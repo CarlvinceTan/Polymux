@@ -1,0 +1,45 @@
+{
+  "name": "midas-desktop",
+  "productName": "Midas",
+  "version": "0.1.0",
+  "description": "Midas desktop agent",
+  "main": ".vite/build/main.js",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "publish": "electron-forge publish",
+    "check": "svelte-check --tsconfig ./src/renderer/tsconfig.json && tsc --noEmit",
+    "renderer:build": "vite build --config vite.renderer.config.ts",
+    "renderer:preview": "vite preview --config vite.renderer.config.ts",
+    "test:ui": "playwright test --config src/renderer/playwright.config.ts"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.1"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-deb": "^7.11.2",
+    "@electron-forge/maker-rpm": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.2",
+    "@electron-forge/plugin-fuses": "^7.11.2",
+    "@electron-forge/plugin-vite": "^7.11.2",
+    "@electron/fuses": "^1.8.0",
+    "@playwright/test": "^1.62.1",
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@tsconfig/svelte": "^5.0.8",
+    "@types/electron-squirrel-startup": "^1.0.2",
+    "@types/node": "^26.2.0",
+    "electron": "43.4.0",
+    "svelte": "^5.46.4",
+    "svelte-check": "^4.4.8",
+    "tslib": "^2.6.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.5"
+  }
+}
