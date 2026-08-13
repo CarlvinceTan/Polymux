@@ -17,7 +17,10 @@
 </script>
 
 <script lang="ts">
-  import {afterUpdate, onMount} from 'svelte';
+  import {afterUpdate, mount, onDestroy, onMount, unmount} from 'svelte';
+  import FileAttachment from './FileAttachment.svelte';
+
+  const chipComponents = new Map<HTMLElement, Record<string, unknown>>();
 
   export let value = '';
   export let chips: InlineChipItem[] = [];
@@ -126,6 +129,11 @@
     savedRange = range.cloneRange();
   }
 
+  /**
+   * A chip is the shared FileAttachment component mounted into the
+   * contenteditable, so the composer's attachments and the ones in a sent
+   * message are literally the same control rather than two lookalikes.
+   */
   function paintChip(element: HTMLElement, chip: InlineChipItem): void {
     const status = chip.status ?? 'done';
     element.dataset.id = chip.id;
@@ -133,40 +141,36 @@
     element.dataset.name = chip.name;
     element.dataset.status = status;
     element.dataset.progress = String(chip.progress ?? 0);
-    element.className = `inline-chip status-${status}`;
-    element.replaceChildren();
 
-    const name = document.createElement('span');
-    name.className = 'inline-chip-name';
-    name.textContent = chip.name;
-    element.appendChild(name);
-
-    if (status === 'uploading') {
-      const progress = document.createElement('span');
-      progress.className = 'inline-chip-progress';
-      progress.textContent = `${Math.round(chip.progress ?? 0)}%`;
-      element.appendChild(progress);
-    }
-
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'inline-chip-remove';
-    remove.setAttribute('aria-label', `Remove ${chip.name}`);
-    remove.textContent = '×';
-    remove.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      onRemove(chip.id);
+    const existing = chipComponents.get(element);
+    const props = {
+      name: chip.name,
+      status: status === 'pending' ? ('uploading' as const) : (status as 'uploading' | 'done' | 'error'),
+      progress: chip.progress ?? 100,
+      halfRow: chips.length > 1,
+      onRemove: () => onRemove(chip.id),
     };
-    element.appendChild(remove);
+    if (existing) {
+      Object.assign(existing, props);
+      return;
+    }
+    chipComponents.set(element, mount(FileAttachment, {target: element, props}) as Record<string, unknown>);
   }
 
   function createChip(chip: InlineChipItem): HTMLElement {
     const element = document.createElement('span');
     element.dataset.chip = '';
     element.contentEditable = 'false';
+    element.className = 'inline-chip-wrapper';
     paintChip(element, chip);
     return element;
+  }
+
+  function destroyChip(element: HTMLElement): void {
+    const component = chipComponents.get(element);
+    if (component) void unmount(component);
+    chipComponents.delete(element);
+    element.remove();
   }
 
   function insertChip(chip: HTMLElement): void {
@@ -193,7 +197,7 @@
     for (const element of editor.querySelectorAll<HTMLElement>('[data-chip]')) {
       const chip = wanted.get(element.dataset.localId ?? '');
       if (chip) paintChip(element, chip);
-      else element.remove();
+      else destroyChip(element);
     }
 
     for (const chip of chips) {
@@ -292,6 +296,11 @@
   });
 
   afterUpdate(reconcileChips);
+
+  onDestroy(() => {
+    for (const component of chipComponents.values()) void unmount(component);
+    chipComponents.clear();
+  });
 </script>
 
 <div class="inline-editor-wrap">
@@ -315,74 +324,3 @@
     onblur={rememberSelection}
   ></div>
 </div>
-
-<style>
-  .inline-editor-wrap { width: 100%; min-width: 0; }
-
-  .inline-chip-editor {
-    width: 100%;
-    overflow-y: auto;
-    background: transparent;
-    color: var(--on-surface, #171717);
-    font-size: 14px;
-    line-height: 1.5;
-    word-break: break-word;
-    white-space: pre-wrap;
-    scrollbar-width: none;
-  }
-
-  .inline-chip-editor::-webkit-scrollbar { display: none; }
-  .inline-chip-editor:focus { outline: none; }
-  .inline-chip-editor.disabled { pointer-events: none; cursor: not-allowed; opacity: 0.5; }
-
-  .inline-chip-editor[data-empty]:not(:focus)::before {
-    content: attr(data-placeholder);
-    color: var(--secondary, #a3a3a3);
-    pointer-events: none;
-  }
-
-  :global(.inline-chip) {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    max-width: 220px;
-    min-height: 24px;
-    vertical-align: top;
-    user-select: none;
-    margin-inline: 2px;
-    border: 1px solid var(--neutral-200, #e5e5e5);
-    border-radius: 7px;
-    padding: 1px 3px 1px 7px;
-    background: var(--neutral-50, #fafafa);
-    color: var(--neutral-700, #404040);
-    font-size: 12px;
-    line-height: 20px;
-  }
-
-  :global(.inline-chip-name) {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  :global(.inline-chip-progress) { color: var(--neutral-500, #737373); font-size: 10px; }
-  :global(.inline-chip.status-error) { border-color: #efb2aa; color: #a5301f; }
-
-  :global(.inline-chip-remove) {
-    width: 18px;
-    height: 18px;
-    display: grid;
-    place-items: center;
-    border: 0;
-    border-radius: 5px;
-    padding: 0;
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
-    font: inherit;
-    font-size: 15px;
-    line-height: 1;
-  }
-
-  :global(.inline-chip-remove:hover) { background: var(--neutral-200, #e5e5e5); }
-</style>

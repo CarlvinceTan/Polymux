@@ -1,0 +1,7 @@
+interface:
+  display_name: "Chronicle"
+  short_description: "Understand recent on-screen work safely"
+  icon_small: "./assets/chronicle.svg"
+  icon_large: "./assets/chronicle.svg"
+  brand_color: "#666666"
+  default_prompt: "Use $chronicle to identify what I was recently doing on screen."

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Mail"
+  short_description: "Work with email through the Himalaya CLI"
+  default_prompt: "Use the Mail skill for this email task."
+

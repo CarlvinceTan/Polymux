@@ -1,0 +1,4 @@
+interface:
+  display_name: "GUI Control"
+  short_description: "Protect focus during desktop app control"
+  default_prompt: "Use GUI Control before operating this desktop application."

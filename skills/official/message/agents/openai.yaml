@@ -1,0 +1,4 @@
+interface:
+  display_name: "Message"
+  short_description: "Draft and manage personal chat messages"
+  default_prompt: "Use the Message skill for this messaging task."

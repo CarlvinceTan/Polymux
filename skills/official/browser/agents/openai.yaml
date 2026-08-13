@@ -1,0 +1,7 @@
+interface:
+  display_name: "Browser"
+  short_description: "Research and work with websites safely"
+  icon_small: "./assets/browser.svg"
+  icon_large: "./assets/browser.svg"
+  brand_color: "#666666"
+  default_prompt: "Use $browser to complete this website task safely."

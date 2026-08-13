@@ -1,0 +1,5 @@
+interface:
+  display_name: "PDF"
+  short_description: "Read, create, and verify PDF files"
+  default_prompt: "Use the PDF skill to work with this file."
+

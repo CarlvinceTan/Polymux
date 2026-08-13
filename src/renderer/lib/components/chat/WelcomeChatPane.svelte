@@ -1,32 +1,70 @@
 <script lang="ts">
   import PromptInput from './PromptInput.svelte';
+
   export let greeting = 'What can I help with?';
   export let subtitle = 'Ask a question, attach a file, or start with your voice.';
   export let placeholder = 'Ask anything';
   export let active = false;
-  export let onSend: (text: string, files: File[]) => void = () => {};
+  export let speechModeEnabled = true;
+  export let showComposer = true;
+  export let onSend: (text: string, files: File[], asGoal: boolean) => void = () => {};
   export let onStop: () => void = () => {};
   export let onVoice: () => void = () => {};
   export let onOptions: () => void = () => {};
+
+  /**
+   * Centres the composer itself on the viewport rather than the whole stack, by
+   * measuring the offset instead of guessing it, so the alignment holds at any
+   * width. The push is limited by the room left below so nothing is pushed out
+   * of view on a short viewport.
+   */
+  function centreComposer(node: HTMLElement) {
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const prompt = node.querySelector<HTMLElement>('.polymux-prompt');
+      if (!prompt) return;
+      node.style.setProperty('--welcome-offset', '0px');
+      const promptRect = prompt.getBoundingClientRect();
+      const stackRect = node.getBoundingClientRect();
+      const viewportCentre = window.innerHeight / 2;
+      const ideal = viewportCentre - (promptRect.top + promptRect.height / 2);
+      const roomBelow = window.innerHeight - stackRect.bottom - 8;
+      node.style.setProperty('--welcome-offset', `${Math.round(Math.max(0, Math.min(ideal, roomBelow)))}px`);
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(measure);
+    };
+
+    // Measured straight away so the composer is centred on first paint, then
+    // refined once layout settles.
+    measure();
+    schedule();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
+    observer?.observe(node);
+    window.addEventListener('resize', schedule);
+
+    return {
+      destroy() {
+        if (frame) cancelAnimationFrame(frame);
+        observer?.disconnect();
+        window.removeEventListener('resize', schedule);
+      },
+    };
+  }
 </script>
 
-<section class="welcome-chat-pane">
-  <div class="welcome-content">
-    <img src="/polymux.svg" alt="Polymux" />
+<div class="welcome-chat-pane" use:centreComposer>
+  <div class="welcome-heading">
+    <!-- Document-relative, not root-relative: the packaged app is loaded over
+         file://, where a leading slash resolves against the filesystem root
+         rather than the bundle and the mark silently fails to load. -->
+    <img class="brand-mark" src="polymux.svg" alt="Polymux"/>
     <h1>{greeting}</h1>
     <p>{subtitle}</p>
-    <div class="welcome-composer">
-      <PromptInput variant="welcome" {active} {placeholder} onSend={onSend} onStop={onStop} onVoice={onVoice} onOptions={onOptions}/>
-    </div>
   </div>
-</section>
-
-<style>
-  .welcome-chat-pane { min-height: 0; flex: 1; display: grid; place-items: center; overflow-y: auto; padding: 62px 24px 90px; background: #fff; }
-  .welcome-content { width: min(100%, 720px); display: flex; flex-direction: column; align-items: center; text-align: center; }
-  img { width: 68px; height: 56px; object-fit: contain; margin-bottom: 25px; }
-  h1 { margin: 0; color: #171717; font-size: clamp(27px, 4vw, 38px); font-weight: 560; letter-spacing: -.035em; }
-  p { margin: 11px 0 30px; color: #737373; font-size: 14px; }
-  .welcome-composer { width: 100%; text-align: left; }
-  @media (max-width: 600px) { .welcome-chat-pane { align-items: start; padding: 85px 16px 40px; } img { width: 58px; } }
-</style>
+  {#if showComposer}
+    <PromptInput variant="welcome" {active} {speechModeEnabled} {placeholder} {onSend} {onStop} {onVoice} {onOptions}/>
+  {/if}
+</div>

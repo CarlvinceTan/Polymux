@@ -14,8 +14,15 @@ const icon = process.platform === 'win32'
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    extraResource: ['skills'],
+    extendInfo: {
+      NSLocationUsageDescription: 'Midas uses your location only when Location access is enabled in General settings.',
+      NSLocationWhenInUseUsageDescription: 'Midas uses your location only when Location access is enabled in General settings.',
+      NSMicrophoneUsageDescription: 'Midas uses the microphone only when you start voice input or speech mode.',
+      NSSpeechRecognitionUsageDescription: 'Midas converts speech to text only when you start voice dictation.',
+    },
     appBundleId: 'com.polymux.midas',
-    executableName: 'midas',
+    executableName: 'Midas',
     icon,
   },
   rebuildConfig: {},

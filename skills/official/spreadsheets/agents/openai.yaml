@@ -1,0 +1,5 @@
+interface:
+  display_name: "Spreadsheets"
+  short_description: "Analyze and edit spreadsheet files"
+  default_prompt: "Use the Spreadsheets skill to work with this workbook."
+

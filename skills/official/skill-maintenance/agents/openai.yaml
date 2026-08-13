@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Maintenance"
+  short_description: "Stage and validate personal skill changes"
+  default_prompt: "Use the Skill Maintenance skill to safely update this skill."

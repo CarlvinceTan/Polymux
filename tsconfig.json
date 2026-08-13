@@ -17,6 +17,7 @@
     "forge.env.d.ts",
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
+    "packages/**/*.ts",
     "vite.*.config.ts"
   ]
 }

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Skill Creator"
+  short_description: "Create clear, reusable Midas skills"
+  default_prompt: "Use the Skill Creator skill to create or improve this skill."
+

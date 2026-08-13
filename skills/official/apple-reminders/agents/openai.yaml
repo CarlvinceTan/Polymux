@@ -1,0 +1,5 @@
+interface:
+  display_name: "Apple Reminders"
+  short_description: "Manage Apple Reminders on macOS"
+  default_prompt: "Use the Apple Reminders skill for this reminder task."
+

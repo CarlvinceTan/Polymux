@@ -1,16 +1,30 @@
 <script lang="ts">
   export let title = 'Spreadsheet';
+  export let columns = 6;
+  export let rows = 14;
+
+  const columnName = (index: number) => String.fromCharCode(65 + index);
 </script>
 
-<section class="workspace-view" aria-label={title}>
-  <div class="placeholder-icon">▦</div>
-  <h2>{title}</h2>
-  <p>Spreadsheet preview will appear here.</p>
-</section>
-
-<style>
-  .workspace-view { min-height: 100%; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 32px; color: var(--neutral-700, #404040); text-align: center; }
-  .placeholder-icon { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid var(--neutral-200, #e5e5e5); border-radius: 12px; color: var(--neutral-500, #737373); font-size: 18px; }
-  h2 { margin: 0; color: var(--neutral-900, #171717); font-size: 16px; font-weight: 600; }
-  p { margin: 0; color: var(--neutral-500, #737373); font-size: 13px; }
-</style>
+<div class="artifact-draft spreadsheet-draft" aria-label={title}>
+  <table>
+    <thead>
+      <tr>
+        <th scope="col"><span class="visually-hidden">Row</span></th>
+        {#each Array.from({length: columns}, (_, index) => index) as column (column)}
+          <th scope="col">{columnName(column)}</th>
+        {/each}
+      </tr>
+    </thead>
+    <tbody>
+      {#each Array.from({length: rows}, (_, index) => index) as row (row)}
+        <tr>
+          <th scope="row">{row + 1}</th>
+          {#each Array.from({length: columns}, (_, index) => index) as column (column)}
+            <td><input aria-label={`${columnName(column)}${row + 1}`}/></td>
+          {/each}
+        </tr>
+      {/each}
+    </tbody>
+  </table>
+</div>

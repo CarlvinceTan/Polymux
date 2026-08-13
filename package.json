@@ -6,6 +6,9 @@
   "main": ".vite/build/main.js",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "start": "electron-forge start",
     "package": "electron-forge package",
@@ -14,11 +17,33 @@
     "check": "svelte-check --tsconfig ./src/renderer/tsconfig.json && tsc --noEmit",
     "renderer:build": "vite build --config vite.renderer.config.ts",
     "renderer:preview": "vite preview --config vite.renderer.config.ts",
-    "test:ui": "playwright test --config src/renderer/playwright.config.ts"
+    "test:ui": "playwright test --config src/renderer/playwright.config.ts",
+    "test:storage": "tsx --test packages/storage/test/**/*.test.ts",
+    "test:chronicle": "tsx --test packages/chronicle/test/**/*.test.ts",
+    "test:inference": "tsx --test packages/inference/test/**/*.test.ts",
+    "test:core": "tsx --test packages/core/test/**/*.test.ts",
+    "test:agent": "tsx --test packages/agent/test/**/*.test.ts",
+    "test:tools": "tsx --test packages/tools/test/**/*.test.ts",
+    "test:protocol": "tsx --test packages/protocol/test/**/*.test.ts",
+    "test:main": "tsx --test src/main/test/**/*.test.ts",
+    "test:backend": "npm run test:inference && npm run test:core && npm run test:storage && npm run test:chronicle && npm run test:tools && npm run test:agent && npm run test:protocol && npm run test:main",
+    "icons": "node scripts/build-icons.mjs"
   },
   "license": "UNLICENSED",
   "dependencies": {
-    "electron-squirrel-startup": "^1.0.1"
+    "@earendil-works/pi-ai": "^0.84.1",
+    "@midas/agent": "0.1.0",
+    "@midas/chronicle": "0.1.0",
+    "@midas/inference": "0.1.0",
+    "@midas/protocol": "0.1.0",
+    "@midas/storage": "0.1.0",
+    "@midas/tools": "0.1.0",
+    "dompurify": "^3.4.13",
+    "electron-squirrel-startup": "^1.0.1",
+    "highlight.js": "^11.12.0",
+    "marked": "^18.0.9",
+    "smol-toml": "^1.8.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.11.2",
@@ -30,15 +55,20 @@
     "@electron-forge/plugin-fuses": "^7.11.2",
     "@electron-forge/plugin-vite": "^7.11.2",
     "@electron/fuses": "^1.8.0",
+    "@lobehub/icons-static-svg": "^1.94.0",
     "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@tsconfig/svelte": "^5.0.8",
     "@types/electron-squirrel-startup": "^1.0.2",
     "@types/node": "^26.2.0",
+    "@types/three": "^0.185.4",
     "electron": "43.4.0",
+    "prettier": "^3.9.6",
+    "simple-icons": "^16.28.0",
     "svelte": "^5.46.4",
     "svelte-check": "^4.4.8",
     "tslib": "^2.6.2",
+    "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vite": "^8.0.5"
   }
