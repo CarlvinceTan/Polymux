@@ -166,9 +166,9 @@ export class MidasAgent {
     const systemPrompt = buildSystemPrompt({
       basePrompt: this.#options.basePrompt,
       preferences: this.#options.storage.listPreferences(),
-      memorySummary: memory.summary,
-      memoryRegistryPath: memory.registryPath,
-      memories: memory.conversationMemories,
+      memorySummary: memory.enabled ? memory.summary : undefined,
+      memoryRegistryPath: memory.enabled ? memory.registryPath : undefined,
+      memories: memory.enabled ? memory.conversationMemories : [],
       chronicle: chronicle?.enabled ? chronicle : undefined,
       environment,
       skills: skillResult.skills,

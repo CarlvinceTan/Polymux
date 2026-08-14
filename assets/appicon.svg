@@ -1,17 +1,13 @@
-<!-- macOS does not mask app icons: the artwork itself must carry the rounded
-     shape. This follows Apple's Big Sur icon grid — a 1024 canvas with an
-     824x824 rounded square (r=185) centred on transparent margins - so the
-     Dock renders it like every other icon instead of a hard-edged slab. The
+<!-- Full-bleed artwork: macOS applies its own squircle mask (and Tahoe its
+     glass edge) to app icons, so the source must fill the canvas edge to
+     edge. Artwork that carries its own rounded shape gets set on the system's
+     grey backing plate instead, which reads as a halo around the icon. The
      ground stays white so the black Polymux mark reads over any wallpaper. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Polymux">
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="#fff"/>
-  <!-- The mark keeps its previous composition, scaled from the old 172-unit
-       window (origin 14,14) onto the inner square: 824/172 ~ 4.7907. -->
-  <g transform="translate(32.93 32.93) scale(4.7907)">
-    <path
-      fill="#000"
-      transform="translate(-10 0)"
-      d="M 40 40 L 120 40 A 60 60 0 0 1 120 160 L 40 160 L 70 120 L 110 120 A 20 20 0 0 0 110 80 L 70 80 Z"
-    />
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="14 14 172 172" role="img" aria-label="Polymux">
+  <rect width="200" height="200" fill="#fff"/>
+  <path
+    fill="#000"
+    transform="translate(-10 0)"
+    d="M 40 40 L 120 40 A 60 60 0 0 1 120 160 L 40 160 L 70 120 L 110 120 A 20 20 0 0 0 110 80 L 70 80 Z"
+  />
 </svg>

@@ -83,7 +83,8 @@ export class ChronicleStore {
     const frameDirectory = path.join(this.framesDirectory, day);
     mkdirSync(frameDirectory, { recursive: true });
     const id = `${safeTimestamp(timestamp)}-${safeStem(frame.sourceId)}-${crypto.randomUUID().slice(0, 8)}`;
-    const target = path.join(frameDirectory, `${id}.jpg`);
+    const kind = frame.kind ?? "image";
+    const target = path.join(frameDirectory, `${id}.${kind === "text" ? "md" : "jpg"}`);
     writeFileSync(target, frame.image);
     const entry: ChronicleEntry = {
       id,
@@ -97,6 +98,7 @@ export class ChronicleStore {
       change,
       reason,
       bytes: frame.image.byteLength,
+      kind,
     };
     appendFileSync(
       path.join(this.indexDirectory, `${day}.jsonl`),
@@ -143,10 +145,10 @@ export class ChronicleStore {
     this.#rebuildTimeline();
   }
 
-  status(enabled: boolean, running: boolean, lastError: string | null): ChronicleStatus {
+  status(settings: ChronicleSettings, running: boolean, lastError: string | null): ChronicleStatus {
     const entries = this.entries({ limit: Number.MAX_SAFE_INTEGER });
     return {
-      enabled,
+      enabled: settings.enabled,
       running,
       directory: this.directory,
       lastCapturedAt: entries[0]?.capturedAt ?? null,
@@ -174,7 +176,7 @@ export class ChronicleStore {
       [
         "# Chronicle Timeline",
         "",
-        "Newest retained changed frames. Open only the few images needed for the task.",
+        "Newest retained accessibility text snapshots. Open only the few needed for the task.",
         "",
         ...(entries.length
           ? entries.map(

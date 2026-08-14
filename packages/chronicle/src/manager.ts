@@ -48,7 +48,7 @@ export class ChronicleManager {
   }
 
   status(): ChronicleStatus {
-    return this.store.status(this.settings().enabled, this.#running, this.#lastError);
+    return this.store.status(this.settings(), this.#running, this.#lastError);
   }
 
   promptContext(): ChroniclePromptContext {
@@ -148,6 +148,30 @@ export function signatureDifference(left: Uint8Array, right: Uint8Array): number
   for (let index = 0; index < left.length; index++)
     difference += Math.abs(left[index]! - right[index]!);
   return difference / (left.length * 255);
+}
+
+/**
+ * Fixed-length signature for a text snapshot, comparable with
+ * `signatureDifference` just like a downscaled frame. Character trigrams are
+ * hashed into a bucket histogram: a small edit shifts a handful of buckets,
+ * while a different document lands on largely different trigrams and moves
+ * the signature past the change threshold.
+ */
+export function textSignature(text: string): Uint8Array {
+  const buckets = new Float64Array(256);
+  const normalized = text.toLowerCase();
+  for (let index = 0; index + 2 < normalized.length; index += 1) {
+    const hash =
+      normalized.charCodeAt(index) * 961 +
+      normalized.charCodeAt(index + 1) * 31 +
+      normalized.charCodeAt(index + 2);
+    buckets[hash % 256] += 1;
+  }
+  const peak = Math.max(1, ...buckets);
+  const signature = new Uint8Array(256);
+  for (let index = 0; index < 256; index += 1)
+    signature[index] = Math.round((buckets[index]! / peak) * 255);
+  return signature;
 }
 
 export function frameSignature(bitmap: Uint8Array): Uint8Array {

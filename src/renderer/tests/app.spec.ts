@@ -14,6 +14,30 @@ async function send(page: Page, text: string) {
 }
 
 test.describe('welcome view', () => {
+  test('shows a restrained Midas startup screen', async ({page}) => {
+    await page.goto('/');
+    const splash = page.getByRole('status', {name: 'Loading Midas'});
+    await expect(splash).toBeVisible();
+    await expect(splash.locator('img')).toHaveAttribute('src', 'polymux.svg');
+    await expect(splash.getByText('Midas', {exact: true})).toBeVisible();
+    const startupAnimation = await splash.locator('.startup-brand').evaluate((node) => {
+      const style = getComputedStyle(node);
+      return {name: style.animationName, duration: style.animationDuration};
+    });
+    expect(startupAnimation.name).toContain('startup-brand-in');
+    expect(startupAnimation.duration).toBe('2s');
+    const startupLockup = await splash.locator('.startup-brand').evaluate((node) => {
+      const mark = node.querySelector('img')!.getBoundingClientRect();
+      const word = node.querySelector('span')!;
+      const style = getComputedStyle(word);
+      return {markWidth: mark.width, markHeight: mark.height, gap: getComputedStyle(node).gap, fontSize: style.fontSize, fontWeight: style.fontWeight, tracking: style.letterSpacing};
+    });
+    expect(startupLockup).toEqual({markWidth: 48, markHeight: 39, gap: '8px', fontSize: '32px', fontWeight: '750', tracking: '-1.44px'});
+    await page.waitForTimeout(1700);
+    await expect(splash).toBeVisible();
+    await expect(splash).toHaveCount(0, {timeout: 1500});
+  });
+
   test('shows the Polymux mark, heading and composer, and nothing else', async ({page}) => {
     await page.goto('/');
     await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
@@ -67,6 +91,8 @@ test.describe('welcome view', () => {
 
     const modal = page.getByRole('dialog', {name: 'Options'});
     await expect(modal).toBeVisible();
+    await expect(modal.getByRole('heading', {name: 'General'})).toBeVisible();
+    await expect(modal.getByText('Manage Midas preferences and access.')).toBeVisible();
     const modalBounds = await modal.boundingBox();
     expect(modalBounds).not.toBeNull();
     expect(modalBounds!.width).toBeLessThanOrEqual(782);
@@ -125,8 +151,55 @@ test.describe('welcome view', () => {
     expect(dividerSpacing).toEqual({left: 15, right: 15});
     await expect(modal.locator('.options-rail')).toHaveCSS('width', '220px');
     await expect(modal.getByRole('heading', {name: 'Filesystem'})).toBeVisible();
-    await expect(modal.getByText('Local standard input/output server')).toBeVisible();
+    await expect(modal.getByRole('heading', {name: 'Filesystem'})).toHaveCSS('font-size', '16px');
+    await expect(modal.getByText('Access local files and directories.')).toBeVisible();
+    await expect(modal.getByText('documents', {exact: true})).toBeVisible();
+    await expect(modal.getByText('filesystem://documents', {exact: true})).toHaveCount(0);
+    const officialMcp = modal.getByRole('button', {name: /Browser Tools Official/});
+    await expect(officialMcp.locator('.official-rail-stamp')).toBeVisible();
+    await expect(officialMcp.locator('.mcp-name-status')).toHaveCount(0);
+    await expect(officialMcp).toContainText('connected');
+    await expect(officialMcp).not.toContainText('official · connected');
+    await officialMcp.click();
+    await expect(modal.getByRole('heading', {name: 'Browser Tools'})).toBeVisible();
+    await expect(modal.locator('.options-detail-header .options-badge')).toHaveCount(0);
+    await expect(modal.locator('.skill-meta')).toContainText('Bundled with Midas');
+    await expect(modal.locator('.skill-meta')).toContainText('Connected');
+    await expect(modal.getByText('Last error')).toHaveCount(0);
+    await modal.getByRole('button', {name: /Filesystem/}).click();
+    await expect(modal.getByRole('heading', {name: 'Filesystem'})).toBeVisible();
     await expect(modal.getByRole('button', {name: 'Add MCP server'})).toBeVisible();
+    const mcpMarketplace = modal.getByRole('button', {name: 'Browse MCP Marketplace'});
+    await expect(mcpMarketplace).toBeVisible();
+    await mcpMarketplace.click();
+    await expect(modal.getByRole('heading', {name: 'MCP Marketplace'})).toBeVisible();
+    await expect(modal.getByRole('searchbox', {name: 'Search MCP Marketplace'})).toBeVisible();
+    await modal.getByRole('button', {name: /Filesystem/}).click();
+    await expect(modal.getByRole('heading', {name: 'Filesystem'})).toBeVisible();
+    await mcpMarketplace.click();
+    const marketplaceFiles = modal.locator('.skill-registry-results li').filter({hasText: 'Browse and manage files'});
+    await marketplaceFiles.getByRole('button', {name: 'Install'}).click();
+    await expect(marketplaceFiles.getByRole('button', {name: 'Uninstall'})).toBeVisible();
+    await expect(modal.locator('.skill-registry-results li').filter({hasText: 'Issues'}).getByRole('button', {name: 'Configure'})).toBeVisible();
+    await modal.getByRole('button', {name: 'Done'}).click();
+    await expect(modal.getByRole('heading', {name: 'Filesystem'})).toBeVisible();
+    await modal.getByRole('button', {name: /^Files midas/}).click();
+    await expect(modal.getByRole('button', {name: 'Delete MCP server'})).toBeVisible();
+    await modal.getByRole('button', {name: 'Delete MCP server'}).click();
+    await expect(modal.getByRole('button', {name: /^Files midas/})).toHaveCount(0);
+    await expect(modal.getByRole('heading', {name: 'Filesystem'})).toBeVisible();
+    await expect(modal.getByRole('button', {name: 'Filter MCP servers'})).toBeVisible();
+    await expect(modal.getByRole('button', {name: 'Sort MCP servers'})).toBeVisible();
+    await modal.getByRole('button', {name: 'Filter MCP servers'}).click();
+    const mcpFilterMenu = modal.getByRole('menu', {name: 'Filter MCP servers'});
+    await expect(mcpFilterMenu.getByRole('menuitemradio')).toHaveText(['All MCP servers', 'Enabled', 'Disabled', 'Connected', 'Official', 'Custom']);
+    await mcpFilterMenu.getByRole('menuitemradio', {name: 'Connected'}).click();
+    await expect(modal.getByRole('button', {name: /Filesystem/})).toBeVisible();
+    await modal.getByRole('button', {name: 'Filter MCP servers'}).click();
+    await modal.getByRole('menuitemradio', {name: 'All MCP servers'}).click();
+    await modal.getByRole('button', {name: 'Sort MCP servers'}).click();
+    await expect(modal.getByRole('menu', {name: 'Sort MCP servers'}).getByRole('menuitemradio')).toHaveText(['Recommended', 'Server A–Z', 'Server Z–A']);
+    await modal.getByRole('menuitemradio', {name: 'Recommended'}).click();
     await expect(modal.getByRole('button', {name: 'Refresh MCP'})).toHaveCount(0);
     const mcpSearch = modal.getByRole('searchbox', {name: 'Search MCP server'});
     await expect(mcpSearch).toHaveAttribute('placeholder', 'Search MCP server');
@@ -146,10 +219,13 @@ test.describe('welcome view', () => {
 
     await modal.getByRole('tab', {name: 'Skills'}).click();
     await expect(modal.getByRole('heading', {name: 'Documents'})).toBeVisible();
+    await expect(modal.getByRole('heading', {name: 'Documents'})).toHaveCSS('font-size', '15px');
     await expect(modal.getByText('Create and edit document files.')).toBeVisible();
     const officialPdf = modal.getByRole('button', {name: /PDF Official/});
     await expect(officialPdf).toBeVisible();
     await expect(officialPdf.locator('[data-icon="verified"]')).toBeVisible();
+    await expect(officialPdf.locator('small')).toHaveText('Active');
+    await expect(officialPdf.locator('.integration-state')).toHaveCount(0);
     const officialSealGap = await officialPdf.evaluate((row) => {
       const name = row.querySelector('.skill-name-line strong')!.getBoundingClientRect();
       const seal = row.querySelector('.official-rail-stamp')!.getBoundingClientRect();
@@ -157,21 +233,85 @@ test.describe('welcome view', () => {
     });
     expect(officialSealGap).toBe(4);
     await expect(modal.getByRole('button', {name: 'Add Skills'})).toBeVisible();
+    await modal.getByRole('button', {name: 'Add Skills'}).click();
+    await expect(modal.getByRole('menuitem', {name: 'Create Custom'})).toBeVisible();
+    await expect(modal.getByRole('menuitem', {name: 'Upload Skills'})).toBeVisible();
+    await expect(modal.getByRole('menuitem', {name: 'Install from Vercel Skills'})).toBeVisible();
+    await modal.getByRole('menuitem', {name: 'Create Custom'}).click();
+    await expect(modal.getByRole('heading', {name: 'Add Skill'})).toBeVisible();
+    await modal.getByRole('button', {name: 'Cancel'}).click();
+    await modal.getByRole('button', {name: 'Add Skills'}).click();
+    await modal.getByRole('menuitem', {name: 'Install from Vercel Skills'}).click();
+    await expect(modal.getByRole('heading', {name: 'Vercel Skills'})).toBeVisible();
+    // Searching the directory lists registry entries with install counts.
+    await modal.getByLabel('Search Vercel Skills').fill('find');
+    const findRow = modal.locator('.skill-registry-results li').filter({hasText: 'find-skills'});
+    await expect(findRow).toContainText('vercel-labs/skills');
+    await expect(findRow).toContainText('120.3k installs');
+    await findRow.getByRole('button', {name: 'Install'}).click();
+    // The row flips to Uninstall, and the browser stays open for more changes.
+    await expect(findRow.getByRole('button', {name: 'Uninstall'})).toBeVisible();
+    await findRow.getByRole('button', {name: 'Uninstall'}).click();
+    await expect(findRow.getByRole('button', {name: 'Install'})).toBeVisible();
+    await findRow.getByRole('button', {name: 'Install'}).click();
+    await expect(findRow.getByRole('button', {name: 'Uninstall'})).toBeVisible();
+    await expect(modal.getByRole('heading', {name: 'Vercel Skills'})).toBeVisible();
+    await expect(modal.getByLabel('Package')).toHaveCount(0);
+    const directoryLayout = await modal.locator('.options-detail.directory-open').evaluate((detail) => ({
+      overflowY: getComputedStyle(detail).overflowY,
+      resultsOverflowY: getComputedStyle(detail.querySelector('.skill-registry-results')!).overflowY,
+    }));
+    expect(directoryLayout).toEqual({overflowY: 'hidden', resultsOverflowY: 'auto'});
+    await modal.getByRole('button', {name: 'Done'}).click();
+    await expect(modal.getByRole('heading', {name: 'Find Skills'})).toBeVisible();
+    await expect(modal.getByRole('button', {name: /Find Skills Active/})).toBeVisible();
+    await expect(modal.getByRole('button', {name: 'Filter skills'})).toBeVisible();
+    await expect(modal.getByRole('button', {name: 'Sort skills'})).toBeVisible();
+    await modal.getByRole('button', {name: 'Filter skills'}).click();
+    const skillFilterMenu = modal.getByRole('menu', {name: 'Filter skills'});
+    await expect(skillFilterMenu.getByRole('menuitemradio')).toHaveText(['All', 'Enabled', 'Disabled', 'Official', 'Custom']);
+    await skillFilterMenu.getByRole('menuitemradio', {name: 'Official'}).click();
+    await expect(modal.getByRole('button', {name: /PDF Official/})).toBeVisible();
+    await modal.getByRole('button', {name: 'Filter skills'}).click();
+    await modal.getByRole('menuitemradio', {name: 'All', exact: true}).click();
+    await modal.getByRole('button', {name: 'Sort skills'}).click();
+    await expect(modal.getByRole('menu', {name: 'Sort skills'}).getByRole('menuitemradio')).toHaveText(['Recommended', 'Last edited', 'Skill A–Z', 'Skill Z–A']);
+    await modal.getByRole('menuitemradio', {name: 'Recommended'}).click();
     await expect(modal.getByRole('button', {name: 'Refresh Skills'})).toHaveCount(0);
     const browserSkill = modal.getByRole('button', {name: /Browser Official/});
-    const browserIcon = await browserSkill.locator('img').getAttribute('src');
+    // Skill rows carry no logos or icon marks — the name and stamp are the row.
+    await expect(browserSkill.locator('img, .option-mark')).toHaveCount(0);
     await browserSkill.click();
     await expect(modal.getByRole('heading', {name: 'Browser'})).toBeVisible();
-    await expect(modal.locator('.options-detail-header .skill-logo')).toHaveAttribute('src', browserIcon!);
     const officialBadge = modal.locator('.options-detail-header .official-badge');
     await expect(officialBadge).toHaveText('Official');
+    await expect(officialBadge).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(officialBadge).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 1)');
     await expect(officialBadge.locator('[data-icon="verified"]')).toBeVisible();
-    const customSkill = modal.getByRole('button', {name: /Personal Research Custom/});
+    const officialMeta = modal.locator('.skill-meta');
+    await expect(officialMeta.locator('dt')).toHaveText(['Author', 'Category', 'Last edited', 'Source']);
+    await expect(officialMeta).toContainText('Midas');
+    await expect(officialMeta).toContainText('Web');
+    await expect(officialMeta).toContainText('Bundled with Midas');
+    const customSkill = modal.getByRole('button', {name: /Personal Research Active/});
     await expect(customSkill).toBeVisible();
     await customSkill.click();
-    await expect(modal.locator('.options-detail-header .options-badge')).toHaveText('Custom');
+    await expect(modal.locator('.options-detail-header .options-badge')).toHaveCount(0);
+    await expect(modal.locator('.skill-detail > .options-detail-header > .options-title-group')).toHaveCSS('align-self', 'flex-start');
+    await expect(modal.locator('.skill-detail > .options-detail-header')).toHaveCSS('height', '20px');
+    const customMeta = modal.locator('.skill-meta');
+    await expect(customMeta).toContainText('You');
+    await expect(customMeta).toContainText('Midas · ~/.midas/skills');
+    const skillPathBottomGap = await modal.locator('.skill-detail').evaluate((detail) => {
+      const path = detail.querySelector('.options-path')!.getBoundingClientRect();
+      const bounds = detail.getBoundingClientRect();
+      return Math.round(bounds.bottom - path.bottom);
+    });
+    expect(skillPathBottomGap).toBe(20);
 
     await modal.getByRole('tab', {name: 'Model'}).click();
+    await expect(modal.getByRole('heading', {name: 'Models'})).toBeVisible();
+    await expect(modal.getByText('Click a model to choose it.')).toBeVisible();
     const selectedModel = modal.getByLabel(/Selected model:/);
     await expect(selectedModel).toContainText('GPT-5.6 Terra');
     await expect(selectedModel).toHaveAttribute('data-tooltip-label', 'Current Model');
@@ -179,7 +319,12 @@ test.describe('welcome view', () => {
     const selectedModelRestingBackground = await selectedModel.evaluate((node) => getComputedStyle(node).backgroundColor);
     await selectedModel.hover();
     await expect(selectedModel).not.toHaveCSS('background-color', selectedModelRestingBackground);
-    await expect(modal.getByRole('searchbox', {name: 'Search company'})).toHaveAttribute('placeholder', 'Search company');
+    await expect(page.getByRole('tooltip', {name: 'Current Model'})).toBeVisible();
+    const companySearch = modal.getByRole('searchbox', {name: 'Search model'});
+    await expect(companySearch).toHaveAttribute('placeholder', 'Search model');
+    await companySearch.fill('Haiku');
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['Anthropic']);
+    await companySearch.fill('');
     await expect(modal.getByRole('button', {name: /OpenAI.*2 models/})).toBeVisible();
     await expect(modal.getByRole('button', {name: /Google.*1 model/})).toBeVisible();
     await expect(modal.getByRole('button', {name: /Anthropic.*2 models/})).toBeVisible();
@@ -250,15 +395,7 @@ test.describe('welcome view', () => {
     });
     expect(modelTableStyle).toEqual({wrapperBorder: 'none', headerBackground: 'rgba(0, 0, 0, 0)', countBackground: 'rgba(0, 0, 0, 0)', countRightOffset: 0});
     await expect(modal.getByText('Prices are per 1M tokens. Some rates may be unavailable or not applicable.')).toBeVisible();
-    const modelSearch = modal.getByRole('searchbox', {name: 'Search model'});
-    await expect(modelSearch).toHaveAttribute('placeholder', 'Search model');
-    await modelSearch.fill('Haiku');
-    await expect(modal.getByRole('button', {name: 'Use Claude Haiku 4.5'})).toBeVisible();
-    await expect(modal.getByRole('button', {name: 'Use Claude Sonnet 4.5'})).toHaveCount(0);
-    const clearModelSearch = modal.getByRole('button', {name: 'Clear model search'});
-    await expect(clearModelSearch).toHaveCSS('color', 'rgb(17, 17, 17)');
-    await clearModelSearch.click();
-    await expect(modelSearch).toHaveValue('');
+    await expect(modal.getByRole('button', {name: 'Clear model search'})).toHaveCount(0);
     const currencyMenu = modal.getByRole('button', {name: 'Currency'});
     await expect(currencyMenu).toContainText('USD');
     const currencyPosition = await modal.locator('.pricing-toolbar').evaluate((toolbar) => {
@@ -328,14 +465,21 @@ test.describe('welcome view', () => {
     await modal.getByRole('button', {name: 'Filter providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'All providers'}).click();
     await modal.getByRole('button', {name: 'Sort providers'}).click();
-    await expect(modal.getByRole('menuitemradio', {name: 'Recommended'})).toBeVisible();
+    await expect(modal.getByRole('menuitemradio')).toHaveText(['Default', 'Recommended', 'Provider A–Z', 'Provider Z–A', 'Most models', 'Fewest models']);
+    await expect(modal.getByRole('menuitemradio', {name: 'Default'})).toHaveAttribute('aria-checked', 'true');
     await expect(modal.getByRole('menuitemradio', {name: 'Popularity'})).toHaveCount(0);
     await expect(modal.getByRole('menuitemradio', {name: 'Most models'})).toBeVisible();
+    await modal.getByRole('menuitemradio', {name: 'Recommended'}).click();
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['Anthropic', 'OpenAI', 'OpenRouter']);
+    await modal.getByRole('button', {name: 'Sort providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Provider A–Z'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['Anthropic', 'OpenAI', 'OpenRouter']);
     await modal.getByRole('button', {name: 'Sort providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Fewest models'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['OpenRouter', 'Anthropic', 'OpenAI']);
+    await modal.getByRole('button', {name: 'Sort providers'}).click();
+    await modal.getByRole('menuitemradio', {name: 'Default'}).click();
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['OpenAI', 'Anthropic', 'OpenRouter']);
     await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
     const apiKey = modal.getByLabel('API key');
     await expect(apiKey).toHaveAttribute('placeholder', 'Enter API key');
@@ -359,6 +503,8 @@ test.describe('welcome view', () => {
     await apiKey.fill('sk-second-secret');
     await modal.getByRole('button', {name: 'Add key'}).click();
     await expect(modal.locator('.credential-key-row')).toHaveCount(2);
+    await expect(modal.locator('.credential-key-row small')).toHaveText(['Ready', 'Ready']);
+    await expect(modal.locator('.credential-keys')).not.toContainText('Standby');
     const removeKey = modal.getByRole('button', {name: /Remove sk-t/});
     await expect(removeKey).toHaveAttribute('data-tooltip-label', 'Remove');
     await removeKey.click();
@@ -404,20 +550,34 @@ test.describe('welcome view', () => {
     await modal.getByRole('tab', {name: 'Memory'}).click();
     await expect(modal.locator('.memory-options .option-mark')).toHaveCount(0);
     await expect(modal.locator('.memory-options .options-detail-header .options-badge')).toHaveCount(0);
-    const memoryMetrics = modal.locator('.memory-top-metrics');
-    await expect(memoryMetrics.getByText('Memories', {exact: true})).toBeVisible();
-    await expect(memoryMetrics.getByText('Rollouts', {exact: true})).toBeVisible();
+    const memoryMetrics = modal.getByLabel('Memory storage');
+    await expect(memoryMetrics.getByText('2 memories', {exact: true})).toBeVisible();
+    await expect(memoryMetrics.getByText('17.8 KB', {exact: true})).toBeVisible();
+    await expect(memoryMetrics.getByText('Latest:', {exact: false})).toBeVisible();
+    await expect(modal.getByText('/demo/memories', {exact: true})).toBeVisible();
+    const memoryToggle = modal.getByRole('switch', {name: 'Enable Memory'});
+    const chronicleToggle = modal.getByRole('switch', {name: 'Enable Chronicle'});
+    await expect(memoryToggle).toHaveAttribute('aria-checked', 'true');
+    await memoryToggle.click();
+    await expect(memoryToggle).toHaveAttribute('aria-checked', 'false');
+    await expect(modal.getByText('Memory is off', {exact: true})).toHaveCount(0);
+    await expect(chronicleToggle).toBeDisabled();
+    await expect(modal.locator('.chronicle-group')).toHaveClass(/disabled/);
+    await memoryToggle.click();
+    await expect(memoryToggle).toHaveAttribute('aria-checked', 'true');
+    await expect(chronicleToggle).toBeEnabled();
     const memoryLayout = await modal.locator('.memory-options').evaluate((node) => {
-      const page = node.getBoundingClientRect();
-      const metrics = node.querySelector('.memory-top-metrics')!.getBoundingClientRect();
       return {
-        metricsRightGap: Math.round(page.right - metrics.right),
         scrollHeight: node.scrollHeight,
         clientHeight: node.clientHeight,
       };
     });
-    expect(memoryLayout.metricsRightGap).toBeLessThanOrEqual(32);
     expect(memoryLayout.scrollHeight).toBeLessThanOrEqual(memoryLayout.clientHeight);
+    const memoryPathBottomGap = await modal.locator('.memory-options').evaluate((panel) => {
+      const path = panel.querySelector('.options-path')!.getBoundingClientRect();
+      return Math.round(panel.getBoundingClientRect().bottom - path.bottom);
+    });
+    expect(memoryPathBottomGap).toBe(20);
     const sharedLeftEdge = await modal.evaluate((node) => {
       const firstTab = node.querySelector('.options-mode button')!;
       const tabBounds = firstTab.getBoundingClientRect();
@@ -427,10 +587,9 @@ test.describe('welcome view', () => {
     });
     expect(sharedLeftEdge).toBe(0);
     await expect(modal.getByText('Durable memories are added or removed only when you explicitly ask.')).toBeVisible();
-    const chronicleToggle = modal.getByRole('switch', {name: 'Enable Chronicle'});
     await expect(chronicleToggle).toHaveAttribute('aria-checked', 'true');
-    await expect(modal.getByText('Recording recent screen context', {exact: true})).toBeVisible();
-    await expect(modal.getByText('Visual deduplication', {exact: false})).toBeVisible();
+    await expect(modal.getByText('adaptive sampling', {exact: false})).toBeVisible();
+    await expect(modal.getByRole('radiogroup', {name: 'Chronicle capture mode'})).toHaveCount(0);
     await chronicleToggle.click();
     await expect(chronicleToggle).toHaveAttribute('aria-checked', 'false');
     await expect(modal.getByText('Recent screen context is off', {exact: true})).toBeVisible();
@@ -460,11 +619,47 @@ test.describe('welcome view', () => {
     await expect(skillToggle).toHaveAttribute('aria-checked', 'true');
     await skillToggle.click();
     await expect(skillToggle).toHaveAttribute('aria-checked', 'false');
+    const inactiveSkillRow = modal.getByRole('button', {name: /Documents Inactive/});
+    await expect(inactiveSkillRow).toBeVisible();
+    await expect(inactiveSkillRow).toHaveClass(/integration-disabled/);
     await modal.getByRole('button', {name: 'Edit skill'}).click();
     await expect(modal.getByRole('heading', {name: 'Edit Skill'})).toBeVisible();
+    const skillFormWidth = await modal.locator('.skill-form').evaluate((form) => ({
+      form: Math.round(form.getBoundingClientRect().width),
+      detail: Math.round(form.parentElement!.getBoundingClientRect().width - 33),
+    }));
+    expect(skillFormWidth.form).toBe(skillFormWidth.detail);
     await modal.getByLabel('Description').fill('Create polished document files.');
     await modal.getByRole('button', {name: 'Save', exact: true}).click();
     await expect(modal.getByText('Create polished document files.')).toBeVisible();
+    await expect(modal.getByRole('button', {name: 'Delete skill'})).toBeVisible();
+    await modal.getByRole('button', {name: 'Delete skill'}).click();
+    await expect(modal.getByRole('button', {name: /Documents Active/})).toHaveCount(0);
+    await modal.getByRole('button', {name: /PDF Official/}).click();
+    await expect(modal.getByRole('button', {name: 'Delete skill'})).toHaveCount(0);
+  });
+
+  test('falls back to a network location when the platform service fails', async ({page}) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'geolocation', {
+        configurable: true,
+        value: {
+          getCurrentPosition: (_success: PositionCallback, failure: PositionErrorCallback) =>
+            failure({code: 3, message: 'Timed out', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3} as GeolocationPositionError),
+        },
+      });
+    });
+    await page.goto('/');
+    await page.getByRole('button', {name: 'OPTIONS'}).click();
+    const modal = page.getByRole('dialog', {name: 'Options'});
+    const locationRow = modal.locator('.general-setting-row').filter({hasText: 'Location'});
+    const retry = locationRow.getByRole('button', {name: 'Try again'});
+    await expect(retry).toBeVisible();
+    await retry.click();
+    // The broken platform provider no longer strands the row: the network
+    // fallback resolves, and the retry affordance stands down.
+    await expect(locationRow).toContainText('Shared with the agent');
+    await expect(retry).toHaveCount(0);
   });
 
   test('the primary button offers speech until there is something to send', async ({page}) => {
@@ -542,6 +737,25 @@ test.describe('design system', () => {
     await expect(page.locator('.shared-tooltip')).toHaveText('New Chat');
     await page.getByRole('button', {name: 'Toggle Workspace'}).hover();
     await expect(page.locator('.shared-tooltip')).toHaveText('Workspace');
+  });
+
+  test('dismisses a tooltip when its hovered control is removed', async ({page}) => {
+    await page.goto('/');
+    await page.evaluate(() => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('aria-label', 'Temporary action');
+      button.innerHTML = '<svg viewBox="0 0 24 24"></svg>';
+      button.style.position = 'fixed';
+      button.style.inset = '80px auto auto 80px';
+      document.body.appendChild(button);
+    });
+
+    const temporary = page.getByRole('button', {name: 'Temporary action'});
+    await temporary.hover();
+    await expect(page.getByRole('tooltip', {name: 'Temporary action'})).toBeVisible();
+    await temporary.evaluate((button) => button.remove());
+    await expect(page.locator('.shared-tooltip')).toHaveCount(0);
   });
 
   test('History and New Chat use the same icon-button hover treatment', async ({page}) => {
@@ -704,6 +918,65 @@ test.describe('conversation', () => {
     });
     expect(composerMask.bottom).toBe(composerMask.viewportBottom);
     expect(composerMask.background).not.toBe('none');
+  });
+
+  test('attaches files from the bottom-left of the sent-message editor', async ({page}) => {
+    await page.goto('/');
+    await send(page, 'Edit this message');
+    const user = page.locator('.message:not(.assistant)').first();
+    await user.hover();
+    await user.getByRole('button', {name: 'Edit'}).click();
+
+    const shell = user.locator('.message-edit-shell');
+    const attach = shell.getByRole('button', {name: 'Attach files'});
+    await expect(attach).toBeVisible();
+    const geometry = await shell.evaluate((node) => {
+      const shellBounds = node.getBoundingClientRect();
+      const buttonBounds = node.querySelector('.edit-attach')!.getBoundingClientRect();
+      const sendBounds = node.querySelector('.save')!.getBoundingClientRect();
+      return {
+        attachNearLeft: buttonBounds.left - shellBounds.left < 20,
+        attachLeftOfSend: buttonBounds.right < sendBounds.left,
+        attachNearBottom: shellBounds.bottom - buttonBounds.bottom < 20,
+      };
+    });
+    expect(geometry).toEqual({attachNearLeft: true, attachLeftOfSend: true, attachNearBottom: true});
+
+    await shell.locator('input[type=file]').setInputFiles({name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes')});
+    await expect(shell.getByLabel('New attachments')).toContainText('notes.txt');
+    await shell.getByRole('button', {name: 'Send'}).click();
+    await expect(user.locator('.message-files')).toContainText('notes.txt');
+  });
+
+  test('persists message edits and feedback after starting and reopening a chat', async ({page}) => {
+    await page.goto('/');
+    await send(page, 'Original chat message');
+
+    const user = page.locator('.message:not(.assistant)').first();
+    const assistant = page.locator('.message.assistant').first();
+    await expect(assistant).toContainText(/assembled Midas chat surface/, {timeout: 4000});
+
+    await user.hover();
+    await user.getByRole('button', {name: 'Edit'}).click();
+    await user.getByRole('textbox', {name: 'Edit message'}).fill('Updated chat message');
+    await user.getByRole('button', {name: 'Send'}).click();
+    await expect(user).toContainText('Updated chat message');
+
+    await assistant.hover();
+    const goodResponse = assistant.getByRole('button', {name: 'Good response'});
+    await goodResponse.click();
+    await expect(goodResponse).toHaveAttribute('aria-pressed', 'true');
+
+    await page.getByRole('button', {name: 'New Chat'}).click();
+    await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
+    await page.getByRole('button', {name: 'Toggle chat history'}).click();
+    await historyDrawer(page).getByRole('button', {name: /Open chat: Original chat message/}).click();
+
+    const restoredUser = page.locator('.message:not(.assistant)').first();
+    const restoredAssistant = page.locator('.message.assistant').first();
+    await expect(restoredUser).toContainText('Updated chat message');
+    await restoredAssistant.hover();
+    await expect(restoredAssistant.getByRole('button', {name: 'Good response'})).toHaveAttribute('aria-pressed', 'true');
   });
 
   test('renders assistant markdown, including a titled code block', async ({page}) => {
@@ -998,6 +1271,29 @@ test.describe('history drawer', () => {
     await page.keyboard.press('ArrowRight');
     await expect(historyDrawer(page)).not.toHaveCSS('width', '240px');
   });
+
+  test('drawers yield to the conversation floor instead of squeezing the composer', async ({page}) => {
+    // 1000px leaves less room than both drawers' preferred widths plus the
+    // conversation floor, so opening both must trigger the readjustment.
+    await page.setViewportSize({width: 1000, height: 640});
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle chat history'}).click();
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    // Workspace opened last, so history gives way — exactly to its own minimum.
+    await expect(historyDrawer(page)).toHaveCSS('width', '180px');
+    // One row of these buttons is under 20px tall; a wrap doubles it.
+    const toolbarOnOneLine = () => page.locator('.polymux-prompt-toolbar').evaluate((bar) =>
+      bar.getBoundingClientRect().height < 24);
+    expect(await toolbarOnOneLine()).toBe(true);
+    // Growing history now pushes the workspace back toward its own minimum
+    // rather than compressing the conversation below its floor.
+    const handle = page.getByRole('button', {name: 'Resize History'});
+    await handle.focus();
+    for (let step = 0; step < 4; step += 1) await page.keyboard.press('ArrowRight');
+    await expect(historyDrawer(page)).toHaveCSS('width', '208px');
+    await expect(workspaceDrawer(page)).toHaveCSS('width', '360px');
+    expect(await toolbarOnOneLine()).toBe(true);
+  });
 });
 
 test.describe('workspace drawer', () => {
@@ -1099,7 +1395,7 @@ test.describe('speech orb', () => {
 
 test.describe('responsive', () => {
   test('reserves a gutter for the timeline rail beside conversation content', async ({page}) => {
-    await page.setViewportSize({width: 700, height: 720});
+    await page.setViewportSize({width: 1250, height: 720});
     await page.goto('/');
     await send(page, 'first timeline turn');
     await expect(page.locator('.message.assistant').first()).toContainText(/assembled Midas chat surface/, {timeout: 4000});
@@ -1108,10 +1404,19 @@ test.describe('responsive', () => {
     await expect(rail).toBeVisible();
     const positions = await page.evaluate(() => {
       const rail = document.querySelector('.timeline-rail')!.getBoundingClientRect();
-      const message = document.querySelector('.message')!.getBoundingClientRect();
-      return {railRight: Math.round(rail.right), messageLeft: Math.round(message.left)};
+      const message = document.querySelector('.message.assistant')!.getBoundingClientRect();
+      const prompt = document.querySelector('.polymux-prompt-shell')!.getBoundingClientRect();
+      return {railRight: Math.round(rail.right), messageLeft: Math.round(message.left), promptLeft: Math.round(prompt.left)};
     });
     expect(positions.railRight).toBeLessThan(positions.messageLeft);
+    expect(positions.messageLeft).toBe(positions.promptLeft);
+
+    await page.getByRole('button', {name: 'Toggle chat history'}).click();
+    await expect(rail).toBeHidden();
+    await page.getByRole('button', {name: 'Toggle chat history'}).click();
+    await expect(rail).toBeVisible();
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await expect(rail).toBeHidden();
   });
 
   test('below the split-layout width both drawers become overlays', async ({page}) => {

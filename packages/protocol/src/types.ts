@@ -50,7 +50,9 @@ export interface MemoryDto {
   updatedAt: string;
 }
 export interface MemoryStatusDto {
+  enabled: boolean;
   directory: string;
+  storedBytes: number;
   registryPath: string;
   summaryPath: string;
   memories: number;
@@ -103,17 +105,27 @@ export interface GeneralSettingsUpdate {
   locationEnabled?: boolean;
   location?: GeneralSettingsDto["location"];
 }
-export type SystemPermissionKind = "microphone" | "screen-recording";
+export type SystemPermissionKind =
+  | "microphone"
+  | "screen-recording"
+  | "accessibility";
 export type SystemPermissionStatus =
   | "not-determined"
   | "granted"
   | "denied"
   | "restricted"
   | "unknown";
+export interface FirstRunPermissionDto {
+  firstRun: boolean;
+  microphone: SystemPermissionStatus;
+  screenRecording: SystemPermissionStatus;
+}
 export interface McpServerDto {
   id: string;
   name: string;
-  source: "midas" | "codex";
+  description?: string;
+  /** "official" marks a server bundled with the app, like official skills. */
+  source: "official" | "midas" | "codex";
   editable: boolean;
   enabled: boolean;
   transport: "stdio" | "streamable-http";
@@ -132,6 +144,7 @@ export interface McpServerDto {
 export interface SaveCustomMcpRequest {
   id: string;
   name: string;
+  description?: string;
   transport: "stdio" | "streamable-http";
   command?: string;
   args?: string[];
@@ -144,23 +157,48 @@ export interface McpChangeDto {
   servers: McpServerDto[];
   error: string | null;
 }
+export interface McpRegistryEntryDto {
+  id: string;
+  name: string;
+  description: string;
+  url: string;
+  repository?: string;
+  requiredHeaders: string[];
+}
 export interface SkillDto {
   name: string;
   description: string;
   source: "official" | "codex" | "midas" | "agents" | "bundled" | "configured";
   filePath: string;
-  iconDataUrl?: string;
   disableModelInvocation: boolean;
   allowedTools: string[];
   enabled: boolean;
   editable: boolean;
   instructions?: string;
+  displayName?: string;
+  author?: string;
+  category?: string;
+  /** ISO timestamp of the SKILL.md's last modification. */
+  updatedAt?: string;
 }
 export interface SaveCustomSkillRequest {
   originalName?: string;
   name: string;
   description: string;
   instructions: string;
+}
+export interface SkillUploadFile {
+  path: string;
+  relativePath: string;
+}
+/** One entry of the skills.sh directory (GitHub-backed skill registry). */
+export interface SkillRegistryEntryDto {
+  /** Installable package spec, e.g. "vercel-labs/skills/find-skills". */
+  id: string;
+  name: string;
+  /** Repository the skill ships from, e.g. "vercel-labs/skills". */
+  source: string;
+  installs: number;
 }
 export interface ModelDto {
   provider: string;
@@ -281,15 +319,55 @@ export interface GoalCommandRequest {
   objective?: string;
 }
 
+
+/** Live page state for an embedded workspace-browser tab. */
+export interface BrowserPageStateDto {
+  tabId: string;
+  url: string;
+  title: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  loading: boolean;
+}
+export interface BrowserDownloadDto {
+  id: string;
+  title: string;
+  path: string;
+  kind: "document" | "image" | "pdf" | "spreadsheet" | "file";
+  completedAt: string;
+}
+export interface BrowserFoundDto {
+  tabId: string;
+  matches: number;
+  activeMatch: number;
+}
+export type BrowserEventDto =
+  | { type: "state"; state: BrowserPageStateDto }
+  | { type: "downloads"; downloads: BrowserDownloadDto[] }
+  | { type: "found"; found: BrowserFoundDto };
+
 export interface MidasApi {
   general: {
     get(): Promise<GeneralSettingsDto>;
     update(settings: GeneralSettingsUpdate): Promise<GeneralSettingsDto>;
+    /**
+     * Network-based approximate location (city-level), used when the
+     * platform geolocation service cannot produce a position.
+     */
+    locate(): Promise<NonNullable<GeneralSettingsDto["location"]>>;
   };
   permissions: {
+    ensureFirstRun(): Promise<FirstRunPermissionDto>;
     status(permission: SystemPermissionKind): Promise<SystemPermissionStatus>;
     request(permission: SystemPermissionKind): Promise<SystemPermissionStatus>;
     openSettings(permission: SystemPermissionKind | "location"): Promise<void>;
+  };
+  dictation: {
+    /**
+     * Transcribes a mono 16kHz 16-bit WAV recording with the local
+     * speech-to-text engine and resolves to the recognised text.
+     */
+    transcribe(audio: ArrayBuffer): Promise<string>;
   };
   conversations: {
     list(): Promise<ConversationDto[]>;
@@ -299,7 +377,7 @@ export interface MidasApi {
     messages(id: ConversationId): Promise<MessageDto[]>;
     updateMessage(
       id: string,
-      patch: { content?: JsonValue; metadata?: JsonValue },
+      patch: { content?: JsonValue; metadata?: JsonValue; attachments?: string[] },
     ): Promise<MessageDto | null>;
   };
   runs: {
@@ -321,6 +399,7 @@ export interface MidasApi {
   };
   memory: {
     status(): Promise<MemoryStatusDto>;
+    setEnabled(enabled: boolean): Promise<MemoryStatusDto>;
     list(conversationId?: ConversationId): Promise<MemoryDto[]>;
     remember(
       content: string,
@@ -342,6 +421,8 @@ export interface MidasApi {
     reload(): Promise<McpServerDto[]>;
     setEnabled(id: string, enabled: boolean): Promise<McpServerDto[]>;
     saveCustom(request: SaveCustomMcpRequest): Promise<McpServerDto[]>;
+    removeCustom(id: string): Promise<McpServerDto[]>;
+    searchRegistry(query: string): Promise<McpRegistryEntryDto[]>;
     subscribe(listener: (change: McpChangeDto) => void): () => void;
   };
   skills: {
@@ -349,12 +430,45 @@ export interface MidasApi {
     reload(): Promise<SkillDto[]>;
     setEnabled(name: string, enabled: boolean): Promise<SkillDto[]>;
     saveCustom(request: SaveCustomSkillRequest): Promise<SkillDto[]>;
+    removeCustom(name: string): Promise<SkillDto[]>;
+    upload(files: File[]): Promise<SkillDto[]>;
+    /**
+     * Installs a package from the skills.sh ecosystem (GitHub-backed), e.g.
+     * "vercel-labs/skills/find-skills" or a skills.sh / github.com URL.
+     */
+    install(spec: string): Promise<SkillDto[]>;
+    /** Searches the skills.sh directory (minimum two characters). */
+    searchRegistry(query: string): Promise<SkillRegistryEntryDto[]>;
   };
   models: {
     list(): Promise<ModelDto[]>;
     select(provider: string, id: string): Promise<ModelDto>;
     /** Catalogue detail for the current models, keyed `<provider>:<id>`. */
     metadata(): Promise<Record<string, ModelMetadataDto>>;
+  };
+  /**
+   * The embedded workspace browser: real Chromium web contents hosted by the
+   * main process, positioned under a renderer-measured rectangle. `embedded`
+   * is false in the browser demo, where BrowserView falls back to an iframe.
+   */
+  browser: {
+    embedded: boolean;
+    open(tabId: string, url?: string): Promise<void>;
+    navigate(tabId: string, url: string): Promise<void>;
+    history(tabId: string, delta: -1 | 1): Promise<void>;
+    reload(tabId: string): Promise<void>;
+    setBounds(tabId: string, bounds: {x: number; y: number; width: number; height: number}): Promise<void>;
+    setVisible(tabId: string, visible: boolean): Promise<void>;
+    close(tabId: string): Promise<void>;
+    openExternal(url: string): Promise<void>;
+    find(tabId: string, text: string, forward: boolean): Promise<void>;
+    stopFind(tabId: string): Promise<void>;
+    print(tabId: string): Promise<void>;
+    screenshot(tabId: string): Promise<BrowserDownloadDto | null>;
+    downloads(): Promise<BrowserDownloadDto[]>;
+    openDownload(id: string): Promise<void>;
+    openDownloadsFolder(): Promise<void>;
+    subscribe(listener: (event: BrowserEventDto) => void): () => void;
   };
   providers: {
     list(): Promise<ProviderDto[]>;

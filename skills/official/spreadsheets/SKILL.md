@@ -2,6 +2,8 @@
 name: spreadsheets
 description: Create, inspect, analyze, edit, and verify spreadsheet files including XLSX, XLS, CSV, and TSV. Use for formulas, tables, charts, financial models, data cleaning, and workbook-based analysis.
 allowed-tools: read write edit bash
+author: Midas
+category: Documents
 ---
 
 # Spreadsheets

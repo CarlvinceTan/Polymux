@@ -1,5 +1,8 @@
 interface:
   display_name: "Documents"
   short_description: "Create and edit polished DOCX documents"
+  icon_small: "./assets/documents.svg"
+  icon_large: "./assets/documents.svg"
+  brand_color: "#2B6CB0"
   default_prompt: "Use the Documents skill to create or edit this document."
 

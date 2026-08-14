@@ -14,7 +14,7 @@ const icon = process.platform === 'win32'
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    extraResource: ['skills'],
+    extraResource: ['skills', 'native'],
     extendInfo: {
       NSLocationUsageDescription: 'Midas uses your location only when Location access is enabled in General settings.',
       NSLocationWhenInUseUsageDescription: 'Midas uses your location only when Location access is enabled in General settings.',

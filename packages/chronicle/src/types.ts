@@ -1,3 +1,8 @@
+/**
+ * "accessibility" samples the frontmost window's text through the macOS
+ * Accessibility API — no pixels, so macOS shows no screen-recording
+ * indicator. "screen" captures display frames and carries that indicator.
+ */
 export interface ChronicleSettings {
   enabled: boolean;
   activeIntervalMs: number;
@@ -15,8 +20,10 @@ export interface ChronicleFrame {
   displayId: string | null;
   width: number;
   height: number;
+  /** JPEG bytes for image captures; UTF-8 markdown for text captures. */
   image: Uint8Array;
   signature: Uint8Array;
+  kind?: "image" | "text";
 }
 
 export interface ChronicleFrameSource {
@@ -46,6 +53,7 @@ export interface ChronicleEntry {
   change: number;
   reason: "change" | "heartbeat" | "initial";
   bytes: number;
+  kind?: "image" | "text";
 }
 
 export interface ChronicleStatus {

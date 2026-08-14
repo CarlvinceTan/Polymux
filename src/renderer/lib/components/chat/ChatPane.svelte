@@ -35,14 +35,12 @@
   import AgentActivity from './AgentActivity.svelte';
   import QueuedMessages, {type QueuedMessage} from './QueuedMessages.svelte';
   import GoalBar, {type ActiveGoal} from './GoalBar.svelte';
-  import TimelineRail, {type TimelineItem} from './TimelineRail.svelte';
 
   export let messages: ChatMessage[] = [];
   export let running = false;
   export let placeholder = 'Ask anything';
   export let queued: QueuedMessage[] = [];
   export let goal: ActiveGoal | null = null;
-  export let timeline: TimelineItem[] = [];
   export let speechMode = false;
   export let speechModeEnabled = true;
   export let showJumpToLatest = false;
@@ -50,7 +48,7 @@
   export let onStop: () => void = () => {};
   export let onVoice: () => void = () => {};
   export let onOptions: () => void = () => {};
-  export let onEdit: (id: string, text: string) => void = () => {};
+  export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
   export let onFeedback: (id: string, feedback: 'up' | 'down' | null) => void = () => {};
   export let onQueueHeight: (height: number) => void = () => {};
   export let onJumpAvailability: (show: boolean) => void = () => {};
@@ -64,15 +62,8 @@
 
   let column: HTMLDivElement;
   let stickToLatest = true;
-  let paneWidth = 0;
-  let contentHeight = 0;
-  let timelineLeft = 14;
 
-  /** The rail is only worth showing once a conversation is long enough to be
-      hard to scan, and only where there is room beside the column for it. */
-  $: showTimelineRail = timeline.length > 2 && paneWidth >= 560 && contentHeight > 0;
-
-  $: onQueueHeight((queued.length ? Math.min(queued.length, 4) * 40 + 24 : 0) + (goal ? 58 : 0));
+  $: onQueueHeight((queued.length ? Math.min(queued.length, 4) * 40 + 24 : 0) + (goal ? 50 : 0));
   $: if (messages.length || running) void followLatest(messages.length, running);
 
   async function followLatest(_count: number, _running: boolean): Promise<void> {
@@ -83,9 +74,6 @@
 
   function measure(): void {
     if (!column) return;
-    paneWidth = column.clientWidth;
-    contentHeight = column.scrollHeight;
-    timelineLeft = column.getBoundingClientRect().left + 16;
     const state = conversationScrollState(column);
     stickToLatest = state.stickToLatest;
     onJumpAvailability(state.showJumpToLatest);
@@ -111,7 +99,7 @@
 <!-- Only this column scrolls. It is never transformed, filtered or contained:
      the composer is fixed inside it, and any of those would make this element
      its containing block and collapse it to the column's width. -->
-<div class="conversation-column" bind:this={column} onscroll={measure} style={`--timeline-left:${timelineLeft}px`}>
+<div class="conversation-column" bind:this={column} onscroll={measure}>
   {#if messages.length === 0}
     <div class:voice-welcome={speechMode} class="empty-state">
       <WelcomeChatPane
@@ -126,9 +114,7 @@
       />
     </div>
   {:else}
-    {#if showTimelineRail}<TimelineRail items={timeline}/>{/if}
-
-    <div class:has-timeline={showTimelineRail} class="message-list" aria-live="polite">
+    <div class="message-list" aria-live="polite">
       {#each messages as message, index (message.id)}
         {#if message.role === 'assistant' && (message.activities?.length || (running && index === messages.length - 1))}
           <AgentActivity

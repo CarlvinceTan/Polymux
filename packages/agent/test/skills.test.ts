@@ -10,20 +10,18 @@ test("discovers Pi-compatible global skills with progressive metadata", async ()
   try {
     const directory = join(home, ".midas", "skills", "pdf-tools");
     await mkdir(join(directory, "agents"), { recursive: true });
-    await mkdir(join(directory, "assets"), { recursive: true });
     await writeFile(
       join(directory, "SKILL.md"),
       "---\nname: pdf-tools\ndescription: Work with PDF files.\n---\n\n# Instructions",
     );
     await writeFile(
       join(directory, "agents", "openai.yaml"),
-      'interface:\n  icon_small: "./assets/icon.svg"\n',
+      'interface:\n  display_name: "PDF Tools"\n',
     );
-    await writeFile(join(directory, "assets", "icon.svg"), "<svg></svg>");
     const loaded = new SkillLoader({ home }).load();
     assert.equal(loaded.skills[0]?.name, "pdf-tools");
     assert.equal(loaded.skills[0]?.description, "Work with PDF files.");
-    assert.equal(loaded.skills[0]?.iconPath, join(directory, "assets", "icon.svg"));
+    assert.equal(loaded.skills[0]?.displayName, "PDF Tools");
     assert.equal(
       parseSkillCommand("/skill:pdf-tools extract", loaded.skills)?.arguments,
       "extract",
@@ -33,19 +31,22 @@ test("discovers Pi-compatible global skills with progressive metadata", async ()
   }
 });
 
-test("loads personal Codex skills as a distinct user source", async () => {
-  const home = await mkdtemp(join(tmpdir(), "midas-codex-skills-"));
+test("sources the cross-agent ~/.agents store but not agent-specific ones", async () => {
+  const home = await mkdtemp(join(tmpdir(), "midas-agents-skills-"));
   try {
-    const directory = join(home, ".codex", "skills", "personal-research");
-    await mkdir(directory, {recursive: true});
+    await mkdir(join(home, ".agents", "skills", "react-best-practices"), {recursive: true});
     await writeFile(
-      join(directory, "SKILL.md"),
+      join(home, ".agents", "skills", "react-best-practices", "SKILL.md"),
+      "---\nname: react-best-practices\ndescription: React guidance.\n---\n",
+    );
+    await mkdir(join(home, ".codex", "skills", "personal-research"), {recursive: true});
+    await writeFile(
+      join(home, ".codex", "skills", "personal-research", "SKILL.md"),
       "---\nname: personal-research\ndescription: Personal research workflow.\n---\n",
     );
 
     const loaded = new SkillLoader({home}).load();
-    assert.equal(loaded.skills[0]?.name, "personal-research");
-    assert.equal(loaded.skills[0]?.source, "codex");
+    assert.deepEqual(loaded.skills.map((skill) => `${skill.name}:${skill.source}`), ["react-best-practices:agents"]);
   } finally {
     await rm(home, {recursive: true, force: true});
   }
@@ -81,7 +82,7 @@ test("warns about invalid names and refuses skills without descriptions", async 
   }
 });
 
-test("loads official skills and lets user skills override them", async () => {
+test("official skills ship with the app and shadow same-named user skills", async () => {
   const root = await mkdtemp(join(tmpdir(), "midas-official-skills-"));
   const home = join(root, "home");
   const official = join(root, "official");
@@ -100,15 +101,40 @@ test("loads official skills and lets user skills override them", async () => {
     );
 
     const loaded = new SkillLoader({ home, official: [official] }).load();
-    const browser = loaded.skills.find((skill) => skill.name === "browser");
-    assert.equal(browser?.source, "midas");
-    assert.equal(browser?.description, "User browser workflow.");
+    const matches = loaded.skills.filter((skill) => skill.name === "browser");
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0]?.source, "official");
+    assert.equal(matches[0]?.description, "Official browser workflow.");
     assert.ok(
       loaded.diagnostics.some((item) =>
-        item.message.includes("Duplicate skill browser"),
+        item.message.includes("Duplicate skill browser; official skill wins"),
       ),
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("surfaces manifest and frontmatter metadata for the skill catalogue", async () => {
+  const home = await mkdtemp(join(tmpdir(), "midas-skill-metadata-"));
+  try {
+    const directory = join(home, ".midas", "skills", "email");
+    await mkdir(join(directory, "agents"), { recursive: true });
+    await writeFile(
+      join(directory, "SKILL.md"),
+      "---\nname: email\ndescription: Handle email.\nauthor: Midas\ncategory: Communication\n---\n",
+    );
+    await writeFile(
+      join(directory, "agents", "openai.yaml"),
+      'interface:\n  display_name: "Email"\n',
+    );
+    const loaded = new SkillLoader({ home }).load();
+    const skill = loaded.skills[0];
+    assert.equal(skill?.displayName, "Email");
+    assert.equal(skill?.author, "Midas");
+    assert.equal(skill?.category, "Communication");
+    assert.ok(skill?.updatedAt && !Number.isNaN(Date.parse(skill.updatedAt)));
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 });

@@ -1,5 +1,6 @@
 import type {
   ArtifactDto,
+  ChronicleStatusDto,
   ConversationDto,
   GoalDto,
   GeneralSettingsDto,
@@ -66,15 +67,17 @@ function createBrowserDemoApi(): MidasApi {
     {id: 'openrouter', name: 'OpenRouter', apiKeyLabel: 'OpenRouter API key', supportsOAuth: false, storedCredential: false, configured: false, source: null, modelCount: 1, custom: false, apiKeys: []},
   ];
   const demoSkills: SkillDto[] = [
-    {name: 'documents', description: 'Create and edit document files.', source: 'midas', filePath: '~/.midas/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], enabled: true, editable: true, instructions: 'Create and edit document files.'},
-    {name: 'personal-research', description: 'Personal research workflow.', source: 'codex', filePath: '~/.codex/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], enabled: true, editable: false},
-    {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], enabled: true, editable: false},
-    {name: 'browser', description: 'Research and interact with websites.', source: 'official', filePath: '/skills/official/browser/SKILL.md', iconDataUrl: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%2211%22 fill=%22none%22 stroke=%22%23666%22 stroke-width=%222%22/%3E%3C/svg%3E', disableModelInvocation: false, allowedTools: ['read', 'bash'], enabled: true, editable: false},
+    {name: 'documents', description: 'Create and edit document files.', source: 'midas', filePath: '~/.midas/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], enabled: true, editable: true, instructions: 'Create and edit document files.', updatedAt: '2026-07-02T09:30:00.000Z'},
+    {name: 'personal-research', description: 'Personal research workflow.', source: 'midas', filePath: '~/.midas/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], enabled: true, editable: true, instructions: 'Personal research workflow.', updatedAt: '2026-05-18T14:00:00.000Z'},
+    {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], enabled: true, editable: false, displayName: 'PDF', author: 'Midas', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
+    {name: 'browser-use', description: 'Research and interact with websites.', source: 'official', filePath: '/skills/official/browser-use/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'bash'], enabled: true, editable: false, displayName: 'Browser', author: 'Midas', category: 'Web', updatedAt: '2026-08-01T08:00:00.000Z'},
   ];
   const demoMcpServers: McpServerDto[] = [
-    {id: 'filesystem', name: 'Filesystem', source: 'midas', editable: true, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_files'], resourceUris: [], promptNames: [], command: 'node', args: ['server.mjs']},
+    {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', source: 'midas', editable: true, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_files'], resourceUris: ['filesystem://documents'], promptNames: [], command: 'node', args: ['server.mjs']},
+    {id: 'browser-tools', name: 'Browser Tools', description: 'Open and inspect web pages.', source: 'official', editable: false, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['open_page', 'read_page'], resourceUris: [], promptNames: [], command: 'node', args: ['browser.mjs']},
   ];
   let demoChronicleEnabled = true;
+  let demoMemoryEnabled = true;
   let demoGeneral: GeneralSettingsDto = {
     theme: 'light',
     // Pinned rather than null: a null here falls through to the locale
@@ -103,11 +106,18 @@ function createBrowserDemoApi(): MidasApi {
         };
         return structuredClone(demoGeneral);
       },
+      locate: async () => ({latitude: -33.8688, longitude: 151.2093, accuracy: 25_000, updatedAt: '2026-08-14T00:00:00.000Z'}),
     },
     permissions: {
+      ensureFirstRun: async () => ({firstRun: false, microphone: 'granted', screenRecording: 'granted'}),
       status: async () => 'granted',
       request: async () => 'granted',
       openSettings: async () => {},
+    },
+    dictation: {
+      transcribe: async () => {
+        throw new Error('Local dictation runs in the desktop app, not the browser demo.');
+      },
     },
     conversations: {
       list: async () => [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
@@ -137,7 +147,17 @@ function createBrowserDemoApi(): MidasApi {
         for (const [conversationId, items] of messages) {
           const index = items.findIndex((item) => item.id === id);
           if (index < 0) continue;
-          const updated = {...items[index]!, ...patch};
+          const current = items[index]!;
+          const attachments = patch.attachments?.map((attachmentPath) => ({
+            id: crypto.randomUUID(), messageId: id, name: attachmentPath.split(/[\\/]/).pop() ?? attachmentPath,
+            path: attachmentPath, mimeType: null, size: null, sha256: null, createdAt: new Date().toISOString(),
+          })) ?? [];
+          const updated = {
+            ...current,
+            ...(patch.content === undefined ? {} : {content: patch.content}),
+            ...(patch.metadata === undefined ? {} : {metadata: patch.metadata}),
+            attachments: [...current.attachments, ...attachments],
+          };
           messages.set(conversationId, items.map((item) => item.id === id ? updated : item));
           return structuredClone(updated);
         }
@@ -198,7 +218,9 @@ function createBrowserDemoApi(): MidasApi {
     },
     memory: {
       status: async () => ({
+        enabled: demoMemoryEnabled,
         directory: '/demo/memories',
+        storedBytes: 18_240,
         registryPath: '/demo/memories/MEMORY.md',
         summaryPath: '/demo/memories/memory_summary.md',
         memories: 2,
@@ -208,6 +230,10 @@ function createBrowserDemoApi(): MidasApi {
         latestMemoryAt: new Date().toISOString(),
         latestRolloutAt: new Date().toISOString(),
       }),
+      setEnabled: async (enabled) => {
+        demoMemoryEnabled = enabled;
+        return {...await api.memory.status(), enabled};
+      },
       list: async () => [],
       remember: async (content, conversationId) => ({id: crypto.randomUUID(), scope: conversationId ? 'conversation' : 'user', scopeId: conversationId ?? null, kind: 'learning', content, confidence: 1, updatedAt: new Date().toISOString()}),
       forget: async () => true,
@@ -250,11 +276,36 @@ function createBrowserDemoApi(): MidasApi {
         if (item) Object.assign(item, next); else demoMcpServers.push(next);
         return demoMcpServers;
       },
+      removeCustom: async (id) => {
+        const index = demoMcpServers.findIndex((candidate) => candidate.id === id && candidate.editable);
+        if (index < 0) throw new Error(`MCP server is not removable: ${id}`);
+        demoMcpServers.splice(index, 1);
+        return demoMcpServers;
+      },
+      searchRegistry: async (query) => [
+        {id: 'io.github/example/files', name: 'Files', description: 'Browse and manage files.', url: 'https://example.com/files/mcp', requiredHeaders: []},
+        {id: 'io.github/example/issues', name: 'Issues', description: `Search ${query || 'project'} issues.`, url: 'https://example.com/issues/mcp', repository: 'https://github.com/example/issues', requiredHeaders: ['Authorization']},
+      ],
       subscribe: () => () => {},
     },
     skills: {
       list: async () => demoSkills,
       reload: async () => demoSkills,
+      install: async (spec) => {
+        const name = spec.trim().replace(/\/+$/, '').split('/').pop() ?? 'installed-skill';
+        if (demoSkills.some((item) => item.name === name)) throw new Error(`A skill named ${name} already exists`);
+        demoSkills.push({name, description: `Installed from ${spec.trim()}.`, source: 'midas', filePath: `~/.midas/skills/${name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], enabled: true, editable: true, instructions: `Installed from ${spec.trim()}.`, updatedAt: '2026-08-14T03:00:00.000Z'});
+        return demoSkills;
+      },
+      searchRegistry: async (query) => {
+        const directory = [
+          {id: 'vercel-labs/agent-skills/vercel-react-best-practices', name: 'vercel-react-best-practices', source: 'vercel-labs/agent-skills', installs: 630_723},
+          {id: 'vercel-labs/skills/find-skills', name: 'find-skills', source: 'vercel-labs/skills', installs: 120_345},
+          {id: 'vercel-labs/agent-skills/web-design-guidelines', name: 'web-design-guidelines', source: 'vercel-labs/agent-skills', installs: 84_210},
+        ];
+        const text = query.trim().toLowerCase();
+        return text.length < 2 ? [] : directory.filter((entry) => entry.name.includes(text) || entry.source.includes(text));
+      },
       setEnabled: async (name, enabled) => {
         const item = demoSkills.find((candidate) => candidate.name === name);
         if (item) item.enabled = enabled;
@@ -266,6 +317,13 @@ function createBrowserDemoApi(): MidasApi {
         if (index >= 0) demoSkills.splice(index, 1, next); else demoSkills.push(next);
         return demoSkills;
       },
+      removeCustom: async (name) => {
+        const index = demoSkills.findIndex((candidate) => candidate.name === name && candidate.editable);
+        if (index < 0) throw new Error(`Skill is not removable: ${name}`);
+        demoSkills.splice(index, 1);
+        return demoSkills;
+      },
+      upload: async () => demoSkills,
     },
     models: {
       list: async () => demoModels,
@@ -282,6 +340,28 @@ function createBrowserDemoApi(): MidasApi {
       // it exercises the "catalogue knows nothing" path the real app falls
       // back to when offline.
       metadata: async () => demoModelMetadata,
+    },
+    // The demo runs in a plain browser tab with no main process, so the
+    // embedded browser is unavailable and BrowserView falls back to its
+    // iframe rendering.
+    browser: {
+      embedded: false,
+      open: async () => {},
+      navigate: async () => {},
+      history: async () => {},
+      reload: async () => {},
+      setBounds: async () => {},
+      setVisible: async () => {},
+      close: async () => {},
+      openExternal: async (url) => { window.open(url, '_blank'); },
+      find: async () => {},
+      stopFind: async () => {},
+      print: async () => {},
+      screenshot: async () => null,
+      downloads: async () => [],
+      openDownload: async () => {},
+      openDownloadsFolder: async () => {},
+      subscribe: () => () => {},
     },
     providers: {
       list: async () => demoProviders.map((provider) => providerWithKeys(provider)),

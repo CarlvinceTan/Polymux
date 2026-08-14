@@ -2,6 +2,8 @@
 name: apple-reminders
 description: Manage Apple Reminders on macOS through the remindctl command-line tool. Use to list, create, inspect, edit, complete, or delete reminders that should sync through the user's normal Apple account. Do not use for calendar events or Midas scheduled tasks.
 allowed-tools: bash
+author: Midas
+category: Productivity
 ---
 
 # Apple Reminders

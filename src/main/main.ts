@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain } from "electron";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import started from "electron-squirrel-startup";
@@ -10,10 +11,30 @@ import {
 
 if (started) app.quit();
 
+// The credential store, API-key pool, and SQLite database all live in one
+// userData directory, and each instance caches them in memory: a second
+// instance (say, a forgotten `npm start`) writes its stale cache back over
+// the other's changes — observed losing a freshly saved API key. Hand the
+// session to the instance that already owns the directory instead.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.focus();
+  });
+}
+
 // Development runs execute inside Electron.app, whose bundle name would
 // otherwise appear as "Electron" in the macOS Dock tooltip.
 app.setName("Midas");
 process.title = "Midas";
+// Electron does not always build Chromium's accessibility tree until assistive
+// technology requests it. Keep the renderer tree available so macOS can expose
+// Midas's labelled chat controls to VoiceOver and exact-window automation.
+app.commandLine.appendSwitch("force-renderer-accessibility");
 // Electron's geolocation provider reads GOOGLE_API_KEY before any renderer is
 // created. Keep a Midas-specific variable available for packaged launches while
 // still respecting Electron's documented variable when it is supplied.
@@ -75,13 +96,8 @@ function createWindow(): void {
 
   backend = new DesktopBackend({
     dataDirectory: app.getPath("userData"),
-    officialSkillDirectories: [
-      path.join(
-        app.isPackaged ? process.resourcesPath : app.getAppPath(),
-        "skills",
-        "official",
-      ),
-    ],
+    officialSkillDirectories: [officialSkillDirectory()],
+    axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
     window,
     ipcMain,
     model: modelFromEnvironment(),
@@ -109,19 +125,10 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  // The packaged bundle already supplies its multi-resolution ICNS to macOS.
-  // Only Electron's development host needs a runtime override; its Dock API
-  // does not reliably decode ICNS paths, so give it the directly rendered
-  // 1024px PNG instead. Never let a cosmetic override prevent startup.
-  if (process.platform === "darwin" && !app.isPackaged) {
-    const dockIcon = path.join(app.getAppPath(), "assets", "appicon.png");
-    try {
-      app.dock.setIcon(dockIcon);
-    } catch (error) {
-      console.warn("Could not set the development Dock icon", error);
-    }
-  }
-
+  // No runtime Dock icon override: `dock.setIcon` draws the raw bitmap with
+  // none of the system's icon shaping, which is exactly the unmasked-square
+  // artifact it used to cause. Development gets its icon from the rebranded
+  // bundle's ICNS (scripts/dev-app-name.mjs); packaged builds from their own.
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -131,3 +138,22 @@ app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+/**
+ * `app.isPackaged` cannot pick this path: it merely checks that the executable
+ * is not named "electron", and the development bundle is deliberately renamed
+ * to "Midas" for the Dock (scripts/dev-app-name.mjs), which makes a dev run
+ * look packaged and pointed skill loading at the bundle's empty Resources.
+ * Probing for the directory that actually exists is launch-mode-proof.
+ */
+function officialSkillDirectory(): string {
+  return bundledResource("skills", "official");
+}
+
+function bundledResource(...segments: string[]): string {
+  const candidates = [
+    path.join(process.resourcesPath, ...segments),
+    path.join(app.getAppPath(), ...segments),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}

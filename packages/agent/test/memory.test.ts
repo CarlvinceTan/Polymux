@@ -30,7 +30,9 @@ test("creates a Codex-style local memory vault and migrates SQLite memory once",
   assert.match(readFileSync(memory.summaryPath, "utf8"), /Prefer clear explanations/);
   assert.ok(existsSync(path.join(directory, ".sqlite-memory-migrated-v1")));
   assert.deepEqual(memory.status(), {
+    enabled: true,
     directory,
+    storedBytes: memory.status().storedBytes,
     registryPath: path.join(directory, "MEMORY.md"),
     summaryPath: path.join(directory, "memory_summary.md"),
     memories: 1,
@@ -40,6 +42,12 @@ test("creates a Codex-style local memory vault and migrates SQLite memory once",
     latestMemoryAt: memory.list()[0]!.updatedAt,
     latestRolloutAt: null,
   });
+  assert.ok(memory.status().storedBytes > 0);
+  assert.equal(memory.setEnabled(false).enabled, false);
+  assert.equal(memory.promptContext().enabled, false);
+  assert.equal(memory.promptContext().summary, "");
+  assert.equal(memory.recordRollout({conversationId: "off", runId: "off", userText: "off", assistantText: "off"}), "");
+  assert.equal(memory.setEnabled(true).enabled, true);
   storage.close();
 });
 

@@ -3,10 +3,14 @@ export interface Skill {
   description: string;
   filePath: string;
   baseDir: string;
-  iconPath?: string;
   source: "official" | "codex" | "midas" | "agents" | "bundled" | "configured";
   disableModelInvocation: boolean;
   allowedTools?: string[];
+  displayName?: string;
+  author?: string;
+  category?: string;
+  /** ISO timestamp of the SKILL.md's last modification. */
+  updatedAt?: string;
 }
 
 export interface SkillDiagnostic {

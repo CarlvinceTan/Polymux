@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { GoalManager, MemoryManager, MidasAgent, SkillLoader, type SkillLoaderOptions } from "@midas/agent";
@@ -18,6 +19,7 @@ import type {
   ProviderDto,
   RunEventDto,
   SkillDto,
+  SkillUploadFile,
   SystemPermissionKind,
   UpdateCustomProviderRequest,
 } from "@midas/protocol";
@@ -37,14 +39,23 @@ import {
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {createProvider, type Model, type MutableModels} from "@earendil-works/pi-ai";
 import {openAICompletionsApi} from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import {safeStorage, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent} from "electron";
+import {app, safeStorage, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent} from "electron";
 import {EncryptedCredentialStore} from "./credential-store.js";
 import {EncryptedApiKeyPool} from "./api-key-pool.js";
+import {WhisperDictation} from "./dictation.js";
+import {installSkillPackage, searchSkillRegistry} from "./skill-registry.js";
+import {searchMcpRegistry} from "./mcp-registry.js";
 import {ModelCatalog} from "./model-catalog.js";
+import {EmbeddedBrowser} from "./embedded-browser.js";
 import {RotatingInference} from "./rotating-inference.js";
-import {ElectronChronicleFrames, ElectronChronicleSystem} from "./chronicle.js";
+import {
+  AccessibilityChronicleFrames,
+  ElectronChronicleSystem,
+} from "./chronicle.js";
+import {AxReader} from "./ax-reader.js";
 import {FileReloadWatcher} from "./file-reload-watcher.js";
 import {parse as parseToml} from "smol-toml";
+import {FirstRunPermissions} from "./first-run-permissions.js";
 import {
   openSystemPermissionSettings,
   requestSystemPermission,
@@ -59,6 +70,8 @@ export interface DesktopBackendOptions {
   toolDirectory?: string;
   officialSkillDirectories?: string[];
   codexConfigPath?: string;
+  /** Path to the bundled native/ax-reader.swift accessibility helper. */
+  axReaderSourcePath?: string;
 }
 
 interface CustomProviderConfig {
@@ -85,6 +98,8 @@ export class DesktopBackend {
   readonly #goals: GoalManager;
   readonly #memory: MemoryManager;
   readonly #chronicle: ChronicleManager;
+  readonly #firstRunPermissions: FirstRunPermissions;
+  readonly #dictation: WhisperDictation;
   readonly #mcp = new McpManager();
   readonly #registry: ToolRegistry;
   readonly #activeRuns = new Map<string, ActiveAgentRun>();
@@ -103,6 +118,7 @@ export class DesktopBackend {
   #mcpReloadInFlight?: Promise<McpServerDto[]>;
   #closing = false;
   readonly #modelCatalog: ModelCatalog;
+  readonly #embeddedBrowser: EmbeddedBrowser;
 
   constructor(options: DesktopBackendOptions) {
     this.#window = options.window;
@@ -136,10 +152,32 @@ export class DesktopBackend {
     });
     this.#chronicle = new ChronicleManager({
       directory: path.join(options.dataDirectory, "chronicle"),
-      frames: new ElectronChronicleFrames(),
+      frames: new AccessibilityChronicleFrames(new AxReader({
+        sourcePath: options.axReaderSourcePath ?? "",
+        cacheDirectory: path.join(options.dataDirectory, "bin"),
+      })),
       system: new ElectronChronicleSystem(),
     });
+    this.#dictation = new WhisperDictation({
+      modelDirectory: path.join(options.dataDirectory, "whisper"),
+    });
+    this.#firstRunPermissions = new FirstRunPermissions({
+      store: this.#storage,
+      microphoneEnabled: () => this.#generalSettings().speechModeEnabled,
+      screenRecordingEnabled: () => false,
+      status: systemPermissionStatus,
+      request: requestSystemPermission,
+      onReady: () => this.#chronicle.start(),
+    });
     this.#modelCatalog = new ModelCatalog({cacheDir: options.dataDirectory});
+    this.#embeddedBrowser = new EmbeddedBrowser({
+      window: options.window,
+      downloadsDir: app.getPath("downloads"),
+      send: (event) => {
+        if (!this.#closing && !this.#window.isDestroyed())
+          this.#window.webContents.send(channels.browserEvent, event);
+      },
+    });
     this.#mcpConfigPath = path.join(options.dataDirectory, "mcp.json");
     this.#customSkillDirectory = path.join(homedir(), ".midas", "skills");
     this.#codexMcpConfigPath = options.codexConfigPath ?? path.join(homedir(), ".codex", "config.toml");
@@ -161,7 +199,16 @@ export class DesktopBackend {
   }
 
   register(): void {
-    this.#chronicle.start();
+    if (this.#firstRunPermissions.completed()) this.#chronicle.start();
+    // Accessibility capture cannot ask through a media-access dialog the way
+    // microphone capture can; surface the system prompt at launch so text
+    // capture does not fail silently until the user visits Options.
+    const chronicleSettings = this.#chronicle.settings();
+    if (
+      chronicleSettings.enabled &&
+      systemPermissionStatus("accessibility") !== "granted"
+    )
+      void requestSystemPermission("accessibility");
     this.#handle(channels.generalGet, () => this.#generalSettings());
     this.#handle(channels.generalUpdate, (_event, value: unknown) => {
       const next = generalSettingsUpdate(value, this.#generalSettings());
@@ -175,14 +222,21 @@ export class DesktopBackend {
       });
       return next;
     });
+    this.#handle(channels.generalLocate, () => approximateLocation());
     this.#handle(channels.permissionsStatus, (_event, value: unknown) =>
       systemPermissionStatus(systemPermission(value)),
+    );
+    this.#handle(channels.permissionsEnsureFirstRun, () =>
+      this.#firstRunPermissions.ensure(),
     );
     this.#handle(channels.permissionsRequest, (_event, value: unknown) =>
       requestSystemPermission(systemPermission(value)),
     );
     this.#handle(channels.permissionsOpenSettings, (_event, value: unknown) =>
       openSystemPermissionSettings(systemPermission(value, true)),
+    );
+    this.#handle(channels.dictationTranscribe, (_event, audio: unknown) =>
+      this.#dictation.transcribe(audioBuffer(audio)),
     );
     this.#handle(channels.conversationsList, () =>
       this.#storage.listConversations(),
@@ -213,10 +267,11 @@ export class DesktopBackend {
       (
         _event,
         id: string,
-        patch: { content?: unknown; metadata?: unknown },
+        patch: { content?: unknown; metadata?: unknown; attachments?: unknown },
       ) => {
+        const messageId = required(id, "message id");
         const updated = this.#storage.updateMessage(
-          required(id, "message id"),
+          messageId,
           {
             content:
               patch.content === undefined ? undefined : json(patch.content),
@@ -224,6 +279,21 @@ export class DesktopBackend {
               patch.metadata === undefined ? undefined : json(patch.metadata),
           },
         );
+        if (!updated) return null;
+        const existingPaths = new Set(this.#storage.listAttachments(messageId).map((attachment) => attachment.path));
+        for (const attachmentPath of optionalStringArray(patch.attachments, "attachments")) {
+          if (existingPaths.has(attachmentPath)) continue;
+          this.#storage.addAttachment({
+            id: crypto.randomUUID(),
+            messageId,
+            name: path.basename(attachmentPath),
+            path: attachmentPath,
+            mimeType: null,
+            size: null,
+            sha256: null,
+          });
+          existingPaths.add(attachmentPath);
+        }
         return updated ? this.#messageDto(updated) : null;
       },
     );
@@ -270,6 +340,10 @@ export class DesktopBackend {
       this.#memory.list(conversationId),
     );
     this.#handle(channels.memoryStatus, () => this.#memory.status());
+    this.#handle(channels.memorySetEnabled, (_event, enabled: boolean) => {
+      if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
+      return this.#memory.setEnabled(enabled);
+    });
     this.#handle(
       channels.memoryRemember,
       (_event, content: string, conversationId?: string) =>
@@ -283,7 +357,7 @@ export class DesktopBackend {
     this.#handle(channels.chronicleStatus, () => this.#chronicle.status());
     this.#handle(channels.chronicleSetEnabled, async (_event, enabled: boolean) => {
       if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
-      if (enabled) await requestSystemPermission("screen-recording");
+      if (enabled) await requestSystemPermission("accessibility");
       const status = this.#chronicle.setEnabled(enabled);
       if (enabled) {
         await this.#chronicle.captureOnce();
@@ -307,6 +381,13 @@ export class DesktopBackend {
       await this.#saveCustomMcp(customMcpRequest(value));
       return this.#reloadMcpAfterMutation();
     });
+    this.#handle(channels.mcpRemoveCustom, async (_event, id: unknown) => {
+      await this.#removeCustomMcp(required(id, "MCP id"));
+      return this.#reloadMcpAfterMutation();
+    });
+    this.#handle(channels.mcpSearchRegistry, (_event, query: unknown) =>
+      searchMcpRegistry(typeof query === "string" ? query : ""),
+    );
     this.#handle(channels.skillsList, () => this.#skillDtos());
     this.#handle(channels.skillsReload, () => this.#skillDtos());
     this.#handle(channels.skillsSetEnabled, (_event, name: string, enabled: boolean) => {
@@ -317,6 +398,21 @@ export class DesktopBackend {
       await this.#saveCustomSkill(customSkillRequest(value));
       return this.#skillDtos();
     });
+    this.#handle(channels.skillsRemoveCustom, async (_event, name: unknown) => {
+      await this.#removeCustomSkill(required(name, "skill name"));
+      return this.#skillDtos();
+    });
+    this.#handle(channels.skillsUpload, async (_event, value: unknown) => {
+      await this.#uploadSkill(skillUploadFiles(value));
+      return this.#skillDtos();
+    });
+    this.#handle(channels.skillsInstall, async (_event, spec: unknown) => {
+      await installSkillPackage(required(spec, "skill package"), this.#customSkillDirectory);
+      return this.#skillDtos();
+    });
+    this.#handle(channels.skillsSearchRegistry, (_event, query: unknown) =>
+      searchSkillRegistry(typeof query === "string" ? query : ""),
+    );
     this.#handle(channels.modelsList, () =>
       this.#inference.listModels().map((model) => this.#modelDto(model)),
     );
@@ -332,6 +428,49 @@ export class DesktopBackend {
       this.#modelCatalog.metadataFor(
         this.#inference.listModels().map((model) => ({provider: model.provider, id: model.id})),
       ),
+    );
+    this.#handle(channels.browserOpen, (_event, tabId: string, url?: string) =>
+      this.#embeddedBrowser.open(required(tabId, "tab id"), url),
+    );
+    this.#handle(channels.browserNavigate, (_event, tabId: string, url: string) =>
+      this.#embeddedBrowser.navigate(required(tabId, "tab id"), required(url, "url")),
+    );
+    this.#handle(channels.browserHistory, (_event, tabId: string, delta: -1 | 1) =>
+      this.#embeddedBrowser.history(required(tabId, "tab id"), delta === -1 ? -1 : 1),
+    );
+    this.#handle(channels.browserReload, (_event, tabId: string) =>
+      this.#embeddedBrowser.reload(required(tabId, "tab id")),
+    );
+    this.#handle(channels.browserSetBounds, (_event, tabId: string, bounds: {x: number; y: number; width: number; height: number}) =>
+      this.#embeddedBrowser.setBounds(required(tabId, "tab id"), bounds),
+    );
+    this.#handle(channels.browserSetVisible, (_event, tabId: string, visible: boolean) =>
+      this.#embeddedBrowser.setVisible(required(tabId, "tab id"), Boolean(visible)),
+    );
+    this.#handle(channels.browserClose, (_event, tabId: string) =>
+      this.#embeddedBrowser.close(required(tabId, "tab id")),
+    );
+    this.#handle(channels.browserOpenExternal, (_event, url: string) =>
+      import("electron").then(({shell}) => shell.openExternal(required(url, "url"))),
+    );
+    this.#handle(channels.browserFind, (_event, tabId: string, text: string, forward: boolean) =>
+      this.#embeddedBrowser.find(required(tabId, "tab id"), String(text ?? ""), forward !== false),
+    );
+    this.#handle(channels.browserStopFind, (_event, tabId: string) =>
+      this.#embeddedBrowser.stopFind(required(tabId, "tab id")),
+    );
+    this.#handle(channels.browserPrint, (_event, tabId: string) =>
+      this.#embeddedBrowser.print(required(tabId, "tab id")),
+    );
+    this.#handle(channels.browserScreenshot, (_event, tabId: string) =>
+      this.#embeddedBrowser.screenshot(required(tabId, "tab id")),
+    );
+    this.#handle(channels.browserDownloadsList, () => this.#embeddedBrowser.downloads());
+    this.#handle(channels.browserOpenDownload, (_event, id: string) =>
+      this.#embeddedBrowser.openDownload(required(id, "download id")),
+    );
+    this.#handle(channels.browserOpenDownloadsFolder, () =>
+      this.#embeddedBrowser.openDownloadsFolder(),
     );
     this.#handle(channels.providersList, () => this.#providerDtos());
     this.#handle(channels.providersSaveApiKey, async (_event, providerId: string, apiKey: string) => {
@@ -477,6 +616,7 @@ export class DesktopBackend {
 
   async close(): Promise<void> {
     this.#closing = true;
+    this.#embeddedBrowser.closeAll();
     this.#mcpConfigWatcher.stop();
     this.#codexMcpConfigWatcher.stop();
     this.#chronicle.stop();
@@ -624,12 +764,15 @@ export class DesktopBackend {
       description: skill.description,
       source: skill.source,
       filePath: skill.filePath,
-      iconDataUrl: skillIconDataUrl(skill.iconPath),
       disableModelInvocation: skill.disableModelInvocation,
       allowedTools: skill.allowedTools ?? [],
       enabled: this.#integrationEnabled("skill-enabled", skill.name),
       editable: skill.source === "midas",
       instructions: skill.source === "midas" ? skillInstructions(readFileSync(skill.filePath, "utf8")) : undefined,
+      displayName: skill.displayName,
+      author: skill.author,
+      category: skill.category,
+      updatedAt: skill.updatedAt,
     }));
   }
 
@@ -659,13 +802,35 @@ export class DesktopBackend {
       ? {...existing as Record<string, unknown>}
       : {};
     servers[request.id] = request.transport === "stdio"
-      ? {name: request.name, command: request.command, args: request.args, env: request.env, cwd: request.cwd}
-      : {name: request.name, url: request.url, headers: request.headers};
+      ? {name: request.name, description: request.description, command: request.command, args: request.args, env: request.env, cwd: request.cwd}
+      : {name: request.name, description: request.description, url: request.url, headers: request.headers};
     root.mcpServers = servers;
     await mkdir(path.dirname(this.#mcpConfigPath), {recursive: true});
     const temporary = `${this.#mcpConfigPath}.tmp`;
     await writeFile(temporary, `${JSON.stringify(root, null, 2)}\n`, "utf8");
     await rename(temporary, this.#mcpConfigPath);
+  }
+
+  async #removeCustomMcp(id: string): Promise<void> {
+    const source = await readFile(this.#mcpConfigPath, "utf8").catch(
+      (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? "{}" : Promise.reject(error),
+    );
+    const root = JSON.parse(source) as Record<string, unknown>;
+    const existing = root.mcpServers;
+    if (!existing || typeof existing !== "object" || Array.isArray(existing) || !(id in existing))
+      throw new Error(`MCP server is not removable: ${id}`);
+    const servers = {...existing as Record<string, unknown>};
+    delete servers[id];
+    root.mcpServers = servers;
+    const temporary = `${this.#mcpConfigPath}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(root, null, 2)}\n`, "utf8");
+    await rename(temporary, this.#mcpConfigPath);
+    const cached = this.#storage.getPreference("mcp-capabilities")?.value;
+    if (cached && typeof cached === "object" && !Array.isArray(cached)) {
+      const next = {...cached};
+      delete next[id];
+      this.#storage.setPreference("mcp-capabilities", next);
+    }
   }
 
   async #saveCustomSkill(request: SaveCustomSkillRequest): Promise<void> {
@@ -679,6 +844,51 @@ export class DesktopBackend {
     const temporary = path.join(destination, "SKILL.md.tmp");
     await writeFile(temporary, contents, "utf8");
     await rename(temporary, path.join(destination, "SKILL.md"));
+  }
+
+  async #removeCustomSkill(name: string): Promise<void> {
+    const skill = this.#skills.load().skills.find((candidate) => candidate.name === name);
+    if (!skill || skill.source !== "midas") throw new Error(`Skill is not removable: ${name}`);
+    const root = path.resolve(this.#customSkillDirectory);
+    const destination = path.resolve(root, name);
+    if (path.dirname(destination) !== root) throw new Error(`Invalid skill name: ${name}`);
+    await rm(destination, {recursive: true, force: false});
+    const stored = this.#storage.getPreference("skill-enabled")?.value;
+    if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+      const next = {...stored};
+      delete next[name];
+      this.#storage.setPreference("skill-enabled", next);
+    }
+  }
+
+  async #uploadSkill(files: SkillUploadFile[]): Promise<void> {
+    const skillFiles = files.filter((file) => file.relativePath.split("/").length === 2 && path.basename(file.relativePath) === "SKILL.md");
+    if (skillFiles.length !== 1) throw new Error("Choose one skill folder with a SKILL.md at its top level");
+    const rootName = skillFiles[0]!.relativePath.split("/")[0]!;
+    const selected = files.filter((file) => file.relativePath.startsWith(`${rootName}/`));
+    const temporary = path.join(this.#customSkillDirectory, `.upload-${randomUUID()}`);
+    await mkdir(temporary, {recursive: true});
+    try {
+      for (const file of selected) {
+        const relative = file.relativePath.slice(rootName.length + 1);
+        if (!relative || path.isAbsolute(relative) || relative.split(/[\\/]/).includes("..")) throw new Error("Skill folder contains an invalid path");
+        const destination = path.join(temporary, relative);
+        await mkdir(path.dirname(destination), {recursive: true});
+        await copyFile(file.path, destination);
+      }
+      const result = new SkillLoader({configured: [temporary]}).load();
+      const skill = result.skills.find((item) => item.filePath === path.join(temporary, "SKILL.md"));
+      if (!skill) throw new Error("The selected folder does not contain a valid SKILL.md with a name and description");
+      const diagnostic = result.diagnostics.find((item) => item.severity === "error");
+      if (diagnostic) throw new Error(diagnostic.message);
+      const destination = path.join(this.#customSkillDirectory, skill.name);
+      const exists = await stat(destination).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error));
+      if (exists) throw new Error(`A skill named ${skill.name} already exists`);
+      await rename(temporary, destination);
+    } catch (error) {
+      await rm(temporary, {recursive: true, force: true});
+      throw error;
+    }
   }
 
   #generalSettings(): GeneralSettingsDto {
@@ -821,9 +1031,10 @@ export class DesktopBackend {
       apiKeyLabel: provider.auth.apiKey?.name ?? null,
       supportsOAuth: provider.auth.oauth !== undefined,
       storedCredential: stored !== undefined || apiKeys.length > 0,
-      configured:
-        auth !== undefined ||
-        apiKeys.some((key) => key.status !== "invalid"),
+      // Configuration means a credential is present, not that its latest
+      // authentication attempt succeeded. Invalid keys remain visible as
+      // invalid in the detail pane without making the rail look disconnected.
+      configured: auth !== undefined || stored !== undefined || apiKeys.length > 0,
       source: apiKeys.length ? `${apiKeys.length} saved API ${apiKeys.length === 1 ? "key" : "keys"}` : auth?.source ?? null,
       modelCount: provider.getModels().length,
       custom: this.#customProviders.has(provider.id),
@@ -885,10 +1096,17 @@ export class DesktopBackend {
 
   #mcpDto(snapshot: ReturnType<McpManager["snapshots"]>[number]): McpServerDto {
     const config = this.#mcpConfigs.get(snapshot.id);
+    const capabilities = this.#mcpCapabilities(snapshot);
     return {
       ...snapshot,
+      ...capabilities,
       name: config?.name ?? snapshot.id,
-      source: config?.metadata?.source === "codex" ? "codex" : "midas",
+      description: typeof config?.metadata?.description === "string" ? config.metadata.description : undefined,
+      source: config?.metadata?.source === "codex"
+        ? "codex"
+        : config?.metadata?.source === "official"
+          ? "official"
+          : "midas",
       editable: config?.metadata?.source === "midas",
       enabled: this.#integrationEnabled("mcp-enabled", snapshot.id, config?.enabled !== false),
       transport: config?.transport ?? "stdio",
@@ -897,6 +1115,26 @@ export class DesktopBackend {
         : config?.transport === "streamable-http"
           ? {url: config.url, headers: config.headers}
           : {}),
+    };
+  }
+
+  #mcpCapabilities(snapshot: ReturnType<McpManager["snapshots"]>[number]): Pick<McpServerDto, "toolNames" | "resourceUris" | "promptNames"> {
+    const current = {toolNames: snapshot.toolNames, resourceUris: snapshot.resourceUris, promptNames: snapshot.promptNames};
+    const value = this.#storage.getPreference("mcp-capabilities")?.value;
+    const cache = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    if (snapshot.status === "connected") {
+      const previous = cache[snapshot.id];
+      if (JSON.stringify(previous) !== JSON.stringify(current))
+        this.#storage.setPreference("mcp-capabilities", {...cache, [snapshot.id]: current});
+      return current;
+    }
+    const saved = cache[snapshot.id];
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return current;
+    const record = saved as Record<string, unknown>;
+    return {
+      toolNames: Array.isArray(record.toolNames) && record.toolNames.every((item) => typeof item === "string") ? record.toolNames : current.toolNames,
+      resourceUris: Array.isArray(record.resourceUris) && record.resourceUris.every((item) => typeof item === "string") ? record.resourceUris : current.resourceUris,
+      promptNames: Array.isArray(record.promptNames) && record.promptNames.every((item) => typeof item === "string") ? record.promptNames : current.promptNames,
     };
   }
 
@@ -959,6 +1197,11 @@ function required(value: unknown, label: string): string {
     throw new Error(`${label} must be a non-empty string`);
   return value.trim();
 }
+function optionalStringArray(value: unknown, label: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value.map((item, index) => required(item, `${label}[${index}]`));
+}
 
 function systemPermission(value: unknown): SystemPermissionKind;
 function systemPermission(
@@ -1020,22 +1263,46 @@ export function modelFromEnvironment(
   };
 }
 
-function skillIconDataUrl(iconPath?: string): string | undefined {
-  if (!iconPath) return undefined;
-  const mimeType = new Map([
-    [".svg", "image/svg+xml"],
-    [".png", "image/png"],
-    [".jpg", "image/jpeg"],
-    [".jpeg", "image/jpeg"],
-    [".webp", "image/webp"],
-    [".gif", "image/gif"],
-  ]).get(path.extname(iconPath).toLocaleLowerCase());
-  if (!mimeType) return undefined;
-  try {
-    return `data:${mimeType};base64,${readFileSync(iconPath).toString("base64")}`;
-  } catch {
-    return undefined;
+/**
+ * City-level position from the network. Chromium's own geolocation needs a
+ * Google API key (or a CoreLocation grant the dev bundle rarely holds), so
+ * the renderer falls back to this whenever the platform service fails; for
+ * agent context — weather, local time, nearby places — city-level is enough.
+ */
+async function approximateLocation(): Promise<NonNullable<GeneralSettingsDto["location"]>> {
+  const services = ["https://ipwho.is/", "https://ipapi.co/json/"];
+  let failure = "the network location services did not respond";
+  for (const service of services) {
+    try {
+      const response = await fetch(service, {
+        signal: AbortSignal.timeout(6_000),
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) continue;
+      const body = (await response.json()) as Record<string, unknown>;
+      const latitude = Number(body.latitude);
+      const longitude = Number(body.longitude);
+      if (Number.isFinite(latitude) && Number.isFinite(longitude))
+        return {
+          latitude,
+          longitude,
+          // IP geolocation is city-scale; advertise that honestly.
+          accuracy: 25_000,
+          updatedAt: new Date().toISOString(),
+        };
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
   }
+  throw new Error(`Could not determine an approximate location: ${failure}`);
+}
+
+function audioBuffer(value: unknown): Buffer {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof ArrayBuffer) return Buffer.from(value);
+  if (ArrayBuffer.isView(value))
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  throw new Error("Dictation audio must be binary");
 }
 
 function generalSettingsPreference(value: unknown): GeneralSettingsDto {
@@ -1242,17 +1509,18 @@ function customMcpRequest(value: unknown): SaveCustomMcpRequest {
   const record = value as Record<string, unknown>;
   const id = integrationId(record.id, "MCP id");
   const name = required(record.name, "MCP name");
+  const description = optionalText(record.description);
   const transport = record.transport === "streamable-http" ? "streamable-http" : "stdio";
   const args = optionalStrings(record.args, "MCP arguments");
   const env = optionalStringRecord(record.env, "MCP environment");
   const headers = optionalStringRecord(record.headers, "MCP headers");
   if (transport === "stdio")
-    return {id, name, transport, command: required(record.command, "MCP command"), args, env, cwd: optionalText(record.cwd)};
+    return {id, name, description, transport, command: required(record.command, "MCP command"), args, env, cwd: optionalText(record.cwd)};
   const url = required(record.url, "MCP URL");
   const parsed = new URL(url);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
     throw new Error("MCP URL must use HTTP or HTTPS");
-  return {id, name, transport, url: parsed.toString(), headers};
+  return {id, name, description, transport, url: parsed.toString(), headers};
 }
 
 function customSkillRequest(value: unknown): SaveCustomSkillRequest {
@@ -1267,6 +1535,15 @@ function customSkillRequest(value: unknown): SaveCustomSkillRequest {
   if (/\r|\n/.test(description)) throw new Error("skill description must be one line");
   const instructions = required(record.instructions, "skill instructions");
   return {originalName, name, description, instructions};
+}
+
+function skillUploadFiles(value: unknown): SkillUploadFile[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error("Choose a skill folder to upload");
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Invalid skill folder");
+    const record = item as Record<string, unknown>;
+    return {path: required(record.path, "skill file path"), relativePath: required(record.relativePath, "skill relative path")};
+  });
 }
 
 function optionalText(value: unknown): string | undefined {

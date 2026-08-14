@@ -1,0 +1,10 @@
+interface:
+  display_name: "Chat Style"
+  short_description: "Draft replies in your natural chat voice"
+  icon_small: "./assets/chat-style-small.svg"
+  icon_large: "./assets/chat-style-large.svg"
+  brand_color: "#7C3AED"
+  default_prompt: "Use $chat-style to draft this reply in my natural style."
+
+policy:
+  allow_implicit_invocation: true

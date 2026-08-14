@@ -22,7 +22,7 @@
 
   export let message: MessageData;
   export let streaming = false;
-  export let onEdit: (id: string, text: string) => void = () => {};
+  export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
   export let onFeedback: (id: string, feedback: MessageFeedback) => void = () => {};
   export let onOpenFile: (name: string) => void = () => {};
   export let onOpenLink: (url: string, title: string) => void = () => {};
@@ -31,6 +31,8 @@
   let draft = '';
   let copied = false;
   let editArea: HTMLTextAreaElement;
+  let editFileInput: HTMLInputElement;
+  let editFiles: File[] = [];
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
   let renderedMarkdown = '';
   let renderFrame = 0;
@@ -77,6 +79,7 @@
 
   async function startEdit(): Promise<void> {
     draft = message.text;
+    editFiles = [];
     editing = true;
     await tick();
     editArea?.focus();
@@ -84,13 +87,27 @@
 
   function submitEdit(): void {
     const text = draft.trim();
-    if (!text && !message.files?.length) return;
+    if (!text && !message.files?.length && !editFiles.length) return;
     editing = false;
-    onEdit(message.id, text);
+    onEdit(message.id, text, editFiles);
+    editFiles = [];
+  }
+
+  function cancelEdit(): void {
+    editing = false;
+    editFiles = [];
+  }
+
+  function selectEditFiles(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const next = Array.from(input.files ?? []);
+    const seen = new Set(editFiles.map((file) => `${file.name}\0${file.size}\0${file.lastModified}`));
+    editFiles = [...editFiles, ...next.filter((file) => !seen.has(`${file.name}\0${file.size}\0${file.lastModified}`))];
+    input.value = '';
   }
 
   function editKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') editing = false;
+    if (event.key === 'Escape') cancelEdit();
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submitEdit();
@@ -147,9 +164,18 @@
   {#if editing}
     <div class="message-edit-shell">
       <textarea bind:this={editArea} bind:value={draft} aria-label="Edit message" rows="3" onkeydown={editKeydown}></textarea>
+      {#if editFiles.length}
+        <div class="message-edit-attachments" aria-label="New attachments">
+          {#each editFiles as file (`${file.name}-${file.size}-${file.lastModified}`)}<span><Icon name="file" size={12}/>{file.name}</span>{/each}
+        </div>
+      {/if}
       <div class="message-edit-controls">
-        <button type="button" onclick={() => editing = false}>Cancel</button>
-        <button type="button" class="save" onclick={submitEdit}>Send</button>
+        <input bind:this={editFileInput} class="visually-hidden" type="file" multiple tabindex="-1" aria-hidden="true" onchange={selectEditFiles}/>
+        <button type="button" class="edit-attach" aria-label="Attach files" data-tooltip-label="Attach" onclick={() => editFileInput.click()}><Icon name="attach" size={16}/></button>
+        <span class="message-edit-actions">
+          <button type="button" onclick={cancelEdit}>Cancel</button>
+          <button type="button" class="save" onclick={submitEdit}>Send</button>
+        </span>
       </div>
     </div>
   {:else}

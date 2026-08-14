@@ -1,0 +1,10 @@
+interface:
+  display_name: "Window Control"
+  short_description: "Control exact windows while preserving your active app"
+  icon_small: "./assets/window-control.svg"
+  icon_large: "./assets/window-control.svg"
+  brand_color: "#475569"
+  default_prompt: "Use $window-control to prepare and control an exact local app window while preserving my active app."
+
+policy:
+  allow_implicit_invocation: true

@@ -3,6 +3,7 @@
   import type {ArtifactDto, ConversationDto, GoalDto, JsonValue, MessageDto, ReferenceDto, RunEventDto} from '@midas/protocol';
   import TitleBar from './lib/components/chat/TitleBar.svelte';
   import ChatPane, {type ChatMessage} from './lib/components/chat/ChatPane.svelte';
+  import TimelineRail from './lib/components/chat/TimelineRail.svelte';
   import type {AgentActivityKind} from './lib/components/chat/AgentActivity.svelte';
   import type {ActiveGoal} from './lib/components/chat/GoalBar.svelte';
   import SpeechOrb from './lib/components/chat/SpeechOrb.svelte';
@@ -23,11 +24,11 @@
     type PanelState,
   } from './lib/state/panels';
   import {
+    MIN_HISTORY_WIDTH,
+    MIN_WORKSPACE_WIDTH,
     SPLIT_LAYOUT_MIN_WIDTH,
     SUMMARY_RESERVED_COLUMN,
-    clampPanelWidth,
-    historyResizeBounds,
-    workspaceResizeBounds,
+    resolvePanelWidths,
   } from './lib/layout/layoutSizing';
 
   type Conversation = HistoryChat & {messages: ChatMessage[]; goal?: ActiveGoal};
@@ -51,6 +52,8 @@
 
   let historyOpen = false;
   let historyWidth = 240;
+  let panelPriority: 'history' | 'workspace' = 'workspace';
+  let trackedPanels = {history: false, workspace: false};
   let historyResizing = false;
   let workspaceWidth = 540;
   let workspaceResizing = false;
@@ -64,6 +67,12 @@
   let outputMuted = false;
   let voicePaused = false;
   let optionsOpen = false;
+  let startupVisible = true;
+  let startupLeaving = false;
+  let startupMinimumElapsed = false;
+  let startupReady = false;
+  let startupMinimumTimer: ReturnType<typeof setTimeout> | undefined;
+  let startupRemovalTimer: ReturnType<typeof setTimeout> | undefined;
   let speechModeEnabled = true;
   let windowActive = true;
   let queueHeight = 0;
@@ -90,6 +99,7 @@
   $: syncConversationPanel(active.messages.length > 0, viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH, summaryDismissed);
 
   $: if (mode !== 'workspace' && workspaceExpanded) workspaceExpanded = false;
+  $: applyPanelLayout(viewportWidth, historyOpen, mode === 'workspace' && !workspaceExpanded, historyWidth, workspaceWidth);
 
   $: workspaceColumn = mode === 'workspace' ? `${workspaceWidth}px` : '0px';
   $: workspacePanelWidth = workspaceExpanded
@@ -105,9 +115,19 @@
   $: composerColumn = mode === 'summary'
     ? `${SUMMARY_RESERVED_COLUMN}px`
     : mode === 'workspace' ? `${workspaceWidth}px` : '0px';
+  $: dockedHistoryWidth = viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH && historyOpen ? historyWidth : 0;
+  $: dockedRightWidth = viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH
+    ? mode === 'summary' ? SUMMARY_RESERVED_COLUMN : mode === 'workspace' ? workspaceWidth : 0
+    : 0;
+  $: chatAreaWidth = Math.max(0, viewportWidth - dockedHistoryWidth - dockedRightWidth);
+  $: chatColumnWidth = Math.min(792, Math.max(0, chatAreaWidth - 8));
+  $: timelineLeft = dockedHistoryWidth + (chatAreaWidth - chatColumnWidth) / 2 - 34;
+  $: showTimelineRail = timeline.length > 2 && chatAreaWidth >= 880 && !workspaceExpanded;
 
   onDestroy(() => {
     clearTimeout(clearTimer);
+    clearTimeout(startupMinimumTimer);
+    clearTimeout(startupRemovalTimer);
     unsubscribeEvents?.();
     stopThemeSync?.();
   });
@@ -116,15 +136,29 @@
   let stopThemeSync: (() => void) | undefined;
 
   onMount(() => {
+    startupMinimumTimer = setTimeout(() => {
+      startupMinimumElapsed = true;
+      finishStartupWhenReady();
+    }, 2000);
     stopThemeSync = startThemeSync();
-    void api.general.get().then((settings) => {
+    void api.permissions.ensureFirstRun().catch(() => {});
+    const settingsLoad = api.general.get().then((settings) => {
       applyTheme(settings.theme);
       speechModeEnabled = settings.speechModeEnabled;
-    });
+    }).catch(() => {});
     windowActive = document.hasFocus();
     unsubscribeEvents = api.runs.subscribe(handleRunEvent);
-    void loadHistory();
+    void Promise.all([settingsLoad, loadHistory()]).finally(() => {
+      startupReady = true;
+      finishStartupWhenReady();
+    });
   });
+
+  function finishStartupWhenReady(): void {
+    if (!startupVisible || startupLeaving || !startupMinimumElapsed || !startupReady) return;
+    startupLeaving = true;
+    startupRemovalTimer = setTimeout(() => startupVisible = false, 240);
+  }
 
   function syncConversationPanel(hasMessages: boolean, splitLayout: boolean, dismissed: boolean): void {
     const next = conversationPanelState(panelState, {hasMessages, splitLayout, summaryDismissed: dismissed});
@@ -415,9 +449,11 @@
     await refreshGoal(activeId);
   }
 
-  async function editMessage(id: string, text: string): Promise<void> {
-    updateActive((chat) => ({...chat, messages: chat.messages.map((message) => message.id === id ? {...message, text} : message)}));
-    await api.conversations.updateMessage(id, {content: text});
+  async function editMessage(id: string, text: string, files: File[]): Promise<void> {
+    updateActive((chat) => ({...chat, messages: chat.messages.map((message) => message.id === id ? {...message, text, files: [...(message.files ?? []), ...files.map((file) => file.name)]} : message)}));
+    const attachmentPaths = files.length ? await api.files.paths(files) : [];
+    const updated = await api.conversations.updateMessage(id, {content: text, attachments: attachmentPaths});
+    if (updated) updateActive((chat) => ({...chat, messages: chat.messages.map((message) => message.id === id ? fromMessage(updated) : message)}));
   }
 
   async function setFeedback(id: string, feedback: 'up' | 'down' | null): Promise<void> {
@@ -451,8 +487,12 @@
    */
   function closeTab(id: string): void {
     const index = workspaceTabs.findIndex((tab) => tab.id === id);
+    const closing = workspaceTabs[index];
     workspaceTabs = workspaceTabs.filter((tab) => tab.id !== id);
     if (activeTabId === id) activeTabId = workspaceTabs[Math.max(0, index - 1)]?.id ?? null;
+    // The embedded browser's native view outlives the Svelte component, so the
+    // tab closing is what actually tears it down.
+    if (closing?.kind === 'browser') void api.browser.close(id);
   }
 
   function newTab(kind: WorkspaceTabKind = 'document'): void {
@@ -492,13 +532,28 @@
     voiceStartedEmpty = false;
   }
 
-  /** Both surfaces resize against the same floor, so neither can crush the chat. */
-  function clampPanelWidths(): void {
-    if (viewportWidth < SPLIT_LAYOUT_MIN_WIDTH) return;
-    const activeHistoryWidth = historyOpen ? historyWidth : 0;
-    const activeWorkspaceWidth = mode === 'workspace' && !workspaceExpanded ? workspaceWidth : 0;
-    if (activeWorkspaceWidth) workspaceWidth = clampPanelWidth(workspaceWidth, workspaceResizeBounds(viewportWidth, activeHistoryWidth));
-    if (activeHistoryWidth) historyWidth = clampPanelWidth(historyWidth, historyResizeBounds(viewportWidth, activeWorkspaceWidth));
+  /**
+   * Both surfaces resize against the same conversation floor, so neither can
+   * crush the chat below the width that keeps the composer toolbar on one
+   * line. The drawer touched last keeps its width; the other gives way, but
+   * never below its own minimum. Runs reactively so opening, resizing, mode
+   * changes, and viewport changes all settle to a valid layout.
+   */
+  function applyPanelLayout(viewport: number, historyActive: boolean, workspaceActive: boolean, currentHistory: number, currentWorkspace: number): void {
+    if (historyActive && !trackedPanels.history) panelPriority = 'history';
+    if (workspaceActive && !trackedPanels.workspace) panelPriority = 'workspace';
+    trackedPanels = {history: historyActive, workspace: workspaceActive};
+    if (viewport < SPLIT_LAYOUT_MIN_WIDTH) return;
+    const resolved = resolvePanelWidths({
+      viewportWidth: viewport,
+      historyOpen: historyActive,
+      workspaceOpen: workspaceActive,
+      historyWidth: currentHistory,
+      workspaceWidth: currentWorkspace,
+      priority: panelPriority,
+    });
+    if (resolved.historyWidth !== historyWidth) historyWidth = resolved.historyWidth;
+    if (resolved.workspaceWidth !== workspaceWidth) workspaceWidth = resolved.workspaceWidth;
   }
 
   function emptyDraft(): Conversation {
@@ -622,7 +677,6 @@
 
 <svelte:window
   bind:innerWidth={viewportWidth}
-  on:resize={clampPanelWidths}
   on:focus={() => windowActive = true}
   on:blur={() => windowActive = false}
 />
@@ -639,7 +693,7 @@
   class:history-resizing={historyResizing}
   class:history-open={historyOpen}
   class:has-queue={queueHeight > 0}
-  style={`--history-column: ${historyOpen ? historyWidth : 0}px; --history-offset: ${historyOpen ? historyWidth : 0}px; --content-right-column: ${contentRightColumn}; --content-composer-column: ${composerColumn}; --content-docked-column: ${workspaceWidth}px; --workspace-panel-width: ${workspacePanelWidth}; --workspace-expanded-tab-left: ${historyOpen ? 8 : 44}px; --history-panel-width: ${historyWidth}px; --queue-height: ${queueHeight}px`}
+  style={`--history-column: ${historyOpen ? historyWidth : 0}px; --history-offset: ${historyOpen ? historyWidth : 0}px; --content-right-column: ${contentRightColumn}; --content-composer-column: ${composerColumn}; --content-docked-column: ${workspaceWidth}px; --workspace-panel-width: ${workspacePanelWidth}; --workspace-expanded-tab-left: ${historyOpen ? 8 : 44}px; --history-panel-width: ${historyWidth}px; --queue-height: ${queueHeight}px; --timeline-left: ${timelineLeft}px`}
 >
   <div class="window-drag-region" aria-hidden="true"></div>
   <div class:visible={!windowActive} class="inactive-traffic-lights" aria-hidden="true">
@@ -665,18 +719,19 @@
     open={historyOpen}
     width={historyWidth}
     resizing={historyResizing}
-    reservedWidth={mode === 'workspace' && !workspaceExpanded ? workspaceWidth : 0}
+    reservedWidth={mode === 'workspace' && !workspaceExpanded ? MIN_WORKSPACE_WIDTH : 0}
     onOpen={openChat}
     onRename={renameHistory}
     onDelete={deleteHistory}
-    onResize={(value) => historyWidth = value}
+    onResize={(value) => { panelPriority = 'history'; historyWidth = value; }}
     onResizeState={(value) => historyResizing = value}
   />
+
+  {#if showTimelineRail}<TimelineRail items={timeline}/>{/if}
 
   <ChatPane
     messages={active.messages}
     {running}
-    {timeline}
     goal={active.goal ?? null}
     speechMode={voiceOpen && voiceInChat}
     {speechModeEnabled}
@@ -728,14 +783,16 @@
     open={mode === 'workspace'}
     expanded={workspaceExpanded}
     resizing={workspaceResizing}
-    reservedWidth={historyOpen ? historyWidth : 0}
+    reservedWidth={historyOpen ? MIN_HISTORY_WIDTH : 0}
     summaryData={{outputs, references, tasks}}
     onSelect={(id) => activeTabId = id}
     onClose={closeTab}
     onNew={newTab}
     onToggleExpand={() => workspaceExpanded = !workspaceExpanded}
-    onResize={(value) => workspaceWidth = value}
+    onResize={(value) => { panelPriority = 'workspace'; workspaceWidth = value; }}
     onResizeState={(value) => workspaceResizing = value}
+    browserObscured={optionsOpen || (voiceOpen && !voiceInChat)}
+    onTabState={(id, patch) => workspaceTabs = workspaceTabs.map((tab) => tab.id === id ? {...tab, ...patch, title: patch.title ?? tab.title, url: patch.url ?? tab.url} : tab)}
   />
 
   {#if optionsOpen}<OptionsModal
@@ -746,5 +803,26 @@
     }}
   />{/if}
 
+  {#if startupVisible}
+    <div class:leaving={startupLeaving} class="startup-splash" role="status" aria-label="Loading Midas">
+      <div class="startup-brand">
+        <img src="polymux.svg" alt="" aria-hidden="true"/>
+        <span>Midas</span>
+      </div>
+    </div>
+  {/if}
+
   <Tooltip/>
 </main>
+
+<style>
+  .startup-splash{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;pointer-events:none;background:var(--app-bg)}
+  .startup-splash.leaving{animation:startup-cover-out .24s ease forwards}
+  .startup-brand{position:relative;left:-10px;display:flex;align-items:center;gap:8px;opacity:.78;animation:startup-brand-in 2s cubic-bezier(.22,1,.36,1) forwards}
+  .startup-brand img{width:48px;height:39px;display:block;object-fit:contain}
+  .startup-brand span{color:var(--neutral-950);font-size:32px;font-weight:750;letter-spacing:-.045em;line-height:1;text-rendering:geometricPrecision;-webkit-font-smoothing:antialiased}
+  :global(:root[data-theme="dark"]) .startup-brand img{filter:invert(1)}
+  @keyframes startup-brand-in{from{left:-10px;opacity:.78}to{left:0;opacity:1}}
+  @keyframes startup-cover-out{from{opacity:1}to{opacity:0}}
+  @media (prefers-reduced-motion:reduce){.startup-splash{animation:none;opacity:1}.startup-brand{left:0;animation:none;opacity:1}}
+</style>

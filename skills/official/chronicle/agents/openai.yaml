@@ -1,7 +1,10 @@
 interface:
   display_name: "Chronicle"
-  short_description: "Understand recent on-screen work safely"
-  icon_small: "./assets/chronicle.svg"
+  short_description: "Recall recent screen activity with reliable context"
+  icon_small: "./assets/chronicle-small.svg"
   icon_large: "./assets/chronicle.svg"
-  brand_color: "#666666"
-  default_prompt: "Use $chronicle to identify what I was recently doing on screen."
+  brand_color: "#5B5BD6"
+  default_prompt: "Use $chronicle to identify what I was doing recently and verify the relevant context."
+
+policy:
+  allow_implicit_invocation: true

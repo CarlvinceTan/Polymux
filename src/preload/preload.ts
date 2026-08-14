@@ -1,4 +1,4 @@
-import type { McpChangeDto, MidasApi, RunEventDto } from "@midas/protocol";
+import type { BrowserEventDto, McpChangeDto, MidasApi, RunEventDto } from "@midas/protocol";
 import { channels } from "@midas/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
@@ -6,14 +6,19 @@ const api: MidasApi = {
   general: {
     get: () => ipcRenderer.invoke(channels.generalGet),
     update: (settings) => ipcRenderer.invoke(channels.generalUpdate, settings),
+    locate: () => ipcRenderer.invoke(channels.generalLocate),
   },
   permissions: {
+    ensureFirstRun: () => ipcRenderer.invoke(channels.permissionsEnsureFirstRun),
     status: (permission) =>
       ipcRenderer.invoke(channels.permissionsStatus, permission),
     request: (permission) =>
       ipcRenderer.invoke(channels.permissionsRequest, permission),
     openSettings: (permission) =>
       ipcRenderer.invoke(channels.permissionsOpenSettings, permission),
+  },
+  dictation: {
+    transcribe: (audio) => ipcRenderer.invoke(channels.dictationTranscribe, audio),
   },
   conversations: {
     list: () => ipcRenderer.invoke(channels.conversationsList),
@@ -65,6 +70,7 @@ const api: MidasApi = {
   },
   memory: {
     status: () => ipcRenderer.invoke(channels.memoryStatus),
+    setEnabled: (enabled) => ipcRenderer.invoke(channels.memorySetEnabled, enabled),
     list: (conversationId) =>
       ipcRenderer.invoke(channels.memoryList, conversationId),
     remember: (content, conversationId) =>
@@ -83,6 +89,8 @@ const api: MidasApi = {
     reload: () => ipcRenderer.invoke(channels.mcpReload),
     setEnabled: (id, enabled) => ipcRenderer.invoke(channels.mcpSetEnabled, id, enabled),
     saveCustom: (request) => ipcRenderer.invoke(channels.mcpSaveCustom, request),
+    removeCustom: (id) => ipcRenderer.invoke(channels.mcpRemoveCustom, id),
+    searchRegistry: (query) => ipcRenderer.invoke(channels.mcpSearchRegistry, query),
     subscribe(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: McpChangeDto) =>
         listener(value);
@@ -95,12 +103,43 @@ const api: MidasApi = {
     reload: () => ipcRenderer.invoke(channels.skillsReload),
     setEnabled: (name, enabled) => ipcRenderer.invoke(channels.skillsSetEnabled, name, enabled),
     saveCustom: (request) => ipcRenderer.invoke(channels.skillsSaveCustom, request),
+    removeCustom: (name) => ipcRenderer.invoke(channels.skillsRemoveCustom, name),
+    upload: (files) => ipcRenderer.invoke(channels.skillsUpload, files.map((file) => ({
+      path: webUtils.getPathForFile(file),
+      relativePath: file.webkitRelativePath,
+    }))),
+    install: (spec) => ipcRenderer.invoke(channels.skillsInstall, spec),
+    searchRegistry: (query) => ipcRenderer.invoke(channels.skillsSearchRegistry, query),
   },
   models: {
     list: () => ipcRenderer.invoke(channels.modelsList),
     select: (provider, id) =>
       ipcRenderer.invoke(channels.modelsSelect, provider, id),
     metadata: () => ipcRenderer.invoke(channels.modelsMetadata),
+  },
+  browser: {
+    embedded: true,
+    open: (tabId, url) => ipcRenderer.invoke(channels.browserOpen, tabId, url),
+    navigate: (tabId, url) => ipcRenderer.invoke(channels.browserNavigate, tabId, url),
+    history: (tabId, delta) => ipcRenderer.invoke(channels.browserHistory, tabId, delta),
+    reload: (tabId) => ipcRenderer.invoke(channels.browserReload, tabId),
+    setBounds: (tabId, bounds) => ipcRenderer.invoke(channels.browserSetBounds, tabId, bounds),
+    setVisible: (tabId, visible) => ipcRenderer.invoke(channels.browserSetVisible, tabId, visible),
+    close: (tabId) => ipcRenderer.invoke(channels.browserClose, tabId),
+    openExternal: (url) => ipcRenderer.invoke(channels.browserOpenExternal, url),
+    find: (tabId, text, forward) => ipcRenderer.invoke(channels.browserFind, tabId, text, forward),
+    stopFind: (tabId) => ipcRenderer.invoke(channels.browserStopFind, tabId),
+    print: (tabId) => ipcRenderer.invoke(channels.browserPrint, tabId),
+    screenshot: (tabId) => ipcRenderer.invoke(channels.browserScreenshot, tabId),
+    downloads: () => ipcRenderer.invoke(channels.browserDownloadsList),
+    openDownload: (id) => ipcRenderer.invoke(channels.browserOpenDownload, id),
+    openDownloadsFolder: () => ipcRenderer.invoke(channels.browserOpenDownloadsFolder),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: BrowserEventDto) =>
+        listener(value);
+      ipcRenderer.on(channels.browserEvent, receive);
+      return () => ipcRenderer.removeListener(channels.browserEvent, receive);
+    },
   },
   providers: {
     list: () => ipcRenderer.invoke(channels.providersList),

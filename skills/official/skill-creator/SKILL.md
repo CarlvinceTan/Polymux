@@ -1,45 +1,96 @@
 ---
 name: skill-creator
-description: Create or improve Midas skills, including SKILL.md instructions, reusable scripts, references, assets, and user-facing metadata. Use when authoring a new skill or restructuring an existing one.
-allowed-tools: read write edit bash
+description: Create or improve skill structure, instructions, resources, trigger descriptions, and meaningful ChatGPT-facing metadata. Use when authoring a new skill, restructuring an existing skill, designing reusable scripts, references, assets, display names, prompts, or icons, or refining when a skill should activate. For personal-skill staging, behavioral validation, approval, history, upstream merges, and promotion, use skill-maintenance.
+metadata:
+  short-description: Create or improve a skill
+author: Midas
+category: Skills
 ---
 
 # Skill Creator
 
-Create skills that are concise, discoverable, and usable with the tools Midas
-actually exposes.
+Create concise skills containing only the non-obvious knowledge, stable
+preferences, fragile workflows, and reusable resources needed for reliable work.
 
-## Structure
+## Authoring principles
 
-Every skill is a directory containing `SKILL.md`:
+- Use progressive disclosure: keep the always-loaded `SKILL.md` focused on core
+  routing and procedure, and put task-specific detail in directly linked
+  references.
+- Match freedom to risk: use prose for flexible judgment, parameterized scripts
+  for preferred patterns, and deterministic scripts for fragile operations.
+- Keep activation scope in the frontmatter `description`; include positive
+  triggers and important nearby boundaries.
+- Avoid duplicating instructions between the core and references.
+- Add only resources the workflow consumes. Test every changed script.
+- Treat `agents/openai.yaml` and its referenced icons as part of the finished
+  user experience, not optional cleanup.
 
-```text
-skill-name/
-├── SKILL.md
-├── agents/openai.yaml      # recommended metadata
-├── scripts/                # deterministic reusable operations
-├── references/             # detailed guidance loaded when needed
-└── assets/                 # templates and output resources
-```
+## Structure and resources
 
-Use lowercase kebab-case names. Frontmatter must include `name` and a concrete
-third-person `description` that says both what the skill does and when it
-should activate.
+Every skill requires `SKILL.md`. Add only the resources it uses:
+
+- `scripts/` for deterministic or repeatedly reused operations;
+- `references/` for detailed or variant-specific material loaded on demand;
+- `assets/` for templates, icons, fonts, and files used in outputs;
+- `agents/openai.yaml` for the name, description, prompt, and visual identity
+  shown in ChatGPT.
+
+Keep the core workflow and routing in `SKILL.md`. Move schemas, provider
+details, long examples, and conditional variants into directly linked
+references. Do not add generic README, changelog, installation, or quick
+reference files that the workflow never consumes.
 
 ## Workflow
 
-1. Identify two or three representative user requests and the capabilities the
-   skill can genuinely use.
-2. Inspect related skills and reuse proven patterns without retaining host-only
-   tools or paths.
-3. Write the shortest SKILL.md that captures routing, safety, workflow, and
-   completion checks. Move detail to references and deterministic logic to
-   scripts.
-4. Use paths relative to the skill directory and explain when each supporting
-   resource should be read or run.
-5. Validate frontmatter, naming, referenced files, executable scripts, and the
-   representative requests.
+1. **Understand**
+   - Identify representative requests that should trigger the skill and nearby
+     requests that should not.
+   - Read an existing skill and every required resource before restructuring it.
+2. **Plan**
+   - Decide what belongs in `SKILL.md`, `scripts/`, `references/`, and `assets/`.
+   - Plan a distinct, understandable ChatGPT display name, short description,
+     default prompt, and purpose-relevant icon treatment.
+   - Preserve stable behavior and interfaces unless the user requests a change.
+3. **Initialize or stage**
+   - For a new skill, use `scripts/init_skill.py`; do not hand-build boilerplate.
+   - For a personal skill, load `skill-maintenance`, create or stage the
+     candidate first, and initialize only in that inactive location. Never
+     initialize directly in the live skill root.
+4. **Implement**
+   - Write imperative, task-focused instructions.
+   - Keep references one level from `SKILL.md` and state exactly when to read
+     each one.
+   - Remove all unused placeholders and resources.
+   - Read [references/openai_yaml.md](references/openai_yaml.md), then create or
+     update `agents/openai.yaml`. Use a clear, unique display name; a concise
+     description of the skill's value; a one-sentence default prompt that
+     explicitly invokes `$skill-name`; and distinct, meaningful icons when the
+     ChatGPT surface supports them. Preserve suitable existing identity assets,
+     but replace generic, misleading, missing, or copied icons.
+5. **Validate the authored content**
+   - Run `scripts/quick_validate.py <skill-folder>`.
+   - Exercise every changed script and at least one representative workflow.
+   - For a new, complex, or substantially revised skill, use permitted fresh,
+     isolated test runs to probe a representative request, a nearby boundary,
+     and at least one plausible unseen scenario. Give each probe only the skill
+     and task-local artifacts; do not reveal the expected answer or suspected
+     defect.
+   - Run bounded, side-effect-free probes automatically when they need no new
+     authority. Ask first if testing may be slow or costly, requires another
+     approval, or could touch a real account, device, GUI, or external system.
+     Report material failures and resulting changes; summarize successful
+     coverage without narrating every probe.
+   - For a personal skill, hand the candidate to `skill-maintenance` for the
+     complete behavioral gate and deployment decision.
 
-Avoid generic filler, duplicate documentation, deep reference chains, and
-claims about integrations that are not installed.
+## Ownership boundary
 
+`skill-creator` owns authoring decisions: scope, triggers, structure,
+instructions, resources, initialization, basic deterministic validation, and
+lightweight discovery probes used to improve the candidate.
+
+`skill-maintenance` exclusively owns personal-skill staging, approved-baseline
+comparison, behavioral contracts, repeated probes, reports, intentional-change
+approval, Git history, upstream merging, and promotion. Do not duplicate those
+systems or run a separate evaluator stack from this skill.

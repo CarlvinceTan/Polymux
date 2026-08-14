@@ -64,7 +64,11 @@
   {#if editing}
     <input bind:this={input} bind:value={draft} aria-label="Edit goal" onkeydown={keydown} onblur={save}/>
   {:else}
-    <span class="goal-copy"><strong>{goal.status === 'paused' ? 'Paused goal' : 'Pursuing goal'}</strong> <span>{goal.text}</span> <small>· {elapsed}</small></span>
+    <span class="goal-copy">
+      <strong>{goal.status === 'paused' ? 'Paused goal' : 'Pursuing goal'}</strong>
+      <span>{goal.text}</span>
+      <small>· {elapsed}</small>
+    </span>
   {/if}
   <div class="goal-actions">
     <button type="button" aria-label="Edit goal" onclick={startEdit}><Icon name="edit" size={16}/></button>

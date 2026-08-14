@@ -13,6 +13,14 @@ interface CredentialFile {
   credentials: Record<string, string>;
 }
 
+/**
+ * On macOS this state almost always means Keychain access was denied — the
+ * dialog was dismissed, or the ad-hoc-signed dev bundle changed identity —
+ * and Chromium remembers the denial for the rest of the process.
+ */
+export const SECURE_STORAGE_UNAVAILABLE =
+  "Secure credential storage is unavailable. Restart Midas and click \"Always Allow\" when macOS asks for keychain access.";
+
 /** Persists only OS-encrypted credential blobs. Secrets are never returned by
  * renderer-facing APIs and plaintext is never written to disk. */
 export class EncryptedCredentialStore implements CredentialStore {
@@ -29,7 +37,7 @@ export class EncryptedCredentialStore implements CredentialStore {
     const encoded = (await this.#load()).credentials[providerId];
     if (!encoded) return undefined;
     if (!this.#cipher.isEncryptionAvailable())
-      throw new Error("Secure credential storage is unavailable on this device");
+      throw new Error(SECURE_STORAGE_UNAVAILABLE);
     return JSON.parse(this.#cipher.decryptString(Buffer.from(encoded, "base64"))) as Credential;
   }
 
@@ -48,7 +56,7 @@ export class EncryptedCredentialStore implements CredentialStore {
       const next = await fn(current);
       if (next === undefined) return current;
       if (!this.#cipher.isEncryptionAvailable())
-        throw new Error("Secure credential storage is unavailable on this device");
+        throw new Error(SECURE_STORAGE_UNAVAILABLE);
       const file = await this.#load();
       file.credentials[providerId] = this.#cipher.encryptString(JSON.stringify(next)).toString("base64");
       await this.#save(file);

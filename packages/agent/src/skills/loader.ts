@@ -27,20 +27,21 @@ export class SkillLoader {
         source: "official",
         includeRootMarkdown: true,
       })),
+      // ~/.agents/skills is the cross-agent standard directory that
+      // Vercel's `npx skills` CLI installs into, so packages added there
+      // appear in Midas automatically. Agent-specific stores such as
+      // ~/.codex/skills stay unsourced: a personal skill becomes Midas's by
+      // being copied into ~/.midas/skills, which also wins name clashes so
+      // in-app edits keep authority.
       {
-        path: join(home, ".codex", "skills"),
-        source: "codex",
+        path: join(home, ".agents", "skills"),
+        source: "agents",
         includeRootMarkdown: false,
       },
       {
         path: join(home, ".midas", "skills"),
         source: "midas",
         includeRootMarkdown: true,
-      },
-      {
-        path: join(home, ".agents", "skills"),
-        source: "agents",
-        includeRootMarkdown: false,
       },
       ...(options.bundled ?? []).map((path): SkillLocation => ({
         path,
@@ -63,7 +64,18 @@ export class SkillLoader {
       const result = loadLocation(location);
       diagnostics.push(...result.diagnostics);
       for (const skill of result.skills) {
-        if (byName.has(skill.name))
+        const existing = byName.get(skill.name);
+        if (existing?.source === "official") {
+          // Official skills ship with the application and stay authoritative;
+          // a same-named skill in a user directory is ignored, not an override.
+          diagnostics.push({
+            severity: "warning",
+            message: `Duplicate skill ${skill.name}; official skill wins`,
+            path: skill.filePath,
+          });
+          continue;
+        }
+        if (existing)
           diagnostics.push({
             severity: "warning",
             message: `Duplicate skill ${skill.name}; later location wins`,
@@ -140,41 +152,50 @@ function loadFile(
       message: "description exceeds 1024 characters",
       path: filePath,
     });
+  const manifest = skillManifest(dirname(filePath));
   skills.push({
     name,
     description,
     filePath,
     baseDir: dirname(filePath),
-    iconPath: skillIconPath(dirname(filePath), diagnostics),
     source,
     disableModelInvocation: frontmatter["disable-model-invocation"] === true,
     allowedTools:
       typeof frontmatter["allowed-tools"] === "string"
         ? frontmatter["allowed-tools"].split(/\s+/).filter(Boolean)
         : undefined,
+    displayName: manifest.displayName,
+    author:
+      typeof frontmatter.author === "string" ? frontmatter.author : undefined,
+    category:
+      typeof frontmatter.category === "string"
+        ? frontmatter.category
+        : undefined,
+    updatedAt: fileUpdatedAt(filePath),
   });
 }
 
-function skillIconPath(
-  baseDir: string,
-  diagnostics: SkillDiagnostic[],
-): string | undefined {
+interface SkillManifest {
+  displayName?: string;
+}
+
+function skillManifest(baseDir: string): SkillManifest {
   const metadataPath = join(baseDir, "agents", "openai.yaml");
-  if (!existsSync(metadataPath) || !statSync(metadataPath).isFile()) return undefined;
+  if (!existsSync(metadataPath) || !statSync(metadataPath).isFile()) return {};
   const metadata = readFileSync(metadataPath, "utf8");
-  const match = metadata.match(/^\s+(?:icon_small|icon_large):\s*["']?([^"'\r\n]+?)["']?\s*$/m);
-  if (!match?.[1]) return undefined;
-  const iconPath = resolve(baseDir, match[1]);
-  const basePrefix = `${resolve(baseDir)}${process.platform === "win32" ? "\\" : "/"}`;
-  if (!iconPath.startsWith(basePrefix) || !existsSync(iconPath) || !statSync(iconPath).isFile()) {
-    diagnostics.push({
-      severity: "warning",
-      message: "skill icon must reference an existing file inside the skill folder",
-      path: metadataPath,
-    });
+  return {
+    displayName: metadata.match(
+      /^\s+display_name:\s*["']?([^"'\r\n]+?)["']?\s*$/m,
+    )?.[1],
+  };
+}
+
+function fileUpdatedAt(filePath: string): string | undefined {
+  try {
+    return statSync(filePath).mtime.toISOString();
+  } catch {
     return undefined;
   }
-  return iconPath;
 }
 
 function parseFrontmatter(content: string): Record<string, string | boolean> {

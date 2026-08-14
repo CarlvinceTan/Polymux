@@ -8,7 +8,7 @@
     | 'connections' | 'link' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
     | 'document' | 'presentation' | 'folder' | 'pdf' | 'spreadsheet' | 'image' | 'audio' | 'video' | 'code'
     | 'calendar' | 'clock' | 'sun' | 'goal' | 'users' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
-    | 'mail';
+    | 'mail' | 'storefront';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -171,6 +171,8 @@
     <path d="M3 20h18"/><rect x="5" y="11" width="3.6" height="9" rx="1"/><rect x="10.2" y="6" width="3.6" height="14" rx="1"/><rect x="15.4" y="9" width="3.6" height="11" rx="1"/>
   {:else if name === 'mail'}
     <rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4.5 8.2 6.6 4.6a1.6 1.6 0 0 0 1.8 0l6.6-4.6"/>
+  {:else if name === 'storefront'}
+    <path d="M4 10v10h16V10M3 10l2-6h14l2 6"/><path d="M3 10a3 3 0 0 0 5 2 3 3 0 0 0 4 0 3 3 0 0 0 4 0 3 3 0 0 0 5-2M9 20v-5h6v5"/>
   {:else if name === 'filter'}
     <path d="M4 6h16M7 12h10M10 18h4"/>
   {:else if name === 'sort'}

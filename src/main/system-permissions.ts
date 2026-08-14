@@ -8,6 +8,10 @@ export function systemPermissionStatus(
   permission: SystemPermissionKind,
 ): SystemPermissionStatus {
   if (process.platform !== "darwin") return "granted";
+  if (permission === "accessibility")
+    return systemPreferences.isTrustedAccessibilityClient(false)
+      ? "granted"
+      : "denied";
   return systemPreferences.getMediaAccessStatus(
     permission === "microphone" ? "microphone" : "screen",
   );
@@ -20,6 +24,10 @@ export async function requestSystemPermission(
 
   if (permission === "microphone") {
     await systemPreferences.askForMediaAccess("microphone");
+  } else if (permission === "accessibility") {
+    // Prompting registers Midas in Privacy & Security → Accessibility and
+    // shows the system dialog pointing there; there is no async grant flow.
+    systemPreferences.isTrustedAccessibilityClient(true);
   } else if (systemPermissionStatus(permission) !== "granted") {
     // macOS registers Screen Recording access when an application first tries
     // to enumerate a display. The tiny thumbnail avoids doing real Chronicle
@@ -47,7 +55,9 @@ export async function openSystemPermissionSettings(
     ? "Privacy_Microphone"
     : permission === "screen-recording"
       ? "Privacy_ScreenCapture"
-      : "Privacy_LocationServices";
+      : permission === "accessibility"
+        ? "Privacy_Accessibility"
+        : "Privacy_LocationServices";
   await shell.openExternal(
     `x-apple.systempreferences:com.apple.preference.security?${pane}`,
   );

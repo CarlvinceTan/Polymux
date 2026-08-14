@@ -63,8 +63,33 @@ test("stores multiple encrypted API keys and changes the active key after a limi
     assert.equal(rotated[0]!.key, "sk-second-secret");
     assert.equal((await pool.list("anthropic"))[0]!.status, "rate_limited");
 
+    const reopened = new EncryptedApiKeyPool(file, cipher);
+    assert.deepEqual(
+      (await reopened.list("anthropic")).map((item) => item.status),
+      ["ready", "ready"],
+      "provider failures must not invalidate keys across app restarts",
+    );
+    assert.deepEqual(
+      (await reopened.candidates("anthropic")).map((item) => item.key),
+      ["sk-second-secret", "sk-first-secret"],
+    );
+
     const onDisk = await readFile(file, "utf8");
     assert.doesNotMatch(onDisk, /sk-(first|second)-secret/);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test("rejects incomplete OpenCode keys instead of treating them as configured", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "midas-opencode-key-"));
+  try {
+    const pool = new EncryptedApiKeyPool(path.join(directory, "api-keys.json"), cipher);
+    await assert.rejects(
+      pool.add("opencode-go", "df"),
+      /full OpenCode API key beginning with sk-/,
+    );
+    assert.deepEqual(await pool.list("opencode-go"), []);
   } finally {
     await rm(directory, {recursive: true, force: true});
   }

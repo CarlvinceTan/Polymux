@@ -1,4 +1,11 @@
 interface:
   display_name: "Message"
-  short_description: "Draft and manage personal chat messages"
-  default_prompt: "Use the Message skill for this messaging task."
+  short_description: "Route all connected messaging accounts"
+  icon_small: "./assets/message-small.svg"
+  icon_large: "./assets/message.svg"
+  brand_color: "#6657C8"
+  default_prompt: "Use $message to retrieve or handle this messaging task through the connected Matrix accounts with the right context and approval path."
+
+policy:
+  allow_implicit_invocation: true
+

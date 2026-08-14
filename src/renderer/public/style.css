@@ -248,9 +248,12 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
    Sharing row 1 with the conversation column overlays it on the scrolling
    content instead of taking a row of its own, and the column width animates
    with the panel for free rather than on a parallel transition. */
-.conversation-title-bar { pointer-events: none; position: fixed; z-index: 28; top: 0; right: 0; left: 0; height: var(--app-topbar-height); display: grid; place-items: center; border-bottom: 0; background: var(--app-titlebar); backdrop-filter: blur(14px); transition: opacity var(--drawer-fade-duration) ease; }
+.conversation-title-bar { pointer-events: none; position: fixed; z-index: 28; top: 0; right: 0; left: 0; height: var(--app-topbar-height); display: grid; place-items: center; overflow:hidden; border-bottom: 0; background: var(--app-titlebar); backdrop-filter: blur(14px); transition: opacity var(--drawer-fade-duration) ease; }
 main.history-open .conversation-title-bar { left: var(--history-offset); }
 main.workspace-open .conversation-title-bar { right: var(--content-right-column); }
+/* Resizing is direct manipulation: track the drawer edge immediately so the
+   title can never lag underneath it. Open/close changes retain the slide. */
+main.history-resizing .conversation-title-bar, main.workspace-resizing .conversation-title-bar { transition: none; }
 /* Sits above the translucent title bar so the rule stays crisp and continuous
    across the full viewport instead of being washed out beneath it. */
 main.has-conversation::after { content: ''; pointer-events: none; position: fixed; z-index: 29; top: calc(var(--app-topbar-height) - 1px); right: 0; left: 0; height: 1px; background: var(--neutral-200); }
@@ -296,7 +299,6 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
 .history-empty { margin: 8px 10px; color: var(--neutral-400); font-size: 12px; line-height: 1.5; }
 
 .message-list { padding: 110px 0 205px; opacity: 1; visibility: visible; transition: opacity var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s; }
-.message-list.has-timeline { padding-left: 38px; }
 main.has-queue .message-list { padding-bottom: calc(205px + var(--queue-height)); }
 .message { margin-bottom: 38px; color: var(--on-surface); font-size: 15px; line-height: 1.6; }
 .message-role { margin-bottom: 8px; color: var(--neutral-500); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
@@ -374,9 +376,13 @@ main.has-queue .message-list { padding-bottom: calc(205px + var(--queue-height))
 .message-edit-shell { width: min(100%, 560px); padding: 8px 12px; border: 1px solid var(--neutral-300); border-radius: 20px; background: var(--app-surface); }
 .message.editing { width: min(100%, 560px); }
 .message-edit-shell textarea { width: 100%; min-height: 72px; resize: vertical; border: 0; padding: 2px 0; outline: none; background: transparent; color: var(--neutral-800); font: inherit; line-height: 1.55; }
-.message-edit-controls { display: flex; justify-content: flex-end; gap: 6px; margin-top: 7px; }
+.message-edit-attachments { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.message-edit-attachments span { max-width: 100%; display: inline-flex; align-items: center; gap: 5px; overflow: hidden; border-radius: 7px; padding: 4px 7px; background: var(--neutral-100); color: var(--neutral-600); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.message-edit-controls { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 7px; }
+.message-edit-actions { display: flex; align-items: center; gap: 6px; }
 .message-edit-controls button { padding: 5px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--neutral-500); font-size: 12px; font-weight: 550; cursor: pointer; }
 .message-edit-controls button:hover { background: var(--neutral-100); color: var(--neutral-800); }
+.message-edit-controls button.edit-attach { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; }
 .message-edit-controls button.save { background: var(--neutral-900); color: #fff; }
 .thinking { display: inline-flex; gap: 4px; padding: 7px 0; } .thinking i { width: 5px; height: 5px; border-radius: 50%; background: var(--neutral-500); animation: pulse 1.2s infinite; } .thinking i:nth-child(2){animation-delay:.15s} .thinking i:nth-child(3){animation-delay:.3s}
 @keyframes pulse { 0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)} }
@@ -399,12 +405,13 @@ main.workspace-expanded .sticky-composer { pointer-events: none; }
 main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var(--history-offset) - var(--content-docked-column) - 40px)); }
 
 .queued-messages { width: 100%; margin-bottom: 8px; padding: 8px; border: 1px solid var(--neutral-200); border-radius: 16px; background: var(--app-translucent); box-shadow: 0 8px 26px rgba(0,0,0,.14); backdrop-filter: blur(14px); }
-.goal-bar { width: 100%; min-height: 50px; display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding: 0 12px; border: 1px solid var(--neutral-200); border-radius: 15px; background: var(--app-translucent); color: var(--neutral-900); box-shadow: 0 8px 26px rgba(0,0,0,.14); backdrop-filter: blur(14px); }
+.goal-bar { width: 100%; min-height: 42px; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 0 10px; border: 1px solid var(--neutral-200); border-radius: 14px; background: var(--app-translucent); color: var(--neutral-900); box-shadow: 0 8px 26px rgba(0,0,0,.14); backdrop-filter: blur(14px); }
 .goal-bar.paused { color: var(--neutral-500); }
 .goal-state { width: 20px; height: 24px; display: grid; flex: none; place-items: center; color: var(--neutral-500); }
-.goal-copy { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.35; }
+.goal-copy { min-width: 0; display: flex; flex: 1; align-items: baseline; gap: 8px; overflow: hidden; white-space: nowrap; font-size: 13px; line-height: 1.35; }
 .goal-copy strong { color: var(--neutral-950); font-weight: 580; }
-.goal-copy > span, .goal-copy small { color: var(--neutral-500); font: inherit; }
+.goal-copy > span { min-width: 0; overflow: hidden; color: var(--neutral-500); font: inherit; text-overflow: ellipsis; }
+.goal-copy small { flex: none; color: var(--neutral-500); font: inherit; }
 .goal-bar > input { min-width: 0; height: 30px; flex: 1; border: 1px solid var(--neutral-300); border-radius: 8px; padding: 0 8px; outline: none; background: var(--input-surface); color: var(--neutral-900); font: inherit; font-size: 13px; }
 .goal-actions { display: flex; flex: none; align-items: center; gap: 2px; }
 .goal-actions button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
@@ -547,6 +554,14 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .download-copy small { margin-top: 2px; color: var(--neutral-500); font-size: 11.5px; }
 .downloads-empty { margin: 8px 5px 10px; color: var(--neutral-500); font-size: 12px; }
 .workspace-content { flex: 1; min-height: 0; overflow: hidden; background: var(--main-panel-background); }
+.browser-surface { position: relative; }
+.browser-find { position: relative; z-index: 3; flex: none; display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-bottom: 1px solid var(--neutral-200); background: var(--app-surface); }
+.browser-find input { min-width: 0; flex: 1; height: 26px; border: 1px solid var(--neutral-200); border-radius: 8px; padding: 0 9px; background: var(--neutral-50); color: var(--neutral-950); outline: 0; font-family: inherit; font-size: 12px; }
+.browser-find input:focus { border-color: var(--neutral-400); background: var(--app-surface); }
+.browser-find-count { flex: none; color: var(--neutral-500); font-size: 11px; }
+.browser-find button { width: 26px; height: 26px; display: grid; flex: none; place-items: center; border: 0; border-radius: 7px; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
+.browser-find button:hover:not(:disabled), .browser-find button:focus-visible { outline: 0; background: var(--neutral-100); color: var(--neutral-900); }
+.browser-find button:disabled { color: var(--neutral-300); cursor: default; }
 .new-tab-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--neutral-400); }
 .new-tab-empty h2 { margin: 18px 0 6px; color: var(--neutral-950); font-size: 16px; font-weight: 550; }
 .new-tab-empty p { margin: 0; color: var(--neutral-500); font-size: 14px; }

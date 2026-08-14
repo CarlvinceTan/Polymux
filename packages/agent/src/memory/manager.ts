@@ -21,13 +21,16 @@ export interface MemoryManagerOptions {
 }
 
 export interface MemoryPromptContext {
+  enabled: boolean;
   summary: string;
   registryPath: string;
   conversationMemories: MemoryRecord[];
 }
 
 export interface MemoryVaultStatus {
+  enabled: boolean;
   directory: string;
+  storedBytes: number;
   registryPath: string;
   summaryPath: string;
   memories: number;
@@ -58,6 +61,7 @@ export class MemoryManager {
   readonly notesDirectory: string;
   readonly rolloutsDirectory: string;
   readonly archiveDirectory: string;
+  readonly settingsPath: string;
   readonly #clock: () => Date;
   readonly #id: () => string;
 
@@ -73,6 +77,7 @@ export class MemoryManager {
     );
     this.rolloutsDirectory = path.join(this.directory, "rollout_summaries");
     this.archiveDirectory = path.join(this.directory, "archive");
+    this.settingsPath = path.join(this.directory, "settings.json");
     this.#clock = options.clock ?? (() => new Date());
     this.#id = options.id ?? (() => crypto.randomUUID());
     this.#initialize();
@@ -90,11 +95,13 @@ export class MemoryManager {
   }
 
   promptContext(conversationId?: string): MemoryPromptContext {
+    const enabled = this.enabled();
     const summary = readFile(this.summaryPath).trim();
     return {
-      summary,
+      enabled,
+      summary: enabled ? summary : "",
       registryPath: this.registryPath,
-      conversationMemories: conversationId
+      conversationMemories: enabled && conversationId
         ? this.#all().filter(
             (memory) =>
               memory.scope === "conversation" &&
@@ -111,7 +118,9 @@ export class MemoryManager {
       .map((entry) => statSync(path.join(this.rolloutsDirectory, entry.name)).mtime.toISOString())
       .sort((a, b) => b.localeCompare(a));
     return {
+      enabled: this.enabled(),
       directory: this.directory,
+      storedBytes: directoryBytes(this.directory),
       registryPath: this.registryPath,
       summaryPath: this.summaryPath,
       memories: memories.length,
@@ -121,6 +130,19 @@ export class MemoryManager {
       latestMemoryAt: memories[0]?.updatedAt ?? null,
       latestRolloutAt: rollouts[0] ?? null,
     };
+  }
+
+  enabled(): boolean {
+    try {
+      return (JSON.parse(readFileSync(this.settingsPath, "utf8")) as {enabled?: unknown}).enabled !== false;
+    } catch {
+      return true;
+    }
+  }
+
+  setEnabled(enabled: boolean): MemoryVaultStatus {
+    writeFileSync(this.settingsPath, `${JSON.stringify({enabled}, null, 2)}\n`, "utf8");
+    return this.status();
   }
 
   remember(
@@ -171,6 +193,7 @@ export class MemoryManager {
   }
 
   recordRollout(input: RolloutSummaryInput): string {
+    if (!this.enabled()) return "";
     const timestamp = this.#clock().toISOString();
     const filename = `${fileTimestamp(timestamp)}-${safeStem(input.runId)}.md`;
     const target = uniquePath(this.rolloutsDirectory, filename);
@@ -207,6 +230,7 @@ export class MemoryManager {
       mkdirSync(directory, { recursive: true });
     if (!existsSync(this.registryPath)) writeFileSync(this.registryPath, registry([]));
     if (!existsSync(this.summaryPath)) writeFileSync(this.summaryPath, summary([]));
+    if (!existsSync(this.settingsPath)) writeFileSync(this.settingsPath, `${JSON.stringify({enabled: true}, null, 2)}\n`);
   }
 
   #migrateLegacy(storage: Storage): void {
@@ -258,6 +282,15 @@ export class MemoryManager {
     writeFileSync(this.registryPath, registry(memories), "utf8");
     writeFileSync(this.summaryPath, summary(memories), "utf8");
   }
+}
+
+function directoryBytes(directory: string): number {
+  return readdirSync(directory, {withFileTypes: true}).reduce((total, entry) => {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) return total + directoryBytes(target);
+    if (entry.isFile()) return total + statSync(target).size;
+    return total;
+  }, 0);
 }
 
 function readNote(file: string): MemoryRecord | null {

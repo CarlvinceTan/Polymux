@@ -12,7 +12,7 @@
  * Runs as `prestart`: a no-op when already applied, self-healing after
  * `npm install` restores the stock bundle. The packaged app is unaffected.
  */
-import {execFileSync} from 'node:child_process';
+import {execFileSync, spawnSync} from 'node:child_process';
 import {copyFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -43,18 +43,54 @@ const syncIcon = () => {
   return true;
 };
 
-const resign = () => {
+/**
+ * Ad-hoc signatures get a new identity on every resign, which invalidates the
+ * Keychain ACL guarding Electron's "Safe Storage" key — each icon tweak used
+ * to break saved API keys until the user re-approved access. A stable local
+ * identity (Apple Development, or a self-signed "Midas Dev" certificate)
+ * keeps the same designated requirement across resigns, so one "Always
+ * Allow" lasts. Ad-hoc remains the fallback when no identity exists.
+ */
+const signingIdentity = () => {
   try {
-    execFileSync('codesign', ['--force', '--deep', '--sign', '-', brandedApp], {stdio: 'ignore'});
+    const listing = execFileSync('security', ['find-identity', '-p', 'codesigning', '-v'], {encoding: 'utf8'});
+    const match = listing.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"((?:Midas Dev|Apple Development)[^"]*)"/m);
+    return match ? {hash: match[1], authority: match[2]} : {hash: '-', authority: undefined};
+  } catch {
+    return {hash: '-', authority: undefined};
+  }
+};
+
+const currentSigningIdentity = () => {
+  const result = spawnSync('codesign', ['-dv', '--verbose=4', brandedApp], {encoding: 'utf8'});
+  return `${result.stdout ?? ''}${result.stderr ?? ''}`;
+};
+
+const needsStableResign = (identity) => {
+  if (!identity.authority) return false;
+  return !currentSigningIdentity().includes(`Authority=${identity.authority}`);
+};
+
+const resign = (identity = signingIdentity()) => {
+  try {
+    execFileSync('codesign', ['--force', '--deep', '--sign', identity.hash, brandedApp], {stdio: 'ignore'});
   } catch {
     // An unsigned dev bundle still launches locally; the rename is what matters.
   }
 };
 
 if (existsSync(brandedApp) && readFileSync(pathFile, 'utf8').trim() === wanted) {
-  if (syncIcon()) {
-    resign();
+  const iconChanged = syncIcon();
+  const identity = signingIdentity();
+  const signatureChanged = needsStableResign(identity);
+  if (iconChanged || signatureChanged) {
+    resign(identity);
+  }
+  if (iconChanged) {
     console.log(`Refreshed the ${NAME}.app development icon.`);
+  }
+  if (signatureChanged) {
+    console.log(`Migrated the ${NAME}.app development signature to a stable identity.`);
   }
   process.exit(0);
 }

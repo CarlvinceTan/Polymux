@@ -9,6 +9,7 @@ import {
   type ChronicleSystemState,
   frameSignature,
   signatureDifference,
+  textSignature,
 } from "../src/index.js";
 
 function frame(signature: number[], image = "image"): ChronicleFrame {
@@ -48,7 +49,7 @@ test("stores only meaningful changes plus bounded heartbeats", async () => {
   now = new Date("2026-08-13T12:01:06.000Z");
   assert.equal((await manager.captureOnce())[0]?.reason, "heartbeat");
   assert.equal(manager.status().storedFrames, 3);
-  assert.match(readFileSync(manager.store.timelinePath, "utf8"), /changed/);
+  assert.match(readFileSync(manager.store.timelinePath, "utf8"), /· change · change 0\.353/);
 });
 
 test("does not capture while locked, idle, or thermally constrained", async () => {
@@ -81,6 +82,39 @@ test("starts enabled and persists an explicit opt-out", () => {
   assert.equal(manager.setEnabled(false).enabled, false);
   manager.stop();
   assert.match(readFileSync(manager.store.instructionsPath, "utf8"), /never authorization/i);
+});
+
+test("stores accessibility text snapshots as markdown with their own kind", async () => {
+  const manager = new ChronicleManager({
+    directory: mkdtempSync(path.join(tmpdir(), "midas-chronicle-")),
+    frames: {
+      capture: async () => [{
+        sourceId: "ax-com.apple.finder",
+        sourceName: "Finder — Documents",
+        displayId: null,
+        width: 0,
+        height: 0,
+        image: new TextEncoder().encode("# Finder — Documents\n\nReports\nInvoices\n"),
+        signature: textSignature("Documents\nReports\nInvoices"),
+        kind: "text",
+      }],
+    },
+    system: { current: () => active },
+  });
+
+  const [entry] = await manager.captureOnce();
+  assert.equal(entry?.kind, "text");
+  assert.match(entry!.path, /\.md$/);
+  assert.match(readFileSync(entry!.path, "utf8"), /Invoices/);
+});
+
+test("text signatures separate different documents but tolerate small edits", () => {
+  const base = textSignature("The quarterly report covers revenue, churn, and growth targets.");
+  const edited = textSignature("The quarterly report covers revenue, churn, and growth target.");
+  const different = textSignature("git status\nmain.ts modified\nnpm test passed\n0 failures");
+  assert.equal(signatureDifference(base, base), 0);
+  assert.ok(signatureDifference(base, edited) < 0.035, "small edit should stay under the change threshold");
+  assert.ok(signatureDifference(base, different) > 0.035, "different content should cross the change threshold");
 });
 
 test("computes compact grayscale signatures and normalized differences", () => {

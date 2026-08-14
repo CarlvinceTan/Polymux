@@ -26,38 +26,18 @@
   let fileDragActive = false;
 
   // Dictation writes into the draft; speech mode is the primary button instead.
-  let recognition: SpeechRecognitionLike | null = null;
+  // Recording happens here, but recognition runs locally in the main process
+  // (whisper.cpp): the Web Speech API needs Google's cloud recogniser, which
+  // Electron does not ship, so it always failed mid-session.
+  let recorder: MediaRecorder | null = null;
+  let recorderStream: MediaStream | null = null;
+  let recorderChunks: Blob[] = [];
   let dictationListening = false;
+  let dictationTranscribing = false;
   let dictationError = '';
   let dictationBase = '';
-  let dictationFinal = '';
-
-  interface SpeechRecognitionResultLike {
-    readonly isFinal: boolean;
-    readonly 0: {transcript: string};
-  }
-
-  interface SpeechRecognitionEventLike extends Event {
-    readonly resultIndex: number;
-    readonly results: ArrayLike<SpeechRecognitionResultLike>;
-  }
-
-  interface SpeechRecognitionErrorLike extends Event {
-    readonly error: string;
-  }
-
-  interface SpeechRecognitionLike {
-    continuous: boolean;
-    interimResults: boolean;
-    lang: string;
-    onstart: (() => void) | null;
-    onend: (() => void) | null;
-    onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-    onerror: ((event: SpeechRecognitionErrorLike) => void) | null;
-    start: () => void;
-    stop: () => void;
-    abort: () => void;
-  }
+  let dictationPending = false;
+  let dictationFinishing = false;
 
   $: hasContent = draft.length > 0 || attachments.length > 0;
   /** Content is always sendable; with an empty composer the button offers to
@@ -137,21 +117,29 @@
     addFiles(event.dataTransfer?.files ?? []);
   }
 
-  function recognitionConstructor(): (new () => SpeechRecognitionLike) | undefined {
-    const speechWindow = window as typeof window & {
-      SpeechRecognition?: new () => SpeechRecognitionLike;
-      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
-    };
-    return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
-  }
-
   function stopDictation(): void {
-    recognition?.abort();
-    recognition = null;
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+    recorder = null;
     dictationListening = false;
   }
 
+  /** Unmount path: drop the clip instead of transcribing it. */
+  function cancelDictation(): void {
+    if (recorder) recorder.onstop = null;
+    stopDictation();
+    releaseRecorder();
+  }
+
+  function releaseRecorder(): void {
+    recorderStream?.getTracks().forEach((track) => track.stop());
+    recorderStream = null;
+    recorderChunks = [];
+    dictationPending = false;
+    dictationFinishing = false;
+  }
+
   async function toggleDictation(): Promise<void> {
+    if (dictationTranscribing && !dictationListening) return;
     if (dictationListening) {
       stopDictation();
       return;
@@ -161,42 +149,83 @@
       dictationError = 'Microphone access is off. Enable it in System Settings.';
       return;
     }
-    const Constructor = recognitionConstructor();
-    if (!Constructor) {
-      dictationError = 'Dictation is not available in this build.';
+    dictationError = '';
+    dictationBase = draft && !draft.endsWith(' ') ? `${draft} ` : draft;
+    try {
+      recorderStream = await navigator.mediaDevices.getUserMedia({audio: true});
+    } catch {
+      dictationError = 'No microphone was found. Connect one and try again.';
       return;
     }
-    dictationBase = draft && !draft.endsWith(' ') ? `${draft} ` : draft;
-    dictationFinal = '';
-    dictationError = '';
-
-    const next = new Constructor();
-    next.continuous = true;
-    next.interimResults = true;
-    next.lang = 'en-AU';
-    next.onstart = () => dictationListening = true;
-    next.onend = () => dictationListening = false;
-    next.onresult = (event) => {
-      let interim = '';
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        if (result.isFinal) dictationFinal += result[0].transcript;
-        else interim += result[0].transcript;
-      }
-      draft = `${dictationBase}${dictationFinal}${interim}`;
-      editor?.setText(draft);
+    recorderChunks = [];
+    dictationPending = false;
+    dictationFinishing = false;
+    const next = new MediaRecorder(recorderStream);
+    next.ondataavailable = (event) => {
+      if (!event.data.size) return;
+      recorderChunks.push(event.data);
+      void transcribeRecording();
     };
-    next.onerror = (event) => {
-      if (event.error === 'aborted' || event.error === 'no-speech') return;
+    next.onstop = () => {
       dictationListening = false;
-      dictationError = event.error === 'not-allowed' || event.error === 'service-not-allowed'
-        ? 'Microphone permission is blocked. Allow microphone access and try again.'
-        : event.error === 'audio-capture'
-          ? 'No microphone was found. Connect one and try again.'
-          : 'Dictation stopped unexpectedly. Try again.';
+      dictationFinishing = true;
+      void transcribeRecording();
     };
-    recognition = next;
-    next.start();
+    recorder = next;
+    // Each data slice extends the same WebM recording. Re-running local
+    // Whisper over the accumulated clip lets the draft show partial results
+    // without depending on a cloud streaming recogniser.
+    next.start(2500);
+    dictationListening = true;
+  }
+
+  async function transcribeRecording(): Promise<void> {
+    dictationPending = true;
+    if (dictationTranscribing) return;
+    dictationTranscribing = true;
+    while (dictationPending) {
+      dictationPending = false;
+      const clip = new Blob(recorderChunks);
+      if (!clip.size) continue;
+      try {
+        const text = await api.dictation.transcribe(await monoWav(clip));
+        if (text) {
+          draft = `${dictationBase}${text}`;
+          editor?.setText(draft);
+        }
+      } catch (error) {
+        dictationError = dictationFailure(error);
+      }
+    }
+    dictationTranscribing = false;
+    if (dictationFinishing) releaseRecorder();
+  }
+
+  /** whisper.cpp wants mono 16kHz 16-bit PCM; decodeAudioData resamples to the
+   * context rate, so the conversion is one render plus a WAV header. */
+  async function monoWav(clip: Blob): Promise<ArrayBuffer> {
+    const context = new OfflineAudioContext(1, 1, 16000);
+    const decoded = await context.decodeAudioData(await clip.arrayBuffer());
+    const samples = decoded.getChannelData(0);
+    const wav = new DataView(new ArrayBuffer(44 + samples.length * 2));
+    const writeAscii = (offset: number, text: string) => {
+      for (let index = 0; index < text.length; index += 1) wav.setUint8(offset + index, text.charCodeAt(index));
+    };
+    writeAscii(0, 'RIFF'); wav.setUint32(4, 36 + samples.length * 2, true); writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt '); wav.setUint32(16, 16, true); wav.setUint16(20, 1, true); wav.setUint16(22, 1, true);
+    wav.setUint32(24, 16000, true); wav.setUint32(28, 32000, true); wav.setUint16(32, 2, true); wav.setUint16(34, 16, true);
+    writeAscii(36, 'data'); wav.setUint32(40, samples.length * 2, true);
+    for (let index = 0; index < samples.length; index += 1) {
+      const sample = Math.max(-1, Math.min(1, samples[index]));
+      wav.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    }
+    return wav.buffer;
+  }
+
+  function dictationFailure(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    const detail = message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+    return detail || 'Dictation stopped unexpectedly. Try again.';
   }
 
   onMount(() => {
@@ -205,7 +234,7 @@
     window.addEventListener('dragleave', windowDragLeave);
     window.addEventListener('drop', windowDrop);
     return () => {
-      stopDictation();
+      cancelDictation();
       window.removeEventListener('dragenter', windowDragEnter);
       window.removeEventListener('dragover', windowDragOver);
       window.removeEventListener('dragleave', windowDragLeave);
@@ -243,17 +272,17 @@
   <div class="polymux-prompt-toolbar">
     <button type="button" onclick={chooseFiles}><Icon name="attach" size={14}/><span>ATTACH</span></button>
     <button
-      class:active={dictationListening}
+      class:active={dictationListening || dictationTranscribing}
       type="button"
       aria-pressed={dictationListening}
-      data-tooltip-label={dictationListening ? 'Stop listening' : 'Voice dictation'}
+      aria-busy={dictationTranscribing}
       onclick={() => void toggleDictation()}
     >
       <span class="dictation-mark">
         {#if dictationListening}<span class="dictation-ping" aria-hidden="true"></span>{/if}
         <Icon name="mic" size={14}/>
       </span>
-      <span>{dictationListening ? 'LISTENING' : 'VOICE'}</span>
+      <span>{dictationListening ? 'LISTENING' : dictationTranscribing ? 'WRITING…' : 'VOICE'}</span>
     </button>
     <button
       class="goal-toggle"

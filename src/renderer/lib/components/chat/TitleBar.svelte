@@ -1,5 +1,5 @@
 <script lang="ts">
-  import {tick} from 'svelte';
+  import {afterUpdate, beforeUpdate, tick} from 'svelte';
   import Icon from '../shared/Icon.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../layout/iconSizing';
   import type {PanelMode} from '../../state/panels';
@@ -18,7 +18,35 @@
   let editing = false;
   let draft = '';
   let input: HTMLInputElement;
+  let titleButton: HTMLButtonElement;
+  let titleControl: HTMLElement;
+  let previousCenter: number | null = null;
+  let renderedPosition = `${historyOpen}:${mode}`;
+  let positionChanged = false;
+  $: titleControl = editing ? input : titleButton;
   $: titleInputSize = Math.max(8, Math.min(48, draft.length + 2));
+
+  beforeUpdate(() => {
+    const position = `${historyOpen}:${mode}`;
+    positionChanged = position !== renderedPosition;
+    previousCenter = positionChanged && titleControl
+      ? titleControl.getBoundingClientRect().left + titleControl.getBoundingClientRect().width / 2
+      : null;
+  });
+
+  afterUpdate(() => {
+    if (!positionChanged || previousCenter === null || !titleControl) return;
+    const rect = titleControl.getBoundingClientRect();
+    const delta = previousCenter - (rect.left + rect.width / 2);
+    renderedPosition = `${historyOpen}:${mode}`;
+    positionChanged = false;
+    if (Math.abs(delta) < .5) return;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    titleControl.animate(
+      [{transform: `translateX(${delta}px)`}, {transform: 'translateX(0)'}],
+      {duration: reducedMotion ? 1 : 440, easing: 'cubic-bezier(.45,0,.55,1)'},
+    );
+  });
 
   async function startEditing(): Promise<void> {
     draft = title;
@@ -109,7 +137,7 @@
     {#if editing}
       <input bind:this={input} bind:value={draft} size={titleInputSize} aria-label="Rename conversation" onkeydown={keydown} onblur={save}/>
     {:else}
-      <button type="button" title={title} aria-label={`Rename conversation: ${title}`} data-tooltip="none" onclick={startEditing}>{title}</button>
+      <button bind:this={titleButton} type="button" title={title} aria-label={`Rename conversation: ${title}`} data-tooltip="none" onclick={startEditing}>{title}</button>
     {/if}
   </header>
 {/if}

@@ -2,6 +2,8 @@
 name: documents
 description: Create, inspect, edit, and verify Word-compatible documents, especially DOCX files. Use for reports, letters, proposals, templates, redlines, comments, or any task where document structure and rendered layout matter.
 allowed-tools: read write edit bash
+author: Midas
+category: Documents
 ---
 
 # Documents

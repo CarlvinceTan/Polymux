@@ -29,6 +29,10 @@
   export let onToggleExpand: () => void = () => {};
   export let onResize: (width: number) => void = () => {};
   export let onResizeState: (resizing: boolean) => void = () => {};
+  /** True while another surface covers the drawer; the embedded browser's
+   * native view must hide under it. */
+  export let browserObscured = false;
+  export let onTabState: (id: string, patch: {title?: string; url?: string}) => void = () => {};
 
   let panel: HTMLElement;
   let newTabWrapper: HTMLDivElement;
@@ -163,7 +167,7 @@
     {:else if activeTab.kind === 'sheet'}<SheetView title={activeTab.title}/>
     {:else if activeTab.kind === 'photo'}<PhotoView title={activeTab.title}/>
     {:else if activeTab.kind === 'video'}<VideoView title={activeTab.title}/>
-    {:else if activeTab.kind === 'browser'}<BrowserView title={activeTab.title} url={activeTab.url}/>
+    {:else if activeTab.kind === 'browser'}<BrowserView tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || !open} onState={(patch) => onTabState(activeTab.id, patch)}/>
     {:else if activeTab.kind === 'side-chat'}<SideChatView title={activeTab.title}/>
     {:else}<SummaryView section={activeTab.section ?? 'outputs'} data={summaryData}/>
     {/if}
