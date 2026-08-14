@@ -150,6 +150,12 @@ test.describe('welcome view', () => {
     const officialPdf = modal.getByRole('button', {name: /PDF Official/});
     await expect(officialPdf).toBeVisible();
     await expect(officialPdf.locator('[data-icon="verified"]')).toBeVisible();
+    const officialSealGap = await officialPdf.evaluate((row) => {
+      const name = row.querySelector('.skill-name-line strong')!.getBoundingClientRect();
+      const seal = row.querySelector('.official-rail-stamp')!.getBoundingClientRect();
+      return Math.round(seal.left - name.right);
+    });
+    expect(officialSealGap).toBe(4);
     await expect(modal.getByRole('button', {name: 'Add Skills'})).toBeVisible();
     await expect(modal.getByRole('button', {name: 'Refresh Skills'})).toHaveCount(0);
     const browserSkill = modal.getByRole('button', {name: /Browser Official/});
@@ -160,6 +166,10 @@ test.describe('welcome view', () => {
     const officialBadge = modal.locator('.options-detail-header .official-badge');
     await expect(officialBadge).toHaveText('Official');
     await expect(officialBadge.locator('[data-icon="verified"]')).toBeVisible();
+    const customSkill = modal.getByRole('button', {name: /Personal Research Custom/});
+    await expect(customSkill).toBeVisible();
+    await customSkill.click();
+    await expect(modal.locator('.options-detail-header .options-badge')).toHaveText('Custom');
 
     await modal.getByRole('tab', {name: 'Model'}).click();
     const selectedModel = modal.getByLabel(/Selected model:/);

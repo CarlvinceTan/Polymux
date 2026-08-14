@@ -10,6 +10,7 @@
     "packages/*"
   ],
   "scripts": {
+    "prestart": "node scripts/dev-app-name.mjs",
     "start": "electron-forge start",
     "package": "electron-forge package",
     "make": "electron-forge make",

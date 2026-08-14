@@ -67,6 +67,7 @@ function createBrowserDemoApi(): MidasApi {
   ];
   const demoSkills: SkillDto[] = [
     {name: 'documents', description: 'Create and edit document files.', source: 'midas', filePath: '~/.midas/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], enabled: true, editable: true, instructions: 'Create and edit document files.'},
+    {name: 'personal-research', description: 'Personal research workflow.', source: 'codex', filePath: '~/.codex/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], enabled: true, editable: false},
     {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], enabled: true, editable: false},
     {name: 'browser', description: 'Research and interact with websites.', source: 'official', filePath: '/skills/official/browser/SKILL.md', iconDataUrl: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%2211%22 fill=%22none%22 stroke=%22%23666%22 stroke-width=%222%22/%3E%3C/svg%3E', disableModelInvocation: false, allowedTools: ['read', 'bash'], enabled: true, editable: false},
   ];

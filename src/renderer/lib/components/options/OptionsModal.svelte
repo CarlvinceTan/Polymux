@@ -195,8 +195,10 @@
     return lines.join('\n');
   }
 
-  function skillRowAuthor(source: SkillDto['source']): string {
-    return source === 'official' ? 'Midas' : source;
+  function skillSourceLabel(source: SkillDto['source']): string {
+    return source === 'codex' || source === 'midas' || source === 'agents' || source === 'configured'
+      ? 'Custom'
+      : source;
   }
 
   function groupModels(items: ModelDto[], providerStates: ProviderDto[], searchFilter: string, stateFilter: string, sort: string): Array<{id: string; name: string; logoDataUrl?: string; models: ModelDto[]; selected: boolean; configured: boolean; custom: boolean}> {
@@ -860,8 +862,7 @@
                     <Icon name={(SKILL_ICONS[item.name] ?? 'book-open') as never} size={14}/>
                   {/if}
                 </span>
-                <span class="options-rail-copy"><strong>{skillDisplayName(item.name)}</strong>{#if item.source !== 'official'}<small>{skillRowAuthor(item.source)}</small>{/if}</span>
-                {#if item.source === 'official'}<span class="official-rail-stamp" aria-label="Official"><Icon name="verified" size={14} strokeWidth={1.8}/></span>{/if}
+                <span class="options-rail-copy"><span class="skill-name-line"><strong>{skillDisplayName(item.name)}</strong>{#if item.source === 'official'}<span class="official-rail-stamp" aria-label="Official"><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span>{#if item.source !== 'official'}<small>{skillSourceLabel(item.source)}</small>{/if}</span>
               </button></li>
             {:else}<li class="options-empty rail-empty">{loading ? 'Loading skills…' : !query && skills.length === 0 ? 'No skills yet' : 'No skills found'}</li>{/each}
           {:else if mode === 'model'}
@@ -960,7 +961,7 @@
                 <Icon name={(SKILL_ICONS[skill.name] ?? 'book-open') as never} size={18}/>
               {/if}
             </span>
-            <span class="options-title-group"><h3>{skillDisplayName(skill.name)}</h3>{#if skill.source === 'official'}<span class="options-badge official-badge"><Icon name="verified" size={11} strokeWidth={1.8}/><span>Official</span></span>{:else}<span class="options-badge">{skill.source}</span>{/if}</span>
+            <span class="options-title-group"><h3>{skillDisplayName(skill.name)}</h3>{#if skill.source === 'official'}<span class="options-badge official-badge"><Icon name="verified" size={11} strokeWidth={1.8}/><span>Official</span></span>{:else}<span class="options-badge">{skillSourceLabel(skill.source)}</span>{/if}</span>
             {#if skill.editable}<button type="button" class="provider-edit" aria-label="Edit skill" onclick={() => editSkill(skill)}><Icon name="edit" size={14}/></button>{/if}
             <button type="button" class:enabled={skill.enabled} class="chronicle-toggle" role="switch" aria-label="Enable skill" aria-checked={skill.enabled} disabled={integrationSaving} onclick={() => void setSkillEnabled(skill)}><span></span></button>
           </header>
@@ -1075,7 +1076,7 @@
   .options-rail{min-height:0;display:flex;flex-direction:column;gap:6px;padding:0 var(--options-divider-gap) 12px var(--options-content-edge)}.options-search{display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border:1px solid var(--neutral-200);border-radius:9px;background:var(--input-surface);color:var(--neutral-500)}.options-search:focus-within{border-color:var(--neutral-400);background:var(--prompt-surface-active)}.options-search input{min-width:0;flex:1;border:0;background:transparent;color:var(--neutral-950);outline:none;font-size:12.5px}.options-search input::-webkit-search-cancel-button{filter:grayscale(1);opacity:.72;cursor:pointer}.options-search input::-webkit-search-cancel-button:hover{opacity:1}
   .options-rail-list{flex:1;min-height:0;overflow-y:auto;margin:0;padding:6px 0 14px;list-style:none;-webkit-mask-image:linear-gradient(to bottom,transparent,#000 6px,#000 calc(100% - 14px),transparent);mask-image:linear-gradient(to bottom,transparent,#000 6px,#000 calc(100% - 14px),transparent)}.options-rail-list.empty-state{display:flex;align-items:center;justify-content:center;-webkit-mask-image:none;mask-image:none}.options-rail-list li{display:flex}.options-rail-list .rail-empty{justify-content:center;padding:0 8px}.options-rail-row{width:100%;display:flex;align-items:center;gap:10px;margin:2px 0;padding:5px 9px;border:0;border-radius:10px;background:transparent;text-align:left;cursor:pointer}.options-rail-row:hover,.options-rail-row:focus-visible{outline:0;background:var(--neutral-100)}.options-rail-row.selected{background:var(--neutral-200)}
   .options-rail-row.integration-disabled{opacity:.52}.options-rail-row.integration-disabled.selected{opacity:.72}
-  .official-rail-stamp{width:20px;height:26px;display:grid;flex:none;place-items:center;color:var(--neutral-500)}
+  .skill-name-line{min-width:0;display:flex;align-items:center;gap:4px}.skill-name-line strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.official-rail-stamp{width:14px;height:14px;display:grid;flex:none;place-items:center;color:var(--neutral-500)}
   .option-mark{flex:none;width:26px;height:26px;display:grid;place-items:center;border-radius:8px;background:var(--neutral-200);color:var(--neutral-700)}
   /* A product's own icon already carries its shape and ground, so the house
      tile would read as a second, mismatched container behind it. */
