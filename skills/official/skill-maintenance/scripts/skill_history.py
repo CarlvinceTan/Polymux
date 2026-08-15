@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3.14
+#!/usr/bin/env python3
 """Record approved personal-skill deployments in an isolated Git history."""
 
 from __future__ import annotations
@@ -17,11 +17,11 @@ import sys
 import uuid
 
 
-DEFAULT_REPO = Path("/Users/carlvincetan/.codex/skill-history.git")
-DEFAULT_WORKTREES = Path("/Users/carlvincetan/.codex/skill-regression/git-worktrees")
-DEFAULT_CODEX_ROOT = Path("/Users/carlvincetan/.codex/skills")
+DEFAULT_REPO = Path.home() / ".midas" / "skill-history.git"
+DEFAULT_WORKTREES = Path.home() / ".midas" / "skill-maintenance" / "git-worktrees"
+DEFAULT_MIDAS_ROOT = Path.home() / ".midas" / "skills"
 DEFAULT_AGENTS_ROOT = Path("/Users/carlvincetan/.agents/skills")
-DEFAULT_REGRESSION_ROOT = Path("/Users/carlvincetan/.codex/skill-regression")
+DEFAULT_REGRESSION_ROOT = Path.home() / ".midas" / "skill-maintenance"
 GIT = shutil.which("git") or "/usr/bin/git"
 IGNORED_NAMES = {".git", ".DS_Store", "__pycache__", ".esphome"}
 
@@ -34,13 +34,13 @@ class HistoryError(RuntimeError):
 class Config:
     repo: Path
     worktrees: Path
-    codex_root: Path
+    midas_root: Path
     agents_root: Path
     regression_root: Path
 
     @property
     def live_roots(self) -> tuple[Path, Path]:
-        return (self.codex_root, self.agents_root)
+        return (self.midas_root, self.agents_root)
 
 
 def resolved(path: Path) -> Path:
@@ -67,9 +67,9 @@ def git_env() -> dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
-            "GIT_AUTHOR_NAME": "Codex Skill Maintenance",
+            "GIT_AUTHOR_NAME": "Midas Skill Maintenance",
             "GIT_AUTHOR_EMAIL": "skill-maintenance@local.invalid",
-            "GIT_COMMITTER_NAME": "Codex Skill Maintenance",
+            "GIT_COMMITTER_NAME": "Midas Skill Maintenance",
             "GIT_COMMITTER_EMAIL": "skill-maintenance@local.invalid",
         }
     )
@@ -186,7 +186,7 @@ def copy_skill_root(source_root: Path, destination_root: Path) -> int:
 
 def sync_live_to_worktree(config: Config, worktree: Path) -> dict[str, int]:
     return {
-        "codex": copy_skill_root(config.codex_root, worktree / "codex"),
+        "midas": copy_skill_root(config.midas_root, worktree / "midas"),
         "agents": copy_skill_root(config.agents_root, worktree / "agents"),
     }
 
@@ -210,9 +210,9 @@ def legacy_deleted_snapshots(config: Config) -> dict[tuple[str, str], Path]:
         if ":" not in target_id:
             continue
         scope, name = target_id.split(":", 1)
-        if scope not in {"codex", "agents"} or not name:
+        if scope not in {"midas", "agents"} or not name:
             continue
-        live_root = config.codex_root if scope == "codex" else config.agents_root
+        live_root = config.midas_root if scope == "midas" else config.agents_root
         if (live_root / name / "SKILL.md").is_file():
             continue
         snapshot = Path(str(metadata.get("baseline_snapshot", "")))
@@ -459,7 +459,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
     return Config(
         repo=Path(args.repo),
         worktrees=Path(args.worktrees),
-        codex_root=Path(args.codex_root),
+        midas_root=Path(args.midas_root),
         agents_root=Path(args.agents_root),
         regression_root=Path(args.regression_root),
     )
@@ -469,7 +469,7 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--repo", default=str(DEFAULT_REPO))
     root.add_argument("--worktrees", default=str(DEFAULT_WORKTREES))
-    root.add_argument("--codex-root", default=str(DEFAULT_CODEX_ROOT))
+    root.add_argument("--midas-root", default=str(DEFAULT_MIDAS_ROOT))
     root.add_argument("--agents-root", default=str(DEFAULT_AGENTS_ROOT))
     root.add_argument("--regression-root", default=str(DEFAULT_REGRESSION_ROOT))
     commands = root.add_subparsers(dest="command", required=True)

@@ -1,4 +1,19 @@
 <script module lang="ts">
+  import {midasApi} from '../../api/midas';
+
+  /** Site icons for links, asked for once per site and shared by every message
+   * on screen — the same handful of sites recur across a conversation. */
+  const linkFavicons = new Map<string, Promise<string | null>>();
+
+  function linkFavicon(url: string): Promise<string | null> {
+    let pending = linkFavicons.get(url);
+    if (!pending) {
+      pending = midasApi().browser.favicon(url).catch(() => null);
+      linkFavicons.set(url, pending);
+    }
+    return pending;
+  }
+
   export type MessageRole = 'user' | 'assistant';
   export type MessageFeedback = 'up' | 'down' | null;
 
@@ -16,12 +31,16 @@
 
 <script lang="ts">
   import {onDestroy, tick} from 'svelte';
+  import {copyText} from '../../clipboard';
   import {renderMarkdown} from '../../conversation/markdown';
   import Icon from '../shared/Icon.svelte';
   import MessageAction from './MessageAction.svelte';
 
   export let message: MessageData;
   export let streaming = false;
+  /** True when an AgentActivity block is rendered above this message; its
+   * live shimmer row is the working indicator, so the dots stand down. */
+  export let activityVisible = false;
   export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
   export let onFeedback: (id: string, feedback: MessageFeedback) => void = () => {};
   export let onOpenFile: (name: string) => void = () => {};
@@ -115,7 +134,8 @@
   }
 
   async function copyMessage(): Promise<void> {
-    try { await navigator.clipboard.writeText(message.text); } catch {}
+    // The label only flips to Copied once the text is actually on the clipboard.
+    if (!await copyText(message.text)) return;
     copied = true;
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => copied = false, 1400);
@@ -132,8 +152,7 @@
       // Resolved from the block rather than the button's sibling, so the copy
       // action keeps working wherever it sits inside the code block header.
       const code = copy.closest('.markdown-code-block')?.querySelector('pre code')?.textContent ?? '';
-      try { await navigator.clipboard.writeText(code); } catch {}
-      copy.textContent = 'Copied';
+      copy.textContent = await copyText(code) ? 'Copied' : 'Copy failed';
       setTimeout(() => copy.textContent = 'Copy', 1400);
       return;
     }
@@ -148,15 +167,50 @@
 
   function markdownInteractions(node: HTMLElement) {
     const click = (event: MouseEvent) => void interactWithMarkdown(event);
+    // A link shows its globe until the site's own icon actually arrives,
+    // so a missing or broken favicon needs no handling of its own. Load fires
+    // on the image rather than bubbling, so it is caught on the way down.
+    const loaded = (event: Event) => {
+      const image = event.target;
+      if (image instanceof HTMLImageElement && image.dataset.linkFavicon !== undefined) image.classList.add('loaded');
+    };
+    // The markdown carries which site each link icon belongs to, not the icon
+    // itself, so the bytes are asked for here. A streaming message rewrites
+    // its html as it arrives, so new links are picked up as they appear.
+    const fillFavicons = () => {
+      for (const image of node.querySelectorAll<HTMLImageElement>('img[data-link-favicon]')) {
+        const source = image.dataset.linkFavicon;
+        if (!source || image.dataset.faviconAsked !== undefined) continue;
+        image.dataset.faviconAsked = '';
+        void linkFavicon(source).then((dataUrl) => {
+          if (dataUrl) image.src = dataUrl;
+        });
+      }
+    };
+    const observer = new MutationObserver(fillFavicons);
+    observer.observe(node, {childList: true, subtree: true});
+    fillFavicons();
     node.addEventListener('click', click);
-    return {destroy: () => node.removeEventListener('click', click)};
+    node.addEventListener('load', loaded, true);
+    return {destroy: () => {
+      observer.disconnect();
+      node.removeEventListener('click', click);
+      node.removeEventListener('load', loaded, true);
+    }};
   }
 
   function formatMessageTime(value?: string): string {
     if (!value) return '';
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return '';
-    return new Intl.DateTimeFormat(undefined, {hour: 'numeric', minute: '2-digit', hour12: true}).format(date);
+    const time = new Intl.DateTimeFormat(undefined, {hour: 'numeric', minute: '2-digit', hour12: true}).format(date);
+    const startOfDay = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+    const now = new Date();
+    const days = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+    if (days === 0) return time;
+    if (days > 0 && days < 7) return `${new Intl.DateTimeFormat(undefined, {weekday: 'long'}).format(date)} ${time}`;
+    const day = new Intl.DateTimeFormat(undefined, {day: 'numeric', month: 'short', ...(date.getFullYear() === now.getFullYear() ? {} : {year: 'numeric'})}).format(date);
+    return `${day}, ${time}`;
   }
 </script>
 
@@ -187,8 +241,15 @@
           {:else}
             <p>{message.text}</p>
           {/if}
-        {:else}
+        {:else if streaming && !activityVisible}
           <span class="thinking" role="status" aria-label="Assistant is responding"><i></i><i></i><i></i></span>
+        {:else if streaming}
+          <!-- The live activity row above carries the working shimmer; pulse
+               dots beneath it would be a second, redundant indicator. -->
+        {:else}
+          <!-- A stopped or cancelled turn leaves no text behind: say so rather
+               than pulse dots at a run that is already over. -->
+          <p class="message-stopped">Stopped</p>
         {/if}
       </div>
     {/if}

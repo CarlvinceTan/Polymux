@@ -159,6 +159,185 @@ test("executes a tool and continues the model loop", async () => {
   assert.ok(events.some((event) => event.type === "tool.completed"));
 });
 
+test("phases messages and reports work activity for a tool-using run", async () => {
+  const inference = new FakeInference();
+  inference.responses.push(
+    [
+      done(
+        [
+          { type: "text", text: "Checking the file first." },
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "read",
+            arguments: { path: "README.md" },
+          },
+        ],
+        "toolUse",
+      ),
+    ],
+    [done([{ type: "text", text: "All done." }])],
+  );
+  const read: AgentTool = {
+    name: "read",
+    description: "Read a file",
+    parameters: { type: "object" },
+    async execute() {
+      return { content: "contents" };
+    },
+  };
+  let now = 0;
+  const runner = new AgentRunner({ inference, clock: () => (now += 10) });
+  const active = runner.start({
+    runId: "run-phase",
+    model,
+    context: { messages: [{ role: "user", content: "Read it" }] },
+    tools: [read],
+  });
+  const eventsPromise = collect(active.events);
+  const result = await active.result;
+  const events = await eventsPromise;
+
+  const phases = events.flatMap((event) =>
+    event.type === "message.completed" ? [event.phase] : [],
+  );
+  assert.deepEqual(phases, ["commentary", "final"]);
+  assert.equal(result.hadWorkActivity, true);
+  assert.equal(result.lastAgentMessage, "All done.");
+  assert.ok(result.durationMs > 0);
+});
+
+test("a plain reply reports no work activity", async () => {
+  const inference = new FakeInference();
+  inference.responses.push([done([{ type: "text", text: "Just an answer." }])]);
+  const runner = new AgentRunner({ inference });
+  const active = runner.start({
+    runId: "run-no-work",
+    model,
+    context: { messages: [{ role: "user", content: "Hi" }] },
+  });
+  const eventsPromise = collect(active.events);
+  const result = await active.result;
+  const events = await eventsPromise;
+
+  const phases = events.flatMap((event) =>
+    event.type === "message.completed" ? [event.phase] : [],
+  );
+  assert.deepEqual(phases, ["final"]);
+  assert.equal(result.hadWorkActivity, false);
+  assert.equal(result.lastAgentMessage, "Just an answer.");
+});
+
+test("a pre-tool hook can veto a call and the model sees the block", async () => {
+  const inference = new FakeInference();
+  inference.responses.push(
+    [
+      done(
+        [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "write",
+            arguments: { path: "a.txt" },
+          },
+        ],
+        "toolUse",
+      ),
+    ],
+    [done([{ type: "text", text: "Understood" }])],
+  );
+  let executed = 0;
+  const write: AgentTool = {
+    name: "write",
+    description: "Write a file",
+    parameters: { type: "object" },
+    async execute() {
+      executed += 1;
+      return { content: "written" };
+    },
+  };
+  const observed: string[] = [];
+  const runner = new AgentRunner({
+    inference,
+    hooks: {
+      beforeTool: async (call) => ({
+        allow: false,
+        message: `write to ${String((call.arguments as { path?: string }).path)} denied`,
+      }),
+      afterTool: async (call) => {
+        observed.push(call.name);
+      },
+    },
+  });
+  const active = runner.start({
+    runId: "run-hook",
+    model,
+    context: { messages: [{ role: "user", content: "Write it" }] },
+    tools: [write],
+  });
+  const eventsPromise = collect(active.events);
+  const result = await active.result;
+  const events = await eventsPromise;
+
+  assert.equal(result.status, "completed");
+  assert.equal(executed, 0);
+  assert.deepEqual(observed, []);
+  const failed = events.find((event) => event.type === "tool.failed");
+  assert.ok(failed && "error" in failed);
+  assert.equal(failed.error.code, "tool_blocked_by_hook");
+  const toolResult = inference.requests[1]?.messages.at(-1);
+  assert.equal(toolResult?.role, "toolResult");
+  assert.match(JSON.stringify(toolResult), /denied/);
+});
+
+test("post-tool hooks observe completed calls", async () => {
+  const inference = new FakeInference();
+  inference.responses.push(
+    [
+      done(
+        [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "read",
+            arguments: {},
+          },
+        ],
+        "toolUse",
+      ),
+    ],
+    [done([{ type: "text", text: "ok" }])],
+  );
+  const read: AgentTool = {
+    name: "read",
+    description: "Read",
+    parameters: { type: "object" },
+    async execute() {
+      return { content: "contents" };
+    },
+  };
+  const observed: string[] = [];
+  const runner = new AgentRunner({
+    inference,
+    hooks: {
+      afterTool: async (call, result) => {
+        observed.push(`${call.name}:${String(result.content)}`);
+        throw new Error("observer failures never break the run");
+      },
+    },
+  });
+  const active = runner.start({
+    runId: "run-hook-post",
+    model,
+    context: { messages: [{ role: "user", content: "Read" }] },
+    tools: [read],
+  });
+  void collect(active.events);
+  const result = await active.result;
+  assert.equal(result.status, "completed");
+  assert.deepEqual(observed, ["read:contents"]);
+});
+
 test("applies transformed context without mutating durable context", async () => {
   const inference = new FakeInference();
   inference.responses.push([done([{ type: "text", text: "ok" }])]);
@@ -229,6 +408,94 @@ test("supports steering between turns and cancellation", async () => {
     cancelledControl,
   );
   assert.equal((await cancelled.result).status, "cancelled");
+});
+
+test("retries a transient rate limit with backoff before failing", async () => {
+  const inference = new FakeInference();
+  inference.responses.push(
+    [
+      {
+        type: "error",
+        error: {
+          code: "rate_limit",
+          message: "429 Rate limit exceeded",
+          retryable: true,
+        },
+      },
+    ],
+    [
+      {
+        type: "error",
+        error: {
+          code: "rate_limit",
+          message: "429 Rate limit exceeded",
+          retryable: true,
+        },
+      },
+    ],
+    [done([{ type: "text", text: "Recovered" }])],
+  );
+  const active = new AgentRunner({ inference }).start({
+    runId: "run-retry",
+    model,
+    context: { messages: [{ role: "user", content: "Hi" }] },
+  });
+  const result = await active.result;
+
+  assert.equal(result.status, "completed");
+  assert.equal(inference.requests.length, 3);
+  const last = result.context.messages.at(-1) as { content: Array<{type: string; text?: string}> };
+  assert.equal(last.content[0]?.text, "Recovered");
+});
+
+test("fails when retries are exhausted without any response content", async () => {
+  const inference = new FakeInference();
+  for (let index = 0; index < 3; index += 1)
+    inference.responses.push([
+      {
+        type: "error",
+        error: {
+          code: "rate_limit",
+          message: "429 Rate limit exceeded",
+          retryable: true,
+        },
+      },
+    ]);
+  const active = new AgentRunner({ inference }).start({
+    runId: "run-out",
+    model,
+    context: { messages: [{ role: "user", content: "Hi" }] },
+  });
+  const result = await active.result;
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error?.retryable, true);
+  assert.equal(inference.requests.length, 3);
+});
+
+test("does not retry a failure that already emitted content", async () => {
+  const inference = new FakeInference();
+  inference.responses.push([
+    { type: "start", model: modelInfo },
+    { type: "textDelta", index: 0, delta: "Partial" },
+    {
+      type: "error",
+      error: {
+        code: "rate_limit",
+        message: "429 Rate limit exceeded",
+        retryable: true,
+      },
+    },
+  ]);
+  const active = new AgentRunner({ inference }).start({
+    runId: "run-partial",
+    model,
+    context: { messages: [{ role: "user", content: "Hi" }] },
+  });
+  const result = await active.result;
+
+  assert.equal(result.status, "failed");
+  assert.equal(inference.requests.length, 1);
 });
 
 test("bounds repeated tool turns", async () => {

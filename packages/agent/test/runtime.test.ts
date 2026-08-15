@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -106,6 +106,64 @@ test("treats slash-prefixed text as an ordinary chat message", async () => {
   }
 });
 
+test("persists assistant messages tagged with their run phase", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push(
+      [
+        {
+          type: "done",
+          reason: "toolUse",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Let me check that." },
+              { type: "toolCall", id: "call-1", name: "probe", arguments: {} },
+            ],
+            usage,
+            stopReason: "toolUse",
+          },
+        },
+      ],
+      [answer("Here is the answer.")],
+    );
+    const tools = new ToolRegistry();
+    tools.register({
+      name: "probe",
+      description: "Probe",
+      parameters: { type: "object" },
+      async execute() {
+        return { content: "ok" };
+      },
+    });
+    const agent = new MidasAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools,
+      model,
+      compaction: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "check something",
+      includeSubagents: false,
+    }).result;
+
+    const assistants = storage
+      .listMessages("conversation")
+      .filter((message) => message.role === "assistant");
+    assert.equal(assistants.length, 2);
+    assert.deepEqual(assistants[0]?.metadata, { phase: "commentary" });
+    assert.deepEqual(assistants[1]?.metadata, { phase: "final" });
+  } finally {
+    storage.close();
+  }
+});
+
 test("creates a durable goal only from structured run metadata", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
@@ -119,6 +177,7 @@ test("creates a durable goal only from structured run metadata", async () => {
       tools: new ToolRegistry(),
       model,
       compaction: { enabled: false },
+      goalLoop: { enabled: false },
     });
 
     await agent.start({
@@ -127,6 +186,7 @@ test("creates a durable goal only from structured run metadata", async () => {
       asGoal: true,
       includeSubagents: false,
     }).result;
+    await agent.settleGoalWork();
 
     assert.equal(
       storage.getGoal("conversation")?.objective,
@@ -236,11 +296,13 @@ test("compaction reuses its summary while the compacted context still fits", asy
       { role: "user" as const, content: "a".repeat(400) },
       { role: "user" as const, content: "recent" },
     ];
+    let compactionReports = 0;
     const first = await manager.transform(
       "conversation",
       model,
       { messages },
       new AbortController().signal,
+      async () => { compactionReports += 1; },
     );
     const second = await manager.transform(
       "conversation",
@@ -250,17 +312,261 @@ test("compaction reuses its summary while the compacted context still fits", asy
     );
 
     assert.equal(inference.requests.length, 1);
-    assert.match(
-      (first.messages[0] as { content: string }).content,
-      /durable summary/,
-    );
-    assert.match(
-      (second.messages[0] as { content: string }).content,
-      /durable summary/,
+    assert.equal(compactionReports, 1);
+    assert.match(first.systemPrompt ?? "", /durable summary/);
+    assert.match(second.systemPrompt ?? "", /durable summary/);
+    // The summary is prior context, never a turn attributed to the user.
+    assert.ok(
+      !JSON.stringify(first.messages).includes("durable summary"),
+      "summary must not be injected as a message",
     );
     assert.equal(
       storage.getLatestCompaction("conversation")?.summary,
       "durable summary",
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("a long conversation is compacted before the model ever sees it", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    for (let index = 0; index < 4; index += 1)
+      storage.appendMessage({
+        id: `old-${index}`,
+        conversationId: "conversation",
+        role: "user",
+        content: `earlier turn ${index} ${"detail ".repeat(60)}`,
+      });
+    const inference = new FakeInference();
+    inference.responses.push([answer("compacted earlier context")]);
+    inference.responses.push([answer("answer")]);
+    const agent = new MidasAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: true, reserveTokens: 20, keepRecentTokens: 40 },
+      goalLoop: { enabled: false },
+      memoryConsolidation: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "next question",
+      includeSubagents: false,
+    }).result;
+    await agent.settleGoalWork();
+
+    // First request is the compaction pass, second is the turn itself.
+    assert.equal(inference.requests.length, 2);
+    const turn = inference.requests[1];
+    assert.match(turn?.systemPrompt ?? "", /## Earlier conversation/);
+    assert.match(turn?.systemPrompt ?? "", /compacted earlier context/);
+    assert.ok(
+      !JSON.stringify(turn?.messages).includes("earlier turn 0"),
+      "compacted turns must not still be in the message list",
+    );
+    assert.equal(
+      storage.getLatestCompaction("conversation")?.summary,
+      "compacted earlier context",
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("the agent is given memory tools and its writes land in the vault", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const memory = testMemory();
+    const inference = new FakeInference();
+    inference.responses.push(
+      [
+        {
+          type: "done",
+          reason: "toolUse",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "call-1",
+                name: "remember",
+                arguments: {
+                  content: "Ships Rust and TypeScript in one monorepo",
+                  kind: "profile",
+                },
+              },
+            ],
+            usage,
+            stopReason: "toolUse",
+          },
+        },
+      ],
+      [answer("Saved.")],
+    );
+    const agent = new MidasAgent({
+      inference,
+      storage,
+      memory,
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+      goalLoop: { enabled: false },
+      memoryConsolidation: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "remember that for me",
+      includeSubagents: false,
+    }).result;
+    await agent.settleGoalWork();
+
+    // The tool has to be offered before it can be called.
+    const offered = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    for (const expected of ["remember", "forget", "search_history", "read_conversation"])
+      assert.ok(offered.includes(expected), `${expected} must be offered to the model`);
+    const saved = memory.userMemories();
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0]?.kind, "profile");
+    assert.match(saved[0]?.content ?? "", /Rust and TypeScript/);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a completed run drives memory consolidation through the runtime", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const memory = testMemory();
+    for (let index = 0; index < 4; index += 1)
+      memory.remember(`Durable preference ${index}`, { kind: "preference" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("answer")]);
+    inference.responses.push([
+      answer("## User Profile\n\nConsolidated briefing."),
+    ]);
+    const agent = new MidasAgent({
+      inference,
+      storage,
+      memory,
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+      goalLoop: { enabled: false },
+      memoryConsolidation: { minimumPending: 3 },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "hello",
+      includeSubagents: false,
+    }).result;
+    await agent.settleGoalWork();
+
+    assert.match(
+      readFileSync(memory.summaryPath, "utf8"),
+      /Consolidated briefing/,
+    );
+    assert.equal(memory.pendingMemories().length, 0);
+    assert.equal(memory.status().consolidationError, null);
+    assert.ok(memory.status().consolidatedAt);
+  } finally {
+    storage.close();
+  }
+});
+
+test("compaction re-summarizes when the compacted history changed underneath it", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("first summary")]);
+    inference.responses.push([answer("second summary")]);
+    const manager = new CompactionManager(inference, storage, {
+      reserveTokens: 20,
+      keepRecentTokens: 10,
+    });
+    const signal = new AbortController().signal;
+
+    await manager.transform(
+      "conversation",
+      model,
+      {
+        messages: [
+          { role: "user", content: "a".repeat(400) },
+          { role: "user", content: "recent" },
+        ],
+      },
+      signal,
+    );
+    // Same message count, different content in the compacted prefix.
+    const edited = await manager.transform(
+      "conversation",
+      model,
+      {
+        messages: [
+          { role: "user", content: "b".repeat(800) },
+          { role: "user", content: "recent" },
+          { role: "user", content: "newer" },
+        ],
+      },
+      signal,
+    );
+
+    assert.equal(inference.requests.length, 2, "edited history must re-summarize");
+    assert.match(edited.systemPrompt ?? "", /second summary/);
+    assert.doesNotMatch(edited.systemPrompt ?? "", /first summary/);
+  } finally {
+    storage.close();
+  }
+});
+
+test("compaction renders images as placeholders instead of inlining base64", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("summary")]);
+    const manager = new CompactionManager(inference, storage, {
+      reserveTokens: 20,
+      keepRecentTokens: 10,
+    });
+    const payload = "A".repeat(50_000);
+
+    await manager.transform(
+      "conversation",
+      model,
+      {
+        messages: [
+          {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "screenshot",
+            content: [{ type: "image", data: payload, mimeType: "image/png" }],
+            isError: false,
+          },
+          { role: "user", content: "recent" },
+        ],
+      },
+      new AbortController().signal,
+    );
+
+    const sent = inference.requests[0]?.messages[0];
+    const rendered = typeof sent?.content === "string" ? sent.content : "";
+    assert.ok(!rendered.includes(payload), "base64 must never be inlined");
+    assert.match(rendered, /\[image omitted: image\/png\]/);
+    assert.match(rendered, /## Tool result: screenshot/);
+    assert.ok(
+      rendered.length < 500,
+      `transcript should stay small, got ${rendered.length} characters`,
     );
   } finally {
     storage.close();
@@ -297,4 +603,158 @@ test("task tool adds no internal concurrency cap", async () => {
   assert.equal(maximum, 12);
   release();
   await Promise.all(calls);
+});
+
+test("goal loop keeps running until the judge calls the objective done", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    // Run, judge, continuation run, judge.
+    inference.responses.push(
+      [answer("started the research")],
+      [answer('{"verdict":"continue","reason":"No findings reported yet."}')],
+      [answer("here are the findings, goal met")],
+      [answer('{"verdict":"done","reason":"Findings delivered."}')],
+    );
+    const agent = new MidasAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Research a mechatronics project",
+      asGoal: true,
+      includeSubagents: false,
+    }).result;
+    await agent.settleGoalWork();
+
+    const goal = storage.getGoal("conversation");
+    assert.equal(goal?.status, "completed");
+    assert.equal(agent.goalLoop.turnsUsed("conversation"), 0);
+    // Two model turns plus one judge call each.
+    assert.equal(inference.requests.length, 4);
+    const continuation = storage
+      .listMessages("conversation")
+      .find((message) => (message.metadata as Record<string, unknown>).goalContinuation === true);
+    assert.match(
+      String(continuation?.content),
+      /No findings reported yet/,
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("goal loop pauses itself once the turn budget is spent", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    for (let index = 0; index < 8; index += 1)
+      inference.responses.push(
+        [answer("still working")],
+        [answer('{"verdict":"continue","reason":"Not done."}')],
+      );
+    const agent = new MidasAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+      goalLoop: { maxTurns: 2 },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Keep going forever",
+      asGoal: true,
+      includeSubagents: false,
+    }).result;
+    await agent.settleGoalWork();
+
+    assert.equal(storage.getGoal("conversation")?.status, "paused");
+    // Three model turns: the initial one and two continuations. Only the first
+    // two are judged — the third hits the spent budget and pauses without
+    // spending a judge call.
+    assert.equal(inference.requests.length, 5);
+  } finally {
+    storage.close();
+  }
+});
+
+test("an unreadable verdict pauses the goal instead of looping blindly", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push(
+      [answer("did some work")],
+      [answer("I think it is probably fine?")],
+    );
+    const agent = new MidasAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Do the thing",
+      asGoal: true,
+      includeSubagents: false,
+    }).result;
+    await agent.settleGoalWork();
+
+    assert.equal(storage.getGoal("conversation")?.status, "paused");
+    assert.equal(inference.requests.length, 2);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a paused goal is not driven and a user turn resets the budget", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("acknowledged")]);
+    const agent = new MidasAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+    });
+    storage.createGoal({
+      id: "goal",
+      conversationId: "conversation",
+      objective: "Paused work",
+      status: "paused",
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Just a question",
+      includeSubagents: false,
+    }).result;
+    await agent.settleGoalWork();
+
+    assert.equal(storage.getGoal("conversation")?.status, "paused");
+    // No judge call: a paused goal does not drive the loop.
+    assert.equal(inference.requests.length, 1);
+    assert.equal(agent.goalLoop.turnsUsed("conversation"), 0);
+  } finally {
+    storage.close();
+  }
 });

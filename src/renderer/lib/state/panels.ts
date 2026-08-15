@@ -52,11 +52,3 @@ export function conversationPanelState(state: PanelState, context: ConversationP
 export function summaryWasDismissed(previous: PanelState, next: PanelState): boolean {
   return previous.mode === 'summary' && next.mode !== 'summary';
 }
-
-/** Reads the shared motion token so JS timers cannot drift from the stylesheet. */
-export function drawerMotionMs(): number {
-  if (typeof getComputedStyle !== 'function') return 440;
-  const raw = getComputedStyle(document.documentElement).getPropertyValue('--drawer-motion-duration').trim();
-  const value = raw.endsWith('ms') ? Number.parseFloat(raw) : Number.parseFloat(raw) * 1000;
-  return Number.isFinite(value) && value >= 0 ? value : 440;
-}

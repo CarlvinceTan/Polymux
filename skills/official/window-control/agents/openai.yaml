@@ -1,5 +1,5 @@
 interface:
-  display_name: "Window Control"
+  display_name: "GUI Control"
   short_description: "Control exact windows while preserving your active app"
   icon_small: "./assets/window-control.svg"
   icon_large: "./assets/window-control.svg"

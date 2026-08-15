@@ -1,0 +1,1478 @@
+<script lang="ts">
+  import {untrack} from 'svelte';
+  import type {
+    CommsLoginStepDto,
+    CommsPlatform,
+    CommsStatusDto,
+    MidasApi,
+    SystemPermissionKind,
+  } from '@midas/protocol';
+  import {COMMS_EMAIL_PRESETS, permissionPrompts} from '@midas/protocol';
+  import {readableError} from '../../errors';
+  import {qrSvgPath} from '../../qr';
+  import {bridgeLogo, mailLogo} from '../../options/platformBrands';
+  import Icon from '../shared/Icon.svelte';
+
+  interface Props {
+    api: MidasApi;
+    onDone: (reach: {messaging: string[]; mail: string[]}) => void;
+    onSkip: () => void;
+    /**
+     * False while this step is parked off screen. Every step of setup is
+     * mounted at once so the deck can pan between them, so the ring has to be
+     * told when it is actually being looked at: its entrance is worth nothing
+     * played to an empty room, and neither is a rAF loop.
+     */
+    active?: boolean;
+  }
+
+  const {api, onDone, onSkip, active: onCamera = true}: Props = $props();
+
+  /**
+   * One seat on the arc. Messaging and mail are different machinery behind the
+   * scenes, but to the person setting Midas up they are the same decision —
+   * "give it this account" — so they share one ring.
+   */
+  interface Seat {
+    key: string;
+    kind: 'messaging' | 'mail';
+    name: string;
+    /** The company's own logo, or null when we ship no artwork for it. */
+    logo: string | null;
+    /** Stand-in for a missing brand mark. */
+    initial: string;
+    /** Set for messaging seats only. */
+    platform?: CommsPlatform;
+    /** Set for mail seats only. */
+    preset?: string;
+    imapHost?: string;
+  }
+
+  let status = $state<CommsStatusDto | null>(null);
+  let busy = $state('');
+  let error = $state('');
+  /** The seat whose panel is open, if any. */
+  let open = $state<string>('');
+  /** The seat under the pointer or keyboard focus. */
+  let hovered = $state<string>('');
+  let hoverRelease: ReturnType<typeof setTimeout> | undefined;
+
+  /** Points the panel at a seat, cancelling any release already scheduled. */
+  function hoverOn(key: string): void {
+    clearTimeout(hoverRelease);
+    hovered = key;
+    // Hovering is the earliest honest signal that this platform is wanted, so
+    // its bridge starts now rather than on the click. A bridge takes well under
+    // a tenth of a second to answer, and spending that during the reach for the
+    // seat means the panel has its login methods before the click lands.
+    void woken(seatsByKey.find((seat) => seat.key === key)?.platform);
+  }
+
+  /**
+   * Platforms already asked for this session. A bridge only has to be started
+   * once, and hovering along the ring must not re-ask for every seat the
+   * pointer crosses.
+   */
+  const wokenPlatforms = new Set<CommsPlatform>();
+
+  async function woken(platform: CommsPlatform | undefined): Promise<void> {
+    if (!platform || wokenPlatforms.has(platform)) return;
+    wokenPlatforms.add(platform);
+    const next = await api.comms.wake(platform).catch((): null => null);
+    if (next) status = next;
+  }
+
+  /**
+   * Fades a scroller's top and bottom edges so it reads as having more to see.
+   * The fade only appears on the side that actually has more: laid over the
+   * first row when nothing is above it, it stops being a hint and just makes
+   * that row look dimmed.
+   *
+   * Written to custom properties rather than classes because the component's
+   * CSS is scoped — a class added from script has no hash on it and the rule
+   * would be compiled away as unused.
+   */
+  function fadeEdges(node: HTMLElement, _content: string | number) {
+    const update = (): void => {
+      const room = node.scrollHeight - node.clientHeight;
+      // Sub-pixel scroll positions never land exactly on the ends.
+      node.style.setProperty('--fade-top', room > 1 && node.scrollTop > 1 ? '1' : '0');
+      node.style.setProperty(
+        '--fade-bottom',
+        room > 1 && node.scrollTop < room - 1 ? '1' : '0',
+      );
+    };
+    update();
+    node.addEventListener('scroll', update, {passive: true});
+    // Catches the panel being resized; the `update` below catches content
+    // arriving, which does not resize a scroller already at its cap.
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return {
+      update: () => requestAnimationFrame(update),
+      destroy: () => {
+        node.removeEventListener('scroll', update);
+        observer.disconnect();
+      },
+    };
+  }
+
+  /**
+   * Hands the panel back once the pointer has actually left — not the instant
+   * it crosses a seat's edge. Reaching the panel's button means travelling
+   * over the gap between the ring and the disc, and a panel that closed on the
+   * way would take the button with it. Entering the panel cancels the release.
+   */
+  function hoverOff(): void {
+    clearTimeout(hoverRelease);
+    hoverRelease = setTimeout(() => (hovered = ''), 180);
+  }
+
+  let step = $state<CommsLoginStepDto | null>(null);
+  let linking = $state<CommsPlatform | ''>('');
+  /** A grant is being asked for, so its button reads as busy rather than idle. */
+  let granting = $state(false);
+  let values = $state<Record<string, string>>({});
+  let stepError = $state('');
+
+  let email = $state('');
+  let password = $state('');
+  /** Values for a bridge's own configuration, e.g. Telegram's api_id pair. */
+  let setupValues = $state<Record<string, string>>({});
+  /** Which of the platform's login methods is on screen. */
+  let activeFlow = $state('');
+  /** Only asked for on the custom seat, where no preset can fill them in. */
+  let imapHost = $state('');
+  let smtpHost = $state('');
+
+  const hub = $derived(status?.hub ?? null);
+  const connected = $derived(hub?.status === 'signed-in');
+  /**
+   * Every platform the hub knows about, in the order the catalogue lists them.
+   * Nothing is filtered out: before the hub starts, the backend reports the
+   * whole fleet as `unreachable`, and hiding those would leave the ring empty
+   * on exactly the screen whose job is to show what the hub covers. A seat
+   * that cannot be linked yet says so when it is opened.
+   */
+  const bridges = $derived(status?.bridges ?? []);
+  const mailTooling = $derived(status?.email.tooling ?? null);
+  const mailAccounts = $derived(status?.email.accounts ?? []);
+  /**
+   * Short seat names. The preset labels carry their alternates ("Gmail /
+   * Google Workspace", "iCloud Mail") which read as clutter next to a logo,
+   * and "custom" is any other IMAP server — a mailbox, not a brand.
+   */
+  const MAIL_NAMES: Record<string, string> = {
+    gmail: 'Gmail',
+    outlook: 'Outlook',
+    icloud: 'iCloud',
+    lark: 'Lark',
+    fastmail: 'Fastmail',
+    custom: 'Mail',
+  };
+  const mailPresets = $derived(COMMS_EMAIL_PRESETS);
+
+  const seats = $derived<Seat[]>([
+    ...bridges.map((bridge) => ({
+      key: `chat:${bridge.platform}`,
+      kind: 'messaging' as const,
+      name: bridge.name,
+      logo: bridgeLogo(bridge.platform),
+      initial: bridge.name.trim().charAt(0).toUpperCase(),
+      platform: bridge.platform,
+    })),
+    // One seat, because mail is the platform. Gmail, Lark and the rest are
+    // providers of it, not networks of their own: what Midas connects to is
+    // IMAP either way, so a seat each would put five logos on the ring for one
+    // capability — and file a Lark-hosted mailbox under "Lark" as though the
+    // messaging side had been linked, which it has not.
+    {
+      key: 'mail',
+      kind: 'mail' as const,
+      name: 'Mail',
+      logo: mailLogo('custom'),
+      initial: 'M',
+    },
+  ]);
+
+  /**
+   * Keyed by platform, so a backend that reported the same one twice would
+   * otherwise take the whole ring down with a duplicate-key error. Setup is
+   * the worst place to be brittle about a status payload.
+   */
+  const seatsByKey = $derived([...new Map(seats.map((seat) => [seat.key, seat])).values()]);
+
+  /** The seat a running login belongs to, if any. */
+  const flowKey = $derived(
+    linking ? (seatsByKey.find((seat) => seat.platform === linking)?.key ?? '') : '',
+  );
+  /**
+   * Which seat the panel is showing. A chosen seat holds it until another is
+   * chosen: once you are reading a QR or filling in a field, the pointer
+   * wandering across the ring — on its way to that very field — must not swap
+   * the panel out from under you. Hovering only leads while nothing is chosen,
+   * where it is the fastest way to read down the ring.
+   */
+  const activeKey = $derived(open || (step && flowKey ? flowKey : hovered));
+  const active = $derived(seatsByKey.find((seat) => seat.key === activeKey) ?? null);
+  const activeBridge = $derived(
+    active?.platform ? (bridges.find((bridge) => bridge.platform === active.platform) ?? null) : null,
+  );
+  /**
+   * Which provider the add-mailbox form is filling in for. It used to be
+   * whichever seat you clicked; with one mail seat it is a choice inside the
+   * form, which is where it belongs — it only ever decided which server names
+   * to prefill.
+   */
+  let mailPreset = $state<string>(COMMS_EMAIL_PRESETS[0].value);
+  const activePreset = $derived(
+    COMMS_EMAIL_PRESETS.find((item) => item.value === mailPreset) ?? COMMS_EMAIL_PRESETS[0],
+  );
+
+  /** Linked accounts on the shown platform. Several is normal, not an edge. */
+  const activeAccounts = $derived(activeBridge?.accounts ?? []);
+  /** Mailboxes already saved against the shown provider, matched by server. */
+  /**
+   * Every saved mailbox, since they all live under the one seat now. Matching
+   * them to a seat by IMAP host also meant a mailbox on a server no preset
+   * names — the whole point of "Other" — matched nothing and never appeared.
+   */
+  const activeMailboxes = $derived(active?.kind === 'mail' ? mailAccounts : []);
+  /** Set while adding one more account to a platform that already has some. */
+  let adding = $state('');
+  /** A bridge that cannot even start until its own credentials are recorded. */
+  const needsSetup = $derived(
+    Boolean(activeBridge?.setup && !activeBridge.setup.configured),
+  );
+  /**
+   * Scanning a code beats typing a number, so that is what a platform opens
+   * on when it offers both. The rest stay one click away rather than hidden:
+   * QR pairing fails often enough — no phone to hand, a desktop-only account —
+   * that the alternative has to be visible at the moment it is needed.
+   */
+  function preferredFlow(flows: {id: string; name: string}[]): string | null {
+    const qr = flows.find(
+      (flow) => flow.id === 'qr' || /\bqr\b/i.test(flow.name),
+    );
+    return (qr ?? flows[0])?.id ?? null;
+  }
+
+  /**
+   * Whether the step on screen belongs to the seat being shown. The panel
+   * follows the pointer, but a running flow belongs to one platform: without
+   * this, hovering a neighbour would show it another network's QR code.
+   */
+  const flowHere = $derived(Boolean(active?.platform && linking === active.platform));
+  /** Ready for the explicit "Log in" button: reachable, idle, and loggable. */
+  const canLogin = $derived(
+    connected &&
+      !(flowHere && step) &&
+      !needsSetup &&
+      activeBridge !== null &&
+      activeBridge.flows.length > 0,
+  );
+
+  const setupReady = $derived(
+    Boolean(
+      activeBridge?.setup?.fields.every((field) => (setupValues[field.id] ?? '').trim() !== ''),
+    ),
+  );
+  const qr = $derived(
+    step?.type === 'display_and_wait' && step.display === 'qr' && step.data
+      ? qrSvgPath(step.data)
+      : null,
+  );
+  /**
+   * Whether a `user_input` step is worth submitting: every field filled, and
+   * matching the pattern the bridge gave for it. Submitting a value the bridge
+   * already told us the shape of only round-trips to the same error.
+   */
+  const inputReady = $derived(
+    step?.type === 'user_input' &&
+      step.fields.every((field) => {
+        const value = (values[field.id] ?? '').trim();
+        if (value === '') return false;
+        if (!field.pattern) return true;
+        try {
+          return new RegExp(field.pattern).test(value);
+        } catch {
+          // The bridge's regex dialect may not be ours; let the bridge judge.
+          return true;
+        }
+      }),
+  );
+  /** As many logos as read as a hand rather than a list; the rest are a count. */
+  const stackedSeats = $derived(seatsByKey.slice(0, 7));
+  const linkedNames = $derived(
+    bridges.filter((bridge) => bridge.state === 'connected').map((bridge) => bridge.name),
+  );
+
+  /* ---- The ring ------------------------------------------------------- */
+
+  let vw = $state(1280);
+  let vh = $state(800);
+  /**
+   * This step's own screen, which is taller than the window: the deck gives the
+   * hub room above and below so the whole disc fits inside it uncut. The ring
+   * is centred on that screen, while its size still comes from the window —
+   * the camera parks on this screen's middle, so the two coincide in the only
+   * frame that matters.
+   */
+  let stageH = $state(0);
+  /**
+   * Floored. A window reports zero size while it is being created or restored,
+   * and the binding writes that through; without a floor the arc collapses to
+   * its minimum radius and every seat piles up on the centre line.
+   */
+  const winW = $derived(Math.max(vw, 900));
+  const winH = $derived(Math.max(vh, 520));
+
+  /**
+   * Logos ride their own circle, concentric with the visible one and a set
+   * distance outside it. Every logo's centre sits on that circle — including
+   * the chosen one, which grows about its centre rather than off the line.
+   */
+  const RING_GAP = 52;
+  /** Widest a seat is allowed to get, when the fleet is small enough. */
+  const MAX_SEAT = 53;
+  const MIN_SEAT = 36;
+  /** Clear air between neighbouring discs, held constant as the fleet grows. */
+  const SEAT_GAP = 19;
+  /** How far apart seats may drift when there are few of them. */
+  const MAX_PITCH = 96;
+  /**
+   * How much opacity a seat gives up between the centre line and the window
+   * edge. Deliberately tiny: this is depth, not a vignette — a seat clipped by
+   * the frame must still look like a seat that carried on, not one that faded
+   * out because the ring ended.
+   */
+  const EDGE_FADE = 0.22;
+
+  /** Just over half the window's height: enough for the arc to leave through
+   *  the top and bottom edges, tight enough to curve visibly on the way. */
+  const radius = $derived(Math.max(winH * 0.62, 320));
+  /** The arc's left-most point. The floor keeps the ring clear of the copy. */
+  const arcLeft = $derived(Math.max(winW * 0.52, 430));
+  const centreX = $derived(arcLeft + radius);
+  const seatRadius = $derived(radius + RING_GAP);
+  /** The disc's centre line, measured down this step's screen. */
+  const centreY = $derived((stageH || winH) / 2);
+  /**
+   * The middle slot is the one on the window's horizontal centre line, and the
+   * arc is measured outwards from it in both directions. With an even number
+   * of seats one side carries one more than the other — which is right: the
+   * chosen seat has to sit dead centre, not half a step off it.
+   */
+  const middle = $derived(Math.floor((seatsByKey.length - 1) / 2));
+  /**
+   * Spacing is fixed, not fitted: the ring is a carousel, so it does not owe
+   * the window a view of every platform at once. Seats sit a constant distance
+   * apart and the ones past the top and bottom edges simply wait their turn,
+   * instead of the whole fleet crowding together to stay on screen.
+   *
+   * Stretched, if a short fleet needs it, until the whole run of seats is
+   * longer than the window is tall. That is what keeps the illusion honest:
+   * the point where the last seat jumps back to the head of the queue then
+   * always falls outside the window, so what is on screen is only ever a
+   * length of ring turning past — never a seat blinking out of existence.
+   */
+  const pitch = $derived(
+    Math.max(MAX_PITCH, (winH + 2 * MAX_SEAT) / Math.max(seatsByKey.length, 1)),
+  );
+  /** Degrees between neighbouring slots. */
+  const stepAngle = $derived((pitch / seatRadius) * (180 / Math.PI));
+  /**
+   * The disc is sized from the room a seat actually has, not fixed: the window
+   * only holds so much arc, so a long fleet has to give ground on diameter
+   * rather than on the air between neighbours. Spacing then reads the same
+   * whether the hub carries six platforms or sixteen.
+   */
+  const seatSize = $derived(
+    Math.round(Math.max(MIN_SEAT, Math.min(MAX_SEAT, pitch - SEAT_GAP))),
+  );
+
+  /**
+   * Where the ring starts its entrance, in slots behind its settled position.
+   * A couple of seats is enough to read as a wheel that was already turning.
+   */
+  const ROLL_FROM = -2.4;
+
+  /**
+   * The ring turns as one body: a single rotation value, in slots, drives
+   * every seat, so they all sweep the arc at the same angular speed and can
+   * never overlap. A seat's virtual slot is its natural index plus the
+   * rotation, wrapped around the seat count.
+   */
+  let rot = $state(ROLL_FROM);
+  let anim: number | null = null;
+
+  /**
+   * Slots per second the ring turns on its own. Slow enough that it reads as
+   * the thing being alive rather than as a carousel demanding to be watched.
+   */
+  const DRIFT_RATE = 0.14;
+  /**
+   * The ring turns by itself whenever no seat is open. A click stops it — the
+   * seat is being read, and a panel whose subject slides away is unusable —
+   * and closing that seat hands the ring back to itself. Hover alone does not
+   * stop it: a pointer crossing the arc on its way somewhere else is not a
+   * decision, and halting for that would make the ring feel skittish.
+   */
+  /**
+   * The ring arrives already turning, a couple of seats back from where it
+   * settles, so the step opens on a wheel rolling to a stop rather than on a
+   * diagram being switched on. It is the same motion the drift then carries
+   * on, which is what ties the entrance to the thing itself.
+   */
+  let rolling = $state(true);
+
+  $effect(() => {
+    if (!onCamera || !rolling) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      rot = 0;
+      rolling = false;
+      return;
+    }
+    const started = performance.now();
+    const duration = 1000;
+    let frame: number | null = requestAnimationFrame(function tick(now: number): void {
+      const t = Math.min(1, (now - started) / duration);
+      // Eased out hard: most of the turn is spent in the first third, so it
+      // reads as momentum running out rather than a slider being dragged.
+      rot = ROLL_FROM * (1 - t) ** 3;
+      if (t < 1) frame = requestAnimationFrame(tick);
+      else {
+        frame = null;
+        rot = 0;
+        rolling = false;
+      }
+    });
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  });
+
+  const drifting = $derived(onCamera && open === '' && !rolling);
+  let drift: number | null = null;
+
+  $effect(() => {
+    if (!drifting) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // `from` is a plain local, not a read of `rot`: writing the state this
+    // effect also read would re-run it every frame.
+    const from = untrack(() => rot);
+    // A rotate-to-centre still in flight would be writing `rot` too, and the
+    // two loops would fight over it frame by frame.
+    if (anim !== null) {
+      cancelAnimationFrame(anim);
+      anim = null;
+    }
+    const started = performance.now();
+    const frame = (now: number): void => {
+      rot = from + ((now - started) / 1000) * DRIFT_RATE;
+      drift = requestAnimationFrame(frame);
+    };
+    drift = requestAnimationFrame(frame);
+    return () => {
+      if (drift !== null) cancelAnimationFrame(drift);
+      drift = null;
+    };
+  });
+
+  /**
+   * Position and fade for the seat at natural index `index`. The last unit of
+   * the wrap — between the bottom slot and the top one — is off screen: the
+   * seat carries on past the bottom while fading out, then drops in from just
+   * above the top while fading back in.
+   */
+  function seatPose(index: number): string {
+    const count = seatsByKey.length;
+    const v = count < 2 ? 0 : (((index + rot) % count) + count) % count;
+    // Past the last slot the seat has left the bottom of the window; it is
+    // moved to the head of the queue, above the top edge, where `pitch`
+    // guarantees there is nothing to see. No fade: a seat dissolving at the
+    // edge would say the ring stops there, and it does not.
+    const slot = v > count - 0.5 ? v - count : v;
+    // Angle 0 is the arc's left-most point, which is the window's vertical
+    // centre — so the seat in the middle slot is exactly centred.
+    const radians = ((slot - middle) * stepAngle * Math.PI) / 180;
+    const top = centreY + seatRadius * Math.sin(radians);
+    // A very slight lift towards the centre line, spread evenly over the whole
+    // half-height rather than banked up at the edge. Nothing disappears — the
+    // seat at the frame is still nearly solid — it just gives the ring some
+    // depth, so the middle of the arc is the part being offered.
+    const away = Math.min(1, Math.abs(top - centreY) / (winH / 2));
+    return `left:${centreX - seatRadius * Math.cos(radians)}px;top:${top}px;--fade:${(1 - EDGE_FADE * away).toFixed(3)}`;
+  }
+
+  /** Turn the ring, the short way round, until `key` sits dead centre. */
+  function rotateTo(key: string): void {
+    const count = seatsByKey.length;
+    const index = seatsByKey.findIndex((item) => item.key === key);
+    if (count < 2 || index < 0) return;
+    const v = (((index + rot) % count) + count) % count;
+    let delta = v - middle;
+    if (delta > count / 2) delta -= count;
+    if (delta < -count / 2) delta += count;
+    if (delta === 0) return;
+
+    const target = rot - delta;
+    if (anim !== null) cancelAnimationFrame(anim);
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      rot = ((target % count) + count) % count;
+      return;
+    }
+    // Time scales with distance, so every turn moves at about the same speed.
+    const duration = Math.min(760, Math.max(300, Math.abs(delta) * 120));
+    const from = rot;
+    const started = performance.now();
+    const ease = (t: number) => (t < 0.5 ? 2 * t * t : 1 - (2 - 2 * t) ** 2 / 2);
+    const frame = (now: number): void => {
+      const t = Math.min(1, (now - started) / duration);
+      rot = from + (target - from) * ease(t);
+      if (t < 1) anim = requestAnimationFrame(frame);
+      else {
+        rot = ((target % count) + count) % count;
+        anim = null;
+      }
+    };
+    anim = requestAnimationFrame(frame);
+  }
+
+  $effect(() => () => {
+    if (anim !== null) cancelAnimationFrame(anim);
+  });
+
+  $effect(() => {
+    void api.comms
+      .status()
+      .then((next) => {
+        status = next;
+      })
+      .catch((cause: unknown) => {
+        error = readableError(cause);
+      });
+    // A grant given in System Settings comes back with nothing to announce it,
+    // and a bridge held back by one starts the moment it is given — so coming
+    // back to the window is when to ask the fleet again.
+    const recheck = (): void => {
+      void api.comms.refresh().then(
+        (next) => {
+          status = next;
+        },
+        () => {},
+      );
+    };
+    window.addEventListener('focus', recheck);
+    return () => window.removeEventListener('focus', recheck);
+  });
+
+  async function connect(): Promise<void> {
+    busy = 'connect';
+    error = '';
+    try {
+      status = await api.comms.connect();
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  function choose(target: Seat): void {
+    rotateTo(target.key);
+    // Choosing is also pointing at it. A pointer normally hovers before it
+    // clicks, but a keyboard or a programmatic click does not, and the panel
+    // follows what is hovered — without this it would show the seat the
+    // pointer last passed over instead of the one just chosen.
+    hoverOn(target.key);
+    if (open === target.key) {
+      // Same seat again: fold it back into the carousel. Any flow it had
+      // running goes with it — dismissing the panel is dismissing the login.
+      void cancel();
+      open = '';
+      return;
+    }
+    void cancel();
+    open = target.key;
+    stepError = '';
+    email = '';
+    password = '';
+    setupValues = {};
+    imapHost = '';
+    smtpHost = '';
+    adding = '';
+    // Deliberately no login here. Opening a seat is looking at it; talking to
+    // the network starts from the button in the circle, so nothing fires a QR
+    // or a sign-in sheet at someone who was only browsing the ring.
+  }
+
+  /** Starts the platform's first login flow, if it has one to start. */
+  async function link(platform: CommsPlatform): Promise<void> {
+    const bridge = bridges.find((item) => item.platform === platform);
+    if (!bridge || bridge.flows.length === 0) return;
+    // A bridge missing its own credentials cannot log anyone in; the panel
+    // asks for those first and starts the flow once they are recorded.
+    if (bridge.setup && !bridge.setup.configured) return;
+    const flow = preferredFlow(bridge.flows);
+    if (flow) await startLink(platform, flow);
+  }
+
+  /** Signs one account out, leaving the platform's others alone. */
+  async function signOut(platform: CommsPlatform, accountId: string): Promise<void> {
+    busy = `out:${accountId}`;
+    stepError = '';
+    try {
+      status = await api.comms.bridgeLogout(platform, accountId);
+    } catch (cause) {
+      stepError = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  /** Removes one mailbox, leaving the provider's others alone. */
+  async function removeMailbox(id: string): Promise<void> {
+    busy = `out:${id}`;
+    stepError = '';
+    try {
+      status = await api.comms.emailRemove(id);
+    } catch (cause) {
+      stepError = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  /** Records a bridge's own credentials, then carries on into its login. */
+  async function saveSetup(): Promise<void> {
+    if (!active?.platform || !setupReady) return;
+    busy = 'setup';
+    stepError = '';
+    try {
+      status = await api.comms.bridgeSetup(active.platform, setupValues);
+      setupValues = {};
+      await link(active.platform);
+    } catch (cause) {
+      stepError = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  /**
+   * Asks macOS for the grant a bridge is held back by, then re-reads the
+   * fleet. For a permission macOS prompts for, the answer arrives with the
+   * dialog; for Full Disk Access the pane opens and the answer arrives
+   * whenever the user comes back, which the focus listener below picks up.
+   */
+  async function grant(permission: SystemPermissionKind): Promise<void> {
+    granting = true;
+    try {
+      await api.permissions.request(permission);
+      status = await api.comms.refresh().catch(() => status);
+    } catch (cause) {
+      stepError = readableError(cause);
+    } finally {
+      granting = false;
+    }
+  }
+
+  /** The hub-is-down path: start it, then carry straight on into the link. */
+  async function connectThenLink(platform: CommsPlatform): Promise<void> {
+    await connect();
+    if (hub?.status === 'signed-in') await link(platform);
+  }
+
+  async function startLink(platform: CommsPlatform, flowId: string): Promise<void> {
+    attempt += 1;
+    linking = platform;
+    activeFlow = flowId;
+    step = null;
+    busy = `link:${platform}`;
+    try {
+      step = await api.comms.loginStart(platform, flowId);
+      // Busy ends when the first step is on screen, not when the flow does: a
+      // QR wait can hold `advance` open for minutes, and the alternative
+      // methods must stay clickable for exactly that stretch.
+      busy = '';
+      await advance();
+    } catch (cause) {
+      stepError = readableError(cause);
+    } finally {
+      if (busy === `link:${platform}`) busy = '';
+    }
+  }
+
+  /**
+   * Which attempt the flow state belongs to. A `display_and_wait` blocks
+   * server-side until the remote user acts, so its promise can outlive the
+   * flow it belongs to — cancelled, or replaced by another login method. A
+   * result from a superseded attempt is dropped on the floor; letting it
+   * through would overwrite the step the user is actually on.
+   */
+  let attempt = 0;
+
+  /** Carries the flow through every step that needs no typing. */
+  async function advance(): Promise<void> {
+    const mine = attempt;
+    while (step && linking && attempt === mine) {
+      if (step.type === 'display_and_wait') {
+        try {
+          const next = await api.comms.loginWait(linking, step.loginId, step.stepId);
+          if (attempt !== mine) return;
+          step = next;
+        } catch (cause) {
+          if (attempt === mine) stepError = readableError(cause);
+          return;
+        }
+      } else if (step.type === 'cookies') {
+        try {
+          const next = await api.comms.loginCookies(linking, step.loginId, step.stepId);
+          if (attempt !== mine) return;
+          step = next;
+        } catch (cause) {
+          if (attempt === mine) stepError = readableError(cause);
+          return;
+        }
+      } else if (step.type === 'complete') {
+        step = null;
+        linking = '';
+        activeFlow = '';
+        status = await api.comms.refresh().catch(() => status);
+        return;
+      } else return;
+    }
+  }
+
+  async function submit(): Promise<void> {
+    if (!step || step.type !== 'user_input' || !linking) return;
+    busy = 'step';
+    stepError = '';
+    const mine = attempt;
+    try {
+      const next = await api.comms.loginSubmit(linking, step.loginId, step.stepId, values);
+      if (attempt !== mine) return;
+      step = next;
+      values = {};
+      await advance();
+    } catch (cause) {
+      stepError = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function cancel(): Promise<void> {
+    attempt += 1;
+    const platform = linking;
+    const loginId = step?.loginId;
+    step = null;
+    activeFlow = '';
+    linking = '';
+    values = {};
+    stepError = '';
+    if (platform && loginId) status = await api.comms.loginCancel(platform, loginId).catch(() => status);
+  }
+
+  /** A mailbox needs a short handle; the address's local part is a good one. */
+  function accountId(address: string): string {
+    const base = address.split('@')[0]?.replace(/[^a-z0-9]+/gi, '') || 'mail';
+    let id = base.toLowerCase();
+    let suffix = 2;
+    while (mailAccounts.some((account) => account.id === id)) id = `${base.toLowerCase()}${suffix++}`;
+    return id;
+  }
+
+  /** The custom seat is the only one whose servers the user has to supply. */
+  const customMail = $derived(activePreset?.value === 'custom');
+  const mailReady = $derived(
+    Boolean(email.trim() && password && (!customMail || (imapHost.trim() && smtpHost.trim()))),
+  );
+
+  async function saveMailbox(): Promise<void> {
+    if (!activePreset || !mailReady) return;
+    busy = 'mail';
+    stepError = '';
+    try {
+      status = await api.comms.emailSave({
+        id: accountId(email.trim()),
+        email: email.trim(),
+        preset: activePreset.value,
+        imapHost: customMail ? imapHost.trim() : activePreset.imapHost,
+        imapPort: activePreset.imapPort,
+        imapEncryption: activePreset.imapEncryption,
+        smtpHost: customMail ? smtpHost.trim() : activePreset.smtpHost,
+        smtpPort: activePreset.smtpPort,
+        smtpEncryption: activePreset.smtpEncryption,
+        password,
+        isDefault: mailAccounts.length === 0,
+      });
+      email = '';
+      password = '';
+      imapHost = '';
+      smtpHost = '';
+      // Back to the list, with the new mailbox on it. The seat stays open:
+      // having just added one, seeing where it landed is the point.
+      adding = '';
+    } catch (cause) {
+      stepError = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  function inputType(type: string): string {
+    if (type === 'password' || type === 'token') return 'password';
+    if (type === 'phone_number') return 'tel';
+    if (type === 'email') return 'email';
+    return 'text';
+  }
+
+  function done(): void {
+    onDone({messaging: linkedNames, mail: mailAccounts.map((account) => account.email)});
+  }
+</script>
+
+<svelte:window bind:innerWidth={vw} bind:innerHeight={vh} />
+
+<div
+  class="pf"
+  class:live={onCamera}
+  bind:clientHeight={stageH}
+  style="--arc:{arcLeft}px;--seat:{seatSize}px"
+>
+  <div class="pf-copy">
+    <p class="onb-eyebrow">The Hub</p>
+    <h1 class="onb-title">One place for everything you talk on.</h1>
+    <p class="onb-lede">
+      The Hub runs on this Mac. It carries every conversation Midas can reach, chat, DMs and mail,
+      into one stream it can read and answer. Nothing leaves this machine.
+    </p>
+
+    {#if error}<p class="onb-note warn">{error}</p>{/if}
+
+    <!-- Only when something is in the way. A running hub says so by the ring
+         being live; a line repeating it is just furniture. -->
+    {#if !connected}
+      <p class="onb-note">
+        {hub?.canAutoConnect
+          ? 'The Hub is not running yet. Midas makes its own account on it, so there is nothing for you to choose.'
+          : 'The Hub is not available on this Mac yet, so its platforms cannot be reached.'}
+      </p>
+    {/if}
+
+    <div class="onb-actions">
+      {#if !connected && hub?.canAutoConnect}
+        <button type="button" class="onb-button primary" disabled={busy === 'connect'} onclick={() => void connect()}>
+          {busy === 'connect' ? 'Starting the Hub…' : 'Start the Hub'}
+        </button>
+        <button type="button" class="onb-quiet" onclick={onSkip}>Skip the Hub</button>
+      {:else}
+        <button type="button" class="onb-button primary" onclick={done}>Continue</button>
+      {/if}
+    </div>
+  </div>
+
+  <!-- Fixed, and clipped to the window: the arc belongs to a circle far larger
+       than the screen, so what shows is one line running top edge to bottom. -->
+  <div class="pf-scene">
+    <div
+      class="pf-arc"
+      style="left:{arcLeft}px;top:{centreY - radius}px;width:{radius * 2}px;height:{radius * 2}px"
+    ></div>
+
+    {#each seatsByKey as item, index (item.key)}
+      <button
+        type="button"
+        class="pf-seat"
+        class:mail={item.kind === 'mail'}
+        class:idle={item.kind === 'messaging' && !connected}
+        class:done={item.kind === 'messaging'
+          ? bridges.find((bridge) => bridge.platform === item.platform)?.state === 'connected'
+          : mailAccounts.length > 0}
+        class:open={open === item.key}
+        style="{seatPose(index)};--i:{index}"
+        onmouseenter={() => hoverOn(item.key)}
+        onmouseleave={hoverOff}
+        onfocus={() => hoverOn(item.key)}
+        onblur={hoverOff}
+        onclick={() => choose(item)}
+      >
+        <span class="pf-seat-mark">
+          {#if item.logo}
+            <img src={item.logo} alt="" aria-hidden="true" />
+          {:else if item.preset === 'custom'}
+            <Icon name="mail" size={19} />
+          {:else}
+            {item.initial}
+          {/if}
+        </span>
+        <span class="pf-seat-label">{item.name}</span>
+        <span class="pf-seat-tick"><Icon name="check" size={9} strokeWidth={3} /></span>
+      </button>
+    {/each}
+  </div>
+
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="pf-face"
+    use:fadeEdges={`${activeKey}:${activeMailboxes.length}:${adding}`}
+    class:empty={!active}
+    onmouseenter={() => clearTimeout(hoverRelease)}
+    onmouseleave={hoverOff}
+    onfocusin={() => clearTimeout(hoverRelease)}
+  >
+    {#if active && active.kind === 'messaging'}
+      {#if active.logo}
+        <span class="pf-face-mark"><img src={active.logo} alt="" aria-hidden="true" /></span>
+      {/if}
+      <p class="onb-eyebrow">{active.name}</p>
+      {#if flowHere && qr}
+        <div class="pf-qr">
+          <!-- The four-module quiet zone belongs to the symbol; scanners need it. -->
+          <svg viewBox="-4 -4 {qr.size + 8} {qr.size + 8}" role="img" aria-label="Pairing QR code">
+            <rect x="-4" y="-4" width={qr.size + 8} height={qr.size + 8} fill="#fff" />
+            <path d={qr.path} fill="#000" />
+          </svg>
+        </div>
+        <p class="onb-note">
+          {step?.type === 'display_and_wait' && step.instructions
+            ? step.instructions
+            : 'Scan this from your phone.'}
+        </p>
+      {:else if flowHere && step?.type === 'display_and_wait' && step.display === 'qr' && step.imageUrl}
+        <!-- Some bridges send a pre-rendered image rather than the payload. -->
+        <div class="pf-qr">
+          <img src={step.imageUrl} alt="Pairing QR code" />
+        </div>
+        <p class="onb-note">{step.instructions ?? 'Scan this from your phone.'}</p>
+      {:else if flowHere && step?.type === 'display_and_wait' && (step.display === 'code' || step.display === 'emoji') && step.data}
+        <p class="pf-code" class:emoji={step.display === 'emoji'}>{step.data}</p>
+        <p class="onb-note">
+          {step.instructions ??
+            (step.display === 'emoji'
+              ? 'Check this matches what the app on your phone shows.'
+              : 'Enter this code on your phone.')}
+        </p>
+      {:else if flowHere && step?.type === 'display_and_wait'}
+        <!-- `nothing` to show: the remote side has to act on its own. -->
+        <p class="onb-note">{step.instructions ?? `Waiting for ${active.name} to confirm…`}</p>
+      {:else if flowHere && step?.type === 'user_input'}
+        {#if step.instructions}<p class="onb-note">{step.instructions}</p>{/if}
+        {#each step.fields as field (field.id)}
+          <label class="onb-field pf-field">
+            <span>{field.name}</span>
+            <input
+              type={inputType(field.type)}
+              spellcheck="false"
+              autocomplete="off"
+              value={values[field.id] ?? ''}
+              oninput={(event) => (values = {...values, [field.id]: event.currentTarget.value})}
+              onkeydown={(event) => {
+                if (event.key === 'Enter' && inputReady) void submit();
+              }}
+            />
+            {#if field.description}<small class="pf-field-hint">{field.description}</small>{/if}
+          </label>
+        {/each}
+      {:else if flowHere && step?.type === 'cookies'}
+        <p class="onb-note">Finish signing in to {active.name} in the sheet that just opened.</p>
+      {:else if needsSetup && activeBridge?.setup}
+        <!-- Telegram: the bridge will not connect on someone else's
+             application, so the pair is asked for here rather than shipped. -->
+        <p class="onb-note">
+          {active.name} needs an application of your own before it can connect. Create one, it
+          takes a minute, then paste the two values it gives you.
+        </p>
+        {#each activeBridge.setup.fields as field (field.id)}
+          <label class="onb-field pf-field">
+            <span>{field.name}</span>
+            <input
+              type={field.secret ? 'password' : 'text'}
+              spellcheck="false"
+              autocomplete="off"
+              value={setupValues[field.id] ?? ''}
+              oninput={(event) => (setupValues = {...setupValues, [field.id]: event.currentTarget.value})}
+            />
+          </label>
+        {/each}
+        {#if activeBridge.setup.fields[0]?.helpUrl}
+          <p class="onb-note">
+            Get them at <span class="pf-link">{activeBridge.setup.fields[0].helpUrl}</span>
+          </p>
+        {/if}
+      {:else if activeAccounts.length > 0 && active.platform}
+        <!-- One row per account. A platform holding two handles is ordinary,
+             and each has to be identifiable and removable by itself. -->
+        <ul class="pf-accounts">
+          {#each activeAccounts as account (account.id)}
+            <li class:warn={account.state === 'bad-credentials'}>
+              <span class="pf-account-name">{account.name || account.id}</span>
+              <span class="pf-account-state">
+                {account.state === 'connected'
+                  ? 'Connected'
+                  : account.state === 'connecting'
+                    ? 'Connecting…'
+                    : account.state === 'bad-credentials'
+                      ? 'Needs signing in again'
+                      : 'Unknown'}
+              </span>
+              <button
+                type="button"
+                class="pf-account-drop"
+                disabled={busy === `out:${account.id}`}
+                onclick={() => void signOut(active.platform!, account.id)}
+              >
+                {busy === `out:${account.id}` ? 'Removing…' : 'Sign out'}
+              </button>
+            </li>
+          {/each}
+        </ul>
+        {#each activeAccounts.filter((account) => account.error) as account (account.id)}
+          <p class="onb-note warn">{account.name}: {account.error}</p>
+        {/each}
+      {:else if !connected}
+        <p class="onb-note">
+          {hub?.canAutoConnect
+            ? 'This comes in through the Hub, which is not started yet. Midas makes its own account on it.'
+            : 'This comes in through the Hub, which is not available on this Mac.'}
+        </p>
+      {:else if activeBridge?.state === 'unavailable' || activeBridge?.api === 'none'}
+        <p class="onb-note">
+          {activeBridge.error ??
+            'This one reaches Midas through a relay on this Mac rather than a sign-in, so there is nothing to bring in here.'}
+        </p>
+      {:else if activeBridge?.state === 'dormant'}
+        <!-- Not running because nothing is linked to it. Hovering this seat
+             already asked for it, so this is the sub-second gap before its own
+             login methods arrive rather than a state to act on. -->
+        <p class="onb-note">Starting {active.name}…</p>
+      {:else if activeBridge?.state === 'unreachable'}
+        <p class="onb-note">
+          The Hub is running but this platform is not answering yet. Its bridge may still be
+          starting, or may not be installed on this Mac.
+        </p>
+        {#if activeBridge.error}<p class="onb-note warn">{activeBridge.error}</p>{/if}
+      {:else if canLogin && (activeBridge?.flows.length ?? 0) > 1}
+        <!-- Every way in, all on screen. A platform offering two ways to sign
+             in is offering a choice, and showing one at a time made the other
+             read as a second button for the same thing rather than as the
+             alternative it is. Which methods exist is the bridge's answer. -->
+        <ul class="pf-methods">
+          {#each activeBridge?.flows ?? [] as flow (flow.id)}
+            <li>
+              <button
+                type="button"
+                class="pf-method"
+                disabled={busy.startsWith('link:')}
+                onclick={() => void startLink(active.platform!, flow.id)}
+              >
+                <span class="pf-method-copy">
+                  <strong>{flow.name}</strong>
+                  <small>{flow.description}</small>
+                </span>
+                <Icon name="forward" size={13} />
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {:else if canLogin}
+        <p class="onb-note">
+          {activeBridge?.flows[0]?.description ??
+            'Sign in and your conversations start arriving here.'}
+        </p>
+      {:else}
+        <p class="onb-note">{busy ? 'Starting…' : 'Nothing to bring in here.'}</p>
+      {/if}
+
+      {#if stepError}<p class="onb-note warn">{stepError}</p>{/if}
+
+
+      <div class="onb-actions pf-actions">
+        {#if flowHere && step?.type === 'user_input'}
+          <button
+            type="button"
+            class="onb-button primary"
+            disabled={busy === 'step' || !inputReady}
+            onclick={() => void submit()}
+          >
+            {busy === 'step' ? 'Checking…' : 'Continue'}
+          </button>
+        {:else if activeBridge?.permission}
+          <!-- A blocker macOS can lift is an action, not a set of directions:
+               being told where the switch is and being handed it are different
+               things. It sits in the same row, and reads the same, as every
+               other way into a platform. -->
+          <button
+            type="button"
+            class="onb-button primary"
+            disabled={granting}
+            onclick={() => void grant(activeBridge.permission!)}
+          >
+            {granting
+              ? 'Waiting…'
+              : permissionPrompts(activeBridge.permission)
+                ? 'Allow access'
+                : 'Open Settings'}
+          </button>
+        {:else if canLogin && active.platform && (activeAccounts.length > 0 || (activeBridge?.flows.length ?? 0) <= 1)}
+          <button
+            type="button"
+            class="onb-button primary"
+            disabled={busy !== ''}
+            onclick={() => void link(active.platform!)}
+          >
+            {busy.startsWith('link:')
+              ? 'Starting…'
+              : activeAccounts.length > 0
+                ? 'Add another account'
+                : `Log in to ${active.name}`}
+          </button>
+        {:else if needsSetup}
+          <button
+            type="button"
+            class="onb-button primary"
+            disabled={busy === 'setup' || !setupReady}
+            onclick={() => void saveSetup()}
+          >
+            {busy === 'setup' ? 'Saving…' : 'Save and continue'}
+          </button>
+        {:else if !connected && hub?.canAutoConnect && active.platform}
+          <button
+            type="button"
+            class="onb-button primary"
+            disabled={busy === 'connect'}
+            onclick={() => void connectThenLink(active.platform!)}
+          >
+            {busy === 'connect' ? 'Starting the Hub…' : 'Start the Hub and bring it in'}
+          </button>
+        {/if}
+      </div>
+    {:else if active && active.kind === 'mail'}
+      {#if active.logo}
+        <span class="pf-face-mark"><img src={active.logo} alt="" aria-hidden="true" /></span>
+      {/if}
+      <p class="onb-eyebrow">{active.name}</p>
+      {#if activeMailboxes.length > 0}
+        <ul class="pf-accounts" use:fadeEdges={activeMailboxes.length}>
+          {#each activeMailboxes as account (account.id)}
+            <li class:warn={account.status === 'error'}>
+              <span class="pf-account-name">{account.email}</span>
+              <span class="pf-account-state">
+                {account.status === 'ok'
+                  ? account.isDefault
+                    ? 'Default'
+                    : 'Connected'
+                  : account.status === 'error'
+                    ? 'Not signing in'
+                    : 'Not checked'}
+              </span>
+              <button
+                type="button"
+                class="pf-account-drop"
+                disabled={busy === `out:${account.id}`}
+                onclick={() => void removeMailbox(account.id)}
+              >
+                {busy === `out:${account.id}` ? 'Removing…' : 'Remove'}
+              </button>
+            </li>
+          {/each}
+        </ul>
+        {#each activeMailboxes.filter((account) => account.error) as account (account.id)}
+          <p class="onb-note warn">{account.email}: {account.error}</p>
+        {/each}
+      {/if}
+      {#if mailTooling && !mailTooling.installed}
+        <p class="onb-note">Mail support is not installed on this Mac.</p>
+        <p class="onb-note warn">{mailTooling.error}</p>
+      {:else if activeMailboxes.length === 0 || adding === active.key}
+      <!-- The provider picker the seats used to be. It only decides which
+           server names get prefilled, so it belongs beside the fields it
+           fills rather than out on the ring as five separate platforms. -->
+      <div class="pf-providers">
+        {#each mailPresets as preset (preset.value)}
+          <button
+            type="button"
+            class="pf-provider"
+            class:on={mailPreset === preset.value}
+            aria-pressed={mailPreset === preset.value}
+            onclick={() => (mailPreset = preset.value)}
+          >
+            {#if mailLogo(preset.value)}
+              <img src={mailLogo(preset.value)} alt="" aria-hidden="true" />
+            {/if}
+            <!-- "Mail" is the seat's name; in here the same preset is the
+                 any-other-server option, and repeating the heading would read
+                 as a provider called Mail. -->
+            {preset.value === 'custom' ? 'Other' : (MAIL_NAMES[preset.value] ?? preset.label)}
+          </button>
+        {/each}
+      </div>
+      <p class="onb-note">{activePreset.hint}</p>
+      <label class="onb-field pf-field">
+        <span>Email address</span>
+        <input bind:value={email} type="email" spellcheck="false" placeholder="you@example.com" />
+      </label>
+      {#if customMail}
+        <div class="pf-pair">
+          <label class="onb-field pf-field">
+            <span>IMAP server</span>
+            <input bind:value={imapHost} spellcheck="false" placeholder="imap.example.com" />
+          </label>
+          <label class="onb-field pf-field">
+            <span>SMTP server</span>
+            <input bind:value={smtpHost} spellcheck="false" placeholder="smtp.example.com" />
+          </label>
+        </div>
+      {/if}
+      <label class="onb-field pf-field">
+        <span>{customMail ? 'Password' : 'App password'}</span>
+        <input
+          bind:value={password}
+          type="password"
+          autocomplete="off"
+          onkeydown={(event) => {
+            if (event.key === 'Enter') void saveMailbox();
+          }}
+        />
+      </label>
+
+      {#if stepError}<p class="onb-note warn">{stepError}</p>{/if}
+
+      <div class="onb-actions pf-actions">
+        <button
+          type="button"
+          class="onb-button primary"
+          disabled={busy === 'mail' || !mailReady}
+          onclick={() => void saveMailbox()}
+        >
+          {busy === 'mail' ? 'Adding…' : 'Add mailbox'}
+        </button>
+      </div>
+      {:else}
+      <div class="onb-actions pf-actions">
+        <button type="button" class="onb-button primary" onclick={() => (adding = active.key)}>
+          Add another mailbox
+        </button>
+      </div>
+      {/if}
+    {:else if active}
+      <p class="onb-eyebrow">{active.kind === 'mail' ? 'Mail' : 'Messaging'}</p>
+      <p class="pf-name">{active.name}</p>
+      <p class="onb-note">
+        {#if active.kind === 'mail'}
+          {mailAccounts.length > 0
+            ? `${mailAccounts.length} mailbox${mailAccounts.length === 1 ? '' : 'es'} set up.`
+            : 'Add a mailbox with an app password.'}
+        {:else if !connected}
+          Start the hub first and this wakes up.
+        {:else}
+          {bridges.find((bridge) => bridge.platform === active.platform)?.state === 'connected'
+            ? 'Linked to the hub.'
+            : (bridges.find((bridge) => bridge.platform === active.platform)?.flows[0]?.description ??
+              'Not linked yet.')}
+        {/if}
+      </p>
+    {:else}
+      <!-- Nothing chosen yet, so the disc says what is on offer: the size of
+           the ring, and a hand of its logos. The count is the claim; the stack
+           is the evidence for it. -->
+      <p class="pf-count">{seatsByKey.length}<span> platforms</span></p>
+      <div class="pf-stack" aria-hidden="true">
+        {#each stackedSeats as item, position (item.key)}
+          <span class="pf-stack-mark" style="--i:{position}">
+            {#if item.logo}
+              <img src={item.logo} alt="" />
+            {:else if item.preset === 'custom'}
+              <Icon name="mail" size={15} />
+            {:else}
+              {item.initial}
+            {/if}
+          </span>
+        {/each}
+        {#if seatsByKey.length > stackedSeats.length}
+          <span class="pf-stack-more" style="--i:{stackedSeats.length}">
+            +{seatsByKey.length - stackedSeats.length}
+          </span>
+        {/if}
+      </div>
+      <p class="onb-note">Chat, DMs and mail, all arriving in one place. Click one to bring it in.</p>
+    {/if}
+  </div>
+</div>
+
+<style>
+  /* --arc is the circle's left-most point, set from the script, and the anchor
+     everything else is measured from. */
+  .pf-copy{max-width:min(400px,calc(var(--arc) - 190px))}
+  .pf.live .pf-copy{animation:pf-copy-in .58s cubic-bezier(.22,1,.36,1) .06s both}
+  @keyframes pf-copy-in{from{opacity:0;transform:translate3d(0,18px,0)}to{opacity:1;transform:none}}
+  .pf-copy .onb-note{margin-top:16px}
+
+  /* The disc is the Hub: solid, edge to edge, no outline. Its inside runs the
+     opposite way to the page, and swaps with it in dark mode. */
+  /* Literal, not scale tokens: the neutral ramp inverts with the theme, so
+     `--neutral-950` would follow the disc instead of opposing it. */
+  /* Fills its own slide of the deck. The copy is centred against the window's
+     height and measured from its left edge, the way the arc is. */
+  .pf{--edge-fade:linear-gradient(to bottom,
+      transparent 0,
+      #000 calc(var(--fade-size) * var(--fade-top)),
+      #000 calc(100% - var(--fade-size) * var(--fade-bottom)),
+      transparent 100%);
+    position:absolute;inset:0;display:flex;align-items:center;padding-left:clamp(52px,8.5vw,136px);--hub-fill:#0a0a0a;--hub-ink:#fff;--hub-ink-soft:rgb(255 255 255 / .64)}
+  :global(:root[data-theme="dark"]) .pf{--hub-fill:#fafafa;--hub-ink:#0a0a0a;--hub-ink-soft:rgb(10 10 10 / .62)}
+  @media (prefers-color-scheme:dark){
+    :global(:root:not([data-theme="light"])) .pf{--hub-fill:#fafafa;--hub-ink:#0a0a0a;--hub-ink-soft:rgb(10 10 10 / .62)}
+  }
+
+  /* Opacity only. The pan is already carrying this screen up from below; a
+     second rise on top of it reads as the disc sliding within its own page. */
+  .pf-scene{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:0}
+  .pf.live .pf-scene{animation:pf-scene-in .62s cubic-bezier(.22,1,.36,1) both}
+  @keyframes pf-scene-in{from{opacity:0}to{opacity:1}}
+  /* Sized from the script: just past the window's height, so the rim leaves
+     through the top and bottom edges while still curving on the way. */
+  .pf-arc{position:absolute;border-radius:50%;border:0;background:var(--hub-fill)}
+
+  /* left/top are the seat's centre, so the clearance from the rim is the same
+     wherever it sits. Position transitions carry the rotation. */
+  /* The box is exactly the disc, so what the arc's maths positions is the
+     logo's own centre. The name hangs off it absolutely — a label in flow
+     would widen the button and push the logo off the ring. Position and
+     come per-frame from the script, so no left/top transitions here: they
+     would fight the animation loop. */
+  .pf-seat{position:absolute;width:var(--seat,44px);height:var(--seat,44px);transform:translate(-50%,-50%);display:block;padding:0;border:0;background:none;pointer-events:auto;cursor:pointer;opacity:var(--fade,1);
+    transition:transform .22s cubic-bezier(.22,1,.36,1)}
+  .pf-seat:disabled{cursor:default}
+  /* No entrance of their own: the seats are riding a wheel that is already
+     rolling, and a stagger on top of that reads as two animations arguing. */
+  .pf-seat-mark{display:grid;place-items:center;width:100%;height:100%;border-radius:50%;border:1px solid var(--neutral-200);background:var(--app-bg);color:var(--neutral-800);font-size:14.5px;font-weight:650;transition:border-color .22s,color .22s}
+  .pf-seat-mark img{width:50%;height:50%;object-fit:contain}
+  .pf-seat-tick{display:none}
+  /* Carried for screen readers only. Painted, it runs outward from the rim
+     and straight across the copy on the left — and it is the one thing on
+     this screen that is already said elsewhere: the disc names the platform
+     the moment the seat is looked at. */
+  .pf-seat-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  /* Already linked. The ring stays the same weight as every other seat — a
+     darker one here reads as "selected", which it is not. */
+  .pf-seat.done .pf-seat-tick{position:absolute;right:-1px;bottom:-1px;display:grid;place-items:center;width:15px;height:15px;border-radius:50%;border:1.5px solid var(--app-bg);background:var(--neutral-900);color:var(--app-bg)}
+  /* Barely held back while its hub is down — every seat opens either way, so
+     this is a hint, not a "keep out". */
+  .pf-seat.idle{opacity:calc(var(--fade,1) * .92)}
+  .pf-seat.open{z-index:2}
+  /* The chosen seat rides the middle of the arc, a size up from the rest. */
+  /* The chosen seat rides to the middle a size up from the rest. */
+  .pf-seat.open{transform:translate(-50%,-50%) scale(1.3)}
+  /* Chosen reads as size and a darker ring — no fill, so the logo stays itself. */
+  .pf-seat.open .pf-seat-mark{border-color:var(--neutral-950);background:var(--app-bg)}
+  .pf-seat:hover,.pf-seat:focus-visible{z-index:1}
+  .pf-seat:hover:not(:disabled),.pf-seat:focus-visible{transform:translate(-50%,-50%) scale(1.22)}
+  .pf-seat.open:hover,.pf-seat.open:focus-visible{transform:translate(-50%,-50%) scale(1.3)}
+  .pf-seat:hover:not(:disabled) .pf-seat-mark,.pf-seat:focus-visible .pf-seat-mark{border-color:var(--neutral-500);color:var(--neutral-950)}
+  .pf-seat:focus-visible{outline:none}
+
+  /* Inside the circle, clear of the rim, and reading against the fill. */
+  .pf-face{position:absolute;top:50%;left:calc(var(--arc) + 108px);width:min(340px,calc(100vw - var(--arc) - 150px));transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-start;gap:8px;z-index:1;color:var(--hub-ink);
+    /* The disc is a circle, so the panel has a finite middle to sit in: past
+       this it runs out through the curve and onto the page behind. Anything
+       longer scrolls here instead. */
+    max-height:min(74vh,600px);overflow-y:auto;overscroll-behavior:contain;
+    --fade-top:0;--fade-bottom:0;--fade-size:28px;
+    -webkit-mask-image:var(--edge-fade);mask-image:var(--edge-fade)}
+  .pf-face.empty{opacity:.75}
+  .pf-face :global(.onb-note){margin:0;color:var(--hub-ink-soft)}
+  .pf-face :global(.onb-note.warn){color:#f87171}
+  .pf-face :global(.onb-eyebrow){margin:0;color:var(--hub-ink-soft)}
+  .pf-face :global(.onb-state){color:var(--hub-ink)}
+  .pf-name{margin:0;color:var(--hub-ink);font-size:16px;font-weight:650;letter-spacing:-.02em}
+  /* The number carries the screen, so it is set like a headline and the word
+     after it steps back to a caption. */
+  .pf-count{display:flex;align-items:baseline;gap:8px;margin:0;color:var(--hub-ink);font-size:40px;font-weight:680;letter-spacing:-.04em;line-height:1}
+  .pf-count span{font-size:14px;font-weight:560;letter-spacing:-.01em;color:var(--hub-ink-soft)}
+  /* Overlapped left to right, each one cut into the one before by its ring, so
+     the row reads as a stack of the same kind of thing. */
+  .pf-stack{display:flex;margin:14px 0 2px;padding-left:2px}
+  .pf-stack-mark,.pf-stack-more{display:grid;place-items:center;width:32px;height:32px;flex:none;
+    border-radius:50%;border:1.5px solid var(--hub-fill);background:var(--hub-ink);color:var(--hub-fill);
+    font-size:11px;font-weight:650;
+    margin-left:-9px;z-index:calc(20 - var(--i,0))}
+  .pf-stack-mark:first-child{margin-left:0}
+  .pf-stack-mark img{width:18px;height:18px;object-fit:contain}
+  .pf-stack-more{background:rgb(from var(--hub-ink) r g b / .22);color:var(--hub-ink);font-size:10.5px}
+  .pf-actions{margin-top:8px}
+  /* One row per linked account: who it is, how it is doing, and the way out.
+     Rows rather than prose because the count is open-ended. */
+  .pf-accounts{margin:2px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:5px;width:100%;
+    /* About four rows. Someone with nine mailboxes still has to reach the form
+       underneath, and a list that grows without limit takes it off screen. */
+    max-height:172px;overflow-y:auto;overscroll-behavior:contain;
+    --fade-top:0;--fade-bottom:0;--fade-size:22px;
+    -webkit-mask-image:var(--edge-fade);mask-image:var(--edge-fade)}
+  .pf-accounts li{display:flex;align-items:baseline;gap:8px;padding:6px 10px;border-radius:9px;background:rgb(from var(--hub-ink) r g b / .07)}
+  .pf-accounts li.warn{background:rgb(248 113 113 / .13)}
+  .pf-account-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--hub-ink);font-size:12.5px;font-weight:560}
+  .pf-account-state{flex:none;color:var(--hub-ink-soft);font-size:10.5px}
+  .pf-account-drop{flex:none;border:0;padding:0;background:none;color:var(--hub-ink-soft);font-family:inherit;font-size:10.5px;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+  .pf-account-drop:hover:not(:disabled){color:var(--hub-ink)}
+  .pf-account-drop:disabled{opacity:.55;cursor:default}
+  /* Alternatives, not actions: quieter than the button that finishes the flow
+     on screen, but plainly clickable. */
+  /* Every way into a platform, as a list rather than one-at-a-time: each row
+     is the whole target, so the choice is read and taken in one move. */
+  /* The seat's own mark, brought into the panel so the thing being set up is
+     named twice: once in letters, once in the logo you actually recognise.
+     No hairline ring — the seats carry one to lift them off the page, and on
+     this ground it would only draw a circle around a circle.
+
+     The disc stays light in both themes for the same reason the QR code does:
+     brand marks are drawn for a light ground, and the panel's own ground
+     inverts underneath them. In dark mode it lands on the panel's near-white
+     fill and simply disappears, which is the correct result. */
+  .pf-face-mark{display:grid;place-items:center;width:46px;height:46px;flex:none;border-radius:50%;background:#fff;margin-bottom:4px}
+  .pf-face-mark img{width:56%;height:56%;object-fit:contain}
+  .pf-providers{width:100%;display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+  .pf-provider{display:inline-flex;align-items:center;gap:6px;border:1px solid rgb(from var(--hub-ink) r g b / .22);border-radius:999px;padding:5px 11px 5px 7px;background:none;color:var(--hub-ink-soft);font-family:inherit;font-size:11.5px;font-weight:530;cursor:pointer;transition:border-color .16s,color .16s,background-color .16s}
+  .pf-provider img{width:15px;height:15px;border-radius:50%;background:#fff;object-fit:contain;padding:1px}
+  .pf-provider:hover{border-color:var(--hub-ink);color:var(--hub-ink)}
+  .pf-provider.on{border-color:var(--hub-ink);background:var(--hub-ink);color:var(--hub-fill)}
+  .pf-provider:focus-visible{outline:2px solid var(--hub-ink);outline-offset:2px}
+  .pf-methods{width:100%;margin:2px 0 0;padding:0;list-style:none;display:flex;flex-direction:column}
+  .pf-methods li + li{border-top:1px solid rgb(from var(--hub-ink) r g b / .14)}
+  .pf-method{width:100%;display:flex;align-items:center;gap:12px;padding:11px 0;border:0;background:none;color:var(--hub-ink);font-family:inherit;text-align:left;cursor:pointer;transition:opacity .16s}
+  .pf-method:hover:not(:disabled){opacity:.72}
+  .pf-method:disabled{opacity:.45;cursor:default}
+  .pf-method:focus-visible{outline:2px solid var(--hub-ink);outline-offset:2px;border-radius:6px}
+  .pf-method-copy{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .pf-method-copy strong{font-size:12.5px;font-weight:560;letter-spacing:-.01em}
+  .pf-method-copy small{color:var(--hub-ink-soft);font-size:11px;line-height:1.45}
+  /* Buttons and fields flip with the disc: the page's own styles assume the
+     page's background, which is the one colour that is not behind them here. */
+  .pf-face :global(.onb-button){--onb-button-edge:rgb(from var(--hub-ink) r g b / .28);--onb-button-surface:transparent;color:var(--hub-ink)}
+  .pf-face :global(.onb-button.primary){--onb-button-edge:var(--hub-ink);--onb-button-surface:var(--hub-ink);color:var(--hub-fill)}
+  .pf-face :global(.onb-quiet){color:var(--hub-ink-soft)}
+  .pf-face :global(.onb-quiet:hover){color:var(--hub-ink)}
+  .pf-field{width:100%;margin-top:2px}
+  .pf-field :global(span){color:var(--hub-ink-soft)}
+  .pf-field :global(input){border-color:rgb(from var(--hub-ink) r g b / .28);background:rgb(from var(--hub-ink) r g b / .08);color:var(--hub-ink)}
+  .pf-field :global(input:focus){border-color:var(--hub-ink);outline:none}
+  .pf-field :global(input::placeholder){color:rgb(from var(--hub-ink) r g b / .4)}
+  .pf-pair{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%}
+
+  /* White ground regardless of theme: a dark-inverted symbol will not scan. */
+  .pf-qr{width:168px;padding:10px;border-radius:12px;background:#fff}
+  .pf-qr svg{width:100%;height:auto;display:block;shape-rendering:crispEdges}
+  .pf-qr img{width:100%;height:auto;display:block}
+  /* Emoji render larger than digits at the same size; even out the read. */
+  .pf-code.emoji{font-size:26px;letter-spacing:.3em}
+  .pf-field-hint{display:block;margin-top:3px;color:var(--hub-ink-soft);font-size:10.5px;line-height:1.4}
+  .pf-code{margin:0;padding:11px 14px;border-radius:11px;background:rgb(from var(--hub-ink) r g b / .12);color:var(--hub-ink);font-size:21px;font-weight:600;letter-spacing:.18em;font-variant-numeric:tabular-nums}
+
+  @media (prefers-reduced-motion:reduce){
+    .pf-seat,.pf-seat-mark{transition:opacity .18s ease}
+    .pf.live .pf-scene,.pf.live .pf-copy{animation:none}
+    .pf-seat:hover:not(:disabled),.pf-seat:focus-visible{transform:translate(-50%,-50%)}
+  }
+</style>

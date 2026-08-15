@@ -4,7 +4,7 @@ import type {
   ActiveAgentRun,
   AgentTool,
 } from "@midas/core";
-import { AgentRunner } from "@midas/core";
+import { AgentRunner, type ToolHooks } from "@midas/core";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type {
@@ -26,7 +26,19 @@ import {
   type SkillLoaderOptions,
 } from "./skills/loader.js";
 import { GoalManager } from "./goals/manager.js";
+import { GoalJudge } from "./goals/judge.js";
+import {
+  GoalLoop,
+  type GoalLoopDecision,
+  type GoalLoopSettings,
+} from "./goals/loop.js";
+import {
+  MemoryConsolidator,
+  type MemoryConsolidationSettings,
+} from "./memory/consolidator.js";
+import { createHistoryTools } from "./memory/history-tools.js";
 import { MemoryManager } from "./memory/manager.js";
+import { createMemoryTools } from "./memory/tools.js";
 import { createTaskTool, type SubagentRequest } from "./subagents/task-tool.js";
 
 export interface ChronicleContextProvider {
@@ -40,6 +52,7 @@ export interface ChronicleContextProvider {
 export interface EnvironmentContextProvider {
   promptContext(): {
     time?: { local: string; timeZone: string; utcOffset: string };
+    language?: string;
     locationEnabled: boolean;
     location?: {
       latitude: number;
@@ -58,10 +71,34 @@ export interface MidasAgentOptions {
   environment?: EnvironmentContextProvider;
   tools: ToolRegistry;
   model: ModelRef;
+  /** Model subagent (Task tool) runs use. Falls back to `model`. */
+  taskModel?: ModelRef;
+  /** Model the goal judge reads with. Falls back to `model`. */
+  judgeModel?: ModelRef;
   reasoning?: ReasoningEffort;
   basePrompt?: string;
+  communicationPrompt?: string;
   skills?: SkillLoaderOptions;
   compaction?: Partial<CompactionSettings>;
+  memoryConsolidation?: Partial<MemoryConsolidationSettings>;
+  maxTurns?: number;
+  /** Host lifecycle hooks that can veto or observe every tool call. */
+  hooks?: ToolHooks;
+  goalLoop?: Partial<GoalLoopSettings>;
+  /**
+   * Called when a standing goal drives another run. The host owns run
+   * plumbing, so it needs the continuation run to forward its events and to
+   * keep it cancellable.
+   */
+  onGoalContinuation?: (continuation: GoalContinuation) => void;
+}
+
+export interface GoalContinuation {
+  conversationId: string;
+  previousRunId: string;
+  runId: string;
+  run: ActiveAgentRun;
+  decision: GoalLoopDecision;
 }
 
 export interface StartMidasRunInput {
@@ -75,22 +112,45 @@ export interface StartMidasRunInput {
   contextMode?: "conversation" | "none" | "recent";
   attachments?: string[];
   asGoal?: boolean;
+  maxTurns?: number;
+  reasoning?: ReasoningEffort;
+  /**
+   * Set when the goal loop started this run rather than the user. Such a run
+   * does not reset the turn budget and its prompt is hidden from the
+   * transcript.
+   */
+  goalContinuation?: boolean;
+  /** Overrides the agent's main model for this run only. */
+  model?: ModelRef;
 }
 
 export class MidasAgent {
   readonly goals: GoalManager;
+  readonly goalLoop: GoalLoop;
   readonly memory: MemoryManager;
   readonly #options: MidasAgentOptions;
   readonly #compaction: CompactionManager;
+  readonly #consolidator: MemoryConsolidator;
   readonly #skillLoader: SkillLoader;
+  readonly #goalWork = new Set<Promise<void>>();
   constructor(options: MidasAgentOptions) {
     this.#options = options;
     this.goals = new GoalManager(options.storage);
+    this.goalLoop = new GoalLoop(
+      this.goals,
+      new GoalJudge(options.inference),
+      options.goalLoop,
+    );
     this.memory = options.memory;
     this.#compaction = new CompactionManager(
       options.inference,
       options.storage,
       options.compaction,
+    );
+    this.#consolidator = new MemoryConsolidator(
+      options.inference,
+      options.memory,
+      options.memoryConsolidation,
     );
     this.#skillLoader = new SkillLoader(options.skills);
   }
@@ -106,6 +166,11 @@ export class MidasAgent {
     const text = skillCommand
       ? `${readSkill(skillCommand.skill.filePath)}${skillCommand.arguments ? `\n\nUser: ${skillCommand.arguments}` : ""}`
       : input.text;
+    // A user-driven turn is the goal loop's preemption point: the budget starts
+    // over so a fresh instruction is never starved by turns an earlier one
+    // spent.
+    if (!input.parentRunId && !input.goalContinuation)
+      this.goalLoop.resetBudget(input.conversationId);
     if (input.asGoal) {
       const existing = this.goals.get(input.conversationId);
       if (existing && existing.status !== "completed")
@@ -123,7 +188,11 @@ export class MidasAgent {
         runId: null,
         role: "user",
         content: text,
-        metadata: input.asGoal ? { asGoal: true } : {},
+        metadata: input.asGoal
+          ? { asGoal: true }
+          : input.goalContinuation
+            ? { goalContinuation: true }
+            : {},
       });
       for (const attachmentPath of input.attachments ?? []) {
         this.#options.storage.addAttachment({
@@ -137,11 +206,12 @@ export class MidasAgent {
         });
       }
     }
+    const model = input.model ?? this.#options.model;
     this.#options.storage.createRun({
       id: runId,
       conversationId: input.conversationId,
       parentRunId: input.parentRunId,
-      model: `${this.#options.model.provider}/${this.#options.model.id}`,
+      model: `${model.provider}/${model.id}`,
       status: "running",
     });
     const stored = this.#options.storage.listMessages(input.conversationId);
@@ -165,9 +235,11 @@ export class MidasAgent {
     const environment = this.#options.environment?.promptContext();
     const systemPrompt = buildSystemPrompt({
       basePrompt: this.#options.basePrompt,
+      communicationPrompt: this.#options.communicationPrompt,
       preferences: this.#options.storage.listPreferences(),
       memorySummary: memory.enabled ? memory.summary : undefined,
       memoryRegistryPath: memory.enabled ? memory.registryPath : undefined,
+      historySearch: true,
       memories: memory.enabled ? memory.conversationMemories : [],
       chronicle: chronicle?.enabled ? chronicle : undefined,
       environment,
@@ -177,6 +249,8 @@ export class MidasAgent {
     const tools = [
       ...this.#options.tools.list(),
       ...this.goals.tools(input.conversationId),
+      ...createMemoryTools(this.memory, input.conversationId),
+      ...createHistoryTools(this.#options.storage, input.conversationId),
     ];
     if (input.includeSubagents !== false)
       tools.push(
@@ -187,27 +261,78 @@ export class MidasAgent {
     const runner = new AgentRunner({
       inference: this.#options.inference,
       eventSink: { append: (event) => this.#persistEvent(event) },
+      hooks: this.#options.hooks,
     });
     const active = runner.start({
       runId,
-      model: this.#options.model,
-      reasoning: this.#options.reasoning,
+      model,
+      reasoning: input.reasoning ?? this.#options.reasoning,
+      maxTurns: input.maxTurns ?? this.#options.maxTurns,
       context: { systemPrompt, messages },
       tools,
       toolExecution: "parallel",
       signal: input.signal,
-      transformContext: ({ context, signal }) =>
+      transformContext: ({ context, signal, reportStatus }) =>
         this.#compaction.transform(
           input.conversationId,
-          this.#options.model,
+          model,
           context,
           signal,
+          () => reportStatus('compacting'),
         ),
     });
-    void active.result.then((result) =>
-      this.#finish(input, result, stored.length),
-    );
+    const settled = active.result.then(async (result) => {
+      this.#finish(input, result, stored.length);
+      await this.#driveGoal(input, result);
+    });
+    this.#goalWork.add(settled);
+    void settled.finally(() => this.#goalWork.delete(settled));
     return active;
+  }
+
+  /**
+   * Resolves once every judged turn, the continuations it started, and the
+   * post-turn memory work have settled. A run's own `result` resolves before
+   * the goal loop has judged it, so callers that need the background quiet —
+   * tests, shutdown — wait here.
+   */
+  async settleGoalWork(): Promise<void> {
+    while (this.#goalWork.size)
+      await Promise.allSettled([...this.#goalWork]);
+  }
+
+  /**
+   * Judges the standing goal once a run settles and, while the objective is
+   * unmet, starts the next run itself. Only top-level runs drive the loop: a
+   * subagent finishing says nothing about the conversation's goal.
+   */
+  async #driveGoal(
+    input: StartMidasRunInput,
+    result: AgentRunResult,
+  ): Promise<void> {
+    if (input.parentRunId || result.status !== "completed") return;
+    const decision = await this.goalLoop.afterRun({
+      conversationId: input.conversationId,
+      model: this.#options.judgeModel ?? this.#options.model,
+      lastAgentMessage: result.lastAgentMessage,
+      signal: input.signal,
+    });
+    if (decision.action !== "continue" || !decision.prompt) return;
+    const runId = crypto.randomUUID();
+    const run = this.start({
+      conversationId: input.conversationId,
+      text: decision.prompt,
+      reasoning: input.reasoning,
+      goalContinuation: true,
+      runId,
+    });
+    this.#options.onGoalContinuation?.({
+      conversationId: input.conversationId,
+      previousRunId: result.runId,
+      runId,
+      run,
+      decision,
+    });
   }
 
   async #runSubagent(
@@ -221,6 +346,7 @@ export class MidasAgent {
       text: request.prompt,
       parentRunId,
       includeSubagents: false,
+      model: this.#options.taskModel,
       signal,
       contextMode: request.context,
     });
@@ -252,20 +378,29 @@ export class MidasAgent {
     const additions = result.context.messages
       .slice(initialMessages)
       .filter((message) => message.role === "assistant");
-    for (const message of additions)
+    additions.forEach((message, index) =>
       this.#options.storage.appendMessage({
         id: crypto.randomUUID(),
         conversationId: input.conversationId,
         runId: result.runId,
         role: "assistant",
         content: json(message.content),
-      });
-    this.memory.recordRollout({
-      conversationId: input.conversationId,
-      runId: result.runId,
-      userText: input.text,
-      assistantText: assistantText(result),
-    });
+        // Mirrors the run's message.completed phases: only the run's last
+        // assistant message is the answer; earlier ones are mid-run narration
+        // that a client nests inside the run's activity group.
+        metadata: {
+          phase: index === additions.length - 1 ? "final" : "commentary",
+        },
+      }),
+    );
+    // Watermark-gated background work: it runs alongside the goal loop rather
+    // than before it, so it never delays the turn, but it is tracked so
+    // shutdown and tests can wait for it. maybeConsolidate absorbs failures.
+    const memoryWork = this.#consolidator
+      .maybeConsolidate(this.#options.model, new AbortController().signal)
+      .then((): void => undefined);
+    this.#goalWork.add(memoryWork);
+    void memoryWork.finally(() => this.#goalWork.delete(memoryWork));
   }
 }
 

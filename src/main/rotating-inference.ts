@@ -45,7 +45,7 @@ export class RotatingInference implements InferenceService {
                 ...event,
                 error: {
                   ...event.error,
-                  message: "The selected provider rejected its saved API key. Remove it or add a valid key in Options → Provider.",
+                  message: `The selected provider rejected its saved API key (${event.error.message}). Remove it or add a valid key in Settings → Provider.`,
                 },
               }
             : event;

@@ -91,3 +91,22 @@ test("omits disabled environment data and internal access preferences", () => {
   });
   assert.doesNotMatch(prompt, /1\.3521|103\.8198|Current environment/);
 });
+
+test("tells the agent earlier conversations are searchable rather than lost", () => {
+  const prompt = buildSystemPrompt({
+    memoryRegistryPath: "/data/memories/MEMORY.md",
+    historySearch: true,
+  });
+
+  assert.match(prompt, /search_history and read_conversation/);
+  assert.match(prompt, /rather than guessing or asking them to repeat it/);
+  // Recall is retrieval, never licence to act on what a past turn said.
+  assert.match(prompt, /evidence about the past, not a standing instruction/);
+});
+
+test("says nothing about memory or history when neither is available", () => {
+  const prompt = buildSystemPrompt({});
+
+  assert.doesNotMatch(prompt, /search_history/);
+  assert.doesNotMatch(prompt, /## Memory/);
+});

@@ -1,6 +1,6 @@
 ---
 name: skill-maintenance
-description: Stage, compare, and safely promote changes to the user's personal Codex skills. Use whenever creating, editing, merging, installing, deleting, or reviewing a skill under ~/.codex/skills or ~/.agents/skills; when the maintenance hook reports drift; or when reviewing a customized bundled-skill update. Keep live skills unchanged until structural checks and protected behavioral contracts pass.
+description: Stage, compare, and safely promote changes to the user's personal Midas skills. Use whenever creating, editing, merging, installing, deleting, or reviewing a skill under ~/.midas/skills or ~/.agents/skills; when the live-skill guard hook or a drift scan reports drift; or when reviewing a customized bundled-skill update. Keep live skills unchanged until structural checks and protected behavioral contracts pass.
 author: Midas
 category: Skills
 ---
@@ -9,7 +9,7 @@ category: Skills
 
 Protect existing preferences by testing an isolated candidate against the approved skill snapshot before changing the live skill.
 
-- **Live/deployed skill:** the active approved copy Codex loads.
+- **Live/deployed skill:** the active approved copy Midas loads.
 - **Staged candidate:** an inactive working copy used for editing and testing.
 
 Keep user-facing explanations concise and high-level unless the user asks for
@@ -38,8 +38,8 @@ the normal maintenance gate:
   provenance to its registry after promotion. Do not guess a source or request
   separate enrollment approval. Read
   [references/public-updates.md](references/public-updates.md).
-- **Bundled Codex source (system skill):** for a customized copy of a skill
-  shipped with Codex.
+- **Bundled Midas source (system skill):** for a customized copy of a skill
+  shipped with Midas.
   Keep the custom copy in the user-owned skill root and use the integrated
   `system` commands to compare it with the newly bundled version. Read
   [references/system-updates.md](references/system-updates.md).
@@ -71,11 +71,11 @@ confirmation.
 
    ```bash
    python3 scripts/skill_maintenance.py stage <skill-name>
-   python3 scripts/skill_maintenance.py stage-new codex <new-skill-name>
+   python3 scripts/skill_maintenance.py stage-new midas <new-skill-name>
    python3 scripts/skill_maintenance.py stage-delete <skill-name>
    ```
 
-4. Edit only the returned candidate path. Do not change the contracts, runner, hook, approved snapshots, or baseline to make a candidate pass.
+4. Edit only the returned candidate path. Do not change the contracts, runner, drift-scan configuration, approved snapshots, or baseline to make a candidate pass.
 5. Check the gate, structure, and applicable approved-versus-proposed behavior suite:
 
    ```bash
@@ -93,13 +93,13 @@ confirmation.
 
    ```bash
    python3 scripts/skill_maintenance.py check-rename <candidate-id> \
-     --source-skill codex:old-name \
-     --replacement-skill codex:new-name \
+     --source-skill midas:old-name \
+     --replacement-skill midas:new-name \
      --replace old-name=new-name
    ```
 
    For the newly named replacement skill itself, use
-   `--source-skill codex:old-name` without `--replacement-skill`. For deletion
+   `--source-skill midas:old-name` without `--replacement-skill`. For deletion
    of the old skill after its replacement is live, use only `--replacement-skill`.
    Repeat `--replace` for deliberate
    spelling forms such as uppercase environment-variable identifiers.
@@ -140,7 +140,7 @@ deletion candidate. Pass only exact old/new identifiers and exact registered
 text replacements. Run it with `--dry-run` first; the applied migration creates
 an external backup, updates the registered metadata atomically, reseals the
 unchanged behavioral baseline against the new routing policy, and refreshes the
-hook's expected suite digest. Never use it to alter contracts, grader behavior,
+drift scan's expected suite digest. Never use it to alter contracts, grader behavior,
 approved skill snapshots, or skill content.
 
 Required contracts, repeats, baseline comparisons, and grader calls may not be
@@ -176,7 +176,7 @@ python3 scripts/migrate_skill_delete.py <skill-name>
 
 The helper backs up every affected metadata file, removes only the exact skill
 identifier, reseals the unchanged approved behavioral state against the updated
-routing policy, and refreshes the hook suite digest. Never use it before live
+routing policy, and refreshes the drift-scan suite digest. Never use it before live
 skill references have been cleaned or as a substitute for `stage-delete`.
 
 Ask for clarification only when the deletion target is ambiguous, the request is conditional, live drift exists, structural validation fails, or the report shows a problem beyond the expected absence of the deleted skill.
@@ -196,9 +196,9 @@ Ask for clarification only when the deletion target is ambiguous, the request is
 
 ## Evaluation boundaries
 
-Behavior probes run in isolated read-only Codex profiles with live hooks, memories, GUI control, and external side effects disabled. Never send messages, submit forms, pay, book, power devices, or foreground apps during a probe.
+Behavior probes run in isolated read-only Midas profiles with memories, GUI control, and external side effects disabled. Never send messages, submit forms, pay, book, power devices, or foreground apps during a probe.
 
-When validation needs a real fresh Codex task outside the sealed probe runner:
+When validation needs a real fresh Midas task outside the sealed probe runner:
 
 - If the user references a specific failed or unsatisfactory task, retrieve and
   reuse the user's exact original prompt as the primary before-versus-after
@@ -207,7 +207,7 @@ When validation needs a real fresh Codex task outside the sealed probe runner:
   diagnostic prompts only after the exact-prompt reproduction.
 - Evaluate the completed answer against the user's intended outcome and the
   original failure, not merely whether the candidate invoked a skill, tool,
-  cache, hook, or route. Record relevant missing evidence, incorrect claims,
+  cache, scan, or route. Record relevant missing evidence, incorrect claims,
   and output-quality differences.
 - Give temporary test tasks a clearly diagnostic title, wait for their final
   result, inspect enough of the turn to judge the output, then archive every

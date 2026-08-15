@@ -2,6 +2,12 @@
 
 Midas is a lean, local-first desktop agent built with Electron and TypeScript.
 
+**macOS only for now.** `npm run make` still produces Windows and Linux artifacts,
+but several subsystems reach for macOS-specific facilities with no fallback: mailbox
+passwords go through the `security` keychain tool, screen and accessibility features
+go through macOS permission APIs, and the bundled bridges are `darwin-arm64` builds.
+Treat the non-Mac targets as unsupported until those paths are made portable.
+
 ## Backend
 
 - `core` owns the provider-neutral agent loop, streaming events, cancellation, steering, and tool execution.
@@ -29,6 +35,74 @@ npm run test:ui
 npm run package
 npm run make
 ```
+
+### Bridge binaries
+
+Messaging runs through mautrix bridges that Midas supervises itself — no Docker, no
+Synapse. The binaries are not in git; fetch them before packaging:
+
+```sh
+npm run bridges:fetch
+```
+
+That pulls 13 pinned bridges (~580 MB) into `bridges/`, verifying each against the
+checksum upstream publishes for it, and `npm run make` runs it automatically. Eleven
+come from GitHub releases; iMessage and Google Chat have no usable release, so they
+come from pinned mau.dev CI commits with hashes recorded in the script. `bridges/`
+ships as an `extraResource`, and at runtime `BridgeHost` searches the bundled copy
+first, then `<userData>/hub/bin` — drop a binary there to add a network the bundle
+does not carry, and it is picked up on the next launch.
+
+**Apple Silicon only, with one exception.** Upstream publishes `darwin-arm64` builds
+and no `darwin-amd64` ones, so an Intel Mac gets no bundled bridges apart from
+iMessage, whose CI produces a universal binary. Everything else in Midas works on
+Intel; only messaging is affected, and the Hub screen reports each missing network as
+not installed rather than failing silently. Supporting Intel properly means building
+the bridges from source for `amd64` at package time, which needs a Go toolchain and
+each bridge's own build dependencies.
+
+**Telegram needs credentials.** The bridge ships without an `api_id`/`api_hash` pair;
+first-run setup asks for one (from <https://my.telegram.org/apps>) and records it in
+that bridge's config. Until then the bridge is held back rather than started broken.
+
+**iMessage needs Full Disk Access.** Its bridge reads `~/Library/Messages/chat.db`,
+which macOS blocks (`operation not permitted`) until Midas is granted Full Disk
+Access in System Settings → Privacy & Security. Without it the bridge exits at
+startup and the Hub reports iMessage as not answering.
+
+To prove the fleet end to end after fetching, `npx tsx scripts/smoke-bridges.mts`
+starts the embedded homeserver and every bridge, then checks each one answers its
+provisioning API — the same route the app drives logins through.
+
+### Storage providers
+
+The Drive reads and writes through pluggable backends: a folder on this Mac, Google
+Drive, Dropbox, OneDrive, and any S3-compatible bucket. Settings → Drive connects
+them, shows each one's quota, and sets the order new files are saved in — Midas
+writes to the first backend in that order it can reach.
+
+Each cloud provider is confined to its own folder rather than the whole account:
+Google Drive uses the `drive.file` scope, Dropbox and OneDrive use their app-folder
+permissions, and S3 takes an optional prefix. Refresh tokens and the S3 secret key
+go into the same OS-encrypted credential store as the model provider keys.
+
+The three OAuth providers need client credentials, which are read from the
+environment and never committed. A build without them reports that provider as
+unavailable rather than offering a button that could only fail:
+
+```sh
+MIDAS_GOOGLE_DRIVE_CLIENT_ID=... MIDAS_GOOGLE_DRIVE_CLIENT_SECRET=... \
+MIDAS_DROPBOX_CLIENT_ID=... \
+MIDAS_ONEDRIVE_CLIENT_ID=... \
+npm start
+```
+
+Register each app as a **desktop/native** client with the redirect URI
+`http://127.0.0.1:47665/drive/callback`. The port is fixed because Dropbox and
+Microsoft match redirect URIs exactly. Public clients that issue no secret (the
+usual case for native apps) can omit the `_CLIENT_SECRET` variable — every flow uses
+PKCE regardless. S3 needs no build-time configuration; its bucket, region, endpoint
+and keys are entered in Settings → Drive.
 
 `MIDAS_MODEL` uses `provider/model` format. Credentials are resolved by `pi-ai`; environment credentials are suitable for development until the settings UI and operating-system credential store are added.
 

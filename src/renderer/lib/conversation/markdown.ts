@@ -74,6 +74,54 @@ function highlightCode(pre: Element): void {
   }
 }
 
+/**
+ * Web links read as running text rather than raw urls: the site's own icon,
+ * then a short label, underlined like any other link instead of boxed into a
+ * chip that interrupts the sentence. The icon is the site's own `/favicon.ico`
+ * — no third-party favicon service, so rendering a link tells nobody the user
+ * was sent it. It sits behind a globe that only gets replaced once the real
+ * icon loads, which is also the fallback for a site that has none.
+ *
+ * The image is left without a `src`: the renderer's CSP allows no remote
+ * images, so the bytes come from the main process instead, and the site the
+ * icon belongs to is recorded here for whoever mounts this html to ask for.
+ */
+function decorateLink(document: Document, anchor: HTMLAnchorElement): void {
+  let url: URL
+  try {
+    url = new URL(anchor.getAttribute('href') ?? '')
+  } catch {
+    return
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return
+
+  const text = anchor.textContent?.trim() ?? ''
+  // An autolinked url is its own text; a hostname reads better as a mention.
+  const label = !text || text === anchor.getAttribute('href') || /^https?:\/\//i.test(text)
+    ? url.hostname.replace(/^www\./, '')
+    : text
+
+  const icon = document.createElement('span')
+  icon.className = 'link-icon'
+  icon.innerHTML = GLOBE_SVG
+  const favicon = document.createElement('img')
+  favicon.className = 'link-favicon'
+  favicon.dataset.linkFavicon = `${url.origin}/favicon.ico`
+  favicon.alt = ''
+  icon.append(favicon)
+
+  const name = document.createElement('span')
+  name.className = 'link-label'
+  name.textContent = label
+
+  anchor.classList.add('markdown-link')
+  anchor.replaceChildren(icon, name)
+}
+
+// The same globe the Icon component draws, so a link's fallback icon matches
+// every other globe in the app.
+const GLOBE_SVG = '<svg class="link-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>'
+
 export function renderMarkdown(source: string): string {
   if (!source.trim()) return ''
   const rendered = marked.parse(source, {
@@ -91,6 +139,7 @@ export function renderMarkdown(source: string): string {
   const document = new DOMParser().parseFromString(sanitized, 'text/html')
   for (const anchor of document.querySelectorAll('a')) {
     anchor.setAttribute('rel', 'noopener noreferrer')
+    decorateLink(document, anchor)
   }
   for (const pre of document.querySelectorAll('pre')) {
     const wrapper = document.createElement('div')

@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import {onDestroy, onMount} from 'svelte';
+  import {onDestroy, onMount, tick} from 'svelte';
   import Icon from '../shared/Icon.svelte';
   import {midasApi} from '../../api/midas';
 
@@ -13,7 +13,7 @@
   /** True while another surface (a modal, the speech orb) covers the drawer.
    * The embedded view floats above every DOM element, so it must yield. */
   export let obscured = false;
-  export let onState: (patch: {title?: string; url?: string}) => void = () => {};
+  export let onState: (patch: {title?: string; url?: string; favicon?: string | null}) => void = () => {};
 
   const api = midasApi();
   // The embedded browser is real Chromium hosted by the main process. Without
@@ -36,12 +36,14 @@
   let moreWrapper: HTMLElement;
   let surface: HTMLElement;
   let unsubscribe: (() => void) | undefined;
-  let boundsTimer: ReturnType<typeof setInterval> | undefined;
+  let boundsFrame: number | undefined;
   let lastBounds = '';
   let downloads: BrowserDownload[] = [];
 
   $: if (!embedded) draft = url ?? '';
-  $: if (embedded) void api.browser.setVisible(tabId, !obscured);
+  // The bar's own popovers hang over the page too, so it steps aside for them
+  // the same way it does for surfaces that cover the whole drawer.
+  $: if (embedded) void api.browser.setVisible(tabId, !obscured && !downloadsOpen && !moreOpen);
 
   /** "Search or enter address" semantics: URLs load, anything else searches. */
   function resolveInput(value: string): string {
@@ -93,6 +95,9 @@
 
   async function takeScreenshot(): Promise<void> {
     moreOpen = false;
+    // Closing the menu is what un-hides the page, and that ride runs through a
+    // reactive flush; capture only after it, or the shot is of a hidden view.
+    await tick();
     const entry = await api.browser.screenshot(tabId);
     if (entry) downloads = [entry, ...downloads.filter((existing) => existing.id !== entry.id)];
   }
@@ -107,7 +112,11 @@
   /** The main process positions the web contents under this component's
    * surface, so its rectangle is reported whenever it can have moved. Layout
    * animations (drawer slides, resizes) have no end event that covers every
-   * case, so a cheap poll keeps the view glued through them. */
+   * case, so this is sampled every frame instead: the drawer slide moves the
+   * surface continuously, and anything coarser repositions the web contents in
+   * visible steps that read as the page lagging behind its own pane. The
+   * rectangle is compared first, so a still layout costs one `getBoundingClientRect`
+   * per frame and sends nothing. */
   function reportBounds(): void {
     if (!surface) return;
     const rect = surface.getBoundingClientRect();
@@ -130,6 +139,7 @@
         onState({
           title: event.state.title || undefined,
           url: event.state.url || undefined,
+          favicon: event.state.faviconUrl,
         });
       } else if (event.type === 'downloads') {
         downloads = event.downloads;
@@ -141,8 +151,11 @@
     const observer = new ResizeObserver(reportBounds);
     observer.observe(surface);
     window.addEventListener('resize', reportBounds);
-    boundsTimer = setInterval(reportBounds, 200);
-    reportBounds();
+    const trackBounds = (): void => {
+      reportBounds();
+      boundsFrame = requestAnimationFrame(trackBounds);
+    };
+    trackBounds();
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', reportBounds);
@@ -150,7 +163,7 @@
   });
 
   onDestroy(() => {
-    clearInterval(boundsTimer);
+    if (boundsFrame !== undefined) cancelAnimationFrame(boundsFrame);
     unsubscribe?.();
     // Switching tabs unmounts this component while the tab stays open, so the
     // view hides rather than closes; the drawer closes it with the tab.

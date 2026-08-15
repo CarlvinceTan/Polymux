@@ -1,16 +1,28 @@
 import type {
   ArtifactDto,
+  ChatDto,
+  ChatMessageDto,
   ChronicleStatusDto,
+  CommsEmailAccountDto,
+  CommsStatusDto,
+  DriveEntryDto,
+  DriveProviderId,
+  DriveStatusDto,
+  MailEnvelopeDto,
+  MailFolderDto,
+  WorkspaceSnapshotDto,
   ConversationDto,
   GoalDto,
   GeneralSettingsDto,
   JsonValue,
   McpServerDto,
-  MemoryDto,
   MessageDto,
   MidasApi,
   ModelDto,
   ModelMetadataDto,
+  ModelRole,
+  ModelRoleAssignmentDto,
+  ModelRolesDto,
   ProviderDto,
   ReferenceDto,
   RunEventDto,
@@ -30,6 +42,13 @@ export function midasApi(): MidasApi {
 /** A development-only adapter keeps browser-based component tests useful. The
  * packaged desktop never selects it because preload supplies `window.midas`. */
 function createBrowserDemoApi(): MidasApi {
+  /**
+   * `?onboarding` puts the demo into a genuine first-run state — nothing
+   * configured, nothing granted — so first-run setup can be previewed and
+   * tested without a second dev server.
+   */
+  const onboardingPreview =
+    typeof location !== 'undefined' && new URLSearchParams(location.search).has('onboarding');
   const now = Date.now();
   let conversations: ConversationDto[] = [
     conversation('welcome', 'Planning a product launch', now - 86_400_000),
@@ -46,6 +65,22 @@ function createBrowserDemoApi(): MidasApi {
   const listeners = new Set<(event: RunEventDto) => void>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const runConversations = new Map<string, string>();
+  let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string}>> = {};
+  const demoRoles = (): ModelRolesDto => {
+    const assignment = (ref?: {provider: string; id: string}): ModelRoleAssignmentDto | null => {
+      const model = ref && demoModels.find((item) => item.provider === ref.provider && item.id === ref.id);
+      return model ? {provider: model.provider, id: model.id, name: model.name} : null;
+    };
+    const main = demoModels.find((item) => item.selected);
+    return {
+      main: assignment(main),
+      task: assignment(demoRoleOverrides.task),
+      judge: assignment(demoRoleOverrides.judge),
+      speech: assignment(demoRoleOverrides.speech),
+      image: assignment(demoRoleOverrides.image),
+      video: assignment(demoRoleOverrides.video),
+    };
+  };
   let demoModels: ModelDto[] = [
     {provider: 'openai', id: '~openai/gpt-5.6-terra', name: 'GPT-5.6 Terra', contextWindow: 200_000, maxOutputTokens: 32_000, reasoning: true, input: ['text', 'image'], cost: {input: 2.5, output: 15, cacheRead: .25, cacheWrite: 3.125}, selected: true, custom: false},
     {provider: 'openai', id: '~openai/gpt-5.6-sol', name: 'GPT-5.6 Sol', contextWindow: 200_000, maxOutputTokens: 32_000, reasoning: true, input: ['text', 'image'], cost: {input: 5, output: 30, cacheRead: .5, cacheWrite: 6.25}, selected: false, custom: false},
@@ -60,7 +95,11 @@ function createBrowserDemoApi(): MidasApi {
     'anthropic:~anthropic/claude-sonnet-4-5': {description: 'Balanced model for coding agents and careful analysis.', family: 'claude-sonnet', lab: 'anthropic', knowledgeCutoff: '2025-08-31', releaseDate: '2026-02-17', openWeights: false, toolCall: true, structuredOutput: true, temperature: true, attachment: true, contextLimit: 200_000, outputLimit: 16_000},
     'openrouter:google/gemini-3.1-pro-preview': {description: 'Long-context multimodal preview model.', family: 'gemini-3.1', lab: 'google', releaseDate: '2026-03-05', openWeights: false, toolCall: true, contextLimit: 1_000_000, outputLimit: 65_536},
   };
-  const demoKeys = new Map<string, ProviderDto['apiKeys']>([['openai', [{id: 'openai-key-1', label: 'sk-p••••demo', active: true, status: 'ready'}]]]);
+  const demoKeys = new Map<string, ProviderDto['apiKeys']>(
+    onboardingPreview
+      ? []
+      : [['openai', [{id: 'openai-key-1', label: 'sk-p••••demo', active: true, status: 'ready'}]]],
+  );
   const demoProviders: ProviderDto[] = [
     {id: 'openai', name: 'OpenAI', apiKeyLabel: 'OpenAI API key', supportsOAuth: false, storedCredential: true, configured: true, source: '1 saved API key', modelCount: 2, custom: false, apiKeys: []},
     {id: 'anthropic', name: 'Anthropic', apiKeyLabel: 'Anthropic API key', supportsOAuth: true, storedCredential: false, configured: false, source: null, modelCount: 2, custom: false, apiKeys: []},
@@ -76,18 +115,115 @@ function createBrowserDemoApi(): MidasApi {
     {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', source: 'midas', editable: true, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_files'], resourceUris: ['filesystem://documents'], promptNames: [], command: 'node', args: ['server.mjs']},
     {id: 'browser-tools', name: 'Browser Tools', description: 'Open and inspect web pages.', source: 'official', editable: false, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['open_page', 'read_page'], resourceUris: [], promptNames: [], command: 'node', args: ['browser.mjs']},
   ];
+  const demoCommsStatus: CommsStatusDto = {
+    hub: {
+      baseUrl: 'http://127.0.0.1:18080',
+      homeserverUrl: 'http://127.0.0.1:8008',
+      canAutoConnect: onboardingPreview,
+      directory: '~/Library/Application Support/matrix-hub',
+      status: onboardingPreview ? 'reachable' : 'signed-in',
+      userId: onboardingPreview ? null : '@demo:localhost',
+      homeserverName: 'localhost',
+      error: null,
+    },
+    bridges: [
+      {platform: 'whatsapp', name: 'WhatsApp', api: 'bridgev2', state: onboardingPreview ? 'logged-out' : 'connected', accounts: onboardingPreview ? [] : [{id: 'wa1', name: '+61 400 000 000', state: 'connected', error: null}], flows: onboardingPreview ? [{id: 'qr', name: 'QR Code', description: 'Scan a QR code to pair the bridge to your WhatsApp account'}, {id: 'phone', name: 'Pairing code', description: 'Enter your phone number and type the code WhatsApp shows into your phone'}] : [], setup: null, managementRoomHint: null, error: null},
+      {platform: 'telegram', name: 'Telegram', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'phone', name: 'Phone Number', description: 'Login using your Telegram phone number'}, {id: 'qr', name: 'QR Code', description: 'Login by scanning a QR code from your phone'}], setup: {fields: [{id: 'api_id', name: 'API ID', description: 'The numeric ID of your Telegram application.', helpUrl: 'https://my.telegram.org/apps', secret: false}, {id: 'api_hash', name: 'API hash', description: 'The hash shown next to it.', helpUrl: 'https://my.telegram.org/apps', secret: true}], configured: false}, managementRoomHint: null, error: null},
+      {platform: 'signal', name: 'Signal', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Link this Mac as a Signal device by scanning a QR code'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'slack', name: 'Slack', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'token', name: 'Token', description: 'Sign in with a Slack token pair'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'googlechat', name: 'Google Chat', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Google login', description: 'Sign in to your Google account'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'gmessages', name: 'Google Messages', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Pair with Messages for web by scanning a QR code'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'twitter', name: 'X', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'x.com', description: 'Login using cookies from x.com'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'bluesky', name: 'Bluesky', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'password', name: 'App password', description: 'Sign in with a Bluesky app password'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'gvoice', name: 'Google Voice', api: 'bridgev2', state: 'unreachable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'mautrix-gvoice is not installed on this Mac.'},
+      {platform: 'messenger', name: 'Messenger', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'messenger', name: 'messenger.com', description: 'Login using cookies from messenger.com'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'instagram', name: 'Instagram', api: 'bridgev2', state: 'connected', accounts: [{id: 'ig1', name: '@carl.builds', state: 'connected', error: null}, {id: 'ig2', name: '@flarehq', state: 'connected', error: null}], flows: [{id: 'instagram', name: 'instagram.com', description: 'Login using cookies from instagram.com'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'discord', name: 'Discord', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Scan a QR code with the Discord app'}, {id: 'token', name: 'Token', description: 'Paste a Discord account token to link it'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'linkedin', name: 'LinkedIn', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Cookies', description: 'Log in with your LinkedIn account using your cookies'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'imessage', name: 'iMessage', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'local', name: 'This Mac', description: 'Read the Messages database on this Mac'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'wechat', name: 'WeChat', api: 'none', state: 'unavailable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'This platform runs through a local relay on this Mac rather than a hosted login, so there is nothing to link here.'},
+    ],
+    email: {
+      tooling: {installed: true, version: 'himalaya v1.2.0', configPath: '~/.config/himalaya/config.toml', error: null},
+      accounts: onboardingPreview
+        ? []
+        : [
+            {id: 'personal', displayName: 'Demo User', email: 'demo@example.com', isDefault: true, incoming: {kind: 'imap', host: 'imap.gmail.com', port: 993, encryption: 'tls', login: 'demo@example.com', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.gmail.com', port: 587, encryption: 'start-tls', login: 'demo@example.com', auth: 'command'}, secretStored: true, status: 'ok', error: null},
+            {id: 'work', displayName: 'Demo At Work', email: 'demo@work.example', isDefault: false, incoming: {kind: 'imap', host: 'outlook.office365.com', port: 993, encryption: 'tls', login: 'demo@work.example', auth: 'oauth2'}, outgoing: {kind: 'smtp', host: 'smtp.office365.com', port: 587, encryption: 'start-tls', login: 'demo@work.example', auth: 'oauth2'}, secretStored: false, status: 'unknown', error: null},
+            {id: 'team', displayName: null, email: 'team@example.co', isDefault: false, incoming: {kind: 'imap', host: 'imap.larksuite.com', port: 993, encryption: 'tls', login: 'team@example.co', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.larksuite.com', port: 465, encryption: 'tls', login: 'team@example.co', auth: 'command'}, secretStored: true, status: 'error', error: 'authentication failed'},
+          ],
+    },
+  };
+  /** Logins the user backed out of; their pending waits must go nowhere. */
+  let demoLoginCancelled = 0;
+  /** A finished login has to show up in the ring, or the demo ends on a lie. */
+  const demoMarkLinked = (platform: string): void => {
+    demoCommsStatus.bridges = demoCommsStatus.bridges.map((bridge) =>
+      bridge.platform === platform
+        ? {
+            ...bridge,
+            state: 'connected',
+            accounts: [
+              ...bridge.accounts,
+              {id: `demo-${platform}`, name: 'Demo account', state: 'connected', error: null},
+            ],
+          }
+        : bridge,
+    );
+  };
+  const demoChats: ChatDto[] = [
+    {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp'},
+    {id: '!wa-family:local', name: 'Family', platform: 'whatsapp'},
+    {id: '!tg-devs:local', name: 'Dev Chat', platform: 'telegram'},
+  ];
+  let demoChatMessages: ChatMessageDto[] = [
+    {id: 'c1', chatId: '!wa-jules:local', sender: 'Jules Tan', body: 'Are we still on for Thursday?', sentAt: new Date(now - 3_600_000).toISOString(), mine: false},
+    {id: 'c2', chatId: '!wa-jules:local', sender: 'You', body: 'Yes — 2pm works.', sentAt: new Date(now - 3_500_000).toISOString(), mine: true},
+    {id: 'c3', chatId: '!wa-family:local', sender: 'Mum', body: 'Dinner Sunday?', sentAt: new Date(now - 86_400_000).toISOString(), mine: false},
+    {id: 'c4', chatId: '!tg-devs:local', sender: 'Priya', body: 'Shipped the build, logs look clean.', sentAt: new Date(now - 7_200_000).toISOString(), mine: false},
+  ];
+  const demoMailFolders: MailFolderDto[] = [
+    {name: 'INBOX', label: 'INBOX', role: 'inbox'},
+    {name: '[Gmail]/Drafts', label: 'Drafts', role: 'drafts'},
+    {name: '[Gmail]/Sent Mail', label: 'Sent Mail', role: 'sent'},
+    {name: '[Gmail]/All Mail', label: 'All Mail', role: 'archive'},
+    {name: '[Gmail]/Spam', label: 'Spam', role: 'junk'},
+    {name: '[Gmail]/Trash', label: 'Trash', role: 'trash'},
+  ];
+  let demoEnvelopes: Array<{folder: string; body: string; html?: string; envelope: MailEnvelopeDto}> = [
+    {folder: 'INBOX', body: 'The quarterly numbers are attached. Let me know if you want the breakdown by region before Thursday.', envelope: {id: '1', subject: 'Q3 numbers', from: {name: 'Priya Raman', address: 'priya@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 5_400_000).toISOString(), seen: false, flagged: false, answered: false, draft: false, hasAttachment: true}},
+    {folder: 'INBOX', body: 'Reminder that the office will be closed on Monday.', envelope: {id: '2', subject: 'Closed Monday', from: {name: 'Office', address: 'office@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 90_000_000).toISOString(), seen: true, flagged: true, answered: false, draft: false, hasAttachment: false}},
+    {folder: 'INBOX', body: 'Your invoice for August is ready to view.', html: '<div style="font-family:system-ui"><h2 style="margin:0 0 8px">Invoice #1042</h2><p>Your invoice for August is <b>ready to view</b>.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left" style="border-bottom:1px solid #ddd">Item</th><th align="right" style="border-bottom:1px solid #ddd">Amount</th></tr><tr><td>Subscription</td><td align="right">$42.00</td></tr></table><p><a href="https://example.com/invoice/1042">View invoice</a></p></div>', envelope: {id: '3', subject: 'Invoice ready', from: {name: 'Billing', address: 'billing@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 172_800_000).toISOString(), seen: true, flagged: false, answered: true, draft: false, hasAttachment: false}},
+    {folder: '[Gmail]/Spam', body: 'You have definitely won a prize.', envelope: {id: '4', subject: 'YOU WON', from: {name: null, address: 'noreply@spam.example'}, to: null, date: new Date(now - 200_000_000).toISOString(), seen: false, flagged: false, answered: false, draft: false, hasAttachment: false}},
+  ];
+  const demoWorkspaceSnapshots = new Map<string, WorkspaceSnapshotDto>();
+  let demoDictationPass = 0;
   let demoChronicleEnabled = true;
   let demoMemoryEnabled = true;
   let demoGeneral: GeneralSettingsDto = {
     theme: 'light',
+    language: 'system',
     // Pinned rather than null: a null here falls through to the locale
     // default, which makes the demo — and every UI test — depend on the
     // machine's timezone (this machine resolves to SGD).
     currency: 'USD',
     speechModeEnabled: true,
+    dictationAutoStopSeconds: 6,
     timeEnabled: true,
     locationEnabled: true,
+    reasoningLevel: 'medium',
+    // The demo is a returning user; the Playwright suite drives the main UI,
+    // not first-run setup. Flip to false to preview setup in the browser.
+    onboardingCompleted: !onboardingPreview,
     location: null,
+  };
+
+  const demoUpdate = {
+    status: 'unsupported' as const,
+    version: '0.1.0',
+    latest: null,
+    checkedAt: '2026-08-14T00:00:00.000Z',
+    message: 'Updates are managed by the desktop app.',
   };
 
   const api: MidasApi = {
@@ -107,16 +243,33 @@ function createBrowserDemoApi(): MidasApi {
         return structuredClone(demoGeneral);
       },
       locate: async () => ({latitude: -33.8688, longitude: 151.2093, accuracy: 25_000, updatedAt: '2026-08-14T00:00:00.000Z'}),
+      version: async () => ({version: '0.1.0', electron: '', platform: 'browser', packaged: false}),
+      checkForUpdates: async () => demoUpdate,
+      installUpdate: async () => demoUpdate,
     },
+    // A browser tab has no traffic lights to move out of, so the state never
+    // changes and the subscription has nothing to tear down.
+    window: {subscribeFullscreen: () => () => {}},
     permissions: {
       ensureFirstRun: async () => ({firstRun: false, microphone: 'granted', screenRecording: 'granted'}),
-      status: async () => 'granted',
-      request: async () => 'granted',
+      // The onboarding preview starts from a genuine first run, so the states
+      // setup actually has to handle are the ones on screen.
+      status: async () => (onboardingPreview ? 'not-determined' : 'granted'),
+      request: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return 'granted';
+      },
       openSettings: async () => {},
     },
     dictation: {
+      // whisper.cpp lives in the desktop app, so the demo stands in for it —
+      // revealing the canned sentence a few words at a time, the way real
+      // passes over a growing recording do. Without this the composer's voice
+      // button is the one control a browser test cannot exercise.
       transcribe: async () => {
-        throw new Error('Local dictation runs in the desktop app, not the browser demo.');
+        const words = 'this is dictated text from the browser demo'.split(' ');
+        demoDictationPass = Math.min(demoDictationPass + 1, words.length);
+        return words.slice(0, demoDictationPass).join(' ');
       },
     },
     conversations: {
@@ -178,6 +331,12 @@ function createBrowserDemoApi(): MidasApi {
       events: async () => [],
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     },
+    workspace: {
+      snapshot: async (conversationId) => demoWorkspaceSnapshots.get(conversationId) ?? null,
+      saveSnapshot: async (conversationId, snapshot) => {
+        demoWorkspaceSnapshots.set(conversationId, structuredClone(snapshot));
+      },
+    },
     goals: {
       execute: async (request) => {
         if (request.action === 'clear') { goals.delete(request.conversationId); return null; }
@@ -226,17 +385,16 @@ function createBrowserDemoApi(): MidasApi {
         memories: 2,
         userMemories: 2,
         conversationMemories: 0,
-        rolloutSummaries: 4,
         latestMemoryAt: new Date().toISOString(),
-        latestRolloutAt: new Date().toISOString(),
+        consolidatedAt: new Date().toISOString(),
+        consolidationError: null,
+        consolidationRetryAfter: null,
+        pendingMemories: 0,
       }),
       setEnabled: async (enabled) => {
         demoMemoryEnabled = enabled;
         return {...await api.memory.status(), enabled};
       },
-      list: async () => [],
-      remember: async (content, conversationId) => ({id: crypto.randomUUID(), scope: conversationId ? 'conversation' : 'user', scopeId: conversationId ?? null, kind: 'learning', content, confidence: 1, updatedAt: new Date().toISOString()}),
-      forget: async () => true,
     },
     chronicle: {
       status: async () => ({
@@ -262,6 +420,164 @@ function createBrowserDemoApi(): MidasApi {
       },
       entries: async () => [],
     },
+    comms: {
+      status: async () => demoCommsStatus,
+      refresh: async () => demoCommsStatus,
+      // Nothing to start in a browser tab; the demo's bridges are always up.
+      wake: async () => demoCommsStatus,
+      setHubUrl: async (baseUrl) => {
+        demoCommsStatus.hub.baseUrl = baseUrl;
+        return demoCommsStatus;
+      },
+      connect: async () => {
+        demoCommsStatus.hub = {...demoCommsStatus.hub, status: 'signed-in', userId: '@midas-demo:localhost', canAutoConnect: false};
+        return demoCommsStatus;
+      },
+      signIn: async (userId) => {
+        demoCommsStatus.hub = {...demoCommsStatus.hub, status: 'signed-in', userId, error: null};
+        return demoCommsStatus;
+      },
+      signOut: async () => {
+        demoCommsStatus.hub = {...demoCommsStatus.hub, status: 'reachable', userId: null, canAutoConnect: true};
+        return demoCommsStatus;
+      },
+      // Each flow id opens with the step shape its real bridge uses, so the
+      // preview walks the same screens the packaged app does.
+      loginStart: async (platform, flowId) => {
+        if (flowId === 'qr')
+          return {type: 'display_and_wait', loginId: 'demo', stepId: 'qr', instructions: 'Scan this from your phone.', display: 'qr', data: `https://example.com/pair/${platform}`, imageUrl: null};
+        if (flowId === 'phone')
+          return {type: 'user_input', loginId: 'demo', stepId: `phone:${platform}`, instructions: null, fields: [{id: 'phone', type: 'phone_number', name: 'Phone number', description: 'With country code, e.g. +61 400 000 000.', pattern: '^\\+?[0-9 ]{6,}$'}]};
+        if (flowId === 'token')
+          return {type: 'user_input', loginId: 'demo', stepId: 'token', instructions: null, fields: [{id: 'token', type: 'token', name: 'Token', description: null, pattern: null}]};
+        if (flowId === 'password')
+          return {type: 'user_input', loginId: 'demo', stepId: 'password', instructions: null, fields: [{id: 'username', type: 'username', name: 'Handle', description: 'e.g. you.bsky.social', pattern: null}, {id: 'password', type: 'password', name: 'App password', description: null, pattern: null}]};
+        if (flowId === 'local')
+          return {type: 'display_and_wait', loginId: 'demo', stepId: 'local', instructions: 'Reading Messages on this Mac…', display: 'nothing', data: null, imageUrl: null};
+        // Everything else in the fleet signs in on the network's own site.
+        return {type: 'cookies', loginId: 'demo', stepId: 'cookies', instructions: null, url: 'https://example.com/login', waitForUrl: null, userAgent: null, fields: []};
+      },
+      loginSubmit: async (platform, _loginId, stepId) => {
+        // WhatsApp answers a phone number with a code to type on the phone;
+        // Telegram answers it by sending a login code to the app.
+        if (stepId === 'phone:whatsapp')
+          return {type: 'display_and_wait', loginId: 'demo', stepId: 'pairing', instructions: 'Type this code into WhatsApp on your phone.', display: 'code', data: 'GRWM-K2FH', imageUrl: null};
+        if (stepId.startsWith('phone:'))
+          return {type: 'user_input', loginId: 'demo', stepId: 'code', instructions: 'Telegram sent a login code to your other devices.', fields: [{id: 'code', type: '2fa_code', name: 'Login code', description: null, pattern: '^[0-9]{5,6}$'}]};
+        demoMarkLinked(platform);
+        return {type: 'complete', loginId: 'demo', accountId: 'demo', accountName: 'Demo account'};
+      },
+      // The real endpoint blocks until the remote side scans, and the QR stays
+      // on screen for as long as it does; resolving instantly would make the
+      // demo flash past the step it is meant to show.
+      loginWait: async (platform, _loginId, stepId) => {
+        const before = demoLoginCancelled;
+        await new Promise((resolve) => setTimeout(resolve, stepId === 'local' ? 3000 : 20_000));
+        if (demoLoginCancelled !== before) throw new Error('The login was cancelled.');
+        demoMarkLinked(platform);
+        return {type: 'complete', loginId: 'demo', accountId: 'demo', accountName: 'Demo account'};
+      },
+      loginCookies: async (platform) => {
+        demoMarkLinked(platform);
+        return {type: 'complete', loginId: 'demo', accountId: 'demo', accountName: 'Demo account'};
+      },
+      loginCancel: async () => {
+        demoLoginCancelled += 1;
+        return demoCommsStatus;
+      },
+      bridgeLogout: async (platform, accountId) => {
+        demoCommsStatus.bridges = demoCommsStatus.bridges.map((bridge) => {
+          if (bridge.platform !== platform) return bridge;
+          const accounts = bridge.accounts.filter((account) => account.id !== accountId);
+          return {...bridge, accounts, state: accounts.length > 0 ? 'connected' : 'logged-out'};
+        });
+        return demoCommsStatus;
+      },
+      bridgeSetup: async (platform, values) => {
+        demoCommsStatus.bridges = demoCommsStatus.bridges.map((bridge) =>
+          bridge.platform === platform && bridge.setup
+            ? {
+                ...bridge,
+                setup: {
+                  ...bridge.setup,
+                  configured: bridge.setup.fields.every((field) => Boolean(values[field.id])),
+                },
+              }
+            : bridge,
+        );
+        return demoCommsStatus;
+      },
+      chats: async () => demoChats,
+      chatMessages: async (chatId) => demoChatMessages.filter((item) => item.chatId === chatId),
+      chatSend: async (chatId, text) => {
+        const sent: ChatMessageDto = {id: crypto.randomUUID(), chatId, sender: 'You', body: text, sentAt: new Date().toISOString(), mine: true};
+        demoChatMessages = [sent, ...demoChatMessages];
+        return sent;
+      },
+      mailFolders: async () => demoMailFolders,
+      mailEnvelopes: async (request) => {
+        const folder = request.folder ?? 'INBOX';
+        const needle = request.query?.trim().toLowerCase() ?? '';
+        return demoEnvelopes
+          .filter((item) => item.folder === folder)
+          .filter((item) => !needle || item.envelope.subject.toLowerCase().includes(needle) || item.envelope.from.address.toLowerCase().includes(needle))
+          .map((item) => item.envelope);
+      },
+      mailMessage: async (id) => {
+        const found = demoEnvelopes.find((item) => item.envelope.id === id);
+        if (!found) throw new Error(`No message ${id}`);
+        return {id, subject: found.envelope.subject, from: found.envelope.from, to: found.envelope.to ? [found.envelope.to] : [], cc: [], date: found.envelope.date, body: found.body, html: found.html ?? null, attachments: found.envelope.hasAttachment ? [{name: 'q3-report.pdf', mime: 'application/pdf'}] : [], messageId: `<demo-${id}@example.com>`, references: []};
+      },
+      mailSend: async () => {},
+      mailDelete: async (ids) => {
+        demoEnvelopes = demoEnvelopes.filter((item) => !ids.includes(item.envelope.id));
+      },
+      mailDownload: async () => ['/tmp/q3-report.pdf'],
+      mailOpenFile: async () => {},
+      mailPickFiles: async () => ['/tmp/demo-attachment.pdf'],
+      mailMove: async (ids, target) => {
+        demoEnvelopes = demoEnvelopes.map((item) => (ids.includes(item.envelope.id) ? {...item, folder: target} : item));
+      },
+      mailFlag: async (ids, flag, on) => {
+        demoEnvelopes = demoEnvelopes.map((item) =>
+          ids.includes(item.envelope.id) ? {...item, envelope: {...item.envelope, [flag === 'seen' ? 'seen' : 'flagged']: on}} : item,
+        );
+      },
+      // Real enough to exercise the UI: several mailboxes can share a
+      // provider, and each is edited or removed on its own.
+      emailSave: async (request) => {
+        const account: CommsEmailAccountDto = {
+          id: request.id,
+          displayName: request.displayName ?? null,
+          email: request.email,
+          isDefault: request.isDefault ?? demoCommsStatus.email.accounts.length === 0,
+          incoming: {kind: 'imap', host: request.imapHost, port: request.imapPort, encryption: request.imapEncryption, login: request.email, auth: 'password'},
+          outgoing: {kind: 'smtp', host: request.smtpHost, port: request.smtpPort, encryption: request.smtpEncryption, login: request.email, auth: 'password'},
+          secretStored: true,
+          status: 'ok',
+          error: null,
+        };
+        const existing = request.originalId ?? request.id;
+        const accounts = demoCommsStatus.email.accounts.some((item) => item.id === existing)
+          ? demoCommsStatus.email.accounts.map((item) => (item.id === existing ? account : item))
+          : [...demoCommsStatus.email.accounts, account];
+        demoCommsStatus.email = {...demoCommsStatus.email, accounts};
+        return demoCommsStatus;
+      },
+      emailRemove: async (id) => {
+        demoCommsStatus.email = {
+          ...demoCommsStatus.email,
+          accounts: demoCommsStatus.email.accounts.filter((item) => item.id !== id),
+        };
+        return demoCommsStatus;
+      },
+      emailTest: async (id) => {
+        const account = demoCommsStatus.email.accounts.find((item) => item.id === id);
+        if (!account) throw new Error(`No email account named ${id}`);
+        return {...account, status: 'ok', error: null};
+      },
+      subscribe: () => () => {},
+    },
     mcp: {
       list: async () => demoMcpServers,
       reload: async () => demoMcpServers,
@@ -286,6 +602,53 @@ function createBrowserDemoApi(): MidasApi {
         {id: 'io.github/example/files', name: 'Files', description: 'Browse and manage files.', url: 'https://example.com/files/mcp', requiredHeaders: []},
         {id: 'io.github/example/issues', name: 'Issues', description: `Search ${query || 'project'} issues.`, url: 'https://example.com/issues/mcp', repository: 'https://github.com/example/issues', requiredHeaders: ['Authorization']},
       ],
+      subscribe: () => () => {},
+    },
+    drive: {
+      status: async () => demoDriveStatus,
+      refresh: async () => demoDriveStatus,
+      // The demo has no OAuth to run, so connecting just flips the provider on
+      // — enough to exercise every state the settings tab renders.
+      connect: async (provider) => demoDriveConnect(provider, true),
+      disconnect: async (provider) => demoDriveConnect(provider, false),
+      setSaveOrder: async (order) => {
+        demoDriveStatus.saveOrder = order;
+        return demoDriveStatus;
+      },
+      setLocalRoot: async (path) => {
+        const local = demoDriveStatus.providers.find((entry) => entry.id === 'local');
+        if (local) local.root = path ?? '/demo/Midas';
+        return demoDriveStatus;
+      },
+      saveS3: async (config) => {
+        const s3 = demoDriveStatus.providers.find((entry) => entry.id === 's3');
+        if (s3) {
+          s3.state = 'connected';
+          s3.root = config.prefix ? `${config.bucket}/${config.prefix}` : config.bucket;
+          s3.accounts = [{id: config.bucket, name: config.bucket, email: null}];
+        }
+        return demoDriveStatus;
+      },
+      list: async (provider, path) => demoDriveEntries(provider, path ?? ''),
+      createFolder: async (provider, parentPath, name) => ({
+        id: `${parentPath}/${name}`, name, kind: 'folder', size: null,
+        modifiedAt: new Date().toISOString(), provider, path: `${parentPath}/${name}`, mimeType: null,
+      }),
+      upload: async () => [],
+      download: async (_provider, path) => `/demo/downloads/${path}`,
+      remove: async () => {},
+      rename: async (provider, path, name) => ({
+        id: path, name, kind: 'file', size: null,
+        modifiedAt: new Date().toISOString(), provider, path, mimeType: null,
+      }),
+      move: async (provider, paths, destinationFolder) => paths.map((path) => ({
+        id: path, name: path.slice(path.lastIndexOf(':') + 1), kind: 'file' as const, size: null,
+        modifiedAt: new Date().toISOString(), provider, path: `${destinationFolder}/${path}`, mimeType: null,
+      })),
+      copy: async (provider, paths) => paths.map((path) => ({
+        id: `${path}-copy`, name: 'Copy', kind: 'file' as const, size: null,
+        modifiedAt: new Date().toISOString(), provider, path: `${path}-copy`, mimeType: null,
+      })),
       subscribe: () => () => {},
     },
     skills: {
@@ -332,7 +695,7 @@ function createBrowserDemoApi(): MidasApi {
         if (!selected) throw new Error(`Unknown model: ${provider}/${id}`);
         const providerState = demoProviders.find((item) => item.id === provider);
         if (providerState && !providerWithKeys(providerState).configured)
-          throw new Error(`${providerState.name} is not configured. Add its API key in Options → Provider, or choose a configured model.`);
+          throw new Error(`${providerState.name} is not configured. Add its API key in Settings → Provider, or choose a configured model.`);
         demoModels = demoModels.map((model) => ({...model, selected: model === selected}));
         return demoModels.find((model) => model.selected)!;
       },
@@ -340,6 +703,26 @@ function createBrowserDemoApi(): MidasApi {
       // it exercises the "catalogue knows nothing" path the real app falls
       // back to when offline.
       metadata: async () => demoModelMetadata,
+      roles: async () => demoRoles(),
+      assignRole: async (role, provider, id) => {
+        const model = demoModels.find((item) => item.provider === provider && item.id === id);
+        if (!model) throw new Error(`Unknown model: ${provider}/${id}`);
+        const providerState = demoProviders.find((item) => item.id === provider);
+        if (providerState && !providerWithKeys(providerState).configured)
+          throw new Error(`${providerState.name} is not configured. Add its API key in Settings → Provider, or choose a configured model.`);
+        if (role === 'main') {
+          demoModels = demoModels.map((item) => ({...item, selected: item === model}));
+          return demoRoles();
+        }
+        demoRoleOverrides = {...demoRoleOverrides, [role]: {provider, id}};
+        return demoRoles();
+      },
+      clearRole: async (role) => {
+        if (role === 'main') throw new Error('The main model cannot be cleared');
+        const {[role]: _removed, ...rest} = demoRoleOverrides;
+        demoRoleOverrides = rest;
+        return demoRoles();
+      },
     },
     // The demo runs in a plain browser tab with no main process, so the
     // embedded browser is unavailable and BrowserView falls back to its
@@ -358,6 +741,9 @@ function createBrowserDemoApi(): MidasApi {
       stopFind: async () => {},
       print: async () => {},
       screenshot: async () => null,
+      // In a plain browser tab the page's own CSP is what it is, so a link's
+      // icon falls back to the globe rather than being fetched for it.
+      favicon: async () => null,
       downloads: async () => [],
       openDownload: async () => {},
       openDownloadsFolder: async () => {},
@@ -445,7 +831,7 @@ function createBrowserDemoApi(): MidasApi {
         timers.delete(runId);
         runConversations.delete(runId);
         emit(runId, request.conversationId, 'run.failed', {
-          result: {error: {message: 'OpenCode Go is not configured. Add its API key in Options → Provider, or choose a configured model.'}},
+          result: {error: {message: 'OpenCode Go is not configured. Add its API key in Settings → Provider, or choose a configured model.'}},
         });
         queueMicrotask(() => emit(runId, request.conversationId, 'run.settled', {}));
       }, 50));
@@ -462,29 +848,55 @@ function createBrowserDemoApi(): MidasApi {
       }, 50));
       return {runId};
     }
+    // `__demo_run_<ms>__` holds the run open for that long, which is how the
+    // browser demo exercises anything that only exists mid-run (steering, the
+    // queue behind a running agent).
+    const held = /^__demo_run_(\d+)__$/.exec(request.text);
+    const duration = held ? Number(held[1]) : 900;
+    const isActivityDemo = request.text === '__demo_activity__';
+    if (isActivityDemo) {
+      const args = {path: '/skills/browser-use/SKILL.md'};
+      const commentary = 'I’ll read the skill files first to see what applies here.';
+      emit(runId, request.conversationId, 'message.completed', {message: {role: 'assistant', content: [{type: 'text', text: commentary}]}, phase: 'commentary'});
+      emit(runId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-skill-read-1', name: 'read', arguments: args}});
+      emit(runId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-skill-read-2', name: 'read', arguments: args}});
+      emit(runId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}});
+      emit(runId, request.conversationId, 'tool.progress', {toolCallId: 'demo-skill-read-3', message: 'Scanning the skill manifest'});
+      emit(runId, request.conversationId, 'tool.progress', {toolCallId: 'demo-skill-read-3', message: 'Reading workflow steps'});
+    }
     timers.set(runId, setTimeout(() => {
       const text = 'This is the assembled Midas chat surface. Connect the send handler to your agent backend when it is ready.';
+      if (isActivityDemo) {
+        const args = {path: '/skills/browser-use/SKILL.md'};
+        emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}, result: {content: 'Read 96 lines covering the browser-use skill workflow.'}});
+        items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [], Date.now() - 2, runId, {phase: 'commentary'}));
+        items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [], Date.now() - 1, runId, {phase: 'commentary'}));
+      }
       emit(runId, request.conversationId, 'message.text.delta', {delta: text});
-      emit(runId, request.conversationId, 'message.completed', {message: {role: 'assistant', content: [{type: 'text', text}]}});
-      items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [{type: 'text', text}], Date.now(), runId));
-      finishDemoRun(runId, 'run.completed');
-    }, 900));
+      emit(runId, request.conversationId, 'message.completed', {message: {role: 'assistant', content: [{type: 'text', text}]}, phase: 'final'});
+      items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [{type: 'text', text}], Date.now(), runId, {phase: 'final'}));
+      finishDemoRun(runId, 'run.completed', {hadWorkActivity: isActivityDemo, lastAgentMessage: text, durationMs: duration});
+    }, duration));
     return {runId};
   }
 
-  function finishDemoRun(runId: string, type: 'run.completed' | 'run.cancelled'): void {
+  function finishDemoRun(runId: string, type: 'run.completed' | 'run.cancelled', result: Record<string, JsonValue> = {}): void {
     const conversationId = runConversations.get(runId);
     if (!conversationId) return;
     const timer = timers.get(runId);
     if (timer) clearTimeout(timer);
     timers.delete(runId);
     runConversations.delete(runId);
-    emit(runId, conversationId, type, {});
+    emit(runId, conversationId, type, {result});
     queueMicrotask(() => emit(runId, conversationId, 'run.settled', {}));
   }
 
+  let emitSequence = 0;
   function emit(runId: string, conversationId: string, type: string, body: Record<string, JsonValue>): void {
-    const event: RunEventDto = {runId, conversationId, sequence: 0, timestamp: Date.now(), type, payload: {runId, conversationId, sequence: 0, timestamp: Date.now(), type, ...body}};
+    // A real run's events carry increasing sequences, and the renderer keys
+    // per-event UI (like tool sub-steps) off them, so the demo must too.
+    const sequence = ++emitSequence;
+    const event: RunEventDto = {runId, conversationId, sequence, timestamp: Date.now(), type, payload: {runId, conversationId, sequence, timestamp: Date.now(), type, ...body}};
     for (const listener of listeners) listener(event);
   }
 
@@ -503,6 +915,44 @@ function message(id: string, conversationId: string, role: MessageDto['role'], c
 function goal(conversationId: string, objective: string): GoalDto {
   const date = new Date().toISOString();
   return {id: crypto.randomUUID(), conversationId, objective, status: 'active', createdAt: date, updatedAt: date, completedAt: null};
+}
+
+/**
+ * One provider of each shape, so the settings tab can be worked on in a browser
+ * without credentials: connected, connectable, needing a form, and one this
+ * build has no client id for.
+ */
+const demoDriveStatus: DriveStatusDto = {
+  saveOrder: ['google-drive', 'dropbox', 'onedrive', 's3', 'local'],
+  providers: [
+    {id: 'local', name: 'This Mac', kind: 'local', state: 'connected', accounts: [{id: 'local', name: 'Midas', email: null}], usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/Midas', error: null},
+    {id: 'google-drive', name: 'Google Drive', kind: 'oauth', state: 'connected', accounts: [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}], usage: {used: 6_200_000_000, total: 15_000_000_000}, root: 'Midas', error: null},
+    {id: 'dropbox', name: 'Dropbox', kind: 'oauth', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
+    {id: 'onedrive', name: 'OneDrive', kind: 'oauth', state: 'unconfigured', accounts: [], usage: null, root: null, error: 'This build has no OneDrive client credentials.'},
+    {id: 's3', name: 'S3 storage', kind: 's3', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
+  ],
+};
+
+function demoDriveConnect(provider: DriveProviderId, connected: boolean): DriveStatusDto {
+  demoDriveStatus.providers = demoDriveStatus.providers.map((entry) =>
+    entry.id === provider
+      ? {
+          ...entry,
+          state: connected ? 'connected' : 'logged-out',
+          accounts: connected ? [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}] : [],
+          usage: connected ? {used: 1_200_000_000, total: 10_000_000_000} : null,
+        }
+      : entry);
+  return demoDriveStatus;
+}
+
+function demoDriveEntries(provider: DriveProviderId, path: string): DriveEntryDto[] {
+  if (path) return [];
+  const now = new Date().toISOString();
+  return [
+    {id: `${provider}:reports`, name: 'Reports', kind: 'folder', size: null, modifiedAt: now, provider, path: `${provider}:reports`, mimeType: null},
+    {id: `${provider}:brief`, name: 'Launch brief.docx', kind: 'file', size: 48_310, modifiedAt: now, provider, path: `${provider}:brief`, mimeType: null},
+  ];
 }
 
 function demoArtifacts(conversationId: string): ArtifactDto[] {

@@ -1,11 +1,11 @@
 // The conversation never compresses below a readable measure, so both side
 // surfaces resize against this floor rather than against the viewport alone.
 export const MIN_MAIN_PANE_WIDTH = 432;
-export const MIN_HISTORY_WIDTH = 180;
-export const MAX_HISTORY_WIDTH = 480;
+export const MIN_CHAT_DRAWER_WIDTH = 180;
+export const MAX_CHAT_DRAWER_WIDTH = 480;
 export const MIN_WORKSPACE_WIDTH = 360;
 export const MAX_WORKSPACE_WIDTH = 720;
-export const SPLIT_LAYOUT_MIN_WIDTH = MIN_HISTORY_WIDTH + MIN_MAIN_PANE_WIDTH + MIN_WORKSPACE_WIDTH + 1;
+export const SPLIT_LAYOUT_MIN_WIDTH = MIN_CHAT_DRAWER_WIDTH + MIN_MAIN_PANE_WIDTH + MIN_WORKSPACE_WIDTH + 1;
 // Space reserved for the Summary card and its horizontal insets. Keep the
 // matching fixed sizes in style.css in step with this value.
 export const SUMMARY_RESERVED_COLUMN = 337;
@@ -19,12 +19,12 @@ function bounds(viewportWidth: number, reservedWidth: number, minimum: number, m
   };
 }
 
-export function historyResizeBounds(viewportWidth: number, workspaceWidth: number): ResizeBounds {
-  return bounds(viewportWidth, workspaceWidth, MIN_HISTORY_WIDTH, MAX_HISTORY_WIDTH);
+export function chatDrawerResizeBounds(viewportWidth: number, workspaceWidth: number): ResizeBounds {
+  return bounds(viewportWidth, workspaceWidth, MIN_CHAT_DRAWER_WIDTH, MAX_CHAT_DRAWER_WIDTH);
 }
 
-export function workspaceResizeBounds(viewportWidth: number, historyWidth: number): ResizeBounds {
-  return bounds(viewportWidth, historyWidth, MIN_WORKSPACE_WIDTH, MAX_WORKSPACE_WIDTH);
+export function workspaceResizeBounds(viewportWidth: number, chatDrawerWidth: number): ResizeBounds {
+  return bounds(viewportWidth, chatDrawerWidth, MIN_WORKSPACE_WIDTH, MAX_WORKSPACE_WIDTH);
 }
 
 export function clampPanelWidth(width: number, resizeBounds: ResizeBounds): number {
@@ -33,16 +33,16 @@ export function clampPanelWidth(width: number, resizeBounds: ResizeBounds): numb
 
 export interface PanelLayoutRequest {
   viewportWidth: number;
-  historyOpen: boolean;
+  chatDrawerOpen: boolean;
   workspaceOpen: boolean;
-  historyWidth: number;
+  chatDrawerWidth: number;
   workspaceWidth: number;
   /** The drawer whose width reflects the most recent user intent. */
-  priority: "history" | "workspace";
+  priority: "chatDrawer" | "workspace";
 }
 
 export interface PanelLayout {
-  historyWidth: number;
+  chatDrawerWidth: number;
   workspaceWidth: number;
 }
 
@@ -56,22 +56,22 @@ export interface PanelLayout {
  */
 export function resolvePanelWidths(request: PanelLayoutRequest): PanelLayout {
   const {viewportWidth} = request;
-  let history = request.historyOpen
-    ? clampPanelWidth(request.historyWidth, historyResizeBounds(viewportWidth, request.workspaceOpen ? MIN_WORKSPACE_WIDTH : 0))
-    : request.historyWidth;
+  let chats = request.chatDrawerOpen
+    ? clampPanelWidth(request.chatDrawerWidth, chatDrawerResizeBounds(viewportWidth, request.workspaceOpen ? MIN_WORKSPACE_WIDTH : 0))
+    : request.chatDrawerWidth;
   let workspace = request.workspaceOpen
-    ? clampPanelWidth(request.workspaceWidth, workspaceResizeBounds(viewportWidth, request.historyOpen ? MIN_HISTORY_WIDTH : 0))
+    ? clampPanelWidth(request.workspaceWidth, workspaceResizeBounds(viewportWidth, request.chatDrawerOpen ? MIN_CHAT_DRAWER_WIDTH : 0))
     : request.workspaceWidth;
-  if (request.historyOpen && request.workspaceOpen) {
-    const overflow = () => history + workspace + MIN_MAIN_PANE_WIDTH - viewportWidth;
+  if (request.chatDrawerOpen && request.workspaceOpen) {
+    const overflow = () => chats + workspace + MIN_MAIN_PANE_WIDTH - viewportWidth;
     if (overflow() > 0) {
-      if (request.priority === "history") workspace = Math.max(MIN_WORKSPACE_WIDTH, workspace - overflow());
-      else history = Math.max(MIN_HISTORY_WIDTH, history - overflow());
+      if (request.priority === "chatDrawer") workspace = Math.max(MIN_WORKSPACE_WIDTH, workspace - overflow());
+      else chats = Math.max(MIN_CHAT_DRAWER_WIDTH, chats - overflow());
     }
     if (overflow() > 0) {
-      if (request.priority === "history") history = Math.max(MIN_HISTORY_WIDTH, history - overflow());
+      if (request.priority === "chatDrawer") chats = Math.max(MIN_CHAT_DRAWER_WIDTH, chats - overflow());
       else workspace = Math.max(MIN_WORKSPACE_WIDTH, workspace - overflow());
     }
   }
-  return {historyWidth: Math.round(history), workspaceWidth: Math.round(workspace)};
+  return {chatDrawerWidth: Math.round(chats), workspaceWidth: Math.round(workspace)};
 }

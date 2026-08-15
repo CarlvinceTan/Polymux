@@ -1,19 +1,23 @@
 <script lang="ts">
   import {afterUpdate, beforeUpdate, tick} from 'svelte';
   import Icon from '../shared/Icon.svelte';
-  import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../layout/iconSizing';
+  import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH, SETTINGS_ICON_SIZE, SETTINGS_ICON_STROKE_WIDTH} from '../../layout/iconSizing';
   import type {PanelMode} from '../../state/panels';
 
   export let title = 'New chat';
   export let showTitle = false;
   export let showSummary = false;
   export let hideNewChat = false;
-  export let historyOpen = false;
+  export let chatDrawerOpen = false;
   export let mode: PanelMode = 'none';
   export let onRename: (title: string) => void = () => {};
-  export let onToggleHistory: () => void = () => {};
+  export let onToggleChatDrawer: () => void = () => {};
   export let onNewChat: () => void = () => {};
   export let onTogglePanel: (mode: 'summary' | 'workspace') => void = () => {};
+  export let onOpenSettings: () => void = () => {};
+  export let onOpenDrive: () => void = () => {};
+  export let onOpenSchedule: () => void = () => {};
+  export let onOpenHub: () => void = () => {};
 
   let editing = false;
   let draft = '';
@@ -21,13 +25,13 @@
   let titleButton: HTMLButtonElement;
   let titleControl: HTMLElement;
   let previousCenter: number | null = null;
-  let renderedPosition = `${historyOpen}:${mode}`;
+  let renderedPosition = `${chatDrawerOpen}:${mode}`;
   let positionChanged = false;
   $: titleControl = editing ? input : titleButton;
   $: titleInputSize = Math.max(8, Math.min(48, draft.length + 2));
 
   beforeUpdate(() => {
-    const position = `${historyOpen}:${mode}`;
+    const position = `${chatDrawerOpen}:${mode}`;
     positionChanged = position !== renderedPosition;
     previousCenter = positionChanged && titleControl
       ? titleControl.getBoundingClientRect().left + titleControl.getBoundingClientRect().width / 2
@@ -38,7 +42,7 @@
     if (!positionChanged || previousCenter === null || !titleControl) return;
     const rect = titleControl.getBoundingClientRect();
     const delta = previousCenter - (rect.left + rect.width / 2);
-    renderedPosition = `${historyOpen}:${mode}`;
+    renderedPosition = `${chatDrawerOpen}:${mode}`;
     positionChanged = false;
     if (Math.abs(delta) < .5) return;
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -81,13 +85,13 @@
   <button
     type="button"
     class="title-bar-icon-button"
-    aria-label="Toggle chat history"
-    aria-pressed={historyOpen}
-    data-tooltip-label="History"
+    aria-label="Toggle Chats"
+    aria-pressed={chatDrawerOpen}
+    data-tooltip-label="Chats"
     data-tooltip-align="start"
-    onclick={onToggleHistory}
+    onclick={onToggleChatDrawer}
   >
-    <Icon name="history" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
+    <Icon name="panel-left" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
   </button>
   {#if !hideNewChat}
     <button
@@ -104,6 +108,50 @@
 </div>
 
 <div class="top-controls" aria-label="Panels">
+  <!-- Both open a workspace tab, so once the drawer is showing they would be
+       duplicating its own + menu. They move into that menu instead. -->
+  {#if mode !== 'workspace'}
+    <button
+      type="button"
+      class="title-bar-icon-button"
+      aria-label="Open Drive"
+      data-tooltip-label="Drive"
+      data-tooltip-align="end"
+      onclick={onOpenDrive}
+    >
+      <Icon name="drive" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
+    </button>
+    <button
+      type="button"
+      class="title-bar-icon-button"
+      aria-label="Open Hub"
+      data-tooltip-label="Hub"
+      data-tooltip-align="end"
+      onclick={onOpenHub}
+    >
+      <Icon name="chat" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
+    </button>
+    <button
+      type="button"
+      class="title-bar-icon-button"
+      aria-label="Open Schedule"
+      data-tooltip-label="Schedule"
+      data-tooltip-align="end"
+      onclick={onOpenSchedule}
+    >
+      <Icon name="clock" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
+    </button>
+  {/if}
+  <button
+    type="button"
+    class="title-bar-icon-button"
+    aria-label="Settings"
+    data-tooltip-label="Settings"
+    data-tooltip-align="end"
+    onclick={onOpenSettings}
+  >
+    <Icon name="settings" size={SETTINGS_ICON_SIZE} strokeWidth={SETTINGS_ICON_STROKE_WIDTH}/>
+  </button>
   {#if showSummary && mode !== 'workspace'}
     <button
       type="button"

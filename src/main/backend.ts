@@ -9,6 +9,8 @@ import type { ActiveAgentRun, AgentRunEvent } from "@midas/core";
 import type { InferenceModel, InferenceService, ModelRef } from "@midas/inference";
 import { PiInference } from "@midas/inference/pi";
 import type {
+  AppUpdateDto,
+  AppVersionDto,
   CreateCustomProviderRequest,
   GeneralSettingsDto,
   GoalCommandRequest,
@@ -16,16 +18,31 @@ import type {
   SaveCustomMcpRequest,
   SaveCustomSkillRequest,
   ModelDto,
+  ModelRole,
+  ModelRoleAssignmentDto,
+  ModelRolesDto,
   ProviderDto,
+  ReasoningEffort,
   RunEventDto,
   SkillDto,
   SkillUploadFile,
+  MailListRequest,
+  SendMailRequest,
   SystemPermissionKind,
   UpdateCustomProviderRequest,
+  JsonValue,
+  WorkspaceSnapshotDto,
 } from "@midas/protocol";
 import {
   channels,
+  commsPlatform,
+  driveProvider,
+  driveS3Config,
+  languageLabel,
+  SUPPORTED_LANGUAGES,
+  supportedLanguage,
   validateGoalCommand,
+  validateSaveEmailAccount,
   validateStartRun,
 } from "@midas/protocol";
 import { SqliteStorage } from "@midas/storage/sqlite";
@@ -39,14 +56,28 @@ import {
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {createProvider, type Model, type MutableModels} from "@earendil-works/pi-ai";
 import {openAICompletionsApi} from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import {app, safeStorage, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent} from "electron";
+import {app, safeStorage, session, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent} from "electron";
 import {EncryptedCredentialStore} from "./credential-store.js";
+import {
+  appVersion,
+  checkForUpdates,
+  installUpdate,
+  startUpdateChecks,
+  stopUpdateChecks,
+} from "./updater.js";
+import { HookEngine } from "./hooks.js";
+import { AgentSurfaceServer } from "./agent-surface.js";
+import { AgentSurfaceAdapter } from "./agent-surface-adapter.js";
+import { createBrowserControlTools } from "./browser-control-tools.js";
+import { createInAppBrowserTool } from "./in-app-browser-tools.js";
+import { RunResourceRecorder } from "./run-resources.js";
 import {EncryptedApiKeyPool} from "./api-key-pool.js";
 import {WhisperDictation} from "./dictation.js";
 import {installSkillPackage, searchSkillRegistry} from "./skill-registry.js";
 import {searchMcpRegistry} from "./mcp-registry.js";
 import {ModelCatalog} from "./model-catalog.js";
 import {EmbeddedBrowser} from "./embedded-browser.js";
+import {faviconDataUrl} from "./favicon.js";
 import {RotatingInference} from "./rotating-inference.js";
 import {
   AccessibilityChronicleFrames,
@@ -54,6 +85,28 @@ import {
 } from "./chronicle.js";
 import {AxReader} from "./ax-reader.js";
 import {FileReloadWatcher} from "./file-reload-watcher.js";
+import {Communications} from "./communications/index.js";
+import {Drive} from "./drive/index.js";
+import {sessionScopedSnapshot} from "./workspace-snapshot.js";
+import type {Homeserver} from "./homeserver/index.js";
+
+/** The part of BridgeHost the backend needs: what is installed, and what is held back. */
+interface BridgeInventory {
+  inventory: () => Promise<
+    {
+      platform: string;
+      binary: string;
+      installed: boolean;
+      blocked: {reason: string; permission?: SystemPermissionKind} | null;
+    }[]
+  >;
+  networkConfig: (platform: string) => Promise<Record<string, string>>;
+  configureNetwork: (platform: string, values: Record<string, string>) => Promise<void>;
+  retryBlocked: () => Promise<void>;
+  ensure: (platform: string) => Promise<void>;
+}
+import {cancelCookieLogin, runCookieLogin} from "./communications/cookie-login.js";
+import {createCommunicationsTools} from "./communications-tools.js";
 import {parse as parseToml} from "smol-toml";
 import {FirstRunPermissions} from "./first-run-permissions.js";
 import {
@@ -72,6 +125,13 @@ export interface DesktopBackendOptions {
   codexConfigPath?: string;
   /** Path to the bundled native/ax-reader.swift accessibility helper. */
   axReaderSourcePath?: string;
+  /**
+   * The app-scoped message hub. It outlives this backend: closing a window
+   * closes the backend, but the hub and its bridges run until the app quits.
+   * Absent when the hub failed to start, which degrades messaging to an
+   * externally configured deployment.
+   */
+  hub?: {homeserver: Homeserver; directory: string; bridges?: BridgeInventory};
 }
 
 interface CustomProviderConfig {
@@ -83,11 +143,13 @@ interface CustomProviderConfig {
 }
 
 export class DesktopBackend {
-  readonly #window: BrowserWindow;
+  #window: BrowserWindow;
   readonly #ipcMain: IpcMain;
   readonly #storage: SqliteStorage;
   #agent?: MidasAgent;
   #model?: ModelRef;
+  /** Per-role model overrides. An absent role follows the main model. */
+  #roleOverrides: Partial<Record<ModelRole, ModelRef>> = {};
   readonly #models: MutableModels;
   readonly #customProviders = new Map<string, CustomProviderConfig>();
   readonly #credentials: EncryptedCredentialStore;
@@ -102,7 +164,22 @@ export class DesktopBackend {
   readonly #dictation: WhisperDictation;
   readonly #mcp = new McpManager();
   readonly #registry: ToolRegistry;
+  readonly #hooks = new HookEngine();
+  readonly #agentSurface = new AgentSurfaceServer();
+  readonly #runResources: RunResourceRecorder;
+  readonly #surfaceMenubar = new AgentSurfaceAdapter({
+    onStop: () => {
+      // "Stop Using <App>" from the Computer Use pill: end browser control
+      // and cancel whatever run was driving it.
+      for (const lease of this.#agentSurface.snapshot().leases)
+        this.#agentSurface.releaseLease(lease.id);
+      for (const run of this.#activeRuns.values())
+        run.control.cancel(new Error("Stopped from the Computer Use menu"));
+    },
+  });
   readonly #activeRuns = new Map<string, ActiveAgentRun>();
+  /** Conversation id -> the goal continuation run currently working on it. */
+  readonly #goalContinuations = new Map<string, string>();
   readonly #mcpToolNames = new Set<string>();
   readonly #registeredChannels: string[] = [];
   readonly #mcpConfigs = new Map<
@@ -119,6 +196,8 @@ export class DesktopBackend {
   #closing = false;
   readonly #modelCatalog: ModelCatalog;
   readonly #embeddedBrowser: EmbeddedBrowser;
+  readonly #comms: Communications;
+  readonly #drive: Drive;
 
   constructor(options: DesktopBackendOptions) {
     this.#window = options.window;
@@ -144,7 +223,10 @@ export class DesktopBackend {
     this.#models = builtinModels({credentials: this.#credentials});
     for (const config of customProviderPreference(this.#storage.getPreference("custom-providers")?.value))
       this.#registerCustomProvider(config);
-    this.#inference = new RotatingInference(new PiInference(this.#models), this.#apiKeys);
+    this.#inference = new RotatingInference(
+      new PiInference(this.#models),
+      this.#apiKeys,
+    );
     this.#goals = new GoalManager(this.#storage);
     this.#memory = new MemoryManager({
       directory: path.join(options.dataDirectory, "memories"),
@@ -189,13 +271,140 @@ export class DesktopBackend {
       this.#codexMcpConfigPath,
       () => this.#requestMcpReload(),
     );
+    this.#comms = new Communications({
+      credentials: this.#credentials,
+      // App-scoped and possibly absent; the backend only points comms at it.
+      embedded: options.hub
+        ? {
+            baseUrl: options.hub.homeserver.baseUrl,
+            directory: options.hub.directory,
+            provision: (localpart) => options.hub!.homeserver.createLocalUser(localpart),
+            inventory: options.hub.bridges
+              ? () => options.hub!.bridges!.inventory()
+              : undefined,
+            networkConfig: options.hub.bridges
+              ? (platform) => options.hub!.bridges!.networkConfig(platform)
+              : undefined,
+            configureNetwork: options.hub.bridges
+              ? (platform, values) => options.hub!.bridges!.configureNetwork(platform, values)
+              : undefined,
+            retryBlocked: options.hub.bridges
+              ? () => options.hub!.bridges!.retryBlocked()
+              : undefined,
+            ensure: options.hub.bridges
+              ? (platform) => options.hub!.bridges!.ensure(platform)
+              : undefined,
+          }
+        : undefined,
+      storage: {
+        getPreference: (key) => this.#storage.getPreference(key),
+        setPreference: (key, value) => this.#storage.setPreference(key, value),
+      },
+      onChange: (status) => {
+        if (!this.#closing && !this.#window.isDestroyed())
+          this.#window.webContents.send(channels.commsChanged, status);
+      },
+      // Parented, so the network's sign-in page opens as a sheet over Midas
+      // rather than as a window that can end up behind it.
+      cookieLogin: (request) => runCookieLogin(request, this.#window),
+      cancelCookieLogin,
+    });
+    this.#drive = new Drive({
+      storage: {
+        getPreference: (key) => this.#storage.getPreference(key),
+        setPreference: (key, value) => this.#storage.setPreference(key, value),
+      },
+      // Drive secrets ride the same OS-encrypted store as the model provider
+      // keys, so tokens are never written as plaintext either.
+      secrets: {
+        read: async (id) => {
+          const credential = await this.#credentials.read(id);
+          return credential?.type === "api_key" ? credential.key : undefined;
+        },
+        write: async (id, secret) => {
+          await this.#credentials.modify(id, async () => ({
+            type: "api_key",
+            key: secret,
+          }));
+        },
+        clear: async (id) => {
+          await this.#credentials.delete(id);
+        },
+      },
+      pickers: {
+        folder: async () => {
+          const {dialog} = await import("electron");
+          const result = await dialog.showOpenDialog({
+            properties: ["openDirectory", "createDirectory"],
+            title: "Choose the Drive folder",
+          });
+          return result.canceled ? null : (result.filePaths[0] ?? null);
+        },
+        files: async () => {
+          const {dialog} = await import("electron");
+          const result = await dialog.showOpenDialog({
+            properties: ["openFile", "multiSelections"],
+            title: "Upload to Drive",
+          });
+          return result.canceled ? [] : result.filePaths;
+        },
+        downloads: () => app.getPath("downloads"),
+      },
+      parent: () => (this.#window.isDestroyed() ? undefined : this.#window),
+      onChange: (status) => {
+        if (!this.#closing && !this.#window.isDestroyed())
+          this.#window.webContents.send(channels.driveChanged, status);
+      },
+    });
+    this.#runResources = new RunResourceRecorder(this.#storage);
     this.#registry = new ToolRegistry(
       createNativeTools({ cwd: options.toolDirectory ?? homedir() }),
     );
+    for (const tool of createBrowserControlTools(this.#agentSurface))
+      this.#registry.register(tool);
+    // The in-app Browser is the default surface for web work, so the agent
+    // drives it directly rather than through the user's external browser.
+    this.#registry.register(createInAppBrowserTool(this.#embeddedBrowser));
+    // Messaging and email are app capabilities rather than an MCP server the
+    // user has to register, so their tools are always present.
+    for (const tool of createCommunicationsTools(this.#comms))
+      this.#registry.register(tool);
+    // Loopback only; a failed bind (port in use) degrades to no browser control.
+    void this.#agentSurface.start().catch(() => {});
+    // Mirror active browser-control leases into the user's Agent Surface
+    // menu-bar pill (the ChatGPT-desktop-style Computer Use capsule), when
+    // that presentation layer is installed.
+    this.#agentSurface.onLeasesChanged = (leases) => {
+      if (leases.length === 0) void this.#surfaceMenubar.release("midas-browser");
+      else
+        void this.#surfaceMenubar.acquireWindow("midas-browser", {
+          appName: browserAppName(),
+          bundleId: browserBundleId(),
+          windowTitle: leases[0].tab.title || leases[0].tab.url,
+          sessionId: "midas-browser",
+        });
+    };
+    this.#roleOverrides = modelRolesPreference(this.#storage.getPreference("model-roles")?.value);
     const storedModel = modelPreference(this.#storage.getPreference("model")?.value);
     if (options.model) this.#selectModel(options.model, false);
     else if (storedModel && this.#inference.getModel(storedModel))
       this.#selectModel(storedModel, false);
+  }
+
+  /**
+   * Points the backend at a fresh app window after the previous one closed.
+   * Everything long-lived — runs, storage, MCP connections, the works — kept
+   * going while no window existed; only the event sink and the IPC frame
+   * guard need re-aiming.
+   */
+  attachWindow(window: BrowserWindow): void {
+    this.#window = window;
+    this.#embeddedBrowser.attachWindow(window);
+  }
+
+  /** Rescues the embedded browser's pages before their window is destroyed. */
+  detachWindow(): void {
+    this.#embeddedBrowser.detachWindow();
   }
 
   register(): void {
@@ -214,15 +423,21 @@ export class DesktopBackend {
       const next = generalSettingsUpdate(value, this.#generalSettings());
       this.#storage.setPreference("general-access", {
         theme: next.theme,
+        language: next.language,
         currency: next.currency,
         speechModeEnabled: next.speechModeEnabled,
         timeEnabled: next.timeEnabled,
         locationEnabled: next.locationEnabled,
+        onboardingCompleted: next.onboardingCompleted,
         location: next.location,
       });
       return next;
     });
     this.#handle(channels.generalLocate, () => approximateLocation());
+    this.#handle(channels.generalVersion, () => appVersion());
+    this.#handle(channels.generalCheckUpdates, () => checkForUpdates());
+    this.#handle(channels.generalInstallUpdate, () => installUpdate());
+    startUpdateChecks();
     this.#handle(channels.permissionsStatus, (_event, value: unknown) =>
       systemPermissionStatus(systemPermission(value)),
     );
@@ -235,8 +450,8 @@ export class DesktopBackend {
     this.#handle(channels.permissionsOpenSettings, (_event, value: unknown) =>
       openSystemPermissionSettings(systemPermission(value, true)),
     );
-    this.#handle(channels.dictationTranscribe, (_event, audio: unknown) =>
-      this.#dictation.transcribe(audioBuffer(audio)),
+    this.#handle(channels.dictationTranscribe, (_event, audio: unknown, final: unknown) =>
+      this.#dictation.transcribe(audioBuffer(audio), final !== false),
     );
     this.#handle(channels.conversationsList, () =>
       this.#storage.listConversations(),
@@ -254,9 +469,11 @@ export class DesktopBackend {
           title: required(title, "title"),
         }),
     );
-    this.#handle(channels.conversationsRemove, (_event, id: string) =>
-      this.#storage.deleteConversation(required(id, "conversation id")),
-    );
+    this.#handle(channels.conversationsRemove, (_event, id: string) => {
+      const conversationId = required(id, "conversation id");
+      this.#runResources.forget(conversationId);
+      return this.#storage.deleteConversation(conversationId);
+    });
     this.#handle(channels.messagesList, (_event, id: string) =>
       this.#storage
         .listMessages(required(id, "conversation id"))
@@ -336,24 +553,11 @@ export class DesktopBackend {
     this.#handle(channels.goalsGet, (_event, conversationId: string) =>
       this.#goals.get(required(conversationId, "conversation id")),
     );
-    this.#handle(channels.memoryList, (_event, conversationId?: string) =>
-      this.#memory.list(conversationId),
-    );
     this.#handle(channels.memoryStatus, () => this.#memory.status());
     this.#handle(channels.memorySetEnabled, (_event, enabled: boolean) => {
       if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
       return this.#memory.setEnabled(enabled);
     });
-    this.#handle(
-      channels.memoryRemember,
-      (_event, content: string, conversationId?: string) =>
-        this.#memory.remember(required(content, "content"), {
-          conversationId,
-        }),
-    );
-    this.#handle(channels.memoryForget, (_event, id: string) =>
-      this.#memory.forget(required(id, "memory id")),
-    );
     this.#handle(channels.chronicleStatus, () => this.#chronicle.status());
     this.#handle(channels.chronicleSetEnabled, async (_event, enabled: boolean) => {
       if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
@@ -387,6 +591,189 @@ export class DesktopBackend {
     });
     this.#handle(channels.mcpSearchRegistry, (_event, query: unknown) =>
       searchMcpRegistry(typeof query === "string" ? query : ""),
+    );
+    this.#handle(channels.workspaceSnapshotGet, (_event, conversationId: unknown) => {
+      const stored = this.#storage.getPreference(
+        `workspace-snapshot:${required(conversationId, "conversation id")}`,
+      );
+      return stored ? sessionScopedSnapshot(stored.value, WORKSPACE_BOOT_ID) : null;
+    });
+    this.#handle(
+      channels.workspaceSnapshotSave,
+      (_event, conversationId: unknown, snapshot: unknown) => {
+        this.#storage.setPreference(
+          `workspace-snapshot:${required(conversationId, "conversation id")}`,
+          // Through the existing json() laundering: optional DTO fields do not
+          // satisfy JsonValue's index signature structurally.
+          json({...workspaceSnapshot(snapshot), bootId: WORKSPACE_BOOT_ID}) as JsonValue,
+        );
+      },
+    );
+    this.#handle(channels.commsStatus, () => this.#comms.status());
+    this.#handle(channels.commsRefresh, () => this.#comms.refresh());
+    this.#handle(channels.commsWake, (_event, value: unknown) =>
+      this.#comms.wake(commsPlatform(value)),
+    );
+    this.#handle(channels.commsSetHubUrl, (_event, baseUrl: unknown) =>
+      this.#comms.setHubUrl(required(baseUrl, "hub address")),
+    );
+    this.#handle(channels.commsConnect, () => this.#comms.connect());
+    this.#handle(channels.commsSignIn, (_event, userId: unknown, password: unknown) =>
+      this.#comms.signIn(required(userId, "Matrix user ID"), required(password, "password")),
+    );
+    this.#handle(channels.commsSignOut, () => this.#comms.signOut());
+    this.#handle(channels.commsLoginStart, (_event, platform: unknown, flowId: unknown) =>
+      this.#comms.loginStart(commsPlatform(platform), required(flowId, "login method")),
+    );
+    this.#handle(
+      channels.commsLoginSubmit,
+      (_event, platform: unknown, loginId: unknown, stepId: unknown, values: unknown) =>
+        this.#comms.loginSubmit(
+          commsPlatform(platform),
+          required(loginId, "login id"),
+          required(stepId, "step id"),
+          loginValues(values),
+        ),
+    );
+    this.#handle(
+      channels.commsLoginWait,
+      (_event, platform: unknown, loginId: unknown, stepId: unknown) =>
+        this.#comms.loginWait(
+          commsPlatform(platform),
+          required(loginId, "login id"),
+          required(stepId, "step id"),
+        ),
+    );
+    this.#handle(
+      channels.commsLoginCookies,
+      (_event, platform: unknown, loginId: unknown, stepId: unknown) =>
+        this.#comms.loginCookies(
+          commsPlatform(platform),
+          required(loginId, "login id"),
+          required(stepId, "step id"),
+        ),
+    );
+    this.#handle(channels.commsLoginCancel, (_event, platform: unknown, loginId: unknown) =>
+      this.#comms.loginCancel(commsPlatform(platform), required(loginId, "login id")),
+    );
+    this.#handle(channels.commsBridgeSetup, (_event, platform: unknown, values: unknown) =>
+      this.#comms.bridgeSetup(commsPlatform(platform), loginValues(values)),
+    );
+    this.#handle(channels.commsBridgeLogout, (_event, platform: unknown, accountId: unknown) =>
+      this.#comms.bridgeLogout(commsPlatform(platform), required(accountId, "account id")),
+    );
+    this.#handle(channels.commsChats, () => this.#comms.chats());
+    this.#handle(
+      channels.commsChatMessages,
+      async (_event, chatId: unknown, limit: unknown, before: unknown) => {
+        const result = await this.#comms.readChat(
+          required(chatId, "chat id"),
+          typeof limit === "number" ? limit : 50,
+          typeof before === "string" ? before : undefined,
+        );
+        return result.messages;
+      },
+    );
+    this.#handle(channels.commsChatSend, (_event, chatId: unknown, text: unknown) =>
+      this.#comms.sendChat(required(chatId, "chat id"), required(text, "message")),
+    );
+    this.#handle(channels.commsMailFolders, (_event, account: unknown) =>
+      this.#comms.mailFolders(typeof account === "string" ? account : undefined),
+    );
+    this.#handle(channels.commsMailEnvelopes, (_event, value: unknown) =>
+      this.#comms.mailEnvelopes(mailListRequest(value)),
+    );
+    this.#handle(
+      channels.commsMailMessage,
+      (_event, id: unknown, account: unknown, folder: unknown) =>
+        this.#comms.mailMessage(
+          required(id, "message id"),
+          typeof account === "string" ? account : undefined,
+          typeof folder === "string" ? folder : undefined,
+        ),
+    );
+    this.#handle(channels.commsMailSend, async (_event, value: unknown) => {
+      const request = sendMailRequest(value);
+      await this.#comms.emailSend({
+        account: request.account,
+        to: request.to,
+        cc: request.cc ?? [],
+        bcc: request.bcc ?? [],
+        subject: request.subject,
+        body: request.body,
+        draft: request.draft,
+        attachments: request.attachments,
+        inReplyTo: request.inReplyTo,
+        references: request.references,
+      });
+      // An edited draft replaces the copy it came from; leaving both would
+      // make the folder grow a version per save.
+      const replaces = request.replacesDraft;
+      if (replaces)
+        await this.#comms
+          .mailDelete([replaces.id], request.account, replaces.folder)
+          .catch(() => {});
+    });
+    this.#handle(
+      channels.commsMailDelete,
+      (_event, ids: unknown, account: unknown, folder: unknown) =>
+        this.#comms.mailDelete(
+          optionalStringArray(ids, "ids"),
+          typeof account === "string" ? account : undefined,
+          typeof folder === "string" ? folder : undefined,
+        ),
+    );
+    this.#handle(
+      channels.commsMailDownload,
+      (_event, id: unknown, account: unknown, folder: unknown) =>
+        this.#comms.mailDownload(
+          required(id, "message id"),
+          typeof account === "string" ? account : undefined,
+          typeof folder === "string" ? folder : undefined,
+        ),
+    );
+    this.#handle(channels.commsMailOpenFile, async (_event, file: unknown) => {
+      const {shell} = await import("electron");
+      const error = await shell.openPath(required(file, "file path"));
+      if (error) throw new Error(error);
+    });
+    this.#handle(channels.commsMailPickFiles, async () => {
+      const {dialog} = await import("electron");
+      const result = await dialog.showOpenDialog({
+        properties: ["openFile", "multiSelections"],
+        title: "Attach files",
+      });
+      return result.canceled ? [] : result.filePaths;
+    });
+    this.#handle(
+      channels.commsMailMove,
+      (_event, ids: unknown, target: unknown, account: unknown, folder: unknown) =>
+        this.#comms.mailMove(
+          optionalStringArray(ids, "ids"),
+          required(target, "target folder"),
+          typeof account === "string" ? account : undefined,
+          typeof folder === "string" ? folder : undefined,
+        ),
+    );
+    this.#handle(
+      channels.commsMailFlag,
+      (_event, ids: unknown, flag: unknown, on: unknown, account: unknown, folder: unknown) =>
+        this.#comms.mailFlag(
+          optionalStringArray(ids, "ids"),
+          flag === "flagged" ? "flagged" : "seen",
+          on === true,
+          typeof account === "string" ? account : undefined,
+          typeof folder === "string" ? folder : undefined,
+        ),
+    );
+    this.#handle(channels.commsEmailSave, (_event, value: unknown) =>
+      this.#comms.emailSave(validateSaveEmailAccount(value)),
+    );
+    this.#handle(channels.commsEmailRemove, (_event, id: unknown) =>
+      this.#comms.emailRemove(required(id, "account id")),
+    );
+    this.#handle(channels.commsEmailTest, (_event, id: unknown) =>
+      this.#comms.emailTest(required(id, "account id")),
     );
     this.#handle(channels.skillsList, () => this.#skillDtos());
     this.#handle(channels.skillsReload, () => this.#skillDtos());
@@ -424,6 +811,16 @@ export class DesktopBackend {
       await this.#assertProviderConfigured(ref.provider);
       return this.#selectModel(ref);
     });
+    this.#handle(channels.modelsRoles, () => this.#modelRoles());
+    this.#handle(channels.modelsAssignRole, (_event, role: unknown, provider: unknown, modelId: unknown) =>
+      this.#assignRole(modelRole(role), {
+        provider: required(provider, "provider"),
+        id: required(modelId, "model id"),
+      }),
+    );
+    this.#handle(channels.modelsClearRole, (_event, role: unknown) =>
+      this.#clearRole(modelRole(role)),
+    );
     this.#handle(channels.modelsMetadata, () =>
       this.#modelCatalog.metadataFor(
         this.#inference.listModels().map((model) => ({provider: model.provider, id: model.id})),
@@ -465,12 +862,106 @@ export class DesktopBackend {
     this.#handle(channels.browserScreenshot, (_event, tabId: string) =>
       this.#embeddedBrowser.screenshot(required(tabId, "tab id")),
     );
+    // Links in chat show the site's icon too, and the renderer is no more able
+    // to load one there than it is in a tab.
+    this.#handle(channels.browserFavicon, (_event, url: string) =>
+      faviconDataUrl(session.defaultSession, required(url, "url")),
+    );
     this.#handle(channels.browserDownloadsList, () => this.#embeddedBrowser.downloads());
     this.#handle(channels.browserOpenDownload, (_event, id: string) =>
       this.#embeddedBrowser.openDownload(required(id, "download id")),
     );
     this.#handle(channels.browserOpenDownloadsFolder, () =>
       this.#embeddedBrowser.openDownloadsFolder(),
+    );
+    this.#handle(channels.driveStatus, () => this.#drive.status());
+    this.#handle(channels.driveRefresh, () => this.#drive.refresh());
+    this.#handle(channels.driveConnect, (_event, provider: unknown) =>
+      this.#drive.connect(driveProvider(provider)),
+    );
+    this.#handle(
+      channels.driveDisconnect,
+      (_event, provider: unknown, accountId: unknown) =>
+        this.#drive.disconnect(
+          driveProvider(provider),
+          typeof accountId === "string" ? accountId : undefined,
+        ),
+    );
+    this.#handle(channels.driveSetSaveOrder, (_event, order: unknown) =>
+      this.#drive.setSaveOrder(
+        Array.isArray(order) ? order.map((entry) => driveProvider(entry)) : [],
+      ),
+    );
+    this.#handle(channels.driveSetLocalRoot, (_event, target: unknown) =>
+      this.#drive.setLocalRoot(typeof target === "string" ? target : null),
+    );
+    this.#handle(channels.driveSaveS3, (_event, config: unknown) =>
+      this.#drive.saveS3(driveS3Config(config)),
+    );
+    this.#handle(channels.driveList, (_event, provider: unknown, target: unknown) =>
+      this.#drive.list(
+        driveProvider(provider),
+        typeof target === "string" ? target : "",
+      ),
+    );
+    this.#handle(
+      channels.driveCreateFolder,
+      (_event, provider: unknown, parentPath: unknown, name: unknown) =>
+        this.#drive.createFolder(
+          driveProvider(provider),
+          typeof parentPath === "string" ? parentPath : "",
+          required(name, "folder name"),
+        ),
+    );
+    this.#handle(
+      channels.driveUpload,
+      (_event, provider: unknown, parentPath: unknown, paths: unknown) =>
+        this.#drive.upload(
+          driveProvider(provider),
+          typeof parentPath === "string" ? parentPath : "",
+          Array.isArray(paths)
+            ? paths.filter((entry): entry is string => typeof entry === "string")
+            : undefined,
+        ),
+    );
+    this.#handle(channels.driveDownload, (_event, provider: unknown, target: unknown) =>
+      this.#drive.download(driveProvider(provider), required(target, "file path")),
+    );
+    this.#handle(channels.driveRemove, (_event, provider: unknown, paths: unknown) =>
+      this.#drive.remove(
+        driveProvider(provider),
+        Array.isArray(paths)
+          ? paths.filter((entry): entry is string => typeof entry === "string")
+          : [],
+      ),
+    );
+    this.#handle(
+      channels.driveRename,
+      (_event, provider: unknown, target: unknown, name: unknown) =>
+        this.#drive.rename(
+          driveProvider(provider),
+          required(target, "file path"),
+          required(name, "name"),
+        ),
+    );
+    this.#handle(
+      channels.driveMove,
+      (_event, provider: unknown, paths: unknown, destination: unknown) =>
+        this.#drive.move(
+          driveProvider(provider),
+          Array.isArray(paths)
+            ? paths.filter((entry): entry is string => typeof entry === "string")
+            : [],
+          typeof destination === "string" ? destination : "",
+        ),
+    );
+    this.#handle(channels.driveCopy, (_event, provider: unknown, paths: unknown) =>
+      this.#drive.copy(
+        driveProvider(provider),
+        Array.isArray(paths)
+          ? paths.filter((entry): entry is string => typeof entry === "string")
+          : [],
+      ),
     );
     this.#handle(channels.providersList, () => this.#providerDtos());
     this.#handle(channels.providersSaveApiKey, async (_event, providerId: string, apiKey: string) => {
@@ -616,10 +1107,14 @@ export class DesktopBackend {
 
   async close(): Promise<void> {
     this.#closing = true;
+    stopUpdateChecks();
+    this.#surfaceMenubar.close();
+    void this.#agentSurface.close();
     this.#embeddedBrowser.closeAll();
     this.#mcpConfigWatcher.stop();
     this.#codexMcpConfigWatcher.stop();
     this.#chronicle.stop();
+    this.#dictation.close();
     const activeRuns = [...this.#activeRuns.values()];
     for (const run of activeRuns)
       run.control.cancel(new Error("Midas is closing"));
@@ -633,9 +1128,39 @@ export class DesktopBackend {
     this.#storage.close();
   }
 
+  /**
+   * A goal continuation is a run the agent started for itself, so the host has
+   * to adopt it: without this it would stream nowhere and could not be
+   * cancelled from the UI.
+   */
+  #trackGoalContinuation(
+    conversationId: string,
+    runId: string,
+    active: ActiveAgentRun,
+  ): void {
+    if (this.#closing) {
+      active.control.cancel(new Error("Midas is closing"));
+      return;
+    }
+    this.#goalContinuations.set(conversationId, runId);
+    this.#activeRuns.set(runId, active);
+    void this.#forwardEvents(runId, active);
+  }
+
+  /** The user speaking outranks a goal continuation still working. */
+  #preemptGoalContinuation(conversationId: string): void {
+    const runId = this.#goalContinuations.get(conversationId);
+    this.#goalContinuations.delete(conversationId);
+    if (!runId) return;
+    this.#activeRuns
+      .get(runId)
+      ?.control.cancel(new Error("Superseded by a new user message"));
+  }
+
   async #startRun(
     request: ReturnType<typeof validateStartRun>,
   ): Promise<{ runId: string }> {
+    this.#preemptGoalContinuation(request.conversationId);
     await this.#prepareMcpForRun();
     const agent = await this.#ensureConfiguredAgent();
     const runId = crypto.randomUUID();
@@ -645,6 +1170,7 @@ export class DesktopBackend {
       userMessageId: request.messageId,
       attachments: request.attachments,
       asGoal: request.asGoal,
+      reasoning: request.reasoning,
       runId,
     });
     this.#activeRuns.set(runId, active);
@@ -675,10 +1201,13 @@ export class DesktopBackend {
   async #forwardEvents(runId: string, active: ActiveAgentRun): Promise<void> {
     try {
       for await (const event of active.events) {
+        const conversationId = this.#storage.getRun(runId)?.conversationId ?? "";
+        // Pages opened and files written during the run feed the Summary panel.
+        this.#runResources.record(conversationId, runId, event);
         if (!this.#window.isDestroyed())
           this.#window.webContents.send(
             channels.runEvent,
-            eventDto(event, this.#storage.getRun(runId)?.conversationId ?? ""),
+            eventDto(event, conversationId),
           );
       }
       await active.result;
@@ -687,6 +1216,12 @@ export class DesktopBackend {
       // still lets the renderer replace optimistic state with stored messages.
     } finally {
       this.#activeRuns.delete(runId);
+      const goalConversation = this.#storage.getRun(runId)?.conversationId;
+      if (
+        goalConversation &&
+        this.#goalContinuations.get(goalConversation) === runId
+      )
+        this.#goalContinuations.delete(goalConversation);
       if (this.#activeRuns.size === 0 && this.#mcpReloadPending)
         await this.#reloadMcpAndPublish();
       if (!this.#window.isDestroyed()) {
@@ -892,9 +1427,18 @@ export class DesktopBackend {
   }
 
   #generalSettings(): GeneralSettingsDto {
-    return generalSettingsPreference(
-      this.#storage.getPreference("general-access")?.value,
-    );
+    const stored = this.#storage.getPreference("general-access")?.value;
+    const settings = generalSettingsPreference(stored);
+    // First-run setup predates nothing: an install that already asked for
+    // permissions has been used before, so it must not be sent back through
+    // setup just because this flag did not exist when it was last written.
+    if (
+      !settings.onboardingCompleted &&
+      !hasOnboardingFlag(stored) &&
+      this.#firstRunPermissions.completed()
+    )
+      return {...settings, onboardingCompleted: true};
+    return settings;
   }
 
   #environmentPromptContext() {
@@ -915,6 +1459,10 @@ export class DesktopBackend {
             utcOffset: `${offsetSign}${offsetHours}:${offsetRemainder}`,
           }
         : undefined,
+      language:
+        settings.language === "system"
+          ? undefined
+          : languageLabel(settings.language),
       locationEnabled: settings.locationEnabled,
       location:
         settings.locationEnabled && settings.location
@@ -927,6 +1475,16 @@ export class DesktopBackend {
     const model = this.#inference.getModel(ref);
     if (!model) throw new Error(`Unknown model: ${ref.provider}/${ref.id}`);
     this.#model = ref;
+    this.#buildAgent(ref);
+    if (persist)
+      this.#storage.setPreference("model", {
+        provider: ref.provider,
+        id: ref.id,
+      });
+    return this.#modelDto(model);
+  }
+
+  #buildAgent(ref: ModelRef): void {
     this.#agent = new MidasAgent({
       inference: this.#inference,
       storage: this.#storage,
@@ -935,14 +1493,74 @@ export class DesktopBackend {
       environment: { promptContext: () => this.#environmentPromptContext() },
       tools: this.#registry,
       model: ref,
+      // Both fall back to the main model inside the agent when undefined, so
+      // an override that no longer resolves simply stops applying.
+      taskModel: this.#usableRole("task"),
+      judgeModel: this.#usableRole("judge"),
       skills: this.#agentSkillOptions,
+      hooks: this.#hooks,
+      onGoalContinuation: ({ conversationId, runId, run }) =>
+        this.#trackGoalContinuation(conversationId, runId, run),
     });
-    if (persist)
-      this.#storage.setPreference("model", {
-        provider: ref.provider,
-        id: ref.id,
-      });
-    return this.#modelDto(model);
+  }
+
+  /** A stored override only counts while the model it names still exists. */
+  #usableRole(role: ModelRole): ModelRef | undefined {
+    const ref = this.#roleOverrides[role];
+    return ref && this.#inference.getModel(ref) ? ref : undefined;
+  }
+
+  #modelRoles(): ModelRolesDto {
+    const assignment = (ref: ModelRef | undefined): ModelRoleAssignmentDto | null => {
+      if (!ref) return null;
+      const model = this.#inference.getModel(ref);
+      if (!model) return null;
+      return { provider: ref.provider, id: ref.id, name: model.name ?? ref.id };
+    };
+    return {
+      main: assignment(this.#model),
+      task: assignment(this.#usableRole("task")),
+      judge: assignment(this.#usableRole("judge")),
+      speech: assignment(this.#usableRole("speech")),
+      image: assignment(this.#usableRole("image")),
+      video: assignment(this.#usableRole("video")),
+    };
+  }
+
+  async #assignRole(role: ModelRole, ref: ModelRef): Promise<ModelRolesDto> {
+    await this.#assertProviderConfigured(ref.provider);
+    if (role === "main") {
+      this.#selectModel(ref);
+      return this.#modelRoles();
+    }
+    if (!this.#inference.getModel(ref))
+      throw new Error(`Unknown model: ${ref.provider}/${ref.id}`);
+    this.#roleOverrides = { ...this.#roleOverrides, [role]: ref };
+    this.#persistRoles();
+    return this.#modelRoles();
+  }
+
+  #clearRole(role: ModelRole): ModelRolesDto {
+    // The main model is what everything else falls back to, so there is
+    // nothing to clear it to.
+    if (role === "main") throw new Error("The main model cannot be cleared");
+    const {[role]: _removed, ...rest} = this.#roleOverrides;
+    this.#roleOverrides = rest;
+    this.#persistRoles();
+    return this.#modelRoles();
+  }
+
+  #persistRoles(): void {
+    this.#storage.setPreference(
+      "model-roles",
+      Object.fromEntries(
+        Object.entries(this.#roleOverrides).map(([role, ref]) => [
+          role,
+          { provider: ref.provider, id: ref.id },
+        ]),
+      ),
+    );
+    if (this.#model) this.#buildAgent(this.#model);
   }
 
   #modelDto(model: InferenceModel): ModelDto {
@@ -1046,7 +1664,7 @@ export class DesktopBackend {
     const provider = await this.#providerDto(providerId);
     if (provider.configured) return;
     throw new Error(
-      `${provider.name} is not configured. Add its API key in Options → Provider, or choose a configured model.`,
+      `${provider.name} is not configured. Add its API key in Settings → Provider, or choose a configured model.`,
     );
   }
 
@@ -1069,7 +1687,7 @@ export class DesktopBackend {
     }
 
     throw new Error(
-      "No model provider is configured. Add an API key in Options → Provider, then choose a model.",
+      "No model provider is configured. Add an API key in Settings → Provider, then choose a model.",
     );
   }
 
@@ -1197,11 +1815,112 @@ function required(value: unknown, label: string): string {
     throw new Error(`${label} must be a non-empty string`);
   return value.trim();
 }
+/**
+ * Answers to a bridge login step. Field ids come from the bridge, so the map is
+ * accepted as-is apart from requiring every value to be a string.
+ */
+function mailListRequest(value: unknown): MailListRequest {
+  const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    account: typeof input.account === "string" ? input.account : undefined,
+    folder: typeof input.folder === "string" ? input.folder : undefined,
+    page: typeof input.page === "number" ? input.page : undefined,
+    pageSize: typeof input.pageSize === "number" ? input.pageSize : undefined,
+    sort: MAIL_SORTS.includes(input.sort as string)
+      ? (input.sort as MailListRequest["sort"])
+      : undefined,
+    query: typeof input.query === "string" && input.query.trim() ? input.query : undefined,
+  };
+}
+
+const MAIL_SORTS = ["date-desc", "date-asc", "subject", "from"];
+
+function sendMailRequest(value: unknown): SendMailRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Mail request must be an object");
+  const input = value as Record<string, unknown>;
+  const to = optionalStringArray(input.to, "to");
+  if (to.length === 0) throw new Error("At least one recipient is required");
+  return {
+    account: typeof input.account === "string" ? input.account : undefined,
+    to,
+    cc: optionalStringArray(input.cc, "cc"),
+    bcc: optionalStringArray(input.bcc, "bcc"),
+    subject: typeof input.subject === "string" ? input.subject : "",
+    body: typeof input.body === "string" ? input.body : "",
+    draft: input.draft === true,
+    attachments: optionalStringArray(input.attachments, "attachments"),
+    inReplyTo: typeof input.inReplyTo === "string" ? input.inReplyTo : undefined,
+    references: optionalStringArray(input.references, "references"),
+    replacesDraft: draftReference(input.replacesDraft),
+  };
+}
+
+/** The draft an edited message replaces, when it came from one. */
+function draftReference(value: unknown): SendMailRequest["replacesDraft"] {
+  if (!value || typeof value !== "object") return null;
+  const input = value as Record<string, unknown>;
+  return typeof input.id === "string" && typeof input.folder === "string"
+    ? {id: input.id, folder: input.folder}
+    : null;
+}
+
+/** Identifies this run of the app, for the snapshot drawer-openness rule. */
+const WORKSPACE_BOOT_ID = randomUUID();
+
+/**
+ * A workspace snapshot from the renderer: tab records with whatever fields
+ * they carried, plus the active tab and drawer state. Tab kinds are validated
+ * by the renderer on restore, so storage only guards the shape.
+ */
+function workspaceSnapshot(value: unknown): WorkspaceSnapshotDto {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Workspace snapshot must be an object");
+  const input = value as Record<string, unknown>;
+  const tabs = Array.isArray(input.tabs) ? input.tabs : [];
+  return {
+    tabs: tabs
+      .filter((tab): tab is Record<string, unknown> => !!tab && typeof tab === "object")
+      .map((tab) => ({
+        id: String(tab.id ?? ""),
+        title: String(tab.title ?? ""),
+        kind: String(tab.kind ?? ""),
+        ...(typeof tab.url === "string" ? {url: tab.url} : {}),
+        ...(typeof tab.favicon === "string" ? {favicon: tab.favicon} : {}),
+        ...(typeof tab.section === "string" ? {section: tab.section} : {}),
+      }))
+      .filter((tab) => tab.id && tab.kind),
+    activeTabId: typeof input.activeTabId === "string" ? input.activeTabId : null,
+    open: input.open === true,
+  };
+}
+
+function loginValues(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Login values must be an object");
+  const entries = Object.entries(value as Record<string, unknown>);
+  for (const [key, item] of entries)
+    if (typeof item !== "string") throw new Error(`${key} must be a string`);
+  return Object.fromEntries(entries) as Record<string, string>;
+}
 function optionalStringArray(value: unknown, label: string): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
   return value.map((item, index) => required(item, `${label}[${index}]`));
 }
+
+/**
+ * Every kind the protocol declares, as a map rather than a list of literals so
+ * that a kind added to SystemPermissionKind fails to compile here instead of
+ * being rejected at the IPC boundary — which is how Accessibility ended up
+ * unaskable from onboarding while both sides of it worked.
+ */
+const SYSTEM_PERMISSIONS: Record<SystemPermissionKind, true> = {
+  microphone: true,
+  "screen-recording": true,
+  accessibility: true,
+  "full-disk-access": true,
+};
 
 function systemPermission(value: unknown): SystemPermissionKind;
 function systemPermission(
@@ -1212,12 +1931,10 @@ function systemPermission(
   value: unknown,
   includeLocation = false,
 ): SystemPermissionKind | "location" {
-  if (
-    value === "microphone" ||
-    value === "screen-recording" ||
-    (includeLocation && value === "location")
-  ) return value;
-  throw new Error("Unknown system permission");
+  if (typeof value === "string" && Object.hasOwn(SYSTEM_PERMISSIONS, value))
+    return value as SystemPermissionKind;
+  if (includeLocation && value === "location") return "location";
+  throw new Error(`Unknown system permission: ${String(value)}`);
 }
 function number(value: unknown): number {
   if (!Number.isSafeInteger(value) || Number(value) < 0)
@@ -1305,13 +2022,63 @@ function audioBuffer(value: unknown): Buffer {
   throw new Error("Dictation audio must be binary");
 }
 
+const BROWSER_IDENTITIES: Record<string, { name: string; bundleId: string }> = {
+  chrome: { name: "Google Chrome", bundleId: "com.google.Chrome" },
+  brave: { name: "Brave Browser", bundleId: "com.brave.Browser" },
+  edge: { name: "Microsoft Edge", bundleId: "com.microsoft.edgemac" },
+  arc: { name: "Arc", bundleId: "company.thebrowser.Browser" },
+  chromium: { name: "Chromium", bundleId: "org.chromium.Chromium" },
+};
+
+function tabContextBrowser(): { name: string; bundleId: string } | null {
+  try {
+    const payload = JSON.parse(
+      readFileSync(
+        path.join(
+          homedir(),
+          "Library",
+          "Application Support",
+          "midas-tab-context",
+          "tabs.json",
+        ),
+        "utf8",
+      ),
+    ) as { browser?: string };
+    return BROWSER_IDENTITIES[payload.browser ?? ""] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function browserAppName(): string {
+  return tabContextBrowser()?.name ?? "Browser";
+}
+
+function browserBundleId(): string | undefined {
+  return tabContextBrowser()?.bundleId;
+}
+
+/** Whether a stored settings record predates the first-run setup flag. */
+function hasOnboardingFlag(value: unknown): boolean {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "onboardingCompleted" in (value as Record<string, unknown>)
+  );
+}
+
 function generalSettingsPreference(value: unknown): GeneralSettingsDto {
   const defaults: GeneralSettingsDto = {
     theme: "light",
+    language: "system",
     currency: null,
     speechModeEnabled: true,
+    dictationAutoStopSeconds: 6,
     timeEnabled: true,
     locationEnabled: true,
+    reasoningLevel: "medium",
+    onboardingCompleted: false,
     location: null,
   };
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -1322,11 +2089,17 @@ function generalSettingsPreference(value: unknown): GeneralSettingsDto {
       record.theme === "light" || record.theme === "dark" || record.theme === "system"
         ? record.theme
         : defaults.theme,
+    language: supportedLanguage(record.language) ?? defaults.language,
     currency: supportedCurrency(record.currency),
     speechModeEnabled:
       typeof record.speechModeEnabled === "boolean"
         ? record.speechModeEnabled
         : defaults.speechModeEnabled,
+    dictationAutoStopSeconds:
+      record.dictationAutoStopSeconds === null
+        ? null
+        : (autoStopSeconds(record.dictationAutoStopSeconds) ??
+          defaults.dictationAutoStopSeconds),
     timeEnabled:
       typeof record.timeEnabled === "boolean"
         ? record.timeEnabled
@@ -1335,6 +2108,17 @@ function generalSettingsPreference(value: unknown): GeneralSettingsDto {
       typeof record.locationEnabled === "boolean"
         ? record.locationEnabled
         : defaults.locationEnabled,
+    onboardingCompleted:
+      typeof record.onboardingCompleted === "boolean"
+        ? record.onboardingCompleted
+        : defaults.onboardingCompleted,
+    // `thinkingLevel` is the pre-rename key: settings written before the
+    // rename still carry it, so an existing choice is not reset to the default.
+    reasoningLevel:
+      reasoningEffort(
+        record.reasoningLevel ?? record.thinkingLevel,
+        defaults.reasoningLevel,
+      ) ?? defaults.reasoningLevel,
     location: locationPreference(record.location),
   };
 }
@@ -1353,20 +2137,42 @@ function generalSettingsUpdate(
     record.theme !== "system"
   )
     throw new Error("theme must be light, dark, or system");
+  if (record.language !== undefined && !supportedLanguage(record.language))
+    throw new Error(
+      `language must be one of: ${SUPPORTED_LANGUAGES.map((item) => item.value).join(", ")}`,
+    );
   if (record.currency !== undefined && record.currency !== null && !supportedCurrency(record.currency))
     throw new Error("currency must be USD, AUD, EUR, GBP, SGD, or JPY");
   if (record.timeEnabled !== undefined && typeof record.timeEnabled !== "boolean")
     throw new Error("timeEnabled must be a boolean");
+  if (
+    record.onboardingCompleted !== undefined &&
+    typeof record.onboardingCompleted !== "boolean"
+  )
+    throw new Error("onboardingCompleted must be a boolean");
   if (
     record.speechModeEnabled !== undefined &&
     typeof record.speechModeEnabled !== "boolean"
   )
     throw new Error("speechModeEnabled must be a boolean");
   if (
+    record.dictationAutoStopSeconds !== undefined &&
+    record.dictationAutoStopSeconds !== null &&
+    !autoStopSeconds(record.dictationAutoStopSeconds)
+  )
+    throw new Error(
+      `dictationAutoStopSeconds must be null or a whole number of seconds between ${AUTO_STOP_MIN_SECONDS} and ${AUTO_STOP_MAX_SECONDS}`,
+    );
+  if (
     record.locationEnabled !== undefined &&
     typeof record.locationEnabled !== "boolean"
   )
     throw new Error("locationEnabled must be a boolean");
+  if (
+    record.reasoningLevel !== undefined &&
+    !reasoningEffort(record.reasoningLevel, null)
+  )
+    throw new Error("reasoningLevel must be a supported reasoning effort");
   const locationEnabled =
     typeof record.locationEnabled === "boolean"
       ? record.locationEnabled
@@ -1377,11 +2183,17 @@ function generalSettingsUpdate(
       : record.location === null
         ? null
         : requiredLocation(record.location);
+  const onboardingCompleted =
+    typeof record.onboardingCompleted === "boolean"
+      ? record.onboardingCompleted
+      : current.onboardingCompleted;
   return {
+    onboardingCompleted,
     theme:
       record.theme === "light" || record.theme === "dark" || record.theme === "system"
         ? record.theme
         : current.theme,
+    language: supportedLanguage(record.language) ?? current.language,
     currency:
       record.currency === undefined
         ? current.currency
@@ -1392,13 +2204,61 @@ function generalSettingsUpdate(
       typeof record.speechModeEnabled === "boolean"
         ? record.speechModeEnabled
         : current.speechModeEnabled,
+    dictationAutoStopSeconds:
+      record.dictationAutoStopSeconds === undefined
+        ? current.dictationAutoStopSeconds
+        : record.dictationAutoStopSeconds === null
+          ? null
+          : (autoStopSeconds(record.dictationAutoStopSeconds) as number),
     timeEnabled:
       typeof record.timeEnabled === "boolean"
         ? record.timeEnabled
         : current.timeEnabled,
     locationEnabled,
     location: locationEnabled ? location : null,
+    reasoningLevel:
+      record.reasoningLevel === undefined
+        ? current.reasoningLevel
+        : (reasoningEffort(record.reasoningLevel, current.reasoningLevel) as ReasoningEffort),
   };
+}
+
+const REASONING_EFFORTS: ReasoningEffort[] = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+/** Returns the value when it names a supported effort, otherwise the fallback.
+ * The fallback may be null when the caller needs to know whether a raw value
+ * was accepted at all (update validation). */
+function reasoningEffort(
+  value: unknown,
+  fallback: ReasoningEffort | null,
+): ReasoningEffort | null {
+  return typeof value === "string" &&
+    REASONING_EFFORTS.includes(value as ReasoningEffort)
+    ? (value as ReasoningEffort)
+    : fallback;
+}
+
+const AUTO_STOP_MIN_SECONDS = 2;
+const AUTO_STOP_MAX_SECONDS = 60;
+
+/** Returns the value when it is a usable silence window, otherwise null. Null
+ * doubles as "never stop on its own", so callers separate that case out before
+ * asking. */
+function autoStopSeconds(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= AUTO_STOP_MIN_SECONDS &&
+    value <= AUTO_STOP_MAX_SECONDS
+    ? value
+    : null;
 }
 
 function supportedCurrency(
@@ -1434,6 +2294,26 @@ function requiredLocation(value: unknown): NonNullable<GeneralSettingsDto["locat
   if (typeof record.updatedAt !== "string" || !Number.isFinite(Date.parse(record.updatedAt)))
     throw new Error("location updatedAt is invalid");
   return { latitude, longitude, accuracy, updatedAt: record.updatedAt };
+}
+
+const MODEL_ROLES: ModelRole[] = ["main", "task", "judge", "speech", "image", "video"];
+
+function modelRole(value: unknown): ModelRole {
+  if (typeof value === "string" && (MODEL_ROLES as string[]).includes(value))
+    return value as ModelRole;
+  throw new Error(`Unknown model role: ${String(value)}`);
+}
+
+function modelRolesPreference(value: unknown): Partial<Record<ModelRole, ModelRef>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const record = value as Record<string, unknown>;
+  const roles: Partial<Record<ModelRole, ModelRef>> = {};
+  for (const role of MODEL_ROLES) {
+    if (role === "main") continue;
+    const ref = modelPreference(record[role]);
+    if (ref) roles[role] = ref;
+  }
+  return roles;
 }
 
 function modelPreference(value: unknown): ModelRef | undefined {

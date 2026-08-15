@@ -27,6 +27,38 @@ export interface MemoryPromptContext {
   conversationMemories: MemoryRecord[];
 }
 
+/**
+ * Progress of the background consolidation job, mirroring the watermark and
+ * retry bookkeeping Codex keeps in its own memory job table.
+ */
+export interface MemoryConsolidationState {
+  /** updatedAt of the newest memory folded into the current summary. */
+  watermark: string | null;
+  consolidatedAt: string | null;
+  consecutiveFailures: number;
+  /** Earliest time a failed job may run again; null when healthy. */
+  retryAfter: string | null;
+  lastError: string | null;
+}
+
+/**
+ * Failures back off but never stop permanently. Consolidation only runs after
+ * a turn that completed, so the model was working moments earlier and any
+ * failure is transient by construction. Backoff exists only so a deterministic
+ * failure — memories that overflow the model's context, say — costs one
+ * request per window instead of one per turn.
+ */
+const retryBaseMinutes = 10;
+const retryCapMinutes = 360;
+
+const emptyConsolidation: MemoryConsolidationState = {
+  watermark: null,
+  consolidatedAt: null,
+  consecutiveFailures: 0,
+  retryAfter: null,
+  lastError: null,
+};
+
 export interface MemoryVaultStatus {
   enabled: boolean;
   directory: string;
@@ -36,16 +68,15 @@ export interface MemoryVaultStatus {
   memories: number;
   userMemories: number;
   conversationMemories: number;
-  rolloutSummaries: number;
   latestMemoryAt: string | null;
-  latestRolloutAt: string | null;
-}
-
-export interface RolloutSummaryInput {
-  conversationId: string;
-  runId: string;
-  userText: string;
-  assistantText: string;
+  /** When the consolidation job last succeeded, null if it never has. */
+  consolidatedAt: string | null;
+  /** Why the last consolidation attempt failed, null when healthy. */
+  consolidationError: string | null;
+  /** When a failed consolidation will retry itself, null when healthy. */
+  consolidationRetryAfter: string | null;
+  /** Memories waiting for the next consolidation run. */
+  pendingMemories: number;
 }
 
 /**
@@ -59,9 +90,9 @@ export class MemoryManager {
   readonly registryPath: string;
   readonly summaryPath: string;
   readonly notesDirectory: string;
-  readonly rolloutsDirectory: string;
   readonly archiveDirectory: string;
   readonly settingsPath: string;
+  readonly consolidationPath: string;
   readonly #clock: () => Date;
   readonly #id: () => string;
 
@@ -75,9 +106,9 @@ export class MemoryManager {
       "ad_hoc",
       "notes",
     );
-    this.rolloutsDirectory = path.join(this.directory, "rollout_summaries");
     this.archiveDirectory = path.join(this.directory, "archive");
     this.settingsPath = path.join(this.directory, "settings.json");
+    this.consolidationPath = path.join(this.directory, "consolidation.json");
     this.#clock = options.clock ?? (() => new Date());
     this.#id = options.id ?? (() => crypto.randomUUID());
     this.#initialize();
@@ -96,10 +127,9 @@ export class MemoryManager {
 
   promptContext(conversationId?: string): MemoryPromptContext {
     const enabled = this.enabled();
-    const summary = readFile(this.summaryPath).trim();
     return {
       enabled,
-      summary: enabled ? summary : "",
+      summary: enabled ? this.#promptSummary() : "",
       registryPath: this.registryPath,
       conversationMemories: enabled && conversationId
         ? this.#all().filter(
@@ -111,12 +141,106 @@ export class MemoryManager {
     };
   }
 
+  /**
+   * The consolidated summary plus anything remembered since it last ran, so a
+   * new memory still reaches the prompt while the next job is pending.
+   */
+  #promptSummary(): string {
+    const summary = readFile(this.summaryPath).trim();
+    // Before the first consolidation the summary is the mechanical dump, which
+    // already lists everything; appending would duplicate it.
+    if (this.consolidationState().watermark === null) return summary;
+    const pending = this.pendingMemories();
+    if (!pending.length) return summary;
+    return [
+      summary,
+      `## Not yet consolidated\n\n${pending
+        .map((memory) => `- ${memory.content.replaceAll("\n", " ")}`)
+        .join("\n")}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  consolidationState(): MemoryConsolidationState {
+    try {
+      return {
+        ...emptyConsolidation,
+        ...(JSON.parse(
+          readFileSync(this.consolidationPath, "utf8"),
+        ) as Partial<MemoryConsolidationState>),
+      };
+    } catch {
+      return { ...emptyConsolidation };
+    }
+  }
+
+  /** User memories not yet folded into the consolidated summary. */
+  pendingMemories(): MemoryRecord[] {
+    const { watermark } = this.consolidationState();
+    return this.#all().filter(
+      (memory) =>
+        memory.scope === "user" &&
+        (watermark === null || memory.updatedAt > watermark),
+    );
+  }
+
+  userMemories(): MemoryRecord[] {
+    return this.#all().filter((memory) => memory.scope === "user");
+  }
+
+  saveConsolidation(
+    text: string,
+    watermark: string,
+  ): MemoryConsolidationState {
+    writeFileSync(this.summaryPath, `${text.trim()}\n`, "utf8");
+    return this.#writeConsolidation({
+      watermark,
+      consolidatedAt: this.#clock().toISOString(),
+      consecutiveFailures: 0,
+      retryAfter: null,
+      lastError: null,
+    });
+  }
+
+  recordConsolidationFailure(message: string): MemoryConsolidationState {
+    const state = this.consolidationState();
+    const failures = state.consecutiveFailures + 1;
+    const minutes = Math.min(
+      retryBaseMinutes * 2 ** (failures - 1),
+      retryCapMinutes,
+    );
+    return this.#writeConsolidation({
+      ...state,
+      consecutiveFailures: failures,
+      retryAfter: new Date(
+        this.#clock().getTime() + minutes * 60_000,
+      ).toISOString(),
+      lastError: message,
+    });
+  }
+
+  /** False only while a failed job is still inside its backoff window. */
+  consolidationReady(): boolean {
+    const { retryAfter } = this.consolidationState();
+    return !retryAfter || this.#clock().toISOString() >= retryAfter;
+  }
+
+
+  #writeConsolidation(
+    state: MemoryConsolidationState,
+  ): MemoryConsolidationState {
+    writeFileSync(
+      this.consolidationPath,
+      `${JSON.stringify(state, null, 2)}\n`,
+      "utf8",
+    );
+    return state;
+  }
+
   status(): MemoryVaultStatus {
     const memories = this.#all();
-    const rollouts = readdirSync(this.rolloutsDirectory, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-      .map((entry) => statSync(path.join(this.rolloutsDirectory, entry.name)).mtime.toISOString())
-      .sort((a, b) => b.localeCompare(a));
+    const consolidation = this.consolidationState();
     return {
       enabled: this.enabled(),
       directory: this.directory,
@@ -126,9 +250,11 @@ export class MemoryManager {
       memories: memories.length,
       userMemories: memories.filter((memory) => memory.scope === "user").length,
       conversationMemories: memories.filter((memory) => memory.scope === "conversation").length,
-      rolloutSummaries: rollouts.length,
       latestMemoryAt: memories[0]?.updatedAt ?? null,
-      latestRolloutAt: rollouts[0] ?? null,
+      consolidatedAt: consolidation.consolidatedAt,
+      consolidationError: consolidation.lastError,
+      consolidationRetryAfter: consolidation.retryAfter,
+      pendingMemories: this.pendingMemories().length,
     };
   }
 
@@ -192,39 +318,10 @@ export class MemoryManager {
     return true;
   }
 
-  recordRollout(input: RolloutSummaryInput): string {
-    if (!this.enabled()) return "";
-    const timestamp = this.#clock().toISOString();
-    const filename = `${fileTimestamp(timestamp)}-${safeStem(input.runId)}.md`;
-    const target = uniquePath(this.rolloutsDirectory, filename);
-    writeFileSync(
-      target,
-      [
-        "# Conversation rollout",
-        "",
-        `conversation_id: ${input.conversationId}`,
-        `run_id: ${input.runId}`,
-        `updated_at: ${timestamp}`,
-        "",
-        "## User",
-        "",
-        bounded(input.userText),
-        "",
-        "## Assistant",
-        "",
-        bounded(input.assistantText),
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    return target;
-  }
-
   #initialize(): void {
     for (const directory of [
       this.directory,
       this.notesDirectory,
-      this.rolloutsDirectory,
       this.archiveDirectory,
     ])
       mkdirSync(directory, { recursive: true });
@@ -280,7 +377,11 @@ export class MemoryManager {
   #rebuildIndexes(): void {
     const memories = this.#all();
     writeFileSync(this.registryPath, registry(memories), "utf8");
-    writeFileSync(this.summaryPath, summary(memories), "utf8");
+    // Once consolidation owns the summary, the mechanical dump must not
+    // overwrite it. New memories reach the prompt through pendingMemories()
+    // until the next job runs.
+    if (this.consolidationState().watermark === null)
+      writeFileSync(this.summaryPath, summary(memories), "utf8");
   }
 }
 
@@ -346,24 +447,85 @@ function registryLines(memories: MemoryRecord[]): string[] {
   });
 }
 
+/**
+ * Every user memory, grouped by kind, followed by a "What's in Memory" index.
+ * Modelled after Codex Desktop: nothing is truncated, so a memory can never be
+ * dropped without leaving a trace, and the index gives a structural read of the
+ * vault before the agent decides whether to open the registry.
+ */
 function summary(memories: MemoryRecord[]): string {
-  const top = memories
-    .filter((memory) => memory.scope === "user")
-    .sort(
-      (a, b) =>
-        b.confidence - a.confidence || b.updatedAt.localeCompare(a.updatedAt),
-    )
-    .slice(0, 40);
-  return [
+  const header = [
     "# Memory Summary",
     "",
     "Reviewable local context maintained by Midas.",
     "",
-    ...(top.length
-      ? top.map((memory) => `- ${memory.content.replaceAll("\n", " ")}`)
-      : ["No user memories yet."]),
+  ];
+  const groups = groupByKind(memories.filter((memory) => memory.scope === "user"));
+  if (!groups.length) return [...header, "No user memories yet.", ""].join("\n");
+  const total = groups.reduce((count, group) => count + group.entries.length, 0);
+  return [
+    ...header,
+    ...groups.flatMap((group) => [
+      `## ${capitalize(group.kind)}`,
+      "",
+      ...group.entries.map((memory) => `- ${memory.content.replaceAll("\n", " ")}`),
+      "",
+    ]),
+    "## What's in Memory",
+    "",
+    ...groups.map(
+      (group) =>
+        `- ${group.kind}: ${group.entries.length} ${group.entries.length === 1 ? "entry" : "entries"}, latest ${group.latest.slice(0, 10)}`,
+    ),
+    "",
+    `All ${total} user ${total === 1 ? "memory is" : "memories are"} listed above in full. \`MEMORY.md\` holds the same entries with kind, confidence, and timestamps, plus any conversation-scoped memory.`,
     "",
   ].join("\n");
+}
+
+interface KindGroup {
+  kind: string;
+  entries: MemoryRecord[];
+  confidence: number;
+  latest: string;
+}
+
+/** Strongest kind first; within a kind, most confident then most recent. */
+function groupByKind(memories: MemoryRecord[]): KindGroup[] {
+  const groups = new Map<string, MemoryRecord[]>();
+  for (const memory of memories) {
+    const entries = groups.get(memory.kind);
+    if (entries) entries.push(memory);
+    else groups.set(memory.kind, [memory]);
+  }
+  return [...groups]
+    .map(([kind, entries]) => {
+      entries.sort(
+        (a, b) =>
+          b.confidence - a.confidence || b.updatedAt.localeCompare(a.updatedAt),
+      );
+      return {
+        kind,
+        entries,
+        confidence: entries.reduce(
+          (top, memory) => Math.max(top, memory.confidence),
+          0,
+        ),
+        latest: entries.reduce(
+          (newest, memory) =>
+            memory.updatedAt > newest ? memory.updatedAt : newest,
+          "",
+        ),
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.confidence - left.confidence || left.kind.localeCompare(right.kind),
+    );
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function readFile(file: string): string {
@@ -395,10 +557,6 @@ function normalize(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
 
-function bounded(value: string, limit = 12_000): string {
-  const trimmed = value.trim();
-  return trimmed.length <= limit ? trimmed : `${trimmed.slice(0, limit)}\n\n[truncated]`;
-}
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));

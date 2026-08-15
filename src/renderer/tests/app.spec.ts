@@ -1,7 +1,7 @@
 import {expect, test, type Page} from '@playwright/test';
 
 const editor = (page: Page) => page.getByRole('textbox', {name: 'Message Midas'});
-const historyDrawer = (page: Page) => page.locator('aside.history-drawer');
+const chatDrawer = (page: Page) => page.locator('aside.chat-drawer');
 const workspaceDrawer = (page: Page) => page.locator('aside.workspace-drawer');
 const summaryCard = (page: Page) => page.locator('aside.summary-panel');
 
@@ -18,7 +18,7 @@ test.describe('welcome view', () => {
     await page.goto('/');
     const splash = page.getByRole('status', {name: 'Loading Midas'});
     await expect(splash).toBeVisible();
-    await expect(splash.locator('img')).toHaveAttribute('src', 'polymux.svg');
+    await expect(splash.locator('svg.startup-mark')).toBeVisible();
     await expect(splash.getByText('Midas', {exact: true})).toBeVisible();
     const startupAnimation = await splash.locator('.startup-brand').evaluate((node) => {
       const style = getComputedStyle(node);
@@ -27,12 +27,30 @@ test.describe('welcome view', () => {
     expect(startupAnimation.name).toContain('startup-brand-in');
     expect(startupAnimation.duration).toBe('2s');
     const startupLockup = await splash.locator('.startup-brand').evaluate((node) => {
-      const mark = node.querySelector('img')!.getBoundingClientRect();
+      const mark = node.querySelector('svg')!.getBoundingClientRect();
       const word = node.querySelector('span')!;
       const style = getComputedStyle(word);
-      return {markWidth: mark.width, markHeight: mark.height, gap: getComputedStyle(node).gap, fontSize: style.fontSize, fontWeight: style.fontWeight, tracking: style.letterSpacing};
+      // The lockup slides in under a transform, so a box measured mid-flight
+      // carries the compositor's sub-pixel remainder — 71.99996948242188 for a
+      // mark that is 72 wide. Two decimals is finer than any real regression
+      // and coarser than that noise.
+      const round = (value: number) => Math.round(value * 100) / 100;
+      return {markWidth: round(mark.width), markHeight: round(mark.height), gap: getComputedStyle(node).gap, fontSize: style.fontSize, fontWeight: style.fontWeight, tracking: style.letterSpacing};
     });
-    expect(startupLockup).toEqual({markWidth: 48, markHeight: 39, gap: '8px', fontSize: '32px', fontWeight: '750', tracking: '-1.44px'});
+    expect(startupLockup).toEqual({markWidth: 72, markHeight: 59, gap: '12px', fontSize: '48px', fontWeight: '750', tracking: '-2.16px'});
+  });
+
+  /**
+   * How long the splash stays is a wall-clock property, so it is measured on
+   * its own: sharing a test with the geometry above meant the reads had to
+   * finish inside the splash's ~2s life, which is not something a machine
+   * running the rest of this suite alongside it can promise. Here the wait
+   * begins the moment the splash is first seen, with nothing in between.
+   */
+  test('holds the startup splash for about two seconds', async ({page}) => {
+    await page.goto('/');
+    const splash = page.getByRole('status', {name: 'Loading Midas'});
+    await expect(splash).toBeVisible();
     await page.waitForTimeout(1700);
     await expect(splash).toBeVisible();
     await expect(splash).toHaveCount(0, {timeout: 1500});
@@ -70,12 +88,12 @@ test.describe('welcome view', () => {
     await expect(toolbar.getByText('ATTACH')).toBeVisible();
     await expect(toolbar.getByText('VOICE')).toBeVisible();
     await expect(toolbar.getByText('GOAL')).toBeVisible();
-    await expect(toolbar.getByText('OPTIONS')).toBeVisible();
+    await expect(toolbar.getByText('MODEL')).toBeVisible();
     await expect(toolbar.getByText('PLUGINS')).toHaveCount(0);
     await expect(toolbar.getByText('TEAMS')).toHaveCount(0);
   });
 
-  test('opens Options as a Teams-style modal with connections, models and memory controls', async ({page}) => {
+  test('opens Settings as a Teams-style modal with connections, models and memory controls', async ({page}) => {
     await page.route('https://api.frankfurter.dev/v2/rates**', (route) => route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify([
@@ -87,9 +105,9 @@ test.describe('welcome view', () => {
       ]),
     }));
     await page.goto('/');
-    await page.getByRole('button', {name: 'OPTIONS'}).click();
+    await page.getByRole('button', {name: 'Settings'}).click();
 
-    const modal = page.getByRole('dialog', {name: 'Options'});
+    const modal = page.getByRole('dialog', {name: 'Settings'});
     await expect(modal).toBeVisible();
     await expect(modal.getByRole('heading', {name: 'General'})).toBeVisible();
     await expect(modal.getByText('Manage Midas preferences and access.')).toBeVisible();
@@ -100,7 +118,7 @@ test.describe('welcome view', () => {
     expect(modalBounds!.y).toBeGreaterThanOrEqual(48);
     await expect(modal).toHaveCSS('border-style', 'none');
     await expect(page.getByRole('menu')).toHaveCount(0);
-    await expect(modal.getByRole('tab')).toHaveText(['General', 'MCP', 'Skills', 'Model', 'Provider', 'Memory']);
+    await expect(modal.getByRole('tab')).toHaveText(['General', 'Hub', 'Drive', 'MCP', 'Skills', 'Models', 'Provider', 'Memory']);
     const tabMetrics = await modal.getByRole('tab').first().evaluate((node) => {
       const style = getComputedStyle(node);
       return {fontSize: style.fontSize, padding: style.padding, radius: style.borderRadius};
@@ -158,8 +176,7 @@ test.describe('welcome view', () => {
     const officialMcp = modal.getByRole('button', {name: /Browser Tools Official/});
     await expect(officialMcp.locator('.official-rail-stamp')).toBeVisible();
     await expect(officialMcp.locator('.mcp-name-status')).toHaveCount(0);
-    await expect(officialMcp).toContainText('connected');
-    await expect(officialMcp).not.toContainText('official · connected');
+    await expect(officialMcp.locator('small')).toHaveText('Midas · Connected');
     await officialMcp.click();
     await expect(modal.getByRole('heading', {name: 'Browser Tools'})).toBeVisible();
     await expect(modal.locator('.options-detail-header .options-badge')).toHaveCount(0);
@@ -183,10 +200,10 @@ test.describe('welcome view', () => {
     await expect(modal.locator('.skill-registry-results li').filter({hasText: 'Issues'}).getByRole('button', {name: 'Configure'})).toBeVisible();
     await modal.getByRole('button', {name: 'Done'}).click();
     await expect(modal.getByRole('heading', {name: 'Filesystem'})).toBeVisible();
-    await modal.getByRole('button', {name: /^Files midas/}).click();
+    await modal.getByRole('button', {name: /^Files Custom/}).click();
     await expect(modal.getByRole('button', {name: 'Delete MCP server'})).toBeVisible();
     await modal.getByRole('button', {name: 'Delete MCP server'}).click();
-    await expect(modal.getByRole('button', {name: /^Files midas/})).toHaveCount(0);
+    await expect(modal.getByRole('button', {name: /^Files Custom/})).toHaveCount(0);
     await expect(modal.getByRole('heading', {name: 'Filesystem'})).toBeVisible();
     await expect(modal.getByRole('button', {name: 'Filter MCP servers'})).toBeVisible();
     await expect(modal.getByRole('button', {name: 'Sort MCP servers'})).toBeVisible();
@@ -224,7 +241,7 @@ test.describe('welcome view', () => {
     const officialPdf = modal.getByRole('button', {name: /PDF Official/});
     await expect(officialPdf).toBeVisible();
     await expect(officialPdf.locator('[data-icon="verified"]')).toBeVisible();
-    await expect(officialPdf.locator('small')).toHaveText('Active');
+    await expect(officialPdf.locator('small')).toHaveText('Midas · Active');
     await expect(officialPdf.locator('.integration-state')).toHaveCount(0);
     const officialSealGap = await officialPdf.evaluate((row) => {
       const name = row.querySelector('.skill-name-line strong')!.getBoundingClientRect();
@@ -264,7 +281,7 @@ test.describe('welcome view', () => {
     expect(directoryLayout).toEqual({overflowY: 'hidden', resultsOverflowY: 'auto'});
     await modal.getByRole('button', {name: 'Done'}).click();
     await expect(modal.getByRole('heading', {name: 'Find Skills'})).toBeVisible();
-    await expect(modal.getByRole('button', {name: /Find Skills Active/})).toBeVisible();
+    await expect(modal.getByRole('button', {name: /Find Skills.*Active/})).toBeVisible();
     await expect(modal.getByRole('button', {name: 'Filter skills'})).toBeVisible();
     await expect(modal.getByRole('button', {name: 'Sort skills'})).toBeVisible();
     await modal.getByRole('button', {name: 'Filter skills'}).click();
@@ -293,14 +310,14 @@ test.describe('welcome view', () => {
     await expect(officialMeta).toContainText('Midas');
     await expect(officialMeta).toContainText('Web');
     await expect(officialMeta).toContainText('Bundled with Midas');
-    const customSkill = modal.getByRole('button', {name: /Personal Research Active/});
+    const customSkill = modal.getByRole('button', {name: /Personal Research.*Active/});
     await expect(customSkill).toBeVisible();
     await customSkill.click();
     await expect(modal.locator('.options-detail-header .options-badge')).toHaveCount(0);
     await expect(modal.locator('.skill-detail > .options-detail-header > .options-title-group')).toHaveCSS('align-self', 'flex-start');
     await expect(modal.locator('.skill-detail > .options-detail-header')).toHaveCSS('height', '20px');
     const customMeta = modal.locator('.skill-meta');
-    await expect(customMeta).toContainText('You');
+    await expect(customMeta).toContainText('Custom');
     await expect(customMeta).toContainText('Midas · ~/.midas/skills');
     const skillPathBottomGap = await modal.locator('.skill-detail').evaluate((detail) => {
       const path = detail.querySelector('.options-path')!.getBoundingClientRect();
@@ -309,17 +326,13 @@ test.describe('welcome view', () => {
     });
     expect(skillPathBottomGap).toBe(20);
 
-    await modal.getByRole('tab', {name: 'Model'}).click();
+    await modal.getByRole('tab', {name: 'Models'}).click();
     await expect(modal.getByRole('heading', {name: 'Models'})).toBeVisible();
-    await expect(modal.getByText('Click a model to choose it.')).toBeVisible();
-    const selectedModel = modal.getByLabel(/Selected model:/);
-    await expect(selectedModel).toContainText('GPT-5.6 Terra');
-    await expect(selectedModel).toHaveAttribute('data-tooltip-label', 'Current Model');
-    await expect(selectedModel.locator('.provider-logo img')).toBeVisible();
-    const selectedModelRestingBackground = await selectedModel.evaluate((node) => getComputedStyle(node).backgroundColor);
-    await selectedModel.hover();
-    await expect(selectedModel).not.toHaveCSS('background-color', selectedModelRestingBackground);
-    await expect(page.getByRole('tooltip', {name: 'Current Model'})).toBeVisible();
+    await expect(modal.getByText('Click a model to assign it to a job.')).toBeVisible();
+    await expect(modal.getByLabel(/Selected model:/)).toHaveCount(0);
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['OpenAI']);
+    await modal.getByRole('button', {name: 'Filter models'}).click();
+    await modal.getByRole('menuitemradio', {name: 'All Companies'}).click();
     const companySearch = modal.getByRole('searchbox', {name: 'Search model'});
     await expect(companySearch).toHaveAttribute('placeholder', 'Search model');
     await companySearch.fill('Haiku');
@@ -346,16 +359,24 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('button', {name: 'Sort models'})).toBeVisible();
     await modal.getByRole('button', {name: 'Filter models'}).click();
     const modelFilterMenu = modal.getByRole('menu', {name: 'Filter models'});
-    await expect(modelFilterMenu.getByRole('menuitemradio')).toHaveText(['All Companies', 'Configured', 'Not Configured', 'Custom Provider']);
-    await modal.getByRole('menuitemradio', {name: 'Configured', exact: true}).click();
+    await expect(modelFilterMenu.getByRole('menuitemradio')).toHaveText(['Default', 'All Companies', 'Custom Provider', 'Text models', 'Image models', 'Video models', 'Speech models', 'Embedding models']);
+    await modal.getByRole('menuitemradio', {name: 'Default', exact: true}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['OpenAI']);
     await expect(modal.getByRole('heading', {name: 'OpenAI'})).toBeVisible();
-    await modal.getByRole('button', {name: 'Filter models'}).click();
-    await modal.getByRole('menuitemradio', {name: 'Not Configured'}).click();
-    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['Anthropic', 'Google']);
-    await expect(modal.getByRole('heading', {name: 'Anthropic'})).toBeVisible();
+    await expect(modal.locator('.model-table tbody tr')).toHaveCount(2);
+    await expect(modal.locator('.model-table tbody')).toContainText('openai/');
+    await expect(modal.locator('.model-table tbody')).not.toContainText('anthropic/');
     await modal.getByRole('button', {name: 'Filter models'}).click();
     await modal.getByRole('menuitemradio', {name: 'All Companies'}).click();
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['OpenAI', 'Anthropic', 'Google']);
+    await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
+    await expect(modal.getByRole('heading', {name: 'Anthropic'})).toBeVisible();
+    await expect(modal.locator('.model-table tbody tr')).toHaveCount(2);
+    await expect(modal.locator('.model-table tbody')).toContainText('anthropic/');
+    await expect(modal.locator('.model-table tbody')).not.toContainText('openai/');
+    await modal.getByRole('button', {name: /Google.*1 model/}).click();
+    await expect(modal.locator('.model-table tbody tr')).toHaveCount(1);
+    await expect(modal.locator('.model-table tbody')).toContainText('openrouter/');
     await modal.getByRole('button', {name: 'Sort models'}).click();
     await expect(modal.getByRole('menuitemradio', {name: 'Recommended'})).toBeVisible();
     await expect(modal.getByRole('menuitemradio', {name: 'Popularity'})).toHaveCount(0);
@@ -411,31 +432,69 @@ test.describe('welcome view', () => {
     expect(currencyPosition).toEqual({topOffset: -5, rightGap: 0});
     await currencyMenu.click();
     await modal.getByRole('menuitemradio', {name: 'AUD'}).click();
-    const sonnetRow = modal.getByRole('button', {name: 'Use Claude Sonnet 4.5'}).locator('xpath=ancestor::tr');
+    const sonnetRow = modal.getByRole('button', {name: 'Assign Claude Sonnet 4.5'}).locator('xpath=ancestor::tr');
     await expect(sonnetRow.locator('td').nth(1)).toHaveText('A$4.50');
     await currencyMenu.click();
     await modal.getByRole('menuitemradio', {name: 'USD'}).click();
     await expect(modal.locator('.model-table thead')).toContainText('InputOutputCache hitCache writeContext');
-    const sonnet = modal.getByRole('button', {name: 'Use Claude Sonnet 4.5'});
+    const sonnet = modal.getByRole('button', {name: 'Assign Claude Sonnet 4.5'});
     await expect(sonnet).toBeVisible();
     await expect(sonnet.locator('xpath=ancestor::tr')).toContainText('$3.00$15.00$0.300$3.75');
     await sonnet.click();
+    const sonnetRoles = modal.locator('.model-roles');
+    // A text model only offers the jobs a text model can do.
+    await expect(sonnetRoles.locator('.model-role-copy strong')).toHaveText(['Main', 'Task', 'Judge']);
+    await expect(sonnetRoles.locator('.model-role').first()).toContainText('GPT-5.6 Terra');
+    // A falling-back role names the model it uses rather than saying so.
+    await expect(sonnetRoles.locator('.model-role').nth(1)).toContainText('GPT-5.6 Terra');
+    // Task and judge are the only roles that fall back, and the button that
+    // puts them back is dead until one of them is overridden.
+    await expect(sonnetRoles.getByRole('button', {name: 'Set to Main'})).toHaveCount(2);
+    await expect(sonnetRoles.getByRole('button', {name: 'Set to Main'}).first()).toBeDisabled();
+    // View Setup lists every job at once, including the ones this row can't take.
+    await modal.getByRole('button', {name: 'View Setup'}).click();
+    const setupMenu = modal.getByRole('menu', {name: 'Model setup'});
+    await expect(setupMenu.locator('.role-setup-row')).toHaveText([
+      'MainGPT-5.6 Terra',
+      'TaskGPT-5.6 Terra',
+      'JudgeGPT-5.6 Terra',
+      'SpeechNot set',
+      'Image generationNot set',
+      'Video generationNot set',
+    ]);
+    await modal.getByRole('button', {name: 'View Setup'}).click();
+    await expect(setupMenu).toHaveCount(0);
+    // An unconfigured provider fails on assignment, not on opening the row.
+    await expect(modal.locator('.options-error')).toHaveCount(0);
+    await modal.getByRole('button', {name: 'Set Claude Sonnet 4.5 as the main model'}).click();
     await expect(modal.locator('.options-error')).toContainText('Anthropic is not configured');
-    await expect(selectedModel).toContainText('GPT-5.6 Terra');
-    await expect(modal.getByRole('button', {name: 'Use Claude Sonnet 4.5'})).toBeEnabled();
+    await sonnet.click();
+    await expect(modal.locator('.model-roles')).toHaveCount(0);
+    // The price cells belong to the same row, so they open and close it too.
+    await sonnetRow.locator('td').nth(2).click();
+    await expect(modal.locator('.model-roles')).toHaveCount(1);
+    await sonnetRow.locator('td').nth(2).click();
+    await expect(modal.locator('.model-roles')).toHaveCount(0);
+
+    // A role with no consumer yet still records the choice, and the row it was
+    // set from is the one that reads back as current.
+    await modal.getByRole('button', {name: /OpenAI.*2 models/}).click();
+    await modal.getByRole('button', {name: 'Assign GPT-5.6 Sol'}).click();
+    const solRoles = modal.locator('.model-roles');
+    // A text model is not offered the generation jobs it could never do.
+    await expect(solRoles.locator('.model-role-copy strong')).toHaveText(['Main', 'Task', 'Judge']);
+    await modal.getByRole('button', {name: 'Set GPT-5.6 Sol as the judge model'}).click();
+    await expect(modal.getByRole('button', {name: 'GPT-5.6 Sol is the judge model'})).toBeDisabled();
+    const judgeRole = solRoles.locator('.model-role').nth(2);
+    await expect(judgeRole).toContainText('GPT-5.6 Sol');
+    await judgeRole.getByRole('button', {name: 'Set to Main'}).click();
+    await expect(judgeRole).toContainText('GPT-5.6 Terra');
+    await expect(judgeRole.getByRole('button', {name: 'Set to Main'})).toBeDisabled();
+    await modal.getByRole('button', {name: 'Assign GPT-5.6 Sol'}).click();
+    await expect(modal.locator('.model-roles')).toHaveCount(0);
+    await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
     await modal.getByRole('button', {name: /Google.*1 model/}).click();
     await expect(modal.getByRole('heading', {name: 'Google'})).toBeVisible();
-    await page.evaluate(() => {
-      const original = Element.prototype.scrollIntoView;
-      Element.prototype.scrollIntoView = function(options) {
-        (window as typeof window & {lastModelScroll?: ScrollIntoViewOptions}).lastModelScroll = options as ScrollIntoViewOptions;
-        Element.prototype.scrollIntoView = original;
-      };
-    });
-    await selectedModel.click();
-    await expect(modal.getByRole('heading', {name: 'OpenAI'})).toBeVisible();
-    await expect(modal.locator('.model-table tr.revealed')).toContainText('GPT-5.6 Terra');
-    await expect.poll(() => page.evaluate(() => (window as typeof window & {lastModelScroll?: ScrollIntoViewOptions}).lastModelScroll)).toEqual({behavior: 'smooth', block: 'center', inline: 'nearest'});
 
     await modal.getByRole('tab', {name: 'Provider'}).click();
     await expect(modal.locator('.options-rail-list .configured-check')).toHaveCount(1);
@@ -539,13 +598,14 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('button', {name: /Local Studio.*1 model/})).toBeVisible();
     await expect(modal.getByRole('heading', {name: 'Local Studio'})).toBeVisible();
 
-    await modal.getByRole('tab', {name: 'Model'}).click();
+    await modal.getByRole('tab', {name: 'Models'}).click();
     await modal.getByRole('button', {name: 'Filter models'}).click();
     await modal.getByRole('menuitemradio', {name: 'Custom Provider'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['Local Studio']);
     await expect(modal.getByRole('heading', {name: 'Local Studio'})).toBeVisible();
     await expect(modal.locator('.provider-detail-header .provider-logo img')).toBeVisible();
-    await expect(modal.getByRole('button', {name: 'Studio Chat selected'})).toBeDisabled();
+    await modal.getByRole('button', {name: 'Assign Studio Chat'}).click();
+    await expect(modal.locator('.model-roles .model-role').first()).toContainText('Main');
 
     await modal.getByRole('tab', {name: 'Memory'}).click();
     await expect(modal.locator('.memory-options .option-mark')).toHaveCount(0);
@@ -600,8 +660,8 @@ test.describe('welcome view', () => {
 
   test('toggles integrations and edits Midas-owned skills and MCP servers', async ({page}) => {
     await page.goto('/');
-    await page.getByRole('button', {name: 'OPTIONS'}).click();
-    const modal = page.getByRole('dialog', {name: 'Options'});
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog', {name: 'Settings'});
 
     await modal.getByRole('tab', {name: 'MCP'}).click();
     const mcpToggle = modal.getByRole('switch', {name: 'Enable MCP server'});
@@ -619,7 +679,7 @@ test.describe('welcome view', () => {
     await expect(skillToggle).toHaveAttribute('aria-checked', 'true');
     await skillToggle.click();
     await expect(skillToggle).toHaveAttribute('aria-checked', 'false');
-    const inactiveSkillRow = modal.getByRole('button', {name: /Documents Inactive/});
+    const inactiveSkillRow = modal.getByRole('button', {name: /Documents.*Inactive/});
     await expect(inactiveSkillRow).toBeVisible();
     await expect(inactiveSkillRow).toHaveClass(/integration-disabled/);
     await modal.getByRole('button', {name: 'Edit skill'}).click();
@@ -634,7 +694,7 @@ test.describe('welcome view', () => {
     await expect(modal.getByText('Create polished document files.')).toBeVisible();
     await expect(modal.getByRole('button', {name: 'Delete skill'})).toBeVisible();
     await modal.getByRole('button', {name: 'Delete skill'}).click();
-    await expect(modal.getByRole('button', {name: /Documents Active/})).toHaveCount(0);
+    await expect(modal.getByRole('button', {name: /Documents.*Active/})).toHaveCount(0);
     await modal.getByRole('button', {name: /PDF Official/}).click();
     await expect(modal.getByRole('button', {name: 'Delete skill'})).toHaveCount(0);
   });
@@ -650,8 +710,8 @@ test.describe('welcome view', () => {
       });
     });
     await page.goto('/');
-    await page.getByRole('button', {name: 'OPTIONS'}).click();
-    const modal = page.getByRole('dialog', {name: 'Options'});
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog', {name: 'Settings'});
     const locationRow = modal.locator('.general-setting-row').filter({hasText: 'Location'});
     const retry = locationRow.getByRole('button', {name: 'Try again'});
     await expect(retry).toBeVisible();
@@ -660,6 +720,15 @@ test.describe('welcome view', () => {
     // fallback resolves, and the retry affordance stands down.
     await expect(locationRow).toContainText('Shared with the agent');
     await expect(retry).toHaveCount(0);
+  });
+
+  test('the provider panel explains that extra keys rotate automatically', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'Provider'}).click();
+    await expect(modal.getByRole('switch', {name: 'Enable auto API key rotation'})).toHaveCount(0);
+    await expect(modal.getByText('rotates through them automatically')).toBeVisible();
   });
 
   test('the primary button offers speech until there is something to send', async ({page}) => {
@@ -675,13 +744,13 @@ test.describe('welcome view', () => {
 
   test('speech mode can be disabled and replaced by the Send button', async ({page}) => {
     await page.goto('/');
-    await page.getByRole('button', {name: 'OPTIONS'}).click();
-    const modal = page.getByRole('dialog', {name: 'Options'});
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog', {name: 'Settings'});
     const speechMode = modal.getByRole('switch', {name: 'Enable speech mode'});
     await expect(speechMode).toHaveAttribute('aria-checked', 'true');
     await speechMode.click();
     await expect(speechMode).toHaveAttribute('aria-checked', 'false');
-    await modal.getByRole('button', {name: 'Close Options'}).click();
+    await modal.getByRole('button', {name: 'Close Settings'}).click();
 
     const send = page.getByRole('button', {name: 'Send message'});
     await expect(send).toBeVisible();
@@ -715,7 +784,7 @@ test.describe('design system', () => {
 
   test('every chrome icon draws at one size and weight', async ({page}) => {
     await page.goto('/');
-    const icons = await page.locator('.left-controls svg, .top-controls svg').evaluateAll((nodes) =>
+    const icons = await page.locator('.left-controls svg, .top-controls button:not([aria-label="Settings"]) svg').evaluateAll((nodes) =>
       nodes.map((node) => ({
         box: node.getAttribute('viewBox'),
         width: node.getAttribute('width'),
@@ -727,12 +796,24 @@ test.describe('design system', () => {
       expect(icon.width).toBe('16');
       expect(icon.stroke).toBe('1.5');
     }
+    // The gear is the one optical correction: its teeth fill the box edge to
+    // edge, so it draws a notch smaller. Strokes are authored in the 24-unit
+    // box and thin with the icon, so its own stroke scales back up to render at
+    // the same line weight as the rest of the set.
+    const gear = page.locator('.top-controls button[aria-label="Settings"] svg');
+    await expect(gear).toHaveAttribute('viewBox', '0 0 24 24');
+    await expect(gear).toHaveAttribute('width', '13');
+    const lineWeight = (icon: {width: string | null; stroke: string | null}) =>
+      Number(icon.stroke) * Number(icon.width) / 24;
+    const gearWeight = await gear.evaluate((node) =>
+      Number(node.getAttribute('stroke-width')) * Number(node.getAttribute('width')) / 24);
+    expect(gearWeight).toBeCloseTo(lineWeight(icons[0]), 2);
   });
 
   test('every chrome control names itself through the shared tooltip', async ({page}) => {
     await page.goto('/');
-    await page.getByRole('button', {name: 'Toggle chat history'}).hover();
-    await expect(page.locator('.shared-tooltip')).toHaveText('History');
+    await page.getByRole('button', {name: 'Toggle Chats'}).hover();
+    await expect(page.locator('.shared-tooltip')).toHaveText('Chats');
     await page.getByRole('button', {name: 'New Chat'}).hover();
     await expect(page.locator('.shared-tooltip')).toHaveText('New Chat');
     await page.getByRole('button', {name: 'Toggle Workspace'}).hover();
@@ -758,12 +839,177 @@ test.describe('design system', () => {
     await expect(page.locator('.shared-tooltip')).toHaveCount(0);
   });
 
-  test('History and New Chat use the same icon-button hover treatment', async ({page}) => {
+  test('a control holding its menu open shows no tooltip, even under the pointer', async ({page}) => {
     await page.goto('/');
-    const history = page.getByRole('button', {name: 'Toggle chat history'});
+    await send(page, 'menu tooltips');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const newTab = page.getByLabel('New tab', {exact: true});
+
+    // Hovering first puts the pill up, which is the state the click has to
+    // clear: the menu opens directly under it, over its own first item.
+    await newTab.hover();
+    await expect(page.locator('.shared-tooltip')).toHaveText('New tab');
+    await newTab.click();
+    await expect(page.getByRole('menuitem', {name: 'Open browser'})).toBeVisible();
+    await expect(page.locator('.shared-tooltip')).toHaveCount(0);
+
+    // Still nothing while the pointer sits on the trigger, and it comes back
+    // once the menu is closed.
+    await newTab.hover();
+    await expect(page.locator('.shared-tooltip')).toHaveCount(0);
+    await newTab.click();
+    await expect(page.locator('.shared-tooltip')).toHaveText('New tab');
+  });
+
+  test('model rows reveal a rich tooltip only after a deliberate pause', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'Models'}).click();
+    await modal.getByRole('button', {name: 'Filter models'}).click();
+    await modal.getByRole('menuitemradio', {name: 'All Companies'}).click();
+    await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
+    const sonnet = modal.getByRole('button', {name: 'Assign Claude Sonnet 4.5'});
+
+    await sonnet.hover();
+    await expect(page.locator('.shared-tooltip')).toHaveCount(0);
+    await expect(page.locator('.shared-tooltip.wide')).toHaveCount(0);
+
+    const tooltip = page.getByRole('tooltip', {name: /anthropic.*claude-sonnet/});
+    await expect(tooltip).toBeVisible({timeout: 3500});
+    await expect(tooltip).toContainText('Balanced model for coding agents and careful analysis.');
+    await expect(tooltip).toContainText('Knowledge cutoff: 2025-08-31');
+    await expect(tooltip).toContainText('Supports: tools, structured output, attachments');
+    await expect(tooltip).toHaveCSS('white-space', 'pre-line');
+  });
+
+  test('MODEL lists the available models and picks a reasoning level per model', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'MODEL'}).click();
+
+    const menu = page.getByRole('menu', {name: 'Model options'});
+    await expect(menu).toBeVisible();
+    // The search takes the caret, so a filter can be typed without aiming.
+    await expect(menu.getByRole('textbox', {name: 'Search models'})).toBeFocused();
+    const rows = menu.getByRole('menuitem');
+    await expect(rows.first()).toContainText('GPT-5.6 Terra');
+
+    // Each row opens its own reasoning submenu to the side.
+    await rows.first().click();
+    const submenu = page.getByRole('menu', {name: 'Reasoning for GPT-5.6 Terra'});
+    await expect(submenu).toContainText('Reasoning');
+    const options = submenu.getByRole('menuitemradio');
+    await expect(options).toHaveText(['Off', 'Low', 'Medium', 'High']);
+    await expect(submenu.getByRole('menuitemradio', {name: 'Medium'})).toHaveAttribute('aria-checked', 'true');
+
+    // Choosing a level settles both halves and closes the pair.
+    await submenu.getByRole('menuitemradio', {name: 'High'}).click();
+    await expect(submenu).toHaveCount(0);
+    await expect(menu).toHaveCount(0);
+
+    await page.getByRole('button', {name: 'MODEL'}).click();
+    await menu.getByRole('menuitem').first().click();
+    await expect(submenu.getByRole('menuitemradio', {name: 'High'})).toHaveAttribute('aria-checked', 'true');
+    await expect(submenu.getByRole('menuitemradio', {name: 'Medium'})).toHaveAttribute('aria-checked', 'false');
+  });
+
+  test('the model menu searches the list and stays a few rows tall', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'MODEL'}).click();
+    const menu = page.getByRole('menu', {name: 'Model options'});
+    const list = menu.locator('.model-menu-list');
+
+    // Bounded height with its own scroller, so a long catalogue cannot grow the
+    // menu over the composer it hangs off.
+    expect(await list.evaluate((node) => getComputedStyle(node).overflowY)).toBe('auto');
+    // A whole number of 28px rows, so the resting view ends on a row edge and
+    // not on the blank half of a clipped sixth.
+    expect((await list.boundingBox())!.height % 28).toBe(0);
+
+    // Every row carries its company mark to the left of the name.
+    await expect(menu.getByRole('menuitem').first().locator('.provider-logo')).toBeVisible();
+
+    const search = menu.getByRole('textbox', {name: 'Search models'});
+    // The clear control only exists while there is something to clear, and it
+    // stays untooltipped — an x on a search field explains itself.
+    await expect(menu.getByRole('button', {name: 'Clear search'})).toHaveCount(0);
+    await search.fill('sol');
+    await expect(menu.getByRole('menuitem')).toHaveText([/GPT-5.6 Sol/]);
+    const clear = menu.getByRole('button', {name: 'Clear search'});
+    await expect(clear).not.toHaveAttribute('data-tooltip-label', /.*/);
+    await expect(clear).not.toHaveAttribute('title', /.*/);
+    await clear.click();
+    await expect(search).toHaveValue('');
+    await expect(search).toBeFocused();
+
+    await search.fill('nothing here');
+    await expect(menu.getByRole('menuitem')).toHaveCount(0);
+    await expect(menu).toContainText('No models available');
+  });
+
+  test('a reasoning submenu low in the list rests against the window edge', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'MODEL'}).click();
+    const menu = page.getByRole('menu', {name: 'Model options'});
+    const rows = menu.getByRole('menuitem');
+
+    // The submenu is taller than a row, so the lowest row cannot keep its
+    // alignment without hanging off the bottom — it slides up instead.
+    await rows.last().click();
+    const submenu = page.locator('.model-submenu');
+    const box = (await submenu.boundingBox())!;
+    const viewport = page.viewportSize()!.height;
+    expect(box.y).toBeGreaterThanOrEqual(8);
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport - 7);
+
+    // A row that does fit keeps lining up with its own row.
+    await rows.first().click();
+    const first = (await submenu.boundingBox())!;
+    const rowBox = (await rows.first().boundingBox())!;
+    expect(first.y).toBeCloseTo(rowBox.y - 4, 0);
+  });
+
+  test('the model menu opens away from whatever the prompt sits against', async ({page}) => {
+    await page.goto('/');
+    const menu = page.getByRole('menu', {name: 'Model options'});
+    // The menu lines up with the MODEL word, not the button box: the icon
+    // sits left of the label, so centring on the box reads as off-centre.
+    const label = page.getByRole('button', {name: 'MODEL'}).locator('span');
+    const gap = async () => {
+      const button = (await page.getByRole('button', {name: 'MODEL'}).boundingBox())!;
+      const word = (await label.boundingBox())!;
+      const box = (await menu.boundingBox())!;
+      return {
+        above: button.y - (box.y + box.height),
+        below: box.y - (button.y + button.height),
+        offCentre: (box.x + box.width / 2) - (word.x + word.width / 2),
+      };
+    };
+
+    // The welcome prompt is centred under the greeting, so the menu drops down.
+    await page.getByRole('button', {name: 'MODEL'}).click();
+    const welcome = await gap();
+    expect(welcome.below).toBeCloseTo(6);
+    expect(welcome.offCentre).toBeCloseTo(0, 1);
+
+    // In a conversation the composer sits on the floor, so it opens upward.
+    await page.keyboard.press('Escape');
+    await send(page, 'menu placement');
+    await page.getByRole('button', {name: 'MODEL'}).click();
+    const conversation = await gap();
+    expect(conversation.above).toBeCloseTo(6);
+    expect(conversation.offCentre).toBeCloseTo(0, 1);
+    const box = (await menu.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+  });
+
+  test('Chats and New Chat use the same icon-button hover treatment', async ({page}) => {
+    await page.goto('/');
+    const chatDrawerToggle = page.getByRole('button', {name: 'Toggle Chats'});
     const newChat = page.getByRole('button', {name: 'New Chat'});
 
-    const appearance = async (button: typeof history) => button.evaluate((node) => {
+    const appearance = async (button: typeof chatDrawerToggle) => button.evaluate((node) => {
       const style = getComputedStyle(node);
       return {
         width: style.width,
@@ -774,7 +1020,7 @@ test.describe('design system', () => {
       };
     });
 
-    expect(await appearance(history)).toEqual(await appearance(newChat));
+    expect(await appearance(chatDrawerToggle)).toEqual(await appearance(newChat));
     await expect(newChat).not.toHaveCSS('position', 'fixed');
     const centres = await newChat.evaluate((button) => {
       const buttonRect = button.getBoundingClientRect();
@@ -788,17 +1034,17 @@ test.describe('design system', () => {
     });
     expect(centres.artworkX).toBeCloseTo(centres.buttonX);
     expect(centres.artworkY).toBeCloseTo(centres.buttonY);
-    await history.hover();
+    await chatDrawerToggle.hover();
     await page.waitForTimeout(180);
-    const historyHover = await appearance(history);
+    const chatDrawerHover = await appearance(chatDrawerToggle);
     await newChat.hover();
     await page.waitForTimeout(180);
-    expect(await appearance(newChat)).toEqual(historyHover);
+    expect(await appearance(newChat)).toEqual(chatDrawerHover);
   });
 
   test('right-side controls use the same aligned icon-button treatment', async ({page}) => {
     await page.goto('/');
-    const history = page.getByRole('button', {name: 'Toggle chat history'});
+    const chatDrawerToggle = page.getByRole('button', {name: 'Toggle Chats'});
     const workspace = page.getByRole('button', {name: 'Toggle Workspace'});
     await expect(workspace).toHaveClass(/title-bar-icon-button/);
     await expect(workspace).toHaveCSS('width', '28px');
@@ -816,7 +1062,7 @@ test.describe('design system', () => {
     await page.waitForTimeout(180);
     await expect(workspace).toHaveCSS('background-color', 'rgb(243, 243, 243)');
     await expect(workspace).toHaveCSS('color', 'rgb(10, 10, 10)');
-    await expect(workspace).toHaveCSS('border-radius', await history.evaluate((node) => getComputedStyle(node).borderRadius));
+    await expect(workspace).toHaveCSS('border-radius', await chatDrawerToggle.evaluate((node) => getComputedStyle(node).borderRadius));
   });
 
   test('the full title bar clears the window chrome and sits on one centre line', async ({page}) => {
@@ -830,13 +1076,13 @@ test.describe('design system', () => {
         const rect = node.getBoundingClientRect();
         return {left: rect.left, width: rect.width, centre: rect.top + rect.height / 2};
       }));
-    expect(boxes).toHaveLength(5);
-    // All four icon buttons share the 26px line; the text title retains its
+    expect(boxes).toHaveLength(9);
+    // Every icon button shares the 26px line; the text title retains its
     // optical 25px line.
-    expect(boxes.map((box) => box.centre)).toEqual([26, 26, 26, 26, 25]);
-    const historyGlyph = await page.locator('[data-icon="history"]').boundingBox();
+    expect(boxes.map((box) => box.centre)).toEqual([26, 26, 26, 26, 26, 26, 26, 26, 25]);
+    const chatDrawerGlyph = await page.locator('[data-icon="panel-left"]').boundingBox();
     const newChatGlyph = await page.locator('[data-icon="new-chat"]').boundingBox();
-    expect(historyGlyph!.y + historyGlyph!.height / 2).toBe(26);
+    expect(chatDrawerGlyph!.y + chatDrawerGlyph!.height / 2).toBe(26);
     expect(newChatGlyph!.y + newChatGlyph!.height / 2).toBe(26);
     const rightGlyphCentres = await page.locator('.top-controls button > svg').evaluateAll((nodes) =>
       nodes.map((node) => {
@@ -845,14 +1091,6 @@ test.describe('design system', () => {
       }));
     for (const centre of rightGlyphCentres) expect(centre).toBe(26);
 
-    // The artwork shrinks inside unchanged 16px SVG boxes: History moves two
-    // Retina pixels inward per edge, while New Chat is two pixels smaller
-    // overall. Their centres stay fixed.
-    const insetOutlines = await page.locator('[data-icon="history"] > circle').evaluateAll((nodes) => nodes.map((node) => {
-      const rect = node.getBoundingClientRect();
-      return {top: rect.top, bottom: rect.bottom};
-    }));
-    expect(insetOutlines[0]).toEqual({top: 20.5, bottom: 31.5});
     // On macOS the row starts clear of the traffic lights, which end at 72px.
     const inset = await page.evaluate(() =>
       getComputedStyle(document.documentElement).getPropertyValue('--chrome-inset').trim());
@@ -882,7 +1120,7 @@ test.describe('design system', () => {
 });
 
 test.describe('conversation', () => {
-  test('lays out user and assistant messages differently and reveals actions on hover', async ({page}) => {
+  test('lays out user and assistant messages differently with always-visible actions', async ({page}) => {
     await page.goto('/');
     await send(page, 'Test the assembled chat');
 
@@ -900,9 +1138,9 @@ test.describe('conversation', () => {
     expect(bubble.background).toBe('rgb(232, 232, 232)');
     await expect(assistant.locator('.message-content')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
 
-    // Actions are hidden until the turn is hovered.
+    // Actions stay visible without hovering the turn.
     const actions = user.locator('.message-actions');
-    await expect(actions).toHaveCSS('opacity', '0');
+    await expect(actions).toHaveCSS('opacity', '1');
     await user.hover();
     await expect(actions).toHaveCSS('opacity', '1');
     await expect(user.getByRole('button', {name: 'Edit'})).toBeVisible();
@@ -969,8 +1207,8 @@ test.describe('conversation', () => {
 
     await page.getByRole('button', {name: 'New Chat'}).click();
     await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
-    await historyDrawer(page).getByRole('button', {name: /Open chat: Original chat message/}).click();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    await chatDrawer(page).getByRole('button', {name: /Open chat: Original chat message/}).click();
 
     const restoredUser = page.locator('.message:not(.assistant)').first();
     const restoredAssistant = page.locator('.message.assistant').first();
@@ -990,7 +1228,7 @@ test.describe('conversation', () => {
     await send(page, '__demo_provider_failure__');
     const assistant = page.locator('.message.assistant').first();
     await expect(assistant).toContainText('Unable to respond: OpenCode Go is not configured.');
-    await expect(assistant).toContainText('Options → Provider');
+    await expect(assistant).toContainText('Settings → Provider');
   });
 
   test('replaces raw authentication failures with an actionable provider message', async ({page}) => {
@@ -998,7 +1236,7 @@ test.describe('conversation', () => {
     await send(page, '__demo_auth_failure__');
     const assistant = page.locator('.message.assistant').first();
     await expect(assistant).toContainText('The selected provider rejected its saved API key.');
-    await expect(assistant).toContainText('Options → Provider');
+    await expect(assistant).toContainText('Settings → Provider');
     await expect(assistant).not.toContainText('Missing Authentication header');
   });
 
@@ -1013,6 +1251,58 @@ test.describe('conversation', () => {
     await page.goto('/');
     await send(page, 'timing');
     await expect(page.locator('.agent-activity-heading')).toContainText(/Work(ing|ed) for \d+s/);
+  });
+
+  test('shows one readable activity block for a multi-step agent run', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_activity__');
+    await expect(page.locator('.message.assistant')).toContainText('assembled Midas chat surface', {timeout: 4000});
+    // Settled and collapsed, the trail hides entirely behind the heading.
+    await expect(page.locator('.agent-activity-list')).toHaveCount(0);
+    await page.locator('.agent-activity-heading').click();
+    await expect(page.locator('.agent-activity-list')).toContainText('Using Browser');
+    // The run's mid-run narration nests inside the activity group as a
+    // commentary row; the repeated reads still collapse to one tool row.
+    await expect(page.locator('.agent-activity-list li.commentary')).toContainText('I’ll read the skill files first');
+    await expect(page.locator('.agent-activity-list .activity-copy')).toHaveCount(2);
+    await expect(page.locator('.agent-activity')).toHaveCount(1);
+    await expect(page.locator('.message.assistant')).toHaveCount(1);
+
+    // A row with captured output opens its own detail, ChatGPT-style: the
+    // tool's reported sub-steps as an indented trail, then its result excerpt.
+    const detailToggle = page.locator('.activity-detail-toggle');
+    await expect(detailToggle).toHaveCount(1);
+    await expect(detailToggle.locator('small')).toHaveCount(0);
+    await detailToggle.click();
+    const steps = detailToggle.locator('.activity-steps li');
+    await expect(steps).toHaveCount(2);
+    await expect(steps.first()).toHaveText('Scanning the skill manifest');
+    await expect(steps.last()).toHaveText('Reading workflow steps');
+    await expect(detailToggle.locator('small')).toContainText('Read 96 lines');
+  });
+
+  test('hides the activity group entirely for a run that used no tools', async ({page}) => {
+    await page.goto('/');
+    await send(page, 'just a question');
+    await expect(page.locator('.message.assistant')).toContainText('assembled Midas chat surface', {timeout: 4000});
+    await expect(page.locator('.agent-activity')).toHaveCount(0);
+  });
+
+  test('restores the worked-duration and activity list for a past chat', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_activity__');
+    await expect(page.locator('.message.assistant')).toContainText('assembled Midas chat surface', {timeout: 4000});
+    await expect(page.locator('.agent-activity-heading')).toContainText(/Work(ing|ed) for \d+s/);
+
+    await page.getByRole('button', {name: 'New Chat'}).click();
+    await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    await chatDrawer(page).getByRole('button', {name: /Open chat: .*/}).first().click();
+
+    const heading = page.locator('.agent-activity-heading');
+    await expect(heading).toContainText(/Work(ing|ed) for \d+s/);
+    await heading.click();
+    await expect(page.locator('.agent-activity-list')).toContainText('Using Browser');
   });
 
   test('sends the next prompt as a one-shot goal and shows its status', async ({page}) => {
@@ -1032,13 +1322,88 @@ test.describe('conversation', () => {
     await expect(page.getByRole('button', {name: 'Send next message as a goal'})).toHaveAttribute('aria-pressed', 'false');
   });
 
+  test('the live activity shimmer is the only working indicator', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_run_10000__');
+    // The activity block's live row carries the working state, ChatGPT-style;
+    // pulse dots under it would be a second, redundant indicator.
+    const liveRow = page.locator('.agent-activity-list li.live');
+    await expect(liveRow).toHaveCount(1);
+    await expect(page.getByRole('status', {name: 'Assistant is responding'})).toHaveCount(0);
+    const label = await liveRow.evaluate((node) => {
+      const style = getComputedStyle(node, '::after');
+      return {name: style.animationName, timing: style.animationTimingFunction};
+    });
+    expect(label).toEqual({name: 'activity-glint-sweep', timing: 'linear'});
+
+    await page.getByRole('button', {name: 'Stop agent'}).click();
+    await expect(liveRow).toHaveCount(0);
+  });
+
+  test('a prompt typed mid-run waits in the queue, then sends itself', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_run_1500__');
+    await editor(page).click();
+    await page.keyboard.type('second prompt');
+    await page.getByRole('button', {name: 'Send message'}).click();
+
+    const queue = page.getByRole('region', {name: 'Queued messages'});
+    await expect(queue).toContainText('second prompt');
+    await expect(page.locator('.message:not(.assistant)')).toHaveCount(1);
+
+    await expect(queue).toHaveCount(0, {timeout: 4000});
+    await expect(page.locator('.message:not(.assistant)').nth(1)).toContainText('second prompt');
+  });
+
+  test('⌘Enter skips the queue and steers the running agent', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_run_10000__');
+    await editor(page).click();
+    await page.keyboard.type('urgent prompt');
+    await page.keyboard.press('ControlOrMeta+Enter');
+
+    await expect(page.getByRole('region', {name: 'Queued messages'})).toHaveCount(0);
+    await expect(page.locator('.message:not(.assistant)').nth(1)).toContainText('urgent prompt');
+  });
+
+  test('a queued message can be steered, or edited back into the composer', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_run_10000__');
+    await editor(page).click();
+    await page.keyboard.type('queued prompt');
+    await page.getByRole('button', {name: 'Send message'}).click();
+
+    const queue = page.getByRole('region', {name: 'Queued messages'});
+    await queue.getByRole('button', {name: 'Edit queued message'}).click();
+    await expect(queue).toHaveCount(0);
+    await expect(editor(page)).toHaveText('queued prompt');
+
+    await page.getByRole('button', {name: 'Send message'}).click();
+    await queue.getByRole('button', {name: 'Steer'}).click();
+    await expect(queue).toHaveCount(0);
+    await expect(page.locator('.message:not(.assistant)').nth(1)).toContainText('queued prompt');
+  });
+
+  test('stopping the agent drops whatever was queued behind it', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_run_10000__');
+    await editor(page).click();
+    await page.keyboard.type('queued prompt');
+    await page.getByRole('button', {name: 'Send message'}).click();
+    await expect(page.getByRole('region', {name: 'Queued messages'})).toContainText('queued prompt');
+
+    await page.getByRole('button', {name: 'Stop agent'}).click();
+    await expect(page.getByRole('region', {name: 'Queued messages'})).toHaveCount(0);
+    await expect(page.locator('.message:not(.assistant)')).toHaveCount(1);
+  });
+
   test('shows a time beneath assistant messages too', async ({page}) => {
     await page.goto('/');
     await send(page, 'show timestamps');
     const assistant = page.locator('.message.assistant').first();
     const time = assistant.locator('.message-time');
     await expect(time).toHaveText(/^\d{1,2}:\d{2}\s[AP]M$/, {timeout: 4000});
-    await expect(time).toHaveCSS('opacity', '0');
+    await expect(time).toHaveCSS('opacity', '1');
     await assistant.hover();
     await expect(time).toHaveCSS('opacity', '1');
   });
@@ -1064,8 +1429,8 @@ test.describe('conversation', () => {
     const centreOffset = async () => title.evaluate((node) => {
       const bounds = node.getBoundingClientRect();
       const workspace = document.querySelector('.workspace-drawer.open')?.getBoundingClientRect();
-      const history = document.querySelector('.history-drawer.open')?.getBoundingClientRect();
-      const availableLeft = history?.right ?? 0;
+      const chatDrawerToggle = document.querySelector('.chat-drawer.open')?.getBoundingClientRect();
+      const availableLeft = chatDrawerToggle?.right ?? 0;
       const availableRight = workspace?.left ?? window.innerWidth;
       return Math.abs(Math.round(bounds.left + bounds.width / 2 - (availableLeft + availableRight) / 2));
     });
@@ -1115,7 +1480,7 @@ test.describe('panels', () => {
     await expect(summaryCard(page)).toHaveCount(0);
   });
 
-  test('the Summary control returns only once the Workspace has finished closing', async ({page}) => {
+  test('the Summary control returns with the other title-bar controls when the Workspace closes', async ({page}) => {
     await page.goto('/');
     await send(page, 'latch');
     const summaryButton = page.getByRole('button', {name: 'Toggle Summary'});
@@ -1123,15 +1488,17 @@ test.describe('panels', () => {
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await expect(summaryButton).toHaveCount(0);
 
+    // Closing brings it straight back alongside Drive/Hub/Schedule — one set
+    // of controls appearing together, not a straggler after the slide.
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
-    // Still gone part-way through the 440ms slide, so it cannot flash over the
-    // panel while the panel is still crossing that spot.
-    await page.waitForTimeout(200);
-    await expect(summaryButton).toHaveCount(0);
-    await expect(summaryButton).toBeVisible({timeout: 2000});
+    await expect(summaryButton).toBeVisible();
+    await expect(page.getByRole('button', {name: 'Open Drive'})).toBeVisible();
   });
 
   test('opening a panel never reflows the conversation column away from centre', async ({page}) => {
+    // Wide enough to keep the split layout, narrow enough that the 420px docked
+    // workspace actually compresses the column (100vw - 420 < 792 at 1220px).
+    await page.setViewportSize({width: 1000, height: 720});
     await page.goto('/');
     await send(page, 'stability');
     const column = page.locator('.conversation-column');
@@ -1192,21 +1559,30 @@ test.describe('panels', () => {
   });
 });
 
-test.describe('history drawer', () => {
+/** Past chats open with older groups collapsed, so a test that needs two
+ * different conversations expands every group first. */
+const expandAllChatGroups = async (page: Page) => {
+  const toggles = chatDrawer(page).locator('.chat-drawer-group-toggle');
+  for (const toggle of await toggles.all())
+    if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+  return chatDrawer(page).getByRole('button', {name: /Open chat:/});
+};
+
+test.describe('chat drawer', () => {
   test('opens as a sheet, groups by recency, and closes again', async ({page}) => {
     await page.goto('/');
-    const drawer = historyDrawer(page);
+    const drawer = chatDrawer(page);
     await expect(drawer).not.toHaveClass(/open/);
 
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
     await expect(drawer).toHaveClass(/open/);
-    const historyButton = page.getByRole('button', {name: 'Toggle chat history'});
-    await expect(historyButton).not.toHaveClass(/active/);
+    const chatDrawerButton = page.getByRole('button', {name: 'Toggle Chats'});
+    await expect(chatDrawerButton).not.toHaveClass(/active/);
     await page.mouse.move(400, 200);
-    await expect(historyButton).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-    await expect(historyButton).toHaveCSS('color', 'rgb(160, 160, 160)');
-    await expect(drawer.getByRole('heading', {name: 'History'})).toBeVisible();
-    await expect(drawer.locator('.history-group-toggle')).not.toHaveCount(0);
+    await expect(chatDrawerButton).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(chatDrawerButton).toHaveCSS('color', 'rgb(160, 160, 160)');
+    await expect(drawer.getByRole('heading', {name: 'Chats'})).toBeVisible();
+    await expect(drawer.locator('.chat-drawer-group-toggle')).not.toHaveCount(0);
 
     // The drawer keeps its resting width and slides, rather than animating width.
     await expect(drawer).toHaveCSS('width', '240px');
@@ -1226,50 +1602,84 @@ test.describe('history drawer', () => {
     await expect(drawer).toHaveClass(/open/);
     await expect(firstChat).toHaveAttribute('aria-current', 'page');
 
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
     await expect(drawer).not.toHaveClass(/open/);
+  });
+
+  test('leaves the side panels alone when the chat changes', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    const rows = await expandAllChatGroups(page);
+    await rows.first().click();
+
+    // Workspace open and docked: switching chats keeps it open.
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await expect(page.locator('main')).toHaveClass(/workspace-open/);
+    await rows.nth(1).click();
+    await expect(page.locator('main')).toHaveClass(/workspace-open/);
+
+    // Closed stays closed too, rather than the next chat reopening Summary.
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await page.getByRole('button', {name: 'Toggle Summary'}).click();
+    await expect(page.locator('main')).not.toHaveClass(/panel-open/);
+    await rows.first().click();
+    await expect(page.locator('main')).not.toHaveClass(/panel-open/);
+  });
+
+  test('hands back an expanded workspace when another chat is picked', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    const rows = await expandAllChatGroups(page);
+    await rows.first().click();
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await page.getByRole('button', {name: 'Expand Workspace'}).click();
+    await expect(page.locator('main')).toHaveClass(/workspace-expanded/);
+
+    await rows.nth(1).click();
+    await expect(page.locator('main')).not.toHaveClass(/workspace-expanded/);
+    await expect(page.locator('main')).toHaveClass(/workspace-open/);
   });
 
   test('collapses a group, and renames a chat from its row menu', async ({page}) => {
     await page.goto('/');
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
-    const drawer = historyDrawer(page);
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    const drawer = chatDrawer(page);
 
-    const group = drawer.locator('.history-group-toggle').first();
+    const group = drawer.locator('.chat-drawer-group-toggle').first();
     await group.click();
     await expect(group).toHaveClass(/collapsed/);
     await group.click();
     await expect(group).not.toHaveClass(/collapsed/);
 
-    const row = drawer.locator('.history-row').first();
+    const row = drawer.locator('.chat-drawer-row').first();
     await row.hover();
     await row.getByRole('button', {name: /More actions/}).click();
     await page.getByRole('menuitem', {name: 'Rename'}).click();
-    await page.locator('.history-edit input').fill('Renamed from the drawer');
+    await page.locator('.chat-drawer-edit input').fill('Renamed from the drawer');
     await page.keyboard.press('Enter');
     await expect(drawer.getByText('Renamed from the drawer')).toBeVisible();
   });
 
   test('deletes a chat from its row menu', async ({page}) => {
     await page.goto('/');
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
-    const drawer = historyDrawer(page);
-    const before = await drawer.locator('.history-row').count();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    const drawer = chatDrawer(page);
+    const before = await drawer.locator('.chat-drawer-row').count();
 
-    const row = drawer.locator('.history-row').first();
+    const row = drawer.locator('.chat-drawer-row').first();
     await row.hover();
     await row.getByRole('button', {name: /More actions/}).click();
     await page.getByRole('menuitem', {name: 'Delete'}).click();
-    await expect(drawer.locator('.history-row')).toHaveCount(before - 1);
+    await expect(drawer.locator('.chat-drawer-row')).toHaveCount(before - 1);
   });
 
   test('resizes with the keyboard within its bounds', async ({page}) => {
     await page.goto('/');
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
-    const handle = page.getByRole('button', {name: 'Resize History'});
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    const handle = page.getByRole('button', {name: 'Resize Chats'});
     await handle.focus();
     await page.keyboard.press('ArrowRight');
-    await expect(historyDrawer(page)).not.toHaveCSS('width', '240px');
+    await expect(chatDrawer(page)).not.toHaveCSS('width', '240px');
   });
 
   test('drawers yield to the conversation floor instead of squeezing the composer', async ({page}) => {
@@ -1277,20 +1687,20 @@ test.describe('history drawer', () => {
     // conversation floor, so opening both must trigger the readjustment.
     await page.setViewportSize({width: 1000, height: 640});
     await page.goto('/');
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
-    // Workspace opened last, so history gives way — exactly to its own minimum.
-    await expect(historyDrawer(page)).toHaveCSS('width', '180px');
+    // Workspace opened last, so the chat drawer gives way — exactly to its own minimum.
+    await expect(chatDrawer(page)).toHaveCSS('width', '180px');
     // One row of these buttons is under 20px tall; a wrap doubles it.
     const toolbarOnOneLine = () => page.locator('.polymux-prompt-toolbar').evaluate((bar) =>
       bar.getBoundingClientRect().height < 24);
     expect(await toolbarOnOneLine()).toBe(true);
-    // Growing history now pushes the workspace back toward its own minimum
+    // Growing the chat drawer now pushes the workspace back toward its own minimum
     // rather than compressing the conversation below its floor.
-    const handle = page.getByRole('button', {name: 'Resize History'});
+    const handle = page.getByRole('button', {name: 'Resize Chats'});
     await handle.focus();
     for (let step = 0; step < 4; step += 1) await page.keyboard.press('ArrowRight');
-    await expect(historyDrawer(page)).toHaveCSS('width', '208px');
+    await expect(chatDrawer(page)).toHaveCSS('width', '208px');
     await expect(workspaceDrawer(page)).toHaveCSS('width', '360px');
     expect(await toolbarOnOneLine()).toBe(true);
   });
@@ -1302,12 +1712,12 @@ test.describe('workspace drawer', () => {
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const drawer = workspaceDrawer(page);
     await expect(drawer).toHaveClass(/open/);
-    await drawer.getByRole('button', {name: 'Create a document'}).click();
+    await drawer.getByRole('button', {name: 'Drive'}).click();
 
     const tab = drawer.locator('.tab').first();
     await expect(tab).toHaveClass(/active/);
     await expect(tab).toHaveCSS('width', '156px');
-    await expect(drawer.locator('.draft-page')).toBeVisible();
+    await expect(drawer.locator('.fb')).toBeVisible();
 
     await page.getByRole('button', {name: 'Expand Workspace'}).click();
     await expect(drawer).toHaveClass(/expanded/);
@@ -1326,8 +1736,54 @@ test.describe('workspace drawer', () => {
     const drawer = workspaceDrawer(page);
 
     await expect(drawer.locator('.workspace-launcher')).toBeVisible();
+    await drawer.getByRole('button', {name: 'Schedule'}).click();
+    await expect(drawer.locator('.schedule-view')).toBeVisible();
+  });
+
+  test('sends a launcher suggestion to the chat instead of opening a view', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+
     await drawer.getByRole('button', {name: 'Create a presentation'}).click();
-    await expect(drawer.locator('.draft-slide')).toBeVisible();
+    await expect(drawer.locator('.workspace-launcher')).toBeVisible();
+    await expect(drawer.locator('.tab')).toHaveCount(0);
+    await expect(page.locator('.message:not(.assistant)').first()).toContainText('I want to create a presentation.');
+  });
+
+  test('offers recent pages once enough have been visited, and opens one', async ({page}) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('midasBrowserHistory', JSON.stringify([
+        {url: 'https://example.com/one', title: 'Example One'},
+        {url: 'https://example.com/two', title: 'Example Two'},
+        {url: 'https://example.com/three', title: 'Example Three'},
+      ]));
+    });
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+
+    await expect(drawer.locator('.workspace-launcher-heading')).toHaveText('Recent');
+    await expect(drawer.locator('.workspace-launcher-suggestion')).toHaveCount(3);
+    await expect(drawer.getByRole('button', {name: 'Create a document'})).toHaveCount(0);
+
+    await drawer.getByRole('button', {name: 'Example Two'}).click();
+    await expect(drawer.locator('.tab')).toHaveCount(1);
+    await expect(drawer.locator('.tab')).toContainText('Example Two');
+  });
+
+  test('keeps the create suggestions until the history is worth showing', async ({page}) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('midasBrowserHistory', JSON.stringify([
+        {url: 'https://example.com/one', title: 'Example One'},
+        {url: 'https://example.com/two', title: 'Example Two'},
+      ]));
+    });
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+
+    await expect(workspaceDrawer(page).locator('.workspace-launcher-heading')).toHaveText('Suggestions');
+    await expect(workspaceDrawer(page).getByRole('button', {name: 'Create a document'})).toBeVisible();
   });
 
   test('header actions ride the panel rather than appearing before it lands', async ({page}) => {
@@ -1337,7 +1793,7 @@ test.describe('workspace drawer', () => {
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await expect(action).toHaveCSS('visibility', 'visible');
     if (await page.locator('.workspace-header-action').count() === 1) {
-      await workspaceDrawer(page).getByRole('button', {name: 'Create a document'}).click();
+      await workspaceDrawer(page).getByRole('button', {name: 'Drive'}).click();
     }
 
     const headerActions = await page.locator('.workspace-header-action').evaluateAll((nodes) =>
@@ -1359,8 +1815,24 @@ test.describe('workspace drawer', () => {
     await page.waitForTimeout(180);
     await expect(expand).toHaveCSS('background-color', 'rgb(243, 243, 243)');
     await expect(expand).toHaveCSS('color', 'rgb(10, 10, 10)');
+    // Expand belongs to the right-hand control cluster: docked or expanded it
+    // sits one standard gap to the left of Settings.
+    const gapToSettings = async () => {
+      const settings = (await page.getByRole('button', {name: 'Settings'}).boundingBox())!;
+      const action = (await page.locator('.expand-workspace-action').boundingBox())!;
+      return settings.x - (action.x + action.width);
+    };
+    const settingsToWorkspace = await page.evaluate(() => {
+      const settings = document.querySelector('button[aria-label="Settings"]')!.getBoundingClientRect();
+      const workspace = document.querySelector('button[aria-label="Toggle Workspace"]')!.getBoundingClientRect();
+      return workspace.left - settings.right;
+    });
+    expect(await gapToSettings()).toBeCloseTo(settingsToWorkspace);
+
     await expand.click();
     await expect(workspaceDrawer(page)).toHaveClass(/expanded/);
+    await page.waitForTimeout(500);
+    expect(await gapToSettings()).toBeCloseTo(settingsToWorkspace);
   });
 });
 
@@ -1399,21 +1871,40 @@ test.describe('responsive', () => {
     await page.goto('/');
     await send(page, 'first timeline turn');
     await expect(page.locator('.message.assistant').first()).toContainText(/assembled Midas chat surface/, {timeout: 4000});
-    await send(page, 'second timeline turn');
     const rail = page.locator('.timeline-rail');
+    // The rail stands down until it has enough turns to draw its full hover
+    // curve, so the gutter is only reserved once the conversation is long enough.
+    await send(page, 'second timeline turn');
+    await expect(rail).toBeHidden();
+    for (const [index, turn] of ['third', 'fourth', 'fifth', 'sixth', 'seventh'].entries()) {
+      await send(page, `${turn} timeline turn`);
+      await expect(page.locator('.message.assistant')).toHaveCount(index + 3, {timeout: 4000});
+    }
     await expect(rail).toBeVisible();
     const positions = await page.evaluate(() => {
       const rail = document.querySelector('.timeline-rail')!.getBoundingClientRect();
       const message = document.querySelector('.message.assistant')!.getBoundingClientRect();
       const prompt = document.querySelector('.polymux-prompt-shell')!.getBoundingClientRect();
-      return {railRight: Math.round(rail.right), messageLeft: Math.round(message.left), promptLeft: Math.round(prompt.left)};
+      const chatDrawer = document.querySelector('.chat-drawer');
+      const chatDrawerRect = chatDrawer?.getBoundingClientRect();
+      const contentLeft = chatDrawer && chatDrawerRect && getComputedStyle(chatDrawer).position !== 'fixed'
+        ? chatDrawerRect.right
+        : 0;
+      return {
+        railLeft: Math.round(rail.left),
+        contentLeft: Math.round(contentLeft),
+        railRight: Math.round(rail.right),
+        messageLeft: Math.round(message.left),
+        promptLeft: Math.round(prompt.left)
+      };
     });
+    expect(positions.railLeft - positions.contentLeft).toBe(10);
     expect(positions.railRight).toBeLessThan(positions.messageLeft);
     expect(positions.messageLeft).toBe(positions.promptLeft);
 
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
     await expect(rail).toBeHidden();
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
     await expect(rail).toBeVisible();
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await expect(rail).toBeHidden();
@@ -1423,9 +1914,9 @@ test.describe('responsive', () => {
     await page.setViewportSize({width: 900, height: 720});
     await page.goto('/');
 
-    await page.getByRole('button', {name: 'Toggle chat history'}).click();
-    await expect(historyDrawer(page)).toHaveCSS('position', 'fixed');
-    await expect(page.getByRole('button', {name: 'Resize History'})).toBeHidden();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    await expect(chatDrawer(page)).toHaveCSS('position', 'fixed');
+    await expect(page.getByRole('button', {name: 'Resize Chats'})).toBeHidden();
 
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await expect(workspaceDrawer(page)).toHaveCSS('position', 'fixed');
@@ -1438,5 +1929,454 @@ test.describe('responsive', () => {
     await page.goto('/');
     await send(page, 'narrow');
     await expect(page.locator('.timeline-rail')).toBeHidden();
+  });
+});
+
+test.describe('dictation', () => {
+  /** A MediaStream with no device behind it, since the Chromium under test has
+      no microphone. The tone stands in for a voice and `hush` for trailing off,
+      which is what the silence window measures. An AudioContext starts
+      suspended here, so it is resumed inside the call the button makes — that
+      one runs from the click, and so counts as a gesture. */
+  async function stubMicrophone(page: Page) {
+    await page.addInitScript(() => {
+      const context = new AudioContext();
+      const level = context.createGain();
+      const tone = context.createOscillator();
+      tone.frequency.value = 180;
+      tone.connect(level);
+      tone.start();
+      (globalThis as unknown as {__mic: unknown}).__mic = level;
+      // A fresh stream per call, as a real microphone gives: the app stops the
+      // tracks of the one it is done with.
+      navigator.mediaDevices.getUserMedia = async () => {
+        await context.resume();
+        const destination = context.createMediaStreamDestination();
+        level.connect(destination);
+        return destination.stream;
+      };
+    });
+  }
+
+  const hush = (page: Page) =>
+    page.evaluate(() => {
+      (globalThis as unknown as {__mic: GainNode}).__mic.gain.value = 0;
+    });
+
+  const speak = (page: Page) =>
+    page.evaluate(() => {
+      (globalThis as unknown as {__mic: GainNode}).__mic.gain.value = 0.3;
+    });
+
+  async function setAutoStop(page: Page, label: string) {
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const row = page.locator('.general-setting-row', {hasText: 'Stop dictation when silent'});
+    await row.getByRole('button').first().click();
+    await row.getByRole('menuitemradio', {name: label}).click();
+    await expect(row.getByRole('button').first()).toContainText(label);
+    await page.getByRole('button', {name: 'Close Settings'}).click();
+  }
+
+  const voiceButton = (page: Page) => page.locator('.polymux-prompt-toolbar button', {hasText: /VOICE|LISTENING/});
+
+  test('the button reads LISTENING before the microphone has opened', async ({page}) => {
+    await page.addInitScript(() => {
+      // Never resolves: the label must not be waiting on this.
+      navigator.mediaDevices.getUserMedia = () => new Promise(() => {});
+    });
+    await page.goto('/');
+    await voiceButton(page).click();
+    await expect(voiceButton(page)).toContainText('LISTENING');
+    await expect(page.locator('.dictation-ping')).toBeVisible();
+    await voiceButton(page).click();
+    await expect(voiceButton(page)).toContainText('VOICE');
+  });
+
+  test('dictated text lands at the caret and survives the silence auto-off', async ({page}) => {
+    await stubMicrophone(page);
+    await page.goto('/');
+    await setAutoStop(page, '3 seconds');
+
+    await editor(page).click();
+    await page.keyboard.type('before after');
+    // Put the caret between the two words.
+    for (let index = 0; index < ' after'.length; index += 1) await page.keyboard.press('ArrowLeft');
+
+    await voiceButton(page).click();
+    await expect(voiceButton(page)).toContainText('LISTENING');
+    await speak(page);
+    await expect(editor(page)).toContainText('this is', {timeout: 6000});
+
+    // Trailing off ends the session on its own, and what it wrote stays put.
+    await hush(page);
+    await expect(voiceButton(page)).toContainText('VOICE', {timeout: 8000});
+    const text = (await editor(page).innerText()).replace(/\s+/g, ' ').trim();
+    expect(text.startsWith('before ')).toBe(true);
+    expect(text.endsWith(' after')).toBe(true);
+    expect(text).toContain('this is dictated');
+
+    // A second press adds to that text rather than replacing it.
+    const before = text;
+    await voiceButton(page).click();
+    await expect(voiceButton(page)).toContainText('LISTENING');
+    await speak(page);
+    await page.waitForTimeout(1500);
+    await hush(page);
+    await expect(voiceButton(page)).toContainText('VOICE', {timeout: 8000});
+    const after = (await editor(page).innerText()).replace(/\s+/g, ' ').trim();
+    expect(after.length).toBeGreaterThan(before.length);
+    expect(after).toContain('before');
+    expect(after).toContain('after');
+  });
+});
+
+test.describe('first-run setup', () => {
+  /** `?onboarding` puts the demo API into a genuine first-run state. */
+  const start = async (page: import('@playwright/test').Page) => {
+    await page.goto('/?onboarding');
+    await expect(page.getByRole('region', {name: 'Set up Midas'})).toBeVisible({timeout: 15000});
+  };
+
+  /**
+   * The welcome screen is the brand lockup and one button; every other screen
+   * is reached through it, so each test starts by opening the deck.
+   */
+  const begin = async (page: import('@playwright/test').Page) => {
+    await start(page);
+    const setup = page.getByRole('region', {name: 'Set up Midas'});
+    await expect(setup.getByRole('heading', {name: 'Midas'})).toBeVisible();
+    // Nothing has been asked for yet, so there is nothing to skip here.
+    await expect(setup.getByRole('button', {name: 'Skip setup'})).toHaveCount(0);
+    await setup.getByRole('button', {name: 'Start'}).click();
+    return setup;
+  };
+
+  test('walks every step and ends in the app', async ({page}) => {
+    const setup = await begin(page);
+
+    // The Hub comes first, and starting it is the one thing to decide: Midas
+    // makes its own account on it, so there are no fields.
+    await expect(setup.getByRole('heading')).toContainText(
+      'One place for everything you talk on',
+    );
+    await setup.getByRole('button', {name: 'Start the Hub'}).click();
+    await setup.getByRole('button', {name: 'Continue'}).click();
+
+    // Model: a provider is preselected, and connecting needs a key. The button
+    // names the provider, so the assertion has to as well.
+    await expect(setup.getByRole('heading')).toContainText('Choose who Midas thinks with');
+    await setup.getByRole('radio', {name: /OpenAI/}).click();
+    const connect = setup.getByRole('button', {name: 'Connect OpenAI'});
+    await expect(connect).toBeDisabled();
+    await setup.locator('input[type="password"]').fill('sk-test-key');
+    await expect(connect).toBeEnabled();
+    await connect.click();
+
+    // Permissions are requested one at a time, each from its own button.
+    await expect(setup.getByRole('heading')).toContainText('only what you want');
+    const allow = setup.getByRole('button', {name: 'Allow'});
+    await expect(allow).toHaveCount(2);
+    await allow.first().click();
+    await expect(setup.getByText('Allowed').first()).toBeVisible();
+    // Full Disk Access is the one macOS never prompts for, so its row offers
+    // the pane it is switched on in rather than an Allow that does nothing.
+    await expect(setup.getByRole('button', {name: 'Open Settings'})).toBeVisible();
+    await setup.getByRole('button', {name: 'Continue'}).click();
+
+    // The closing screen is one line and the way in.
+    await expect(setup.getByRole('heading')).toContainText("You're ready to go");
+    // Setup is over, so there is nothing left to skip — only the way back.
+    await expect(setup.getByRole('button', {name: 'Skip setup'})).toHaveCount(0);
+    await expect(setup.getByRole('button', {name: 'Back'})).toBeVisible();
+
+    // The closing disc breathes for as long as it is on screen, so the button
+    // riding it never holds still for a pointer. Keyboard activation is the
+    // same path and does not wait on a bounding box that keeps moving.
+    await setup.getByRole('button', {name: 'Get started'}).press('Enter');
+    await expect(setup).toHaveCount(0, {timeout: 5000});
+    await expect(page.getByText('What can I help with?')).toBeVisible();
+  });
+
+  test('renders a scannable pairing code inline', async ({page}) => {
+    const setup = await begin(page);
+    await setup.getByRole('button', {name: 'Start the Hub'}).click();
+
+    // A platform is opened from its seat on the ring, and one offering more
+    // than one way in shows them all rather than picking for you. The seats are
+    // positioned per frame by the ring's own loop, so they are never stable
+    // enough for a pointer — the keyboard reaches them the same way.
+    await setup.getByRole('button', {name: 'WhatsApp'}).press('Enter');
+    await setup.getByRole('button', {name: /QR Code/}).click();
+
+    const qr = setup.getByRole('img', {name: 'Pairing QR code'});
+    await expect(qr).toBeVisible();
+    // The quiet zone is part of the symbol, and the ground stays light in both
+    // themes — a dark-inverted QR does not scan.
+    await expect(qr).toHaveAttribute('viewBox', /^-4 -4 /);
+    await expect(qr.locator('rect')).toHaveAttribute('fill', '#fff');
+  });
+
+  test('skipping setup goes straight to the app', async ({page}) => {
+    const setup = await begin(page);
+    // The way out appears with the first screen that asks for something.
+    await setup.getByRole('button', {name: 'Skip setup'}).click();
+    await expect(setup).toHaveCount(0);
+    await expect(page.getByText('What can I help with?')).toBeVisible();
+  });
+});
+
+test.describe('hub settings mail', () => {
+  test('the rail carries one Mail entry and the pane lists every mailbox', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog');
+    await modal.getByRole('tab', {name: 'Hub'}).click();
+
+    // One entry, summarising the set — not a row per account.
+    const mail = modal.getByRole('button', {name: /^Mail/});
+    await expect(mail).toHaveCount(1);
+    await expect(mail).toContainText('3 mailboxes');
+    await mail.click();
+
+    await expect(modal.getByRole('heading', {name: 'Mail', exact: true})).toBeVisible();
+    for (const address of ['demo@example.com', 'demo@work.example', 'team@example.co'])
+      await expect(modal.getByText(address, {exact: true})).toBeVisible();
+    // Each mailbox reports its own reachability and carries its own actions.
+    // Exact, or "Failed" also matches the "authentication failed" detail below it.
+    await expect(modal.getByText('Reachable', {exact: true})).toBeVisible();
+    await expect(modal.getByText('Failed', {exact: true})).toBeVisible();
+    await expect(modal.getByText('authentication failed')).toBeVisible();
+    await expect(modal.getByRole('button', {name: 'Test'})).toHaveCount(3);
+    await expect(modal.getByRole('button', {name: 'Remove'})).toHaveCount(3);
+
+    // Adding opens the form without leaving the Mail section.
+    await modal.getByRole('button', {name: 'Add mailbox'}).click();
+    await expect(modal.getByRole('heading', {name: 'Add a mailbox'})).toBeVisible();
+  });
+});
+
+test.describe('hub view', () => {
+  const openView = async (page: import('@playwright/test').Page) => {
+    await page.goto('/');
+    // The title-bar Hub button opens the tab the same way Drive does.
+    await page.getByRole('button', {name: 'Open Hub'}).click();
+    await expect(page.locator('.hub-view')).toBeVisible();
+  };
+
+  test('lists linked platforms and mailbox folders, and reads a message', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+
+    // Sources carry their platform mark, not a generic bubble.
+    await expect(view.locator('.hub-view-source', {hasText: 'WhatsApp'})).toBeVisible();
+    await expect(view.locator('svg[data-platform="whatsapp"]')).toBeVisible();
+    await expect(view.locator('svg[data-platform="mail"]').first()).toBeVisible();
+
+    // Mailboxes live in a dropdown over the list, not in the rail, and are
+    // classified from IMAP special-use flags.
+    await view.locator('.hub-view-folder-button').click();
+    for (const folder of ['INBOX', 'Drafts', 'Sent Mail', 'Spam', 'Trash'])
+      await expect(
+        view.locator('.hub-view-folder-menu').getByRole('button', {name: folder, exact: true}),
+      ).toBeVisible();
+    await view.locator('.hub-view-folder-button').click();
+
+    // Unread is carried by weight, so the first row is heavier than a read one.
+    const rows = view.locator('.hub-view-row');
+    await expect(rows.first()).toHaveClass(/unread/);
+    await rows.first().click();
+
+    await expect(view.getByRole('heading', {name: 'Q3 numbers'})).toBeVisible();
+    await expect(view.getByText('The quarterly numbers are attached.')).toBeVisible();
+    for (const action of ['Reply', 'Reply all', 'Forward', 'Archive', 'Junk', 'Delete', 'Move to folder'])
+      await expect(view.getByRole('button', {name: action, exact: true})).toBeVisible();
+    // Opening marks it read.
+    await expect(rows.first()).not.toHaveClass(/unread/);
+  });
+
+  test('folds account lists under their platform row', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const mailRow = view.locator('.hub-view-source', {hasText: 'Mail'});
+
+    // Mail is one row, with its mailboxes' accounts inline underneath it.
+    await expect(mailRow).toHaveCount(1);
+    await expect(view.locator('.hub-view-accounts button', {hasText: 'demo@work.example'})).toBeVisible();
+    await mailRow.click();
+    await expect(view.locator('.hub-view-accounts button', {hasText: 'demo@work.example'})).toBeHidden();
+
+    // A platform with more than one account behaves the same way.
+    await view.locator('.hub-view-source', {hasText: 'Instagram'}).click();
+    await expect(view.locator('.hub-view-accounts button', {hasText: '@carl.builds'})).toBeVisible();
+
+    // One with a single account has nothing to fold, so its row selects it.
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await expect(view.locator('.hub-view-source', {hasText: 'WhatsApp'})).toHaveClass(/active/);
+  });
+
+  test('filters the list down to unread messages', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await expect(view.locator('.hub-view-row')).toHaveCount(3);
+
+    await view.getByRole('button', {name: 'Filter messages'}).click();
+    await view.getByRole('button', {name: 'Unread'}).click();
+    // Only the unread row survives, and the filter reads as on.
+    await expect(view.locator('.hub-view-row')).toHaveCount(1);
+    await expect(view.locator('.hub-view-row').first()).toHaveClass(/unread/);
+    await expect(view.getByRole('button', {name: 'Filter messages'})).toHaveClass(/on/);
+
+    await view.getByRole('button', {name: 'Filter messages'}).click();
+    await view.getByRole('button', {name: 'All messages'}).click();
+    await expect(view.locator('.hub-view-row')).toHaveCount(3);
+  });
+
+  test('moves a message to junk', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await expect(view.locator('.hub-view-row')).toHaveCount(3);
+    await view.locator('.hub-view-row').first().click();
+    await view.getByRole('button', {name: 'Junk'}).click();
+    // The row leaves the folder it was moved out of.
+    await expect(view.locator('.hub-view-row')).toHaveCount(2);
+  });
+
+  test('opens a chat thread and sends a message', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    await expect(view.locator('.hub-view-bubble')).toHaveCount(2);
+    await view.locator('.hub-view-composer input').fill('See you then.');
+    await view.locator('.hub-view-composer button').click();
+    await expect(view.locator('.hub-view-bubble')).toHaveCount(3);
+    // The sent message is attributed to the user, not the remote side.
+    await expect(view.locator('.hub-view-bubble.mine').first()).toContainText('See you then.');
+  });
+
+  test('composes a new mail, with copies and attachments', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.getByRole('button', {name: 'New'}).click();
+    await expect(view.getByRole('heading', {name: 'New message'})).toBeVisible();
+    await expect(view.getByRole('button', {name: 'Send'})).toBeDisabled();
+    await view.locator('.hub-view-compose-form input').first().fill('someone@example.com');
+    await expect(view.getByRole('button', {name: 'Send'})).toBeEnabled();
+    await expect(view.getByRole('button', {name: 'Save draft'})).toBeVisible();
+
+    // Cc and Bcc stay folded away until they are asked for.
+    await expect(view.getByText('Cc', {exact: true})).toBeHidden();
+    await view.getByRole('button', {name: 'Cc/Bcc'}).click();
+    await expect(view.getByText('Cc', {exact: true})).toBeVisible();
+    await expect(view.getByText('Bcc', {exact: true})).toBeVisible();
+
+    await view.getByRole('button', {name: 'Attach'}).click();
+    await expect(view.locator('.hub-view-file')).toContainText('demo-attachment.pdf');
+  });
+
+  test('replies to the sender with the message quoted', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-row').first().click();
+    await view.getByRole('button', {name: 'Reply', exact: true}).click();
+
+    await expect(view.getByRole('heading', {name: 'Reply'})).toBeVisible();
+    const fields = view.locator('.hub-view-compose-form input');
+    await expect(fields.first()).toHaveValue('priya@example.com');
+    await expect(fields.last()).toHaveValue('Re: Q3 numbers');
+    // The answer carries what it answers, the way every mail client does.
+    await expect(view.locator('.hub-view-compose-form textarea')).toHaveValue(
+      /> The quarterly numbers are attached\./,
+    );
+  });
+
+  test('acts on several messages at once', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const rows = view.locator('.hub-view-row');
+    await rows.nth(0).click({modifiers: ['Meta']});
+    await rows.nth(1).click({modifiers: ['Meta']});
+
+    await expect(view.locator('.hub-view-selection')).toContainText('2 selected');
+    // Marking them read is a flag change, so they stay in the folder.
+    await view.locator('.hub-view-selection').getByRole('button', {name: 'Read', exact: true}).click();
+    await expect(view.locator('.hub-view-row.unread')).toHaveCount(0);
+
+    await rows.nth(0).click({modifiers: ['Meta']});
+    await view.locator('.hub-view-selection').getByRole('button', {name: 'Archive'}).click();
+    await expect(rows).toHaveCount(2);
+  });
+
+  test('shows the attachments and recipients of a message', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-row').first().click();
+
+    await expect(view.locator('.hub-view-recipients')).toContainText('demo@example.com');
+    await expect(view.locator('.hub-view-attachments')).toContainText('q3-report.pdf');
+    await view.locator('.hub-view-attachments').getByRole('button', {name: 'Save'}).click();
+    await expect(view.locator('.hub-view-attachments')).toContainText('Open q3-report.pdf');
+  });
+});
+
+test.describe('hub multi-account', () => {
+  test('a platform lists every linked account and still offers to add more', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog');
+    await modal.getByRole('tab', {name: 'Hub'}).click();
+
+    // The rail summarises plurality instead of naming only the first account.
+    const rail = modal.getByRole('button', {name: /Instagram/});
+    await expect(rail).toContainText('2 accounts');
+    await rail.click();
+
+    await expect(modal.getByRole('heading', {name: 'Linked accounts'})).toBeVisible();
+    await expect(modal.getByRole('code').filter({hasText: '@carl.builds'})).toBeVisible();
+    await expect(modal.getByRole('code').filter({hasText: '@flarehq'})).toBeVisible();
+    // Each account carries its own unlink, and more can be added alongside.
+    await expect(modal.getByRole('button', {name: 'Unlink'})).toHaveCount(2);
+    await expect(modal.getByRole('heading', {name: 'Add another account'})).toBeVisible();
+
+    // Unlinking one leaves the other untouched. Scoped to the account row's
+    // code element: the surviving name also appears in the rail and header.
+    await modal.getByRole('button', {name: 'Unlink'}).first().click();
+    await expect(modal.getByRole('button', {name: 'Unlink'})).toHaveCount(1);
+    await expect(modal.getByRole('code').filter({hasText: '@flarehq'})).toBeVisible();
+    await expect(modal.getByRole('heading', {name: 'Linked account', exact: true})).toBeVisible();
+  });
+});
+
+test.describe('workspace persistence', () => {
+  // The history toggle's label is being reworked in a parallel branch; match
+  // any of its recent names rather than chasing the churn. The drawer's
+  // open/closed state after picking a chat is also in flux, so the helper
+  // toggles only when the wanted row is not already clickable.
+  const openFromHistory = async (page: import('@playwright/test').Page, title: string) => {
+    const row = page.getByRole('button', {name: `Open chat: ${title}`});
+    if (!(await row.isVisible()))
+      await page.getByRole('button', {name: /Toggle (past chats|chat history|archive|Chats)/}).click();
+    await row.click();
+  };
+
+  test('each chat keeps its own workspace and restores it on return', async ({page}) => {
+    await page.goto('/');
+    await openFromHistory(page, 'Planning a product launch');
+
+    // Open the Hub view in this chat's workspace.
+    await page.getByRole('button', {name: 'Open Hub'}).click();
+    await expect(page.locator('.hub-view')).toBeVisible();
+
+    // A different chat starts from its own (empty) workspace, not this one's.
+    // New Chat rather than a second chat row: which older groups the
+    // drawer surfaces by default is being reworked in a parallel branch.
+    await page.getByRole('button', {name: 'New Chat'}).click();
+    await expect(page.locator('.hub-view')).toHaveCount(0);
+
+    // Returning restores the first chat's layout: tab back, drawer open.
+    await openFromHistory(page, 'Planning a product launch');
+    await expect(page.locator('.hub-view')).toBeVisible();
+    await expect(page.locator('.tab-main', {hasText: 'Hub'})).toBeVisible();
   });
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtemp, readFile, rm} from "node:fs/promises";
+import {mkdtemp, readdir, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +10,17 @@ const cipher: SecretCipher = {
   isEncryptionAvailable: () => true,
   encryptString: (value) => Buffer.from([...Buffer.from(value)].map((byte) => byte ^ 0xa5)),
   decryptString: (value) => Buffer.from([...value].map((byte) => byte ^ 0xa5)).toString(),
+};
+
+/** Simulates a store written under an OS key that no longer matches: every
+ * decryption of the old data fails, exactly like safeStorage after the
+ * keychain key changed. */
+const mismatchedCipher: SecretCipher = {
+  isEncryptionAvailable: () => true,
+  encryptString: cipher.encryptString,
+  decryptString: () => {
+    throw new Error("Error while decrypting the ciphertext provided to safeStorage.decryptString.");
+  },
 };
 
 test("persists encrypted credentials without exposing their values", async () => {
@@ -90,6 +101,67 @@ test("rejects incomplete OpenCode keys instead of treating them as configured", 
       /full OpenCode API key beginning with sk-/,
     );
     assert.deepEqual(await pool.list("opencode-go"), []);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test("recovers when the pool file can no longer be decrypted", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "midas-key-pool-stale-"));
+  const file = path.join(directory, "api-keys.json");
+  try {
+    // A key saved under a previous OS encryption key.
+    await new EncryptedApiKeyPool(file, cipher).add("openai", "sk-lost-forever");
+
+    const reopened = new EncryptedApiKeyPool(file, mismatchedCipher);
+    assert.deepEqual(await reopened.list("openai"), [], "unreadable keys are dropped");
+    await reopened.add("openai", "sk-fresh-secret");
+    assert.deepEqual((await reopened.candidates("openai")).map((item) => item.key), ["sk-fresh-secret"]);
+
+    const names = await readdir(directory);
+    assert.equal(names.filter((name) => name.startsWith("api-keys.json.unreadable-")).length, 1, "the stale file is quarantined");
+
+    const onDisk = await readFile(file, "utf8");
+    assert.doesNotMatch(onDisk, /sk-fresh-secret/);
+    assert.deepEqual(
+      (await new EncryptedApiKeyPool(file, cipher).list("openai")).map((item) => item.label),
+      ["sk-f••••cret"],
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test("recovers when the pool file decrypts to a malformed document", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "midas-key-pool-malformed-"));
+  const file = path.join(directory, "api-keys.json");
+  try {
+    await writeFile(file, cipher.encryptString("[]").toString("base64"), "utf8");
+    const pool = new EncryptedApiKeyPool(file, cipher);
+    assert.deepEqual(await pool.list("openai"), []);
+    await pool.add("openai", "sk-back-again");
+    assert.deepEqual((await pool.candidates("openai")).map((item) => item.key), ["sk-back-again"]);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test("recovers when the credential store is corrupt or its key changed", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "midas-credentials-stale-"));
+  const file = path.join(directory, "credentials.json");
+  try {
+    await writeFile(file, "not json", "utf8");
+    const corrupt = new EncryptedCredentialStore(file, cipher);
+    assert.equal(await corrupt.read("openai"), undefined);
+    await corrupt.modify("openai", async () => ({type: "api_key", key: "sk-regenerated"}));
+    assert.deepEqual(await new EncryptedCredentialStore(file, cipher).read("openai"), {type: "api_key", key: "sk-regenerated"});
+
+    // A credential blob encrypted under a previous OS key reads as absent and
+    // can be overwritten, instead of failing every store operation.
+    await writeFile(file, JSON.stringify({version: 1, credentials: {anthropic: "stale-blob"}}), "utf8");
+    const mismatched = new EncryptedCredentialStore(file, mismatchedCipher);
+    assert.equal(await mismatched.read("anthropic"), undefined);
+    assert.deepEqual(await mismatched.list(), []);
   } finally {
     await rm(directory, {recursive: true, force: true});
   }

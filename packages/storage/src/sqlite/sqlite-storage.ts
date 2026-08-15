@@ -10,6 +10,8 @@ import type {
   JsonValue,
   MemoryRecord,
   MemoryScope,
+  MessageRole,
+  MessageSearchHit,
   NewArtifact,
   NewAttachment,
   NewCompaction,
@@ -69,6 +71,26 @@ function conversation(row: Row): Conversation {
     metadata: decode(row.metadata_json),
   };
 }
+/** Keeps a user's literal % or _ from behaving as a LIKE wildcard. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+/** Message content is JSON; searches and hits work in the text inside it. */
+function plainText(content: JsonValue): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content))
+    return content
+      .map((block) => {
+        const item = block as { type?: unknown; text?: unknown };
+        if (item.type === "image") return "[image]";
+        return typeof item.text === "string" ? item.text : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  return "";
+}
+
 function message(row: Row): StoredMessage {
   return {
     id: text(row.id),
@@ -375,6 +397,52 @@ export class SqliteStorage implements Storage {
     ).map(message);
   }
 
+  searchMessages(
+    query: string,
+    options: {
+      limit?: number;
+      conversationId?: Id;
+      roles?: MessageRole[];
+    } = {},
+  ): MessageSearchHit[] {
+    const term = query.trim();
+    if (!term) return [];
+    const roles = options.roles?.length
+      ? options.roles
+      : (["user", "assistant"] as MessageRole[]);
+    const limit = Math.max(1, Math.min(options.limit ?? 20, 200));
+    // LIKE over content_json also matches the JSON scaffolding around the text,
+    // so hits are rendered to plain text before they are returned.
+    const rows = this.database
+      .prepare(
+        `SELECT m.*, c.title AS conversation_title FROM messages m
+           JOIN conversations c ON c.id = m.conversation_id
+          WHERE m.content_json LIKE ? ESCAPE '\\'
+            AND m.role IN (${roles.map(() => "?").join(",")})
+            ${options.conversationId ? "AND m.conversation_id = ?" : ""}
+          ORDER BY m.created_at DESC, m.sequence DESC
+          LIMIT ?`,
+      )
+      .all(
+        `%${escapeLike(term)}%`,
+        ...roles,
+        ...(options.conversationId ? [options.conversationId] : []),
+        limit,
+      ) as Array<Row & { conversation_title: unknown }>;
+    return rows.map((row) => {
+      const stored = message(row);
+      return {
+        conversationId: stored.conversationId,
+        conversationTitle: text(row.conversation_title),
+        messageId: stored.id,
+        role: stored.role,
+        sequence: stored.sequence,
+        createdAt: stored.createdAt,
+        text: plainText(stored.content),
+      };
+    });
+  }
+
   addAttachment(input: NewAttachment): Attachment {
     const now = this.#clock();
     this.database
@@ -525,7 +593,11 @@ export class SqliteStorage implements Storage {
     const now = this.#clock();
     this.database
       .prepare(
-        "INSERT INTO compactions (id,conversation_id,through_message_sequence,summary,token_count,created_at) VALUES (?,?,?,?,?,?)",
+        // Recompacting the same prefix replaces its summary: the history it
+        // described can change underneath it, and the pair is unique.
+        `INSERT INTO compactions (id,conversation_id,through_message_sequence,summary,token_count,created_at) VALUES (?,?,?,?,?,?)
+         ON CONFLICT(conversation_id,through_message_sequence) DO UPDATE SET
+           id=excluded.id, summary=excluded.summary, token_count=excluded.token_count, created_at=excluded.created_at`,
       )
       .run(
         input.id,

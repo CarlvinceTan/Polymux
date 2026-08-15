@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3.14
+#!/usr/bin/env python3
 """Detect bundled system-skill updates and route merges through maintenance."""
 
 from __future__ import annotations
@@ -17,17 +17,18 @@ import sys
 import tempfile
 
 
-CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+MIDAS_HOME = Path(os.environ.get("MIDAS_HOME", Path.home() / ".midas")).expanduser()
 DEFAULT_STATE_ROOT = Path(
     os.environ.get(
-        "CODEX_SKILL_MAINTENANCE_HOME",
-        CODEX_HOME / "skill-maintenance" / "system-updates",
+        "MIDAS_SKILL_MAINTENANCE_HOME",
+        MIDAS_HOME / "skill-maintenance" / "system-updates",
     )
 ).expanduser()
-APP_CODEX = Path("/Applications/ChatGPT.app/Contents/Resources/codex")
+# Official skills ship as a plain directory inside the Midas app bundle.
+APP_BUNDLED_SKILLS = Path("/Applications/Midas.app/Contents/Resources/skills/official")
 MAINTENANCE = Path(__file__).with_name("skill_maintenance.py")
-PYTHON = "/opt/homebrew/bin/python3.14"
-MARKER = ".codex-system-skills.marker"
+PYTHON = sys.executable
+MARKER = ".midas-system-skills.marker"
 MISSING = object()
 
 
@@ -73,16 +74,16 @@ def load_config(state_root: Path) -> dict:
     return config
 
 
-def find_codex(config: dict) -> Path:
-    configured = config.get("codex_binary")
-    if configured and expanded(configured).is_file():
+def find_bundled_skills(config: dict) -> Path:
+    configured = config.get("bundled_skills")
+    if configured and expanded(configured).is_dir():
         return expanded(configured)
-    if APP_CODEX.is_file():
-        return APP_CODEX
-    found = shutil.which("codex")
-    if found:
-        return Path(found)
-    raise UpdateError("Could not find the Codex executable")
+    if APP_BUNDLED_SKILLS.is_dir():
+        return APP_BUNDLED_SKILLS
+    raise UpdateError(
+        "Could not find the bundled Midas skills directory; "
+        "set bundled_skills in config.json"
+    )
 
 
 def iter_tree(root: Path) -> dict[str, tuple[str, bytes, int]]:
@@ -146,26 +147,10 @@ def atomic_copytree(source: Path, destination: Path) -> None:
 
 
 def extract_upstream(config: dict, destination: Path) -> None:
-    codex = find_codex(config)
-    with tempfile.TemporaryDirectory(prefix="codex-system-updates-") as temporary_home:
-        env = os.environ.copy()
-        env["CODEX_HOME"] = temporary_home
-        result = subprocess.run(
-            [str(codex), "debug", "prompt-input", "--", "system skill update inventory"],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0:
-            raise UpdateError(f"Codex system-skill extraction failed: {result.stderr.strip()}")
-        source = Path(temporary_home) / "skills/.system"
-        if not source.is_dir():
-            raise UpdateError("Codex did not materialize bundled system skills")
-        if destination.exists():
-            shutil.rmtree(destination)
-        shutil.copytree(source, destination, symlinks=True)
+    source = find_bundled_skills(config)
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination, symlinks=True)
 
 
 def is_text(entry) -> bool:

@@ -29,7 +29,9 @@
   export let disabled = false;
   export let maxLines = 4;
   export let onChange: (text: string) => void = () => {};
-  export let onSubmit: (text: string, chips: SubmittedChip[]) => void = () => {};
+  /** `immediate` is set when the send was made with Cmd/Ctrl+Enter, which skips
+      the queue and interrupts a running agent. */
+  export let onSubmit: (text: string, chips: SubmittedChip[], immediate: boolean) => void = () => {};
   export let onRemove: (id: string) => void = () => {};
   export let onExpanded: (expanded: boolean) => void = () => {};
 
@@ -123,10 +125,74 @@
     const range = document.createRange();
     range.selectNodeContents(editor);
     range.collapse(false);
+    apply(range);
+  }
+
+  /** Offsets index the text `getText` returns, so callers never have to know
+      how the content is laid out in the DOM. */
+  function placeCursorAt(offset: number): void {
+    const node = editor.firstChild;
+    if (node?.nodeType !== Node.TEXT_NODE) {
+      placeCursorAtEnd();
+      return;
+    }
+    const range = document.createRange();
+    range.setStart(node, Math.max(0, Math.min(offset, node.textContent?.length ?? 0)));
+    range.collapse(true);
+    apply(range);
+  }
+
+  function apply(range: Range): void {
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
     savedRange = range.cloneRange();
+  }
+
+  /** The caret's position in the text `getText` returns — chips and line breaks
+      counted the same way — or the end of the text when the caret is elsewhere.
+      Lets a caller insert at the caret without reaching into the DOM. */
+  export function caret(): number {
+    const live = window.getSelection();
+    const active = live?.rangeCount ? live.getRangeAt(0) : null;
+    const range = active && editor?.contains(active.startContainer)
+      ? active
+      : savedRange && editor?.contains(savedRange.startContainer)
+        ? savedRange
+        : null;
+    if (!range) return getText().length;
+
+    let offset = 0;
+    let done = false;
+    const visit = (node: Node): void => {
+      if (done) return;
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (node === range.startContainer) {
+          offset += range.startOffset;
+          done = true;
+        } else offset += (node.textContent ?? '').length;
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const element = node as HTMLElement;
+      if (element.hasAttribute('data-chip')) return;
+      if (element.tagName === 'BR') {
+        offset += 1;
+        return;
+      }
+      // A caret between two nodes reports their parent as its container, with
+      // the child index as the offset.
+      const children = [...element.childNodes];
+      const limit = node === range.startContainer ? range.startOffset : children.length;
+      for (let index = 0; index < limit && !done; index += 1) visit(children[index]);
+      if (node === range.startContainer) done = true;
+      else if (element.tagName === 'DIV' || element.tagName === 'P') offset += 1;
+    };
+
+    const children = [...editor.childNodes];
+    const limit = editor === range.startContainer ? range.startOffset : children.length;
+    for (let index = 0; index < limit && !done; index += 1) visit(children[index]);
+    return offset;
   }
 
   /**
@@ -174,16 +240,13 @@
   }
 
   function insertChip(chip: HTMLElement): void {
-    const selection = window.getSelection();
     if (savedRange && editor.contains(savedRange.startContainer)) {
       savedRange.deleteContents();
       savedRange.insertNode(chip);
       const after = document.createRange();
       after.setStartAfter(chip);
       after.collapse(true);
-      selection?.removeAllRanges();
-      selection?.addRange(after);
-      savedRange = after.cloneRange();
+      apply(after);
     } else {
       editor.appendChild(chip);
       placeCursorAtEnd();
@@ -230,7 +293,7 @@
   function keydown(event: KeyboardEvent): void {
     if (!disabled && event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      submit();
+      submit(event.metaKey || event.ctrlKey);
     }
   }
 
@@ -265,7 +328,9 @@
     updateExpanded();
   }
 
-  export function setText(text: string): void {
+  /** @param caretAt Where to leave the caret, as an offset into `text`.
+      Defaults to the end, which is what typing-like callers want. */
+  export function setText(text: string, caretAt?: number): void {
     suppressInput = true;
     editor.replaceChildren();
     if (text) editor.appendChild(document.createTextNode(text));
@@ -275,15 +340,16 @@
     onChange(text);
     reconcileChips();
     editor.focus();
-    placeCursorAtEnd();
+    if (caretAt === undefined) placeCursorAtEnd();
+    else placeCursorAt(caretAt);
     syncEmpty();
     updateExpanded();
     editor.scrollTop = editor.scrollHeight;
   }
 
-  export function submit(): void {
+  export function submit(immediate = false): void {
     const result = serialize();
-    onSubmit(result.text, result.chips);
+    onSubmit(result.text, result.chips, immediate);
   }
 
   onMount(() => {

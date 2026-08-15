@@ -42,7 +42,7 @@ Never retry an ambiguous send until delivery evidence has been checked.
 - **Matrix unavailable or unsupported:** when Matrix lacks the exact room, account state, media feature, or required capability, immediately report the platform, account, missing capability, and observed blocker. Do not attempt a browser, desktop, phone, or platform-specific fallback unless the user explicitly asks for that alternate route.
 - **Email:** load `email` and let it choose the account and route.
 - **WeChat:** use the verified Matrix route for reading, searching, unread retrieval, and text sending. For an unsupported feature, report the limitation and wait for an explicit fallback request.
-- **Web surfaces:** load `browser-use` and use the Codex in-app Browser first.
+- **Web surfaces:** load `browser-use` and use the Midas in-app Browser first.
 - **Reminders:** load `apple-reminders` for Apple Reminders; do not treat reminders as messages.
 - **Phone tasks:** load `remote-control` before declaring a phone route unavailable.
 

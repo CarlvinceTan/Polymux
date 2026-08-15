@@ -1,31 +1,27 @@
 #!/usr/bin/env python3
-"""Read-only health report for OpenAI's built-in Chronicle on macOS."""
+"""Read-only health report for Midas's built-in Chronicle on macOS.
+
+Midas records Chronicle inside the app itself: accessibility text frames are
+saved as Markdown under the Chronicle directory, indexed per day, and
+summarised into timeline.md. There is no separate recorder process to check;
+health is the recorder setting plus evidence freshness on disk.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
-import subprocess
 import sys
 import time
-from typing import Iterable
 
 
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
-SUMMARY_SUFFIX = "memory-summary.md"
-
-
-def newest_file(root: Path, suffixes: Iterable[str]) -> Path | None:
-    allowed = {suffix.lower() for suffix in suffixes}
+def newest_file(root: Path, suffix: str) -> Path | None:
     newest: tuple[float, Path] | None = None
     if not root.is_dir():
         return None
-    for path in root.rglob("*"):
-        if not path.is_file() or not any(
-            path.name.lower().endswith(suffix) for suffix in allowed
-        ):
+    for path in root.rglob(f"*{suffix}"):
+        if not path.is_file():
             continue
         try:
             modified = path.stat().st_mtime
@@ -54,88 +50,65 @@ def file_state(path: Path | None, now: float, fresh_seconds: float) -> dict:
     }
 
 
-def process_state(pid_file: Path) -> tuple[dict, list[str]]:
+def recorder_state(root: Path) -> tuple[dict, list[str]]:
     errors: list[str] = []
-    state = {
-        "pid_file": str(pid_file),
-        "pid": None,
-        "running": False,
-        "executable": None,
-        "verified": False,
-    }
+    state = {"directory": str(root), "present": root.is_dir(), "enabled": None}
+    if not root.is_dir():
+        errors.append("Chronicle directory is missing; Chronicle has never run")
+        return state, errors
+    settings = root / "settings.json"
     try:
-        raw_pid = pid_file.read_text(encoding="utf-8").strip()
-        pid = int(raw_pid)
-        if pid <= 0:
-            raise ValueError
-        state["pid"] = pid
-    except FileNotFoundError:
-        errors.append("Chronicle PID file is missing")
-        return state, errors
+        value = json.loads(settings.read_text(encoding="utf-8"))
+        state["enabled"] = bool(value.get("enabled", True))
     except (OSError, ValueError):
-        errors.append("Chronicle PID file is unreadable or invalid")
-        return state, errors
-
-    result = subprocess.run(
-        ["/bin/ps", "-p", str(pid), "-o", "comm="],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    executable = result.stdout.strip() if result.returncode == 0 else ""
-    state["executable"] = executable or None
-    state["running"] = bool(executable)
-    state["verified"] = Path(executable).name == "codex_chronicle"
-    if not executable:
-        errors.append("Saved Chronicle PID is not running")
-    elif not state["verified"]:
-        errors.append("Saved Chronicle PID belongs to a different executable")
+        # Missing settings mean Midas is using its defaults; not an error.
+        state["enabled"] = None
+    if state["enabled"] is False:
+        errors.append("Chronicle is disabled in Midas settings")
     return state, errors
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    default_tmp = Path(os.environ.get("TMPDIR", "/tmp"))
-    parser.add_argument("--tmp-root", type=Path, default=default_tmp)
     parser.add_argument(
-        "--memory-root",
+        "--chronicle-root",
         type=Path,
-        default=Path.home() / ".codex/memories/extensions/chronicle",
+        default=Path.home() / "Library/Application Support/Midas/chronicle",
     )
     parser.add_argument("--frame-fresh-seconds", type=float, default=120.0)
-    parser.add_argument("--summary-fresh-seconds", type=float, default=1200.0)
+    parser.add_argument("--timeline-fresh-seconds", type=float, default=1200.0)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     now = time.time()
-    pid_file = args.tmp_root / "codex_chronicle/chronicle-started.pid"
-    recordings = args.tmp_root / "chronicle/screen_recording"
-    resources = args.memory_root / "resources"
+    root = args.chronicle_root
 
-    recorder, errors = process_state(pid_file)
-    frame = file_state(newest_file(recordings, IMAGE_SUFFIXES), now, args.frame_fresh_seconds)
-    summary = file_state(
-        newest_file(resources, {SUMMARY_SUFFIX}), now, args.summary_fresh_seconds
+    recorder, errors = recorder_state(root)
+    frame = file_state(newest_file(root / "index", ".jsonl"), now, args.frame_fresh_seconds)
+    timeline = file_state(
+        root / "timeline.md" if (root / "timeline.md").is_file() else None,
+        now,
+        args.timeline_fresh_seconds,
     )
     warnings: list[str] = []
     if not frame["available"]:
-        errors.append("No Chronicle raw frame is available")
+        errors.append("No Chronicle frame index is available")
     elif not frame["fresh"]:
-        warnings.append("Newest Chronicle raw frame is stale")
-    if not summary["available"]:
-        warnings.append("No generated Chronicle summary is available")
-    elif not summary["fresh"]:
-        warnings.append("Newest generated Chronicle summary is stale")
+        warnings.append("Newest Chronicle frame is stale")
+    if not timeline["available"]:
+        warnings.append("No Chronicle timeline is available")
+    elif not timeline["fresh"]:
+        warnings.append("Chronicle timeline is stale")
 
     status = "unavailable" if errors else "degraded" if warnings else "ok"
     report = {
         "status": status,
         "checked_unix": now,
         "recorder": recorder,
-        "raw_frame": frame,
-        "generated_summary": summary,
+        "latest_frame_index": frame,
+        "timeline": timeline,
         "errors": errors,
         "warnings": warnings,
     }

@@ -111,7 +111,7 @@ else
   [[ -n "$route_id" ]] || { print -r -- '{"status":"blocked_control_route_invalid"}'; exit 4; }
 fi
 
-cache_root="${TMPDIR:-/tmp}/codex-window-control"
+cache_root="${TMPDIR:-/tmp}/midas-window-control"
 /bin/mkdir -p "$cache_root" || { print -r -- '{"status":"blocked_controller_cache"}'; exit 5; }
 source_digest="$(/usr/bin/shasum -a 256 "$source_file" | /usr/bin/awk '{print $1}')"
 binary="$cache_root/exact-window-controller-$source_digest"

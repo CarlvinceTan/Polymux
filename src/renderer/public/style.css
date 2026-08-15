@@ -48,9 +48,32 @@
   /* Adjacent 28px hit areas leave a visual glyph gap that matches the space
      between the final traffic light and the first chat control. */
   --main-control-gap: 1.5px;
+  /* Clearance in front of the first chat control: the window edge inset on
+     most platforms, and on macOS also the slack --chrome-inset leaves past the
+     last traffic light. Reused after the control so the expanded tab strip is
+     spaced from it exactly as the lights are. */
+  --titlebar-control-lead: 8px;
   --drawer-motion-duration: 440ms;
   --drawer-fade-duration: 260ms;
+  /* Summary opens as a fixed overlay, so the grid column has to clear space
+     before it fades in — quicker reflow, and the panel waits for most of it. */
+  --summary-motion-duration: 300ms;
+  --drawer-panel-delay: 190ms;
   --drawer-motion-ease: cubic-bezier(.45,0,.55,1);
+  /* Anything anchored to --chrome-inset changes places unanimated. Full screen
+     taking the traffic lights or handing them back is the only thing that moves
+     the inset, and macOS freezes the web contents for the whole of its zoom —
+     measured at ~550ms, during which not one frame the renderer draws reaches
+     the screen. So the move is made in the handful of frames before the freeze
+     and the zoom covers it: nothing is ever seen travelling. Sliding it instead
+     was tried at every length from 200ms to 1100ms, and is always either
+     invisible behind the freeze or visibly late once the picture is back.
+     Coming back out of full screen alone, the controls also blank for the flip
+     and fade in at their old place; going in wants none of it and simply moves.
+     Short, because AppKit redraws the traffic lights at full strength the
+     moment the window lands: measured against them these begin one frame
+     behind and are solid ~67ms after. */
+  --chrome-fade-duration: 120ms;
   /* Room the window chrome takes on the left. macOS draws its traffic lights
      over the app on a hidden-inset title bar, so the chat controls start after
      them; every other platform starts at the window edge. */
@@ -95,9 +118,14 @@
 /* The traffic lights occupy x 20-72 (three 12px circles, 20px apart), so the
    chat controls start clear of them with the same breathing room the lights
    themselves get from the window edge. */
-:root[data-platform="darwin"] { --chrome-inset: 80px; }
+:root[data-platform="darwin"] { --chrome-inset: 80px; --titlebar-control-lead: 16px; }
+/* In full screen macOS takes the lights away, so the reserved strip would be
+   dead space: the controls move back to the window edge like every other
+   platform, and the stand-in dots have nothing to stand in for. */
+:root[data-platform="darwin"][data-fullscreen="true"] { --chrome-inset: 0px; --titlebar-control-lead: 8px; }
+:root[data-platform="darwin"][data-fullscreen="true"] .inactive-traffic-lights.visible { display: none; }
 
-@property --history-column {
+@property --chat-drawer-column {
   syntax: "<length>";
   inherits: false;
   initial-value: 0px;
@@ -143,29 +171,31 @@ button:focus-visible, [contenteditable]:focus-visible { outline: 2px solid rgba(
 :root[data-platform="darwin"] .inactive-traffic-lights i { width: 14px; height: 14px; border: 1px solid rgba(0,0,0,.1); border-radius: 50%; background: #c8c8c8; box-shadow: inset 0 0 0 .5px rgba(255,255,255,.18); }
 .top-controls, .left-controls, .title-bar-icon-button, .conversation-title-bar > button, .conversation-title-bar > input { -webkit-app-region: no-drag; }
 
-main { --history-column: 0px; --content-right-column: 0px; --content-composer-column: 0px; position: relative; height: 100vh; display: grid; grid-template-columns: var(--history-column) minmax(0,1fr) var(--content-right-column); overflow-x: hidden; background: var(--main-panel-background); transition: --history-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-right-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-composer-column var(--drawer-motion-duration) var(--drawer-motion-ease); }
+main { --chat-drawer-column: 0px; --content-right-column: 0px; --content-composer-column: 0px; position: relative; height: 100vh; display: grid; grid-template-columns: var(--chat-drawer-column) minmax(0,1fr) var(--content-right-column); overflow-x: hidden; background: var(--main-panel-background); transition: --chat-drawer-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-right-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-composer-column var(--drawer-motion-duration) var(--drawer-motion-ease); }
+main.summary-open, main.summary-open .conversation-column, main.summary-open .sticky-composer, main.summary-open .composer-column-content { transition-duration: var(--summary-motion-duration); }
 main.workspace-resizing, main.workspace-resizing .conversation-column, main.workspace-resizing .sticky-composer, main.workspace-resizing .composer-column-content,
-main.history-resizing, main.history-resizing .conversation-column, main.history-resizing .sticky-composer, main.history-resizing .composer-column-content { transition: none; }
-main.workspace-resizing .speech-orb.in-chat, main.history-resizing .speech-orb.in-chat { transition: none; }
+main.chat-drawer-resizing, main.chat-drawer-resizing .conversation-column, main.chat-drawer-resizing .sticky-composer, main.chat-drawer-resizing .composer-column-content { transition: none; }
+main.workspace-resizing .speech-orb.in-chat, main.chat-drawer-resizing .speech-orb.in-chat { transition: none; }
 main.workspace-resizing .scroll-to-latest,
-main.history-resizing .scroll-to-latest,
-main.history-resizing .timeline-rail,
+main.chat-drawer-resizing .scroll-to-latest,
+main.chat-drawer-resizing .timeline-rail { transition: none; }
+
 /* Never transform, filter, or contain this column. The composer and its queue
    are position:fixed inside it, and any of those would make it their containing
    block: their left/right would stop resolving against the viewport and the
    composer would collapse to the column's width. The expand animation lives on
    the column's contents instead, which the composer is not one of. */
 .conversation-column { grid-column: 2; grid-row: 1; width: min(792px, calc(100vw - 8px)); height: 100vh; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding-inline: 16px; margin: 0 auto; transition: width var(--drawer-motion-duration) var(--drawer-motion-ease); }
-main.history-open .conversation-column { width: min(792px,calc(100% - 8px)); }
+main.chat-drawer-open .conversation-column { width: min(792px,calc(100% - 8px)); }
 main.summary-open .conversation-column { width: min(792px,calc(100% - 8px)); margin: 0 auto; }
 /* Animate directly to the docked measure. Using the live grid track here makes
    the max-width pane wait for most of the slide and compress only at the end. */
-main.workspace-open .conversation-column { width: min(792px, calc(100vw - var(--history-offset) - var(--content-docked-column) - 8px)); }
+main.workspace-open .conversation-column { width: min(792px, calc(100vw - var(--chat-drawer-offset) - var(--content-docked-column) - 8px)); }
 /* Track 3 stays at the docked width so the main pane cannot reflow mid-slide —
    but the panel itself grows to fill the viewport, and a wider item in a
    narrower track overflows to the right unless it is end-aligned. The track's
    right edge is the viewport's, so ending it there puts its left edge at 0. */
-main.workspace-expanded { grid-template-columns: var(--history-column) minmax(0,1fr) var(--content-docked-column); }
+main.workspace-expanded { grid-template-columns: var(--chat-drawer-column) minmax(0,1fr) var(--content-docked-column); }
 main.workspace-expanded .conversation-column { pointer-events: none; }
 
 .empty-state { min-height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 72px 0 52px; opacity: 1; visibility: visible; transition: opacity var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s; }
@@ -219,6 +249,43 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 .polymux-prompt-toolbar button.active { color: var(--neutral-950); opacity: 1; }
 .polymux-prompt-toolbar .goal-toggle { margin: -4px -7px; padding: 4px 7px; border-radius: 8px; transition: color .15s ease, background-color .15s ease, opacity .15s; }
 .polymux-prompt-toolbar .goal-toggle.active { background: var(--neutral-200); }
+.polymux-prompt-toolbar .prompt-option-wrap { position: relative; display: inline-flex; }
+/* In a conversation the composer sits on the floor of the window, so the menu
+   opens upward. The welcome prompt is centred with the heading above it, so
+   there it drops down instead of covering the greeting. */
+/* The labels are one word each, so the menu is only as wide as it needs to be
+   and hangs on the button's centre line rather than trailing off to one side. */
+/* Centred on the REASONING label rather than the button box: the 14px icon and
+   its 4px gap sit left of the label, so the label's centre is half of that
+   (9px) right of the button's. */
+.model-menu { position: absolute; left: 50%; bottom: calc(100% + 6px); z-index: 80; width: 212px; transform: translateX(calc(-50% + 9px)); letter-spacing: normal; }
+.polymux-prompt.welcome .model-menu { top: calc(100% + 6px); bottom: auto; }
+.model-menu-search { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 8px; background: var(--neutral-50); color: var(--neutral-500); }
+.model-menu-search > svg { flex: none; }
+.model-menu-search input { width: 100%; min-width: 0; border: 0; padding: 0; background: transparent; color: var(--neutral-900); font: inherit; font-size: 11px; font-weight: 450; outline: none; }
+.model-menu-search input::placeholder { color: var(--neutral-400); }
+/* Bare on purpose: an x on a search field explains itself, so it carries no
+   tooltip and no hover chip — it only darkens. */
+.model-menu-clear { flex: none; display: grid; place-items: center; width: 16px; height: 16px; border: 0; padding: 0; background: transparent; color: var(--neutral-400); cursor: pointer; transition: color .15s ease; }
+.model-menu-clear:hover, .model-menu-clear:focus-visible { color: var(--neutral-800); }
+/* Exactly five 28px rows: enough to browse without the menu swallowing the
+   composer it hangs off, and a whole number of them so the resting view ends on
+   a row edge rather than on the blank half of a clipped sixth. */
+.model-menu-list { max-height: 140px; margin-top: 4px; overflow-y: auto; overscroll-behavior: contain; }
+.model-menu-row { position: relative; }
+/* Roomier inside the highlight than the shared item default: the mark, the name
+   and the caret each want air off the rounded edge. */
+.model-menu-row .polymux-dropdown-item { gap: 8px; padding-right: 10px; padding-left: 10px; }
+.model-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-menu-row .polymux-dropdown-item.active { background: var(--neutral-50); color: var(--neutral-950); }
+.model-menu-caret { flex: none; display: grid; place-items: center; color: var(--neutral-400); transform: rotate(-90deg); }
+.model-menu-empty { margin: 0; padding: 8px; color: var(--neutral-400); font-size: 11px; font-weight: 450; text-align: center; }
+/* The submenu hangs off the row's right edge, aligned to its top. */
+.model-submenu { position: absolute; top: -4px; left: calc(100% + 4px); z-index: 1; width: 116px; }
+.model-submenu-title { margin: 0; padding: 5px 8px 3px; color: var(--neutral-400); font-size: 9px; font-weight: 600; letter-spacing: var(--tracking-overline); text-transform: uppercase; }
+.model-submenu .polymux-dropdown-item { padding-right: 10px; padding-left: 10px; }
+.model-submenu .polymux-dropdown-item > span:first-child { flex: 1; min-width: 0; }
+.reasoning-menu-check { flex: none; width: 13px; height: 13px; display: grid; place-items: center; }
 .dictation-error { margin: -7px 0 0; color: #a92914; font-size: 10px; line-height: 1.35; text-align: center; }
 /* Listening pulse: a ping expanding behind the mic. */
 .dictation-mark { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; }
@@ -242,18 +309,25 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 /* App shell chrome */
 .top-controls, .left-controls { position: fixed; top: var(--titlebar-control-top); display: flex; gap: var(--main-control-gap); }
 .top-controls { z-index: 50; right: 8px; }
-.left-controls { z-index: 60; left: calc(var(--chrome-inset) + 8px); }
+/* --chrome-inset collapses when full screen takes the traffic lights, so the
+   controls belong at the window edge instead. Position is never animated — see
+   the chrome-inset note above — the opacity is, and only on the way back out. */
+.left-controls { z-index: 60; left: calc(var(--chrome-inset) + 8px); transition: opacity var(--chrome-fade-duration) ease; }
+/* Blanked for the restore itself, so the controls are not left sitting in the
+   old place while the window travels. App.svelte lifts this the moment frames
+   reach the screen again, which is when the fade above plays. */
+:root[data-chrome-shift="restore"] .left-controls { opacity: 0; transition: none; }
 /* The title bar is placed by the same grid that reserves the drawer and panel
    columns, so it spans exactly the main pane and cannot disagree with them.
    Sharing row 1 with the conversation column overlays it on the scrolling
    content instead of taking a row of its own, and the column width animates
    with the panel for free rather than on a parallel transition. */
 .conversation-title-bar { pointer-events: none; position: fixed; z-index: 28; top: 0; right: 0; left: 0; height: var(--app-topbar-height); display: grid; place-items: center; overflow:hidden; border-bottom: 0; background: var(--app-titlebar); backdrop-filter: blur(14px); transition: opacity var(--drawer-fade-duration) ease; }
-main.history-open .conversation-title-bar { left: var(--history-offset); }
+main.chat-drawer-open .conversation-title-bar { left: var(--chat-drawer-offset); }
 main.workspace-open .conversation-title-bar { right: var(--content-right-column); }
 /* Resizing is direct manipulation: track the drawer edge immediately so the
    title can never lag underneath it. Open/close changes retain the slide. */
-main.history-resizing .conversation-title-bar, main.workspace-resizing .conversation-title-bar { transition: none; }
+main.chat-drawer-resizing .conversation-title-bar, main.workspace-resizing .conversation-title-bar { transition: none; }
 /* Sits above the translucent title bar so the rule stays crisp and continuous
    across the full viewport instead of being washed out beneath it. */
 main.has-conversation::after { content: ''; pointer-events: none; position: fixed; z-index: 29; top: calc(var(--app-topbar-height) - 1px); right: 0; left: 0; height: 1px; background: var(--neutral-200); }
@@ -265,41 +339,46 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
 .title-bar-icon-button:hover, .title-bar-icon-button.active, .icon-button:hover, .icon-button.active { color: var(--neutral-950); background: var(--neutral-100); }
 .shared-tooltip { pointer-events: none; position: fixed; z-index: 1000; box-sizing: border-box; width: max-content; max-width: calc(100vw - 16px); overflow: hidden; padding: 6px 8px; border: 1px solid var(--neutral-200); border-radius: 7px; background: var(--app-surface); color: var(--neutral-700); box-shadow: 0 4px 12px rgba(0,0,0,.16); opacity: 0; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; font-weight: 500; line-height: 1; transform: translateY(-2px); transition: opacity .15s, transform .15s; }
 .shared-tooltip.visible { opacity: 1; transform: translateY(0); }
+.shared-tooltip.wide { width: max-content; max-width: 340px; white-space: pre-line; text-align: left; line-height: 1.5; font-weight: 450; }
 
 /* The drawer keeps its resting width while closed and slides in as a finished
    sheet. Sizing it to the animating grid column instead would relayout its
    contents on every frame, which reads as the panel compressing rather than
    moving. The column animates on the same curve, so the sheet's trailing edge
    stays exactly on the conversation's edge throughout. */
-.history-drawer { grid-column: 1; position: relative; z-index: 45; top: 0; width: var(--history-panel-width, 240px); height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: visible; padding: 54px 10px 14px; background: var(--app-bg); pointer-events: none; transform: translateX(-100%); visibility: hidden; will-change: transform; transition: transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s linear var(--drawer-motion-duration); }
-.history-drawer.open { pointer-events: auto; transform: translateX(0); visibility: visible; transition-delay: 0s; }
-.history-resize-handle { position: absolute; z-index: 80; inset: 0 -8px 0 auto; width: 17px; border: 0; padding: 0; background: transparent; cursor: col-resize; touch-action: none; }
-.history-resize-handle::after { content: ''; position: absolute; inset: 0 8px 0 auto; width: 1px; background: var(--neutral-200); box-shadow: -4px 0 10px transparent; transition: background-color .16s ease, box-shadow .2s ease; }
-.history-drawer:has(.history-resize-handle:hover), .history-drawer.resizing { box-shadow: inset -7px 0 14px rgba(26,28,28,.045); }
-.history-resize-handle:hover::after, .history-resize-handle:focus-visible::after, .history-drawer.resizing .history-resize-handle::after { background: var(--neutral-400); box-shadow: -4px 0 10px rgba(26,28,28,.11); }
-.history-resize-handle:focus-visible { outline: none; }
-.history-drawer h2 { align-self: flex-start; margin: 0 10px 11px; color: var(--neutral-950); font-size: 15px; font-weight: 600; }
-.history-groups { min-height: 0; flex: 1; overflow-y: auto; scrollbar-width: none; }
-.history-groups::-webkit-scrollbar { display: none; }
-.history-group + .history-group { margin-top: 8px; }
-.history-group-toggle { width: 100%; height: 30px; display: flex; align-items: center; justify-content: space-between; border: 0; padding: 0 8px; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 12.5px; font-weight: 580; line-height: 1.2; text-align: left; }
-.history-group-toggle:hover, .history-group-toggle:focus-visible { outline: none; color: var(--neutral-900); }
-.history-group-toggle svg { transition: transform .15s ease; }
-.history-group-toggle.collapsed svg { transform: rotate(-90deg); }
-.history-drawer ul { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
-.history-drawer li { margin: 0; padding: 0; }
-.history-row, .history-edit { width: 100%; min-height: 34px; display: flex; align-items: center; border-radius: 10px; background: transparent; color: var(--neutral-950); transition: background-color .15s ease; }
-.history-row:hover, .history-row:has(:focus-visible) { background: rgba(217,217,217,.6); } .history-row.active { background: var(--neutral-300); }
-.history-open-chat { min-width: 0; min-height: 34px; display: flex; flex: 1; align-items: center; border: 0; padding: 7px 0 7px 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.history-open-chat:focus-visible { outline: none; } .history-open-chat > span { min-width: 0; flex: 1; overflow: hidden; font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.history-more { width: 0; height: 20px; display: grid; flex: none; place-items: center; overflow: hidden; border: 0; padding: 0; background: transparent; color: var(--neutral-400); opacity: 0; cursor: pointer; transition: width .14s ease, margin .14s ease, opacity .12s ease, color .12s ease; }
-.history-row:hover .history-more, .history-row:has(:focus-visible) .history-more, .history-row.menu-open .history-more { width: 20px; margin: 0 7px 0 6px; opacity: 1; } .history-more:hover, .history-more:focus-visible { outline: none; background: transparent; color: var(--neutral-950); }
-.history-edit { padding: 7px 10px; } .history-edit input { width: 100%; min-width: 0; border: 0; padding: 0; outline: 0; background: transparent; color: var(--neutral-950); font-size: .8125rem; line-height: 1.25; }
-.history-row-menu { position: absolute; z-index: 90; right: 10px; width: 144px; } .history-row-menu .destructive { color: #b42318; } .history-row-menu .destructive:hover { background: #fff1f0; color: #8f1d15; }
-.history-empty { margin: 8px 10px; color: var(--neutral-400); font-size: 12px; line-height: 1.5; }
+.chat-drawer { grid-column: 1; position: relative; z-index: 45; top: 0; width: var(--chat-drawer-panel-width, 240px); height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: visible; padding: 54px 10px 14px; background: var(--app-bg); pointer-events: none; transform: translateX(-100%); visibility: hidden; will-change: transform; transition: transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s linear var(--drawer-motion-duration); }
+.chat-drawer.open { pointer-events: auto; transform: translateX(0); visibility: visible; transition-delay: 0s; }
+.chat-drawer-resize-handle { position: absolute; z-index: 80; inset: 0 -8px 0 auto; width: 17px; border: 0; padding: 0; background: transparent; cursor: col-resize; touch-action: none; }
+.chat-drawer-resize-handle::after { content: ''; position: absolute; inset: 0 8px 0 auto; width: 1px; background: var(--neutral-200); transition: background-color .16s ease; }
+/* The handle darkens on hover and while dragging, but casts no shadow: the
+   drawer's right edge stays a clean hairline against the conversation. */
+.chat-drawer-resize-handle:hover::after, .chat-drawer-resize-handle:focus-visible::after, .chat-drawer.resizing .chat-drawer-resize-handle::after { background: var(--neutral-400); }
+.chat-drawer-resize-handle:focus-visible { outline: none; }
+.chat-drawer h2 { align-self: flex-start; margin: 0 10px 11px; color: var(--neutral-950); font-size: 15px; font-weight: 600; }
+.chat-drawer-groups { min-height: 0; flex: 1; overflow-y: auto; scrollbar-width: none; }
+.chat-drawer-groups::-webkit-scrollbar { display: none; }
+.chat-drawer-group + .chat-drawer-group { margin-top: 8px; }
+.chat-drawer-group-toggle { width: 100%; height: 30px; display: flex; align-items: center; justify-content: space-between; border: 0; padding: 0 8px; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 12.5px; font-weight: 580; line-height: 1.2; text-align: left; }
+.chat-drawer-group-toggle:hover, .chat-drawer-group-toggle:focus-visible { outline: none; color: var(--neutral-900); }
+.chat-drawer-group-toggle svg { transition: transform .15s ease; }
+.chat-drawer-group-toggle.collapsed svg { transform: rotate(-90deg); }
+.chat-drawer ul { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.chat-drawer li { margin: 0; padding: 0; }
+.chat-drawer-row, .chat-drawer-edit { width: 100%; min-height: 34px; display: flex; align-items: center; border-radius: 10px; background: transparent; color: var(--neutral-950); transition: background-color .15s ease; }
+.chat-drawer-row:hover, .chat-drawer-row:has(:focus-visible) { background: rgba(217,217,217,.6); } .chat-drawer-row.active { background: var(--neutral-300); }
+.chat-drawer-open-chat { min-width: 0; min-height: 34px; display: flex; flex: 1; align-items: center; border: 0; padding: 7px 0 7px 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.chat-drawer-open-chat:focus-visible { outline: none; } .chat-drawer-open-chat > span { min-width: 0; flex: 1; overflow: hidden; font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.chat-drawer-more { width: 0; height: 20px; display: grid; flex: none; place-items: center; overflow: hidden; border: 0; padding: 0; background: transparent; color: var(--neutral-400); opacity: 0; cursor: pointer; transition: width .14s ease, margin .14s ease, opacity .12s ease, color .12s ease; }
+.chat-drawer-row:hover .chat-drawer-more, .chat-drawer-row:has(:focus-visible) .chat-drawer-more, .chat-drawer-row.menu-open .chat-drawer-more { width: 20px; margin: 0 7px 0 6px; opacity: 1; } .chat-drawer-more:hover, .chat-drawer-more:focus-visible { outline: none; background: transparent; color: var(--neutral-950); }
+.chat-drawer-edit { padding: 7px 10px; } .chat-drawer-edit input { width: 100%; min-width: 0; border: 0; padding: 0; outline: 0; background: transparent; color: var(--neutral-950); font-size: .8125rem; line-height: 1.25; }
+.chat-drawer-row-menu { position: absolute; z-index: 90; right: 10px; width: 144px; } .chat-drawer-row-menu .destructive { color: #b42318; } .chat-drawer-row-menu .destructive:hover { background: #fff1f0; color: #8f1d15; }
+.chat-drawer-empty { margin: 8px 10px; color: var(--neutral-400); font-size: 12px; line-height: 1.5; }
 
-.message-list { padding: 110px 0 205px; opacity: 1; visibility: visible; transition: opacity var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s; }
-main.has-queue .message-list { padding-bottom: calc(205px + var(--queue-height)); }
+/* The foot reserves exactly as far as the composer's own controls reach, so the
+   space under the last message is its ordinary bottom margin — the same gap that
+   separates every other pair of messages — however tall the composer grows. The
+   fallback only applies before the first measurement lands. */
+.message-list { padding: 110px 0 var(--composer-reserve,98px); opacity: 1; visibility: visible; transition: opacity var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s; }
 .message { margin-bottom: 38px; color: var(--on-surface); font-size: 15px; line-height: 1.6; }
 .message-role { margin-bottom: 8px; color: var(--neutral-500); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
 .message:not(.assistant) p { margin: 0; white-space: pre-wrap; }
@@ -311,6 +390,28 @@ main.has-queue .message-list { padding-bottom: calc(205px + var(--queue-height))
 .markdown-body ul, .markdown-body ol { margin: .7em 0; padding-left: 1.45em; } .markdown-body li { padding-left: .12em; } .markdown-body li + li { margin-top: .22em; } .markdown-body li > p { margin: .25em 0; }
 .markdown-body strong { color: var(--neutral-950); font-weight: 650; } .markdown-body em { font-style: italic; }
 .markdown-body a { color: #1769a7; text-decoration: underline; text-decoration-color: rgba(23,105,167,.35); text-underline-offset: 3px; } .markdown-body a:hover { text-decoration-color: currentColor; }
+/* Web links read as Notion-style mentions: site icon, then a short label. The
+   favicon sits over a globe and is revealed only once it actually loads, so a
+   site without one (or with a broken one) keeps the globe. */
+/* A link reads as running text with the site's icon in front of it, not as a
+   chip: `inline` so it wraps and sits on the baseline like the words around it. */
+/* The rule is a border on the anchor rather than a text underline: text
+   decoration skips the icon (an atomic inline box), which would draw the icon's
+   stretch and the label's as two separate lines. A border spans the whole inline
+   box in one pass, and borders on an inline box paint without affecting layout,
+   so the icon stays exactly where it sits. Padding drops the rule clear of the
+   icon, which otherwise reads as cramped; padding on an inline box moves the
+   border without moving anything else. */
+.markdown-body a.markdown-link { display: inline; color: var(--neutral-900); text-decoration: none; border-bottom: 1px solid var(--neutral-300); padding-bottom: 2px; }
+.markdown-body a.markdown-link:hover { color: var(--neutral-950); border-bottom-color: var(--neutral-500); }
+/* Centred on the label's cap height (~.35em above the baseline), not on the
+   line box, so the icon sits level with the text it fronts. */
+.link-icon { position: relative; width: 15px; height: 15px; display: inline-grid; place-items: center; margin-right: 4px; vertical-align: calc(.35em - 7.5px); color: var(--neutral-500); }
+.link-icon > * { grid-area: 1 / 1; }
+.link-globe { width: 15px; height: 15px; }
+.link-favicon { width: 15px; height: 15px; border-radius: 3px; opacity: 0; }
+.link-favicon.loaded { opacity: 1; }
+.link-icon:has(.link-favicon.loaded) .link-globe { opacity: 0; }
 .markdown-body blockquote { margin: .85em 0; border-left: 3px solid var(--neutral-300); padding: .1em 0 .1em .9em; color: var(--neutral-600); } .markdown-body blockquote p { margin: .3em 0; }
 .markdown-body code { border-radius: 5px; padding: .12em .34em; background: var(--neutral-100); color: var(--neutral-900); font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-size: .88em; }
 .markdown-code-block { margin: .9em 0; overflow: hidden; border: 1px solid var(--neutral-200); border-radius: 11px; background: var(--neutral-50); }
@@ -324,36 +425,45 @@ main.has-queue .message-list { padding-bottom: calc(205px + var(--queue-height))
 .markdown-body table { width: 100%; display: block; overflow-x: auto; margin: .9em 0; border-collapse: collapse; font-size: .92em; } .markdown-body th, .markdown-body td { border: 1px solid var(--neutral-200); padding: 7px 9px; text-align: left; } .markdown-body th { background: var(--neutral-50); color: var(--neutral-900); font-weight: 620; }
 .markdown-body hr { margin: 1.2em 0; border: 0; border-top: 1px solid var(--neutral-200); }
 
-.agent-activity { margin: 0 0 18px; color: var(--neutral-500); }
-.agent-activity-heading { width: 100%; height: 35px; display: flex; align-items: center; justify-content: flex-start; gap: 5px; border: 0; border-bottom: 1px solid var(--neutral-200); padding: 0 2px 10px; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 13px; line-height: 1; text-align: left; }
-.agent-activity-heading:hover { color: var(--neutral-700); }
+.agent-activity { margin: 0 0 18px; color: var(--neutral-700); }
+.agent-activity-heading { width: 100%; height: 35px; display: flex; align-items: center; justify-content: flex-start; gap: 5px; border: 0; border-bottom: 1px solid var(--neutral-200); padding: 0 2px 10px; background: transparent; color: var(--neutral-700); cursor: pointer; font-size: 13px; line-height: 1; text-align: left; }
+.agent-activity-heading:hover { color: var(--neutral-950); }
 .agent-activity-heading svg { transition: transform .16s ease; }
 .agent-activity.expanded .agent-activity-heading svg { transform: rotate(180deg); }
-.agent-activity-summary { max-width: 100%; display: flex; align-items: center; gap: 9px; border: 0; padding: 14px 2px 0; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 13px; text-align: left; }
-.agent-activity-summary > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-activity-summary svg:last-child { flex: none; transition: transform .16s ease; }
-.agent-activity-summary:hover { color: var(--neutral-700); }
+.activity-detail-toggle { border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-align: left; }
+.activity-steps { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 2px; padding: 0 0 0 13px; border-left: 1px solid var(--neutral-200); list-style: none; color: var(--neutral-700); font-size: 12.5px; line-height: 1.4; }
+.activity-steps li.active { color: var(--neutral-950); }
+.activity-steps li.failed { color: #a92914; }
+.activity-live-step { color: var(--neutral-500); font-size: 11px; }
+.activity-row-line { display: inline-flex; align-items: baseline; gap: 6px; }
+.activity-row-line > svg { flex: none; align-self: center; color: var(--neutral-500); transition: transform .16s ease; }
+.activity-detail-toggle[aria-expanded="true"] .activity-row-line > svg { transform: rotate(180deg); }
+.activity-detail-toggle:hover .activity-row-line > svg { color: var(--neutral-950); }
 .agent-activity-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 14px 2px 0; list-style: none; }
-.agent-activity-list li { display: flex; align-items: flex-start; gap: 9px; min-width: 0; color: var(--neutral-500); font-size: 13px; line-height: 1.4; }
-.agent-activity-list li > svg { flex: none; margin-top: 1px; }
-.agent-activity-list li.active { color: var(--neutral-700); }
-.agent-activity-list li.live > svg { animation: activity-icon-sweep 3.2s ease-in-out infinite; }
-.agent-activity-list li.live .activity-copy > span:first-child { color: transparent; background: linear-gradient(90deg,var(--neutral-500) 0%,var(--neutral-500) 34%,var(--neutral-950) 48%,var(--neutral-600) 62%,var(--neutral-500) 100%); background-size: 230% 100%; background-position: 130% 0; background-clip: text; -webkit-background-clip: text; animation: activity-gradient-sweep 3.2s cubic-bezier(.4,0,.2,1) infinite; }
+.agent-activity-list li { display: flex; align-items: flex-start; gap: 9px; min-width: 0; color: var(--neutral-950); font-size: 13px; line-height: 1.4; }
+.agent-activity-list li > svg { flex: none; margin-top: 1px; color: var(--neutral-950); }
+.agent-activity-list li.active { color: var(--neutral-950); font-weight: 450; }
+.agent-activity-list li.live, .agent-activity-list li.active:not(.commentary), .agent-activity.streaming .agent-activity-list li:not(.commentary) { position: relative; isolation: isolate; }
+/* One glimmer for the whole row: a single highlight sweeps across the icon and
+   the label as one wave, lightening the ink it passes over. */
+.agent-activity-list li.live::after, .agent-activity-list li.active:not(.commentary)::after, .agent-activity.streaming .agent-activity-list li:not(.commentary)::after { content: ""; position: absolute; z-index: 1; top: 0; bottom: 0; left: 0; width: 150px; pointer-events: none; background-image: linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,.35) 30%,rgba(255,255,255,.92) 50%,rgba(255,255,255,.35) 70%,rgba(255,255,255,0) 100%); mix-blend-mode: screen; animation: activity-glint-sweep calc((var(--glint-ink,120) + 450) / 200 * 1s) linear infinite; }
+:root[data-theme="dark"] .agent-activity-list li.live::after, :root[data-theme="dark"] .agent-activity-list li.active:not(.commentary)::after, :root[data-theme="dark"] .agent-activity.streaming .agent-activity-list li:not(.commentary)::after { background-image: linear-gradient(90deg,rgba(0,0,0,0) 0%,rgba(0,0,0,.3) 30%,rgba(0,0,0,.8) 50%,rgba(0,0,0,.3) 70%,rgba(0,0,0,0) 100%); mix-blend-mode: multiply; }
 .agent-activity-list li.failed { color: #a92914; }
+.agent-activity-list li.failed > svg { color: #a92914; }
+/* Red is reserved for a finished run; while the agent is still working every row reads as ordinary ink. */
+.agent-activity.streaming .agent-activity-list li.failed, .agent-activity.streaming .agent-activity-list li.failed > svg { color: var(--neutral-950); }
+.agent-activity-list li.commentary { color: var(--neutral-700); }
+.agent-activity-list li.commentary > svg { color: var(--neutral-500); }
+.agent-activity-list li.commentary .activity-copy > span:first-child { white-space: pre-wrap; overflow-wrap: anywhere; }
 .activity-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.activity-copy small { color: var(--neutral-400); font-size: 11px; }
+.activity-copy small { color: var(--neutral-500); font-size: 11px; }
 .activity-target { color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
-@keyframes activity-gradient-sweep {
-  0%,18% { background-position: 130% 0; }
-  68%,100% { background-position: -130% 0; }
-}
-@keyframes activity-icon-sweep {
-  0%,18%,100% { color: var(--neutral-500); opacity: .72; }
-  45% { color: var(--neutral-950); opacity: 1; }
+@keyframes activity-glint-sweep {
+  0% { transform: translateX(-150px); }
+  100% { transform: translateX(calc(var(--glint-ink,120) * 1px + 300px)); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .agent-activity-list li.live > svg, .agent-activity-list li.live .activity-copy > span:first-child { animation: none; }
-  .agent-activity-list li.live .activity-copy > span:first-child { color: var(--neutral-700); background: none; }
+  .agent-activity-list li.live::after, .agent-activity-list li.active:not(.commentary)::after, .agent-activity.streaming .agent-activity-list li:not(.commentary)::after { animation: none; content: none; }
 }
 
 .message:not(.assistant) { width: fit-content; max-width: 85%; margin-left: auto; }
@@ -364,10 +474,8 @@ main.has-queue .message-list { padding-bottom: calc(205px + var(--queue-height))
 .message:not(.assistant) .message-files { width: min(620px,85vw); margin-left: auto; }
 .message-footer { min-height: 22px; display: flex; align-items: center; gap: 7px; margin-top: 3px; color: var(--neutral-500); }
 .message:not(.assistant) .message-footer { justify-content: flex-end; }
-.message-time { opacity: 0; font-size: 11px; line-height: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; transition: opacity .15s ease; }
-.message-actions { height: 20px; display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity .15s ease; }
-.message-group:hover .message-actions, .message-group:focus-within .message-actions,
-.message-group:hover .message-time, .message-group:focus-within .message-time { opacity: 1; }
+.message-time { font-size: 11px; line-height: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.message-actions { height: 20px; display: flex; align-items: center; gap: 2px; }
 .message-goal-label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; line-height: 20px; white-space: nowrap; }
 .message-action-wrap { position: relative; display: inline-flex; }
 .message-action-wrap > button { width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--neutral-400); cursor: pointer; transition: color .15s ease, background-color .15s ease; }
@@ -384,25 +492,28 @@ main.has-queue .message-list { padding-bottom: calc(205px + var(--queue-height))
 .message-edit-controls button:hover { background: var(--neutral-100); color: var(--neutral-800); }
 .message-edit-controls button.edit-attach { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; }
 .message-edit-controls button.save { background: var(--neutral-900); color: #fff; }
-.thinking { display: inline-flex; gap: 4px; padding: 7px 0; } .thinking i { width: 5px; height: 5px; border-radius: 50%; background: var(--neutral-500); animation: pulse 1.2s infinite; } .thinking i:nth-child(2){animation-delay:.15s} .thinking i:nth-child(3){animation-delay:.3s}
-@keyframes pulse { 0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)} }
+.message-stopped { color: var(--neutral-500); font-size: 13px; font-style: italic; }
+/* The Polymux working indicator: 7px dots that swell rather than hop. */
+.thinking { display: inline-flex; align-items: center; gap: 6px; padding: 8px 4px 4px; } .thinking i { width: 7px; height: 7px; border-radius: 50%; background: var(--neutral-400); animation: working-pulse 1.2s ease-in-out infinite; } .thinking i:nth-child(2){animation-delay:.2s} .thinking i:nth-child(3){animation-delay:.4s}
+@keyframes working-pulse { 0%,60%,100%{opacity:.4;transform:scale(1)}30%{opacity:1;transform:scale(1.35)} }
+@media (prefers-reduced-motion: reduce) { .thinking i { animation: none; } }
 
-.scroll-to-latest { position: fixed; z-index: 32; left: 50%; bottom: calc(124px + var(--queue-height)); width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--neutral-200); border-radius: 50%; padding: 0; background: var(--app-translucent); color: var(--neutral-700); box-shadow: 0 4px 14px rgba(0,0,0,.16); transform: translateX(-50%); cursor: pointer; animation: jump-to-latest-in .15s ease-out; transition: left var(--drawer-motion-duration) var(--drawer-motion-ease), bottom .18s ease, background-color .15s, color .15s, box-shadow .15s; backdrop-filter: blur(10px); }
-.scroll-to-latest:hover { background: var(--neutral-50); color: var(--neutral-950); box-shadow: 0 5px 18px rgba(26,28,28,.16); }
+.scroll-to-latest { position: fixed; z-index: 32; left: 50%; bottom: calc(124px + var(--queue-height)); width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--neutral-200); border-radius: 50%; padding: 0; background: var(--app-translucent); color: var(--neutral-700); box-shadow: 0 4px 14px rgba(0,0,0,.16); transform: translateX(-50%); cursor: pointer; animation: jump-to-latest-in .15s ease-out; transition: left var(--drawer-motion-duration) var(--drawer-motion-ease), bottom .18s ease, transform .15s ease, box-shadow .15s; backdrop-filter: blur(10px); }
+.scroll-to-latest:hover { transform: translateX(-50%) scale(1.08); box-shadow: 0 5px 18px rgba(0,0,0,.18); }
 main.summary-open .scroll-to-latest { left: calc((100vw - 337px) / 2); }
-main.history-open.summary-open .scroll-to-latest { left: calc(var(--history-offset) + (100vw - var(--history-offset) - 337px) / 2); }
+main.chat-drawer-open.summary-open .scroll-to-latest { left: calc(var(--chat-drawer-offset) + (100vw - var(--chat-drawer-offset) - 337px) / 2); }
 main.workspace-open .scroll-to-latest { left: calc((100vw - var(--content-right-column)) / 2); }
-main.history-open .scroll-to-latest { left: calc(var(--history-offset) + (100vw - var(--history-offset)) / 2); }
-main.history-open.workspace-open .scroll-to-latest { left: calc(var(--history-offset) + (100vw - var(--history-offset) - var(--content-right-column)) / 2); }
+main.chat-drawer-open .scroll-to-latest { left: calc(var(--chat-drawer-offset) + (100vw - var(--chat-drawer-offset)) / 2); }
+main.chat-drawer-open.workspace-open .scroll-to-latest { left: calc(var(--chat-drawer-offset) + (100vw - var(--chat-drawer-offset) - var(--content-right-column)) / 2); }
 main.workspace-expanded .scroll-to-latest { display: none; }
 @keyframes jump-to-latest-in { from { opacity: 0; transform: translate(-50%,4px); } }
 
-.sticky-composer { position: fixed; z-index: 20; right: var(--content-composer-column); bottom: 0; left: var(--history-offset); display: flex; justify-content: center; padding-bottom: 18px; background: linear-gradient(to bottom,transparent 0,var(--app-bg) 28px); transition: left var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), opacity var(--drawer-motion-duration) var(--drawer-motion-ease); }
+.sticky-composer { position: fixed; z-index: 20; right: var(--content-composer-column); bottom: 0; left: var(--chat-drawer-offset); display: flex; justify-content: center; padding-bottom: 18px; background: linear-gradient(to bottom,transparent 0,var(--app-bg) 28px); transition: left var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), opacity var(--drawer-motion-duration) var(--drawer-motion-ease); }
 /* Expansion is an overlay slide. ChatPane keeps its docked geometry underneath
    instead of fading, translating, or reflowing while Workspace crosses it. */
 main.workspace-expanded .sticky-composer { pointer-events: none; }
 .composer-column-content { width: min(760px,calc(100% - 40px)); padding-top: 28px; background: var(--composer-fade); transition: width var(--drawer-motion-duration) var(--drawer-motion-ease); }
-main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var(--history-offset) - var(--content-docked-column) - 40px)); }
+main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var(--chat-drawer-offset) - var(--content-docked-column) - 40px)); }
 
 .queued-messages { width: 100%; margin-bottom: 8px; padding: 8px; border: 1px solid var(--neutral-200); border-radius: 16px; background: var(--app-translucent); box-shadow: 0 8px 26px rgba(0,0,0,.14); backdrop-filter: blur(14px); }
 .goal-bar { width: 100%; min-height: 42px; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 0 10px; border: 1px solid var(--neutral-200); border-radius: 14px; background: var(--app-translucent); color: var(--neutral-900); box-shadow: 0 8px 26px rgba(0,0,0,.14); backdrop-filter: blur(14px); }
@@ -433,16 +544,44 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .queue-actions button:hover, .queue-actions button:focus-visible { outline: none; background: var(--neutral-100); color: var(--neutral-900); }
 .queue-actions .queue-steer { display: inline-flex; gap: 5px; padding: 0 8px; font-size: 12px; }
 
-.timeline-rail { position: fixed; z-index: 35; top: 50%; left: var(--timeline-left,calc(var(--history-offset) + 14px)); width: 26px; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; transform: translateY(-50%); transition: left var(--drawer-motion-duration) var(--drawer-motion-ease); }
-.timeline-point { position: relative; width: 26px; height: 7px; display: flex; align-items: center; border: 0; padding: 0; background: transparent; cursor: pointer; }
+/* The rail owns the whole column between the title bar's divider and the
+   bottom of the window, and centres its points inside it. Short conversations
+   sit compactly in the middle at their natural spacing; long ones let the
+   points shrink (see .timeline-point's flex) until the rail fills the band
+   rather than running off either end. */
+.timeline-rail { position: fixed; z-index: 35; top: calc(var(--app-topbar-height) + 20px); bottom: 20px; left: var(--timeline-left,calc(var(--chat-drawer-offset) + 14px)); width: 26px; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; transition: left var(--drawer-motion-duration) var(--drawer-motion-ease); }
+.timeline-point { position: relative; width: 26px; flex: 0 1 10px; min-height: 4px; display: flex; align-items: center; border: 0; padding: 0; background: transparent; cursor: pointer; }
 .timeline-line { width: var(--timeline-width,6px); height: 2px; display: block; border-radius: 999px; background: var(--neutral-300); opacity: var(--timeline-opacity,1); transition: width .16s cubic-bezier(.22,.7,.28,1), height .15s ease, background-color .15s ease, opacity .15s ease; }
 .timeline-point.near .timeline-line { background: var(--neutral-500); }
 .timeline-point.active:not(.hovered) .timeline-line { height: 3px; background: var(--neutral-600); }
 .timeline-point.hovered .timeline-line { height: 3px; background: var(--neutral-950); opacity: 1; }
-.timeline-preview { pointer-events: none; position: absolute; left: calc(100% + 10px); top: 50%; width: min(321px,calc(100vw - 76px)); display: flex; flex-direction: column; gap: 14px; padding: 13px 16px 15px; border: 1px solid var(--neutral-200); border-radius: 13px; background: var(--app-translucent); color: var(--neutral-600); box-shadow: 0 8px 30px rgba(0,0,0,.18),0 2px 8px rgba(0,0,0,.1); opacity: 0; transform: translateY(-50%) translateX(-4px); transition: opacity .12s ease, transform .12s ease; visibility: hidden; }
-.timeline-preview strong { overflow: hidden; color: var(--neutral-950); font-size: 14px; font-weight: 550; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.timeline-preview > span { display: -webkit-box; overflow: hidden; font-size: 13px; line-height: 1.5; text-align: left; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-.timeline-point:hover .timeline-preview, .timeline-point:focus-visible .timeline-preview { opacity: 1; transform: translateY(-50%) translateX(0); visibility: visible; }
+/* Rendered only while hovered, so it fades itself in rather than being gated on
+   :hover. --peek-shift keeps it on screen when its point is near an end. */
+.timeline-preview { pointer-events: none; position: absolute; left: calc(100% + 10px); top: 50%; width: min(321px,calc(100vw - 76px)); display: flex; flex-direction: column; gap: 10px; padding: 13px 16px 15px; border: 1px solid var(--neutral-200); border-radius: 13px; background: var(--app-translucent); color: var(--neutral-600); box-shadow: 0 8px 30px rgba(0,0,0,.18),0 2px 8px rgba(0,0,0,.1); transform: translateY(calc(-50% + var(--peek-shift,0px))); animation: timeline-peek-in .12s ease both; backdrop-filter: blur(14px); }
+@keyframes timeline-peek-in { from { opacity: 0; transform: translateY(calc(-50% + var(--peek-shift,0px))) translateX(-4px); } to { opacity: 1; transform: translateY(calc(-50% + var(--peek-shift,0px))); } }
+.timeline-preview strong { overflow: hidden; color: var(--neutral-950); font-size: 14px; font-weight: 550; line-height: 1.35; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+/* Exactly four lines of the reply. The height is the whole budget — the script
+   in TimelineRail trims the content to fit it and ends it in an ellipsis — so
+   the blocks carry no margins of their own: spacing here would be paid for in
+   lines of the excerpt. */
+.timeline-preview-body { display: block; overflow: hidden; max-width: 100%; max-height: calc(4 * 1.5em); font-size: 13px; line-height: 1.5; text-align: left; }
+/* Every descendant, not just the direct children: markdown's own rhythm reaches
+   nested list items and paragraphs, and any stray margin or taller line box
+   makes the four-line budget stop matching four rendered lines. */
+.timeline-preview-body.markdown-body * { margin: 0; line-height: 1.5; }
+/* Blocks the trim emptied. Hidden rather than removed so the trim stays
+   reversible; a bullet left standing with no text reads as a failed load. */
+.timeline-preview-body .peek-blank { display: none; }
+/* Flattened to body text, not kept as headings. The request above is the peek's
+   only title, and a reply that opens with a heading would otherwise render a
+   second bold line directly under it and read as part of the request. */
+.timeline-preview-body :is(h1,h2,h3,h4,h5,h6) { font-size: 13px; font-weight: inherit; line-height: 1.5; color: inherit; }
+.timeline-preview-body :is(ul,ol) { padding-left: 18px; }
+.timeline-preview-body :is(hr,img) { display: none; }
+.timeline-preview-body .markdown-code-header { display: none; }
+.timeline-preview-body :is(pre,.markdown-code-block) { max-height: none; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; overflow: hidden; }
+.timeline-preview-body pre code { display: block; padding: 0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+.timeline-preview-body blockquote { margin: 0; padding-left: 10px; border-left: 2px solid var(--neutral-200); }
 
 .file-card { width: 100%; display: flex; align-items: center; gap: 15px; padding: 15px 18px; border: 1px solid var(--neutral-200); border-radius: 14px; background: var(--app-surface); box-shadow: 0 1px 2px rgba(0,0,0,.08),0 4px 18px rgba(0,0,0,.1); text-align: left; cursor: pointer; }
 .file-card:hover { box-shadow: 0 2px 4px rgba(0,0,0,.06),0 6px 22px rgba(26,28,28,.11); }
@@ -450,7 +589,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .file-copy { min-width: 0; flex: 1; } .file-copy strong, .file-copy small { display: block; } .file-copy strong { overflow: hidden; color: var(--neutral-950); text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; } .file-copy small { margin-top: 3px; color: var(--neutral-500); font-size: 13px; }
 .open-in { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 7px 10px; border: 1px solid var(--neutral-200); border-radius: 9px; color: var(--neutral-700); background: var(--app-surface); font-size: 13px; }
 
-.summary-panel { position: fixed; z-index: 25; top: calc(var(--app-topbar-height) + 16px); right: 16px; width: min(301px,calc(100vw - 32px)); max-height: calc(100vh - var(--app-topbar-height) - 32px); overflow: visible; padding: 15px; border: 1px solid var(--neutral-200); border-radius: 20px; background: var(--neutral-50); box-shadow: none; animation: panel-in var(--drawer-fade-duration) var(--drawer-motion-ease); }
+.summary-panel { position: fixed; z-index: 25; top: calc(var(--app-topbar-height) + 16px); right: 16px; width: min(301px,calc(100vw - 32px)); max-height: calc(100vh - var(--app-topbar-height) - 32px); overflow: visible; padding: 15px; border: 1px solid var(--neutral-200); border-radius: 20px; background: var(--neutral-50); box-shadow: none; animation: panel-in var(--drawer-fade-duration) var(--drawer-motion-ease) var(--drawer-panel-delay) backwards; }
 .summary-panel section { padding: 14px 0 15px; border-bottom: 1px solid var(--neutral-200); } .summary-panel section:first-of-type { padding-top: 0; } .summary-panel section:last-of-type { padding-bottom: 0; border-bottom: 0; }
 .summary-panel header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; } .summary-panel h2 { margin: 0; color: var(--neutral-800); font-size: 13px; font-weight: 560; } .summary-panel header > button, .summary-panel header > .summary-menu-wrap > button { width: 22px; height: 22px; display: grid; place-items: center; border: 0; padding: 0; background: none; color: var(--neutral-500); cursor: pointer; }
 .summary-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 5px; border: 0; border-radius: 10px; background: transparent; color: var(--neutral-900); text-align: left; font-size: 12.5px; cursor: pointer; } .summary-row:hover, .summary-row:focus-visible { outline: none; background: var(--neutral-200); } .summary-row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .summary-row.muted { color: var(--neutral-700); } .mini-file { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; color: var(--neutral-600); background: #fff; border: 1px solid var(--neutral-200); }
@@ -488,13 +627,34 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 
 .summary-view { height: 100%; overflow: auto; padding: 28px 30px 40px; background: var(--main-panel-background); } .summary-view > header { max-width: 760px; margin: 0 auto 18px; padding-bottom: 14px; border-bottom: 1px solid var(--neutral-200); } .summary-view h1 { margin: 0; color: var(--neutral-950); font-size: 20px; font-weight: 560; } .summary-view-rows { max-width: 760px; margin: 0 auto; } .summary-page-row { width: 100%; min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 9px 10px; border: 0; border-bottom: 1px solid var(--neutral-100); border-radius: 16px; background: transparent; color: var(--neutral-900); text-align: left; font-size: 14px; cursor: pointer; } .summary-page-row:hover:not(.task) { background: var(--neutral-50); } .summary-page-row > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .summary-page-row.task { cursor: default; } .summary-page-row.task strong { font-size: 14px; font-weight: 520; } .summary-page-icon { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 8px; background: var(--neutral-100); color: var(--neutral-500); }
 
-.tab-strip { position: relative; z-index: 50; height: var(--app-topbar-height); flex: none; display: flex; align-items: flex-start; gap: 6px; padding: var(--titlebar-control-top) 44px 8px 8px; border-bottom: 0; -webkit-app-region: no-drag; transition: padding-left var(--drawer-motion-duration) var(--drawer-motion-ease); }
+/* The strip reserves exactly the two fixed title-bar controls (settings and
+   workspace) plus one more standard gap, so the expand button reads as the
+   third icon of that cluster instead of drifting away from it. */
+.tab-strip { position: relative; z-index: 50; height: var(--app-topbar-height); flex: none; display: flex; align-items: flex-start; gap: 6px; padding: var(--titlebar-control-top) calc(8px + (var(--titlebar-control-size) + var(--main-control-gap)) * 2) 8px 8px; border-bottom: 0; -webkit-app-region: no-drag; transition: padding-left var(--drawer-motion-duration) var(--drawer-motion-ease); }
+/* Expanded, the strip reaches the window's left edge, so it must clear the
+   window chrome and the lone chat-drawer control itself (new chat is hidden while
+   expanded), trailing it by the same gap the traffic lights leave in front of
+   it — unless the chat drawer already sits under them. */
 .workspace-drawer.expanded .tab-strip { padding-left: var(--workspace-expanded-tab-left); }
+/* The expanded strip also starts past the chrome inset, so a full-screen flip
+   moves it too. It takes that up unseen along with everything else rather than
+   spending its drawer transition on a move nobody can watch, then goes back to
+   following the drawer. */
+:root[data-chrome-shift] .tab-strip { transition: none; }
 .tabs { display: flex; flex: 1; gap: 5px; min-width: 0; overflow-x: auto; scrollbar-width: none; } .tabs::-webkit-scrollbar { display: none; }
 .tab { position: relative; width: 156px; max-width: 156px; min-width: 112px; height: 28px; display: flex; align-items: center; border-radius: 10px; background: transparent; color: var(--neutral-500); transition: background-color .14s ease, color .14s ease; }
 .tab + .tab::before { content: ''; position: absolute; top: 6px; left: -3px; width: 1px; height: 16px; background: var(--neutral-200); opacity: .8; }
 .tab.active { background: var(--neutral-100); color: var(--neutral-950); }
 .tab:hover:not(.active), .tab:focus-within:not(.active) { background: color-mix(in srgb,var(--neutral-100) 58%,transparent); color: var(--neutral-700); }
+/* Browser-tab favicon, badged with the cursor glyph while the agent holds a
+   control lease on that page (favicon dims to 30% like the extension's). */
+/* A site with no icon shows the standard browser globe in the favicon's place
+   — the same Icon glyph as everywhere else in the app, swapped for the real
+   favicon once the site reports one. */
+.tab-favicon { position: relative; width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
+.tab-favicon img { width: 16px; height: 16px; border-radius: 3px; }
+.tab-favicon.controlled img, .tab-favicon.controlled svg:not(.tab-cursor-badge) { opacity: .3; }
+.tab-cursor-badge { position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; }
 .tab-main { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 8px; padding: 0 3px 0 10px; border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 14px; } .tab-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-close { flex: none; display: grid; place-items: center; padding: 7px 8px 7px 3px; border: 0; background: transparent; color: var(--neutral-500); opacity: 0; transform: scale(.9); pointer-events: none; cursor: pointer; transition: opacity .14s ease, transform .14s ease, color .14s ease; }
 .tab:hover .tab-close, .tab:focus-within .tab-close, .tab.active .tab-close { opacity: 1; transform: scale(1); pointer-events: auto; }
@@ -504,7 +664,9 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
    controls slide in with the panel instead of popping in after it lands. */
 .workspace-drawer:not(.open) .workspace-header-action { opacity: 0; visibility: hidden; pointer-events: none; transform: translateX(12px); transition: opacity var(--drawer-fade-duration) ease, transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s linear var(--drawer-fade-duration); }
 .workspace-drawer.open .workspace-header-action { opacity: 1; visibility: visible; pointer-events: auto; transform: none; transition: opacity var(--drawer-fade-duration) ease, transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s; }
-.new-tab-menu { position: absolute; z-index: 50; top: calc(100% + 4px); right: 0; width: 168px; }
+/* Sized to its longest label rather than a fixed column, so the menu stays a
+   small tag beside the + instead of a panel. */
+.new-tab-menu { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; width: max-content; min-width: 120px; max-width: 200px; }
 
 .browser-bar { height: 39px; flex: none; display: flex; align-items: center; gap: 7px; padding: 5px 12px; border-bottom: 1px solid var(--neutral-200); }
 .browser-bar > button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; padding: 0; border-radius: 8px; background: none; color: var(--neutral-500); cursor: pointer; }
@@ -562,9 +724,9 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .browser-find button { width: 26px; height: 26px; display: grid; flex: none; place-items: center; border: 0; border-radius: 7px; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
 .browser-find button:hover:not(:disabled), .browser-find button:focus-visible { outline: 0; background: var(--neutral-100); color: var(--neutral-900); }
 .browser-find button:disabled { color: var(--neutral-300); cursor: default; }
-.new-tab-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--neutral-400); }
+.new-tab-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--neutral-400); }
 .new-tab-empty h2 { margin: 18px 0 6px; color: var(--neutral-950); font-size: 16px; font-weight: 550; }
-.new-tab-empty p { margin: 0; color: var(--neutral-500); font-size: 14px; }
+.new-tab-empty p { margin: 0; max-width: 36ch; color: var(--neutral-500); font-size: 14px; line-height: 1.45; text-wrap: balance; }
 .browser-frame, .document-preview { width: 100%; height: 100%; display: block; border: 0; background: var(--main-panel-background); }
 .media-preview { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 24px; background: var(--main-panel-background); }
 .media-preview img, .media-preview video { max-width: 100%; max-height: 100%; object-fit: contain; }
@@ -585,6 +747,230 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .workspace-launcher-suggestion:hover, .workspace-launcher-suggestion:focus-visible { outline: 0; background: var(--neutral-100); }
 .workspace-launcher-suggestion svg { flex: none; color: var(--neutral-500); }
 
+/* Drive is the old web app's Finder-style file browser: a flush table with
+   zebra rows and no panel chrome. Schedule reuses the .list-* table below. */
+.drive-view, .schedule-view { height: 100%; display: flex; flex-direction: column; background: var(--main-panel-background); container-type: inline-size; }
+.schedule-view { border-top: 1px solid var(--neutral-200); }
+/* A rule across the whole top so the view starts from one edge rather than
+   running straight into the tab strip. */
+.fb { position: relative; height: 100%; display: flex; flex-direction: column; overflow: hidden; border-top: 1px solid var(--neutral-200); background: var(--main-panel-background); container-type: inline-size; }
+/* Sits behind the toolbar rather than below it, so an empty folder still reads
+   as one surface. */
+.fb-empty { position: absolute; inset: 0; z-index: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 0 18px; color: var(--neutral-400); pointer-events: none; text-align: center; }
+.fb-empty p { max-width: 24rem; margin: 0; color: var(--neutral-500); font-size: 13px; font-weight: 500; }
+
+.fb-toolbar { position: relative; z-index: 20; flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 14px 6px; border-bottom: 1px solid var(--neutral-100); background: var(--main-panel-background); }
+/* The nav absorbs the first crumb's 8px padding so the row still starts flush
+   with the toolbar edge. The offset lives here rather than on the crumb: the
+   nav clips its overflow, so a crumb pulled outside it would lose the left
+   edge of its own hover pill. */
+.fb-breadcrumbs { min-width: 0; flex: 1; display: flex; align-items: center; gap: 4px; overflow: hidden; margin-left: -8px; color: var(--neutral-950); font-size: 13px; font-weight: 600; }
+.fb-crumb { min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 6px; padding: 4px 8px; background: transparent; color: var(--neutral-600); cursor: pointer; font: inherit; transition: background .15s, color .15s; }
+.fb-crumb > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The root crumb holds its width: it is the shortest and the one you navigate
+   back to, so deeper folders give up their characters first rather than
+   squeezing the home icon and drive name down to an ellipsis. */
+.fb-crumb:first-child { flex: none; }
+.fb-crumb:hover { background: var(--neutral-100); color: var(--neutral-950); }
+.fb-crumb.current { color: var(--neutral-950); }
+.fb-home { flex: none; display: grid; place-items: center; transform: translateY(-1px); }
+/* The slash leans right, so its own side bearing eats the gap after it.
+   A little extra on that side lands it optically between the two names. */
+.fb-crumb-separator { flex: none; padding-right: 3px; color: var(--neutral-400); }
+.fb-crumb-tail { min-width: 0; display: none; align-items: center; gap: 4px; }
+.fb-crumb-selected { min-width: 0; overflow: hidden; padding: 2px 4px; color: var(--neutral-500); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.fb-selected-count { flex: none; margin-right: 4px; border-radius: 6px; padding: 4px 8px; background: var(--neutral-100); color: var(--neutral-700); font-size: 11px; font-weight: 500; }
+.fb-action-divider { width: 1px; height: 20px; flex: none; margin: 0 2px; background: var(--neutral-200); }
+.fb-action.muted { color: var(--neutral-400); }
+.fb-action.danger:hover:not(:disabled) { background: var(--danger-50, #fdecea); color: var(--danger-600, #b42318); }
+
+.fb-actions { flex: none; display: flex; align-items: center; gap: 4px; }
+.fb-action { flex: none; display: grid; place-items: center; height: 30px; border: 0; border-radius: 6px; padding: 0 6px; background: transparent; color: var(--neutral-700); cursor: pointer; transition: background .15s, color .15s; }
+.fb-action:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-950); }
+.fb-action.on { background: var(--neutral-100); color: var(--neutral-950); }
+.fb-action.quiet, .fb-action.quiet:hover { background: transparent; color: var(--neutral-500); }
+.fb-action:disabled { color: var(--neutral-300); cursor: default; }
+
+/* The first breadcrumb, when it is a switch between storage backends rather
+   than the name of the only one. It anchors its own menu, so it is positioned
+   even though the crumb inside it is laid out like any other. */
+/* The storage switch is the shared Menu, which brings its own trigger and
+   dropdown; it only needs to sit at the drive's own control height. */
+.fb-toolbar > .select-menu .select-menu-trigger { height: 26px; border-radius: 7px; padding: 0 7px 0 9px; font-size: 12.5px; }
+
+/* Trails the filename as its last token, so it reads as part of the name
+   rather than as another column. */
+.fb-provider-badge { flex: none; display: inline-grid; place-items: center; margin-left: 5px; opacity: .9; }
+
+/* The field takes the name's place in the row, at the same size and position,
+   so committing a rename does not make the text jump. */
+.fb-name-input { min-width: 0; flex: 1; height: 21px; border: 1px solid var(--neutral-400); border-radius: 5px; padding: 0 5px; background: var(--app-surface); color: var(--neutral-950); font: inherit; font-size: 13px; }
+.fb-name-input:focus-visible { border-color: var(--neutral-950); outline: 0; }
+.fb-row.naming { background: var(--neutral-50); cursor: default; }
+
+.fb-move { position: relative; }
+.fb-move-name { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.fb-move-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.fb-confirm-text { min-width: 0; overflow: hidden; color: var(--neutral-700); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.fb-confirm-cancel, .fb-confirm-go { flex: none; height: 26px; border-radius: 6px; padding: 0 10px; cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 550; }
+.fb-confirm-cancel { border: 1px solid var(--neutral-300); background: var(--app-surface); color: var(--neutral-700); }
+.fb-confirm-cancel:hover { background: var(--neutral-100); color: var(--neutral-950); }
+.fb-confirm-go { border: 1px solid #a04545; background: #a04545; color: #fff; }
+.fb-confirm-go:hover { opacity: .88; }
+
+/* A panel over the list rather than beside it: the dock is narrow, and the
+   row it describes stays highlighted underneath. */
+.fb-info { position: absolute; z-index: 40; right: 10px; bottom: 10px; left: 10px; overflow: hidden; border: 1px solid var(--neutral-200); border-radius: 10px; background: var(--app-surface); box-shadow: 0 10px 26px rgba(0,0,0,.14); }
+.fb-info header { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-bottom: 1px solid var(--neutral-100); }
+.fb-info header strong { min-width: 0; flex: 1; overflow: hidden; color: var(--neutral-950); text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 560; }
+.fb-info header button { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 5px; background: transparent; color: var(--neutral-500); cursor: pointer; }
+.fb-info header button:hover { background: var(--neutral-100); color: var(--neutral-950); }
+.fb-info dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 0; padding: 10px; font-size: 11.5px; }
+.fb-info dt { color: var(--neutral-500); }
+.fb-info dd { min-width: 0; margin: 0; overflow: hidden; color: var(--neutral-900); text-overflow: ellipsis; white-space: nowrap; }
+.fb-info-provider { display: flex; align-items: center; gap: 6px; }
+.fb-info-path { font-size: 11px; }
+
+.fb-filter { position: relative; }
+.fb-filter-menu { position: absolute; z-index: 50; top: 100%; right: 0; width: 160px; margin-top: 4px; overflow: hidden; border: 1px solid var(--neutral-300); border-radius: 8px; background: var(--app-surface); box-shadow: 0 8px 20px rgba(0,0,0,.12); }
+.fb-filter-item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 0; padding: 8px 12px; background: transparent; color: var(--neutral-700); cursor: pointer; font-size: 13px; text-align: left; }
+.fb-filter-item:hover { background: var(--neutral-100); }
+.fb-filter-item.active { color: var(--neutral-950); font-weight: 500; }
+
+/* Collapsed the search is just its icon; expanded it takes a quarter of the
+   toolbar and the field itself becomes visible. */
+.fb-search { flex: none; width: 30px; transition: width .2s; }
+.fb-search.expanded { width: 25%; min-width: 120px; }
+.fb-search-field { width: 100%; height: 30px; display: flex; align-items: center; border: 1px solid transparent; border-radius: 6px; transition: border-color .15s, background .15s; }
+.fb-search-field.expanded { border-color: var(--neutral-200); background: var(--neutral-50); }
+.fb-search-field.expanded.focused { border-color: var(--neutral-400); background: var(--app-surface); }
+/* Flex-centred rather than inline: an inline input sits on the text baseline,
+   which floated the placeholder off the icon's centre line. */
+.fb-search-slot { width: 0; display: flex; align-items: center; overflow: hidden; opacity: 0; transition: opacity .2s; }
+.fb-search-field.expanded .fb-search-slot { min-width: 0; flex: 1; opacity: 1; }
+.fb-search-slot input { width: 100%; min-width: 0; display: block; border: 0; padding: 0 8px 0 0; background: transparent; color: var(--neutral-950); font: inherit; font-size: 12.5px; line-height: 1; outline: 0; }
+.fb-search-slot input::placeholder { color: var(--neutral-400); }
+
+.fb-list { position: relative; z-index: 10; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 16px; }
+.fb-head, .fb-row { display: grid; grid-template-columns: minmax(140px,1fr) 96px 128px 172px; column-gap: 16px; align-items: center; padding: 0 14px; }
+.fb-head { flex: none; padding-top: 4px; padding-bottom: 4px; border-bottom: 1px solid var(--neutral-200); color: var(--neutral-500); font-size: 11px; font-weight: 500; }
+.fb-head-cell { min-width: 0; display: flex; }
+.fb-head-cell.size { justify-content: flex-end; }
+.fb-head-button { min-width: 0; display: flex; align-items: center; gap: 3px; border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.fb-head-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-head-button:hover, .fb-head-button.sorted { color: var(--neutral-900); }
+/* One chevron asset, flipped by the sort direction rather than a second icon. */
+.fb-head-button svg { flex: none; transition: transform .12s; }
+.fb-head-button.descending svg { transform: rotate(180deg); }
+
+.fb-rows { position: relative; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
+/* Positioned inside the scroll container, so it tracks the rows rather than
+   the viewport when the list scrolls mid-drag. */
+.fb-marquee { position: absolute; z-index: 10; border: 1px solid rgba(20,20,20,.5); border-radius: 2px; background: rgba(20,20,20,.1); pointer-events: none; }
+.fb-row { width: 100%; flex: none; border: 0; padding-top: 6px; padding-bottom: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background .12s; }
+.fb-row.odd { background: var(--neutral-50); }
+.fb-row:hover { background: var(--neutral-100); }
+.fb-row.selected { background: var(--neutral-100); }
+.fb-row:focus-visible { outline: 2px solid var(--neutral-400); outline-offset: -2px; }
+.fb-cell { min-width: 0; overflow: hidden; color: var(--neutral-500); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.fb-cell.name { display: flex; align-items: center; gap: 8px; }
+.fb-cell.size { text-align: right; font-variant-numeric: tabular-nums; }
+.fb-icon { flex: none; display: grid; place-items: center; color: var(--neutral-700); }
+.fb-name { min-width: 0; overflow: hidden; color: var(--neutral-950); font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The drawer docks narrower than a Finder window, so the softer columns go
+   before the ones that identify a file. */
+@container (min-width: 640px) { .fb-crumb-tail { display: flex; } }
+@container (max-width: 560px) { .fb-head > .kind, .fb-row > .kind { display: none; } .fb-head, .fb-row { grid-template-columns: minmax(120px,1fr) 88px 150px; } }
+@container (max-width: 420px) { .fb-head > .modified, .fb-row > .modified { display: none; } .fb-head, .fb-row { grid-template-columns: minmax(100px,1fr) 88px; } }
+
+/* Schedule's table: columned rows with a chip per row. */
+.list-toolbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--neutral-100); }
+.schedule-heading { min-width: 0; flex: 1; display: flex; align-items: center; gap: 7px; padding-left: 2px; color: var(--neutral-950); font-size: 13px; font-weight: 550; }
+.schedule-heading svg { color: var(--neutral-500); }
+.list-search { flex: none; display: flex; align-items: center; gap: 6px; width: 190px; height: 28px; padding: 0 9px; border: 1px solid var(--neutral-200); border-radius: 9px; color: var(--neutral-400); }
+.list-search:focus-within { border-color: var(--neutral-300); }
+.list-search input { min-width: 0; flex: 1; border: 0; background: transparent; color: var(--neutral-900); font: inherit; font-size: 13px; outline: 0; }
+.list-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+.list-columns { flex: none; display: grid; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--neutral-100); }
+.list-column-cell { min-width: 0; display: flex; align-items: center; }
+.list-column-cell.end { justify-content: flex-end; }
+.list-column { min-width: 0; display: flex; align-items: center; gap: 4px; min-height: 30px; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 11.5px; font-weight: 550; letter-spacing: .02em; text-align: left; text-transform: uppercase; }
+.list-column > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-column.static { cursor: default; }
+.list-column:hover:not(.static) { color: var(--neutral-900); }
+.list-column.sorted { color: var(--neutral-900); }
+.list-column svg { transition: transform .12s; }
+.list-column.descending svg { transform: rotate(180deg); }
+
+.list-rows { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px 20px; }
+.list-row { display: grid; gap: 12px; align-items: center; min-height: 46px; border-radius: 10px; padding: 0 9px; color: var(--neutral-900); font-size: 13px; }
+.list-row-name { min-width: 0; display: flex; align-items: center; gap: 11px; }
+.list-row-icon { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--neutral-100); color: var(--neutral-600); }
+.list-row-icon.schedule.failed { color: var(--danger-500, #c0392b); }
+.list-row-label { min-width: 0; overflow: hidden; color: var(--neutral-950); font-size: 13px; font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
+.list-row-meta { overflow: hidden; color: var(--neutral-500); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.schedule-row-main { min-width: 0; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.schedule-status { justify-self: end; height: 22px; border: 0; border-radius: 999px; padding: 0 10px; background: var(--neutral-100); color: var(--neutral-600); cursor: pointer; font-size: 11.5px; font-weight: 550; }
+.schedule-status:hover { background: var(--neutral-200); color: var(--neutral-900); }
+.schedule-status.active, .schedule-status.running { color: var(--neutral-950); }
+/* Both popovers are positioned against the view, so it anchors them. */
+.schedule-view { position: relative; }
+.schedule-create { flex: none; height: 28px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--neutral-200); border-radius: 9px; padding: 0 10px 0 8px; background: transparent; color: var(--neutral-900); cursor: pointer; font-size: 12.5px; font-weight: 550; }
+.schedule-create:hover { background: var(--neutral-100); }
+.new-tab-empty .schedule-create { margin-top: 4px; }
+/* The cadence is the control that opens the frequency editor, so it carries a
+   hover the rest of the row's static metadata does not. */
+.schedule-cadence { border: 0; border-radius: 7px; padding: 3px 5px; margin-left: -5px; background: transparent; color: var(--neutral-500); font: inherit; font-size: 11.5px; text-align: left; cursor: pointer; }
+.schedule-cadence:hover { background: var(--neutral-100); color: var(--neutral-900); }
+.schedule-row-end { justify-self: end; display: flex; align-items: center; gap: 2px; }
+.schedule-more { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 7px; background: transparent; color: var(--neutral-500); cursor: pointer; opacity: 0; transition: opacity .12s, background .12s; }
+.schedule-row:hover .schedule-more, .schedule-row.menu-open .schedule-more, .schedule-more:focus-visible { opacity: 1; }
+.schedule-more:hover { background: var(--neutral-100); color: var(--neutral-950); }
+.schedule-row.menu-open { background: var(--neutral-50); }
+.schedule-row-menu { position: absolute; z-index: 80; right: 14px; width: 172px; padding: 5px; }
+
+.schedule-frequency-editor { position: absolute; z-index: 80; right: 14px; width: 306px; padding: 10px; border-radius: 14px; border: 1px solid var(--neutral-200); background: var(--app-surface); box-shadow: 0 14px 34px rgba(0,0,0,.16); animation: panel-in .12s ease-out; }
+.schedule-frequency-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 8px; color: var(--neutral-500); font-size: 11.5px; font-weight: 550; letter-spacing: .02em; text-transform: uppercase; }
+.schedule-frequency-close { display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--neutral-500); cursor: pointer; }
+.schedule-frequency-close:hover { background: var(--neutral-100); color: var(--neutral-950); }
+/* No `overflow: hidden` to round the corners: the rows hold dropdowns that
+   open past the group's bottom edge, and clipping cut them off. */
+.schedule-frequency-rows { border: 1px solid var(--neutral-200); border-radius: 12px; }
+.schedule-frequency-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 40px; padding: 4px 12px; color: var(--neutral-950); font-size: 13px; }
+.schedule-frequency-row + .schedule-frequency-row { border-top: 1px solid var(--neutral-100); }
+.schedule-frequency-row > span:first-child { flex: none; }
+.schedule-frequency-value { display: flex; align-items: baseline; gap: 5px; color: var(--neutral-500); }
+.schedule-frequency-value input { width: 46px; border: 1px solid transparent; border-radius: 7px; padding: 3px 6px; background: transparent; color: var(--neutral-950); font: inherit; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+.schedule-frequency-value input:hover { border-color: var(--neutral-200); }
+.schedule-frequency-value input:focus { border-color: var(--neutral-400); outline: 0; }
+.schedule-frequency-value em { font-style: normal; font-size: 12.5px; }
+.schedule-frequency-static { color: var(--neutral-500); font-size: 12.5px; text-align: right; }
+.schedule-frequency-days { display: flex; gap: 2px; }
+.schedule-day { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 11.5px; font-weight: 550; }
+.schedule-day:hover { background: var(--neutral-100); color: var(--neutral-900); }
+.schedule-day.on { background: var(--neutral-900); color: var(--app-surface); }
+/* The sentence the row will show, so an edit is checked against its result
+   rather than against the fields that produced it. */
+.schedule-frequency-summary { margin: 9px 4px 2px; color: var(--neutral-500); font-size: 12px; }
+
+/* The panel is resizable down to a narrow dock, so the schedule sheds its
+   softer columns before the ones that say when a task next runs. */
+.schedule-columns, .schedule-row { grid-template-columns: minmax(0,1fr) 130px 112px; }
+.schedule-columns > .cadence, .schedule-columns > .last, .schedule-row > .cadence, .schedule-row > .last { display: none; }
+@container (min-width: 560px) {
+  .schedule-columns, .schedule-row { grid-template-columns: minmax(0,1fr) 150px 140px 112px; }
+  .schedule-columns > .cadence { display: flex; }
+  .schedule-row > .cadence { display: block; }
+}
+@container (min-width: 720px) {
+  .schedule-columns, .schedule-row { grid-template-columns: minmax(0,1fr) 170px 150px 150px 112px; }
+  .schedule-columns > .last { display: flex; }
+  .schedule-row > .last { display: block; }
+}
+
 .file-bar { height: 39px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 5px 12px; }
 .file-zoom-wrap, .file-open-wrap { position: relative; flex: none; }
 .file-bar-button { height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 0; border-radius: 9px; background: transparent; color: var(--neutral-600); cursor: pointer; font-size: 13px; }
@@ -598,7 +984,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 @keyframes panel-in { from{opacity:0;transform:translateY(-4px) scale(.99)} }
 
 @media (prefers-reduced-motion: reduce) {
-  :root { --drawer-motion-duration: 1ms; --drawer-fade-duration: 1ms; }
+  :root { --drawer-motion-duration: 1ms; --drawer-fade-duration: 1ms; --summary-motion-duration: 1ms; --drawer-panel-delay: 0ms; }
 }
 
 /* Speech orb */
@@ -629,7 +1015,7 @@ main.voice-in-chat .message-list { padding-bottom: 286px; }
 main.voice-in-chat .sticky-composer { display: none; }
 .empty-state.voice-welcome { justify-content: flex-start; padding: clamp(84px,12vh,128px) 0 0; overflow: hidden; }
 .empty-state.voice-welcome .welcome-chat-pane { gap: 0; transform: none; }
-.speech-orb.in-chat { z-index: 21; top: auto; right: 0; bottom: 0; left: 0; height: 264px; min-height: 0; display: grid; grid-template-columns: var(--history-offset) minmax(0,1fr) var(--content-right-column); overflow: visible; pointer-events: none; background: transparent; }
+.speech-orb.in-chat { z-index: 21; top: auto; right: 0; bottom: 0; left: 0; height: 264px; min-height: 0; display: grid; grid-template-columns: var(--chat-drawer-offset) minmax(0,1fr) var(--content-right-column); overflow: visible; pointer-events: none; background: transparent; }
 .speech-orb.in-chat .voice-orb::before { display: none; }
 .speech-orb.in-chat .speech-orb-chat-toggle { pointer-events: auto; }
 .speech-orb.in-chat .speech-orb-content { grid-column: 2; width: min(760px,calc(100% - 40px)); min-height: 0; height: 100%; justify-self: center; margin: 0; justify-content: flex-end; gap: 2px; padding: 3px 0 18px; pointer-events: auto; background: var(--voice-chat-fade); }
@@ -654,21 +1040,21 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
   main { display: block; overflow: hidden; }
   .conversation-column { width: min(792px,calc(100vw - 8px)); }
   main.workspace-open .conversation-column { width: min(792px,calc(100vw - 8px)); }
-  .sticky-composer, main.workspace-open .sticky-composer, main.history-open .sticky-composer, main.history-open.workspace-open .sticky-composer { right: 0; left: 0; }
-  main.workspace-open .scroll-to-latest, main.history-open .scroll-to-latest, main.history-open.workspace-open .scroll-to-latest { left: 50%; }
+  .sticky-composer, main.workspace-open .sticky-composer, main.chat-drawer-open .sticky-composer, main.chat-drawer-open.workspace-open .sticky-composer { right: 0; left: 0; }
+  main.workspace-open .scroll-to-latest, main.chat-drawer-open .scroll-to-latest, main.chat-drawer-open.workspace-open .scroll-to-latest { left: 50%; }
   main.summary-open .conversation-column { width: min(792px,calc(100vw - 8px)); margin: 0 auto; }
-  main.summary-open .sticky-composer, main.history-open.summary-open .sticky-composer { right: 0; left: 0; }
-  main.summary-open .scroll-to-latest, main.history-open.summary-open .scroll-to-latest { left: 50%; }
+  main.summary-open .sticky-composer, main.chat-drawer-open.summary-open .sticky-composer { right: 0; left: 0; }
+  main.summary-open .scroll-to-latest, main.chat-drawer-open.summary-open .scroll-to-latest { left: 50%; }
   .speech-orb.in-chat { grid-template-columns: 0 minmax(0,1fr) 0; }
   .summary-panel { top: 72px; right: 14px; }
   .workspace-drawer { position: fixed; inset: 0; width: 100vw; height: 100vh; transform: translateX(100%); }
   .workspace-drawer::before { display: none; }
   .workspace-drawer.open { transform: translateX(0); }
   .workspace-resize-handle { display: none; }
-  .history-resize-handle { display: none; }
+  .chat-drawer-resize-handle { display: none; }
   .expand-workspace-action { display: none; }
-  .history-drawer { position: fixed; inset: 0 auto 0 0; width: min(320px,calc(100vw - 42px)); box-shadow: 14px 0 34px rgba(26,28,28,.1); transform: translateX(-100%); }
-  .history-drawer.open { transform: translateX(0); }
+  .chat-drawer { position: fixed; inset: 0 auto 0 0; width: min(320px,calc(100vw - 42px)); box-shadow: 14px 0 34px rgba(26,28,28,.1); transform: translateX(-100%); }
+  .chat-drawer.open { transform: translateX(0); }
   .tab { min-width: 112px; }
 }
 
@@ -707,9 +1093,361 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .select-menu-trigger:hover, .select-menu-trigger[aria-expanded='true'] { border-color: var(--neutral-400); color: var(--neutral-950); }
 .select-menu-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-menu-trigger > svg { flex: none; color: var(--neutral-500); }
-.select-menu-list { position: absolute; z-index: 93; top: calc(100% + 5px); right: 0; min-width: 100%; width: max-content; max-width: 220px; }
+/* A long option list scrolls inside the menu rather than running off the
+   surface it opens over. `--select-menu-rows` sets how many rows stay visible;
+   the 4px is the menu's own vertical padding. */
+.select-menu-list { position: absolute; z-index: 93; top: calc(100% + 5px); right: 0; min-width: 100%; width: max-content; max-width: 220px; max-height: calc(var(--select-menu-rows, 8) * var(--select-menu-row, 28.3px) + 8px); overflow-y: auto; overscroll-behavior: contain; }
 .select-menu-list .polymux-dropdown-item > svg:last-child { margin-left: auto; }
-/* The shared destructive modifier. The history row menu keeps its own slightly
+/* The shared destructive modifier. The chat row menu keeps its own slightly
    deeper red, which is what the reference uses for that surface. */
 .polymux-dropdown-item.danger { color: #c0392b; }
 .polymux-dropdown-item.danger:hover { background: #fdf0ee; color: #a5301f; }
+
+/* ---------------------------------------------------------------------------
+   First-run setup.
+
+   Shared primitives rather than per-component copies: the setup screens are
+   separate components but must read as one continuous surface, so the type
+   scale, controls, and rhythm are defined once here. The scale is deliberately
+   larger and calmer than the app's dense chrome — this is the one moment the
+   product is not trying to fit everything on screen at once.
+   --------------------------------------------------------------------------- */
+.onb-eyebrow { margin: 0 0 10px; color: var(--neutral-400); font-size: 10px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; }
+.onb-title { margin: 0; color: var(--neutral-950); font-size: 29px; font-weight: 640; letter-spacing: -.035em; line-height: 1.12; }
+.onb-lede { max-width: 44ch; margin: 11px 0 0; color: var(--neutral-600); font-size: 13.5px; line-height: 1.55; }
+.onb-section { margin-top: 26px; }
+
+/* The ink: the ground every black form of setup is made of — the hub's disc,
+   the model's slab, the permissions tide, the closing circle. Literal colours
+   rather than scale tokens, because the neutral ramp inverts with the theme
+   and these grounds must oppose the page, not follow it. Lives here because
+   the forms are drawn by different components, and each needs the same flip
+   for everything it paints on the ink. */
+.onb-ink { --disc-fill: #0a0a0a; --disc-ink: #fff; --disc-ink-soft: rgb(255 255 255 / .64); background: var(--disc-fill); color: var(--disc-ink); }
+:root[data-theme="dark"] .onb-ink { --disc-fill: #fafafa; --disc-ink: #0a0a0a; --disc-ink-soft: rgb(10 10 10 / .62); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .onb-ink { --disc-fill: #fafafa; --disc-ink: #0a0a0a; --disc-ink-soft: rgb(10 10 10 / .62); }
+}
+.onb-ink .onb-title { color: var(--disc-ink); }
+.onb-ink .onb-eyebrow, .onb-ink .onb-lede, .onb-ink .onb-note { color: var(--disc-ink-soft); }
+.onb-ink .onb-row { border-color: rgb(from var(--disc-ink) r g b / .18); background: rgb(from var(--disc-ink) r g b / .06); }
+.onb-ink .onb-row-copy strong { color: var(--disc-ink); }
+.onb-ink .onb-row-copy small { color: var(--disc-ink-soft); }
+.onb-ink .onb-row-mark { background: rgb(from var(--disc-ink) r g b / .1); color: var(--disc-ink); }
+.onb-ink .onb-state { color: var(--disc-ink-soft); }
+.onb-ink .onb-button { --onb-button-edge: rgb(from var(--disc-ink) r g b / .28); --onb-button-surface: transparent; color: var(--disc-ink); }
+.onb-ink .onb-button.primary { --onb-button-edge: var(--disc-ink); --onb-button-surface: var(--disc-ink); color: var(--disc-fill); }
+.onb-ink .onb-quiet { color: var(--disc-ink-soft); }
+.onb-ink .onb-quiet:hover { color: var(--disc-ink); }
+.onb-ink .onb-field > span { color: var(--disc-ink-soft); }
+.onb-ink .onb-field input { border-color: rgb(from var(--disc-ink) r g b / .28); background: rgb(from var(--disc-ink) r g b / .08); color: var(--disc-ink); }
+.onb-ink .onb-field input::placeholder { color: rgb(from var(--disc-ink) r g b / .4); }
+.onb-ink .onb-field input:focus-visible { border-color: var(--disc-ink); }
+
+.onb-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 14px; border: 1px solid var(--neutral-200); border-radius: 12px; background: var(--app-surface); text-align: left; }
+.onb-row + .onb-row { margin-top: 8px; }
+.onb-row-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.onb-row-copy strong { color: var(--neutral-900); font-size: 12.5px; font-weight: 570; }
+.onb-row-copy small { color: var(--neutral-500); font-size: 11px; line-height: 1.45; }
+.onb-row-mark { display: grid; flex: none; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: var(--neutral-100); color: var(--neutral-700); }
+
+.onb-field { display: flex; flex-direction: column; gap: 4px; }
+.onb-field > span { color: var(--neutral-600); font-size: 11px; font-weight: 530; }
+.onb-field input { height: 36px; border: 1px solid var(--neutral-200); border-radius: 10px; padding: 0 11px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 13px; }
+.onb-field input::placeholder { color: var(--neutral-400); }
+.onb-field input:focus-visible { border-color: var(--neutral-500); outline: 0; }
+
+/* Setup's buttons answer to the pointer with size, not with colour: on the
+   disc they sit on inverted ground, where a hover state written in the page's
+   neutrals is either invisible or wrong, and a button that keeps its exact
+   colours through hover and press cannot be either. */
+/* The hover growth lives on the ::before plate, not on the button: a scale
+   transform over a label redraws the text from a bitmap rasterised at another
+   size, which both softens it and slides it off its baseline. The plate is a
+   rounded rect with nothing to lose, so it can grow while the words hold
+   their size and their place. Surface and edge come through variables so the
+   disc and hub inversions can repaint the plate without owning it. */
+.onb-button { --onb-button-surface: var(--app-surface); --onb-button-edge: var(--neutral-200); position: relative; isolation: isolate; height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: none; border: 0; border-radius: 10px; padding: 0 16px; background: transparent; color: var(--neutral-800); font-family: inherit; font-size: 12.5px; font-weight: 550; cursor: pointer; transition: opacity .15s; }
+.onb-button::before { content: ''; position: absolute; z-index: -1; inset: 0; border: 1px solid var(--onb-button-edge); border-radius: inherit; background: var(--onb-button-surface); transition: transform .18s cubic-bezier(.22,1,.36,1), border-color .16s, background-color .16s; will-change: transform; backface-visibility: hidden; }
+.onb-button:hover:not(:disabled)::before { transform: scale(1.05); }
+.onb-button:active:not(:disabled)::before { transform: scale(1.01); }
+.onb-button.primary { --onb-button-edge: var(--neutral-950); --onb-button-surface: var(--neutral-950); color: var(--app-bg); }
+.onb-button.small { height: 30px; border-radius: 8px; padding: 0 12px; font-size: 11.5px; }
+.onb-button:disabled { cursor: default; opacity: .45; }
+.onb-button:focus-visible { outline: 2px solid var(--neutral-500); outline-offset: 2px; }
+
+.onb-quiet { border: 0; padding: 0; background: transparent; color: var(--neutral-500); font-family: inherit; font-size: 12.5px; cursor: pointer; }
+.onb-quiet:hover { color: var(--neutral-900); }
+.onb-quiet:focus-visible { outline: 2px solid var(--neutral-500); outline-offset: 3px; border-radius: 4px; }
+
+.onb-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 26px; }
+.onb-note { margin: 12px 0 0; color: var(--neutral-500); font-size: 11.5px; line-height: 1.5; }
+.onb-note.warn { color: #a04545; }
+:root[data-theme="dark"] .onb-note.warn { color: #e79c9c; }
+
+.onb-state { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--neutral-500); font-size: 11.5px; font-weight: 540; }
+.onb-state.done { color: #3f9c5a; }
+.onb-state.failed { color: #a04545; }
+
+/* ---------------------------------------------------------------------------
+   Communications workspace view.
+
+   Three columns — sources, list, reader — because messaging and mail are the
+   same task over different transports, and one shape for both means the user
+   learns the view once. `.workspace-content` does not scroll, so each column
+   owns its own overflow.
+   --------------------------------------------------------------------------- */
+/* Sized against the drawer, not the viewport: the drawer is resizable from
+   360px to full-screen, so a viewport media query would report a width this
+   view never actually has. */
+/* The container is the outer element and the grid is inside it: an element
+   cannot query its own size, so the two cannot be the same node. */
+/* A rule across the whole top so the rail and the list start from one edge
+   rather than the rail running straight into the tab strip. */
+.hub-view { height: 100%; min-height: 0; container-type: inline-size; border-top: 1px solid var(--neutral-200); background: var(--main-panel-background); }
+.hub-view-grid { height: 100%; min-height: 0; display: grid; grid-template-columns: 172px minmax(0, 1fr); }
+.hub-view-back { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 8px; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; font-family: inherit; font-size: 11.5px; }
+.hub-view-back:hover { color: var(--neutral-950); }
+.hub-view-grid > * { min-width: 0; min-height: 0; }
+
+.hub-view-rail { min-width: 0; overflow-y: auto; padding: 12px 8px; border-right: 1px solid var(--neutral-200); }
+.hub-view-rail-heading { margin: 12px 6px 5px; color: var(--neutral-400); font-size: 9px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.hub-view-rail-heading:first-child { margin-top: 2px; }
+.hub-view-rail-empty { margin: 4px 6px; color: var(--neutral-400); font-size: 10.5px; line-height: 1.45; }
+.hub-view-source { width: 100%; display: grid; grid-template-columns: 17px minmax(0,1fr); align-items: center; gap: 8px; border: 0; border-radius: 8px; padding: 7px 8px; background: transparent; color: var(--neutral-800); cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 520; text-align: left; }
+.hub-view-source:hover { background: var(--neutral-100); }
+.hub-view-source.active { background: var(--neutral-100); color: var(--neutral-950); }
+.hub-view-source > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Tiles and outline glyphs are deliberately different sizes so they carry the
+   same optical weight, so a fixed column — not the icon — lines the labels up.
+   Sizing the svg itself would stretch one of the two. */
+.hub-view-source > :first-child { justify-self: center; }
+/* Accounts hang under their platform row without their own icons — the row
+   above already says which service they belong to. */
+.hub-view-accounts { margin: 1px 0 5px; padding: 0 0 0 25px; list-style: none; }
+.hub-view-accounts button { width: 100%; display: block; overflow: hidden; border: 0; border-radius: 7px; padding: 5px 8px; background: transparent; color: var(--neutral-600); cursor: pointer; font-family: inherit; font-size: 11px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.hub-view-accounts button:hover { background: var(--neutral-100); color: var(--neutral-900); }
+.hub-view-accounts button.active { background: var(--neutral-200); color: var(--neutral-950); font-weight: 540; }
+
+.hub-view-list { flex-direction: column; overflow: hidden; border-right: 1px solid var(--neutral-200); }
+.hub-view-list-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; flex: none; padding: 10px 10px 8px; border-bottom: 1px solid var(--neutral-200); }
+.hub-view-folder-picker { position: relative; display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1 0 100%; }
+.hub-view-list-account { min-width: 0; overflow: hidden; color: var(--neutral-500); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.hub-view-folder-button { flex: none; max-width: 60%; display: inline-flex; align-items: center; gap: 6px; height: 26px; border: 0; border-radius: 8px; padding: 0 8px; background: transparent; color: var(--neutral-950); cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 560; }
+.hub-view-folder-button:hover, .hub-view-folder-button.open { background: var(--neutral-100); }
+.hub-view-folder-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-view-folder-button > svg:last-child { color: var(--neutral-400); transition: transform .16s ease; }
+.hub-view-folder-button.open > svg:last-child { transform: rotate(180deg); }
+.hub-view-folder-menu { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; min-width: 150px; margin: 0; padding: 4px; border: 1px solid var(--neutral-200); border-radius: 10px; background: var(--app-surface); box-shadow: 0 8px 22px rgb(0 0 0 / .10); list-style: none; }
+.hub-view-folder-menu button { width: 100%; display: grid; grid-template-columns: 15px minmax(0,1fr); align-items: center; gap: 8px; border: 0; border-radius: 7px; padding: 6px 8px; background: transparent; color: var(--neutral-700); cursor: pointer; font-family: inherit; font-size: 11.5px; text-align: left; }
+.hub-view-folder-menu button:hover { background: var(--neutral-100); color: var(--neutral-950); }
+.hub-view-folder-menu button.active { color: var(--neutral-950); font-weight: 560; }
+.hub-view-list-head input { min-width: 0; flex: 1; height: 28px; border: 1px solid var(--neutral-200); border-radius: 8px; padding: 0 9px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 11.5px; }
+.hub-view-list-head input:focus-visible { border-color: var(--neutral-500); outline: 0; }
+.hub-view-filter { position: relative; flex: none; }
+.hub-view-menu-right { left: auto; right: 0; }
+.hub-view-icon-button { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--neutral-200); border-radius: 8px; background: var(--app-surface); color: var(--neutral-600); cursor: pointer; }
+.hub-view-icon-button:hover { background: var(--neutral-100); color: var(--neutral-950); }
+.hub-view-icon-button.on { border-color: var(--neutral-950); background: var(--neutral-950); color: var(--app-bg); }
+.hub-view-compose { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 28px; border: 1px solid var(--neutral-200); border-radius: 8px; padding: 0 10px; background: var(--app-surface); color: var(--neutral-800); cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 550; }
+.hub-view-compose:hover { background: var(--neutral-100); }
+/* Bulk actions live above the rows they act on, appearing only once there is
+   a selection to act on. */
+.hub-view-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; flex: none; padding: 7px 10px; border-bottom: 1px solid var(--neutral-200); background: var(--neutral-50); }
+.hub-view-selection > span { margin-right: auto; color: var(--neutral-600); font-size: 11px; font-weight: 560; }
+.hub-view-selection button { height: 24px; border: 1px solid var(--neutral-200); border-radius: 7px; padding: 0 8px; background: var(--app-surface); color: var(--neutral-700); cursor: pointer; font-family: inherit; font-size: 10.5px; font-weight: 540; }
+.hub-view-selection button:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-950); }
+.hub-view-selection button.destructive { color: #a04545; }
+.hub-view-selection button:disabled { cursor: default; opacity: .5; }
+.hub-view-more { width: 100%; border: 0; border-bottom: 1px solid var(--neutral-100); padding: 10px; background: transparent; color: var(--neutral-500); cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 540; }
+.hub-view-more:hover:not(:disabled) { background: var(--neutral-50); color: var(--neutral-950); }
+.hub-view-menu-heading { margin: 4px 8px 2px; color: var(--neutral-400); font-size: 9px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+
+.hub-view-rows { min-height: 0; flex: 1; display: flex; flex-direction: column; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.hub-view-rows > li { flex: none; }
+.hub-view-rows > li.hub-view-empty { flex: 1; }
+.hub-view-row { width: 100%; display: flex; flex-direction: column; gap: 2px; border: 0; border-bottom: 1px solid var(--neutral-100); padding: 9px 11px; background: transparent; color: var(--neutral-700); cursor: pointer; font-family: inherit; text-align: left; }
+.hub-view-row:hover { background: var(--neutral-50); }
+.hub-view-row.active { background: var(--neutral-100); }
+.hub-view-row.picked { background: var(--neutral-200); }
+.hub-view-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.hub-view-row-top strong { overflow: hidden; color: var(--neutral-900); text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 545; }
+.hub-view-row-top em { flex: none; color: var(--neutral-400); font-style: normal; font-size: 10px; }
+.hub-view-row-subject { overflow: hidden; color: var(--neutral-600); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.hub-view-row-meta { display: flex; gap: 5px; color: var(--neutral-400); }
+.hub-view-row-meta:empty { display: none; }
+/* Unread is carried by weight and a colour shift rather than a dot, so the
+   scan reads as a block of bold rather than a column of ornaments. */
+.hub-view-row.unread .hub-view-row-top strong { color: var(--neutral-950); font-weight: 640; }
+.hub-view-row.unread .hub-view-row-subject { color: var(--neutral-800); }
+
+.hub-view-reader { flex-direction: column; overflow: hidden; }
+.hub-view-reader-head { flex: none; padding: 14px 18px 12px; border-bottom: 1px solid var(--neutral-200); }
+.hub-view-reader-head h2 { margin: 0; color: var(--neutral-950); font-size: 15px; font-weight: 580; letter-spacing: -.01em; }
+.hub-view-recipients { color: var(--neutral-400) !important; font-size: 11px !important; }
+.hub-view-reader-head p { margin: 4px 0 0; color: var(--neutral-500); font-size: 11.5px; }
+.hub-view-reader-head em { font-style: normal; color: var(--neutral-400); }
+/* Actions are grouped into segmented pills the way a mail client's toolbar
+   groups them: answer, dispose, file, mark. */
+.hub-view-reader-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.hub-view-action-group { position: relative; display: inline-flex; align-items: center; border: 1px solid var(--neutral-200); border-radius: 999px; background: var(--app-surface); overflow: visible; }
+.hub-view-reader-actions button { display: inline-flex; align-items: center; gap: 5px; height: 27px; border: 0; border-radius: 999px; padding: 0 11px; background: transparent; color: var(--neutral-700); cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 540; }
+.hub-view-action-group > button + button { box-shadow: inset 1px 0 0 var(--neutral-200); }
+.hub-view-reader-actions button:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-950); }
+.hub-view-reader-actions button:disabled { cursor: default; opacity: .4; }
+.hub-view-reader-actions button.destructive:hover:not(:disabled) { color: #a04545; }
+.hub-view-reader-actions button.on { color: var(--neutral-950); }
+.hub-view-body { min-height: 0; flex: 1; overflow-y: auto; padding: 16px 18px 28px; color: var(--neutral-800); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+/* The sender's own markup, kept from fighting the app around it: it may not
+   set its own width, and its type falls back to the reader's. */
+.hub-view-html { color: var(--neutral-900); font-size: 13px; line-height: 1.55; white-space: normal; }
+.hub-view-html :where(img, table, video, iframe) { max-width: 100% !important; height: auto; }
+.hub-view-html :where(table) { width: auto !important; border-collapse: collapse; }
+.hub-view-html :where(a) { color: #2f6fd0; cursor: pointer; }
+.hub-view-html :where(h1, h2, h3) { color: var(--neutral-950); }
+.hub-view-html :where(img:not([src])) { display: none; }
+.hub-view-remote { display: flex; align-items: center; justify-content: center; gap: 6px; flex: none; width: 100%; border: 0; border-top: 1px solid var(--neutral-200); padding: 8px; background: var(--neutral-50); color: var(--neutral-600); cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 540; }
+.hub-view-remote:hover { background: var(--neutral-100); color: var(--neutral-950); }
+
+/* Attachments and the conversation sit under the body as trailing strips, out
+   of the way of reading but reachable without leaving the message. */
+.hub-view-attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: none; padding: 10px 18px; border-top: 1px solid var(--neutral-200); }
+.hub-view-attachments-head { display: inline-flex; align-items: center; gap: 5px; color: var(--neutral-500); font-size: 11px; font-weight: 550; }
+.hub-view-file { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--neutral-200); border-radius: 7px; padding: 3px 8px; color: var(--neutral-700); font-size: 11px; }
+.hub-view-file button { display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-400); cursor: pointer; }
+.hub-view-file button:hover { color: var(--neutral-950); }
+.hub-view-attachments > button { display: inline-flex; align-items: center; gap: 5px; height: 24px; border: 1px solid var(--neutral-200); border-radius: 7px; padding: 0 9px; background: var(--app-surface); color: var(--neutral-700); cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 540; }
+.hub-view-attachments > button:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-950); }
+.hub-view-chain { flex: none; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px 14px; border-top: 1px solid var(--neutral-200); }
+.hub-view-chain-head { margin: 0 6px 4px; color: var(--neutral-400); font-size: 9px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.hub-view-chain button { display: grid; grid-template-columns: minmax(0, auto) 1fr auto; align-items: baseline; gap: 8px; border: 0; border-radius: 8px; padding: 6px 8px; background: transparent; color: var(--neutral-600); cursor: pointer; font-family: inherit; font-size: 11px; text-align: left; }
+.hub-view-chain button:hover { background: var(--neutral-100); }
+.hub-view-chain button.active { background: var(--neutral-100); color: var(--neutral-950); }
+.hub-view-chain button strong { color: var(--neutral-900); font-weight: 560; }
+.hub-view-chain button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-view-chain button em { order: 3; color: var(--neutral-400); font-style: normal; font-size: 10px; }
+.hub-view-compose-row { display: flex; align-items: flex-end; gap: 8px; }
+.hub-view-compose-row > label { flex: 1; }
+.hub-view-inline-link { flex: none; height: 32px; border: 0; padding: 0 4px; background: transparent; color: var(--neutral-400); cursor: pointer; font-family: inherit; font-size: 10.5px; font-weight: 500; }
+.hub-view-inline-link:hover { color: var(--neutral-950); }
+
+.hub-view-skeleton { display: flex; flex-direction: column; gap: 10px; }
+.hub-view-skeleton-line { height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--neutral-100) 25%, var(--neutral-200) 37%, var(--neutral-100) 63%); background-size: 400% 100%; animation: hub-view-shimmer 1.4s ease infinite; }
+@keyframes hub-view-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .hub-view-skeleton-line { animation: none; } }
+
+.hub-view-thread { min-height: 0; flex: 1; display: flex; flex-direction: column-reverse; gap: 8px; overflow-y: auto; padding: 16px 18px; }
+.hub-view-bubble { max-width: 76%; align-self: flex-start; border-radius: 13px; padding: 8px 11px; background: var(--neutral-100); color: var(--neutral-900); }
+.hub-view-bubble.mine { align-self: flex-end; background: var(--neutral-950); color: var(--app-bg); }
+.hub-view-bubble p { margin: 0; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.hub-view-bubble-who { display: block; margin-bottom: 2px; color: var(--neutral-500); font-size: 10px; font-weight: 560; }
+.hub-view-bubble em { display: block; margin-top: 3px; opacity: .6; font-style: normal; font-size: 9.5px; }
+
+.hub-view-composer { display: flex; align-items: center; gap: 8px; flex: none; padding: 10px 14px 14px; border-top: 1px solid var(--neutral-200); }
+.hub-view-composer input { min-width: 0; flex: 1; height: 34px; border: 1px solid var(--neutral-200); border-radius: 10px; padding: 0 11px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 12.5px; }
+.hub-view-composer input:focus-visible { border-color: var(--neutral-500); outline: 0; }
+.hub-view-composer button { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border: 0; border-radius: 9px; background: var(--neutral-950); color: var(--app-bg); cursor: pointer; }
+.hub-view-composer button:disabled { cursor: default; opacity: .4; }
+
+.hub-view-compose-form { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding: 16px 18px 20px; }
+.hub-view-compose-form label { display: flex; flex-direction: column; gap: 4px; }
+.hub-view-compose-form label > span { color: var(--neutral-600); font-size: 11px; font-weight: 530; }
+.hub-view-compose-form input { height: 32px; border: 1px solid var(--neutral-200); border-radius: 9px; padding: 0 10px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 12.5px; }
+.hub-view-compose-form textarea { min-height: 200px; flex: 1; border: 1px solid var(--neutral-200); border-radius: 11px; padding: 11px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 12.5px; line-height: 1.55; resize: none; }
+.hub-view-compose-form input:focus-visible, .hub-view-compose-form textarea:focus-visible { border-color: var(--neutral-500); outline: 0; }
+/* The attach control leads, the send controls trail, and a pane too narrow
+   for all four wraps rather than pushing them out of it. */
+.hub-view-compose-form footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.hub-view-compose-form footer > button:first-child { margin-right: auto; }
+.hub-view-compose-form footer button { display: inline-flex; align-items: center; gap: 5px; height: 30px; border: 1px solid var(--neutral-200); border-radius: 9px; padding: 0 12px; background: var(--app-surface); color: var(--neutral-700); cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 550; }
+.hub-view-compose-form footer button:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-950); }
+.hub-view-compose-form footer button.primary { border-color: var(--neutral-950); background: var(--neutral-950); color: var(--app-bg); }
+.hub-view-compose-form footer button:disabled { cursor: default; opacity: .5; }
+
+/* Which panes are visible, in one place. Narrow drawers show the list until
+   something is opened and then swap in the reader; past three-column width both
+   sit side by side and the back affordance is redundant. */
+.hub-view-grid > .hub-view-list { display: flex; }
+.hub-view-grid > .hub-view-reader { display: none; }
+.hub-view-grid.reading > .hub-view-list { display: none; }
+.hub-view-grid.reading > .hub-view-reader { display: flex; }
+@container (min-width: 720px) {
+  .hub-view-grid { grid-template-columns: 172px minmax(200px, 280px) minmax(0, 1fr); }
+  .hub-view-grid > .hub-view-list,
+  .hub-view-grid.reading > .hub-view-list { display: flex; }
+  .hub-view-grid > .hub-view-reader,
+  .hub-view-grid.reading > .hub-view-reader { display: flex; }
+  .hub-view-back { display: none; }
+}
+
+/* Placeholder copy sits in the middle of whatever space it stands in, the
+   same as the reading pane's blank state, rather than clinging to the top. */
+.hub-view-empty { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; margin: 0; padding: 16px 14px; color: var(--neutral-400); font-size: 11.5px; text-align: center; }
+.hub-view-error { flex: none; margin: 0; padding: 9px 18px; background: #fff5f5; color: #8f3e3e; font-size: 11.5px; }
+:root[data-theme="dark"] .hub-view-error { background: #321f1f; color: #eea7a7; }
+.hub-view-blank { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--neutral-400); }
+.hub-view-blank h2 { margin: 4px 0 0; color: var(--neutral-700); font-size: 13.5px; font-weight: 560; }
+.hub-view-blank p { margin: 0; font-size: 11.5px; }
+
+
+/* Setup's closing reveal. Lives here rather than in the component so the
+   registered property below is declared once, globally, which is the only way
+   `@property` works: a scoped copy per component instance is not a thing.
+
+   The radius is animated as a real length on a full-window gradient. The
+   obvious build — a small circle wearing a `0 0 0 100vmax` box-shadow, grown by
+   its width and height — costs a layout pass and a repaint of a shadow several
+   times the size of the screen on every frame, which is what made the reveal
+   stall part way through. This paints one window-sized gradient per frame and
+   never touches layout. */
+@property --cover-r {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+.onb-cover { position: absolute; inset: 0; z-index: 3; pointer-events: none; --cover-r: 0px; }
+/* Solid disc growing from the centre: setup's own circle, inverted. */
+.onb-cover.fill { background: radial-gradient(circle at 50% 50%, var(--cover-ink,#0a0a0a) var(--cover-r), transparent calc(var(--cover-r) + 1px)); animation: cover-open .62s cubic-bezier(.4,0,.2,1) both; }
+/* The same circle as a hole, so at radius zero the window is still solid ink
+   and the swap from the fill has no seam in it. */
+.onb-cover.hole { background: radial-gradient(circle at 50% 50%, transparent var(--cover-r), var(--cover-ink,#0a0a0a) calc(var(--cover-r) + 1px)); animation: cover-open .84s cubic-bezier(.4,0,.2,1) both; }
+@keyframes cover-open { from { --cover-r: 0px; } to { --cover-r: var(--cover-max, 120vmax); } }
+@media (prefers-reduced-motion: reduce) { .onb-cover { animation: none; --cover-r: var(--cover-max, 120vmax); } }
+
+/* Startup splash. Lives in index.html and is styled here so the whole lockup —
+   mark, wordmark and its slide — is on screen with the document's first frame
+   rather than after the renderer bundle has loaded and mounted. */
+.startup-splash { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; pointer-events: none; background: var(--app-bg); }
+.startup-splash.leaving { will-change: opacity; animation: startup-cover-out .24s ease forwards; }
+/* The travel is read against the lockup's own size, not in absolute pixels:
+   at the wordmark's current 48px, the old 10px drift was a fraction of one
+   letter and barely registered as movement. 40px is about one glyph — the
+   same amount of visible slide the smaller lockup used to have. */
+.startup-brand { display: flex; align-items: center; gap: 12px; color: var(--neutral-950); opacity: .78; transform: translate3d(-40px,0,0); will-change: transform,opacity; backface-visibility: hidden; }
+/* The brand holds this opening pose until the window is on screen (theme-boot
+   flips the attribute), so the slide is seen rather than spent behind a window
+   that has not appeared yet. Matching the attribute's presence rather than the
+   value keeps the animation — and the settled pose its `forwards` fill holds —
+   in place through `done`: dropping it there snapped the brand back to its
+   opening pose just as the cover began to fade, 10px off the identical lockup
+   underneath. */
+/* A gentler ease than the quintic this used to run on. That curve spent ~85%
+   of the travel in its first half-second and then crept for the remaining
+   second and a half — which read as a slide that stalls, and left the eye on
+   a crawl slow enough that a single dropped frame showed as a stutter. A
+   quadratic ease-out keeps real movement going most of the two seconds and
+   still settles rather than stopping dead. */
+:root[data-splash] .startup-brand { animation: startup-brand-in 2s cubic-bezier(.25,.46,.45,.94) forwards; }
+.startup-mark { width: 72px; height: 59px; display: block; }
+.startup-brand span { font-size: 48px; font-weight: 750; letter-spacing: -.045em; line-height: 1; text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
+/* The stored theme is only known once settings load, so until an explicit theme
+   is set the splash follows the system. Without this a dark-mode launch paints
+   white and then flips part way through the slide. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .startup-splash { background: #171717; }
+  :root:not([data-theme]) .startup-brand { color: #fafafa; }
+}
+@keyframes startup-brand-in { from { transform: translate3d(-40px,0,0); opacity: .78; } to { transform: translate3d(0,0,0); opacity: 1; } }
+@keyframes startup-cover-out { from { opacity: 1; } to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .startup-splash { animation: none; opacity: 1; } .startup-brand { transform: none; animation: none; opacity: 1; will-change: auto; } }

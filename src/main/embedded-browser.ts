@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BrowserDownloadDto, BrowserEventDto } from "@midas/protocol";
 import { shell, WebContentsView, type BrowserWindow, type WebContents } from "electron";
+import { faviconDataUrl } from "./favicon.js";
 
 /**
  * The workspace browser: one WebContentsView per browser tab, attached to the
@@ -15,7 +16,7 @@ import { shell, WebContentsView, type BrowserWindow, type WebContents } from "el
  * channel.
  */
 export class EmbeddedBrowser {
-  readonly #window: BrowserWindow;
+  #window: BrowserWindow;
   readonly #views = new Map<string, WebContentsView>();
   readonly #downloads: BrowserDownloadDto[] = [];
   readonly #downloadsDir: string;
@@ -32,9 +33,36 @@ export class EmbeddedBrowser {
     this.#send = options.send;
   }
 
+  /**
+   * Re-homes the browser onto a new app window. The old window's destruction
+   * took the hosted views' webContents with it, so surviving map entries are
+   * corpses to sweep, not tabs to migrate.
+   */
+  attachWindow(window: BrowserWindow): void {
+    this.#window = window;
+    for (const [tabId, view] of [...this.#views]) {
+      if (view.webContents.isDestroyed()) this.#views.delete(tabId);
+      else window.contentView.addChildView(view);
+    }
+  }
+
+  /**
+   * Lifts every view out of the window before it is destroyed, so the pages —
+   * webContents and all — survive a window close and re-home on the next one.
+   * Must run on the window's `close` event; after `closed` it is too late.
+   */
+  detachWindow(): void {
+    if (this.#window.isDestroyed()) return;
+    for (const view of this.#views.values()) this.#window.contentView.removeChildView(view);
+  }
+
   open(tabId: string, url?: string): void {
-    if (this.#views.has(tabId)) {
-      if (url) this.navigate(tabId, url);
+    const existing = this.#views.get(tabId);
+    if (existing) {
+      // A remount re-opens tabs it already knows about. Navigating again would
+      // discard the live page state the detach/attach cycle just preserved,
+      // so only a view with nothing loaded takes the url.
+      if (url && !existing.webContents.getURL()) this.navigate(tabId, url);
       return;
     }
     const view = new WebContentsView({
@@ -88,12 +116,125 @@ export class EmbeddedBrowser {
     const view = this.#views.get(tabId);
     if (!view) return;
     this.#views.delete(tabId);
-    this.#window.contentView.removeChildView(view);
-    view.webContents.close();
+    if (!this.#window.isDestroyed()) this.#window.contentView.removeChildView(view);
+    if (!view.webContents.isDestroyed()) view.webContents.close();
+    this.#send({ type: "closed", tabId });
   }
 
   closeAll(): void {
     for (const tabId of [...this.#views.keys()]) this.close(tabId);
+  }
+
+  /* ---- Agent control -------------------------------------------------- */
+
+  /** Tabs the agent can act on, newest last. */
+  tabs(): Array<{ tabId: string; url: string; title: string }> {
+    return [...this.#views]
+      .filter(([, view]) => !view.webContents.isDestroyed())
+      .map(([tabId, view]) => ({
+        tabId,
+        url: view.webContents.getURL(),
+        title: view.webContents.getTitle(),
+      }));
+  }
+
+  /**
+   * Opens a tab on the agent's behalf. The renderer learns about it through the
+   * `opened` event and gives it a workspace tab, so the user sees the page the
+   * agent is working in rather than a hidden view.
+   */
+  async openAgentTab(url: string, show = false): Promise<{ tabId: string; url: string; title: string }> {
+    const tabId = crypto.randomUUID();
+    this.open(tabId, url);
+    this.#send({ type: "opened", tab: { tabId, url, title: "" }, show });
+    return this.settle(tabId);
+  }
+
+  /** Brings an existing agent tab to the front of the workspace — what "show
+   * me the page" asks for once the tab is already open. */
+  reveal(tabId: string): void {
+    const page = this.pageInfo(tabId);
+    this.#send({ type: "opened", tab: page, show: true });
+  }
+
+  /** Resolves once the page stops loading, or after `timeoutMs` either way —
+   * a page that never finishes is still readable. */
+  async settle(tabId: string, timeoutMs = 15_000): Promise<{ tabId: string; url: string; title: string }> {
+    const contents = this.#contents(tabId);
+    if (contents && contents.isLoading())
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          clearTimeout(timer);
+          contents.off("did-stop-loading", done);
+          resolve();
+        };
+        const timer = setTimeout(done, timeoutMs);
+        contents.once("did-stop-loading", done);
+      });
+    return this.pageInfo(tabId);
+  }
+
+  pageInfo(tabId: string): { tabId: string; url: string; title: string } {
+    const contents = this.#contents(tabId);
+    return {
+      tabId,
+      url: contents?.getURL() ?? "",
+      title: contents?.getTitle() ?? "",
+    };
+  }
+
+  /** The page's visible text, trimmed to what a tool result can carry. */
+  async readPage(tabId: string, maxChars: number): Promise<string> {
+    return this.#run<string>(tabId, `(() => {
+      const root = document.querySelector('main, article') ?? document.body;
+      return (root?.innerText ?? '').replace(/\n{3,}/g, '\n\n').trim().slice(0, ${Math.max(1, Math.floor(maxChars))});
+    })()`);
+  }
+
+  async click(tabId: string, selector: string): Promise<boolean> {
+    return this.#run<boolean>(tabId, `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) return false;
+      element.scrollIntoView({block: 'center'});
+      element.click();
+      return true;
+    })()`);
+  }
+
+  async type(tabId: string, selector: string, text: string, submit: boolean): Promise<boolean> {
+    return this.#run<boolean>(tabId, `(() => {
+      const field = document.querySelector(${JSON.stringify(selector)});
+      if (!field) return false;
+      field.focus();
+      const setter = Object.getOwnPropertyDescriptor(field.constructor.prototype, 'value')?.set;
+      // React and friends listen for the native setter, not a plain assignment.
+      if (setter) setter.call(field, ${JSON.stringify(text)});
+      else field.value = ${JSON.stringify(text)};
+      field.dispatchEvent(new Event('input', {bubbles: true}));
+      field.dispatchEvent(new Event('change', {bubbles: true}));
+      if (${submit ? "true" : "false"}) {
+        field.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+        field.form?.requestSubmit?.();
+      }
+      return true;
+    })()`);
+  }
+
+  async scroll(tabId: string, deltaY: number): Promise<boolean> {
+    return this.#run<boolean>(tabId, `(() => { window.scrollBy(0, ${Math.round(deltaY)}); return true; })()`);
+  }
+
+  #contents(tabId: string): WebContents | null {
+    const contents = this.#views.get(tabId)?.webContents;
+    return contents && !contents.isDestroyed() ? contents : null;
+  }
+
+  /** Evaluated in the page's own main world, so whatever comes back is page
+   * content: untrusted data for the agent to read, never instructions. */
+  async #run<T>(tabId: string, script: string): Promise<T> {
+    const contents = this.#contents(tabId);
+    if (!contents) throw new Error(`No such browser tab: ${tabId}`);
+    return contents.executeJavaScript(script, true) as Promise<T>;
   }
 
   find(tabId: string, text: string, forward: boolean): void {
@@ -136,6 +277,12 @@ export class EmbeddedBrowser {
   }
 
   #wireState(tabId: string, contents: WebContents): void {
+    // The icon the page declares, and the bytes fetched for it. They are kept
+    // apart because the fetch is async: a second navigation can land while the
+    // first page's icon is still in flight, and only the icon that still
+    // belongs to the current page may be shown.
+    let faviconSource: string | null = null;
+    let faviconUrl: string | null = null;
     const emit = (): void => {
       if (contents.isDestroyed()) return;
       this.#send({
@@ -144,13 +291,38 @@ export class EmbeddedBrowser {
           tabId,
           url: contents.getURL(),
           title: contents.getTitle(),
+          faviconUrl,
           canGoBack: contents.navigationHistory.canGoBack(),
           canGoForward: contents.navigationHistory.canGoForward(),
           loading: contents.isLoading(),
         },
       });
     };
-    contents.on("did-navigate", emit);
+    contents.on("page-favicon-updated", (_event, favicons) => {
+      const source = favicons[0] ?? null;
+      if (source === faviconSource) return;
+      faviconSource = source;
+      if (!source) {
+        faviconUrl = null;
+        emit();
+        return;
+      }
+      // The renderer cannot load a remote icon itself, so the bytes are
+      // fetched here and reported once they arrive; until then the tab keeps
+      // showing whatever it has, which after a navigation is the globe.
+      void faviconDataUrl(contents.session, source).then((dataUrl) => {
+        if (contents.isDestroyed() || faviconSource !== source) return;
+        faviconUrl = dataUrl;
+        emit();
+      });
+    });
+    contents.on("did-navigate", (): void => {
+      // A navigation invalidates the previous page's icon until the new one
+      // reports; without this the old favicon lingers on the wrong site.
+      faviconSource = null;
+      faviconUrl = null;
+      emit();
+    });
     contents.on("did-navigate-in-page", emit);
     contents.on("page-title-updated", emit);
     contents.on("did-start-loading", emit);

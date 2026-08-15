@@ -47,13 +47,13 @@ Use this skill to make chat replies sound like the user, not like an assistant. 
 Record draft/final pairs whenever the user edits a proposed chat reply. Use the helper script:
 
 ```bash
-python3 "$HOME/.codex/skills/chat-style/scripts/record_chat_edit.py" record-original --text "draft" --person "name-or-id" --platform "wechat" --message-type "reply"
-python3 "$HOME/.codex/skills/chat-style/scripts/record_chat_edit.py" record-final --match "<hash>" --text "user final version"
-python3 "$HOME/.codex/skills/chat-style/scripts/record_chat_edit.py" pending
-python3 "$HOME/.codex/skills/chat-style/scripts/record_chat_edit.py" stats
+python3 scripts/record_chat_edit.py record-original --text "draft" --person "name-or-id" --platform "wechat" --message-type "reply"
+python3 scripts/record_chat_edit.py record-final --match "<hash>" --text "user final version"
+python3 scripts/record_chat_edit.py pending
+python3 scripts/record_chat_edit.py stats
 ```
 
-Store examples in `~/.codex/state/chat-style/edits/` by default. These logs are evidence for the main agent to read and summarize into skill rules later; they do not require another AI process.
+Store examples in `~/.midas/state/chat-style/edits/` by default. These logs are evidence for the main agent to read and summarize into skill rules later; they do not require another AI process.
 
 When reviewing edits:
 

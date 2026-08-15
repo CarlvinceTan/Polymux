@@ -8,6 +8,8 @@ import type {
   JsonValue,
   MemoryRecord,
   MemoryScope,
+  MessageRole,
+  MessageSearchHit,
   NewArtifact,
   NewAttachment,
   NewCompaction,
@@ -49,6 +51,15 @@ export interface ConversationStore {
     conversationId: Id,
     options?: { afterSequence?: number; limit?: number },
   ): StoredMessage[];
+  /**
+   * Substring search across stored messages, newest first. Conversation history
+   * is the record of what was actually said, so it is searched on demand rather
+   * than distilled ahead of time into memory.
+   */
+  searchMessages(
+    query: string,
+    options?: { limit?: number; conversationId?: Id; roles?: MessageRole[] },
+  ): MessageSearchHit[];
   addAttachment(input: NewAttachment): Attachment;
   listAttachments(messageId: Id): Attachment[];
 }

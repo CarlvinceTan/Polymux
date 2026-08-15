@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3.14
+#!/usr/bin/env python3
 """Atomically migrate exact skill identifiers in protected routing metadata."""
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ import sys
 import tempfile
 
 
-SUITE = Path("/Users/carlvincetan/.codex/skill-regression")
+SUITE = Path.home() / ".midas" / "skill-maintenance"
 POLICY = SUITE / "policy.json"
-HOOKS = Path("/Users/carlvincetan/.codex/hooks.json")
+HOOKS = Path.home() / ".midas" / "hooks.json"
 BACKUPS = SUITE / "migration-backups"
 RUNNER = SUITE / "runner.py"
 

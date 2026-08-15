@@ -6,13 +6,101 @@ export function upsertActivity(activities: AgentActivityItem[] = [], activity: A
   return activities.map((item, itemIndex) => itemIndex === index ? activity : item);
 }
 
+export function collapseActivities(activities: AgentActivityItem[] = []): AgentActivityItem[] {
+  const collapsed: AgentActivityItem[] = [];
+  for (const activity of activities) {
+    const last = collapsed.at(-1);
+    if (last && last.kind === activity.kind && last.label === activity.label) {
+      // Merged rows keep every reported step, so repeated calls to the same
+      // tool read as one group with its combined sub-step trail.
+      const steps = [...(last.steps ?? []), ...(activity.steps ?? [])];
+      collapsed[collapsed.length - 1] = {
+        ...last,
+        ...activity,
+        id: last.id,
+        steps: steps.length ? steps : undefined,
+      };
+    } else {
+      collapsed.push(activity);
+    }
+  }
+  return collapsed;
+}
+
+export function activityPresentation(name: string, input: Record<string, unknown> = {}): {kind: AgentActivityKind; label: string} {
+  const normalized = name.toLowerCase();
+  const path = typeof input.path === 'string' ? input.path : '';
+  const uri = typeof input.uri === 'string' ? input.uri : '';
+
+  if (normalized.includes('read') && /(?:^|\/)skill\.md$/i.test(path)) {
+    const skill = path.split('/').at(-2) ?? 'Skill';
+    return {kind: 'skill', label: `Using ${humanizeSkill(skill)}`};
+  }
+  if (normalized === 'skill' || normalized.startsWith('skill_') || normalized.startsWith('skill.')) {
+    const skill = typeof input.name === 'string' ? input.name : 'Skill';
+    return {kind: 'skill', label: `Using ${humanizeSkill(skill)}`};
+  }
+  if (normalized.includes('compact') || normalized.includes('compress') || normalized.includes('optimis') || normalized.includes('optimiz')) {
+    return {kind: 'compacting', label: 'Optimising Conversation'};
+  }
+  if (normalized.includes('think') || normalized.includes('reason')) {
+    return {kind: 'thinking', label: 'Thinking'};
+  }
+  if (normalized.includes('resource') || uri.length > 0 || normalized === 'read_resource' || normalized === 'fetch_resource') {
+    const resource = uri ? uri.split('/').at(-1) ?? 'Resource' : typeof input.name === 'string' ? input.name : 'Resource';
+    return {kind: 'resource', label: `Using ${humanize(resource)}`};
+  }
+  if (normalized === 'read' || normalized.includes('read_file')) {
+    return {kind: 'reading', label: 'Reading Files'};
+  }
+  if (normalized === 'edit' || normalized === 'write' || normalized.includes('apply_patch') || normalized.includes('edit_file') || normalized.includes('write_file')) {
+    return {kind: 'editing', label: 'Editing Files'};
+  }
+  if (normalized === 'bash' || normalized.includes('command') || normalized.includes('terminal') || normalized.includes('exec') || normalized === 'sh') {
+    return {kind: 'running', label: 'Running Command'};
+  }
+  if (normalized.includes('search') || normalized.includes('web') || normalized === 'glob' || normalized === 'grep') {
+    return {kind: 'searching', label: 'Searching'};
+  }
+  if (normalized === 'task' || normalized.includes('subagent') || normalized.includes('delegate')) {
+    return {kind: 'task', label: 'Delegating Task'};
+  }
+  if (name.includes('.')) {
+    return {kind: 'tool', label: `Using ${humanize(name.split('.')[0]!)}`};
+  }
+  return {kind: 'tool', label: humanize(name)};
+}
+
+// Skills whose folder name reads awkwardly in activity rows. The UI name is the
+// one users see in the skills list, so activity labels match it.
+const skillDisplayNames: Record<string, string> = {
+  'browser-use': 'Browser',
+};
+
+function humanizeSkill(value: string): string {
+  return skillDisplayNames[value.toLowerCase()] ?? humanize(value);
+}
+
+function humanize(value: string): string {
+  return value
+    .replaceAll('_', ' ')
+    .replaceAll('-', ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 const condensedLabels: Record<AgentActivityKind, string> = {
   thinking: 'Thought',
-  reading: 'Read files',
-  searching: 'Searched',
-  running: 'Ran commands',
-  editing: 'Edited files',
-  plugin: 'Used tools',
+  compacting: 'Optimised Conversation',
+  reading: 'Reading Files',
+  searching: 'Searching',
+  running: 'Running Commands',
+  task: 'Delegating Tasks',
+  skill: 'Using Skills',
+  tool: 'Using Tools',
+  resource: 'Using Resources',
+  editing: 'Editing Files',
+  plugin: 'Using Tools',
+  commentary: 'Shared Updates',
 };
 
 export function shouldShowAgentActivity(activities: AgentActivityItem[] = []): boolean {
@@ -22,6 +110,12 @@ export function shouldShowAgentActivity(activities: AgentActivityItem[] = []): b
 export function activitySummary(activities: AgentActivityItem[]): string {
   const kinds = [...new Set(activities.map((activity) => activity.kind))];
   return kinds.map((kind) => condensedLabels[kind]).join(', ');
+}
+
+/** ChatGPT-style elapsed label: "49s" under a minute, then "6m 58s". */
+export function formatElapsedSeconds(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 export function activityDuration(startedAt?: string, completedAt?: string, now = Date.now()): number {

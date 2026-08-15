@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3.14
+#!/usr/bin/env python3
 """Deterministically prove that a candidate is only a declared literal rename."""
 
 from __future__ import annotations

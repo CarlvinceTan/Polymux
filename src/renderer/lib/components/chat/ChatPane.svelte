@@ -35,6 +35,7 @@
   import AgentActivity from './AgentActivity.svelte';
   import QueuedMessages, {type QueuedMessage} from './QueuedMessages.svelte';
   import GoalBar, {type ActiveGoal} from './GoalBar.svelte';
+  import type {ReasoningEffort} from '@midas/protocol';
 
   export let messages: ChatMessage[] = [];
   export let running = false;
@@ -43,24 +44,44 @@
   export let goal: ActiveGoal | null = null;
   export let speechMode = false;
   export let speechModeEnabled = true;
+  export let dictationAutoStopSeconds: number | null = 6;
   export let showJumpToLatest = false;
-  export let onSend: (text: string, files: File[], asGoal: boolean) => void = () => {};
+  export let onSend: (text: string, files: File[], asGoal: boolean, immediate: boolean) => void = () => {};
   export let onStop: () => void = () => {};
   export let onVoice: () => void = () => {};
-  export let onOptions: () => void = () => {};
+  export let reasoning: ReasoningEffort = 'medium';
+  export let onReasoningChange: (value: ReasoningEffort) => void = () => {};
   export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
   export let onFeedback: (id: string, feedback: 'up' | 'down' | null) => void = () => {};
+  /** A link in a message: the host decides which browser surface opens it. */
+  export let onOpenLink: (url: string, title: string) => void = () => {};
   export let onQueueHeight: (height: number) => void = () => {};
   export let onJumpAvailability: (show: boolean) => void = () => {};
   export let onSteerQueued: (id: string) => void = () => {};
   export let onRemoveQueued: (id: string) => void = () => {};
   export let onEditQueued: (id: string) => void = () => {};
   export let onReorderQueued: (sourceId: string, targetId: string) => void = () => {};
+  /** Text to drop into the composer, e.g. a queued message pulled back for edits. */
+  export let insertion: {id: string; text: string} | null = null;
+  export let onInsertionApplied: () => void = () => {};
   export let onEditGoal: (text: string) => void = () => {};
   export let onToggleGoalPaused: () => void = () => {};
   export let onDeleteGoal: () => void = () => {};
 
   let column: HTMLDivElement;
+  let composer: HTMLDivElement | undefined;
+  /**
+   * What the list reserves at its foot. The composer is fixed, so the list has
+   * to hold open space of its own for the last message to clear it — and that
+   * space is measured rather than assumed, because the composer's height moves
+   * with the queue, the goal bar and a prompt grown to several lines.
+   *
+   * It reaches the prompt's own top edge, not the composer's: the band above the
+   * prompt is the fade the conversation is meant to pass under. The gap the
+   * reader sees is then the last message's own bottom margin, which is the same
+   * margin that spaces every other pair of messages.
+   */
+  let composerReserve = 0;
   let stickToLatest = true;
 
   $: onQueueHeight((queued.length ? Math.min(queued.length, 4) * 40 + 24 : 0) + (goal ? 50 : 0));
@@ -72,16 +93,49 @@
     measure();
   }
 
+  /** Height from the topmost thing the reader must clear down to the window's
+      foot: the goal bar or queue when either is stacked above the prompt,
+      otherwise the prompt itself. Falls back to the whole composer if none of
+      them is mounted, as in speech mode. */
+  function reserveFor(node: HTMLDivElement): number {
+    const leading = node.querySelector('.goal-bar, .queued-messages, .polymux-prompt-shell');
+    if (!leading) return node.getBoundingClientRect().height;
+    return Math.max(0, window.innerHeight - leading.getBoundingClientRect().top);
+  }
+
   function measure(): void {
     if (!column) return;
+    if (composer) composerReserve = reserveFor(composer);
     const state = conversationScrollState(column);
     stickToLatest = state.stickToLatest;
     onJumpAvailability(state.showJumpToLatest);
   }
 
+  /**
+   * Deliberate motion, unlike the jump `followLatest` makes: this is a button
+   * the reader pressed, and travelling the distance is what tells them where
+   * the bottom was relative to where they had been reading.
+   */
   function scrollToLatest(): void {
     if (!column) return;
-    column.scrollTo({top: column.scrollHeight, behavior: 'auto'});
+    const reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    column.scrollTo({top: column.scrollHeight, behavior: reduceMotion ? 'auto' : 'smooth'});
+  }
+
+  /** Watches the composer for its whole life: it is mounted and unmounted with
+      the conversation, so a one-off observer set up here would miss it. */
+  function trackComposer(node: HTMLDivElement) {
+    composer = node;
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    return {
+      destroy: () => {
+        observer?.disconnect();
+        composer = undefined;
+        composerReserve = 0;
+      },
+    };
   }
 
   onMount(() => {
@@ -106,17 +160,22 @@
         showComposer={!speechMode}
         active={running}
         {speechModeEnabled}
+        {dictationAutoStopSeconds}
         {placeholder}
         {onSend}
         {onStop}
         {onVoice}
-        {onOptions}
+        {reasoning}
+        {onReasoningChange}
+        {insertion}
+        {onInsertionApplied}
       />
     </div>
   {:else}
-    <div class="message-list" aria-live="polite">
+    <div class="message-list" aria-live="polite" style={composerReserve ? `--composer-reserve:${composerReserve}px` : ''}>
       {#each messages as message, index (message.id)}
-        {#if message.role === 'assistant' && (message.activities?.length || (running && index === messages.length - 1))}
+        {@const activityVisible = message.role === 'assistant' && Boolean(message.activities?.length || (running && index === messages.length - 1))}
+        {#if activityVisible}
           <AgentActivity
             activities={message.activities ?? []}
             startedAt={message.startedAt}
@@ -124,17 +183,17 @@
             streaming={running && index === messages.length - 1}
           />
         {/if}
-        <Message {message} streaming={running && index === messages.length - 1} {onEdit} {onFeedback}/>
+        <Message {message} streaming={running && index === messages.length - 1} {activityVisible} {onEdit} {onFeedback} {onOpenLink}/>
       {/each}
     </div>
 
     {#if showJumpToLatest}
-      <button type="button" class="scroll-to-latest" aria-label="Scroll to latest" onclick={scrollToLatest}>
+      <button type="button" class="scroll-to-latest" aria-label="Scroll to bottom" data-tooltip="none" onclick={scrollToLatest}>
         <Icon name="arrow-down" size={18}/>
       </button>
     {/if}
 
-    <div class="sticky-composer">
+    <div class="sticky-composer" use:trackComposer>
       <div class="composer-column-content">
         {#if goal}
           <GoalBar {goal} onEdit={onEditGoal} onTogglePaused={onToggleGoalPaused} onDelete={onDeleteGoal}/>
@@ -149,7 +208,7 @@
           />
         {/if}
         {#if !speechMode}
-          <PromptInput active={running} {speechModeEnabled} {placeholder} {onSend} {onStop} {onVoice} {onOptions}/>
+          <PromptInput active={running} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied}/>
         {/if}
       </div>
     </div>

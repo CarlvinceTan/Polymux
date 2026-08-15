@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3.14
+#!/usr/bin/env python3
 """Stable entry point for the runner with isolated Git deployment history."""
 
 from __future__ import annotations
@@ -11,10 +11,10 @@ import subprocess
 import sys
 
 
-RUNNER = Path("/Users/carlvincetan/.codex/skill-regression/runner.py")
+RUNNER = Path.home() / ".midas" / "skill-maintenance" / "runner.py"
 HISTORY = Path(__file__).with_name("skill_history.py")
 SYSTEM_UPDATES = Path(__file__).with_name("system_skill_updates.py")
-PYTHON = "/opt/homebrew/bin/python3.14"
+PYTHON = sys.executable
 MUTATING_COMMANDS = {"promote", "approve-intentional"}
 EVALUATION_COMMANDS = {"check", "check-rename", "run"}
 EVALUATION_LOCKS = RUNNER.parent / "state" / "evaluation-locks"

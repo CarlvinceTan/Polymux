@@ -1,4 +1,4 @@
-import type { BrowserEventDto, McpChangeDto, MidasApi, RunEventDto } from "@midas/protocol";
+import type { BrowserEventDto, CommsStatusDto, DriveStatusDto, McpChangeDto, MidasApi, RunEventDto } from "@midas/protocol";
 import { channels } from "@midas/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
@@ -7,6 +7,18 @@ const api: MidasApi = {
     get: () => ipcRenderer.invoke(channels.generalGet),
     update: (settings) => ipcRenderer.invoke(channels.generalUpdate, settings),
     locate: () => ipcRenderer.invoke(channels.generalLocate),
+    version: () => ipcRenderer.invoke(channels.generalVersion),
+    checkForUpdates: () => ipcRenderer.invoke(channels.generalCheckUpdates),
+    installUpdate: () => ipcRenderer.invoke(channels.generalInstallUpdate),
+  },
+  window: {
+    subscribeFullscreen(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: boolean) =>
+        listener(value);
+      ipcRenderer.on(channels.windowFullscreen, receive);
+      return () =>
+        ipcRenderer.removeListener(channels.windowFullscreen, receive);
+    },
   },
   permissions: {
     ensureFirstRun: () => ipcRenderer.invoke(channels.permissionsEnsureFirstRun),
@@ -18,7 +30,8 @@ const api: MidasApi = {
       ipcRenderer.invoke(channels.permissionsOpenSettings, permission),
   },
   dictation: {
-    transcribe: (audio) => ipcRenderer.invoke(channels.dictationTranscribe, audio),
+    transcribe: (audio, final) =>
+      ipcRenderer.invoke(channels.dictationTranscribe, audio, final),
   },
   conversations: {
     list: () => ipcRenderer.invoke(channels.conversationsList),
@@ -49,6 +62,12 @@ const api: MidasApi = {
     get: (conversationId) =>
       ipcRenderer.invoke(channels.goalsGet, conversationId),
   },
+  workspace: {
+    snapshot: (conversationId) =>
+      ipcRenderer.invoke(channels.workspaceSnapshotGet, conversationId),
+    saveSnapshot: (conversationId, snapshot) =>
+      ipcRenderer.invoke(channels.workspaceSnapshotSave, conversationId, snapshot),
+  },
   files: {
     paths: async (files) => files.map((file) => webUtils.getPathForFile(file)),
   },
@@ -71,11 +90,6 @@ const api: MidasApi = {
   memory: {
     status: () => ipcRenderer.invoke(channels.memoryStatus),
     setEnabled: (enabled) => ipcRenderer.invoke(channels.memorySetEnabled, enabled),
-    list: (conversationId) =>
-      ipcRenderer.invoke(channels.memoryList, conversationId),
-    remember: (content, conversationId) =>
-      ipcRenderer.invoke(channels.memoryRemember, content, conversationId),
-    forget: (id) => ipcRenderer.invoke(channels.memoryForget, id),
   },
   chronicle: {
     status: () => ipcRenderer.invoke(channels.chronicleStatus),
@@ -98,6 +112,86 @@ const api: MidasApi = {
       return () => ipcRenderer.removeListener(channels.mcpChanged, receive);
     },
   },
+  comms: {
+    status: () => ipcRenderer.invoke(channels.commsStatus),
+    refresh: () => ipcRenderer.invoke(channels.commsRefresh),
+    wake: (platform) => ipcRenderer.invoke(channels.commsWake, platform),
+    setHubUrl: (baseUrl) => ipcRenderer.invoke(channels.commsSetHubUrl, baseUrl),
+    connect: () => ipcRenderer.invoke(channels.commsConnect),
+    signIn: (userId, password) => ipcRenderer.invoke(channels.commsSignIn, userId, password),
+    signOut: () => ipcRenderer.invoke(channels.commsSignOut),
+    loginStart: (platform, flowId) =>
+      ipcRenderer.invoke(channels.commsLoginStart, platform, flowId),
+    loginSubmit: (platform, loginId, stepId, values) =>
+      ipcRenderer.invoke(channels.commsLoginSubmit, platform, loginId, stepId, values),
+    loginWait: (platform, loginId, stepId) =>
+      ipcRenderer.invoke(channels.commsLoginWait, platform, loginId, stepId),
+    loginCookies: (platform, loginId, stepId) =>
+      ipcRenderer.invoke(channels.commsLoginCookies, platform, loginId, stepId),
+    loginCancel: (platform, loginId) =>
+      ipcRenderer.invoke(channels.commsLoginCancel, platform, loginId),
+    bridgeLogout: (platform, accountId) =>
+      ipcRenderer.invoke(channels.commsBridgeLogout, platform, accountId),
+    bridgeSetup: (platform, values) =>
+      ipcRenderer.invoke(channels.commsBridgeSetup, platform, values),
+    chats: () => ipcRenderer.invoke(channels.commsChats),
+    chatMessages: (chatId, limit, before) =>
+      ipcRenderer.invoke(channels.commsChatMessages, chatId, limit, before),
+    chatSend: (chatId, text) => ipcRenderer.invoke(channels.commsChatSend, chatId, text),
+    mailFolders: (account) => ipcRenderer.invoke(channels.commsMailFolders, account),
+    mailEnvelopes: (request) => ipcRenderer.invoke(channels.commsMailEnvelopes, request),
+    mailMessage: (id, account, folder) =>
+      ipcRenderer.invoke(channels.commsMailMessage, id, account, folder),
+    mailSend: (request) => ipcRenderer.invoke(channels.commsMailSend, request),
+    mailMove: (ids, target, account, folder) =>
+      ipcRenderer.invoke(channels.commsMailMove, ids, target, account, folder),
+    mailFlag: (ids, flag, on, account, folder) =>
+      ipcRenderer.invoke(channels.commsMailFlag, ids, flag, on, account, folder),
+    mailDelete: (ids, account, folder) =>
+      ipcRenderer.invoke(channels.commsMailDelete, ids, account, folder),
+    mailDownload: (id, account, folder) =>
+      ipcRenderer.invoke(channels.commsMailDownload, id, account, folder),
+    mailOpenFile: (path) => ipcRenderer.invoke(channels.commsMailOpenFile, path),
+    mailPickFiles: () => ipcRenderer.invoke(channels.commsMailPickFiles),
+    emailSave: (request) => ipcRenderer.invoke(channels.commsEmailSave, request),
+    emailRemove: (id) => ipcRenderer.invoke(channels.commsEmailRemove, id),
+    emailTest: (id) => ipcRenderer.invoke(channels.commsEmailTest, id),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: CommsStatusDto) =>
+        listener(value);
+      ipcRenderer.on(channels.commsChanged, receive);
+      return () => ipcRenderer.removeListener(channels.commsChanged, receive);
+    },
+  },
+  drive: {
+    status: () => ipcRenderer.invoke(channels.driveStatus),
+    refresh: () => ipcRenderer.invoke(channels.driveRefresh),
+    connect: (provider) => ipcRenderer.invoke(channels.driveConnect, provider),
+    disconnect: (provider, accountId) =>
+      ipcRenderer.invoke(channels.driveDisconnect, provider, accountId),
+    setSaveOrder: (order) => ipcRenderer.invoke(channels.driveSetSaveOrder, order),
+    setLocalRoot: (path) => ipcRenderer.invoke(channels.driveSetLocalRoot, path),
+    saveS3: (config) => ipcRenderer.invoke(channels.driveSaveS3, config),
+    list: (provider, path) => ipcRenderer.invoke(channels.driveList, provider, path),
+    createFolder: (provider, parentPath, name) =>
+      ipcRenderer.invoke(channels.driveCreateFolder, provider, parentPath, name),
+    upload: (provider, parentPath, paths) =>
+      ipcRenderer.invoke(channels.driveUpload, provider, parentPath, paths),
+    download: (provider, path) =>
+      ipcRenderer.invoke(channels.driveDownload, provider, path),
+    remove: (provider, paths) => ipcRenderer.invoke(channels.driveRemove, provider, paths),
+    rename: (provider, path, name) =>
+      ipcRenderer.invoke(channels.driveRename, provider, path, name),
+    move: (provider, paths, destinationFolder) =>
+      ipcRenderer.invoke(channels.driveMove, provider, paths, destinationFolder),
+    copy: (provider, paths) => ipcRenderer.invoke(channels.driveCopy, provider, paths),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: DriveStatusDto) =>
+        listener(value);
+      ipcRenderer.on(channels.driveChanged, receive);
+      return () => ipcRenderer.removeListener(channels.driveChanged, receive);
+    },
+  },
   skills: {
     list: () => ipcRenderer.invoke(channels.skillsList),
     reload: () => ipcRenderer.invoke(channels.skillsReload),
@@ -116,6 +210,10 @@ const api: MidasApi = {
     select: (provider, id) =>
       ipcRenderer.invoke(channels.modelsSelect, provider, id),
     metadata: () => ipcRenderer.invoke(channels.modelsMetadata),
+    roles: () => ipcRenderer.invoke(channels.modelsRoles),
+    assignRole: (role, provider, id) =>
+      ipcRenderer.invoke(channels.modelsAssignRole, role, provider, id),
+    clearRole: (role) => ipcRenderer.invoke(channels.modelsClearRole, role),
   },
   browser: {
     embedded: true,
@@ -131,6 +229,7 @@ const api: MidasApi = {
     stopFind: (tabId) => ipcRenderer.invoke(channels.browserStopFind, tabId),
     print: (tabId) => ipcRenderer.invoke(channels.browserPrint, tabId),
     screenshot: (tabId) => ipcRenderer.invoke(channels.browserScreenshot, tabId),
+    favicon: (url) => ipcRenderer.invoke(channels.browserFavicon, url),
     downloads: () => ipcRenderer.invoke(channels.browserDownloadsList),
     openDownload: (id) => ipcRenderer.invoke(channels.browserOpenDownload, id),
     openDownloadsFolder: () => ipcRenderer.invoke(channels.browserOpenDownloadsFolder),

@@ -11,7 +11,9 @@
   ],
   "scripts": {
     "prestart": "node scripts/dev-app-name.mjs",
-    "start": "electron-forge start",
+    "start": "node scripts/dev-start.mjs",
+    "start:onboarding": "MIDAS_ONBOARDING=1 node scripts/dev-start.mjs",
+    "renderer:dev": "vite --config vite.renderer.config.ts",
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",
@@ -28,7 +30,9 @@
     "test:protocol": "tsx --test packages/protocol/test/**/*.test.ts",
     "test:main": "tsx --test src/main/test/**/*.test.ts",
     "test:backend": "npm run test:inference && npm run test:core && npm run test:storage && npm run test:chronicle && npm run test:tools && npm run test:agent && npm run test:protocol && npm run test:main",
-    "icons": "node scripts/build-icons.mjs"
+    "icons": "node scripts/build-icons.mjs",
+    "bridges:fetch": "node scripts/fetch-bridges.mjs",
+    "publish:updates": "node scripts/publish-updates.mjs"
   },
   "license": "UNLICENSED",
   "dependencies": {
@@ -47,6 +51,7 @@
     "three": "^0.185.1"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3.1111.0",
     "@electron-forge/cli": "^7.11.2",
     "@electron-forge/maker-deb": "^7.11.2",
     "@electron-forge/maker-rpm": "^7.11.2",

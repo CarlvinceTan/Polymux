@@ -25,6 +25,18 @@ export interface StoredMessage {
   metadata: JsonValue;
 }
 
+/** One match from a history search, carrying enough to locate and read it. */
+export interface MessageSearchHit {
+  conversationId: Id;
+  conversationTitle: string;
+  messageId: Id;
+  role: MessageRole;
+  sequence: number;
+  createdAt: Timestamp;
+  /** The matched message rendered as plain text. */
+  text: string;
+}
+
 export type RunStatus =
   "queued" | "running" | "completed" | "cancelled" | "failed" | "interrupted";
 

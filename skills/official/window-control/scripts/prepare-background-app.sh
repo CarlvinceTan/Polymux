@@ -403,7 +403,7 @@ fi
 
 if [[ "$launch_behavior" == "restore_previous_frontmost" ]]; then
   recovery_source="${0:A:h}/foreground-launch-recovery.swift"
-  recovery_cache="${TMPDIR:-/tmp}/codex-window-control"
+  recovery_cache="${TMPDIR:-/tmp}/midas-window-control"
   if ! /bin/mkdir -p "$recovery_cache"; then
     report "blocked_state_unavailable"
     exit 6
@@ -421,8 +421,8 @@ if [[ "$launch_behavior" == "restore_previous_frontmost" ]]; then
     /bin/mv -f "$recovery_temporary" "$recovery_binary"
   fi
 
-  recovery_log="$(/usr/bin/mktemp -t codex-window-control-recovery)" || { report "blocked_state_unavailable"; exit 6; }
-  recovery_ready="$(/usr/bin/mktemp -t codex-window-control-recovery-ready)" || { /bin/rm -f "$recovery_log"; report "blocked_state_unavailable"; exit 6; }
+  recovery_log="$(/usr/bin/mktemp -t midas-window-control-recovery)" || { report "blocked_state_unavailable"; exit 6; }
+  recovery_ready="$(/usr/bin/mktemp -t midas-window-control-recovery-ready)" || { /bin/rm -f "$recovery_log"; report "blocked_state_unavailable"; exit 6; }
   /bin/rm -f "$recovery_ready"
 
   cleanup_recovery() {
@@ -508,7 +508,7 @@ fi
 
 visibility_source="${0:A:h}/window-visibility-monitor.swift"
 strict_recovery_source="${0:A:h}/foreground-launch-recovery.swift"
-visibility_cache="${TMPDIR:-/tmp}/codex-window-control"
+visibility_cache="${TMPDIR:-/tmp}/midas-window-control"
 if ! /bin/mkdir -p "$visibility_cache"; then
   report "blocked_state_unavailable"
   exit 6
@@ -537,27 +537,27 @@ if [[ ! -x "$strict_recovery_binary" ]]; then
   /bin/chmod 700 "$strict_recovery_temporary"
   /bin/mv -f "$strict_recovery_temporary" "$strict_recovery_binary"
 fi
-if ! focus_log="$(/usr/bin/mktemp -t codex-window-control-focus)" || [[ -z "$focus_log" ]]; then
+if ! focus_log="$(/usr/bin/mktemp -t midas-window-control-focus)" || [[ -z "$focus_log" ]]; then
   report "blocked_state_unavailable"
   exit 6
 fi
-if ! window_log="$(/usr/bin/mktemp -t codex-window-control-window)" || [[ -z "$window_log" ]]; then
+if ! window_log="$(/usr/bin/mktemp -t midas-window-control-window)" || [[ -z "$window_log" ]]; then
   /bin/rm -f "$focus_log"
   report "blocked_state_unavailable"
   exit 6
 fi
-if ! window_ready="$(/usr/bin/mktemp -t codex-window-control-window-ready)" || [[ -z "$window_ready" ]]; then
+if ! window_ready="$(/usr/bin/mktemp -t midas-window-control-window-ready)" || [[ -z "$window_ready" ]]; then
   /bin/rm -f "$focus_log" "$window_log"
   report "blocked_state_unavailable"
   exit 6
 fi
 /bin/rm -f "$window_ready"
-if ! strict_recovery_log="$(/usr/bin/mktemp -t codex-window-control-strict-recovery)" || [[ -z "$strict_recovery_log" ]]; then
+if ! strict_recovery_log="$(/usr/bin/mktemp -t midas-window-control-strict-recovery)" || [[ -z "$strict_recovery_log" ]]; then
   /bin/rm -f "$focus_log" "$window_log" "$window_ready"
   report "blocked_state_unavailable"
   exit 6
 fi
-if ! strict_recovery_ready="$(/usr/bin/mktemp -t codex-window-control-strict-recovery-ready)" || [[ -z "$strict_recovery_ready" ]]; then
+if ! strict_recovery_ready="$(/usr/bin/mktemp -t midas-window-control-strict-recovery-ready)" || [[ -z "$strict_recovery_ready" ]]; then
   /bin/rm -f "$focus_log" "$window_log" "$window_ready" "$strict_recovery_log"
   report "blocked_state_unavailable"
   exit 6

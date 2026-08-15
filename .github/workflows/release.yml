@@ -1,0 +1,83 @@
+name: Release
+
+# Tag-driven: `git tag v0.1.1 && git push --tags` builds every platform and
+# publishes the update feed. Nothing publishes off a plain push to main, so a
+# merge cannot ship itself to users by accident.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      # One platform failing to sign should not delete the artifacts of the
+      # platform that succeeded; publishing is per-target anyway.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+          - os: macos-13
+            arch: x64
+          - os: windows-latest
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The bridge binaries are half a gigabyte of pinned downloads that the
+      # prePackage hook fetches. Caching them keeps each release build from
+      # re-downloading the same pinned versions.
+      - uses: actions/cache@v4
+        with:
+          path: bridges
+          key: bridges-${{ runner.os }}-${{ hashFiles('scripts/fetch-bridges.mjs') }}
+
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS'
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          echo "$CERT_P12" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k actions build.keychain
+          rm /tmp/cert.p12
+
+      - name: Make
+        env:
+          # Consumed by forge.config.ts once signing is enabled there.
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run make -- --arch=${{ matrix.arch }}
+
+      - name: Publish update feed
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          MIDAS_RELEASE_NOTES: ${{ github.event.head_commit.message }}
+        run: npm run publish:updates
+
+      # A GitHub Release is where people get their *first* install; updates
+      # after that come from R2 and never touch this.
+      - name: Attach installers to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" out/make/**/*.{zip,exe} --clobber

@@ -8,7 +8,7 @@
 - Approved deployments are also committed to a local bare Git repository through temporary detached worktrees outside both live roots. Git history improves inspection and deletion recovery but never substitutes for behavioral validation.
 - Promotion refuses to proceed when Git history does not match the current approved live deployment. Git checkout, pull, merge, reset, and restore operations are forbidden against live roots.
 - The installed baseline is sealed. `baseline --force` is setup-only and cannot bless later drift after sealing.
-- The lifecycle hook blocks obvious direct writes and quarantines any drift it did not prevent. Hook failures are handled as unhealthy-gate warnings, not as evidence that a change passed.
+- Midas runs tool lifecycle hooks from `~/.midas/hooks.json`. Configure the bundled guard (`scripts/live_skill_guard.py`) as a `pre-tool` hook to block direct writes to live skills; the drift scan (`doctor` + `scan`) still quarantines any drift the hook did not prevent. Hook failures are handled as unhealthy-gate warnings, not as evidence that a change passed.
 
 ## Report meaning
 
@@ -60,7 +60,7 @@ For deletion of a named personal skill, the user's direct and unambiguous deleti
 
 ## Recovery
 
-Run `doctor`, then `scan`. If live drift exists, run `quarantine`, evaluate the resulting candidate, and keep the restored approved version live until a decision is made. If the hook or runner integrity check fails, disable no safeguards casually: restore the known files, recompute and review their hashes, update the hook command, and trust that hook configuration again through Codex's hook review surface.
+Run `doctor`, then `scan`. If live drift exists, run `quarantine`, evaluate the resulting candidate, and keep the restored approved version live until a decision is made. If the runner integrity check fails, disable no safeguards casually: restore the known files, recompute and review their hashes, and re-approve the configuration with the user before trusting it again.
 
 For historical recovery, create a detached inspection worktree from the desired
 commit, copy the selected skill into a new staged candidate, and run the full

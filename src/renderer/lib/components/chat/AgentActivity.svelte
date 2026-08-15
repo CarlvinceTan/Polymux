@@ -1,6 +1,26 @@
 <script module lang="ts">
-  export type AgentActivityKind = 'thinking' | 'reading' | 'searching' | 'running' | 'editing' | 'plugin';
+  export type AgentActivityKind =
+    | 'thinking'
+    | 'compacting'
+    | 'reading'
+    | 'searching'
+    | 'running'
+    | 'task'
+    | 'skill'
+    | 'tool'
+    | 'resource'
+    | 'editing'
+    | 'plugin'
+    | 'commentary';
   export type AgentActivityStatus = 'pending' | 'active' | 'completed' | 'failed';
+
+  /** One reported step inside a tool invocation (from tool.progress events),
+   * shown as an indented sub-row when the activity row is opened. */
+  export type AgentActivityStep = {
+    id: string;
+    label: string;
+    status: AgentActivityStatus;
+  };
 
   export type AgentActivityItem = {
     id: string;
@@ -9,12 +29,13 @@
     label: string;
     target?: string;
     result?: string;
+    steps?: AgentActivityStep[];
   };
 </script>
 
 <script lang="ts">
   import {onMount} from 'svelte';
-  import {activityDuration, activitySummary, nextDurationTickDelay} from '../../conversation/activities';
+  import {activityDuration, collapseActivities, formatElapsedSeconds, nextDurationTickDelay} from '../../conversation/activities';
   import Icon from '../shared/Icon.svelte';
 
   export let activities: AgentActivityItem[] = [];
@@ -24,12 +45,17 @@
 
   let expanded = false;
   let now = Date.now();
+  /** Per-row detail disclosure, keyed by activity id. Mirrors ChatGPT's
+   * trail, where a row's extra detail stays hidden until that row is opened. */
+  let detailOpen: Record<string, boolean> = {};
 
   $: elapsed = Math.max(1, activityDuration(startedAt, completedAt, now));
-  $: summary = activitySummary(activities);
-  $: latest = activities.at(-1);
-  $: onlyThinking = activities.length > 0 && activities.every((activity) => activity.kind === 'thinking');
-  $: visibleActivities = expanded ? activities : streaming && latest ? [latest] : [];
+  $: collapsed = collapseActivities(activities);
+  $: latest = collapsed.at(-1);
+  // Collapsed and settled shows the heading alone — the whole trail waits
+  // behind the dropdown. While streaming, the latest activity doubles as the
+  // live status line.
+  $: visibleActivities = expanded ? collapsed : streaming && latest ? [latest] : [];
 
   /**
    * A fixed 1s interval drifts and gets coalesced whenever the main thread is
@@ -48,13 +74,44 @@
     return () => window.clearTimeout(timer);
   });
 
-  const activityIcons: Record<AgentActivityKind, 'bolt' | 'book-open' | 'search' | 'terminal' | 'edit' | 'link'> = {
-    thinking: 'bolt',
+  /**
+   * The glimmer sweeps at a fixed speed, so a long label takes longer to cross
+   * than a short one. CSS cannot read the row's ink width, so the row reports it
+   * as `--glint-ink` (unitless px) and the stylesheet derives the travel and the
+   * duration from it.
+   */
+  function glint(node: HTMLElement, _label: string) {
+    const measure = () => {
+      const row = node.getBoundingClientRect();
+      const label = node.querySelector('.activity-copy > span, .activity-copy .activity-row-line > span');
+      const right = label ? label.getBoundingClientRect().right : row.right;
+      node.style.setProperty('--glint-ink', String(Math.max(40, Math.round(right - row.left))));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return {update: measure, destroy: () => observer.disconnect()};
+  }
+
+  // A few activities read better with their own glyph than with their kind's
+  // generic one — the browser skill is a globe, not a sparkle.
+  const labelIcons: Record<string, 'globe'> = {
+    'Using Browser': 'globe',
+  };
+
+  const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat'> = {
+    thinking: 'brain',
+    compacting: 'compact',
     reading: 'book-open',
     searching: 'search',
     running: 'terminal',
+    task: 'task',
+    skill: 'sparkles',
+    tool: 'wrench',
+    resource: 'link',
     editing: 'edit',
-    plugin: 'link',
+    plugin: 'wrench',
+    commentary: 'chat',
   };
 </script>
 
@@ -65,23 +122,45 @@
     aria-expanded={expanded}
     onclick={() => activities.length && (expanded = !expanded)}
   >
-    <span>{streaming ? 'Working' : 'Worked'} for {elapsed}s</span>
+    <span>{streaming ? 'Working' : 'Worked'} for {formatElapsedSeconds(elapsed)}</span>
     {#if activities.length}<Icon name="chevron" size={14}/>{/if}
   </button>
 
-  {#if !streaming && !expanded && summary && !onlyThinking}
-    <button type="button" class="agent-activity-summary" aria-label={`Show agent activity: ${summary}`} onclick={() => expanded = true}>
-      <Icon name="wrench" size={17}/><span>{summary}</span><Icon name="chevron" size={14}/>
-    </button>
-  {:else if visibleActivities.length}
+  {#if visibleActivities.length}
     <ul class="agent-activity-list" aria-live="polite">
       {#each visibleActivities as activity (activity.id)}
-        <li class:active={activity.status === 'active'} class:live={streaming && activity.status === 'active'} class:failed={activity.status === 'failed'}>
-          <Icon name={activityIcons[activity.kind]} size={17}/>
-          <span class="activity-copy">
-            <span>{activity.label}{#if activity.target} <span class="activity-target">{activity.target}</span>{/if}</span>
-            {#if expanded && activity.result}<small>{activity.result}</small>{/if}
-          </span>
+        <li use:glint={activity.label} class:active={activity.status === 'active'} class:live={streaming && activity.status === 'active'} class:failed={activity.status === 'failed'} class:commentary={activity.kind === 'commentary'}>
+          <Icon name={labelIcons[activity.label] ?? activityIcons[activity.kind]} size={17}/>
+          {#if expanded && (activity.result || activity.steps?.length)}
+            <button
+              type="button"
+              class="activity-copy activity-detail-toggle"
+              aria-expanded={Boolean(detailOpen[activity.id])}
+              onclick={() => detailOpen = {...detailOpen, [activity.id]: !detailOpen[activity.id]}}
+            >
+              <span class="activity-row-line">
+                <span>{activity.label}{#if activity.target} <span class="activity-target">{activity.target}</span>{/if}</span>
+                <Icon name="chevron" size={13}/>
+              </span>
+              {#if detailOpen[activity.id]}
+                {#if activity.steps?.length}
+                  <ul class="activity-steps">
+                    {#each activity.steps as step (step.id)}
+                      <li class:active={step.status === 'active'} class:failed={step.status === 'failed'}>{step.label}</li>
+                    {/each}
+                  </ul>
+                {/if}
+                {#if activity.result}<small>{activity.result}</small>{/if}
+              {/if}
+            </button>
+          {:else}
+            <span class="activity-copy">
+              <span>{activity.label}{#if activity.target} <span class="activity-target">{activity.target}</span>{/if}</span>
+              {#if streaming && activity.status === 'active' && activity.steps?.length}
+                <small class="activity-live-step">{activity.steps.at(-1)?.label}</small>
+              {/if}
+            </span>
+          {/if}
         </li>
       {/each}
     </ul>

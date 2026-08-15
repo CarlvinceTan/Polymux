@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validateGoalCommand, validateStartRun } from "../src/index.js";
+import {
+  DRIVE_PROVIDERS,
+  driveProvider,
+  driveS3Config,
+  driveSaveOrder,
+  validateGoalCommand,
+  validateStartRun,
+} from "../src/index.js";
 
 test("validates renderer run requests at the Electron boundary", () => {
   assert.deepEqual(validateStartRun({ conversationId: "one", text: "hello" }), {
@@ -9,16 +16,70 @@ test("validates renderer run requests at the Electron boundary", () => {
     messageId: undefined,
     attachments: undefined,
     asGoal: undefined,
+    reasoning: undefined,
   });
   assert.equal(
     validateStartRun({ conversationId: "one", text: "ship it", asGoal: true })
       .asGoal,
     true,
   );
+  assert.equal(
+    validateStartRun({ conversationId: "one", text: "think", reasoning: "high" })
+      .reasoning,
+    "high",
+  );
   assert.throws(
     () => validateStartRun({ conversationId: "", text: "hello" }),
     /conversationId/,
   );
+});
+
+test("accepts only storage providers this build knows", () => {
+  assert.equal(driveProvider("google-drive"), "google-drive");
+  assert.throws(() => driveProvider("icloud"), /not a supported storage provider/);
+  assert.throws(() => driveProvider(7), /not a supported storage provider/);
+});
+
+test("keeps every storage provider reachable in the save order", () => {
+  const all = DRIVE_PROVIDERS.map((entry) => entry.value);
+  // A stored order naming only some providers must still list the rest, or
+  // one left out of it could never be written to again.
+  assert.deepEqual(driveSaveOrder(["s3"]), [
+    "s3",
+    ...all.filter((id) => id !== "s3"),
+  ]);
+  // An order written by a build that knew a provider this one does not must
+  // load rather than throw.
+  assert.deepEqual(driveSaveOrder(["icloud", "local"]), [
+    "local",
+    ...all.filter((id) => id !== "local"),
+  ]);
+  assert.deepEqual(driveSaveOrder("nonsense"), all);
+  // Duplicates collapse rather than making a provider appear twice.
+  assert.deepEqual(driveSaveOrder(["local", "local"]), [
+    "local",
+    ...all.filter((id) => id !== "local"),
+  ]);
+});
+
+test("requires the fields an S3 bucket cannot be reached without", () => {
+  const config = driveS3Config({
+    bucket: " files ",
+    region: "auto",
+    accessKeyId: "AKIA",
+    secretAccessKey: "shh",
+    endpoint: "  ",
+    forcePathStyle: true,
+  });
+  assert.equal(config.bucket, "files");
+  // A blank endpoint means AWS, which is an absent value rather than "".
+  assert.equal(config.endpoint, null);
+  assert.equal(config.forcePathStyle, true);
+  // An omitted secret is how an edit keeps the stored one, so it must survive
+  // validation rather than being rejected as missing.
+  assert.equal(driveS3Config({...config, secretAccessKey: ""}).secretAccessKey, undefined);
+  assert.throws(() => driveS3Config({region: "auto", accessKeyId: "AKIA"}), /Bucket/);
+  assert.throws(() => driveS3Config(null), /required/);
 });
 
 test("requires an objective when creating or updating a goal", () => {

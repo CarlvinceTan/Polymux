@@ -1,6 +1,6 @@
 # Chronicle evidence quality
 
-Apply these rules whenever Chronicle summaries, OCR, or frames inform a
+Apply these rules whenever Chronicle timeline entries or frames inform a
 response or help locate another source.
 
 - Preserve useful chronology, but prioritize decisions, corrections,
@@ -30,7 +30,7 @@ response or help locate another source.
   and may add Chronicle context automatically. Do not rewrite its generated
   resources from this skill.
 - When the user explicitly requests a manual durable memory update, write one
-  small timestamped note under `~/.codex/memories/extensions/ad_hoc/notes/`.
+  small timestamped note under `~/Library/Application Support/Midas/memories/extensions/ad_hoc/notes/`.
   Never edit generated `MEMORY.md` or Chronicle resources directly, and confirm
   it as remembered only after the note write succeeds. If writing is
   unavailable, say the current environment cannot perform the update; do not

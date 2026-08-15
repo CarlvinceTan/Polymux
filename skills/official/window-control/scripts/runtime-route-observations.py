@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record narrow Window Control route observations without granting trust."""
+"""Record narrow GUI Control route observations without granting trust."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DEFAULT_STATE = Path.home() / ".codex" / "window-control" / "route-observations.json"
+DEFAULT_STATE = Path.home() / ".midas" / "window-control" / "route-observations.json"
 
 
 def app_identity(app_path: Path) -> dict[str, str]:

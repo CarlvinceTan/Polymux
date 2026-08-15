@@ -98,7 +98,7 @@ controller initialization or any app-specific interaction.
 ## Verified exact-window control tuples
 
 On 2026-08-05, exact native-window capture was paired with accessibility-tree
-inspection and actions while ChatGPT remained frontmost. The target windows
+inspection and actions while the user's frontmost app stayed in place. The target windows
 were hidden and off-screen. The controller selected the native window by PID
 and Core Graphics window ID, mapped that exact window to its accessibility
 window, and failed closed on ambiguous matches.

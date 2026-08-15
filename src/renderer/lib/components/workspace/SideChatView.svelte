@@ -68,7 +68,7 @@
           class="polymux-primary"
           aria-label={running ? 'Stop agent' : 'Send message'}
           onclick={() => running ? onStop() : submit()}
-        ><Icon name={running ? 'stop' : 'send'} size={running ? 16 : 18}/></button>
+        ><Icon name={running ? 'stop' : 'send'} size={running ? 22 : 18}/></button>
       </div>
     </div>
   </div>

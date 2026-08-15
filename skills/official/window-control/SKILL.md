@@ -5,7 +5,7 @@ author: Midas
 category: System
 ---
 
-# Window Control
+# GUI Control
 
 Own only the shared launch, focus-safety, window-identity, and control-ownership
 contract for local GUI apps. App-specific skills decide which app, account,
@@ -51,6 +51,12 @@ existing-tab continuation or a temporary CAPTCHA or passkey fallback.
 - Every local GUI route, including an app-specific fallback selected by another
   skill, stays hidden or background/nonfrontmost unless the user explicitly
   requests foreground interaction or a prepared user-only handoff.
+- Nonfrontmost is a rule about what the agent may raise, never a precondition
+  the user must satisfy. A window the user is already in and has pointed the
+  agent at is a valid target exactly as it sits: work in it in place, at its
+  current position in the window order. Asking the user to switch away, hide
+  the window, or "let it go to the background" before work can start is wrong
+  and is never the answer to such a request.
 - Load this skill before any call that may initialize, launch, reveal, inspect,
   or control a local GUI, including state calls or integrations that may launch
   an app transparently.
@@ -72,7 +78,7 @@ existing-tab continuation or a temporary CAPTCHA or passkey fallback.
   selecting neighboring tabs. Sign-in is observed state, not an eligibility
   requirement: an exact signed-out match remains usable for a prepared login
   handoff. Ask when multiple matches remain ambiguous.
-- Route an ordinary public website directly to the Codex in-app Browser. For an
+- Route an ordinary public website directly to the Midas in-app Browser. For an
   external attention handoff, run the preflight against the verified current
   default browser itself; never reuse a Chrome-specific preflight for another
   browser.
@@ -181,6 +187,12 @@ An app name alone never identifies the target.
   The explicit request authorizes control to begin in
   that exact identified and leased window; do not require the user to switch
   away first and do not confuse visibility with concurrent use.
+  This is the common case, not an edge case: a request like "do X in this
+  window" or "fix this in <app>" while that app is frontmost hands the agent
+  the window it names. Preflight it with `--allow-frontmost-requested` and
+  proceed. What the request must never do is make the agent raise a *different*
+  window over the one the user is in — that, not the user's own focus, is what
+  the focus-safety rules protect.
 - The user may switch to an already leased window solely to watch; that focus
   change does not release the lease or pause exactly targeted automation.
   Pause mutating control only when the user clicks or selects content, types,
@@ -285,8 +297,14 @@ zsh scripts/prepare-background-app.sh \
   through a proven non-activating interface after acquiring the exact window.
 - `ready_existing_frontmost_requested`: the target was already frontmost and
   the user's current request explicitly handed that visible target to the
-  agent. Pass `--allow-frontmost-requested`; never use this flag merely because
-  the app happens to be frontmost.
+  agent. Pass `--allow-frontmost-requested` whenever the request identifies the
+  window the user is in — "do this here", "in this window", or naming the app
+  they are looking at. Withhold the flag only when the frontmost app is
+  incidental: the request never identified it, or it names a different target.
+- `blocked_user_active` on a frontmost target means only that
+  `--allow-frontmost-requested` was not supplied. When the request did hand the
+  agent that window, re-run the preflight with the flag rather than reporting a
+  blocker. Never answer such a request by asking the user to switch away.
 - `needs_hidden_launch`: do not use generic `open`, controller initialization,
   or an untested launcher. Consult
   [references/tested-background-launchers.md](references/tested-background-launchers.md).

@@ -21,6 +21,14 @@ interface CredentialFile {
 export const SECURE_STORAGE_UNAVAILABLE =
   "Secure credential storage is unavailable. Restart Midas and click \"Always Allow\" when macOS asks for keychain access.";
 
+/** Preserves an unreadable secrets file for inspection while clearing the
+ * path for a fresh store. */
+export async function quarantineUnreadable(filePath: string): Promise<void> {
+  const quarantined = `${filePath}.unreadable-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  await rename(filePath, quarantined).catch((): undefined => undefined);
+  console.warn(`Saved credential storage at ${filePath} could not be decrypted (the OS encryption key changed). Moved it to ${quarantined}; please re-add the keys.`);
+}
+
 /** Persists only OS-encrypted credential blobs. Secrets are never returned by
  * renderer-facing APIs and plaintext is never written to disk. */
 export class EncryptedCredentialStore implements CredentialStore {
@@ -38,7 +46,15 @@ export class EncryptedCredentialStore implements CredentialStore {
     if (!encoded) return undefined;
     if (!this.#cipher.isEncryptionAvailable())
       throw new Error(SECURE_STORAGE_UNAVAILABLE);
-    return JSON.parse(this.#cipher.decryptString(Buffer.from(encoded, "base64"))) as Credential;
+    try {
+      return JSON.parse(this.#cipher.decryptString(Buffer.from(encoded, "base64"))) as Credential;
+    } catch {
+      // Encrypted under an OS key that no longer matches (see the pool's
+      // recovery path). The blob can never be read again; report the provider
+      // as unconfigured so a fresh credential can be saved over it.
+      console.warn(`The stored credential for ${providerId} could not be decrypted (the OS encryption key changed); treating it as absent.`);
+      return undefined;
+    }
   }
 
   async list(): Promise<readonly CredentialInfo[]> {
@@ -79,9 +95,18 @@ export class EncryptedCredentialStore implements CredentialStore {
       throw error;
     });
     if (!source) return {version: 1, credentials: {}};
-    const value = JSON.parse(source) as Partial<CredentialFile>;
-    if (value.version !== 1 || !value.credentials || typeof value.credentials !== "object")
-      throw new Error("The credential store has an unsupported format");
+    let value: Partial<CredentialFile>;
+    try {
+      value = JSON.parse(source) as Partial<CredentialFile>;
+    } catch {
+      value = {};
+    }
+    if (value.version !== 1 || !value.credentials || typeof value.credentials !== "object") {
+      // A corrupt store can never be read; move it aside so new credentials
+      // can be saved instead of failing every operation forever.
+      await quarantineUnreadable(this.#filePath);
+      return {version: 1, credentials: {}};
+    }
     return {version: 1, credentials: {...value.credentials}};
   }
 

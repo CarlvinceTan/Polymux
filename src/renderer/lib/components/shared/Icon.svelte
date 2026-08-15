@@ -1,14 +1,16 @@
 <script lang="ts">
   export let name:
-    | 'summary' | 'panel' | 'plus' | 'close' | 'send' | 'mic' | 'waveform' | 'stop'
+    | 'summary' | 'panel' | 'panel-left' | 'plus' | 'close' | 'send' | 'mic' | 'waveform' | 'stop'
     | 'attach' | 'options' | 'verified' | 'globe' | 'file' | 'task' | 'back'
     | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down'
-    | 'bolt' | 'document-text' | 'paper-airplane' | 'history' | 'new-chat'
+    | 'bolt' | 'document-text' | 'paper-airplane' | 'history' | 'archive' | 'drive' | 'new-chat'
     | 'copy' | 'check' | 'edit' | 'thumb-up' | 'thumb-down' | 'search' | 'terminal' | 'wrench' | 'book-open'
+    | 'brain' | 'compact' | 'compress' | 'sparkles' | 'bot'
     | 'connections' | 'link' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
     | 'document' | 'presentation' | 'folder' | 'pdf' | 'spreadsheet' | 'image' | 'audio' | 'video' | 'code'
     | 'calendar' | 'clock' | 'sun' | 'goal' | 'users' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
-    | 'mail' | 'storefront';
+    | 'folder-plus' | 'upload' | 'home' | 'folder-move' | 'info'
+    | 'mail' | 'storefront' | 'settings';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -27,9 +29,13 @@
   data-icon={name}
 >
   {#if name === 'summary'}
-    <circle cx="6" cy="5" r="1.5"/><circle cx="6" cy="12" r="1.5"/><circle cx="6" cy="19" r="1.5"/><path d="M10 5h9M10 12h9M10 19h9"/>
+    <circle cx="6" cy="8.5" r="1.5"/><circle cx="6" cy="15.5" r="1.5"/><path d="M10 8.5h9M10 15.5h9"/>
   {:else if name === 'panel'}
     <rect x="4" y="4.5" width="16" height="15" rx="3"/><path d="M15 5v14"/>
+  {:else if name === 'panel-left'}
+    <!-- The Workspace panel mirrored: same frame, divider on the leading edge,
+         so the two drawer controls read as one pair. -->
+    <rect x="4" y="4.5" width="16" height="15" rx="3"/><path d="M9 5v14"/>
   {:else if name === 'plus'}
     <path d="M12 5v14M5 12h14"/>
   {:else if name === 'close'}
@@ -53,7 +59,7 @@
   {:else if name === 'waveform'}
     <path d="M4 9.8v4.4M7.2 6.4v11.2M10.4 8.7v6.6M13.6 4.8v14.4M16.8 7.3v9.4M20 10.1v3.8" stroke-width="2.5"/>
   {:else if name === 'stop'}
-    <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>
+    <rect x="5.5" y="5.5" width="13" height="13" rx="3" fill="currentColor" stroke="none"/>
   {:else if name === 'attach'}
     <path d="m20.5 11.5-8.2 8.2a6 6 0 0 1-8.5-8.5l8.5-8.5a4 4 0 0 1 5.7 5.7l-8.5 8.5a2 2 0 0 1-2.9-2.8l7.8-7.8"/>
   {:else if name === 'options'}
@@ -101,6 +107,12 @@
     <path d="m21 3-7.5 18-3.8-7.7L2 9.5zM9.7 13.3 21 3"/>
   {:else if name === 'history'}
     <circle cx="12" cy="12" r="8.25"/><path d="M12 7v5l-3 2"/>
+  {:else if name === 'archive'}
+    <rect x="3" y="4" width="18" height="4" rx="1.5"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>
+  {:else if name === 'drive'}
+    <!-- The platter lights read as dropouts at 16px unless they carry more
+         weight than the drive's own outline. -->
+    <rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><circle cx="7" cy="7.5" r="1.15" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="1.15" fill="currentColor" stroke="none"/>
   {:else if name === 'new-chat'}
     <g transform="translate(1.435 1.415) scale(.9)">
       <path d="M13 3H5a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-7"/><path d="m11 13 1.1-3.4L18.7 3a1.6 1.6 0 0 1 2.3 2.3l-6.6 6.6z"/>
@@ -122,7 +134,31 @@
   {:else if name === 'wrench'}
     <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"/>
   {:else if name === 'book-open'}
-    <path d="M3 5.5A3.5 3.5 0 0 1 6.5 2H11v17H6.5A3.5 3.5 0 0 0 3 22zM21 5.5A3.5 3.5 0 0 0 17.5 2H13v17h4.5a3.5 3.5 0 0 1 3.5 3z"/>
+    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+  {:else if name === 'brain'}
+    <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>
+    <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>
+    <path d="M12 5v14"/>
+    <!-- Two folds per lobe, curving with the outline rather than across it, so
+         they stay clear of the edge, the spine and each other. Drawn a little
+         thinner than the outline to keep the icon calm at 14px. -->
+    <g stroke-width={strokeWidth * 0.82}>
+      <path d="M6 9.4c1.4.4 2.8-.1 3.5-1.2"/>
+      <path d="M6.2 15.6c1.3-.3 2.7.2 3.4 1.3"/>
+      <path d="M18 9.4c-1.4.4-2.8-.1-3.5-1.2"/>
+      <path d="M17.8 15.6c-1.3-.3-2.7.2-3.4 1.3"/>
+    </g>
+  {:else if name === 'compact' || name === 'compress'}
+    <path d="M12 2.5v19"/>
+    <path d="M7 2.5C10.5 7.5 10.5 16.5 7 21.5"/>
+    <path d="M17 2.5C13.5 7.5 13.5 16.5 17 21.5"/>
+    <path d="M1.5 12h5M4 9.2l2.5 2.8L4 14.8"/>
+    <path d="M22.5 12h-5M20 9.2l-2.5 2.8 2.5 2.8"/>
+  {:else if name === 'sparkles'}
+    <path d="m12 3-1.9 4.9a2.5 2.5 0 0 1-1.2 1.2L4 11l4.9 1.9a2.5 2.5 0 0 1 1.2 1.2L12 19l1.9-4.9a2.5 2.5 0 0 1 1.2-1.2L20 11l-4.9-1.9a2.5 2.5 0 0 1-1.2-1.2Z"/>
+    <path d="M19 17v4M21 19h-4M5 4v3M6.5 5.5h-3"/>
+  {:else if name === 'bot'}
+    <path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>
   {:else if name === 'connections'}
     <path d="m10 13 4-4M7.5 15.5l-1 1a3.5 3.5 0 0 1-5-5l3-3a3.5 3.5 0 0 1 5 0M16.5 8.5l1-1a3.5 3.5 0 0 1 5 5l-3 3a3.5 3.5 0 0 1-5 0"/>
   {:else if name === 'link'}
@@ -137,6 +173,16 @@
     <rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20l4-4 4 4M12 16v4M8 9h8M8 12h5"/>
   {:else if name === 'folder'}
     <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+  {:else if name === 'folder-plus'}
+    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/>
+  {:else if name === 'upload'}
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/>
+  {:else if name === 'folder-move'}
+    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 13h6M13 11l2 2-2 2"/>
+  {:else if name === 'info'}
+    <circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.75" r=".9" fill="currentColor" stroke="none"/>
+  {:else if name === 'home'}
+    <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>
   {:else if name === 'pdf'}
     <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M15 2v5h5M8 14h8M8 18h5"/>
   {:else if name === 'spreadsheet'}
@@ -173,6 +219,8 @@
     <rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4.5 8.2 6.6 4.6a1.6 1.6 0 0 0 1.8 0l6.6-4.6"/>
   {:else if name === 'storefront'}
     <path d="M4 10v10h16V10M3 10l2-6h14l2 6"/><path d="M3 10a3 3 0 0 0 5 2 3 3 0 0 0 4 0 3 3 0 0 0 4 0 3 3 0 0 0 5-2M9 20v-5h6v5"/>
+  {:else if name === 'settings'}
+    <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.09a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>
   {:else if name === 'filter'}
     <path d="M4 6h16M7 12h10M10 18h4"/>
   {:else if name === 'sort'}

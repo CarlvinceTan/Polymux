@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-DEFAULT_DIR = Path(os.environ.get("CHAT_STYLE_LOG_DIR", Path.home() / ".codex" / "state" / "chat-style" / "edits"))
+DEFAULT_DIR = Path(os.environ.get("CHAT_STYLE_LOG_DIR", Path.home() / ".midas" / "state" / "chat-style" / "edits"))
 
 
 def log_dir(args):

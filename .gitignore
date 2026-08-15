@@ -4,3 +4,11 @@ out
 src/renderer/dist
 src/renderer/test-results
 test-results
+
+# Bundled mautrix bridge binaries, fetched by scripts/fetch-bridges.mjs
+/bridges/
+
+# Electron Forge build output
+/out/
+.DS_Store
+/dist/

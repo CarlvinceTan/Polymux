@@ -30,6 +30,11 @@ export class GoalManager {
     });
   }
 
+  /** Terminal status writes owned by the goal loop's judge, not the agent. */
+  setStatus(conversationId: string, status: GoalStatus): Goal | null {
+    return this.storage.updateGoal(conversationId, { status });
+  }
+
   tools(conversationId: string): AgentTool[] {
     const result = (value: unknown) => ({ content: JSON.stringify(value) });
     return [
@@ -65,7 +70,7 @@ export class GoalManager {
       {
         name: "update_goal",
         description:
-          "Mark the current goal completed only after verification, or blocked only at a genuine impasse.",
+          "Revise the current goal's objective, or pause it when the user asks. Completion is not yours to declare: a judge reads your closing message after every turn and sets the final status, so state plainly in your reply when the goal is finished and what verifies it, or what is blocking you.",
         parameters: {
           type: "object",
           properties: {

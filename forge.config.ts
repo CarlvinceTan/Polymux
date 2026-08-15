@@ -14,7 +14,10 @@ const icon = process.platform === 'win32'
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    extraResource: ['skills', 'native'],
+    // `bridges` holds the mautrix binaries fetched by scripts/fetch-bridges.mjs.
+    // They are not in git (half a gigabyte of build output); run
+    // `npm run bridges:fetch` before packaging, which the prepackage hook does.
+    extraResource: ['skills', 'native', 'bridges'],
     extendInfo: {
       NSLocationUsageDescription: 'Midas uses your location only when Location access is enabled in General settings.',
       NSLocationWhenInUseUsageDescription: 'Midas uses your location only when Location access is enabled in General settings.',
@@ -63,6 +66,17 @@ const config: ForgeConfig = {
       [FuseV1Options.OnlyLoadAppFromAsar]: true,
     }),
   ],
+  hooks: {
+    /**
+     * The bridges are pinned downloads rather than checked-in files, so the
+     * bundle is only complete if they have been fetched. Doing it here means a
+     * plain `npm run make` cannot quietly ship an app with no messaging.
+     */
+    async prePackage() {
+      const {execFileSync} = await import('node:child_process');
+      execFileSync(process.execPath, ['scripts/fetch-bridges.mjs'], {stdio: 'inherit'});
+    },
+  },
 };
 
 export default config;

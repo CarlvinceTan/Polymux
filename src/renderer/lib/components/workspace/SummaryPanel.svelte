@@ -15,39 +15,22 @@
   export let onOpenOutput: (output: OutputItem) => void = () => {};
   export let onOpenReference: (reference: ReferenceItem) => void = () => {};
   export let onViewAll: (section: SummarySection) => void = () => {};
-  export let onCreateOutput: (kind: 'document' | 'presentation' | 'spreadsheet') => void = () => {};
   export let onAttachReferences: (files: File[]) => void = () => {};
 
   /** Four rows per section; anything beyond that is behind View all. */
   const previewLimit = 4;
 
-  let outputMenuOpen = false;
   let referenceMenuOpen = false;
-  let outputMenuWrapper: HTMLDivElement;
   let referenceMenuWrapper: HTMLDivElement;
   let fileInput: HTMLInputElement;
   let folderInput: HTMLInputElement;
 
   function closeMenus(): void {
-    outputMenuOpen = false;
     referenceMenuOpen = false;
   }
 
-  function toggleOutputMenu(): void {
-    const next = !outputMenuOpen;
-    closeMenus();
-    outputMenuOpen = next;
-  }
-
   function toggleReferenceMenu(): void {
-    const next = !referenceMenuOpen;
-    closeMenus();
-    referenceMenuOpen = next;
-  }
-
-  function createOutput(kind: 'document' | 'presentation' | 'spreadsheet'): void {
-    closeMenus();
-    onCreateOutput(kind);
+    referenceMenuOpen = !referenceMenuOpen;
   }
 
   function selectedFiles(event: Event): void {
@@ -64,7 +47,7 @@
       return;
     }
     const target = event.target as Node;
-    if (outputMenuWrapper?.contains(target) || referenceMenuWrapper?.contains(target)) return;
+    if (referenceMenuWrapper?.contains(target)) return;
     closeMenus();
   }
 </script>
@@ -77,17 +60,9 @@
 
   <section>
     <header>
+      <!-- Outputs are what Midas produced, so there is nothing to add by hand:
+           an empty editor here would be a file that does not exist yet. -->
       <h2>Outputs</h2>
-      <div bind:this={outputMenuWrapper} class="summary-menu-wrap">
-        <button type="button" aria-label="Add output" data-tooltip-align="end" aria-haspopup="menu" aria-expanded={outputMenuOpen} onclick={toggleOutputMenu}><Icon name="plus" size={18}/></button>
-        {#if outputMenuOpen}
-          <div class="polymux-dropdown-menu summary-action-menu" role="menu">
-            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => createOutput('document')}><Icon name="document" size={15}/><span>Create document</span></button>
-            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => createOutput('presentation')}><Icon name="presentation" size={15}/><span>Create presentation</span></button>
-            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => createOutput('spreadsheet')}><Icon name="spreadsheet" size={15}/><span>Create spreadsheet</span></button>
-          </div>
-        {/if}
-      </div>
     </header>
     {#if outputs.length}
       {#each outputs.slice(0, previewLimit) as output (output.id)}

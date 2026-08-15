@@ -1,6 +1,6 @@
 import {mkdir, readFile, rename, writeFile} from "node:fs/promises";
 import path from "node:path";
-import {SECURE_STORAGE_UNAVAILABLE, type SecretCipher} from "./credential-store.js";
+import {SECURE_STORAGE_UNAVAILABLE, quarantineUnreadable, type SecretCipher} from "./credential-store.js";
 
 export interface ApiKeySummary {
   id: string;
@@ -123,24 +123,45 @@ export class EncryptedApiKeyPool {
   }
 
   async #load(): Promise<PoolFile> {
-    this.#loaded ??= (async () => {
-      const encoded = await readFile(this.#filePath, "utf8").catch((error: NodeJS.ErrnoException): undefined => {
-        if (error.code === "ENOENT") return undefined;
-        throw error;
-      });
-      if (!encoded) return {version: 1, providers: {}};
-      if (!this.#cipher.isEncryptionAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE);
-      const file = JSON.parse(this.#cipher.decryptString(Buffer.from(encoded, "base64"))) as PoolFile;
-      // A key's invalid/rate-limited state describes one running session, not
-      // the credential itself. Drop legacy persisted states on startup.
-      for (const [providerId, pool] of Object.entries(file.providers)) {
-        for (const item of pool.keys) delete item.status;
-        if (!pool.keys.some((item) => item.id === pool.activeKeyId && isCompleteKey(providerId, item.key)))
-          pool.activeKeyId = pool.keys.find((item) => isCompleteKey(providerId, item.key))?.id;
-      }
-      return file;
-    })();
+    // A rejected read must not be cached: after a transient failure the next
+    // caller retries against the file instead of failing for the process's
+    // lifetime.
+    this.#loaded ??= this.#readPool().catch((error: unknown) => {
+      this.#loaded = undefined;
+      throw error;
+    });
     return this.#loaded;
+  }
+
+  async #readPool(): Promise<PoolFile> {
+    const encoded = await readFile(this.#filePath, "utf8").catch((error: NodeJS.ErrnoException): undefined => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!encoded) return {version: 1, providers: {}};
+    if (!this.#cipher.isEncryptionAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE);
+    let file: PoolFile;
+    try {
+      file = JSON.parse(this.#cipher.decryptString(Buffer.from(encoded, "base64"))) as PoolFile;
+      if (!file.providers || typeof file.providers !== "object") throw new Error("malformed pool file");
+    } catch {
+      // The OS key that encrypted this file no longer matches — a dev bundle
+      // was re-signed under a new identity, keychain access was denied and
+      // Chromium fell back to a throwaway session key, or the login keychain
+      // was reset. The ciphertext is unrecoverable; keeping it wedges every
+      // pool operation (add, list, chat) behind a decrypt error forever.
+      // Move it aside and start with an empty pool so keys can be re-added.
+      await quarantineUnreadable(this.#filePath);
+      return {version: 1, providers: {}};
+    }
+    // A key's invalid/rate-limited state describes one running session, not
+    // the credential itself. Drop legacy persisted states on startup.
+    for (const [providerId, pool] of Object.entries(file.providers)) {
+      for (const item of pool.keys) delete item.status;
+      if (!pool.keys.some((item) => item.id === pool.activeKeyId && isCompleteKey(providerId, item.key)))
+        pool.activeKeyId = pool.keys.find((item) => isCompleteKey(providerId, item.key))?.id;
+    }
+    return file;
   }
 }
 

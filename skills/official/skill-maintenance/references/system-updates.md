@@ -6,7 +6,7 @@
 validation, approved deployment history, and upstream-baseline finalization.
 Customized skills such as `skill-creator` contain no updater or sync logic.
 
-State lives under `~/.codex/skill-maintenance/system-updates`. This directory
+State lives under `~/.midas/skill-maintenance/system-updates`. This directory
 contains accepted upstream baselines, reviews, and backups; it is not a live
 skill or editing surface.
 
@@ -17,7 +17,7 @@ python3 scripts/skill_maintenance.py system check --json
 python3 scripts/skill_maintenance.py system status --json
 ```
 
-Detection extracts the bundled skills from the installed Codex binary into an
+Detection copies the bundled skills from the installed Midas app bundle into an
 isolated temporary home. It does not trust the live `.system` cache. An
 upstream change creates a review containing:
 

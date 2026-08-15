@@ -6,11 +6,25 @@
     <link rel="icon" type="image/svg+xml" href="/polymux.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="stylesheet" href="/style.css" />
+    <script src="/theme-boot.js"></script>
     <title>Midas</title>
   </head>
   <body>
     <div class="bg" aria-hidden="true"></div>
     <div id="app"></div>
+    <!-- The splash is markup, not a component, so it paints with the first
+         frame instead of waiting for the renderer bundle to load and mount.
+         The mark is inlined rather than linked for the same reason: a fetched
+         image arrives after the wordmark and the lockup visibly reflows.
+         App.svelte fades the splash out and removes it once startup finishes. -->
+    <div id="startup-splash" class="startup-splash" role="status" aria-label="Loading Midas">
+      <div class="startup-brand">
+        <svg class="startup-mark" viewBox="20 30 170 140" aria-hidden="true" focusable="false">
+          <path fill="currentColor" transform="translate(-10 0)" d="M 40 40 L 120 40 A 60 60 0 0 1 120 160 L 40 160 L 70 120 L 110 120 A 20 20 0 0 0 110 80 L 70 80 Z"/>
+        </svg>
+        <span>Midas</span>
+      </div>
+    </div>
     <script type="module" src="/main.ts"></script>
   </body>
 </html>

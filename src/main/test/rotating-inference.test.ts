@@ -61,7 +61,7 @@ test("invalidates a rejected key and replaces the provider's raw auth response",
     assert.equal(error.error.code, "auth");
     assert.equal(
       error.error.message,
-      "The selected provider rejected its saved API key. Remove it or add a valid key in Options → Provider.",
+      'The selected provider rejected its saved API key (401: {"message":"Missing Authentication header","code":401}). Remove it or add a valid key in Settings → Provider.',
     );
   }
 });

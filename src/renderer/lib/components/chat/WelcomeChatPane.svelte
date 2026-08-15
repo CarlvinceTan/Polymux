@@ -1,16 +1,21 @@
 <script lang="ts">
   import PromptInput from './PromptInput.svelte';
+  import type {ReasoningEffort} from '@midas/protocol';
 
   export let greeting = 'What can I help with?';
   export let subtitle = 'Ask a question, attach a file, or start with your voice.';
   export let placeholder = 'Ask anything';
   export let active = false;
   export let speechModeEnabled = true;
+  export let dictationAutoStopSeconds: number | null = 6;
   export let showComposer = true;
-  export let onSend: (text: string, files: File[], asGoal: boolean) => void = () => {};
+  export let onSend: (text: string, files: File[], asGoal: boolean, immediate: boolean) => void = () => {};
   export let onStop: () => void = () => {};
   export let onVoice: () => void = () => {};
-  export let onOptions: () => void = () => {};
+  export let reasoning: ReasoningEffort = 'medium';
+  export let onReasoningChange: (value: ReasoningEffort) => void = () => {};
+  export let insertion: {id: string; text: string} | null = null;
+  export let onInsertionApplied: () => void = () => {};
 
   /**
    * Centres the composer itself on the viewport rather than the whole stack, by
@@ -65,6 +70,6 @@
     <p>{subtitle}</p>
   </div>
   {#if showComposer}
-    <PromptInput variant="welcome" {active} {speechModeEnabled} {placeholder} {onSend} {onStop} {onVoice} {onOptions}/>
+    <PromptInput variant="welcome" {active} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied}/>
   {/if}
 </div>

@@ -143,6 +143,36 @@ test("persists replayable run events and lifecycle state", () => {
   }
 });
 
+test("recompacting the same prefix replaces its summary", () => {
+  const storage = fixture();
+  try {
+    storage.createConversation({ id: "conversation-1", title: "Memory" });
+    storage.saveCompaction({
+      id: "compact-1",
+      conversationId: "conversation-1",
+      throughMessageSequence: 8,
+      summary: "stale summary",
+      tokenCount: 80,
+    });
+    const replaced = storage.saveCompaction({
+      id: "compact-2",
+      conversationId: "conversation-1",
+      throughMessageSequence: 8,
+      summary: "fresh summary",
+      tokenCount: 90,
+    });
+
+    assert.equal(replaced.summary, "fresh summary");
+    assert.equal(storage.getLatestCompaction("conversation-1")?.id, "compact-2");
+    assert.equal(
+      storage.getLatestCompaction("conversation-1")?.summary,
+      "fresh summary",
+    );
+  } finally {
+    storage.close();
+  }
+});
+
 test("keeps compaction, durable memory and preferences distinct", () => {
   const storage = fixture();
   try {
@@ -307,6 +337,73 @@ test("prevents resources from crossing conversation boundaries", () => {
         }),
       /another conversation/,
     );
+  } finally {
+    storage.close();
+  }
+});
+
+test("searches message history newest first, ignoring tool noise", () => {
+  const storage = fixture();
+  try {
+    storage.createConversation({ id: "older", title: "Rust questions" });
+    storage.createConversation({ id: "newer", title: "Deployment" });
+    storage.appendMessage({
+      id: "a",
+      conversationId: "older",
+      role: "user",
+      content: "I prefer Rust for the API layer",
+    });
+    storage.appendMessage({
+      id: "b",
+      conversationId: "newer",
+      role: "assistant",
+      content: [{ type: "text", text: "Rust it is, then." }],
+    });
+    storage.appendMessage({
+      id: "c",
+      conversationId: "newer",
+      role: "tool",
+      content: "Rust appears in this tool output too",
+    });
+
+    const hits = storage.searchMessages("Rust");
+
+    // Tool output is excluded by default; newest match comes first.
+    assert.deepEqual(
+      hits.map((hit) => hit.messageId),
+      ["b", "a"],
+    );
+    assert.equal(hits[0]?.conversationTitle, "Deployment");
+    // Block content is rendered to plain text rather than returned as JSON.
+    assert.equal(hits[0]?.text, "Rust it is, then.");
+    assert.equal(storage.searchMessages("Rust", { roles: ["tool"] }).length, 1);
+    assert.equal(storage.searchMessages("   ").length, 0);
+    assert.equal(storage.searchMessages("Rust", { conversationId: "older" }).length, 1);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a literal wildcard in a search is not treated as a pattern", () => {
+  const storage = fixture();
+  try {
+    storage.createConversation({ id: "c", title: "Chat" });
+    storage.appendMessage({
+      id: "a",
+      conversationId: "c",
+      role: "user",
+      content: "discount is 50% off",
+    });
+    storage.appendMessage({
+      id: "b",
+      conversationId: "c",
+      role: "user",
+      content: "nothing relevant here",
+    });
+
+    assert.equal(storage.searchMessages("50% off").length, 1);
+    // Would match everything if % leaked through as a wildcard.
+    assert.equal(storage.searchMessages("%%%").length, 0);
   } finally {
     storage.close();
   }
