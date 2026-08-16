@@ -325,6 +325,7 @@
     <button
       type="button"
       class="title-bar-icon-button workspace-header-action expand-workspace-action"
+      class:active={expanded}
       aria-label={expanded ? $t('workspace.minimise') : $t('workspace.expand')}
       data-tooltip-label={expanded ? $t('common.minimise') : $t('common.expand')}
       data-tooltip-align="end"

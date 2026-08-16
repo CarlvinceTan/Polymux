@@ -1607,7 +1607,7 @@
     open={chatDrawerOpen}
     width={chatDrawerWidth}
     resizing={chatDrawerResizing}
-    reservedWidth={mode === 'workspace' && !workspaceExpanded ? MIN_WORKSPACE_WIDTH : 0}
+    reservedWidth={mode === 'workspace' ? MIN_WORKSPACE_WIDTH : 0}
     onOpen={openChat}
     onRename={renameChatTitle}
     onDelete={deleteChat}

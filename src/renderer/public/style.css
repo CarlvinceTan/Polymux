@@ -173,7 +173,10 @@ body { background: var(--app-bg); }
 button, input, textarea { font: inherit; }
 button { color: inherit; -webkit-tap-highlight-color: transparent; }
 button:focus-visible, [contenteditable]:focus-visible { outline: 2px solid rgba(10,10,10,.18); outline-offset: 2px; }
-::selection { background: #d9d9d9; }
+/* Light ink on a light wash is unreadable, so the selection carries its own
+   foreground rather than borrowing the text's. */
+::selection { background: #d9d9d9; color: #111; }
+:root[data-theme="dark"] ::selection { background: #4a4a4a; color: #f5f5f5; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
 /* The window's own drag strip. It sits above the scrolling conversation so the
@@ -204,7 +207,11 @@ main.chat-drawer-resizing .scroll-to-latest,
 main.window-resizing .scroll-to-latest,
 main.window-resizing .timeline-rail,
 main.chat-drawer-resizing .timeline-rail { transition: none; }
-main.window-resizing .workspace-drawer.open { transition: none; }
+/* An expanded panel is sized off the chat drawer's width, so dragging that
+   drawer's edge resizes both. Left animating, the panel would trail the edge by
+   the length of the slide — opening a gap on the way out and letting the drawer
+   ride over it on the way in. Under a drag the two move as one frame. */
+main.window-resizing .workspace-drawer.open, main.chat-drawer-resizing .workspace-drawer.open { transition: none; }
 
 /* Never transform, filter, or contain this column. The composer and its queue
    are position:fixed inside it, and any of those would make it their containing
@@ -381,7 +388,11 @@ main.workspace-open .conversation-title-bar { right: var(--content-right-column)
 main.chat-drawer-resizing .conversation-title-bar, main.workspace-resizing .conversation-title-bar, main.window-resizing .conversation-title-bar { transition: none; }
 /* Sits above the translucent title bar so the rule stays crisp and continuous
    across the full viewport instead of being washed out beneath it. */
-main.has-conversation::after { content: ''; pointer-events: none; position: fixed; z-index: 29; top: calc(var(--app-topbar-height) - 1px); right: 0; left: 0; height: 1px; background: var(--neutral-200); }
+/* Drawn just under the bar rather than inside its last pixel: the workspace
+   views (drive, hub, schedule) start their own top rule right below a tab strip
+   of exactly this height, and a one-pixel offset between the two halves of the
+   same line is visible wherever both are on screen. */
+main.has-conversation::after { content: ''; pointer-events: none; position: fixed; z-index: 29; top: var(--app-topbar-height); right: 0; left: 0; height: 1px; background: var(--neutral-200); }
 .conversation-title-bar > button, .conversation-title-bar > input { pointer-events: auto; width: auto; max-width: min(520px,calc(100% - 190px)); height: 28px; overflow: hidden; appearance: none; border: 1px solid transparent; border-radius: 7px; margin: 0; padding: 0 7px; background: transparent; color: var(--neutral-800); font-size: 13px; font-weight: 550; line-height: 26px; text-align: center; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
 .conversation-title-bar > button { cursor: text; transition: background-color .15s ease, color .15s ease; }
 .conversation-title-bar > button:hover, .conversation-title-bar > button:focus-visible { outline: none; background: var(--neutral-100); color: var(--neutral-950); }
@@ -504,7 +515,12 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
 /* One glimmer for the whole row: a single highlight sweeps across the icon and
    the label as one wave, lightening the ink it passes over. */
 .agent-activity-list li.live::after, .agent-activity-list li.active:not(.commentary)::after, .agent-activity.streaming .agent-activity-list li:not(.commentary)::after { content: ""; position: absolute; z-index: 1; top: 0; bottom: 0; left: 0; width: 150px; pointer-events: none; background-image: linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,.35) 30%,rgba(255,255,255,.92) 50%,rgba(255,255,255,.35) 70%,rgba(255,255,255,0) 100%); mix-blend-mode: screen; animation: activity-glint-sweep calc((var(--glint-ink,120) + 450) / 200 * 1s) linear infinite; }
-:root[data-theme="dark"] .agent-activity-list li.live::after, :root[data-theme="dark"] .agent-activity-list li.active:not(.commentary)::after, :root[data-theme="dark"] .agent-activity.streaming .agent-activity-list li:not(.commentary)::after { background-image: linear-gradient(90deg,rgba(0,0,0,0) 0%,rgba(0,0,0,.3) 30%,rgba(0,0,0,.8) 50%,rgba(0,0,0,.3) 70%,rgba(0,0,0,0) 100%); mix-blend-mode: multiply; }
+/* Dark mode brightens rather than darkens, and dodges rather than multiplies:
+   multiplying black over an already-dark row dragged the row's own background
+   down with the ink, so the sweep read as a moving black patch. Dodge leaves
+   near-black almost untouched while driving light ink to full white, so only
+   the text and the glyph carry the wave. */
+:root[data-theme="dark"] .agent-activity-list li.live::after, :root[data-theme="dark"] .agent-activity-list li.active:not(.commentary)::after, :root[data-theme="dark"] .agent-activity.streaming .agent-activity-list li:not(.commentary)::after { background-image: linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,.14) 30%,rgba(255,255,255,.4) 50%,rgba(255,255,255,.14) 70%,rgba(255,255,255,0) 100%); mix-blend-mode: color-dodge; }
 .agent-activity-list li.failed { color: #a92914; }
 .agent-activity-list li.failed > svg { color: #a92914; }
 /* Red is reserved for a finished run; while the agent is still working every row reads as ordinary ink. */
@@ -679,6 +695,11 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
    The width transition would fight that stepping, so it stands down. */
 .workspace-drawer.motion { transition: transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s; }
 .workspace-drawer::before { content: ''; position: absolute; z-index: 70; inset: 0 auto 0 0; width: 1px; background: var(--neutral-200); pointer-events: none; transform: translateZ(0); }
+/* Expanded, the panel's left edge lands one pixel right of the chat drawer's
+   own divider, and the two 1px rules read as a single 2px one. Pulling the
+   panel's line onto the drawer's puts them in the same pixel, so the pair
+   renders as one standard divider however the panel is sized. */
+.workspace-drawer.expanded::before { transform: translateX(-1px) translateZ(0); }
 .workspace-drawer svg { stroke-width: 1.5; }
 .workspace-resize-handle { position: absolute; z-index: 80; inset: 0 auto 0 -8px; width: 17px; border: 0; padding: 0; background: transparent; cursor: col-resize; touch-action: none; }
 .workspace-resize-handle::after { content: ''; position: absolute; inset: 0 0 0 8px; width: 1px; background: transparent; transition: background-color .16s ease; }

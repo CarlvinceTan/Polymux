@@ -2069,7 +2069,9 @@
   .permission-retry:disabled{cursor:default;opacity:.55}
   /* The row keeps the app mark rather than a generic puzzle piece, so the
      extension reads as part of FlareAI in both places it is offered. */
-  .extension-row-mark{width:18px;height:18px;border-radius:4px}
+  /* The mark is flat black artwork with a baked-in fill, so on a dark row it
+     is invisible; inverting it is what turns it white without a second asset. */
+  .extension-row-mark{width:18px;height:18px;border-radius:4px}:global(:root[data-theme="dark"]) .extension-row-mark{filter:invert(1)}
   .extension-installed{flex:none;color:var(--neutral-500);font-size:10.5px;font-weight:550}
   .setting-value{flex:none;display:flex;align-items:center;color:var(--neutral-500);font-size:10.5px;font-weight:550;line-height:1}
   .update-refresh{width:16px;height:16px;flex:none;display:flex;align-items:center;justify-content:center;margin-left:-7px;border:0;border-radius:5px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer;line-height:0;transform:translateY(1px)}

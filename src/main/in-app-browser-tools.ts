@@ -31,6 +31,7 @@ export function createInAppBrowserTool(browser: InAppBrowser): AgentTool {
       "Actions: 'open' loads a url in a new tab and returns its tabId (the tab appears in the workspace);",
       "'show' brings a tab to the front of the workspace — use it, or open with show: true, only when the user asked to be shown the page ('show me', 'open X for me'), never to interrupt them while you work;",
       "'tabs' lists the tabs already open here; 'navigate' loads a url in an existing tab;",
+      "'url' takes a page address or, when you need to look something up, plain search terms — those go to Google, the default search engine;",
       "'read' returns the page's title, url and visible text; 'click' clicks a CSS selector;",
       "'type' types text into a selector (submit: true submits the form); 'scroll' scrolls by deltaY pixels;",
       "'close' closes the tab when the work is done.",
@@ -64,8 +65,9 @@ export function createInAppBrowserTool(browser: InAppBrowser): AgentTool {
       if (action === "tabs") return { content: JSON.stringify({ tabs: browser.tabs() }) };
 
       if (action === "open") {
-        if (!httpUrl(url)) return fail("open requires an http(s) url");
-        const page = await browser.openAgentTab(url, input.show === true);
+        const target = resolveTarget(url);
+        if (!target) return fail("open requires an http(s) url or something to search for");
+        const page = await browser.openAgentTab(target, input.show === true);
         return pageResult(page);
       }
 
@@ -85,8 +87,9 @@ export function createInAppBrowserTool(browser: InAppBrowser): AgentTool {
       }
 
       if (action === "navigate") {
-        if (!httpUrl(url)) return fail("navigate requires an http(s) url");
-        browser.navigate(tabId, url);
+        const target = resolveTarget(url);
+        if (!target) return fail("navigate requires an http(s) url or something to search for");
+        browser.navigate(tabId, target);
         return pageResult(await browser.settle(tabId));
       }
 
@@ -136,6 +139,22 @@ function pageResult(
 
 function fail(message: string): { content: string; isError: true } {
   return { content: message, isError: true };
+}
+
+/**
+ * Address-bar semantics, matching what the user gets when they type into the
+ * Browser tab: a url loads, a bare host gets a scheme, and anything else is a
+ * Google search. Without this the agent had to hand-build a search url, and
+ * a stray phrase in `url` was simply rejected.
+ */
+function resolveTarget(value: string): string | null {
+  if (!value) return null;
+  if (httpUrl(value)) return value;
+  // A scheme the browser must not follow (file:, data:) is a refusal, not a
+  // phrase to search for.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return null;
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(\/\S*)?$/i.test(value)) return `https://${value}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(value)}`;
 }
 
 function httpUrl(value: string): boolean {

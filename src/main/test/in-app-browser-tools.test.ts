@@ -81,6 +81,18 @@ test("a selector that matches nothing is an error, not a silent success", async 
   assert.match(result.content, /matches \.missing/);
 });
 
+test("plain terms search Google, a bare host just gains a scheme", async () => {
+  const browser = fakeBrowser();
+  await run(browser, {action: "open", url: "flareai release notes"});
+  await run(browser, {action: "open", url: "flareai.test/docs"});
+  await run(browser, {action: "navigate", tabId: "tab-1", url: "who won the toss"});
+  assert.deepEqual(browser.calls, [
+    "open https://www.google.com/search?q=flareai%20release%20notes",
+    "open https://flareai.test/docs",
+    "navigate tab-1 https://www.google.com/search?q=who%20won%20the%20toss",
+  ]);
+});
+
 test("rejects unknown tabs and non-http urls", async () => {
   const browser = fakeBrowser();
   const unknownTab = await run(browser, {action: "read", tabId: "tab-9"});
