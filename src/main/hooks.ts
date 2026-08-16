@@ -63,10 +63,6 @@ export class HookEngine implements ToolHooks {
     return this.#loadError;
   }
 
-  rules(): HookRule[] {
-    this.#reload();
-    return this.#rules;
-  }
 
   async beforeTool(call: ToolCallBlock): Promise<ToolHookDecision> {
     for (const rule of this.#matching("pre-tool", call.name)) {

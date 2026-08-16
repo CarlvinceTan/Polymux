@@ -25,7 +25,7 @@
     title: string;
     frequency: ScheduleFrequency;
     status: ScheduleStatus;
-    /** The instruction the agent runs each time. Shown when the row expands. */
+    /** The instruction the agent runs each time. */
     prompt?: string;
     /** Epoch milliseconds. */
     nextRunAt?: number;
@@ -315,11 +315,12 @@
     if (item) onChangeFrequency(item, next);
   }
 
-  const now = new Date();
-
   /** Switching kind keeps whatever the other shape shares — the time of day,
    * the zone — so changing Weekly to Monthly does not reset the clock. */
   function withKind(current: ScheduleFrequency, kind: ScheduleFrequency['kind']): ScheduleFrequency {
+    // Read per call: the view is long-lived, so a date captured at mount would
+    // seed yesterday's weekday after midnight.
+    const now = new Date();
     const time = 'time' in current ? current.time : '09:00';
     const timeZone = current.timeZone;
     const interval = frequencyInterval(current);

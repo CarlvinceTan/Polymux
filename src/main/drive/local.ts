@@ -20,10 +20,6 @@ export class LocalDrive implements DriveAdapter {
     this.#root = root;
   }
 
-  root(): string {
-    return this.#root;
-  }
-
   setRoot(root: string): void {
     this.#root = root;
     this.#ready = null;

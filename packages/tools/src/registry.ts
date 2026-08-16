@@ -18,19 +18,7 @@ export class ToolRegistry {
   get(name: string): AgentTool | undefined {
     return this.#tools.get(name);
   }
-  has(name: string): boolean {
-    return this.#tools.has(name);
-  }
   list(): AgentTool[] {
     return [...this.#tools.values()];
-  }
-
-  select(names?: Iterable<string>): AgentTool[] {
-    if (!names) return this.list();
-    return [...names].map((name) => {
-      const tool = this.#tools.get(name);
-      if (!tool) throw new Error(`Unknown tool: ${name}`);
-      return tool;
-    });
   }
 }

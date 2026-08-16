@@ -71,10 +71,6 @@ export class McpConnection {
   tools(): AgentTool[] {
     return [...this.#tools];
   }
-  serverCapabilities() {
-    return this.#client.getServerCapabilities();
-  }
-
   async connect(): Promise<void> {
     if (this.#status === "connected" || this.config.enabled === false) return;
     this.#status = "connecting";
@@ -131,6 +127,9 @@ export class McpConnection {
     tool: Awaited<ReturnType<Client["listTools"]>>["tools"][number],
   ): AgentTool {
     const exposedName = `${this.config.id}.${tool.name}`;
+    // `execute` is invoked with the tool object as `this`, so the connection's
+    // private client must be captured here rather than read off `this`.
+    const client = this.#client;
     return {
       name: exposedName,
       description:
@@ -140,13 +139,15 @@ export class McpConnection {
       async execute(input, context) {
         const result =
           tool.execution?.taskSupport === "required"
-            ? await callTaskTool(this.#client, tool.name, input, context.signal)
-            : await this.#client.callTool(
+            ? await callTaskTool(client, tool.name, input, context.signal)
+            : await client.callTool(
                 { name: tool.name, arguments: input },
                 CallToolResultSchema,
                 { signal: context.signal },
               );
-        return mcpResult(result);
+        // callTool's declared return includes a legacy `toolResult` shape the
+        // passed CallToolResultSchema has already ruled out at runtime.
+        return mcpResult(result as CallToolResult);
       },
     };
   }

@@ -352,12 +352,6 @@ export class HomeserverStore {
     return rows.map(rowToEvent);
   }
 
-  membership(roomId: string, userId: string): string | null {
-    const event = this.stateEvent(roomId, "m.room.member", userId);
-    const content = event?.content as {membership?: string} | undefined;
-    return content?.membership ?? null;
-  }
-
   members(roomId: string, membership?: string): StoredEvent[] {
     return this.fullState(roomId).filter((event) => {
       if (event.type !== "m.room.member") return false;
@@ -437,13 +431,6 @@ export class HomeserverStore {
          ON CONFLICT(user_id, room_id) DO UPDATE SET stream_order = MAX(stream_order, excluded.stream_order)`,
       )
       .run(userId, roomId, streamOrder);
-  }
-
-  receipt(userId: string, roomId: string): number {
-    const row = this.#db
-      .prepare("SELECT stream_order FROM receipts WHERE user_id = ? AND room_id = ?")
-      .get(userId, roomId) as {stream_order: number} | undefined;
-    return row?.stream_order ?? 0;
   }
 
   /** Message events in the user's rooms past their read receipt, oldest first. */

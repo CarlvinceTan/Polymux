@@ -504,16 +504,6 @@ export class SqliteStorage implements Storage {
     return row ? run(row) : null;
   }
 
-  listRuns(conversationId: Id): AgentRun[] {
-    return (
-      this.database
-        .prepare(
-          "SELECT * FROM runs WHERE conversation_id=? ORDER BY created_at",
-        )
-        .all(conversationId) as Row[]
-    ).map(run);
-  }
-
   updateRun(
     id: Id,
     patch: {

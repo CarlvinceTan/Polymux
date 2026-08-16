@@ -143,8 +143,6 @@ export class Communications {
   #matrixToken: string | null = null;
   #userId: string | null = null;
   #loaded = false;
-  /** Login ids in flight, so a cancel can reach the right flow. */
-  readonly #active = new Map<CommsPlatform, string>();
   /** Connection-test outcomes, which are too slow to redo on every status read. */
   readonly #emailStatus = new Map<string, {status: "ok" | "error"; error: string | null}>();
   /**
@@ -448,7 +446,6 @@ export class Communications {
       };
     }
     const step = await this.#hub.loginStart(route, flowId);
-    this.#active.set(platform, step.loginId);
     return this.#remember(platform, step);
   }
 
@@ -463,11 +460,9 @@ export class Communications {
       const token = values.token?.trim();
       if (!token) throw new Error("An account token is required");
       await this.#hub.legacyTokenLogin(route, token);
-      this.#active.delete(platform);
       return {type: "complete", loginId, accountId: null, accountName: null};
     }
     const step = await this.#hub.loginSubmit(route, loginId, stepId, "user_input", values);
-    if (step.type === "complete") this.#active.delete(platform);
     return this.#remember(platform, step);
   }
 
@@ -478,7 +473,6 @@ export class Communications {
   ): Promise<CommsLoginStepDto> {
     const {route} = await this.#target(platform);
     const step = await this.#hub.loginWait(route, loginId, stepId);
-    if (step.type === "complete") this.#active.delete(platform);
     return this.#remember(platform, step);
   }
 
@@ -501,10 +495,7 @@ export class Communications {
       fields: pending.fields,
     });
     const step = await this.#hub.loginSubmit(route, loginId, stepId, "cookies", values);
-    if (step.type === "complete") {
-      this.#active.delete(platform);
-      this.#cookieSteps.delete(`${platform}:${stepId}`);
-    }
+    if (step.type === "complete") this.#cookieSteps.delete(`${platform}:${stepId}`);
     return this.#remember(platform, step);
   }
 
@@ -533,7 +524,6 @@ export class Communications {
     this.#cancelCookieLogin?.(platform);
     const target = await this.#target(platform).catch((): null => null);
     if (target?.api === "bridgev2") await this.#hub.loginCancel(target.route, loginId);
-    this.#active.delete(platform);
     return this.#publish();
   }
 
@@ -586,7 +576,7 @@ export class Communications {
   async emailTest(id: string): Promise<CommsEmailAccountDto> {
     const account = await this.#email.test(id);
     this.#emailStatus.set(id, {status: account.status as "ok" | "error", error: account.error});
-    void this.#publish();
+    void this.#publish().catch((): undefined => undefined);
     return account;
   }
 

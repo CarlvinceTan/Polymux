@@ -130,10 +130,12 @@ export function checkForUpdates(): Promise<AppUpdateDto> {
     const finish = (value: AppUpdateDto) => {
       if (done) return;
       done = true;
+      clearTimeout(deadline);
+      pending = pending.filter((waiter) => waiter !== finish);
       resolve(value);
     };
     pending.push(finish);
-    setTimeout(() => finish(state), CHECK_TIMEOUT_MS);
+    const deadline = setTimeout(() => finish(state), CHECK_TIMEOUT_MS);
     autoUpdater.checkForUpdates();
   });
 }

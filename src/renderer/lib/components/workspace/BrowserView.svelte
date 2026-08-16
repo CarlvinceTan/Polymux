@@ -73,10 +73,13 @@
     if (embedded) void api.browser.history(tabId, delta);
   }
 
+  let refreshingTimer: ReturnType<typeof setTimeout> | undefined;
+
   function reload(): void {
     refreshing = true;
     if (embedded) void api.browser.reload(tabId);
-    setTimeout(() => refreshing = false, 420);
+    clearTimeout(refreshingTimer);
+    refreshingTimer = setTimeout(() => refreshing = false, 420);
   }
 
   function downloadIcon(entry: BrowserDownload): 'document' | 'image' | 'pdf' | 'spreadsheet' | 'file' {
@@ -216,6 +219,7 @@
 
   onDestroy(() => {
     stopWatchingFocus();
+    clearTimeout(refreshingTimer);
     if (boundsFrame !== undefined) cancelAnimationFrame(boundsFrame);
     unsubscribe?.();
     // Switching tabs unmounts this component while the tab stays open, so the

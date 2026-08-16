@@ -79,7 +79,6 @@
   const rest = $derived(ordered.filter((provider) => !FEATURED.includes(provider.id)));
   /** What is actually on screen, and so what the arrow keys walk. */
   const shown = $derived(showAll ? [...recommended, ...rest] : recommended);
-  const alreadyConfigured = $derived(providers.find((provider) => provider.configured) ?? null);
   const selected = $derived(providers.find((provider) => provider.id === chosen) ?? null);
 
   $effect(() => {

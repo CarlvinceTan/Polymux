@@ -12,12 +12,6 @@ export interface ToolEnvironment {
 
 export type ToolFactory = (environment: ToolEnvironment) => AgentTool;
 
-export function objectInput(value: JsonObject, tool: string): JsonObject {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error(`${tool} input must be an object`);
-  return value;
-}
-
 export function stringInput(
   input: JsonObject,
   key: string,

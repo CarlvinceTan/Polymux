@@ -67,7 +67,6 @@ export interface ConversationStore {
 export interface RunStore {
   createRun(input: NewRun): AgentRun;
   getRun(id: Id): AgentRun | null;
-  listRuns(conversationId: Id): AgentRun[];
   updateRun(
     id: Id,
     patch: {

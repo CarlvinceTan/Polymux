@@ -1,5 +1,5 @@
 <script lang="ts">
-  import {onMount, tick} from 'svelte';
+  import {onDestroy, onMount, tick} from 'svelte';
   import {readableError} from '../../errors';
   import type {AppUpdateDto, AppVersionDto, ChronicleStatusDto, GeneralSettingsDto, McpRegistryEntryDto, McpServerDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, ProviderDto, SkillDto, SkillRegistryEntryDto} from '@flareai/protocol';
   import {SUPPORTED_LANGUAGES} from '@flareai/protocol';
@@ -227,6 +227,13 @@
         : !general.location
           ? 'Waiting for location permission'
           : 'Shared with the agent';
+
+  onDestroy(() => {
+    // A registry search debounce that outlives the modal would fire a network
+    // request whose result lands in unmounted state.
+    clearTimeout(mcpRegistryTimer);
+    clearTimeout(registryTimer);
+  });
 
   onMount(() => {
     void loadAll();
@@ -528,14 +535,14 @@
     checkingUpdate = true;
     // A cached answer can come back instantly; hold the label long enough
     // that the click reads as having done something.
-    const settled = new Promise((resolve) => setTimeout(resolve, 600));
+    const minimumDelay = new Promise((resolve) => setTimeout(resolve, 600));
     try {
       update = await api.general.checkForUpdates();
     } catch (reason) {
       update = null;
       error = readableError(reason);
     } finally {
-      await settled;
+      await minimumDelay;
       checkingUpdate = false;
     }
   }
@@ -1074,10 +1081,7 @@
 
   /** The View Setup line for a role: its own model, or the main model it follows. */
   function roleSetupValue(role: {value: ModelRole; followsMain: boolean}, roles: ModelRolesDto | null): string {
-    const assignment = roleAssignment(role.value, roles);
-    if (assignment) return assignment.name;
-    const main = role.followsMain ? roleAssignment('main', roles) : null;
-    return main?.name ?? 'Not set';
+    return roleStatus(role, roles);
   }
 
   async function assignModelRole(role: ModelRole, item: ModelDto): Promise<void> {

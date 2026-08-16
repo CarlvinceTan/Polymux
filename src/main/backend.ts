@@ -9,8 +9,6 @@ import type { ActiveAgentRun, AgentRunEvent } from "@flareai/core";
 import type { InferenceModel, InferenceService, ModelRef } from "@flareai/inference";
 import { PiInference } from "@flareai/inference/pi";
 import type {
-  AppUpdateDto,
-  AppVersionDto,
   CreateCustomProviderRequest,
   GeneralSettingsDto,
   GoalCommandRequest,
@@ -514,7 +512,7 @@ export class DesktopBackend {
           });
           existingPaths.add(attachmentPath);
         }
-        return updated ? this.#messageDto(updated) : null;
+        return this.#messageDto(updated);
       },
     );
     this.#handle(channels.runsStart, (_event, value: unknown) =>
@@ -528,6 +526,9 @@ export class DesktopBackend {
       const value = required(text, "text");
       const run = this.#storage.getRun(id);
       if (!run) throw new Error(`Run not found: ${id}`);
+      // Resolve the live run before persisting: a run that settled between the
+      // click and this handler must not leave an orphaned user message behind.
+      const active = this.#requireRun(id);
       this.#storage.appendMessage({
         id: messageId ? required(messageId, "message id") : crypto.randomUUID(),
         conversationId: run.conversationId,
@@ -535,7 +536,7 @@ export class DesktopBackend {
         role: "user",
         content: value,
       });
-      this.#requireRun(id).control.steer({
+      active.control.steer({
         role: "user",
         content: value,
       });

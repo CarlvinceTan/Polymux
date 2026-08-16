@@ -43,9 +43,6 @@
     initial: string;
     /** Set for messaging seats only. */
     platform?: CommsPlatform;
-    /** Set for mail seats only. */
-    preset?: string;
-    imapHost?: string;
   }
 
   let status = $state<CommsStatusDto | null>(null);
@@ -1050,8 +1047,6 @@
         <span class="pf-seat-mark">
           {#if item.logo}
             <img src={item.logo} alt="" aria-hidden="true" />
-          {:else if item.preset === 'custom'}
-            <Icon name="mail" size={19} />
           {:else}
             {item.initial}
           {/if}
@@ -1463,8 +1458,6 @@
           <span class="pf-stack-mark" style="--i:{position}">
             {#if item.logo}
               <img src={item.logo} alt="" />
-            {:else if item.preset === 'custom'}
-              <Icon name="mail" size={15} />
             {:else}
               {item.initial}
             {/if}
@@ -1543,7 +1536,6 @@
   .pf-seat.idle{opacity:calc(var(--fade,1) * .92)}
   .pf-seat.open{z-index:2}
   /* The chosen seat rides the middle of the arc, a size up from the rest. */
-  /* The chosen seat rides to the middle a size up from the rest. */
   .pf-seat.open{transform:translate(-50%,-50%) scale(1.3)}
   /* Chosen reads as size and a darker ring — no fill, so the logo stays itself. */
   .pf-seat.open .pf-seat-mark{border-color:var(--neutral-950);background:var(--app-bg)}

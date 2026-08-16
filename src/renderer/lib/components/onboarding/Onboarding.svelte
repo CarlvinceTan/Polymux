@@ -346,16 +346,12 @@
           <!-- The one line that ends setup, on the ground that then closes over
                the app. -->
           <div class="onb-disc onb-ink"><div class="onb-disc-inner">
-            {#if false}
-              <span></span>
-            {:else}
-              <h1 class="onb-title onb-finale">You're ready to go.</h1>
-              <div class="onb-actions onb-actions-centre">
-                <button type="button" class="onb-button primary" disabled={finishing} onclick={() => void finish()}>
-                  Get started
-                </button>
-              </div>
-            {/if}
+            <h1 class="onb-title onb-finale">You're ready to go.</h1>
+            <div class="onb-actions onb-actions-centre">
+              <button type="button" class="onb-button primary" disabled={finishing} onclick={() => void finish()}>
+                Get started
+              </button>
+            </div>
           </div></div>
         {/if}
       </div>
@@ -416,7 +412,6 @@
     :global(:root:not([data-theme="light"])) .onb{--cover-ink:#fafafa}
   }
 
-  /* Above the platforms arc, which is painted from a fixed layer at z-index 0. */
   /* Above the platforms arc, which is painted from a fixed layer at z-index 0.
      Empty on the left, where the macOS traffic lights sit over this surface. */
   .onb-chrome{position:absolute;z-index:2;top:0;left:0;right:0;display:flex;align-items:center;justify-content:flex-end;min-height:22px;padding:18px 22px;-webkit-app-region:drag;

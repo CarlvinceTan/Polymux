@@ -256,6 +256,8 @@ export class BridgeHost {
   /** Starts in flight, so hover-then-click cannot spawn a bridge twice. */
   readonly #starting = new Map<string, Promise<void>>();
   #closed = false;
+  /** Pending restart backoffs, cancelled on close so shutdown is not held up. */
+  readonly #restartTimers = new Set<NodeJS.Timeout>();
 
   constructor(options: BridgeHostOptions) {
     this.#options = options;
@@ -555,6 +557,8 @@ export class BridgeHost {
 
   async close(): Promise<void> {
     this.#closed = true;
+    for (const timer of this.#restartTimers) clearTimeout(timer);
+    this.#restartTimers.clear();
     for (const child of this.#children.values()) child.kill("SIGTERM");
     this.#children.clear();
   }
@@ -719,7 +723,11 @@ export class BridgeHost {
       this.#options.log?.(
         `[${bridge.name}] exited with code ${code ?? "signal"}; restarting in ${delay / 1000}s`,
       );
-      setTimeout(() => this.#supervise(bridge, configPath, directory), delay);
+      const timer = setTimeout(() => {
+        this.#restartTimers.delete(timer);
+        void this.#supervise(bridge, configPath, directory);
+      }, delay);
+      this.#restartTimers.add(timer);
     });
   }
 

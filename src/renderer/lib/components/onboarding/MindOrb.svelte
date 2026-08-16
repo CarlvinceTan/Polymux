@@ -105,6 +105,14 @@
     const started = performance.now();
     let speaking = false;
     const feed = (now: number): void => {
+      // Off camera the effect below has parked the orb; feeding it here would
+      // wake it back up on the next phrase and waste frames on an unseen slide.
+      if (!active) {
+        // Forget mid-phrase state so coming back on camera re-derives it.
+        speaking = false;
+        frame = requestAnimationFrame(feed);
+        return;
+      }
       const t = (now - started) / 1000;
       const audio = speechAt(t);
       // The state is inferred from the envelope the same way the real session

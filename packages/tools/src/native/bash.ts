@@ -43,12 +43,16 @@ export function createBashTool(environment: ToolEnvironment): AgentTool {
       const abort = () => child.kill("SIGTERM");
       context.signal.addEventListener("abort", abort, { once: true });
       const timer = timeoutMs ? setTimeout(abort, timeoutMs) : undefined;
-      const code = await new Promise<number | null>((resolveCode, reject) => {
-        child.once("error", reject);
-        child.once("close", resolveCode);
-      });
-      if (timer) clearTimeout(timer);
-      context.signal.removeEventListener("abort", abort);
+      let code: number | null;
+      try {
+        code = await new Promise<number | null>((resolveCode, reject) => {
+          child.once("error", reject);
+          child.once("close", resolveCode);
+        });
+      } finally {
+        if (timer) clearTimeout(timer);
+        context.signal.removeEventListener("abort", abort);
+      }
       if (context.signal.aborted) throw context.signal.reason;
       const full = Buffer.concat(chunks).toString("utf8");
       const bounded = boundOutput(

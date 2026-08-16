@@ -44,7 +44,6 @@
   let conversations: Conversation[] = [];
   let activeId = '';
   let draftConversation: Conversation = emptyDraft();
-  let loadError = '';
   let runByConversation: Record<string, string> = {};
   let liveAssistantByConversation: Record<string, string> = {};
   /** Messages typed while a run was going. They wait their turn instead of
@@ -254,6 +253,7 @@
     unsubscribeFullscreen?.();
     cancelAnimationFrame(chromeShiftFrame);
     cancelAnimationFrame(workspaceMotionFrame);
+    clearTimeout(resourceRefreshTimer);
     stopThemeSync?.();
   });
 
@@ -328,7 +328,10 @@
       // directions differ only in how long it is held, and the stylesheet
       // keys the restore's blanking off the value.
       cancelAnimationFrame(chromeShiftFrame);
-    cancelAnimationFrame(workspaceMotionFrame);
+      // A width animation in flight would fight the fullscreen zoom; snap it
+      // to its target rather than leaving the panel frozen mid-motion.
+      cancelAnimationFrame(workspaceMotionFrame);
+      workspaceMotionWidth = null;
       root.dataset.chromeShift = fullscreen ? 'enter' : 'restore';
       root.dataset.fullscreen = String(fullscreen);
       if (fullscreen) {
@@ -565,9 +568,8 @@
         messages: current.get(item.id)?.messages ?? [],
         goal: current.get(item.id)?.goal,
       }));
-      loadError = '';
     } catch (error) {
-      loadError = readableError(error);
+      console.error('Could not load chats:', readableError(error));
     }
   }
 
@@ -582,9 +584,8 @@
       const current = conversations.find((chat) => chat.id === id)?.messages ?? [];
       updateConversation(id, (chat) => ({...chat, messages: mergeMessages(storedMessages, current), goal: fromGoal(storedGoal)}));
       applyResources(artifacts, storedReferences);
-      loadError = '';
     } catch (error) {
-      loadError = readableError(error);
+      console.error('Could not load the conversation:', readableError(error));
     }
   }
 

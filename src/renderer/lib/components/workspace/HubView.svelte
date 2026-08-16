@@ -288,9 +288,14 @@
     }
   }
 
+  // Guards overlapping list fetches (search vs. sort change): only the most
+  // recently started request may write the results, same as readMail's guard.
+  let envelopeFetch = 0;
+
   async function loadEnvelopes(more = false): Promise<void> {
     if (!source || source.kind !== 'mail') return;
     const wanted = more ? page + 1 : 1;
+    const fetchId = ++envelopeFetch;
     busy = more ? 'more' : 'envelopes';
     try {
       const batch = await api.comms.mailEnvelopes({
@@ -301,6 +306,7 @@
         sort,
         query: search.trim() || undefined,
       });
+      if (fetchId !== envelopeFetch) return;
       // A short page is the end of the folder; a full one may not be.
       moreToLoad = batch.length === PAGE_SIZE;
       page = wanted;
@@ -308,6 +314,7 @@
       if (!more) selected = new Set();
       error = '';
     } catch (cause) {
+      if (fetchId !== envelopeFetch) return;
       error = readableError(cause);
       if (!more) envelopes = [];
     } finally {
@@ -334,6 +341,8 @@
         query: `subject "${base.replace(/"/g, '')}"`,
       })
       .catch(() => [] as MailEnvelopeDto[]);
+    // A slower earlier click must not put its chain under a newer message.
+    if (openEnvelope?.id !== envelope.id) return;
     // Only worth showing when there is actually a chain.
     const chain = found.filter((item) => baseSubject(item.subject) === base);
     thread = chain.length > 1 ? chain : [];
@@ -424,10 +433,7 @@
     try {
       await api.comms.mailMove([envelope.id], target.name, account, folder);
       envelopes = envelopes.filter((item) => item.id !== envelope.id);
-      if (openEnvelope?.id === envelope.id) {
-        openMail = null;
-        openEnvelope = null;
-      }
+      if (openEnvelope?.id === envelope.id) closeReader();
       error = '';
     } catch (cause) {
       error = readableError(cause);
@@ -583,7 +589,6 @@
   function startCompose(mode: ComposeMode = 'new'): void {
     const message = mode === 'new' ? null : openMail;
     composing = true;
-    if (mode !== 'new') openMail = message;
     composeTo = message && mode !== 'forward'
       ? replyRecipients(message, mode === 'reply-all').join(', ')
       : '';

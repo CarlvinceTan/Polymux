@@ -52,8 +52,6 @@ export interface HubProbe {
 interface RequestOptions {
   method?: "GET" | "POST";
   body?: unknown;
-  /** Falls back to the shared secret when the app holds no Matrix token. */
-  route: string;
   timeoutMs?: number;
 }
 
@@ -413,7 +411,7 @@ export class MatrixHub {
           "This platform runs through a local relay on this Mac rather than a hosted login, so there is nothing to link here.",
       };
 
-    const whoami = await this.#provision<WhoamiResponse>(route, "whoami", {route}).catch(
+    const whoami = await this.#provision<WhoamiResponse>(route, "whoami", {}).catch(
       (error: unknown) => error as Error,
     );
     if (whoami instanceof ProvisioningError && whoami.status === 404) {
@@ -469,7 +467,7 @@ export class MatrixHub {
     const step = await this.#provision<RawLoginStep>(
       route,
       `login/start/${encodeURIComponent(flowId)}`,
-      {route, method: "POST", body: {}},
+      {method: "POST", body: {}},
     );
     // Only the start response carries the login id; every later step has to be
     // addressed with it, so losing it here strands the flow.
@@ -488,7 +486,7 @@ export class MatrixHub {
     const step = await this.#provision<RawLoginStep>(
       route,
       `login/step/${encodeURIComponent(loginId)}/${encodeURIComponent(stepId)}/${stepType}`,
-      {route, method: "POST", body: values},
+      {method: "POST", body: values},
     );
     return toStep(step, loginId);
   }
@@ -498,14 +496,13 @@ export class MatrixHub {
     const step = await this.#provision<RawLoginStep>(
       route,
       `login/step/${encodeURIComponent(loginId)}/${encodeURIComponent(stepId)}/display_and_wait`,
-      {route, method: "POST", body: {}, timeoutMs: WAIT_TIMEOUT_MS},
+      {method: "POST", body: {}, timeoutMs: WAIT_TIMEOUT_MS},
     );
     return toStep(step, loginId);
   }
 
   async loginCancel(route: string, loginId: string): Promise<void> {
     await this.#provision(route, `login/cancel/${encodeURIComponent(loginId)}`, {
-      route,
       method: "POST",
     }).catch((): undefined => undefined);
   }
@@ -516,7 +513,6 @@ export class MatrixHub {
       return;
     }
     await this.#provision(route, `logout/${encodeURIComponent(accountId)}`, {
-      route,
       method: "POST",
     });
   }

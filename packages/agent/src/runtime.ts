@@ -281,10 +281,18 @@ export class FlareAIAgent {
           () => reportStatus('compacting'),
         ),
     });
-    const settled = active.result.then(async (result) => {
-      this.#finish(input, result, stored.length);
-      await this.#driveGoal(input, result);
-    });
+    // The runner appends new messages onto the context it was started with, so
+    // the run's additions begin at this index — not at the stored row count,
+    // which drifts whenever toInferenceMessage or selectContext drops rows.
+    const initialContextLength = messages.length;
+    const settled = active.result
+      .then(async (result) => {
+        this.#finish(input, result, initialContextLength);
+        await this.#driveGoal(input, result);
+      })
+      .catch((error: unknown) => {
+        console.error("FlareAI post-run bookkeeping failed", error);
+      });
     this.#goalWork.add(settled);
     void settled.finally(() => this.#goalWork.delete(settled));
     return active;

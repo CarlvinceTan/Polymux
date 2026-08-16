@@ -92,7 +92,6 @@ export class AgentSurfaceServer {
   readonly #leases = new Map<string, SurfaceLease>();
   readonly #waiters = new Set<() => void>();
   readonly #pendingCommands = new Map<string, PendingCommand>();
-  readonly #arrivalWaiters = new Map<string, () => void>();
   #clock: () => number;
 
   constructor(options: { port?: number; clock?: () => number } = {}) {
@@ -250,10 +249,9 @@ export class AgentSurfaceServer {
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/cursor-arrivals") {
-      const body = await readBody(request);
-      const key = `${String(body.leaseId)}:${String(body.moveSequence)}`;
-      this.#arrivalWaiters.get(key)?.();
-      this.#arrivalWaiters.delete(key);
+      // Acknowledged but otherwise unused: nothing blocks on cursor arrival
+      // today, and the extension only needs a 200 to stop retrying.
+      await readBody(request);
       json(response, 200, { ok: true });
       return;
     }

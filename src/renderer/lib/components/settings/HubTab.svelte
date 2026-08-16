@@ -310,19 +310,27 @@
     }
   }
 
+  // Versions the login flow so a cancelled attempt's pending waits cannot
+  // write their stale steps over a newer flow (loginWait blocks for minutes).
+  let linkAttempt = 0;
+
   async function startLink(platform: CommsPlatform, flowId: string): Promise<void> {
+    const mine = ++linkAttempt;
     stepPlatform = platform;
     stepError = '';
     stepValues = {};
     busy = `link:${platform}`;
     try {
-      step = await api.comms.loginStart(platform, flowId);
-      await advance();
+      const next = await api.comms.loginStart(platform, flowId);
+      if (mine !== linkAttempt) return;
+      step = next;
+      await advance(mine);
     } catch (cause) {
+      if (mine !== linkAttempt) return;
       stepError = readableError(cause);
       step = null;
     } finally {
-      busy = '';
+      if (mine === linkAttempt) busy = '';
     }
   }
 
@@ -330,18 +338,21 @@
    * Drives whichever step the bridge returned that needs no typing: a QR or
    * code has to be waited on, and a cookie sign-in opens its own window.
    */
-  async function advance(): Promise<void> {
+  async function advance(mine: number): Promise<void> {
     while (step && stepPlatform) {
       if (step.type === 'display_and_wait') {
         waiting = true;
         try {
-          step = await api.comms.loginWait(stepPlatform, step.loginId, step.stepId);
+          const next = await api.comms.loginWait(stepPlatform, step.loginId, step.stepId);
+          if (mine !== linkAttempt) return;
+          step = next;
         } catch (cause) {
+          if (mine !== linkAttempt) return;
           stepError = readableError(cause);
           waiting = false;
           return;
         } finally {
-          waiting = false;
+          if (mine === linkAttempt) waiting = false;
         }
         continue;
       }
@@ -350,8 +361,11 @@
         const platform = stepPlatform;
         const loginId = step.loginId;
         try {
-          step = await api.comms.loginCookies(stepPlatform, step.loginId, step.stepId);
+          const next = await api.comms.loginCookies(stepPlatform, step.loginId, step.stepId);
+          if (mine !== linkAttempt) return;
+          step = next;
         } catch (cause) {
+          if (mine !== linkAttempt) return;
           // The sign-in window is gone — closed, or it failed to open. End the
           // flow so the log-in button comes back; the error stays on screen.
           stepError = readableError(cause);
@@ -360,7 +374,7 @@
           status = await api.comms.loginCancel(platform, loginId).catch(() => status);
           return;
         } finally {
-          waiting = false;
+          if (mine === linkAttempt) waiting = false;
         }
         continue;
       }
@@ -378,18 +392,23 @@
     if (!step || step.type !== 'user_input' || !stepPlatform) return;
     stepError = '';
     busy = 'step';
+    const mine = linkAttempt;
     try {
-      step = await api.comms.loginSubmit(stepPlatform, step.loginId, step.stepId, stepValues);
+      const next = await api.comms.loginSubmit(stepPlatform, step.loginId, step.stepId, stepValues);
+      if (mine !== linkAttempt) return;
+      step = next;
       stepValues = {};
-      await advance();
+      await advance(mine);
     } catch (cause) {
+      if (mine !== linkAttempt) return;
       stepError = readableError(cause);
     } finally {
-      busy = '';
+      if (mine === linkAttempt) busy = '';
     }
   }
 
   async function cancelLink(): Promise<void> {
+    linkAttempt++;
     if (!step || !stepPlatform) {
       step = null;
       stepPlatform = null;

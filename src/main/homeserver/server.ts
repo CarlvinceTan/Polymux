@@ -597,9 +597,10 @@ export class Homeserver {
   ): Promise<void> {
     void parsedBody;
     // rest for legacy: ["v3", "upload"] / ["v3", "download", server, id, name?]
-    // rest for authenticated media: ["media", "download", server, id] under client/v1.
-    const parts = rest[0] === "media" ? rest.slice(1) : rest.slice(1);
-    const verb = rest[0] === "media" ? rest[1] : rest[1];
+    // rest for authenticated media: ["media", "download", server, id] under
+    // client/v1 — either way the verb sits at index 1 and the args after it.
+    const parts = rest.slice(1);
+    const verb = rest[1];
     if (method === "POST" && verb === "upload") {
       const mediaId = randomBytes(16).toString("base64url");
       const chunks: Buffer[] = [];
