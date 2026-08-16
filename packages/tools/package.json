@@ -1,5 +1,5 @@
 {
-  "name": "@midas/tools",
+  "name": "@flareai/tools",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "./mcp": "./src/mcp/index.ts"
   },
   "dependencies": {
-    "@midas/core": "0.1.0",
+    "@flareai/core": "0.1.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "zod": "^4.0.0"
   }

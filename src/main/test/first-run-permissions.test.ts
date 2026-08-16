@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {SystemPermissionKind, SystemPermissionStatus} from "@midas/protocol";
+import type {SystemPermissionKind, SystemPermissionStatus} from "@flareai/protocol";
 import {FirstRunPermissions, type PermissionPreferenceStore} from "../first-run-permissions.js";
 
 test("requests enabled OS permissions once and in sequence", async () => {

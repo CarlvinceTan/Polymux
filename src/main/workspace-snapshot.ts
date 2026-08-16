@@ -1,4 +1,4 @@
-import type {WorkspaceSnapshotDto} from "@midas/protocol";
+import type {WorkspaceSnapshotDto} from "@flareai/protocol";
 
 /**
  * The drawer-openness rule for stored workspace snapshots: a snapshot restores

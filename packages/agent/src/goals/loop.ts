@@ -1,5 +1,5 @@
-import type { ModelRef } from "@midas/inference";
-import type { Goal } from "@midas/storage";
+import type { ModelRef } from "@flareai/inference";
+import type { Goal } from "@flareai/storage";
 import type { GoalJudge, GoalJudgement } from "./judge.js";
 import type { GoalManager } from "./manager.js";
 

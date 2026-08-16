@@ -9,7 +9,7 @@ import {Communications} from "../communications/index.js";
 import {Homeserver} from "../homeserver/server.js";
 
 /**
- * The tier-3 loop, end to end: Midas's comms service running against the
+ * The tier-3 loop, end to end: FlareAI's comms service running against the
  * in-process homeserver, with a fake mautrix bridge on the far side. No
  * Synapse, no Docker, no account for the user to create.
  */
@@ -65,9 +65,9 @@ async function startFakeBridge(): Promise<{
 }
 
 test("zero-config connect and a full message round-trip on the embedded hub", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-embedded-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-embedded-"));
   const bridge = await startFakeBridge();
-  const hs = new Homeserver({serverName: "midas.local", dataDirectory: directory});
+  const hs = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
   await hs.start();
   const asToken = "as-embedded";
   hs.registerAppservice({
@@ -76,7 +76,7 @@ test("zero-config connect and a full message round-trip on the embedded hub", as
     hsToken: "hs-embedded",
     url: bridge.base,
     senderLocalpart: "whatsappbot",
-    userNamespaces: ["@whatsapp_.*:midas\\.local"],
+    userNamespaces: ["@whatsapp_.*:flareai\\.local"],
   });
 
   const comms = new Communications({
@@ -96,19 +96,19 @@ test("zero-config connect and a full message round-trip on the embedded hub", as
     // No setup call at all: the first status() arrives already signed in.
     const connected = await comms.status();
     assert.equal(connected.hub.status, "signed-in");
-    assert.match(connected.hub.userId ?? "", /^@midas-[0-9a-f]{8}:midas\.local$/);
+    assert.match(connected.hub.userId ?? "", /^@flareai-[0-9a-f]{8}:flareai\.local$/);
     assert.equal(connected.hub.baseUrl, hs.baseUrl);
 
     // A bridge creates a portal and speaks; the user sees it with no daemon.
     const userId = connected.hub.userId!;
-    const created = await fetch(`${hs.baseUrl}/_matrix/client/v3/createRoom?user_id=${encodeURIComponent("@whatsapp_1:midas.local")}`, {
+    const created = await fetch(`${hs.baseUrl}/_matrix/client/v3/createRoom?user_id=${encodeURIComponent("@whatsapp_1:flareai.local")}`, {
       method: "POST",
       headers: {Authorization: `Bearer ${asToken}`, "Content-Type": "application/json"},
       body: JSON.stringify({name: "Jules Tan (WA)", invite: [userId]}),
     });
     const {room_id} = (await created.json()) as {room_id: string};
     await fetch(
-      `${hs.baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(room_id)}/send/m.room.message/t1?user_id=${encodeURIComponent("@whatsapp_1:midas.local")}`,
+      `${hs.baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(room_id)}/send/m.room.message/t1?user_id=${encodeURIComponent("@whatsapp_1:flareai.local")}`,
       {
         method: "PUT",
         headers: {Authorization: `Bearer ${asToken}`, "Content-Type": "application/json"},
@@ -151,8 +151,8 @@ test("zero-config connect and a full message round-trip on the embedded hub", as
 });
 
 test("an explicit external address turns embedded mode off", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-embedded-"));
-  const hs = new Homeserver({serverName: "midas.local", dataDirectory: directory});
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-embedded-"));
+  const hs = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
   await hs.start();
   const comms = new Communications({
     credentials: memoryCredentials(),
@@ -173,7 +173,7 @@ test("an explicit external address turns embedded mode off", async () => {
 });
 
 test("a stored external address is the only thing that disables embedded mode", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-embedded-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-embedded-"));
   const storage = memoryPreferences();
   storage.setPreference("comms-hub", {baseUrl: "http://127.0.0.1:18080"});
   const comms = new Communications({

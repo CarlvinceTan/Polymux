@@ -60,7 +60,7 @@
 
   <section>
     <header>
-      <!-- Outputs are what Midas produced, so there is nothing to add by hand:
+      <!-- Outputs are what FlareAI produced, so there is nothing to add by hand:
            an empty editor here would be a file that does not exist yet. -->
       <h2>Outputs</h2>
     </header>
@@ -69,7 +69,7 @@
         <button type="button" class="summary-row" onclick={() => onOpenOutput(output)}><span class="mini-file"><Icon name="file" size={14}/></span><span>{output.name}</span></button>
       {/each}
       {#if outputs.length > previewLimit}<button type="button" class="summary-view-all" onclick={() => onViewAll('outputs')}><span>View all</span><Icon name="forward" size={12}/></button>{/if}
-    {:else}<p class="empty-row">Files created by Midas appear here.</p>{/if}
+    {:else}<p class="empty-row">Files created by FlareAI appear here.</p>{/if}
   </section>
 
   <section>
@@ -78,9 +78,9 @@
       <div bind:this={referenceMenuWrapper} class="summary-menu-wrap">
         <button type="button" aria-label="Add reference" data-tooltip-align="end" aria-haspopup="menu" aria-expanded={referenceMenuOpen} onclick={toggleReferenceMenu}><Icon name="plus" size={18}/></button>
         {#if referenceMenuOpen}
-          <div class="polymux-dropdown-menu summary-action-menu reference-action-menu" role="menu">
-            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => fileInput.click()}><Icon name="file" size={15}/><span>Choose files</span></button>
-            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => folderInput.click()}><Icon name="folder" size={15}/><span>Choose folder</span></button>
+          <div class="flareai-dropdown-menu summary-action-menu reference-action-menu" role="menu">
+            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => fileInput.click()}><Icon name="file" size={15}/><span>Choose files</span></button>
+            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => folderInput.click()}><Icon name="folder" size={15}/><span>Choose folder</span></button>
           </div>
         {/if}
       </div>

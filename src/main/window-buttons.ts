@@ -5,7 +5,7 @@
  * 26 - 7 = 19 centres the lights on it. The unfocused stand-in dots in
  * style.css use the same origin and size, so focus changes swap colour
  * without the lights moving or resizing. */
-export const MIDAS_TRAFFIC_LIGHT_POSITION = {x: 19, y: 19} as const;
+export const FLAREAI_TRAFFIC_LIGHT_POSITION = {x: 19, y: 19} as const;
 
 export interface MacWindowButtons {
   setWindowButtonVisibility(visible: boolean): void;
@@ -19,5 +19,5 @@ export function syncMacWindowButtons(
   focused: boolean,
 ): void {
   window.setWindowButtonVisibility(focused);
-  if (focused) window.setWindowButtonPosition(MIDAS_TRAFFIC_LIGHT_POSITION);
+  if (focused) window.setWindowButtonPosition(FLAREAI_TRAFFIC_LIGHT_POSITION);
 }

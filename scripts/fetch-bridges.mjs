@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Downloads the mautrix bridge binaries that ship inside Midas.
+ * Downloads the mautrix bridge binaries that ship inside FlareAI.
  *
  * Bridges are bundled rather than fetched at runtime: setup has to work on a
  * machine that is not online yet, and an app that downloads and then executes

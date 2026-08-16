@@ -1,6 +1,6 @@
 <script lang="ts">
   import PromptInput from './PromptInput.svelte';
-  import type {ReasoningEffort} from '@midas/protocol';
+  import type {ReasoningEffort} from '@flareai/protocol';
 
   export let greeting = 'What can I help with?';
   export let subtitle = 'Ask a question, attach a file, or start with your voice.';
@@ -27,7 +27,7 @@
     let frame = 0;
     const measure = () => {
       frame = 0;
-      const prompt = node.querySelector<HTMLElement>('.polymux-prompt');
+      const prompt = node.querySelector<HTMLElement>('.flareai-prompt');
       if (!prompt) return;
       node.style.setProperty('--welcome-offset', '0px');
       const promptRect = prompt.getBoundingClientRect();
@@ -65,7 +65,7 @@
     <!-- Document-relative, not root-relative: the packaged app is loaded over
          file://, where a leading slash resolves against the filesystem root
          rather than the bundle and the mark silently fails to load. -->
-    <img class="brand-mark" src="polymux.svg" alt="Polymux"/>
+    <img class="brand-mark" src="flareai.svg" alt="FlareAI"/>
     <h1>{greeting}</h1>
     <p>{subtitle}</p>
   </div>

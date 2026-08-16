@@ -18,7 +18,7 @@ import typescript from 'highlight.js/lib/languages/typescript'
 import xml from 'highlight.js/lib/languages/xml'
 import yaml from 'highlight.js/lib/languages/yaml'
 
-// Only the languages Midas realistically shows are registered, so the bundle
+// Only the languages FlareAI realistically shows are registered, so the bundle
 // carries a curated set rather than every grammar highlight.js ships.
 for (const [name, language] of Object.entries({
   bash, css, diff, go, java, javascript, json, markdown, php, python, ruby, rust, sql, typescript, xml, yaml,

@@ -15,7 +15,7 @@ from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_REGISTRY = SKILL_DIR / "references" / "app-control-registry.json"
-STATE_DIR = Path.home() / ".midas" / "state" / "window-control"
+STATE_DIR = Path.home() / ".flareai" / "state" / "window-control"
 
 
 def atomic_json_write(path: Path, value: object) -> None:

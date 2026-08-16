@@ -46,7 +46,7 @@ test("assembles preferences, memory, skill summaries, and active goal without pr
         description: "Handle PDFs",
         filePath: "/skills/pdf/SKILL.md",
         baseDir: "/skills/pdf",
-        source: "midas",
+        source: "flareai",
         disableModelInvocation: false,
       },
     ],

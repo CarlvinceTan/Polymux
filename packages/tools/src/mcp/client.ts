@@ -7,7 +7,7 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { AgentTool, AgentToolResult } from "../types.js";
-import type { JsonValue } from "@midas/inference";
+import type { JsonValue } from "@flareai/inference";
 import type { McpServerConfig } from "./config.js";
 
 export interface McpConnectionSnapshot {
@@ -32,7 +32,7 @@ export class McpConnection {
   constructor(config: McpServerConfig) {
     this.config = config;
     this.#client = new Client(
-      { name: "midas", version: "0.1.0" },
+      { name: "flareai", version: "0.1.0" },
       {
         capabilities: {},
         listChanged: {

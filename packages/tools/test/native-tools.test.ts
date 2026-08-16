@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { createNativeTools, ToolRegistry } from "../src/index.js";
 
 async function fixture() {
-  const cwd = await mkdtemp(join(tmpdir(), "midas-tools-"));
+  const cwd = await mkdtemp(join(tmpdir(), "flareai-tools-"));
   const registry = new ToolRegistry(createNativeTools({ cwd }));
   const context = {
     runId: "run",

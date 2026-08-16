@@ -341,7 +341,7 @@ test("logs a bridgev2 account out by its login id", async () => {
  * bridge's config file, so a legacy bridge exercises the on-disk secret path.
  */
 async function legacyHubDirectory(secret: string): Promise<string> {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-hub-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hub-"));
   await mkdir(path.join(directory, "bridges", "discord"), {recursive: true});
   await writeFile(
     path.join(directory, "bridges", "discord", "config.yaml"),
@@ -492,7 +492,7 @@ test("sends a message with an idempotent transaction id", async () => {
       auth: () => ({matrixToken: "syt_token", userId: "@me:local"}),
     });
     assert.equal(await hub.send("!room:local", "hello"), "$evt");
-    assert.match(sent[0], /^\/_matrix\/client\/v3\/rooms\/!room%3Alocal\/send\/m\.room\.message\/midas-/);
+    assert.match(sent[0], /^\/_matrix\/client\/v3\/rooms\/!room%3Alocal\/send\/m\.room\.message\/flareai-/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -533,7 +533,7 @@ test("the provisioning secret is found in either config layout", () => {
     "        shared_secret: legacy-secret",
     "        debug_endpoints: false",
     "    permissions:",
-    '        "midas.local": user',
+    '        "flareai.local": user',
     "",
   ].join("\n");
   assert.equal(provisioningSecret(legacy), "legacy-secret");

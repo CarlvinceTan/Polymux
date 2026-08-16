@@ -72,7 +72,7 @@ async function startFakeService(): Promise<FakeService> {
 async function withAdapter(
   run: (service: FakeService, adapter: AgentSurfaceAdapter, stops: string[]) => Promise<void>,
 ): Promise<void> {
-  const dir = await mkdtemp(path.join(tmpdir(), "midas-surface-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "flareai-surface-"));
   const tokenPath = path.join(dir, "token");
   await writeFile(tokenPath, "test-token\n", "utf8");
   const service = await startFakeService();
@@ -95,35 +95,35 @@ async function withAdapter(
 
 test("publishes a window lease with the Codex-compatible shape and token", async () => {
   await withAdapter(async (service, adapter) => {
-    const ok = await adapter.acquireWindow("midas-browser", {
+    const ok = await adapter.acquireWindow("flareai-browser", {
       appName: "Google Chrome",
       bundleId: "com.google.Chrome",
       windowTitle: "Docs",
-      sessionId: "midas-browser",
+      sessionId: "flareai-browser",
     });
     assert.equal(ok, true);
     assert.equal(service.puts.length, 1);
     const {id, body, auth} = service.puts[0];
-    assert.equal(id, "midas-browser");
+    assert.equal(id, "flareai-browser");
     assert.equal(auth, "Bearer test-token");
     assert.equal(body.kind, "window");
     assert.equal(body.state, "active");
-    assert.deepEqual(body.agent, {id: "midas", name: "Midas"});
+    assert.deepEqual(body.agent, {id: "flareai", name: "FlareAI"});
     assert.deepEqual(body.app, {name: "Google Chrome", bundleId: "com.google.Chrome"});
-    assert.deepEqual(body.control, {sessionId: "midas-browser"});
+    assert.deepEqual(body.control, {sessionId: "flareai-browser"});
   });
 });
 
 test("refreshes held leases and releases them", async () => {
   await withAdapter(async (service, adapter) => {
-    await adapter.acquireWindow("midas-browser", {
+    await adapter.acquireWindow("flareai-browser", {
       appName: "Browser",
-      sessionId: "midas-browser",
+      sessionId: "flareai-browser",
     });
     await new Promise((resolve) => setTimeout(resolve, 140));
     assert.ok(service.puts.length >= 2, "expected refresh PUTs");
-    await adapter.release("midas-browser");
-    assert.deepEqual(service.deletes, ["midas-browser"]);
+    await adapter.release("flareai-browser");
+    assert.deepEqual(service.deletes, ["flareai-browser"]);
     const count = service.puts.length;
     await new Promise((resolve) => setTimeout(resolve, 120));
     assert.equal(service.puts.length, count, "no refreshes after release");
@@ -132,20 +132,20 @@ test("refreshes held leases and releases them", async () => {
 
 test("stop requests from the pill are acknowledged and forwarded", async () => {
   await withAdapter(async (service, adapter, stops) => {
-    await adapter.acquireWindow("midas-browser", {
+    await adapter.acquireWindow("flareai-browser", {
       appName: "Browser",
-      sessionId: "midas-browser",
+      sessionId: "flareai-browser",
     });
     service.stopRequests.push({
-      id: "midas-browser",
-      agentId: "midas",
-      target: "midas-browser",
+      id: "flareai-browser",
+      agentId: "flareai",
+      target: "flareai-browser",
       requestedAtMs: Date.now(),
       expiresAtMs: Date.now() + 60_000,
     });
     await new Promise((resolve) => setTimeout(resolve, 150));
-    assert.deepEqual(stops, ["midas-browser"]);
-    assert.deepEqual(service.stopAcks, ["midas-browser"]);
+    assert.deepEqual(stops, ["flareai-browser"]);
+    assert.deepEqual(service.stopAcks, ["flareai-browser"]);
   });
 });
 

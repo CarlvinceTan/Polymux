@@ -5,7 +5,7 @@ import { desktopCapturer, shell, systemPreferences } from "electron";
 import type {
   SystemPermissionKind,
   SystemPermissionStatus,
-} from "@midas/protocol";
+} from "@flareai/protocol";
 
 /** Where each grant lives in System Settings. */
 const SETTINGS_PANE: Record<SystemPermissionKind | "location", string> = {
@@ -65,7 +65,7 @@ export async function requestSystemPermission(
   if (permission === "microphone") {
     await systemPreferences.askForMediaAccess("microphone");
   } else if (permission === "accessibility") {
-    // Prompting registers Midas in Privacy & Security → Accessibility and
+    // Prompting registers FlareAI in Privacy & Security → Accessibility and
     // shows the system dialog pointing there; there is no async grant flow.
     systemPreferences.isTrustedAccessibilityClient(true);
   } else if (permission === "full-disk-access") {
@@ -75,7 +75,7 @@ export async function requestSystemPermission(
   } else if (systemPermissionStatus(permission) !== "granted") {
     // macOS registers Screen Recording access when an application first tries
     // to enumerate a display. The tiny thumbnail avoids doing real Chronicle
-    // work while still ensuring Midas appears in Privacy & Security.
+    // work while still ensuring FlareAI appears in Privacy & Security.
     try {
       await desktopCapturer.getSources({
         types: ["screen"],

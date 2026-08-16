@@ -9,7 +9,7 @@ import type {
   CommsLoginFlowDto,
   CommsLoginStepDto,
   CommsPlatform,
-} from "@midas/protocol";
+} from "@flareai/protocol";
 
 /** Provisioning route prefix every bridgev2 bridge serves its login API under. */
 const BRIDGEV2_PREFIX = "_matrix/provision/v3";
@@ -121,7 +121,7 @@ export class MatrixHub {
     const secret = await this.#registrationSecret();
     if (!secret)
       throw new Error(
-        "Could not read the homeserver's registration secret, so Midas cannot create its own account. Sign in with an existing account instead.",
+        "Could not read the homeserver's registration secret, so FlareAI cannot create its own account. Sign in with an existing account instead.",
       );
     const {nonce} = await this.#json<{nonce: string}>(
       `${this.#homeserverUrl}/_synapse/admin/v1/register`,
@@ -142,7 +142,7 @@ export class MatrixHub {
           password,
           admin: false,
           mac,
-          initial_device_display_name: "Midas",
+          initial_device_display_name: "FlareAI",
         },
       },
     );
@@ -203,7 +203,7 @@ export class MatrixHub {
           type: "m.login.password",
           identifier: {type: "m.id.user", user: localpart},
           password,
-          initial_device_display_name: "Midas",
+          initial_device_display_name: "FlareAI",
         },
       },
     );
@@ -327,7 +327,7 @@ export class MatrixHub {
 
   async send(roomId: string, body: string): Promise<string> {
     // A transaction id makes the send idempotent if the request is retried.
-    const txnId = `midas-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const txnId = `flareai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const result = await this.#client<{event_id?: string}>(
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${txnId}`,
       {method: "PUT", body: {msgtype: "m.text", body}},
@@ -375,7 +375,7 @@ export class MatrixHub {
     const {matrixToken} = this.#auth();
     if (!matrixToken)
       throw new Error(
-        "Midas is not signed in to the Matrix hub. Open Settings → Communications to connect it.",
+        "FlareAI is not signed in to the Matrix hub. Open Settings → Communications to connect it.",
       );
     return this.#json<T>(`${this.#homeserverUrl}${endpoint}`, {
       method: options.method,
@@ -589,7 +589,7 @@ export class MatrixHub {
       const secret = await this.#sharedSecret(route);
       if (!secret)
         throw new ProvisioningError(
-          `Could not read ${route}'s provisioning secret from the hub, and Midas holds no Matrix token for this bridge.`,
+          `Could not read ${route}'s provisioning secret from the hub, and FlareAI holds no Matrix token for this bridge.`,
           0,
           null,
         );

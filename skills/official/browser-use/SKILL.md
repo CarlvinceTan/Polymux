@@ -1,7 +1,7 @@
 ---
 name: browser-use
-description: Use for website, browser, tab, and tab-group tasks. Default to the Midas in-app Browser; use the OS default browser only for required authentication or integration, or when the user explicitly requests it. Lease exact tabs, group external task tabs, and let the user work in other tabs without interruption.
-author: Midas
+description: Use for website, browser, tab, and tab-group tasks. Default to the FlareAI in-app Browser; use the OS default browser only for required authentication or integration, or when the user explicitly requests it. Lease exact tabs, group external task tabs, and let the user work in other tabs without interruption.
+author: FlareAI
 category: Web
 ---
 
@@ -19,7 +19,7 @@ attention preparation; do not duplicate those rules here.
 ## Browser routing
 
 - Use exactly two possible browser surfaces:
-  1. The Midas in-app Browser is always the default.
+  1. The FlareAI in-app Browser is always the default.
   2. The operating system's verified current default browser is the only local
      external fallback.
 - Use the external browser only when either the in-app Browser is unavailable,
@@ -159,7 +159,7 @@ attention preparation; do not duplicate those rules here.
    To act inside one of the user's external tabs, use the `browser_control`
    tool: `focus` the exact tab by url/title from `browser_tabs`, then
    `read`/`click`/`type`/`scroll`/`navigate`, then `release`. It drives only
-   the leased tab through the Midas extension (the in-page cursor shows the
+   the leased tab through the FlareAI extension (the in-page cursor shows the
    user what is happening) and never raises the browser or switches focus —
    the `$window-control` boundaries still govern what may be done there.
 2. If external use is technically required or explicitly requested, complete

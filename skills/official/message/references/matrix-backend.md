@@ -8,9 +8,9 @@ skill and Matrix tools directly.
 
 - Hub root: `/Users/carlvincetan/Library/Application Support/matrix-hub`
 - MCP server: `mcp/server.mjs`
-- Midas MCP registration: the `matrix-hub` server in Midas's MCP
+- FlareAI MCP registration: the `matrix-hub` server in FlareAI's MCP
   configuration (Settings → MCP, stored at
-  `~/Library/Application Support/Midas/mcp.json`)
+  `~/Library/Application Support/FlareAI/mcp.json`)
 - Trusted invite service:
   `/Users/carlvincetan/Library/Application Support/matrix-hub/bin/matrix-hub-autojoin`
 - LaunchAgent: `com.carlvince.matrix-hub.autojoin`
@@ -22,7 +22,7 @@ skill and Matrix tools directly.
   `http://127.0.0.1:29350/health`
 
 The MCP credential is read from the macOS login keychain service
-`Matrix Hub Midas Token`. Never print it. Each bridge keeps its own credentials
+`Matrix Hub FlareAI Token`. Never print it. Each bridge keeps its own credentials
 inside its private bridge data directory; never surface them in tool output.
 
 ## Supported routing and health
@@ -81,10 +81,10 @@ The registered server provides:
 - `matrix_get_unread_messages`
 - `matrix_send_message`
 
-After changing or newly registering the MCP server, a running Midas task may
+After changing or newly registering the MCP server, a running FlareAI task may
 not discover it dynamically. Verify tool discovery in a fresh task before
 calling the integration active. A local smoke test may use the MCP SDK over
-stdio, but it does not prove that the current Midas task reloaded its tool
+stdio, but it does not prove that the current FlareAI task reloaded its tool
 catalog.
 
 ## Linking and repair

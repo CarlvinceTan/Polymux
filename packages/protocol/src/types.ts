@@ -145,7 +145,7 @@ export interface McpServerDto {
   name: string;
   description?: string;
   /** "official" marks a server bundled with the app, like official skills. */
-  source: "official" | "midas" | "codex";
+  source: "official" | "flareai" | "codex";
   editable: boolean;
   enabled: boolean;
   transport: "stdio" | "streamable-http";
@@ -188,7 +188,7 @@ export interface McpRegistryEntryDto {
 export interface SkillDto {
   name: string;
   description: string;
-  source: "official" | "codex" | "midas" | "agents" | "bundled" | "configured";
+  source: "official" | "codex" | "flareai" | "agents" | "bundled" | "configured";
   filePath: string;
   disableModelInvocation: boolean;
   allowedTools: string[];
@@ -396,7 +396,11 @@ export type BrowserEventDto =
   | { type: "closed"; tabId: string }
   | { type: "state"; state: BrowserPageStateDto }
   | { type: "downloads"; downloads: BrowserDownloadDto[] }
-  | { type: "found"; found: BrowserFoundDto };
+  | { type: "found"; found: BrowserFoundDto }
+  /** The page took keyboard focus. Clicks inside the embedded web contents
+   * never reach the renderer, so this is how the chrome around it knows to
+   * drop its own focus (the address bar's caret, above all). */
+  | { type: "focus"; tabId: string };
 
 export interface AppVersionDto {
   version: string;
@@ -454,7 +458,7 @@ export interface CommsHubDto {
   /** The homeserver itself, which the proxy does not expose the admin API of. */
   homeserverUrl: string;
   /**
-   * Whether Midas can create its own account on the hub, which is what lets
+   * Whether FlareAI can create its own account on the hub, which is what lets
    * messaging be set up without the user entering anything.
    */
   canAutoConnect: boolean;
@@ -628,7 +632,7 @@ export interface CommsEmailAccountDto {
   isDefault: boolean;
   incoming: CommsEmailEndpointDto;
   outgoing: CommsEmailEndpointDto;
-  /** Whether Midas holds the password for this account in encrypted storage. */
+  /** Whether FlareAI holds the password for this account in encrypted storage. */
   secretStored: boolean;
   status: "unknown" | "ok" | "error";
   error: string | null;
@@ -895,7 +899,7 @@ export interface DriveS3ConfigRequest {
   forcePathStyle: boolean;
 }
 
-export interface MidasApi {
+export interface FlareAIApi {
   general: {
     get(): Promise<GeneralSettingsDto>;
     update(settings: GeneralSettingsUpdate): Promise<GeneralSettingsDto>;
@@ -1022,13 +1026,13 @@ export interface MidasApi {
     wake(platform: CommsPlatform): Promise<CommsStatusDto>;
     setHubUrl(baseUrl: string): Promise<CommsStatusDto>;
     /**
-     * Sets messaging up with no input from the user: Midas creates its own
+     * Sets messaging up with no input from the user: FlareAI creates its own
      * account on the local hub and keeps the token in encrypted storage.
      */
     connect(): Promise<CommsStatusDto>;
     /**
      * Signs in as an existing account instead of provisioning one. Only needed
-     * for a hub Midas cannot provision into, such as a remote homeserver.
+     * for a hub FlareAI cannot provision into, such as a remote homeserver.
      */
     signIn(userId: string, password: string): Promise<CommsStatusDto>;
     signOut(): Promise<CommsStatusDto>;

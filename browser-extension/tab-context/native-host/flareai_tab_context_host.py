@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Native messaging host: persists the browser's tab snapshot for Midas.
+"""Native messaging host: persists the browser's tab snapshot for FlareAI.
 
 Chrome launches this process and frames each JSON message with a 4-byte
 little-endian length prefix. Every snapshot received is written atomically to
-~/Library/Application Support/midas-tab-context/tabs.json, where the Midas
+~/Library/Application Support/flareai-tab-context/tabs.json, where the FlareAI
 browser-use skill reads it (scripts/tab_context.py).
 """
 
@@ -15,7 +15,7 @@ import struct
 import sys
 from pathlib import Path
 
-CACHE_DIR = Path.home() / "Library" / "Application Support" / "midas-tab-context"
+CACHE_DIR = Path.home() / "Library" / "Application Support" / "flareai-tab-context"
 CACHE_PATH = CACHE_DIR / "tabs.json"
 MAX_MESSAGE_BYTES = 4 * 1024 * 1024
 

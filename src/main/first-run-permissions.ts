@@ -1,4 +1,4 @@
-import type {SystemPermissionKind, SystemPermissionStatus} from "@midas/protocol";
+import type {SystemPermissionKind, SystemPermissionStatus} from "@flareai/protocol";
 
 export interface PermissionPreferenceStore {
   getPreference(key: string): {value: unknown} | null;

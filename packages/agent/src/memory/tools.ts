@@ -1,4 +1,4 @@
-import type { AgentTool } from "@midas/core";
+import type { AgentTool } from "@flareai/core";
 import type { MemoryManager } from "./manager.js";
 
 /** A memory is a fact, not a document. Codex's own notes top out near this. */

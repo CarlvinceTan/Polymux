@@ -6,7 +6,7 @@ metadata:
   hermes:
     tags: [Email, IMAP, SMTP, CLI, Communication]
     homepage: https://github.com/pimalaya/himalaya
-author: Midas
+author: FlareAI
 category: Communication
 ---
 

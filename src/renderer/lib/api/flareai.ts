@@ -17,7 +17,7 @@ import type {
   JsonValue,
   McpServerDto,
   MessageDto,
-  MidasApi,
+  FlareAIApi,
   ModelDto,
   ModelMetadataDto,
   ModelRole,
@@ -28,20 +28,20 @@ import type {
   RunEventDto,
   SkillDto,
   StartRunRequest,
-} from '@midas/protocol';
+} from '@flareai/protocol';
 
-let browserApi: MidasApi | undefined;
+let browserApi: FlareAIApi | undefined;
 
-export function midasApi(): MidasApi {
-  if (typeof window !== 'undefined' && window.midas) return window.midas;
-  if (import.meta.env.DEV || import.meta.env.VITE_MIDAS_BROWSER_DEMO === 'true')
+export function flareaiApi(): FlareAIApi {
+  if (typeof window !== 'undefined' && window.flareai) return window.flareai;
+  if (import.meta.env.DEV || import.meta.env.VITE_FLAREAI_BROWSER_DEMO === 'true')
     return browserApi ??= createBrowserDemoApi();
-  throw new Error('The Midas desktop bridge is unavailable. Open this build through the desktop app.');
+  throw new Error('The FlareAI desktop bridge is unavailable. Open this build through the desktop app.');
 }
 
 /** A development-only adapter keeps browser-based component tests useful. The
- * packaged desktop never selects it because preload supplies `window.midas`. */
-function createBrowserDemoApi(): MidasApi {
+ * packaged desktop never selects it because preload supplies `window.flareai`. */
+function createBrowserDemoApi(): FlareAIApi {
   /**
    * `?onboarding` puts the demo into a genuine first-run state — nothing
    * configured, nothing granted — so first-run setup can be previewed and
@@ -106,13 +106,13 @@ function createBrowserDemoApi(): MidasApi {
     {id: 'openrouter', name: 'OpenRouter', apiKeyLabel: 'OpenRouter API key', supportsOAuth: false, storedCredential: false, configured: false, source: null, modelCount: 1, custom: false, apiKeys: []},
   ];
   const demoSkills: SkillDto[] = [
-    {name: 'documents', description: 'Create and edit document files.', source: 'midas', filePath: '~/.midas/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], enabled: true, editable: true, instructions: 'Create and edit document files.', updatedAt: '2026-07-02T09:30:00.000Z'},
-    {name: 'personal-research', description: 'Personal research workflow.', source: 'midas', filePath: '~/.midas/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], enabled: true, editable: true, instructions: 'Personal research workflow.', updatedAt: '2026-05-18T14:00:00.000Z'},
-    {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], enabled: true, editable: false, displayName: 'PDF', author: 'Midas', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
-    {name: 'browser-use', description: 'Research and interact with websites.', source: 'official', filePath: '/skills/official/browser-use/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'bash'], enabled: true, editable: false, displayName: 'Browser', author: 'Midas', category: 'Web', updatedAt: '2026-08-01T08:00:00.000Z'},
+    {name: 'documents', description: 'Create and edit document files.', source: 'flareai', filePath: '~/.flareai/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], enabled: true, editable: true, instructions: 'Create and edit document files.', updatedAt: '2026-07-02T09:30:00.000Z'},
+    {name: 'personal-research', description: 'Personal research workflow.', source: 'flareai', filePath: '~/.flareai/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], enabled: true, editable: true, instructions: 'Personal research workflow.', updatedAt: '2026-05-18T14:00:00.000Z'},
+    {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], enabled: true, editable: false, displayName: 'PDF', author: 'FlareAI', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
+    {name: 'browser-use', description: 'Research and interact with websites.', source: 'official', filePath: '/skills/official/browser-use/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'bash'], enabled: true, editable: false, displayName: 'Browser', author: 'FlareAI', category: 'Web', updatedAt: '2026-08-01T08:00:00.000Z'},
   ];
   const demoMcpServers: McpServerDto[] = [
-    {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', source: 'midas', editable: true, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_files'], resourceUris: ['filesystem://documents'], promptNames: [], command: 'node', args: ['server.mjs']},
+    {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', source: 'flareai', editable: true, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_files'], resourceUris: ['filesystem://documents'], promptNames: [], command: 'node', args: ['server.mjs']},
     {id: 'browser-tools', name: 'Browser Tools', description: 'Open and inspect web pages.', source: 'official', editable: false, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['open_page', 'read_page'], resourceUris: [], promptNames: [], command: 'node', args: ['browser.mjs']},
   ];
   const demoCommsStatus: CommsStatusDto = {
@@ -226,7 +226,7 @@ function createBrowserDemoApi(): MidasApi {
     message: 'Updates are managed by the desktop app.',
   };
 
-  const api: MidasApi = {
+  const api: FlareAIApi = {
     general: {
       get: async () => structuredClone(demoGeneral),
       update: async (settings) => {
@@ -430,7 +430,7 @@ function createBrowserDemoApi(): MidasApi {
         return demoCommsStatus;
       },
       connect: async () => {
-        demoCommsStatus.hub = {...demoCommsStatus.hub, status: 'signed-in', userId: '@midas-demo:localhost', canAutoConnect: false};
+        demoCommsStatus.hub = {...demoCommsStatus.hub, status: 'signed-in', userId: '@flareai-demo:localhost', canAutoConnect: false};
         return demoCommsStatus;
       },
       signIn: async (userId) => {
@@ -444,6 +444,10 @@ function createBrowserDemoApi(): MidasApi {
       // Each flow id opens with the step shape its real bridge uses, so the
       // preview walks the same screens the packaged app does.
       loginStart: async (platform, flowId) => {
+        // A real bridge takes a beat to produce its first step; without that
+        // beat here the preview never shows the waiting state that stands in
+        // for it.
+        await new Promise((resolve) => setTimeout(resolve, 500));
         if (flowId === 'qr')
           return {type: 'display_and_wait', loginId: 'demo', stepId: 'qr', instructions: 'Scan this from your phone.', display: 'qr', data: `https://example.com/pair/${platform}`, imageUrl: null};
         if (flowId === 'phone')
@@ -588,7 +592,7 @@ function createBrowserDemoApi(): MidasApi {
       },
       saveCustom: async (request) => {
         const item = demoMcpServers.find((candidate) => candidate.id === request.id);
-        const next: McpServerDto = {...request, source: 'midas', editable: true, enabled: item?.enabled ?? true, status: item?.status ?? 'disconnected', toolNames: item?.toolNames ?? [], resourceUris: [], promptNames: []};
+        const next: McpServerDto = {...request, source: 'flareai', editable: true, enabled: item?.enabled ?? true, status: item?.status ?? 'disconnected', toolNames: item?.toolNames ?? [], resourceUris: [], promptNames: []};
         if (item) Object.assign(item, next); else demoMcpServers.push(next);
         return demoMcpServers;
       },
@@ -617,7 +621,7 @@ function createBrowserDemoApi(): MidasApi {
       },
       setLocalRoot: async (path) => {
         const local = demoDriveStatus.providers.find((entry) => entry.id === 'local');
-        if (local) local.root = path ?? '/demo/Midas';
+        if (local) local.root = path ?? '/demo/FlareAI';
         return demoDriveStatus;
       },
       saveS3: async (config) => {
@@ -629,26 +633,77 @@ function createBrowserDemoApi(): MidasApi {
         }
         return demoDriveStatus;
       },
-      list: async (provider, path) => demoDriveEntries(provider, path ?? ''),
-      createFolder: async (provider, parentPath, name) => ({
-        id: `${parentPath}/${name}`, name, kind: 'folder', size: null,
-        modifiedAt: new Date().toISOString(), provider, path: `${parentPath}/${name}`, mimeType: null,
-      }),
-      upload: async () => [],
+      list: async (provider, path) => demoDriveFolder(provider, path ?? ''),
+      createFolder: async (provider, parentPath, name) => {
+        const folder = demoDriveFolder(provider, parentPath);
+        // The same collision the real adapters raise, so the drive's error
+        // path is reachable in the demo rather than only in the packaged app.
+        if (folder.some((entry) => entry.name === name))
+          throw new Error(`A folder named ${name} already exists here.`);
+        const entry: DriveEntryDto = {
+          id: `${parentPath}/${name}`, name, kind: 'folder', size: null,
+          modifiedAt: new Date().toISOString(), provider, path: `${parentPath}/${name}`, mimeType: null,
+        };
+        folder.push(entry);
+        return entry;
+      },
+      // A browser tab has no file picker to open, so the demo stands in with a
+      // file of its own rather than doing nothing and looking broken.
+      upload: async (provider, parentPath) => {
+        const entry: DriveEntryDto = {
+          id: `${parentPath}/upload-${demoDriveUploads += 1}.png`,
+          name: `Uploaded ${demoDriveUploads}.png`, kind: 'file', size: 128_400,
+          modifiedAt: new Date().toISOString(), provider,
+          path: `${parentPath}/upload-${demoDriveUploads}.png`, mimeType: 'image/png',
+        };
+        demoDriveFolder(provider, parentPath).push(entry);
+        return [entry];
+      },
       download: async (_provider, path) => `/demo/downloads/${path}`,
-      remove: async () => {},
-      rename: async (provider, path, name) => ({
-        id: path, name, kind: 'file', size: null,
-        modifiedAt: new Date().toISOString(), provider, path, mimeType: null,
+      remove: async (provider, paths) => {
+        for (const [key, entries] of demoDriveFolders) {
+          if (!key.startsWith(`${provider}:`)) continue;
+          demoDriveFolders.set(key, entries.filter((entry) => !paths.includes(entry.path)));
+        }
+      },
+      rename: async (provider, path, name) => {
+        const entry = demoDriveFind(provider, path);
+        if (entry) entry.name = name;
+        return entry ?? {
+          id: path, name, kind: 'file', size: null,
+          modifiedAt: new Date().toISOString(), provider, path, mimeType: null,
+        };
+      },
+      move: async (provider, paths, destinationFolder) => paths.map((path) => {
+        const entry = demoDriveFind(provider, path);
+        const moved: DriveEntryDto = {
+          ...(entry ?? {
+            id: path, name: path.slice(path.lastIndexOf('/') + 1), kind: 'file' as const,
+            size: null, modifiedAt: new Date().toISOString(), provider, path, mimeType: null,
+          }),
+          path: `${destinationFolder}/${path.slice(path.lastIndexOf('/') + 1)}`,
+        };
+        for (const [key, entries] of demoDriveFolders)
+          if (key.startsWith(`${provider}:`))
+            demoDriveFolders.set(key, entries.filter((item) => item.path !== path));
+        demoDriveFolder(provider, destinationFolder).push(moved);
+        return moved;
       }),
-      move: async (provider, paths, destinationFolder) => paths.map((path) => ({
-        id: path, name: path.slice(path.lastIndexOf(':') + 1), kind: 'file' as const, size: null,
-        modifiedAt: new Date().toISOString(), provider, path: `${destinationFolder}/${path}`, mimeType: null,
-      })),
-      copy: async (provider, paths) => paths.map((path) => ({
-        id: `${path}-copy`, name: 'Copy', kind: 'file' as const, size: null,
-        modifiedAt: new Date().toISOString(), provider, path: `${path}-copy`, mimeType: null,
-      })),
+      copy: async (provider, paths) => paths.map((path) => {
+        const entry = demoDriveFind(provider, path);
+        const parent = path.slice(0, path.lastIndexOf('/'));
+        const copied: DriveEntryDto = {
+          ...(entry ?? {
+            id: path, name: 'Item', kind: 'file' as const, size: null,
+            modifiedAt: new Date().toISOString(), provider, path, mimeType: null,
+          }),
+          id: `${path}-copy`,
+          name: `${entry?.name ?? 'Item'} copy`,
+          path: `${path}-copy`,
+        };
+        demoDriveFolder(provider, parent).push(copied);
+        return copied;
+      }),
       subscribe: () => () => {},
     },
     skills: {
@@ -657,7 +712,7 @@ function createBrowserDemoApi(): MidasApi {
       install: async (spec) => {
         const name = spec.trim().replace(/\/+$/, '').split('/').pop() ?? 'installed-skill';
         if (demoSkills.some((item) => item.name === name)) throw new Error(`A skill named ${name} already exists`);
-        demoSkills.push({name, description: `Installed from ${spec.trim()}.`, source: 'midas', filePath: `~/.midas/skills/${name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], enabled: true, editable: true, instructions: `Installed from ${spec.trim()}.`, updatedAt: '2026-08-14T03:00:00.000Z'});
+        demoSkills.push({name, description: `Installed from ${spec.trim()}.`, source: 'flareai', filePath: `~/.flareai/skills/${name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], enabled: true, editable: true, instructions: `Installed from ${spec.trim()}.`, updatedAt: '2026-08-14T03:00:00.000Z'});
         return demoSkills;
       },
       searchRegistry: async (query) => {
@@ -676,7 +731,7 @@ function createBrowserDemoApi(): MidasApi {
       },
       saveCustom: async (request) => {
         const index = demoSkills.findIndex((candidate) => candidate.name === (request.originalName ?? request.name));
-        const next: SkillDto = {name: request.name, description: request.description, instructions: request.instructions, source: 'midas', filePath: `~/.midas/skills/${request.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], enabled: index >= 0 ? demoSkills[index]!.enabled : true, editable: true};
+        const next: SkillDto = {name: request.name, description: request.description, instructions: request.instructions, source: 'flareai', filePath: `~/.flareai/skills/${request.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], enabled: index >= 0 ? demoSkills[index]!.enabled : true, editable: true};
         if (index >= 0) demoSkills.splice(index, 1, next); else demoSkills.push(next);
         return demoSkills;
       },
@@ -865,7 +920,7 @@ function createBrowserDemoApi(): MidasApi {
       emit(runId, request.conversationId, 'tool.progress', {toolCallId: 'demo-skill-read-3', message: 'Reading workflow steps'});
     }
     timers.set(runId, setTimeout(() => {
-      const text = 'This is the assembled Midas chat surface. Connect the send handler to your agent backend when it is ready.';
+      const text = 'This is the assembled FlareAI chat surface. Connect the send handler to your agent backend when it is ready.';
       if (isActivityDemo) {
         const args = {path: '/skills/browser-use/SKILL.md'};
         emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}, result: {content: 'Read 96 lines covering the browser-use skill workflow.'}});
@@ -925,8 +980,8 @@ function goal(conversationId: string, objective: string): GoalDto {
 const demoDriveStatus: DriveStatusDto = {
   saveOrder: ['google-drive', 'dropbox', 'onedrive', 's3', 'local'],
   providers: [
-    {id: 'local', name: 'This Mac', kind: 'local', state: 'connected', accounts: [{id: 'local', name: 'Midas', email: null}], usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/Midas', error: null},
-    {id: 'google-drive', name: 'Google Drive', kind: 'oauth', state: 'connected', accounts: [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}], usage: {used: 6_200_000_000, total: 15_000_000_000}, root: 'Midas', error: null},
+    {id: 'local', name: 'This Mac', kind: 'local', state: 'connected', accounts: [{id: 'local', name: 'FlareAI', email: null}], usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/FlareAI', error: null},
+    {id: 'google-drive', name: 'Google Drive', kind: 'oauth', state: 'connected', accounts: [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}], usage: {used: 6_200_000_000, total: 15_000_000_000}, root: 'FlareAI', error: null},
     {id: 'dropbox', name: 'Dropbox', kind: 'oauth', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
     {id: 'onedrive', name: 'OneDrive', kind: 'oauth', state: 'unconfigured', accounts: [], usage: null, root: null, error: 'This build has no OneDrive client credentials.'},
     {id: 's3', name: 'S3 storage', kind: 's3', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
@@ -946,12 +1001,42 @@ function demoDriveConnect(provider: DriveProviderId, connected: boolean): DriveS
   return demoDriveStatus;
 }
 
-function demoDriveEntries(provider: DriveProviderId, path: string): DriveEntryDto[] {
-  if (path) return [];
+/**
+ * The demo drive's contents, keyed `<provider>:<path>` and mutated in place.
+ *
+ * Stateful on purpose: a stub that always answered with the same two rows made
+ * creating, uploading and deleting look like they did nothing, which is exactly
+ * the failure the real drive must not have.
+ */
+const demoDriveFolders = new Map<string, DriveEntryDto[]>();
+let demoDriveUploads = 0;
+
+function demoDriveFolder(provider: DriveProviderId, path: string): DriveEntryDto[] {
+  const key = `${provider}:${path}`;
+  const known = demoDriveFolders.get(key);
+  if (known) return known;
+  const seeded = path ? [] : demoDriveSeed(provider);
+  demoDriveFolders.set(key, seeded);
+  return seeded;
+}
+
+/** Finds an entry wherever it currently sits. */
+function demoDriveFind(provider: DriveProviderId, path: string): DriveEntryDto | undefined {
+  for (const [key, entries] of demoDriveFolders) {
+    if (!key.startsWith(`${provider}:`)) continue;
+    const found = entries.find((entry) => entry.path === path);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function demoDriveSeed(provider: DriveProviderId): DriveEntryDto[] {
   const now = new Date().toISOString();
   return [
-    {id: `${provider}:reports`, name: 'Reports', kind: 'folder', size: null, modifiedAt: now, provider, path: `${provider}:reports`, mimeType: null},
-    {id: `${provider}:brief`, name: 'Launch brief.docx', kind: 'file', size: 48_310, modifiedAt: now, provider, path: `${provider}:brief`, mimeType: null},
+    // Slash-separated so the parent of an entry can be read off its path, the
+    // way every real provider's addressing allows.
+    {id: '/Reports', name: 'Reports', kind: 'folder', size: null, modifiedAt: now, provider, path: '/Reports', mimeType: null},
+    {id: '/Launch brief.docx', name: 'Launch brief.docx', kind: 'file', size: 48_310, modifiedAt: now, provider, path: '/Launch brief.docx', mimeType: null},
   ];
 }
 
@@ -960,5 +1045,5 @@ function demoArtifacts(conversationId: string): ArtifactDto[] {
 }
 
 function demoReferences(conversationId: string): ReferenceDto[] {
-  return [{id: 'polymux-site', conversationId, runId: null, kind: 'web', title: 'polymux.com', uri: 'https://polymux.com', createdAt: new Date().toISOString(), metadata: {}}];
+  return [{id: 'flareai-site', conversationId, runId: null, kind: 'web', title: 'flarehq.co', uri: 'https://flarehq.co', createdAt: new Date().toISOString(), metadata: {}}];
 }

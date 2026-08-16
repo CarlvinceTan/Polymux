@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ModelMetadataDto } from "@midas/protocol";
+import type { ModelMetadataDto } from "@flareai/protocol";
 
 /**
  * Model facts that pi-ai does not carry — descriptions, dates, capability

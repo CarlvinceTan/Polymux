@@ -1,4 +1,4 @@
-/* Midas design system, ported from the flareAI reference implementation.
+/* FlareAI design system, ported from the flareAI reference implementation.
    Values here are the authority: components carry structure and behaviour, not
    their own metrics, so the whole surface stays in one system. */
 :root {
@@ -147,6 +147,25 @@
 html, body, #app { min-width: 320px; height: 100%; margin: 0; }
 /* Only the main conversation pane scrolls; the app shell and side panels stay fixed. */
 html, body { overflow: hidden; }
+/* Status words carry their state in colour as well as in the word, so a rail
+   reads at a glance. Only the states worth reacting to are coloured: an
+   off-state keeps the surrounding muted colour, because colouring every state
+   equally would leave none of them standing out. Same palette as the Hub's
+   status dots, so the two never disagree about what green means.
+   The class is doubled deliberately. Svelte adds a hash class to every scoped
+   selector, so a component's own `.rail small { color: … }` outranks a plain
+   `.state-text[data-state]` and the word stays grey; repeating the class lifts
+   this above them without reaching for !important. */
+.state-text.state-text[data-state="connected"],
+.state-text.state-text[data-state="active"],
+.state-text.state-text[data-state="ready"],
+.state-text.state-text[data-state="ok"] { color: #3f9c5a; }
+.state-text.state-text[data-state="connecting"],
+.state-text.state-text[data-state="downloading"],
+.state-text.state-text[data-state="rate_limited"] { color: #c99a3a; }
+.state-text.state-text[data-state="error"],
+.state-text.state-text[data-state="invalid"] { color: #c05a5a; }
+
 /* Scrollbars stay hidden on every scrollable surface; scrolling still works. */
 * { scrollbar-width: none; -ms-overflow-style: none; }
 *::-webkit-scrollbar { width: 0; height: 0; display: none; }
@@ -165,7 +184,7 @@ button:focus-visible, [contenteditable]:focus-visible { outline: 2px solid rgba(
 /* Sized and spaced to the native lights they stand in for, measured from
    screen captures of the running app: 14px circles on 23px centres. With the
    native group positioned so its centres land on (26,26)/(49,26)/(72,26) —
-   see MIDAS_TRAFFIC_LIGHT_POSITION — these dots occupy the same pixels, so
+   see FLAREAI_TRAFFIC_LIGHT_POSITION — these dots occupy the same pixels, so
    losing focus only drains the colour and never resizes or shifts the lights. */
 :root[data-platform="darwin"] .inactive-traffic-lights.visible { pointer-events: none; position: fixed; z-index: 31; top: 19px; left: 19px; display: flex; gap: 9px; }
 :root[data-platform="darwin"] .inactive-traffic-lights i { width: 14px; height: 14px; border: 1px solid rgba(0,0,0,.1); border-radius: 50%; background: #c8c8c8; box-shadow: inset 0 0 0 .5px rgba(255,255,255,.18); }
@@ -209,16 +228,16 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 .welcome-heading p { margin: 0; color: var(--neutral-500); font-size: .875rem; line-height: 1.45; }
 
 /* Prompt input */
-.polymux-prompt { width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding-top: 6px; }
-.polymux-prompt-shell { position: relative; display: flex; width: 100%; min-height: 52px; align-items: center; border-radius: 16px; background: var(--prompt-surface); padding: 8px; transition: background-color 150ms ease, outline-color 150ms ease, box-shadow 150ms ease; }
-.polymux-prompt.welcome .polymux-prompt-shell { min-height: 60px; border-radius: 18px; padding: 12px; }
-.polymux-prompt.welcome .polymux-primary { right: 12px; }
-.polymux-prompt.welcome .polymux-editor-slot { padding-left: 8px; padding-right: 49px; }
-.polymux-prompt.welcome .inline-chip-editor { font-size: .9375rem; }
-.polymux-prompt-shell.expanded { align-items: flex-start; }
-.polymux-prompt-shell:focus-within, .polymux-prompt-shell.raised { background: var(--prompt-surface-active); outline: 1px solid color-mix(in srgb,var(--neutral-400) 42%,transparent); box-shadow: 0 0 0 1px color-mix(in srgb,var(--neutral-300) 42%,transparent); }
-.polymux-prompt.file-drag-active .polymux-prompt-shell { background: var(--neutral-50); outline: 1px solid var(--neutral-400); box-shadow: 0 0 0 3px rgba(10,10,10,.055); }
-.polymux-editor-slot { position: relative; min-width: 0; flex: 1; padding-left: 8px; padding-right: 49px; }
+.flareai-prompt { width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding-top: 6px; }
+.flareai-prompt-shell { position: relative; display: flex; width: 100%; min-height: 52px; align-items: center; border-radius: 16px; background: var(--prompt-surface); padding: 8px; transition: background-color 150ms ease, outline-color 150ms ease, box-shadow 150ms ease; }
+.flareai-prompt.welcome .flareai-prompt-shell { min-height: 60px; border-radius: 18px; padding: 12px; }
+.flareai-prompt.welcome .flareai-primary { right: 12px; }
+.flareai-prompt.welcome .flareai-editor-slot { padding-left: 8px; padding-right: 49px; }
+.flareai-prompt.welcome .inline-chip-editor { font-size: .9375rem; }
+.flareai-prompt-shell.expanded { align-items: flex-start; }
+.flareai-prompt-shell:focus-within, .flareai-prompt-shell.raised { background: var(--prompt-surface-active); outline: 1px solid color-mix(in srgb,var(--neutral-400) 42%,transparent); box-shadow: 0 0 0 1px color-mix(in srgb,var(--neutral-300) 42%,transparent); }
+.flareai-prompt.file-drag-active .flareai-prompt-shell { background: var(--neutral-50); outline: 1px solid var(--neutral-400); box-shadow: 0 0 0 3px rgba(10,10,10,.055); }
+.flareai-editor-slot { position: relative; min-width: 0; flex: 1; padding-left: 8px; padding-right: 49px; }
 .inline-editor-wrap { position: relative; width: 100%; }
 .inline-chip-editor { width: 100%; overflow-y: auto; background: transparent; color: var(--on-surface); font-size: .875rem; line-height: 1.5; word-break: break-word; white-space: pre-wrap; scrollbar-width: none; }
 .inline-chip-editor::-webkit-scrollbar { display: none; }
@@ -239,17 +258,17 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 .inline-file-remove { flex: none; width: 14px; height: 14px; display: grid; place-items: center; border: 0; border-radius: 4px; padding: 0; background: transparent; color: var(--neutral-600); font-size: 13px; line-height: 1; cursor: pointer; transition: opacity .15s; }
 .inline-file-remove svg { width: 12px; height: 12px; }
 .inline-file-remove:hover { opacity: .6; }
-.polymux-primary { position: absolute; right: 8px; top: 50%; width: 36px; height: 36px; display: grid; flex: none; place-items: center; border: 0; border-radius: 8px; background: var(--neutral-950); color: var(--on-primary); transform: translateY(-50%); cursor: pointer; transition: opacity .15s; }
-.polymux-prompt-shell.expanded .polymux-primary { top: auto; bottom: 8px; transform: none; }
-.polymux-prompt.welcome .polymux-prompt-shell.expanded .polymux-primary { bottom: 12px; }
-.polymux-primary:hover { opacity: .9; } .polymux-primary:active { opacity: .8; }
-.polymux-prompt-toolbar { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; column-gap: 32px; row-gap: 8px; color: var(--secondary); font-size: .625rem; font-weight: 600; letter-spacing: var(--tracking-overline); line-height: 1.25; }
-.polymux-prompt-toolbar button { display: inline-flex; align-items: center; gap: 4px; border: 0; padding: 0; background: transparent; color: inherit; white-space: nowrap; cursor: pointer; transition: opacity .15s; }
-.polymux-prompt-toolbar button:hover { opacity: .7; }
-.polymux-prompt-toolbar button.active { color: var(--neutral-950); opacity: 1; }
-.polymux-prompt-toolbar .goal-toggle { margin: -4px -7px; padding: 4px 7px; border-radius: 8px; transition: color .15s ease, background-color .15s ease, opacity .15s; }
-.polymux-prompt-toolbar .goal-toggle.active { background: var(--neutral-200); }
-.polymux-prompt-toolbar .prompt-option-wrap { position: relative; display: inline-flex; }
+.flareai-primary { position: absolute; right: 8px; top: 50%; width: 36px; height: 36px; display: grid; flex: none; place-items: center; border: 0; border-radius: 8px; background: var(--neutral-950); color: var(--on-primary); transform: translateY(-50%); cursor: pointer; transition: opacity .15s; }
+.flareai-prompt-shell.expanded .flareai-primary { top: auto; bottom: 8px; transform: none; }
+.flareai-prompt.welcome .flareai-prompt-shell.expanded .flareai-primary { bottom: 12px; }
+.flareai-primary:hover { opacity: .9; } .flareai-primary:active { opacity: .8; }
+.flareai-prompt-toolbar { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; column-gap: 32px; row-gap: 8px; color: var(--secondary); font-size: .625rem; font-weight: 600; letter-spacing: var(--tracking-overline); line-height: 1.25; }
+.flareai-prompt-toolbar button { display: inline-flex; align-items: center; gap: 4px; border: 0; padding: 0; background: transparent; color: inherit; white-space: nowrap; cursor: pointer; transition: opacity .15s; }
+.flareai-prompt-toolbar button:hover { opacity: .7; }
+.flareai-prompt-toolbar button.active { color: var(--neutral-950); opacity: 1; }
+.flareai-prompt-toolbar .goal-toggle { margin: -4px -7px; padding: 4px 7px; border-radius: 8px; transition: color .15s ease, background-color .15s ease, opacity .15s; }
+.flareai-prompt-toolbar .goal-toggle.active { background: var(--neutral-200); }
+.flareai-prompt-toolbar .prompt-option-wrap { position: relative; display: inline-flex; }
 /* In a conversation the composer sits on the floor of the window, so the menu
    opens upward. The welcome prompt is centred with the heading above it, so
    there it drops down instead of covering the greeting. */
@@ -259,7 +278,7 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
    its 4px gap sit left of the label, so the label's centre is half of that
    (9px) right of the button's. */
 .model-menu { position: absolute; left: 50%; bottom: calc(100% + 6px); z-index: 80; width: 212px; transform: translateX(calc(-50% + 9px)); letter-spacing: normal; }
-.polymux-prompt.welcome .model-menu { top: calc(100% + 6px); bottom: auto; }
+.flareai-prompt.welcome .model-menu { top: calc(100% + 6px); bottom: auto; }
 .model-menu-search { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 8px; background: var(--neutral-50); color: var(--neutral-500); }
 .model-menu-search > svg { flex: none; }
 .model-menu-search input { width: 100%; min-width: 0; border: 0; padding: 0; background: transparent; color: var(--neutral-900); font: inherit; font-size: 11px; font-weight: 450; outline: none; }
@@ -275,16 +294,16 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 .model-menu-row { position: relative; }
 /* Roomier inside the highlight than the shared item default: the mark, the name
    and the caret each want air off the rounded edge. */
-.model-menu-row .polymux-dropdown-item { gap: 8px; padding-right: 10px; padding-left: 10px; }
+.model-menu-row .flareai-dropdown-item { gap: 8px; padding-right: 10px; padding-left: 10px; }
 .model-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-menu-row .polymux-dropdown-item.active { background: var(--neutral-50); color: var(--neutral-950); }
+.model-menu-row .flareai-dropdown-item.active { background: var(--neutral-50); color: var(--neutral-950); }
 .model-menu-caret { flex: none; display: grid; place-items: center; color: var(--neutral-400); transform: rotate(-90deg); }
 .model-menu-empty { margin: 0; padding: 8px; color: var(--neutral-400); font-size: 11px; font-weight: 450; text-align: center; }
 /* The submenu hangs off the row's right edge, aligned to its top. */
 .model-submenu { position: absolute; top: -4px; left: calc(100% + 4px); z-index: 1; width: 116px; }
 .model-submenu-title { margin: 0; padding: 5px 8px 3px; color: var(--neutral-400); font-size: 9px; font-weight: 600; letter-spacing: var(--tracking-overline); text-transform: uppercase; }
-.model-submenu .polymux-dropdown-item { padding-right: 10px; padding-left: 10px; }
-.model-submenu .polymux-dropdown-item > span:first-child { flex: 1; min-width: 0; }
+.model-submenu .flareai-dropdown-item { padding-right: 10px; padding-left: 10px; }
+.model-submenu .flareai-dropdown-item > span:first-child { flex: 1; min-width: 0; }
 .reasoning-menu-check { flex: none; width: 13px; height: 13px; display: grid; place-items: center; }
 .dictation-error { margin: -7px 0 0; color: #a92914; font-size: 10px; line-height: 1.35; text-align: center; }
 /* Listening pulse: a ping expanding behind the mic. */
@@ -294,16 +313,16 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 @keyframes dictation-ping { 75%,100% { opacity: 0; transform: scale(2); } }
 @media (prefers-reduced-motion: reduce) { .dictation-ping { animation: none; opacity: .5; } }
 
-.polymux-options { position: relative; display: inline-flex; }
-.polymux-dropdown-menu { padding: 4px; border-radius: 12px; background: var(--app-surface); box-shadow: 0 4px 12px rgba(0,0,0,.16); outline: 1px solid var(--neutral-200); animation: dropdown-in .12s ease-out; }
-.polymux-dropdown-item { width: 100%; min-height: 28px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 8px; padding: 7px 8px; background: transparent; color: var(--neutral-700); cursor: pointer; font-size: 11px; font-weight: 450; line-height: 1.3; text-align: left; }
-.polymux-dropdown-item:hover:not(:disabled), .polymux-dropdown-item:focus-visible { background: var(--neutral-50); color: var(--neutral-950); }
-.polymux-dropdown-item:disabled { color: var(--neutral-300); cursor: default; }
-.polymux-compact-menu { position: absolute; z-index: 60; left: 50%; bottom: calc(100% + 4px); width: 216px; transform: translateX(-50%); letter-spacing: normal; }
-.polymux-compact-menu.opens-below { top: calc(100% + 4px); bottom: auto; }
-.polymux-dropdown-setting { display: flex; align-items: center; justify-content: space-between; gap: 9px; min-height: 28px; padding: 4px 6px; }
+.flareai-options { position: relative; display: inline-flex; }
+.flareai-dropdown-menu { padding: 4px; border-radius: 12px; background: var(--app-surface); box-shadow: 0 4px 12px rgba(0,0,0,.16); outline: 1px solid var(--neutral-200); animation: dropdown-in .12s ease-out; }
+.flareai-dropdown-item { width: 100%; min-height: 28px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 8px; padding: 7px 8px; background: transparent; color: var(--neutral-700); cursor: pointer; font-size: 11px; font-weight: 450; line-height: 1.3; text-align: left; }
+.flareai-dropdown-item:hover:not(:disabled), .flareai-dropdown-item:focus-visible { background: var(--neutral-50); color: var(--neutral-950); }
+.flareai-dropdown-item:disabled { color: var(--neutral-300); cursor: default; }
+.flareai-compact-menu { position: absolute; z-index: 60; left: 50%; bottom: calc(100% + 4px); width: 216px; transform: translateX(-50%); letter-spacing: normal; }
+.flareai-compact-menu.opens-below { top: calc(100% + 4px); bottom: auto; }
+.flareai-dropdown-setting { display: flex; align-items: center; justify-content: space-between; gap: 9px; min-height: 28px; padding: 4px 6px; }
 .option-copy { min-width: 0; flex: 1; } .option-copy strong, .option-copy small { display: block; } .option-copy strong { color: var(--neutral-900); font-size: 11px; font-weight: 500; line-height: 1.3; } .option-copy small { margin-top: 1px; color: var(--neutral-500); font-size: 10px; font-weight: 450; line-height: 1.3; }
-.polymux-compact-menu .toggle { width: 28px; height: 16px; flex: none; display: inline-flex; align-items: center; justify-content: flex-start; border: 0; border-radius: 999px; padding: 2px; background: var(--neutral-300); opacity: 1; cursor: pointer; transition: background-color .14s ease; } .polymux-compact-menu .toggle.enabled { justify-content: flex-end; background: var(--neutral-950); } .toggle span { width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+.flareai-compact-menu .toggle { width: 28px; height: 16px; flex: none; display: inline-flex; align-items: center; justify-content: flex-start; border: 0; border-radius: 999px; padding: 2px; background: var(--neutral-300); opacity: 1; cursor: pointer; transition: background-color .14s ease; } .flareai-compact-menu .toggle.enabled { justify-content: flex-end; background: var(--neutral-950); } .toggle span { width: 12px; height: 12px; border-radius: 50%; background: #fff; }
 @keyframes dropdown-in { from { opacity: 0; } }
 
 /* App shell chrome */
@@ -493,7 +512,7 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
 .message-edit-controls button.edit-attach { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; }
 .message-edit-controls button.save { background: var(--neutral-900); color: #fff; }
 .message-stopped { color: var(--neutral-500); font-size: 13px; font-style: italic; }
-/* The Polymux working indicator: 7px dots that swell rather than hop. */
+/* The FlareAI working indicator: 7px dots that swell rather than hop. */
 .thinking { display: inline-flex; align-items: center; gap: 6px; padding: 8px 4px 4px; } .thinking i { width: 7px; height: 7px; border-radius: 50%; background: var(--neutral-400); animation: working-pulse 1.2s ease-in-out infinite; } .thinking i:nth-child(2){animation-delay:.2s} .thinking i:nth-child(3){animation-delay:.4s}
 @keyframes working-pulse { 0%,60%,100%{opacity:.4;transform:scale(1)}30%{opacity:1;transform:scale(1.35)} }
 @media (prefers-reduced-motion: reduce) { .thinking i { animation: none; } }
@@ -605,8 +624,8 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .summary-menu-wrap { position: relative; }
 .summary-action-menu { position: absolute; z-index: 90; top: calc(100% + 4px); right: 0; width: 190px; }
 .reference-action-menu { width: 208px; }
-.reference-action-menu .polymux-dropdown-item > svg:last-child { margin-left: auto; }
-.reference-action-menu .polymux-dropdown-item.active { background: var(--neutral-100); color: var(--neutral-950); }
+.reference-action-menu .flareai-dropdown-item > svg:last-child { margin-left: auto; }
+.reference-action-menu .flareai-dropdown-item.active { background: var(--neutral-100); color: var(--neutral-950); }
 .summary-attachment-picker { position: absolute; z-index: 91; width: 154px; }
 
 .artifact-draft { width: 100%; height: 100%; overflow: auto; background: var(--neutral-50); }
@@ -617,6 +636,10 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .workspace-drawer { grid-column: 3; position: relative; z-index: 40; top: 0; justify-self: end; width: var(--workspace-panel-width,var(--content-docked-column)); height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--app-bg); pointer-events: none; transform: translateX(100%); visibility: hidden; will-change: width,transform; transition: width var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s linear var(--drawer-motion-duration); }
 .workspace-drawer.open { pointer-events: auto; transform: translateX(0); visibility: visible; transition-delay: 0s; }
 .workspace-drawer.resizing { transition: none; }
+/* Expanding and minimising step the width in whole pixels from the app (see
+   App.svelte), so the left divider never lands between two device pixels.
+   The width transition would fight that stepping, so it stands down. */
+.workspace-drawer.motion { transition: transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s; }
 .workspace-drawer::before { content: ''; position: absolute; z-index: 70; inset: 0 auto 0 0; width: 1px; background: var(--neutral-200); pointer-events: none; transform: translateZ(0); }
 .workspace-drawer svg { stroke-width: 1.5; }
 .workspace-resize-handle { position: absolute; z-index: 80; inset: 0 auto 0 -8px; width: 17px; border: 0; padding: 0; background: transparent; cursor: col-resize; touch-action: none; }
@@ -678,7 +701,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .browser-actions > button:disabled { color: var(--neutral-300); cursor: default; }
 .address-form { position: relative; min-width: 0; height: 30px; flex: 1; border: 1px solid transparent; border-radius: 11px; background: transparent; transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease; }
 .address-form:has(input:not(:read-only)):not(:focus-within):hover { background: var(--neutral-100); }
-.address-form:has(input:not(:read-only)):focus-within { border-color: var(--neutral-300); background: transparent; box-shadow: 0 0 0 1px color-mix(in srgb, var(--neutral-300) 35%, transparent); }
+.address-form:has(input:not(:read-only)):focus-within { border-color: var(--neutral-300); background: transparent; box-shadow: none; }
 .address-form input { width: 100%; height: 28px; border: 0; border-radius: inherit; padding: 0 32px; outline: 0; background: transparent; color: var(--neutral-700); text-align: center; text-overflow: ellipsis; font-size: 14px; }
 .address-form input::placeholder { color: var(--neutral-500); opacity: 1; }
 .address-form:focus-within input::placeholder { color: transparent; }
@@ -764,8 +787,8 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
    with the toolbar edge. The offset lives here rather than on the crumb: the
    nav clips its overflow, so a crumb pulled outside it would lose the left
    edge of its own hover pill. */
-.fb-breadcrumbs { min-width: 0; flex: 1; display: flex; align-items: center; gap: 4px; overflow: hidden; margin-left: -8px; color: var(--neutral-950); font-size: 13px; font-weight: 600; }
-.fb-crumb { min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 6px; padding: 4px 8px; background: transparent; color: var(--neutral-600); cursor: pointer; font: inherit; transition: background .15s, color .15s; }
+.fb-breadcrumbs { min-width: 0; flex: 1; display: flex; align-items: center; gap: 0; overflow: hidden; margin-left: -4px; color: var(--neutral-950); font-size: 13px; font-weight: 600; }
+.fb-crumb { min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 6px; padding: 4px 4px; background: transparent; color: var(--neutral-600); cursor: pointer; font: inherit; transition: background .15s, color .15s; }
 .fb-crumb > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The root crumb holds its width: it is the shortest and the one you navigate
    back to, so deeper folders give up their characters first rather than
@@ -776,7 +799,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .fb-home { flex: none; display: grid; place-items: center; transform: translateY(-1px); }
 /* The slash leans right, so its own side bearing eats the gap after it.
    A little extra on that side lands it optically between the two names. */
-.fb-crumb-separator { flex: none; padding-right: 3px; color: var(--neutral-400); }
+.fb-crumb-separator { flex: none; margin-left: 2px; padding-right: 3px; color: var(--neutral-400); }
 .fb-crumb-tail { min-width: 0; display: none; align-items: center; gap: 4px; }
 .fb-crumb-selected { min-width: 0; overflow: hidden; padding: 2px 4px; color: var(--neutral-500); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .fb-selected-count { flex: none; margin-right: 4px; border-radius: 6px; padding: 4px 8px; background: var(--neutral-100); color: var(--neutral-700); font-size: 11px; font-weight: 500; }
@@ -794,9 +817,26 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 /* The first breadcrumb, when it is a switch between storage backends rather
    than the name of the only one. It anchors its own menu, so it is positioned
    even though the crumb inside it is laid out like any other. */
-/* The storage switch is the shared Menu, which brings its own trigger and
-   dropdown; it only needs to sit at the drive's own control height. */
-.fb-toolbar > .select-menu .select-menu-trigger { height: 26px; border-radius: 7px; padding: 0 7px 0 9px; font-size: 12.5px; }
+.fb-error { flex: none; display: flex; align-items: center; gap: 10px; margin: 8px 14px 0; padding: 8px 10px; border-radius: 8px; background: #fff5f5; color: #8f3e3e; font-size: 11.5px; }
+.fb-error > span { min-width: 0; flex: 1; }
+.fb-error button { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.fb-error button:hover { background: rgba(0,0,0,.06); }
+:root[data-theme="dark"] .fb-error { background: #321f1f; color: #eea7a7; }
+
+/* The storage switch is the shared Menu in its plain form, so it inherits the
+   breadcrumbs' type and needs only the same negative inset the first crumb
+   carries — its padding would otherwise push the path off the toolbar's edge. */
+.fb-toolbar > .select-menu { margin-left: -4px; color: var(--neutral-950); font-size: 13px; font-weight: 600; }
+/* Matching the crumbs' inset keeps the slash the same distance from the source
+   name as it is from every folder name after it. */
+.fb-toolbar > .select-menu .select-menu-trigger.plain { padding: 4px 4px; }
+/* That inset belongs to whichever element leads the path. With the switch
+   present the breadcrumbs no longer do, so the offset here instead swallows the
+   toolbar's own 6px gap: the slash then sits the same distance from the source
+   name as from the folder name after it. The pull is on the nav rather than on
+   the slash because the nav clips its overflow, and a slash dragged past its
+   left edge disappears. */
+.fb-toolbar > .select-menu + .fb-breadcrumbs { margin-left: -6px; }
 
 /* Trails the filename as its last token, so it reads as part of the name
    rather than as another column. */
@@ -840,17 +880,28 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 
 /* Collapsed the search is just its icon; expanded it takes a quarter of the
    toolbar and the field itself becomes visible. */
-.fb-search { flex: none; width: 30px; transition: width .2s; }
-.fb-search.expanded { width: 25%; min-width: 120px; }
+.fb-search { flex: none; width: 30px; transition: width .22s cubic-bezier(.2, 0, 0, 1); }
+/* The field scales with the toolbar so a wide workspace gets a wide search,
+   with a floor that keeps it usable narrow and a ceiling so it never crowds
+   the path beside it. The bounds are a clamp rather than min-width/max-width
+   because those only apply while expanded: the floor would land the instant
+   the class did, snapping the first 150px open before the transition had any
+   width left to animate. A clamp resolves to one value the width can run to. */
+.fb-search.expanded { width: clamp(150px, 34%, 420px); }
 .fb-search-field { width: 100%; height: 30px; display: flex; align-items: center; border: 1px solid transparent; border-radius: 6px; transition: border-color .15s, background .15s; }
 .fb-search-field.expanded { border-color: var(--neutral-200); background: var(--neutral-50); }
 .fb-search-field.expanded.focused { border-color: var(--neutral-400); background: var(--app-surface); }
 /* Flex-centred rather than inline: an inline input sits on the text baseline,
    which floated the placeholder off the icon's centre line. */
-.fb-search-slot { width: 0; display: flex; align-items: center; overflow: hidden; opacity: 0; transition: opacity .2s; }
-.fb-search-field.expanded .fb-search-slot { min-width: 0; flex: 1; opacity: 1; }
+.fb-search-slot { width: 0; display: flex; align-items: center; overflow: hidden; opacity: 0; transition: opacity .12s ease; }
+/* Opening, the box leads and the field catches up inside it; closing, the
+   field goes first so nothing is still fading while the width collapses. */
+.fb-search-field.expanded .fb-search-slot { min-width: 0; flex: 1; opacity: 1; transition-delay: .1s; }
 .fb-search-slot input { width: 100%; min-width: 0; display: block; border: 0; padding: 0 8px 0 0; background: transparent; color: var(--neutral-950); font: inherit; font-size: 12.5px; line-height: 1; outline: 0; }
 .fb-search-slot input::placeholder { color: var(--neutral-400); }
+/* Same clear affordance the model and settings searches carry. */
+.fb-search-clear { -webkit-appearance: none; appearance: none; flex: none; display: grid; place-items: center; width: 16px; height: 16px; margin-right: 8px; border: 0; border-radius: 0; padding: 0; background: transparent; box-shadow: none; color: var(--neutral-400); cursor: pointer; transition: color .15s ease; }
+.fb-search-clear:hover, .fb-search-clear:focus-visible { outline: 0; border: 0; background: transparent; box-shadow: none; color: var(--neutral-800); }
 
 .fb-list { position: relative; z-index: 10; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 16px; }
 .fb-head, .fb-row { display: grid; grid-template-columns: minmax(140px,1fr) 96px 128px 172px; column-gap: 16px; align-items: center; padding: 0 14px; }
@@ -888,11 +939,13 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 /* Schedule's table: columned rows with a chip per row. */
 .list-toolbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--neutral-100); }
 .schedule-heading { min-width: 0; flex: 1; display: flex; align-items: center; gap: 7px; padding-left: 2px; color: var(--neutral-950); font-size: 13px; font-weight: 550; }
-.schedule-heading svg { color: var(--neutral-500); }
-.list-search { flex: none; display: flex; align-items: center; gap: 6px; width: 190px; height: 28px; padding: 0 9px; border: 1px solid var(--neutral-200); border-radius: 9px; color: var(--neutral-400); }
-.list-search:focus-within { border-color: var(--neutral-300); }
-.list-search input { min-width: 0; flex: 1; border: 0; background: transparent; color: var(--neutral-900); font: inherit; font-size: 13px; outline: 0; }
-.list-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.schedule-heading svg { flex: none; color: var(--neutral-500); }
+/* The title gives way to the search rather than running underneath it once the
+   toolbar is narrower than both together. */
+.schedule-heading > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Collapsed, the search is one icon wide, so the create action is an icon too
+   rather than a labelled button sitting alone beside it. */
+.schedule-create-icon { flex: none; }
 
 .list-columns { flex: none; display: grid; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--neutral-100); }
 .list-column-cell { min-width: 0; display: flex; align-items: center; }
@@ -979,7 +1032,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .file-bar-button.outlined:hover, .file-bar-button.outlined[aria-expanded="true"] { background: var(--neutral-100); }
 .file-zoom-menu, .file-open-menu { position: absolute; z-index: 70; top: calc(100% + 4px); right: 0; width: 210px; padding: 5px; }
 .file-zoom-menu { width: 168px; }
-.file-zoom-menu .polymux-dropdown-item.active, .file-open-menu .polymux-dropdown-item.active { background: var(--neutral-100); }
+.file-zoom-menu .flareai-dropdown-item.active, .file-open-menu .flareai-dropdown-item.active { background: var(--neutral-100); }
 
 @keyframes panel-in { from{opacity:0;transform:translateY(-4px) scale(.99)} }
 
@@ -993,7 +1046,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .speech-orb-chat-toggle:hover { background: transparent; color: var(--neutral-950); }
 .speech-orb-content { position: relative; z-index: 1; width: 100%; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; margin: 0 auto; padding: 72px 24px 42px; }
 .voice-orb { position: relative; width: clamp(400px,46vw,580px); aspect-ratio: 1; display: block; }
-.voice-orb::before { content: ''; pointer-events: none; position: absolute; inset: 22%; border-radius: 50%; background: radial-gradient(circle,rgba(212,160,23,.14) 0,rgba(212,160,23,.07) 38%,rgba(143,85,21,.025) 58%,transparent 74%); filter: blur(24px); }
+.voice-orb::before { content: ''; pointer-events: none; position: absolute; inset: 22%; border-radius: 50%; background: radial-gradient(circle,rgba(35,132,203,.14) 0,rgba(35,132,203,.07) 38%,rgba(22,48,79,.025) 58%,transparent 74%); filter: blur(24px); }
 .voice-orb canvas { position: relative; z-index: 1; width: 100%; height: 100%; display: block; }
 .speech-orb:not(.in-chat) .voice-orb { margin-bottom: clamp(-164px,-11vw,-104px); }
 .speech-orb.error .voice-orb { opacity: .75; }
@@ -1064,8 +1117,8 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
   .empty-state { padding: 72px 0 42px; }
   .welcome-chat-pane { gap: 20px; }
   .welcome-heading p { max-width: 280px; }
-  .polymux-editor-slot { padding-left: 4px; }
-  .polymux-prompt-toolbar { column-gap: 26px; }
+  .flareai-editor-slot { padding-left: 4px; }
+  .flareai-prompt-toolbar { column-gap: 26px; }
   .message-list { padding-top: 84px; }
   .summary-panel { width: calc(100vw - 24px); right: 12px; padding: 15px; border-radius: 18px; }
   .file-card { gap: 11px; padding: 13px; } .file-icon { width: 42px; height: 42px; } .open-in { display: none; }
@@ -1081,7 +1134,7 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .side-chat-messages .message { margin-bottom: 20px; font-size: 14px; }
 .side-chat-empty { margin: 0; color: var(--neutral-500); font-size: 12.5px; line-height: 1.5; }
 .side-chat-composer { flex: none; padding: 4px 16px 16px; }
-.side-chat-composer .polymux-prompt { gap: 0; padding-top: 0; }
+.side-chat-composer .flareai-prompt { gap: 0; padding-top: 0; }
 .side-chat-input { width: 100%; max-height: calc(4 * 1.5em); min-height: 1.5em; resize: none; border: 0; padding: 0; outline: 0; background: transparent; color: var(--on-surface); font: inherit; font-size: .875rem; line-height: 1.5; }
 .side-chat-input::placeholder { color: var(--secondary); }
 
@@ -1093,15 +1146,25 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .select-menu-trigger:hover, .select-menu-trigger[aria-expanded='true'] { border-color: var(--neutral-400); color: var(--neutral-950); }
 .select-menu-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-menu-trigger > svg { flex: none; color: var(--neutral-500); }
+.select-menu-icon { flex: none; display: grid; place-items: center; }
+/* The label variant: it names a place rather than holding a value, so it drops
+   the field's outline and keeps only the hover highlight — which covers the
+   icon and the name together, since both sit inside the button. */
+.select-menu-trigger.plain { width: auto; height: auto; gap: 6px; border-color: transparent; border-radius: 6px; padding: 4px 8px; background: transparent; color: var(--neutral-600); font: inherit; transition: background .15s, color .15s; }
+.select-menu-trigger.plain:hover, .select-menu-trigger.plain[aria-expanded='true'] { border-color: transparent; background: var(--neutral-100); color: var(--neutral-950); }
 /* A long option list scrolls inside the menu rather than running off the
    surface it opens over. `--select-menu-rows` sets how many rows stay visible;
    the 4px is the menu's own vertical padding. */
 .select-menu-list { position: absolute; z-index: 93; top: calc(100% + 5px); right: 0; min-width: 100%; width: max-content; max-width: 220px; max-height: calc(var(--select-menu-rows, 8) * var(--select-menu-row, 28.3px) + 8px); overflow-y: auto; overscroll-behavior: contain; }
-.select-menu-list .polymux-dropdown-item > svg:last-child { margin-left: auto; }
+.select-menu-list .flareai-dropdown-item > svg:last-child { margin-left: auto; }
+/* A plain trigger leads a row rather than ending one, so its list hangs from
+   the left edge; anchoring it right would push a list wider than the label off
+   the panel and clip it. */
+.select-menu.plain .select-menu-list { right: auto; left: 0; }
 /* The shared destructive modifier. The chat row menu keeps its own slightly
    deeper red, which is what the reference uses for that surface. */
-.polymux-dropdown-item.danger { color: #c0392b; }
-.polymux-dropdown-item.danger:hover { background: #fdf0ee; color: #a5301f; }
+.flareai-dropdown-item.danger { color: #c0392b; }
+.flareai-dropdown-item.danger:hover { background: #fdf0ee; color: #a5301f; }
 
 /* ---------------------------------------------------------------------------
    First-run setup.
@@ -1179,6 +1242,12 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .onb-quiet { border: 0; padding: 0; background: transparent; color: var(--neutral-500); font-family: inherit; font-size: 12.5px; cursor: pointer; }
 .onb-quiet:hover { color: var(--neutral-900); }
 .onb-quiet:focus-visible { outline: 2px solid var(--neutral-500); outline-offset: 3px; border-radius: 4px; }
+/* Both are the bare word, on the same centre line as whatever they stand
+   beside: with no half-leading of their own, box centre is text centre. */
+.onb-back, .onb-skip { display: inline-flex; align-items: center; line-height: 1; }
+/* Further off the primary than the row's own gap: the button carries a plate
+   and the word does not, so at an equal gap the two read as crowded. */
+.onb-actions .onb-skip { margin-left: 10px; }
 
 .onb-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 26px; }
 .onb-note { margin: 12px 0 0; color: var(--neutral-500); font-size: 11.5px; line-height: 1.5; }
@@ -1415,39 +1484,175 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 @keyframes cover-open { from { --cover-r: 0px; } to { --cover-r: var(--cover-max, 120vmax); } }
 @media (prefers-reduced-motion: reduce) { .onb-cover { animation: none; --cover-r: var(--cover-max, 120vmax); } }
 
-/* Startup splash. Lives in index.html and is styled here so the whole lockup —
-   mark, wordmark and its slide — is on screen with the document's first frame
-   rather than after the renderer bundle has loaded and mounted. */
-.startup-splash { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; pointer-events: none; background: var(--app-bg); }
+/* Startup splash. Lives in index.html and is styled here so the whole sequence
+   — the mark drawing itself, then the lockup opening — is on screen with
+   the document's first frame rather than after the renderer bundle has loaded
+   and mounted.
+
+   Every beat is keyed off `data-splash`, which is set when the window actually
+   reaches the screen (main.ts, on its first frame), so none of the animation is
+   spent behind a window nobody can see yet. The beats, from that moment:
+
+     0.00s  the mark, alone on the window's centre, is drawn: all sixteen rays
+            growing out of its middle, each at its own full thickness
+     1.08s  the lockup opens — the mark travels left while the wordmark slides
+            the other way, out from behind it through a soft edge that stays put
+            in the gap, so the letters emerge rather than being wiped on
+     2.08s  the lockup is settled, and holds there for a beat
+     2.30s  theme-boot treats the end of that hold as the end of the sequence
+            and lets App.svelte lift the cover, on to the identical lockup the
+            app has already painted underneath.
+
+   Everything animated here is transform, opacity or paint — nothing on this
+   path triggers layout, because it runs alongside the renderer bundle mounting
+   the app underneath and a dropped frame is the one thing a splash cannot
+   afford. */
+.startup-splash {
+  position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; pointer-events: none; background: var(--app-bg);
+}
 .startup-splash.leaving { will-change: opacity; animation: startup-cover-out .24s ease forwards; }
-/* The travel is read against the lockup's own size, not in absolute pixels:
-   at the wordmark's current 48px, the old 10px drift was a fraction of one
-   letter and barely registered as movement. 40px is about one glyph — the
-   same amount of visible slide the smaller lockup used to have. */
-.startup-brand { display: flex; align-items: center; gap: 12px; color: var(--neutral-950); opacity: .78; transform: translate3d(-40px,0,0); will-change: transform,opacity; backface-visibility: hidden; }
-/* The brand holds this opening pose until the window is on screen (theme-boot
-   flips the attribute), so the slide is seen rather than spent behind a window
-   that has not appeared yet. Matching the attribute's presence rather than the
-   value keeps the animation — and the settled pose its `forwards` fill holds —
-   in place through `done`: dropping it there snapped the brand back to its
-   opening pose just as the cover began to fade, 10px off the identical lockup
-   underneath. */
-/* A gentler ease than the quintic this used to run on. That curve spent ~85%
-   of the travel in its first half-second and then crept for the remaining
-   second and a half — which read as a slide that stalls, and left the eye on
-   a crawl slow enough that a single dropped frame showed as a stutter. A
-   quadratic ease-out keeps real movement going most of the two seconds and
-   still settles rather than stopping dead. */
-:root[data-splash] .startup-brand { animation: startup-brand-in 2s cubic-bezier(.25,.46,.45,.94) forwards; }
-.startup-mark { width: 72px; height: 59px; display: block; }
-.startup-brand span { font-size: 48px; font-weight: 750; letter-spacing: -.045em; line-height: 1; text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
+
+/* Opening pose: the lockup is pushed right by exactly what the wordmark and its
+   gap add to the left of centre, which puts the mark's own centre on the
+   window's. A translate percentage is read against this element's own width —
+   the mark, the gap and the wordmark — so half of that less half the mark is
+   the whole calculation, and nothing has to be measured in script.
+   Matching the attribute's presence rather than its value keeps the animations
+   — and the settled pose their fill holds — in place through `done`: dropping
+   them there would snap the lockup back to this opening pose just as the cover
+   begins to fade, half a wordmark off the identical lockup underneath.
+
+   Nothing here promotes the lockup to a layer of its own, and that is the whole
+   point: the mark is vector art, and it is only as sharp as the last thing that
+   touched it. `will-change`, `backface-visibility` and `translate3d` all say
+   "put this on the GPU and keep it there", and once it is there the mark paints
+   into a texture and every frame after is a resample of it — measurably softer
+   than the same paths drawn directly, which on rays this thin is exactly the
+   fuzz you see against a flat rendering of the same SVG.
+
+   Dropping those hints fixes the settled mark but not the travel, because a
+   transform animation is composited on its own account. So the travel does not
+   animate `transform` — it animates a registered custom property that
+   `transform` is built from. That cannot be handed to the compositor, so the
+   lockup is laid out and painted from the paths themselves on every frame of
+   the move, which is the only way the mark is sharp *throughout* rather than
+   only once it has stopped. It costs a repaint of a couple of hundred pixels
+   per frame, which is worth it and no more than that. */
+@property --startup-travel {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 0px;
+}
+.startup-brand { display: flex; align-items: center; gap: 12px; color: var(--neutral-950); --startup-travel: calc(50% - 32px);
+  /* Snap the lockup to the pixel grid. Centring puts its left edge at
+     (viewport - its own width) / 2, and its own width is never a whole number —
+     the wordmark's advance is fractional — so the mark lands on x.703 at every
+     window size there is, straddling device pixels, and every edge of it is
+     spread over two. That is the difference you see against a mark that sits on
+     the grid. A percentage inside translateX resolves against this element's
+     width, so the centred offset is expressible here, and the difference
+     between it and its own floor is the correction. */
+  --startup-snap: calc(round(down, (100vw - 100%) / 2, 1px) - (100vw - 100%) / 2);
+  transform: translateX(calc(var(--startup-snap) + var(--startup-travel))); }
+:root[data-splash] .startup-brand { animation: startup-brand-in 1.22s cubic-bezier(.5,0,.2,1) 1.08s both; }
+/* The travel is over at 82%; the rest is the lockup standing still. That hold
+   is what the cover waits on, so the sequence ends on a settled mark rather
+   than crossfading out of the last frame of its own movement. */
+@keyframes startup-brand-in {
+  0%   { --startup-travel: calc(50% - 32px); }
+  82%  { --startup-travel: 0px; }
+  100% { --startup-travel: 0px; }
+}
+
+/* Every ray keeps its full thickness from the first frame — what grows is its
+   length. Each one is scaled along its own axis from the end nearest the middle
+   of the mark: `rotate(a) scaleX(k) rotate(-a)` swings the ray's axis onto x,
+   stretches it, and swings it back, so nothing but length changes. `--a` is
+   that axis and `--o` the end it grows from, read off the path's own box —
+   which is why the sixteen values below are geometry, not taste.
+
+   The eight points go first and the eight notches that cap them follow, timed
+   to arrive about where a point has reached by then, so the mark assembles
+   outward instead of in two disconnected halves. */
+.startup-mark { width: 64px; height: 64px; display: block; }
+.startup-mark path { fill: currentColor; transform-box: fill-box; transform-origin: var(--o); transform: rotate(var(--a)) scaleX(0) rotate(calc(var(--a) * -1)); }
+.startup-mark path:nth-child(1)  { --o: 100% 100%; --a: -140.3deg; }
+.startup-mark path:nth-child(2)  { --o: 100% 100%; --a: -160.2deg; }
+.startup-mark path:nth-child(3)  { --o: 100% 0%;   --a:  129.7deg; }
+.startup-mark path:nth-child(4)  { --o: 100% 0%;   --a:  109.9deg; }
+.startup-mark path:nth-child(5)  { --o: 0% 0%;     --a:   39.7deg; }
+.startup-mark path:nth-child(6)  { --o: 0% 0%;     --a:   19.8deg; }
+.startup-mark path:nth-child(7)  { --o: 0% 100%;   --a:  -50.3deg; }
+.startup-mark path:nth-child(8)  { --o: 0% 100%;   --a:  -70.1deg; }
+.startup-mark path:nth-child(9)  { --o: 100% 100%; --a: -125.3deg; }
+.startup-mark path:nth-child(10) { --o: 100% 100%; --a: -141.5deg; }
+.startup-mark path:nth-child(11) { --o: 100% 0%;   --a:  144.8deg; }
+.startup-mark path:nth-child(12) { --o: 100% 0%;   --a:  127.8deg; }
+.startup-mark path:nth-child(13) { --o: 0% 0%;     --a:   53.7deg; }
+.startup-mark path:nth-child(14) { --o: 0% 0%;     --a:   37.4deg; }
+.startup-mark path:nth-child(15) { --o: 0% 100%;   --a:  -34.5deg; }
+.startup-mark path:nth-child(16) { --o: 0% 100%;   --a:  -52.6deg; }
+:root[data-splash] .startup-mark path { animation: startup-mark-draw .9s cubic-bezier(.22,.7,.3,1) both; }
+:root[data-splash] .startup-mark path:nth-child(n+9) { animation-duration: .48s; animation-delay: .42s; }
+@keyframes startup-mark-draw {
+  from { transform: rotate(var(--a)) scaleX(0) rotate(calc(var(--a) * -1)); }
+  to   { transform: rotate(var(--a)) scaleX(1) rotate(calc(var(--a) * -1)); }
+}
+/* Then take the transform off them again once the sequence is over. At full
+   length that pair of rotations cancels, but only to within floating point, so
+   the draw's fill would otherwise hold a nearly-but-not-exactly identity matrix
+   on every ray for as long as the splash is up. `done` is the moment it is safe
+   to drop — the rays are long since grown, so no transform at all *is* their
+   settled pose — and it leaves the mark as sixteen plain paths for the whole
+   tail of the splash, including the crossfade out of it. */
+:root[data-splash="done"] .startup-mark path { animation: none; transform: none; }
+
+@property --startup-word-travel {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 0px;
+}
+/* The wordmark comes out from behind the mark. The edge it comes through does
+   not move: a static soft-edged mask sits in the gap between the two, opaque
+   from the word's own left edge rightward and fading to nothing back across the
+   gap, so a letter is hidden while it is over the mark, fades up as it crosses
+   the gap, and is solid by the time it clears. Sweeping that edge across the
+   word instead — which is what a travelling clip does — reads as the word being
+   wiped on, and drags the soft edge across letters that have already arrived.
+
+   Because the edge holds still, the whole reveal is the slide: the word starts
+   far enough left that all of it is behind the mask and travels its own width
+   out. `-125%` is read against the word's own box, so a wider rendering of the
+   name is still fully hidden at the start rather than showing its tail.
+
+   The ramp is the gap and nothing but the gap: transparent exactly at the
+   mark's right edge, solid exactly at the word's left. It has to stop there —
+   run it any further left and letters ghost over the mark on their way out,
+   which puts the fade on the logo instead of on the text. Twelve pixels is not
+   much to be soft in, so the stops shape it rather than ramping straight.
+
+   The box is padded and the padding taken straight back off in margin, so the
+   mask has that gap to work in and room for the glyphs' overshoot, without the
+   lockup's own metrics moving by a pixel. */
+.startup-word { display: block; font-size: 48px; font-weight: 750; letter-spacing: -.045em; line-height: 1; white-space: nowrap; text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; padding: 12px 0 12px 30px; margin: -12px 0 -12px -30px; -webkit-mask-image: linear-gradient(to right, transparent 18px, rgba(0,0,0,.12) 21px, rgba(0,0,0,.5) 24px, rgba(0,0,0,.88) 27px, #000 30px); mask-image: linear-gradient(to right, transparent 18px, rgba(0,0,0,.12) 21px, rgba(0,0,0,.5) 24px, rgba(0,0,0,.88) 27px, #000 30px); }
+.startup-word-slide { display: block; --startup-word-travel: -125%; transform: translateX(var(--startup-word-travel)); }
+:root[data-splash] .startup-word-slide { animation: startup-word-slide 1s cubic-bezier(.5,0,.2,1) 1.08s both; }
+@keyframes startup-word-slide { from { --startup-word-travel: -125%; } to { --startup-word-travel: 0%; } }
+
 /* The stored theme is only known once settings load, so until an explicit theme
    is set the splash follows the system. Without this a dark-mode launch paints
-   white and then flips part way through the slide. */
+   white and then flips part way through the sequence. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) .startup-splash { background: #171717; }
   :root:not([data-theme]) .startup-brand { color: #fafafa; }
 }
-@keyframes startup-brand-in { from { transform: translate3d(-40px,0,0); opacity: .78; } to { transform: translate3d(0,0,0); opacity: 1; } }
 @keyframes startup-cover-out { from { opacity: 1; } to { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .startup-splash { animation: none; opacity: 1; } .startup-brand { transform: none; animation: none; opacity: 1; will-change: auto; } }
+/* Reduced motion drops the sequence for its settled pose. The selectors carry
+   the `[data-splash]` prefix because a media query adds no specificity of its
+   own, and main.ts sets that attribute whatever the motion preference is — so
+   plain class selectors here would simply lose to the rules above. */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-splash] .startup-brand { transform: none; animation: none; }
+  :root[data-splash] .startup-word-slide { transform: none; animation: none; }
+  :root[data-splash] .startup-mark path { transform: none; animation: none; }
+}

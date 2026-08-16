@@ -3,8 +3,8 @@ import type {
   ChronicleFrameSource,
   ChronicleSystemState,
   ChronicleSystemStateSource,
-} from "@midas/chronicle";
-import { textSignature } from "@midas/chronicle";
+} from "@flareai/chronicle";
+import { textSignature } from "@flareai/chronicle";
 import { powerMonitor } from "electron";
 import type { AxReader } from "./ax-reader.js";
 
@@ -25,7 +25,7 @@ export class AccessibilityChronicleFrames implements ChronicleFrameSource {
     const snapshot = await this.#reader.snapshot(process.pid);
     if (!snapshot.trusted)
       throw new Error(
-        "Accessibility access is off. Allow Midas under Privacy & Security → Accessibility in System Settings.",
+        "Accessibility access is off. Allow FlareAI under Privacy & Security → Accessibility in System Settings.",
       );
     if (snapshot.skipped || !snapshot.app) return [];
     const text = snapshot.text?.trim() ?? "";

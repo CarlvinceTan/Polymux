@@ -1,6 +1,6 @@
-# Working on Midas
+# Working on FlareAI
 
-Midas is an Electron + Svelte 5 desktop app. `src/main` is the main process,
+FlareAI is an Electron + Svelte 5 desktop app. `src/main` is the main process,
 `src/preload` the bridge, `src/renderer` the Svelte UI, and `packages/*` the
 workspace libraries the main process runs on.
 
@@ -35,7 +35,7 @@ Watch the output. If the window is blank, check in this order:
    during `mount()` in `src/renderer/main.ts` leaves `#app` empty with the error
    only in the console, never in the terminal.
 2. A leftover dev app from an earlier `npm start`. `scripts/dev-start.mjs`
-   retires these automatically; if you see `Retiring the Midas dev app...`, that
+   retires these automatically; if you see `Retiring the FlareAI dev app...`, that
    was the cause. Kill any stray `node_modules/electron/dist/...` processes by
    hand if the window is still stale.
 3. Main-process failures before `loadURL` — these print to the terminal.
@@ -43,7 +43,7 @@ Watch the output. If the window is blank, check in this order:
 Do not report a change as working on the strength of a green build alone, and
 do not ask the user to check the window for you.
 
-## One Midas at a time
+## One FlareAI at a time
 
 Every dev run shares one userData directory, one single-instance lock, one hub
 port (47664) and one Vite port. Two agents or terminals running `npm start`

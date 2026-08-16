@@ -1,5 +1,5 @@
-import type { AgentTool, AgentToolContext, AgentToolResult } from "@midas/core";
-import type { JsonObject } from "@midas/inference";
+import type { AgentTool, AgentToolContext, AgentToolResult } from "@flareai/core";
+import type { JsonObject } from "@flareai/inference";
 
 export interface ToolEnvironment {
   cwd: string;

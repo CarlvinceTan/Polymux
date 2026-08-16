@@ -3,11 +3,12 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import started from "electron-squirrel-startup";
-import { channels } from "@midas/protocol";
+import { channels } from "@flareai/protocol";
 import { DesktopBackend, modelFromEnvironment } from "./backend.js";
 import { BridgeHost, Homeserver } from "./homeserver/index.js";
+import { loadShippedCredentials } from "./homeserver/shipped-credentials.js";
 import {
-  MIDAS_TRAFFIC_LIGHT_POSITION,
+  FLAREAI_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
 } from "./window-buttons.js";
 
@@ -42,10 +43,10 @@ if (started) {
 if (!app.requestSingleInstanceLock()) {
   // Say so. This instance dies before it ever builds a window, so without a
   // line here `npm start` looks hung: the dev server stays up, the terminal
-  // goes quiet, and the only Midas on screen is the older instance still
+  // goes quiet, and the only FlareAI on screen is the older instance still
   // running its older bundle.
   console.error(
-    "Midas is already running, so this instance is handing the session over " +
+    "FlareAI is already running, so this instance is handing the session over " +
       "and exiting. Quit the running one (Cmd+Q) before starting again.",
   );
   quitting = true;
@@ -68,17 +69,17 @@ if (!app.requestSingleInstanceLock()) {
 
 // Development runs execute inside Electron.app, whose bundle name would
 // otherwise appear as "Electron" in the macOS Dock tooltip.
-app.setName("Midas");
-process.title = "Midas";
+app.setName("FlareAI");
+process.title = "FlareAI";
 // Electron does not always build Chromium's accessibility tree until assistive
 // technology requests it. Keep the renderer tree available so macOS can expose
-// Midas's labelled chat controls to VoiceOver and exact-window automation.
+// FlareAI's labelled chat controls to VoiceOver and exact-window automation.
 app.commandLine.appendSwitch("force-renderer-accessibility");
 // Electron's geolocation provider reads GOOGLE_API_KEY before any renderer is
-// created. Keep a Midas-specific variable available for packaged launches while
+// created. Keep a FlareAI-specific variable available for packaged launches while
 // still respecting Electron's documented variable when it is supplied.
-if (!process.env.GOOGLE_API_KEY && process.env.MIDAS_GOOGLE_API_KEY)
-  process.env.GOOGLE_API_KEY = process.env.MIDAS_GOOGLE_API_KEY;
+if (!process.env.GOOGLE_API_KEY && process.env.FLAREAI_GOOGLE_API_KEY)
+  process.env.GOOGLE_API_KEY = process.env.FLAREAI_GOOGLE_API_KEY;
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 let backend: DesktopBackend | undefined;
@@ -89,7 +90,7 @@ let coldStartConsumed = false;
 
 function createWindow(): void {
   const window = new BrowserWindow({
-    title: "Midas",
+    title: "FlareAI",
     width: 1000,
     height: 618,
     // The floor where the split layout still reads: history at its 180px
@@ -119,7 +120,7 @@ function createWindow(): void {
     // render at y=12; these measured positions share the same visual line.
     titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
     trafficLightPosition:
-      process.platform === "darwin" ? MIDAS_TRAFFIC_LIGHT_POSITION : undefined,
+      process.platform === "darwin" ? FLAREAI_TRAFFIC_LIGHT_POSITION : undefined,
     webPreferences: {
       preload: path.join(currentDirectory, "preload.js"),
       contextIsolation: true,
@@ -175,7 +176,7 @@ function createWindow(): void {
       if (retriesLeft <= 0) {
         console.error(
           "[renderer] giving up on the load; the window will stay blank. " +
-            "Check that the dev server is up and quit any other running Midas.",
+            "Check that the dev server is up and quit any other running FlareAI.",
         );
         return;
       }
@@ -334,7 +335,7 @@ function loadRenderer(window: BrowserWindow): void {
     // `npm run start:onboarding` reopens first-run setup over this machine's
     // real profile without recording that it ran. Only the dev-server branch
     // reads it, so a packaged build has no way to reach it.
-    if (process.env.MIDAS_ONBOARDING === "1")
+    if (process.env.FLAREAI_ONBOARDING === "1")
       url.searchParams.set("onboarding", "1");
     void window.loadURL(url.toString()).catch((error: unknown) => {
       // `did-fail-load` covers the retry; this only keeps the rejection from
@@ -366,8 +367,22 @@ let hub: {homeserver: Homeserver; bridges: BridgeHost; directory: string} | unde
 
 async function startHub(): Promise<NonNullable<typeof hub>> {
   const directory = path.join(app.getPath("userData"), "hub");
+  // Before any bridge is discovered or started: which application a bridge
+  // identifies itself as is decided at seed time, and a pair that arrived
+  // after the config was written would not take effect until the next launch.
+  // Bounded, and its own failure is not the hub's — the built-in pair covers
+  // every way this can go wrong.
+  await withTimeout(
+    loadShippedCredentials({
+      directory: app.getPath("userData"),
+      host: process.env.FLAREAI_UPDATE_HOST ?? "https://updates.flarehq.co",
+      log: (message) => console.warn(`[credentials] ${message}`),
+    }),
+    8_000,
+    "shipped credentials",
+  ).catch((): undefined => undefined);
   const homeserver = new Homeserver({
-    serverName: "midas.local",
+    serverName: "flareai.local",
     dataDirectory: directory,
     port: 47_664,
   });
@@ -397,11 +412,12 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
  * port 47664 with nothing pointing at it, and the launch after this one would
  * hang on exactly the same step.
  */
-async function withTimeout(
-  work: Promise<NonNullable<typeof hub>>,
+async function withTimeout<T>(
+  work: Promise<T>,
   ms: number,
   what: string,
-): Promise<NonNullable<typeof hub>> {
+  onLate?: (late: T) => unknown,
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   let timedOut = false;
   try {
@@ -416,10 +432,9 @@ async function withTimeout(
     ]);
   } finally {
     clearTimeout(timer);
-    if (timedOut)
-      void work
-        .then((late) => Promise.allSettled([late.bridges.close(), late.homeserver.close()]))
-        .catch(() => {});
+    // Whatever the abandoned work eventually produces still has to be disposed
+    // of; the caller knows how, because only it knows what it asked for.
+    if (timedOut) void work.then((late) => onLate?.(late)).catch(() => {});
   }
 }
 
@@ -435,7 +450,9 @@ app.whenReady().then(async () => {
     // orphaned previous main process has not released yet, a bridge database
     // waiting on a lock — would otherwise hold the first window back forever,
     // which on screen is indistinguishable from the app refusing to start.
-    hub = await withTimeout(startHub(), 10_000, "the embedded message hub");
+    hub = await withTimeout(startHub(), 10_000, "the embedded message hub", (late) =>
+      Promise.allSettled([late.bridges.close(), late.homeserver.close()]),
+    );
   } catch (error) {
     // A hub that cannot bind its port degrades messaging, nothing else.
     console.warn(`Embedded hub failed to start: ${error instanceof Error ? error.message : String(error)}`);
@@ -473,7 +490,7 @@ app.on("will-quit", (event) => {
 /**
  * `app.isPackaged` cannot pick this path: it merely checks that the executable
  * is not named "electron", and the development bundle is deliberately renamed
- * to "Midas" for the Dock (scripts/dev-app-name.mjs), which makes a dev run
+ * to "FlareAI" for the Dock (scripts/dev-app-name.mjs), which makes a dev run
  * look packaged and pointed skill loading at the bundle's empty Resources.
  * Probing for the directory that actually exists is launch-mode-proof.
  */

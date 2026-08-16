@@ -1,13 +1,13 @@
-// Midas browser extension — background service worker.
+// FlareAI browser extension — background service worker.
 //
 // Two responsibilities:
-//  1. Tab context: stream the open-tab list to the Midas desktop agent through
-//     the com.midas.tab_context native messaging host (tabs.json on disk).
-//  2. Agent surface: proxy the loopback Midas feed for content scripts —
+//  1. Tab context: stream the open-tab list to the FlareAI desktop agent through
+//     the com.flareai.tab_context native messaging host (tabs.json on disk).
+//  2. Agent surface: proxy the loopback FlareAI feed for content scripts —
 //     snapshot/long-poll, cursor arrivals, and control-command results —
 //     because content scripts cannot fetch 127.0.0.1 from arbitrary origins.
 
-const HOST = "com.midas.tab_context";
+const HOST = "com.flareai.tab_context";
 const HEARTBEAT_MINUTES = 1;
 const DEBOUNCE_MS = 500;
 
@@ -72,14 +72,14 @@ chrome.tabs.onAttached.addListener(scheduleSnapshot);
 chrome.windows.onFocusChanged.addListener(scheduleSnapshot);
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create("midas-tab-context-heartbeat", {
+  chrome.alarms.create("flareai-tab-context-heartbeat", {
     periodInMinutes: HEARTBEAT_MINUTES,
   });
   scheduleSnapshot();
 });
 chrome.runtime.onStartup.addListener(scheduleSnapshot);
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "midas-tab-context-heartbeat") scheduleSnapshot();
+  if (alarm.name === "flareai-tab-context-heartbeat") scheduleSnapshot();
 });
 
 // --- Agent surface proxy ----------------------------------------------------
@@ -97,7 +97,7 @@ function respondWith(promise, sendResponse) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "midas:cursor-arrived") {
+  if (message?.type === "flareai:cursor-arrived") {
     return respondWith(
       fetch(ARRIVAL_URL, {
         method: "POST",
@@ -112,7 +112,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     );
   }
 
-  if (message?.type === "midas:command-result") {
+  if (message?.type === "flareai:command-result") {
     return respondWith(
       fetch(RESULTS_URL, {
         method: "POST",
@@ -132,10 +132,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     );
   }
 
-  if (message?.type === "midas:snapshot" || message?.type === "midas:changes") {
+  if (message?.type === "flareai:snapshot" || message?.type === "flareai:changes") {
     const url = new URL(SNAPSHOT_URL);
     if (
-      message.type === "midas:changes" &&
+      message.type === "flareai:changes" &&
       Number.isInteger(message.afterRevision)
     ) {
       url.searchParams.set("after", String(message.afterRevision));
@@ -147,7 +147,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return respondWith(
       fetch(url.href, { cache: "no-store" }).then(async (response) => {
         if (!response.ok)
-          throw new Error(`Midas agent surface returned ${response.status}`);
+          throw new Error(`FlareAI agent surface returned ${response.status}`);
         return { ok: true, snapshot: await response.json() };
       }),
       sendResponse

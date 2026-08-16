@@ -8,9 +8,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import type { MemoryRecord, Storage } from "@midas/storage";
+import type { MemoryRecord, Storage } from "@flareai/storage";
 
-const notePrefix = "<!-- midas-memory:";
+const notePrefix = "<!-- flareai-memory:";
 const noteSuffix = " -->";
 
 export interface MemoryManagerOptions {
@@ -83,7 +83,7 @@ export interface MemoryVaultStatus {
  * A local, reviewable memory vault modelled after Codex Desktop's memory
  * layout. SQLite remains responsible for conversation state and compaction;
  * durable memory lives in plain Markdown files that can be opened, searched,
- * diffed, backed up, and edited outside Midas.
+ * diffed, backed up, and edited outside FlareAI.
  */
 export class MemoryManager {
   readonly directory: string;
@@ -424,7 +424,7 @@ function registry(memories: MemoryRecord[]): string {
     (memory) => memory.scope === "conversation",
   );
   return [
-    "# Midas Memory",
+    "# FlareAI Memory",
     "",
     "Local memory registry built from reviewable Markdown source notes.",
     "",
@@ -457,7 +457,7 @@ function summary(memories: MemoryRecord[]): string {
   const header = [
     "# Memory Summary",
     "",
-    "Reviewable local context maintained by Midas.",
+    "Reviewable local context maintained by FlareAI.",
     "",
   ];
   const groups = groupByKind(memories.filter((memory) => memory.scope === "user"));

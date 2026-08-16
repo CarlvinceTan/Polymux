@@ -1,9 +1,9 @@
-import type {McpRegistryEntryDto} from "@midas/protocol";
+import type {McpRegistryEntryDto} from "@flareai/protocol";
 
 const REGISTRY_URL = "https://registry.modelcontextprotocol.io/v0/servers";
 
 /** Searches the official MCP Registry and returns the latest remote-capable
- * servers. Package-only entries are omitted because Midas cannot install them
+ * servers. Package-only entries are omitted because FlareAI cannot install them
  * without first resolving their runtime and environment requirements. */
 export async function searchMcpRegistry(query: string): Promise<McpRegistryEntryDto[]> {
   const url = new URL(REGISTRY_URL);

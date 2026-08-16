@@ -5,11 +5,12 @@ import {randomBytes} from "node:crypto";
 import {homedir} from "node:os";
 import path from "node:path";
 import {DatabaseSync} from "node:sqlite";
-import type {SystemPermissionKind} from "@midas/protocol";
+import type {SystemPermissionKind} from "@flareai/protocol";
 import type {Homeserver} from "./server.js";
+import {shippedNetworkConfig} from "./shipped-credentials.js";
 
 /**
- * Runs mautrix bridge binaries as supervised children of Midas, against the
+ * Runs mautrix bridge binaries as supervised children of FlareAI, against the
  * embedded homeserver. No Docker, no separate stack: a bridge is a binary in
  * the bridges directory, and everything else — config, registration, tokens,
  * ports, restarts — is owned here.
@@ -49,6 +50,12 @@ export interface BridgeHostOptions {
   log?: (message: string) => void;
   /** The home directory a bridge's preflight looks in. Overridable for tests. */
   home?: string;
+  /**
+   * Application credentials shipped with the build, by platform, standing in
+   * for ones the user would otherwise register themselves. Overridable so a
+   * test can supply a pair without a build that baked one in.
+   */
+  shippedCredentials?: (platform: string) => Readonly<Record<string, string>>;
   /** Backoff between restarts. Overridable so tests need not wait it out. */
   restartDelaysMs?: readonly number[];
   /**
@@ -126,7 +133,7 @@ export interface BridgeBlock {
   permission?: SystemPermissionKind;
   /**
    * Whether looking again could clear this. A precondition can be satisfied
-   * while Midas is running, so it is worth re-checking; a bridge that burned
+   * while FlareAI is running, so it is worth re-checking; a bridge that burned
    * its restart budget is not, and retrying it on a timer would just rebuild
    * the crash loop the budget existed to stop.
    */
@@ -162,7 +169,7 @@ export async function messagesDatabaseAccess({
       retryable: true,
     };
   return {
-    reason: "Midas needs Full Disk Access to read your Messages database.",
+    reason: "FlareAI needs Full Disk Access to read your Messages database.",
     permission: "full-disk-access",
     retryable: true,
   };
@@ -176,11 +183,11 @@ export async function messagesDatabaseAccess({
  */
 export const BRIDGE_FLEET: readonly BridgeSpec[] = [
   {platform: "whatsapp", binary: "mautrix-whatsapp"},
-  // Telegram will not talk to an application it does not know about, and the
-  // pair identifying one belongs to whoever registered it — so until the user
-  // supplies theirs there is nothing for this binary to start with. The values
-  // below are the example pair the binary itself writes into a fresh config
-  // and then refuses to start on, which is why they have to count as unset.
+  // Telegram will not talk to an application it does not know about, so this
+  // binary needs a pair before it can start: the one the build ships, or the
+  // user's own. The values below are the example pair the binary itself writes
+  // into a fresh config and then refuses to start on, which is why they have
+  // to count as unset.
   {
     platform: "telegram",
     binary: "mautrix-telegram",
@@ -207,7 +214,7 @@ export const BRIDGE_FLEET: readonly BridgeSpec[] = [
 /**
  * How a bridge records that an account is linked to it, newest generation
  * first. Read straight out of the bridge's own database so the answer survives
- * a Midas that has never seen the login happen — the alternative, Midas
+ * a FlareAI that has never seen the login happen — the alternative, FlareAI
  * keeping its own list, is a second source of truth that starts out empty and
  * would silently stop delivering messages for anyone upgrading.
  */
@@ -286,9 +293,27 @@ export class BridgeHost {
       name: spec.platform,
       binary: found.get(spec.binary)!,
       port: this.#port(spec.platform),
-      network: spec.network,
+      // A shipped pair joins the keys the spec pins, so it is seeded into the
+      // config like any other `network:` value and the bridge starts on it.
+      // Anything the user recorded still wins: every writer here merges the
+      // config's own values over these.
+      network: this.#withShipped(spec.platform, spec.network),
       legacy: spec.legacy,
     }));
+  }
+
+  /** What FlareAI supplies for a platform in place of the user's own pair. */
+  #shipped(platform: string): Readonly<Record<string, string>> {
+    return (this.#options.shippedCredentials ?? shippedNetworkConfig)(platform);
+  }
+
+  #withShipped(
+    platform: string,
+    network: Record<string, string> | undefined,
+  ): Record<string, string> | undefined {
+    const shipped = this.#shipped(platform);
+    if (Object.keys(shipped).length === 0) return network;
+    return {...network, ...shipped};
   }
 
   /**
@@ -360,7 +385,7 @@ export class BridgeHost {
   }
 
   /**
-   * What has to be up for Midas to do its job: the bridges carrying an
+   * What has to be up for FlareAI to do its job: the bridges carrying an
    * account. The rest of the installed fleet stays down until `ensure` is
    * asked for it — a dozen idle Go processes and their databases is a real
    * cost to pay for networks nobody has signed into.
@@ -437,7 +462,9 @@ export class BridgeHost {
     await mkdir(directory, {recursive: true});
     const configPath = path.join(directory, "config.yaml");
     const existing = await readFile(configPath, "utf8").catch((): string | null => null);
-    const merged = {...spec.network, ...values};
+    // The user's own values last: supplying a pair is how you override the one
+    // FlareAI ships, and a partial answer must not strip the rest of the block.
+    const merged = {...spec.network, ...this.#shipped(platform), ...values};
     const bridge: BridgeDefinition = {
       name: platform,
       binary: "",
@@ -542,7 +569,7 @@ export class BridgeHost {
     if (existing === null) {
       await writeFile(configPath, this.#seedConfig(bridge), "utf8");
     } else if (bridge.legacy && /^database:/m.test(existing)) {
-      // An earlier Midas seeded this legacy bridge with the modern layout,
+      // An earlier FlareAI seeded this legacy bridge with the modern layout,
       // which its generation rejects at startup — it has been crash-looping
       // ever since. Reseed in the shape it accepts. The registration goes with
       // it: the reseed mints new tokens, and a registration carrying the old
@@ -597,7 +624,7 @@ export class BridgeHost {
       await this.#run(bridge.binary, ["-c", configPath, "-r", registrationPath, "-g"], directory);
     }
 
-    // A crashed or force-quit Midas leaves its bridge children orphaned, and a
+    // A crashed or force-quit FlareAI leaves its bridge children orphaned, and a
     // second copy would fight the first for the appservice port. Reap the
     // previous incumbent before spawning a new one.
     await reapStalePid(path.join(directory, "bridge.pid"));
@@ -620,7 +647,7 @@ export class BridgeHost {
 
   /**
    * Why this bridge cannot run yet, or null when nothing is holding it back.
-   * Both kinds of answer are the user's to give — a credential Midas will not
+   * Both kinds of answer are the user's to give — a credential FlareAI will not
    * invent, a grant only macOS can hand over — so neither is something a
    * restart can resolve.
    */
@@ -628,7 +655,11 @@ export class BridgeHost {
     const spec = BRIDGE_FLEET.find((entry) => entry.platform === bridge.name);
     if (!spec) return null;
     if (spec.requires) {
-      const recorded = await this.networkConfig(bridge.name);
+      // A shipped pair answers the requirement before the config that will
+      // carry it has been written: the block is checked on the way to the
+      // first start, and the seed happens during it. Without this the bridge
+      // would be held back waiting for a credential it already has.
+      const recorded = {...(await this.networkConfig(bridge.name)), ...this.#shipped(bridge.name)};
       const missing = Object.keys(spec.requires).filter((key) => !recorded[key]);
       if (missing.length > 0)
         return {
@@ -806,7 +837,7 @@ export function withNetwork(source: string, values: Record<string, string>): str
 }
 
 /**
- * Terminates a bridge left over from a previous Midas that did not shut down
+ * Terminates a bridge left over from a previous FlareAI that did not shut down
  * cleanly, identified by the pid file its supervisor wrote. A stale file whose
  * pid now belongs to some other program is the caveat; the window is narrow
  * (pid reuse between a crash and the next launch) and the alternative — two

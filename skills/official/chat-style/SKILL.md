@@ -1,7 +1,7 @@
 ---
 name: chat-style
 description: Draft, rewrite, and review short chat or message replies in the user's personal text style. Use when composing replies for WeChat, WhatsApp, email-like chats, marketplace/support chats, friend messages, or any communication where the agent should match the user's own phrasing, bubble length, casualness, language mix, and prior corrections. Also use when recording user edits to improve future chat drafts.
-author: Midas
+author: FlareAI
 category: Communication
 ---
 
@@ -53,7 +53,7 @@ python3 scripts/record_chat_edit.py pending
 python3 scripts/record_chat_edit.py stats
 ```
 
-Store examples in `~/.midas/state/chat-style/edits/` by default. These logs are evidence for the main agent to read and summarize into skill rules later; they do not require another AI process.
+Store examples in `~/.flareai/state/chat-style/edits/` by default. These logs are evidence for the main agent to read and summarize into skill rules later; they do not require another AI process.
 
 When reviewing edits:
 

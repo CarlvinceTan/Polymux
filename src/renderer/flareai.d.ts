@@ -1,8 +1,8 @@
-import type { MidasApi } from "@midas/protocol";
+import type { FlareAIApi } from "@flareai/protocol";
 
 declare global {
   interface Window {
-    midas: MidasApi;
+    flareai: FlareAIApi;
   }
 }
 

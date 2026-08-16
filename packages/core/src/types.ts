@@ -8,9 +8,9 @@ import type {
   ModelRef,
   ReasoningEffort,
   ToolCallBlock,
-} from "@midas/inference";
+} from "@flareai/inference";
 
-export type { ToolCallBlock } from "@midas/inference";
+export type { ToolCallBlock } from "@flareai/inference";
 
 export type RunId = string;
 export type RunStatus =

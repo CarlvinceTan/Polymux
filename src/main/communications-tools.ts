@@ -1,5 +1,5 @@
-import type {AgentTool} from "@midas/core";
-import {COMMS_PLATFORMS} from "@midas/protocol";
+import type {AgentTool} from "@flareai/core";
+import {COMMS_PLATFORMS} from "@flareai/protocol";
 import type {Communications} from "./communications/index.js";
 
 /**

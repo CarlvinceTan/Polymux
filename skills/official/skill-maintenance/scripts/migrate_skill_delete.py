@@ -14,9 +14,9 @@ import sys
 import tempfile
 
 
-SUITE = Path.home() / ".midas" / "skill-maintenance"
+SUITE = Path.home() / ".flareai" / "skill-maintenance"
 POLICY = SUITE / "policy.json"
-HOOKS = Path.home() / ".midas" / "hooks.json"
+HOOKS = Path.home() / ".flareai" / "hooks.json"
 BACKUPS = SUITE / "migration-backups"
 
 

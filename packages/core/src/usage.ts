@@ -1,4 +1,4 @@
-import type { InferenceUsage } from "@midas/inference";
+import type { InferenceUsage } from "@flareai/inference";
 
 export function emptyUsage(): InferenceUsage {
   return {

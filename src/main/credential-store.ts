@@ -19,7 +19,7 @@ interface CredentialFile {
  * and Chromium remembers the denial for the rest of the process.
  */
 export const SECURE_STORAGE_UNAVAILABLE =
-  "Secure credential storage is unavailable. Restart Midas and click \"Always Allow\" when macOS asks for keychain access.";
+  "Secure credential storage is unavailable. Restart FlareAI and click \"Always Allow\" when macOS asks for keychain access.";
 
 /** Preserves an unreadable secrets file for inspection while clearing the
  * path for a fresh store. */

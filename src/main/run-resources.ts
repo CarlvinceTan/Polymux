@@ -1,11 +1,11 @@
-import type { AgentRunEvent } from "@midas/core";
+import type { AgentRunEvent } from "@flareai/core";
 import type {
   Artifact,
   ArtifactKind,
   NewArtifact,
   NewReference,
   StoredReference,
-} from "@midas/storage";
+} from "@flareai/storage";
 
 /**
  * The Summary panel's Outputs and References are fed from what a run actually

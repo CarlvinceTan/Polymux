@@ -1,5 +1,5 @@
-import type { InferenceService, ModelRef } from "@midas/inference";
-import type { MemoryRecord } from "@midas/storage";
+import type { InferenceService, ModelRef } from "@flareai/inference";
+import type { MemoryRecord } from "@flareai/storage";
 import type { MemoryManager } from "./manager.js";
 
 export interface MemoryConsolidationSettings {

@@ -29,12 +29,12 @@ export default defineConfig({
   // workspace's own packages resolve inside node_modules, so the dependency
   // optimizer treats them as third-party and prebundles them. That bundle is
   // only invalidated by lockfile or config changes — never by edits to
-  // packages/* — so a new export in @midas/protocol leaves the renderer
+  // packages/* — so a new export in @flareai/protocol leaves the renderer
   // importing the stale bundle and dying at module load with "does not provide
   // an export". Serving it as source keeps it always current; un-ignoring it
   // in the watcher lets edits reach a running dev server too.
-  optimizeDeps: {exclude: ['@midas/protocol']},
-  server: {watch: {ignored: ['!**/node_modules/@midas/**']}},
+  optimizeDeps: {exclude: ['@flareai/protocol']},
+  server: {watch: {ignored: ['!**/node_modules/@flareai/**']}},
   build: {
     outDir: path.join(projectRoot, '.vite/renderer/main_window'),
     emptyOutDir: true,

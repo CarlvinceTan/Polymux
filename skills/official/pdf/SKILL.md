@@ -2,7 +2,7 @@
 name: pdf
 description: Read, create, edit, extract, render, and verify PDF files, including forms and scanned pages. Use whenever PDF content or page layout is central to the request.
 allowed-tools: read write edit bash
-author: Midas
+author: FlareAI
 category: Documents
 ---
 

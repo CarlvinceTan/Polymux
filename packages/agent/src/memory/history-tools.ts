@@ -1,5 +1,5 @@
-import type { AgentTool } from "@midas/core";
-import type { Storage } from "@midas/storage";
+import type { AgentTool } from "@flareai/core";
+import type { Storage } from "@flareai/storage";
 
 /** Bound on how much of one message a hit carries back. */
 const snippetLimit = 600;

@@ -1,7 +1,7 @@
 ---
 name: skill-maintenance
-description: Stage, compare, and safely promote changes to the user's personal Midas skills. Use whenever creating, editing, merging, installing, deleting, or reviewing a skill under ~/.midas/skills or ~/.agents/skills; when the live-skill guard hook or a drift scan reports drift; or when reviewing a customized bundled-skill update. Keep live skills unchanged until structural checks and protected behavioral contracts pass.
-author: Midas
+description: Stage, compare, and safely promote changes to the user's personal FlareAI skills. Use whenever creating, editing, merging, installing, deleting, or reviewing a skill under ~/.flareai/skills or ~/.agents/skills; when the live-skill guard hook or a drift scan reports drift; or when reviewing a customized bundled-skill update. Keep live skills unchanged until structural checks and protected behavioral contracts pass.
+author: FlareAI
 category: Skills
 ---
 
@@ -9,7 +9,7 @@ category: Skills
 
 Protect existing preferences by testing an isolated candidate against the approved skill snapshot before changing the live skill.
 
-- **Live/deployed skill:** the active approved copy Midas loads.
+- **Live/deployed skill:** the active approved copy FlareAI loads.
 - **Staged candidate:** an inactive working copy used for editing and testing.
 
 Keep user-facing explanations concise and high-level unless the user asks for
@@ -38,8 +38,8 @@ the normal maintenance gate:
   provenance to its registry after promotion. Do not guess a source or request
   separate enrollment approval. Read
   [references/public-updates.md](references/public-updates.md).
-- **Bundled Midas source (system skill):** for a customized copy of a skill
-  shipped with Midas.
+- **Bundled FlareAI source (system skill):** for a customized copy of a skill
+  shipped with FlareAI.
   Keep the custom copy in the user-owned skill root and use the integrated
   `system` commands to compare it with the newly bundled version. Read
   [references/system-updates.md](references/system-updates.md).
@@ -71,7 +71,7 @@ confirmation.
 
    ```bash
    python3 scripts/skill_maintenance.py stage <skill-name>
-   python3 scripts/skill_maintenance.py stage-new midas <new-skill-name>
+   python3 scripts/skill_maintenance.py stage-new flareai <new-skill-name>
    python3 scripts/skill_maintenance.py stage-delete <skill-name>
    ```
 
@@ -93,13 +93,13 @@ confirmation.
 
    ```bash
    python3 scripts/skill_maintenance.py check-rename <candidate-id> \
-     --source-skill midas:old-name \
-     --replacement-skill midas:new-name \
+     --source-skill flareai:old-name \
+     --replacement-skill flareai:new-name \
      --replace old-name=new-name
    ```
 
    For the newly named replacement skill itself, use
-   `--source-skill midas:old-name` without `--replacement-skill`. For deletion
+   `--source-skill flareai:old-name` without `--replacement-skill`. For deletion
    of the old skill after its replacement is live, use only `--replacement-skill`.
    Repeat `--replace` for deliberate
    spelling forms such as uppercase environment-variable identifiers.
@@ -196,9 +196,9 @@ Ask for clarification only when the deletion target is ambiguous, the request is
 
 ## Evaluation boundaries
 
-Behavior probes run in isolated read-only Midas profiles with memories, GUI control, and external side effects disabled. Never send messages, submit forms, pay, book, power devices, or foreground apps during a probe.
+Behavior probes run in isolated read-only FlareAI profiles with memories, GUI control, and external side effects disabled. Never send messages, submit forms, pay, book, power devices, or foreground apps during a probe.
 
-When validation needs a real fresh Midas task outside the sealed probe runner:
+When validation needs a real fresh FlareAI task outside the sealed probe runner:
 
 - If the user references a specific failed or unsatisfactory task, retrieve and
   reuse the user's exact original prompt as the primary before-versus-after

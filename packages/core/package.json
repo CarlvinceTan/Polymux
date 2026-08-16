@@ -1,5 +1,5 @@
 {
-  "name": "@midas/core",
+  "name": "@flareai/core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,6 +10,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@midas/inference": "0.1.0"
+    "@flareai/inference": "0.1.0"
   }
 }

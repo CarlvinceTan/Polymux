@@ -1,12 +1,12 @@
-import type { AgentContext } from "@midas/core";
+import type { AgentContext } from "@flareai/core";
 import type {
   AssistantBlock,
   InferenceMessage,
   InferenceService,
   InputBlock,
   ModelRef,
-} from "@midas/inference";
-import type { Storage } from "@midas/storage";
+} from "@flareai/inference";
+import type { Storage } from "@flareai/storage";
 import { estimateContextTokens, estimateMessageTokens } from "./tokens.js";
 
 export interface CompactionSettings {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {JsonObject} from "@midas/inference";
+import type {JsonObject} from "@flareai/inference";
 import {createInAppBrowserTool, type InAppBrowser} from "../in-app-browser-tools.js";
 
 function fakeBrowser(overrides: Partial<InAppBrowser> = {}): InAppBrowser & {calls: string[]} {
@@ -35,14 +35,14 @@ async function run(browser: InAppBrowser, input: JsonObject): Promise<{content: 
 
 test("open loads a url and reports the tab it landed in", async () => {
   const browser = fakeBrowser();
-  const result = await run(browser, {action: "open", url: "https://midas.test/docs"});
+  const result = await run(browser, {action: "open", url: "https://flareai.test/docs"});
   assert.deepEqual(JSON.parse(result.content), {
     ok: true,
     tabId: "tab-2",
-    pageUrl: "https://midas.test/docs",
+    pageUrl: "https://flareai.test/docs",
     pageTitle: "Opened",
   });
-  assert.deepEqual(browser.calls, ["open https://midas.test/docs"]);
+  assert.deepEqual(browser.calls, ["open https://flareai.test/docs"]);
 });
 
 test("show brings an open tab to the front for the user", async () => {
@@ -54,8 +54,8 @@ test("show brings an open tab to the front for the user", async () => {
 
 test("open can reveal the page when the user asked to see it", async () => {
   const browser = fakeBrowser();
-  await run(browser, {action: "open", url: "https://midas.test/docs", show: true});
-  assert.deepEqual(browser.calls, ["open https://midas.test/docs show"]);
+  await run(browser, {action: "open", url: "https://flareai.test/docs", show: true});
+  assert.deepEqual(browser.calls, ["open https://flareai.test/docs show"]);
 });
 
 test("read returns the page text alongside the page it came from", async () => {
@@ -69,9 +69,9 @@ test("read returns the page text alongside the page it came from", async () => {
 
 test("typing with submit reports where the tab ended up", async () => {
   const browser = fakeBrowser();
-  const result = await run(browser, {action: "type", tabId: "tab-1", selector: "#q", text: "midas", submit: true});
+  const result = await run(browser, {action: "type", tabId: "tab-1", selector: "#q", text: "flareai", submit: true});
   assert.equal(JSON.parse(result.content).ok, true);
-  assert.deepEqual(browser.calls, ["type #q midas true"]);
+  assert.deepEqual(browser.calls, ["type #q flareai true"]);
 });
 
 test("a selector that matches nothing is an error, not a silent success", async () => {

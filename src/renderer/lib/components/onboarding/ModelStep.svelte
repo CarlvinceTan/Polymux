@@ -1,15 +1,15 @@
 <script lang="ts">
-  import type {MidasApi, ProviderDto} from '@midas/protocol';
+  import type {FlareAIApi, ProviderDto} from '@flareai/protocol';
   import {readableError} from '../../errors';
   import ProviderLogo from '../settings/ProviderLogo.svelte';
+  import SkipAction from './SkipAction.svelte';
 
   interface Props {
-    api: MidasApi;
+    api: FlareAIApi;
     onDone: (label: string) => void;
-    onSkip: () => void;
   }
 
-  const {api, onDone, onSkip}: Props = $props();
+  const {api, onDone}: Props = $props();
 
   let providers = $state<ProviderDto[]>([]);
   let chosen = $state('');
@@ -19,6 +19,45 @@
   let grid = $state<HTMLDivElement | null>(null);
   /** The long tail stays folded away until asked for. */
   let showAll = $state(false);
+
+  /**
+   * The grid is what the step is actually about, so it — not the column as a
+   * whole — is what sits on the window's centre line. How much copy stands
+   * above it and how much field below it changes with the provider chosen, so
+   * the offset is measured rather than guessed: half the column's height, less
+   * where the grid's own middle falls inside it.
+   *
+   * Measured from the column and the grid together, both inside the same
+   * transformed deck, so the numbers are layout distances and the shift this
+   * produces cannot feed back into them.
+   */
+  /** Bumped by anything that changes the column's height. */
+  let measured = $state(0);
+
+  $effect(() => {
+    // Read what the measurement depends on, so it is redone when they change.
+    void [chosen, showAll, providers.length, error, measured];
+    const column = grid?.parentElement;
+    if (!grid || !column) return;
+    const box = column.getBoundingClientRect();
+    const row = grid.getBoundingClientRect();
+    // A column tall enough to scroll is already using every pixel it has;
+    // moving it would only push its far end out of reach.
+    if (column.scrollHeight > column.clientHeight + 1) {
+      column.style.setProperty('--mind-shift', '0px');
+      return;
+    }
+    const shift = Math.round(box.height / 2 - (row.top - box.top + row.height / 2));
+    column.style.setProperty('--mind-shift', `${shift}px`);
+  });
+
+  $effect(() => {
+    const column = grid?.parentElement;
+    if (!column) return;
+    const observer = new ResizeObserver(() => (measured += 1));
+    observer.observe(column);
+    return () => observer.disconnect();
+  });
 
   /**
    * The providers worth putting first. They get the grid; everything else is
@@ -99,9 +138,9 @@
 </script>
 
 <p class="onb-eyebrow">Model</p>
-<h1 class="onb-title">Choose who Midas thinks with.</h1>
+<h1 class="onb-title">Choose who FlareAI thinks with.</h1>
 <p class="onb-lede">
-  Midas talks to a model provider using your own API key. The key is encrypted by macOS and never
+  FlareAI talks to a model provider using your own API key. The key is encrypted by macOS and never
   leaves this Mac.
 </p>
 
@@ -145,6 +184,8 @@
 </div>
 
 {#if rest.length > 0}
+  <!-- The rest of the catalogue, under the grid it belongs to. Passing on the
+       question entirely is Skip's job, in the action row. -->
   <button type="button" class="onb-quiet prov-more" onclick={() => (showAll = !showAll)}>
     {showAll ? 'Show fewer' : `${rest.length} more providers`}
   </button>
@@ -161,6 +202,7 @@
           <button type="button" class="onb-button primary" onclick={() => onDone(selected.name)}>
             Use {selected.name}
           </button>
+          <SkipAction />
         </div>
       {:else if selected.apiKeyLabel}
         <div class="onb-field prov-key">
@@ -190,22 +232,18 @@
             disabled={saving || !apiKey.trim()}
             onclick={() => void save()}
           >
-            {saving ? 'Checking…' : `Connect ${selected.name}`}
+            {saving ? 'Checking…' : 'Connect'}
           </button>
-          <button type="button" class="onb-quiet" onclick={() => (alreadyConfigured ? onDone(alreadyConfigured.name) : onSkip())}>
-            {alreadyConfigured ? `Continue with ${alreadyConfigured.name}` : "I'll add a key later"}
-          </button>
+          <SkipAction />
         </div>
       {:else}
         <!-- No key to paste: whatever this provider needs, it is not
              something this screen can ask for. -->
         <p class="onb-note">
-          {selected.name} signs in with your account. Midas opens that from Settings → Providers.
+          {selected.name} signs in with your account. FlareAI opens that from Settings → Providers.
         </p>
         <div class="onb-actions">
-          <button type="button" class="onb-quiet" onclick={() => (alreadyConfigured ? onDone(alreadyConfigured.name) : onSkip())}>
-            {alreadyConfigured ? `Continue with ${alreadyConfigured.name}` : 'I\u2019ll set this up later'}
-          </button>
+          <SkipAction />
         </div>
       {/if}
     </div>
@@ -221,7 +259,7 @@
      padding the clip edge cut them off. The padding is cancelled by an equal
      negative margin, so the cards still line up with the copy above them. */
   .prov-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;
-    padding:7px;margin:-7px -7px -3px;
+    padding:7px;margin:24px -7px -3px;
     /* Four recommendations fit without scrolling; the expanded list scrolls
        inside this box instead of pushing the key field off the screen. */
     max-height:clamp(182px,36vh,314px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none}
@@ -251,9 +289,20 @@
   .prov-card.selected .prov-mark{background:var(--neutral-100)}
   .prov-card:focus-visible{outline:2px solid var(--neutral-500);outline-offset:2px}
 
-  /* The answer to the card just chosen, arriving under it. */
-  .prov-detail{margin-top:4px;animation:prov-in .28s cubic-bezier(.22,1,.36,1) both}
-  .prov-key{max-width:360px}
+  /* The answer to the card just chosen, arriving under it. Held to the width
+     of the field it is mostly made of: run full width, the one line of
+     explanation stretched twice as wide as the input it explains and stopped
+     reading as a pair. Its own rhythm too — label to field to note to buttons,
+     each step a little further apart than the last — rather than the page's
+     section spacing, which was written for whole blocks. */
+  /* The column is centred on its own height, so a panel that is taller for one
+     provider than the next pushed the title and the cards up and down as the
+     choice changed. The panel holds the room the tallest of them needs — a
+     key field, a line about signing in, and the buttons — and the shorter ones
+     leave the rest of it empty rather than dragging the page after them. */
+  .prov-detail{max-width:380px;min-height:172px;margin-top:18px;animation:prov-in .28s cubic-bezier(.22,1,.36,1) both}
+  .prov-detail :global(.onb-note){margin-top:9px}
+  .prov-detail :global(.onb-actions){margin-top:18px}
   @keyframes prov-in{from{opacity:0;transform:translate3d(0,-6px,0)}to{opacity:1;transform:none}}
 
   /* On any ink ground — disc or slab — the cards sit on the inverted surface

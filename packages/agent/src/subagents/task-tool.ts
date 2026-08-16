@@ -1,5 +1,5 @@
-import type { AgentTool } from "@midas/core";
-import type { JsonObject } from "@midas/inference";
+import type { AgentTool } from "@flareai/core";
+import type { JsonObject } from "@flareai/inference";
 
 export interface SubagentRequest {
   description: string;
@@ -15,7 +15,7 @@ export function createTaskTool(run: SubagentRunner): AgentTool {
   return {
     name: "task",
     description:
-      "Delegate a concrete, bounded subtask to an independent Midas subagent and return its result. Multiple task calls may run concurrently.",
+      "Delegate a concrete, bounded subtask to an independent FlareAI subagent and return its result. Multiple task calls may run concurrently.",
     executionMode: "parallel",
     parameters: {
       type: "object",

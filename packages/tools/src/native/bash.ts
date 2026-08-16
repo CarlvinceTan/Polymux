@@ -59,7 +59,7 @@ export function createBashTool(environment: ToolEnvironment): AgentTool {
       let logPath: string | undefined;
       if (bounded.truncated) {
         const directory =
-          environment.temporaryDirectory ?? join(tmpdir(), "midas-tool-output");
+          environment.temporaryDirectory ?? join(tmpdir(), "flareai-tool-output");
         await mkdir(directory, { recursive: true });
         logPath = join(directory, `${context.runId}-${context.callId}.log`);
         await writeFile(logPath, full, "utf8");

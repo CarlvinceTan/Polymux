@@ -1,7 +1,7 @@
 <script lang="ts">
   import type {SimpleIcon} from 'simple-icons';
   import {siDropbox, siGoogledrive} from 'simple-icons';
-  import type {DriveProviderId} from '@midas/protocol';
+  import type {DriveProviderId} from '@flareai/protocol';
 
   interface Props {
     provider: DriveProviderId;

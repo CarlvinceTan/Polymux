@@ -154,6 +154,7 @@
 </script>
 
 <script lang="ts">
+  import {tick} from 'svelte';
   import Icon from '../shared/Icon.svelte';
   import Menu from '../shared/Menu.svelte';
 
@@ -167,6 +168,12 @@
   export let onChangeFrequency: (item: ScheduleItem, frequency: ScheduleFrequency) => void = () => {};
 
   let query = '';
+  /** The search starts as its icon, the way Drive's does, so the heading and
+   * the create action keep their room until a search is actually being run. */
+  let searchExpanded = false;
+  let searchFocused = false;
+  let searchInput: HTMLInputElement;
+  let searchWrapper: HTMLDivElement;
   let sortKey: ScheduleSortKey = 'next';
   let sortAscending = true;
   let menuId: string | null = null;
@@ -208,6 +215,16 @@
 
   $: visible = sortItems(filterItems(items, query), sortKey, sortAscending);
   $: unitLabel = draft ? {hourly: 'hour', daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year', once: 'day'}[draft.kind] : 'day';
+
+  async function toggleSearch(): Promise<void> {
+    searchExpanded = !searchExpanded;
+    if (searchExpanded) {
+      await tick();
+      searchInput?.focus();
+    } else {
+      query = '';
+    }
+  }
 
   function filterItems(list: ScheduleItem[], text: string): ScheduleItem[] {
     const needle = text.trim().toLowerCase();
@@ -374,13 +391,19 @@
     } else if (menuId) {
       event.stopPropagation();
       menuId = null;
+    } else if (searchExpanded) {
+      event.stopPropagation();
+      void toggleSearch();
     }
   }
 
   function dismiss(event: MouseEvent): void {
     const target = event.target as HTMLElement;
     if (menuId && !target.closest('.schedule-row-menu') && !target.closest('.schedule-more')) menuId = null;
-    if (editingId && !target.closest('.schedule-frequency-editor') && !target.closest('.polymux-dropdown-menu')) closeEditor();
+    if (editingId && !target.closest('.schedule-frequency-editor') && !target.closest('.flareai-dropdown-menu')) closeEditor();
+    // A search still holding a query stays open; an empty one has nothing to
+    // keep the toolbar space for.
+    if (searchExpanded && !query && !searchWrapper?.contains(target)) searchExpanded = false;
   }
 </script>
 
@@ -389,12 +412,43 @@
 <div class="schedule-view">
   <div class="list-toolbar">
     <span class="schedule-heading"><Icon name="clock" size={15}/><span>{title}</span></span>
-    <label class="list-search">
-      <Icon name="search" size={14}/>
-      <input type="search" bind:value={query} placeholder="Search schedules" aria-label="Search schedules"/>
-    </label>
-    <button type="button" class="schedule-create" onclick={onCreate}>
-      <Icon name="plus" size={14}/><span>New schedule</span>
+    <div class="fb-search" class:expanded={searchExpanded}>
+      <div bind:this={searchWrapper} class="fb-search-field" class:expanded={searchExpanded} class:focused={searchFocused}>
+        <button
+          type="button"
+          class="fb-action"
+          class:quiet={searchExpanded}
+          aria-label="Search schedules"
+          aria-expanded={searchExpanded}
+          data-tooltip-label={searchExpanded ? undefined : 'Search'}
+          onclick={toggleSearch}
+        ><Icon name="search" size={15}/></button>
+        <div class="fb-search-slot">
+          <input
+            bind:this={searchInput}
+            bind:value={query}
+            type="text"
+            placeholder="Search schedules"
+            aria-label="Search schedules"
+            tabindex={searchExpanded ? 0 : -1}
+            onfocus={() => searchFocused = true}
+            onblur={() => searchFocused = false}
+            onkeydown={(event) => { if (event.key === 'Escape') toggleSearch(); }}
+          />
+          {#if query}
+            <button
+              type="button"
+              class="fb-search-clear"
+              aria-label="Clear search"
+              data-tooltip="none"
+              onclick={() => { query = ''; searchInput?.focus(); }}
+            ><Icon name="close" size={12}/></button>
+          {/if}
+        </div>
+      </div>
+    </div>
+    <button type="button" class="fb-action schedule-create-icon" aria-label="New schedule" data-tooltip-label="New schedule" onclick={onCreate}>
+      <Icon name="plus" size={15}/>
     </button>
   </div>
 
@@ -474,13 +528,13 @@
   {#if menuId}
     {@const menuItem = items.find((entry) => entry.id === menuId)}
     {#if menuItem}
-      <div class="polymux-dropdown-menu schedule-row-menu" role="menu" style:top={`${menuTop}px`}>
-        <button class="polymux-dropdown-item" role="menuitem" onclick={() => act(menuItem, onRunItem)}><Icon name="play" size={14}/><span>Run now</span></button>
-        <button class="polymux-dropdown-item" role="menuitem" onclick={(event) => startEditing(event, menuItem)}><Icon name="clock" size={14}/><span>Edit frequency</span></button>
-        <button class="polymux-dropdown-item" role="menuitem" onclick={() => act(menuItem, onToggleItem)}>
+      <div class="flareai-dropdown-menu schedule-row-menu" role="menu" style:top={`${menuTop}px`}>
+        <button class="flareai-dropdown-item" role="menuitem" onclick={() => act(menuItem, onRunItem)}><Icon name="play" size={14}/><span>Run now</span></button>
+        <button class="flareai-dropdown-item" role="menuitem" onclick={(event) => startEditing(event, menuItem)}><Icon name="clock" size={14}/><span>Edit frequency</span></button>
+        <button class="flareai-dropdown-item" role="menuitem" onclick={() => act(menuItem, onToggleItem)}>
           <Icon name={menuItem.status === 'paused' ? 'play' : 'pause'} size={14}/><span>{menuItem.status === 'paused' ? 'Resume' : 'Pause'}</span>
         </button>
-        <button class="polymux-dropdown-item destructive" role="menuitem" onclick={() => act(menuItem, onDeleteItem)}><Icon name="trash" size={14}/><span>Delete</span></button>
+        <button class="flareai-dropdown-item destructive" role="menuitem" onclick={() => act(menuItem, onDeleteItem)}><Icon name="trash" size={14}/><span>Delete</span></button>
       </div>
     {/if}
   {/if}

@@ -1,6 +1,6 @@
-import type { AgentTool } from "@midas/core";
-import type { JsonObject } from "@midas/inference";
-import type { Goal, GoalStatus, Storage } from "@midas/storage";
+import type { AgentTool } from "@flareai/core";
+import type { JsonObject } from "@flareai/inference";
+import type { Goal, GoalStatus, Storage } from "@flareai/storage";
 
 export type GoalCommand =
   | { action: "view" | "clear" | "pause" | "resume" }

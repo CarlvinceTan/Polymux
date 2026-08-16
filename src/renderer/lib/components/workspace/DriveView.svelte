@@ -1,5 +1,6 @@
 <script module lang="ts">
-  import type {DriveProviderId} from '@midas/protocol';
+  import type {DriveProviderId} from '@flareai/protocol';
+  import type {MenuOption} from '../shared/Menu.svelte';
 
   export type DriveEntryKind = 'folder' | 'document' | 'spreadsheet' | 'presentation' | 'pdf' | 'image' | 'audio' | 'video' | 'code' | 'file';
   export type DriveEntry = {
@@ -20,7 +21,7 @@
   /** One storage backend the drive can be pointed at. Only backends that can
    * actually be opened are passed, so there is no state to carry: offering a
    * source is the host saying it is reachable. */
-  export type DriveSource = {id: string; name: string};
+  export type DriveSource = {id: string; name: string; icon?: MenuOption['icon']};
 
   export type DriveSortKey = 'name' | 'size' | 'kind' | 'modified';
   export type DriveFilter = 'all' | 'images' | 'documents' | 'videos';
@@ -106,6 +107,10 @@
   /** Set while the host is fetching a folder, so an empty one that has simply
    * not arrived yet does not claim to be empty. */
   export let loading = false;
+  /** What went wrong with the last action, shown above the list. Empty hides
+   * it. Dismissing it is the host's to clear. */
+  export let error = '';
+  export let onDismissError: () => void = () => {};
   /** Opening a file is the host's business — the drive only browses. */
   export let onOpenEntry: (entry: DriveEntry) => void = () => {};
   /**
@@ -214,7 +219,7 @@
   $: items = sortEntries(filterEntries(current.children ?? [], searchQuery, activeFilter), sortKey, sortAscending);
   /** The switch only earns its place once there is something to switch to. */
   $: showSourceMenu = sources.length > 1;
-  $: sourceOptions = sources.map((source) => ({value: source.id, label: source.name}));
+  $: sourceOptions = sources.map((source) => ({value: source.id, label: source.name, icon: source.icon ?? 'drive'}));
   /** A folder still being fetched is not an empty one, and saying so would be
    * wrong for exactly as long as the request takes. */
   $: showEmptyOverlay = items.length === 0 && !loading;
@@ -640,6 +645,17 @@
     </div>
   {/if}
 
+  {#if error}
+    <!-- Above the list rather than over it: what failed is about the folder
+         you are looking at, which stays readable underneath. -->
+    <div class="fb-error" role="alert">
+      <span>{error}</span>
+      <button type="button" aria-label="Dismiss error" onclick={onDismissError}>
+        <Icon name="close" size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
+      </button>
+    </div>
+  {/if}
+
   <div class="fb-toolbar">
     <!-- With more than one backend connected the root of the path is which
          storage you are looking at, so the switch between them stands where
@@ -647,10 +663,14 @@
          their overflow to ellipsize a long path, which would cut the menu off
          too — and because the shared Menu positions its own list. -->
     {#if showSourceMenu}
+      <!-- Plain, so it reads as the first crumb of the path rather than as a
+           form control sitting in front of one. -->
       <Menu
         options={sourceOptions}
         value={activeSourceId}
         label="Storage"
+        icon="drive"
+        plain
         onChange={selectSource}
       />
     {/if}
@@ -825,6 +845,15 @@
               onblur={() => searchFocused = false}
               onkeydown={(event) => { if (event.key === 'Escape') toggleSearch(); }}
             />
+            {#if searchQuery}
+              <button
+                type="button"
+                class="fb-search-clear"
+                aria-label="Clear search"
+                data-tooltip="none"
+                onclick={() => { searchQuery = ''; searchInput?.focus(); }}
+              ><Icon name="close" size={12}/></button>
+            {/if}
           </div>
         </div>
       </div>

@@ -3,11 +3,11 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { SqliteStorage } from "@midas/storage/sqlite";
+import { SqliteStorage } from "@flareai/storage/sqlite";
 import { MemoryManager } from "../src/index.js";
 
 function temporaryVault(): string {
-  return mkdtempSync(path.join(tmpdir(), "midas-memory-vault-"));
+  return mkdtempSync(path.join(tmpdir(), "flareai-memory-vault-"));
 }
 
 test("creates a Codex-style local memory vault and migrates SQLite memory once", () => {

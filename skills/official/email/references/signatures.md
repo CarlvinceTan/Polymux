@@ -23,5 +23,5 @@ Confidential Note: The information contained in this email and any attachments a
 
 - Personal Gmail signature
 - Uni email signature
-- Polymux signature
+- FlareAI signature
 - FlareHQ signature

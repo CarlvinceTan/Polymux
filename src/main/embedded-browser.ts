@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { BrowserDownloadDto, BrowserEventDto } from "@midas/protocol";
+import type { BrowserDownloadDto, BrowserEventDto } from "@flareai/protocol";
 import { shell, WebContentsView, type BrowserWindow, type WebContents } from "electron";
 import { faviconDataUrl } from "./favicon.js";
 
@@ -327,6 +327,13 @@ export class EmbeddedBrowser {
     contents.on("page-title-updated", emit);
     contents.on("did-start-loading", emit);
     contents.on("did-stop-loading", emit);
+    contents.on("focus", () => this.#send({ type: "focus", tabId }));
+    // A view with nothing loaded still sits over the pane and eats the click
+    // without reporting a focus change, so the press itself is the signal: it
+    // proves the pointer went to the page and not to the chrome.
+    contents.on("input-event", (_event, input) => {
+      if (input.type === "mouseDown") this.#send({ type: "focus", tabId });
+    });
     contents.on("found-in-page", (_event, result) => {
       this.#send({
         type: "found",

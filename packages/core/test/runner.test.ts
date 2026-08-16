@@ -7,7 +7,7 @@ import type {
   InferenceRequest,
   InferenceService,
   ModelRef,
-} from "@midas/inference";
+} from "@flareai/inference";
 import {
   AgentRunControl,
   AgentRunner,

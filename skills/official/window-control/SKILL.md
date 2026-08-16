@@ -1,7 +1,7 @@
 ---
 name: window-control
 description: Mandatory prerequisite for any action that may initialize, launch, open, reveal, focus, inspect, or control a local GUI app, directly or through another skill, plugin, script, or tool. Use it to protect or immediately restore the user's current focus, select preverified background routes, bind work to an exact window or tab, pair exact-window capture with accessibility control, prevent controller overlap, allow passive observation, and prepare user intervention without foregrounding the target. It does not apply to local file inspection, headless rendering, or screenshots produced without a GUI app.
-author: Midas
+author: FlareAI
 category: System
 ---
 
@@ -78,7 +78,7 @@ existing-tab continuation or a temporary CAPTCHA or passkey fallback.
   selecting neighboring tabs. Sign-in is observed state, not an eligibility
   requirement: an exact signed-out match remains usable for a prepared login
   handoff. Ask when multiple matches remain ambiguous.
-- Route an ordinary public website directly to the Midas in-app Browser. For an
+- Route an ordinary public website directly to the FlareAI in-app Browser. For an
   external attention handoff, run the preflight against the verified current
   default browser itself; never reuse a Chrome-specific preflight for another
   browser.

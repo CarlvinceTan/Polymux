@@ -1,14 +1,14 @@
 ---
 name: chronicle
-description: Use Midas's built-in Chronicle to identify the user's current screen or recent on-screen work and to interpret Chronicle evidence. Use when the user explicitly asks what is visible, what they were doing, or about Chronicle; or when recent on-screen context cannot be identified safely from the request, workspace, or a narrower source. Do not invoke for ordinary ambiguity that a reasonable inference or concise question can resolve.
-author: Midas
+description: Use FlareAI's built-in Chronicle to identify the user's current screen or recent on-screen work and to interpret Chronicle evidence. Use when the user explicitly asks what is visible, what they were doing, or about Chronicle; or when recent on-screen context cannot be identified safely from the request, workspace, or a narrower source. Do not invoke for ordinary ambiguity that a reasonable inference or concise question can resolve.
+author: FlareAI
 category: Memory
 ---
 
 # Chronicle
 
-Use Midas's built-in Chronicle recorder. Do not install, run, or maintain a
-second recorder. Midas captures accessibility text frames of the user's active
+Use FlareAI's built-in Chronicle recorder. Do not install, run, or maintain a
+second recorder. FlareAI captures accessibility text frames of the user's active
 window from inside the app and owns capture and the timeline; this skill owns
 careful retrieval, verification, and interpretation.
 
@@ -31,12 +31,12 @@ confidence is materially limited or the user asks for detail.
    the latest Chronicle evidence generally.
 4. Do not start, replace, or repair the built-in recorder from this skill. If
    it is unavailable, use a narrower authoritative source or tell the user to
-   enable Chronicle in Midas's settings or restart Midas. Chronicle capture
-   also requires macOS Accessibility permission for Midas.
+   enable Chronicle in FlareAI's settings or restart FlareAI. Chronicle capture
+   also requires macOS Accessibility permission for FlareAI.
 
 ## Evidence sources
 
-Chronicle lives under `~/Library/Application Support/Midas/chronicle/` and
+Chronicle lives under `~/Library/Application Support/FlareAI/chronicle/` and
 provides two complementary sources:
 
 - **Frames:** timestamped accessibility text captures of the active window,
@@ -107,4 +107,4 @@ claims, decisions, and manual memory updates.
   context such as the app, project, and action.
 - This skill improves how Chronicle evidence is selected, verified, and used,
   but it cannot change the built-in recorder's capture schedule, timeline
-  contents, or Midas's memory integration.
+  contents, or FlareAI's memory integration.

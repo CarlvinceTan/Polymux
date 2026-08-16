@@ -7,10 +7,10 @@
     MailEnvelopeDto,
     MailFolderDto,
     MailMessageDto,
-    MidasApi,
-  } from '@midas/protocol';
+    FlareAIApi,
+  } from '@flareai/protocol';
   import DOMPurify from 'dompurify';
-  import {midasApi} from '../../api/midas';
+  import {flareaiApi} from '../../api/flareai';
   import {readableError} from '../../errors';
   import Icon from '../shared/Icon.svelte';
   import PlatformLogo from '../shared/PlatformLogo.svelte';
@@ -18,7 +18,7 @@
 
   type IconName = ComponentProps<typeof Icon>['name'];
 
-  const api: MidasApi = midasApi();
+  const api: FlareAIApi = flareaiApi();
 
   /**
    * One unified inbox over every linked platform plus every mailbox. The source

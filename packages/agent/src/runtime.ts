@@ -3,8 +3,8 @@ import type {
   AgentRunResult,
   ActiveAgentRun,
   AgentTool,
-} from "@midas/core";
-import { AgentRunner, type ToolHooks } from "@midas/core";
+} from "@flareai/core";
+import { AgentRunner, type ToolHooks } from "@flareai/core";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type {
@@ -12,9 +12,9 @@ import type {
   InferenceService,
   ModelRef,
   ReasoningEffort,
-} from "@midas/inference";
-import type { JsonValue, Storage, StoredMessage } from "@midas/storage";
-import { ToolRegistry } from "@midas/tools";
+} from "@flareai/inference";
+import type { JsonValue, Storage, StoredMessage } from "@flareai/storage";
+import { ToolRegistry } from "@flareai/tools";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import {
   CompactionManager,
@@ -63,7 +63,7 @@ export interface EnvironmentContextProvider {
   };
 }
 
-export interface MidasAgentOptions {
+export interface FlareAIAgentOptions {
   inference: InferenceService;
   storage: Storage;
   memory: MemoryManager;
@@ -101,7 +101,7 @@ export interface GoalContinuation {
   decision: GoalLoopDecision;
 }
 
-export interface StartMidasRunInput {
+export interface StartFlareAIRunInput {
   conversationId: string;
   text: string;
   userMessageId?: string;
@@ -124,16 +124,16 @@ export interface StartMidasRunInput {
   model?: ModelRef;
 }
 
-export class MidasAgent {
+export class FlareAIAgent {
   readonly goals: GoalManager;
   readonly goalLoop: GoalLoop;
   readonly memory: MemoryManager;
-  readonly #options: MidasAgentOptions;
+  readonly #options: FlareAIAgentOptions;
   readonly #compaction: CompactionManager;
   readonly #consolidator: MemoryConsolidator;
   readonly #skillLoader: SkillLoader;
   readonly #goalWork = new Set<Promise<void>>();
-  constructor(options: MidasAgentOptions) {
+  constructor(options: FlareAIAgentOptions) {
     this.#options = options;
     this.goals = new GoalManager(options.storage);
     this.goalLoop = new GoalLoop(
@@ -155,7 +155,7 @@ export class MidasAgent {
     this.#skillLoader = new SkillLoader(options.skills);
   }
 
-  start(input: StartMidasRunInput): ActiveAgentRun {
+  start(input: StartFlareAIRunInput): ActiveAgentRun {
     const conversation = this.#options.storage.getConversation(
       input.conversationId,
     );
@@ -307,7 +307,7 @@ export class MidasAgent {
    * subagent finishing says nothing about the conversation's goal.
    */
   async #driveGoal(
-    input: StartMidasRunInput,
+    input: StartFlareAIRunInput,
     result: AgentRunResult,
   ): Promise<void> {
     if (input.parentRunId || result.status !== "completed") return;
@@ -365,7 +365,7 @@ export class MidasAgent {
     this.#options.storage.appendRunEvent(event.runId, event.type, json(event));
   }
   #finish(
-    input: StartMidasRunInput,
+    input: StartFlareAIRunInput,
     result: AgentRunResult,
     initialMessages: number,
   ): void {
@@ -448,7 +448,7 @@ function readSkill(path: string): string {
 
 function selectContext(
   messages: InferenceMessage[],
-  mode: NonNullable<StartMidasRunInput["contextMode"]>,
+  mode: NonNullable<StartFlareAIRunInput["contextMode"]>,
 ): InferenceMessage[] {
   if (mode === "none") return [];
   if (mode === "recent") return messages.slice(-8);

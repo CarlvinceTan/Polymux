@@ -13,7 +13,7 @@ import {defineConfig} from 'vite';
  * This has to go through `rolldownOptions`: Vite 8 bundles with Rolldown, and
  * `rollupOptions.external` alone does not reach it.
  *
- * Everything else (the @midas/* workspace packages and their pure-JS
+ * Everything else (the @flareai/* workspace packages and their pure-JS
  * dependencies) is still bundled, so the packaged app needs no node_modules
  * shipped beside it. Nothing here is a native module — `node:sqlite` is a
  * builtin — so there is nothing that must stay unbundled.
@@ -24,6 +24,16 @@ const nodeBuiltins = [
 ];
 
 export default defineConfig({
+  /**
+   * Application credentials FlareAI ships on the user's behalf, baked in here
+   * rather than committed. Unset in a normal checkout, which is the point: a
+   * build without them falls back to asking the user for their own pair, so
+   * nothing breaks, it just asks. Release builds set them in the environment.
+   */
+  define: {
+    __FLAREAI_TELEGRAM_API_ID__: JSON.stringify(process.env.FLAREAI_TELEGRAM_API_ID ?? ''),
+    __FLAREAI_TELEGRAM_API_HASH__: JSON.stringify(process.env.FLAREAI_TELEGRAM_API_HASH ?? ''),
+  },
   build: {
     rolldownOptions: {
       platform: 'node',

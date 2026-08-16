@@ -14,7 +14,7 @@ import os from 'node:os';
 
 const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = path.join(projectRoot, 'assets/appicon.svg');
-const work = path.join(os.tmpdir(), `midas-icons-${process.pid}`);
+const work = path.join(os.tmpdir(), `flareai-icons-${process.pid}`);
 
 /** macOS ships every size an .icns needs; .ico wants the Windows shell set. */
 const ICNS_SIZES = [16, 32, 64, 128, 256, 512, 1024];

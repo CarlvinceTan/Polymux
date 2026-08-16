@@ -1,6 +1,6 @@
 /**
  * Uploads the artifacts produced by `npm run make` to the R2 bucket behind
- * updates.polymux.com, and writes the feed document macOS reads.
+ * updates.flarehq.co, and writes the feed document macOS reads.
  *
  * Electron Forge has no publisher for "static files on an S3-compatible
  * bucket", and electron-updater's generic provider expects the latest-*.yml
@@ -30,7 +30,7 @@ if (missing.length > 0) {
 }
 
 const bucket = process.env.R2_BUCKET;
-const publicHost = process.env.MIDAS_UPDATE_HOST ?? "https://updates.polymux.com";
+const publicHost = process.env.FLAREAI_UPDATE_HOST ?? "https://updates.flarehq.co";
 
 const s3 = new S3Client({
   region: "auto",
@@ -89,7 +89,7 @@ for (const arch of ["arm64", "x64"]) {
   const feed = {
     url: `${publicHost}/${zipKey}`,
     name: version,
-    notes: process.env.MIDAS_RELEASE_NOTES ?? "",
+    notes: process.env.FLAREAI_RELEASE_NOTES ?? "",
     pub_date: new Date().toISOString(),
   };
   await s3.send(new PutObjectCommand({
@@ -122,6 +122,32 @@ for (const arch of ["x64", "arm64"]) {
     await upload(file, `${CHANNEL}/win32/${arch}/${name}`, type);
   }
   published += 1;
+}
+
+// The application credentials the app reads at launch, served from the same
+// bucket as the feed. This is the rotation path: a banned pair is replaced by
+// overwriting this one object, and machines pick it up on their next launch
+// rather than waiting for a release to reach them. Written only when the
+// values are in the environment, so a publish without them leaves whatever is
+// already there alone rather than blanking it.
+if (process.env.FLAREAI_TELEGRAM_API_ID && process.env.FLAREAI_TELEGRAM_API_HASH) {
+  const credentials = {
+    telegram: {
+      api_id: process.env.FLAREAI_TELEGRAM_API_ID,
+      api_hash: process.env.FLAREAI_TELEGRAM_API_HASH,
+    },
+  };
+  await s3.send(new PutObjectCommand({
+    Bucket: bucket,
+    Key: `${CHANNEL}/credentials.json`,
+    Body: JSON.stringify(credentials),
+    ContentType: "application/json",
+    // Rotation is the entire point; a cached copy of a banned pair defeats it.
+    CacheControl: "no-cache",
+  }));
+  console.log(`wrote ${CHANNEL}/credentials.json`);
+} else {
+  console.log("no application credentials in the environment; left credentials.json as it is");
 }
 
 if (published === 0) {

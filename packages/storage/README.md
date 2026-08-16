@@ -1,11 +1,11 @@
-# @midas/storage
+# @flareai/storage
 
-Durable local storage for Midas. The package contains storage contracts and a SQLite implementation; it has no Electron, renderer, inference, or agent-loop dependencies.
+Durable local storage for FlareAI. The package contains storage contracts and a SQLite implementation; it has no Electron, renderer, inference, or agent-loop dependencies.
 
 ```ts
-import { SqliteStorage } from "@midas/storage";
+import { SqliteStorage } from "@flareai/storage";
 
-const storage = new SqliteStorage("/path/to/midas.sqlite");
+const storage = new SqliteStorage("/path/to/flareai.sqlite");
 storage.createConversation({ id: crypto.randomUUID(), title: "New chat" });
 ```
 

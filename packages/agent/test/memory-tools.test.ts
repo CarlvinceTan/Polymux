@@ -3,12 +3,12 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import type { AgentTool, AgentToolResult } from "@midas/core";
+import type { AgentTool, AgentToolResult } from "@flareai/core";
 import { createMemoryTools, MemoryManager } from "../src/index.js";
 
 function vault(): MemoryManager {
   return new MemoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "midas-memory-tools-")),
+    directory: mkdtempSync(path.join(tmpdir(), "flareai-memory-tools-")),
   });
 }
 

@@ -7,7 +7,7 @@
  *   ERROR: Unrecognized attribute string flag '?' in attribute string
  *   "T@"NSString",?,R,C" for property debugDescription
  *
- * The properties belong to system frameworks Electron loads, not to any Midas
+ * The properties belong to system frameworks Electron loads, not to any FlareAI
  * code, and the message is written straight to the process's stderr rather
  * than os_log, so there is nothing to silence from inside the app. Dropping
  * the lines here keeps the dev console readable; everything else is forwarded
@@ -50,13 +50,13 @@ function processTable() {
  * on the userData directory, so the instance this run is about to launch quits
  * itself before it ever opens a window (see the lock in src/main/main.ts).
  * Forge does not notice — it keeps its dev servers up and its terminal quiet —
- * and the only Midas on screen stays the old one, still on its old bundle.
+ * and the only FlareAI on screen stays the old one, still on its old bundle.
  * That reads exactly like `npm start` hanging on a blank window, so retire the
  * old session first.
  *
  * Only this checkout's development app is a candidate: it runs out of
- * `node_modules/electron`, which an installed Midas.app never does. Its main
- * process renames itself to "Midas" and so cannot be matched by path, but its
+ * `node_modules/electron`, which an installed FlareAI.app never does. Its main
+ * process renames itself to "FlareAI" and so cannot be matched by path, but its
  * helper processes keep theirs — and their parent is the main process.
  */
 async function retirePreviousDevApp() {
@@ -100,7 +100,7 @@ async function retirePreviousDevApp() {
   const doomed = [...apps, ...forges];
   if (doomed.length === 0) return;
 
-  console.error('Retiring the Midas dev app left over from an earlier `npm start`.');
+  console.error('Retiring the FlareAI dev app left over from an earlier `npm start`.');
   const alive = (pid) => {
     try {
       process.kill(pid, 0);
@@ -123,7 +123,7 @@ async function retirePreviousDevApp() {
   // teardown first — and the single-instance lock outlives the old main
   // process by exactly that long. Spawn Forge before then and the new instance
   // finds the lock still held, hands over its session, and exits: the only
-  // Midas on screen stays the old one, whose renderer is usually already dead.
+  // FlareAI on screen stays the old one, whose renderer is usually already dead.
   // That is the blank window this whole function is trying to prevent.
   signal('SIGTERM');
   const deadline = Date.now() + 5000;

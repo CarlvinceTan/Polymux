@@ -1,13 +1,13 @@
 import { app, autoUpdater } from "electron";
-import type { AppUpdateDto, AppVersionDto } from "@midas/protocol";
+import type { AppUpdateDto, AppVersionDto } from "@flareai/protocol";
 
 /**
  * Updates are served as static files from Cloudflare R2 behind
- * updates.polymux.com. Nothing dynamic runs there: macOS reads a small JSON
+ * updates.flarehq.co. Nothing dynamic runs there: macOS reads a small JSON
  * document describing the newest build, Windows reads the RELEASES index that
  * MakerSquirrel already produces. `scripts/publish-updates.mjs` writes both.
  */
-const FEED_HOST = process.env.MIDAS_UPDATE_HOST ?? "https://updates.polymux.com";
+const FEED_HOST = process.env.FLAREAI_UPDATE_HOST ?? "https://updates.flarehq.co";
 const CHANNEL = "stable";
 
 // Squirrel polls rather than being pushed to, so the interval is the worst-case

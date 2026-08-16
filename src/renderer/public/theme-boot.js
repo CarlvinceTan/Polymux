@@ -5,7 +5,7 @@
 // instead of flashing into it. `lib/theme.ts` writes the value it reads here.
 (function () {
   try {
-    var stored = localStorage.getItem('midas.theme');
+    var stored = localStorage.getItem('flareai.theme');
     // A fresh profile has nothing stored, and 'system' is what it will be given
     // — so resolve that here rather than leaving the root bare. The stylesheet
     // can dress an unthemed root, but the attribute would still arrive later,
@@ -23,8 +23,8 @@
     // without this hint still opens in a sensible colour.
   }
 
-  // The slide starts when the splash is actually on screen, so that all of it
-  // is seen. In the app that moment belongs to the main process, which holds
+  // The sequence starts when the splash is actually on screen, so that all of
+  // it is seen. In the app that moment belongs to the main process, which holds
   // the window back until its first frame and sets this attribute as it shows
   // it (see main.ts) — a hidden Electron window still reports its document as
   // visible, so the page cannot tell. In a browser the page is on screen as
@@ -36,21 +36,44 @@
     root.dataset.splash = 'playing';
   }
   // Done means the cover may lift as soon as the app is ready. The app asks
-  // for this state rather than timing the slide itself, so it cannot matter
-  // whether it mounts before or after the slide finishes.
+  // for this state rather than timing the sequence itself, so it cannot matter
+  // whether it mounts before or after the sequence finishes.
   function done() {
     if (root.dataset.splash === 'done') return;
     root.dataset.splash = 'done';
-    document.dispatchEvent(new Event('midas:splash-done'));
+    document.dispatchEvent(new Event('flareai:splash-done'));
   }
+  // The last beat of the sequence is the lockup settling into place and holding
+  // there. Its end is what says the animation has been watched through.
   document.addEventListener('animationend', function (event) {
     if (event.animationName === 'startup-brand-in') done();
   });
-  // Reduced motion removes the slide altogether, so there is nothing to wait
+  // …and a ceiling on it, because that event is the only thing standing between
+  // a splash and never leaving: an animation dropped for any reason — a mark
+  // that failed to parse, a motion setting flipped mid-run — would take the
+  // whole cover down with it. The clock starts when the sequence does, whoever
+  // started it, which is why this watches the attribute rather than sitting in
+  // `play` (main sets it directly, over IPC, and never calls that).
+  var watch = new MutationObserver(function () {
+    if (!root.dataset.splash) return;
+    watch.disconnect();
+    setTimeout(done, 3400);
+  });
+  watch.observe(root, {attributes: true, attributeFilter: ['data-splash']});
+  // Reduced motion removes the sequence altogether, so there is nothing to wait
   // for and no animationend coming.
+  //
+  // The app's own timeout has to sit behind main's, not in front of it: main
+  // shows the window on its first frame or on a 4s deadline, whichever comes
+  // first, and sets the attribute as it does. At 3s this fired first whenever
+  // the renderer took a while to reach that frame — which in development it
+  // always does, the bundle coming off a dev server — and the whole sequence
+  // then played out behind a window that was still hidden, so the cover lifted
+  // on a lockup nobody had seen move. 6s is past every path main can take, and
+  // still well inside the dead-bundle sweep below.
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) done();
-  else if (!window.midas) play();
-  else setTimeout(play, 3000);
+  else if (!window.flareai) play();
+  else setTimeout(play, 6000);
 
   // The app lifts the splash when it mounts. If the bundle never loads at all
   // nothing would, and a full-window cover would hide the very thing that says

@@ -1,9 +1,9 @@
 <script lang="ts">
   import {onMount, tick} from 'svelte';
   import {readableError} from '../../errors';
-  import type {AppUpdateDto, AppVersionDto, ChronicleStatusDto, GeneralSettingsDto, McpRegistryEntryDto, McpServerDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, ProviderDto, SkillDto, SkillRegistryEntryDto} from '@midas/protocol';
-  import {SUPPORTED_LANGUAGES} from '@midas/protocol';
-  import {midasApi} from '../../api/midas';
+  import type {AppUpdateDto, AppVersionDto, ChronicleStatusDto, GeneralSettingsDto, McpRegistryEntryDto, McpServerDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, ProviderDto, SkillDto, SkillRegistryEntryDto} from '@flareai/protocol';
+  import {SUPPORTED_LANGUAGES} from '@flareai/protocol';
+  import {flareaiApi} from '../../api/flareai';
   import {applyTheme, type ThemeMode} from '../../theme';
   import {modelCompanyId, providerName} from '../../options/providerBrands';
   import Icon from '../shared/Icon.svelte';
@@ -20,7 +20,7 @@
   type ModelKind = 'text' | 'image' | 'video' | 'audio' | 'embedding';
   type Currency = Exclude<GeneralSettingsDto['currency'], null>;
 
-  const api = midasApi();
+  const api = flareaiApi();
   let mode: Mode = 'general';
   let settled = false;
   let search = '';
@@ -85,6 +85,7 @@
   let providerFilter = 'all';
   let providerSort = 'default';
   let openRailMenu: RailMenu | null = null;
+  let swallowBackdropClose = false;
   let skillAddMenuOpen = false;
   let browsingMcpRegistry = false;
   let mcpRegistryQuery = '';
@@ -105,7 +106,6 @@
   let registryRequest = 0;
   let installingRegistryId = '';
   let skillFolderInput: HTMLInputElement;
-  let railActions: HTMLElement;
   let railList: HTMLUListElement;
   let railAtTop = true;
   let railAtBottom = true;
@@ -140,14 +140,14 @@
   const mcpSortOptions = [{value: 'recommended', label: 'Recommended'}, {value: 'name-asc', label: 'Server A–Z'}, {value: 'name-desc', label: 'Server Z–A'}];
   const skillSortOptions = [{value: 'recommended', label: 'Recommended'}, {value: 'updated-desc', label: 'Last edited'}, {value: 'name-asc', label: 'Skill A–Z'}, {value: 'name-desc', label: 'Skill Z–A'}];
   const MODE_HEADERS: Record<Mode, {title: string; description: string}> = {
-    general: {title: 'General', description: 'Manage Midas preferences and access.'},
+    general: {title: 'General', description: 'Manage FlareAI preferences and access.'},
     hub: {title: 'Hub', description: 'Connect messaging platforms and email accounts.'},
     drive: {title: 'Drive', description: 'Connect storage providers and choose where files go.'},
     mcp: {title: 'MCP', description: 'Manage Model Context Protocol servers.'},
-    skills: {title: 'Skills', description: 'Manage the skills available to Midas.'},
+    skills: {title: 'Skills', description: 'Manage the skills available to FlareAI.'},
     model: {title: 'Models', description: 'Click a model to assign it to a job.'},
     provider: {title: 'Providers', description: 'Manage model providers and API keys.'},
-    memory: {title: 'Memory', description: 'Review and manage Midas memory.'},
+    memory: {title: 'Memory', description: 'Review and manage FlareAI memory.'},
   };
   const recommendedModelCompanies = ['openai', 'anthropic', 'google', 'xai', 'meta', 'deepseek', 'mistral', 'qwen', 'moonshotai', 'minimax', 'cohere', 'perplexity', 'ai21'];
   const currencies: Currency[] = ['USD', 'AUD', 'EUR', 'GBP', 'SGD', 'JPY'];
@@ -270,12 +270,12 @@
   }
 
   function skillAuthor(item: SkillDto): string {
-    return item.author ?? (item.source === 'official' ? 'Midas' : 'Custom');
+    return item.author ?? (item.source === 'official' ? 'FlareAI' : 'Custom');
   }
 
   function skillOrigin(item: SkillDto): string {
-    if (item.source === 'official' || item.source === 'bundled') return 'Bundled with Midas';
-    if (item.source === 'midas') return 'Midas · ~/.midas/skills';
+    if (item.source === 'official' || item.source === 'bundled') return 'Bundled with FlareAI';
+    if (item.source === 'flareai') return 'FlareAI · ~/.flareai/skills';
     if (item.source === 'codex') return 'Codex · ~/.codex/skills';
     if (item.source === 'agents') return 'Agents · ~/.agents/skills';
     return 'Configured folder';
@@ -289,13 +289,13 @@
   }
 
   function mcpOrigin(item: McpServerDto): string {
-    if (item.source === 'official') return 'Bundled with Midas';
+    if (item.source === 'official') return 'Bundled with FlareAI';
     if (item.source === 'codex') return 'Codex';
-    return 'Midas';
+    return 'FlareAI';
   }
 
   function mcpAuthor(item: McpServerDto): string {
-    if (item.source === 'official') return 'Midas';
+    if (item.source === 'official') return 'FlareAI';
     if (item.source === 'codex') return 'Codex';
     return 'Custom';
   }
@@ -345,7 +345,7 @@
   }
 
   function skillSourceLabel(source: SkillDto['source']): string {
-    return source === 'codex' || source === 'midas' || source === 'agents' || source === 'configured'
+    return source === 'codex' || source === 'flareai' || source === 'agents' || source === 'configured'
       ? 'Custom'
       : source;
   }
@@ -462,7 +462,7 @@
       // annotate the General tab and must never block the settings lists.
       void api.general.version().then((value) => appVersion = value).catch(() => {});
       void checkForUpdates();
-      if (general.locationEnabled && !general.location && window.midas) void refreshLocation();
+      if (general.locationEnabled && !general.location && window.flareai) void refreshLocation();
     } catch (reason) {
       error = readableError(reason);
     } finally {
@@ -1237,8 +1237,27 @@
     }
   }
 
+  /**
+   * Runs before the window-level dismissal, since the backdrop is the press
+   * target: it records whether a rail menu was still open, so the press that
+   * retires the menu is not also read as a press to close the whole modal.
+   * Queried from the DOM rather than local state so the tabs that own their own
+   * rail menus, such as Hub, are covered by the same rule.
+   */
+  function noteBackdropPress(event: PointerEvent): void {
+    // Every press inside the modal bubbles through here, so the flag is set
+    // from scratch on each one and only for presses on the backdrop itself.
+    swallowBackdropClose =
+      event.target === event.currentTarget && !!document.querySelector('.rail-tool-menu');
+  }
+
   function closeFromBackdrop(event: MouseEvent): void {
-    if (event.target === event.currentTarget) onClose();
+    if (event.target !== event.currentTarget) return;
+    if (swallowBackdropClose) {
+      swallowBackdropClose = false;
+      return;
+    }
+    onClose();
   }
 
   function toggleRailMenu(menu: RailMenu): void {
@@ -1268,8 +1287,20 @@
   /** Runs on pointerdown, not click: a rail menu should be gone the moment the
    * press lands outside it, not once the button is released. */
   function dismissRailMenu(event: Event): void {
-    if (openRailMenu && !railActions?.contains(event.target as Node)) openRailMenu = null;
-    if (skillAddMenuOpen && !railActions?.contains(event.target as Node)) skillAddMenuOpen = false;
+    if (pressKeepsRailMenu(event.target)) return;
+    openRailMenu = null;
+    skillAddMenuOpen = false;
+  }
+
+  /**
+   * Only the open menu and the button that opened it hold a press. Testing the
+   * whole tools row instead would make its blank stretch — which runs the full
+   * width of the rail — a dead zone where a press reads as outside the menu but
+   * dismisses nothing.
+   */
+  function pressKeepsRailMenu(target: EventTarget | null): boolean {
+    const wrap = target instanceof Element ? target.closest('.rail-tool-wrap') : null;
+    return !!wrap?.querySelector('.rail-tool-menu');
   }
 
   function keydown(event: KeyboardEvent): void {
@@ -1309,7 +1340,7 @@
      already showing that value, so its slide only ever means a user click. -->
 {#snippet pendingToggle()}<span class="chronicle-toggle pending" aria-hidden="true"><span></span></span>{/snippet}
 
-<div class="options-modal-backdrop" role="presentation" onclick={closeFromBackdrop}>
+<div class="options-modal-backdrop" role="presentation" onpointerdown={noteBackdropPress} onclick={closeFromBackdrop}>
   <div class="options-modal" class:settling={!settled} role="dialog" aria-modal="true" aria-label="Settings">
     <header class="options-header">
       <div>
@@ -1340,7 +1371,7 @@
       <div class="general-options" role="tabpanel">
         <section class="general-setting-row">
           <span class="option-mark large"><Icon name="sun" size={18}/></span>
-          <span class="general-setting-copy"><h4>Theme</h4><small>Choose how Midas appears</small></span>
+          <span class="general-setting-copy"><h4>Theme</h4><small>Choose how FlareAI appears</small></span>
           <div class="theme-switch" role="radiogroup" aria-label="Theme">
             {#each ['light', 'dark', 'system'] as theme}
               <button type="button" role="radio" aria-checked={general?.theme === theme} class:active={general?.theme === theme} disabled={updatingTheme || !general} onclick={() => void setTheme(theme as ThemeMode)}>{theme[0].toLocaleUpperCase() + theme.slice(1)}</button>
@@ -1349,7 +1380,7 @@
         </section>
         <section class="general-setting-row">
           <span class="option-mark large"><Icon name="book-open" size={18}/></span>
-          <span class="general-setting-copy"><h4>Language</h4><small>The language Midas replies in</small></span>
+          <span class="general-setting-copy"><h4>Language</h4><small>The language FlareAI replies in</small></span>
           <div class="setting-menu language" class:busy={updatingLanguage || !general}>
             <Menu options={languageOptions} value={general?.language ?? 'system'} label="Language" wide onChange={(value) => void setLanguage(value)}/>
           </div>
@@ -1406,7 +1437,7 @@
             <span><h4>Local memory</h4></span>
             {#if memory}<button type="button" class:enabled={memory.enabled} class="chronicle-toggle" role="switch" aria-label="Enable Memory" aria-checked={memory.enabled} disabled={updatingMemory} onclick={() => void setMemoryEnabled(!memory!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </header>
-          <p>The compact memory summary is included automatically. Midas searches the full registry and earlier conversations only when prior context could materially help. Durable memories are added or removed only when you explicitly ask.</p>
+          <p>The compact memory summary is included automatically. FlareAI searches the full registry and earlier conversations only when prior context could materially help. Durable memories are added or removed only when you explicitly ask.</p>
           <div class="chronicle-inline-stats" aria-label="Memory storage"><span>{memory?.memories ?? 0} memories</span><span>{formatBytes(memory?.storedBytes ?? 0)}</span><span>Latest: {formatMemoryTime(memory?.latestMemoryAt)}</span><span>Consolidated: {formatMemoryTime(memory?.consolidatedAt)}</span>{#if (memory?.pendingMemories ?? 0) > 0}<span>{memory?.pendingMemories} pending</span>{/if}</div>
         </section>
         {#if memory?.consolidationError}
@@ -1426,7 +1457,7 @@
           </section>
           {#if chronicle?.lastError}
             <section class="chronicle-error">
-              <span><h4>Capture unavailable</h4><p>{chronicle.lastError}</p><small>You may need to allow Accessibility for Midas in macOS System Settings.</small></span>
+              <span><h4>Capture unavailable</h4><p>{chronicle.lastError}</p><small>You may need to allow Accessibility for FlareAI in macOS System Settings.</small></span>
               <button type="button" disabled={!memory?.enabled || updatingChronicle} onclick={() => void retryChronicle()}>{updatingChronicle ? 'Trying…' : 'Try again'}</button>
             </section>
           {/if}
@@ -1446,13 +1477,13 @@
           {#if mode === 'mcp'}
             {#each visibleMcp as item (item.id)}
               <li><button type="button" class:selected={adding !== 'mcp' && item.id === selectedMcp} class:integration-disabled={!item.enabled} class="options-rail-row" onclick={() => selectMcp(item.id)}>
-                <span class="options-rail-copy"><span class="skill-name-line"><strong>{item.name}</strong>{#if item.source === 'official'}<span class="official-rail-stamp" aria-label="Official"><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span><small>{mcpAuthor(item)} · {mcpStatus(item)}</small></span>
+                <span class="options-rail-copy"><span class="skill-name-line"><strong>{item.name}</strong>{#if item.source === 'official'}<span class="official-rail-stamp" aria-label="Official"><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span><small>{mcpAuthor(item)} · <span class="state-text" data-state={item.status}>{mcpStatus(item)}</span></small></span>
               </button></li>
             {:else}<li class="options-empty rail-empty">{loading ? 'Loading MCP servers…' : !query && mcpServers.length === 0 ? 'No MCP servers yet' : 'No MCP servers found'}</li>{/each}
           {:else if mode === 'skills'}
             {#each visibleSkills as item (item.name)}
               <li><button type="button" class:selected={adding !== 'skills' && item.name === selectedSkill} class:integration-disabled={!item.enabled} class="options-rail-row" onclick={() => selectSkill(item.name)}>
-                <span class="options-rail-copy"><span class="skill-name-line"><strong>{skillTitle(item)}</strong>{#if item.source === 'official'}<span class="official-rail-stamp" aria-label="Official"><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span><small>{skillAuthor(item)} · {item.enabled ? 'Active' : 'Inactive'}</small></span>
+                <span class="options-rail-copy"><span class="skill-name-line"><strong>{skillTitle(item)}</strong>{#if item.source === 'official'}<span class="official-rail-stamp" aria-label="Official"><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span><small>{skillAuthor(item)} · <span class="state-text" data-state={item.enabled ? 'active' : 'inactive'}>{item.enabled ? 'Active' : 'Inactive'}</span></small></span>
               </button></li>
             {:else}<li class="options-empty rail-empty">{loading ? 'Loading skills…' : !query && skills.length === 0 ? 'No skills yet' : 'No skills found'}</li>{/each}
           {:else if mode === 'model'}
@@ -1473,13 +1504,13 @@
           {/if}
         </ul>
 
-        <div class="options-rail-tools" bind:this={railActions}>
+        <div class="options-rail-tools">
             <div class="rail-tool-wrap">
               <button type="button" class:active={activeRailFilter !== activeRailDefaultFilter} class="rail-tool" aria-label={`Filter ${activeRailSubject}`} aria-haspopup="menu" aria-expanded={openRailMenu === 'filter'} data-tooltip-label="Filter" onclick={() => toggleRailMenu('filter')}><Icon name="filter" size={15}/></button>
               {#if openRailMenu === 'filter'}
-                <div class="polymux-dropdown-menu rail-tool-menu" role="menu" aria-label={`Filter ${activeRailSubject}`}>
+                <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={`Filter ${activeRailSubject}`}>
                   {#each activeRailFilterOptions as option (option.value)}
-                    <button type="button" class="polymux-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailFilter} onclick={() => chooseRailOption('filter', option.value)}><span>{option.label}</span>{#if option.value === activeRailFilter}<Icon name="check" size={13}/>{/if}</button>
+                    <button type="button" class="flareai-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailFilter} onclick={() => chooseRailOption('filter', option.value)}><span>{option.label}</span>{#if option.value === activeRailFilter}<Icon name="check" size={13}/>{/if}</button>
                   {/each}
                 </div>
               {/if}
@@ -1487,9 +1518,9 @@
             <div class="rail-tool-wrap">
               <button type="button" class:active={activeRailSort !== activeRailDefaultSort} class="rail-tool" aria-label={`Sort ${activeRailSubject}`} aria-haspopup="menu" aria-expanded={openRailMenu === 'sort'} data-tooltip-label="Sort" onclick={() => toggleRailMenu('sort')}><Icon name="sort" size={15}/></button>
               {#if openRailMenu === 'sort'}
-                <div class="polymux-dropdown-menu rail-tool-menu" role="menu" aria-label={`Sort ${activeRailSubject}`}>
+                <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={`Sort ${activeRailSubject}`}>
                   {#each activeRailSortOptions as option (option.value)}
-                    <button type="button" class="polymux-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailSort} onclick={() => chooseRailOption('sort', option.value)}><span>{option.label}</span>{#if option.value === activeRailSort}<Icon name="check" size={13}/>{/if}</button>
+                    <button type="button" class="flareai-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailSort} onclick={() => chooseRailOption('sort', option.value)}><span>{option.label}</span>{#if option.value === activeRailSort}<Icon name="check" size={13}/>{/if}</button>
                   {/each}
                 </div>
               {/if}
@@ -1498,7 +1529,7 @@
               <div class="rail-tool-wrap">
                 <button type="button" class:active={openRailMenu === 'setup'} class="rail-tool rail-tool-text" aria-haspopup="menu" aria-expanded={openRailMenu === 'setup'} onclick={() => toggleRailMenu('setup')}>View Setup</button>
                 {#if openRailMenu === 'setup'}
-                  <div class="polymux-dropdown-menu rail-tool-menu role-setup-menu" role="menu" aria-label="Model setup">
+                  <div class="flareai-dropdown-menu rail-tool-menu role-setup-menu" role="menu" aria-label="Model setup">
                     {#each MODEL_ROLES as role (role.value)}
                       <div class="role-setup-row" role="menuitem"><span>{role.label}</span><strong>{roleSetupValue(role, modelRoles)}</strong></div>
                     {/each}
@@ -1513,10 +1544,10 @@
               <div class="rail-tool-wrap">
                 <button type="button" class:active={adding === 'skills' || skillAddMenuOpen} class="rail-tool" aria-label="Add Skills" aria-haspopup="menu" aria-expanded={skillAddMenuOpen} data-tooltip-label="Add Skills" onclick={() => { openRailMenu = null; skillAddMenuOpen = !skillAddMenuOpen; }}><Icon name="plus" size={15}/></button>
                 {#if skillAddMenuOpen}
-                  <div class="polymux-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label="Add Skills">
-                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => beginAdd('skills')}><span>Create Custom</span></button>
-                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={beginInstallSkill}><span>Install from Vercel Skills</span></button>
-                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => skillFolderInput.click()}><span>Upload Skills</span></button>
+                  <div class="flareai-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label="Add Skills">
+                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => beginAdd('skills')}><span>Create Custom</span></button>
+                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={beginInstallSkill}><span>Install from Vercel Skills</span></button>
+                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => skillFolderInput.click()}><span>Upload Skills</span></button>
                     <input bind:this={skillFolderInput} class="skill-folder-input" type="file" webkitdirectory multiple aria-label="Upload skill folder" onchange={(event) => void uploadSkillFolder(event)}/>
                   </div>
                 {/if}
@@ -1599,7 +1630,7 @@
           <header class="options-detail-header"><span class="option-mark large"><Icon name={editingIntegration ? 'edit' : 'plus'} size={18}/></span><span class="options-title-group"><h3>{editingIntegration ? 'Edit Skill' : 'Add Skill'}</h3></span></header>
           <form class="custom-integration-form skill-form" onsubmit={(event) => { event.preventDefault(); void saveCustomSkill(); }}>
             <label>Name<input bind:value={customSkillName} placeholder="my-skill" required/></label>
-            <label>Description<input bind:value={customSkillDescription} placeholder="When Midas should use this skill" required/></label>
+            <label>Description<input bind:value={customSkillDescription} placeholder="When FlareAI should use this skill" required/></label>
             <label>Instructions<textarea class="instructions" bind:value={customSkillInstructions} placeholder="Skill instructions" required></textarea></label>
             <div class="custom-provider-actions"><button type="button" onclick={() => adding = null}>Cancel</button><button class="credential-primary" type="submit" disabled={integrationSaving}>{integrationSaving ? 'Saving…' : 'Save'}</button></div>
           </form>
@@ -1615,7 +1646,7 @@
             <dl class="skill-meta">
               <div><dt>Source</dt><dd>{mcpOrigin(mcp)}</dd></div>
               <div><dt>Transport</dt><dd>{mcp.transport === 'stdio' ? 'Stdio' : 'Streamable HTTP'}</dd></div>
-              <div><dt>Status</dt><dd title={mcp.error ?? undefined}>{mcp.error ?? mcpStatus(mcp)}</dd></div>
+              <div><dt>Status</dt><dd class="state-text" data-state={mcp.error ? 'error' : mcp.status} title={mcp.error ?? undefined}>{mcp.error ?? mcpStatus(mcp)}</dd></div>
               <div><dt>Availability</dt><dd>{mcp.enabled ? 'Enabled' : 'Disabled'}</dd></div>
             </dl>
           </section>
@@ -1729,7 +1760,7 @@
           <section class="credential-panel">
             <div class="credential-copy">
               <h4>API key</h4>
-              <p>{credentialProvider.apiKeyLabel ?? `Configure credentials for ${credentialProvider.name}.`} Saved keys are encrypted by the operating system and are never displayed again. Add more than one and Midas rotates through them automatically, retrying with the next key whenever one is rate limited or rejected.</p>
+              <p>{credentialProvider.apiKeyLabel ?? `Configure credentials for ${credentialProvider.name}.`} Saved keys are encrypted by the operating system and are never displayed again. Add more than one and FlareAI rotates through them automatically, retrying with the next key whenever one is rate limited or rejected.</p>
             </div>
             {#if credentialProvider.apiKeyLabel}
               <form class="credential-form" onsubmit={(event) => {event.preventDefault(); void saveCredential();}}>
@@ -1739,13 +1770,13 @@
                 </div>
               </form>
             {:else}
-              <p class="credential-unavailable">This provider does not accept an API key through Midas.</p>
+              <p class="credential-unavailable">This provider does not accept an API key through FlareAI.</p>
             {/if}
             <div class="credential-keys">
               {#each credentialProvider.apiKeys as key (key.id)}
                 <div class="credential-key-row">
                   <span class="credential-key-state" class:active={key.status === 'ready'} class:invalid={key.status === 'invalid'} class:limited={key.status === 'rate_limited'}></span>
-                  <span><strong>{key.label}</strong><small>{key.status === 'invalid' ? 'Invalid' : key.status === 'rate_limited' ? 'Rate limited' : 'Ready'}</small></span>
+                  <span><strong>{key.label}</strong><small class="state-text" data-state={key.status}>{key.status === 'invalid' ? 'Invalid' : key.status === 'rate_limited' ? 'Rate limited' : 'Ready'}</small></span>
                   <button type="button" aria-label={`Remove ${key.label}`} data-tooltip-label="Remove" disabled={savingCredential} onclick={() => void removeCredential(key.id)}><Icon name="trash" size={14}/></button>
                 </div>
               {/each}
@@ -1789,7 +1820,7 @@
   .options-detail.directory-open{display:flex;flex-direction:column;overflow:hidden}.skill-registry{min-height:0;flex:1;display:flex;flex-direction:column;gap:12px;margin-top:14px}.skill-registry-results{flex:1;min-height:0;overflow-y:auto;margin:0;padding:0;list-style:none}.skill-registry-results li{display:flex;align-items:center;gap:12px;min-height:44px;border-bottom:1px solid var(--neutral-100)}.skill-registry-results li:last-child{border-bottom:0}.skill-registry-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.skill-registry-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:540}.skill-registry-copy small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.skill-registry-installed{flex:none;color:var(--neutral-400);font-size:10.5px;font-weight:550}.skill-registry-results .skill-registry-empty{height:100%;display:grid;place-items:center;border:0;color:var(--neutral-400);text-align:center;font-size:11.5px}
   .skill-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 18px;margin:8px 0 0;max-width:460px}.skill-meta div{min-width:0;display:flex;flex-direction:column;gap:2px}.skill-meta dt{color:var(--neutral-400);font-size:10.5px;font-weight:550;letter-spacing:.02em}.skill-meta dd{margin:0;overflow:hidden;color:var(--neutral-700);text-overflow:ellipsis;white-space:nowrap;font-size:12px}.options-rail-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.options-rail-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:530}.options-rail-copy small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;text-transform:capitalize}.options-name{display:flex;align-items:center;gap:5px}.options-name strong{min-width:0;flex:1}.options-name i{padding:1px 5px;border-radius:5px;background:#fff;color:var(--neutral-600);font-size:9px;font-style:normal}
   .provider-mark{width:26px;height:26px;display:grid;flex:none;place-items:center;border:1px solid var(--neutral-200);border-radius:8px;background:#fff}.provider-mark.large{width:34px;height:34px;border-radius:10px}.provider-row.selected .provider-mark{border-color:rgba(0,0,0,.08)}.provider-row.has-check{position:relative}.provider-row.has-check .options-rail-copy{-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px));mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px))}.configured-check{position:absolute;top:0;right:15px;bottom:0;width:18px;display:grid;place-items:center;color:var(--neutral-600)}
-  .options-rail-tools{position:relative;flex:none;display:flex;align-items:center;justify-content:flex-start;gap:2px;margin-top:2px}.rail-tool-wrap{position:relative}.rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}.rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}.rail-tool-menu .polymux-dropdown-item>span{min-width:0;flex:1}.rail-tool-text{width:auto;padding:0 9px;font-family:inherit;font-size:11px;font-weight:540}.role-setup-menu{width:252px;padding:5px}.role-setup-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:5px 7px;color:var(--neutral-500);font-size:11px}.role-setup-row>span{flex:none;white-space:nowrap}.role-setup-row+.role-setup-row{border-top:1px solid var(--neutral-100)}.role-setup-row strong{min-width:0;overflow:hidden;color:var(--neutral-800);text-align:right;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:540}
+  .options-rail-tools{position:relative;flex:none;display:flex;align-items:center;justify-content:flex-start;gap:2px;margin-top:2px}.rail-tool-wrap{position:relative}.rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}.rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}.rail-tool-menu .flareai-dropdown-item>span{min-width:0;flex:1}.rail-tool-text{width:auto;padding:0 9px;font-family:inherit;font-size:11px;font-weight:540}.role-setup-menu{width:252px;padding:5px}.role-setup-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:5px 7px;color:var(--neutral-500);font-size:11px}.role-setup-row>span{flex:none;white-space:nowrap}.role-setup-row+.role-setup-row{border-top:1px solid var(--neutral-100)}.role-setup-row strong{min-width:0;overflow:hidden;color:var(--neutral-800);text-align:right;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:540}
   .options-detail{min-height:0;overflow-y:auto;padding:0 18px 20px var(--options-divider-gap)}.options-detail-header{display:flex;align-items:center;gap:11px}.options-detail-header>.chronicle-toggle{margin-right:8px}.options-title-group{min-width:0;flex:1;display:flex;align-items:center;gap:8px}.options-title-group h3{min-width:0;margin:0;overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:570}.options-badge{flex:none;padding:2px 8px;border-radius:7px;background:var(--neutral-200);color:var(--neutral-600);font-size:10.5px;font-weight:540;text-transform:capitalize}.options-badge.good{background:#e8f5ec;color:#347049}.official-badge{display:inline-flex;align-items:center;gap:4px;padding:0;background:transparent;transform:translateY(1px)}.official-badge :global(svg){flex:none}
   .options-detail.mcp-detail{display:flex;flex-direction:column;overflow:hidden}.mcp-detail>.options-detail-header,.mcp-detail>.options-detail-block{flex:none}.mcp-detail>.options-resources{min-height:0;flex:1}.mcp-detail>.options-resources>section{min-height:0;display:flex;flex-direction:column}.mcp-detail>.options-resources ul{min-height:0;max-height:none;flex:1;overflow-y:auto}
   .options-detail.skill-detail{display:flex;flex-direction:column;overflow:hidden}.skill-detail>.options-path{flex:none;margin-top:auto;padding-top:12px}.skill-description{display:-webkit-box;overflow:hidden;line-clamp:4;-webkit-box-orient:vertical;-webkit-line-clamp:4}

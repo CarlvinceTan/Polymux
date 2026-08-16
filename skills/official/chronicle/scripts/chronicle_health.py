@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Read-only health report for Midas's built-in Chronicle on macOS.
+"""Read-only health report for FlareAI's built-in Chronicle on macOS.
 
-Midas records Chronicle inside the app itself: accessibility text frames are
+FlareAI records Chronicle inside the app itself: accessibility text frames are
 saved as Markdown under the Chronicle directory, indexed per day, and
 summarised into timeline.md. There is no separate recorder process to check;
 health is the recorder setting plus evidence freshness on disk.
@@ -61,10 +61,10 @@ def recorder_state(root: Path) -> tuple[dict, list[str]]:
         value = json.loads(settings.read_text(encoding="utf-8"))
         state["enabled"] = bool(value.get("enabled", True))
     except (OSError, ValueError):
-        # Missing settings mean Midas is using its defaults; not an error.
+        # Missing settings mean FlareAI is using its defaults; not an error.
         state["enabled"] = None
     if state["enabled"] is False:
-        errors.append("Chronicle is disabled in Midas settings")
+        errors.append("Chronicle is disabled in FlareAI settings")
     return state, errors
 
 
@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chronicle-root",
         type=Path,
-        default=Path.home() / "Library/Application Support/Midas/chronicle",
+        default=Path.home() / "Library/Application Support/FlareAI/chronicle",
     )
     parser.add_argument("--frame-fresh-seconds", type=float, default=120.0)
     parser.add_argument("--timeline-fresh-seconds", type=float, default=1200.0)

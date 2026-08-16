@@ -51,9 +51,9 @@
   </div>
 
   <div class="side-chat-composer">
-    <div class="polymux-prompt">
-      <div class:raised={draft.length > 0} class="polymux-prompt-shell">
-        <div class="polymux-editor-slot">
+    <div class="flareai-prompt">
+      <div class:raised={draft.length > 0} class="flareai-prompt-shell">
+        <div class="flareai-editor-slot">
           <textarea
             bind:value={draft}
             class="side-chat-input"
@@ -65,7 +65,7 @@
         </div>
         <button
           type="button"
-          class="polymux-primary"
+          class="flareai-primary"
           aria-label={running ? 'Stop agent' : 'Send message'}
           onclick={() => running ? onStop() : submit()}
         ><Icon name={running ? 'stop' : 'send'} size={running ? 22 : 18}/></button>

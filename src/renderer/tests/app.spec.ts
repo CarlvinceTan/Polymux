@@ -1,6 +1,6 @@
 import {expect, test, type Page} from '@playwright/test';
 
-const editor = (page: Page) => page.getByRole('textbox', {name: 'Message Midas'});
+const editor = (page: Page) => page.getByRole('textbox', {name: 'Message FlareAI'});
 const chatDrawer = (page: Page) => page.locator('aside.chat-drawer');
 const workspaceDrawer = (page: Page) => page.locator('aside.workspace-drawer');
 const summaryCard = (page: Page) => page.locator('aside.summary-panel');
@@ -14,49 +14,89 @@ async function send(page: Page, text: string) {
 }
 
 test.describe('welcome view', () => {
-  test('shows a restrained Midas startup screen', async ({page}) => {
+  test('shows a restrained FlareAI startup screen', async ({page}) => {
     await page.goto('/');
-    const splash = page.getByRole('status', {name: 'Loading Midas'});
+    const splash = page.getByRole('status', {name: 'Loading FlareAI'});
     await expect(splash).toBeVisible();
     await expect(splash.locator('svg.startup-mark')).toBeVisible();
-    await expect(splash.getByText('Midas', {exact: true})).toBeVisible();
-    const startupAnimation = await splash.locator('.startup-brand').evaluate((node) => {
-      const style = getComputedStyle(node);
-      return {name: style.animationName, duration: style.animationDuration};
+    await expect(splash.locator('.startup-word')).toHaveText('FlareAI');
+    // Freeze the sequence before reading it. The rays drop their animation the
+    // moment it finishes — that is what leaves the settled mark as plain
+    // untransformed paths — so a machine slow enough to arrive after the last
+    // beat would otherwise read the wiring as absent rather than as done.
+    await page.evaluate(() => document.getAnimations().forEach((a) => a.pause()));
+    // The beats of the sequence, each on the element that carries it: the mark
+    // drawing itself, then the lockup opening — the brand travelling left while
+    // the wordmark slides the other way out from behind it. Names rather than
+    // pixels — what a machine can hold to here is that every beat is still
+    // wired up, and that the last of them is the one theme-boot waits on to
+    // lift the cover.
+    const beats = await splash.evaluate((node) => {
+      const of = (selector: string) => {
+        const style = getComputedStyle(node.querySelector(selector)!);
+        return [style.animationName, style.animationDuration, style.animationDelay];
+      };
+      return {
+        ray: of('.startup-mark path'),
+        notch: of('.startup-mark path:nth-child(16)'),
+        brand: of('.startup-brand'),
+        slide: of('.startup-word-slide'),
+        // The edge the wordmark comes through does not move, so it is a static
+        // mask and not a beat at all. Pinned here because a mask that starts
+        // travelling again is exactly the regression to catch — and because it
+        // has to begin at the mark's right edge, 18px, so the fade lands on the
+        // text and never on the logo.
+        edge: getComputedStyle(node.querySelector('.startup-word')!).maskImage,
+      };
     });
-    expect(startupAnimation.name).toContain('startup-brand-in');
-    expect(startupAnimation.duration).toBe('2s');
+    expect(beats).toEqual({
+      ray: ['startup-mark-draw', '0.9s', '0s'],
+      // The notches that cap the rays run shorter and start later, so they
+      // arrive about where a ray has grown to by then.
+      notch: ['startup-mark-draw', '0.48s', '0.42s'],
+      // Last to end — the extra .22s past the travel is the settled hold, and
+      // its end is what lifts the cover.
+      brand: ['startup-brand-in', '1.22s', '1.08s'],
+      slide: ['startup-word-slide', '1s', '1.08s'],
+      edge: 'linear-gradient(to right, rgba(0, 0, 0, 0) 18px, rgba(0, 0, 0, 0.12) 21px, rgba(0, 0, 0, 0.5) 24px, rgba(0, 0, 0, 0.88) 27px, rgb(0, 0, 0) 30px)',
+    });
     const startupLockup = await splash.locator('.startup-brand').evaluate((node) => {
       const mark = node.querySelector('svg')!.getBoundingClientRect();
-      const word = node.querySelector('span')!;
+      const word = node.querySelector('.startup-word')!;
       const style = getComputedStyle(word);
       // The lockup slides in under a transform, so a box measured mid-flight
-      // carries the compositor's sub-pixel remainder — 71.99996948242188 for a
-      // mark that is 72 wide. Two decimals is finer than any real regression
+      // carries the compositor's sub-pixel remainder — 63.99996948242188 for a
+      // mark that is 64 wide. Two decimals is finer than any real regression
       // and coarser than that noise.
       const round = (value: number) => Math.round(value * 100) / 100;
       return {markWidth: round(mark.width), markHeight: round(mark.height), gap: getComputedStyle(node).gap, fontSize: style.fontSize, fontWeight: style.fontWeight, tracking: style.letterSpacing};
     });
-    expect(startupLockup).toEqual({markWidth: 72, markHeight: 59, gap: '12px', fontSize: '48px', fontWeight: '750', tracking: '-2.16px'});
+    // The FlareAI mark is radially symmetric, so the lockup box is square.
+    expect(startupLockup).toEqual({markWidth: 64, markHeight: 64, gap: '12px', fontSize: '48px', fontWeight: '750', tracking: '-2.16px'});
   });
 
   /**
    * How long the splash stays is a wall-clock property, so it is measured on
    * its own: sharing a test with the geometry above meant the reads had to
-   * finish inside the splash's ~2s life, which is not something a machine
-   * running the rest of this suite alongside it can promise. Here the wait
-   * begins the moment the splash is first seen, with nothing in between.
+   * finish inside the splash's life, which is not something a machine running
+   * the rest of this suite alongside it can promise. Here the wait begins the
+   * moment the splash is first seen, with nothing in between.
+   *
+   * The sequence's last beat ends at 2.30s and the cover fades over the .24s
+   * after it, so the splash is still up at 2s and gone shortly past 2.5s. The
+   * point of the lower bound is that the cover cannot lift early and cut the
+   * animation short — the app waits for the lockup, not for a timer.
    */
-  test('holds the startup splash for about two seconds', async ({page}) => {
+  test('holds the startup splash for the whole sequence', async ({page}) => {
     await page.goto('/');
-    const splash = page.getByRole('status', {name: 'Loading Midas'});
+    const splash = page.getByRole('status', {name: 'Loading FlareAI'});
     await expect(splash).toBeVisible();
-    await page.waitForTimeout(1700);
+    await page.waitForTimeout(2000);
     await expect(splash).toBeVisible();
-    await expect(splash).toHaveCount(0, {timeout: 1500});
+    await expect(splash).toHaveCount(0, {timeout: 1600});
   });
 
-  test('shows the Polymux mark, heading and composer, and nothing else', async ({page}) => {
+  test('shows the FlareAI mark, heading and composer, and nothing else', async ({page}) => {
     await page.goto('/');
     await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
 
@@ -67,11 +107,11 @@ test.describe('welcome view', () => {
     });
     expect(welcomeGeometry).toEqual({markWidth: 44, markToHeading: 10});
 
-    const logo = await page.evaluate(() => fetch('/polymux.svg').then((response) => response.text()));
+    const logo = await page.evaluate(() => fetch('/flareai.svg').then((response) => response.text()));
     expect(logo).toContain('fill="#000"');
     expect(logo).not.toContain('<rect');
 
-    // Intentional Midas simplification: no recent chats, no suggestion cards.
+    // Intentional FlareAI simplification: no recent chats, no suggestion cards.
     await expect(page.locator('.welcome-features')).toHaveCount(0);
     await expect(page.locator('.welcome-recents')).toHaveCount(0);
     await expect(page.locator('.recent-grid')).toHaveCount(0);
@@ -84,7 +124,7 @@ test.describe('welcome view', () => {
 
   test('exposes Attach, Voice, Goal and Options without plugins or teams', async ({page}) => {
     await page.goto('/');
-    const toolbar = page.locator('.polymux-prompt-toolbar');
+    const toolbar = page.locator('.flareai-prompt-toolbar');
     await expect(toolbar.getByText('ATTACH')).toBeVisible();
     await expect(toolbar.getByText('VOICE')).toBeVisible();
     await expect(toolbar.getByText('GOAL')).toBeVisible();
@@ -110,7 +150,7 @@ test.describe('welcome view', () => {
     const modal = page.getByRole('dialog', {name: 'Settings'});
     await expect(modal).toBeVisible();
     await expect(modal.getByRole('heading', {name: 'General'})).toBeVisible();
-    await expect(modal.getByText('Manage Midas preferences and access.')).toBeVisible();
+    await expect(modal.getByText('Manage FlareAI preferences and access.')).toBeVisible();
     const modalBounds = await modal.boundingBox();
     expect(modalBounds).not.toBeNull();
     expect(modalBounds!.width).toBeLessThanOrEqual(782);
@@ -134,7 +174,7 @@ test.describe('welcome view', () => {
     await theme.getByRole('radio', {name: 'Dark'}).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expect(page.locator('.brand-mark')).toHaveCSS('filter', 'invert(1)');
-    await expect(page.locator('.polymux-prompt-shell').first()).toHaveCSS('background-color', 'rgb(43, 43, 43)');
+    await expect(page.locator('.flareai-prompt-shell').first()).toHaveCSS('background-color', 'rgb(43, 43, 43)');
     await expect(timeAccess).toHaveCSS('background-color', 'rgb(231, 231, 231)');
     await expect(timeAccess.locator('span')).toHaveCSS('background-color', 'rgb(36, 36, 36)');
     await theme.getByRole('radio', {name: 'Light'}).click();
@@ -176,11 +216,11 @@ test.describe('welcome view', () => {
     const officialMcp = modal.getByRole('button', {name: /Browser Tools Official/});
     await expect(officialMcp.locator('.official-rail-stamp')).toBeVisible();
     await expect(officialMcp.locator('.mcp-name-status')).toHaveCount(0);
-    await expect(officialMcp.locator('small')).toHaveText('Midas · Connected');
+    await expect(officialMcp.locator('small')).toHaveText('FlareAI · Connected');
     await officialMcp.click();
     await expect(modal.getByRole('heading', {name: 'Browser Tools'})).toBeVisible();
     await expect(modal.locator('.options-detail-header .options-badge')).toHaveCount(0);
-    await expect(modal.locator('.skill-meta')).toContainText('Bundled with Midas');
+    await expect(modal.locator('.skill-meta')).toContainText('Bundled with FlareAI');
     await expect(modal.locator('.skill-meta')).toContainText('Connected');
     await expect(modal.getByText('Last error')).toHaveCount(0);
     await modal.getByRole('button', {name: /Filesystem/}).click();
@@ -241,7 +281,7 @@ test.describe('welcome view', () => {
     const officialPdf = modal.getByRole('button', {name: /PDF Official/});
     await expect(officialPdf).toBeVisible();
     await expect(officialPdf.locator('[data-icon="verified"]')).toBeVisible();
-    await expect(officialPdf.locator('small')).toHaveText('Midas · Active');
+    await expect(officialPdf.locator('small')).toHaveText('FlareAI · Active');
     await expect(officialPdf.locator('.integration-state')).toHaveCount(0);
     const officialSealGap = await officialPdf.evaluate((row) => {
       const name = row.querySelector('.skill-name-line strong')!.getBoundingClientRect();
@@ -307,9 +347,9 @@ test.describe('welcome view', () => {
     await expect(officialBadge.locator('[data-icon="verified"]')).toBeVisible();
     const officialMeta = modal.locator('.skill-meta');
     await expect(officialMeta.locator('dt')).toHaveText(['Author', 'Category', 'Last edited', 'Source']);
-    await expect(officialMeta).toContainText('Midas');
+    await expect(officialMeta).toContainText('FlareAI');
     await expect(officialMeta).toContainText('Web');
-    await expect(officialMeta).toContainText('Bundled with Midas');
+    await expect(officialMeta).toContainText('Bundled with FlareAI');
     const customSkill = modal.getByRole('button', {name: /Personal Research.*Active/});
     await expect(customSkill).toBeVisible();
     await customSkill.click();
@@ -318,7 +358,7 @@ test.describe('welcome view', () => {
     await expect(modal.locator('.skill-detail > .options-detail-header')).toHaveCSS('height', '20px');
     const customMeta = modal.locator('.skill-meta');
     await expect(customMeta).toContainText('Custom');
-    await expect(customMeta).toContainText('Midas · ~/.midas/skills');
+    await expect(customMeta).toContainText('FlareAI · ~/.flareai/skills');
     const skillPathBottomGap = await modal.locator('.skill-detail').evaluate((detail) => {
       const path = detail.querySelector('.options-path')!.getBoundingClientRect();
       const bounds = detail.getBoundingClientRect();
@@ -658,7 +698,7 @@ test.describe('welcome view', () => {
     await expect(modal).toHaveCount(0);
   });
 
-  test('toggles integrations and edits Midas-owned skills and MCP servers', async ({page}) => {
+  test('toggles integrations and edits FlareAI-owned skills and MCP servers', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
     const modal = page.getByRole('dialog', {name: 'Settings'});
@@ -1042,6 +1082,31 @@ test.describe('design system', () => {
     expect(await appearance(newChat)).toEqual(chatDrawerHover);
   });
 
+  test('Search Chats rides the drawer and opens a search modal', async ({page}) => {
+    await page.goto('/');
+    const search = page.getByRole('button', {name: 'Search Chats'});
+    await expect(search).toHaveCount(0);
+
+    await send(page, 'Original chat message');
+    await expect(page.locator('.message.assistant')).toBeVisible({timeout: 4000});
+    await page.getByRole('button', {name: 'New Chat'}).click();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    await expect(search).toBeVisible();
+    await expect(search).toHaveClass(/title-bar-icon-button/);
+
+    await search.click();
+    const dialog = page.getByRole('dialog', {name: 'Search chats'});
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('textbox', {name: 'Search chats'}).fill('Original');
+    await dialog.getByRole('option').first().click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('.message:not(.assistant)').first()).toContainText('Original chat message');
+
+    // Closing the drawer takes its search affordance with it.
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    await expect(search).toHaveCount(0);
+  });
+
   test('right-side controls use the same aligned icon-button treatment', async ({page}) => {
     await page.goto('/');
     const chatDrawerToggle = page.getByRole('button', {name: 'Toggle Chats'});
@@ -1127,7 +1192,7 @@ test.describe('conversation', () => {
     const user = page.locator('.message:not(.assistant)').first();
     const assistant = page.locator('.message.assistant').first();
     await expect(user).toContainText('Test the assembled chat');
-    await expect(assistant).toContainText(/assembled Midas chat surface/, {timeout: 4000});
+    await expect(assistant).toContainText(/assembled FlareAI chat surface/, {timeout: 4000});
 
     // The user's turn is a right-aligned pill; the assistant's is full width.
     const bubble = await user.locator('.message-content').evaluate((node) => {
@@ -1192,7 +1257,7 @@ test.describe('conversation', () => {
 
     const user = page.locator('.message:not(.assistant)').first();
     const assistant = page.locator('.message.assistant').first();
-    await expect(assistant).toContainText(/assembled Midas chat surface/, {timeout: 4000});
+    await expect(assistant).toContainText(/assembled FlareAI chat surface/, {timeout: 4000});
 
     await user.hover();
     await user.getByRole('button', {name: 'Edit'}).click();
@@ -1256,7 +1321,7 @@ test.describe('conversation', () => {
   test('shows one readable activity block for a multi-step agent run', async ({page}) => {
     await page.goto('/');
     await send(page, '__demo_activity__');
-    await expect(page.locator('.message.assistant')).toContainText('assembled Midas chat surface', {timeout: 4000});
+    await expect(page.locator('.message.assistant')).toContainText('assembled FlareAI chat surface', {timeout: 4000});
     // Settled and collapsed, the trail hides entirely behind the heading.
     await expect(page.locator('.agent-activity-list')).toHaveCount(0);
     await page.locator('.agent-activity-heading').click();
@@ -1284,14 +1349,14 @@ test.describe('conversation', () => {
   test('hides the activity group entirely for a run that used no tools', async ({page}) => {
     await page.goto('/');
     await send(page, 'just a question');
-    await expect(page.locator('.message.assistant')).toContainText('assembled Midas chat surface', {timeout: 4000});
+    await expect(page.locator('.message.assistant')).toContainText('assembled FlareAI chat surface', {timeout: 4000});
     await expect(page.locator('.agent-activity')).toHaveCount(0);
   });
 
   test('restores the worked-duration and activity list for a past chat', async ({page}) => {
     await page.goto('/');
     await send(page, '__demo_activity__');
-    await expect(page.locator('.message.assistant')).toContainText('assembled Midas chat surface', {timeout: 4000});
+    await expect(page.locator('.message.assistant')).toContainText('assembled FlareAI chat surface', {timeout: 4000});
     await expect(page.locator('.agent-activity-heading')).toContainText(/Work(ing|ed) for \d+s/);
 
     await page.getByRole('button', {name: 'New Chat'}).click();
@@ -1466,6 +1531,25 @@ test.describe('panels', () => {
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await expect(workspaceDrawer(page)).not.toHaveClass(/open/);
     await expect(summaryCard(page)).toBeVisible();
+  });
+
+  test('clicking away from the address bar drops the caret and keeps the typed text', async ({page}) => {
+    await page.goto('/');
+    await send(page, 'address focus');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await page.getByLabel('New tab', {exact: true}).click();
+    await page.getByRole('menuitem', {name: 'Open browser'}).click();
+
+    const address = page.getByLabel('Address').last();
+    await address.click();
+    await address.fill('asds');
+    await expect(address).toBeFocused();
+
+    // A spot that takes no focus of its own, so the field is left holding
+    // whatever the user typed once the caret goes.
+    await page.locator('.browser-bar').last().click({position: {x: 60, y: 4}});
+    await expect(address).not.toBeFocused();
+    await expect(address).toHaveValue('asds');
   });
 
   test('a dismissed Summary stays closed for that conversation', async ({page}) => {
@@ -1692,7 +1776,7 @@ test.describe('chat drawer', () => {
     // Workspace opened last, so the chat drawer gives way — exactly to its own minimum.
     await expect(chatDrawer(page)).toHaveCSS('width', '180px');
     // One row of these buttons is under 20px tall; a wrap doubles it.
-    const toolbarOnOneLine = () => page.locator('.polymux-prompt-toolbar').evaluate((bar) =>
+    const toolbarOnOneLine = () => page.locator('.flareai-prompt-toolbar').evaluate((bar) =>
       bar.getBoundingClientRect().height < 24);
     expect(await toolbarOnOneLine()).toBe(true);
     // Growing the chat drawer now pushes the workspace back toward its own minimum
@@ -1730,6 +1814,29 @@ test.describe('workspace drawer', () => {
     await expect(drawer.locator('.tab')).toHaveCount(0);
   });
 
+  test('keeps its divider on the pixel grid while it expands', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await expect(drawer).toHaveClass(/open/);
+    await page.waitForTimeout(500);
+
+    // A fractional left edge anti-aliases the one-pixel divider across two
+    // pixels at partial alpha, which at its weight reads as the edge vanishing
+    // for the length of the slide. Every frame of the expansion lands on a
+    // whole pixel instead.
+    await page.getByRole('button', {name: 'Expand Workspace'}).click();
+    const edges: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      await page.waitForTimeout(70);
+      edges.push((await drawer.boundingBox())!.x);
+    }
+    expect(edges.every(Number.isInteger)).toBe(true);
+    expect(edges[edges.length - 1]).toBeLessThan(edges[0]);
+    await page.waitForTimeout(500);
+    expect((await drawer.boundingBox())!.x).toBe(0);
+  });
+
   test('offers the launcher when nothing is open, and opens a typed view', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
@@ -1753,7 +1860,7 @@ test.describe('workspace drawer', () => {
 
   test('offers recent pages once enough have been visited, and opens one', async ({page}) => {
     await page.addInitScript(() => {
-      localStorage.setItem('midasBrowserHistory', JSON.stringify([
+      localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
         {url: 'https://example.com/one', title: 'Example One'},
         {url: 'https://example.com/two', title: 'Example Two'},
         {url: 'https://example.com/three', title: 'Example Three'},
@@ -1774,7 +1881,7 @@ test.describe('workspace drawer', () => {
 
   test('keeps the create suggestions until the history is worth showing', async ({page}) => {
     await page.addInitScript(() => {
-      localStorage.setItem('midasBrowserHistory', JSON.stringify([
+      localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
         {url: 'https://example.com/one', title: 'Example One'},
         {url: 'https://example.com/two', title: 'Example Two'},
       ]));
@@ -1870,7 +1977,7 @@ test.describe('responsive', () => {
     await page.setViewportSize({width: 1250, height: 720});
     await page.goto('/');
     await send(page, 'first timeline turn');
-    await expect(page.locator('.message.assistant').first()).toContainText(/assembled Midas chat surface/, {timeout: 4000});
+    await expect(page.locator('.message.assistant').first()).toContainText(/assembled FlareAI chat surface/, {timeout: 4000});
     const rail = page.locator('.timeline-rail');
     // The rail stands down until it has enough turns to draw its full hover
     // curve, so the gutter is only reserved once the conversation is long enough.
@@ -1884,7 +1991,7 @@ test.describe('responsive', () => {
     const positions = await page.evaluate(() => {
       const rail = document.querySelector('.timeline-rail')!.getBoundingClientRect();
       const message = document.querySelector('.message.assistant')!.getBoundingClientRect();
-      const prompt = document.querySelector('.polymux-prompt-shell')!.getBoundingClientRect();
+      const prompt = document.querySelector('.flareai-prompt-shell')!.getBoundingClientRect();
       const chatDrawer = document.querySelector('.chat-drawer');
       const chatDrawerRect = chatDrawer?.getBoundingClientRect();
       const contentLeft = chatDrawer && chatDrawerRect && getComputedStyle(chatDrawer).position !== 'fixed'
@@ -1977,7 +2084,7 @@ test.describe('dictation', () => {
     await page.getByRole('button', {name: 'Close Settings'}).click();
   }
 
-  const voiceButton = (page: Page) => page.locator('.polymux-prompt-toolbar button', {hasText: /VOICE|LISTENING/});
+  const voiceButton = (page: Page) => page.locator('.flareai-prompt-toolbar button', {hasText: /VOICE|LISTENING/});
 
   test('the button reads LISTENING before the microphone has opened', async ({page}) => {
     await page.addInitScript(() => {
@@ -2034,7 +2141,7 @@ test.describe('first-run setup', () => {
   /** `?onboarding` puts the demo API into a genuine first-run state. */
   const start = async (page: import('@playwright/test').Page) => {
     await page.goto('/?onboarding');
-    await expect(page.getByRole('region', {name: 'Set up Midas'})).toBeVisible({timeout: 15000});
+    await expect(page.getByRole('region', {name: 'Set up FlareAI'})).toBeVisible({timeout: 15000});
   };
 
   /**
@@ -2043,10 +2150,10 @@ test.describe('first-run setup', () => {
    */
   const begin = async (page: import('@playwright/test').Page) => {
     await start(page);
-    const setup = page.getByRole('region', {name: 'Set up Midas'});
-    await expect(setup.getByRole('heading', {name: 'Midas'})).toBeVisible();
-    // Nothing has been asked for yet, so there is nothing to skip here.
-    await expect(setup.getByRole('button', {name: 'Skip setup'})).toHaveCount(0);
+    const setup = page.getByRole('region', {name: 'Set up FlareAI'});
+    await expect(setup.getByRole('heading', {name: 'FlareAI'})).toBeVisible();
+    // Nothing is behind the welcome screen, so it offers no way back.
+    await expect(setup.getByRole('button', {name: 'Back'})).toHaveCount(0);
     await setup.getByRole('button', {name: 'Start'}).click();
     return setup;
   };
@@ -2054,7 +2161,7 @@ test.describe('first-run setup', () => {
   test('walks every step and ends in the app', async ({page}) => {
     const setup = await begin(page);
 
-    // The Hub comes first, and starting it is the one thing to decide: Midas
+    // The Hub comes first, and starting it is the one thing to decide: FlareAI
     // makes its own account on it, so there are no fields.
     await expect(setup.getByRole('heading')).toContainText(
       'One place for everything you talk on',
@@ -2062,11 +2169,10 @@ test.describe('first-run setup', () => {
     await setup.getByRole('button', {name: 'Start the Hub'}).click();
     await setup.getByRole('button', {name: 'Continue'}).click();
 
-    // Model: a provider is preselected, and connecting needs a key. The button
-    // names the provider, so the assertion has to as well.
-    await expect(setup.getByRole('heading')).toContainText('Choose who Midas thinks with');
+    // Model: a provider is preselected, and connecting needs a key.
+    await expect(setup.getByRole('heading')).toContainText('Choose who FlareAI thinks with');
     await setup.getByRole('radio', {name: /OpenAI/}).click();
-    const connect = setup.getByRole('button', {name: 'Connect OpenAI'});
+    const connect = setup.getByRole('button', {name: 'Connect', exact: true});
     await expect(connect).toBeDisabled();
     await setup.locator('input[type="password"]').fill('sk-test-key');
     await expect(connect).toBeEnabled();
@@ -2081,12 +2187,15 @@ test.describe('first-run setup', () => {
     // Full Disk Access is the one macOS never prompts for, so its row offers
     // the pane it is switched on in rather than an Allow that does nothing.
     await expect(setup.getByRole('button', {name: 'Open Settings'})).toBeVisible();
-    await setup.getByRole('button', {name: 'Continue'}).click();
+    // Continue means "all three are settled", so it stays out of reach while
+    // any of them is not — here, the one macOS only grants from its own pane.
+    await expect(setup.getByRole('button', {name: 'Continue'})).toBeDisabled();
+    await setup.getByRole('button', {name: 'Skip'}).click();
 
     // The closing screen is one line and the way in.
     await expect(setup.getByRole('heading')).toContainText("You're ready to go");
     // Setup is over, so there is nothing left to skip — only the way back.
-    await expect(setup.getByRole('button', {name: 'Skip setup'})).toHaveCount(0);
+    await expect(setup.getByRole('button', {name: 'Skip'})).toHaveCount(0);
     await expect(setup.getByRole('button', {name: 'Back'})).toBeVisible();
 
     // The closing disc breathes for as long as it is on screen, so the button
@@ -2108,18 +2217,32 @@ test.describe('first-run setup', () => {
     await setup.getByRole('button', {name: 'WhatsApp'}).press('Enter');
     await setup.getByRole('button', {name: /QR Code/}).click();
 
+    // The choice is taken immediately: the methods go, and the box the code
+    // will fill is already on screen while the bridge is still producing it.
+    await expect(setup.getByRole('button', {name: /Pairing code/})).toHaveCount(0);
+    await expect(setup.getByText('Getting QR Code ready…')).toBeVisible();
+
     const qr = setup.getByRole('img', {name: 'Pairing QR code'});
     await expect(qr).toBeVisible();
     // The quiet zone is part of the symbol, and the ground stays light in both
     // themes — a dark-inverted QR does not scan.
     await expect(qr).toHaveAttribute('viewBox', /^-4 -4 /);
     await expect(qr.locator('rect')).toHaveAttribute('fill', '#fff');
+
+    // Picking a method is not a commitment: the code on screen is no use if the
+    // phone is in another room, so the other ways in stay one click away.
+    await setup.getByRole('button', {name: 'Other verification methods'}).click();
+    await expect(qr).toHaveCount(0);
+    await expect(setup.getByRole('button', {name: /QR Code/})).toBeVisible();
+    await expect(setup.getByRole('button', {name: /Pairing code/})).toBeVisible();
   });
 
-  test('skipping setup goes straight to the app', async ({page}) => {
+  test('leaving setup goes straight to the app', async ({page}) => {
     const setup = await begin(page);
-    // The way out appears with the first screen that asks for something.
-    await setup.getByRole('button', {name: 'Skip setup'}).click();
+    // Skip passes a screen, not the whole of setup; Escape is the way out.
+    await setup.getByRole('button', {name: 'Skip'}).click();
+    await expect(setup.getByRole('heading')).toContainText('Choose who FlareAI thinks with');
+    await page.keyboard.press('Escape');
     await expect(setup).toHaveCount(0);
     await expect(page.getByText('What can I help with?')).toBeVisible();
   });

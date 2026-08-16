@@ -2,6 +2,7 @@ import path from "node:path";
 import {homedir} from "node:os";
 import {spawn} from "node:child_process";
 import {randomBytes} from "node:crypto";
+import {shippedNetworkConfig} from "../homeserver/shipped-credentials.js";
 import type {CredentialStore} from "@earendil-works/pi-ai";
 import {
   COMMS_PLATFORMS,
@@ -18,7 +19,7 @@ import {
   type MailMessageDto,
   type SaveEmailAccountRequest,
   type SystemPermissionKind,
-} from "@midas/protocol";
+} from "@flareai/protocol";
 import {EmailAccounts, type CommandResult, type CommandRunner} from "./email.js";
 import {MatrixHub} from "./hub.js";
 
@@ -194,7 +195,7 @@ export class Communications {
 
   /**
    * A deliberate second look, as opposed to the status the tab reads on its
-   * own schedule. Anything the user could have changed outside Midas — a grant
+   * own schedule. Anything the user could have changed outside FlareAI — a grant
    * given in System Settings, a bridge binary dropped in — is re-checked here,
    * so "look again" actually acts rather than re-reading what was cached.
    */
@@ -239,9 +240,14 @@ export class Communications {
         (await this.#embedded?.networkConfig
           ?.(entry.value)
           .catch((): Record<string, string> => ({}))) ?? {};
+      // A pair FlareAI ships counts as answered, and counts before the bridge
+      // has started once: the config that will carry it is not written until
+      // the first start, and until then the panel would ask for a credential
+      // the user is never going to have to give.
+      const shipped = shippedNetworkConfig(entry.value);
       return {
         fields: entry.setup,
-        configured: entry.setup.every((field) => Boolean(recorded[field.id])),
+        configured: entry.setup.every((field) => Boolean(recorded[field.id] ?? shipped[field.id])),
       };
     };
     /**
@@ -367,7 +373,7 @@ export class Communications {
   /**
    * Sets messaging up without asking the user for anything.
    *
-   * Midas registers a dedicated account on the local hub with a generated
+   * FlareAI registers a dedicated account on the local hub with a generated
    * password it never displays, then keeps only the access token. This is the
    * intended path: the hub is an implementation detail of "messaging works",
    * not something the user should have to hold credentials for. The password is
@@ -378,7 +384,7 @@ export class Communications {
     await this.#load();
     if (this.#matrixToken) return this.status();
     // A random localpart keeps repeat setups on one machine from colliding.
-    const username = `midas-${randomBytes(4).toString("hex")}`;
+    const username = `flareai-${randomBytes(4).toString("hex")}`;
     if (this.#embeddedMode && this.#embedded) {
       const minted = this.#embedded.provision(username);
       await this.#store(minted.userId, minted.accessToken, null);
@@ -405,7 +411,7 @@ export class Communications {
       key: accessToken,
       env: {
         MATRIX_USER_ID: userId,
-        // Only ever a password Midas generated itself.
+        // Only ever a password FlareAI generated itself.
         ...(password ? {MATRIX_PROVISIONED_PASSWORD: password} : {}),
       },
     }));
@@ -745,7 +751,7 @@ export class Communications {
     // first time anything asks, and "set up messaging" ceases to be a page.
     if (this.#embeddedMode && this.#embedded && !this.#matrixToken) {
       try {
-        const minted = this.#embedded.provision(`midas-${randomBytes(4).toString("hex")}`);
+        const minted = this.#embedded.provision(`flareai-${randomBytes(4).toString("hex")}`);
         await this.#store(minted.userId, minted.accessToken, null);
       } catch {
         // The homeserver may still be binding its port; the next status()

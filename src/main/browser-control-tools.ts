@@ -1,11 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { AgentTool } from "@midas/core";
+import type { AgentTool } from "@flareai/core";
 import type { AgentSurfaceServer } from "./agent-surface.js";
 
 /**
- * Agent tools backed by the Midas browser extension: `browser_tabs` reads the
+ * Agent tools backed by the FlareAI browser extension: `browser_tabs` reads the
  * tab snapshot the extension streams to disk, and `browser_control` drives a
  * leased tab through the agent-surface command channel (with the ChatGPT-style
  * cursor presented in-page while it works).
@@ -15,7 +15,7 @@ const TABS_PATH = path.join(
   homedir(),
   "Library",
   "Application Support",
-  "midas-tab-context",
+  "flareai-tab-context",
   "tabs.json",
 );
 
@@ -29,7 +29,7 @@ function createTabsTool(): AgentTool {
   return {
     name: "browser_tabs",
     description:
-      "List the tabs currently open in the user's browser (title, url, active state), as streamed by the Midas browser extension. Returns a staleness age; treat an old snapshot as history, not current state.",
+      "List the tabs currently open in the user's browser (title, url, active state), as streamed by the FlareAI browser extension. Returns a staleness age; treat an old snapshot as history, not current state.",
     parameters: {
       type: "object",
       properties: {},
@@ -42,7 +42,7 @@ function createTabsTool(): AgentTool {
       } catch {
         return {
           content:
-            "No tab snapshot is available. The Midas browser extension is not installed or has not reported yet.",
+            "No tab snapshot is available. The FlareAI browser extension is not installed or has not reported yet.",
           isError: true,
         };
       }
@@ -78,7 +78,7 @@ function createControlTool(surface: AgentSurfaceServer): AgentTool {
   return {
     name: "browser_control",
     description: [
-      "Control a tab in the user's browser through the Midas extension.",
+      "Control a tab in the user's browser through the FlareAI extension.",
       "Actions: 'focus' binds a lease to the tab matching url and/or title (use browser_tabs first) and returns a leaseId used by every later action;",
       "'navigate' loads a url; 'click' clicks a CSS selector or viewport x/y;",
       "'type' types text into a selector (submit: true presses Enter);",

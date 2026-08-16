@@ -1,6 +1,6 @@
 import {readFile} from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto} from "@midas/protocol";
+import type {DriveEntryDto} from "@flareai/protocol";
 import {jsonRequest, requestError, streamToFile} from "./http.js";
 import {OAuthClient, oauthAppFromEnv} from "./oauth.js";
 import {copyName, type DriveAdapter, type DriveProbe, type DriveSecretStore} from "./types.js";
@@ -12,7 +12,7 @@ const ITEM_FIELDS = "id,name,size,lastModifiedDateTime,folder,file";
 /**
  * OneDrive, through Microsoft Graph.
  *
- * Like Dropbox this uses the app-folder permission, so Midas can only ever see
+ * Like Dropbox this uses the app-folder permission, so FlareAI can only ever see
  * its own directory. The `common` tenant is used so personal and work accounts
  * both sign in through the same flow.
  */
@@ -73,7 +73,7 @@ export class OneDrive implements DriveAdapter {
           used: drive.quota?.used ?? null,
           total: drive.quota?.total ?? null,
         },
-        root: "Apps/Midas",
+        root: "Apps/FlareAI",
         error: null,
       };
     } catch (cause) {

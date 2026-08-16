@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { FileReloadWatcher } from "../file-reload-watcher.js";
 
 test("debounces changes and observes atomic configuration replacement", async () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "midas-reload-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "flareai-reload-"));
   const target = path.join(directory, "mcp.json");
   writeFileSync(target, "{}\n");
   let changes = 0;

@@ -11,7 +11,7 @@ Do not infer provenance from a similar name or search result. If the source is p
 Installers that record GitHub provenance in `.skill-lock.json` are synchronized with:
 
 ```bash
-python3 ~/.midas/github-skill-updater/enroll_skill.py --sync-locks
+python3 ~/.flareai/github-skill-updater/enroll_skill.py --sync-locks
 ```
 
 The daily updater also runs this synchronization before checking registered skills. A lock entry is enrolled only when its source is anonymously reachable and its folder hash resolves to the same Git tree on the public upstream branch.
@@ -21,7 +21,7 @@ The daily updater also runs this synchronization before checking registered skil
 For a manually installed public skill, record the exact repository, source subdirectory, installed directory, and accepted source commit:
 
 ```bash
-python3 ~/.midas/github-skill-updater/enroll_skill.py \
+python3 ~/.flareai/github-skill-updater/enroll_skill.py \
   --skill <skill-name> \
   --repo <public-https-github-url> \
   --skill-dir <installed-skill-directory> \

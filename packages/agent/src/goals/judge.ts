@@ -1,4 +1,4 @@
-import type { InferenceService, ModelRef } from "@midas/inference";
+import type { InferenceService, ModelRef } from "@flareai/inference";
 
 /**
  * `done` when the objective is satisfied or unreachable, `continue` when more

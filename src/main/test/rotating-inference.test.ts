@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {InferenceEvent, InferenceRequest, InferenceService} from "@midas/inference";
+import type {InferenceEvent, InferenceRequest, InferenceService} from "@flareai/inference";
 import {RotatingInference, type InferenceKeyPool} from "../rotating-inference.js";
 
 test("rotates to the next key after a pre-response rate limit", async () => {

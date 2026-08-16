@@ -1,13 +1,14 @@
 <script lang="ts">
   import {onDestroy, onMount} from 'svelte';
   import {readableError} from './lib/errors';
-  import type {ArtifactDto, ConversationDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto} from '@midas/protocol';
+  import type {ArtifactDto, ConversationDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto} from '@flareai/protocol';
   import TitleBar from './lib/components/chat/TitleBar.svelte';
   import ChatPane, {type ChatMessage} from './lib/components/chat/ChatPane.svelte';
   import TimelineRail, {TIMELINE_RAIL_MINIMUM} from './lib/components/chat/TimelineRail.svelte';
   import type {ActiveGoal} from './lib/components/chat/GoalBar.svelte';
   import SpeechOrb from './lib/components/chat/SpeechOrb.svelte';
   import ChatDrawer, {type ChatEntry} from './lib/components/shell/ChatDrawer.svelte';
+  import ChatSearchModal from './lib/components/shell/ChatSearchModal.svelte';
   import SummaryPanel, {type SummarySection, type ReferenceItem} from './lib/components/workspace/SummaryPanel.svelte';
   import WorkspaceDrawer, {SINGLETON_TAB_IDS, type WorkspaceTab, type WorkspaceTabKind} from './lib/components/workspace/WorkspaceDrawer.svelte';
   import {driveEntryKind, type DriveEntry} from './lib/components/workspace/DriveView.svelte';
@@ -16,7 +17,7 @@
   import {recordVisit} from './lib/browser/visitHistory';
   import SettingsModal from './lib/components/settings/SettingsModal.svelte';
   import Onboarding from './lib/components/onboarding/Onboarding.svelte';
-  import {midasApi} from './lib/api/midas';
+  import {flareaiApi} from './lib/api/flareai';
   import {applyTheme, startThemeSync} from './lib/theme';
   import {
     conversationPanelState,
@@ -39,7 +40,7 @@
   type SummaryTask = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'};
   type QueuedSend = {id: string; text: string; files: File[]; asGoal: boolean};
 
-  const api = midasApi();
+  const api = flareaiApi();
   let conversations: Conversation[] = [];
   let activeId = '';
   let draftConversation: Conversation = emptyDraft();
@@ -57,6 +58,7 @@
   let summaryDismissed = false;
 
   let chatDrawerOpen = false;
+  let chatSearchOpen = false;
   let chatDrawerWidth = 240;
   let panelPriority: 'chatDrawer' | 'workspace' = 'workspace';
   let trackedPanels = {chatDrawer: false, workspace: false};
@@ -65,6 +67,59 @@
   let workspaceResizing = false;
   let workspaceExpanded = false;
   let viewportWidth = typeof window === 'undefined' ? 1280 : window.innerWidth;
+
+  /**
+   * Expanding and minimising the workspace are driven here rather than by the
+   * CSS width transition. A transitioned width lands on fractional pixels for
+   * the whole slide, and the panel's one-pixel left divider, drawn at that
+   * fractional edge, is anti-aliased across two pixels at partial alpha — at
+   * the divider's own weight that reads as the edge vanishing until the panel
+   * settles. Stepping the width in whole pixels keeps the edge on the pixel
+   * grid, so the divider stays a hairline the whole way across.
+   */
+  const WORKSPACE_MOTION_MS = 440;
+  let workspaceMotionWidth: number | null = null;
+  let workspaceMotionFrame = 0;
+  let workspaceMotionState: boolean | null = null;
+
+  /** `cubic-bezier(.45,0,.55,1)`, the shared drawer easing, solved for x. */
+  function drawerEase(t: number): number {
+    const curveX = (u: number) => 3 * (1 - u) ** 2 * u * 0.45 + 3 * (1 - u) * u ** 2 * 0.55 + u ** 3;
+    const curveY = (u: number) => 3 * (1 - u) * u ** 2 + u ** 3;
+    let low = 0;
+    let high = 1;
+    for (let i = 0; i < 20; i++) {
+      const mid = (low + high) / 2;
+      if (curveX(mid) < t) low = mid; else high = mid;
+    }
+    return curveY((low + high) / 2);
+  }
+
+  function animateWorkspaceWidth(to: number): void {
+    const panel = document.querySelector('aside.workspace-drawer');
+    const from = workspaceMotionWidth ?? (panel ? panel.getBoundingClientRect().width : to);
+    cancelAnimationFrame(workspaceMotionFrame);
+    if (Math.round(from) === Math.round(to)) { workspaceMotionWidth = null; return; }
+    const started = performance.now();
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - started) / WORKSPACE_MOTION_MS);
+      workspaceMotionWidth = Math.round(from + (to - from) * drawerEase(progress));
+      if (progress < 1) workspaceMotionFrame = requestAnimationFrame(step);
+      else workspaceMotionWidth = null;
+    };
+    workspaceMotionFrame = requestAnimationFrame(step);
+  }
+
+  // Only the expand/minimise flip is animated here; docking the panel in and
+  // out is still the CSS slide, which moves the whole panel as one layer.
+  $: if (typeof window !== 'undefined' && mode === 'workspace' && workspaceMotionState !== workspaceExpanded) {
+    const first = workspaceMotionState === null;
+    workspaceMotionState = workspaceExpanded;
+    if (!first) {
+      animateWorkspaceWidth(workspaceExpanded ? viewportWidth - (chatDrawerOpen ? chatDrawerWidth : 0) : workspaceWidth);
+    }
+  }
+  $: if (mode !== 'workspace') { workspaceMotionState = workspaceExpanded; }
 
   let voiceOpen = false;
   let voiceInChat = false;
@@ -116,7 +171,7 @@
    * rows so the view can be worked on outside the app. */
   const demoHour = 3_600_000;
   const demoNow = Date.now();
-  let scheduleItems: ScheduleItem[] = window.midas ? [] : [
+  let scheduleItems: ScheduleItem[] = window.flareai ? [] : [
     {id: 'demo-brief', title: 'Morning brief', frequency: {kind: 'weekly', days: [1, 2, 3, 4, 5], time: '08:00'}, status: 'active', prompt: 'Summarise my inbox and calendar for the day.', nextRunAt: demoNow + 14 * demoHour, lastRunAt: demoNow - 10 * demoHour},
     {id: 'demo-inbox', title: 'Triage inbox', frequency: {kind: 'hourly', interval: 2}, status: 'running', prompt: 'Triage new mail and flag anything that needs a reply.', nextRunAt: demoNow + 2 * demoHour, lastRunAt: demoNow - demoHour},
     {id: 'demo-report', title: 'Weekly spend report', frequency: {kind: 'weekly', days: [5], time: '17:00'}, status: 'paused', prompt: 'Total this week\u2019s spend and compare it to last week.', lastRunAt: demoNow - 96 * demoHour},
@@ -162,9 +217,11 @@
   $: applyPanelLayout(viewportWidth, chatDrawerOpen, mode === 'workspace' && !workspaceExpanded, chatDrawerWidth, workspaceWidth);
 
   $: workspaceColumn = mode === 'workspace' ? `${workspaceWidth}px` : '0px';
-  $: workspacePanelWidth = workspaceExpanded
-    ? `calc(100vw - ${chatDrawerOpen ? chatDrawerWidth : 0}px)`
-    : `${workspaceWidth}px`;
+  $: workspacePanelWidth = workspaceMotionWidth !== null
+    ? `${workspaceMotionWidth}px`
+    : workspaceExpanded
+      ? `calc(100vw - ${chatDrawerOpen ? chatDrawerWidth : 0}px)`
+      : `${workspaceWidth}px`;
   $: contentRightColumn = mode === 'summary' ? `${SUMMARY_RESERVED_COLUMN}px` : workspaceColumn;
   /**
    * What the composer reserves on its right. It follows the panel docking in
@@ -175,6 +232,8 @@
   $: composerColumn = mode === 'summary'
     ? `${SUMMARY_RESERVED_COLUMN}px`
     : mode === 'workspace' ? `${workspaceWidth}px` : '0px';
+  // The search entry point lives with the drawer, so closing the drawer closes it.
+  $: if (!chatDrawerOpen) chatSearchOpen = false;
   $: dockedChatDrawerWidth = viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH && chatDrawerOpen ? chatDrawerWidth : 0;
   $: dockedRightWidth = viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH
     ? mode === 'summary' ? SUMMARY_RESERVED_COLUMN : mode === 'workspace' ? workspaceWidth : 0
@@ -194,6 +253,7 @@
     unsubscribeBrowser?.();
     unsubscribeFullscreen?.();
     cancelAnimationFrame(chromeShiftFrame);
+    cancelAnimationFrame(workspaceMotionFrame);
     stopThemeSync?.();
   });
 
@@ -205,11 +265,11 @@
 
   onMount(() => {
     if (startupVisible) {
-      // The cover waits for the slide to finish, which theme-boot announces —
-      // the slide starts when the window reaches the screen, so waiting for it
-      // rather than for a timer is what makes the whole of it visible.
+      // The cover waits for the mark's sequence to finish, which theme-boot
+      // announces — it starts when the window reaches the screen, so waiting
+      // for it rather than for a timer is what makes the whole of it visible.
       if (document.documentElement.dataset.splash === 'done') startupMinimumElapsed = true;
-      else document.addEventListener('midas:splash-done', () => {
+      else document.addEventListener('flareai:splash-done', () => {
         startupMinimumElapsed = true;
         finishStartupWhenReady();
       }, {once: true});
@@ -268,6 +328,7 @@
       // directions differ only in how long it is held, and the stylesheet
       // keys the restore's blanking off the value.
       cancelAnimationFrame(chromeShiftFrame);
+    cancelAnimationFrame(workspaceMotionFrame);
       root.dataset.chromeShift = fullscreen ? 'enter' : 'restore';
       root.dataset.fullscreen = String(fullscreen);
       if (fullscreen) {
@@ -907,7 +968,7 @@
 
   /** Sizes and dates the desktop has no local filesystem to report yet, so the
    * browser demo supplies a folder that exercises every column. */
-  const demoDriveFiles: DriveEntry[] = window.midas ? [] : [
+  const demoDriveFiles: DriveEntry[] = window.flareai ? [] : [
     {id: 'demo-f1', name: 'Launch plan.docx', kind: 'document', size: 48_310, modifiedAt: demoNow - 2 * demoHour},
     {id: 'demo-f2', name: 'Q3 regional revenue breakdown (final).xlsx', kind: 'spreadsheet', size: 1_284_912, modifiedAt: demoNow - 26 * demoHour},
     {id: 'demo-f3', name: 'Launch deck.pptx', kind: 'presentation', size: 8_420_115, modifiedAt: demoNow - 50 * demoHour},
@@ -936,14 +997,17 @@
   /**
    * Storage, beyond this conversation's own files.
    *
-   * The conversation tree stays the default source because it is what the
-   * drive is for most of the time; connected providers join it as further
-   * sources, each browsed a folder at a time.
+   * The conversation's own files are one source among the connected providers,
+   * each browsed a folder at a time.
    */
   const CONVERSATION_SOURCE = 'conversation';
   let driveStatus: DriveStatusDto | null = null;
   let driveSourceId = CONVERSATION_SOURCE;
   let driveLoading = false;
+  let driveError = '';
+  /** True once the user has picked a source themselves, after which the drive
+   * stops choosing one for them. */
+  let driveSourceChosen = false;
   /** Folders already fetched, keyed `<provider>:<path>`. Cleared when the
    * source changes, since a path only means something inside its provider. */
   let driveFolders: Record<string, DriveEntry[]> = {};
@@ -952,20 +1016,41 @@
     void loadDriveStatus();
     return api.drive.subscribe((next) => {
       driveStatus = next;
+      adoptPreferredSource();
     });
   });
 
   async function loadDriveStatus(): Promise<void> {
     try {
       driveStatus = await api.drive.status();
+      adoptPreferredSource();
     } catch {
       // A drive that cannot be reached is not a reason to fail the workspace;
       // the source picker simply offers this conversation alone.
     }
   }
 
+  /**
+   * Opens the drive on the storage the save order names first.
+   *
+   * The conversation's files are a view of what a run produced — nothing can be
+   * created or uploaded into them — so opening there would greet every user
+   * with a toolbar that cannot do anything. Starting where a new file would go
+   * means the actions are live from the first frame, and "This chat" is one
+   * click away in the switch.
+   */
+  function adoptPreferredSource(): void {
+    if (driveSourceChosen || driveSourceId !== CONVERSATION_SOURCE) return;
+    const preferred = (driveStatus?.saveOrder ?? []).find(
+      (id) => driveStatus?.providers.find((entry) => entry.id === id)?.state === 'connected',
+    );
+    if (!preferred) return;
+    driveSourceId = preferred;
+    void loadDriveFolder('');
+  }
+
   $: driveSources = [
-    {id: CONVERSATION_SOURCE, name: 'This chat'},
+    {id: CONVERSATION_SOURCE, name: 'This chat', icon: 'chat' as const},
     // Only connected providers are offered: a source in the switch is a
     // promise that opening it will show something.
     ...(driveStatus?.providers ?? [])
@@ -1034,7 +1119,9 @@
         })),
       };
     } catch (cause) {
-      console.error('Listing the drive folder failed', cause);
+      // A folder that will not open is worth saying out loud too — otherwise
+      // it just reads as an empty folder.
+      driveError = readableError(cause);
     } finally {
       driveLoading = false;
     }
@@ -1089,11 +1176,15 @@
     action: (provider: DriveProviderId) => Promise<string | null>,
   ): Promise<void> {
     if (driveSourceId === CONVERSATION_SOURCE) return;
+    driveError = '';
     try {
       const reload = await action(driveSourceId as DriveProviderId);
       if (reload !== null) await loadDriveFolder(reload);
     } catch (cause) {
-      console.error('The drive action failed', cause);
+      // Shown rather than logged: a name already taken or a provider that has
+      // stopped answering is the user's to resolve, and a console message
+      // makes a failed action look like a button that does nothing.
+      driveError = readableError(cause);
     }
   }
 
@@ -1159,8 +1250,8 @@
    * default surface. A page already open in a workspace tab is just revealed.
    */
   /** A link in a message opens in the system browser: following one is leaving
-   * the conversation, not asking Midas to work on the page — the workspace
-   * browser stays for pages Midas itself is on. */
+   * the conversation, not asking FlareAI to work on the page — the workspace
+   * browser stays for pages FlareAI itself is on. */
   function openLink(url: string): void {
     void api.browser.openExternal(url);
   }
@@ -1398,6 +1489,7 @@
     onRename={rename}
     onToggleChatDrawer={() => chatDrawerOpen = !chatDrawerOpen}
     onNewChat={newChat}
+    onSearchChats={() => chatSearchOpen = true}
     onTogglePanel={togglePanel}
     onOpenSettings={() => settingsOpen = true}
     onOpenDrive={() => newTab('drive')}
@@ -1418,6 +1510,12 @@
     onResize={(value) => { panelPriority = 'chatDrawer'; chatDrawerWidth = value; }}
     onResizeState={(value) => chatDrawerResizing = value}
   />
+
+  {#if chatSearchOpen}<ChatSearchModal
+    chats={chatEntries}
+    onOpen={openChat}
+    onClose={() => chatSearchOpen = false}
+  />{/if}
 
   {#if showTimelineRail}<TimelineRail items={timeline}/>{/if}
 
@@ -1484,12 +1582,15 @@
     open={mode === 'workspace'}
     expanded={workspaceExpanded}
     resizing={workspaceResizing}
+    motion={workspaceMotionWidth !== null}
     reservedWidth={chatDrawerOpen ? MIN_CHAT_DRAWER_WIDTH : 0}
     summaryData={{outputs, references, tasks}}
     {driveRoot}
     {driveSources}
     {driveSourceId}
     {driveLoading}
+    {driveError}
+    onDismissDriveError={() => (driveError = '')}
     {driveActions}
     onSelectDriveSource={selectDriveSource}
     onDriveNavigate={(entry) => void loadDriveFolder(entry.id)}

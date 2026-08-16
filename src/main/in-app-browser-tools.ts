@@ -1,7 +1,7 @@
-import type { AgentTool } from "@midas/core";
+import type { AgentTool } from "@flareai/core";
 
 /**
- * The agent's handle on the Midas in-app Browser — the surface the browser-use
+ * The agent's handle on the FlareAI in-app Browser — the surface the browser-use
  * skill treats as the default. It mirrors what `browser_control` does in the
  * user's external browser, minus the leasing: tabs the agent opens here are its
  * own, appear in the workspace so the user can watch, and never touch the
@@ -27,7 +27,7 @@ export function createInAppBrowserTool(browser: InAppBrowser): AgentTool {
   return {
     name: "browser",
     description: [
-      "Open and control pages in the Midas in-app Browser — the default browser surface.",
+      "Open and control pages in the FlareAI in-app Browser — the default browser surface.",
       "Actions: 'open' loads a url in a new tab and returns its tabId (the tab appears in the workspace);",
       "'show' brings a tab to the front of the workspace — use it, or open with show: true, only when the user asked to be shown the page ('show me', 'open X for me'), never to interrupt them while you work;",
       "'tabs' lists the tabs already open here; 'navigate' loads a url in an existing tab;",

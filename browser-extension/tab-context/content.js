@@ -1,19 +1,19 @@
-// Midas agent surface — in-page presentation and control.
+// FlareAI agent surface — in-page presentation and control.
 //
 // Adapted from the user's Hermes Agent Surface extension so the presentation
 // contract matches the ChatGPT desktop one exactly: a Codex-style favicon
 // badge on leased tabs and the same spring-animated cursor (cursor-motion.js).
 // On top of that, this content script executes control commands (navigate,
-// click, type, scroll, read) that the Midas agent issues through the loopback
+// click, type, scroll, read) that the FlareAI agent issues through the loopback
 // feed, animating the cursor to the target before pointer actions.
 (() => {
   "use strict";
 
-  const BADGE_MARKER = "midas-favicon-badge";
-  const BADGED_SELECTOR = 'link[data-midas-favicon-badge="true"]';
+  const BADGE_MARKER = "flareai-favicon-badge";
+  const BADGED_SELECTOR = 'link[data-flareai-favicon-badge="true"]';
   const ICON_SELECTOR = 'link[rel~="icon"], link[rel="shortcut icon"]';
-  const CREATED = "midasFaviconBadgeCreated";
-  const ORIGINAL = "midasOriginalFaviconHref";
+  const CREATED = "flareaiFaviconBadgeCreated";
+  const ORIGINAL = "flareaiOriginalFaviconHref";
   const APPLE_TOUCH_ICON = "apple-touch-icon";
   const CURSOR_PATH =
     "M3.04536 4.45259C2.7582 3.60299 3.60299 2.7582 4.45259 3.04536L14.1828 6.33403C15.1637 6.66558 15.0872 8.08006 14.0715 8.39045L10.2994 9.54319C9.93919 9.65327 9.65327 9.93919 9.54319 10.2994L8.39046 14.0715C8.08007 15.0872 6.66558 15.1637 6.33404 14.1828L3.04536 4.45259Z";
@@ -58,7 +58,7 @@
 
   function badgedFavicon(state, faviconUrl) {
     const opacity = state === "active" ? ' opacity="0.3"' : "";
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" data-midas-favicon-badge="${BADGE_MARKER}" width="32" height="32" viewBox="0 0 32 32"><image href="${escapeXml(
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" data-flareai-favicon-badge="${BADGE_MARKER}" width="32" height="32" viewBox="0 0 32 32"><image href="${escapeXml(
       faviconUrl
     )}" width="32" height="32"${opacity} />${badgeShape(state)}</svg>`;
     return `data:image/svg+xml,${encodeURIComponent(svg)}`;
@@ -68,7 +68,7 @@
     if (!value || !value.startsWith("data:image/svg+xml,")) return false;
     try {
       return decodeURIComponent(value.slice(19)).includes(
-        `data-midas-favicon-badge="${BADGE_MARKER}"`
+        `data-flareai-favicon-badge="${BADGE_MARKER}"`
       );
     } catch {
       return false;
@@ -91,7 +91,7 @@
   }
 
   function clearDataset(link) {
-    delete link.dataset.midasFaviconBadge;
+    delete link.dataset.flareaiFaviconBadge;
     delete link.dataset[CREATED];
     delete link.dataset[ORIGINAL];
   }
@@ -150,7 +150,7 @@
       const originalHref = link.getAttribute("href");
       const created = originalHref === null;
       link.href = badgedHref;
-      link.dataset.midasFaviconBadge = "true";
+      link.dataset.flareaiFaviconBadge = "true";
       if (created) link.dataset[CREATED] = "true";
       else link.dataset[ORIGINAL] = originalHref;
       return { badgedHref, created, originalHref, link };
@@ -189,18 +189,18 @@
   function ensureOverlay() {
     if (cursorRenderer !== null) return;
     overlayHost = document.createElement("div");
-    overlayHost.id = "midas-agent-overlay-root";
-    overlayHost.dataset.midasOverlayRoot = "";
+    overlayHost.id = "flareai-agent-overlay-root";
+    overlayHost.dataset.flareaiOverlayRoot = "";
     const shadow = overlayHost.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
     style.textContent =
-      ".midas-overlay{all:initial;z-index:2147483646;pointer-events:none;position:fixed;inset:0}@media print{.midas-overlay{display:none}}";
+      ".flareai-overlay{all:initial;z-index:2147483646;pointer-events:none;position:fixed;inset:0}@media print{.flareai-overlay{display:none}}";
     const root = document.createElement("div");
-    root.className = "midas-overlay";
+    root.className = "flareai-overlay";
     root.setAttribute("aria-hidden", "true");
     shadow.append(style, root);
     document.documentElement.appendChild(overlayHost);
-    cursorRenderer = globalThis.MidasCursorMotion.createRenderer(root, {
+    cursorRenderer = globalThis.FlareAICursorMotion.createRenderer(root, {
       glowColor: "#339cff",
       onArrived(moveSequence) {
         if (pendingAction && pendingAction.moveSequence === moveSequence) {
@@ -211,7 +211,7 @@
         }
         if (!currentLease?.id) return;
         chrome.runtime.sendMessage({
-          type: "midas:cursor-arrived",
+          type: "flareai:cursor-arrived",
           leaseId: currentLease.id,
           moveSequence,
         });
@@ -243,7 +243,7 @@
     overlayHost = null;
   }
 
-  // --- Humanized input (ported from the old midas repo's humanize package:
+  // --- Humanized input (ported from the old flareai repo's humanize package:
   // randomized in-box click targets, aim and hold delays, per-character
   // typing cadence with thinking pauses, and accel/cruise/decel scrolling) --
 
@@ -286,7 +286,7 @@
 
   function postResult(lease, command, result) {
     chrome.runtime.sendMessage({
-      type: "midas:command-result",
+      type: "flareai:command-result",
       leaseId: lease.id,
       commandId: command.id,
       ok: result.ok !== false,
@@ -566,7 +566,7 @@
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
         {
-          type: afterRevision === null ? "midas:snapshot" : "midas:changes",
+          type: afterRevision === null ? "flareai:snapshot" : "flareai:changes",
           afterRevision,
           waitMs,
         },

@@ -5,13 +5,13 @@
     DriveProviderId,
     DriveS3ConfigRequest,
     DriveStatusDto,
-    MidasApi,
-  } from '@midas/protocol';
-  import {DRIVE_PROVIDERS} from '@midas/protocol';
+    FlareAIApi,
+  } from '@flareai/protocol';
+  import {DRIVE_PROVIDERS} from '@flareai/protocol';
   import {readableError} from '../../errors';
   import Icon from '../shared/Icon.svelte';
 
-  export let api: MidasApi;
+  export let api: FlareAIApi;
 
   let status: DriveStatusDto | null = null;
   let selected: DriveProviderId = 'local';
@@ -66,12 +66,20 @@
   $: description = (id: DriveProviderId) =>
     DRIVE_PROVIDERS.find((entry) => entry.value === id)?.description ?? '';
 
+  /** Who the connection belongs to, which leads the rail's second line the way
+   * an MCP server's author does. Nothing to say for a provider that is not
+   * connected, so the state word stands alone there. */
+  function accountLabel(provider: DriveProviderDto): string {
+    if (provider.state !== 'connected') return '';
+    return provider.accounts.length > 1
+      ? `${provider.accounts.length} accounts`
+      : (provider.accounts[0]?.name ?? '');
+  }
+
   function stateLabel(provider: DriveProviderDto): string {
     switch (provider.state) {
       case 'connected':
-        return provider.accounts.length > 1
-          ? `${provider.accounts.length} accounts`
-          : (provider.accounts[0]?.name ?? 'Connected');
+        return 'Connected';
       case 'logged-out':
         return 'Not connected';
       case 'unconfigured':
@@ -219,10 +227,14 @@
                 editingS3 = false;
               }}
             >
-              <span class="drive-dot" data-state={provider.state}></span>
               <span>
                 <strong>{provider.name}</strong>
-                <small>{stateLabel(provider)}</small>
+                <small>
+                  {#if accountLabel(provider)}{accountLabel(provider)} · {/if}<span
+                    class="state-text"
+                    data-state={provider.state}
+                  >{stateLabel(provider)}</span>
+                </small>
               </span>
             </button>
           </li>
@@ -270,7 +282,7 @@
               <input
                 value={s3Form.prefix ?? ''}
                 spellcheck="false"
-                placeholder="Optional — confines Midas to one folder"
+                placeholder="Optional — confines FlareAI to one folder"
                 oninput={(event) => (s3Form.prefix = (event.currentTarget as HTMLInputElement).value || null)}
               />
             </label>
@@ -339,13 +351,13 @@
                 <code>README.md</code> for the environment variables to set.
               </p>
             {:else if active.kind === 's3'}
-              <p class="drive-hint">Add a bucket and Midas will read and write files in it.</p>
+              <p class="drive-hint">Add a bucket and FlareAI will read and write files in it.</p>
               <footer class="drive-actions">
                 <button type="button" class="primary" onclick={editS3}>Add a bucket</button>
               </footer>
             {:else}
               <p class="drive-hint">
-                Signing in opens {active.name}'s own page. Midas only ever sees the token it hands
+                Signing in opens {active.name}'s own page. FlareAI only ever sees the token it hands
                 back, and only for its own folder.
               </p>
               <footer class="drive-actions">
@@ -370,7 +382,7 @@
                   Change
                 </button>
               </p>
-              <p class="drive-hint">Everything Midas saves to this Mac goes here.</p>
+              <p class="drive-hint">Everything FlareAI saves to this Mac goes here.</p>
             </section>
           {/if}
 
@@ -406,7 +418,7 @@
           <section class="drive-block">
             <h4>Where new files go</h4>
             <p class="drive-hint">
-              Midas saves to the first of these it can reach, so the one at the top is the one it
+              FlareAI saves to the first of these it can reach, so the one at the top is the one it
               normally uses.
             </p>
             {#if writable.length === 0}
@@ -464,15 +476,9 @@
   .drive-rail button{width:100%;display:flex;align-items:center;gap:9px;border:0;border-radius:8px;padding:7px 8px;background:transparent;color:var(--neutral-700);cursor:pointer;font-family:inherit;text-align:left}
   .drive-rail button:hover{background:var(--neutral-100)}
   .drive-rail button.active{background:var(--neutral-100);color:var(--neutral-950)}
-  .drive-rail button>span:not(.drive-dot){min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+  .drive-rail button>span{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
   .drive-rail strong{overflow:hidden;color:var(--neutral-900);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:540}
   .drive-rail small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:9.5px}
-
-  .drive-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--neutral-300)}
-  .drive-dot[data-state="connected"]{background:#3f9c5a}
-  .drive-dot[data-state="error"]{background:#c05a5a}
-  .drive-dot[data-state="logged-out"]{background:var(--neutral-300)}
-  .drive-dot[data-state="unconfigured"],.drive-dot[data-state="unavailable"]{background:var(--neutral-200);box-shadow:inset 0 0 0 1px var(--neutral-300)}
 
   .drive-detail{min-height:0;overflow-y:auto;padding-right:2px}
   .drive-detail-header{position:relative;margin-bottom:14px}

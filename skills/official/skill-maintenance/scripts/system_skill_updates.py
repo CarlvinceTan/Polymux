@@ -17,18 +17,18 @@ import sys
 import tempfile
 
 
-MIDAS_HOME = Path(os.environ.get("MIDAS_HOME", Path.home() / ".midas")).expanduser()
+FLAREAI_HOME = Path(os.environ.get("FLAREAI_HOME", Path.home() / ".flareai")).expanduser()
 DEFAULT_STATE_ROOT = Path(
     os.environ.get(
-        "MIDAS_SKILL_MAINTENANCE_HOME",
-        MIDAS_HOME / "skill-maintenance" / "system-updates",
+        "FLAREAI_SKILL_MAINTENANCE_HOME",
+        FLAREAI_HOME / "skill-maintenance" / "system-updates",
     )
 ).expanduser()
-# Official skills ship as a plain directory inside the Midas app bundle.
-APP_BUNDLED_SKILLS = Path("/Applications/Midas.app/Contents/Resources/skills/official")
+# Official skills ship as a plain directory inside the FlareAI app bundle.
+APP_BUNDLED_SKILLS = Path("/Applications/FlareAI.app/Contents/Resources/skills/official")
 MAINTENANCE = Path(__file__).with_name("skill_maintenance.py")
 PYTHON = sys.executable
-MARKER = ".midas-system-skills.marker"
+MARKER = ".flareai-system-skills.marker"
 MISSING = object()
 
 
@@ -81,7 +81,7 @@ def find_bundled_skills(config: dict) -> Path:
     if APP_BUNDLED_SKILLS.is_dir():
         return APP_BUNDLED_SKILLS
     raise UpdateError(
-        "Could not find the bundled Midas skills directory; "
+        "Could not find the bundled FlareAI skills directory; "
         "set bundled_skills in config.json"
     )
 

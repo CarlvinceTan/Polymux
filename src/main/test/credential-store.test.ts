@@ -24,7 +24,7 @@ const mismatchedCipher: SecretCipher = {
 };
 
 test("persists encrypted credentials without exposing their values", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-credentials-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-credentials-"));
   const file = path.join(directory, "credentials.json");
   try {
     const store = new EncryptedCredentialStore(file, cipher);
@@ -44,7 +44,7 @@ test("persists encrypted credentials without exposing their values", async () =>
 });
 
 test("refuses to persist a secret when OS encryption is unavailable", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-credentials-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-credentials-"));
   try {
     const unavailable = new EncryptedCredentialStore(path.join(directory, "credentials.json"), {
       ...cipher,
@@ -60,7 +60,7 @@ test("refuses to persist a secret when OS encryption is unavailable", async () =
 });
 
 test("stores multiple encrypted API keys and changes the active key after a limit", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-key-pool-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-key-pool-"));
   const file = path.join(directory, "api-keys.json");
   try {
     const pool = new EncryptedApiKeyPool(file, cipher);
@@ -93,7 +93,7 @@ test("stores multiple encrypted API keys and changes the active key after a limi
 });
 
 test("rejects incomplete OpenCode keys instead of treating them as configured", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-opencode-key-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-opencode-key-"));
   try {
     const pool = new EncryptedApiKeyPool(path.join(directory, "api-keys.json"), cipher);
     await assert.rejects(
@@ -107,7 +107,7 @@ test("rejects incomplete OpenCode keys instead of treating them as configured", 
 });
 
 test("recovers when the pool file can no longer be decrypted", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-key-pool-stale-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-key-pool-stale-"));
   const file = path.join(directory, "api-keys.json");
   try {
     // A key saved under a previous OS encryption key.
@@ -133,7 +133,7 @@ test("recovers when the pool file can no longer be decrypted", async () => {
 });
 
 test("recovers when the pool file decrypts to a malformed document", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-key-pool-malformed-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-key-pool-malformed-"));
   const file = path.join(directory, "api-keys.json");
   try {
     await writeFile(file, cipher.encryptString("[]").toString("base64"), "utf8");
@@ -147,7 +147,7 @@ test("recovers when the pool file decrypts to a malformed document", async () =>
 });
 
 test("recovers when the credential store is corrupt or its key changed", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-credentials-stale-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-credentials-stale-"));
   const file = path.join(directory, "credentials.json");
   try {
     await writeFile(file, "not json", "utf8");

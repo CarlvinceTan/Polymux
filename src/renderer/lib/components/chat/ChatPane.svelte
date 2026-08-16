@@ -35,7 +35,7 @@
   import AgentActivity from './AgentActivity.svelte';
   import QueuedMessages, {type QueuedMessage} from './QueuedMessages.svelte';
   import GoalBar, {type ActiveGoal} from './GoalBar.svelte';
-  import type {ReasoningEffort} from '@midas/protocol';
+  import type {ReasoningEffort} from '@flareai/protocol';
 
   export let messages: ChatMessage[] = [];
   export let running = false;
@@ -98,7 +98,7 @@
       otherwise the prompt itself. Falls back to the whole composer if none of
       them is mounted, as in speech mode. */
   function reserveFor(node: HTMLDivElement): number {
-    const leading = node.querySelector('.goal-bar, .queued-messages, .polymux-prompt-shell');
+    const leading = node.querySelector('.goal-bar, .queued-messages, .flareai-prompt-shell');
     if (!leading) return node.getBoundingClientRect().height;
     return Math.max(0, window.innerHeight - leading.getBoundingClientRect().top);
   }

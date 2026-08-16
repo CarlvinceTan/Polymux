@@ -90,9 +90,10 @@ export const COMMS_PLATFORMS: {
     route: "telegram",
     bot: "telegrambot",
     // Telegram refuses to connect without an application of its own, and the
-    // pair is bound to whoever registered it. Midas ships none deliberately:
-    // one pair shared by every install is a single account carrying everyone
-    // else's traffic, and Telegram restricts exactly that.
+    // pair is bound to whoever registered it. A build that ships one of its
+    // own satisfies this without asking (see `shipped-credentials.ts`), and
+    // these fields are what a build without one falls back to — along with the
+    // way any user overrides the shipped pair with their own.
     setup: [
       {
         id: "api_id",
@@ -163,19 +164,19 @@ export const DRIVE_PROVIDERS: {
     value: "google-drive",
     label: "Google Drive",
     kind: "oauth",
-    description: "Files Midas creates live in their own Drive folder.",
+    description: "Files FlareAI creates live in their own Drive folder.",
   },
   {
     value: "dropbox",
     label: "Dropbox",
     kind: "oauth",
-    description: "Scoped to the Midas app folder, not your whole Dropbox.",
+    description: "Scoped to the FlareAI app folder, not your whole Dropbox.",
   },
   {
     value: "onedrive",
     label: "OneDrive",
     kind: "oauth",
-    description: "Personal or work account, in its own Midas folder.",
+    description: "Personal or work account, in its own FlareAI folder.",
   },
   {
     value: "s3",

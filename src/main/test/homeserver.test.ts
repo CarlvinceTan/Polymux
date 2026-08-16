@@ -72,9 +72,9 @@ interface Harness {
 }
 
 async function startHarness(): Promise<Harness> {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-hs-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hs-"));
   const bridge = await startFakeBridge();
-  const hs = new Homeserver({serverName: "midas.test", dataDirectory: directory});
+  const hs = new Homeserver({serverName: "flareai.test", dataDirectory: directory});
   await hs.start();
   const asToken = "as-token-test";
   hs.registerAppservice({
@@ -83,7 +83,7 @@ async function startHarness(): Promise<Harness> {
     hsToken: "hs-token-test",
     url: bridge.base,
     senderLocalpart: "whatsappbot",
-    userNamespaces: ["@whatsapp_.*:midas\\.test"],
+    userNamespaces: ["@whatsapp_.*:flareai\\.test"],
   });
   return {
     hs,
@@ -144,7 +144,7 @@ test("registers the bridge bot and ghosts through appservice registration", asyn
       body: {type: "m.login.application_service", username: "whatsappbot", inhibit_login: true},
     });
     assert.equal(bot.status, 200);
-    assert.equal(bot.body.user_id, "@whatsappbot:midas.test");
+    assert.equal(bot.body.user_id, "@whatsappbot:flareai.test");
     assert.equal(bot.body.access_token, undefined, "inhibit_login must not mint a token");
 
     const ghost = await call(hs, "POST", "/_matrix/client/v3/register", {
@@ -174,15 +174,15 @@ test("whoami reflects appservice masquerading", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
     const asBot = await call(hs, "GET", "/_matrix/client/v3/account/whoami", {token: asToken});
-    assert.equal(asBot.body.user_id, "@whatsappbot:midas.test");
+    assert.equal(asBot.body.user_id, "@whatsappbot:flareai.test");
     const asGhost = await call(hs, "GET", "/_matrix/client/v3/account/whoami", {
       token: asToken,
-      query: {user_id: "@whatsapp_1:midas.test"},
+      query: {user_id: "@whatsapp_1:flareai.test"},
     });
-    assert.equal(asGhost.body.user_id, "@whatsapp_1:midas.test");
+    assert.equal(asGhost.body.user_id, "@whatsapp_1:flareai.test");
     const outside = await call(hs, "GET", "/_matrix/client/v3/account/whoami", {
       token: asToken,
-      query: {user_id: "@victim:midas.test"},
+      query: {user_id: "@victim:flareai.test"},
     });
     assert.equal(outside.status, 401, "masquerading outside the namespace must be refused");
   } finally {
@@ -210,10 +210,10 @@ test("round-trips the MSC2659 appservice ping", async () => {
 test("a portal room reaches the local user without an autojoin daemon", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("midas");
+    const user = hs.createLocalUser("flareai");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_61400000000:midas.test"},
+      query: {user_id: "@whatsapp_61400000000:flareai.test"},
       body: {
         name: "Jules Tan (WA)",
         invite: [user.userId],
@@ -240,10 +240,10 @@ test("a portal room reaches the local user without an autojoin daemon", async ()
 test("bridged messages flow to the user with massaged timestamps and land in unread", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("midas");
+    const user = hs.createLocalUser("flareai");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_1:midas.test"},
+      query: {user_id: "@whatsapp_1:flareai.test"},
       body: {invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
@@ -254,7 +254,7 @@ test("bridged messages flow to the user with massaged timestamps and land in unr
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/txn-1`,
       {
         token: asToken,
-        query: {user_id: "@whatsapp_1:midas.test", ts: "1700000000000"},
+        query: {user_id: "@whatsapp_1:flareai.test", ts: "1700000000000"},
         body: {msgtype: "m.text", body: "hello from whatsapp"},
       },
     );
@@ -267,7 +267,7 @@ test("bridged messages flow to the user with massaged timestamps and land in unr
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/txn-1`,
       {
         token: asToken,
-        query: {user_id: "@whatsapp_1:midas.test"},
+        query: {user_id: "@whatsapp_1:flareai.test"},
         body: {msgtype: "m.text", body: "hello from whatsapp"},
       },
     );
@@ -306,10 +306,10 @@ test("bridged messages flow to the user with massaged timestamps and land in unr
 test("the user's reply is pushed to the bridge as an ordered transaction", async () => {
   const {hs, bridge, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("midas");
+    const user = hs.createLocalUser("flareai");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_1:midas.test"},
+      query: {user_id: "@whatsapp_1:flareai.test"},
       body: {invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
@@ -320,7 +320,7 @@ test("the user's reply is pushed to the bridge as an ordered transaction", async
       hs,
       "PUT",
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/user-txn`,
-      {token: user.accessToken, body: {msgtype: "m.text", body: "reply from midas"}},
+      {token: user.accessToken, body: {msgtype: "m.text", body: "reply from flareai"}},
     );
     assert.equal(sent.status, 200);
 
@@ -328,15 +328,15 @@ test("the user's reply is pushed to the bridge as an ordered transaction", async
       () =>
         bridge.transactions
           .slice(before)
-          .some((txn) => txn.events.some((event) => (event.content as {body?: string})?.body === "reply from midas")),
+          .some((txn) => txn.events.some((event) => (event.content as {body?: string})?.body === "reply from flareai")),
       "the reply to be pushed to the bridge",
     );
     const delivery = bridge.transactions.find((txn) =>
-      txn.events.some((event) => (event.content as {body?: string})?.body === "reply from midas"),
+      txn.events.some((event) => (event.content as {body?: string})?.body === "reply from flareai"),
     )!;
     assert.equal(delivery.auth, "Bearer hs-token-test", "pushes authenticate with the hs_token");
     const event = delivery.events.find(
-      (item) => (item.content as {body?: string})?.body === "reply from midas",
+      (item) => (item.content as {body?: string})?.body === "reply from flareai",
     )!;
     assert.equal(event.sender, user.userId);
     assert.equal(event.room_id, roomId);
@@ -356,12 +356,12 @@ test("media round-trips through upload and both download endpoints", async () =>
       body: payload,
     });
     const {content_uri} = (await upload.json()) as {content_uri: string};
-    assert.match(content_uri, /^mxc:\/\/midas\.test\//);
+    assert.match(content_uri, /^mxc:\/\/flareai\.test\//);
     const mediaId = content_uri.split("/").pop()!;
 
     for (const endpoint of [
-      `/_matrix/media/v3/download/midas.test/${mediaId}`,
-      `/_matrix/client/v1/media/download/midas.test/${mediaId}`,
+      `/_matrix/media/v3/download/flareai.test/${mediaId}`,
+      `/_matrix/client/v1/media/download/flareai.test/${mediaId}`,
     ]) {
       const download = await fetch(`${hs.baseUrl}${endpoint}`, {
         headers: {Authorization: `Bearer ${asToken}`},
@@ -378,16 +378,16 @@ test("media round-trips through upload and both download endpoints", async () =>
 test("search and account data cover the client surface the hub uses", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("midas");
+    const user = hs.createLocalUser("flareai");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_1:midas.test"},
+      query: {user_id: "@whatsapp_1:flareai.test"},
       body: {invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
     await call(hs, "PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/t1`, {
       token: asToken,
-      query: {user_id: "@whatsapp_1:midas.test"},
+      query: {user_id: "@whatsapp_1:flareai.test"},
       body: {msgtype: "m.text", body: "the quarterly numbers are ready"},
     });
 
@@ -401,13 +401,13 @@ test("search and account data cover the client surface the hub uses", async () =
     // m.direct is what bridges write to mark DMs.
     const put = await call(hs, "PUT", `/_matrix/client/v3/user/${encodeURIComponent(user.userId)}/account_data/m.direct`, {
       token: user.accessToken,
-      body: {"@whatsapp_1:midas.test": [roomId]},
+      body: {"@whatsapp_1:flareai.test": [roomId]},
     });
     assert.equal(put.status, 200);
     const got = await call(hs, "GET", `/_matrix/client/v3/user/${encodeURIComponent(user.userId)}/account_data/m.direct`, {
       token: user.accessToken,
     });
-    assert.deepEqual(got.body[`@whatsapp_1:midas.test`], [roomId]);
+    assert.deepEqual(got.body[`@whatsapp_1:flareai.test`], [roomId]);
   } finally {
     await cleanup();
   }
@@ -417,7 +417,7 @@ test("the provisioning proxy forwards to the bridge listener", async () => {
   const {hs, bridge, cleanup} = await startHarness();
   try {
     hs.setProvisioningTarget("whatsapp", bridge.base);
-    const response = await fetch(`${hs.baseUrl}/bridges/whatsapp/_matrix/provision/v3/whoami?user_id=@midas:midas.test`, {
+    const response = await fetch(`${hs.baseUrl}/bridges/whatsapp/_matrix/provision/v3/whoami?user_id=@flareai:flareai.test`, {
       headers: {Authorization: "Bearer some-user-token"},
     });
     assert.equal(response.status, 200);
@@ -433,7 +433,7 @@ test("password login is refused and foreign tokens are rejected", async () => {
   const {hs, cleanup} = await startHarness();
   try {
     const login = await call(hs, "POST", "/_matrix/client/v3/login", {
-      body: {type: "m.login.password", identifier: {type: "m.id.user", user: "midas"}, password: "x"},
+      body: {type: "m.login.password", identifier: {type: "m.id.user", user: "flareai"}, password: "x"},
     });
     assert.equal(login.status, 403);
     const stranger = await call(hs, "GET", "/_matrix/client/v3/joined_rooms", {token: "not-a-token"});
@@ -454,12 +454,12 @@ test("parseRegistration extracts tokens and user namespaces", () => {
       "rate_limited: false",
       "namespaces:",
       "    users:",
-      "    - regex: ^@whatsappbot:midas\\.test$",
+      "    - regex: ^@whatsappbot:flareai\\.test$",
       "      exclusive: true",
-      "    - regex: ^@whatsapp_.*:midas\\.test$",
+      "    - regex: ^@whatsapp_.*:flareai\\.test$",
       "      exclusive: true",
       "    aliases:",
-      "    - regex: ^#whatsapp_.*:midas\\.test$",
+      "    - regex: ^#whatsapp_.*:flareai\\.test$",
       "      exclusive: true",
     ].join("\n"),
   );
@@ -467,17 +467,17 @@ test("parseRegistration extracts tokens and user namespaces", () => {
   assert.equal(parsed.hsToken, "def456");
   assert.equal(parsed.senderLocalpart, "whatsappbot");
   assert.deepEqual(parsed.userNamespaces, [
-    "@whatsappbot:midas\\.test",
-    "@whatsapp_.*:midas\\.test",
+    "@whatsappbot:flareai\\.test",
+    "@whatsapp_.*:flareai\\.test",
   ]);
 });
 
 test("a fresh install creates its own data directory", async () => {
   // The exact crash from first boot: the hub directory does not exist yet and
   // SQLite will not create missing directories itself.
-  const parent = await mkdtemp(path.join(tmpdir(), "midas-fresh-"));
+  const parent = await mkdtemp(path.join(tmpdir(), "flareai-fresh-"));
   const directory = path.join(parent, "does", "not", "exist", "hub");
-  const hs = new Homeserver({serverName: "midas.test", dataDirectory: directory});
+  const hs = new Homeserver({serverName: "flareai.test", dataDirectory: directory});
   try {
     await hs.start();
     const versions = await fetch(`${hs.baseUrl}/_matrix/client/versions`);
@@ -489,7 +489,7 @@ test("a fresh install creates its own data directory", async () => {
 });
 
 test("reapStalePid terminates an orphan from a crashed run", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-reap-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-reap-"));
   const pidPath = path.join(directory, "bridge.pid");
   // A stand-in orphan: long-lived, harmless, and ours to kill.
   const {spawn} = await import("node:child_process");

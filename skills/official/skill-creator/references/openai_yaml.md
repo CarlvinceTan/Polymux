@@ -1,6 +1,6 @@
 # openai.yaml fields (full example + descriptions)
 
-`agents/openai.yaml` is the manifest Midas reads for a skill's display identity (the filename is a compatibility convention; Midas reads it directly). It is intended for the machine/harness to read, not the agent. Other product-specific config can also live in the `agents/` folder.
+`agents/openai.yaml` is the manifest FlareAI reads for a skill's display identity (the filename is a compatibility convention; FlareAI reads it directly). It is intended for the machine/harness to read, not the agent. Other product-specific config can also live in the `agents/` folder.
 
 ## Full example
 
@@ -48,7 +48,7 @@ Top-level constraints:
   the model context by default, but can still be invoked explicitly via `$skill`.
   Defaults to true.
 
-## Midas-facing quality rules
+## FlareAI-facing quality rules
 
 - Create `agents/openai.yaml` for every new user-facing skill and recheck it
   after material changes to the skill's name, scope, workflow, or identity.
@@ -57,7 +57,7 @@ Top-level constraints:
 - Make `short_description` describe the practical value in 25-64 characters.
 - Make `default_prompt` a useful one-sentence example that explicitly mentions
   the exact `$skill-name`.
-- Give personal skills distinct, purpose-relevant icons when the Midas surface
+- Give personal skills distinct, purpose-relevant icons when the FlareAI surface
   supports them. Reuse existing icons only when they still represent the skill;
   otherwise create or obtain suitable assets and reference them with relative
   `./assets/...` paths. Do not reuse an unrelated skill's icon merely to fill

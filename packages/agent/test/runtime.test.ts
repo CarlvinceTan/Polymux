@@ -9,14 +9,14 @@ import type {
   InferenceRequest,
   InferenceService,
   ModelRef,
-} from "@midas/inference";
-import { SqliteStorage } from "@midas/storage/sqlite";
-import { ToolRegistry } from "@midas/tools";
+} from "@flareai/inference";
+import { SqliteStorage } from "@flareai/storage/sqlite";
+import { ToolRegistry } from "@flareai/tools";
 import {
   CompactionManager,
   createTaskTool,
   MemoryManager,
-  MidasAgent,
+  FlareAIAgent,
 } from "../src/index.js";
 
 const model = { provider: "test", id: "model" };
@@ -71,7 +71,7 @@ function answer(text: string): InferenceEvent {
 
 function testMemory(): MemoryManager {
   return new MemoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "midas-memory-test-")),
+    directory: mkdtempSync(path.join(tmpdir(), "flareai-memory-test-")),
   });
 }
 
@@ -81,7 +81,7 @@ test("treats slash-prefixed text as an ordinary chat message", async () => {
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("ordinary response")]);
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -138,7 +138,7 @@ test("persists assistant messages tagged with their run phase", async () => {
         return { content: "ok" };
       },
     });
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -170,7 +170,7 @@ test("creates a durable goal only from structured run metadata", async () => {
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("working")]);
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -217,7 +217,7 @@ test("subagent context modes isolate prior conversation messages", async () => {
     });
     const inference = new FakeInference();
     inference.responses.push([answer("child result")]);
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -248,7 +248,7 @@ test("persists attachments and restores their paths into later context", async (
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("received")], [answer("remembered")]);
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -343,7 +343,7 @@ test("a long conversation is compacted before the model ever sees it", async () 
     const inference = new FakeInference();
     inference.responses.push([answer("compacted earlier context")]);
     inference.responses.push([answer("answer")]);
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -410,7 +410,7 @@ test("the agent is given memory tools and its writes land in the vault", async (
       ],
       [answer("Saved.")],
     );
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory,
@@ -453,7 +453,7 @@ test("a completed run drives memory consolidation through the runtime", async ()
     inference.responses.push([
       answer("## User Profile\n\nConsolidated briefing."),
     ]);
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory,
@@ -617,7 +617,7 @@ test("goal loop keeps running until the judge calls the objective done", async (
       [answer("here are the findings, goal met")],
       [answer('{"verdict":"done","reason":"Findings delivered."}')],
     );
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -661,7 +661,7 @@ test("goal loop pauses itself once the turn budget is spent", async () => {
         [answer("still working")],
         [answer('{"verdict":"continue","reason":"Not done."}')],
       );
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -698,7 +698,7 @@ test("an unreadable verdict pauses the goal instead of looping blindly", async (
       [answer("did some work")],
       [answer("I think it is probably fine?")],
     );
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -728,7 +728,7 @@ test("a paused goal is not driven and a user turn resets the budget", async () =
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("acknowledged")]);
-    const agent = new MidasAgent({
+    const agent = new FlareAIAgent({
       inference,
       storage,
       memory: testMemory(),

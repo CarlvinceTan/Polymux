@@ -7,8 +7,8 @@ import type {
   DriveS3ConfigRequest,
   DriveStatusDto,
   JsonValue,
-} from "@midas/protocol";
-import {DRIVE_PROVIDERS, driveSaveOrder} from "@midas/protocol";
+} from "@flareai/protocol";
+import {DRIVE_PROVIDERS, driveSaveOrder} from "@flareai/protocol";
 import {DropboxDrive} from "./dropbox.js";
 import {GoogleDrive} from "./google-drive.js";
 import {LocalDrive} from "./local.js";
@@ -79,7 +79,7 @@ export class Drive {
     this.#local = new LocalDrive(
       typeof stored.localRoot === "string" && stored.localRoot
         ? stored.localRoot
-        : path.join(homedir(), "Midas"),
+        : path.join(homedir(), "FlareAI"),
     );
     this.#s3 = new S3Drive(options.secrets, s3Settings(stored.s3));
 

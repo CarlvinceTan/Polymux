@@ -76,7 +76,7 @@ test("normalizes text, reasoning, tool-call and final-message events", async () 
   const events = await collect(
     inference.stream({
       model: { provider: "test-provider", id: "test-model" },
-      systemPrompt: "You are Midas.",
+      systemPrompt: "You are FlareAI.",
       messages: [{ role: "user", content: "Inspect it" }],
       tools: [
         {
@@ -114,7 +114,7 @@ test("normalizes text, reasoning, tool-call and final-message events", async () 
   }
 });
 
-test("round-trips Midas context without exposing its types to the provider", async () => {
+test("round-trips FlareAI context without exposing its types to the provider", async () => {
   const { faux, inference } = fixture();
   faux.setResponses([
     (context, options) => {
@@ -144,7 +144,7 @@ test("round-trips Midas context without exposing its types to the provider", asy
             type: "toolCall",
             id: "call-1",
             name: "search",
-            arguments: { query: "Midas" },
+            arguments: { query: "FlareAI" },
           },
         ],
       },

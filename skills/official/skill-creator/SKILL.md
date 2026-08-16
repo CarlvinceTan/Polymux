@@ -1,9 +1,9 @@
 ---
 name: skill-creator
-description: Create or improve skill structure, instructions, resources, trigger descriptions, and meaningful Midas-facing metadata. Use when authoring a new skill, restructuring an existing skill, designing reusable scripts, references, assets, display names, prompts, or icons, or refining when a skill should activate. For personal-skill staging, behavioral validation, approval, history, upstream merges, and promotion, use skill-maintenance.
+description: Create or improve skill structure, instructions, resources, trigger descriptions, and meaningful FlareAI-facing metadata. Use when authoring a new skill, restructuring an existing skill, designing reusable scripts, references, assets, display names, prompts, or icons, or refining when a skill should activate. For personal-skill staging, behavioral validation, approval, history, upstream merges, and promotion, use skill-maintenance.
 metadata:
   short-description: Create or improve a skill
-author: Midas
+author: FlareAI
 category: Skills
 ---
 
@@ -34,7 +34,7 @@ Every skill requires `SKILL.md`. Add only the resources it uses:
 - `references/` for detailed or variant-specific material loaded on demand;
 - `assets/` for templates, icons, fonts, and files used in outputs;
 - `agents/openai.yaml` for the name, description, prompt, and visual identity
-  shown in Midas.
+  shown in FlareAI.
 
 Keep the core workflow and routing in `SKILL.md`. Move schemas, provider
 details, long examples, and conditional variants into directly linked
@@ -49,7 +49,7 @@ reference files that the workflow never consumes.
    - Read an existing skill and every required resource before restructuring it.
 2. **Plan**
    - Decide what belongs in `SKILL.md`, `scripts/`, `references/`, and `assets/`.
-   - Plan a distinct, understandable Midas display name, short description,
+   - Plan a distinct, understandable FlareAI display name, short description,
      default prompt, and purpose-relevant icon treatment.
    - Preserve stable behavior and interfaces unless the user requests a change.
 3. **Initialize or stage**
@@ -66,7 +66,7 @@ reference files that the workflow never consumes.
      update `agents/openai.yaml`. Use a clear, unique display name; a concise
      description of the skill's value; a one-sentence default prompt that
      explicitly invokes `$skill-name`; and distinct, meaningful icons when the
-     Midas surface supports them. Preserve suitable existing identity assets,
+     FlareAI surface supports them. Preserve suitable existing identity assets,
      but replace generic, misleading, missing, or copied icons.
 5. **Validate the authored content**
    - Run `scripts/quick_validate.py <skill-folder>`.

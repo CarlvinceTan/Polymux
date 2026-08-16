@@ -28,18 +28,28 @@ import {
  * behave like ink in water rather than like light: they are alpha-blended, and
  * overlapping dots deepen toward full pigment while sparse ones stay pale. That
  * rules out the dark end of the palette for anything but the densest cores —
- * dark brown composited over white at partial coverage can read as grey, so
- * saturated gold carries the energy while the dispersing tips turn champagne.
+ * navy and ink composited over white at partial coverage read as grey, not as
+ * blue — so brand blue carries the energy and the dispersing tips fade out.
  */
-const MIDAS_CHAMPAGNE = new Color('#ffe8a3')
-const MIDAS_GOLD = new Color('#d4a017')
-const MIDAS_UMBER = new Color('#241405')
+const FLARE_LIGHT = new Color('#6fd6ff')
+const FLARE_BLUE = new Color('#2384cb')
 /**
- * Bronze and copper give the gold ramp enough hue travel to retain the liquid
- * depth of the original material instead of looking like one flat yellow.
+ * The deep end of the ramp. Kept a legible blue rather than the near-black it
+ * started as: these points are alpha-blended, so wherever the cloud is dense
+ * the darkest colour composites darker still, and an ink that is almost black
+ * to begin with lands as black specks scattered through the form.
  */
-const MIDAS_BRONZE = new Color('#8f5515')
-const MIDAS_COPPER = new Color('#c76b24')
+const FLARE_INK = new Color('#1e4778')
+/**
+ * Two colours from outside the brand blues. Between navy and the light blue
+ * there is only about 17 degrees of hue, which is far too little to read as a
+ * gradient at all — every mixture of them looks like one blue lit unevenly.
+ * Electric violet carries most of the hue travel, while magenta remains a
+ * restrained accent. That keeps the form recognisably blue without flattening
+ * it into one hue shown at several brightnesses.
+ */
+const FLARE_VIOLET = new Color('#7b3ff2')
+const FLARE_MAGENTA = new Color('#ee3ba4')
 
 const POINT_COUNT = 14_000
 
@@ -166,10 +176,10 @@ void main() {
 
 const FRAGMENT = `
 uniform vec3 uLight;
-uniform vec3 uGold;
+uniform vec3 uBlue;
 uniform vec3 uInk;
-uniform vec3 uBronze;
-uniform vec3 uCopper;
+uniform vec3 uViolet;
+uniform vec3 uMagenta;
 uniform float uSaturation;
 uniform float uOpacity;
 varying float vEnergy;
@@ -191,17 +201,20 @@ void main() {
   // cloud still reads as lit from above rather than coloured at random.
   float shade = clamp(vFlow * 0.74 + vHeight * 0.26, 0.0, 1.0);
 
-  // The ramp travels from umber through copper and bronze into Midas gold,
-  // with champagne reserved for the brightest, thinnest particles.
-  vec3 copperHint = mix(uGold, uCopper, 0.24);
-  vec3 colour = mix(uInk, copperHint, smoothstep(0.0, 0.18, shade));
-  colour = mix(colour, uBronze, smoothstep(0.16, 0.32, shade));
-  colour = mix(colour, uGold, smoothstep(0.28, 0.70, shade));
+  // The dark sweep remains predominantly blue. Magenta only tints its endpoint
+  // before the ramp travels through violet, brand blue, and cyan. Violet and
+  // magenta hold just enough hue travel to keep the form from flattening; brand
+  // blue owns the widest band so the orb reads as FlareHQ's blue.
+  vec3 magentaHint = mix(uBlue, uMagenta, 0.10);
+  vec3 colour = mix(uInk, magentaHint, smoothstep(0.0, 0.18, shade));
+  colour = mix(colour, uViolet, smoothstep(0.16, 0.32, shade));
+  colour = mix(colour, uBlue, smoothstep(0.28, 0.70, shade));
   colour = mix(colour, uLight, smoothstep(0.72, 0.98, shade) * 0.85);
 
   // Energy then works against that gradient rather than replacing it: plume
-  // roots deepen into bronze and the dispersing tips lift toward champagne.
-  colour = mix(colour, uBronze, smoothstep(0.35, 0.85, vEnergy) * 0.13);
+  // roots deepen from whatever blue they sit in, and the dispersing tips lift
+  // toward the light blue as they thin out.
+  colour = mix(colour, uViolet, smoothstep(0.35, 0.85, vEnergy) * 0.13);
   colour = mix(colour, uLight, smoothstep(0.70, 1.0, vEnergy) * 0.5);
 
   // Density rises into the plumes, then falls away again at their very tips:
@@ -228,14 +241,18 @@ void main() {
 
   // Aerial perspective, kept deliberately slight. Lightening the far side is
   // the same operation as the top of the vertical gradient, so a strong one
-  // silently erases the dark end: a strong value drags umber to mid-gold and the
+  // silently erases the dark end: at 0.35 it dragged ink to mid-blue and the
   // whole cloud read as a single colour. Thinning the far side by alpha below
   // carries the depth instead.
   colour = mix(mix(colour, uLight, 0.12), colour, vDepth);
   float alpha = mask * uOpacity * density * (0.6 + vSeed * 0.4) * (0.42 + vDepth * 0.58);
   // Shell shading: a fast fall from lit to shaded is what separates a glossy
-  // surface from a matte one, which spreads the same light evenly instead.
-  colour *= 0.38 + 0.84 * lit;
+  // surface from a matte one, which spreads the same light evenly instead. The
+  // floor is an ambient term, not a true black — taken all the way down it
+  // multiplied the deep end of the ramp into specks with no hue left in them,
+  // and the shaded side of the cloud read as scattered black rather than as
+  // blue in shadow. Depth here is carried by alpha and by density above.
+  colour *= 0.58 + 0.62 * lit;
 
   // Only the near shell can reflect toward the viewer. Without this the far
   // side paints highlights straight through the form and the reflection smears
@@ -250,7 +267,6 @@ void main() {
   // material around it or there is nothing for it to be brighter than.
   colour += mix(uLight, vec3(1.0), 0.4) * pow(ndh, 20.0) * 1.05 * facing;
   colour += uLight * pow(ndh, 6.0) * 0.28 * facing;
-
 
   // Push every colour away from its own grey before the state saturation is
   // applied. Alpha compositing over a light surface pulls everything toward
@@ -287,11 +303,11 @@ export function startThreeVoiceOrb(canvas: HTMLCanvasElement, initialState: Real
     uCameraZ: { value: 5.9 },
     uSaturation: { value: 1 },
     uOpacity: { value: 1 },
-    uLight: { value: MIDAS_CHAMPAGNE },
-    uGold: { value: MIDAS_GOLD },
-    uInk: { value: MIDAS_UMBER },
-    uBronze: { value: MIDAS_BRONZE },
-    uCopper: { value: MIDAS_COPPER },
+    uLight: { value: FLARE_LIGHT },
+    uBlue: { value: FLARE_BLUE },
+    uInk: { value: FLARE_INK },
+    uViolet: { value: FLARE_VIOLET },
+    uMagenta: { value: FLARE_MAGENTA },
   }
 
   const geometry = new BufferGeometry()

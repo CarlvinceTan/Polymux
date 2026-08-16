@@ -14,8 +14,8 @@ function fixture() {
 }
 
 test("persists user configuration after the database is reopened", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "midas-preferences-"));
-  const databasePath = path.join(directory, "midas.sqlite");
+  const directory = mkdtempSync(path.join(tmpdir(), "flareai-preferences-"));
+  const databasePath = path.join(directory, "flareai.sqlite");
   try {
     const firstSession = new SqliteStorage(databasePath);
     firstSession.setPreference("general-access", {
@@ -261,8 +261,8 @@ test("stores artifacts and references without putting file contents in SQLite", 
       conversationId: "conversation-1",
       runId: "run-1",
       kind: "web",
-      title: "Polymux",
-      uri: "https://polymux.com",
+      title: "FlareAI",
+      uri: "https://flarehq.co",
     });
     assert.equal(
       storage.listArtifacts("conversation-1")[0]?.path,
@@ -270,7 +270,7 @@ test("stores artifacts and references without putting file contents in SQLite", 
     );
     assert.equal(
       storage.listReferences("conversation-1")[0]?.uri,
-      "https://polymux.com",
+      "https://flarehq.co",
     );
   } finally {
     storage.close();

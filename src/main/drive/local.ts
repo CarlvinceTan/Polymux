@@ -1,6 +1,6 @@
 import {copyFile, cp, mkdir, readdir, rename, rm, stat, statfs} from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto} from "@midas/protocol";
+import type {DriveEntryDto} from "@flareai/protocol";
 import {copyName, type DriveAdapter, type DriveProbe} from "./types.js";
 
 /**
@@ -13,6 +13,8 @@ import {copyName, type DriveAdapter, type DriveProbe} from "./types.js";
 export class LocalDrive implements DriveAdapter {
   readonly id = "local" as const;
   #root: string;
+  /** Memoised so the root is only created once per location. */
+  #ready: Promise<void> | null = null;
 
   constructor(root: string) {
     this.#root = root;
@@ -24,11 +26,25 @@ export class LocalDrive implements DriveAdapter {
 
   setRoot(root: string): void {
     this.#root = root;
+    this.#ready = null;
+  }
+
+  /**
+   * Creates the root if it is not there.
+   *
+   * The folder is one the user picked or that the app chose, and either can be
+   * moved or thrown away while the app is running. Every operation that touches
+   * the disk goes through this, so a missing root reads as an empty drive that
+   * can still be written to rather than as a failure on every click.
+   */
+  async #ensureRoot(): Promise<void> {
+    this.#ready ??= mkdir(this.#root, {recursive: true}).then((): void => undefined);
+    await this.#ready;
   }
 
   async probe(): Promise<DriveProbe> {
     try {
-      await mkdir(this.#root, {recursive: true});
+      await this.#ensureRoot();
       const info = await statfs(this.#root);
       const total = info.blocks * info.bsize;
       return {
@@ -52,6 +68,7 @@ export class LocalDrive implements DriveAdapter {
   }
 
   async list(target: string): Promise<DriveEntryDto[]> {
+    await this.#ensureRoot();
     const directory = this.#resolve(target);
     const names = await readdir(directory, {withFileTypes: true});
     const entries = await Promise.all(
@@ -78,6 +95,7 @@ export class LocalDrive implements DriveAdapter {
   }
 
   async createFolder(parentPath: string, name: string): Promise<DriveEntryDto> {
+    await this.#ensureRoot();
     const full = this.#resolve(path.join(this.#resolve(parentPath), name));
     await mkdir(full, {recursive: false});
     const info = await stat(full);
@@ -94,6 +112,7 @@ export class LocalDrive implements DriveAdapter {
   }
 
   async upload(parentPath: string, localPath: string): Promise<DriveEntryDto> {
+    await this.#ensureRoot();
     const name = path.basename(localPath);
     const full = this.#resolve(path.join(this.#resolve(parentPath), name));
     await copyFile(localPath, full);

@@ -1,6 +1,6 @@
 import {readFile} from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto} from "@midas/protocol";
+import type {DriveEntryDto} from "@flareai/protocol";
 import {jsonRequest, requestError, streamToFile} from "./http.js";
 import {OAuthClient, oauthAppFromEnv} from "./oauth.js";
 import {copyName, type DriveAdapter, type DriveProbe, type DriveSecretStore} from "./types.js";
@@ -9,22 +9,22 @@ import type {BrowserWindow} from "electron";
 const API = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
-/** The folder Midas keeps its files in. Visible in the user's Drive on
- * purpose: files an agent made should be findable without Midas. */
-const ROOT_FOLDER_NAME = "Midas";
+/** The folder FlareAI keeps its files in. Visible in the user's Drive on
+ * purpose: files an agent made should be findable without FlareAI. */
+const ROOT_FOLDER_NAME = "FlareAI";
 const FILE_FIELDS = "id,name,mimeType,size,modifiedTime";
 
 /**
  * Google Drive.
  *
- * Only files Midas creates are in scope — the `drive.file` scope means the app
+ * Only files FlareAI creates are in scope — the `drive.file` scope means the app
  * can never read the rest of the user's Drive, which is both the least
  * surprising behaviour and the least it can ask for.
  */
 export class GoogleDrive implements DriveAdapter {
   readonly id = "google-drive" as const;
   readonly #oauth: OAuthClient;
-  /** The `Midas` folder's id, looked up once per connection. */
+  /** The `FlareAI` folder's id, looked up once per connection. */
   #rootId: string | null = null;
 
   constructor(secrets: DriveSecretStore, parent: () => BrowserWindow | undefined) {
@@ -134,7 +134,7 @@ export class GoogleDrive implements DriveAdapter {
     const bytes = await readFile(localPath);
     // A multipart upload sends the metadata and the bytes in one request,
     // which is what keeps a new file from ever existing without its name.
-    const boundary = `midas-${Date.now().toString(36)}`;
+    const boundary = `flareai-${Date.now().toString(36)}`;
     const body = Buffer.concat([
       Buffer.from(
         `--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(
@@ -216,7 +216,7 @@ export class GoogleDrive implements DriveAdapter {
     return this.#entry(file);
   }
 
-  /** Finds the `Midas` folder, creating it the first time. */
+  /** Finds the `FlareAI` folder, creating it the first time. */
   async #root(): Promise<string> {
     if (this.#rootId) return this.#rootId;
     const query = encodeURIComponent(
@@ -240,7 +240,7 @@ export class GoogleDrive implements DriveAdapter {
           parents: ["root"],
         }),
       },
-      "Creating the Midas folder",
+      "Creating the FlareAI folder",
     );
     this.#rootId = created.id;
     return created.id;

@@ -1,6 +1,6 @@
 import {BrowserWindow, nativeTheme, session, type BrowserWindow as BrowserWindowType} from "electron";
-import {commsPlatformLabel} from "@midas/protocol";
-import type {CommsPlatform} from "@midas/protocol";
+import {commsPlatformLabel} from "@flareai/protocol";
+import type {CommsPlatform} from "@flareai/protocol";
 import type {CookieLoginRequest} from "./index.js";
 
 /**
@@ -11,14 +11,13 @@ const FALLBACK_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /**
- * Sheets currently on screen, by platform. Cancelling a login from the app has
- * to reach the sheet it opened: a macOS modal sheet has no traffic lights, so
- * without this the Close button in the app would end the flow while the
- * network's page stayed up with no visible way out.
+ * Sign-in windows currently on screen, by platform. Cancelling a login from the
+ * app has to reach the window it opened, or the Close button in the app would
+ * end the flow while the network's page stayed up.
  */
 const openSheets = new Map<string, BrowserWindowType>();
 
-/** Closes the sign-in sheet for a platform, if one is open. */
+/** Closes the sign-in window for a platform, if one is open. */
 export function cancelCookieLogin(platform: string): void {
   const sheet = openSheets.get(platform);
   if (sheet && !sheet.isDestroyed()) sheet.close();
@@ -38,27 +37,30 @@ export async function runCookieLogin(
   request: CookieLoginRequest,
   parent?: BrowserWindowType,
 ): Promise<Record<string, string>> {
-  const partition = `persist:midas-comms-${request.platform}`;
+  const partition = `persist:flareai-comms-${request.platform}`;
   const userAgent = request.userAgent ?? FALLBACK_USER_AGENT;
   const label = commsPlatformLabel(request.platform as CommsPlatform);
   const window = new BrowserWindow({
     width: 520,
     height: 760,
-    // Attached to Midas rather than floating free: on macOS a parented modal
-    // is a sheet over the app, which is what signing in to a network from
-    // inside an app should look like. It also cannot be lost behind the
-    // window that is waiting on it.
+    // Kept above FlareAI so it cannot be lost behind the window waiting on it,
+    // but deliberately not modal: a macOS modal sheet is drawn without a title
+    // bar, which left the user with no visible way out of a network's sign-in
+    // page. A framed child window gets real traffic lights, so closing it is
+    // the obvious thing it looks like.
     parent: parent?.isDestroyed() ? undefined : parent,
-    modal: parent !== undefined && !parent.isDestroyed(),
+    modal: false,
+    frame: true,
     title: `Sign in to ${label}`,
     // The page paints late; without this the sheet flashes white on a dark
     // desktop before the network's own page arrives.
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff",
     autoHideMenuBar: true,
-    // Nothing here belongs to Midas, so there is no app chrome to imitate:
-    // the sheet is the network's page and the platform's name.
-    minimizable: false,
-    maximizable: false,
+    // Nothing here belongs to FlareAI, so there is no app chrome to imitate:
+    // the window is the network's page under the platform's name, and it
+    // resizes like the browser window it stands in for.
+    minimizable: true,
+    maximizable: true,
     fullscreenable: false,
     webPreferences: {
       partition,
@@ -72,8 +74,13 @@ export async function runCookieLogin(
   window.webContents.setUserAgent(userAgent);
   openSheets.set(request.platform, window);
 
-  // A sheet has no close button, so the keyboard is the way out: Escape, and
-  // the platform's own close-window chord. Closing counts as cancelling.
+  // The network's own page decides its <title>; the bar should say which
+  // account the user is signing in to, so keep ours.
+  window.on("page-title-updated", (event) => event.preventDefault());
+
+  // The close button is the obvious way out, but the keyboard should work too:
+  // Escape, and the platform's own close-window chord. Closing counts as
+  // cancelling.
   window.webContents.on("before-input-event", (_event, input) => {
     if (input.type !== "keyDown") return;
     const chord = process.platform === "darwin" ? input.meta : input.control;

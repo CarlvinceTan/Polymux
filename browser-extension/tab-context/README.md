@@ -1,6 +1,6 @@
-# Midas Agent Surface (browser extension)
+# FlareAI Agent Surface (browser extension)
 
-The Midas equivalent of the ChatGPT desktop browser extension: it gives the
+The FlareAI equivalent of the ChatGPT desktop browser extension: it gives the
 agent context about open tabs **and** lets it control a leased tab, with the
 same in-page presentation contract as the original Hermes/Agent Surface
 extension it descends from:
@@ -16,10 +16,10 @@ extension it descends from:
 
 - **Tab context** — the background worker streams the open-tab list (title,
   URL, active/pinned state; never page contents) through the
-  `com.midas.tab_context` native messaging host into
-  `~/Library/Application Support/midas-tab-context/tabs.json`, read by the
+  `com.flareai.tab_context` native messaging host into
+  `~/Library/Application Support/flareai-tab-context/tabs.json`, read by the
   agent's `browser_tabs` tool and the browser-use skill.
-- **Control** — Midas runs a loopback agent-surface feed on
+- **Control** — FlareAI runs a loopback agent-surface feed on
   `http://127.0.0.1:47654`. Content scripts long-poll it; a tab whose URL or
   title matches an active lease badges itself and executes the lease's pending
   command (`navigate`, `click`, `type`, `scroll`, `read`), animating the
@@ -36,7 +36,7 @@ window, switches tabs, or steals the user's focus.
    directory. Copy the extension ID.
 2. `./install.sh <extension-id>` — registers the native messaging host for
    every Chromium-based browser it finds (Chrome, Brave, Edge, Arc, …).
-3. Reload the extension. Midas must be running for control (the loopback feed
+3. Reload the extension. FlareAI must be running for control (the loopback feed
    lives in the app); tab snapshots work either way.
 
 Browser security requires a person to approve an unpacked extension once.

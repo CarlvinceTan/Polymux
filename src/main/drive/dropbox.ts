@@ -1,6 +1,6 @@
 import {readFile} from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto} from "@midas/protocol";
+import type {DriveEntryDto} from "@flareai/protocol";
 import {jsonRequest, requestError, streamToFile} from "./http.js";
 import {OAuthClient, oauthAppFromEnv} from "./oauth.js";
 import {copyName, type DriveAdapter, type DriveProbe, type DriveSecretStore} from "./types.js";
@@ -13,7 +13,7 @@ const CONTENT = "https://content.dropboxapi.com/2";
  * Dropbox, scoped to the app folder.
  *
  * The app-folder permission means every path here is already relative to a
- * private `Apps/Midas` directory — Dropbox itself enforces that the rest of the
+ * private `Apps/FlareAI` directory — Dropbox itself enforces that the rest of the
  * user's account is out of reach, so there is no root folder to find or guard.
  */
 export class DropboxDrive implements DriveAdapter {
@@ -77,7 +77,7 @@ export class DropboxDrive implements DriveAdapter {
           used: space.used ?? null,
           total: space.allocation?.allocated ?? null,
         },
-        root: "Apps/Midas",
+        root: "Apps/FlareAI",
         error: null,
       };
     } catch (cause) {

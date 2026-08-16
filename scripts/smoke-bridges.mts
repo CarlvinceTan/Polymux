@@ -20,10 +20,10 @@ import {BridgeHost} from "../src/main/homeserver/bridges.js";
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const binaries = path.join(repo, "bridges");
-const directory = await mkdtemp(path.join(tmpdir(), "midas-smoke-"));
+const directory = await mkdtemp(path.join(tmpdir(), "flareai-smoke-"));
 
 const homeserver = new Homeserver({
-  serverName: "midas.local",
+  serverName: "flareai.local",
   dataDirectory: directory,
   port: 0,
 });

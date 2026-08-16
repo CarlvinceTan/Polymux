@@ -1,5 +1,5 @@
 {
-  "name": "@midas/inference",
+  "name": "@flareai/inference",
   "version": "0.1.0",
   "private": true,
   "type": "module",

@@ -5,7 +5,7 @@ import type {
   DriveProviderState,
   DriveUsageDto,
   JsonValue,
-} from "@midas/protocol";
+} from "@flareai/protocol";
 
 
 /**

@@ -1,4 +1,4 @@
-import type {InferenceEvent, InferenceModel, InferenceRequest, InferenceService, ModelRef} from "@midas/inference";
+import type {InferenceEvent, InferenceModel, InferenceRequest, InferenceService, ModelRef} from "@flareai/inference";
 
 export interface InferenceKeyPool {
   candidates(providerId: string): Promise<Array<{id: string; key: string}>>;

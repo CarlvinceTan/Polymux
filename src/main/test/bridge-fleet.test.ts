@@ -13,7 +13,7 @@ import {
   messagesDatabaseAccess,
   withNetwork,
 } from "../homeserver/bridges.js";
-import {COMMS_PLATFORMS} from "@midas/protocol";
+import {COMMS_PLATFORMS} from "@flareai/protocol";
 
 /**
  * The fleet is the list of networks this host can run. These tests pin the
@@ -39,7 +39,7 @@ function fakeChild() {
 function fakeHomeserver() {
   return {
     baseUrl: "http://127.0.0.1:47664",
-    serverName: "midas.local",
+    serverName: "flareai.local",
     registerAppservice: () => {},
     setProvisioningTarget: () => {},
   } as unknown as ConstructorParameters<typeof BridgeHost>[0]["homeserver"];
@@ -56,7 +56,7 @@ async function hostWith(
   binaries: string[],
   options: Partial<ConstructorParameters<typeof BridgeHost>[0]> = {},
 ) {
-  const root = await mkdtemp(path.join(tmpdir(), "midas-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   for (const binary of binaries) {
@@ -104,7 +104,7 @@ function linkedDatabase(file: string, logins: number): void {
   for (let index = 0; index < logins; index += 1)
     database
       .prepare("insert into user_login values (?, ?, ?, ?)")
-      .run("bridge", "@user:midas.local", `login-${index}`, "Someone");
+      .run("bridge", "@user:flareai.local", `login-${index}`, "Someone");
   database.close();
 }
 
@@ -169,7 +169,7 @@ test("the inventory reports the whole fleet, installed or not", async () => {
 });
 
 test("a user-supplied binary fills a gap the bundle does not cover", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "midas-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
   const bundled = path.join(root, "bundled");
   const userSupplied = path.join(root, "bin");
   await mkdir(bundled, {recursive: true});
@@ -197,7 +197,7 @@ test("a user-supplied binary fills a gap the bundle does not cover", async () =>
 });
 
 test("the bundled copy wins over a stale one in the user directory", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "midas-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
   const bundled = path.join(root, "bundled");
   const userSupplied = path.join(root, "bin");
   await mkdir(bundled, {recursive: true});
@@ -275,18 +275,18 @@ test("a config with no network block yet gains one", () => {
 });
 
 test("a legacy bridge crash-looping on a modern seed is healed at startup", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "midas-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   await writeFile(path.join(binariesDirectory, "mautrix-discord"), "", "utf8");
 
-  // What an earlier Midas seeded: the modern layout, which mautrix-discord
+  // What an earlier FlareAI seeded: the modern layout, which mautrix-discord
   // rejects at startup — plus the registration minted alongside it.
   const home = path.join(root, "bridges", "discord");
   await mkdir(home, {recursive: true});
   await writeFile(
     path.join(home, "config.yaml"),
-    ["homeserver:", "    address: http://x", "    domain: midas.local", "    software: standard", "database:", "    type: sqlite3-fk-wal", ""].join("\n"),
+    ["homeserver:", "    address: http://x", "    domain: flareai.local", "    software: standard", "database:", "    type: sqlite3-fk-wal", ""].join("\n"),
     "utf8",
   );
   await writeFile(
@@ -328,7 +328,7 @@ test("a legacy bridge crash-looping on a modern seed is healed at startup", asyn
 });
 
 test("a shared binary's config missing its network mode is repaired, not replaced", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "midas-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   await writeFile(path.join(binariesDirectory, "mautrix-meta"), "", "utf8");
@@ -381,7 +381,7 @@ test("every platform in the fleet is one the protocol knows how to route", () =>
 });
 
 test("the seed config binds each instance to its own network and port", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "midas-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   await writeFile(path.join(binariesDirectory, "mautrix-meta"), "", "utf8");
@@ -480,6 +480,44 @@ test("supplying the credentials starts the bridge that was waiting for them", as
   );
 });
 
+/**
+ * The alternative to asking: a build that carries its own registered pair.
+ * Telegram is the only network that needs one, and the difference between
+ * shipping it and not is the difference between "scan this QR" and "go
+ * register an application on another website first".
+ */
+test("a pair shipped with the build starts the bridge without asking for one", async () => {
+  const spawned: string[][] = [];
+  const {host, root} = await hostWith(["mautrix-telegram"], {
+    shippedCredentials: (platform: string) =>
+      platform === "telegram" ? {api_id: "2040", api_hash: "b18441a1ff607e10"} : {},
+    spawn: ((binary: string, args: string[]) => {
+      spawned.push([binary, ...args]);
+      return fakeChild();
+    }) as unknown as typeof spawnFn,
+  });
+  await seedRegistration(root, "telegram");
+
+  await host.startAll();
+  await host.close();
+
+  assert.equal(spawned.length, 1, "nothing is waiting on a credential the build already has");
+  assert.equal(await blockedReason(host, "telegram"), null);
+  const config = await readFile(path.join(root, "bridges", "telegram", "config.yaml"), "utf8");
+  assert.match(config, /network:\n\s+api_id: 2040/, "and the bridge runs on it");
+});
+
+test("a pair the user supplies wins over the one shipped with the build", async () => {
+  const {host} = await hostWith(["mautrix-telegram"], {
+    shippedCredentials: () => ({api_id: "2040", api_hash: "b18441a1ff607e10"}),
+  });
+
+  await host.configureNetwork("telegram", {api_id: "99", api_hash: "mine"});
+  await host.close();
+
+  assert.deepEqual(await host.networkConfig("telegram"), {api_id: "99", api_hash: "mine"});
+});
+
 test("a bridge that keeps dying is left down rather than looping forever", async () => {
   const spawned: string[][] = [];
   const {host, root} = await hostWith(["mautrix-whatsapp"], {
@@ -512,7 +550,7 @@ test(
   "iMessage names the grant that would unblock it, and only when one would",
   {skip: process.platform !== "darwin" ? "macOS-only grant" : false},
   async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "midas-home-"));
+    const home = await mkdtemp(path.join(tmpdir(), "flareai-home-"));
     const database = path.join(home, "Library", "Messages", "chat.db");
 
     const absent = await messagesDatabaseAccess({home});
@@ -619,19 +657,19 @@ test("looking again leaves a bridge that burned its restart budget down", async 
  * minted new ones. The marker has to be something only the modern seed writes.
  */
 test("a healed legacy bridge is left alone on the next launch", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "midas-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   await writeFile(path.join(binariesDirectory, "mautrix-discord"), "", "utf8");
 
-  // The legacy layout Midas seeds — database under `appservice:` — after the
+  // The legacy layout FlareAI seeds — database under `appservice:` — after the
   // binary has upgraded it in place and added its own `software:` default.
   const home = path.join(root, "bridges", "discord");
   await mkdir(home, {recursive: true});
   const seeded = [
     "homeserver:",
     "    address: http://x",
-    "    domain: midas.local",
+    "    domain: flareai.local",
     "    software: standard",
     "appservice:",
     "    id: discord",

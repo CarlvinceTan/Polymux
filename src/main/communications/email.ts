@@ -11,7 +11,7 @@ import type {
   MailFolderDto,
   MailMessageDto,
   SaveEmailAccountRequest,
-} from "@midas/protocol";
+} from "@flareai/protocol";
 
 /**
  * Keychain service prefix for mailbox passwords. The generic-password entry is
@@ -19,7 +19,7 @@ import type {
  * is a contract between this module and the config it writes — changing it
  * orphans every account already on disk.
  */
-export const EMAIL_KEYCHAIN_SERVICE = "Midas Email";
+export const EMAIL_KEYCHAIN_SERVICE = "FlareAI Email";
 
 export interface CommandResult {
   code: number;
@@ -610,7 +610,7 @@ function mimeMessage(options: {
   if (files.length === 0)
     return `${[...headers, "Content-Type: text/plain; charset=utf-8"].join("\r\n")}\r\n\r\n${body}\r\n`;
 
-  const boundary = `midas-${Date.now().toString(36)}-${files.length}`;
+  const boundary = `flareai-${Date.now().toString(36)}-${files.length}`;
   const parts = [
     ["Content-Type: text/plain; charset=utf-8", "", body].join("\r\n"),
     ...files.map((file) =>

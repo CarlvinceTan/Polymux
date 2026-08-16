@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DEFAULT_STATE = Path.home() / ".midas" / "window-control" / "route-observations.json"
+DEFAULT_STATE = Path.home() / ".flareai" / "window-control" / "route-observations.json"
 
 
 def app_identity(app_path: Path) -> dict[str, str]:

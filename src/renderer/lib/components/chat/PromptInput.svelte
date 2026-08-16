@@ -1,8 +1,8 @@
 <script lang="ts">
   import {onMount} from 'svelte';
   import {readableError} from '../../errors';
-  import {midasApi} from '../../api/midas';
-  import type {ModelDto, ReasoningEffort} from '@midas/protocol';
+  import {flareaiApi} from '../../api/flareai';
+  import type {ModelDto, ReasoningEffort} from '@flareai/protocol';
   import Icon from '../shared/Icon.svelte';
   import InlineChip, {type InlineChipItem, type SubmittedChip} from './InlineChip.svelte';
   import ProviderLogo from '../settings/ProviderLogo.svelte';
@@ -23,7 +23,7 @@
   export let insertion: {id: string; text: string} | null = null;
   export let onInsertionApplied: () => void = () => {};
 
-  const api = midasApi();
+  const api = flareaiApi();
 
   type Attachment = InlineChipItem & {file: File};
 
@@ -560,11 +560,11 @@
   });
 </script>
 
-<div class:welcome={variant === 'welcome'} class:file-drag-active={fileDragActive} class="polymux-prompt">
+<div class:welcome={variant === 'welcome'} class:file-drag-active={fileDragActive} class="flareai-prompt">
   <input bind:this={fileInput} class="visually-hidden" name="prompt-attachments" type="file" multiple tabindex="-1" aria-hidden="true" onchange={selected}/>
 
-  <div class:expanded class:raised={hasContent} class="polymux-prompt-shell">
-    <div class="polymux-editor-slot">
+  <div class:expanded class:raised={hasContent} class="flareai-prompt-shell">
+    <div class="flareai-editor-slot">
       <InlineChip
         bind:this={editor}
         value={draft}
@@ -579,14 +579,14 @@
     <button
       type="button"
       data-testid="prompt-primary-button"
-      class="polymux-primary"
+      class="flareai-primary"
       aria-label={primary === 'send' ? 'Send message' : primary === 'stop' ? 'Stop agent' : 'Start speech mode'}
       data-tooltip-label={primary === 'send' ? (active ? 'Queue (⌘↩ to send now)' : 'Send') : primary === 'stop' ? 'Stop agent' : 'Speech Mode'}
       onclick={primaryAction}
     ><Icon name={primary === 'mic' ? 'waveform' : primary} size={primary === 'stop' ? 22 : 18}/></button>
   </div>
 
-  <div class="polymux-prompt-toolbar">
+  <div class="flareai-prompt-toolbar">
     <button type="button" onclick={chooseFiles}><Icon name="attach" size={14}/><span>ATTACH</span></button>
     <button
       class="dictation-toggle"
@@ -612,7 +612,7 @@
     <div bind:this={modelWrap} class="prompt-option-wrap">
       <button type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} onclick={() => void toggleModelMenu()}><Icon name="brain" size={14}/><span>MODEL</span></button>
       {#if modelMenuOpen && modelsLoaded}
-        <div class="polymux-dropdown-menu model-menu" role="menu" aria-label="Model options">
+        <div class="flareai-dropdown-menu model-menu" role="menu" aria-label="Model options">
           <div class="model-menu-search">
             <Icon name="search" size={13}/>
             <input
@@ -639,7 +639,7 @@
               <div class="model-menu-row">
                 <button
                   type="button"
-                  class="polymux-dropdown-item"
+                  class="flareai-dropdown-item"
                   class:active={openModelKey === modelKey(model)}
                   role="menuitem"
                   aria-haspopup="menu"
@@ -663,12 +663,12 @@
           <!-- Outside the scroller: a submenu inside it would be clipped by the
                overflow that makes the list scrollable. -->
           {#if openModel}
-            <div class="polymux-dropdown-menu model-submenu" role="menu" aria-label={`Reasoning for ${openModel.name}`} style:top={`${openModelTop}px`}>
+            <div class="flareai-dropdown-menu model-submenu" role="menu" aria-label={`Reasoning for ${openModel.name}`} style:top={`${openModelTop}px`}>
               <p class="model-submenu-title">Reasoning</p>
               {#each effortsFor(openModel) as option (option.value)}
                 <button
                   type="button"
-                  class="polymux-dropdown-item"
+                  class="flareai-dropdown-item"
                   role="menuitemradio"
                   aria-checked={openModel.selected && option.value === reasoning}
                   aria-disabled={!adjustable(openModel)}

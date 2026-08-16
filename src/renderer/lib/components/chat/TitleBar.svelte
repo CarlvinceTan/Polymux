@@ -13,6 +13,7 @@
   export let onRename: (title: string) => void = () => {};
   export let onToggleChatDrawer: () => void = () => {};
   export let onNewChat: () => void = () => {};
+  export let onSearchChats: () => void = () => {};
   export let onTogglePanel: (mode: 'summary' | 'workspace') => void = () => {};
   export let onOpenSettings: () => void = () => {};
   export let onOpenDrive: () => void = () => {};
@@ -104,6 +105,20 @@
     >
       <Icon name="new-chat" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
     </button>
+    <!-- Searching past chats only makes sense while their list is on screen,
+         so this rides the drawer rather than living in the resting chrome. -->
+    {#if chatDrawerOpen}
+      <button
+        type="button"
+        class="title-bar-icon-button"
+        aria-label="Search Chats"
+        data-tooltip-label="Search Chats"
+        data-tooltip-align="start"
+        onclick={onSearchChats}
+      >
+        <Icon name="search" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
+      </button>
+    {/if}
   {/if}
 </div>
 

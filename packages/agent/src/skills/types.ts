@@ -3,7 +3,7 @@ export interface Skill {
   description: string;
   filePath: string;
   baseDir: string;
-  source: "official" | "codex" | "midas" | "agents" | "bundled" | "configured";
+  source: "official" | "codex" | "flareai" | "agents" | "bundled" | "configured";
   disableModelInvocation: boolean;
   allowedTools?: string[];
   displayName?: string;

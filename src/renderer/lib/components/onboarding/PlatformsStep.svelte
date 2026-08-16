@@ -4,19 +4,19 @@
     CommsLoginStepDto,
     CommsPlatform,
     CommsStatusDto,
-    MidasApi,
+    FlareAIApi,
     SystemPermissionKind,
-  } from '@midas/protocol';
-  import {COMMS_EMAIL_PRESETS, permissionPrompts} from '@midas/protocol';
+  } from '@flareai/protocol';
+  import {COMMS_EMAIL_PRESETS, permissionPrompts} from '@flareai/protocol';
   import {readableError} from '../../errors';
   import {qrSvgPath} from '../../qr';
   import {bridgeLogo, mailLogo} from '../../options/platformBrands';
   import Icon from '../shared/Icon.svelte';
+  import SkipAction from './SkipAction.svelte';
 
   interface Props {
-    api: MidasApi;
+    api: FlareAIApi;
     onDone: (reach: {messaging: string[]; mail: string[]}) => void;
-    onSkip: () => void;
     /**
      * False while this step is parked off screen. Every step of setup is
      * mounted at once so the deck can pan between them, so the ring has to be
@@ -26,11 +26,11 @@
     active?: boolean;
   }
 
-  const {api, onDone, onSkip, active: onCamera = true}: Props = $props();
+  const {api, onDone, active: onCamera = true}: Props = $props();
 
   /**
    * One seat on the arc. Messaging and mail are different machinery behind the
-   * scenes, but to the person setting Midas up they are the same decision —
+   * scenes, but to the person setting FlareAI up they are the same decision —
    * "give it this account" — so they share one ring.
    */
   interface Seat {
@@ -57,8 +57,47 @@
   let hovered = $state<string>('');
   let hoverRelease: ReturnType<typeof setTimeout> | undefined;
 
+  /**
+   * Whether the pointer has moved of its own accord since the step slid into
+   * view. The camera pans the ring up to a cursor that never left the middle
+   * of the window, so a seat arrives *under* the pointer and fires
+   * `mouseenter` without the user having reached for anything — the disc would
+   * open on whichever logo happened to drift past. Until a real move, the ring
+   * ignores the pointer; focus and clicks are unaffected, being deliberate by
+   * definition.
+   */
+  let pointerArmed = $state(false);
+
+  $effect(() => {
+    if (!onCamera) {
+      pointerArmed = false;
+      return;
+    }
+    // Scrolling content under a still cursor can itself emit `pointermove`, so
+    // the first event only records where the pointer already was; arming waits
+    // for a position that actually differs from it.
+    let from: {x: number; y: number} | null = null;
+    const moved = (event: PointerEvent): void => {
+      if (from && (Math.abs(event.clientX - from.x) > 2 || Math.abs(event.clientY - from.y) > 2)) {
+        pointerArmed = true;
+        return;
+      }
+      from = {x: event.clientX, y: event.clientY};
+    };
+    const pressed = (): void => {
+      pointerArmed = true;
+    };
+    window.addEventListener('pointermove', moved, {passive: true});
+    window.addEventListener('pointerdown', pressed, {capture: true, passive: true});
+    return () => {
+      window.removeEventListener('pointermove', moved);
+      window.removeEventListener('pointerdown', pressed, {capture: true});
+    };
+  });
+
   /** Points the panel at a seat, cancelling any release already scheduled. */
-  function hoverOn(key: string): void {
+  function hoverOn(key: string, viaPointer = false): void {
+    if (viaPointer && !pointerArmed) return;
     clearTimeout(hoverRelease);
     hovered = key;
     // Hovering is the earliest honest signal that this platform is wanted, so
@@ -115,6 +154,63 @@
         observer.disconnect();
       },
     };
+  }
+
+  /**
+   * Crossfades the disc's contents when it starts showing a different platform.
+   * Hovering along the ring swaps the whole panel at once, and the hard cut
+   * read as a flicker.
+   *
+   * Both halves are needed for it to read as one movement, so the panel holds
+   * the platform it is already showing (`shownKey`) until the old contents have
+   * faded out, and only then renders the new ones — which fade back in through
+   * the action below. Swapping first and fading second would mean fading in
+   * from nothing, which is the same cut with a delay in front of it.
+   */
+  const SWAP_OUT_MS = 110;
+  const SWAP_IN_MS = 190;
+  let faceEl = $state<HTMLElement>();
+  let shownKey = $state('');
+  let swapping = false;
+  let swapped = false;
+  $effect(() => {
+    const to = activeKey;
+    if (to === shownKey || swapping) return;
+    // The first pass has nothing on screen to fade out of; a flow moving on a
+    // step keeps the same key, so that redraws in place as before.
+    if (!swapped || !faceEl) {
+      swapped = true;
+      shownKey = to;
+      return;
+    }
+    swapping = true;
+    const node = faceEl;
+    node
+      .animate([{opacity: restOpacity}, {opacity: 0}], {
+        duration: SWAP_OUT_MS,
+        easing: 'ease-in',
+      })
+      .finished.catch(() => {})
+      // Whatever is hovered *now*, not when the fade started: the pointer may
+      // have crossed two more seats in the meantime.
+      .finally(() => {
+        swapping = false;
+        shownKey = activeKey;
+      });
+  });
+
+  /** The incoming half of the crossfade: see the effect above. */
+  function fadeSwap(node: HTMLElement, _key: string) {
+    const play = (): void => {
+      node.animate(
+        [
+          {opacity: 0, transform: 'translateY(-50%) translateY(5px)'},
+          {opacity: restOpacity, transform: 'translateY(-50%)'},
+        ],
+        {duration: SWAP_IN_MS, easing: 'cubic-bezier(.22,.61,.36,1)'},
+      );
+    };
+    return {update: play};
   }
 
   /**
@@ -182,7 +278,7 @@
       platform: bridge.platform,
     })),
     // One seat, because mail is the platform. Gmail, Lark and the rest are
-    // providers of it, not networks of their own: what Midas connects to is
+    // providers of it, not networks of their own: what FlareAI connects to is
     // IMAP either way, so a seat each would put five logos on the ring for one
     // capability — and file a Lark-hosted mailbox under "Lark" as though the
     // messaging side had been linked, which it has not.
@@ -214,7 +310,17 @@
    * where it is the fastest way to read down the ring.
    */
   const activeKey = $derived(open || (step && flowKey ? flowKey : hovered));
-  const active = $derived(seatsByKey.find((seat) => seat.key === activeKey) ?? null);
+  // `shownKey` trails `activeKey` by the length of the fade-out; the panel's
+  // contents follow what is on screen, the ring follows the pointer.
+  const active = $derived(seatsByKey.find((seat) => seat.key === shownKey) ?? null);
+  /**
+   * The opacity the panel rests at. Full, in every state: held back at .75 the
+   * copy on the disc went grey rather than white, and the state with nothing
+   * chosen — the one the panel spends the most time in — was the greyest of
+   * them. Both halves of the fade land on this exact value, so the animation
+   * ends where the stylesheet leaves it rather than stepping on the last frame.
+   */
+  const restOpacity = 1;
   const activeBridge = $derived(
     active?.platform ? (bridges.find((bridge) => bridge.platform === active.platform) ?? null) : null,
   );
@@ -263,14 +369,38 @@
    * this, hovering a neighbour would show it another network's QR code.
    */
   const flowHere = $derived(Boolean(active?.platform && linking === active.platform));
+  /**
+   * A method has been chosen and the bridge has not answered with its first
+   * step yet. The panel commits to the choice immediately and shows the shape
+   * of what is coming: asking a bridge for a QR takes a moment, and leaving the
+   * method list up for that moment read as a click that did nothing.
+   */
+  const pending = $derived(Boolean(flowHere && !step && busy === `link:${linking}`));
+  /** The method being waited on, so the skeleton can match its shape. */
+  const pendingFlow = $derived(
+    pending ? (activeBridge?.flows.find((flow) => flow.id === activeFlow) ?? null) : null,
+  );
+  /** A QR is a square block; everything else arrives as lines of text or fields. */
+  const pendingQr = $derived(
+    Boolean(pendingFlow && /qr/i.test(`${pendingFlow.id} ${pendingFlow.name}`)),
+  );
+
   /** Ready for the explicit "Log in" button: reachable, idle, and loggable. */
   const canLogin = $derived(
     connected &&
-      !(flowHere && step) &&
+      !(flowHere && (step || pending)) &&
       !needsSetup &&
       activeBridge !== null &&
       activeBridge.flows.length > 0,
   );
+
+  /**
+   * A platform offering more than one way in owes the user a way back to that
+   * choice. Picking QR and finding out your phone is across the room is not a
+   * decision to be stuck with: the code on screen has to be leaveable, and the
+   * pairing-code method reachable, without abandoning the platform entirely.
+   */
+  const hasChoices = $derived((activeBridge?.flows.length ?? 0) > 1);
 
   const setupReady = $derived(
     Boolean(
@@ -686,19 +816,25 @@
 
   async function startLink(platform: CommsPlatform, flowId: string): Promise<void> {
     attempt += 1;
+    const mine = attempt;
     linking = platform;
     activeFlow = flowId;
     step = null;
+    stepError = '';
     busy = `link:${platform}`;
     try {
-      step = await api.comms.loginStart(platform, flowId);
+      const first = await api.comms.loginStart(platform, flowId);
+      // Backed out while the bridge was still answering: the panel has already
+      // moved on, and a step from an abandoned method must not land on it.
+      if (attempt !== mine) return;
+      step = first;
       // Busy ends when the first step is on screen, not when the flow does: a
       // QR wait can hold `advance` open for minutes, and the alternative
       // methods must stay clickable for exactly that stretch.
       busy = '';
       await advance();
     } catch (cause) {
-      stepError = readableError(cause);
+      if (attempt === mine) stepError = readableError(cause);
     } finally {
       if (busy === `link:${platform}`) busy = '';
     }
@@ -727,12 +863,24 @@
           return;
         }
       } else if (step.type === 'cookies') {
+        const platform = linking;
+        const loginId = step.loginId;
         try {
           const next = await api.comms.loginCookies(linking, step.loginId, step.stepId);
           if (attempt !== mine) return;
           step = next;
         } catch (cause) {
-          if (attempt === mine) stepError = readableError(cause);
+          if (attempt !== mine) return;
+          // The sign-in window is gone — closed, or it failed to open. Drop the
+          // flow so the card offers the log-in button again; leaving the step
+          // in place stranded the user on "finish signing in" with no window
+          // to finish in and no way to retry.
+          attempt += 1;
+          step = null;
+          activeFlow = '';
+          linking = '';
+          stepError = readableError(cause);
+          status = await api.comms.loginCancel(platform, loginId).catch(() => status);
           return;
         }
       } else if (step.type === 'complete') {
@@ -846,7 +994,7 @@
     <p class="onb-eyebrow">The Hub</p>
     <h1 class="onb-title">One place for everything you talk on.</h1>
     <p class="onb-lede">
-      The Hub runs on this Mac. It carries every conversation Midas can reach, chat, DMs and mail,
+      The Hub runs on this Mac. It carries every conversation FlareAI can reach, chat, DMs and mail,
       into one stream it can read and answer. Nothing leaves this machine.
     </p>
 
@@ -857,7 +1005,7 @@
     {#if !connected}
       <p class="onb-note">
         {hub?.canAutoConnect
-          ? 'The Hub is not running yet. Midas makes its own account on it, so there is nothing for you to choose.'
+          ? 'The Hub is not running yet. FlareAI makes its own account on it, so there is nothing for you to choose.'
           : 'The Hub is not available on this Mac yet, so its platforms cannot be reached.'}
       </p>
     {/if}
@@ -867,10 +1015,10 @@
         <button type="button" class="onb-button primary" disabled={busy === 'connect'} onclick={() => void connect()}>
           {busy === 'connect' ? 'Starting the Hub…' : 'Start the Hub'}
         </button>
-        <button type="button" class="onb-quiet" onclick={onSkip}>Skip the Hub</button>
       {:else}
         <button type="button" class="onb-button primary" onclick={done}>Continue</button>
       {/if}
+      <SkipAction />
     </div>
   </div>
 
@@ -893,7 +1041,7 @@
           : mailAccounts.length > 0}
         class:open={open === item.key}
         style="{seatPose(index)};--i:{index}"
-        onmouseenter={() => hoverOn(item.key)}
+        onmouseenter={() => hoverOn(item.key, true)}
         onmouseleave={hoverOff}
         onfocus={() => hoverOn(item.key)}
         onblur={hoverOff}
@@ -917,8 +1065,10 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="pf-face"
-    use:fadeEdges={`${activeKey}:${activeMailboxes.length}:${adding}`}
-    class:empty={!active}
+    bind:this={faceEl}
+    use:fadeEdges={`${shownKey}:${activeMailboxes.length}:${adding}`}
+    use:fadeSwap={shownKey}
+    style="opacity:{restOpacity}"
     onmouseenter={() => clearTimeout(hoverRelease)}
     onmouseleave={hoverOff}
     onfocusin={() => clearTimeout(hoverRelease)}
@@ -928,7 +1078,23 @@
         <span class="pf-face-mark"><img src={active.logo} alt="" aria-hidden="true" /></span>
       {/if}
       <p class="onb-eyebrow">{active.name}</p>
-      {#if flowHere && qr}
+      {#if pending}
+        <!-- The shape of the step being fetched, held in place until it lands,
+             so the panel changes once rather than twice. -->
+        {#if pendingQr}
+          <div class="pf-qr pf-skeleton-qr" aria-hidden="true"></div>
+        {:else}
+          <div class="pf-skeleton-lines" aria-hidden="true">
+            <span></span>
+            <span></span>
+          </div>
+        {/if}
+        <p class="onb-note" role="status">
+          <!-- The method's own name, as the bridge writes it: lowercasing it
+               turns "QR Code" into something that reads like a typo. -->
+          {pendingFlow ? `Getting ${pendingFlow.name} ready…` : 'Starting…'}
+        </p>
+      {:else if flowHere && qr}
         <div class="pf-qr">
           <!-- The four-module quiet zone belongs to the symbol; scanners need it. -->
           <svg viewBox="-4 -4 {qr.size + 8} {qr.size + 8}" role="img" aria-label="Pairing QR code">
@@ -977,7 +1143,10 @@
           </label>
         {/each}
       {:else if flowHere && step?.type === 'cookies'}
-        <p class="onb-note">Finish signing in to {active.name} in the sheet that just opened.</p>
+        <p class="onb-note">
+          Finish signing in to {active.name} in the window that just opened. Closing it brings you
+          back here.
+        </p>
       {:else if needsSetup && activeBridge?.setup}
         <!-- Telegram: the bridge will not connect on someone else's
              application, so the pair is asked for here rather than shipped. -->
@@ -1035,13 +1204,13 @@
       {:else if !connected}
         <p class="onb-note">
           {hub?.canAutoConnect
-            ? 'This comes in through the Hub, which is not started yet. Midas makes its own account on it.'
+            ? 'This comes in through the Hub, which is not started yet. FlareAI makes its own account on it.'
             : 'This comes in through the Hub, which is not available on this Mac.'}
         </p>
       {:else if activeBridge?.state === 'unavailable' || activeBridge?.api === 'none'}
         <p class="onb-note">
           {activeBridge.error ??
-            'This one reaches Midas through a relay on this Mac rather than a sign-in, so there is nothing to bring in here.'}
+            'This one reaches FlareAI through a relay on this Mac rather than a sign-in, so there is nothing to bring in here.'}
         </p>
       {:else if activeBridge?.state === 'dormant'}
         <!-- Not running because nothing is linked to it. Hovering this seat
@@ -1146,6 +1315,16 @@
             onclick={() => void connectThenLink(active.platform!)}
           >
             {busy === 'connect' ? 'Starting the Hub…' : 'Start the Hub and bring it in'}
+          </button>
+        {/if}
+        {#if flowHere && hasChoices && (pending || (step && step.type !== 'cookies'))}
+          <!-- Sits on its own line below whatever the step itself needs, so it
+               reads as the way out of this method rather than as another step
+               in it. Not offered for a cookie sign-in: that method's window is
+               in front of this panel and has its own close button, which is
+               already the way back here. -->
+          <button type="button" class="onb-quiet pf-back" onclick={() => void cancel()}>
+            Other verification methods
           </button>
         {/if}
       </div>
@@ -1321,10 +1500,10 @@
       #000 calc(var(--fade-size) * var(--fade-top)),
       #000 calc(100% - var(--fade-size) * var(--fade-bottom)),
       transparent 100%);
-    position:absolute;inset:0;display:flex;align-items:center;padding-left:clamp(52px,8.5vw,136px);--hub-fill:#0a0a0a;--hub-ink:#fff;--hub-ink-soft:rgb(255 255 255 / .64)}
-  :global(:root[data-theme="dark"]) .pf{--hub-fill:#fafafa;--hub-ink:#0a0a0a;--hub-ink-soft:rgb(10 10 10 / .62)}
+    position:absolute;inset:0;display:flex;align-items:center;padding-left:clamp(52px,8.5vw,136px);--hub-fill:#0a0a0a;--hub-ink:#fff;--hub-ink-soft:rgb(255 255 255 / .86)}
+  :global(:root[data-theme="dark"]) .pf{--hub-fill:#fafafa;--hub-ink:#0a0a0a;--hub-ink-soft:rgb(10 10 10 / .84)}
   @media (prefers-color-scheme:dark){
-    :global(:root:not([data-theme="light"])) .pf{--hub-fill:#fafafa;--hub-ink:#0a0a0a;--hub-ink-soft:rgb(10 10 10 / .62)}
+    :global(:root:not([data-theme="light"])) .pf{--hub-fill:#fafafa;--hub-ink:#0a0a0a;--hub-ink-soft:rgb(10 10 10 / .84)}
   }
 
   /* Opacity only. The pan is already carrying this screen up from below; a
@@ -1381,11 +1560,17 @@
        longer scrolls here instead. */
     max-height:min(74vh,600px);overflow-y:auto;overscroll-behavior:contain;
     --fade-top:0;--fade-bottom:0;--fade-size:28px;
-    -webkit-mask-image:var(--edge-fade);mask-image:var(--edge-fade)}
-  .pf-face.empty{opacity:.75}
-  .pf-face :global(.onb-note){margin:0;color:var(--hub-ink-soft)}
+    -webkit-mask-image:var(--edge-fade);mask-image:var(--edge-fade);
+    /* The crossfade puts the panel on its own compositing layer for as long as
+       it runs, and text is smoothed differently there — so the last frame of
+       every fade handed the type back to the other smoothing and the whole
+       panel appeared to darken on arrival. Held to one smoothing, and the
+       layer kept rather than made and dropped, the fade ends where it looks
+       like it is ending. */
+    -webkit-font-smoothing:antialiased;will-change:opacity}
+  .pf-face :global(.onb-note){margin:0;color:var(--hub-ink)}
   .pf-face :global(.onb-note.warn){color:#f87171}
-  .pf-face :global(.onb-eyebrow){margin:0;color:var(--hub-ink-soft)}
+  .pf-face :global(.onb-eyebrow){margin:0;color:var(--hub-ink)}
   .pf-face :global(.onb-state){color:var(--hub-ink)}
   .pf-name{margin:0;color:var(--hub-ink);font-size:16px;font-weight:650;letter-spacing:-.02em}
   /* The number carries the screen, so it is set like a headline and the word
@@ -1403,6 +1588,8 @@
   .pf-stack-mark img{width:18px;height:18px;object-fit:contain}
   .pf-stack-more{background:rgb(from var(--hub-ink) r g b / .22);color:var(--hub-ink);font-size:10.5px}
   .pf-actions{margin-top:8px}
+  /* Its own row under the step's own button, never beside it. */
+  .pf-back{flex-basis:100%;text-align:left;text-decoration:underline;text-underline-offset:3px}
   /* One row per linked account: who it is, how it is doing, and the way out.
      Rows rather than prose because the count is open-ended. */
   .pf-accounts{margin:2px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:5px;width:100%;
@@ -1465,6 +1652,14 @@
   .pf-qr{width:168px;padding:10px;border-radius:12px;background:#fff}
   .pf-qr svg{width:100%;height:auto;display:block;shape-rendering:crispEdges}
   .pf-qr img{width:100%;height:auto;display:block}
+  /* The placeholder holds the exact box the real code will fill, so nothing
+     under it moves when it lands. It stays on the ink rather than the white
+     ground: a blank white square reads as a QR that failed to draw. */
+  .pf-skeleton-qr{width:168px;height:168px;padding:0;background:rgb(from var(--hub-ink) r g b / .12);animation:pf-skeleton 1.4s ease-in-out infinite}
+  .pf-skeleton-lines{width:100%;display:flex;flex-direction:column;gap:9px}
+  .pf-skeleton-lines span{height:34px;border-radius:9px;background:rgb(from var(--hub-ink) r g b / .12);animation:pf-skeleton 1.4s ease-in-out infinite}
+  .pf-skeleton-lines span:last-child{width:62%;animation-delay:.18s}
+  @keyframes pf-skeleton{0%,100%{opacity:.5}50%{opacity:1}}
   /* Emoji render larger than digits at the same size; even out the read. */
   .pf-code.emoji{font-size:26px;letter-spacing:.3em}
   .pf-field-hint{display:block;margin-top:3px;color:var(--hub-ink-soft);font-size:10.5px;line-height:1.4}
@@ -1474,5 +1669,7 @@
     .pf-seat,.pf-seat-mark{transition:opacity .18s ease}
     .pf.live .pf-scene,.pf.live .pf-copy{animation:none}
     .pf-seat:hover:not(:disabled),.pf-seat:focus-visible{transform:translate(-50%,-50%)}
+    /* The wait is still readable without the pulse: the note says so in words. */
+    .pf-skeleton-qr,.pf-skeleton-lines span{animation:none}
   }
 </style>

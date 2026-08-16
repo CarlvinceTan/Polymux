@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import {midasApi} from '../../api/midas';
+  import {flareaiApi} from '../../api/flareai';
 
   /** Site icons for links, asked for once per site and shared by every message
    * on screen — the same handful of sites recur across a conversation. */
@@ -8,7 +8,7 @@
   function linkFavicon(url: string): Promise<string | null> {
     let pending = linkFavicons.get(url);
     if (!pending) {
-      pending = midasApi().browser.favicon(url).catch(() => null);
+      pending = flareaiApi().browser.favicon(url).catch(() => null);
       linkFavicons.set(url, pending);
     }
     return pending;

@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 
-STATE_DIR = Path.home() / ".midas" / "state"
+STATE_DIR = Path.home() / ".flareai" / "state"
 REGISTRY = STATE_DIR / "window-control-leases.json"
 LOCK_FILE = STATE_DIR / "window-control-leases.lock"
 

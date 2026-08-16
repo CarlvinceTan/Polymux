@@ -1,5 +1,5 @@
 <script lang="ts">
-  import {onMount} from 'svelte';
+  import {onMount, tick} from 'svelte';
   import type {
     CommsBridgeAccountDto,
     CommsBridgeDto,
@@ -7,32 +7,48 @@
     CommsLoginStepDto,
     CommsPlatform,
     CommsStatusDto,
-    MidasApi,
+    FlareAIApi,
     SaveEmailAccountRequest,
     SystemPermissionKind,
-  } from '@midas/protocol';
-  import {COMMS_EMAIL_PRESETS, permissionPrompts} from '@midas/protocol';
+  } from '@flareai/protocol';
+  import {COMMS_EMAIL_PRESETS, permissionPrompts} from '@flareai/protocol';
   import {readableError} from '../../errors';
   import {qrSvgPath} from '../../qr';
+  import {bridgeLogo, mailLogo} from '../../options/platformBrands';
   import Icon from '../shared/Icon.svelte';
   import Menu from '../shared/Menu.svelte';
 
-  export let api: MidasApi;
+  export let api: FlareAIApi;
 
-  type Section = {kind: 'bridge'; platform: CommsPlatform} | {kind: 'mail'} | {kind: 'hub'};
+  type Section = {kind: 'bridge'; platform: CommsPlatform} | {kind: 'mail'};
 
   let status: CommsStatusDto | null = null;
-  let selected: Section = {kind: 'hub'};
+  // The rail's contents arrive with the first status, so the opening section is
+  // picked once they land rather than guessed here.
+  let selected: Section | null = null;
   let loading = true;
   let error = '';
   let busy = '';
 
-  // Hub sign-in
-  let hubUserId = '';
-  let hubPassword = '';
-  let hubUrlDraft = '';
-  let editingHubUrl = false;
-  let showManualSignIn = false;
+  // Rail chrome, matched to the MCP/Skills rails in SettingsModal.
+  type RailMenu = 'filter' | 'sort';
+  const railFilterOptions = [
+    {value: 'all', label: 'All'},
+    {value: 'linked', label: 'Linked'},
+    {value: 'unlinked', label: 'Not linked'},
+    {value: 'attention', label: 'Needs attention'},
+  ];
+  const railSortOptions = [
+    {value: 'recommended', label: 'Recommended'},
+    {value: 'name-asc', label: 'Name A–Z'},
+    {value: 'name-desc', label: 'Name Z–A'},
+  ];
+  let railFilter = 'all';
+  let railSort = 'recommended';
+  let openRailMenu: RailMenu | null = null;
+  let railList: HTMLUListElement;
+  let railAtTop = true;
+  let railAtBottom = true;
 
   // Bridge linking
   let step: CommsLoginStepDto | null = null;
@@ -136,7 +152,7 @@
   // svelte-check does not narrow `selected` across the ternary, so the tagged
   // branch is pulled into a local first.
   $: activeBridge = pickBridge(selected, bridges);
-  $: mailOpen = selected.kind === 'mail';
+  $: mailOpen = selected?.kind === 'mail';
   $: mailSummary = !status?.email.tooling.installed
     ? 'Unavailable'
     : emailAccounts.length === 0
@@ -152,8 +168,106 @@
         ? 'connected'
         : 'logged-out';
 
-  function pickBridge(section: Section, list: CommsBridgeDto[]): CommsBridgeDto | null {
-    if (section.kind !== 'bridge') return null;
+  /**
+   * Mail and the bridges share one rail, so they are flattened into a single
+   * list before filtering and sorting — otherwise "Name A–Z" would sort the
+   * bridges around a Mail row pinned outside the ordering.
+   */
+  $: railEntries = [
+    {
+      key: 'mail',
+      section: {kind: 'mail'} as Section,
+      name: 'Mail',
+      logo: mailLogo('custom'),
+      state: mailState,
+      label: mailSummary,
+    },
+    ...bridges.map((bridge) => ({
+      key: bridge.platform,
+      section: {kind: 'bridge', platform: bridge.platform} as Section,
+      name: bridge.name,
+      logo: bridgeLogo(bridge.platform),
+      state: bridge.state as string,
+      label: bridgeLabel(bridge),
+    })),
+  ];
+  // Both the filter and the sort are passed in rather than read off the
+  // closure: a value only touched inside a helper is not a dependency Svelte
+  // tracks, so the rail would keep showing the previous selection's list.
+  $: visibleRail = sortRail(
+    railEntries.filter((entry) => matchesFilter(entry.state, railFilter)),
+    railSort,
+  );
+  $: railEmpty = visibleRail.length === 0;
+  // A filter that hides the open section would otherwise leave the detail pane
+  // showing something the rail no longer offers a way back to.
+  $: if (visibleRail.length && !visibleRail.some((entry) => isSelected(entry.section, selected))) {
+    selected = visibleRail[0].section;
+  }
+  // The masks are painted from measurements, so they are re-taken whenever the
+  // list's contents change under them.
+  $: railContentKey = `${railFilter}:${railSort}:${visibleRail.length}`;
+  $: if (railContentKey) void tick().then(measureRailEdges);
+
+  function isSelected(section: Section, current: Section | null): boolean {
+    if (!current || current.kind !== section.kind) return false;
+    return section.kind !== 'bridge' || (current.kind === 'bridge' && current.platform === section.platform);
+  }
+
+  function matchesFilter(state: string, filter: string): boolean {
+    switch (filter) {
+      case 'linked':
+        return state === 'connected';
+      case 'unlinked':
+        return state === 'logged-out' || state === 'dormant';
+      case 'attention':
+        return state === 'error' || state === 'unreachable' || state === 'unavailable';
+      default:
+        return true;
+    }
+  }
+
+  function sortRail<T extends {name: string}>(entries: T[], sort: string): T[] {
+    if (sort === 'recommended') return entries;
+    const ordered = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+    return sort === 'name-desc' ? ordered.reverse() : ordered;
+  }
+
+  function measureRailEdges(): void {
+    if (!railList) return;
+    railAtTop = railList.scrollTop <= 1;
+    railAtBottom = railList.scrollHeight - railList.scrollTop - railList.clientHeight <= 1;
+  }
+
+  function toggleRailMenu(menu: RailMenu): void {
+    openRailMenu = openRailMenu === menu ? null : menu;
+  }
+
+  function chooseRailOption(menu: RailMenu, value: string): void {
+    if (menu === 'filter') railFilter = value;
+    else railSort = value;
+    openRailMenu = null;
+  }
+
+  /**
+   * Only the open menu and the button that opened it hold a press. Testing the
+   * whole tools row instead would make its blank stretch — which runs the full
+   * width of the rail — a dead zone where a press reads as outside the menu but
+   * dismisses nothing.
+   */
+  function closeRailMenu(event: PointerEvent): void {
+    const target = event.target;
+    const wrap = target instanceof Element ? target.closest('.rail-tool-wrap') : null;
+    if (wrap?.querySelector('.rail-tool-menu')) return;
+    openRailMenu = null;
+  }
+
+  function railKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && openRailMenu) openRailMenu = null;
+  }
+
+  function pickBridge(section: Section | null, list: CommsBridgeDto[]): CommsBridgeDto | null {
+    if (section?.kind !== 'bridge') return null;
     return list.find((item) => item.platform === section.platform) ?? null;
   }
 
@@ -180,50 +294,14 @@
     }
   }
 
+  /**
+   * The hub sets itself up on its own; this only exists so a bridge held back
+   * by a hub that has not provisioned yet is not a dead end.
+   */
   async function connect(): Promise<void> {
     busy = 'connect';
     try {
       status = await api.comms.connect();
-      error = '';
-    } catch (cause) {
-      error = readableError(cause);
-      // Provisioning is the only path most people should need; offer the manual
-      // one only once it has actually failed.
-      showManualSignIn = true;
-    } finally {
-      busy = '';
-    }
-  }
-
-  async function signIn(): Promise<void> {
-    busy = 'sign-in';
-    try {
-      status = await api.comms.signIn(hubUserId.trim(), hubPassword);
-      hubPassword = '';
-      error = '';
-    } catch (cause) {
-      error = readableError(cause);
-    } finally {
-      busy = '';
-    }
-  }
-
-  async function signOut(): Promise<void> {
-    busy = 'sign-out';
-    try {
-      status = await api.comms.signOut();
-    } catch (cause) {
-      error = readableError(cause);
-    } finally {
-      busy = '';
-    }
-  }
-
-  async function saveHubUrl(): Promise<void> {
-    busy = 'hub-url';
-    try {
-      status = await api.comms.setHubUrl(hubUrlDraft.trim());
-      editingHubUrl = false;
       error = '';
     } catch (cause) {
       error = readableError(cause);
@@ -269,11 +347,17 @@
       }
       if (step.type === 'cookies') {
         waiting = true;
+        const platform = stepPlatform;
+        const loginId = step.loginId;
         try {
           step = await api.comms.loginCookies(stepPlatform, step.loginId, step.stepId);
         } catch (cause) {
+          // The sign-in window is gone — closed, or it failed to open. End the
+          // flow so the log-in button comes back; the error stays on screen.
           stepError = readableError(cause);
-          waiting = false;
+          step = null;
+          stepPlatform = null;
+          status = await api.comms.loginCancel(platform, loginId).catch(() => status);
           return;
         } finally {
           waiting = false;
@@ -430,6 +514,8 @@
   }
 </script>
 
+<svelte:window onpointerdown={closeRailMenu} onkeydown={railKeydown} />
+
 <div class="comms" role="tabpanel">
   {#if loading}
     <p class="comms-muted">Checking your accounts…</p>
@@ -442,51 +528,110 @@
     {/if}
 
     <div class="comms-body">
-      <ul class="comms-rail">
-        <li>
-          <button type="button" class:active={selected.kind === 'hub'} onclick={() => (selected = {kind: 'hub'})}>
-            <Icon name="connections" size={15} />
-            <span>
-              <strong>Message hub</strong>
-              <small>{status?.hub.status === 'signed-in' ? 'Connected' : status?.hub.status === 'reachable' ? 'Setup needed' : 'Offline'}</small>
-            </span>
-          </button>
-        </li>
-        {#each bridges as bridge (bridge.platform)}
-          <li>
+      <div class="comms-rail-column">
+        <ul
+          class="comms-rail"
+          class:empty-state={railEmpty}
+          class:at-top={railAtTop}
+          class:at-bottom={railAtBottom}
+          bind:this={railList}
+          onscroll={measureRailEdges}
+        >
+          {#each visibleRail as entry (entry.key)}
+            <li>
+              <button
+                type="button"
+                class:active={isSelected(entry.section, selected)}
+                onclick={() => (selected = entry.section)}
+              >
+                <span class="comms-mark">
+                  {#if entry.logo}
+                    <img src={entry.logo} alt="" aria-hidden="true" />
+                  {:else}
+                    <span class="comms-mark-letter">{entry.name.charAt(0)}</span>
+                  {/if}
+                  <span class="comms-dot" data-state={entry.state}></span>
+                </span>
+                <span>
+                  <strong>{entry.name}</strong>
+                  <small class="state-text" data-state={entry.state}>{entry.label}</small>
+                </span>
+              </button>
+            </li>
+          {:else}
+            <li class="comms-rail-empty">Nothing matches this filter</li>
+          {/each}
+        </ul>
+
+        <div class="comms-rail-tools">
+          <div class="rail-tool-wrap">
             <button
               type="button"
-              class:active={selected.kind === 'bridge' && selected.platform === bridge.platform}
-              onclick={() => (selected = {kind: 'bridge', platform: bridge.platform})}
+              class="rail-tool"
+              class:active={railFilter !== 'all'}
+              aria-label="Filter platforms"
+              aria-haspopup="menu"
+              aria-expanded={openRailMenu === 'filter'}
+              data-tooltip-label="Filter"
+              onclick={() => toggleRailMenu('filter')}
             >
-              <span class="comms-dot" data-state={bridge.state}></span>
-              <span>
-                <strong>{bridge.name}</strong>
-                <small>{bridgeLabel(bridge)}</small>
-              </span>
+              <Icon name="filter" size={15} />
             </button>
-          </li>
-        {/each}
-        <li>
-          <button
-            type="button"
-            class:active={selected.kind === 'mail'}
-            onclick={() => (selected = {kind: 'mail'})}
-          >
-            <span class="comms-dot" data-state={mailState}></span>
-            <span>
-              <strong>Mail</strong>
-              <small>{mailSummary}</small>
-            </span>
-          </button>
-        </li>
-      </ul>
+            {#if openRailMenu === 'filter'}
+              <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label="Filter platforms">
+                {#each railFilterOptions as option (option.value)}
+                  <button
+                    type="button"
+                    class="flareai-dropdown-item"
+                    role="menuitemradio"
+                    aria-checked={option.value === railFilter}
+                    onclick={() => chooseRailOption('filter', option.value)}
+                  >
+                    <span>{option.label}</span>
+                    {#if option.value === railFilter}<Icon name="check" size={13} />{/if}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+          <div class="rail-tool-wrap">
+            <button
+              type="button"
+              class="rail-tool"
+              class:active={railSort !== 'recommended'}
+              aria-label="Sort platforms"
+              aria-haspopup="menu"
+              aria-expanded={openRailMenu === 'sort'}
+              data-tooltip-label="Sort"
+              onclick={() => toggleRailMenu('sort')}
+            >
+              <Icon name="sort" size={15} />
+            </button>
+            {#if openRailMenu === 'sort'}
+              <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label="Sort platforms">
+                {#each railSortOptions as option (option.value)}
+                  <button
+                    type="button"
+                    class="flareai-dropdown-item"
+                    role="menuitemradio"
+                    aria-checked={option.value === railSort}
+                    onclick={() => chooseRailOption('sort', option.value)}
+                  >
+                    <span>{option.label}</span>
+                    {#if option.value === railSort}<Icon name="check" size={13} />{/if}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        </div>
+      </div>
 
       <div class="comms-detail">
         {#if editingEmail}
           <header class="comms-detail-header">
             <h3>{emailOriginalId ? `Edit ${emailOriginalId}` : 'Add a mailbox'}</h3>
-            <p>Midas stores the password in your keychain and writes only a lookup into Himalaya's config.</p>
+            <p>FlareAI stores the password in your keychain and writes only a lookup into Himalaya's config.</p>
           </header>
           <div class="comms-form">
             <label>
@@ -556,113 +701,14 @@
               </button>
             </footer>
           </div>
-        {:else if selected.kind === 'hub'}
-          <header class="comms-detail-header">
-            <h3>Message hub</h3>
-            <p>
-              Every messaging platform below runs through one hub on this Mac. Nothing leaves your
-              machine except the traffic each platform sends anyway.
-            </p>
-          </header>
-          <section class="comms-block">
-            <h4>Status</h4>
-            {#if signedIn}
-              <p class="comms-value">
-                <span class="comms-status" data-state="ok">Connected</span>
-                <button type="button" disabled={busy === 'sign-out'} onclick={() => void signOut()}>Disconnect</button>
-              </p>
-              <p class="comms-hint">
-                Midas holds its own account on the hub. Its credentials are generated and kept in
-                your keychain, so there is nothing for you to remember.
-              </p>
-            {:else if status?.hub.canAutoConnect}
-              <p class="comms-hint">
-                Midas will set up its own account on the hub. You do not need to create one or
-                choose a password.
-              </p>
-              <footer class="comms-actions">
-                <button type="button" class="primary" disabled={busy === 'connect'} onclick={() => void connect()}>
-                  {busy === 'connect' ? 'Setting up…' : 'Set up messaging'}
-                </button>
-              </footer>
-            {:else if status?.hub.status === 'reachable'}
-              <p class="comms-hint warn">
-                The hub is reachable but Midas cannot create an account on it, so it needs an
-                existing one.
-              </p>
-            {:else}
-              <p class="comms-hint warn">
-                {status?.hub.error ?? 'The message hub is not running on this Mac.'}
-              </p>
-            {/if}
-          </section>
-          <section class="comms-block">
-            <h4>Hub address</h4>
-            {#if editingHubUrl}
-              <div class="comms-form-row">
-                <label>
-                  <span>Address</span>
-                  <input bind:value={hubUrlDraft} spellcheck="false" placeholder="http://127.0.0.1:18080" />
-                </label>
-              </div>
-              <footer class="comms-actions">
-                <button type="button" onclick={() => (editingHubUrl = false)}>Cancel</button>
-                <button type="button" class="primary" disabled={busy === 'hub-url'} onclick={() => void saveHubUrl()}>Save</button>
-              </footer>
-            {:else}
-              <p class="comms-value">
-                <code>{status?.hub.baseUrl}</code>
-                <button
-                  type="button"
-                  onclick={() => {
-                    hubUrlDraft = status?.hub.baseUrl ?? '';
-                    editingHubUrl = true;
-                  }}>Change</button>
-              </p>
-              {#if status?.hub.error}<p class="comms-hint warn">{status.hub.error}</p>{/if}
-            {/if}
-          </section>
-          {#if !signedIn}
-            <section class="comms-block">
-              <button
-                type="button"
-                class="comms-disclosure"
-                aria-expanded={showManualSignIn}
-                onclick={() => (showManualSignIn = !showManualSignIn)}
-              >
-                Use an existing Matrix account instead
-              </button>
-              {#if showManualSignIn}
-                <div class="comms-form">
-                  <label>
-                    <span>Matrix user ID</span>
-                    <input bind:value={hubUserId} spellcheck="false" placeholder="@you:your-server" />
-                  </label>
-                  <label>
-                    <span>Password</span>
-                    <input bind:value={hubPassword} type="password" />
-                  </label>
-                  <footer class="comms-actions">
-                    <button
-                      type="button"
-                      disabled={busy === 'sign-in' || !hubUserId.trim() || !hubPassword}
-                      onclick={() => void signIn()}
-                    >
-                      {busy === 'sign-in' ? 'Signing in…' : 'Sign in'}
-                    </button>
-                  </footer>
-                </div>
-              {/if}
-            </section>
-          {/if}
         {:else if activeBridge}
           <header class="comms-detail-header">
             <h3>{activeBridge.name}</h3>
             <p>
               {#if activeBridge.state === 'connected'}
                 {activeBridge.accounts.length > 1
-                  ? `${activeBridge.accounts.length} accounts are linked. Midas can read and send on all of them.`
-                  : `Linked as ${activeBridge.accounts[0]?.name}. Midas can read and send here.`}
+                  ? `${activeBridge.accounts.length} accounts are linked. FlareAI can read and send on all of them.`
+                  : `Linked as ${activeBridge.accounts[0]?.name}. FlareAI can read and send here.`}
               {:else if activeBridge.state === 'unavailable'}
                 {activeBridge.error}
               {:else if activeBridge.state === 'dormant'}
@@ -670,7 +716,7 @@
               {:else if activeBridge.state === 'unreachable'}
                 The message hub is not responding, so this platform cannot be checked.
               {:else}
-                Link your {activeBridge.name} account to let Midas read and send messages.
+                Link your {activeBridge.name} account to let FlareAI read and send messages.
               {/if}
             </p>
           </header>
@@ -743,7 +789,14 @@
               {/if}
               {#if stepError}<p class="comms-hint warn">{stepError}</p>{/if}
               <footer class="comms-actions">
-                <button type="button" onclick={() => void cancelLink()}>Cancel</button>
+                <!-- With more than one way in, backing out of a method is a
+                     step towards the others rather than giving up on the
+                     platform, and the label should say so. -->
+                <button type="button" onclick={() => void cancelLink()}>
+                  {activeBridge.flows.length > 1 && step.type !== 'cookies'
+                    ? 'Other verification methods'
+                    : 'Cancel'}
+                </button>
                 {#if step.type === 'user_input'}
                   <button type="button" class="primary" disabled={busy === 'step'} onclick={() => void submitStep()}>
                     {busy === 'step' ? 'Checking…' : 'Continue'}
@@ -789,7 +842,18 @@
                 {/each}
               </ul>
               {#if !signedIn}
-                <p class="comms-hint">Set up the message hub first.</p>
+                {#if status?.hub.canAutoConnect}
+                  <p class="comms-hint">FlareAI still has to set itself up before it can link an account.</p>
+                  <footer class="comms-actions">
+                    <button type="button" class="primary" disabled={busy === 'connect'} onclick={() => void connect()}>
+                      {busy === 'connect' ? 'Setting up…' : 'Set up messaging'}
+                    </button>
+                  </footer>
+                {:else}
+                  <p class="comms-hint warn">
+                    {status?.hub.error ?? 'The message hub is not running on this Mac.'}
+                  </p>
+                {/if}
               {/if}
               {#if stepError}<p class="comms-hint warn">{stepError}</p>{/if}
             </section>
@@ -806,7 +870,7 @@
           <header class="comms-detail-header">
             <h3>Mail</h3>
             <p>
-              Midas reads and sends email through these mailboxes. Passwords live in your keychain,
+              FlareAI reads and sends email through these mailboxes. Passwords live in your keychain,
               never in a config file.
             </p>
             <span class="comms-detail-actions">
@@ -841,7 +905,7 @@
                   {#if account.error}<p class="comms-hint warn">{account.error}</p>{/if}
                   {#if !account.secretStored}
                     <p class="comms-hint">
-                      Set up outside Midas, so its password is not in Midas's keychain entry. Editing
+                      Set up outside FlareAI, so its password is not in FlareAI's keychain entry. Editing
                       it here will move it.
                     </p>
                   {/if}
@@ -873,13 +937,6 @@
             </ul>
           {/if}
         {/if}
-
-        {#if !editingEmail && selected.kind === 'hub' && status && !status.email.tooling.installed}
-          <section class="comms-block">
-            <h4>Email</h4>
-            <p class="comms-hint warn">{status.email.tooling.error}</p>
-          </section>
-        {/if}
       </div>
     </div>
   {/if}
@@ -897,8 +954,21 @@
   /* Flex gap rather than row margins: block margins collapse to half the
      intended spacing, and the MCP and Skills rails read as 4px of clear air
      between adjacent highlights. */
-  .comms-rail{min-height:0;display:flex;flex-direction:column;gap:4px;margin:0;padding:0 4px 0 0;overflow-y:auto;list-style:none;border-right:1px solid var(--neutral-200)}
+  .comms-rail-column{min-height:0;display:flex;flex-direction:column;gap:6px;padding-right:4px;border-right:1px solid var(--neutral-200)}
+  /* Same fade as the MCP/Skills rails: the mask only opens at an edge the list
+     is actually scrolled away from, so a short list keeps crisp ends. */
+  .comms-rail{--rail-mask-top:transparent;--rail-mask-bottom:transparent;min-height:0;flex:1;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px 0;overflow-y:auto;list-style:none;-webkit-mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom));mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom))}
+  .comms-rail.at-top{--rail-mask-top:#000}
+  .comms-rail.at-bottom{--rail-mask-bottom:#000}
+  .comms-rail.empty-state{-webkit-mask-image:none;mask-image:none}
   .comms-rail>li{margin:0}
+  .comms-rail-empty{padding:6px 8px;color:var(--neutral-400);font-size:10.5px}
+  .comms-rail-tools{position:relative;flex:none;display:flex;align-items:center;gap:2px}
+  .rail-tool-wrap{position:relative}
+  .rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}
+  .rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}
+  .rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}
+  .rail-tool-menu .flareai-dropdown-item>span{min-width:0;flex:1}
   .comms-rail button:not(.comms-add){width:100%;display:flex;align-items:center;gap:9px;border:0;border-radius:8px;padding:7px 8px;background:transparent;color:var(--neutral-700);cursor:pointer;font-family:inherit;text-align:left}
   .comms-rail button:not(.comms-add):hover{background:var(--neutral-100)}
   .comms-rail button.active{background:var(--neutral-100);color:var(--neutral-950)}
@@ -907,6 +977,16 @@
   .comms-rail strong{overflow:hidden;color:var(--neutral-900);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:540}
   .comms-rail small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:9.5px}
 
+  /* The mark says which platform, the dot says how it is doing. The dot rides
+     the corner of the logo rather than sitting beside it, so the row keeps one
+     leading element and the names still line up. */
+  /* Outranks `.comms-rail button>span:not(.comms-dot)`, which would otherwise
+     claim this span as the text column and stretch it. */
+  .comms-rail button>span.comms-mark{position:relative;width:20px;height:20px;flex:none;display:grid;place-items:center}
+  .comms-mark img{width:100%;height:100%;object-fit:contain}
+  .comms-mark-letter{display:grid;place-items:center;width:100%;height:100%;border-radius:50%;background:var(--neutral-200);color:var(--neutral-600);font-size:10px;font-weight:650}
+  .comms-mark .comms-dot{position:absolute;right:-2px;bottom:-2px;box-shadow:0 0 0 1.5px var(--app-surface)}
+  .comms-rail button.active .comms-mark .comms-dot{box-shadow:0 0 0 1.5px var(--neutral-100)}
   .comms-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--neutral-300)}
   .comms-dot[data-state="connected"]{background:#3f9c5a}
   .comms-dot[data-state="connecting"]{background:#c99a3a}
@@ -970,8 +1050,6 @@
   .comms-qr svg{width:100%;height:auto;display:block;shape-rendering:crispEdges}
   .comms-code{padding:9px 12px;border-radius:9px;background:var(--neutral-100);color:var(--neutral-950);font-size:19px;font-weight:600;letter-spacing:.16em;font-variant-numeric:tabular-nums}
 
-  .comms-disclosure{border:0;padding:0;margin:0 0 8px;background:transparent;color:var(--neutral-600);cursor:pointer;font-family:inherit;font-size:11px;text-decoration:underline;text-underline-offset:2px}
-  .comms-disclosure:hover{color:var(--neutral-950)}
 
   .comms-mailboxes{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
   .comms-mailboxes>li{padding:11px 12px;border:1px solid var(--neutral-200);border-radius:11px}

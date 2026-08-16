@@ -67,6 +67,8 @@
   export let open = false;
   export let expanded = false;
   export let resizing = false;
+  /** True while App drives the expand/minimise width frame by frame. */
+  export let motion = false;
   export let reservedWidth = 0;
   export let summaryData: SummaryViewData = {outputs: [], references: [], tasks: []};
   export let driveRoot: DriveEntry = {id: 'drive-root', name: 'Drive', kind: 'folder', children: []};
@@ -74,6 +76,8 @@
   export let driveSources: DriveSource[] = [];
   export let driveSourceId = '';
   export let driveLoading = false;
+  export let driveError = '';
+  export let onDismissDriveError: () => void = () => {};
   export let onSelectDriveSource: (id: string) => void = () => {};
   export let onDriveNavigate: (entry: DriveEntry) => void = () => {};
   /**
@@ -244,6 +248,7 @@
   class:open
   class:expanded
   class:resizing
+  class:motion
   class="workspace-drawer"
   aria-label="Workspace"
   aria-hidden={!open}
@@ -288,15 +293,15 @@
       <div bind:this={newTabWrapper} class="new-tab-wrap">
         <button type="button" class="title-bar-icon-button workspace-header-action" aria-label="New tab" data-tooltip-align="end" aria-haspopup="menu" aria-expanded={addOpen} onclick={() => addOpen = !addOpen}><Icon name="plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
         {#if addOpen}
-          <div class="polymux-dropdown-menu new-tab-menu" role="menu">
-            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('browser'); }}><Icon name="globe" size={14}/><span>Open browser</span></button>
+          <div class="flareai-dropdown-menu new-tab-menu" role="menu">
+            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('browser'); }}><Icon name="globe" size={14}/><span>Open browser</span></button>
             <!-- Drive and Schedule leave the title bar while the drawer is
                  open, so this menu is where they live instead. -->
             {#if !openKinds.has('drive')}
-              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('drive'); }}><Icon name="drive" size={14}/><span>Drive</span></button>
+              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('drive'); }}><Icon name="drive" size={14}/><span>Drive</span></button>
             {/if}
             {#if !openKinds.has('schedule')}
-              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('schedule'); }}><Icon name="clock" size={14}/><span>Schedule</span></button>
+              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('schedule'); }}><Icon name="clock" size={14}/><span>Schedule</span></button>
             {/if}
           </div>
         {/if}
@@ -362,6 +367,8 @@
       sources={driveSources}
       activeSourceId={driveSourceId}
       loading={driveLoading}
+      error={driveError}
+      onDismissError={onDismissDriveError}
       onSelectSource={onSelectDriveSource}
       onNavigate={onDriveNavigate}
       onOpenEntry={onOpenDriveEntry}

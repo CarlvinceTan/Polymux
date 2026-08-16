@@ -99,10 +99,10 @@ function mix(from: number[], to: number[], amount: number, alpha = 1): string {
   return `rgba(${channel(0)},${channel(1)},${channel(2)},${alpha})`
 }
 
-const CHAMPAGNE_RGB = [255, 232, 163]
-const GOLD_RGB = [212, 160, 23]
-const BRONZE_RGB = [143, 85, 21]
-const UMBER_RGB = [36, 20, 5]
+const LIGHT_RGB = [111, 214, 255]
+const BLUE_RGB = [35, 132, 203]
+const NAVY_RGB = [22, 48, 79]
+const INK_RGB = [8, 21, 37]
 const GREY_RGB = [126, 134, 142]
 
 export function startVoiceOrb(canvas: HTMLCanvasElement, initialState: RealtimeVoiceState = 'connecting'): VoiceOrbHandle {
@@ -161,9 +161,9 @@ export function startVoiceOrb(canvas: HTMLCanvasElement, initialState: RealtimeV
     // Aura: a soft coloured halo that breathes with the audio.
     const auraRadius = Math.min(half, base * (1.45 + energy * 0.22))
     const aura = context.createRadialGradient(centreX, centreY, base * 0.6, centreX, centreY, auraRadius)
-    aura.addColorStop(0, mix(GREY_RGB, GOLD_RGB, visual.saturation, 0.42 * visual.glow))
-    aura.addColorStop(0.55, mix(GREY_RGB, GOLD_RGB, visual.saturation, 0.16 * visual.glow))
-    aura.addColorStop(1, mix(GREY_RGB, GOLD_RGB, visual.saturation, 0))
+    aura.addColorStop(0, mix(GREY_RGB, BLUE_RGB, visual.saturation, 0.42 * visual.glow))
+    aura.addColorStop(0.55, mix(GREY_RGB, BLUE_RGB, visual.saturation, 0.16 * visual.glow))
+    aura.addColorStop(1, mix(GREY_RGB, BLUE_RGB, visual.saturation, 0))
     context.fillStyle = aura
     context.beginPath()
     context.arc(centreX, centreY, auraRadius, 0, Math.PI * 2)
@@ -189,19 +189,19 @@ export function startVoiceOrb(canvas: HTMLCanvasElement, initialState: RealtimeV
       centreX - base * 0.32, centreY - base * 0.38, base * 0.05,
       centreX, centreY, base * 1.25,
     )
-    body.addColorStop(0, mix(GREY_RGB, CHAMPAGNE_RGB, visual.saturation))
-    body.addColorStop(0.34, mix(GREY_RGB, GOLD_RGB, visual.saturation))
-    body.addColorStop(0.72, mix(GREY_RGB, BRONZE_RGB, visual.saturation))
-    body.addColorStop(1, mix(GREY_RGB, UMBER_RGB, visual.saturation))
+    body.addColorStop(0, mix(GREY_RGB, LIGHT_RGB, visual.saturation))
+    body.addColorStop(0.34, mix(GREY_RGB, BLUE_RGB, visual.saturation))
+    body.addColorStop(0.72, mix(GREY_RGB, NAVY_RGB, visual.saturation))
+    body.addColorStop(1, mix(GREY_RGB, INK_RGB, visual.saturation))
     context.fillStyle = body
     context.fillRect(centreX - base * 2, centreY - base * 2, base * 4, base * 4)
 
     // Drifting lobes read as fluid moving inside the orb.
     context.globalCompositeOperation = 'lighter'
     const lobes = [
-      { colour: CHAMPAGNE_RGB, radius: 0.58, speed: 0.42, phase: 0, alpha: 0.72 },
-      { colour: GOLD_RGB, radius: 0.74, speed: -0.31, phase: 2.1, alpha: 0.6 },
-      { colour: CHAMPAGNE_RGB, radius: 0.42, speed: 0.57, phase: 4.2, alpha: 0.5 },
+      { colour: LIGHT_RGB, radius: 0.58, speed: 0.42, phase: 0, alpha: 0.72 },
+      { colour: BLUE_RGB, radius: 0.74, speed: -0.31, phase: 2.1, alpha: 0.6 },
+      { colour: LIGHT_RGB, radius: 0.42, speed: 0.57, phase: 4.2, alpha: 0.5 },
     ]
     for (const lobe of lobes) {
       const angle = drift * lobe.speed + lobe.phase
@@ -219,12 +219,12 @@ export function startVoiceOrb(canvas: HTMLCanvasElement, initialState: RealtimeV
       context.fill()
     }
 
-    // A deep bronze pool keeps the lower body visually anchored.
+    // A deep pool keeps the lower body anchored in brand navy.
     context.globalCompositeOperation = 'multiply'
     const depthX = centreX + base * 0.24
     const depthY = centreY + base * 0.42
     const depth = context.createRadialGradient(depthX, depthY, 0, depthX, depthY, base * 1.05)
-    depth.addColorStop(0, `rgba(${BRONZE_RGB.join(',')},${0.62 * visual.saturation})`)
+    depth.addColorStop(0, `rgba(${NAVY_RGB.join(',')},${0.62 * visual.saturation})`)
     depth.addColorStop(1, 'rgba(255,255,255,0)')
     context.fillStyle = depth
     context.beginPath()

@@ -1,10 +1,10 @@
 /**
- * Rebrands the development Electron bundle as "Midas.app".
+ * Rebrands the development Electron bundle as "FlareAI.app".
  *
  * `app.setName` fixes the menu bar, but the macOS Dock names a tile from the
  * bundle and executable identity of the process — editing CFBundleName alone
  * verifiably does not change the hover label. So the dev bundle is renamed
- * wholesale: Electron.app -> Midas.app, its executable Electron -> Midas,
+ * wholesale: Electron.app -> FlareAI.app, its executable Electron -> FlareAI,
  * CFBundleExecutable updated, and electron's `path.txt` launcher indirection
  * pointed at the new location. The bundle is ad-hoc re-signed because both
  * edits invalidate the signature.
@@ -13,20 +13,34 @@
  * `npm install` restores the stock bundle. The packaged app is unaffected.
  */
 import {execFileSync, spawnSync} from 'node:child_process';
-import {copyFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync} from 'node:fs';
+import {copyFileSync, existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 if (process.platform !== 'darwin') process.exit(0);
 
-const NAME = 'Midas';
+const NAME = 'FlareAI';
 const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const electronDir = path.join(projectRoot, 'node_modules/electron');
 const dist = path.join(electronDir, 'dist');
 const pathFile = path.join(electronDir, 'path.txt');
-const stockApp = path.join(dist, 'Electron.app');
 const brandedApp = path.join(dist, `${NAME}.app`);
 const PLIST_BUDDY = '/usr/libexec/PlistBuddy';
+
+/**
+ * The bundle to rebrand: normally the stock Electron.app, but after the app is
+ * renamed a checkout still carries the *previous* brand's bundle. Adopting
+ * whatever single .app is in dist means a rename does not need a clean
+ * `npm install` to take effect — otherwise the rebrand silently no-ops and the
+ * Dock keeps showing the old name.
+ */
+const sourceApp = () => {
+  const stock = path.join(dist, 'Electron.app');
+  if (existsSync(stock)) return stock;
+  if (!existsSync(dist)) return undefined;
+  const apps = readdirSync(dist).filter((entry) => entry.endsWith('.app'));
+  return apps.length === 1 ? path.join(dist, apps[0]) : undefined;
+};
 
 if (!existsSync(pathFile) || !existsSync(PLIST_BUDDY)) process.exit(0);
 
@@ -47,14 +61,14 @@ const syncIcon = () => {
  * Ad-hoc signatures get a new identity on every resign, which invalidates the
  * Keychain ACL guarding Electron's "Safe Storage" key — each icon tweak used
  * to break saved API keys until the user re-approved access. A stable local
- * identity (Apple Development, or a self-signed "Midas Dev" certificate)
+ * identity (Apple Development, or a self-signed "FlareAI Dev" certificate)
  * keeps the same designated requirement across resigns, so one "Always
  * Allow" lasts. Ad-hoc remains the fallback when no identity exists.
  */
 const signingIdentity = () => {
   try {
     const listing = execFileSync('security', ['find-identity', '-p', 'codesigning', '-v'], {encoding: 'utf8'});
-    const match = listing.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"((?:Midas Dev|Apple Development)[^"]*)"/m);
+    const match = listing.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"((?:FlareAI Dev|Apple Development)[^"]*)"/m);
     return match ? {hash: match[1], authority: match[2]} : {hash: '-', authority: undefined};
   } catch {
     return {hash: '-', authority: undefined};
@@ -94,7 +108,8 @@ if (existsSync(brandedApp) && readFileSync(pathFile, 'utf8').trim() === wanted) 
   }
   process.exit(0);
 }
-if (!existsSync(stockApp)) process.exit(0);
+const source = sourceApp();
+if (!source) process.exit(0);
 
 const plistSet = (key, value) => {
   const plist = path.join(brandedApp, 'Contents/Info.plist');
@@ -105,11 +120,13 @@ const plistSet = (key, value) => {
   }
 };
 
-renameSync(stockApp, brandedApp);
-renameSync(
-  path.join(brandedApp, 'Contents/MacOS/Electron'),
-  path.join(brandedApp, `Contents/MacOS/${NAME}`),
-);
+renameSync(source, brandedApp);
+// The executable inside carries the bundle's old identity, whatever that was.
+const macOS = path.join(brandedApp, 'Contents/MacOS');
+const [executable] = readdirSync(macOS);
+if (executable !== NAME) {
+  renameSync(path.join(macOS, executable), path.join(macOS, NAME));
+}
 plistSet('CFBundleExecutable', NAME);
 plistSet('CFBundleName', NAME);
 plistSet('CFBundleDisplayName', NAME);

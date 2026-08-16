@@ -29,9 +29,9 @@ export class SkillLoader {
       })),
       // ~/.agents/skills is the cross-agent standard directory that
       // Vercel's `npx skills` CLI installs into, so packages added there
-      // appear in Midas automatically. Agent-specific stores such as
-      // ~/.codex/skills stay unsourced: a personal skill becomes Midas's by
-      // being copied into ~/.midas/skills, which also wins name clashes so
+      // appear in FlareAI automatically. Agent-specific stores such as
+      // ~/.codex/skills stay unsourced: a personal skill becomes FlareAI's by
+      // being copied into ~/.flareai/skills, which also wins name clashes so
       // in-app edits keep authority.
       {
         path: join(home, ".agents", "skills"),
@@ -39,8 +39,8 @@ export class SkillLoader {
         includeRootMarkdown: false,
       },
       {
-        path: join(home, ".midas", "skills"),
-        source: "midas",
+        path: join(home, ".flareai", "skills"),
+        source: "flareai",
         includeRootMarkdown: true,
       },
       ...(options.bundled ?? []).map((path): SkillLocation => ({

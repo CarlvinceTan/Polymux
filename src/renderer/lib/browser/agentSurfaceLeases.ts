@@ -2,7 +2,7 @@ import {readable} from 'svelte/store';
 
 /**
  * URLs of pages the agent currently holds a control lease on, long-polled
- * from the Midas agent-surface feed. The workspace tab strip uses this to
+ * from the FlareAI agent-surface feed. The workspace tab strip uses this to
  * badge an in-app browser tab's favicon with the cursor glyph — the same
  * treatment the extension gives external tabs.
  *
@@ -13,7 +13,7 @@ import {readable} from 'svelte/store';
 // localStorage override keeps the feed reachable in dev/demo runs where the
 // desktop app (or a test harness) hosts the surface on another port.
 const PORT =
-  (typeof localStorage !== 'undefined' && localStorage.getItem('midasSurfacePort')) || '47654';
+  (typeof localStorage !== 'undefined' && localStorage.getItem('flareaiSurfacePort')) || '47654';
 const FEED = `http://127.0.0.1:${PORT}/v1/snapshot`;
 
 interface FeedLease {

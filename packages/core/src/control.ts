@@ -1,4 +1,4 @@
-import type { InferenceMessage } from "@midas/inference";
+import type { InferenceMessage } from "@flareai/inference";
 
 export class AgentRunControl {
   readonly #controller = new AbortController();

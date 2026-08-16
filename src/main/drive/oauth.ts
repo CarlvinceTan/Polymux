@@ -1,8 +1,8 @@
 import {createHash, randomBytes} from "node:crypto";
 import {createServer, type Server} from "node:http";
-import {BrowserWindow, nativeTheme, type BrowserWindow as BrowserWindowType} from "electron";
-import type {DriveProviderId} from "@midas/protocol";
-import {driveProviderLabel} from "@midas/protocol";
+import type {BrowserWindow as BrowserWindowType} from "electron";
+import type {DriveProviderId} from "@flareai/protocol";
+import {driveProviderLabel} from "@flareai/protocol";
 import type {DriveSecretStore} from "./types.js";
 
 /**
@@ -52,7 +52,7 @@ export function oauthAppFromEnv(
   provider: DriveProviderId,
   defaults: Omit<OAuthApp, "clientId" | "clientSecret">,
 ): OAuthApp | null {
-  const prefix = `MIDAS_${provider.replace(/-/g, "_").toUpperCase()}`;
+  const prefix = `FLAREAI_${provider.replace(/-/g, "_").toUpperCase()}`;
   const clientId = process.env[`${prefix}_CLIENT_ID`]?.trim();
   if (!clientId) return null;
   const clientSecret = process.env[`${prefix}_CLIENT_SECRET`]?.trim();
@@ -67,7 +67,7 @@ export function oauthAppFromEnv(
  * Runs the authorization-code flow for one provider and holds the resulting
  * tokens.
  *
- * The user signs in on the provider's own page in a dedicated window — Midas
+ * The user signs in on the provider's own page in a dedicated window — FlareAI
  * never sees the password, only the code the provider hands back. PKCE is
  * always used, so a build shipping a public client id is still safe against an
  * intercepted code.
@@ -237,6 +237,10 @@ export class OAuthClient {
    * connection error.
    */
   async #awaitCode(url: string, expectedState: string): Promise<string> {
+    // Imported here rather than at module load so the drive can be exercised
+    // outside Electron: nothing but the consent window needs it, and every
+    // other adapter is plain HTTP.
+    const {BrowserWindow, nativeTheme} = await import("electron");
     const parent = this.#parent();
     const window = new BrowserWindow({
       width: 520,
@@ -252,7 +256,7 @@ export class OAuthClient {
       webPreferences: {
         // A throwaway partition: consent runs in a clean session so it never
         // picks up, or disturbs, the user's workspace browser cookies.
-        partition: `midas-drive-oauth-${this.#provider}`,
+        partition: `flareai-drive-oauth-${this.#provider}`,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -289,10 +293,10 @@ export class OAuthClient {
           const failure = incoming.searchParams.get("error");
           response.writeHead(200, {"content-type": "text/html"});
           response.end(
-            `<!doctype html><meta charset="utf-8"><title>Midas</title><body style="font:15px -apple-system,sans-serif;display:grid;place-items:center;height:100vh;margin:0"><p>${
+            `<!doctype html><meta charset="utf-8"><title>FlareAI</title><body style="font:15px -apple-system,sans-serif;display:grid;place-items:center;height:100vh;margin:0"><p>${
               code && state === expectedState
                 ? "Connected. You can close this window."
-                : "Sign-in failed. Return to Midas and try again."
+                : "Sign-in failed. Return to FlareAI and try again."
             }</p></body>`,
           );
           // State is what ties the response to the request this flow started;

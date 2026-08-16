@@ -6,20 +6,20 @@ import {HomeserverStore, type AppserviceRecord, type StoredEvent} from "./storag
 
 /**
  * The embedded Matrix homeserver: enough of the client-server and appservice
- * APIs for mautrix bridges (with end-to-bridge encryption off) and for Midas's
+ * APIs for mautrix bridges (with end-to-bridge encryption off) and for FlareAI's
  * own hub client, and nothing more. It binds to loopback only, never
  * federates, and trusts its callers to the extent that a single-user local
  * server can: every token it has ever issued belongs to this machine.
  *
  * What is deliberately absent: /sync (bridges receive events as pushed
- * appservice transactions, and Midas reads over the paginated endpoints),
+ * appservice transactions, and FlareAI reads over the paginated endpoints),
  * end-to-end encryption and all device/key endpoints, federation, and
  * power-level enforcement (the only writers are the user and bridges the user
  * installed).
  */
 
 export interface HomeserverOptions {
-  /** Domain in user and room ids, e.g. "midas.local". Never resolved. */
+  /** Domain in user and room ids, e.g. "flareai.local". Never resolved. */
   serverName: string;
   /** Where the database and uploaded media live. */
   dataDirectory: string;
@@ -133,7 +133,7 @@ export class Homeserver {
   createLocalUser(localpart: string): {userId: string; accessToken: string} {
     const userId = this.#fullUserId(localpart);
     this.#store.ensureUser(userId);
-    return {userId, accessToken: this.#store.createToken(userId, "midas")};
+    return {userId, accessToken: this.#store.createToken(userId, "flareai")};
   }
 
   // --- HTTP plumbing ---
@@ -170,7 +170,7 @@ export class Homeserver {
     if (method === "POST" && rest[0] === "v3" && rest[1] === "login")
       return this.#json(response, 403, {
         errcode: "M_FORBIDDEN",
-        error: "Password login is not supported on the embedded hub; Midas holds its token directly.",
+        error: "Password login is not supported on the embedded hub; FlareAI holds its token directly.",
       });
 
     const auth = this.#authenticate(request, query);
@@ -278,7 +278,7 @@ export class Homeserver {
     if (input.type !== "m.login.application_service")
       return this.#json(response, 403, {
         errcode: "M_FORBIDDEN",
-        error: "Only appservice registration is supported; Midas provisions its own account internally.",
+        error: "Only appservice registration is supported; FlareAI provisions its own account internally.",
       });
     const appservice = token ? this.#store.appserviceByToken(token) : null;
     if (!appservice)
@@ -827,7 +827,7 @@ export class Homeserver {
   }
 
   async #deliver(appservice: AppserviceRecord, events: StoredEvent[]): Promise<boolean> {
-    const txnId = `midas-${events[0].streamOrder}`;
+    const txnId = `flareai-${events[0].streamOrder}`;
     for (const delay of [...PUSH_RETRY_MS, null]) {
       if (this.#closed) return false;
       try {

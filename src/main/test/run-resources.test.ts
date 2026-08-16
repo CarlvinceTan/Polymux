@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {AgentRunEvent} from "@midas/core";
-import type {Artifact, NewArtifact, NewReference, StoredReference} from "@midas/storage";
+import type {AgentRunEvent} from "@flareai/core";
+import type {Artifact, NewArtifact, NewReference, StoredReference} from "@flareai/storage";
 import {RunResourceRecorder, type RunResourceStore} from "../run-resources.js";
 
 function memoryStore(): RunResourceStore & {references: StoredReference[]; artifacts: Artifact[]} {
@@ -100,7 +100,7 @@ test("ignores non-web urls and failed tool calls", () => {
 test("ignores links a search only listed — a result is not a page the agent read", () => {
   const store = memoryStore();
   const recorder = new RunResourceRecorder(store, () => "id-1");
-  recorder.record("chat-1", "run-1", toolCompleted("web_search", {query: "midas"}, JSON.stringify({
+  recorder.record("chat-1", "run-1", toolCompleted("web_search", {query: "flareai"}, JSON.stringify({
     results: [{title: "First", url: "https://one.example/a"}, {title: "Second", link: "https://two.example/b"}],
   })));
   assert.equal(store.references.length, 0);

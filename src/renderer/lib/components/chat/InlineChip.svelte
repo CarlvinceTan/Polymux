@@ -25,7 +25,7 @@
   export let value = '';
   export let chips: InlineChipItem[] = [];
   export let placeholder = '';
-  export let ariaLabel = 'Message Midas';
+  export let ariaLabel = 'Message FlareAI';
   export let disabled = false;
   export let maxLines = 4;
   export let onChange: (text: string) => void = () => {};

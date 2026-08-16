@@ -1,5 +1,5 @@
 {
-  "name": "@midas/agent",
+  "name": "@flareai/agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@midas/core": "0.1.0",
-    "@midas/inference": "0.1.0",
-    "@midas/storage": "0.1.0",
-    "@midas/tools": "0.1.0"
+    "@flareai/core": "0.1.0",
+    "@flareai/inference": "0.1.0",
+    "@flareai/storage": "0.1.0",
+    "@flareai/tools": "0.1.0"
   }
 }

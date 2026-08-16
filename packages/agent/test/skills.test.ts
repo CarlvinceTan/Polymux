@@ -6,9 +6,9 @@ import { test } from "node:test";
 import { SkillLoader, parseSkillCommand } from "../src/index.js";
 
 test("discovers Pi-compatible global skills with progressive metadata", async () => {
-  const home = await mkdtemp(join(tmpdir(), "midas-skills-"));
+  const home = await mkdtemp(join(tmpdir(), "flareai-skills-"));
   try {
-    const directory = join(home, ".midas", "skills", "pdf-tools");
+    const directory = join(home, ".flareai", "skills", "pdf-tools");
     await mkdir(join(directory, "agents"), { recursive: true });
     await writeFile(
       join(directory, "SKILL.md"),
@@ -32,7 +32,7 @@ test("discovers Pi-compatible global skills with progressive metadata", async ()
 });
 
 test("sources the cross-agent ~/.agents store but not agent-specific ones", async () => {
-  const home = await mkdtemp(join(tmpdir(), "midas-agents-skills-"));
+  const home = await mkdtemp(join(tmpdir(), "flareai-agents-skills-"));
   try {
     await mkdir(join(home, ".agents", "skills", "react-best-practices"), {recursive: true});
     await writeFile(
@@ -53,9 +53,9 @@ test("sources the cross-agent ~/.agents store but not agent-specific ones", asyn
 });
 
 test("excludes skills disabled by the host application", async () => {
-  const home = await mkdtemp(join(tmpdir(), "midas-disabled-skill-"));
+  const home = await mkdtemp(join(tmpdir(), "flareai-disabled-skill-"));
   try {
-    const directory = join(home, ".midas", "skills", "optional-skill");
+    const directory = join(home, ".flareai", "skills", "optional-skill");
     await mkdir(directory, {recursive: true});
     await writeFile(join(directory, "SKILL.md"), "---\nname: optional-skill\ndescription: Optional workflow.\n---\n");
     const loaded = new SkillLoader({home, isEnabled: (skill) => skill.name !== "optional-skill"}).load();
@@ -66,9 +66,9 @@ test("excludes skills disabled by the host application", async () => {
 });
 
 test("warns about invalid names and refuses skills without descriptions", async () => {
-  const home = await mkdtemp(join(tmpdir(), "midas-skills-"));
+  const home = await mkdtemp(join(tmpdir(), "flareai-skills-"));
   try {
-    const directory = join(home, ".midas", "skills", "Bad Name");
+    const directory = join(home, ".flareai", "skills", "Bad Name");
     await mkdir(directory, { recursive: true });
     await writeFile(
       join(directory, "SKILL.md"),
@@ -83,7 +83,7 @@ test("warns about invalid names and refuses skills without descriptions", async 
 });
 
 test("official skills ship with the app and shadow same-named user skills", async () => {
-  const root = await mkdtemp(join(tmpdir(), "midas-official-skills-"));
+  const root = await mkdtemp(join(tmpdir(), "flareai-official-skills-"));
   const home = join(root, "home");
   const official = join(root, "official");
   try {
@@ -92,11 +92,11 @@ test("official skills ship with the app and shadow same-named user skills", asyn
       join(official, "browser", "SKILL.md"),
       "---\nname: browser\ndescription: Official browser workflow.\n---\n",
     );
-    await mkdir(join(home, ".midas", "skills", "browser"), {
+    await mkdir(join(home, ".flareai", "skills", "browser"), {
       recursive: true,
     });
     await writeFile(
-      join(home, ".midas", "skills", "browser", "SKILL.md"),
+      join(home, ".flareai", "skills", "browser", "SKILL.md"),
       "---\nname: browser\ndescription: User browser workflow.\n---\n",
     );
 
@@ -116,13 +116,13 @@ test("official skills ship with the app and shadow same-named user skills", asyn
 });
 
 test("surfaces manifest and frontmatter metadata for the skill catalogue", async () => {
-  const home = await mkdtemp(join(tmpdir(), "midas-skill-metadata-"));
+  const home = await mkdtemp(join(tmpdir(), "flareai-skill-metadata-"));
   try {
-    const directory = join(home, ".midas", "skills", "email");
+    const directory = join(home, ".flareai", "skills", "email");
     await mkdir(join(directory, "agents"), { recursive: true });
     await writeFile(
       join(directory, "SKILL.md"),
-      "---\nname: email\ndescription: Handle email.\nauthor: Midas\ncategory: Communication\n---\n",
+      "---\nname: email\ndescription: Handle email.\nauthor: FlareAI\ncategory: Communication\n---\n",
     );
     await writeFile(
       join(directory, "agents", "openai.yaml"),
@@ -131,7 +131,7 @@ test("surfaces manifest and frontmatter metadata for the skill catalogue", async
     const loaded = new SkillLoader({ home }).load();
     const skill = loaded.skills[0];
     assert.equal(skill?.displayName, "Email");
-    assert.equal(skill?.author, "Midas");
+    assert.equal(skill?.author, "FlareAI");
     assert.equal(skill?.category, "Communication");
     assert.ok(skill?.updatedAt && !Number.isNaN(Date.parse(skill.updatedAt)));
   } finally {

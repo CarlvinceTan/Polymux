@@ -14,7 +14,7 @@ export const HISTORY_SUGGESTION_MINIMUM = 3;
 /** What the launcher shows at most; the store keeps a little more so closing
  * one entry still leaves a full list. */
 export const HISTORY_SUGGESTION_LIMIT = 5;
-const KEY = 'midasBrowserHistory';
+const KEY = 'flareaiBrowserHistory';
 const CAP = 24;
 
 function normalized(value: string): string {

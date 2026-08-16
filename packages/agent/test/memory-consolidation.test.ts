@@ -9,7 +9,7 @@ import type {
   InferenceRequest,
   InferenceService,
   ModelRef,
-} from "@midas/inference";
+} from "@flareai/inference";
 import { MemoryConsolidator, MemoryManager } from "../src/index.js";
 
 const model: ModelRef = { provider: "test", id: "model" };
@@ -67,7 +67,7 @@ function failure(message: string): InferenceEvent {
 
 function vault(): MemoryManager {
   return new MemoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "midas-consolidation-")),
+    directory: mkdtempSync(path.join(tmpdir(), "flareai-consolidation-")),
   });
 }
 
@@ -137,7 +137,7 @@ test("a memory added after consolidation survives without clobbering the summary
 test("a failed consolidation backs off and then resumes by itself", async () => {
   let now = new Date("2026-08-15T00:00:00.000Z");
   const memory = new MemoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "midas-consolidation-")),
+    directory: mkdtempSync(path.join(tmpdir(), "flareai-consolidation-")),
     clock: () => now,
   });
   const inference = new FakeInference();
@@ -171,7 +171,7 @@ test("a failed consolidation backs off and then resumes by itself", async () => 
 test("backoff doubles per consecutive failure and stays capped", async () => {
   let now = new Date("2026-08-15T00:00:00.000Z");
   const memory = new MemoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "midas-consolidation-")),
+    directory: mkdtempSync(path.join(tmpdir(), "flareai-consolidation-")),
     clock: () => now,
   });
   const inference = new FakeInference();

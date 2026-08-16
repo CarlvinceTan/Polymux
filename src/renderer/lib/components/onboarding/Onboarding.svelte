@@ -1,13 +1,13 @@
 <script lang="ts">
-  import type {MidasApi} from '@midas/protocol';
-  import Icon from '../shared/Icon.svelte';
+  import {setContext} from 'svelte';
+  import type {FlareAIApi} from '@flareai/protocol';
   import ModelStep from './ModelStep.svelte';
   import PermissionsStep from './PermissionsStep.svelte';
   import PlatformsStep from './PlatformsStep.svelte';
   import MindOrb from './MindOrb.svelte';
 
   interface Props {
-    api: MidasApi;
+    api: FlareAIApi;
     onFinish: () => void;
     /**
      * False while the startup splash still covers the window. The welcome
@@ -50,7 +50,20 @@
    * plus the ring the seats ride on outside it.
    */
   const OVERHANG = $derived(Math.round(winH * 0.26 + 240));
-  const slideHeight = $derived((name: Step) => (name === 'platforms' ? winH + OVERHANG : winH));
+  /**
+   * The mind screen is taller than the window for the same reason the hub is:
+   * the two small discs above and below its big one are cut by the window when
+   * the camera is parked, and a screen exactly one window high would have
+   * nowhere to keep the rest of them. Given the room they live inside their own
+   * screen whole, and the pan is what reveals them — while the slide's own clip
+   * keeps them from ever showing up on the screens either side.
+   */
+  const MIND_OVERHANG = $derived(Math.round(winH * 0.6));
+  const slideHeight = $derived((name: Step) =>
+    name === 'platforms' ? winH + OVERHANG
+    : name === 'model' ? winH + MIND_OVERHANG
+    : winH,
+  );
   /**
    * Where the camera sits for a given screen: the top of every ordinary one,
    * and the middle of a screen taller than the window — which for the hub is
@@ -80,6 +93,8 @@
   const OPEN_MS = 840;
 
   let finishing = $state(false);
+  /** The deck's own element, so the wheel can be taken non-passively. */
+  let root = $state<HTMLElement | null>(null);
 
   const step = $derived(STEPS[index]);
   /** Welcome and the closing summary are not choices, so they get no dot. */
@@ -100,6 +115,77 @@
   function back(): void {
     if (index > 0) index -= 1;
   }
+
+  /**
+   * The deck also answers the wheel, but as a deck rather than as a page: one
+   * gesture moves one screen, whole, and the pan is the same one the buttons
+   * and the rail play. Nothing is dragged under the finger, so a long flick
+   * cannot fall two screens at once — the pan holds the wheel off until it has
+   * landed and the gesture that started it has died down.
+   *
+   * The travel of the pan itself, plus a beat for the tail of a trackpad
+   * flick, which keeps sending events long after the fingers have left.
+   */
+  const PAN_MS = 1050;
+  const GESTURE_QUIET_MS = 260;
+  /** Enough that a nudge is not a step, low enough that a flick always is. */
+  const WHEEL_THRESHOLD = 42;
+  let travelling = false;
+  let unlockAt = 0;
+  let rolled = 0;
+  let settle: ReturnType<typeof setTimeout> | undefined;
+
+  function wheel(event: WheelEvent): void {
+    if (closing !== '' || step === 'ready') return;
+    // A scroller with somewhere left to go keeps its own wheel: a provider
+    // list mid-scroll must not throw the deck to the next screen.
+    if (scrollable(event.target as Element | null, event.deltaY)) return;
+    event.preventDefault();
+    // Still panning, or still being pushed by the tail of the last flick.
+    if (travelling || Date.now() < unlockAt) {
+      unlockAt = Date.now() + GESTURE_QUIET_MS;
+      return;
+    }
+    rolled += event.deltaY;
+    // The gesture is over when the events stop, whether or not it moved far
+    // enough — otherwise two unrelated nudges add up into a step.
+    clearTimeout(settle);
+    settle = setTimeout(() => (rolled = 0), GESTURE_QUIET_MS);
+    if (Math.abs(rolled) < WHEEL_THRESHOLD) return;
+    const forward = rolled > 0;
+    rolled = 0;
+    if (forward ? index >= STEPS.length - 1 : index <= 0) return;
+    travelling = true;
+    unlockAt = Date.now() + PAN_MS + GESTURE_QUIET_MS;
+    setTimeout(() => (travelling = false), PAN_MS);
+    if (forward) next();
+    else back();
+  }
+
+  // Bound by hand: the handler refuses the browser's own scroll, and that is
+  // only allowed of a listener registered as willing to.
+  $effect(() => {
+    const node = root;
+    if (!node) return;
+    node.addEventListener('wheel', wheel, {passive: false});
+    return () => node.removeEventListener('wheel', wheel);
+  });
+
+  /** Whether anything under the pointer can still take this wheel itself. */
+  function scrollable(from: Element | null, delta: number): boolean {
+    for (let node = from; node && node !== document.body; node = node.parentElement) {
+      const room = node.scrollHeight - node.clientHeight;
+      if (room > 1 && /auto|scroll/.test(getComputedStyle(node).overflowY)) {
+        if (delta > 0 ? node.scrollTop < room - 1 : node.scrollTop > 1) return true;
+      }
+    }
+    return false;
+  }
+
+  // Every step offers to be passed over, in its own action row. The handler is
+  // handed down rather than passed as a prop so a step can place it wherever
+  // its actions live without every step needing to thread it through.
+  setContext('onb-skip', {skip: next});
 
   /** What the rail's dots are called out loud. */
   const STEP_LABELS: Record<Step, string> = {
@@ -160,24 +246,28 @@
   class:revealed
   class:squeezing={closing !== ''}
   class:opening={closing === 'opening'}
-  aria-label="Set up Midas"
+  aria-label="Set up FlareAI"
+  bind:this={root}
 >
-  <!-- No brand lockup here: setup already says Midas on the welcome screen,
+  <!-- No brand lockup here: setup already says FlareAI on the welcome screen,
        and after that the name in the corner is just furniture. The bar stays
        for the drag region and the way out. -->
   <header class="onb-chrome" class:on-hub={step === 'platforms'}>
-    <!-- Not on welcome: Start is the only thing to do there, and an escape
-         hatch offered before anything has been asked for is just noise. -->
-    {#if step === 'ready'}
-      <!-- Nothing left to skip here, and the receipt is gone: the only thing
-           this corner is still good for is the way back. -->
-      <button type="button" class="onb-quiet onb-back" onclick={back}>
-        <Icon name="back" size={13} />
-        Back
-      </button>
-    {:else if step !== 'welcome'}
-      <button type="button" class="onb-quiet" onclick={() => void finish()}>Skip setup</button>
-    {/if}
+    <!-- The way back, and only that: forward and past belong to the screen
+         being answered, so they sit in its own action row. Nothing to go back
+         to on the welcome screen, so it fades out there rather than being
+         taken away — a control that vanishes the instant it is used reads as
+         a glitch in the middle of a pan that is still running. -->
+    <button
+      type="button"
+      class="onb-quiet onb-back"
+      class:shown={index > 0}
+      tabindex={index > 0 ? 0 : -1}
+      aria-hidden={index === 0}
+      onclick={back}
+    >
+      Back
+    </button>
   </header>
 
   <!-- Every screen is mounted and stacked; moving on pans the whole column up
@@ -204,25 +294,46 @@
                  can never drift apart while the window is still settling. -->
             <div class="onb-hero-lockup">
               <h1 class="onb-hero-brand">
-                <svg class="onb-hero-mark" viewBox="20 30 170 140" aria-hidden="true" focusable="false">
-                  <path fill="currentColor" transform="translate(-10 0)" d="M 40 40 L 120 40 A 60 60 0 0 1 120 160 L 40 160 L 70 120 L 110 120 A 20 20 0 0 0 110 80 L 70 80 Z"/>
+                <svg class="onb-hero-mark" viewBox="41.41 15.26 99.21 99.19" aria-hidden="true" focusable="false">
+                  <path fill="currentColor" d="M72.62,17a3.23,3.23,0,0,0-4.59.79l-2.46,3.62v.13l10.54,8.07,16.33,12,2.88-3.91a3.23,3.23,0,0,0-.69-4.52Z"/>
+                  <path fill="currentColor" d="M71.16,39.87l-27,4.12a3.23,3.23,0,0,0-2.69,3.8l.84,4.36,0,0,13.23-1.75,20-3-.73-4.8A3.23,3.23,0,0,0,71.16,39.87Z"/>
+                  <path fill="currentColor" d="M59.3,61.22l-16.2,22a3.23,3.23,0,0,0,.79,4.59l3.62,2.45h.13l8.07-10.54,12-16.34-3.91-2.87A3.23,3.23,0,0,0,59.3,61.22Z"/>
+                  <path fill="currentColor" d="M78.25,113.58l.07-.07-1.76-13.2-3.05-20-4.79.73A3.23,3.23,0,0,0,66,84.7l4.12,27a3.22,3.22,0,0,0,3.8,2.69Z"/>
+                  <path fill="currentColor" d="M116.4,108.39v-.2l-10.52-8-16.33-12L86.67,92a3.23,3.23,0,0,0,.69,4.52l22,16.2A3.24,3.24,0,0,0,114,112Z"/>
+                  <path fill="currentColor" d="M139.73,77.65l-.11-.1-13.17,1.74-20,3,.73,4.8a3.24,3.24,0,0,0,3.69,2.71l27-4.12a3.22,3.22,0,0,0,2.69-3.81Z"/>
+                  <path fill="currentColor" d="M134.43,39.4h0L126.28,50l-12,16.32,3.91,2.88a3.23,3.23,0,0,0,4.52-.69l16.2-22a3.24,3.24,0,0,0-.79-4.59Z"/>
+                  <path fill="currentColor" d="M111.87,18a3.23,3.23,0,0,0-3.81-2.68l-4.27.82-.11.11,1.75,13.17,3.05,20,4.8-.73A3.23,3.23,0,0,0,116,45Z"/>
+                  <path fill="currentColor" d="M73.92,33.3l0-1.36-8.22-6.3.26,11.63,5.19-.69A3.23,3.23,0,0,0,73.92,33.3Z"/>
+                  <path fill="currentColor" d="M56.45,54.88l-1.17-1.16-10.09,1.34,8.35,8.35,3.21-4.31A3.24,3.24,0,0,0,56.45,54.88Z"/>
+                  <path fill="currentColor" d="M59.42,81.93l-1.34,0-6.3,8.23,11.66-.27-.75-5.22A3.23,3.23,0,0,0,59.42,81.93Z"/>
+                  <path fill="currentColor" d="M80.77,99.37l-.94,1,1.36,10.21,8.11-8.37L85,99A3.24,3.24,0,0,0,80.77,99.37Z"/>
+                  <path fill="currentColor" d="M107.8,96.7l0,.88,8.37,6.4-.49-11.39-5.16.77A3.23,3.23,0,0,0,107.8,96.7Z"/>
+                  <path fill="currentColor" d="M128.1,66.73,125,71a3.23,3.23,0,0,0,.39,4.28l.87.82,10.34-1.37Z"/>
+                  <path fill="currentColor" d="M118.56,39.4l.76,5.3a3.23,3.23,0,0,0,3.2,2.78h1.61l6.19-8.08Z"/>
+                  <path fill="currentColor" d="M93.47,28.26l3.63,2.67a3.22,3.22,0,0,0,4.27-.4l.83-.89-1.37-10.35-8,8.53Z"/>
                 </svg>
-                <span>Midas</span>
+                <span>FlareAI</span>
               </h1>
               <button type="button" class="onb-hero-start" onclick={next}>Start</button>
             </div>
           </div>
         {:else if name === 'platforms'}
-          <PlatformsStep {api} active={step === 'platforms'} onDone={next} onSkip={next} />
+          <PlatformsStep {api} active={step === 'platforms'} onDone={next} />
         {:else if name === 'model'}
           <!-- The mind: a field of dots on an exact grid, with something
                moving underneath it. Copy and cards stay on the page's own
                ground — the field is the step's mass, not its container. -->
-          <div class="onb-mind">
+          <div class="onb-mind" style="height:{winH}px">
             <div class="onb-mind-copy">
-              <ModelStep {api} onDone={next} onSkip={next} />
+              <ModelStep {api} onDone={next} />
             </div>
+            <!-- The orb over its own ground: one disc under it, and a smaller
+                 one off each end of the column, cut by the window until the
+                 camera moves off this screen. -->
             <div class="onb-mind-orb" aria-hidden="true">
+              <span class="mind-disc big"></span>
+              <span class="mind-disc pip top"></span>
+              <span class="mind-disc pip bottom"></span>
               <MindOrb active={step === 'model'} />
             </div>
           </div>
@@ -230,7 +341,7 @@
           <!-- Three circles arranged around one centred statement, each
                holding a permission. Granting one fills it with ink. The step
                owns the whole composition. -->
-          <PermissionsStep {api} onDone={next} onSkip={next} />
+          <PermissionsStep {api} onDone={next} />
         {:else}
           <!-- The one line that ends setup, on the ground that then closes over
                the app. -->
@@ -259,6 +370,7 @@
   <ol
     class="onb-dots"
     class:shown={step !== 'welcome'}
+    class:on-ink={step === 'permissions'}
     aria-label={`Step ${dotIndex + 1} of ${dotted.length}`}
     aria-hidden={step === 'welcome'}
   >
@@ -293,14 +405,6 @@
     {/key}
   {/if}
 
-  <footer class="onb-foot">
-    {#if index > 0 && step !== 'ready'}
-      <button type="button" class="onb-quiet onb-back" onclick={back}>
-        <Icon name="back" size={13} />
-        Back
-      </button>
-    {/if}
-  </footer>
 </section>
 
 <style>
@@ -319,17 +423,13 @@
     opacity:0;transition:opacity .3s ease .05s}
   .onb.revealed .onb-chrome{opacity:1}
   .onb-chrome button{-webkit-app-region:no-drag}
-  /* On the platforms step the hub arc is painted under this bar, so the way out
-     is sitting on the inverted surface: it has to take its ink from the arc,
-     not from the theme, or the hover lands the same colour as the fill. */
-  .onb-chrome.on-hub{--hub-ink:#fff;--hub-ink-soft:rgb(255 255 255 / .64)}
-  :global(:root[data-theme="dark"]) .onb-chrome.on-hub{--hub-ink:#0a0a0a;--hub-ink-soft:rgb(10 10 10 / .62)}
-  @media (prefers-color-scheme: dark){
-    :global(:root:not([data-theme="light"])) .onb-chrome.on-hub{--hub-ink:#0a0a0a;--hub-ink-soft:rgb(10 10 10 / .62)}
-  }
-  .onb-chrome.on-hub :global(.onb-quiet){color:var(--hub-ink-soft)}
-  .onb-chrome.on-hub :global(.onb-quiet:hover){color:var(--hub-ink)}
-  .onb-chrome.on-hub :global(.onb-quiet:focus-visible){outline-color:var(--hub-ink)}
+  .onb-back{opacity:0;pointer-events:none;transition:opacity .3s ease}
+  .onb-back.shown{opacity:1;pointer-events:auto}
+  /* On the platforms step the arc may or may not have reached this corner,
+     depending on how wide the window is, so the way back cannot be given one
+     colour: drawn as the difference against whatever is behind it, it comes out
+     dark on the page and light on the arc without having to know which. */
+  .onb-chrome.on-hub :global(.onb-quiet){color:#fff;mix-blend-mode:difference}
 
   /* The camera. One column of window-tall screens, moved by whole screens; the
      transition on the transform is the pan itself. Absolute rather than a flex
@@ -355,23 +455,47 @@
   /* The mind: copy left on the page's ground, the orb breathing at the right.
      The same composition as the hub — words, then mass — so the deck keeps
      one grammar while every mass stays its own shape. */
-  .onb-slide.mono{padding:0}
+  .onb-slide.mono{display:grid;place-items:center;padding:0}
   /* The row is pinned to the slide's own height. Without that, the canvas
      resolves its 100% height against an auto row, falls back to its intrinsic
      size, and makes the row taller than the slide — which centres the copy
      against a box bigger than the screen and leaves it sitting low. */
   .onb-mind{display:grid;grid-template-columns:minmax(320px,404px) 1fr;grid-template-rows:minmax(0,1fr);
     align-items:center;gap:clamp(16px,3vw,48px);
-    height:100%;padding-left:clamp(56px,8.5vw,140px);padding-right:clamp(8px,1.5vw,24px)}
+    width:100%;padding-left:clamp(56px,8.5vw,140px);padding-right:clamp(8px,1.5vw,24px)}
   /* The copy scrolls inside its own column rather than pushing past the top
      and bottom of the window. A step whose content runs long — a provider
      list with everything expanded, say — stays reachable instead of being
      clipped by the deck, and the scrollbar is hidden so nothing appears
-     unless there is genuinely more to reach. */
+     unless there is genuinely more to reach.
+
+     A scroller clips both axes, not just the one it scrolls, so the column
+     also carries side padding cancelled by an equal negative margin: the
+     provider cards swell past their own box on hover, and without that slack
+     the clip edge sheared the outermost ones. */
+  /* Dropped below the true centre line by however much it takes to put the
+     step's own grid on it — the step measures that and sets --mind-shift. A
+     transform rather than a margin, so it changes neither the column's height
+     nor how much of it the scroller can reach, and so the measurement cannot
+     chase its own result. */
   .onb-mind-copy{min-width:0;min-height:0;max-height:100%;overflow-y:auto;
-    scrollbar-width:none;padding-block:clamp(18px,4vh,34px)}
+    scrollbar-width:none;padding-block:clamp(18px,4vh,34px);
+    padding-inline:10px;margin-inline:-10px;transform:translateY(var(--mind-shift,0px))}
   .onb-mind-copy::-webkit-scrollbar{display:none}
-  .onb-mind-orb{align-self:stretch;min-width:0;min-height:0}
+  .onb-mind-orb{position:relative;align-self:stretch;min-width:0;min-height:0;display:grid;place-items:center;
+    --mind-disc:clamp(240px,56vmin,520px);--mind-pip:calc(var(--mind-disc) * .42)}
+  /* Drawn from the column's centre line, which is the orb's own axis, so the
+     three read as one stack however wide the window gets. */
+  .mind-disc{position:absolute;left:50%;border-radius:50%;background:var(--neutral-950);
+    transform:translate(-50%,-50%);pointer-events:none}
+  .mind-disc.big{top:50%;width:var(--mind-disc);height:var(--mind-disc)}
+  .mind-disc.pip{width:var(--mind-pip);height:var(--mind-pip)}
+  /* A tenth of the way past the window's edge: enough of each one is missing
+     that the screen reads as a view onto something taller than itself. */
+  .mind-disc.pip.top{top:calc(var(--mind-pip) * .1)}
+  .mind-disc.pip.bottom{top:calc(100% - var(--mind-pip) * .1)}
+  /* The cloud paints over its ground, never under it. */
+  .onb-mind-orb :global(.mind-orb){position:relative;z-index:1}
 
   /* Too narrow for two columns: the words are the step, so the orb stands
      down rather than squeezing them into a gutter. */
@@ -382,7 +506,10 @@
 
   /* Kept well inside the rim: a reading column set to the circle's full width
      would have its first and last lines running along the curve. */
-  .onb-disc-inner{width:min(430px,58%)}
+  /* The line is what the screen is, so it takes the disc's own centre; the
+     button hangs off it rather than sharing the centring, which would push the
+     words up by half the button's height. */
+  .onb-disc-inner{position:relative;width:min(430px,58%)}
 
   /* Leaving, in three beats.
      The squeeze is a clip, not a scale: the rim closes in over words that hold
@@ -390,11 +517,12 @@
      zoom-out. The resting clip matches the disc's own edge so nothing changes
      until the close begins. */
   /* A breath, on `scale` rather than `transform` so it composes with the
-     transform the exit already owns instead of fighting it. Under three per
-     cent, over seven seconds: felt at the rim, never watched. It runs only
+     transform the exit already owns instead of fighting it. Just under four
+     per cent, over seven seconds: enough travel at the rim to be seen if you
+     look for it, still slow enough not to ask to be watched. It runs only
      while this slide is the one on screen, and stops the moment the squeeze
      starts so the close is not scaling and clipping at once. */
-  @keyframes onb-disc-breathe{0%,100%{scale:1}50%{scale:1.026}}
+  @keyframes onb-disc-breathe{0%,100%{scale:1}50%{scale:1.038}}
   .onb-slide.disc:not([aria-hidden='true']) .onb-disc{animation:onb-disc-breathe 7s ease-in-out infinite}
   .onb.squeezing .onb-disc{animation:none}
 
@@ -407,21 +535,29 @@
      paints everything outside it, so at size zero the window is still solid
      and the swap between the two beats has no seam. */
   .onb.opening{background:transparent}
-  .onb.opening .onb-track,.onb.opening .onb-chrome,.onb.opening .onb-dots,.onb.opening .onb-foot{opacity:0;visibility:hidden}
+  .onb.opening .onb-track,.onb.opening .onb-chrome,.onb.opening .onb-dots{opacity:0;visibility:hidden}
   /* The cover itself is styled globally, next to its `@property`. */
   /* Fills its own slide rather than the window: inside a moving track, a fixed
      box would sit still while everything around it panned. */
   .onb-hero{position:absolute;inset:0;display:grid;place-items:center}
   /* Metric-for-metric the splash's .startup-brand at its animation's end. */
   .onb-hero-brand{display:flex;align-items:center;gap:12px;margin:0;color:var(--neutral-950)}
-  .onb-hero-mark{width:72px;height:59px;display:block}
+  .onb-hero-mark{width:64px;height:64px;display:block}
   .onb-hero-brand span{font-size:48px;font-weight:750;letter-spacing:-.045em;line-height:1;text-rendering:geometricPrecision;-webkit-font-smoothing:antialiased}
   /* Measured from the lockup's own box rather than from the window's centre
      line. Both used to be positioned off the viewport independently, so while
      the window was still settling into its restored size the button — the one
      part of the pair that is fading in at that moment, and so the only one you
      can see move — appeared to reseat itself vertically. */
-  .onb-hero-lockup{position:relative;display:grid;place-items:center}
+  /* Snapped to the pixel grid the same way, and for the same reason, as the
+     startup splash's lockup (see `.startup-brand` in style.css): centring puts
+     this at x.703 whatever the window size, because the wordmark's advance is
+     not a whole number, and a mark that straddles device pixels has every edge
+     spread over two of them. It has to be snapped here as well as there — the
+     splash fades out over this one, and two lockups three quarters of a pixel
+     apart cross-fade as a blur rather than as one brand standing still. */
+  .onb-hero-lockup{position:relative;display:grid;place-items:center;
+    transform:translateX(calc(round(down, (100vw - 100%) / 2, 1px) - (100vw - 100%) / 2))}
   /* Sits well below the lockup rather than tucked under it: the gap is what
      makes it read as the thing to do, not a caption to the name. */
   /* The label is never transformed — text under a scale transform is drawn
@@ -440,8 +576,16 @@
   /* `backwards`, not `both`: a forwards fill would pin opacity at 1 and eat
      the hover's opacity change for as long as the element lives. */
   /* Opacity only. The button arrives where it will stay — a rise would make it
-     the one thing moving over a still splash. */
-  .onb.revealed .onb-hero-start{opacity:1;animation:onb-fade .9s ease .15s backwards}
+     the one thing moving over a still splash.
+
+     The delay is measured from the moment the splash starts lifting, which is
+     also the moment the lockup has finished settling — and the cover takes
+     .24s to fade from there. So anything shorter than that has the button
+     arriving through a splash still on screen, on top of the brand's own last
+     beat. Clearing it by a further fifth of a second leaves the two as separate
+     events: the brand settles and the window opens, and then the button is
+     there. */
+  .onb.revealed .onb-hero-start{opacity:1;animation:onb-fade .5s ease .44s backwards}
   /* Grows in place rather than lifting: the button is the one fixed point on
      this screen, and a rise would read as it coming loose from the lockup. */
   .onb-hero-start:hover{opacity:.92}
@@ -456,12 +600,9 @@
   .onb-actions-centre{justify-content:center;margin-top:32px}
   /* The one line on the screen, so it is allowed to be the size of one. */
   .onb-finale{margin:0;font-size:clamp(30px,4.4vmin,44px);line-height:1.08;text-align:center}
-  .onb-disc .onb-finale + .onb-actions-centre{margin-top:38px}
+  .onb-disc .onb-finale + .onb-actions-centre{position:absolute;top:100%;left:0;right:0;margin-top:46px}
 
 
-  .onb-foot{position:absolute;z-index:2;bottom:0;left:0;right:0;display:flex;align-items:center;min-height:56px;padding:0 22px 20px;pointer-events:none}
-  .onb-foot > *{pointer-events:auto}
-  .onb-back{display:inline-flex;align-items:center;gap:5px}
   /* A vertical rail on the same axis the deck travels: the filled mark moves
      down the edge exactly as the screens move up past it. */
   .onb-dots{position:absolute;z-index:2;left:24px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none;
@@ -474,6 +615,11 @@
      between marks, so neighbours meet without ever overlapping and stealing
      each other's clicks, and the rail is wide enough to hit without aiming. */
   .onb-dot::after{content:'';position:absolute;inset:-3px -10px}
+  /* The permissions step puts a disc behind the rail, so the marks change
+     ground: over ink they are drawn in the page's own background instead. */
+  .onb-dots.on-ink .onb-dot{background:rgb(255 255 255 / .38)}
+  .onb-dots.on-ink .onb-dot.done{background:rgb(255 255 255 / .6)}
+  .onb-dots.on-ink .onb-dot.current,.onb-dots.on-ink .onb-dot:hover{background:#fff}
   .onb-dot:hover{background:var(--neutral-400)}
   .onb-dot.done{background:var(--neutral-300)}
   .onb-dot.done:hover{background:var(--neutral-500)}

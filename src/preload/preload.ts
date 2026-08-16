@@ -1,8 +1,8 @@
-import type { BrowserEventDto, CommsStatusDto, DriveStatusDto, McpChangeDto, MidasApi, RunEventDto } from "@midas/protocol";
-import { channels } from "@midas/protocol";
+import type { BrowserEventDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, RunEventDto } from "@flareai/protocol";
+import { channels } from "@flareai/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
-const api: MidasApi = {
+const api: FlareAIApi = {
   general: {
     get: () => ipcRenderer.invoke(channels.generalGet),
     update: (settings) => ipcRenderer.invoke(channels.generalUpdate, settings),
@@ -253,4 +253,4 @@ const api: MidasApi = {
   },
 };
 
-contextBridge.exposeInMainWorld("midas", api);
+contextBridge.exposeInMainWorld("flareai", api);

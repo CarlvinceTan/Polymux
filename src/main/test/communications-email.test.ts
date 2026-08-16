@@ -34,7 +34,7 @@ async function withConfig(
   body: (accounts: EmailAccounts, configPath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
   results?: (call: Call) => CommandResult | undefined,
 ): Promise<void> {
-  const directory = await mkdtemp(path.join(tmpdir(), "midas-email-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-email-"));
   const configPath = path.join(directory, "config.toml");
   if (source) await writeFile(configPath, source, "utf8");
   const harnessed = harness({results});
@@ -137,7 +137,7 @@ test("writes a new account that reads its password from the keychain", async () 
     assert.equal(account.backend.encryption.type, "tls");
     assert.equal(account.message.send.backend.port, 587);
     assert.match(account.backend.auth.cmd, /^security find-generic-password /);
-    assert.match(account.backend.auth.cmd, /Midas Email: personal/);
+    assert.match(account.backend.auth.cmd, /FlareAI Email: personal/);
     assert.equal(
       (await readFile(configPath, "utf8")).includes("app-password"),
       false,
@@ -299,7 +299,7 @@ test("re-saving a keychain account without a new password keeps its lookup", asy
     await accounts.save({...base, password: "secret"});
     await accounts.save({...base, originalId: "keep", smtpPort: 465, smtpEncryption: "tls"});
     const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
-    assert.match(written.accounts.keep.backend.auth.cmd, /Midas Email: keep/);
+    assert.match(written.accounts.keep.backend.auth.cmd, /FlareAI Email: keep/);
     assert.equal(written.accounts.keep.message.send.backend.port, 465);
   });
 });
@@ -336,12 +336,12 @@ test("moves the keychain entry when an account is renamed", async () => {
 
       const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
       assert.equal(written.accounts.old, undefined);
-      assert.match(written.accounts.new.backend.auth.cmd, /Midas Email: new/);
+      assert.match(written.accounts.new.backend.auth.cmd, /FlareAI Email: new/);
 
       const inputs = harnessed.calls.map((call) => call.input ?? "").join("\n");
-      assert.match(inputs, /find-generic-password -s "Midas Email: old"/);
-      assert.match(inputs, /add-generic-password -U -s "Midas Email: new"/);
-      assert.match(inputs, /delete-generic-password -s "Midas Email: old"/);
+      assert.match(inputs, /find-generic-password -s "FlareAI Email: old"/);
+      assert.match(inputs, /add-generic-password -U -s "FlareAI Email: new"/);
+      assert.match(inputs, /delete-generic-password -s "FlareAI Email: old"/);
     },
     (call) =>
       call.input?.startsWith("find-generic-password")

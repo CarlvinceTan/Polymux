@@ -7,10 +7,10 @@ import type {
   ToolCallBlock,
   ToolHookDecision,
   ToolHooks,
-} from "@midas/core";
+} from "@flareai/core";
 
 /**
- * User-configured tool lifecycle hooks, read from `~/.midas/hooks.json`.
+ * User-configured tool lifecycle hooks, read from `~/.flareai/hooks.json`.
  *
  * ```json
  * {
@@ -19,7 +19,7 @@ import type {
  *     {
  *       "event": "pre-tool",
  *       "tools": ["write", "edit", "bash"],
- *       "command": "python3 ~/.midas/hooks/guard.py",
+ *       "command": "python3 ~/.flareai/hooks/guard.py",
  *       "timeoutMs": 10000
  *     }
  *   ]
@@ -34,7 +34,7 @@ import type {
  * Post-tool commands are observation only; their exit codes are ignored.
  *
  * The config is re-read when its mtime changes, so edits apply to the next
- * tool call without restarting Midas. A missing file means no hooks.
+ * tool call without restarting FlareAI. A missing file means no hooks.
  */
 
 export interface HookRule {
@@ -53,7 +53,7 @@ export class HookEngine implements ToolHooks {
   #loadedMtime = -1;
   #loadError: string | null = null;
 
-  constructor(configPath = path.join(homedir(), ".midas", "hooks.json")) {
+  constructor(configPath = path.join(homedir(), ".flareai", "hooks.json")) {
     this.#configPath = configPath;
   }
 

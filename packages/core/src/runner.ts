@@ -5,7 +5,7 @@ import type {
   InferenceTool,
   ToolCallBlock,
   ToolResultInferenceMessage,
-} from "@midas/inference";
+} from "@flareai/inference";
 import { AgentRunControl } from "./control.js";
 import { addUsage, emptyUsage } from "./usage.js";
 import type {

@@ -1,7 +1,7 @@
 import {createHash, createHmac} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto, DriveS3ConfigRequest} from "@midas/protocol";
+import type {DriveEntryDto, DriveS3ConfigRequest} from "@flareai/protocol";
 import {requestError, streamToFile} from "./http.js";
 import {copyName, type DriveAdapter, type DriveProbe, type DriveSecretStore} from "./types.js";
 

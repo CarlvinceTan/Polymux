@@ -1124,7 +1124,7 @@
     };
   }
 
-  globalThis.MidasCursorMotion = Object.freeze({
+  globalThis.FlareAICursorMotion = Object.freeze({
     ASSET_DATA_URL,
     PATH,
     SPRINGS,

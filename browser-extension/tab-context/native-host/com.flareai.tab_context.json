@@ -1,6 +1,6 @@
 {
-  "name": "com.midas.tab_context",
-  "description": "Persists the browser tab list for the Midas desktop agent",
+  "name": "com.flareai.tab_context",
+  "description": "Persists the browser tab list for the FlareAI desktop agent",
   "path": "__HOST_PATH__",
   "type": "stdio",
   "allowed_origins": ["chrome-extension://__EXTENSION_ID__/"]

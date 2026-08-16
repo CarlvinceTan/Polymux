@@ -1,15 +1,15 @@
 <script lang="ts">
-  import type {MidasApi, SystemPermissionKind, SystemPermissionStatus} from '@midas/protocol';
-  import {permissionPrompts} from '@midas/protocol';
+  import type {FlareAIApi, SystemPermissionKind, SystemPermissionStatus} from '@flareai/protocol';
+  import {permissionPrompts} from '@flareai/protocol';
   import Icon from '../shared/Icon.svelte';
+  import SkipAction from './SkipAction.svelte';
 
   interface Props {
-    api: MidasApi;
+    api: FlareAIApi;
     onDone: (granted: string[]) => void;
-    onSkip: () => void;
   }
 
-  const {api, onDone, onSkip}: Props = $props();
+  const {api, onDone}: Props = $props();
 
   /**
    * Each permission is asked for on its own button rather than all at once.
@@ -25,7 +25,7 @@
     {
       kind: 'microphone',
       title: 'Microphone',
-      reason: 'Talk to Midas, and dictate instead of typing.',
+      reason: 'Talk to FlareAI, and dictate instead of typing.',
     },
     {
       kind: 'accessibility',
@@ -66,7 +66,7 @@
     // A grant given in System Settings comes back with nothing to announce it,
     // so returning to the window is the moment to look again. The check is a
     // real read rather than a stored answer, so it also stays honest about a
-    // grant that will not apply until Midas is relaunched.
+    // grant that will not apply until FlareAI is relaunched.
     const recheck = (): void => void refresh();
     window.addEventListener('focus', recheck);
     return () => window.removeEventListener('focus', recheck);
@@ -88,8 +88,16 @@
      reason for it, and the control, separated by hairlines — so nothing here
      competes with the sentence at the top. -->
 <div class="permissions">
+  <!-- Two discs, one off each edge of the window, cut by it so only their
+       inner faces show. They flank the column without ever reaching it: the
+       step still reads as one centred sentence, held between two weights. -->
+  <div class="perm-orbs" aria-hidden="true">
+    <span class="perm-orb left"></span>
+    <span class="perm-orb right"></span>
+  </div>
+
   <p class="onb-eyebrow">Permissions</p>
-  <h1 class="onb-title">Give Midas only what you want it to have.</h1>
+  <h1 class="onb-title">Give FlareAI only what you want it to have.</h1>
   <p class="onb-lede">
     All three are optional and can be turned off later. macOS has the final say on each one.
   </p>
@@ -134,27 +142,46 @@
   {#if PERMISSIONS.some((entry) => permissionPrompts(entry.kind) && (statuses[entry.kind] === 'denied' || statuses[entry.kind] === 'restricted'))}
     <p class="onb-note">
       macOS only asks once. To change a denied permission, turn it on in System Settings and restart
-      Midas.
+      FlareAI.
     </p>
   {/if}
   {#if awaitingSettings}
     <p class="onb-note">
-      macOS never asks for Full Disk Access. Switch Midas on in the list that opens, then let it
+      macOS never asks for Full Disk Access. Switch FlareAI on in the list that opens, then let it
       relaunch the app.
     </p>
   {/if}
 
   <div class="onb-actions perm-actions">
-    <button type="button" class="onb-button primary" onclick={() => onDone(granted)}>Continue</button>
-    {#if granted.length === 0}
-      <button type="button" class="onb-quiet" onclick={onSkip}>Not now</button>
-    {/if}
+    <!-- Live only once macOS has actually said yes to all three: the button
+         means "these are settled", and it should not read as available while
+         a row is still asking. Anyone who does not want to grant them all has
+         Skip, which is the honest way past this screen. -->
+    <button
+      type="button"
+      class="onb-button primary"
+      disabled={granted.length < PERMISSIONS.length}
+      onclick={() => onDone(granted)}
+    >
+      Continue
+    </button>
+    <SkipAction />
   </div>
 </div>
 
 <style>
-  .permissions{height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;
-    text-align:center;width:min(520px,86vw);margin:0 auto;padding:24px 0}
+  .permissions{position:relative;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;
+    text-align:center;width:min(520px,86vw);margin:0 auto;padding:24px 0;--perm-orb:clamp(200px,32vw,440px)}
+  /* Everything the step actually says sits above the discs. */
+  .permissions > :not(.perm-orbs){position:relative;z-index:1}
+  .perm-orbs{position:absolute;inset:0;z-index:0;pointer-events:none}
+  /* 50% is the column's centre, so `50% - 50vw` is the window's left edge:
+     the discs are placed against the window even though they hang off a box
+     narrower than it. */
+  .perm-orb{position:absolute;top:50%;width:var(--perm-orb);height:var(--perm-orb);
+    border-radius:50%;background:var(--neutral-950);transform:translateY(-50%)}
+  .perm-orb.left{left:calc(50% - 50vw - var(--perm-orb) * .55)}
+  .perm-orb.right{right:calc(50% - 50vw - var(--perm-orb) * .55)}
   .permissions :global(.onb-lede){max-width:40ch}
   .permissions :global(.onb-note){margin:14px 0 0;max-width:44ch}
 

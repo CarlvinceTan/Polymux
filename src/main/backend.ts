@@ -3,11 +3,11 @@ import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
-import { GoalManager, MemoryManager, MidasAgent, SkillLoader, type SkillLoaderOptions } from "@midas/agent";
-import { ChronicleManager } from "@midas/chronicle";
-import type { ActiveAgentRun, AgentRunEvent } from "@midas/core";
-import type { InferenceModel, InferenceService, ModelRef } from "@midas/inference";
-import { PiInference } from "@midas/inference/pi";
+import { GoalManager, MemoryManager, FlareAIAgent, SkillLoader, type SkillLoaderOptions } from "@flareai/agent";
+import { ChronicleManager } from "@flareai/chronicle";
+import type { ActiveAgentRun, AgentRunEvent } from "@flareai/core";
+import type { InferenceModel, InferenceService, ModelRef } from "@flareai/inference";
+import { PiInference } from "@flareai/inference/pi";
 import type {
   AppUpdateDto,
   AppVersionDto,
@@ -32,7 +32,7 @@ import type {
   UpdateCustomProviderRequest,
   JsonValue,
   WorkspaceSnapshotDto,
-} from "@midas/protocol";
+} from "@flareai/protocol";
 import {
   channels,
   commsPlatform,
@@ -44,15 +44,15 @@ import {
   validateGoalCommand,
   validateSaveEmailAccount,
   validateStartRun,
-} from "@midas/protocol";
-import { SqliteStorage } from "@midas/storage/sqlite";
-import type { StoredMessage } from "@midas/storage";
+} from "@flareai/protocol";
+import { SqliteStorage } from "@flareai/storage/sqlite";
+import type { StoredMessage } from "@flareai/storage";
 import {
   createNativeTools,
   importMcpServers,
   McpManager,
   ToolRegistry,
-} from "@midas/tools";
+} from "@flareai/tools";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {createProvider, type Model, type MutableModels} from "@earendil-works/pi-ai";
 import {openAICompletionsApi} from "@earendil-works/pi-ai/api/openai-completions.lazy";
@@ -146,7 +146,7 @@ export class DesktopBackend {
   #window: BrowserWindow;
   readonly #ipcMain: IpcMain;
   readonly #storage: SqliteStorage;
-  #agent?: MidasAgent;
+  #agent?: FlareAIAgent;
   #model?: ModelRef;
   /** Per-role model overrides. An absent role follows the main model. */
   #roleOverrides: Partial<Record<ModelRole, ModelRef>> = {};
@@ -210,7 +210,7 @@ export class DesktopBackend {
       isEnabled: (skill) => this.#integrationEnabled("skill-enabled", skill.name),
     };
     this.#storage = new SqliteStorage(
-      path.join(options.dataDirectory, "midas.sqlite"),
+      path.join(options.dataDirectory, "flareai.sqlite"),
     );
     this.#credentials = new EncryptedCredentialStore(
       path.join(options.dataDirectory, "credentials.json"),
@@ -261,7 +261,7 @@ export class DesktopBackend {
       },
     });
     this.#mcpConfigPath = path.join(options.dataDirectory, "mcp.json");
-    this.#customSkillDirectory = path.join(homedir(), ".midas", "skills");
+    this.#customSkillDirectory = path.join(homedir(), ".flareai", "skills");
     this.#codexMcpConfigPath = options.codexConfigPath ?? path.join(homedir(), ".codex", "config.toml");
     this.#mcpConfigWatcher = new FileReloadWatcher(
       this.#mcpConfigPath,
@@ -304,7 +304,7 @@ export class DesktopBackend {
         if (!this.#closing && !this.#window.isDestroyed())
           this.#window.webContents.send(channels.commsChanged, status);
       },
-      // Parented, so the network's sign-in page opens as a sheet over Midas
+      // Parented, so the network's sign-in page opens as a sheet over FlareAI
       // rather than as a window that can end up behind it.
       cookieLogin: (request) => runCookieLogin(request, this.#window),
       cancelCookieLogin,
@@ -332,9 +332,12 @@ export class DesktopBackend {
         },
       },
       pickers: {
+        // Parented, so both open as sheets over the app rather than as windows
+        // that can end up behind it — an upload picker lost behind the app is
+        // indistinguishable from an upload button that does nothing.
         folder: async () => {
           const {dialog} = await import("electron");
-          const result = await dialog.showOpenDialog({
+          const result = await dialog.showOpenDialog(this.#window, {
             properties: ["openDirectory", "createDirectory"],
             title: "Choose the Drive folder",
           });
@@ -342,7 +345,7 @@ export class DesktopBackend {
         },
         files: async () => {
           const {dialog} = await import("electron");
-          const result = await dialog.showOpenDialog({
+          const result = await dialog.showOpenDialog(this.#window, {
             properties: ["openFile", "multiSelections"],
             title: "Upload to Drive",
           });
@@ -375,13 +378,13 @@ export class DesktopBackend {
     // menu-bar pill (the ChatGPT-desktop-style Computer Use capsule), when
     // that presentation layer is installed.
     this.#agentSurface.onLeasesChanged = (leases) => {
-      if (leases.length === 0) void this.#surfaceMenubar.release("midas-browser");
+      if (leases.length === 0) void this.#surfaceMenubar.release("flareai-browser");
       else
-        void this.#surfaceMenubar.acquireWindow("midas-browser", {
+        void this.#surfaceMenubar.acquireWindow("flareai-browser", {
           appName: browserAppName(),
           bundleId: browserBundleId(),
           windowTitle: leases[0].tab.title || leases[0].tab.url,
-          sessionId: "midas-browser",
+          sessionId: "flareai-browser",
         });
     };
     this.#roleOverrides = modelRolesPreference(this.#storage.getPreference("model-roles")?.value);
@@ -1080,14 +1083,14 @@ export class DesktopBackend {
           metadata: {...config.metadata, source: "codex"},
         }))
       : [];
-    const midasConfigs = importMcpServers(JSON.parse(source)).map((config) => ({
+    const flareaiConfigs = importMcpServers(JSON.parse(source)).map((config) => ({
       ...config,
-      metadata: {...config.metadata, source: "midas"},
+      metadata: {...config.metadata, source: "flareai"},
     }));
-    // A Midas-local entry intentionally overrides a Codex entry with the same
+    // A FlareAI-local entry intentionally overrides a Codex entry with the same
     // id, so personal experiments never require changing ChatGPT's setup.
     const configs = [...new Map(
-      [...codexConfigs, ...midasConfigs].map((config) => [config.id, config]),
+      [...codexConfigs, ...flareaiConfigs].map((config) => [config.id, config]),
     ).values()].map((config) => ({
       ...config,
       enabled: this.#integrationEnabled("mcp-enabled", config.id, config.enabled !== false),
@@ -1117,7 +1120,7 @@ export class DesktopBackend {
     this.#dictation.close();
     const activeRuns = [...this.#activeRuns.values()];
     for (const run of activeRuns)
-      run.control.cancel(new Error("Midas is closing"));
+      run.control.cancel(new Error("FlareAI is closing"));
     for (const channel of this.#registeredChannels)
       this.#ipcMain.removeHandler(channel);
     await Promise.allSettled([
@@ -1139,7 +1142,7 @@ export class DesktopBackend {
     active: ActiveAgentRun,
   ): void {
     if (this.#closing) {
-      active.control.cancel(new Error("Midas is closing"));
+      active.control.cancel(new Error("FlareAI is closing"));
       return;
     }
     this.#goalContinuations.set(conversationId, runId);
@@ -1302,8 +1305,8 @@ export class DesktopBackend {
       disableModelInvocation: skill.disableModelInvocation,
       allowedTools: skill.allowedTools ?? [],
       enabled: this.#integrationEnabled("skill-enabled", skill.name),
-      editable: skill.source === "midas",
-      instructions: skill.source === "midas" ? skillInstructions(readFileSync(skill.filePath, "utf8")) : undefined,
+      editable: skill.source === "flareai",
+      instructions: skill.source === "flareai" ? skillInstructions(readFileSync(skill.filePath, "utf8")) : undefined,
       displayName: skill.displayName,
       author: skill.author,
       category: skill.category,
@@ -1383,7 +1386,7 @@ export class DesktopBackend {
 
   async #removeCustomSkill(name: string): Promise<void> {
     const skill = this.#skills.load().skills.find((candidate) => candidate.name === name);
-    if (!skill || skill.source !== "midas") throw new Error(`Skill is not removable: ${name}`);
+    if (!skill || skill.source !== "flareai") throw new Error(`Skill is not removable: ${name}`);
     const root = path.resolve(this.#customSkillDirectory);
     const destination = path.resolve(root, name);
     if (path.dirname(destination) !== root) throw new Error(`Invalid skill name: ${name}`);
@@ -1485,7 +1488,7 @@ export class DesktopBackend {
   }
 
   #buildAgent(ref: ModelRef): void {
-    this.#agent = new MidasAgent({
+    this.#agent = new FlareAIAgent({
       inference: this.#inference,
       storage: this.#storage,
       memory: this.#memory,
@@ -1609,7 +1612,7 @@ export class DesktopBackend {
       auth: {apiKey: {
         name: `${config.name} API key`,
         resolve: async ({credential}) => ({
-          auth: {apiKey: credential?.key ?? "midas-local"},
+          auth: {apiKey: credential?.key ?? "flareai-local"},
           source: credential?.key ? "Saved API key" : "Custom endpoint",
         }),
       }},
@@ -1671,7 +1674,7 @@ export class DesktopBackend {
   /** Keep a stale model preference from making chat unusable after credentials
    * are removed or changed. The user's selection wins while it is usable;
    * otherwise the first configured provider becomes the active model. */
-  async #ensureConfiguredAgent(): Promise<MidasAgent> {
+  async #ensureConfiguredAgent(): Promise<FlareAIAgent> {
     if (this.#model) {
       const current = await this.#providerDto(this.#model.provider);
       if (current.configured) return this.#requireAgent();
@@ -1698,10 +1701,10 @@ export class DesktopBackend {
     };
   }
 
-  #requireAgent(): MidasAgent {
+  #requireAgent(): FlareAIAgent {
     if (!this.#agent)
       throw new Error(
-        "No inference model is configured. Set MIDAS_MODEL to provider/model.",
+        "No inference model is configured. Set FLAREAI_MODEL to provider/model.",
       );
     return this.#agent;
   }
@@ -1724,8 +1727,8 @@ export class DesktopBackend {
         ? "codex"
         : config?.metadata?.source === "official"
           ? "official"
-          : "midas",
-      editable: config?.metadata?.source === "midas",
+          : "flareai",
+      editable: config?.metadata?.source === "flareai",
       enabled: this.#integrationEnabled("mcp-enabled", snapshot.id, config?.enabled !== false),
       transport: config?.transport ?? "stdio",
       ...(config?.transport === "stdio"
@@ -1968,12 +1971,12 @@ function chronicleQuery(value: unknown): {
 }
 
 export function modelFromEnvironment(
-  value = process.env.MIDAS_MODEL,
+  value = process.env.FLAREAI_MODEL,
 ): ModelRef | undefined {
   if (!value) return undefined;
   const separator = value.indexOf("/");
   if (separator <= 0 || separator === value.length - 1)
-    throw new Error("MIDAS_MODEL must use provider/model format");
+    throw new Error("FLAREAI_MODEL must use provider/model format");
   return {
     provider: value.slice(0, separator),
     id: value.slice(separator + 1),
@@ -2038,7 +2041,7 @@ function tabContextBrowser(): { name: string; bundleId: string } | null {
           homedir(),
           "Library",
           "Application Support",
-          "midas-tab-context",
+          "flareai-tab-context",
           "tabs.json",
         ),
         "utf8",
