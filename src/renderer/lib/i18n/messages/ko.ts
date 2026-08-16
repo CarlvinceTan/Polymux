@@ -255,7 +255,7 @@ const messages: Catalog = {
 
   'workspace.resize': '작업 공간 너비 조절',
   'workspace.closeTab': '{title} 닫기',
-  'workspace.openBrowser': '브라우저 열기',
+  'workspace.browser': '브라우저',
   'workspace.minimise': '작업 공간 축소',
   'workspace.expand': '작업 공간 확대',
   'workspace.recent': '최근',

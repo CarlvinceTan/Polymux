@@ -1047,7 +1047,7 @@ test.describe('design system', () => {
     await newTab.hover();
     await expect(page.locator('.shared-tooltip')).toHaveText('New tab');
     await newTab.click();
-    await expect(page.getByRole('menuitem', {name: 'Open browser'})).toBeVisible();
+    await expect(page.getByRole('menuitem', {name: 'Browser'})).toBeVisible();
     await expect(page.locator('.shared-tooltip')).toHaveCount(0);
 
     // Still nothing while the pointer sits on the trigger, and it comes back
@@ -1722,7 +1722,7 @@ test.describe('panels', () => {
     await send(page, 'address focus');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await page.getByLabel('New tab', {exact: true}).click();
-    await page.getByRole('menuitem', {name: 'Open browser'}).click();
+    await page.getByRole('menuitem', {name: 'Browser'}).click();
 
     const address = page.getByLabel('Address').last();
     await address.click();

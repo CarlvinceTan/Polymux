@@ -255,7 +255,7 @@ const messages: Catalog = {
 
   'workspace.resize': 'ワークスペースの幅を調整',
   'workspace.closeTab': '{title} を閉じる',
-  'workspace.openBrowser': 'ブラウザを開く',
+  'workspace.browser': 'ブラウザ',
   'workspace.minimise': 'ワークスペースを縮小',
   'workspace.expand': 'ワークスペースを拡大',
   'workspace.recent': '最近',

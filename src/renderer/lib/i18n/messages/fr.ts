@@ -256,7 +256,7 @@ const messages: Catalog = {
 
   'workspace.resize': "Redimensionner l'espace de travail",
   'workspace.closeTab': 'Fermer {title}',
-  'workspace.openBrowser': 'Ouvrir le navigateur',
+  'workspace.browser': 'Navigateur',
   'workspace.minimise': "Réduire l'espace de travail",
   'workspace.expand': "Agrandir l'espace de travail",
   'workspace.recent': 'Récent',

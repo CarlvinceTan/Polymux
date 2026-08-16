@@ -61,7 +61,7 @@
   import SummaryView, {type SummaryViewData} from './SummaryView.svelte';
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
   import ScheduleView, {type ScheduleItem, type ScheduleFrequency} from './ScheduleView.svelte';
-  import {t, translate} from '../../i18n';
+  import {t, translate, type MessageKey} from '../../i18n';
 
   export let tabs: WorkspaceTab[] = [];
   export let activeTabId: string | null = null;
@@ -130,6 +130,20 @@
    * up where they left off beats the generic create-something prompts. */
   $: historySuggestions = $visitHistory.slice(0, HISTORY_SUGGESTION_LIMIT);
   $: showHistory = $visitHistory.length >= HISTORY_SUGGESTION_MINIMUM;
+
+  /** Titles of the built-in singleton tabs are named, not typed by anyone, so
+   * they are resolved at render time rather than read from the stored title:
+   * a tab opened before a language switch would otherwise keep the old wording. */
+  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {
+    drive: 'workspace.drive',
+    schedule: 'workspace.schedule',
+    'side-chat': 'workspace.chat',
+    hub: 'workspace.hub',
+  };
+  $: tabTitle = (tab: WorkspaceTab): string => {
+    const key = SINGLETON_TAB_IDS[tab.kind] === tab.id ? singletonTitles[tab.kind] : undefined;
+    return key ? $t(key) : tab.title;
+  };
 
   const tabIcons: Record<WorkspaceTabKind, 'document' | 'presentation' | 'spreadsheet' | 'image' | 'video' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock'> = {
     document: 'document',
@@ -283,8 +297,8 @@
             {:else}
               <Icon name={tabIcons[tab.kind]} size={16}/>
             {/if}
-            <span>{tab.title}</span></button>
-          <button type="button" class="tab-close" aria-label={$t('workspace.closeTab', {title: tab.title})} data-tooltip="none" onclick={() => onClose(tab.id)}><Icon name="close" size={14}/></button>
+            <span>{tabTitle(tab)}</span></button>
+          <button type="button" class="tab-close" aria-label={$t('workspace.closeTab', {title: tabTitle(tab)})} data-tooltip="none" onclick={() => onClose(tab.id)}><Icon name="close" size={14}/></button>
         </div>
       {/each}
     </div>
@@ -295,7 +309,7 @@
         <button type="button" class="title-bar-icon-button workspace-header-action" aria-label={$t('workspace.newTab')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={addOpen} onclick={() => addOpen = !addOpen}><Icon name="plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
         {#if addOpen}
           <div class="flareai-dropdown-menu new-tab-menu" role="menu">
-            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('browser'); }}><Icon name="globe" size={14}/><span>{$t('workspace.openBrowser')}</span></button>
+            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('browser'); }}><Icon name="globe" size={14}/><span>{$t('workspace.browser')}</span></button>
             <!-- Drive and Schedule leave the title bar while the drawer is
                  open, so this menu is where they live instead. -->
             {#if !openKinds.has('drive')}
@@ -322,7 +336,7 @@
   <div class="workspace-content">
     {#if !activeTab}
       <div class="workspace-launcher">
-        <button type="button" class="workspace-launcher-row" onclick={() => onNew('browser')}><Icon name="globe" size={16}/><span>{$t('workspace.openBrowser')}</span></button>
+        <button type="button" class="workspace-launcher-row" onclick={() => onNew('browser')}><Icon name="globe" size={16}/><span>{$t('workspace.browser')}</span></button>
         {#if !openKinds.has('drive')}
           <button type="button" class="workspace-launcher-row" onclick={() => onNew('drive')}><Icon name="drive" size={16}/><span>{$t('workspace.drive')}</span></button>
         {/if}

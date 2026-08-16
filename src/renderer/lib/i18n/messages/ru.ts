@@ -260,7 +260,7 @@ const messages: Catalog = {
 
   'workspace.resize': 'Изменить ширину рабочей области',
   'workspace.closeTab': 'Закрыть {title}',
-  'workspace.openBrowser': 'Открыть браузер',
+  'workspace.browser': 'Браузер',
   'workspace.minimise': 'Свернуть рабочую область',
   'workspace.expand': 'Развернуть рабочую область',
   'workspace.recent': 'Недавнее',

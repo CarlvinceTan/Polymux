@@ -255,7 +255,7 @@ const messages: Catalog = {
 
   'workspace.resize': 'Đổi chiều rộng không gian làm việc',
   'workspace.closeTab': 'Đóng {title}',
-  'workspace.openBrowser': 'Mở trình duyệt',
+  'workspace.browser': 'Trình duyệt',
   'workspace.minimise': 'Thu nhỏ không gian làm việc',
   'workspace.expand': 'Mở rộng không gian làm việc',
   'workspace.recent': 'Gần đây',

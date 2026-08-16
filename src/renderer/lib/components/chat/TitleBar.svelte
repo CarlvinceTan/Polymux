@@ -1,5 +1,6 @@
 <script lang="ts">
   import {afterUpdate, beforeUpdate, tick} from 'svelte';
+  import {fade} from 'svelte/transition';
   import Icon from '../shared/Icon.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH, SETTINGS_ICON_SIZE, SETTINGS_ICON_STROKE_WIDTH} from '../../layout/iconSizing';
   import type {PanelMode} from '../../state/panels';
@@ -23,6 +24,17 @@
   export let showExtensionPrompt = false;
   export let onInstallExtension: () => void = () => {};
   export let onDismissExtension: () => void = () => {};
+
+  /** Icons that come and go with the drawer or the panel mode fade rather than
+   * blink: short enough not to lag the click that caused it, long enough that
+   * the row does not look like it is snapping between states. */
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const iconFade = {duration: reducedMotion ? 0 : 120};
+  /** Search belongs to the drawer, so it waits for the drawer's edge to travel
+   * out past it before appearing — at the narrowest width that edge is still
+   * left of the icon for most of the 440ms slide. Leaving is the reverse and
+   * already reads right, so only the entrance is held back. */
+  const searchFadeIn = {duration: reducedMotion ? 0 : 140, delay: reducedMotion ? 0 : 260};
 
   let editing = false;
   let draft = '';
@@ -102,6 +114,7 @@
     <button
       type="button"
       class="title-bar-icon-button new-chat-button"
+      transition:fade={iconFade}
       aria-label={$t('titlebar.newChat')}
       data-tooltip-label={$t('titlebar.newChat')}
       data-tooltip-align="start"
@@ -116,6 +129,8 @@
         type="button"
         class="title-bar-icon-button"
         aria-label={$t('titlebar.searchChats')}
+        in:fade={searchFadeIn}
+        out:fade={iconFade}
         data-tooltip-label={$t('titlebar.searchChats')}
         data-tooltip-align="start"
         onclick={onSearchChats}
@@ -163,6 +178,7 @@
       type="button"
       class="title-bar-icon-button"
       aria-label={$t('titlebar.openDrive')}
+      transition:fade={iconFade}
       data-tooltip-label={$t('workspace.drive')}
       data-tooltip-align="end"
       onclick={onOpenDrive}
@@ -173,6 +189,7 @@
       type="button"
       class="title-bar-icon-button"
       aria-label={$t('titlebar.openHub')}
+      transition:fade={iconFade}
       data-tooltip-label={$t('workspace.hub')}
       data-tooltip-align="end"
       onclick={onOpenHub}
@@ -183,6 +200,7 @@
       type="button"
       class="title-bar-icon-button"
       aria-label={$t('titlebar.openSchedule')}
+      transition:fade={iconFade}
       data-tooltip-label={$t('workspace.schedule')}
       data-tooltip-align="end"
       onclick={onOpenSchedule}
@@ -206,6 +224,7 @@
       class="title-bar-icon-button"
       class:active={mode === 'summary'}
       aria-label={$t('titlebar.toggleSummary')}
+      transition:fade={iconFade}
       aria-pressed={mode === 'summary'}
       data-tooltip-label={$t('titlebar.summary')}
       data-tooltip-align="end"

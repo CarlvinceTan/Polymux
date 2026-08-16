@@ -1553,8 +1553,8 @@
           <span class="option-mark large"><Icon name="sun-moon" size={18}/></span>
           <span class="general-setting-copy"><h4>{$t('settings.theme')}</h4><small>{$t('settings.themeHint')}</small></span>
           <div class="theme-switch" role="radiogroup" aria-label={$t('settings.theme')}>
-            {#each ['light', 'dark', 'system'] as theme}
-              <button type="button" role="radio" aria-checked={general?.theme === theme} class:active={general?.theme === theme} disabled={updatingTheme || !general} onclick={() => void setTheme(theme as ThemeMode)}>{theme[0].toLocaleUpperCase() + theme.slice(1)}</button>
+            {#each [['light', 'settings.themeLight'], ['dark', 'settings.themeDark'], ['system', 'settings.themeSystem']] as const as [theme, label]}
+              <button type="button" role="radio" aria-checked={general?.theme === theme} class:active={general?.theme === theme} disabled={updatingTheme || !general} onclick={() => void setTheme(theme as ThemeMode)}>{$t(label)}</button>
             {/each}
           </div>
         </section>
@@ -2056,7 +2056,12 @@
   .options-modal-backdrop{position:fixed;z-index:1000;inset:0;display:grid;place-items:center;padding:48px;background:rgba(20,20,20,.28);backdrop-filter:blur(5px);animation:backdrop-in .16s ease-out}
   .options-modal{--options-content-edge:14px;--options-detail-edge:32px;--options-tab-inline:11px;--options-divider-gap:15px;width:min(780px,calc(100vw - 96px));height:min(620px,calc(100vh - 96px));display:flex;flex-direction:column;overflow:hidden;border:0;border-radius:20px;background:var(--app-bg);box-shadow:0 24px 80px rgba(0,0,0,.3);animation:modal-in .22s cubic-bezier(.22,1,.36,1)}
   .options-modal.settling :global(*){transition:none!important;animation:none!important}
-  .options-header{flex:none;display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:30px 32px 18px}.options-header>div{min-width:0}.options-header h2{margin:0;color:var(--neutral-950);font-size:28px;font-weight:570;letter-spacing:-.025em}.options-header p{margin:7px 0 0;color:var(--neutral-600);font-size:12.5px;line-height:1.5}
+  .options-header{flex:none;display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:30px 32px 18px}.options-header>div{min-width:0}.options-header h2{margin:0;color:var(--neutral-950);font-size:28px;font-weight:570;letter-spacing:-.025em}
+  /* Explicit line boxes, not glyph-driven ones: scripts with taller ascenders
+     (CJK, Thai, Devanagari) would otherwise grow the header and shift the tab
+     row down as you switch tabs. Both lines are short by design, so clipping
+     the overflow costs nothing and keeps the height constant. */
+  .options-header h2{height:35px;line-height:35px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.options-header p{margin:7px 0 0;height:19px;overflow:hidden;color:var(--neutral-600);text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;line-height:19px}
   .options-close{width:32px;height:32px;display:grid;flex:none;place-items:center;border:0;border-radius:10px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.options-close:hover,.options-close:focus-visible{outline:none;background:var(--neutral-100);color:var(--neutral-950)}
   .options-mode{align-self:flex-start;display:flex;gap:4px;margin:0 var(--options-detail-edge) 14px var(--options-content-edge)}.options-mode button{border:0;border-radius:8px;padding:5px var(--options-tab-inline);background:transparent;color:var(--neutral-500);cursor:pointer;font-family:inherit;font-size:13px}.options-mode button:hover{color:var(--neutral-900)}.options-mode button.active{background:var(--neutral-100);color:var(--neutral-950);font-weight:540}
   .options-error{margin:0 18px 8px;padding:7px 10px;border-radius:8px;background:var(--neutral-100);color:var(--neutral-700);font-size:12px}

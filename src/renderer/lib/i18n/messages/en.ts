@@ -270,7 +270,7 @@ export default {
 
   'workspace.resize': 'Resize Workspace',
   'workspace.closeTab': 'Close {title}',
-  'workspace.openBrowser': 'Open browser',
+  'workspace.browser': 'Browser',
   'workspace.minimise': 'Minimise Workspace',
   'workspace.expand': 'Expand Workspace',
   'workspace.recent': 'Recent',
