@@ -26,9 +26,9 @@ sends. Detect its installed version and compiled capabilities with
   that the user's instruction explicitly authorizes sending the finished mail.
 - Never retry a send merely because Himalaya exits non-zero. SMTP delivery may have succeeded before save-to-Sent failed; inspect the correct Sent folder and delivery evidence first.
 - Verify account, folder, current message ID, and destination before copying, moving, deleting, or changing flags. Deletion and consequential reorganization require explicit approval.
-- Keep Himalaya CLI-only. If setup needs a browser or local GUI, load `browser-use` or `window-control` as applicable and preserve the user's focus.
+- Keep Himalaya CLI-only. If setup needs a browser or local GUI, load `browser-use` or `gui-control` as applicable and preserve the user's focus.
 - If `email` selects Apple Mail as a fallback, follow its route and
-  `window-control`; do not duplicate GUI policy here.
+  `gui-control`; do not duplicate GUI policy here.
 - Prefer `--output json` for structured reads. Do not expose credentials or unnecessary message content in logs.
 
 ## Quick preflight

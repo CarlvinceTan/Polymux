@@ -36,10 +36,12 @@
   import QueuedMessages, {type QueuedMessage} from './QueuedMessages.svelte';
   import GoalBar, {type ActiveGoal} from './GoalBar.svelte';
   import type {ReasoningEffort} from '@flareai/protocol';
+  import {t} from '../../i18n';
 
   export let messages: ChatMessage[] = [];
   export let running = false;
-  export let placeholder = 'Ask anything';
+  /** Empty means the composer's own default, which follows the language. */
+  export let placeholder = '';
   export let queued: QueuedMessage[] = [];
   export let goal: ActiveGoal | null = null;
   export let speechMode = false;
@@ -55,6 +57,7 @@
   export let onFeedback: (id: string, feedback: 'up' | 'down' | null) => void = () => {};
   /** A link in a message: the host decides which browser surface opens it. */
   export let onOpenLink: (url: string, title: string) => void = () => {};
+  export let onOpenFilePath: (path: string) => void = () => {};
   export let onQueueHeight: (height: number) => void = () => {};
   export let onJumpAvailability: (show: boolean) => void = () => {};
   export let onSteerQueued: (id: string) => void = () => {};
@@ -183,12 +186,12 @@
             streaming={running && index === messages.length - 1}
           />
         {/if}
-        <Message {message} streaming={running && index === messages.length - 1} {activityVisible} {onEdit} {onFeedback} {onOpenLink}/>
+        <Message {message} streaming={running && index === messages.length - 1} {activityVisible} {onEdit} {onFeedback} {onOpenLink} {onOpenFilePath}/>
       {/each}
     </div>
 
     {#if showJumpToLatest}
-      <button type="button" class="scroll-to-latest" aria-label="Scroll to bottom" data-tooltip="none" onclick={scrollToLatest}>
+      <button type="button" class="scroll-to-latest" aria-label={$t('chat.scrollToBottom')} data-tooltip="none" onclick={scrollToLatest}>
         <Icon name="arrow-down" size={18}/>
       </button>
     {/if}

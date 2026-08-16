@@ -61,6 +61,7 @@
   import SummaryView, {type SummaryViewData} from './SummaryView.svelte';
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
   import ScheduleView, {type ScheduleItem, type ScheduleFrequency} from './ScheduleView.svelte';
+  import {t, translate} from '../../i18n';
 
   export let tabs: WorkspaceTab[] = [];
   export let activeTabId: string | null = null;
@@ -71,7 +72,7 @@
   export let motion = false;
   export let reservedWidth = 0;
   export let summaryData: SummaryViewData = {outputs: [], references: [], tasks: []};
-  export let driveRoot: DriveEntry = {id: 'drive-root', name: 'Drive', kind: 'folder', children: []};
+  export let driveRoot: DriveEntry = {id: 'drive-root', name: translate('workspace.drive'), kind: 'folder', children: []};
   /** Storage backends the drive can be switched between. */
   export let driveSources: DriveSource[] = [];
   export let driveSourceId = '';
@@ -250,14 +251,14 @@
   class:resizing
   class:motion
   class="workspace-drawer"
-  aria-label="Workspace"
+  aria-label={$t('titlebar.workspace')}
   aria-hidden={!open}
   inert={!open}
 >
   <button
     type="button"
     class="workspace-resize-handle"
-    aria-label="Resize Workspace"
+    aria-label={$t('workspace.resize')}
     tabindex={open && !expanded ? 0 : -1}
     data-tooltip="none"
     onpointerdown={startResize}
@@ -283,7 +284,7 @@
               <Icon name={tabIcons[tab.kind]} size={16}/>
             {/if}
             <span>{tab.title}</span></button>
-          <button type="button" class="tab-close" aria-label={`Close ${tab.title}`} data-tooltip="none" onclick={() => onClose(tab.id)}><Icon name="close" size={14}/></button>
+          <button type="button" class="tab-close" aria-label={$t('workspace.closeTab', {title: tab.title})} data-tooltip="none" onclick={() => onClose(tab.id)}><Icon name="close" size={14}/></button>
         </div>
       {/each}
     </div>
@@ -291,17 +292,17 @@
          header would only repeat them. -->
     {#if tabs.length}
       <div bind:this={newTabWrapper} class="new-tab-wrap">
-        <button type="button" class="title-bar-icon-button workspace-header-action" aria-label="New tab" data-tooltip-align="end" aria-haspopup="menu" aria-expanded={addOpen} onclick={() => addOpen = !addOpen}><Icon name="plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
+        <button type="button" class="title-bar-icon-button workspace-header-action" aria-label={$t('workspace.newTab')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={addOpen} onclick={() => addOpen = !addOpen}><Icon name="plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
         {#if addOpen}
           <div class="flareai-dropdown-menu new-tab-menu" role="menu">
-            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('browser'); }}><Icon name="globe" size={14}/><span>Open browser</span></button>
+            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('browser'); }}><Icon name="globe" size={14}/><span>{$t('workspace.openBrowser')}</span></button>
             <!-- Drive and Schedule leave the title bar while the drawer is
                  open, so this menu is where they live instead. -->
             {#if !openKinds.has('drive')}
-              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('drive'); }}><Icon name="drive" size={14}/><span>Drive</span></button>
+              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('drive'); }}><Icon name="drive" size={14}/><span>{$t('workspace.drive')}</span></button>
             {/if}
             {#if !openKinds.has('schedule')}
-              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('schedule'); }}><Icon name="clock" size={14}/><span>Schedule</span></button>
+              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('schedule'); }}><Icon name="clock" size={14}/><span>{$t('workspace.schedule')}</span></button>
             {/if}
           </div>
         {/if}
@@ -310,8 +311,8 @@
     <button
       type="button"
       class="title-bar-icon-button workspace-header-action expand-workspace-action"
-      aria-label={expanded ? 'Minimise Workspace' : 'Expand Workspace'}
-      data-tooltip-label={expanded ? 'Minimise' : 'Expand'}
+      aria-label={expanded ? $t('workspace.minimise') : $t('workspace.expand')}
+      data-tooltip-label={expanded ? $t('common.minimise') : $t('common.expand')}
       data-tooltip-align="end"
       aria-pressed={expanded}
       onclick={onToggleExpand}
@@ -321,15 +322,15 @@
   <div class="workspace-content">
     {#if !activeTab}
       <div class="workspace-launcher">
-        <button type="button" class="workspace-launcher-row" onclick={() => onNew('browser')}><Icon name="globe" size={16}/><span>Open browser</span></button>
+        <button type="button" class="workspace-launcher-row" onclick={() => onNew('browser')}><Icon name="globe" size={16}/><span>{$t('workspace.openBrowser')}</span></button>
         {#if !openKinds.has('drive')}
-          <button type="button" class="workspace-launcher-row" onclick={() => onNew('drive')}><Icon name="drive" size={16}/><span>Drive</span></button>
+          <button type="button" class="workspace-launcher-row" onclick={() => onNew('drive')}><Icon name="drive" size={16}/><span>{$t('workspace.drive')}</span></button>
         {/if}
         {#if !openKinds.has('schedule')}
-          <button type="button" class="workspace-launcher-row" onclick={() => onNew('schedule')}><Icon name="clock" size={16}/><span>Schedule</span></button>
+          <button type="button" class="workspace-launcher-row" onclick={() => onNew('schedule')}><Icon name="clock" size={16}/><span>{$t('workspace.schedule')}</span></button>
         {/if}
-        <button type="button" class="workspace-launcher-row" onclick={() => onNew('hub')}><Icon name="chat" size={16}/><span>Hub</span></button>
-        <p class="workspace-launcher-heading">{showHistory ? 'Recent' : 'Suggestions'}</p>
+        <button type="button" class="workspace-launcher-row" onclick={() => onNew('hub')}><Icon name="chat" size={16}/><span>{$t('workspace.hub')}</span></button>
+        <p class="workspace-launcher-heading">{showHistory ? $t('workspace.recent') : $t('workspace.suggestions')}</p>
         <div class="workspace-launcher-suggestions">
           {#if showHistory}
             {#each historySuggestions as visit (visit.url)}
@@ -341,9 +342,9 @@
               </button>
             {/each}
           {:else}
-            <button type="button" class="workspace-launcher-suggestion" onclick={() => onSuggest('I want to create a document.')}><Icon name="document" size={16}/><span>Create a document</span></button>
-            <button type="button" class="workspace-launcher-suggestion" onclick={() => onSuggest('I want to create a presentation.')}><Icon name="presentation" size={16}/><span>Create a presentation</span></button>
-            <button type="button" class="workspace-launcher-suggestion" onclick={() => onSuggest('I want to create a spreadsheet.')}><Icon name="spreadsheet" size={16}/><span>Create a spreadsheet</span></button>
+            <button type="button" class="workspace-launcher-suggestion" onclick={() => onSuggest($t('workspace.suggestDocumentPrompt'))}><Icon name="document" size={16}/><span>{$t('workspace.suggestDocument')}</span></button>
+            <button type="button" class="workspace-launcher-suggestion" onclick={() => onSuggest($t('workspace.suggestPresentationPrompt'))}><Icon name="presentation" size={16}/><span>{$t('workspace.suggestPresentation')}</span></button>
+            <button type="button" class="workspace-launcher-suggestion" onclick={() => onSuggest($t('workspace.suggestSpreadsheetPrompt'))}><Icon name="spreadsheet" size={16}/><span>{$t('workspace.suggestSpreadsheet')}</span></button>
           {/if}
         </div>
       </div>

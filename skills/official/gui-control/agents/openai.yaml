@@ -1,0 +1,10 @@
+interface:
+  display_name: "GUI Control"
+  short_description: "Control exact windows while preserving your active app"
+  icon_small: "./assets/gui-control.svg"
+  icon_large: "./assets/gui-control.svg"
+  brand_color: "#475569"
+  default_prompt: "Use $gui-control to prepare and control an exact local app window while preserving my active app."
+
+policy:
+  allow_implicit_invocation: true

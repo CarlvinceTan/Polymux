@@ -1,6 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 
-type Migration = { version: number; sql: string };
+/** A step is plain `sql`, or a `run` for work SQL cannot express on its own —
+ * reading a JSON column and deciding row by row. Both kinds apply inside the
+ * same transaction as the version bump. */
+type Migration = { version: number; sql: string; run?: undefined } | { version: number; sql?: undefined; run: (database: DatabaseSync) => void };
 
 const migrations: Migration[] = [
   {
@@ -112,7 +115,97 @@ const migrations: Migration[] = [
     ALTER TABLE messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
   `,
   },
+  {
+    // References used to be recorded for every page a run opened, which filled
+    // the Summary panel with search-result pages the reply never cited. The
+    // rule is now "a link the assistant put in its readable text", so drop the
+    // rows the old rule collected that the new one would not have kept.
+    version: 4,
+    run: dropUncitedWebReferences,
+  },
+  {
+    // A summary is only safe to reuse while the turns it describes are still
+    // there, so the identity of those turns is stored with it. Rows written
+    // before this keep the empty default, which reads as "unknown" and simply
+    // re-summarizes rather than trusting a summary it cannot check.
+    version: 5,
+    run: addCompactionFingerprint,
+  },
 ];
+
+/**
+ * Adds the column only when it is absent, so a store whose schema already has
+ * it — one whose version was wound back by hand, or a step re-applied —
+ * upgrades instead of failing on a duplicate column.
+ */
+function addCompactionFingerprint(database: DatabaseSync): void {
+  const columns = database
+    .prepare("PRAGMA table_info(compactions)")
+    .all() as Array<{ name: string }>;
+  if (columns.some((column) => column.name === "prefix_fingerprint")) return;
+  database.exec(
+    "ALTER TABLE compactions ADD COLUMN prefix_fingerprint TEXT NOT NULL DEFAULT ''",
+  );
+}
+
+function dropUncitedWebReferences(database: DatabaseSync): void {
+  // Only agent-recorded web rows are in question: a file the user attached has
+  // no run, and is theirs to remove.
+  const rows = database
+    .prepare("SELECT id, conversation_id, uri FROM refs WHERE kind='web' AND run_id IS NOT NULL")
+    .all() as Array<{ id: string; conversation_id: string; uri: string }>;
+  if (!rows.length) return;
+
+  const cited = new Map<string, Set<string>>();
+  const citedIn = (conversationId: string): Set<string> => {
+    const known = cited.get(conversationId);
+    if (known) return known;
+    const messages = database
+      .prepare("SELECT content_json FROM messages WHERE conversation_id=? AND role='assistant'")
+      .all(conversationId) as Array<{ content_json: string }>;
+    const urls = new Set<string>();
+    for (const message of messages)
+      for (const url of urlsInReply(message.content_json)) urls.add(url);
+    cited.set(conversationId, urls);
+    return urls;
+  };
+
+  const remove = database.prepare("DELETE FROM refs WHERE id=?");
+  for (const row of rows) if (!citedIn(row.conversation_id).has(normalizeUri(row.uri))) remove.run(row.id);
+}
+
+/** Urls in an assistant message's readable text. Tool-call arguments and
+ * reasoning are not the reply, so a page merely opened stays uncited. */
+function urlsInReply(contentJson: string): string[] {
+  let content: unknown;
+  try {
+    content = JSON.parse(contentJson);
+  } catch {
+    return [];
+  }
+  const blocks = Array.isArray(content) ? content : [];
+  const text = typeof content === "string"
+    ? content
+    : blocks
+        .map((block) => {
+          const item = block as { type?: unknown; text?: unknown };
+          return item.type === "text" && typeof item.text === "string" ? item.text : "";
+        })
+        .filter(Boolean)
+        .join("\n");
+  return [...text.matchAll(/https?:\/\/[^\s<>()[\]"']+/g)]
+    .map((match) => normalizeUri(match[0]!.replace(/[).,;:!?'"]+$/, "")));
+}
+
+/** Stored uris went through `new URL()` when they were recorded; cited ones
+ * have not, so both sides are normalised before they are compared. */
+function normalizeUri(value: string): string {
+  try {
+    return new URL(value).toString();
+  } catch {
+    return value;
+  }
+}
 
 export function migrate(database: DatabaseSync): void {
   const current = Number(
@@ -122,7 +215,8 @@ export function migrate(database: DatabaseSync): void {
     if (migration.version <= current) continue;
     database.exec("BEGIN IMMEDIATE");
     try {
-      database.exec(migration.sql);
+      if (migration.sql !== undefined) database.exec(migration.sql);
+      else migration.run(database);
       database.exec(`PRAGMA user_version = ${migration.version}`);
       database.exec("COMMIT");
     } catch (error) {

@@ -3,6 +3,8 @@
 </script>
 
 <script lang="ts">
+  import {t} from '../../i18n';
+
   export let name: string;
   export let status: FileAttachmentStatus = 'done';
   export let progress = 100;
@@ -49,7 +51,7 @@
     <button
       type="button"
       class="inline-file-remove"
-      aria-label={`Remove ${name}`}
+      aria-label={$t('common.remove', {name})}
       data-tooltip="none"
       onclick={(event) => {
         event.stopPropagation();

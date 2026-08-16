@@ -1,5 +1,6 @@
 <script module lang="ts">
   import type {DriveProviderId} from '@flareai/protocol';
+  import {activeLocale, translate, type MessageKey} from '../../i18n';
   import type {MenuOption} from '../shared/Menu.svelte';
 
   export type DriveEntryKind = 'folder' | 'document' | 'spreadsheet' | 'presentation' | 'pdf' | 'image' | 'audio' | 'video' | 'code' | 'file';
@@ -37,17 +38,17 @@
     css: 'code', go: 'code', html: 'code', js: 'code', json: 'code', jsx: 'code', py: 'code', rs: 'code', svelte: 'code', ts: 'code', tsx: 'code', vue: 'code', yaml: 'code', yml: 'code',
   };
 
-  const KIND_LABELS: Record<DriveEntryKind, string> = {
-    folder: 'Folder',
-    document: 'Document',
-    spreadsheet: 'Spreadsheet',
-    presentation: 'Presentation',
-    pdf: 'PDF',
-    image: 'Image',
-    audio: 'Audio',
-    video: 'Video',
-    code: 'Code',
-    file: 'File',
+  const KIND_LABELS: Record<DriveEntryKind, MessageKey> = {
+    folder: 'drive.kind.folder',
+    document: 'drive.kind.document',
+    spreadsheet: 'drive.kind.spreadsheet',
+    presentation: 'drive.kind.presentation',
+    pdf: 'drive.kind.pdf',
+    image: 'drive.kind.image',
+    audio: 'drive.kind.audio',
+    video: 'drive.kind.video',
+    code: 'drive.kind.code',
+    file: 'drive.kind.file',
   };
 
   /** Names are all the drive gets from most sources, so the extension is what
@@ -58,19 +59,28 @@
   }
 
   export function driveKindLabel(kind: DriveEntryKind): string {
-    return KIND_LABELS[kind];
+    return translate(KIND_LABELS[kind]);
   }
 
+  /** Sizes are written with the language's own decimal separator and unit
+   * wording — a comma rather than a point in most of Europe. */
   export function formatDriveSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes < 1024) return translate('drive.sizeBytes', {size: formatNumber(bytes, 0)});
+    if (bytes < 1024 * 1024) return translate('drive.sizeKilobytes', {size: formatNumber(bytes / 1024, 1)});
+    return translate('drive.sizeMegabytes', {size: formatNumber(bytes / (1024 * 1024), 1)});
+  }
+
+  function formatNumber(value: number, decimals: number): string {
+    return value.toLocaleString(activeLocale(), {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
   }
 
   export function formatDriveDate(epochMs: number): string {
     const date = new Date(epochMs);
     if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleDateString(undefined, {
+    return date.toLocaleDateString(activeLocale(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -86,10 +96,11 @@
   import Menu from '../shared/Menu.svelte';
   import DriveProviderLogo from '../shared/DriveProviderLogo.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../layout/iconSizing';
+  import {t} from '../../i18n';
 
-  export let title = 'Drive';
+  export let title = '';
   /** The top of the tree. Its own name is the first breadcrumb. */
-  export let root: DriveEntry = {id: 'drive-root', name: 'Drive', kind: 'folder', children: []};
+  export let root: DriveEntry = {id: 'drive-root', name: translate('workspace.drive'), kind: 'folder', children: []};
   /**
    * The storage backends the drive can show, which is what makes the first
    * breadcrumb a switch rather than a label. An empty list keeps the old
@@ -174,23 +185,24 @@
   /** Stands in for the folder being named, which has no id until it exists. */
   const NEW_FOLDER_ROW = 'new';
 
-  const PROVIDER_LABELS: Record<DriveProviderId, string> = {
-    local: 'This Mac',
+  /** Product names, not words: they read the same in every language. Only the
+   * two that describe something — this machine, generic S3 storage — are
+   * translated. */
+  $: PROVIDER_LABELS = {
+    local: $t('drive.thisMac'),
     'google-drive': 'Google Drive',
     dropbox: 'Dropbox',
     onedrive: 'OneDrive',
-    s3: 'S3 storage',
-  };
+    s3: $t('drive.s3'),
+  } as Record<DriveProviderId, string>;
 
-  function providerLabel(provider: DriveProviderId): string {
-    return PROVIDER_LABELS[provider] ?? provider;
-  }
+  $: providerLabel = (provider: DriveProviderId): string => PROVIDER_LABELS[provider] ?? provider;
 
-  const filterItems: Array<{id: DriveFilter; label: string}> = [
-    {id: 'all', label: 'All files'},
-    {id: 'images', label: 'Images'},
-    {id: 'documents', label: 'Documents'},
-    {id: 'videos', label: 'Videos'},
+  $: filterItems = [
+    {id: 'all' as DriveFilter, label: $t('drive.filterAll')},
+    {id: 'images' as DriveFilter, label: $t('drive.filterImages')},
+    {id: 'documents' as DriveFilter, label: $t('drive.filterDocuments')},
+    {id: 'videos' as DriveFilter, label: $t('drive.filterVideos')},
   ];
 
   const filterKinds: Record<Exclude<DriveFilter, 'all'>, DriveEntryKind[]> = {
@@ -259,8 +271,8 @@
       if ((a.kind === 'folder') !== (b.kind === 'folder')) return a.kind === 'folder' ? -1 : 1;
       if (key === 'size') return ((a.size ?? 0) - (b.size ?? 0)) * direction;
       if (key === 'modified') return ((a.modifiedAt ?? 0) - (b.modifiedAt ?? 0)) * direction;
-      if (key === 'kind') return driveKindLabel(a.kind).localeCompare(driveKindLabel(b.kind)) * direction;
-      return a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: 'base'}) * direction;
+      if (key === 'kind') return driveKindLabel(a.kind).localeCompare(driveKindLabel(b.kind), activeLocale()) * direction;
+      return a.name.localeCompare(b.name, activeLocale(), {numeric: true, sensitivity: 'base'}) * direction;
     });
   }
 
@@ -641,7 +653,7 @@
   {#if showEmptyOverlay}
     <div class="fb-empty" aria-hidden="true">
       <Icon name={searchQuery.trim() ? 'search' : 'folder'} size={56} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
-      <p>{searchQuery.trim() ? 'No files match your search.' : 'This folder is empty.'}</p>
+      <p>{searchQuery.trim() ? $t('drive.noMatches') : $t('drive.emptyFolder')}</p>
     </div>
   {/if}
 
@@ -650,7 +662,7 @@
          you are looking at, which stays readable underneath. -->
     <div class="fb-error" role="alert">
       <span>{error}</span>
-      <button type="button" aria-label="Dismiss error" onclick={onDismissError}>
+      <button type="button" aria-label={$t('common.dismissError')} onclick={onDismissError}>
         <Icon name="close" size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
       </button>
     </div>
@@ -675,7 +687,7 @@
       />
     {/if}
 
-    <nav class="fb-breadcrumbs" aria-label="Files">
+    <nav class="fb-breadcrumbs" aria-label={$t('drive.files')}>
       {#each crumbs as crumb, index (crumb.id)}
         <!-- The switch already names the root, so the crumb for it would only
              say the same thing twice. -->
@@ -716,14 +728,14 @@
           <span class="fb-confirm-text">
             Delete {isMultiSelection ? `${selection.length} items` : primary?.name}?
           </span>
-          <button type="button" class="fb-confirm-cancel" onclick={() => (confirmingDelete = false)}>Cancel</button>
-          <button type="button" class="fb-confirm-go" onclick={confirmDelete}>Delete</button>
+          <button type="button" class="fb-confirm-cancel" onclick={() => (confirmingDelete = false)}>{$t('common.cancel')}</button>
+          <button type="button" class="fb-confirm-go" onclick={confirmDelete}>{$t('common.delete')}</button>
         {:else}
           {#if isMultiSelection}
             <span class="fb-selected-count">{selection.length} selected</span>
           {/if}
           {#if !isMultiSelection}
-            <button type="button" class="fb-action" aria-label="Rename" data-tooltip-label="Rename" disabled={!onRename || !primary} onclick={() => primary && void startNaming(primary.id, primary.name)}>
+            <button type="button" class="fb-action" aria-label={$t('common.rename')} data-tooltip-label={$t('common.rename')} disabled={!onRename || !primary} onclick={() => primary && void startNaming(primary.id, primary.name)}>
               <Icon name="edit" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
             </button>
           {/if}
@@ -732,8 +744,8 @@
               type="button"
               class="fb-action"
               class:on={moveOpen}
-              aria-label="Move"
-              data-tooltip-label="Move"
+              aria-label={$t('drive.move')}
+              data-tooltip-label={$t('drive.move')}
               aria-haspopup="menu"
               aria-expanded={moveOpen}
               disabled={!onMove || moveTargets.length === 0}
@@ -756,26 +768,26 @@
               </div>
             {/if}
           </div>
-          <button type="button" class="fb-action" aria-label="Duplicate" data-tooltip-label="Duplicate" disabled={!onDuplicate} onclick={() => onDuplicate?.(selection)}>
+          <button type="button" class="fb-action" aria-label={$t('drive.duplicate')} data-tooltip-label={$t('drive.duplicate')} disabled={!onDuplicate} onclick={() => onDuplicate?.(selection)}>
             <Icon name="copy" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
           </button>
           {#if !isMultiSelection && primary?.kind !== 'folder'}
-            <button type="button" class="fb-action" aria-label="Download" data-tooltip-label="Download" disabled={!onDownload || !primary} onclick={() => primary && onDownload?.(primary)}>
+            <button type="button" class="fb-action" aria-label={$t('drive.download')} data-tooltip-label={$t('drive.download')} disabled={!onDownload || !primary} onclick={() => primary && onDownload?.(primary)}>
               <Icon name="download" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
             </button>
           {/if}
           {#if !isMultiSelection}
             <!-- Info needs no handler: everything it shows is already on the
                  row, so the drive answers it itself. -->
-            <button type="button" class="fb-action" class:on={infoEntry !== null} aria-label="Info" data-tooltip-label="Info" disabled={!primary} onclick={() => (infoEntry = infoEntry ? null : primary)}>
+            <button type="button" class="fb-action" class:on={infoEntry !== null} aria-label={$t('drive.info')} data-tooltip-label={$t('drive.info')} disabled={!primary} onclick={() => (infoEntry = infoEntry ? null : primary)}>
               <Icon name="info" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
             </button>
           {/if}
-          <button type="button" class="fb-action danger" aria-label="Delete" data-tooltip-label="Delete" disabled={!onDelete} onclick={() => (confirmingDelete = true)}>
+          <button type="button" class="fb-action danger" aria-label={$t('common.delete')} data-tooltip-label={$t('common.delete')} disabled={!onDelete} onclick={() => (confirmingDelete = true)}>
             <Icon name="trash" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
           </button>
           <span class="fb-action-divider" aria-hidden="true"></span>
-          <button type="button" class="fb-action muted" aria-label="Clear selection" data-tooltip-label="Deselect" onclick={clearSelection}>
+          <button type="button" class="fb-action muted" aria-label={$t('drive.clearSelection')} data-tooltip-label={$t('drive.deselect')} onclick={clearSelection}>
             <Icon name="close" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
           </button>
         {/if}
@@ -785,17 +797,17 @@
       <button
         type="button"
         class="fb-action"
-        aria-label="New folder"
-        data-tooltip-label="New folder"
+        aria-label={$t('drive.newFolder')}
+        data-tooltip-label={$t('drive.newFolder')}
         disabled={!onNewFolder}
-        onclick={() => void startNaming(NEW_FOLDER_ROW, 'Untitled folder')}
+        onclick={() => void startNaming(NEW_FOLDER_ROW, $t('drive.untitledFolder'))}
       ><Icon name="folder-plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
 
       <button
         type="button"
         class="fb-action"
-        aria-label="Upload"
-        data-tooltip-label="Upload"
+        aria-label={$t('drive.upload')}
+        data-tooltip-label={$t('drive.upload')}
         disabled={!onUpload}
         onclick={() => onUpload?.(current)}
       ><Icon name="upload" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
@@ -805,8 +817,8 @@
           type="button"
           class="fb-action"
           class:on={activeFilter !== 'all'}
-          aria-label="Filter files"
-          data-tooltip-label="Filter"
+          aria-label={$t('drive.filterFiles')}
+          data-tooltip-label={$t('drive.filter')}
           aria-haspopup="menu"
           aria-expanded={filterOpen}
           onclick={() => filterOpen = !filterOpen}
@@ -829,8 +841,8 @@
             type="button"
             class="fb-action"
             class:quiet={searchExpanded}
-            aria-label="Search files"
-            data-tooltip-label={searchExpanded ? undefined : 'Search'}
+            aria-label={$t('drive.searchFiles')}
+            data-tooltip-label={searchExpanded ? undefined : $t('common.search')}
             onclick={toggleSearch}
           ><Icon name="search" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
           <div class="fb-search-slot">
@@ -838,8 +850,8 @@
               bind:this={searchInput}
               bind:value={searchQuery}
               type="text"
-              placeholder="Search..."
-              aria-label="Search files"
+              placeholder={$t('drive.searchPlaceholder')}
+              aria-label={$t('drive.searchFiles')}
               tabindex={searchExpanded ? 0 : -1}
               onfocus={() => searchFocused = true}
               onblur={() => searchFocused = false}
@@ -849,7 +861,7 @@
               <button
                 type="button"
                 class="fb-search-clear"
-                aria-label="Clear search"
+                aria-label={$t('common.clearSearch')}
                 data-tooltip="none"
                 onclick={() => { searchQuery = ''; searchInput?.focus(); }}
               ><Icon name="close" size={12}/></button>
@@ -863,7 +875,7 @@
 
   <div class="fb-list">
     <div class="fb-head" role="row">
-      {#each [{key: 'name', label: 'Name'}, {key: 'size', label: 'Size'}, {key: 'kind', label: 'Kind'}, {key: 'modified', label: 'Date Modified'}] as column (column.key)}
+      {#each [{key: 'name', label: $t('drive.columnName')}, {key: 'size', label: $t('drive.columnSize')}, {key: 'kind', label: $t('drive.columnKind')}, {key: 'modified', label: $t('drive.columnModified')}] as column (column.key)}
         <span
           class={`fb-head-cell ${column.key}`}
           role="columnheader"
@@ -896,13 +908,13 @@
               bind:value={nameDraft}
               class="fb-name-input"
               type="text"
-              aria-label="Folder name"
+              aria-label={$t('drive.folderName')}
               onkeydown={submitName}
               onblur={commitName}
             />
           </span>
           <span class="fb-cell size">—</span>
-          <span class="fb-cell kind">Folder</span>
+          <span class="fb-cell kind">{$t('drive.kind.folder')}</span>
           <span class="fb-cell modified">—</span>
         </div>
       {/if}
@@ -915,7 +927,7 @@
           class:odd={index % 2 === 1}
           class:selected={selectedIds.has(entry.id)}
           data-drive-id={entry.id}
-          aria-label={entry.kind === 'folder' ? `Open folder ${entry.name}` : `Open ${entry.name}`}
+          aria-label={entry.kind === 'folder' ? $t('drive.openFolder', {name: entry.name}) : $t('drive.openEntry', {name: entry.name})}
           aria-pressed={selectedIds.has(entry.id)}
           use:overflowTooltip={entry.name}
           onclick={(event) => selectEntry(entry, event)}
@@ -933,7 +945,7 @@
                 bind:value={nameDraft}
                 class="fb-name-input"
                 type="text"
-                aria-label="New name"
+                aria-label={$t('drive.newName')}
                 onclick={(event) => event.stopPropagation()}
                 ondblclick={(event) => event.stopPropagation()}
                 onkeydown={submitName}
@@ -972,26 +984,26 @@
   <!-- Everything here is already on the row; the panel is a place to read it
        in full, so it needs nothing from the host to open. -->
   {#if infoEntry}
-    <aside class="fb-info" aria-label="File information">
+    <aside class="fb-info" aria-label={$t('drive.fileInformation')}>
       <header>
         <span class="fb-icon"><Icon name={entryIcons[infoEntry.kind]} size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></span>
         <strong>{infoEntry.name}</strong>
-        <button type="button" aria-label="Close information" onclick={() => (infoEntry = null)}>
+        <button type="button" aria-label={$t('drive.closeInformation')} onclick={() => (infoEntry = null)}>
           <Icon name="close" size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
         </button>
       </header>
       <dl>
-        <dt>Kind</dt><dd>{driveKindLabel(infoEntry.kind)}</dd>
-        <dt>Size</dt><dd>{infoEntry.size === undefined ? '—' : formatDriveSize(infoEntry.size)}</dd>
-        <dt>Modified</dt><dd>{infoEntry.modifiedAt ? formatDriveDate(infoEntry.modifiedAt) : '—'}</dd>
+        <dt>{$t('drive.columnKind')}</dt><dd>{driveKindLabel(infoEntry.kind)}</dd>
+        <dt>{$t('drive.columnSize')}</dt><dd>{infoEntry.size === undefined ? '—' : formatDriveSize(infoEntry.size)}</dd>
+        <dt>{$t('drive.modified')}</dt><dd>{infoEntry.modifiedAt ? formatDriveDate(infoEntry.modifiedAt) : '—'}</dd>
         {#if infoEntry.provider}
-          <dt>Storage</dt>
+          <dt>{$t('drive.storage')}</dt>
           <dd class="fb-info-provider">
             <DriveProviderLogo provider={infoEntry.provider} size={13} plain/>
             <span>{providerLabel(infoEntry.provider)}</span>
           </dd>
         {/if}
-        {#if infoEntry.uri}<dt>Source</dt><dd class="fb-info-path">{infoEntry.uri}</dd>{/if}
+        {#if infoEntry.uri}<dt>{$t('drive.source')}</dt><dd class="fb-info-path">{infoEntry.uri}</dd>{/if}
       </dl>
     </aside>
   {/if}

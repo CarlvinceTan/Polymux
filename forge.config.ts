@@ -11,6 +11,30 @@ const icon = process.platform === 'win32'
   ? 'assets/appicon.ico'
   : 'assets/appicon.icns';
 
+/**
+ * Signing is switched on by the environment, not by editing this file. Without
+ * a Developer ID the app is ad-hoc signed, which is fine for running a build
+ * locally and fatal for shipping one: Gatekeeper refuses a downloaded app that
+ * is not signed and notarised, and macOS keys permission grants to the signing
+ * identity, so an ad-hoc build asks for microphone and accessibility again
+ * after every update.
+ *
+ * When the certificate exists, set these and nothing else changes:
+ *
+ *   APPLE_SIGNING_IDENTITY="Developer ID Application: Name (TEAMID)"
+ *   APPLE_ID=you@example.com          # notarisation, optional
+ *   APPLE_ID_PASSWORD=abcd-efgh-...   # an app-specific password
+ *   APPLE_TEAM_ID=TEAMID
+ *
+ * Notarisation is separate on purpose: signing alone is enough to keep TCC
+ * grants stable on the machine that built it, and notarising costs a round
+ * trip to Apple that a local build does not need.
+ */
+const signingIdentity = process.env.APPLE_SIGNING_IDENTITY;
+const notarising = Boolean(
+  signingIdentity && process.env.APPLE_ID && process.env.APPLE_ID_PASSWORD && process.env.APPLE_TEAM_ID,
+);
+
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
@@ -27,6 +51,30 @@ const config: ForgeConfig = {
     appBundleId: 'com.flarehq.flareai',
     executableName: 'FlareAI',
     icon,
+    ...(signingIdentity
+      ? {
+          osxSign: {
+            identity: signingIdentity,
+            // Every Mach-O in the bundle is signed, the bridge binaries
+            // included: notarisation rejects a bundle holding an executable
+            // signed by anyone else, and they arrive ad-hoc signed from their
+            // own releases.
+            optionsForFile: () => ({
+              entitlements: 'assets/entitlements.plist',
+              hardenedRuntime: true,
+            }),
+          },
+        }
+      : {}),
+    ...(notarising
+      ? {
+          osxNotarize: {
+            appleId: process.env.APPLE_ID!,
+            appleIdPassword: process.env.APPLE_ID_PASSWORD!,
+            teamId: process.env.APPLE_TEAM_ID!,
+          },
+        }
+      : {}),
   },
   rebuildConfig: {},
   makers: [
@@ -72,7 +120,16 @@ const config: ForgeConfig = {
      * bundle is only complete if they have been fetched. Doing it here means a
      * plain `npm run make` cannot quietly ship an app with no messaging.
      */
-    async prePackage() {
+    async prePackage(_config, platform, arch) {
+      // Refused rather than warned: an Intel macOS build would package and
+      // open perfectly well, and have no messaging in it, because upstream
+      // publishes no darwin-amd64 bridge binaries at all.
+      if (platform === 'darwin' && arch !== 'arm64')
+        throw new Error(
+          `FlareAI cannot be packaged for macOS ${arch}: the bridge fleet is published ` +
+            'for darwin-arm64 only, so this build would ship without messaging. ' +
+            'See AGENTS.md, Packaging and signing.',
+        );
       const {execFileSync} = await import('node:child_process');
       execFileSync(process.execPath, ['scripts/fetch-bridges.mjs'], {stdio: 'inherit'});
     },

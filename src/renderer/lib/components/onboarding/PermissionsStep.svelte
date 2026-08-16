@@ -2,7 +2,8 @@
   import type {FlareAIApi, SystemPermissionKind, SystemPermissionStatus} from '@flareai/protocol';
   import {permissionPrompts} from '@flareai/protocol';
   import Icon from '../shared/Icon.svelte';
-  import SkipAction from './SkipAction.svelte';
+  import BackAction from './BackAction.svelte';
+  import {t, type MessageKey} from '../../i18n';
 
   interface Props {
     api: FlareAIApi;
@@ -19,23 +20,23 @@
    */
   const PERMISSIONS: Array<{
     kind: SystemPermissionKind;
-    title: string;
-    reason: string;
+    title: MessageKey;
+    reason: MessageKey;
   }> = [
     {
       kind: 'microphone',
-      title: 'Microphone',
-      reason: 'Talk to FlareAI, and dictate instead of typing.',
+      title: 'permission.microphone',
+      reason: 'permission.microphoneReason',
     },
     {
       kind: 'accessibility',
-      title: 'Screen reading',
-      reason: 'Act on what is on your screen.',
+      title: 'permission.screenReading',
+      reason: 'permission.screenReadingReason',
     },
     {
       kind: 'full-disk-access',
-      title: 'Full Disk Access',
-      reason: 'Bring iMessage into the Hub.',
+      title: 'permission.fullDisk',
+      reason: 'permission.fullDiskReason',
     },
   ];
 
@@ -43,11 +44,7 @@
   let asking = $state<SystemPermissionKind | ''>('');
 
   const granted = $derived(
-    PERMISSIONS.filter((entry) => statuses[entry.kind] === 'granted').map((entry) => entry.title),
-  );
-  /** Rows still waiting on a pane the user has to visit themselves. */
-  const awaitingSettings = $derived(
-    PERMISSIONS.some((entry) => !permissionPrompts(entry.kind) && statuses[entry.kind] !== 'granted'),
+    PERMISSIONS.filter((entry) => statuses[entry.kind] === 'granted').map((entry) => $t(entry.title)),
   );
 
   async function refresh(): Promise<void> {
@@ -96,11 +93,9 @@
     <span class="perm-orb right"></span>
   </div>
 
-  <p class="onb-eyebrow">Permissions</p>
-  <h1 class="onb-title">Give FlareAI only what you want it to have.</h1>
-  <p class="onb-lede">
-    All three are optional and can be turned off later. macOS has the final say on each one.
-  </p>
+  <p class="onb-eyebrow">{$t('onboarding.stepPermissions')}</p>
+  <h1 class="onb-title">{$t('permission.title')}</h1>
+  <p class="onb-lede">{$t('permission.lede')}</p>
 
   <ul class="perm-list">
     {#each PERMISSIONS as entry (entry.kind)}
@@ -109,18 +104,18 @@
       {@const settings = !permissionPrompts(entry.kind) || status === 'denied' || status === 'restricted'}
       <li class="perm">
         <div class="perm-copy">
-          <strong>{entry.title}</strong>
-          <small>{entry.reason}</small>
+          <strong>{$t(entry.title)}</strong>
+          <small>{$t(entry.reason)}</small>
         </div>
         {#if isGranted}
-          <span class="perm-done"><Icon name="check" size={13} /> Allowed</span>
+          <span class="perm-done"><Icon name="check" size={13} /> {$t('permission.allowed')}</span>
         {:else if settings}
           <button
             type="button"
             class="perm-action"
             onclick={() => void api.permissions.openSettings(entry.kind)}
           >
-            Open Settings
+            {$t('hub.openSettings')}
           </button>
         {:else}
           <button
@@ -129,27 +124,16 @@
             disabled={asking === entry.kind}
             onclick={() => void request(entry.kind)}
           >
-            {asking === entry.kind ? 'Waiting\u2026' : 'Allow'}
+            {asking === entry.kind ? $t('hub.waiting') : $t('permission.allow')}
           </button>
         {/if}
       </li>
     {/each}
   </ul>
 
-  <!-- Two different situations, so two different notes: a prompt already
-       answered cannot be raised again, while a pane never visited was never
-       refused in the first place. -->
+  <!-- A prompt already answered cannot be raised again, so say so. -->
   {#if PERMISSIONS.some((entry) => permissionPrompts(entry.kind) && (statuses[entry.kind] === 'denied' || statuses[entry.kind] === 'restricted'))}
-    <p class="onb-note">
-      macOS only asks once. To change a denied permission, turn it on in System Settings and restart
-      FlareAI.
-    </p>
-  {/if}
-  {#if awaitingSettings}
-    <p class="onb-note">
-      macOS never asks for Full Disk Access. Switch FlareAI on in the list that opens, then let it
-      relaunch the app.
-    </p>
+    <p class="onb-note">{$t('permission.deniedNote')}</p>
   {/if}
 
   <div class="onb-actions perm-actions">
@@ -163,9 +147,9 @@
       disabled={granted.length < PERMISSIONS.length}
       onclick={() => onDone(granted)}
     >
-      Continue
+      {$t('common.continue')}
     </button>
-    <SkipAction />
+    <BackAction />
   </div>
 </div>
 

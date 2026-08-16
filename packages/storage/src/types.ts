@@ -79,6 +79,12 @@ export interface Compaction {
   throughMessageSequence: number;
   summary: string;
   tokenCount: number | null;
+  /**
+   * Identity of the messages this summary replaced, so a later session can tell
+   * whether it still describes the conversation it was written for. Empty on
+   * rows saved before this was recorded, which are never reused.
+   */
+  prefixFingerprint: string;
   createdAt: Timestamp;
 }
 

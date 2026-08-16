@@ -15,6 +15,8 @@
   import {readableError} from '../../errors';
   import {qrSvgPath} from '../../qr';
   import {bridgeLogo, mailLogo} from '../../options/platformBrands';
+  import {emailPresetHint, qrInstructions} from '../../i18n/names';
+  import {locale, plural, t, translate, withLocale} from '../../i18n';
   import Icon from '../shared/Icon.svelte';
   import Menu from '../shared/Menu.svelte';
 
@@ -23,25 +25,27 @@
   type Section = {kind: 'bridge'; platform: CommsPlatform} | {kind: 'mail'};
 
   let status: CommsStatusDto | null = null;
-  // The rail's contents arrive with the first status, so the opening section is
-  // picked once they land rather than guessed here.
-  let selected: Section | null = null;
+  // Mail heads the rail whatever the fleet turns out to hold, so the opening
+  // section is set here rather than waiting on the first status — the pane is
+  // filled the moment the tab is opened, not a beat later. `keepSelectionOnRail`
+  // still moves it if a filter hides Mail.
+  let selected: Section | null = {kind: 'mail'};
   let loading = true;
   let error = '';
   let busy = '';
 
   // Rail chrome, matched to the MCP/Skills rails in SettingsModal.
   type RailMenu = 'filter' | 'sort';
-  const railFilterOptions = [
-    {value: 'all', label: 'All'},
-    {value: 'linked', label: 'Linked'},
-    {value: 'unlinked', label: 'Not linked'},
-    {value: 'attention', label: 'Needs attention'},
+  $: railFilterOptions = [
+    {value: 'all', label: $t('hub.railAll')},
+    {value: 'linked', label: $t('hub.railLinked')},
+    {value: 'unlinked', label: $t('hub.railUnlinked')},
+    {value: 'attention', label: $t('hub.railAttention')},
   ];
-  const railSortOptions = [
-    {value: 'recommended', label: 'Recommended'},
-    {value: 'name-asc', label: 'Name A–Z'},
-    {value: 'name-desc', label: 'Name Z–A'},
+  $: railSortOptions = [
+    {value: 'recommended', label: $t('hub.sortRecommended')},
+    {value: 'name-asc', label: $t('hub.sortNameAsc')},
+    {value: 'name-desc', label: $t('hub.sortNameDesc')},
   ];
   let railFilter = 'all';
   let railSort = 'recommended';
@@ -56,6 +60,12 @@
   let stepValues: Record<string, string> = {};
   let stepError = '';
   let waiting = false;
+  /**
+   * The platform whose login has been confirmed and whose account has not been
+   * reported by the bridge yet. Holds the pane on "Signing in…" across that
+   * gap, instead of dropping back to the log-in button it started from.
+   */
+  let settling: CommsPlatform | null = null;
 
   // Email form
   let editingEmail = false;
@@ -145,7 +155,7 @@
     };
   }
 
-  $: presetHint = COMMS_EMAIL_PRESETS.find((item) => item.value === emailForm.preset)?.hint ?? '';
+  $: presetHint = withLocale($locale, emailPresetHint(emailForm.preset));
   $: bridges = status?.bridges ?? [];
   $: emailAccounts = status?.email.accounts ?? [];
   $: signedIn = status?.hub.status === 'signed-in';
@@ -154,12 +164,12 @@
   $: activeBridge = pickBridge(selected, bridges);
   $: mailOpen = selected?.kind === 'mail';
   $: mailSummary = !status?.email.tooling.installed
-    ? 'Unavailable'
+    ? $t('drive.stateUnavailable')
     : emailAccounts.length === 0
-      ? 'No mailboxes'
+      ? $t('hub.noMailboxes')
       : emailAccounts.length === 1
         ? emailAccounts[0].email
-        : `${emailAccounts.length} mailboxes`;
+        : plural('hub.mailboxes', emailAccounts.length);
   $: mailState = !status?.email.tooling.installed
     ? 'unavailable'
     : emailAccounts.some((account) => account.status === 'error')
@@ -177,7 +187,7 @@
     {
       key: 'mail',
       section: {kind: 'mail'} as Section,
-      name: 'Mail',
+      name: $t('hub.mail'),
       logo: mailLogo('custom'),
       state: mailState,
       label: mailSummary,
@@ -199,10 +209,34 @@
     railSort,
   );
   $: railEmpty = visibleRail.length === 0;
-  // A filter that hides the open section would otherwise leave the detail pane
-  // showing something the rail no longer offers a way back to.
-  $: if (visibleRail.length && !visibleRail.some((entry) => isSelected(entry.section, selected))) {
-    selected = visibleRail[0].section;
+  /**
+   * A filter that hides the open section would otherwise leave the detail pane
+   * showing something the rail no longer offers a way back to — so the
+   * selection moves when the *filter* changes, or when the open platform has
+   * left the fleet entirely.
+   *
+   * Deliberately not on every status read: signing in changes a platform's
+   * state, and under "Not linked" that drops it out of the filtered list. Left
+   * to this rule, logging in to WhatsApp would throw you off WhatsApp at the
+   * moment it succeeded — the one screen you are certainly still reading.
+   */
+  let railFilterAt = railFilter;
+  // In a function, and handed its inputs, for the reason the sort above is:
+  // what a reactive statement re-runs on is what it reads at the top level.
+  $: keepSelectionOnRail(railFilter, visibleRail, railEntries);
+
+  function keepSelectionOnRail(
+    filter: string,
+    visible: typeof railEntries,
+    all: typeof railEntries,
+  ): void {
+    const filterChanged = filter !== railFilterAt;
+    railFilterAt = filter;
+    if (!visible.length) return;
+    if (visible.some((entry) => isSelected(entry.section, selected))) return;
+    // Still on the fleet, just filtered out of view: the selection stands.
+    if (selected !== null && !filterChanged && all.some((entry) => isSelected(entry.section, selected))) return;
+    selected = visible[0].section;
   }
   // The masks are painted from measurements, so they are re-taken whenever the
   // list's contents change under them.
@@ -275,22 +309,22 @@
     switch (bridge.state) {
       case 'connected':
         return bridge.accounts.length > 1
-          ? `${bridge.accounts.length} accounts`
-          : (bridge.accounts[0]?.name ?? 'Connected');
+          ? plural('drive.accounts', bridge.accounts.length)
+          : (bridge.accounts[0]?.name ?? translate('drive.stateConnected'));
       case 'connecting':
-        return 'Connecting…';
+        return translate('hub.connecting');
       case 'logged-out':
-        return 'Not linked';
+        return translate('hub.notLinked');
       case 'error':
-        return 'Needs attention';
+        return translate('drive.stateError');
       case 'unavailable':
-        return 'Local only';
+        return translate('hub.localOnly');
       case 'unreachable':
-        return 'Hub offline';
+        return translate('hub.hubOffline');
       case 'dormant':
-        return 'Not linked';
+        return translate('hub.notLinked');
       default:
-        return 'Unknown';
+        return translate('hub.unknown');
     }
   }
 
@@ -316,6 +350,7 @@
 
   async function startLink(platform: CommsPlatform, flowId: string): Promise<void> {
     const mine = ++linkAttempt;
+    settling = null;
     stepPlatform = platform;
     stepError = '';
     stepValues = {};
@@ -379,12 +414,45 @@
         continue;
       }
       if (step.type === 'complete') {
+        const platform = stepPlatform;
         step = null;
         stepPlatform = null;
-        await refresh();
+        await settle(platform, mine);
         return;
       }
       return;
+    }
+  }
+
+  /**
+   * Waits for a just-confirmed login to show up on the fleet, holding the panel
+   * on "Signing in…" until it does.
+   *
+   * `status` rather than `refresh`: refresh retries every blocked bridge, so it
+   * pokes the very session that has just been established, and it runs through
+   * `busy` — which took the whole detail pane through a loading state for a
+   * login that had already succeeded. Polled because the bridge reports the new
+   * account whenever it has finished bringing it up, with nothing to announce it.
+   */
+  const SETTLE_POLL_MS = 700;
+  const SETTLE_LIMIT_MS = 20000;
+
+  async function settle(platform: CommsPlatform, mine: number): Promise<void> {
+    settling = platform;
+    const deadline = Date.now() + SETTLE_LIMIT_MS;
+    try {
+      for (;;) {
+        const next = await api.comms.status().catch(() => null);
+        if (mine !== linkAttempt) return;
+        if (next) status = next;
+        const bridge = next?.bridges.find((item) => item.platform === platform);
+        if (bridge?.accounts.length) return;
+        if (Date.now() >= deadline) return;
+        await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS));
+        if (mine !== linkAttempt) return;
+      }
+    } finally {
+      if (settling === platform) settling = null;
     }
   }
 
@@ -409,6 +477,7 @@
 
   async function cancelLink(): Promise<void> {
     linkAttempt++;
+    settling = null;
     if (!step || !stepPlatform) {
       step = null;
       stepPlatform = null;
@@ -536,26 +605,30 @@
 <svelte:window onpointerdown={closeRailMenu} onkeydown={railKeydown} />
 
 <div class="comms" role="tabpanel">
-  {#if loading}
-    <p class="comms-muted">Checking your accounts…</p>
-  {:else}
     {#if error}
       <div class="comms-error" role="alert">
         <span>{error}</span>
-        <button type="button" onclick={() => void refresh()} disabled={busy === 'refresh'}>Retry</button>
+        <button type="button" onclick={() => void refresh()} disabled={busy === 'refresh'}>{$t('common.retry')}</button>
       </div>
     {/if}
 
+    <!-- The rail chrome — divider, tool row, list frame — is painted before the
+         fleet lands, so the first status fills a pane that is already there
+         rather than replacing a bare line of text with the whole layout. -->
     <div class="comms-body">
       <div class="comms-rail-column">
         <ul
           class="comms-rail"
-          class:empty-state={railEmpty}
+          class:empty-state={railEmpty || loading}
+          class:loading
           class:at-top={railAtTop}
           class:at-bottom={railAtBottom}
           bind:this={railList}
           onscroll={measureRailEdges}
         >
+          {#if loading}
+            <li class="comms-rail-loading">{$t('hub.checkingAccounts')}</li>
+          {:else}
           {#each visibleRail as entry (entry.key)}
             <li>
               <button
@@ -578,8 +651,9 @@
               </button>
             </li>
           {:else}
-            <li class="comms-rail-empty">Nothing matches this filter</li>
+            <li class="comms-rail-empty">{$t('hub.railNoMatches')}</li>
           {/each}
+          {/if}
         </ul>
 
         <div class="comms-rail-tools">
@@ -588,16 +662,16 @@
               type="button"
               class="rail-tool"
               class:active={railFilter !== 'all'}
-              aria-label="Filter platforms"
+              aria-label={$t('hub.filterPlatforms')}
               aria-haspopup="menu"
               aria-expanded={openRailMenu === 'filter'}
-              data-tooltip-label="Filter"
+              data-tooltip-label={$t('drive.filter')}
               onclick={() => toggleRailMenu('filter')}
             >
               <Icon name="filter" size={15} />
             </button>
             {#if openRailMenu === 'filter'}
-              <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label="Filter platforms">
+              <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('hub.filterPlatforms')}>
                 {#each railFilterOptions as option (option.value)}
                   <button
                     type="button"
@@ -618,16 +692,16 @@
               type="button"
               class="rail-tool"
               class:active={railSort !== 'recommended'}
-              aria-label="Sort platforms"
+              aria-label={$t('hub.sortPlatforms')}
               aria-haspopup="menu"
               aria-expanded={openRailMenu === 'sort'}
-              data-tooltip-label="Sort"
+              data-tooltip-label={$t('hub.sort')}
               onclick={() => toggleRailMenu('sort')}
             >
               <Icon name="sort" size={15} />
             </button>
             {#if openRailMenu === 'sort'}
-              <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label="Sort platforms">
+              <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('hub.sortPlatforms')}>
                 {#each railSortOptions as option (option.value)}
                   <button
                     type="button"
@@ -649,15 +723,15 @@
       <div class="comms-detail">
         {#if editingEmail}
           <header class="comms-detail-header">
-            <h3>{emailOriginalId ? `Edit ${emailOriginalId}` : 'Add a mailbox'}</h3>
-            <p>FlareAI stores the password in your keychain and writes only a lookup into Himalaya's config.</p>
+            <h3>{emailOriginalId ? $t('hub.editMailbox', {name: emailOriginalId}) : $t('hub.addMailbox')}</h3>
+            <p>{$t('hub.mailboxFormBlurb')}</p>
           </header>
           <div class="comms-form">
             <label>
-              <span>Provider</span>
+              <span>{$t('hub.provider')}</span>
               <Menu
                 value={emailForm.preset}
-                label="Provider"
+                label={$t('hub.provider')}
                 wide
                 options={COMMS_EMAIL_PRESETS.map((item) => ({value: item.value, label: item.label}))}
                 onChange={applyPreset}
@@ -665,58 +739,58 @@
             </label>
             {#if presetHint}<p class="comms-hint">{presetHint}</p>{/if}
             <label>
-              <span>Account name</span>
+              <span>{$t('hub.accountName')}</span>
               <input bind:value={emailForm.id} placeholder="work" spellcheck="false" />
             </label>
             <label>
-              <span>Email address</span>
+              <span>{$t('hub.emailAddress')}</span>
               <input bind:value={emailForm.email} type="email" placeholder="you@example.com" spellcheck="false" />
             </label>
             <label>
-              <span>Display name</span>
-              <input bind:value={emailForm.displayName} placeholder="Your Name" />
+              <span>{$t('hub.displayName')}</span>
+              <input bind:value={emailForm.displayName} placeholder={$t('hub.displayNamePlaceholder')} />
             </label>
             <label>
-              <span>Password</span>
+              <span>{$t('hub.password')}</span>
               <input
                 bind:value={emailPassword}
                 type="password"
-                placeholder={emailOriginalId ? 'Leave blank to keep the saved password' : 'App password'}
+                placeholder={emailOriginalId ? $t('hub.passwordKeep') : $t('hub.appPassword')}
               />
             </label>
             <div class="comms-form-row">
               <label>
-                <span>IMAP server</span>
+                <span>{$t('hub.imapServer')}</span>
                 <input bind:value={emailForm.imapHost} spellcheck="false" />
               </label>
               <label class="comms-port">
-                <span>Port</span>
+                <span>{$t('hub.port')}</span>
                 <input bind:value={emailForm.imapPort} type="number" />
               </label>
             </div>
             <div class="comms-form-row">
               <label>
-                <span>SMTP server</span>
+                <span>{$t('hub.smtpServer')}</span>
                 <input bind:value={emailForm.smtpHost} spellcheck="false" />
               </label>
               <label class="comms-port">
-                <span>Port</span>
+                <span>{$t('hub.port')}</span>
                 <input bind:value={emailForm.smtpPort} type="number" />
               </label>
             </div>
             <label class="comms-check">
               <input type="checkbox" bind:checked={emailForm.isDefault} />
-              <span>Send from this mailbox by default</span>
+              <span>{$t('hub.sendByDefault')}</span>
             </label>
             <footer class="comms-actions">
-              <button type="button" onclick={() => (editingEmail = false)}>Cancel</button>
+              <button type="button" onclick={() => (editingEmail = false)}>{$t('common.cancel')}</button>
               <button
                 type="button"
                 class="primary"
                 disabled={busy === 'email-save' || !emailForm.id.trim() || !emailForm.email.trim()}
                 onclick={() => void saveEmail()}
               >
-                {busy === 'email-save' ? 'Saving…' : 'Save mailbox'}
+                {busy === 'email-save' ? $t('hub.saving') : $t('hub.saveMailbox')}
               </button>
             </footer>
           </div>
@@ -726,16 +800,16 @@
             <p>
               {#if activeBridge.state === 'connected'}
                 {activeBridge.accounts.length > 1
-                  ? `${activeBridge.accounts.length} accounts are linked. FlareAI can read and send on all of them.`
-                  : `Linked as ${activeBridge.accounts[0]?.name}. FlareAI can read and send here.`}
+                  ? $t('hub.linkedMany', {count: activeBridge.accounts.length})
+                  : $t('hub.linkedOne', {name: activeBridge.accounts[0]?.name ?? ''})}
               {:else if activeBridge.state === 'unavailable'}
                 {activeBridge.error}
               {:else if activeBridge.state === 'dormant'}
-                Not running yet — nothing is linked to it. Opening it starts it.
+                {$t('hub.dormant')}
               {:else if activeBridge.state === 'unreachable'}
-                The message hub is not responding, so this platform cannot be checked.
+                {$t('hub.unreachable')}
               {:else}
-                Link your {activeBridge.name} account to let FlareAI read and send messages.
+                {$t('hub.linkPrompt', {platform: activeBridge.name})}
               {/if}
             </p>
           </header>
@@ -754,15 +828,22 @@
                 onclick={() => void grant(activeBridge.permission!)}
               >
                 {busy === 'grant'
-                  ? 'Waiting…'
+                  ? $t('hub.waiting')
                   : permissionPrompts(activeBridge.permission)
-                    ? 'Allow access'
-                    : 'Open Settings'}
+                    ? $t('hub.allowAccess')
+                    : $t('hub.openSettings')}
               </button>
             </section>
           {/if}
 
-          {#if step && stepPlatform === activeBridge.platform}
+          {#if settling === activeBridge.platform}
+            <!-- Between the phone confirming and the bridge reporting the
+                 account. One line, in place: the pane carries on rather than
+                 snapping back to the log-in button it started from. -->
+            <section class="comms-block comms-step">
+              <p role="status">{$t('hub.signingIn')}</p>
+            </section>
+          {:else if step && stepPlatform === activeBridge.platform}
             <section class="comms-block comms-step">
               {#if step.type === 'display_and_wait'}
                 {#if qr}
@@ -772,7 +853,7 @@
                     <svg
                       viewBox="-4 -4 {qr.size + 8} {qr.size + 8}"
                       role="img"
-                      aria-label="Pairing QR code"
+                      aria-label={$t('hub.pairingQr')}
                     >
                       <rect x="-4" y="-4" width={qr.size + 8} height={qr.size + 8} fill="#fff" />
                       <path d={qr.path} fill="#000" />
@@ -781,8 +862,14 @@
                 {:else if step.display === 'code' && step.data}
                   <p class="comms-code">{step.data}</p>
                 {/if}
-                <p>{step.instructions ?? 'Waiting for you to confirm on your phone…'}</p>
-                {#if waiting}<p class="comms-muted">Waiting…</p>{/if}
+                <!-- Our own wording first when the QR is up: it names the menu
+                     the scanner hides behind, which "scan this" leaves out. -->
+                <p>
+                  {(qr && qrInstructions(stepPlatform)) ??
+                    step.instructions ??
+                    $t('hub.confirmOnPhone')}
+                </p>
+                {#if waiting}<p class="comms-muted">{$t('hub.waiting')}</p>{/if}
               {:else if step.type === 'user_input'}
                 {#if step.instructions}<p>{step.instructions}</p>{/if}
                 <div class="comms-form">
@@ -804,7 +891,7 @@
                   {/each}
                 </div>
               {:else if step.type === 'cookies'}
-                <p>{step.instructions ?? 'Finish signing in the window that just opened.'}</p>
+                <p>{step.instructions ?? $t('hub.finishInWindow')}</p>
               {/if}
               {#if stepError}<p class="comms-hint warn">{stepError}</p>{/if}
               <footer class="comms-actions">
@@ -813,12 +900,12 @@
                      platform, and the label should say so. -->
                 <button type="button" onclick={() => void cancelLink()}>
                   {activeBridge.flows.length > 1 && step.type !== 'cookies'
-                    ? 'Other verification methods'
-                    : 'Cancel'}
+                    ? $t('hub.otherMethods')
+                    : $t('common.cancel')}
                 </button>
                 {#if step.type === 'user_input'}
                   <button type="button" class="primary" disabled={busy === 'step'} onclick={() => void submitStep()}>
-                    {busy === 'step' ? 'Checking…' : 'Continue'}
+                    {busy === 'step' ? $t('hub.checking') : $t('common.continue')}
                   </button>
                 {/if}
               </footer>
@@ -826,15 +913,19 @@
           {:else}
             {#if activeBridge.accounts.length > 0}
               <section class="comms-block">
-                <h4>{activeBridge.accounts.length === 1 ? 'Linked account' : 'Linked accounts'}</h4>
+                <h4>{activeBridge.accounts.length === 1 ? $t('hub.linkedAccount') : $t('hub.linkedAccounts')}</h4>
                 {#each activeBridge.accounts as account (account.id)}
                   <p class="comms-value">
                     <code>{account.name}</code>
-                    <button
-                      type="button"
-                      class="destructive"
-                      disabled={busy === `unlink:${activeBridge.platform}:${account.id}`}
-                      onclick={() => void unlink(activeBridge, account)}>Unlink</button>
+                    <!-- A relay account belongs to the app on this Mac, not to
+                         a login FlareAI made: there is nothing here to undo. -->
+                    {#if activeBridge.api !== 'none'}
+                      <button
+                        type="button"
+                        class="destructive"
+                        disabled={busy === `unlink:${activeBridge.platform}:${account.id}`}
+                        onclick={() => void unlink(activeBridge, account)}>{$t('hub.unlink')}</button>
+                    {/if}
                   </p>
                   {#if account.error}<p class="comms-hint warn">{account.error}</p>{/if}
                 {/each}
@@ -842,7 +933,7 @@
             {/if}
             {#if activeBridge.flows.length > 0 && activeBridge.state !== 'unavailable'}
             <section class="comms-block">
-              <h4>{activeBridge.accounts.length > 0 ? 'Add another account' : 'How do you want to link it?'}</h4>
+              <h4>{activeBridge.accounts.length > 0 ? $t('hub.addAnotherAccount') : $t('hub.howToLink')}</h4>
               <ul class="comms-flows">
                 {#each activeBridge.flows as flow (flow.id)}
                   <li>
@@ -855,22 +946,22 @@
                       disabled={!signedIn || busy === `link:${activeBridge.platform}`}
                       onclick={() => void startLink(activeBridge.platform, flow.id)}
                     >
-                      {flow.id === 'qr' ? 'Show QR' : 'Start'}
+                      {flow.id === 'qr' ? $t('hub.showQr') : $t('hub.start')}
                     </button>
                   </li>
                 {/each}
               </ul>
               {#if !signedIn}
                 {#if status?.hub.canAutoConnect}
-                  <p class="comms-hint">FlareAI still has to set itself up before it can link an account.</p>
+                  <p class="comms-hint">{$t('hub.setupFirst')}</p>
                   <footer class="comms-actions">
                     <button type="button" class="primary" disabled={busy === 'connect'} onclick={() => void connect()}>
-                      {busy === 'connect' ? 'Setting up…' : 'Set up messaging'}
+                      {busy === 'connect' ? $t('hub.settingUp') : $t('hub.setUpMessaging')}
                     </button>
                   </footer>
                 {:else}
                   <p class="comms-hint warn">
-                    {status?.hub.error ?? 'The message hub is not running on this Mac.'}
+                    {status?.hub.error ?? $t('hub.notRunning')}
                   </p>
                 {/if}
               {/if}
@@ -878,28 +969,29 @@
             </section>
             {:else if activeBridge.state !== 'unavailable' && activeBridge.accounts.length === 0}
             <p class="comms-muted">
-              This bridge did not offer a way to link an account from here.
+              {$t('hub.noLinkMethod')}
               {#if activeBridge.managementRoomHint}
-                Use its management room instead.
+                {$t('hub.useManagementRoom')}
               {/if}
             </p>
             {/if}
           {/if}
         {:else if mailOpen}
           <header class="comms-detail-header">
-            <h3>Mail</h3>
-            <p>
-              FlareAI reads and sends email through these mailboxes. Passwords live in your keychain,
-              never in a config file.
-            </p>
+            <h3>{$t('hub.mail')}</h3>
+            <p>{$t('hub.mailBlurb')}</p>
             <span class="comms-detail-actions">
-              <button type="button" aria-label="Add mailbox" onclick={addEmail}>
+              <button type="button" aria-label={$t('hub.addMailboxShort')} onclick={addEmail}>
                 <Icon name="plus" size={14} />
               </button>
             </span>
           </header>
 
-          {#if status && !status.email.tooling.installed}
+          <!-- Held back while the fleet is still on its way: "No mailboxes yet"
+               is an answer, and it is the wrong one to flash before we have it. -->
+          {#if loading}
+            <p class="comms-muted">{$t('hub.checkingAccounts')}</p>
+          {:else if status && !status.email.tooling.installed}
             <p class="comms-hint warn">{status.email.tooling.error}</p>
           {:else}
             <ul class="comms-mailboxes">
@@ -908,24 +1000,23 @@
                   <div class="comms-mailbox-head">
                     <span class="comms-mailbox-name">
                       <strong>{account.email}</strong>
-                      {#if account.isDefault}<em>Default</em>{/if}
+                      {#if account.isDefault}<em>{$t('hub.default')}</em>{/if}
                     </span>
                     <span class="comms-status" data-state={account.status}>
-                      {account.status === 'ok' ? 'Reachable' : account.status === 'error' ? 'Failed' : 'Not tested'}
+                      {account.status === 'ok' ? $t('hub.reachable') : account.status === 'error' ? $t('task.failed') : $t('hub.notTested')}
                     </span>
                   </div>
                   <p class="comms-mailbox-servers">
-                    <span>{account.incoming.host ?? 'No IMAP server'}{account.incoming.port ? `:${account.incoming.port}` : ''}</span>
+                    <span>{account.incoming.host ?? $t('hub.noImapServer')}{account.incoming.port ? `:${account.incoming.port}` : ''}</span>
                     <span aria-hidden="true">·</span>
-                    <span>{account.outgoing.host ?? 'No SMTP server'}{account.outgoing.port ? `:${account.outgoing.port}` : ''}</span>
+                    <span>{account.outgoing.host ?? $t('hub.noSmtpServer')}{account.outgoing.port ? `:${account.outgoing.port}` : ''}</span>
                     <span aria-hidden="true">·</span>
-                    <span>{account.incoming.auth === 'oauth2' ? 'OAuth' : account.incoming.auth === 'command' ? 'Keychain' : account.incoming.auth}</span>
+                    <span>{account.incoming.auth === 'oauth2' ? 'OAuth' : account.incoming.auth === 'command' ? $t('hub.keychain') : account.incoming.auth}</span>
                   </p>
                   {#if account.error}<p class="comms-hint warn">{account.error}</p>{/if}
                   {#if !account.secretStored}
                     <p class="comms-hint">
-                      Set up outside FlareAI, so its password is not in FlareAI's keychain entry. Editing
-                      it here will move it.
+                      {$t('hub.externalPassword')}
                     </p>
                   {/if}
                   <div class="comms-mailbox-actions">
@@ -934,23 +1025,23 @@
                       disabled={busy === `email-test:${account.id}`}
                       onclick={() => void testEmail(account)}
                     >
-                      {busy === `email-test:${account.id}` ? 'Testing…' : 'Test'}
+                      {busy === `email-test:${account.id}` ? $t('hub.testing') : $t('hub.test')}
                     </button>
-                    <button type="button" onclick={() => editEmail(account)}>Edit</button>
+                    <button type="button" onclick={() => editEmail(account)}>{$t('common.edit')}</button>
                     <button
                       type="button"
                       class="destructive"
                       disabled={busy === `email-remove:${account.id}`}
                       onclick={() => void removeEmail(account)}
                     >
-                      Remove
+                      {$t('hub.remove')}
                     </button>
                   </div>
                 </li>
               {:else}
                 <li class="comms-mailbox-empty">
-                  <p>No mailboxes yet.</p>
-                  <button type="button" onclick={addEmail}>Add a mailbox</button>
+                  <p>{$t('hub.noMailboxesYet')}</p>
+                  <button type="button" onclick={addEmail}>{$t('hub.addMailbox')}</button>
                 </li>
               {/each}
             </ul>
@@ -958,7 +1049,6 @@
         {/if}
       </div>
     </div>
-  {/if}
 </div>
 
 <style>
@@ -982,6 +1072,10 @@
   .comms-rail.empty-state{-webkit-mask-image:none;mask-image:none}
   .comms-rail>li{margin:0}
   .comms-rail-empty{padding:6px 8px;color:var(--neutral-400);font-size:10.5px}
+  /* Centred in the rail's whole height rather than sat at the top: while the
+     fleet is on its way the rail has no rows for it to head. */
+  .comms-rail.loading{justify-content:center}
+  .comms-rail-loading{padding:0 8px;color:var(--neutral-400);text-align:center;font-size:10.5px}
   .comms-rail-tools{position:relative;flex:none;display:flex;align-items:center;gap:2px}
   .rail-tool-wrap{position:relative}
   .rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}
@@ -1014,11 +1108,15 @@
   .comms-dot[data-state="unreachable"],.comms-dot[data-state="unavailable"]{background:var(--neutral-200);box-shadow:inset 0 0 0 1px var(--neutral-300)}
 
   .comms-detail{min-height:0;overflow-y:auto;padding-right:2px}
-  .comms-detail-header{position:relative;margin-bottom:14px}
+  /* The action sits out of the text's way rather than on top of it: the header
+     keeps a lane clear on the right wide enough for the button and its gap. */
+  .comms-detail-header{position:relative;margin-bottom:14px;padding-right:44px}
   .comms-detail-header h3{margin:0;color:var(--neutral-950);font-size:14px;font-weight:580}
   .comms-detail-header p{max-width:520px;margin:5px 0 0;color:var(--neutral-600);font-size:11px;line-height:1.5}
-  .comms-detail-actions{position:absolute;top:0;right:0;display:flex;gap:4px}
-  .comms-detail-actions button{width:26px;height:26px;display:grid;place-items:center;border:1px solid var(--neutral-200);border-radius:7px;background:var(--app-surface);color:var(--neutral-600);cursor:pointer}
+  .comms-detail-actions{position:absolute;top:-2px;right:0;display:flex;gap:4px}
+  /* Borderless — the glyph is the affordance, and a box around it competes with
+     the cards below. The hover fill is what confirms it is a target. */
+  .comms-detail-actions button{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:var(--neutral-500);cursor:pointer}
   .comms-detail-actions button:hover{background:var(--neutral-100);color:var(--neutral-950)}
 
   .comms-block{margin-bottom:16px;padding-top:12px;border-top:1px solid var(--neutral-200)}

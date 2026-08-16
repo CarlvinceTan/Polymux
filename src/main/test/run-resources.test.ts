@@ -53,69 +53,89 @@ function toolCompleted(name: string, args: Record<string, unknown>, content: str
   } as AgentRunEvent;
 }
 
-test("records the page a browser tool landed on", () => {
+function messageCompleted(text: string): AgentRunEvent {
+  return {
+    runId: "run-1",
+    sequence: 2,
+    timestamp: 0,
+    turn: 1,
+    type: "message.completed",
+    phase: "final",
+    message: {role: "assistant", content: [{type: "text", text}]},
+  } as AgentRunEvent;
+}
+
+test("records links the reply cites, titled by their link text", () => {
   const store = memoryStore();
   const recorder = new RunResourceRecorder(store, () => `id-${store.references.length}`);
+  recorder.record("chat-1", "run-1", messageCompleted(
+    "Two are worth a look: [AI Summit](https://one.example/summit) and [Dev Day](https://two.example/dev).",
+  ));
+  assert.deepEqual(
+    store.references.map(({title, uri, kind}) => ({title, uri, kind})),
+    [
+      {title: "AI Summit", uri: "https://one.example/summit", kind: "web"},
+      {title: "Dev Day", uri: "https://two.example/dev", kind: "web"},
+    ],
+  );
+});
+
+test("titles a cited bare url from the page the run actually opened", () => {
+  const store = memoryStore();
+  const recorder = new RunResourceRecorder(store, () => "id-1");
   recorder.record("chat-1", "run-1", toolCompleted(
     "browser_control",
     {action: "navigate", leaseId: "lease", url: "https://example.com"},
     JSON.stringify({ok: true, pageUrl: "https://example.com/docs", pageTitle: "Docs"}),
   ));
+  recorder.record("chat-1", "run-1", messageCompleted("See https://example.com/docs for the details."));
   assert.deepEqual(
-    store.references.map(({title, uri, kind}) => ({title, uri, kind})),
-    [{title: "Docs", uri: "https://example.com/docs", kind: "web"}],
+    store.references.map(({title, uri}) => ({title, uri})),
+    [{title: "Docs", uri: "https://example.com/docs"}],
   );
 });
 
-test("falls back to the requested url and derives a title from it", () => {
+test("falls back to a title derived from an uncited-page url", () => {
   const store = memoryStore();
   const recorder = new RunResourceRecorder(store, () => "id-1");
-  recorder.record("chat-1", "run-1", toolCompleted("fetch", {url: "https://example.com/a/b"}, "some page text"));
+  recorder.record("chat-1", "run-1", messageCompleted("Source: https://example.com/a/b."));
   assert.deepEqual(
     store.references.map(({title, uri}) => ({title, uri})),
     [{title: "example.com/a/b", uri: "https://example.com/a/b"}],
   );
 });
 
-test("de-duplicates repeat visits and seeds from stored references", () => {
+test("pages the run only browsed are not references", () => {
+  const store = memoryStore();
+  const recorder = new RunResourceRecorder(store, () => "id-1");
+  // The shape that filled the panel with search pages: three navigations, and
+  // a reply that cites none of them.
+  for (const query of ["ai+events", "ai+events+2026", "ai+conferences"])
+    recorder.record("chat-1", "run-1", toolCompleted(
+      "browser_control",
+      {action: "navigate", leaseId: "lease", url: `https://search.example/?q=${query}`},
+      JSON.stringify({ok: true, pageUrl: `https://search.example/?q=${query}`, pageTitle: "upcoming AI events Singapore"}),
+    ));
+  recorder.record("chat-1", "run-1", messageCompleted("I found three events happening in March."));
+  assert.equal(store.references.length, 0);
+});
+
+test("de-duplicates a link cited twice and seeds from stored references", () => {
   const store = memoryStore();
   store.createReference({id: "existing", conversationId: "chat-1", kind: "web", title: "Docs", uri: "https://example.com/docs"});
   const recorder = new RunResourceRecorder(store, () => "id-new");
-  const visit = toolCompleted("browser_control", {action: "read", leaseId: "lease"},
-    JSON.stringify({ok: true, pageUrl: "https://example.com/docs", pageTitle: "Docs"}));
-  recorder.record("chat-1", "run-1", visit);
-  recorder.record("chat-1", "run-1", visit);
+  recorder.record("chat-1", "run-1", messageCompleted("https://example.com/docs and again https://example.com/docs"));
+  recorder.record("chat-1", "run-1", messageCompleted("[Docs](https://example.com/docs)"));
   assert.equal(store.references.length, 1);
 });
 
-test("ignores non-web urls and failed tool calls", () => {
+test("ignores non-web urls and trailing sentence punctuation", () => {
   const store = memoryStore();
   const recorder = new RunResourceRecorder(store, () => "id-1");
-  recorder.record("chat-1", "run-1", toolCompleted("browser_control", {}, JSON.stringify({pageUrl: "about:blank"})));
-  const failed = toolCompleted("fetch", {url: "https://example.com"}, "boom");
-  recorder.record("chat-1", "run-1", {...failed, result: {content: "boom", isError: true}} as AgentRunEvent);
+  recorder.record("chat-1", "run-1", messageCompleted("Try about:blank or file:///tmp/x — neither is a source."));
   assert.equal(store.references.length, 0);
-});
-
-test("ignores links a search only listed — a result is not a page the agent read", () => {
-  const store = memoryStore();
-  const recorder = new RunResourceRecorder(store, () => "id-1");
-  recorder.record("chat-1", "run-1", toolCompleted("web_search", {query: "flareai"}, JSON.stringify({
-    results: [{title: "First", url: "https://one.example/a"}, {title: "Second", link: "https://two.example/b"}],
-  })));
-  assert.equal(store.references.length, 0);
-});
-
-test("ignores a call that reported failure in its payload", () => {
-  const store = memoryStore();
-  const recorder = new RunResourceRecorder(store, () => "id-1");
-  recorder.record("chat-1", "run-1", toolCompleted("fetch", {url: "https://example.com/missing"},
-    JSON.stringify({status: 404, body: "Not Found"})));
-  recorder.record("chat-1", "run-1", toolCompleted("browser_control", {action: "read", leaseId: "l"},
-    JSON.stringify({ok: false, pageUrl: "https://example.com/blocked"})));
-  recorder.record("chat-1", "run-1", toolCompleted("fetch", {url: "https://example.com/down"},
-    JSON.stringify({error: "connection refused"})));
-  assert.equal(store.references.length, 0);
+  recorder.record("chat-1", "run-1", messageCompleted("(see https://example.com/page)"));
+  assert.deepEqual(store.references.map(({uri}) => uri), ["https://example.com/page"]);
 });
 
 test("records written files as outputs with a kind from the extension", () => {

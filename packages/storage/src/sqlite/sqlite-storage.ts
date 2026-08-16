@@ -134,6 +134,7 @@ function compaction(row: Row): Compaction {
     throughMessageSequence: Number(row.through_message_sequence),
     summary: text(row.summary),
     tokenCount: nullableNumber(row.token_count),
+    prefixFingerprint: text(row.prefix_fingerprint),
     createdAt: text(row.created_at),
   };
 }
@@ -585,9 +586,10 @@ export class SqliteStorage implements Storage {
       .prepare(
         // Recompacting the same prefix replaces its summary: the history it
         // described can change underneath it, and the pair is unique.
-        `INSERT INTO compactions (id,conversation_id,through_message_sequence,summary,token_count,created_at) VALUES (?,?,?,?,?,?)
+        `INSERT INTO compactions (id,conversation_id,through_message_sequence,summary,token_count,prefix_fingerprint,created_at) VALUES (?,?,?,?,?,?,?)
          ON CONFLICT(conversation_id,through_message_sequence) DO UPDATE SET
-           id=excluded.id, summary=excluded.summary, token_count=excluded.token_count, created_at=excluded.created_at`,
+           id=excluded.id, summary=excluded.summary, token_count=excluded.token_count,
+           prefix_fingerprint=excluded.prefix_fingerprint, created_at=excluded.created_at`,
       )
       .run(
         input.id,
@@ -595,6 +597,7 @@ export class SqliteStorage implements Storage {
         input.throughMessageSequence,
         input.summary,
         input.tokenCount,
+        input.prefixFingerprint,
         now,
       );
     return compaction(

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { SqliteStorage } from "../src/sqlite/sqlite-storage.js";
 
@@ -143,6 +144,41 @@ test("persists replayable run events and lifecycle state", () => {
   }
 });
 
+test("a store written before summaries were fingerprinted still opens", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "flareai-compaction-"));
+  const databasePath = path.join(directory, "flareai.sqlite");
+  try {
+    const before = new SqliteStorage(databasePath);
+    before.createConversation({ id: "conversation-1", title: "Chat" });
+    before.close();
+
+    // Wind the store back to how the previous version wrote it: a compaction
+    // row with no fingerprint recorded against it.
+    const old = new DatabaseSync(databasePath);
+    old.exec("ALTER TABLE compactions DROP COLUMN prefix_fingerprint");
+    old
+      .prepare(
+        "INSERT INTO compactions (id,conversation_id,through_message_sequence,summary,token_count,created_at) VALUES (?,?,?,?,?,?)",
+      )
+      .run("compact-old", "conversation-1", 8, "summary from before", 80, "2026-01-01T00:00:00.000Z");
+    old.exec("PRAGMA user_version = 4");
+    old.close();
+
+    const after = new SqliteStorage(databasePath);
+    try {
+      const saved = after.getLatestCompaction("conversation-1");
+      assert.equal(saved?.summary, "summary from before");
+      // Empty reads as "cannot be checked", which is what keeps an unverifiable
+      // summary from being reused rather than trusted blindly.
+      assert.equal(saved?.prefixFingerprint, "");
+    } finally {
+      after.close();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("recompacting the same prefix replaces its summary", () => {
   const storage = fixture();
   try {
@@ -153,6 +189,7 @@ test("recompacting the same prefix replaces its summary", () => {
       throughMessageSequence: 8,
       summary: "stale summary",
       tokenCount: 80,
+      prefixFingerprint: "user:12",
     });
     const replaced = storage.saveCompaction({
       id: "compact-2",
@@ -160,6 +197,7 @@ test("recompacting the same prefix replaces its summary", () => {
       throughMessageSequence: 8,
       summary: "fresh summary",
       tokenCount: 90,
+      prefixFingerprint: "user:14",
     });
 
     assert.equal(replaced.summary, "fresh summary");
@@ -183,6 +221,7 @@ test("keeps compaction, durable memory and preferences distinct", () => {
       throughMessageSequence: 8,
       summary: "Earlier context",
       tokenCount: 80,
+      prefixFingerprint: "user:12",
     });
     storage.saveCompaction({
       id: "compact-2",
@@ -190,6 +229,7 @@ test("keeps compaction, durable memory and preferences distinct", () => {
       throughMessageSequence: 14,
       summary: "Later context",
       tokenCount: 120,
+      prefixFingerprint: "user:20",
     });
     assert.equal(
       storage.getLatestCompaction("conversation-1")?.id,
@@ -406,5 +446,57 @@ test("a literal wildcard in a search is not treated as a pattern", () => {
     assert.equal(storage.searchMessages("%%%").length, 0);
   } finally {
     storage.close();
+  }
+});
+
+test("drops web references the reply never cited when upgrading an old store", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "flareai-refs-"));
+  const databasePath = path.join(directory, "flareai.sqlite");
+  try {
+    const before = new SqliteStorage(databasePath);
+    before.createConversation({ id: "conversation-1", title: "Research" });
+    before.createRun({ id: "run-1", conversationId: "conversation-1" });
+    before.appendMessage({
+      id: "message-1",
+      conversationId: "conversation-1",
+      runId: "run-1",
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "call-1", name: "browser_control", arguments: { url: "https://search.example/?q=ai" } },
+        { type: "text", text: "The one worth your time is [AI Summit](https://one.example/summit)." },
+      ],
+    });
+    // Cited in the reply, a page only opened along the way, and a file the
+    // user attached by hand.
+    for (const [id, uri] of [
+      ["kept", "https://one.example/summit"],
+      ["opened", "https://search.example/?q=ai"],
+    ] as const)
+      before.createReference({ id, conversationId: "conversation-1", runId: "run-1", kind: "web", title: id, uri });
+    before.createReference({
+      id: "attached",
+      conversationId: "conversation-1",
+      kind: "file",
+      title: "notes.md",
+      uri: "/home/me/notes.md",
+    });
+    before.close();
+
+    // Reopen as a store written by the previous version.
+    const rollback = new DatabaseSync(databasePath);
+    rollback.exec("PRAGMA user_version = 3");
+    rollback.close();
+
+    const after = new SqliteStorage(databasePath);
+    try {
+      assert.deepEqual(
+        after.listReferences("conversation-1").map((item) => item.id).sort(),
+        ["attached", "kept"],
+      );
+    } finally {
+      after.close();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });

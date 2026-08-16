@@ -23,6 +23,25 @@
     // without this hint still opens in a sensible colour.
   }
 
+  // Same story for the interface language: it lives in settings, and the one
+  // thing the document must know before it paints is which way round it goes.
+  // Arabic arriving on mount would re-lay-out the whole page mid-splash, so the
+  // last resolved choice is restored here. `lib/i18n/index.ts` writes it.
+  try {
+    var language = localStorage.getItem('flareai.language') || 'system';
+    if (language === 'system') {
+      var requested = (navigator.languages && navigator.languages.length
+        ? navigator.languages
+        : [navigator.language])[0] || 'en';
+      language = String(requested).split('-')[0];
+    }
+    document.documentElement.lang = language;
+    document.documentElement.dir = language === 'ar' ? 'rtl' : 'ltr';
+  } catch (error) {
+    // Without the hint the document stays as the markup left it, English and
+    // left to right, and the renderer corrects it on mount.
+  }
+
   // The sequence starts when the splash is actually on screen, so that all of
   // it is seen. In the app that moment belongs to the main process, which holds
   // the window back until its first frame and sets this attribute as it shows

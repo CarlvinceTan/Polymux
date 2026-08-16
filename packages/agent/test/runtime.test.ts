@@ -379,6 +379,267 @@ test("a long conversation is compacted before the model ever sees it", async () 
   }
 });
 
+test("the compaction watermark marks the real boundary in stored history", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    // A row that never becomes an inference message, so stored positions and
+    // context positions no longer line up. Indexing one list with the other's
+    // offset lands on the wrong row, which is what this pins down.
+    storage.appendMessage({
+      id: "system-note",
+      conversationId: "conversation",
+      role: "system",
+      content: "session note",
+    });
+    for (let index = 0; index < 4; index += 1)
+      storage.appendMessage({
+        id: `old-${index}`,
+        conversationId: "conversation",
+        role: "user",
+        content: `earlier turn ${index} ${"detail ".repeat(60)}`,
+      });
+    const inference = new FakeInference();
+    inference.responses.push([answer("compacted earlier context")]);
+    inference.responses.push([answer("answer")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: true, reserveTokens: 20, keepRecentTokens: 40 },
+      goalLoop: { enabled: false },
+      memoryConsolidation: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "next question",
+      includeSubagents: false,
+    }).result;
+    await agent.settleGoalWork();
+
+    const watermark =
+      storage.getLatestCompaction("conversation")?.throughMessageSequence ?? 0;
+    assert.ok(watermark > 0, "a compaction must record how far it reached");
+    // The watermark is a boundary: everything at or below it was summarized
+    // away, everything above it is still in the turn the model was given.
+    const turn = JSON.stringify(inference.requests[1]?.messages);
+    for (const message of storage
+      .listMessages("conversation")
+      .filter((item) => item.role === "user")) {
+      const inContext = turn.includes(String(message.content));
+      assert.equal(
+        inContext,
+        message.sequence > watermark,
+        `message ${message.sequence} sits on the wrong side of watermark ${watermark}`,
+      );
+    }
+  } finally {
+    storage.close();
+  }
+});
+
+test("a saved summary is reused after a restart instead of being rebuilt", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const older = storage.appendMessage({
+      id: "older",
+      conversationId: "conversation",
+      role: "user",
+      content: "a".repeat(400),
+    });
+    const recent = storage.appendMessage({
+      id: "recent",
+      conversationId: "conversation",
+      role: "user",
+      content: "recent",
+    });
+    const messages = [
+      { role: "user" as const, content: "a".repeat(400) },
+      { role: "user" as const, content: "recent" },
+    ];
+    const sequences = [older.sequence, recent.sequence];
+    const settings = { reserveTokens: 20, keepRecentTokens: 10 };
+    const signal = new AbortController().signal;
+
+    const before = new FakeInference();
+    before.responses.push([answer("durable summary")]);
+    const compacted = await new CompactionManager(
+      before,
+      storage,
+      settings,
+    ).transform("conversation", model, { messages }, signal, undefined, sequences);
+    assert.match(compacted.systemPrompt ?? "", /durable summary/);
+    assert.equal(before.requests.length, 1);
+
+    // A manager built fresh over the same storage is what the next launch is:
+    // no in-memory cache, only what was written to disk. Its queue is empty, so
+    // any attempt to summarize again fails loudly rather than passing quietly.
+    const after = new FakeInference();
+    const resumed = await new CompactionManager(
+      after,
+      storage,
+      settings,
+    ).transform("conversation", model, { messages }, signal, undefined, sequences);
+
+    assert.match(resumed.systemPrompt ?? "", /durable summary/);
+    assert.equal(after.requests.length, 0, "the saved summary must be reused");
+    assert.ok(
+      !JSON.stringify(resumed.messages).includes("a".repeat(400)),
+      "the summarized turn must stay out of the reloaded context",
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("a saved summary is discarded when the turns it described have changed", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const older = storage.appendMessage({
+      id: "older",
+      conversationId: "conversation",
+      role: "user",
+      content: "a".repeat(400),
+    });
+    const recent = storage.appendMessage({
+      id: "recent",
+      conversationId: "conversation",
+      role: "user",
+      content: "recent",
+    });
+    const sequences = [older.sequence, recent.sequence];
+    const settings = { reserveTokens: 20, keepRecentTokens: 10 };
+    const signal = new AbortController().signal;
+
+    const before = new FakeInference();
+    before.responses.push([answer("first summary")]);
+    await new CompactionManager(before, storage, settings).transform(
+      "conversation",
+      model,
+      {
+        messages: [
+          { role: "user", content: "a".repeat(400) },
+          { role: "user", content: "recent" },
+        ],
+      },
+      signal,
+      undefined,
+      sequences,
+    );
+
+    // Restart, but the compacted turn has been edited since it was summarized.
+    const after = new FakeInference();
+    after.responses.push([answer("rebuilt summary")]);
+    const resumed = await new CompactionManager(
+      after,
+      storage,
+      settings,
+    ).transform(
+      "conversation",
+      model,
+      {
+        messages: [
+          { role: "user", content: "b".repeat(800) },
+          { role: "user", content: "recent" },
+        ],
+      },
+      signal,
+      undefined,
+      sequences,
+    );
+
+    assert.equal(after.requests.length, 1, "changed history must re-summarize");
+    assert.match(resumed.systemPrompt ?? "", /rebuilt summary/);
+    assert.doesNotMatch(resumed.systemPrompt ?? "", /first summary/);
+  } finally {
+    storage.close();
+  }
+});
+
+/** A model roomy enough that a summary plus the recent tail fits under the
+ * threshold, which is what makes reuse observable rather than theoretical. */
+const wideModel: InferenceModel = { ...modelInfo, contextWindow: 20_000 };
+class WideInference extends FakeInference {
+  listModels(): InferenceModel[] {
+    return [wideModel];
+  }
+  getModel(): InferenceModel {
+    return wideModel;
+  }
+}
+
+test("reopening the app continues a compacted conversation without re-summarizing", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    for (let index = 0; index < 8; index += 1)
+      storage.appendMessage({
+        id: `old-${index}`,
+        conversationId: "conversation",
+        role: "user",
+        content: `earlier turn ${index} ${"detail ".repeat(1_715)}`,
+      });
+    const options = {
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: {
+        enabled: true,
+        reserveTokens: 2_000,
+        keepRecentTokens: 4_000,
+      },
+      goalLoop: { enabled: false },
+      memoryConsolidation: { enabled: false },
+    };
+
+    const before = new WideInference();
+    before.responses.push([answer("what came earlier")]);
+    before.responses.push([answer("first answer")]);
+    const first = new FlareAIAgent({ ...options, inference: before });
+    await first.start({
+      conversationId: "conversation",
+      text: "next question",
+      includeSubagents: false,
+    }).result;
+    await first.settleGoalWork();
+    // The compaction pass, then the turn itself.
+    assert.equal(before.requests.length, 2);
+
+    // A second agent over the same storage is the app started again: whatever
+    // it knows about the earlier turns has to have come off disk.
+    const after = new WideInference();
+    after.responses.push([answer("second answer")]);
+    const second = new FlareAIAgent({ ...options, inference: after });
+    await second.start({
+      conversationId: "conversation",
+      text: "and after that?",
+      includeSubagents: false,
+    }).result;
+    await second.settleGoalWork();
+
+    assert.equal(
+      after.requests.length,
+      1,
+      "the reopened conversation must not pay to summarize again",
+    );
+    const turn = after.requests[0];
+    assert.match(turn?.systemPrompt ?? "", /## Earlier conversation/);
+    assert.match(turn?.systemPrompt ?? "", /what came earlier/);
+    assert.ok(
+      !JSON.stringify(turn?.messages).includes("earlier turn 0"),
+      "summarized turns must stay out of the reopened context",
+    );
+  } finally {
+    storage.close();
+  }
+});
+
 test("the agent is given memory tools and its writes land in the vault", async () => {
   const storage = new SqliteStorage(":memory:");
   try {

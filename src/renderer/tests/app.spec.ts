@@ -213,12 +213,12 @@ test.describe('welcome view', () => {
     await expect(modal.getByText('Access local files and directories.')).toBeVisible();
     await expect(modal.getByText('documents', {exact: true})).toBeVisible();
     await expect(modal.getByText('filesystem://documents', {exact: true})).toHaveCount(0);
-    const officialMcp = modal.getByRole('button', {name: /Browser Tools Official/});
+    const officialMcp = modal.getByRole('button', {name: /GitHub Official/});
     await expect(officialMcp.locator('.official-rail-stamp')).toBeVisible();
     await expect(officialMcp.locator('.mcp-name-status')).toHaveCount(0);
     await expect(officialMcp.locator('small')).toHaveText('FlareAI · Connected');
     await officialMcp.click();
-    await expect(modal.getByRole('heading', {name: 'Browser Tools'})).toBeVisible();
+    await expect(modal.getByRole('heading', {name: 'GitHub'})).toBeVisible();
     await expect(modal.locator('.options-detail-header .options-badge')).toHaveCount(0);
     await expect(modal.locator('.skill-meta')).toContainText('Bundled with FlareAI');
     await expect(modal.locator('.skill-meta')).toContainText('Connected');
@@ -335,11 +335,11 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('menu', {name: 'Sort skills'}).getByRole('menuitemradio')).toHaveText(['Recommended', 'Last edited', 'Skill A–Z', 'Skill Z–A']);
     await modal.getByRole('menuitemradio', {name: 'Recommended'}).click();
     await expect(modal.getByRole('button', {name: 'Refresh Skills'})).toHaveCount(0);
-    const browserSkill = modal.getByRole('button', {name: /Browser Official/});
+    const browserSkill = modal.getByRole('button', {name: /Spreadsheets Official/});
     // Skill rows carry no logos or icon marks — the name and stamp are the row.
     await expect(browserSkill.locator('img, .option-mark')).toHaveCount(0);
     await browserSkill.click();
-    await expect(modal.getByRole('heading', {name: 'Browser'})).toBeVisible();
+    await expect(modal.getByRole('heading', {name: 'Spreadsheets'})).toBeVisible();
     const officialBadge = modal.locator('.options-detail-header .official-badge');
     await expect(officialBadge).toHaveText('Official');
     await expect(officialBadge).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
@@ -348,7 +348,7 @@ test.describe('welcome view', () => {
     const officialMeta = modal.locator('.skill-meta');
     await expect(officialMeta.locator('dt')).toHaveText(['Author', 'Category', 'Last edited', 'Source']);
     await expect(officialMeta).toContainText('FlareAI');
-    await expect(officialMeta).toContainText('Web');
+    await expect(officialMeta).toContainText('Documents');
     await expect(officialMeta).toContainText('Bundled with FlareAI');
     const customSkill = modal.getByRole('button', {name: /Personal Research.*Active/});
     await expect(customSkill).toBeVisible();
@@ -487,10 +487,9 @@ test.describe('welcome view', () => {
     await expect(sonnetRoles.locator('.model-role').first()).toContainText('GPT-5.6 Terra');
     // A falling-back role names the model it uses rather than saying so.
     await expect(sonnetRoles.locator('.model-role').nth(1)).toContainText('GPT-5.6 Terra');
-    // Task and judge are the only roles that fall back, and the button that
-    // puts them back is dead until one of them is overridden.
-    await expect(sonnetRoles.getByRole('button', {name: 'Set to Main'})).toHaveCount(2);
-    await expect(sonnetRoles.getByRole('button', {name: 'Set to Main'}).first()).toBeDisabled();
+    // Task and judge follow main here, so there is nothing to put back and the
+    // button that would do it stays out of the row entirely.
+    await expect(sonnetRoles.getByRole('button', {name: 'Set to Main'})).toHaveCount(0);
     // View Setup lists every job at once, including the ones this row can't take.
     await modal.getByRole('button', {name: 'View Setup'}).click();
     const setupMenu = modal.getByRole('menu', {name: 'Model setup'});
@@ -529,7 +528,9 @@ test.describe('welcome view', () => {
     await expect(judgeRole).toContainText('GPT-5.6 Sol');
     await judgeRole.getByRole('button', {name: 'Set to Main'}).click();
     await expect(judgeRole).toContainText('GPT-5.6 Terra');
-    await expect(judgeRole.getByRole('button', {name: 'Set to Main'})).toBeDisabled();
+    // Back to following main, so the button that put it there has nothing left
+    // to do and goes away.
+    await expect(judgeRole.getByRole('button', {name: 'Set to Main'})).toHaveCount(0);
     await modal.getByRole('button', {name: 'Assign GPT-5.6 Sol'}).click();
     await expect(modal.locator('.model-roles')).toHaveCount(0);
     await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
@@ -559,7 +560,10 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('heading', {name: 'OpenAI'})).toBeVisible();
     await modal.getByRole('button', {name: 'Filter providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Not configured'}).click();
-    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['Anthropic', 'OpenRouter']);
+    // The local runtimes sit in the same list as the hosted providers, and
+    // count as not configured until one is connected.
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
+      .toHaveText(['Anthropic', 'OpenRouter', 'llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
     await expect(modal.getByRole('heading', {name: 'Anthropic'})).toBeVisible();
     await modal.getByRole('button', {name: 'Filter providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'All providers'}).click();
@@ -569,16 +573,20 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('menuitemradio', {name: 'Popularity'})).toHaveCount(0);
     await expect(modal.getByRole('menuitemradio', {name: 'Most models'})).toBeVisible();
     await modal.getByRole('menuitemradio', {name: 'Recommended'}).click();
-    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['Anthropic', 'OpenAI', 'OpenRouter']);
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
+      .toHaveText(['Anthropic', 'OpenAI', 'OpenRouter', 'llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
     await modal.getByRole('button', {name: 'Sort providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Provider A–Z'}).click();
-    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['Anthropic', 'OpenAI', 'OpenRouter']);
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
+      .toHaveText(['Anthropic', 'llama.cpp', 'LM Studio', 'Ollama', 'OpenAI', 'OpenRouter', 'vLLM']);
     await modal.getByRole('button', {name: 'Sort providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Fewest models'}).click();
-    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['OpenRouter', 'Anthropic', 'OpenAI']);
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
+      .toHaveText(['llama.cpp', 'LM Studio', 'Ollama', 'vLLM', 'OpenRouter', 'Anthropic', 'OpenAI']);
     await modal.getByRole('button', {name: 'Sort providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Default'}).click();
-    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['OpenAI', 'Anthropic', 'OpenRouter']);
+    await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
+      .toHaveText(['OpenAI', 'Anthropic', 'OpenRouter', 'llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
     await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
     const apiKey = modal.getByLabel('API key');
     await expect(apiKey).toHaveAttribute('placeholder', 'Enter API key');
@@ -621,8 +629,13 @@ test.describe('welcome view', () => {
     });
     await expect(modal.locator('.custom-provider-logo-preview img')).toBeVisible();
     await modal.getByLabel('Custom provider name').fill('Local Lab');
-    await modal.getByLabel('Custom provider base URL').fill('http://localhost:11434/v1');
+    await modal.getByLabel('Custom provider base URL').fill('http://localhost:9000/v1');
     await modal.getByLabel('Custom provider API key').fill('local-secret');
+    // Typing an address is enough — the endpoint is asked what it serves.
+    await expect(modal.getByText('2 models found')).toBeVisible();
+    await expect(modal.locator('.models-summary-list')).toHaveText('llama3.1:8b, qwen2.5-coder:14b');
+    // The detected list is still editable by hand.
+    await modal.getByRole('button', {name: 'Edit list'}).click();
     await modal.getByLabel('Custom provider models').fill('local-chat | Local Chat\nlocal-reasoner | Local Reasoner');
     await modal.getByRole('button', {name: 'Add provider'}).click();
     await expect(modal.getByRole('button', {name: /Local Lab.*2 models/})).toBeVisible();
@@ -631,8 +644,9 @@ test.describe('welcome view', () => {
 
     await modal.getByRole('button', {name: 'Edit Local Lab'}).click();
     await expect(modal.getByRole('heading', {name: 'Edit custom provider'})).toBeVisible();
-    await expect(modal.getByLabel('Custom provider base URL')).toHaveValue('http://localhost:11434/v1');
+    await expect(modal.getByLabel('Custom provider base URL')).toHaveValue('http://localhost:9000/v1');
     await modal.getByLabel('Custom provider name').fill('Local Studio');
+    await modal.getByRole('button', {name: 'Edit list'}).click();
     await modal.getByLabel('Custom provider models').fill('local-chat | Studio Chat');
     await modal.getByRole('button', {name: 'Save changes'}).click();
     await expect(modal.getByRole('button', {name: /Local Studio.*1 model/})).toBeVisible();
@@ -696,6 +710,149 @@ test.describe('welcome view', () => {
 
     await page.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
+  });
+
+  test('a local runtime sits with the other providers and needs only connecting', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'Provider'}).click();
+
+    // Found by name, in the same rail as the hosted providers.
+    await modal.getByLabel('Search provider').fill('ollama');
+    const ollama = modal.getByRole('button', {name: /Ollama/}).first();
+    await expect(ollama).toBeVisible();
+    await ollama.click();
+    await expect(modal.getByRole('heading', {name: 'Ollama'})).toBeVisible();
+    // No key to paste — an address and a Connect button.
+    await expect(modal.getByText('Local runtime', {exact: true})).toBeVisible();
+    await expect(modal.getByLabel('API key')).toHaveCount(0);
+    await expect(modal.getByLabel('Base URL')).toHaveValue('http://localhost:11434/v1');
+    await modal.getByRole('button', {name: 'Connect', exact: true}).click();
+    await expect(modal.locator('.provider-detail-header .options-badge')).toHaveText('Configured');
+    await expect(modal.getByRole('button', {name: /Ollama.*2 models/})).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('auto discovery lists other agents\' skills grouped by where they were found', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'Skills'}).click();
+    await modal.getByRole('button', {name: 'Add Skills'}).click();
+    await modal.getByRole('menuitem', {name: 'Auto Discovery'}).click();
+    await expect(modal.getByRole('heading', {name: 'Auto Discovery'})).toBeVisible();
+
+    // One group per agent the skills were found under, each headed by the
+    // agent's name and the directory that was read. Several agents open folded
+    // so the pane reads as a survey of who has skills.
+    await expect(modal.locator('.discovery-group h4')).toHaveText(['Claude', 'Codex', 'Shared skills']);
+    for (const header of await modal.locator('.discovery-group-header').all())
+      await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await expect(modal.locator('.discovery-groups li:visible')).toHaveCount(0);
+    const claude = modal.locator('.discovery-group').filter({hasText: 'Claude'});
+    await expect(claude.locator('.discovery-group-header code')).toHaveText('~/.claude/skills');
+    await claude.locator('.discovery-group-header').click();
+    const commitWriter = claude.locator('li').filter({hasText: 'commit-writer'});
+    await expect(commitWriter).toContainText('~/.claude/skills/commit-writer');
+
+    // A skill FlareAI already has reads as in use rather than offering to add
+    // it a second time, and so does anything under the shared directory.
+    await expect(claude.locator('li').filter({hasText: 'pdf'})).toContainText('In use');
+    const shared = modal.locator('.discovery-group').filter({hasText: 'Shared skills'});
+    await shared.locator('.discovery-group-header').click();
+    await expect(shared.locator('li')).toContainText('In use');
+
+    // The group list scrolls behind the same edge fade the rail carries, and
+    // the agent's name leads its group rather than sitting at row weight.
+    const groupsLayout = await modal.locator('.discovery-groups').evaluate((groups) => ({
+      overflowY: getComputedStyle(groups).overflowY,
+      masked: getComputedStyle(groups).maskImage.includes('gradient'),
+      headingSize: getComputedStyle(groups.querySelector('.discovery-group h4')!).fontSize,
+      rowSize: getComputedStyle(groups.querySelector('.skill-registry-copy strong')!).fontSize,
+    }));
+    expect(groupsLayout.overflowY).toBe('auto');
+    expect(groupsLayout.masked).toBe(true);
+    expect(Number.parseFloat(groupsLayout.headingSize)).toBeGreaterThan(Number.parseFloat(groupsLayout.rowSize));
+
+    // Each group heading is its own control: it counts what was found and
+    // folds the list away without disturbing the others.
+    const claudeHeader = claude.locator('.discovery-group-header');
+    await expect(claudeHeader).toContainText('2 skills');
+    await expect(modal.locator('.discovery-group').filter({hasText: 'Codex'}).locator('.discovery-group-header')).toContainText('1 skill');
+    // The chevron sits on the heading's own centre line, not the header box's,
+    // and turns to the right when the group is folded away.
+    const chevronAlignment = await claudeHeader.evaluate((header) => {
+      const chevron = header.querySelector('.discovery-chevron')!.getBoundingClientRect();
+      const heading = header.querySelector('h4')!.getBoundingClientRect();
+      return {
+        offset: Math.abs((chevron.top + chevron.height / 2) - (heading.top + heading.height / 2)),
+        size: Math.round(chevron.height),
+      };
+    });
+    expect(chevronAlignment.offset).toBeLessThanOrEqual(1);
+    expect(chevronAlignment.size).toBeGreaterThanOrEqual(16);
+    // Bigger box, same painted line: stroke scales with the icon's viewBox, so
+    // the chevron has to be thinned to sit at the app's icon weight.
+    const strokeWeights = await modal.evaluate((dialog) => {
+      const weight = (svg: SVGSVGElement) =>
+        Number(svg.getAttribute('stroke-width')) * (svg.width.baseVal.value / svg.viewBox.baseVal.width);
+      return {
+        chevron: weight(dialog.querySelector('.discovery-chevron svg')!),
+        railTool: weight(dialog.querySelector('.rail-tool svg')!),
+      };
+    });
+    expect(strokeWeights.chevron).toBeCloseTo(strokeWeights.railTool, 2);
+    // Hovering the heading darkens the whole row — path, count and chevron —
+    // the way the chat drawer's date headers do.
+    const resting = await claudeHeader.evaluate((header) => [
+      getComputedStyle(header.querySelector('code')!).color,
+      getComputedStyle(header.querySelector('.discovery-count')!).color,
+      getComputedStyle(header.querySelector('.discovery-chevron')!).color,
+    ]);
+    await claudeHeader.hover();
+    await expect
+      .poll(() => claudeHeader.evaluate((header) => [
+        getComputedStyle(header.querySelector('code')!).color,
+        getComputedStyle(header.querySelector('.discovery-count')!).color,
+        getComputedStyle(header.querySelector('.discovery-chevron')!).color,
+      ]))
+      .toEqual(resting.map(() => 'rgb(26, 26, 26)'));
+    await modal.getByRole('heading', {name: 'Auto Discovery'}).hover();
+
+    await expect(claudeHeader).toHaveAttribute('aria-expanded', 'true');
+    await expect(claudeHeader.locator('.discovery-chevron')).toHaveCSS('transform', 'none');
+    await claudeHeader.click();
+    await expect(claudeHeader).toHaveAttribute('aria-expanded', 'false');
+    // matrix(0, -1, 1, 0, …) is a quarter turn anticlockwise: down becomes right.
+    await expect(claudeHeader.locator('.discovery-chevron')).toHaveCSS('transform', 'matrix(0, -1, 1, 0, 0, 0)');
+    await expect(commitWriter).toBeHidden();
+    const codex = modal.locator('.discovery-group').filter({hasText: 'Codex'});
+    await codex.locator('.discovery-group-header').click();
+    await expect(codex.locator('li')).toBeVisible();
+    await claudeHeader.click();
+    await expect(commitWriter).toBeVisible();
+
+    await commitWriter.getByRole('button', {name: 'Add'}).click();
+    // Adding keeps the scan open and flips the row it came from.
+    await expect(commitWriter).toContainText('In use');
+    await expect(modal.getByRole('heading', {name: 'Auto Discovery'})).toBeVisible();
+    await modal.getByRole('button', {name: 'Done'}).click();
+    await expect(modal.getByRole('button', {name: /Commit Writer/})).toBeVisible();
+  });
+
+  test('a scan that finds one agent opens it, since there is nothing to survey', async ({page}) => {
+    await page.goto('/?one-agent');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'Skills'}).click();
+    await modal.getByRole('button', {name: 'Add Skills'}).click();
+    await modal.getByRole('menuitem', {name: 'Auto Discovery'}).click();
+    await expect(modal.locator('.discovery-group h4')).toHaveText(['Codex']);
+    await expect(modal.locator('.discovery-group-header')).toHaveAttribute('aria-expanded', 'true');
+    await expect(modal.locator('.discovery-groups li').filter({hasText: 'repo-map'})).toBeVisible();
   });
 
   test('toggles integrations and edits FlareAI-owned skills and MCP servers', async ({page}) => {
@@ -921,6 +1078,33 @@ test.describe('design system', () => {
     await expect(tooltip).toContainText('Knowledge cutoff: 2025-08-31');
     await expect(tooltip).toContainText('Supports: tools, structured output, attachments');
     await expect(tooltip).toHaveCSS('white-space', 'pre-line');
+  });
+
+  test('Set to Main appears only for a job that has been given its own model', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('dialog', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'Models'}).click();
+    await modal.getByRole('button', {name: /OpenAI.*2 models/}).click();
+    await modal.getByRole('button', {name: 'Assign GPT-5.6 Sol'}).click();
+
+    const roles = modal.locator('.model-roles');
+    const setToMain = roles.getByRole('button', {name: 'Set to Main'});
+    // Every job still follows main, so pressing it would change nothing and it
+    // is not offered.
+    await expect(setToMain).toHaveCount(0);
+
+    // Giving Task its own model is what earns the button — and only Task's row
+    // gets one.
+    await roles.getByRole('button', {name: 'Set GPT-5.6 Sol as the task model'}).click();
+    await expect(setToMain).toHaveCount(1);
+    await expect(setToMain).toBeEnabled();
+    await expect(roles.locator('.model-role').nth(1)).toContainText('GPT-5.6 Sol');
+
+    // Pressing it hands the job back to main, and the button leaves with it.
+    await setToMain.click();
+    await expect(setToMain).toHaveCount(0);
+    await expect(roles.locator('.model-role').nth(1)).toContainText('GPT-5.6 Terra');
   });
 
   test('MODEL lists the available models and picks a reasoning level per model', async ({page}) => {
@@ -2152,9 +2336,14 @@ test.describe('first-run setup', () => {
     await start(page);
     const setup = page.getByRole('region', {name: 'Set up FlareAI'});
     await expect(setup.getByRole('heading', {name: 'FlareAI'})).toBeVisible();
-    // Nothing is behind the welcome screen, so it offers no way back.
+    // Nothing is behind the welcome screen, so it offers no way back — and
+    // nothing has been asked of you yet, so there is nothing to skip either.
     await expect(setup.getByRole('button', {name: 'Back'})).toHaveCount(0);
+    await expect(setup.getByRole('button', {name: 'Skip setup'})).toBeHidden();
     await setup.getByRole('button', {name: 'Start'}).click();
+    // From the first real screen on, the way out rides the window's corner. It
+    // arrives once the pan has landed rather than during it.
+    await expect(setup.getByRole('button', {name: 'Skip setup'})).toBeVisible();
     return setup;
   };
 
@@ -2171,12 +2360,36 @@ test.describe('first-run setup', () => {
 
     // Model: a provider is preselected, and connecting needs a key.
     await expect(setup.getByRole('heading')).toContainText('Choose who FlareAI thinks with');
+    // Every provider is in the one scrolling grid, and the search above it
+    // narrows that grid rather than opening a list of its own.
+    // Hosted providers and the local runtimes share one list.
+    await expect(setup.getByRole('radio')).toHaveCount(7);
+    await expect(setup.getByRole('radio', {name: /Ollama/})).toBeVisible();
+    const providerSearch = setup.getByLabel('Search providers');
+    await providerSearch.fill('router');
+    await expect(setup.getByRole('radio')).toHaveCount(1);
+    await expect(setup.getByRole('radio', {name: /OpenRouter/})).toBeVisible();
+    await providerSearch.fill('nothing-here');
+    await expect(setup.getByText('No provider matches that search.')).toBeVisible();
+    await providerSearch.fill('');
+    await expect(setup.getByRole('radio')).toHaveCount(7);
     await setup.getByRole('radio', {name: /OpenAI/}).click();
-    const connect = setup.getByRole('button', {name: 'Connect', exact: true});
-    await expect(connect).toBeDisabled();
+    const set = setup.getByRole('button', {name: 'Set', exact: true});
+    await expect(set).toBeDisabled();
     await setup.locator('input[type="password"]').fill('sk-test-key');
-    await expect(connect).toBeEnabled();
-    await connect.click();
+    await expect(set).toBeEnabled();
+    await set.click();
+
+    // Setting the provider does not leave the step: the same grid comes back
+    // carrying that provider's models, and Continue is what moves on.
+    await expect(setup.getByRole('heading')).toContainText('Now pick the model');
+    await expect(setup.getByRole('radio')).toHaveCount(2);
+    const modelSearch = setup.getByLabel('Search models');
+    await modelSearch.fill('sol');
+    await expect(setup.getByRole('radio')).toHaveCount(1);
+    await modelSearch.fill('');
+    await setup.getByRole('radio', {name: /GPT-5.6 Sol/}).click();
+    await setup.getByRole('button', {name: 'Continue'}).click();
 
     // Permissions are requested one at a time, each from its own button.
     await expect(setup.getByRole('heading')).toContainText('only what you want');
@@ -2190,13 +2403,19 @@ test.describe('first-run setup', () => {
     // Continue means "all three are settled", so it stays out of reach while
     // any of them is not — here, the one macOS only grants from its own pane.
     await expect(setup.getByRole('button', {name: 'Continue'})).toBeDisabled();
-    await setup.getByRole('button', {name: 'Skip'}).click();
+    // Every step carries its own way back, beside the way forward.
+    await expect(setup.getByRole('button', {name: 'Back'})).toBeVisible();
+    await setup.getByRole('button', {name: 'Skip setup'}).click();
 
     // The closing screen is one line and the way in.
     await expect(setup.getByRole('heading')).toContainText("You're ready to go");
-    // Setup is over, so there is nothing left to skip — only the way back.
-    await expect(setup.getByRole('button', {name: 'Skip'})).toHaveCount(0);
+    // Setup is over, so there is nothing left to skip — the corner that carried
+    // the way out now carries the way back, and the disc is left holding the
+    // one button that ends setup.
+    await expect(setup.getByRole('button', {name: 'Skip setup'})).toBeHidden();
     await expect(setup.getByRole('button', {name: 'Back'})).toBeVisible();
+    await expect(setup.locator('.onb-corner').getByRole('button', {name: 'Back'})).toBeVisible();
+    await expect(setup.locator('.onb-slide.disc .onb-actions').getByRole('button')).toHaveCount(1);
 
     // The closing disc breathes for as long as it is on screen, so the button
     // riding it never holds still for a pointer. Keyboard activation is the
@@ -2239,9 +2458,14 @@ test.describe('first-run setup', () => {
 
   test('leaving setup goes straight to the app', async ({page}) => {
     const setup = await begin(page);
-    // Skip passes a screen, not the whole of setup; Escape is the way out.
-    await setup.getByRole('button', {name: 'Skip'}).click();
-    await expect(setup.getByRole('heading')).toContainText('Choose who FlareAI thinks with');
+    // Skip setup passes every remaining screen at once, landing on the closing
+    // one rather than on the next step.
+    await setup.getByRole('button', {name: 'Skip setup'}).click();
+    await expect(setup.getByRole('heading')).toContainText("You're ready to go");
+    // Escape is the way out of setup altogether, from any step it is still on.
+    // The closing disc never holds still for a pointer; the keyboard is the
+    // same path (see the walkthrough above).
+    await setup.getByRole('button', {name: 'Back'}).press('Enter');
     await page.keyboard.press('Escape');
     await expect(setup).toHaveCount(0);
     await expect(page.getByText('What can I help with?')).toBeVisible();
@@ -2501,5 +2725,169 @@ test.describe('workspace persistence', () => {
     await openFromHistory(page, 'Planning a product launch');
     await expect(page.locator('.hub-view')).toBeVisible();
     await expect(page.locator('.tab-main', {hasText: 'Hub'})).toBeVisible();
+  });
+});
+
+test.describe('interface language', () => {
+  test('retranslates the whole app, and turns it around for Arabic', async ({page}) => {
+    await page.goto('/');
+    await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
+
+    await page.getByRole('button', {name: 'Settings'}).click();
+    await page.getByRole('dialog', {name: 'Settings'}).getByRole('button', {name: 'Language'}).click();
+    await page.getByRole('menuitemradio', {name: 'Español'}).click();
+
+    // The modal retranslates in place — including its own accessible name, so
+    // the dialog has to be found again under the Spanish one.
+    await expect(page.getByRole('dialog', {name: 'Ajustes'})).toBeVisible();
+    await expect(page.getByText('El idioma de la interfaz de FlareAI')).toBeVisible();
+    await page.getByRole('button', {name: 'Cerrar los ajustes'}).click();
+
+    // …and so does the app behind it, down to the composer's placeholder.
+    await expect(page.getByRole('heading', {name: '¿En qué puedo ayudarle?'})).toBeVisible();
+    await expect(page.getByText('ADJUNTAR')).toBeVisible();
+    await expect(page.locator('[data-placeholder]').first())
+      .toHaveAttribute('data-placeholder', 'Pregunte lo que quiera');
+    // The document says what it is written in, so the browser hyphenates and
+    // quotes accordingly.
+    await expect(page.locator('html')).toHaveAttribute('lang', 'es');
+
+    // Arabic is the one right-to-left language, and it flips the whole layout.
+    await page.getByRole('button', {name: 'Ajustes'}).click();
+    await page.getByRole('dialog').getByRole('button', {name: 'Idioma'}).click();
+    await page.getByRole('menuitemradio', {name: 'العربية'}).click();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'ar');
+    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+  });
+});
+
+test.describe('browser extension prompt', () => {
+  test('offers the extension in the title bar until it is dismissed', async ({page}) => {
+    await page.goto('/?extension=missing');
+
+    // It sits ahead of the panel icons rather than among them, and is words
+    // alone — a mark on it read as a second logo in the chrome.
+    const chip = page.locator('.extension-chip');
+    await expect(chip).toBeVisible();
+    await expect(chip).toContainText('Install extension');
+    await expect(chip.locator('img')).toHaveCount(0);
+    // The dismiss is divided off by a rule drawn at the border's own weight,
+    // sitting the same distance from the words as from the ×.
+    const rule = await chip.locator('.extension-chip-dismiss').evaluate((node) => {
+      const style = getComputedStyle(node);
+      const chipStyle = getComputedStyle(node.parentElement!);
+      return {
+        width: style.borderLeftWidth,
+        colour: style.borderLeftColor,
+        chipWidth: chipStyle.borderTopWidth,
+        chipColour: chipStyle.borderTopColor,
+      };
+    });
+    expect(rule.width).toBe(rule.chipWidth);
+    expect(rule.colour).toBe(rule.chipColour);
+    // The chip carries the only tooltip. Opting out by name rather than just
+    // dropping the label: an icon-only button otherwise falls back to its
+    // aria-label, which would put a second label on one control.
+    await expect(chip.locator('.extension-chip-dismiss')).toHaveAttribute('data-tooltip', 'none');
+    // Slimmer than the icon buttons beside it, and every horizontal gap reads
+    // as one measure: edge-to-label, label-to-rule, rule-to-×, ×-to-edge. The
+    // × is measured at its glyph, not its box — the close path draws 7..17 of a
+    // 24 viewBox, so 7/24 of the svg each side is blank and equal padding would
+    // push it visibly further from the rule than the label sits.
+    const metrics = await chip.evaluate((node) => {
+      const install = node.querySelector('.extension-chip-install')!;
+      const dismiss = node.querySelector('.extension-chip-dismiss')!;
+      const svg = node.querySelector('.extension-chip-dismiss svg')!;
+      const range = document.createRange();
+      range.selectNodeContents(install);
+      const text = range.getBoundingClientRect();
+      const box = node.getBoundingClientRect();
+      const rule = dismiss.getBoundingClientRect();
+      const glyph = svg.getBoundingClientRect();
+      const inset = glyph.width * 7 / 24;
+      const border = parseFloat(getComputedStyle(node).borderTopWidth);
+      const ruleWidth = parseFloat(getComputedStyle(dismiss).borderLeftWidth);
+      return {
+        height: box.height,
+        gaps: [
+          text.left - (box.left + border),
+          rule.left - text.right,
+          (glyph.left + inset) - (rule.left + ruleWidth),
+          (box.right - border) - (glyph.right - inset),
+        ],
+        glyphCentreY: (glyph.top + glyph.bottom) / 2,
+        textCentreY: (text.top + text.bottom) / 2,
+      };
+    });
+    expect(metrics.height).toBe(24);
+    for (const gap of metrics.gaps) expect(Math.abs(gap - metrics.gaps[0])).toBeLessThan(0.5);
+    // The × rides the label's centre line rather than the chip's box.
+    expect(Math.abs(metrics.glyphCentreY - metrics.textCentreY)).toBeLessThan(0.5);
+
+    // The chip is its own label, so it carries no tooltip either.
+    await expect(chip.locator('.extension-chip-install')).not.toHaveAttribute('data-tooltip-label');
+
+    const chipBox = (await chip.boundingBox())!;
+    const settingsBox = (await page.getByRole('button', {name: 'Settings'}).boundingBox())!;
+    expect(chipBox.x).toBeLessThan(settingsBox.x);
+
+    await page.getByRole('button', {name: 'Dismiss'}).click();
+    await expect(chip).toBeHidden();
+  });
+
+  test('warms rather than jumps when the pointer lands on it', async ({page}) => {
+    await page.goto('/?extension=missing');
+    const chip = page.locator('.extension-chip');
+    const label = chip.locator('.extension-chip-install');
+    // Computed colour comes back as rgb() or color(srgb ...) depending on
+    // whether a mix produced it, so both forms are read the same way.
+    const channels = (value: string): number[] => {
+      const parts = value.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+      return value.startsWith('color(') ? parts.map((n) => n * 255) : parts;
+    };
+    const read = async () => ({
+      text: channels(await label.evaluate((n) => getComputedStyle(n).color)),
+      ground: channels(await chip.evaluate((n) => getComputedStyle(n).backgroundColor)),
+    });
+
+    const rest = await read();
+    await chip.hover();
+    // Past the .15s colour transition: mid-flight Chrome reports the
+    // interpolated colour as oklab(), whose first number is a lightness rather
+    // than a channel, and reading it there compares two different scales.
+    await page.waitForTimeout(300);
+    const hovered = await read();
+
+    // The ground carries the hover; the label only follows it. A label that
+    // moved as far as the ground did would read as changing weight.
+    expect(hovered.ground[0]).toBeLessThan(rest.ground[0]);
+    const shift = rest.text[0] - hovered.text[0];
+    expect(shift).toBeGreaterThan(0);
+    expect(shift).toBeLessThan(25);
+  });
+
+  test('stays out of the title bar once the extension reports', async ({page}) => {
+    await page.goto('/');
+    await expect(page.locator('.extension-chip')).toBeHidden();
+  });
+
+  test('settings keeps the extension row after the chip is dismissed', async ({page}) => {
+    await page.goto('/?extension=missing');
+    await page.getByRole('button', {name: 'Dismiss'}).click();
+
+    // The chip is a "not now"; the Settings row is how it stays reachable.
+    await page.getByRole('button', {name: 'Settings'}).click();
+    await expect(page.getByRole('dialog').getByText('Browser extension')).toBeVisible();
+    await expect(page.getByRole('dialog').getByRole('button', {name: 'Install extension'})).toBeVisible();
+  });
+
+  test('settings reports an extension that is already installed', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Browser extension')).toBeVisible();
+    await expect(dialog.getByText('Installed', {exact: true})).toBeVisible();
+    await expect(dialog.getByRole('button', {name: 'Install extension'})).toBeHidden();
   });
 });

@@ -72,6 +72,12 @@ export class CompactionManager {
     context: AgentContext,
     signal: AbortSignal,
     onCompacting?: () => Promise<void>,
+    /**
+     * The stored message sequence behind each message the run started with, and
+     * `null` where a message has no stored row of its own. Only the caller that
+     * assembled the context knows this mapping, so it has to come in from there.
+     */
+    durableSequences: ReadonlyArray<number | null> = [],
   ): Promise<AgentContext> {
     const modelInfo = this.#inference.getModel(model);
     if (!this.#settings.enabled || !modelInfo) return context;
@@ -80,7 +86,12 @@ export class CompactionManager {
       Math.floor(modelInfo.contextWindow / 2),
     );
     const threshold = modelInfo.contextWindow - reserve;
-    const cached = this.#cached.get(conversationId);
+    // In memory for this session, else the one saved on disk — quitting the app
+    // should not cost a conversation its summary and make the next turn pay to
+    // rebuild it.
+    const cached =
+      this.#cached.get(conversationId) ??
+      this.#restore(conversationId, durableSequences);
     // Reuse only when the messages actually compacted are still identical.
     // Comparing counts alone let an edited or branched history keep a summary
     // describing turns that no longer exist.
@@ -89,6 +100,9 @@ export class CompactionManager {
       context.messages.length > cached.cut &&
       fingerprint(context.messages.slice(0, cached.cut)) === cached.prefix
     ) {
+      // Proven against the live history, so it is worth holding on to whether
+      // or not it happens to fit under the threshold this turn.
+      this.#cached.set(conversationId, cached);
       const compacted = withSummary(
         context,
         cached.summary,
@@ -120,23 +134,37 @@ export class CompactionManager {
     const older = context.messages.slice(0, cut);
     await onCompacting?.();
     const summary = await this.#summarize(model, older, signal);
-    const durableMessages = this.#storage.listMessages(conversationId);
-    const sequence =
-      durableMessages.at(Math.min(cut - 1, durableMessages.length - 1))
-        ?.sequence ?? cut;
+    const prefix = fingerprint(older);
     this.#storage.saveCompaction({
       id: crypto.randomUUID(),
       conversationId,
-      throughMessageSequence: sequence,
+      throughMessageSequence: sequenceThrough(durableSequences, cut),
       summary,
       tokenCount: Math.ceil(summary.length / 4),
+      prefixFingerprint: prefix,
     });
-    this.#cached.set(conversationId, {
-      prefix: fingerprint(older),
-      cut,
-      summary,
-    });
+    this.#cached.set(conversationId, { prefix, cut, summary });
     return withSummary(context, summary, context.messages.slice(cut));
+  }
+
+  /**
+   * The conversation's saved summary, rebuilt into the shape the in-memory
+   * cache uses so a restart continues where the last session left off.
+   *
+   * Returns a candidate, not a verdict: the caller checks it against the live
+   * history before trusting it, exactly as it checks its own cache. A row from
+   * before fingerprints were recorded, or one whose watermark no longer falls
+   * inside this context, is left alone and the conversation re-summarizes.
+   */
+  #restore(
+    conversationId: string,
+    durableSequences: ReadonlyArray<number | null>,
+  ): { prefix: string; cut: number; summary: string } | undefined {
+    const saved = this.#storage.getLatestCompaction(conversationId);
+    if (!saved?.prefixFingerprint) return undefined;
+    const cut = cutThrough(durableSequences, saved.throughMessageSequence);
+    if (cut <= 0) return undefined;
+    return { prefix: saved.prefixFingerprint, cut, summary: saved.summary };
   }
 
   async #summarize(
@@ -209,6 +237,48 @@ function bounded(value: string): string {
   return value.length <= blockCharLimit
     ? value
     : `${value.slice(0, blockCharLimit)}\n[… ${value.length - blockCharLimit} characters truncated]`;
+}
+
+/**
+ * How far a summary reaches in durable terms: the sequence of the last stored
+ * message inside the summarized slice, or 0 when it covers nothing stored.
+ *
+ * `cut` indexes the live run context, which is not the stored history — the
+ * context carries messages produced during the run that are not saved yet, and
+ * omits stored rows that never convert into inference messages. Indexing the
+ * stored list with `cut` therefore lands on an unrelated row, so the boundary
+ * is read off the caller's per-message sequence map instead.
+ */
+function sequenceThrough(
+  sequences: ReadonlyArray<number | null>,
+  cut: number,
+): number {
+  for (let index = Math.min(cut, sequences.length) - 1; index >= 0; index -= 1) {
+    const sequence = sequences[index];
+    if (sequence !== null && sequence !== undefined) return sequence;
+  }
+  return 0;
+}
+
+/**
+ * The inverse of `sequenceThrough`: how many messages at the head of this
+ * context a summary reaching `watermark` covers.
+ *
+ * Counts only the unbroken run of stored messages at or below the watermark, so
+ * a context that starts partway through the conversation (or carries messages
+ * with no stored row) yields 0 and is summarized afresh rather than cut at a
+ * boundary the summary never described.
+ */
+function cutThrough(
+  sequences: ReadonlyArray<number | null>,
+  watermark: number,
+): number {
+  let cut = 0;
+  for (const sequence of sequences) {
+    if (sequence === null || sequence > watermark) break;
+    cut += 1;
+  }
+  return cut;
 }
 
 /** Cheap identity for a run of messages: role and estimated size of each. */

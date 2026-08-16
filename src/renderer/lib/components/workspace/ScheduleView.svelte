@@ -1,4 +1,7 @@
 <script module lang="ts">
+  import {activeLocale, plural, translate, type MessageKey} from '../../i18n';
+  import MESSAGE_KEYS from '../../i18n/messages/en';
+
   export type ScheduleStatus = 'active' | 'paused' | 'running' | 'failed';
 
   /** 0 is Sunday, matching `Date#getDay`. */
@@ -34,23 +37,29 @@
 
   export type ScheduleSortKey = 'title' | 'next' | 'last';
 
-  const STATUS_LABELS: Record<ScheduleStatus, string> = {
-    active: 'Active',
-    paused: 'Paused',
-    running: 'Running',
-    failed: 'Failed',
+  const STATUS_LABELS: Record<ScheduleStatus, MessageKey> = {
+    active: 'schedule.status.active',
+    paused: 'schedule.status.paused',
+    running: 'schedule.status.running',
+    failed: 'schedule.status.failed',
   };
 
   export function scheduleStatusLabel(status: ScheduleStatus): string {
-    return STATUS_LABELS[status];
+    return translate(STATUS_LABELS[status]);
   }
 
+  /**
+   * Dates and times are formatted in the interface language, not the host's
+   * regional setting: someone reading FlareAI in Japanese expects Japanese
+   * month names here, whatever their machine is set to.
+   */
   export function formatScheduleTime(epochMs: number): string {
     const date = new Date(epochMs);
     const now = new Date();
     const sameDay = date.toDateString() === now.toDateString();
-    if (sameDay) return `Today, ${date.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'})}`;
-    return date.toLocaleString(undefined, {
+    const clock = date.toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit'});
+    if (sameDay) return translate('schedule.todayAt', {time: clock});
+    return date.toLocaleString(activeLocale(), {
       month: 'short',
       day: 'numeric',
       ...(date.getFullYear() === now.getFullYear() ? {} : {year: 'numeric'}),
@@ -59,9 +68,21 @@
     });
   }
 
-  const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const DAY_SHORT = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-  const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  /** 4 January 2021 was a Sunday, so this week is the reference for naming
+   * weekdays — the names themselves come from the platform's own data rather
+   * than a table this file would have to carry in nineteen languages. */
+  const WEEKDAY_REFERENCE = Date.UTC(2021, 0, 3);
+
+  function weekdayName(day: number, width: 'long' | 'short'): string {
+    return new Intl.DateTimeFormat(activeLocale(), {weekday: width, timeZone: 'UTC'})
+      .format(new Date(WEEKDAY_REFERENCE + day * 86_400_000));
+  }
+
+  function monthName(month: number): string {
+    return new Intl.DateTimeFormat(activeLocale(), {month: 'long', timeZone: 'UTC'})
+      .format(new Date(Date.UTC(2021, month, 1)));
+  }
+
   const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5];
   /** The whole week, in the order the day buttons are drawn. Typed, so the
    * picker hands `toggleDay` a Weekday rather than a bare loop index. */
@@ -71,27 +92,40 @@
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
 
-  /** "08:00" in whatever shape the user's locale writes a clock time. */
+  /** "08:00" in whatever shape the interface language writes a clock time. */
   export function formatTimeOfDay(time: string): string {
     const [hour, minute] = time.split(':').map(Number);
     const date = new Date(2000, 0, 1, Number.isFinite(hour) ? hour : 0, Number.isFinite(minute) ? minute : 0);
-    return date.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
+    return date.toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit'});
   }
 
   function joinList(parts: string[]): string {
-    if (parts.length <= 1) return parts[0] ?? '';
-    return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+    return new Intl.ListFormat(activeLocale(), {style: 'long', type: 'conjunction'}).format(parts);
   }
 
+  /** "3rd" in English, and whatever the language does instead — most write the
+   * bare number, which is what their catalogs say. */
   function ordinal(day: number): string {
-    const tens = day % 100;
-    if (tens >= 11 && tens <= 13) return `${day}th`;
-    return `${day}${['th', 'st', 'nd', 'rd'][day % 10] ?? 'th'}`;
+    const category = new Intl.PluralRules(activeLocale(), {type: 'ordinal'}).select(day);
+    const key = `ordinal.${category}` as MessageKey;
+    return translate(key in MESSAGE_KEYS ? key : 'ordinal.other', {day});
   }
 
-  /** "Every 3 days" — the count is dropped at 1, where it reads as noise. */
-  function everyPhrase(interval: number, unit: string): string {
-    return interval > 1 ? `Every ${interval} ${unit}s` : `Every ${unit}`;
+  /** Which unit a cadence counts in, as the family name its plural forms live
+   * under. */
+  const UNIT_KEYS = {
+    hour: 'schedule.everyHours',
+    day: 'schedule.everyDays',
+    week: 'schedule.everyWeeks',
+    month: 'schedule.everyMonths',
+    year: 'schedule.everyYears',
+  } as const;
+
+  type CadenceUnit = keyof typeof UNIT_KEYS;
+
+  /** "Every 3 days" — or "Every day" at one, where the count reads as noise. */
+  function everyPhrase(interval: number, unit: CadenceUnit): string {
+    return plural(UNIT_KEYS[unit], interval);
   }
 
   /**
@@ -111,32 +145,64 @@
    * The row's cadence sentence. A zone only earns a mention when it is not the
    * one the reader's clock is already in — "at 8:00 (Asia/Singapore)" is
    * information; the same line naming their own zone back at them is not.
+   *
+   * Each shape is one catalog sentence with its parts filled in, rather than
+   * fragments glued together here: word order around a time or a day name is
+   * not the same in every language, and only a whole sentence can move it.
    */
   export function describeFrequency(frequency: ScheduleFrequency): string {
-    const zone = frequency.timeZone && frequency.timeZone !== localTimeZone() ? ` (${frequency.timeZone})` : '';
+    const zone = frequency.timeZone && frequency.timeZone !== localTimeZone()
+      ? translate('schedule.inZone', {zone: frequency.timeZone})
+      : '';
     const interval = Math.max(1, Math.round(frequencyInterval(frequency) ?? 1));
     switch (frequency.kind) {
       case 'once':
-        return `Once, ${formatScheduleTime(frequency.at)}`;
+        return translate('schedule.cadenceOnce', {time: formatScheduleTime(frequency.at), zone});
       case 'hourly': {
-        const at = frequency.minute ? ` at :${String(frequency.minute).padStart(2, '0')}` : '';
-        return `${everyPhrase(interval, 'hour')}${interval > 1 ? '' : at}${zone}`;
+        const cadence = everyPhrase(interval, 'hour');
+        if (interval > 1 || !frequency.minute) return `${cadence}${zone}`;
+        return translate('schedule.cadenceAtMinute', {
+          cadence,
+          minute: String(frequency.minute).padStart(2, '0'),
+          zone,
+        });
       }
       case 'daily':
-        return `${everyPhrase(interval, 'day')} at ${formatTimeOfDay(frequency.time)}${zone}`;
+        return translate('schedule.cadenceAt', {cadence: everyPhrase(interval, 'day'), time: formatTimeOfDay(frequency.time), zone});
       case 'weekly': {
         const days = [...frequency.days].sort((a, b) => a - b);
         const isEveryWeekday = days.length === 5 && WEEKDAYS.every((day) => days.includes(day));
-        const named = isEveryWeekday ? 'weekday' : joinList(days.map((day) => DAY_NAMES[day]));
-        if (interval > 1) return `Every ${interval} weeks on ${named === 'weekday' ? 'weekdays' : named} at ${formatTimeOfDay(frequency.time)}${zone}`;
-        if (isEveryWeekday) return `Every weekday at ${formatTimeOfDay(frequency.time)}${zone}`;
-        if (!days.length) return `Weekly at ${formatTimeOfDay(frequency.time)}${zone}`;
-        return `Every ${named} at ${formatTimeOfDay(frequency.time)}${zone}`;
+        const time = formatTimeOfDay(frequency.time);
+        if (interval > 1)
+          return translate('schedule.cadenceOnDays', {
+            cadence: everyPhrase(interval, 'week'),
+            days: isEveryWeekday ? translate('schedule.weekdays') : joinList(days.map((day) => weekdayName(day, 'long'))),
+            time,
+            zone,
+          });
+        if (isEveryWeekday) return translate('schedule.everyWeekdayAt', {time, zone});
+        if (!days.length) return translate('schedule.weeklyAt', {time, zone});
+        return translate('schedule.everyDayNameAt', {
+          days: joinList(days.map((day) => weekdayName(day, 'long'))),
+          time,
+          zone,
+        });
       }
       case 'monthly':
-        return `${everyPhrase(interval, 'month')} on the ${ordinal(frequency.dayOfMonth)} at ${formatTimeOfDay(frequency.time)}${zone}`;
+        return translate('schedule.cadenceOnDayOfMonth', {
+          cadence: everyPhrase(interval, 'month'),
+          day: ordinal(frequency.dayOfMonth),
+          time: formatTimeOfDay(frequency.time),
+          zone,
+        });
       case 'yearly':
-        return `${everyPhrase(interval, 'year')} on ${MONTH_NAMES[frequency.month] ?? ''} ${frequency.dayOfMonth} at ${formatTimeOfDay(frequency.time)}${zone}`;
+        return translate('schedule.cadenceOnDate', {
+          cadence: everyPhrase(interval, 'year'),
+          month: monthName(frequency.month),
+          day: frequency.dayOfMonth,
+          time: formatTimeOfDay(frequency.time),
+          zone,
+        });
     }
   }
 
@@ -150,15 +216,24 @@
     return options;
   }
 
-  const TIME_OPTIONS = timeOptions();
 </script>
 
 <script lang="ts">
   import {tick} from 'svelte';
   import Icon from '../shared/Icon.svelte';
   import Menu from '../shared/Menu.svelte';
+  import {locale, t, withLocale} from '../../i18n';
 
-  export let title = 'Schedule';
+  const UNIT_NOUNS = {
+    hourly: 'schedule.hours',
+    daily: 'schedule.days',
+    weekly: 'schedule.weeks',
+    monthly: 'schedule.months',
+    yearly: 'schedule.years',
+    once: 'schedule.days',
+  } as const;
+
+  export let title = '';
   export let items: ScheduleItem[] = [];
   export let onOpenItem: (item: ScheduleItem) => void = () => {};
   export let onToggleItem: (item: ScheduleItem) => void = () => {};
@@ -185,36 +260,45 @@
   let repeatMode: 'once' | 'daily' | 'weekly' | 'monthly' | 'yearly' | 'custom' = 'daily';
 
   /** `key` empty means the column is not sortable; `cell` is what the grid
-   * drops at narrow panel widths. */
-  const columns: Array<{key: ScheduleSortKey | ''; label: string; cell: string}> = [
-    {key: 'title', label: 'Task', cell: 'task'},
-    {key: '', label: 'Frequency', cell: 'cadence'},
-    {key: 'next', label: 'Next run', cell: 'next'},
-    {key: 'last', label: 'Last run', cell: 'last'},
-    {key: '', label: 'Status', cell: 'status'},
+   * drops at narrow panel widths. Everything below is derived rather than
+   * fixed: each one carries wording or a formatted time, so all of it has to
+   * be rebuilt when the language changes. */
+  $: columns = [
+    {key: 'title' as const, label: $t('schedule.columnTask'), cell: 'task'},
+    {key: '' as const, label: $t('schedule.columnFrequency'), cell: 'cadence'},
+    {key: 'next' as const, label: $t('schedule.columnNextRun'), cell: 'next'},
+    {key: 'last' as const, label: $t('schedule.columnLastRun'), cell: 'last'},
+    {key: '' as const, label: $t('schedule.columnStatus'), cell: 'status'},
   ];
 
-  const REPEAT_OPTIONS = [
-    {value: 'once', label: 'Does not repeat'},
-    {value: 'daily', label: 'Daily'},
-    {value: 'weekly', label: 'Weekly'},
-    {value: 'monthly', label: 'Monthly'},
-    {value: 'yearly', label: 'Yearly'},
-    {value: 'custom', label: 'Custom'},
+  $: REPEAT_OPTIONS = [
+    {value: 'once', label: $t('schedule.doesNotRepeat')},
+    {value: 'daily', label: $t('schedule.daily')},
+    {value: 'weekly', label: $t('schedule.weekly')},
+    {value: 'monthly', label: $t('schedule.monthly')},
+    {value: 'yearly', label: $t('schedule.yearly')},
+    {value: 'custom', label: $t('schedule.custom')},
   ];
 
-  const UNIT_OPTIONS = [
-    {value: 'hourly', label: 'Hourly'},
-    {value: 'daily', label: 'Daily'},
-    {value: 'weekly', label: 'Weekly'},
-    {value: 'monthly', label: 'Monthly'},
-    {value: 'yearly', label: 'Yearly'},
+  $: UNIT_OPTIONS = [
+    {value: 'hourly', label: $t('schedule.hourly')},
+    {value: 'daily', label: $t('schedule.daily')},
+    {value: 'weekly', label: $t('schedule.weekly')},
+    {value: 'monthly', label: $t('schedule.monthly')},
+    {value: 'yearly', label: $t('schedule.yearly')},
   ];
 
-  const MONTH_OPTIONS = MONTH_NAMES.map((name, index) => ({value: String(index), label: name}));
+  $: MONTH_OPTIONS = Array.from({length: 12}, (_, index) => ({value: String(index), label: monthName(index)}));
+  $: TIME_OPTIONS = withLocale($locale, timeOptions());
 
-  $: visible = sortItems(filterItems(items, query), sortKey, sortAscending);
-  $: unitLabel = draft ? {hourly: 'hour', daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year', once: 'day'}[draft.kind] : 'day';
+  $: visible = withLocale($locale, sortItems(filterItems(items, query), sortKey, sortAscending));
+  /** The unit noun beside the interval field, already in the plural form the
+   * current count calls for — "day" at one, "days" at three, and whatever the
+   * language does at two, four or eleven. */
+  $: unitNoun = withLocale($locale, plural(
+    UNIT_NOUNS[draft?.kind ?? 'daily'],
+    draft ? frequencyInterval(draft) ?? 1 : 1,
+  ));
 
   async function toggleSearch(): Promise<void> {
     searchExpanded = !searchExpanded;
@@ -412,16 +496,16 @@
 
 <div class="schedule-view">
   <div class="list-toolbar">
-    <span class="schedule-heading"><Icon name="clock" size={15}/><span>{title}</span></span>
+    <span class="schedule-heading"><Icon name="clock" size={15}/><span>{title || $t('workspace.schedule')}</span></span>
     <div class="fb-search" class:expanded={searchExpanded}>
       <div bind:this={searchWrapper} class="fb-search-field" class:expanded={searchExpanded} class:focused={searchFocused}>
         <button
           type="button"
           class="fb-action"
           class:quiet={searchExpanded}
-          aria-label="Search schedules"
+          aria-label={$t('schedule.search')}
           aria-expanded={searchExpanded}
-          data-tooltip-label={searchExpanded ? undefined : 'Search'}
+          data-tooltip-label={searchExpanded ? undefined : $t('common.search')}
           onclick={toggleSearch}
         ><Icon name="search" size={15}/></button>
         <div class="fb-search-slot">
@@ -429,8 +513,8 @@
             bind:this={searchInput}
             bind:value={query}
             type="text"
-            placeholder="Search schedules"
-            aria-label="Search schedules"
+            placeholder={$t('schedule.search')}
+            aria-label={$t('schedule.search')}
             tabindex={searchExpanded ? 0 : -1}
             onfocus={() => searchFocused = true}
             onblur={() => searchFocused = false}
@@ -440,7 +524,7 @@
             <button
               type="button"
               class="fb-search-clear"
-              aria-label="Clear search"
+              aria-label={$t('common.clearSearch')}
               data-tooltip="none"
               onclick={() => { query = ''; searchInput?.focus(); }}
             ><Icon name="close" size={12}/></button>
@@ -448,7 +532,7 @@
         </div>
       </div>
     </div>
-    <button type="button" class="fb-action schedule-create-icon" aria-label="New schedule" data-tooltip-label="New schedule" onclick={onCreate}>
+    <button type="button" class="fb-action schedule-create-icon" aria-label={$t('schedule.new')} data-tooltip-label={$t('schedule.new')} onclick={onCreate}>
       <Icon name="plus" size={15}/>
     </button>
   </div>
@@ -489,25 +573,25 @@
           <button
             type="button"
             class="list-row-meta cadence schedule-cadence"
-            aria-label={`Edit frequency: ${item.title}`}
-            data-tooltip-label="Edit frequency"
+            aria-label={$t('schedule.editFrequencyNamed', {title: item.title})}
+            data-tooltip-label={$t('schedule.editFrequency')}
             onclick={(event) => startEditing(event, item)}
           >{describeFrequency(item.frequency)}</button>
           <span class="list-row-meta next">{item.nextRunAt === undefined ? '—' : formatScheduleTime(item.nextRunAt)}</span>
-          <span class="list-row-meta last">{item.lastRunAt === undefined ? 'Never' : formatScheduleTime(item.lastRunAt)}</span>
+          <span class="list-row-meta last">{item.lastRunAt === undefined ? $t('schedule.never') : formatScheduleTime(item.lastRunAt)}</span>
           <span class="schedule-row-end">
             <button
               type="button"
               class={`schedule-status ${item.status}`}
-              aria-label={`${item.status === 'paused' ? 'Resume' : 'Pause'} ${item.title}`}
-              data-tooltip-label={item.status === 'paused' ? 'Resume' : 'Pause'}
+              aria-label={item.status === 'paused' ? $t('schedule.resumeNamed', {title: item.title}) : $t('schedule.pauseNamed', {title: item.title})}
+              data-tooltip-label={item.status === 'paused' ? $t('common.resume') : $t('common.pause')}
               data-tooltip-align="end"
               onclick={() => onToggleItem(item)}
             >{scheduleStatusLabel(item.status)}</button>
             <button
               type="button"
               class="schedule-more"
-              aria-label={`More actions: ${item.title}`}
+              aria-label={$t('chats.moreActions', {title: item.title})}
               aria-haspopup="menu"
               aria-expanded={menuId === item.id}
               data-tooltip="none"
@@ -520,9 +604,9 @@
   {:else}
     <div class="new-tab-empty">
       <Icon name={query ? 'search' : 'clock'} size={30}/>
-      <h2>{query ? 'No matches' : 'Nothing scheduled'}</h2>
-      <p>{query ? `No schedule matches “${query}”.` : 'Ask the agent to run something on a schedule and it will be listed here.'}</p>
-      {#if !query}<button type="button" class="schedule-create" onclick={onCreate}><Icon name="plus" size={14}/><span>New schedule</span></button>{/if}
+      <h2>{query ? $t('common.noMatches') : $t('schedule.emptyTitle')}</h2>
+      <p>{query ? $t('schedule.noMatchesBody', {query}) : $t('schedule.emptyBody')}</p>
+      {#if !query}<button type="button" class="schedule-create" onclick={onCreate}><Icon name="plus" size={14}/><span>{$t('schedule.new')}</span></button>{/if}
     </div>
   {/if}
 
@@ -530,12 +614,12 @@
     {@const menuItem = items.find((entry) => entry.id === menuId)}
     {#if menuItem}
       <div class="flareai-dropdown-menu schedule-row-menu" role="menu" style:top={`${menuTop}px`}>
-        <button class="flareai-dropdown-item" role="menuitem" onclick={() => act(menuItem, onRunItem)}><Icon name="play" size={14}/><span>Run now</span></button>
-        <button class="flareai-dropdown-item" role="menuitem" onclick={(event) => startEditing(event, menuItem)}><Icon name="clock" size={14}/><span>Edit frequency</span></button>
+        <button class="flareai-dropdown-item" role="menuitem" onclick={() => act(menuItem, onRunItem)}><Icon name="play" size={14}/><span>{$t('schedule.runNow')}</span></button>
+        <button class="flareai-dropdown-item" role="menuitem" onclick={(event) => startEditing(event, menuItem)}><Icon name="clock" size={14}/><span>{$t('schedule.editFrequency')}</span></button>
         <button class="flareai-dropdown-item" role="menuitem" onclick={() => act(menuItem, onToggleItem)}>
-          <Icon name={menuItem.status === 'paused' ? 'play' : 'pause'} size={14}/><span>{menuItem.status === 'paused' ? 'Resume' : 'Pause'}</span>
+          <Icon name={menuItem.status === 'paused' ? 'play' : 'pause'} size={14}/><span>{menuItem.status === 'paused' ? $t('common.resume') : $t('common.pause')}</span>
         </button>
-        <button class="flareai-dropdown-item destructive" role="menuitem" onclick={() => act(menuItem, onDeleteItem)}><Icon name="trash" size={14}/><span>Delete</span></button>
+        <button class="flareai-dropdown-item destructive" role="menuitem" onclick={() => act(menuItem, onDeleteItem)}><Icon name="trash" size={14}/><span>{$t('common.delete')}</span></button>
       </div>
     {/if}
   {/if}
@@ -543,49 +627,49 @@
   {#if editingId && draft}
     <div class="schedule-frequency-editor" style:top={`${editorTop}px`}>
       <div class="schedule-frequency-head">
-        <span>Frequency</span>
-        <button type="button" class="schedule-frequency-close" aria-label="Close frequency editor" onclick={closeEditor}><Icon name="close" size={14}/></button>
+        <span>{$t('schedule.frequency')}</span>
+        <button type="button" class="schedule-frequency-close" aria-label={$t('schedule.closeEditor')} onclick={closeEditor}><Icon name="close" size={14}/></button>
       </div>
       <div class="schedule-frequency-rows">
         <div class="schedule-frequency-row">
-          <span>Repeat</span>
-          <Menu options={REPEAT_OPTIONS} value={repeatMode} label="Repeat" onChange={chooseRepeat}/>
+          <span>{$t('schedule.repeat')}</span>
+          <Menu options={REPEAT_OPTIONS} value={repeatMode} label={$t('schedule.repeat')} onChange={chooseRepeat}/>
         </div>
 
         {#if repeatMode === 'custom'}
           <div class="schedule-frequency-row">
-            <span>Repeats</span>
-            <Menu options={UNIT_OPTIONS} value={draft.kind === 'once' ? 'daily' : draft.kind} label="Repeats" onChange={chooseUnit}/>
+            <span>{$t('schedule.repeats')}</span>
+            <Menu options={UNIT_OPTIONS} value={draft.kind === 'once' ? 'daily' : draft.kind} label={$t('schedule.repeats')} onChange={chooseUnit}/>
           </div>
           <div class="schedule-frequency-row">
-            <span>Every</span>
+            <span>{$t('schedule.every')}</span>
             <span class="schedule-frequency-value">
               <input
                 type="number"
                 min="1"
                 max="99"
-                aria-label={`Every how many ${unitLabel}s`}
+                aria-label={$t('schedule.everyHowMany', {unit: unitNoun})}
                 value={frequencyInterval(draft) ?? 1}
                 oninput={(event) => setEvery(event.currentTarget.value)}
               />
-              <em>{unitLabel}{(frequencyInterval(draft) ?? 1) > 1 ? 's' : ''}</em>
+              <em>{unitNoun}</em>
             </span>
           </div>
         {/if}
 
         {#if draft.kind === 'weekly'}
           <div class="schedule-frequency-row">
-            <span>On</span>
-            <span class="schedule-frequency-days" role="group" aria-label="Days of the week">
+            <span>{$t('schedule.on')}</span>
+            <span class="schedule-frequency-days" role="group" aria-label={$t('schedule.daysOfWeek')}>
               {#each WEEK as day}
                 <button
                   type="button"
                   class="schedule-day"
                   class:on={draft.days.includes(day)}
                   aria-pressed={draft.days.includes(day)}
-                  aria-label={DAY_NAMES[day]}
+                  aria-label={weekdayName(day, 'long')}
                   onclick={() => toggleDay(day)}
-                >{DAY_SHORT[day]}</button>
+                >{weekdayName(day, 'short')}</button>
               {/each}
             </span>
           </div>
@@ -593,36 +677,36 @@
 
         {#if draft.kind === 'yearly'}
           <div class="schedule-frequency-row">
-            <span>In</span>
-            <Menu options={MONTH_OPTIONS} value={String(draft.month)} label="Month" onChange={setMonth}/>
+            <span>{$t('schedule.in')}</span>
+            <Menu options={MONTH_OPTIONS} value={String(draft.month)} label={$t('schedule.month')} onChange={setMonth}/>
           </div>
         {/if}
 
         {#if draft.kind === 'monthly' || draft.kind === 'yearly'}
           <div class="schedule-frequency-row">
-            <span>On day</span>
+            <span>{$t('schedule.onDay')}</span>
             <span class="schedule-frequency-value">
-              <input type="number" min="1" max="31" aria-label="Day of the month" value={draft.dayOfMonth} oninput={(event) => setDayOfMonth(event.currentTarget.value)}/>
+              <input type="number" min="1" max="31" aria-label={$t('schedule.dayOfMonth')} value={draft.dayOfMonth} oninput={(event) => setDayOfMonth(event.currentTarget.value)}/>
             </span>
           </div>
         {/if}
 
         {#if draft.kind !== 'once' && draft.kind !== 'hourly'}
           <div class="schedule-frequency-row">
-            <span>At</span>
-            <Menu options={TIME_OPTIONS} value={draft.time} label="Time of day" onChange={setTime}/>
+            <span>{$t('schedule.at')}</span>
+            <Menu options={TIME_OPTIONS} value={draft.time} label={$t('schedule.timeOfDay')} onChange={setTime}/>
           </div>
         {/if}
 
         {#if draft.kind === 'once'}
           <div class="schedule-frequency-row">
-            <span>When</span>
+            <span>{$t('schedule.when')}</span>
             <span class="schedule-frequency-static">{formatScheduleTime(draft.at)}</span>
           </div>
         {/if}
 
         <div class="schedule-frequency-row">
-          <span>Time zone</span>
+          <span>{$t('schedule.timeZone')}</span>
           <span class="schedule-frequency-static">{draft.timeZone ?? localTimeZone()}</span>
         </div>
       </div>

@@ -82,6 +82,29 @@ const CI_FLEET = [
   },
 ];
 
+/**
+ * macOS builds are arm64 only, and not by choice: every mautrix release
+ * publishes `<binary>-darwin-arm64` and nothing else for macOS. The `amd64`
+ * assets alongside it are Linux. So an Intel build cannot be assembled by
+ * fetching different assets — the binaries do not exist — and packaging one
+ * would produce an app that installs, opens, and has no messaging at all.
+ *
+ * Supporting Intel means building the fleet from source for darwin/amd64,
+ * which also means shipping binaries nobody has published a checksum for.
+ * That is a deliberate decision, not a flag, so this refuses instead.
+ */
+const requestedArch = process.argv.find((flag) => flag.startsWith("--arch="))?.slice(7);
+if (requestedArch && requestedArch !== "arm64") {
+  console.error(
+    [
+      `No macOS ${requestedArch} bridge binaries exist upstream — every mautrix release`,
+      "publishes darwin-arm64 only. Packaging that architecture would ship an app",
+      "with no working messaging. See AGENTS.md, Packaging and signing.",
+    ].join("\n"),
+  );
+  process.exit(1);
+}
+
 const dryRun = process.argv.includes("--dry-run");
 const force = process.argv.includes("--force");
 const trustNew = process.argv.includes("--trust-new");
@@ -217,8 +240,8 @@ async function main() {
   const count = FLEET.length + CI_FLEET.length;
   console.log(`\n${count - failed}/${count} bridges, ${megabytes(total)} total.`);
   console.log(
-    "\nExcept for iMessage, which builds universal, upstream publishes arm64 only:\n" +
-      "an Intel Mac gets iMessage and nothing else. See README, Bridge binaries.",
+    "\nmacOS builds are arm64 only: upstream publishes darwin-arm64 and nothing\n" +
+      "else, so an Intel Mac would get iMessage (universal) and nothing else.",
   );
   if (failed > 0) process.exitCode = 1;
 }

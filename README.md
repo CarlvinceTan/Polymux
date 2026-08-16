@@ -2,6 +2,11 @@
 
 FlareAI is a lean, local-first desktop agent built with Electron and TypeScript.
 
+**Requires a Mac with Apple Silicon.** The bridge fleet is published as
+`darwin-arm64` and nothing else, so an Intel build would install and open with no
+messaging in it — packaging for `x64` refuses rather than shipping that. See
+[Bridge binaries](#bridge-binaries).
+
 **macOS only for now.** `npm run make` still produces Windows and Linux artifacts,
 but several subsystems reach for macOS-specific facilities with no fallback: mailbox
 passwords go through the `security` keychain tool, screen and accessibility features
@@ -53,13 +58,21 @@ ships as an `extraResource`, and at runtime `BridgeHost` searches the bundled co
 first, then `<userData>/hub/bin` — drop a binary there to add a network the bundle
 does not carry, and it is picked up on the next launch.
 
-**Apple Silicon only, with one exception.** Upstream publishes `darwin-arm64` builds
-and no `darwin-amd64` ones, so an Intel Mac gets no bundled bridges apart from
-iMessage, whose CI produces a universal binary. Everything else in FlareAI works on
-Intel; only messaging is affected, and the Hub screen reports each missing network as
-not installed rather than failing silently. Supporting Intel properly means building
-the bridges from source for `amd64` at package time, which needs a Go toolchain and
-each bridge's own build dependencies.
+**Apple Silicon only.** Upstream publishes `darwin-arm64` builds and no
+`darwin-amd64` ones — the `amd64` assets sitting beside them are Linux — so an Intel
+Mac has no bundled bridges apart from iMessage, whose CI produces a universal binary.
+A universal app would not fix it either: an x86 app slice still has no x86 bridges
+behind it.
+
+Rather than let that ship, `npm run package -- --arch=x64` and
+`npm run bridges:fetch -- --arch=x64` both refuse. An Intel build packages, installs
+and opens perfectly well, and has no messaging in it — the kind of failure nobody
+notices until a user reports it.
+
+Supporting Intel properly means building the bridges from source for `amd64` at
+package time: a Go toolchain, libsignal and libolm for the two that need them, and
+shipping binaries with no upstream checksum to verify against. That is a decision
+about what FlareAI ships, not a build flag, which is why nothing does it quietly.
 
 **Telegram needs credentials.** The bridge ships without an `api_id`/`api_hash` pair;
 first-run setup asks for one (from <https://my.telegram.org/apps>) and records it in

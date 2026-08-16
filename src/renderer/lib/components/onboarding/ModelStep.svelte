@@ -1,8 +1,11 @@
 <script lang="ts">
-  import type {FlareAIApi, ProviderDto} from '@flareai/protocol';
+  import type {FlareAIApi, ModelDto, ProviderDto} from '@flareai/protocol';
+  import {fly} from 'svelte/transition';
   import {readableError} from '../../errors';
+  import Icon from '../shared/Icon.svelte';
   import ProviderLogo from '../settings/ProviderLogo.svelte';
-  import SkipAction from './SkipAction.svelte';
+  import BackAction from './BackAction.svelte';
+  import {t} from '../../i18n';
 
   interface Props {
     api: FlareAIApi;
@@ -17,8 +20,21 @@
   let saving = $state(false);
   let error = $state('');
   let grid = $state<HTMLDivElement | null>(null);
-  /** The long tail stays folded away until asked for. */
-  let showAll = $state(false);
+  /** Narrows the grid rather than paging it — every provider stays reachable
+   * by scrolling, so search is a shortcut, not the only way through. */
+  let search = $state('');
+
+  /**
+   * Two halves of one decision, in one step rather than two screens: which
+   * provider FlareAI talks to, and which of that provider's models it thinks
+   * with. The second half has nothing to show until the first is settled, so
+   * the same grid and the same button carry both — the button says what it
+   * does at each half, and the copy above changes with it.
+   */
+  let phase = $state<'provider' | 'model'>('provider');
+  let models = $state<ModelDto[]>([]);
+  let chosenModel = $state('');
+  let loadingModels = $state(false);
 
   /**
    * The grid is what the step is actually about, so it — not the column as a
@@ -31,12 +47,19 @@
    * transformed deck, so the numbers are layout distances and the shift this
    * produces cannot feed back into them.
    */
+  /**
+   * And then a little below even that. Dead centre, the eyebrow ends up level
+   * with the window's own traffic lights, which reads as crowding them rather
+   * than as the top of a page; this much clears them without the column
+   * looking like it has slipped.
+   */
+  const DROP = 26;
   /** Bumped by anything that changes the column's height. */
   let measured = $state(0);
 
   $effect(() => {
     // Read what the measurement depends on, so it is redone when they change.
-    void [chosen, showAll, providers.length, error, measured];
+    void [phase, chosen, chosenModel, search, providers.length, models.length, error, measured];
     const column = grid?.parentElement;
     if (!grid || !column) return;
     const box = column.getBoundingClientRect();
@@ -47,7 +70,7 @@
       column.style.setProperty('--mind-shift', '0px');
       return;
     }
-    const shift = Math.round(box.height / 2 - (row.top - box.top + row.height / 2));
+    const shift = Math.round(box.height / 2 - (row.top - box.top + row.height / 2)) + DROP;
     column.style.setProperty('--mind-shift', `${shift}px`);
   });
 
@@ -60,9 +83,38 @@
   });
 
   /**
-   * The providers worth putting first. They get the grid; everything else is
-   * one click away behind it, so the choice reads as a short recommendation
-   * rather than a directory.
+   * The same edge fade the settings rail carries: faded where the grid runs on,
+   * solid where it ends, so the first and last row of cards are never dimmed
+   * once there is nothing more to scroll to in that direction.
+   */
+  let atTop = $state(true);
+  let atBottom = $state(true);
+
+  function measureEdges(): void {
+    if (!grid) return;
+    atTop = grid.scrollTop <= 1;
+    atBottom = grid.scrollHeight - grid.scrollTop - grid.clientHeight <= 1;
+  }
+
+  $effect(() => {
+    // Anything that changes what is in the grid changes where its ends are.
+    void [phase, shown.length, shownModels.length, measured];
+    const node = grid;
+    if (!node) return;
+    measureEdges();
+    node.addEventListener('scroll', measureEdges, {passive: true});
+    const observer = new ResizeObserver(measureEdges);
+    observer.observe(node);
+    return () => {
+      node.removeEventListener('scroll', measureEdges);
+      observer.disconnect();
+    };
+  });
+
+  /**
+   * The providers worth putting first. They open the grid; the rest of the
+   * catalogue follows them in it, so the recommendation is where the eye lands
+   * without putting anything out of reach.
    */
   const FEATURED = ['anthropic', 'openai', 'google', 'openrouter'];
 
@@ -75,11 +127,28 @@
       return rank(a) - rank(b) || a.name.localeCompare(b.name);
     }),
   );
-  const recommended = $derived(ordered.filter((provider) => FEATURED.includes(provider.id)));
-  const rest = $derived(ordered.filter((provider) => !FEATURED.includes(provider.id)));
   /** What is actually on screen, and so what the arrow keys walk. */
-  const shown = $derived(showAll ? [...recommended, ...rest] : recommended);
+  const shown = $derived.by(() => {
+    const query = search.trim().toLocaleLowerCase();
+    if (!query) return ordered;
+    return ordered.filter((provider) =>
+      `${provider.name} ${provider.id}`.toLocaleLowerCase().includes(query),
+    );
+  });
   const selected = $derived(providers.find((provider) => provider.id === chosen) ?? null);
+  /** The same narrowing, over the settled provider's models. */
+  const shownModels = $derived.by(() => {
+    const query = search.trim().toLocaleLowerCase();
+    if (!query) return models;
+    return models.filter((model) => `${model.name} ${model.id}`.toLocaleLowerCase().includes(query));
+  });
+
+  /** Context windows are read at a glance, not compared to the token. */
+  function compactTokens(size: number): string {
+    if (size >= 1_000_000) return `${Math.round(size / 100_000) / 10}m`;
+    if (size >= 1000) return `${Math.round(size / 1000)}k`;
+    return `${size}`;
+  }
 
   $effect(() => {
     void api.providers
@@ -112,12 +181,45 @@
       : 0;
     if (step === 0) return;
     event.preventDefault();
+    if (phase === 'model') {
+      const next = shownModels[position + step];
+      if (!next) return;
+      const card = grid?.querySelector<HTMLButtonElement>(`[data-model="${CSS.escape(next.id)}"]`);
+      if (!card) return;
+      card.focus();
+      chosenModel = next.id;
+      return;
+    }
     const next = shown[position + step];
     if (!next) return;
     const card = grid?.querySelector<HTMLButtonElement>(`[data-provider="${next.id}"]`);
     if (!card) return;
     card.focus();
     choose(next);
+  }
+
+  /** The provider is settled — now the models it offers, in the same grid. */
+  async function settle(provider: ProviderDto): Promise<void> {
+    search = '';
+    error = '';
+    loadingModels = true;
+    phase = 'model';
+    try {
+      const list = await api.models.list();
+      models = list.filter((model) => model.provider === provider.id);
+      chosenModel = models.find((model) => model.selected)?.id ?? models[0]?.id ?? '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      loadingModels = false;
+    }
+  }
+
+  function reopenProviders(): void {
+    phase = 'provider';
+    search = '';
+    error = '';
+    models = [];
   }
 
   async function save(): Promise<void> {
@@ -127,7 +229,38 @@
     try {
       const updated = await api.providers.saveApiKey(selected.id, apiKey.trim());
       apiKey = '';
-      onDone(updated.name);
+      providers = providers.map((provider) => (provider.id === updated.id ? updated : provider));
+      await settle(updated);
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      saving = false;
+    }
+  }
+
+  /** Local runtimes carry no credential: setting one up is reading its models
+   * off the server, after which it behaves like any configured provider. */
+  async function connectRuntime(provider: ProviderDto): Promise<void> {
+    saving = true;
+    error = '';
+    try {
+      const updated = await api.providers.setupLocalRuntime({id: provider.id});
+      providers = providers.map((item) => (item.id === updated.id ? updated : item));
+      await settle(updated);
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function finish(): Promise<void> {
+    if (!selected) return;
+    saving = true;
+    error = '';
+    try {
+      if (chosenModel) await api.models.select(selected.id, chosenModel);
+      onDone(selected.name);
     } catch (cause) {
       error = readableError(cause);
     } finally {
@@ -136,22 +269,80 @@
   }
 </script>
 
-<p class="onb-eyebrow">Model</p>
-<h1 class="onb-title">Choose who FlareAI thinks with.</h1>
-<p class="onb-lede">
-  FlareAI talks to a model provider using your own API key. The key is encrypted by macOS and never
-  leaves this Mac.
-</p>
+<p class="onb-eyebrow">{$t('onboarding.stepModel')}</p>
 
-<!-- A short grid of the ones worth recommending, with the rest folded in
-     behind them. What the chosen one needs — a key, a sign-in — is answered
-     directly underneath rather than on a screen of its own. -->
+<!-- The heading answers whichever half of the step is on screen. Both sit in
+     the same grid cell so the words that go are replaced in place while the
+     new ones rise into the same place, rather than the page jumping by a line
+     between them. -->
+<div class="prov-copy">
+  {#key phase}
+    <div class="prov-copy-slot" in:fly={{y: 8, duration: 280}}>
+      <h1 class="onb-title">{phase === 'model' ? $t('model.modelTitle') : $t('model.title')}</h1>
+      <p class="onb-lede">
+        <!-- The lede counts the providers, so it waits for the list rather
+             than saying nought of them for a frame. -->
+        {phase === 'model' ?
+          $t('model.modelLede', {provider: selected?.name ?? ''})
+        : providers.length ? $t('model.lede', {count: providers.length})
+        : ''}
+      </p>
+    </div>
+  {/key}
+</div>
+
+<!-- Every provider, recommendations first, in a grid that scrolls. Search
+     narrows it for anyone who already knows what they came for. What the
+     chosen one needs — a key, a sign-in — is answered directly underneath
+     rather than on a screen of its own. -->
+<div class="onb-section prov-search">
+  <Icon name="search" size={14} />
+  <input
+    bind:value={search}
+    type="search"
+    spellcheck="false"
+    autocomplete="off"
+    placeholder={phase === 'model' ? $t('model.searchModels') : $t('model.searchProviders')}
+    aria-label={phase === 'model' ? $t('model.searchModels') : $t('model.searchProviders')}
+  />
+  {#if search}
+    <button type="button" aria-label={$t('common.clearSearch')} onclick={() => (search = '')}>
+      <Icon name="close" size={12} strokeWidth={1.7} />
+    </button>
+  {/if}
+</div>
+
 <div
   class="onb-section prov-grid"
+  class:at-top={atTop}
+  class:at-bottom={atBottom}
   role="radiogroup"
-  aria-label="Model provider"
+  aria-label={phase === 'model' ? $t('model.model') : $t('model.provider')}
   bind:this={grid}
 >
+  {#if phase === 'model'}
+    {#each shownModels as model, position (model.id)}
+      <button
+        type="button"
+        role="radio"
+        data-model={model.id}
+        aria-checked={chosenModel === model.id}
+        class="prov-card"
+        class:selected={chosenModel === model.id}
+        onclick={() => (chosenModel = model.id)}
+        onkeydown={(event) => walk(event, position)}
+      >
+        <span class="prov-mark"><ProviderLogo provider={model.provider} size={20} /></span>
+        <span class="prov-text">
+          <span class="prov-name">{model.name}</span>
+          <span class="prov-how">{$t('model.contextSize', {size: compactTokens(model.contextWindow)})}</span>
+        </span>
+      </button>
+    {/each}
+    {#if shownModels.length === 0 && !loadingModels}
+      <p class="onb-note prov-empty">{$t('model.noModelMatches')}</p>
+    {/if}
+  {:else}
   {#each shown as provider, position (provider.id)}
     <button
       type="button"
@@ -168,88 +359,124 @@
       <span class="prov-name">{provider.name}</span>
       <span class="prov-how">
         {#if provider.configured}
-          Connected
+          {$t('drive.stateConnected')}
         {:else if provider.apiKeyLabel}
-          API key
+          {$t('model.apiKey')}
         {:else if provider.supportsOAuth}
-          Sign in
+          {$t('model.signIn')}
+        {:else if provider.localRuntime}
+          {$t('model.onThisMac')}
         {:else}
-          Setup
+          {$t('model.setup')}
         {/if}
       </span>
       </span>
     </button>
   {/each}
+  {#if shown.length === 0}
+    <p class="onb-note prov-empty">{$t('model.noProviderMatches')}</p>
+  {/if}
+  {/if}
 </div>
 
-{#if rest.length > 0}
-  <!-- The rest of the catalogue, under the grid it belongs to. Passing on the
-       question entirely is Skip's job, in the action row. -->
-  <button type="button" class="onb-quiet prov-more" onclick={() => (showAll = !showAll)}>
-    {showAll ? 'Show fewer' : `${rest.length} more providers`}
-  </button>
-{/if}
-
-{#if selected}
-  <!-- Keyed on the provider so the panel is rebuilt, and its entrance runs,
-       each time the choice changes. -->
-  {#key selected.id}
-    <div class="prov-detail">
-      {#if selected.configured}
-        <p class="onb-note">{selected.name} already has a key saved on this Mac.</p>
-        <div class="onb-actions">
-          <button type="button" class="onb-button primary" onclick={() => onDone(selected.name)}>
-            Use {selected.name}
-          </button>
-          <SkipAction />
-        </div>
-      {:else if selected.apiKeyLabel}
-        <div class="onb-field prov-key">
-          <span>{selected.apiKeyLabel}</span>
-          <input
-            bind:value={apiKey}
-            type="password"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="Paste your key"
-            onkeydown={(event) => {
-              if (event.key === 'Enter') void save();
-            }}
-          />
-        </div>
-        {#if selected.supportsOAuth}
-          <p class="onb-note">
-            {selected.name} can also sign you in with your account, from Settings → Providers,
-            once setup is done.
-          </p>
-        {/if}
-        {#if error}<p class="onb-note warn">{error}</p>{/if}
-        <div class="onb-actions">
-          <button
-            type="button"
-            class="onb-button primary"
-            disabled={saving || !apiKey.trim()}
-            onclick={() => void save()}
-          >
-            {saving ? 'Checking…' : 'Connect'}
-          </button>
-          <SkipAction />
-        </div>
-      {:else}
-        <!-- No key to paste: whatever this provider needs, it is not
-             something this screen can ask for. -->
-        <p class="onb-note">
-          {selected.name} signs in with your account. FlareAI opens that from Settings → Providers.
-        </p>
-        <div class="onb-actions">
-          <SkipAction />
-        </div>
-      {/if}
+{#if phase === 'model'}
+  <!-- Nothing to fill in here: the grid is the whole answer, so this half
+       carries the actions alone rather than the key field's reserved room. -->
+  <div class="prov-detail compact">
+    {#if error}<p class="onb-note warn">{error}</p>{/if}
+    <div class="onb-actions">
+      <button
+        type="button"
+        class="onb-button primary"
+        disabled={saving || loadingModels || !chosenModel}
+        onclick={() => void finish()}
+      >
+        {$t('common.continue')}
+      </button>
+      <button type="button" class="onb-quiet" onclick={reopenProviders}>
+        {$t('model.changeProvider')}
+      </button>
     </div>
-  {/key}
+  </div>
+{:else if selected}
+  <!-- Not keyed on the provider: switching providers should swap the text in
+       place, not tear the panel down and animate a new one in. -->
+  <div class="prov-detail">
+    {#if selected.configured}
+      <p class="onb-note">{$t('model.keyAlreadySaved', {provider: selected.name})}</p>
+      <div class="onb-actions">
+        <button type="button" class="onb-button primary" onclick={() => void settle(selected)}>
+          {$t('model.useProvider', {provider: selected.name})}
+        </button>
+        <BackAction />
+      </div>
+    {:else if selected.apiKeyLabel}
+      <div class="onb-field prov-key">
+        <span>{selected.apiKeyLabel}</span>
+        <input
+          bind:value={apiKey}
+          type="password"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder={$t('model.pasteKey')}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') void save();
+          }}
+        />
+      </div>
+      {#if error}<p class="onb-note warn">{error}</p>{/if}
+      <div class="onb-actions">
+        <button
+          type="button"
+          class="onb-button primary"
+          disabled={saving || !apiKey.trim()}
+          onclick={() => void save()}
+        >
+          {saving ? $t('hub.checking') : $t('model.set')}
+        </button>
+        <BackAction />
+      </div>
+    {:else if selected.localRuntime}
+      <!-- A server on this Mac: there is no key to paste, so the whole step
+           is asking it what it has. -->
+      <p class="onb-note">{$t('model.localRuntimeNote', {provider: selected.name})}</p>
+      {#if error}<p class="onb-note warn">{error}</p>{/if}
+      <div class="onb-actions">
+        <button
+          type="button"
+          class="onb-button primary"
+          disabled={saving}
+          onclick={() => void connectRuntime(selected)}
+        >
+          {saving ? $t('hub.checking') : $t('model.connect')}
+        </button>
+        <BackAction />
+      </div>
+    {:else}
+      <!-- No key to paste: whatever this provider needs, it is not
+           something this screen can ask for. -->
+      <p class="onb-note">{$t('model.oauthOnly', {provider: selected.name})}</p>
+      <div class="onb-actions">
+        <BackAction />
+      </div>
+    {/if}
+  </div>
 {/if}
 
 <style>
+  /* One cell, both headings stacked in it: the swap is a crossfade in place,
+     so nothing under it moves while the words change. The block holds the
+     taller of the two so a two-line lede does not shove the grid down when it
+     arrives. */
+  /* Sized by whichever half is in it rather than by the taller of the two: the
+     lede is one line either way, and the room held for a second one read as a
+     gap between the words and the search box they belong to. Aligned to the
+     bottom of the cell so a lede that does wrap grows upwards, away from the
+     box, instead of pushing it down. */
+  .prov-copy{display:grid;grid-template-areas:'copy';align-items:end}
+  .prov-copy-slot{grid-area:copy}
+  .prov-copy-slot :global(.onb-title){margin:0}
+
   /* Two columns of equal cards. A handful of recommendations reads as a
      choice; the whole catalogue read as a directory, which is why the tail
      sits behind a disclosure instead. */
@@ -258,12 +485,37 @@
      padding the clip edge cut them off. The padding is cancelled by an equal
      negative margin, so the cards still line up with the copy above them. */
   .prov-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;
-    padding:7px;margin:24px -7px -3px;
-    /* Four recommendations fit without scrolling; the expanded list scrolls
-       inside this box instead of pushing the key field off the screen. */
-    max-height:clamp(182px,36vh,314px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none}
+    padding:7px;margin:8px -7px -3px;
+    /* The whole catalogue lives in here, so it scrolls inside this box rather
+       than pushing the key field off the screen. */
+    /* Three rows and no more: enough that the grid reads as a list you scroll
+       rather than as the whole catalogue, and short enough that the copy above
+       it and the key field below it fit on one screen with it. Three rows of
+       card, the two gaps between them, and the box's own slack. */
+    max-height:calc(3 * 54px + 2 * 8px + 14px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;
+    /* Faded only on the side there is more to see on. Each end turns solid the
+       moment the scroll reaches it, so the top and bottom rows are never left
+       dimmed when they are as far as the grid goes. */
+    --prov-mask-top:transparent;--prov-mask-bottom:transparent;
+    -webkit-mask-image:linear-gradient(to bottom,var(--prov-mask-top),#000 26px,#000 calc(100% - 26px),var(--prov-mask-bottom));
+    mask-image:linear-gradient(to bottom,var(--prov-mask-top),#000 26px,#000 calc(100% - 26px),var(--prov-mask-bottom))}
+  .prov-grid.at-top{--prov-mask-top:#000}
+  .prov-grid.at-bottom{--prov-mask-bottom:#000}
   .prov-grid::-webkit-scrollbar{display:none}
-  .prov-more{margin:8px 0 0;padding:0;align-self:flex-start;font-size:11.5px}
+  .prov-empty{grid-column:1/-1;margin:6px 0 2px}
+  /* Above the grid it filters, carrying the same edge as the cards under it. */
+  .prov-search{--prov-search-edge:var(--neutral-200);--prov-search-surface:var(--app-surface);
+    display:flex;align-items:center;gap:8px;height:34px;margin:24px 0 0;padding:0 11px;
+    border:1px solid var(--prov-search-edge);border-radius:11px;background:var(--prov-search-surface);
+    color:var(--neutral-500)}
+  .prov-search:focus-within{border-color:var(--neutral-500)}
+  .prov-search input{-webkit-appearance:none;appearance:none;min-width:0;flex:1;border:0;padding:0;
+    background:transparent;color:var(--neutral-900);outline:none;font-family:inherit;font-size:12.5px}
+  .prov-search input::placeholder{color:var(--neutral-500)}
+  .prov-search input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+  .prov-search button{display:grid;flex:none;place-items:center;width:18px;height:18px;border:0;border-radius:6px;
+    padding:0;background:transparent;color:inherit;cursor:pointer}
+  .prov-search button:hover,.prov-search button:focus-visible{outline:0;color:var(--neutral-900)}
   /* Same split as .onb-button: the card's plate grows on hover, its label and
      logo never scale, so the type stays where it was drawn and stays sharp. */
   .prov-card{--prov-card-edge:var(--neutral-200);--prov-card-surface:var(--app-surface);
@@ -299,10 +551,10 @@
      choice changed. The panel holds the room the tallest of them needs — a
      key field, a line about signing in, and the buttons — and the shorter ones
      leave the rest of it empty rather than dragging the page after them. */
-  .prov-detail{max-width:380px;min-height:172px;margin-top:18px;animation:prov-in .28s cubic-bezier(.22,1,.36,1) both}
+  .prov-detail{max-width:380px;min-height:172px;margin-top:18px}
+  .prov-detail.compact{min-height:0}
   .prov-detail :global(.onb-note){margin-top:9px}
   .prov-detail :global(.onb-actions){margin-top:18px}
-  @keyframes prov-in{from{opacity:0;transform:translate3d(0,-6px,0)}to{opacity:1;transform:none}}
 
   /* On any ink ground — disc or slab — the cards sit on the inverted surface
      like everything else. */
@@ -311,8 +563,13 @@
   :global(.onb-ink) .prov-how{color:var(--disc-ink-soft)}
   :global(.onb-ink) .prov-mark{background:rgb(from var(--disc-ink) r g b / .1)}
   :global(.onb-ink) .prov-card:focus-visible{outline-color:var(--disc-ink)}
+  :global(.onb-ink) .prov-search{--prov-search-edge:rgb(from var(--disc-ink) r g b / .2);--prov-search-surface:rgb(from var(--disc-ink) r g b / .06);color:var(--disc-ink-soft)}
+  :global(.onb-ink) .prov-search:focus-within{border-color:rgb(from var(--disc-ink) r g b / .45)}
+  :global(.onb-ink) .prov-search input{color:var(--disc-ink)}
+  :global(.onb-ink) .prov-search input::placeholder{color:var(--disc-ink-soft)}
+  :global(.onb-ink) .prov-search button:hover,:global(.onb-ink) .prov-search button:focus-visible{color:var(--disc-ink)}
 
   @media (prefers-reduced-motion:reduce){
-    .prov-card,.prov-card::before,.prov-detail{transition:none;animation:none}
+    .prov-card,.prov-card::before{transition:none;animation:none}
   }
 </style>

@@ -91,7 +91,7 @@ catalog.
 
 Prefer each bridge's local provisioning or management API. Use an isolated
 user-attention login handoff only when a secret, 2FA, QR approval, CAPTCHA, or
-other genuinely user-only step remains. Load `window-control` before anything
+other genuinely user-only step remains. Load `gui-control` before anything
 that may initialize or reveal a local GUI.
 
 After linking or repair, verify remote connected state and a Matrix-side

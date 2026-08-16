@@ -11,8 +11,10 @@
   import {readableError} from '../../errors';
   import {qrSvgPath} from '../../qr';
   import {bridgeLogo, mailLogo} from '../../options/platformBrands';
+  import {emailPresetHint, qrInstructions} from '../../i18n/names';
+  import {plural, t} from '../../i18n';
   import Icon from '../shared/Icon.svelte';
-  import SkipAction from './SkipAction.svelte';
+  import BackAction from './BackAction.svelte';
 
   interface Props {
     api: FlareAIApi;
@@ -223,6 +225,14 @@
 
   let step = $state<CommsLoginStepDto | null>(null);
   let linking = $state<CommsPlatform | ''>('');
+  /**
+   * The platform whose login has just been confirmed and whose account has not
+   * shown up on the fleet's status yet. The flow says `complete` the moment the
+   * phone confirms, but the bridge takes a beat longer to report the account —
+   * and in that gap the panel had nothing to show but the log-in button it
+   * started from, which read as a scan that had failed.
+   */
+  let settling = $state<CommsPlatform | ''>('');
   /** A grant is being asked for, so its button reads as busy rather than idle. */
   let granting = $state(false);
   let values = $state<Record<string, string>>({});
@@ -282,7 +292,7 @@
     {
       key: 'mail',
       kind: 'mail' as const,
-      name: 'Mail',
+      name: $t('hub.mail'),
       logo: mailLogo('custom'),
       initial: 'M',
     },
@@ -295,9 +305,15 @@
    */
   const seatsByKey = $derived([...new Map(seats.map((seat) => [seat.key, seat])).values()]);
 
-  /** The seat a running login belongs to, if any. */
+  /**
+   * The seat a login belongs to, if any — including one that is still settling,
+   * so the panel keeps facing the platform that was just signed in rather than
+   * handing itself back to whatever the pointer is resting on.
+   */
   const flowKey = $derived(
-    linking ? (seatsByKey.find((seat) => seat.platform === linking)?.key ?? '') : '',
+    linking || settling
+      ? (seatsByKey.find((seat) => seat.platform === (linking || settling))?.key ?? '')
+      : '',
   );
   /**
    * Which seat the panel is showing. A chosen seat holds it until another is
@@ -306,7 +322,7 @@
    * the panel out from under you. Hovering only leads while nothing is chosen,
    * where it is the fastest way to read down the ring.
    */
-  const activeKey = $derived(open || (step && flowKey ? flowKey : hovered));
+  const activeKey = $derived(open || ((step || settling) && flowKey ? flowKey : hovered));
   // `shownKey` trails `activeKey` by the length of the fade-out; the panel's
   // contents follow what is on screen, the ring follows the pointer.
   const active = $derived(seatsByKey.find((seat) => seat.key === shownKey) ?? null);
@@ -382,9 +398,24 @@
     Boolean(pendingFlow && /qr/i.test(`${pendingFlow.id} ${pendingFlow.name}`)),
   );
 
+  /**
+   * The line under a QR. Our own per-network wording wins where we have it:
+   * it names the menu the scanner hides behind, which is the part a bridge's
+   * "scan this" leaves the person to hunt for.
+   */
+  const scanNote = $derived(
+    qrInstructions(active?.platform) ??
+      (step?.type === 'display_and_wait' ? step.instructions : null) ??
+      $t('platforms.scanFromPhone'),
+  );
+
+  /** The shown seat is the one whose sign-in is still landing. */
+  const settlingHere = $derived(Boolean(active?.platform && settling === active.platform));
+
   /** Ready for the explicit "Log in" button: reachable, idle, and loggable. */
   const canLogin = $derived(
     connected &&
+      !settlingHere &&
       !(flowHere && (step || pending)) &&
       !needsSetup &&
       activeBridge !== null &&
@@ -433,6 +464,8 @@
   const linkedNames = $derived(
     bridges.filter((bridge) => bridge.state === 'connected').map((bridge) => bridge.name),
   );
+  /** At least one platform or mailbox is in, so the step has produced something. */
+  const hasReach = $derived(linkedNames.length > 0 || mailAccounts.length > 0);
 
   /* ---- The ring ------------------------------------------------------- */
 
@@ -814,6 +847,7 @@
   async function startLink(platform: CommsPlatform, flowId: string): Promise<void> {
     attempt += 1;
     const mine = attempt;
+    settling = '';
     linking = platform;
     activeFlow = flowId;
     step = null;
@@ -881,12 +915,46 @@
           return;
         }
       } else if (step.type === 'complete') {
+        const platform = linking;
         step = null;
         linking = '';
         activeFlow = '';
-        status = await api.comms.refresh().catch(() => status);
+        await settle(platform, mine);
         return;
       } else return;
+    }
+  }
+
+  /**
+   * Waits for the account to appear on the fleet, holding the panel on
+   * "Signing in…" for as long as it takes.
+   *
+   * `status` rather than `refresh`: refresh retries every blocked bridge, which
+   * means poking the very session that has just been established — the login
+   * that just succeeded does not need looking for, it needs reporting. Polled
+   * because the bridge reports the new account whenever it has finished
+   * bringing it up, with nothing to announce that it has.
+   */
+  const SETTLE_POLL_MS = 700;
+  const SETTLE_LIMIT_MS = 20000;
+
+  async function settle(platform: CommsPlatform, mine: number): Promise<void> {
+    settling = platform;
+    const deadline = performance.now() + SETTLE_LIMIT_MS;
+    try {
+      for (;;) {
+        const next = await api.comms.status().catch((): null => null);
+        // Superseded: another login was started, or this seat was dismissed.
+        if (attempt !== mine) return;
+        if (next) status = next;
+        const bridge = next?.bridges.find((item) => item.platform === platform);
+        if (bridge?.accounts.length) return;
+        if (performance.now() >= deadline) return;
+        await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS));
+        if (attempt !== mine) return;
+      }
+    } finally {
+      if (settling === platform) settling = '';
     }
   }
 
@@ -915,6 +983,7 @@
     step = null;
     activeFlow = '';
     linking = '';
+    settling = '';
     values = {};
     stepError = '';
     if (platform && loginId) status = await api.comms.loginCancel(platform, loginId).catch(() => status);
@@ -988,12 +1057,9 @@
   style="--arc:{arcLeft}px;--seat:{seatSize}px"
 >
   <div class="pf-copy">
-    <p class="onb-eyebrow">The Hub</p>
-    <h1 class="onb-title">One place for everything you talk on.</h1>
-    <p class="onb-lede">
-      The Hub runs on this Mac. It carries every conversation FlareAI can reach, chat, DMs and mail,
-      into one stream it can read and answer. Nothing leaves this machine.
-    </p>
+    <p class="onb-eyebrow">{$t('platforms.eyebrow')}</p>
+    <h1 class="onb-title">{$t('platforms.title')}</h1>
+    <p class="onb-lede">{$t('platforms.lede')}</p>
 
     {#if error}<p class="onb-note warn">{error}</p>{/if}
 
@@ -1001,21 +1067,23 @@
          being live; a line repeating it is just furniture. -->
     {#if !connected}
       <p class="onb-note">
-        {hub?.canAutoConnect
-          ? 'The Hub is not running yet. FlareAI makes its own account on it, so there is nothing for you to choose.'
-          : 'The Hub is not available on this Mac yet, so its platforms cannot be reached.'}
+        {hub?.canAutoConnect ? $t('platforms.hubNotRunning') : $t('platforms.hubUnavailable')}
       </p>
     {/if}
 
     <div class="onb-actions">
       {#if !connected && hub?.canAutoConnect}
         <button type="button" class="onb-button primary" disabled={busy === 'connect'} onclick={() => void connect()}>
-          {busy === 'connect' ? 'Starting the Hub…' : 'Start the Hub'}
+          {busy === 'connect' ? $t('platforms.startingHub') : $t('platforms.startHub')}
         </button>
       {:else}
-        <button type="button" class="onb-button primary" onclick={done}>Continue</button>
+        <!-- Nothing linked means nothing for the hub to carry, so Continue
+             stays dead until one account is in. Skip is the way past. -->
+        <button type="button" class="onb-button primary" disabled={!hasReach} onclick={done}>
+          {$t('common.continue')}
+        </button>
       {/if}
-      <SkipAction />
+      <BackAction />
     </div>
   </div>
 
@@ -1087,38 +1155,37 @@
         <p class="onb-note" role="status">
           <!-- The method's own name, as the bridge writes it: lowercasing it
                turns "QR Code" into something that reads like a typo. -->
-          {pendingFlow ? `Getting ${pendingFlow.name} ready…` : 'Starting…'}
+          {pendingFlow ? $t('platforms.gettingReady', {method: pendingFlow.name}) : $t('platforms.starting')}
         </p>
+      {:else if settlingHere}
+        <!-- Between the phone confirming and the bridge reporting the account.
+             One line, in place, so the panel reads as carrying on rather than
+             snapping back to the log-in button it started from. -->
+        <p class="onb-note" role="status">{$t('hub.signingIn')}</p>
       {:else if flowHere && qr}
         <div class="pf-qr">
           <!-- The four-module quiet zone belongs to the symbol; scanners need it. -->
-          <svg viewBox="-4 -4 {qr.size + 8} {qr.size + 8}" role="img" aria-label="Pairing QR code">
+          <svg viewBox="-4 -4 {qr.size + 8} {qr.size + 8}" role="img" aria-label={$t('hub.pairingQr')}>
             <rect x="-4" y="-4" width={qr.size + 8} height={qr.size + 8} fill="#fff" />
             <path d={qr.path} fill="#000" />
           </svg>
         </div>
-        <p class="onb-note">
-          {step?.type === 'display_and_wait' && step.instructions
-            ? step.instructions
-            : 'Scan this from your phone.'}
-        </p>
+        <p class="onb-note">{scanNote}</p>
       {:else if flowHere && step?.type === 'display_and_wait' && step.display === 'qr' && step.imageUrl}
         <!-- Some bridges send a pre-rendered image rather than the payload. -->
         <div class="pf-qr">
-          <img src={step.imageUrl} alt="Pairing QR code" />
+          <img src={step.imageUrl} alt={$t('hub.pairingQr')} />
         </div>
-        <p class="onb-note">{step.instructions ?? 'Scan this from your phone.'}</p>
+        <p class="onb-note">{scanNote}</p>
       {:else if flowHere && step?.type === 'display_and_wait' && (step.display === 'code' || step.display === 'emoji') && step.data}
         <p class="pf-code" class:emoji={step.display === 'emoji'}>{step.data}</p>
         <p class="onb-note">
           {step.instructions ??
-            (step.display === 'emoji'
-              ? 'Check this matches what the app on your phone shows.'
-              : 'Enter this code on your phone.')}
+            (step.display === 'emoji' ? $t('platforms.checkEmoji') : $t('platforms.enterCode'))}
         </p>
       {:else if flowHere && step?.type === 'display_and_wait'}
         <!-- `nothing` to show: the remote side has to act on its own. -->
-        <p class="onb-note">{step.instructions ?? `Waiting for ${active.name} to confirm…`}</p>
+        <p class="onb-note">{step.instructions ?? $t('platforms.waitingConfirm', {platform: active.name})}</p>
       {:else if flowHere && step?.type === 'user_input'}
         {#if step.instructions}<p class="onb-note">{step.instructions}</p>{/if}
         {#each step.fields as field (field.id)}
@@ -1175,48 +1242,58 @@
               <span class="pf-account-name">{account.name || account.id}</span>
               <span class="pf-account-state">
                 {account.state === 'connected'
-                  ? 'Connected'
+                  ? $t('drive.stateConnected')
                   : account.state === 'connecting'
-                    ? 'Connecting…'
+                    ? $t('hub.connecting')
                     : account.state === 'bad-credentials'
-                      ? 'Needs signing in again'
-                      : 'Unknown'}
+                      ? $t('platforms.needsSignIn')
+                      : $t('hub.unknown')}
               </span>
-              <button
-                type="button"
-                class="pf-account-drop"
-                disabled={busy === `out:${account.id}`}
-                onclick={() => void signOut(active.platform!, account.id)}
-              >
-                {busy === `out:${account.id}` ? 'Removing…' : 'Sign out'}
-              </button>
+              <!-- A relay account is whoever the app on this Mac is signed in
+                   as. FlareAI did not make that login and cannot end it. -->
+              {#if activeBridge?.api !== 'none'}
+                <button
+                  type="button"
+                  class="pf-account-drop"
+                  disabled={busy === `out:${account.id}`}
+                  onclick={() => void signOut(active.platform!, account.id)}
+                >
+                  {busy === `out:${account.id}` ? $t('platforms.removing') : $t('platforms.signOut')}
+                </button>
+              {/if}
             </li>
           {/each}
         </ul>
         {#each activeAccounts.filter((account) => account.error) as account (account.id)}
           <p class="onb-note warn">{account.name}: {account.error}</p>
         {/each}
+        {#if activeBridge?.api === 'none'}
+          <!-- Said plainly, because a seat that shows an account but no button
+               otherwise reads as one still waiting to be finished. -->
+          <p class="onb-note">{$t('platforms.viaLocalApp', {platform: active.name})}</p>
+        {/if}
       {:else if !connected}
         <p class="onb-note">
-          {hub?.canAutoConnect
-            ? 'This comes in through the Hub, which is not started yet. FlareAI makes its own account on it.'
-            : 'This comes in through the Hub, which is not available on this Mac.'}
+          {hub?.canAutoConnect ? $t('platforms.viaHubNotStarted') : $t('platforms.viaHubUnavailable')}
         </p>
       {:else if activeBridge?.state === 'unavailable' || activeBridge?.api === 'none'}
         <p class="onb-note">
-          {activeBridge.error ??
-            'This one reaches FlareAI through a relay on this Mac rather than a sign-in, so there is nothing to bring in here.'}
+          {activeBridge.error ?? $t('platforms.viaRelay')}
         </p>
+        {#if activeBridge.api === 'none'}
+          <!-- The requirement, stated whether or not anything has failed yet.
+               A platform read through a desktop app depends on that app being
+               installed and signed in, and finding that out from an error is
+               finding out too late. -->
+          <p class="onb-note">{$t('platforms.needsDesktopApp', {platform: active.name})}</p>
+        {/if}
       {:else if activeBridge?.state === 'dormant'}
         <!-- Not running because nothing is linked to it. Hovering this seat
              already asked for it, so this is the sub-second gap before its own
              login methods arrive rather than a state to act on. -->
-        <p class="onb-note">Starting {active.name}…</p>
+        <p class="onb-note">{$t('platforms.startingPlatform', {platform: active.name})}</p>
       {:else if activeBridge?.state === 'unreachable'}
-        <p class="onb-note">
-          The Hub is running but this platform is not answering yet. Its bridge may still be
-          starting, or may not be installed on this Mac.
-        </p>
+        <p class="onb-note">{$t('platforms.bridgeUnreachable')}</p>
         {#if activeBridge.error}<p class="onb-note warn">{activeBridge.error}</p>{/if}
       {:else if canLogin && (activeBridge?.flows.length ?? 0) > 1}
         <!-- Every way in, all on screen. A platform offering two ways to sign
@@ -1243,11 +1320,10 @@
         </ul>
       {:else if canLogin}
         <p class="onb-note">
-          {activeBridge?.flows[0]?.description ??
-            'Sign in and your conversations start arriving here.'}
+          {activeBridge?.flows[0]?.description ?? $t('platforms.signInBlurb')}
         </p>
       {:else}
-        <p class="onb-note">{busy ? 'Starting…' : 'Nothing to bring in here.'}</p>
+        <p class="onb-note">{busy ? $t('platforms.starting') : $t('platforms.nothingToBringIn')}</p>
       {/if}
 
       {#if stepError}<p class="onb-note warn">{stepError}</p>{/if}
@@ -1261,7 +1337,7 @@
             disabled={busy === 'step' || !inputReady}
             onclick={() => void submit()}
           >
-            {busy === 'step' ? 'Checking…' : 'Continue'}
+            {busy === 'step' ? $t('hub.checking') : $t('common.continue')}
           </button>
         {:else if activeBridge?.permission}
           <!-- A blocker macOS can lift is an action, not a set of directions:
@@ -1275,10 +1351,10 @@
             onclick={() => void grant(activeBridge.permission!)}
           >
             {granting
-              ? 'Waiting…'
+              ? $t('hub.waiting')
               : permissionPrompts(activeBridge.permission)
-                ? 'Allow access'
-                : 'Open Settings'}
+                ? $t('hub.allowAccess')
+                : $t('hub.openSettings')}
           </button>
         {:else if canLogin && active.platform && (activeAccounts.length > 0 || (activeBridge?.flows.length ?? 0) <= 1)}
           <button
@@ -1288,10 +1364,10 @@
             onclick={() => void link(active.platform!)}
           >
             {busy.startsWith('link:')
-              ? 'Starting…'
+              ? $t('platforms.starting')
               : activeAccounts.length > 0
-                ? 'Add another account'
-                : `Log in to ${active.name}`}
+                ? $t('hub.addAnotherAccount')
+                : $t('platforms.logInTo', {platform: active.name})}
           </button>
         {:else if needsSetup}
           <button
@@ -1300,7 +1376,7 @@
             disabled={busy === 'setup' || !setupReady}
             onclick={() => void saveSetup()}
           >
-            {busy === 'setup' ? 'Saving…' : 'Save and continue'}
+            {busy === 'setup' ? $t('hub.saving') : $t('platforms.saveAndContinue')}
           </button>
         {:else if !connected && hub?.canAutoConnect && active.platform}
           <button
@@ -1309,7 +1385,7 @@
             disabled={busy === 'connect'}
             onclick={() => void connectThenLink(active.platform!)}
           >
-            {busy === 'connect' ? 'Starting the Hub…' : 'Start the Hub and bring it in'}
+            {busy === 'connect' ? $t('platforms.startingHub') : $t('platforms.startHubAndLink')}
           </button>
         {/if}
         {#if flowHere && hasChoices && (pending || (step && step.type !== 'cookies'))}
@@ -1336,11 +1412,11 @@
               <span class="pf-account-state">
                 {account.status === 'ok'
                   ? account.isDefault
-                    ? 'Default'
-                    : 'Connected'
+                    ? $t('hub.default')
+                    : $t('drive.stateConnected')
                   : account.status === 'error'
-                    ? 'Not signing in'
-                    : 'Not checked'}
+                    ? $t('platforms.notSigningIn')
+                    : $t('platforms.notChecked')}
               </span>
               <button
                 type="button"
@@ -1348,7 +1424,7 @@
                 disabled={busy === `out:${account.id}`}
                 onclick={() => void removeMailbox(account.id)}
               >
-                {busy === `out:${account.id}` ? 'Removing…' : 'Remove'}
+                {busy === `out:${account.id}` ? $t('platforms.removing') : $t('hub.remove')}
               </button>
             </li>
           {/each}
@@ -1358,7 +1434,7 @@
         {/each}
       {/if}
       {#if mailTooling && !mailTooling.installed}
-        <p class="onb-note">Mail support is not installed on this Mac.</p>
+        <p class="onb-note">{$t('platforms.mailNotInstalled')}</p>
         <p class="onb-note warn">{mailTooling.error}</p>
       {:else if activeMailboxes.length === 0 || adding === active.key}
       <!-- The provider picker the seats used to be. It only decides which
@@ -1379,29 +1455,29 @@
             <!-- "Mail" is the seat's name; in here the same preset is the
                  any-other-server option, and repeating the heading would read
                  as a provider called Mail. -->
-            {preset.value === 'custom' ? 'Other' : (MAIL_NAMES[preset.value] ?? preset.label)}
+            {preset.value === 'custom' ? $t('platforms.otherProvider') : (MAIL_NAMES[preset.value] ?? preset.label)}
           </button>
         {/each}
       </div>
-      <p class="onb-note">{activePreset.hint}</p>
+      <p class="onb-note">{emailPresetHint(activePreset.value)}</p>
       <label class="onb-field pf-field">
-        <span>Email address</span>
+        <span>{$t('hub.emailAddress')}</span>
         <input bind:value={email} type="email" spellcheck="false" placeholder="you@example.com" />
       </label>
       {#if customMail}
         <div class="pf-pair">
           <label class="onb-field pf-field">
-            <span>IMAP server</span>
+            <span>{$t('hub.imapServer')}</span>
             <input bind:value={imapHost} spellcheck="false" placeholder="imap.example.com" />
           </label>
           <label class="onb-field pf-field">
-            <span>SMTP server</span>
+            <span>{$t('hub.smtpServer')}</span>
             <input bind:value={smtpHost} spellcheck="false" placeholder="smtp.example.com" />
           </label>
         </div>
       {/if}
       <label class="onb-field pf-field">
-        <span>{customMail ? 'Password' : 'App password'}</span>
+        <span>{customMail ? $t('hub.password') : $t('hub.appPassword')}</span>
         <input
           bind:value={password}
           type="password"
@@ -1421,38 +1497,38 @@
           disabled={busy === 'mail' || !mailReady}
           onclick={() => void saveMailbox()}
         >
-          {busy === 'mail' ? 'Adding…' : 'Add mailbox'}
+          {busy === 'mail' ? $t('platforms.adding') : $t('platforms.addMailbox')}
         </button>
       </div>
       {:else}
       <div class="onb-actions pf-actions">
         <button type="button" class="onb-button primary" onclick={() => (adding = active.key)}>
-          Add another mailbox
+          {$t('platforms.addAnotherMailbox')}
         </button>
       </div>
       {/if}
     {:else if active}
-      <p class="onb-eyebrow">{active.kind === 'mail' ? 'Mail' : 'Messaging'}</p>
+      <p class="onb-eyebrow">{active.kind === 'mail' ? $t('hub.mail') : $t('platforms.messaging')}</p>
       <p class="pf-name">{active.name}</p>
       <p class="onb-note">
         {#if active.kind === 'mail'}
           {mailAccounts.length > 0
-            ? `${mailAccounts.length} mailbox${mailAccounts.length === 1 ? '' : 'es'} set up.`
-            : 'Add a mailbox with an app password.'}
+            ? plural('platforms.mailboxesSetUp', mailAccounts.length)
+            : $t('platforms.addMailboxHint')}
         {:else if !connected}
-          Start the hub first and this wakes up.
+          {$t('platforms.startHubFirst')}
         {:else}
           {bridges.find((bridge) => bridge.platform === active.platform)?.state === 'connected'
-            ? 'Linked to the hub.'
+            ? $t('platforms.linkedToHub')
             : (bridges.find((bridge) => bridge.platform === active.platform)?.flows[0]?.description ??
-              'Not linked yet.')}
+              $t('hub.notLinked'))}
         {/if}
       </p>
     {:else}
       <!-- Nothing chosen yet, so the disc says what is on offer: the size of
            the ring, and a hand of its logos. The count is the claim; the stack
            is the evidence for it. -->
-      <p class="pf-count">{seatsByKey.length}<span> platforms</span></p>
+      <p class="pf-count">{seatsByKey.length}<span> {$t('platforms.platforms')}</span></p>
       <div class="pf-stack" aria-hidden="true">
         {#each stackedSeats as item, position (item.key)}
           <span class="pf-stack-mark" style="--i:{position}">
@@ -1469,7 +1545,7 @@
           </span>
         {/if}
       </div>
-      <p class="onb-note">Chat, DMs and mail, all arriving in one place. Click one to bring it in.</p>
+      <p class="onb-note">{$t('platforms.ringBlurb')}</p>
     {/if}
   </div>
 </div>
@@ -1546,11 +1622,17 @@
   .pf-seat:focus-visible{outline:none}
 
   /* Inside the circle, clear of the rim, and reading against the fill. */
-  .pf-face{position:absolute;top:50%;left:calc(var(--arc) + 108px);width:min(340px,calc(100vw - var(--arc) - 150px));transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-start;gap:8px;z-index:1;color:var(--hub-ink);
+  .pf-face{position:absolute;top:50%;left:calc(var(--arc) + 98px);width:min(360px,calc(100vw - var(--arc) - 130px));transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-start;gap:8px;z-index:1;color:var(--hub-ink);
     /* The disc is a circle, so the panel has a finite middle to sit in: past
        this it runs out through the curve and onto the page behind. Anything
        longer scrolls here instead. */
     max-height:min(74vh,600px);overflow-y:auto;overscroll-behavior:contain;
+    /* Room for the buttons to grow into. A scroller clips on both axes — asking
+       for `overflow-y` gets `overflow-x` with it — so a button that swells on
+       hover had its edge cut off against the panel's own bounds. The padding is
+       the growth (5% of a button), and the offset above gives it back, so the
+       copy sits exactly where it did. */
+    padding:5px 10px;
     --fade-top:0;--fade-bottom:0;--fade-size:28px;
     -webkit-mask-image:var(--edge-fade);mask-image:var(--edge-fade);
     /* The crossfade puts the panel on its own compositing layer for as long as

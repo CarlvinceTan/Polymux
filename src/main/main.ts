@@ -6,7 +6,10 @@ import started from "electron-squirrel-startup";
 import { channels } from "@flareai/protocol";
 import { DesktopBackend, modelFromEnvironment } from "./backend.js";
 import { BridgeHost, Homeserver } from "./homeserver/index.js";
+import { registerMediaScheme, serveMedia } from "./comms-media.js";
+import { WeChatBridge, WECHAT_FALLBACK_DIRECTORIES } from "./homeserver/wechat-bridge.js";
 import { loadShippedCredentials } from "./homeserver/shipped-credentials.js";
+import { installOfficialSkills } from "./official-skills.js";
 import {
   FLAREAI_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
@@ -304,7 +307,12 @@ function createWindow(): void {
       officialSkillDirectories: [officialSkillDirectory()],
       axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
       hub: hub
-        ? {homeserver: hub.homeserver, directory: hub.directory, bridges: hub.bridges}
+        ? {
+            homeserver: hub.homeserver,
+            directory: hub.directory,
+            bridges: hub.bridges,
+            startWeChat: (owner: string) => wechat!.start(owner),
+          }
         : undefined,
       window,
       ipcMain,
@@ -364,6 +372,8 @@ function loadRenderer(window: BrowserWindow): void {
  * one and only teardown.
  */
 let hub: {homeserver: Homeserver; bridges: BridgeHost; directory: string} | undefined;
+/** WeChat has no binary to supervise, so its bridge runs here. */
+let wechat: WeChatBridge | undefined;
 
 async function startHub(): Promise<NonNullable<typeof hub>> {
   const directory = path.join(app.getPath("userData"), "hub");
@@ -402,6 +412,22 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   void bridges.startLinked().catch((error: unknown) => {
     console.warn(`Bridges failed to start: ${error instanceof Error ? error.message : String(error)}`);
   });
+  // No binary to supervise for WeChat, and no account to log into: it is a
+  // relay against the desktop app. Started on demand rather than here, because
+  // portal rooms belong to FlareAI's Matrix user and that does not exist yet.
+  wechat = new WeChatBridge({
+    homeserver,
+    directory: path.join(directory, "bridges"),
+    // The bundled copy first, then a writable directory of the user's own —
+    // the same order the bridge fleet uses, and for the same reason: an
+    // install must not depend on what happens to be on the machine.
+    binaryDirectories: [
+      bundledResource("wechat"),
+      path.join(directory, "bin"),
+      ...WECHAT_FALLBACK_DIRECTORIES,
+    ],
+    log: (line) => console.warn(line),
+  });
   return {homeserver, bridges, directory};
 }
 
@@ -438,8 +464,15 @@ async function withTimeout<T>(
   }
 }
 
+// Before ready, which is the only moment a scheme can be made privileged —
+// without it `<audio>` and `<video>` cannot seek within a bridged voice note.
+registerMediaScheme();
+
 app.whenReady().then(async () => {
   if (quitting) return;
+  // Bridged media is fetched by the main process, which holds the token the
+  // renderer never sees. Read per request, so a later sign-in is picked up.
+  serveMedia(() => backend?.mediaAuth ?? {homeserverUrl: "", token: null});
   // No runtime Dock icon override: `dock.setIcon` draws the raw bitmap with
   // none of the system's icon shaping, which is exactly the unmasked-square
   // artifact it used to cause. Development gets its icon from the rebranded
@@ -493,9 +526,12 @@ app.on("will-quit", (event) => {
  * to "FlareAI" for the Dock (scripts/dev-app-name.mjs), which makes a dev run
  * look packaged and pointed skill loading at the bundle's empty Resources.
  * Probing for the directory that actually exists is launch-mode-proof.
+ *
+ * The bundle is only the source: skills are loaded from the mirror under
+ * `~/.flareai`, so every skill the app runs lives in the user's own directory.
  */
 function officialSkillDirectory(): string {
-  return bundledResource("skills", "official");
+  return installOfficialSkills(bundledResource("skills", "official"));
 }
 
 function bundledResource(...segments: string[]): string {

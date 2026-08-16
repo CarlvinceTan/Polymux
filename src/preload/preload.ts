@@ -3,6 +3,11 @@ import { channels } from "@flareai/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api: FlareAIApi = {
+  extension: {
+    status: () => ipcRenderer.invoke(channels.extensionStatus),
+    dismiss: () => ipcRenderer.invoke(channels.extensionDismiss),
+    openInstall: () => ipcRenderer.invoke(channels.extensionOpenInstall),
+  },
   general: {
     get: () => ipcRenderer.invoke(channels.generalGet),
     update: (settings) => ipcRenderer.invoke(channels.generalUpdate, settings),
@@ -138,6 +143,8 @@ const api: FlareAIApi = {
     chatMessages: (chatId, limit, before) =>
       ipcRenderer.invoke(channels.commsChatMessages, chatId, limit, before),
     chatSend: (chatId, text) => ipcRenderer.invoke(channels.commsChatSend, chatId, text),
+    chatMarkRead: (chatId, messageId) =>
+      ipcRenderer.invoke(channels.commsChatMarkRead, chatId, messageId),
     mailFolders: (account) => ipcRenderer.invoke(channels.commsMailFolders, account),
     mailEnvelopes: (request) => ipcRenderer.invoke(channels.commsMailEnvelopes, request),
     mailMessage: (id, account, folder) =>
@@ -204,6 +211,8 @@ const api: FlareAIApi = {
     }))),
     install: (spec) => ipcRenderer.invoke(channels.skillsInstall, spec),
     searchRegistry: (query) => ipcRenderer.invoke(channels.skillsSearchRegistry, query),
+    discover: () => ipcRenderer.invoke(channels.skillsDiscover),
+    adopt: (path) => ipcRenderer.invoke(channels.skillsAdopt, path),
   },
   models: {
     list: () => ipcRenderer.invoke(channels.modelsList),
@@ -225,6 +234,7 @@ const api: FlareAIApi = {
     setVisible: (tabId, visible) => ipcRenderer.invoke(channels.browserSetVisible, tabId, visible),
     close: (tabId) => ipcRenderer.invoke(channels.browserClose, tabId),
     openExternal: (url) => ipcRenderer.invoke(channels.browserOpenExternal, url),
+    openPath: (filePath) => ipcRenderer.invoke(channels.browserOpenPath, filePath),
     find: (tabId, text, forward) => ipcRenderer.invoke(channels.browserFind, tabId, text, forward),
     stopFind: (tabId) => ipcRenderer.invoke(channels.browserStopFind, tabId),
     print: (tabId) => ipcRenderer.invoke(channels.browserPrint, tabId),
@@ -250,6 +260,10 @@ const api: FlareAIApi = {
       ipcRenderer.invoke(channels.providersCreateCustom, request),
     updateCustom: (request) =>
       ipcRenderer.invoke(channels.providersUpdateCustom, request),
+    discoverModels: (request) =>
+      ipcRenderer.invoke(channels.providersDiscoverModels, request),
+    setupLocalRuntime: (request) =>
+      ipcRenderer.invoke(channels.providersSetupLocalRuntime, request),
   },
 };
 

@@ -215,6 +215,6 @@ When validation needs a real fresh FlareAI task outside the sealed probe runner:
   referenced source task unless the user separately asks.
 
 If real GUI work is ever required outside an isolated probe, load and follow
-`window-control`; this skill does not duplicate or override that policy.
+`gui-control`; this skill does not duplicate or override that policy.
 
 Read [references/protocol.md](references/protocol.md) when repairing the gate, interpreting artifacts, or handling a deliberate behavior change.

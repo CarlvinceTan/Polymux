@@ -8,6 +8,7 @@
 
 <script lang="ts">
   import Icon from '../shared/Icon.svelte';
+  import {t} from '../../i18n';
 
   export let items: QueuedMessage[] = [];
   export let onSteer: (id: string) => void = () => {};
@@ -39,7 +40,7 @@
   }
 </script>
 
-<section class="queued-messages" aria-label="Queued messages" data-visible-limit="4">
+<section class="queued-messages" aria-label={$t('queue.title')} data-visible-limit="4">
   <div class="queued-message-scroll" role="list">
     {#each items as item (item.id)}
       <div
@@ -53,7 +54,7 @@
           class="queue-drag-handle"
           type="button"
           draggable="true"
-          aria-label={`Reorder queued message: ${item.text}`}
+          aria-label={$t('queue.reorder', {text: item.text})}
           data-tooltip="none"
           ondragstart={(event) => startDrag(event, item.id)}
           ondragend={() => { draggedId = null; dropId = null; }}
@@ -62,11 +63,11 @@
         {#if item.files?.length}
           <span class="queue-attachment" title={item.files[0].name}><Icon name={item.files[0].type.startsWith('image/') ? 'image' : 'file'} size={14}/></span>
         {/if}
-        <span class="queue-copy">{item.text || 'Review attached files'}</span>
+        <span class="queue-copy">{item.text || $t('goal.reviewAttached')}</span>
         <div class="queue-actions">
-          <button class="queue-steer" type="button" onclick={() => onSteer(item.id)}><Icon name="steer" size={16}/><span>Steer</span></button>
-          <button type="button" aria-label="Edit queued message" onclick={() => onEdit(item.id)}><Icon name="edit" size={16}/></button>
-          <button type="button" aria-label="Delete queued message" onclick={() => onDelete(item.id)}><Icon name="trash" size={16}/></button>
+          <button class="queue-steer" type="button" onclick={() => onSteer(item.id)}><Icon name="steer" size={16}/><span>{$t('queue.steer')}</span></button>
+          <button type="button" aria-label={$t('queue.edit')} onclick={() => onEdit(item.id)}><Icon name="edit" size={16}/></button>
+          <button type="button" aria-label={$t('queue.delete')} onclick={() => onDelete(item.id)}><Icon name="trash" size={16}/></button>
         </div>
       </div>
     {/each}

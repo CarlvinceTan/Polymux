@@ -9,9 +9,16 @@ import type {
 
 /**
  * The Summary panel's Outputs and References are fed from what a run actually
- * did: pages the agent opened become web references, files it wrote become
- * outputs. Without this, both lists only ever held what the user attached by
- * hand, so browsing a dozen sources left the panel empty.
+ * did: files it wrote become outputs, and links it cites in its reply become
+ * references. Without this, both lists only ever held what the user attached by
+ * hand, so researching a dozen sources left the panel empty.
+ *
+ * References follow the answer, not the browsing. Recording every page a run
+ * opened filled the panel with search-result pages and dead ends — three rows
+ * of the same query, none of them a source the reply actually stands on. A
+ * link the agent chose to put in its readable text is one it is citing, so
+ * that is what gets listed; pages it merely passed through only contribute
+ * their titles, in case one of them is later cited by bare url.
  */
 export interface RunResourceStore {
   createArtifact(input: NewArtifact): Artifact;
@@ -34,22 +41,49 @@ export class RunResourceRecorder {
    * fifteen times contributes one reference. Seeded from storage on first use
    * so restarts and earlier runs still de-duplicate. */
   readonly #seen = new Map<string, Set<string>>();
+  /** Page titles learned while the run browsed, per conversation. A cited bare
+   * url reads better as "Upcoming AI events — Eventbrite" than as a hostname,
+   * and this is the only place that title was ever available. */
+  readonly #titles = new Map<string, Map<string, string>>();
 
   constructor(store: RunResourceStore, newId: () => string = () => crypto.randomUUID()) {
     this.#store = store;
     this.#newId = newId;
   }
 
-  /** Called for every run event; only completed tool calls carry resources. */
+  /** Called for every run event. Tool calls contribute outputs and remembered
+   * titles; the assistant's own text contributes the references. */
   record(conversationId: string, runId: string, event: AgentRunEvent): void {
-    if (!conversationId || event.type !== "tool.completed") return;
-    if (event.result.isError) return;
+    if (!conversationId) return;
     try {
-      for (const resource of resourcesFrom(event.toolCall.name, event.toolCall.arguments, event.result))
-        this.#persist(conversationId, runId, resource);
+      if (event.type === "tool.completed") {
+        if (event.result.isError) return;
+        this.#noteTitles(conversationId, event.toolCall.arguments, event.result);
+        for (const resource of artifactsFrom(event.toolCall.name, event.toolCall.arguments, event.result))
+          this.#persist(conversationId, runId, resource);
+        return;
+      }
+      if (event.type !== "message.completed") return;
+      for (const link of citedLinks(event.message.content))
+        this.#persist(conversationId, runId, {
+          kind: "reference",
+          key: link.url,
+          title: link.title || this.#titles.get(conversationId)?.get(link.url) || hostTitle(link.url),
+        });
     } catch {
       // Summary bookkeeping never interrupts the run it is observing.
     }
+  }
+
+  #noteTitles(conversationId: string, args: Record<string, unknown>, result: {content: unknown; metadata?: unknown}): void {
+    const payload = resultPayload(result);
+    if (!reachedTarget(payload)) return;
+    const url = webUrl(payload.pageUrl) ?? webUrl(args.url) ?? webUrl(args.uri);
+    const title = payload.pageTitle ?? payload.title;
+    if (!url || typeof title !== "string" || !title.trim()) return;
+    const titles = this.#titles.get(conversationId) ?? new Map<string, string>();
+    titles.set(url, title.trim());
+    this.#titles.set(conversationId, titles);
   }
 
   #persist(conversationId: string, runId: string | null, resource: RecordedResource): void {
@@ -116,40 +150,56 @@ export class RunResourceRecorder {
   /** Deleting a conversation drops its resources, so drop the memo with it. */
   forget(conversationId: string): void {
     this.#seen.delete(conversationId);
+    this.#titles.delete(conversationId);
   }
 }
 
-function resourcesFrom(
+function artifactsFrom(
   name: string,
   args: Record<string, unknown>,
   result: { content: unknown; metadata?: unknown },
 ): RecordedResource[] {
-  const payload = resultPayload(result);
-  const resources: RecordedResource[] = [];
-  // A call can report failure in its payload while still succeeding as a tool
-  // call — a 404, `ok: false`, an error message. The agent never saw that
-  // page, so it is not a source.
-  if (!reachedTarget(payload)) return resources;
-
-  // Every browser_control reply reports the page it landed on, which is the
-  // page worth citing — the url the agent asked for may have redirected.
-  const pageUrl = webUrl(payload.pageUrl);
-  if (pageUrl) resources.push({kind: "reference", key: pageUrl, title: pageTitle(payload.pageTitle, pageUrl)});
-  else {
-    // Anything else that took a url — MCP fetchers, web tools, skills — cites
-    // the url it was given.
-    const argUrl = webUrl(args.url) ?? webUrl(args.uri);
-    if (argUrl) resources.push({kind: "reference", key: argUrl, title: pageTitle(payload.pageTitle ?? payload.title, argUrl)});
-  }
-
   // `write` reports the resolved absolute path in its metadata; that file is
   // the run's output.
-  if (name === "write") {
-    const path = typeof payload.path === "string" ? payload.path : typeof args.path === "string" ? args.path : "";
-    if (path) resources.push({kind: "artifact", key: path, title: path.split("/").at(-1) || path});
-  }
+  if (name !== "write") return [];
+  const payload = resultPayload(result);
+  // A call can report failure in its payload while still succeeding as a tool
+  // call — `ok: false`, an error message. Nothing was written.
+  if (!reachedTarget(payload)) return [];
+  const path = typeof payload.path === "string" ? payload.path : typeof args.path === "string" ? args.path : "";
+  return path ? [{kind: "artifact", key: path, title: path.split("/").at(-1) || path}] : [];
+}
 
-  return resources;
+/** Markdown links, then bare urls, in the order the reply mentions them.
+ * Trailing punctuation is sentence, not url: "see https://x.com/a." */
+function citedLinks(content: unknown): Array<{url: string; title: string}> {
+  const blocks = Array.isArray(content) ? content : [];
+  const text = blocks
+    .filter((block): block is {type: "text"; text: string} => isRecord(block) && block.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("\n");
+  const links: Array<{url: string; title: string}> = [];
+  const seen = new Set<string>();
+  const add = (raw: string, title: string): void => {
+    const url = webUrl(raw.replace(/[).,;:!?'"]+$/, ""));
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    links.push({url, title: title.trim()});
+  };
+  const markdown = /\[([^\]]+)\]\(\s*(https?:\/\/[^\s)]+)/g;
+  for (const match of text.matchAll(markdown)) add(match[2]!, match[1]!);
+  // Bare urls, minus the ones already claimed as a markdown link's target.
+  for (const match of text.matchAll(/https?:\/\/[^\s<>()[\]"']+/g)) add(match[0], "");
+  return links;
+}
+
+function hostTitle(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.hostname}${parsed.pathname === "/" ? "" : parsed.pathname}`;
+  } catch {
+    return url;
+  }
 }
 
 /** Did the call actually reach what it went for? */
@@ -185,16 +235,6 @@ function webUrl(value: unknown): string | null {
     return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
   } catch {
     return null;
-  }
-}
-
-function pageTitle(value: unknown, url: string): string {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  try {
-    const parsed = new URL(url);
-    return `${parsed.hostname}${parsed.pathname === "/" ? "" : parsed.pathname}`;
-  } catch {
-    return url;
   }
 }
 

@@ -1,6 +1,7 @@
 import {readFile} from "node:fs/promises";
 import {createHmac} from "node:crypto";
 import path from "node:path";
+import {mediaUrl} from "./media-url.js";
 import type {
   CommsBridgeAccountDto,
   CommsBridgeDto,
@@ -85,6 +86,8 @@ export class MatrixHub {
   readonly #secrets = new Map<string, string | null>();
   readonly #roomNames = new Map<string, string>();
   readonly #roomPlatforms = new Map<string, string>();
+  /** Sender display names and avatars, keyed by Matrix id. */
+  readonly #profiles = new Map<string, {name: string; avatarUrl: string | null}>();
   #registrationSecretCache: string | null | undefined;
 
   constructor(options: MatrixHubOptions) {
@@ -170,6 +173,23 @@ export class MatrixHub {
     return secret;
   }
 
+  /**
+   * Whether a bridge bot exists on *this* homeserver — which is what proves an
+   * appservice is registered here and its traffic can actually arrive.
+   *
+   * A relay can be perfectly healthy and still be delivering somewhere else
+   * entirely; asking the relay how it is does not answer whether FlareAI can
+   * see anything it carries. Only the hub can answer that.
+   */
+  async hasBridgeBot(localpart: string): Promise<boolean> {
+    const server = this.#auth().userId?.split(":")[1];
+    if (!server) return false;
+    const profile = await this.#client(
+      `/_matrix/client/v3/profile/${encodeURIComponent(`@${localpart}:${server}`)}`,
+    ).catch((): null => null);
+    return profile !== null;
+  }
+
   /** Confirms the homeserver answers and reports the server name it claims. */
   async probe(): Promise<HubProbe> {
     const response = await this.#json<{versions?: string[]}>(
@@ -217,17 +237,89 @@ export class MatrixHub {
     }).catch((): undefined => undefined);
   }
 
-  /** Joined rooms with their display names and the platform they came from. */
-  async rooms(): Promise<Array<{roomId: string; name: string; platform: string}>> {
-    const joined = await this.#client<{joined_rooms?: string[]}>(
-      "/_matrix/client/v3/joined_rooms",
+  /**
+   * Every joined room, newest first, with what a chat list needs to draw a row:
+   * name, avatar, unread count, and a line of the last message.
+   *
+   * Built from one `/sync` rather than a call per room. With a couple of
+   * hundred bridged rooms the old shape — joined_rooms, then a name and a
+   * member list each — was four hundred round trips before the list could
+   * paint, and still came back with no ordering and no unread counts.
+   */
+  async rooms(): Promise<MatrixRoom[]> {
+    const filter = encodeURIComponent(
+      JSON.stringify({
+        room: {
+          // Lazy loading keeps a 500-member group from shipping 500 member
+          // events; the senders in the timeline still come through.
+          state: {lazy_load_members: true},
+          timeline: {limit: 1},
+        },
+      }),
     );
-    return Promise.all(
-      (joined.joined_rooms ?? []).map(async (roomId) => ({
+    const sync = await this.#client<SyncResponse>(
+      `/_matrix/client/v3/sync?filter=${filter}&timeout=0`,
+    );
+    const joined = Object.entries(sync.rooms?.join ?? {});
+    const userId = this.#auth().userId;
+    const rooms = joined.map(([roomId, room]) => {
+      const state = [...(room.state?.events ?? []), ...(room.timeline?.events ?? [])];
+      const named = lastStateEvent(state, "m.room.name")?.content?.name;
+      const avatar = lastStateEvent(state, "m.room.avatar")?.content?.url;
+      const members = state.filter((event) => event.type === "m.room.member");
+      const last = (room.timeline?.events ?? []).filter(isMessage).at(-1);
+      /**
+       * A direct chat is a room with one other human in it. The bridges name
+       * those rooms after the contact and leave groups with their own title,
+       * so the fallback for an unnamed room is that contact's name.
+       */
+      const others = members
+        .map((event) => event.state_key ?? "")
+        .filter((member) => member && member !== userId && !isBridgeBot(member));
+      const counterpart = members.find((event) => event.state_key === others[0]);
+      /**
+       * The bridge's own account of the room, and the answer worth trusting.
+       * Sniffing the member list only works when the puppets happen to have
+       * been loaded, and under lazy loading a quiet room ships none — which
+       * filed three quarters of the WhatsApp chats here under "matrix" and
+       * left them out of the list their platform was selected for.
+       */
+      const bridged = lastStateEvent(state, "m.bridge")?.content?.protocol?.id;
+      const roomType = lastStateEvent(state, "m.bridge")?.content?.["com.beeper.room_type"];
+      return {
         roomId,
-        name: await this.#roomName(roomId),
-        platform: await this.#roomPlatform(roomId),
-      })),
+        name: named ?? counterpart?.content?.displayname ?? others[0] ?? roomId,
+        platform:
+          platformOfProtocol(bridged) ??
+          platformOfRoom(members.map((event) => event.state_key ?? "")),
+        avatarUrl: mediaUrl(avatar ?? counterpart?.content?.avatar_url),
+        unread: room.unread_notifications?.notification_count ?? 0,
+        lastActivity: last?.origin_server_ts
+          ? new Date(last.origin_server_ts).toISOString()
+          : null,
+        preview: last ? previewOf(last) : null,
+        /**
+         * mautrix marks direct chats outright, and that answer is taken when
+         * it is there. Otherwise the member count decides: a bridged direct
+         * chat is the two people plus the bridge bot and puppet — three or
+         * four — while a group is larger. Small groups on bridges that write
+         * no room type are the blind spot, and they read as direct chats.
+         */
+        group: roomType
+          ? roomType !== "dm"
+          : (room.summary?.["m.joined_member_count"] ?? 0) > 4,
+        // A bridge's own admin room is a control surface, not a conversation.
+        management: !bridged && others.length === 0 && members.some(
+          (event) => event.state_key && isBridgeBot(event.state_key),
+        ),
+      };
+    });
+    return (
+      rooms
+        .filter((room) => !room.management)
+        .map(({management: _management, ...room}) => room)
+        // Recency, with the never-used rooms after everything that has traffic.
+        .sort((a, b) => Date.parse(b.lastActivity ?? "0") - Date.parse(a.lastActivity ?? "0"))
     );
   }
 
@@ -238,13 +330,54 @@ export class MatrixHub {
   ): Promise<{nextBefore: string | null; messages: MatrixMessage[]}> {
     const params = new URLSearchParams({dir: "b", limit: String(limit)});
     if (before) params.set("from", before);
-    const result = await this.#client<{end?: string; chunk?: RawEvent[]}>(
+    const result = await this.#client<{end?: string; chunk?: RawEvent[]; state?: RawEvent[]}>(
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/messages?${params}`,
     );
+    const messages = (result.chunk ?? []).filter(isMessage).map(toMessage);
     return {
       nextBefore: result.end ?? null,
-      messages: (result.chunk ?? []).filter(isMessage).map(toMessage),
+      // A bridged sender is `@whatsapp_614…:server`, which is unreadable in a
+      // group. Their profile carries the name the contact actually goes by.
+      messages: await this.#withSenders(messages, result.state ?? []),
     };
+  }
+
+  /**
+   * Fills in display names and avatars for the senders of a page of messages.
+   * The member events `/messages` returns alongside the chunk answer this
+   * without a request; anyone missing from them is looked up once and cached,
+   * because the same handful of people send most of a conversation.
+   */
+  async #withSenders(
+    messages: MatrixMessage[],
+    state: RawEvent[],
+  ): Promise<MatrixMessage[]> {
+    for (const event of state) {
+      if (event.type !== "m.room.member" || !event.state_key) continue;
+      this.#profiles.set(event.state_key, {
+        name: event.content?.displayname ?? event.state_key,
+        avatarUrl: mediaUrl(event.content?.avatar_url),
+      });
+    }
+    const unknown = [...new Set(messages.map((message) => message.sender))].filter(
+      (sender) => sender && !this.#profiles.has(sender),
+    );
+    await Promise.all(
+      unknown.map(async (sender) => {
+        const profile = await this.#client<{displayname?: string; avatar_url?: string}>(
+          `/_matrix/client/v3/profile/${encodeURIComponent(sender)}`,
+        ).catch((): {displayname?: string; avatar_url?: string} => ({}));
+        this.#profiles.set(sender, {
+          name: profile.displayname ?? sender,
+          avatarUrl: mediaUrl(profile.avatar_url),
+        });
+      }),
+    );
+    return messages.map((message) => ({
+      ...message,
+      senderName: this.#profiles.get(message.sender)?.name ?? message.sender,
+      senderAvatarUrl: this.#profiles.get(message.sender)?.avatarUrl ?? null,
+    }));
   }
 
   async search(
@@ -321,6 +454,18 @@ export class MatrixHub {
       from = result.next_token;
     }
     return messages;
+  }
+
+  /**
+   * Marks a room read up to an event. A read receipt is the homeserver's own
+   * record, so clearing it here clears it on the phone the messages also
+   * landed on — which is the behaviour anyone who has used two clients expects.
+   */
+  async markRead(roomId: string, eventId: string): Promise<void> {
+    await this.#client(
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/receipt/m.read/${encodeURIComponent(eventId)}`,
+      {method: "POST", body: {}},
+    );
   }
 
   async send(roomId: string, body: string): Promise<string> {
@@ -407,8 +552,10 @@ export class MatrixHub {
       return {
         ...base,
         state: "unavailable",
+        // Reached only by a platform with no route and no relay handler of its
+        // own — WeChat's row is built from its relay before this is asked.
         error:
-          "This platform runs through a local relay on this Mac rather than a hosted login, so there is nothing to link here.",
+          "FlareAI has no way to bring this platform in yet, so there is nothing to link here.",
       };
 
     const whoami = await this.#provision<WhoamiResponse>(route, "whoami", {}).catch(
@@ -664,14 +811,41 @@ export class MatrixHub {
   }
 }
 
+export interface MatrixRoom {
+  roomId: string;
+  name: string;
+  platform: string;
+  avatarUrl: string | null;
+  unread: number;
+  lastActivity: string | null;
+  preview: string | null;
+  group: boolean;
+}
+
+export interface MatrixAttachment {
+  kind: "image" | "audio" | "video" | "file";
+  url: string;
+  name: string;
+  mimeType: string | null;
+  size: number | null;
+  width: number | null;
+  height: number | null;
+  duration: number | null;
+}
+
 export interface MatrixMessage {
   eventId: string;
   roomId: string;
   roomName: string;
   platform: string;
   sender: string;
+  senderName: string;
+  senderAvatarUrl: string | null;
   body: string;
   sentAt: string;
+  attachments: MatrixAttachment[];
+  /** Where to go to see media that could not be carried across. */
+  viewIn: {app: string; url: string} | null;
 }
 
 interface RawEvent {
@@ -679,23 +853,159 @@ interface RawEvent {
   room_id?: string;
   sender?: string;
   type?: string;
+  state_key?: string;
   origin_server_ts?: number;
-  content?: {body?: string; msgtype?: string};
+  content?: {
+    body?: string;
+    msgtype?: string;
+    url?: string;
+    filename?: string;
+    /** Set on a room name, avatar, or member event rather than a message. */
+    name?: string;
+    displayname?: string;
+    avatar_url?: string;
+    /** Written by a bridge onto media it could not fetch; see `viewIn`. */
+    "co.flareai.view_in"?: {app?: string; url?: string};
+    /** Set on `m.bridge`: which network the room is a portal for. */
+    protocol?: {id?: string};
+    /** mautrix marks direct chats "dm" here; groups carry their own type. */
+    "com.beeper.room_type"?: string;
+    info?: {
+      mimetype?: string;
+      size?: number;
+      w?: number;
+      h?: number;
+      /** Milliseconds, as Matrix writes it. */
+      duration?: number;
+    };
+  };
+}
+
+interface SyncResponse {
+  rooms?: {
+    join?: Record<
+      string,
+      {
+        state?: {events?: RawEvent[]};
+        timeline?: {events?: RawEvent[]};
+        unread_notifications?: {notification_count?: number};
+        /** Present on every room, and the only member count lazy loading
+         * does not hide. */
+        summary?: {"m.joined_member_count"?: number};
+      }
+    >;
+  };
 }
 
 function isMessage(event: RawEvent | undefined): event is RawEvent {
   return event?.type === "m.room.message" && typeof event.content?.body === "string";
 }
 
+/** The newest event of a state type, since `/sync` gives them in order. */
+function lastStateEvent(events: RawEvent[], type: string): RawEvent | undefined {
+  return events.filter((event) => event.type === type).at(-1);
+}
+
+/** Bridge bots sit in every room they serve and are not people. */
+function isBridgeBot(userId: string): boolean {
+  return /^@[a-z]+bot:/.test(userId);
+}
+
+/**
+ * Bridges name their own protocol in `m.bridge`, but not always the name the
+ * rest of the app uses: mautrix's Go bridges append the language, and Meta's
+ * one calls Messenger "facebook". Anything unlisted passes through, so a
+ * bridge added later is filed under its own id rather than lost.
+ */
+const BRIDGE_PROTOCOLS: Record<string, string> = {
+  discordgo: "discord",
+  facebookgo: "messenger",
+  facebook: "messenger",
+  instagramgo: "instagram",
+  gmessagesgo: "gmessages",
+  twittergo: "twitter",
+};
+
+function platformOfProtocol(id: string | undefined): string | null {
+  if (!id) return null;
+  return BRIDGE_PROTOCOLS[id] ?? id;
+}
+
+function platformOfRoom(members: string[]): string {
+  for (const member of members) {
+    const found = platformFromSender(member);
+    if (found) return found;
+  }
+  return "matrix";
+}
+
+/**
+ * One line for the chat list. A media message's body is its filename, which
+ * reads as noise in a list, so it is named by what it is instead.
+ */
+function previewOf(event: RawEvent): string {
+  switch (event.content?.msgtype) {
+    case "m.image":
+      return "Photo";
+    case "m.audio":
+      return "Voice message";
+    case "m.video":
+      return "Video";
+    case "m.file":
+      return `File · ${event.content.filename ?? event.content.body ?? ""}`.trim();
+    default:
+      return event.content?.body ?? "";
+  }
+}
+
+const ATTACHMENT_KINDS: Record<string, MatrixAttachment["kind"]> = {
+  "m.image": "image",
+  "m.audio": "audio",
+  "m.video": "video",
+  "m.file": "file",
+};
+
+function attachmentsOf(event: RawEvent): MatrixAttachment[] {
+  const kind = ATTACHMENT_KINDS[event.content?.msgtype ?? ""];
+  const url = mediaUrl(event.content?.url);
+  if (!kind || !url) return [];
+  const info = event.content?.info ?? {};
+  return [
+    {
+      kind,
+      url,
+      name: event.content?.filename ?? event.content?.body ?? kind,
+      mimeType: info.mimetype ?? null,
+      size: info.size ?? null,
+      width: info.w ?? null,
+      height: info.h ?? null,
+      // Matrix counts in milliseconds; seconds is what a player wants.
+      duration: info.duration ? info.duration / 1000 : null,
+    },
+  ];
+}
+
 function toMessage(event: RawEvent): MatrixMessage {
+  const attachments = attachmentsOf(event);
   return {
     eventId: event.event_id ?? "",
     roomId: event.room_id ?? "",
     roomName: "",
     platform: "",
     sender: event.sender ?? "",
-    body: event.content?.body ?? "",
+    senderName: "",
+    senderAvatarUrl: null,
+    // A media message's body is its filename; the attachment carries that
+    // already, so repeating it above the image is just clutter.
+    body: attachments.length > 0 ? "" : (event.content?.body ?? ""),
     sentAt: new Date(event.origin_server_ts ?? 0).toISOString(),
+    attachments,
+    viewIn: event.content?.["co.flareai.view_in"]?.url
+      ? {
+          app: event.content["co.flareai.view_in"].app ?? "the app",
+          url: event.content["co.flareai.view_in"].url,
+        }
+      : null,
   };
 }
 

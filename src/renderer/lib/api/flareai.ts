@@ -5,6 +5,7 @@ import type {
   ChronicleStatusDto,
   CommsEmailAccountDto,
   CommsStatusDto,
+  DiscoveredSkillGroupDto,
   DriveEntryDto,
   DriveProviderId,
   DriveStatusDto,
@@ -29,6 +30,7 @@ import type {
   SkillDto,
   StartRunRequest,
 } from '@flareai/protocol';
+import {LOCAL_RUNTIMES} from '@flareai/protocol';
 
 let browserApi: FlareAIApi | undefined;
 
@@ -104,16 +106,35 @@ function createBrowserDemoApi(): FlareAIApi {
     {id: 'openai', name: 'OpenAI', apiKeyLabel: 'OpenAI API key', supportsOAuth: false, storedCredential: true, configured: true, source: '1 saved API key', modelCount: 2, custom: false, apiKeys: []},
     {id: 'anthropic', name: 'Anthropic', apiKeyLabel: 'Anthropic API key', supportsOAuth: true, storedCredential: false, configured: false, source: null, modelCount: 2, custom: false, apiKeys: []},
     {id: 'openrouter', name: 'OpenRouter', apiKeyLabel: 'OpenRouter API key', supportsOAuth: false, storedCredential: false, configured: false, source: null, modelCount: 1, custom: false, apiKeys: []},
+    ...LOCAL_RUNTIMES.map((runtime) => ({
+      id: runtime.id, name: runtime.name, baseUrl: runtime.baseUrl, apiKeyLabel: null,
+      supportsOAuth: false, storedCredential: false, configured: false, source: null,
+      modelCount: 0, custom: true, localRuntime: true, apiKeys: [],
+    })),
   ];
   const demoSkills: SkillDto[] = [
     {name: 'documents', description: 'Create and edit document files.', source: 'flareai', filePath: '~/.flareai/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], enabled: true, editable: true, instructions: 'Create and edit document files.', updatedAt: '2026-07-02T09:30:00.000Z'},
     {name: 'personal-research', description: 'Personal research workflow.', source: 'flareai', filePath: '~/.flareai/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], enabled: true, editable: true, instructions: 'Personal research workflow.', updatedAt: '2026-05-18T14:00:00.000Z'},
     {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], enabled: true, editable: false, displayName: 'PDF', author: 'FlareAI', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
-    {name: 'browser-use', description: 'Research and interact with websites.', source: 'official', filePath: '/skills/official/browser-use/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'bash'], enabled: true, editable: false, displayName: 'Browser', author: 'FlareAI', category: 'Web', updatedAt: '2026-08-01T08:00:00.000Z'},
+    // No core integration here: browser/GUI control and the Hub's email and
+    // messaging skills are first-class surfaces and never list as add-ons.
+    {name: 'spreadsheets', description: 'Create, analyze, and edit spreadsheets.', source: 'official', filePath: '/skills/official/spreadsheets/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], enabled: true, editable: false, displayName: 'Spreadsheets', author: 'FlareAI', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
+  ];
+  const demoDiscoveredSkills: DiscoveredSkillGroupDto[] = [
+    {id: 'claude', label: 'Claude', directory: '~/.claude/skills', skills: [
+      {name: 'commit-writer', description: 'Write commit messages from a diff.', path: '~/.claude/skills/commit-writer', state: 'available'},
+      {name: 'pdf', description: 'Read, create, and edit PDF files.', path: '~/.claude/skills/pdf', state: 'loaded'},
+    ]},
+    {id: 'codex', label: 'Codex', directory: '~/.codex/skills', skills: [
+      {name: 'repo-map', description: 'Summarize an unfamiliar repository.', path: '~/.codex/skills/repo-map', state: 'available'},
+    ]},
+    {id: 'agents', label: 'Shared skills', directory: '~/.agents/skills', skills: [
+      {name: 'find-skills', description: 'Search the skills directory.', path: '~/.agents/skills/find-skills', state: 'loaded'},
+    ]},
   ];
   const demoMcpServers: McpServerDto[] = [
     {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', source: 'flareai', editable: true, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_files'], resourceUris: ['filesystem://documents'], promptNames: [], command: 'node', args: ['server.mjs']},
-    {id: 'browser-tools', name: 'Browser Tools', description: 'Open and inspect web pages.', source: 'official', editable: false, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['open_page', 'read_page'], resourceUris: [], promptNames: [], command: 'node', args: ['browser.mjs']},
+    {id: 'github', name: 'GitHub', description: 'Read repositories, issues, and pull requests.', source: 'official', editable: false, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_issues', 'get_pull_request'], resourceUris: [], promptNames: [], command: 'node', args: ['github.mjs']},
   ];
   const demoCommsStatus: CommsStatusDto = {
     hub: {
@@ -141,7 +162,10 @@ function createBrowserDemoApi(): FlareAIApi {
       {platform: 'discord', name: 'Discord', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Scan a QR code with the Discord app'}, {id: 'token', name: 'Token', description: 'Paste a Discord account token to link it'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'linkedin', name: 'LinkedIn', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Cookies', description: 'Log in with your LinkedIn account using your cookies'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'imessage', name: 'iMessage', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'local', name: 'This Mac', description: 'Read the Messages database on this Mac'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'wechat', name: 'WeChat', api: 'none', state: 'unavailable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'This platform runs through a local relay on this Mac rather than a hosted login, so there is nothing to link here.'},
+      // No bridge to log in to: a relay against the WeChat app on this Mac,
+      // reporting whichever account that app is already signed in as — and
+      // only once it is delivering into FlareAI's own hub.
+      {platform: 'wechat', name: 'WeChat', api: 'none', state: 'unavailable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'The WeChat relay on this Mac is running, but it is not connected to FlareAI’s own hub, so nothing it carries reaches here.'},
     ],
     email: {
       tooling: {installed: true, version: 'himalaya v1.2.0', configPath: '~/.config/himalaya/config.toml', error: null},
@@ -171,10 +195,11 @@ function createBrowserDemoApi(): FlareAIApi {
         : bridge,
     );
   };
-  const demoChats: ChatDto[] = [
-    {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp'},
-    {id: '!wa-family:local', name: 'Family', platform: 'whatsapp'},
-    {id: '!tg-devs:local', name: 'Dev Chat', platform: 'telegram'},
+  // Newest first with unread counts, the way the hub now returns them.
+  let demoChats: ChatDto[] = [
+    {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp', unread: 2, lastActivity: new Date(now - 3_500_000).toISOString(), preview: 'Yes — 2pm works.', group: false, avatarUrl: null},
+    {id: '!tg-devs:local', name: 'Dev Chat', platform: 'telegram', unread: 0, lastActivity: new Date(now - 7_200_000).toISOString(), preview: 'Shipped the build, logs look clean.', group: true, avatarUrl: null},
+    {id: '!wa-family:local', name: 'Family', platform: 'whatsapp', unread: 0, lastActivity: new Date(now - 86_400_000).toISOString(), preview: 'Dinner Sunday?', group: true, avatarUrl: null},
   ];
   let demoChatMessages: ChatMessageDto[] = [
     {id: 'c1', chatId: '!wa-jules:local', sender: 'Jules Tan', body: 'Are we still on for Thursday?', sentAt: new Date(now - 3_600_000).toISOString(), mine: false},
@@ -226,7 +251,30 @@ function createBrowserDemoApi(): FlareAIApi {
     message: 'Updates are managed by the desktop app.',
   };
 
+  // The demo has no way to observe a real extension, so it reports installed
+  // rather than fabricating a missing one — a false "not installed" would put
+  // the install chip into the title bar of every screenshot and layout test.
+  // `?extension=missing` opts into the prompting state for the tests that
+  // exercise the chip itself.
+  const demoExtensionMissing =
+    typeof location !== 'undefined' &&
+    new URLSearchParams(location.search).get('extension') === 'missing';
+  let demoExtensionDismissed = false;
+  const demoExtensionStatus = () => ({
+    installed: !demoExtensionMissing,
+    lastReportedAt: demoExtensionMissing ? null : new Date().toISOString(),
+    promptToInstall: demoExtensionMissing && !demoExtensionDismissed,
+  });
+
   const api: FlareAIApi = {
+    extension: {
+      status: async () => demoExtensionStatus(),
+      dismiss: async () => {
+        demoExtensionDismissed = true;
+        return demoExtensionStatus();
+      },
+      openInstall: async () => { window.open('https://flarehq.co/extension', '_blank'); },
+    },
     general: {
       get: async () => structuredClone(demoGeneral),
       update: async (settings) => {
@@ -512,6 +560,9 @@ function createBrowserDemoApi(): FlareAIApi {
         return demoCommsStatus;
       },
       chats: async () => demoChats,
+      chatMarkRead: async (chatId) => {
+        demoChats = demoChats.map((chat) => (chat.id === chatId ? {...chat, unread: 0} : chat));
+      },
       chatMessages: async (chatId) => demoChatMessages.filter((item) => item.chatId === chatId),
       chatSend: async (chatId, text) => {
         const sent: ChatMessageDto = {id: crypto.randomUUID(), chatId, sender: 'You', body: text, sentAt: new Date().toISOString(), mine: true};
@@ -724,6 +775,28 @@ function createBrowserDemoApi(): FlareAIApi {
         const text = query.trim().toLowerCase();
         return text.length < 2 ? [] : directory.filter((entry) => entry.name.includes(text) || entry.source.includes(text));
       },
+      // `?one-agent` narrows the scan to a single agent, which is how the one
+      // interesting variation of the discovery pane — nothing to survey, so it
+      // opens expanded — is reachable from a test.
+      discover: async () => (location.search.includes('one-agent')
+        ? demoDiscoveredSkills.filter((group) => group.id === 'codex')
+        : demoDiscoveredSkills
+      ).map((group) => ({
+        ...group,
+        skills: group.skills.map((entry) => ({
+          ...entry,
+          state: entry.state === 'loaded' || demoSkills.some((item) => item.name === entry.name)
+            ? 'loaded' as const
+            : 'available' as const,
+        })),
+      })),
+      adopt: async (path) => {
+        const entry = demoDiscoveredSkills.flatMap((group) => group.skills).find((item) => item.path === path);
+        if (!entry) throw new Error('That skill is not in a directory FlareAI scans');
+        if (demoSkills.some((item) => item.name === entry.name)) throw new Error(`A skill named ${entry.name} already exists`);
+        demoSkills.push({name: entry.name, description: entry.description, source: 'flareai', filePath: `~/.flareai/skills/${entry.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], enabled: true, editable: true, instructions: entry.description, updatedAt: '2026-08-16T09:00:00.000Z'});
+        return demoSkills;
+      },
       setEnabled: async (name, enabled) => {
         const item = demoSkills.find((candidate) => candidate.name === name);
         if (item) item.enabled = enabled;
@@ -792,6 +865,7 @@ function createBrowserDemoApi(): FlareAIApi {
       setVisible: async () => {},
       close: async () => {},
       openExternal: async (url) => { window.open(url, '_blank'); },
+      openPath: async () => {},
       find: async () => {},
       stopFind: async () => {},
       print: async () => {},
@@ -860,12 +934,38 @@ function createBrowserDemoApi(): FlareAIApi {
         ];
         return providerWithKeys(provider);
       },
+      discoverModels: async () => [
+        {id: 'llama3.1:8b'},
+        {id: 'qwen2.5-coder:14b'},
+      ],
+      setupLocalRuntime: async (request) => {
+        const provider = demoProviders.find((candidate) => candidate.id === request.id);
+        if (!provider) throw new Error(`Unknown local runtime: ${request.id}`);
+        const detected = [{id: 'llama3.1:8b'}, {id: 'qwen2.5-coder:14b'}];
+        provider.baseUrl = request.baseUrl ?? provider.baseUrl;
+        provider.localRuntime = false;
+        provider.configured = true;
+        provider.source = 'Local endpoint';
+        provider.modelCount = detected.length;
+        demoModels = [
+          ...demoModels.filter((model) => model.provider !== provider.id),
+          ...detected.map((model, index) => ({
+            provider: provider.id, id: model.id, name: model.id,
+            contextWindow: 0, maxOutputTokens: 0, reasoning: false, input: ['text' as const],
+            cost: {input: null, output: null, cacheRead: null, cacheWrite: null},
+            selected: index === 0, custom: true,
+          })),
+        ];
+        return providerWithKeys(provider);
+      },
     },
   };
 
   function providerWithKeys(provider: ProviderDto): ProviderDto {
     const apiKeys = demoKeys.get(provider.id) ?? [];
-    return {...provider, apiKeys: structuredClone(apiKeys), storedCredential: apiKeys.length > 0, configured: provider.custom || apiKeys.length > 0, source: apiKeys.length ? `${apiKeys.length} saved API ${apiKeys.length === 1 ? 'key' : 'keys'}` : provider.custom ? 'Custom endpoint' : null};
+    // A local runtime that has not been connected yet is offered, not configured.
+    const custom = provider.custom && !provider.localRuntime;
+    return {...provider, apiKeys: structuredClone(apiKeys), storedCredential: apiKeys.length > 0, configured: custom || apiKeys.length > 0, source: apiKeys.length ? `${apiKeys.length} saved API ${apiKeys.length === 1 ? 'key' : 'keys'}` : custom ? 'Custom endpoint' : null};
   }
 
   function startDemoRun(request: StartRunRequest): {runId: string} {

@@ -10,6 +10,7 @@
 <script lang="ts">
   import {onDestroy, onMount, tick} from 'svelte';
   import Icon from '../shared/Icon.svelte';
+  import {t, translate} from '../../i18n';
 
   export let goal: ActiveGoal;
   export let onEdit: (text: string) => void = () => {};
@@ -52,27 +53,27 @@
 
   function formatElapsed(milliseconds: number): string {
     const seconds = Math.floor(milliseconds / 1000);
-    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 60) return translate('time.seconds', {seconds});
     const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m`;
-    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    if (minutes < 60) return translate('time.minutes', {minutes});
+    return translate('time.hoursMinutes', {hours: Math.floor(minutes / 60), minutes: minutes % 60});
   }
 </script>
 
-<section class:paused={goal.status === 'paused'} class="goal-bar" aria-label="Current goal">
+<section class:paused={goal.status === 'paused'} class="goal-bar" aria-label={$t('goal.current')}>
   <span class="goal-state" aria-hidden="true"><Icon name="goal" size={18}/></span>
   {#if editing}
-    <input bind:this={input} bind:value={draft} aria-label="Edit goal" onkeydown={keydown} onblur={save}/>
+    <input bind:this={input} bind:value={draft} aria-label={$t('goal.edit')} onkeydown={keydown} onblur={save}/>
   {:else}
     <span class="goal-copy">
-      <strong>{goal.status === 'paused' ? 'Paused goal' : 'Pursuing goal'}</strong>
+      <strong>{goal.status === 'paused' ? $t('goal.paused') : $t('goal.pursuing')}</strong>
       <span>{goal.text}</span>
       <small>· {elapsed}</small>
     </span>
   {/if}
   <div class="goal-actions">
-    <button type="button" aria-label="Edit goal" onclick={startEdit}><Icon name="edit" size={16}/></button>
-    <button type="button" aria-label={goal.status === 'paused' ? 'Resume goal' : 'Pause goal'} onclick={onTogglePaused}><Icon name={goal.status === 'paused' ? 'play' : 'pause'} size={16}/></button>
-    <button type="button" aria-label="Delete goal" onclick={onDelete}><Icon name="trash" size={16}/></button>
+    <button type="button" aria-label={$t('goal.edit')} onclick={startEdit}><Icon name="edit" size={16}/></button>
+    <button type="button" aria-label={goal.status === 'paused' ? $t('goal.resume') : $t('goal.pause')} onclick={onTogglePaused}><Icon name={goal.status === 'paused' ? 'play' : 'pause'} size={16}/></button>
+    <button type="button" aria-label={$t('goal.delete')} onclick={onDelete}><Icon name="trash" size={16}/></button>
   </div>
 </section>

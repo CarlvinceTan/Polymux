@@ -1,8 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import path from "node:path";
 import type { AgentTool } from "@flareai/core";
 import type { AgentSurfaceServer } from "./agent-surface.js";
+import { tabSnapshotPath } from "./browser-extension.js";
 
 /**
  * Agent tools backed by the FlareAI browser extension: `browser_tabs` reads the
@@ -11,13 +10,7 @@ import type { AgentSurfaceServer } from "./agent-surface.js";
  * cursor presented in-page while it works).
  */
 
-const TABS_PATH = path.join(
-  homedir(),
-  "Library",
-  "Application Support",
-  "flareai-tab-context",
-  "tabs.json",
-);
+const TABS_PATH = tabSnapshotPath();
 
 export function createBrowserControlTools(
   surface: AgentSurfaceServer,

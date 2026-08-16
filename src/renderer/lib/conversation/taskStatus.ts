@@ -1,3 +1,5 @@
+import {translate} from '../i18n';
+
 export type TaskStatus = 'pending' | 'active' | 'completed' | 'failed';
 export type TaskTone = 'running' | 'done' | 'failed';
 
@@ -18,5 +20,5 @@ export function taskStatusTone(status: TaskStatus): TaskTone {
 
 export function taskStatusLabel(status: TaskStatus): string {
   const tone = taskStatusTone(status);
-  return tone === 'done' ? 'Completed' : tone === 'failed' ? 'Failed' : 'Working';
+  return translate(tone === 'done' ? 'task.completed' : tone === 'failed' ? 'task.failed' : 'task.working');
 }

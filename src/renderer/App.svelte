@@ -1,7 +1,7 @@
 <script lang="ts">
   import {onDestroy, onMount} from 'svelte';
   import {readableError} from './lib/errors';
-  import type {ArtifactDto, ConversationDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto} from '@flareai/protocol';
+  import type {ArtifactDto, BrowserExtensionDto, ConversationDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto} from '@flareai/protocol';
   import TitleBar from './lib/components/chat/TitleBar.svelte';
   import ChatPane, {type ChatMessage} from './lib/components/chat/ChatPane.svelte';
   import TimelineRail, {TIMELINE_RAIL_MINIMUM} from './lib/components/chat/TimelineRail.svelte';
@@ -19,6 +19,7 @@
   import Onboarding from './lib/components/onboarding/Onboarding.svelte';
   import {flareaiApi} from './lib/api/flareai';
   import {applyTheme, startThemeSync} from './lib/theme';
+  import {applyLanguage, startLanguageSync, t, translate, type MessageKey} from './lib/i18n';
   import {
     conversationPanelState,
     initialPanelState,
@@ -66,6 +67,22 @@
   let workspaceResizing = false;
   let workspaceExpanded = false;
   let viewportWidth = typeof window === 'undefined' ? 1280 : window.innerWidth;
+
+  // Dragging the window edge reclamps both drawer widths on every frame. The
+  // drawer-motion transitions are tuned for a discrete open/close, so during a
+  // live resize the conversation column and its fixed-position chrome trail the
+  // viewport by the transition duration and the workspace panel paints over
+  // them. Suppress the same transitions a handle drag suppresses, and let them
+  // back in once the drag has settled.
+  let windowResizing = false;
+  let windowResizeSettle: ReturnType<typeof setTimeout> | undefined;
+  const WINDOW_RESIZE_SETTLE_MS = 140;
+
+  function markWindowResizing(): void {
+    windowResizing = true;
+    if (windowResizeSettle) clearTimeout(windowResizeSettle);
+    windowResizeSettle = setTimeout(() => { windowResizing = false; }, WINDOW_RESIZE_SETTLE_MS);
+  }
 
   /**
    * Expanding and minimising the workspace are driven here rather than by the
@@ -147,6 +164,13 @@
   let startupVisible = coldStart && startupSplash !== null;
   if (!startupVisible) startupSplash?.remove();
   let startupLeaving = false;
+  /**
+   * Whether the splash is lifting onto the app rather than onto setup. Setup
+   * paints its own matching lockup and wants the app exactly as it is; the app
+   * fades itself in under the cover instead, so the two halves cross rather
+   * than one being pulled off the other.
+   */
+  let startupToApp = false;
   let startupMinimumElapsed = false;
   let startupReady = false;
   let startupDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -254,7 +278,9 @@
     cancelAnimationFrame(chromeShiftFrame);
     cancelAnimationFrame(workspaceMotionFrame);
     clearTimeout(resourceRefreshTimer);
+    clearTimeout(windowResizeSettle);
     stopThemeSync?.();
+    stopLanguageSync?.();
   });
 
   let unsubscribeEvents: (() => void) | undefined;
@@ -262,6 +288,7 @@
   let unsubscribeFullscreen: (() => void) | undefined;
   let chromeShiftFrame = 0;
   let stopThemeSync: (() => void) | undefined;
+  let stopLanguageSync: (() => void) | undefined;
 
   onMount(() => {
     if (startupVisible) {
@@ -283,8 +310,10 @@
       }, 8000);
     }
     stopThemeSync = startThemeSync();
+    stopLanguageSync = startLanguageSync();
     const settingsLoad = api.general.get().then((settings) => {
       applyTheme(settings.theme);
+      applyLanguage(settings.language);
       speechModeEnabled = settings.speechModeEnabled;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       reasoningLevel = settings.reasoningLevel;
@@ -294,6 +323,7 @@
       // context, which is the surest way to a permanent refusal.
       if (!onboardingOpen) void api.permissions.ensureFirstRun().catch(() => {});
     }).catch(() => {});
+    refreshExtensionStatus();
     windowActive = document.hasFocus();
     unsubscribeEvents = api.runs.subscribe(handleRunEvent);
     // A tab the agent opened for itself becomes a real workspace tab, so its
@@ -368,11 +398,22 @@
     if (!startupVisible || startupLeaving || !startupMinimumElapsed || !startupReady) return;
     startupLeaving = true;
     clearTimeout(startupDeadlineTimer);
+    // Onto setup, the lockup underneath is identical and in the same place, so
+    // the cover can go in a quick crossfade nobody sees. Onto the app there is
+    // nothing under it to match, and that same quick fade reads as the brand
+    // lying over the interface and then vanishing — so it leaves in two beats
+    // instead: the lockup goes first, then the ground it stood on.
+    const toApp = !onboardingOpen;
+    startupToApp = toApp;
     startupSplash?.classList.add('leaving');
+    if (toApp) startupSplash?.classList.add('to-app');
+    // Comfortably past the staged exit's own 760ms rather than level with it:
+    // cutting the element at the exact frame the fade ends takes the tail of
+    // it off on any machine that ran a frame late.
     startupRemovalTimer = setTimeout(() => {
       startupVisible = false;
       startupSplash?.remove();
-    }, 240);
+    }, toApp ? 860 : 240);
   }
 
   function syncConversationPanel(hasMessages: boolean, splitLayout: boolean, dismissed: boolean): void {
@@ -434,13 +475,16 @@
     if (!text && !files.length) return;
     const sentAt = new Date().toISOString();
     let conversationId = activeId;
-    const title = active.title === 'New chat' ? (text || files[0]?.name || 'New chat').slice(0, 42) : active.title;
+    // A draft carries no title of its own — the placeholder shown for it is
+    // drawn from the catalog at render time, so it follows the language rather
+    // than freezing whichever one the draft happened to open in.
+    const title = active.title || (text || files[0]?.name || translate('chat.untitled')).slice(0, 42);
     if (!conversationId) {
       const created = await api.conversations.create(title);
       conversationId = created.id;
       activeId = created.id;
       conversations = [{...fromConversation(created), messages: []}, ...conversations];
-    } else if (active.title === 'New chat') {
+    } else if (!active.title) {
       await rename(title);
     }
 
@@ -454,7 +498,7 @@
     if (existingRun) {
       const steered: ChatMessage = {id: crypto.randomUUID(), role: 'user', text, files: files.map((file) => file.name), sentAt, asGoal};
       updateConversation(conversationId, (chat) => ({...chat, messages: [...chat.messages, steered]}));
-      if (asGoal) await setGoal(conversationId, text || files[0]?.name || 'Review attached files');
+      if (asGoal) await setGoal(conversationId, text || files[0]?.name || translate('goal.reviewAttached'));
       await api.runs.steer(existingRun, text, steered.id);
       return;
     }
@@ -466,8 +510,8 @@
       ...chat,
       title,
       updatedAt: Date.now(),
-      goal: asGoal ? {id: crypto.randomUUID(), text: text || files[0]?.name || 'Review attached files', startedAt: sentAt, status: 'active'} : chat.goal,
-      messages: [...chat.messages, userMessage, {id: assistantId, role: 'assistant', text: '', startedAt: sentAt, activities: [{id: crypto.randomUUID(), kind: 'thinking', status: 'active', label: 'Thinking'}]}],
+      goal: asGoal ? {id: crypto.randomUUID(), text: text || files[0]?.name || translate('goal.reviewAttached'), startedAt: sentAt, status: 'active'} : chat.goal,
+      messages: [...chat.messages, userMessage, {id: assistantId, role: 'assistant', text: '', startedAt: sentAt, activities: [{id: crypto.randomUUID(), kind: 'thinking', status: 'active', label: translate('activity.thinking')}]}],
     }));
     liveAssistantByConversation = {...liveAssistantByConversation, [conversationId]: assistantId};
     runByConversation = {...runByConversation, [conversationId]: `pending:${assistantId}`};
@@ -475,7 +519,7 @@
 
     try {
       const attachmentPaths = files.length ? await api.files.paths(files) : [];
-      const {runId} = await api.runs.start({conversationId, text, messageId: userId, attachments: attachmentPaths, asGoal, reasoning: reasoningLevel});
+      const {runId} = await api.runs.start({conversationId, text, messageId: userId, attachments: attachmentPaths, asGoal, reasoning: reasoningLevel, speechMode: voiceOpen});
       runByConversation = {...runByConversation, [conversationId]: runId};
       updateLiveAssistant(conversationId, (message) => ({...message, runId}));
       if (asGoal) await refreshGoal(conversationId);
@@ -608,7 +652,7 @@
         ...message,
         activities: upsertActivity(
           message.activities ?? [],
-          {id, kind: 'thinking', status: 'active', label: 'Thinking'},
+          {id, kind: 'thinking', status: 'active', label: translate('activity.thinking')},
         ),
       }));
     }
@@ -636,7 +680,7 @@
         ...message,
         activities: upsertActivity(
           (message.activities ?? []).filter((item) => item.status !== 'active' || (item.kind !== 'thinking' && item.kind !== 'compacting')),
-          {id, kind: 'compacting', status: 'active', label: 'Optimising Conversation'},
+          {id, kind: 'compacting', status: 'active', label: translate('activity.compacting')},
         ),
       }));
     }
@@ -664,7 +708,7 @@
         const description = typeof arguments_.description === 'string' ? arguments_.description.trim() : '';
         updateConversationTasks(conversationId, (current) => [
           ...current.filter((task) => task.id !== id),
-          {id, title: description || 'Delegated task', status: 'active'},
+          {id, title: description || translate('activity.delegatedTask'), status: 'active'},
         ]);
       }
     }
@@ -805,7 +849,7 @@
   function failRun(conversationId: string, reason: string): void {
     const completedAt = new Date().toISOString();
     const detail = cleanIpcError(reason);
-    updateLiveAssistant(conversationId, (message) => ({...message, text: `Unable to start the agent: ${detail}`, sentAt: completedAt, completedAt, activities: [{id: crypto.randomUUID(), kind: 'thinking', status: 'failed', label: 'Agent failed to start'}]}));
+    updateLiveAssistant(conversationId, (message) => ({...message, text: translate('run.startFailed', {detail}), sentAt: completedAt, completedAt, activities: [{id: crypto.randomUUID(), kind: 'thinking', status: 'failed', label: translate('activity.startFailed')}]}));
     const next = {...runByConversation}; delete next[conversationId]; runByConversation = next;
   }
 
@@ -959,12 +1003,13 @@
     if (closing?.kind === 'browser') void api.browser.close(id);
   }
 
-  const singletonTitles: Partial<Record<WorkspaceTabKind, string>> = {drive: 'Drive', schedule: 'Schedule', 'side-chat': 'Chat', hub: 'Hub'};
+  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', schedule: 'workspace.schedule', 'side-chat': 'workspace.chat', hub: 'workspace.hub'};
 
   function newTab(kind: WorkspaceTabKind = 'document'): void {
     const singletonId = SINGLETON_TAB_IDS[kind];
-    if (singletonId) openTab({id: singletonId, title: singletonTitles[kind] ?? 'New tab', kind});
-    else openTab({id: crypto.randomUUID(), title: 'New tab', kind});
+    const named = singletonTitles[kind];
+    if (singletonId) openTab({id: singletonId, title: translate(named ?? 'workspace.newTab'), kind});
+    else openTab({id: crypto.randomUUID(), title: translate('workspace.newTab'), kind});
   }
 
   /** Sizes and dates the desktop has no local filesystem to report yet, so the
@@ -982,11 +1027,11 @@
    * produced and what it was given, kept apart. */
   $: conversationDriveRoot = {
     id: 'drive-root',
-    name: 'Drive',
+    name: $t('workspace.drive'),
     kind: 'folder',
     children: [
-      {id: 'drive-outputs', name: 'Outputs', kind: 'folder', children: [...demoDriveFiles, ...outputs.map(({id, name}) => ({id, name, kind: driveEntryKind(name)}))]},
-      {id: 'drive-references', name: 'References', kind: 'folder', children: references.map(({id, title, kind, uri}) => ({
+      {id: 'drive-outputs', name: $t('summary.outputs'), kind: 'folder', children: [...demoDriveFiles, ...outputs.map(({id, name}) => ({id, name, kind: driveEntryKind(name)}))]},
+      {id: 'drive-references', name: $t('summary.references'), kind: 'folder', children: references.map(({id, title, kind, uri}) => ({
         id,
         name: title,
         kind: kind === 'web' ? 'file' : driveEntryKind(title),
@@ -1051,7 +1096,7 @@
   }
 
   $: driveSources = [
-    {id: CONVERSATION_SOURCE, name: 'This chat', icon: 'chat' as const},
+    {id: CONVERSATION_SOURCE, name: $t('drive.thisChat'), icon: 'chat' as const},
     // Only connected providers are offered: a source in the switch is a
     // promise that opening it will show something.
     ...(driveStatus?.providers ?? [])
@@ -1064,7 +1109,7 @@
       ? conversationDriveRoot
       : ({
           id: 'drive-root',
-          name: driveSources.find((source) => source.id === driveSourceId)?.name ?? 'Drive',
+          name: driveSources.find((source) => source.id === driveSourceId)?.name ?? $t('workspace.drive'),
           kind: 'folder',
           // The root's path is the empty string for every provider, which is
           // what lets one tree builder serve all of them. `driveFolders` is
@@ -1237,7 +1282,7 @@
    */
   function createSchedule(): void {
     workspaceExpanded = false;
-    composerInsertion = {id: crypto.randomUUID(), text: 'Schedule this for me: '};
+    composerInsertion = {id: crypto.randomUUID(), text: translate('schedule.composerSeed')};
   }
 
   function openVisit(url: string, title: string): void {
@@ -1253,8 +1298,34 @@
   /** A link in a message opens in the system browser: following one is leaving
    * the conversation, not asking FlareAI to work on the page — the workspace
    * browser stays for pages FlareAI itself is on. */
+  /** The install chip's visibility. Re-checked whenever Settings closes, since
+   * that is when an install started from the Settings row would have landed. */
+  let extensionStatus: BrowserExtensionDto | null = null;
+
+  function refreshExtensionStatus(): void {
+    void api.extension.status().then((value) => extensionStatus = value).catch(() => {});
+  }
+
+  function installExtension(): void {
+    void api.extension.openInstall().catch(() => {});
+  }
+
+  function dismissExtension(): void {
+    void api.extension.dismiss().then((value) => extensionStatus = value).catch(() => {});
+  }
+
   function openLink(url: string): void {
     void api.browser.openExternal(url);
+  }
+
+  /** A file the agent wrote, opened in whatever application owns it. The main
+   * process checks the path exists and is a regular file before the shell
+   * sees it, so a stale or bogus link surfaces as an error rather than acting. */
+  function openFilePath(filePath: string): void {
+    // A link to a file that has since been moved or deleted rejects here.
+    // Logged rather than surfaced: the same as openLink above, and a dead link
+    // is not worth interrupting the conversation for.
+    void api.browser.openPath(filePath).catch((reason: unknown) => console.warn('openPath', reason));
   }
 
   /** The embedded browser reports its page as it settles, which is also where
@@ -1277,8 +1348,14 @@
     void send(text, []);
   }
 
+  const SUMMARY_SECTION_TITLES: Record<SummarySection, MessageKey> = {
+    outputs: 'summary.outputs',
+    references: 'summary.references',
+    tasks: 'summary.tasks',
+  };
+
   function viewSummary(section: SummarySection): void {
-    openTab({id: `summary-${section}`, title: section[0].toUpperCase() + section.slice(1), kind: 'summary', section});
+    openTab({id: `summary-${section}`, title: translate(SUMMARY_SECTION_TITLES[section]), kind: 'summary', section});
   }
 
   async function attachReferences(files: File[]): Promise<void> {
@@ -1327,7 +1404,7 @@
   }
 
   function emptyDraft(): Conversation {
-    return {id: '', title: 'New chat', updatedAt: Date.now(), messages: []};
+    return {id: '', title: '', updatedAt: Date.now(), messages: []};
   }
 
   function fromConversation(conversation: ConversationDto): Conversation {
@@ -1423,17 +1500,36 @@
     return record.content === undefined ? '' : contentText(record.content);
   }
 
+  /** Providers commonly report failures as `<status>: {"message":"…"}`. Show the
+      human sentence rather than the raw envelope. */
+  function readableFailure(message: string): string {
+    const start = message.indexOf('{');
+    if (start < 0) return message;
+    try {
+      const body = asRecord(JSON.parse(message.slice(start)) as JsonValue);
+      const inner = typeof body.message === 'string' ? body.message : '';
+      return inner || message;
+    } catch {
+      return message;
+    }
+  }
+
   function runFailureMessage(payload: Record<string, JsonValue>): string {
     const result = asRecord(payload.result);
     const failure = asRecord(result.error);
-    const message = typeof failure.message === 'string' ? failure.message : 'The agent could not complete this response.';
+    const message = typeof failure.message === 'string' ? readableFailure(failure.message) : translate('run.incomplete');
+    // Checked before the credential test: a region gate is refused with a 403
+    // and reads like an access denial, but no key change can lift it.
+    const regionGated = /(?:regionerror|hosted in china|opt.?in|not available in your (?:region|country))/i.test(message);
+    if (regionGated)
+      return translate('run.failedRegion');
     const authenticationFailure = /(?:missing authentication|unauthori[sz]ed|invalid api key|\b401\b)/i.test(message);
     if (authenticationFailure)
-      return 'Unable to respond: The selected provider rejected its saved API key. Remove it or add a valid key in Settings → Provider.';
+      return translate('run.failedAuth');
     const rateLimited = /(?:rate.?limit|429|too many requests|quota|usage limit|free.?usage)/i.test(message);
     if (rateLimited)
-      return 'Unable to respond: The provider is temporarily rate-limiting requests. Wait a moment, then try again.';
-    return `Unable to respond: ${message}`;
+      return translate('run.failedRateLimit');
+    return translate('run.failed', {message});
   }
 
   function isSubagentTask(name: string): boolean {
@@ -1457,11 +1553,14 @@
 
 <svelte:window
   bind:innerWidth={viewportWidth}
+  on:resize={markWindowResizing}
   on:focus={() => windowActive = true}
   on:blur={() => windowActive = false}
 />
 
 <main
+  class:app-under-splash={startupVisible && !startupLeaving}
+  class:app-entering={startupToApp && startupLeaving}
   class:has-conversation={active.messages.length > 0 || (voiceOpen && voiceInChat)}
   class:voice-in-chat={voiceOpen && voiceInChat}
   class:empty-voice-chat={voiceStartedEmpty && voiceOpen && voiceInChat}
@@ -1471,6 +1570,7 @@
   class:workspace-expanded={workspaceExpanded}
   class:workspace-resizing={workspaceResizing}
   class:chat-drawer-resizing={chatDrawerResizing}
+  class:window-resizing={windowResizing}
   class:chat-drawer-open={chatDrawerOpen}
   class:has-queue={queueHeight > 0}
   style={`--chat-drawer-column: ${chatDrawerOpen ? chatDrawerWidth : 0}px; --chat-drawer-offset: ${chatDrawerOpen ? chatDrawerWidth : 0}px; --content-right-column: ${contentRightColumn}; --content-composer-column: ${composerColumn}; --content-docked-column: ${workspaceWidth}px; --workspace-panel-width: ${workspacePanelWidth}; --workspace-expanded-tab-left: ${chatDrawerOpen ? "8px" : "calc(var(--chrome-inset) + 8px + var(--titlebar-control-size) + var(--titlebar-control-lead))"}; --chat-drawer-panel-width: ${chatDrawerWidth}px; --queue-height: ${queueHeight}px; --timeline-left: ${timelineLeft}px`}
@@ -1481,7 +1581,7 @@
   </div>
 
   <TitleBar
-    title={active.title}
+    title={active.title || $t('chat.untitled')}
     showTitle={active.messages.length > 0}
     showSummary={mode === 'summary' || active.messages.length > 0}
     hideNewChat={workspaceExpanded}
@@ -1496,6 +1596,9 @@
     onOpenDrive={() => newTab('drive')}
     onOpenHub={() => newTab('hub')}
     onOpenSchedule={() => newTab('schedule')}
+    showExtensionPrompt={extensionStatus?.promptToInstall ?? false}
+    onInstallExtension={installExtension}
+    onDismissExtension={dismissExtension}
   />
 
   <ChatDrawer
@@ -1546,6 +1649,7 @@
     onInsertionApplied={() => composerInsertion = null}
     onJumpAvailability={(value) => showJumpToLatest = value}
     onOpenLink={openLink}
+    onOpenFilePath={openFilePath}
     onEdit={editMessage}
     onFeedback={setFeedback}
   />
@@ -1615,7 +1719,7 @@
   />
 
   {#if settingsOpen}<SettingsModal
-    onClose={() => settingsOpen = false}
+    onClose={() => { settingsOpen = false; refreshExtensionStatus(); }}
     onGeneralChange={(settings) => {
       speechModeEnabled = settings.speechModeEnabled;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;

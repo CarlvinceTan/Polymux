@@ -21,7 +21,8 @@ import {
   type SystemPermissionKind,
 } from "@flareai/protocol";
 import {EmailAccounts, type CommandResult, type CommandRunner} from "./email.js";
-import {MatrixHub} from "./hub.js";
+import {MatrixHub, type MatrixMessage, type MatrixRoom} from "./hub.js";
+import {probeWeChatRelay} from "./wechat-relay.js";
 
 /** Credential key the hub's access token is stored under. */
 const HUB_CREDENTIAL_ID = "matrix-hub";
@@ -86,6 +87,12 @@ export interface EmbeddedHub {
    * asked to look again, which is also when a grant has just been given.
    */
   retryBlocked?: () => Promise<void>;
+  /**
+   * Starts the in-process WeChat bridge against FlareAI's own account. Unlike
+   * the rest of the fleet there is no binary to supervise, and the account has
+   * to exist first, so it is started here rather than with the hub.
+   */
+  startWeChat?: (owner: string) => Promise<boolean>;
   /** Values already recorded for a bridge's own configuration. */
   networkConfig?: (platform: string) => Promise<Record<string, string>>;
   /**
@@ -291,13 +298,52 @@ export class Communications {
         permission: known.installed ? (known.blocked!.permission ?? null) : null,
       };
     };
+    /**
+     * WeChat has no bridge to provision: it arrives through a relay against
+     * the WeChat app on this Mac. There is nothing to log in to, so the row is
+     * built from whether that relay is up and whose account it carries —
+     * otherwise the tab reports "unavailable" over a platform that is working.
+     */
+    const relayRow = async (entry: (typeof platforms)[number]): Promise<CommsBridgeDto> => {
+      // Two independent questions, and both have to be yes. A relay reports on
+      // its link to the WeChat app, not on where it delivers: one configured
+      // against another homeserver is entirely healthy and still invisible
+      // here. Reporting only the first is how a seat comes to say "connected"
+      // over a platform whose messages can never arrive.
+      // Bringing it up is part of reading its status: the bridge is in-process
+      // and idempotent, so the first status read after sign-in is what starts
+      // it. Nothing else would.
+      if (this.#userId) await this.#embedded?.startWeChat?.(this.#userId).catch(() => false);
+      const [relay, delivers] = await Promise.all([
+        probeWeChatRelay(),
+        this.#hub.hasBridgeBot(`${entry.value}bot`),
+      ]);
+      const usable = relay.running && delivers;
+      return {
+        platform: entry.value,
+        name: entry.label,
+        api: "none",
+        state: usable ? "connected" : "unavailable",
+        accounts:
+          usable && relay.account
+            ? [{id: relay.account.id, name: relay.account.name, state: "connected", error: null}]
+            : [],
+        flows: [],
+        setup: null,
+        managementRoomHint: null,
+        error:
+          relay.running && !delivers
+            ? `FlareAI has reached ${entry.label} on this Mac but has not finished connecting it. Reopen this in a moment.`
+            : relay.error,
+      };
+    };
     // One slow bridge should not serialize behind the others.
     const rows = probe.reachable
       ? await Promise.all(
-          platforms.map(
-            async (entry) =>
-              missing(entry) ?? (await this.#hub.bridge(entry.value, entry.label, entry.route)),
-          ),
+          platforms.map(async (entry) => {
+            if (entry.value === "wechat") return relayRow(entry);
+            return missing(entry) ?? (await this.#hub.bridge(entry.value, entry.label, entry.route));
+          }),
         )
       : platforms.map(
           (entry): CommsBridgeDto =>
@@ -580,7 +626,21 @@ export class Communications {
     return account;
   }
 
-  async chats(): Promise<Array<{roomId: string; name: string; platform: string}>> {
+  /** The signed-in Matrix id, so a caller can tell the user's own messages apart. */
+  get userId(): string | null {
+    return this.#userId;
+  }
+
+  /**
+   * What the media protocol handler needs to fetch an attachment: bridged
+   * media is behind the homeserver's authenticated endpoint, so the renderer
+   * cannot load it directly and the main process fetches on its behalf.
+   */
+  get mediaAuth(): {homeserverUrl: string; token: string | null} {
+    return {homeserverUrl: this.#homeserverUrl, token: this.#matrixToken};
+  }
+
+  async chats(): Promise<MatrixRoom[]> {
     await this.#load();
     return this.#hub.rooms();
   }
@@ -589,7 +649,7 @@ export class Communications {
     chatId: string,
     limit: number,
     before?: string,
-  ): Promise<{nextBefore: string | null; messages: unknown[]}> {
+  ): Promise<{nextBefore: string | null; messages: MatrixMessage[]}> {
     await this.#load();
     return this.#hub.messages(chatId, limit, before);
   }
@@ -606,6 +666,11 @@ export class Communications {
   async unreadChats(limit: number, platform?: string): Promise<unknown[]> {
     await this.#load();
     return this.#hub.unread(limit, platform);
+  }
+
+  async markChatRead(chatId: string, messageId: string): Promise<void> {
+    await this.#load();
+    return this.#hub.markRead(chatId, messageId);
   }
 
   async sendChat(chatId: string, text: string): Promise<string> {

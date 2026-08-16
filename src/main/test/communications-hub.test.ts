@@ -149,12 +149,15 @@ test("treats an empty login list as not linked", async () => {
   });
 });
 
-test("a platform with no bridge route is reported as local only", async () => {
+test("a platform with no bridge route is reported as unavailable", async () => {
   await withHub({}, async (hub, calls) => {
     const bridge = await hub.bridge("imessage", "iMessage", null);
     assert.equal(bridge.state, "unavailable");
     assert.equal(bridge.api, "none");
-    assert.match(bridge.error ?? "", /local relay/);
+    // Deliberately not a claim about a relay: this branch is reached by a
+    // platform with no route and no relay handler of its own, and WeChat —
+    // the only one that ever had a relay — is built from it before this runs.
+    assert.match(bridge.error ?? "", /no way to bring this platform in yet/);
     assert.equal(calls.length, 0, "a routeless platform must not be probed");
   });
 });

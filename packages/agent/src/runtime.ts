@@ -52,7 +52,6 @@ export interface ChronicleContextProvider {
 export interface EnvironmentContextProvider {
   promptContext(): {
     time?: { local: string; timeZone: string; utcOffset: string };
-    language?: string;
     locationEnabled: boolean;
     location?: {
       latitude: number;
@@ -122,6 +121,11 @@ export interface StartFlareAIRunInput {
   goalContinuation?: boolean;
   /** Overrides the agent's main model for this run only. */
   model?: ModelRef;
+  /**
+   * Set while the user is speaking rather than typing. Transcribed speech is
+   * indistinguishable from typed text, so the prompt has to say which it is.
+   */
+  speechMode?: boolean;
 }
 
 export class FlareAIAgent {
@@ -215,21 +219,35 @@ export class FlareAIAgent {
       status: "running",
     });
     const stored = this.#options.storage.listMessages(input.conversationId);
-    const durableMessages = stored
-      .map((message) =>
-        toInferenceMessage(
-          message,
-          this.#options.storage
-            .listAttachments(message.id)
-            .map((attachment) => attachment.path),
-        ),
-      )
-      .filter((item): item is InferenceMessage => item !== null);
-    const messages = selectContext(
-      durableMessages,
+    // Each converted message stays paired with the row it came from: not every
+    // stored row converts, so position in one list says nothing about the
+    // other, and compaction needs the real mapping to record how far a summary
+    // reaches.
+    const durable: Array<{ message: InferenceMessage; sequence: number }> = [];
+    for (const message of stored) {
+      const converted = toInferenceMessage(
+        message,
+        this.#options.storage
+          .listAttachments(message.id)
+          .map((attachment) => attachment.path),
+      );
+      if (converted)
+        durable.push({ message: converted, sequence: message.sequence });
+    }
+    const selected = selectContext(
+      durable,
       input.contextMode ?? "conversation",
     );
-    if (input.parentRunId) messages.push({ role: "user", content: text });
+    const messages = selected.map((item) => item.message);
+    const durableSequences: Array<number | null> = selected.map(
+      (item) => item.sequence,
+    );
+    // A subagent's instruction is context for this run alone and is never
+    // stored, so it has no sequence of its own.
+    if (input.parentRunId) {
+      messages.push({ role: "user", content: text });
+      durableSequences.push(null);
+    }
     const memory = this.memory.promptContext(input.conversationId);
     const chronicle = this.#options.chronicle?.promptContext();
     const environment = this.#options.environment?.promptContext();
@@ -245,6 +263,7 @@ export class FlareAIAgent {
       environment,
       skills: skillResult.skills,
       goal: this.goals.get(input.conversationId),
+      speechMode: input.speechMode,
     });
     const tools = [
       ...this.#options.tools.list(),
@@ -279,6 +298,7 @@ export class FlareAIAgent {
           context,
           signal,
           () => reportStatus('compacting'),
+          durableSequences,
         ),
     });
     // The runner appends new messages onto the context it was started with, so
@@ -454,10 +474,10 @@ function readSkill(path: string): string {
   return readFileSync(path, "utf8");
 }
 
-function selectContext(
-  messages: InferenceMessage[],
+function selectContext<T>(
+  messages: T[],
   mode: NonNullable<StartFlareAIRunInput["contextMode"]>,
-): InferenceMessage[] {
+): T[] {
   if (mode === "none") return [];
   if (mode === "recent") return messages.slice(-8);
   return messages;

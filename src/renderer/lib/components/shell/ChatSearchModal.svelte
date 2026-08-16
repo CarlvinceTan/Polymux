@@ -2,6 +2,7 @@
   import {tick} from 'svelte';
   import type {ChatEntry} from './ChatDrawer.svelte';
   import Icon from '../shared/Icon.svelte';
+  import {t} from '../../i18n';
 
   export let chats: ChatEntry[] = [];
   export let onOpen: (id: string) => void = () => {};
@@ -73,15 +74,15 @@
   role="presentation"
   onclick={(event) => { if (event.target === event.currentTarget) onClose(); }}
 >
-  <div class="chat-search" role="dialog" aria-modal="true" aria-label="Search chats">
+  <div class="chat-search" role="dialog" aria-modal="true" aria-label={$t('chats.search')}>
     <div class="chat-search-field">
       <Icon name="search" size={16}/>
       <input
         bind:value={query}
         use:focusInput
         type="text"
-        placeholder="Search chats"
-        aria-label="Search chats"
+        placeholder={$t('chats.search')}
+        aria-label={$t('chats.search')}
         aria-controls="chat-search-results"
         autocomplete="off"
         spellcheck="false"
@@ -94,7 +95,7 @@
         class:at-bottom={atBottom}
         id="chat-search-results"
         role="listbox"
-        aria-label="Results"
+        aria-label={$t('common.results')}
         onscroll={measureEdges}
       >
         {#each results as chat, index (chat.id)}
@@ -107,7 +108,7 @@
       </ul>
     {:else}
       <p class="chat-search-empty">
-        {query.trim() ? `No chats match “${query.trim()}”.` : 'No chats yet.'}
+        {query.trim() ? $t('chats.noMatches', {query: query.trim()}) : $t('chats.none')}
       </p>
     {/if}
   </div>

@@ -17,11 +17,21 @@ test("validates renderer run requests at the Electron boundary", () => {
     attachments: undefined,
     asGoal: undefined,
     reasoning: undefined,
+    speechMode: undefined,
   });
   assert.equal(
     validateStartRun({ conversationId: "one", text: "ship it", asGoal: true })
       .asGoal,
     true,
+  );
+  assert.equal(
+    validateStartRun({ conversationId: "one", text: "hi", speechMode: true })
+      .speechMode,
+    true,
+  );
+  assert.throws(
+    () => validateStartRun({ conversationId: "one", text: "hi", speechMode: "yes" }),
+    /speechMode/,
   );
   assert.equal(
     validateStartRun({ conversationId: "one", text: "think", reasoning: "high" })

@@ -6,9 +6,10 @@
   import {onDestroy, onMount, tick} from 'svelte';
   import Icon from '../shared/Icon.svelte';
   import {flareaiApi} from '../../api/flareai';
+  import {t} from '../../i18n';
 
   export let tabId = '';
-  export let title = 'Browser';
+  export let title = '';
   export let url: string | undefined = '';
   /** True while another surface (a modal, the speech orb) covers the drawer.
    * The embedded view floats above every DOM element, so it must yield. */
@@ -232,33 +233,33 @@
 
 <div class="browser-bar">
   <div class="browser-actions browser-nav-actions">
-    <button type="button" aria-label="Back" disabled={!canGoBack} onclick={() => goHistory(-1)}><Icon name="back" size={16}/></button>
-    <button type="button" aria-label="Forward" disabled={!canGoForward} onclick={() => goHistory(1)}><Icon name="forward" size={16}/></button>
-    <button type="button" class:refreshing class="refresh-button" aria-label="Refresh" aria-busy={refreshing} onclick={reload}><Icon name="reload" size={16}/></button>
+    <button type="button" aria-label={$t('browser.back')} disabled={!canGoBack} onclick={() => goHistory(-1)}><Icon name="back" size={16}/></button>
+    <button type="button" aria-label={$t('browser.forward')} disabled={!canGoForward} onclick={() => goHistory(1)}><Icon name="forward" size={16}/></button>
+    <button type="button" class:refreshing class="refresh-button" aria-label={$t('browser.refresh')} aria-busy={refreshing} onclick={reload}><Icon name="reload" size={16}/></button>
   </div>
 
   <form bind:this={addressForm} class="address-form" onsubmit={submit}>
-    <input bind:this={addressInput} bind:value={draft} oninput={() => addressDirty = true} onfocus={watchDocumentFocus} onblur={stopWatchingFocus} aria-label="Address" placeholder="Search or enter address" spellcheck="false" autocomplete="off"/>
-    <button type="submit" class="address-submit" aria-label="Navigate" data-tooltip="none"><Icon name="send" size={16}/></button>
+    <input bind:this={addressInput} bind:value={draft} oninput={() => addressDirty = true} onfocus={watchDocumentFocus} onblur={stopWatchingFocus} aria-label={$t('browser.address')} placeholder={$t('browser.addressPlaceholder')} spellcheck="false" autocomplete="off"/>
+    <button type="submit" class="address-submit" aria-label={$t('browser.navigate')} data-tooltip="none"><Icon name="send" size={16}/></button>
   </form>
 
   <div class="browser-actions browser-page-actions">
     <div bind:this={downloadsWrapper} class="workspace-downloads-wrap">
-      <button type="button" class:active={downloadsOpen} aria-label="Downloads" aria-haspopup="dialog" aria-expanded={downloadsOpen} onclick={() => { moreOpen = false; downloadsOpen = !downloadsOpen; }}><Icon name="download" size={16}/></button>
+      <button type="button" class:active={downloadsOpen} aria-label={$t('browser.downloads')} aria-haspopup="dialog" aria-expanded={downloadsOpen} onclick={() => { moreOpen = false; downloadsOpen = !downloadsOpen; }}><Icon name="download" size={16}/></button>
       {#if downloadsOpen}
         <div class="downloads-popover" role="dialog" aria-labelledby="downloads-title">
           <header>
-            <h2 id="downloads-title">Downloads</h2>
-            <button type="button" aria-label="Show Downloads in file manager" disabled={!embedded} onclick={() => void api.browser.openDownloadsFolder()}><Icon name="folder" size={17}/></button>
+            <h2 id="downloads-title">{$t('browser.downloads')}</h2>
+            <button type="button" aria-label={$t('browser.showDownloads')} disabled={!embedded} onclick={() => void api.browser.openDownloadsFolder()}><Icon name="folder" size={17}/></button>
           </header>
           <div class="download-rows">
             {#each downloads as entry (entry.id)}
               <button type="button" class="download-row" onclick={() => void api.browser.openDownload(entry.id)}>
                 <span class="download-mark"><Icon name={downloadIcon(entry)} size={16}/></span>
-                <span class="download-copy"><strong>{entry.title}</strong><small>Downloaded{entry.completedAt ? ` · ${entry.completedAt}` : ''}</small></span>
+                <span class="download-copy"><strong>{entry.title}</strong><small>{$t('browser.downloaded')}{entry.completedAt ? ` · ${entry.completedAt}` : ''}</small></span>
               </button>
             {:else}
-              <p class="downloads-empty">Downloads from this workspace appear here.</p>
+              <p class="downloads-empty">{$t('browser.downloadsEmpty')}</p>
             {/each}
           </div>
         </div>
@@ -266,14 +267,14 @@
     </div>
 
     <div bind:this={moreWrapper} class="workspace-more-wrap">
-      <button type="button" aria-label="More" data-tooltip-align="end" aria-haspopup="menu" aria-expanded={moreOpen} onclick={() => { downloadsOpen = false; moreOpen = !moreOpen; }}><Icon name="more" size={16}/></button>
+      <button type="button" aria-label={$t('browser.more')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={moreOpen} onclick={() => { downloadsOpen = false; moreOpen = !moreOpen; }}><Icon name="more" size={16}/></button>
       {#if moreOpen}
         <div class="flareai-dropdown-menu workspace-more-menu" role="menu">
-          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={openFind}><span>Find in page</span></button>
-          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => { moreOpen = false; void api.browser.print(tabId); }}><span>Print</span></button>
-          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => void takeScreenshot()}><span>Take a screenshot</span></button>
+          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={openFind}><span>{$t('browser.findInPage')}</span></button>
+          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => { moreOpen = false; void api.browser.print(tabId); }}><span>{$t('browser.print')}</span></button>
+          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => void takeScreenshot()}><span>{$t('browser.screenshot')}</span></button>
           <div class="workspace-menu-divider"></div>
-          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!currentUrl && !url} onclick={() => { moreOpen = false; void api.browser.openExternal(currentUrl || url || ''); }}><span>Open in browser</span></button>
+          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!currentUrl && !url} onclick={() => { moreOpen = false; void api.browser.openExternal(currentUrl || url || ''); }}><span>{$t('browser.openExternal')}</span></button>
         </div>
       {/if}
     </div>
@@ -282,10 +283,10 @@
 
 {#if findOpen}
   <form class="browser-find" onsubmit={submitFind}>
-    <input bind:value={findQuery} aria-label="Find in page" placeholder="Find in page" spellcheck="false"/>
-    {#if findMatches}<span class="browser-find-count">{findMatches.matches ? `${findMatches.activeMatch}/${findMatches.matches}` : 'No matches'}</span>{/if}
-    <button type="submit" disabled={!findQuery.trim()} aria-label="Find next"><Icon name="forward" size={14}/></button>
-    <button type="button" aria-label="Close find" onclick={closeFind}><Icon name="close" size={14}/></button>
+    <input bind:value={findQuery} aria-label={$t('browser.findInPage')} placeholder={$t('browser.findInPage')} spellcheck="false"/>
+    {#if findMatches}<span class="browser-find-count">{findMatches.matches ? `${findMatches.activeMatch}/${findMatches.matches}` : $t('browser.noMatches')}</span>{/if}
+    <button type="submit" disabled={!findQuery.trim()} aria-label={$t('browser.findNext')}><Icon name="forward" size={14}/></button>
+    <button type="button" aria-label={$t('browser.closeFind')} onclick={closeFind}><Icon name="close" size={14}/></button>
   </form>
 {/if}
 
@@ -296,17 +297,17 @@
     {#if !pageLoaded}
       <div class="new-tab-empty">
         <Icon name="globe" size={30}/>
-        <h2>{title}</h2>
-        <p>Enter an address to start browsing.</p>
+        <h2>{title || $t('browser.title')}</h2>
+        <p>{$t('browser.empty')}</p>
       </div>
     {/if}
   </div>
 {:else if url}
-  <iframe class="browser-frame" src={url} {title} sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+  <iframe class="browser-frame" src={url} title={title || $t('browser.title')} sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
 {:else}
   <div class="new-tab-empty">
     <Icon name="globe" size={30}/>
-    <h2>{title}</h2>
-    <p>Enter an address to start browsing.</p>
+    <h2>{title || $t('browser.title')}</h2>
+    <p>{$t('browser.empty')}</p>
   </div>
 {/if}

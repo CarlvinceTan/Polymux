@@ -1,4 +1,5 @@
 import DOMPurify from 'dompurify'
+import { translate } from '../i18n'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
@@ -93,6 +94,7 @@ function decorateLink(document: Document, anchor: HTMLAnchorElement): void {
   } catch {
     return
   }
+  if (url.protocol === 'file:') return decorateFileLink(document, anchor, url)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return
 
   const text = anchor.textContent?.trim() ?? ''
@@ -118,9 +120,64 @@ function decorateLink(document: Document, anchor: HTMLAnchorElement): void {
   anchor.replaceChildren(icon, name)
 }
 
+/**
+ * A file the agent wrote reads the same as a web link — same icon-then-label
+ * shape, same underline — so a reply that cites a page and a file does not
+ * switch visual language halfway through. Only the icon differs (a document
+ * rather than a favicon) and the label is the file's own name, since a full
+ * path is unreadable inline. Clicks are routed to the shell by whoever mounts
+ * this html; the class is what tells them which of the two this is.
+ */
+function decorateFileLink(document: Document, anchor: HTMLAnchorElement, url: URL): void {
+  let name: string
+  try {
+    name = decodeURIComponent(url.pathname).split('/').filter(Boolean).pop() ?? ''
+  } catch {
+    name = url.pathname.split('/').filter(Boolean).pop() ?? ''
+  }
+  if (!name) return
+
+  const text = anchor.textContent?.trim() ?? ''
+  const icon = document.createElement('span')
+  icon.className = 'link-icon'
+  icon.innerHTML = FILE_SVG
+
+  const label = document.createElement('span')
+  label.className = 'link-label'
+  // The author's own words win; the basename is the fallback for a bare path.
+  label.textContent = !text || text === anchor.getAttribute('href') ? name : text
+
+  anchor.classList.add('markdown-link', 'markdown-file-link')
+  anchor.dataset.filePath = decodeURIComponentSafe(url.pathname)
+  anchor.replaceChildren(icon, label)
+}
+
+function decodeURIComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+// The same document mark the Icon component draws, so a file link matches the
+// file icons used everywhere else in the app.
+const FILE_SVG = '<svg class="link-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>'
+
 // The same globe the Icon component draws, so a link's fallback icon matches
 // every other globe in the app.
 const GLOBE_SVG = '<svg class="link-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>'
+
+/**
+ * DOMPurify's default allowlist has no `file:`, so a link to a file the agent
+ * wrote lost its href and rendered as dead text. This is that default with
+ * `file` added and nothing else removed — notably still no `javascript:` or
+ * `data:`. Surviving sanitisation only makes the link clickable; the main
+ * process still resolves the path and refuses anything that is not an existing
+ * regular file before the shell sees it.
+ */
+const ALLOWED_URI =
+  /^(?:(?:(?:f|ht)tps?|file|mailto|tel|callto|sms|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
 
 export function renderMarkdown(source: string): string {
   if (!source.trim()) return ''
@@ -134,6 +191,7 @@ export function renderMarkdown(source: string): string {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select', 'svg', 'math'],
     FORBID_ATTR: ['style', 'srcset'],
+    ALLOWED_URI_REGEXP: ALLOWED_URI,
   })
 
   const document = new DOMParser().parseFromString(sanitized, 'text/html')
@@ -157,8 +215,8 @@ export function renderMarkdown(source: string): string {
     copy.type = 'button'
     copy.className = 'markdown-code-copy'
     copy.dataset.markdownCopy = ''
-    copy.setAttribute('aria-label', 'Copy code')
-    copy.textContent = 'Copy'
+    copy.setAttribute('aria-label', translate('markdown.copyCode'))
+    copy.textContent = translate('common.copy')
     header.append(label, copy)
 
     pre.replaceWith(wrapper)

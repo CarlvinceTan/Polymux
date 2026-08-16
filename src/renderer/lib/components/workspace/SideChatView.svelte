@@ -8,11 +8,12 @@
 
 <script lang="ts">
   import Icon from '../shared/Icon.svelte';
+  import {t} from '../../i18n';
 
-  export let title = 'Side chat';
+  export let title = '';
   export let messages: SideChatMessage[] = [];
   export let running = false;
-  export let placeholder = 'Ask about this workspace';
+  export let placeholder = '';
   export let onSend: (text: string) => void = () => {};
   export let onStop: () => void = () => {};
 
@@ -35,7 +36,7 @@
 
 <!-- No title bar of its own: the tab already names the view, and every other
      workspace view fills the content area edge to edge. -->
-<section class="side-chat-view" aria-label={title}>
+<section class="side-chat-view" aria-label={title || $t('view.sideChat')}>
   <div class="side-chat-messages" aria-live="polite">
     {#if messages.length}
       {#each messages as message (message.id)}
@@ -46,7 +47,7 @@
         </article>
       {/each}
     {:else}
-      <p class="side-chat-empty">Start a focused conversation about this workspace.</p>
+      <p class="side-chat-empty">{$t('view.sideChatEmpty')}</p>
     {/if}
   </div>
 
@@ -58,15 +59,15 @@
             bind:value={draft}
             class="side-chat-input"
             rows="1"
-            aria-label={placeholder}
-            {placeholder}
+            aria-label={placeholder || $t('view.sideChatPlaceholder')}
+            placeholder={placeholder || $t('view.sideChatPlaceholder')}
             onkeydown={keydown}
           ></textarea>
         </div>
         <button
           type="button"
           class="flareai-primary"
-          aria-label={running ? 'Stop agent' : 'Send message'}
+          aria-label={running ? $t('composer.stopAgent') : $t('composer.sendMessage')}
           onclick={() => running ? onStop() : submit()}
         ><Icon name={running ? 'stop' : 'send'} size={running ? 22 : 18}/></button>
       </div>

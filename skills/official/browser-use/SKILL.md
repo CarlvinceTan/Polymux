@@ -12,7 +12,7 @@ This skill owns browser-surface routing, exact-tab ownership, tab-group
 organization, and browser-specific user handoffs.
 
 Before any call that may initialize, inspect, launch, reveal, focus, or control
-the external local browser, load and follow `$window-control`. That skill owns
+the external local browser, load and follow `$gui-control`. That skill owns
 app launch, focus protection, exact-window mechanics, controller safety, and
 attention preparation; do not duplicate those rules here.
 
@@ -37,7 +37,7 @@ attention preparation; do not duplicate those rules here.
   never assume a browser brand.
 - Mandatory ordered preflight for every first external-browser operation in a
   task: before any initialization, inspection, launch, or control, load and
-  apply `$window-control`; determine the OS default without launching it;
+  apply `$gui-control`; determine the OS default without launching it;
   validate a preverified non-activating control route; identify the exact
   window and tab; then lease the tab. Do not cold-launch, inspect, or foreground
   the external browser before completing these steps.
@@ -161,9 +161,9 @@ attention preparation; do not duplicate those rules here.
    `read`/`click`/`type`/`scroll`/`navigate`, then `release`. It drives only
    the leased tab through the FlareAI extension (the in-page cursor shows the
    user what is happening) and never raises the browser or switches focus —
-   the `$window-control` boundaries still govern what may be done there.
+   the `$gui-control` boundaries still govern what may be done there.
 2. If external use is technically required or explicitly requested, complete
-   the mandatory ordered `$window-control` preflight before any external
+   the mandatory ordered `$gui-control` preflight before any external
    operation, then create or reuse a clearly named objective group. Return
    in-app after a temporary fallback; remain external for an explicitly
    external task.

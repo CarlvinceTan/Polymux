@@ -24,6 +24,11 @@ function classifyError(
 ): Pick<InferenceError, "code" | "retryable"> {
   if (aborted) return { code: "aborted", retryable: false };
   const lower = message.toLowerCase();
+  // Access refusals that a different key cannot fix — region locks, opt-in
+  // gates, unsupported countries. They often arrive as 403s, so they have to be
+  // recognised before the credential check below claims them.
+  if (/regionerror|region|unsupported_country|opt.?in|not available in your/.test(lower))
+    return { code: "provider_error", retryable: false };
   if (/auth|api key|unauthorized|forbidden|401|403/.test(lower))
     return { code: "auth", retryable: false };
   if (/rate.?limit|429|too many requests|quota.?exceed|insufficient_quota|usage limit/.test(lower))

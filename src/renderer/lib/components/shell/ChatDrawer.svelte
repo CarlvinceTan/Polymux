@@ -11,6 +11,20 @@
   import {groupChatsByRecency, type ChatHistoryGroupLabel} from '../../conversation/chatSessions';
   import {SPLIT_LAYOUT_MIN_WIDTH, clampPanelWidth, chatDrawerResizeBounds} from '../../layout/layoutSizing';
   import Icon from '../shared/Icon.svelte';
+  import {t, type MessageKey} from '../../i18n';
+
+  /** The group label doubles as the section's identity — which sections are
+   * collapsed is keyed by it — so it stays an English constant and only the
+   * wording on screen comes from the catalog. */
+  const groupLabels: Record<ChatHistoryGroupLabel, MessageKey> = {
+    'Today': 'chats.today',
+    'Yesterday': 'chats.yesterday',
+    'This week': 'chats.thisWeek',
+    'Last week': 'chats.lastWeek',
+    'This month': 'chats.thisMonth',
+    'Last month': 'chats.lastMonth',
+    'Earlier': 'chats.earlier',
+  };
 
   export let chats: ChatEntry[] = [];
   export let activeId = '';
@@ -141,14 +155,14 @@
   class:resizing
   class="chat-drawer"
   style:--chat-drawer-panel-width={`${width}px`}
-  aria-label="Chats"
+  aria-label={$t('titlebar.chats')}
   aria-hidden={!open}
   inert={!open}
 >
   <button
     type="button"
     class="chat-drawer-resize-handle"
-    aria-label="Resize Chats"
+    aria-label={$t('chats.resize')}
     tabindex={open ? 0 : -1}
     data-tooltip="none"
     onpointerdown={startResize}
@@ -157,7 +171,7 @@
     onpointercancel={stopResize}
     onkeydown={resizeWithKeyboard}
   ></button>
-  <h2>Chats</h2>
+  <h2>{$t('titlebar.chats')}</h2>
 
   {#if chatGroups.length}
     <div class="chat-drawer-groups" onscroll={() => menuId = null}>
@@ -170,11 +184,11 @@
             aria-expanded={!collapsedSections.has(group.label)}
             onclick={() => toggleSection(group.label)}
           >
-            <span>{group.label}</span>
+            <span>{$t(groupLabels[group.label])}</span>
             <Icon name="chevron" size={16}/>
           </button>
           {#if !collapsedSections.has(group.label)}
-            <ul aria-label={group.label}>
+            <ul aria-label={$t(groupLabels[group.label])}>
               {#each group.chats as chat (chat.id)}
                 <li>
                   {#if editingId === chat.id}
@@ -182,7 +196,7 @@
                       <input
                         bind:this={renameInput}
                         bind:value={draft}
-                        aria-label={`Rename ${chat.title}`}
+                        aria-label={$t('chats.rename', {title: chat.title})}
                         onkeydown={(event) => renameKeydown(event, chat.id)}
                         onblur={() => saveRename(chat.id)}
                       />
@@ -192,7 +206,7 @@
                       <button
                         class="chat-drawer-open-chat"
                         type="button"
-                        aria-label={`Open chat: ${chat.title}`}
+                        aria-label={$t('chats.openChat', {title: chat.title})}
                         aria-current={chat.id === activeId ? 'page' : undefined}
                         title={chat.title}
                         onclick={() => onOpen(chat.id)}
@@ -203,7 +217,7 @@
                       <button
                         class="chat-drawer-more"
                         type="button"
-                        aria-label={`More actions: ${chat.title}`}
+                        aria-label={$t('chats.moreActions', {title: chat.title})}
                         data-tooltip="none"
                         aria-haspopup="menu"
                         aria-expanded={menuId === chat.id}
@@ -221,15 +235,15 @@
       {/each}
     </div>
   {:else}
-    <p class="chat-drawer-empty">Past chats will appear here.</p>
+    <p class="chat-drawer-empty">{$t('chats.empty')}</p>
   {/if}
 
   {#if menuId}
     {@const menuChat = chats.find((chat) => chat.id === menuId)}
     {#if menuChat}
       <div class="flareai-dropdown-menu chat-drawer-row-menu" role="menu" style:top={`${menuTop}px`}>
-        <button class="flareai-dropdown-item" role="menuitem" onclick={() => startRename(menuChat)}><Icon name="edit" size={14}/><span>Rename</span></button>
-        <button class="flareai-dropdown-item destructive" role="menuitem" onclick={() => deleteChat(menuChat.id)}><Icon name="trash" size={14}/><span>Delete</span></button>
+        <button class="flareai-dropdown-item" role="menuitem" onclick={() => startRename(menuChat)}><Icon name="edit" size={14}/><span>{$t('common.rename')}</span></button>
+        <button class="flareai-dropdown-item destructive" role="menuitem" onclick={() => deleteChat(menuChat.id)}><Icon name="trash" size={14}/><span>{$t('common.delete')}</span></button>
       </div>
     {/if}
   {/if}

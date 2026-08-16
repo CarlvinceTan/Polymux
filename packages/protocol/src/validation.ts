@@ -32,9 +32,29 @@ const REASONING_EFFORTS: ReasoningEffort[] = [
   "max",
 ];
 
-/** The reply languages offered in Settings → General. `system` follows the
- * host locale, so the list stays a small, translatable set rather than every
- * BCP 47 tag Intl would accept. */
+/** Model servers that run on the user's own machine. They all speak the
+ * OpenAI Chat Completions API, so a runtime is nothing but the port it listens
+ * on — which is why FlareAI can offer them as ready-made providers rather than
+ * as a custom endpoint the user has to describe. They are listed alongside the
+ * hosted providers everywhere providers are listed; setting one up asks it what
+ * models it has rather than asking the user. */
+export const LOCAL_RUNTIMES: ReadonlyArray<{
+  id: string;
+  name: string;
+  baseUrl: string;
+}> = [
+  { id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434/v1" },
+  { id: "lm-studio", name: "LM Studio", baseUrl: "http://localhost:1234/v1" },
+  { id: "vllm", name: "vLLM", baseUrl: "http://localhost:8000/v1" },
+  { id: "llama-cpp", name: "llama.cpp", baseUrl: "http://localhost:8080/v1" },
+];
+
+/** The interface languages offered in Settings → General. Every entry here has
+ * a message catalog under `src/renderer/lib/i18n/messages`, so the list is
+ * exactly what FlareAI is translated into — not every BCP 47 tag Intl would
+ * accept. `system` follows the host locale, falling back to English when it
+ * names a language with no catalog. Labels are written in the language itself,
+ * so the menu reads the same whatever locale is currently active. */
 export const SUPPORTED_LANGUAGES: {value: string; label: string}[] = [
   { value: "system", label: "System" },
   { value: "en", label: "English" },
@@ -62,10 +82,23 @@ export function supportedLanguage(value: unknown): string | null {
   return SUPPORTED_LANGUAGES.some((item) => item.value === value) ? value : null;
 }
 
-export function languageLabel(value: string): string {
-  return (
-    SUPPORTED_LANGUAGES.find((item) => item.value === value)?.label ?? value
-  );
+/**
+ * Bundled skills that back a first-class surface of the app rather than an
+ * optional add-on: GUI/browser control, and the Hub's email and messaging
+ * integrations. They are always loaded, and the Hub tab is where the user
+ * configures them, so listing them again in Settings → Skills would offer a
+ * toggle that contradicts the surface it belongs to.
+ */
+export const CORE_INTEGRATION_SKILLS = [
+  "browser-use",
+  "gui-control",
+  "email",
+  "himalaya",
+  "message",
+] as const;
+
+export function isCoreIntegrationSkill(name: string): boolean {
+  return (CORE_INTEGRATION_SKILLS as readonly string[]).includes(name);
 }
 
 /**
@@ -398,6 +431,10 @@ export function validateStartRun(value: unknown): StartRunRequest {
       input.reasoning === undefined
         ? undefined
         : reasoningEffort(input.reasoning),
+    speechMode:
+      input.speechMode === undefined
+        ? undefined
+        : boolean(input.speechMode, "speechMode"),
   };
 }
 

@@ -205,6 +205,29 @@ test("returns typed errors for unknown models and provider failures", async () =
   }
 });
 
+test("treats a region lock as a provider failure rather than a bad credential", async () => {
+  const { faux, inference } = fixture();
+  faux.setResponses([
+    fauxAssistantMessage([], {
+      stopReason: "error",
+      errorMessage:
+        '403: {"type":"RegionError","message":"only available hosted in China and requires explicit opt in"}',
+    }),
+  ]);
+  const failed = await collect(
+    inference.stream({
+      model: { provider: "test-provider", id: "test-model" },
+      messages: [],
+    }),
+  );
+  const final = failed.at(-1);
+  assert.equal(final?.type, "error");
+  if (final?.type === "error") {
+    assert.equal(final.error.code, "provider_error");
+    assert.equal(final.error.retryable, false);
+  }
+});
+
 test("propagates cancellation as an aborted inference error", async () => {
   const { faux, inference } = fixture();
   faux.setResponses([

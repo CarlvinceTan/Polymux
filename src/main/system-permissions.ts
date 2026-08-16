@@ -71,6 +71,12 @@ export async function requestSystemPermission(
   } else if (permission === "full-disk-access") {
     // There is no dialog to raise. Full Disk Access is switched on by hand and
     // nowhere else, so asking for it means opening the pane it lives in.
+    //
+    // The probe runs first, and that ordering is the point: macOS lists an
+    // application under Full Disk Access once it has been *refused* a file the
+    // grant covers, so a pane opened before the refusal is a pane with no
+    // FlareAI row in it — which is exactly the dead end this looked like.
+    fullDiskAccessStatus();
     await openSystemPermissionSettings(permission);
   } else if (systemPermissionStatus(permission) !== "granted") {
     // macOS registers Screen Recording access when an application first tries

@@ -7,9 +7,10 @@
     DriveStatusDto,
     FlareAIApi,
   } from '@flareai/protocol';
-  import {DRIVE_PROVIDERS} from '@flareai/protocol';
   import {readableError} from '../../errors';
   import Icon from '../shared/Icon.svelte';
+  import {activeLocale, locale, plural, t, translate, withLocale, type MessageKey} from '../../i18n';
+  import {driveProviderDescription, driveProviderName} from '../../i18n/names';
 
   export let api: FlareAIApi;
 
@@ -63,8 +64,12 @@
   $: writable = (status?.saveOrder ?? [])
     .map((id) => providers.find((entry) => entry.id === id))
     .filter((entry): entry is DriveProviderDto => entry?.state === 'connected');
-  $: description = (id: DriveProviderId) =>
-    DRIVE_PROVIDERS.find((entry) => entry.value === id)?.description ?? '';
+  /** The backend labels providers in English; both of these put the interface
+   * language back over the top. Named against `$locale` so a language change
+   * redraws the rail. */
+  $: description = withLocale($locale, driveProviderDescription);
+  $: providerName = withLocale($locale, (provider: DriveProviderDto) =>
+    driveProviderName(provider.id, provider.name));
 
   /** Who the connection belongs to, which leads the rail's second line the way
    * an MCP server's author does. Nothing to say for a provider that is not
@@ -72,24 +77,24 @@
   function accountLabel(provider: DriveProviderDto): string {
     if (provider.state !== 'connected') return '';
     return provider.accounts.length > 1
-      ? `${provider.accounts.length} accounts`
+      ? plural('drive.accounts', provider.accounts.length)
       : (provider.accounts[0]?.name ?? '');
   }
 
   function stateLabel(provider: DriveProviderDto): string {
     switch (provider.state) {
       case 'connected':
-        return 'Connected';
+        return translate('drive.stateConnected');
       case 'logged-out':
-        return 'Not connected';
+        return translate('drive.stateDisconnected');
       case 'unconfigured':
-        return 'Unavailable in this build';
+        return translate('drive.stateUnconfigured');
       case 'unavailable':
-        return 'Unavailable';
+        return translate('drive.stateUnavailable');
       case 'error':
-        return 'Needs attention';
+        return translate('drive.stateError');
       default:
-        return 'Unknown';
+        return translate('hub.unknown');
     }
   }
 
@@ -190,26 +195,37 @@
     }
   }
 
+  const SIZE_UNITS: MessageKey[] = [
+    'drive.unitBytes',
+    'drive.unitKilobytes',
+    'drive.unitMegabytes',
+    'drive.unitGigabytes',
+    'drive.unitTerabytes',
+  ];
+
   function formatBytes(bytes: number): string {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
     let value = bytes;
     let unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
+    while (value >= 1024 && unit < SIZE_UNITS.length - 1) {
       value /= 1024;
       unit += 1;
     }
-    return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+    const rounded = value >= 100 || unit === 0 ? Math.round(value) : value;
+    const digits = value >= 100 || unit === 0 ? 0 : 1;
+    return translate(SIZE_UNITS[unit], {
+      size: rounded.toLocaleString(activeLocale(), {minimumFractionDigits: digits, maximumFractionDigits: digits}),
+    });
   }
 </script>
 
 <div class="drive" role="tabpanel">
   {#if loading}
-    <p class="drive-muted">Checking your storage…</p>
+    <p class="drive-muted">{$t('drive.checking')}</p>
   {:else}
     {#if error}
       <div class="drive-error" role="alert">
         <span>{error}</span>
-        <button type="button" onclick={() => void refresh()} disabled={busy === 'refresh'}>Retry</button>
+        <button type="button" onclick={() => void refresh()} disabled={busy === 'refresh'}>{$t('common.retry')}</button>
       </div>
     {/if}
 
@@ -228,7 +244,7 @@
               }}
             >
               <span>
-                <strong>{provider.name}</strong>
+                <strong>{providerName(provider)}</strong>
                 <small>
                   {#if accountLabel(provider)}{accountLabel(provider)} · {/if}<span
                     class="state-text"
@@ -244,73 +260,70 @@
       <div class="drive-detail">
         {#if editingS3}
           <header class="drive-detail-header">
-            <h3>S3 storage</h3>
-            <p>
-              Works with any S3-compatible service. The secret key goes to your keychain; the rest
-              is kept as ordinary settings.
-            </p>
+            <h3>{$t('drive.s3')}</h3>
+            <p>{$t('drive.s3Blurb')}</p>
           </header>
           <div class="drive-form">
             <label>
-              <span>Bucket</span>
+              <span>{$t('drive.bucket')}</span>
               <input bind:value={s3Form.bucket} spellcheck="false" placeholder="my-bucket" />
             </label>
             <label>
-              <span>Region</span>
+              <span>{$t('drive.region')}</span>
               <input bind:value={s3Form.region} spellcheck="false" placeholder="us-east-1" />
             </label>
             <label>
-              <span>Endpoint</span>
+              <span>{$t('drive.endpoint')}</span>
               <input
                 value={s3Form.endpoint ?? ''}
                 spellcheck="false"
-                placeholder="Leave blank for AWS"
+                placeholder={$t('drive.endpointPlaceholder')}
                 oninput={(event) => (s3Form.endpoint = (event.currentTarget as HTMLInputElement).value || null)}
               />
-              <small>Set this for Cloudflare R2, Backblaze B2, or MinIO.</small>
+              <small>{$t('drive.endpointHint')}</small>
             </label>
             <label>
-              <span>Access key ID</span>
+              <span>{$t('drive.accessKeyId')}</span>
               <input bind:value={s3Form.accessKeyId} spellcheck="false" />
             </label>
             <label>
-              <span>Secret access key</span>
-              <input bind:value={s3Secret} type="password" placeholder="Leave blank to keep the saved key" />
+              <span>{$t('drive.secretAccessKey')}</span>
+              <input bind:value={s3Secret} type="password" placeholder={$t('drive.secretPlaceholder')} />
             </label>
             <label>
-              <span>Prefix</span>
+              <span>{$t('drive.prefix')}</span>
               <input
                 value={s3Form.prefix ?? ''}
                 spellcheck="false"
-                placeholder="Optional — confines FlareAI to one folder"
+                placeholder={$t('drive.prefixPlaceholder')}
                 oninput={(event) => (s3Form.prefix = (event.currentTarget as HTMLInputElement).value || null)}
               />
             </label>
             <label class="drive-check">
               <input type="checkbox" bind:checked={s3Form.forcePathStyle} />
-              <span>Use path-style addressing</span>
+              <span>{$t('drive.pathStyle')}</span>
             </label>
             <footer class="drive-actions">
-              <button type="button" onclick={() => (editingS3 = false)}>Cancel</button>
+              <button type="button" onclick={() => (editingS3 = false)}>{$t('common.cancel')}</button>
               <button
                 type="button"
                 class="primary"
                 disabled={busy === 's3-save' || !s3Form.bucket.trim() || !s3Form.accessKeyId.trim()}
                 onclick={() => void saveS3()}
               >
-                {busy === 's3-save' ? 'Saving…' : 'Save bucket'}
+                {busy === 's3-save' ? $t('hub.saving') : $t('drive.saveBucket')}
               </button>
             </footer>
           </div>
         {:else if active}
           <header class="drive-detail-header">
-            <h3>{active.name}</h3>
+            <h3>{providerName(active)}</h3>
             <p>{description(active.id)}</p>
             <span class="drive-detail-actions">
               <button
                 type="button"
-                aria-label="Recheck storage"
-                data-tooltip-label="Recheck"
+                aria-label={$t('drive.recheck')}
+                data-tooltip-label={$t('drive.recheckShort')}
                 class:spinning={busy === 'refresh'}
                 disabled={busy === 'refresh'}
                 onclick={() => void refresh()}
@@ -325,7 +338,7 @@
           {/if}
 
           <section class="drive-block">
-            <h4>Connection</h4>
+            <h4>{$t('drive.connection')}</h4>
             {#if active.state === 'connected'}
               {#each active.accounts as account (account.id)}
                 <p class="drive-value">
@@ -337,29 +350,26 @@
                       disabled={busy === `disconnect:${active.id}`}
                       onclick={() => void disconnect(active)}
                     >
-                      {busy === `disconnect:${active.id}` ? 'Disconnecting…' : 'Disconnect'}
+                      {busy === `disconnect:${active.id}` ? $t('drive.disconnecting') : $t('drive.disconnect')}
                     </button>
                   {/if}
                 </p>
               {/each}
               {#if active.root}
-                <p class="drive-hint">Files live in <code>{active.root}</code>.</p>
+                <p class="drive-hint">{$t('drive.filesLiveIn')} <code>{active.root}</code></p>
               {/if}
             {:else if active.state === 'unconfigured'}
               <p class="drive-hint warn">
-                This build was made without {active.name} credentials, so it cannot connect. See
-                <code>README.md</code> for the environment variables to set.
+                {$t('drive.unconfiguredHint', {provider: providerName(active)})}
+                <code>README.md</code>
               </p>
             {:else if active.kind === 's3'}
-              <p class="drive-hint">Add a bucket and FlareAI will read and write files in it.</p>
+              <p class="drive-hint">{$t('drive.addBucketHint')}</p>
               <footer class="drive-actions">
-                <button type="button" class="primary" onclick={editS3}>Add a bucket</button>
+                <button type="button" class="primary" onclick={editS3}>{$t('drive.addBucket')}</button>
               </footer>
             {:else}
-              <p class="drive-hint">
-                Signing in opens {active.name}'s own page. FlareAI only ever sees the token it hands
-                back, and only for its own folder.
-              </p>
+              <p class="drive-hint">{$t('drive.signInHint', {provider: providerName(active)})}</p>
               <footer class="drive-actions">
                 <button
                   type="button"
@@ -367,7 +377,7 @@
                   disabled={busy === `connect:${active.id}`}
                   onclick={() => void connect(active)}
                 >
-                  {busy === `connect:${active.id}` ? 'Waiting for sign-in…' : `Connect ${active.name}`}
+                  {busy === `connect:${active.id}` ? $t('drive.waitingForSignIn') : $t('drive.connectProvider', {provider: providerName(active)})}
                 </button>
               </footer>
             {/if}
@@ -375,40 +385,40 @@
 
           {#if active.id === 'local'}
             <section class="drive-block">
-              <h4>Folder</h4>
+              <h4>{$t('drive.folder')}</h4>
               <p class="drive-value">
                 <code>{active.root ?? '—'}</code>
                 <button type="button" disabled={busy === 'local-root'} onclick={() => void chooseFolder()}>
-                  Change
+                  {$t('common.change')}
                 </button>
               </p>
-              <p class="drive-hint">Everything FlareAI saves to this Mac goes here.</p>
+              <p class="drive-hint">{$t('drive.localFolderHint')}</p>
             </section>
           {/if}
 
           {#if active.id === 's3' && active.state === 'connected'}
             <section class="drive-block">
-              <h4>Bucket</h4>
+              <h4>{$t('drive.bucket')}</h4>
               <footer class="drive-actions">
-                <button type="button" onclick={editS3}>Edit settings</button>
+                <button type="button" onclick={editS3}>{$t('drive.editSettings')}</button>
               </footer>
             </section>
           {/if}
 
           {#if active.usage}
             <section class="drive-block">
-              <h4>Space</h4>
+              <h4>{$t('drive.space')}</h4>
               {#if active.usage.total !== null && active.usage.used !== null}
-                <div class="drive-meter" role="img" aria-label={`${formatBytes(active.usage.used)} of ${formatBytes(active.usage.total)} used`}>
+                <div class="drive-meter" role="img" aria-label={$t('drive.usedOf', {used: formatBytes(active.usage.used), total: formatBytes(active.usage.total)})}>
                   <span style={`width:${Math.min(100, (active.usage.used / active.usage.total) * 100)}%`}></span>
                 </div>
                 <p class="drive-hint">
-                  {formatBytes(active.usage.used)} of {formatBytes(active.usage.total)} used
+                  {$t('drive.usedOf', {used: formatBytes(active.usage.used), total: formatBytes(active.usage.total)})}
                 </p>
               {:else if active.usage.used !== null}
                 <!-- An account with no cap reports usage but no limit, which is
                      a real answer rather than a missing one. -->
-                <p class="drive-hint">{formatBytes(active.usage.used)} used — no quota on this account.</p>
+                <p class="drive-hint">{$t('drive.usedNoQuota', {used: formatBytes(active.usage.used)})}</p>
               {/if}
             </section>
           {/if}
@@ -416,27 +426,24 @@
 
         {#if !editingS3}
           <section class="drive-block">
-            <h4>Where new files go</h4>
-            <p class="drive-hint">
-              FlareAI saves to the first of these it can reach, so the one at the top is the one it
-              normally uses.
-            </p>
+            <h4>{$t('drive.whereNewFilesGo')}</h4>
+            <p class="drive-hint">{$t('drive.saveOrderHint')}</p>
             {#if writable.length === 0}
-              <p class="drive-muted">Nothing is connected yet.</p>
+              <p class="drive-muted">{$t('drive.nothingConnected')}</p>
             {:else}
               <ol class="drive-order">
                 {#each writable as provider, index (provider.id)}
                   <li>
                     <span class="drive-rank" class:primary={index === 0}>{index + 1}</span>
                     <span class="drive-order-name">
-                      <strong>{provider.name}</strong>
-                      {#if index === 0}<em>Primary</em>{/if}
+                      <strong>{providerName(provider)}</strong>
+                      {#if index === 0}<em>{$t('drive.primary')}</em>{/if}
                     </span>
                     <span class="drive-order-actions">
                       <button
                         type="button"
                         class="up"
-                        aria-label={`Move ${provider.name} up`}
+                        aria-label={$t('drive.moveUp', {provider: providerName(provider)})}
                         disabled={index === 0 || busy === 'order'}
                         onclick={() => void move(provider.id, -1)}
                       >
@@ -444,7 +451,7 @@
                       </button>
                       <button
                         type="button"
-                        aria-label={`Move ${provider.name} down`}
+                        aria-label={$t('drive.moveDown', {provider: providerName(provider)})}
                         disabled={index === writable.length - 1 || busy === 'order'}
                         onclick={() => void move(provider.id, 1)}
                       >

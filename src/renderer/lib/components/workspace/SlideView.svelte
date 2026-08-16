@@ -1,12 +1,15 @@
 <script lang="ts">
-  export let title = 'Slides';
-  export let heading = 'Slide title';
-  export let body = 'Supporting detail for this slide.';
+  import {t} from '../../i18n';
+
+  /** Empty falls back to the catalog, so the view follows the language. */
+  export let title = '';
+  export let heading = '';
+  export let body = '';
 </script>
 
-<div class="artifact-draft presentation-draft" aria-label={title}>
+<div class="artifact-draft presentation-draft" aria-label={title || $t('view.slides')}>
   <div class="draft-slide">
-    <div class="draft-slide-title" contenteditable="true" role="textbox" aria-label="Slide title">{heading}</div>
-    <div class="draft-slide-body" contenteditable="true" role="textbox" aria-label="Slide body">{body}</div>
+    <div class="draft-slide-title" contenteditable="true" role="textbox" aria-label={$t('view.slideTitle')}>{heading || $t('view.slideTitle')}</div>
+    <div class="draft-slide-body" contenteditable="true" role="textbox" aria-label={$t('view.slideBody')}>{body || $t('view.slideBodyPlaceholder')}</div>
   </div>
 </div>

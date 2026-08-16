@@ -450,6 +450,23 @@ export class HomeserverStore {
     return rows.map(rowToEvent);
   }
 
+  /** How many unread messages each of the user's rooms holds, by room. */
+  unreadCounts(userId: string): Map<string, number> {
+    const rooms = this.roomsForUser(userId);
+    if (rooms.length === 0) return new Map();
+    const placeholders = rooms.map(() => "?").join(",");
+    const rows = this.#db
+      .prepare(
+        `SELECT e.room_id AS room_id, COUNT(*) AS unread FROM events e
+         LEFT JOIN receipts r ON r.user_id = ? AND r.room_id = e.room_id
+         WHERE e.room_id IN (${placeholders}) AND e.type = 'm.room.message' AND e.sender != ?
+           AND e.stream_order > COALESCE(r.stream_order, 0)
+         GROUP BY e.room_id`,
+      )
+      .all(userId, ...rooms, userId) as Array<{room_id: string; unread: number}>;
+    return new Map(rows.map((row) => [row.room_id, Number(row.unread)]));
+  }
+
   // --- account data, media, aliases ---
 
   setAccountData(userId: string, roomId: string | null, type: string, content: unknown): void {

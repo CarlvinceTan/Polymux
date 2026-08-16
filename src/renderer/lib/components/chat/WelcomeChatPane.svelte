@@ -1,10 +1,12 @@
 <script lang="ts">
   import PromptInput from './PromptInput.svelte';
   import type {ReasoningEffort} from '@flareai/protocol';
+  import {t} from '../../i18n';
 
-  export let greeting = 'What can I help with?';
-  export let subtitle = 'Ask a question, attach a file, or start with your voice.';
-  export let placeholder = 'Ask anything';
+  /** Empty means the catalog's own wording, which follows the language. */
+  export let greeting = '';
+  export let subtitle = '';
+  export let placeholder = '';
   export let active = false;
   export let speechModeEnabled = true;
   export let dictationAutoStopSeconds: number | null = 6;
@@ -66,8 +68,8 @@
          file://, where a leading slash resolves against the filesystem root
          rather than the bundle and the mark silently fails to load. -->
     <img class="brand-mark" src="flareai.svg" alt="FlareAI"/>
-    <h1>{greeting}</h1>
-    <p>{subtitle}</p>
+    <h1>{greeting || $t('welcome.greeting')}</h1>
+    <p>{subtitle || $t('welcome.subtitle')}</p>
   </div>
   {#if showComposer}
     <PromptInput variant="welcome" {active} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied}/>

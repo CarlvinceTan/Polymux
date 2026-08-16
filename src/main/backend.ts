@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
-import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFile, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -9,7 +10,12 @@ import type { ActiveAgentRun, AgentRunEvent } from "@flareai/core";
 import type { InferenceModel, InferenceService, ModelRef } from "@flareai/inference";
 import { PiInference } from "@flareai/inference/pi";
 import type {
+  ChatDto,
+  ChatMessageDto,
   CreateCustomProviderRequest,
+  DiscoverModelsRequest,
+  SetupLocalRuntimeRequest,
+  BrowserExtensionDto,
   GeneralSettingsDto,
   GoalCommandRequest,
   McpServerDto,
@@ -36,7 +42,8 @@ import {
   commsPlatform,
   driveProvider,
   driveS3Config,
-  languageLabel,
+  isCoreIntegrationSkill,
+  LOCAL_RUNTIMES,
   SUPPORTED_LANGUAGES,
   supportedLanguage,
   validateGoalCommand,
@@ -64,6 +71,9 @@ import {
   stopUpdateChecks,
 } from "./updater.js";
 import { HookEngine } from "./hooks.js";
+import { officialSkillsHome } from "./official-skills.js";
+import { EXTENSION_INSTALL_URL, readExtensionStatus } from "./browser-extension.js";
+import { ProtectedSkillGuard, combineHooks } from "./protected-skills.js";
 import { AgentSurfaceServer } from "./agent-surface.js";
 import { AgentSurfaceAdapter } from "./agent-surface-adapter.js";
 import { createBrowserControlTools } from "./browser-control-tools.js";
@@ -71,6 +81,7 @@ import { createInAppBrowserTool } from "./in-app-browser-tools.js";
 import { RunResourceRecorder } from "./run-resources.js";
 import {EncryptedApiKeyPool} from "./api-key-pool.js";
 import {WhisperDictation} from "./dictation.js";
+import {discoverAgentSkills, resolveDiscoveredSkill} from "./skill-discovery.js";
 import {installSkillPackage, searchSkillRegistry} from "./skill-registry.js";
 import {searchMcpRegistry} from "./mcp-registry.js";
 import {ModelCatalog} from "./model-catalog.js";
@@ -129,7 +140,13 @@ export interface DesktopBackendOptions {
    * Absent when the hub failed to start, which degrades messaging to an
    * externally configured deployment.
    */
-  hub?: {homeserver: Homeserver; directory: string; bridges?: BridgeInventory};
+  hub?: {
+    homeserver: Homeserver;
+    directory: string;
+    bridges?: BridgeInventory;
+    /** Brings the in-process WeChat bridge up for FlareAI's own account. */
+    startWeChat?: (owner: string) => Promise<boolean>;
+  };
 }
 
 interface CustomProviderConfig {
@@ -205,7 +222,9 @@ export class DesktopBackend {
     });
     this.#agentSkillOptions = {
       official: options.officialSkillDirectories,
-      isEnabled: (skill) => this.#integrationEnabled("skill-enabled", skill.name),
+      // Core integrations have no Skills-list toggle, so nothing may switch
+      // them off — including a stale preference from before they were core.
+      isEnabled: (skill) => isCoreIntegrationSkill(skill.name) || this.#integrationEnabled("skill-enabled", skill.name),
     };
     this.#storage = new SqliteStorage(
       path.join(options.dataDirectory, "flareai.sqlite"),
@@ -258,7 +277,11 @@ export class DesktopBackend {
           this.#window.webContents.send(channels.browserEvent, event);
       },
     });
-    this.#mcpConfigPath = path.join(options.dataDirectory, "mcp.json");
+    // FlareAI's own configuration lives in ~/.flareai next to its skills, not
+    // buried in the platform's application-support directory: it is a file the
+    // user is meant to be able to open, and a skill or script may be asked to.
+    this.#mcpConfigPath = path.join(homedir(), ".flareai", "mcp.json");
+    adoptLegacyMcpConfig(path.join(options.dataDirectory, "mcp.json"), this.#mcpConfigPath);
     this.#customSkillDirectory = path.join(homedir(), ".flareai", "skills");
     this.#codexMcpConfigPath = options.codexConfigPath ?? path.join(homedir(), ".codex", "config.toml");
     this.#mcpConfigWatcher = new FileReloadWatcher(
@@ -292,6 +315,7 @@ export class DesktopBackend {
             ensure: options.hub.bridges
               ? (platform) => options.hub!.bridges!.ensure(platform)
               : undefined,
+            startWeChat: options.hub.startWeChat,
           }
         : undefined,
       storage: {
@@ -398,6 +422,11 @@ export class DesktopBackend {
    * going while no window existed; only the event sink and the IPC frame
    * guard need re-aiming.
    */
+  /** Credentials for the bridged-media protocol handler. See `comms-media.ts`. */
+  get mediaAuth(): {homeserverUrl: string; token: string | null} {
+    return this.#comms.mediaAuth;
+  }
+
   attachWindow(window: BrowserWindow): void {
     this.#window = window;
     this.#embeddedBrowser.attachWindow(window);
@@ -666,7 +695,24 @@ export class DesktopBackend {
     this.#handle(channels.commsBridgeLogout, (_event, platform: unknown, accountId: unknown) =>
       this.#comms.bridgeLogout(commsPlatform(platform), required(accountId, "account id")),
     );
-    this.#handle(channels.commsChats, () => this.#comms.chats());
+    // The hub speaks Matrix — rooms and events. The renderer speaks chats and
+    // messages, so the shapes are mapped here rather than leaking room ids
+    // and mxc uris into the UI.
+    this.#handle(channels.commsChats, async () => {
+      const rooms = await this.#comms.chats();
+      return rooms.map(
+        (room): ChatDto => ({
+          id: room.roomId,
+          name: room.name,
+          platform: room.platform,
+          avatarUrl: room.avatarUrl,
+          unread: room.unread,
+          lastActivity: room.lastActivity,
+          preview: room.preview,
+          group: room.group,
+        }),
+      );
+    });
     this.#handle(
       channels.commsChatMessages,
       async (_event, chatId: unknown, limit: unknown, before: unknown) => {
@@ -675,11 +721,47 @@ export class DesktopBackend {
           typeof limit === "number" ? limit : 50,
           typeof before === "string" ? before : undefined,
         );
-        return result.messages;
+        const me = this.#comms.userId;
+        return result.messages.map(
+          (message): ChatMessageDto => ({
+            id: message.eventId,
+            chatId: message.roomId || required(chatId, "chat id"),
+            sender: message.sender,
+            senderName: message.senderName || message.sender,
+            senderAvatarUrl: message.senderAvatarUrl,
+            body: message.body,
+            sentAt: message.sentAt,
+            mine: Boolean(me) && message.sender === me,
+            attachments: message.attachments,
+            viewIn: message.viewIn,
+          }),
+        );
       },
     );
-    this.#handle(channels.commsChatSend, (_event, chatId: unknown, text: unknown) =>
-      this.#comms.sendChat(required(chatId, "chat id"), required(text, "message")),
+    this.#handle(channels.commsChatMarkRead, (_event, chatId: unknown, messageId: unknown) =>
+      this.#comms.markChatRead(required(chatId, "chat id"), required(messageId, "message id")),
+    );
+    // The hub answers a send with the event id it minted. The renderer shows
+    // the sent message immediately rather than re-reading the room, so it is
+    // handed the whole message — an id alone lands in the thread as a blank.
+    this.#handle(
+      channels.commsChatSend,
+      async (_event, chatId: unknown, text: unknown): Promise<ChatMessageDto> => {
+        const room = required(chatId, "chat id");
+        const body = required(text, "message");
+        const eventId = await this.#comms.sendChat(room, body);
+        return {
+          id: eventId,
+          chatId: room,
+          sender: this.#comms.userId ?? "",
+          senderName: "You",
+          senderAvatarUrl: null,
+          body,
+          sentAt: new Date().toISOString(),
+          mine: true,
+          attachments: [],
+        };
+      },
     );
     this.#handle(channels.commsMailFolders, (_event, account: unknown) =>
       this.#comms.mailFolders(typeof account === "string" ? account : undefined),
@@ -804,6 +886,13 @@ export class DesktopBackend {
     this.#handle(channels.skillsSearchRegistry, (_event, query: unknown) =>
       searchSkillRegistry(typeof query === "string" ? query : ""),
     );
+    this.#handle(channels.skillsDiscover, () =>
+      discoverAgentSkills(new Set(this.#skills.load().skills.map((skill) => skill.name))),
+    );
+    this.#handle(channels.skillsAdopt, async (_event, target: unknown) => {
+      await this.#adoptSkill(required(target, "skill path"));
+      return this.#skillDtos();
+    });
     this.#handle(channels.modelsList, () =>
       this.#inference.listModels().map((model) => this.#modelDto(model)),
     );
@@ -853,6 +942,31 @@ export class DesktopBackend {
     );
     this.#handle(channels.browserOpenExternal, (_event, url: string) =>
       import("electron").then(({shell}) => shell.openExternal(required(url, "url"))),
+    );
+    this.#handle(channels.browserOpenPath, async (_event, filePath: unknown) => {
+      // The path arrives from a link in model-written markdown, so it is
+      // treated as input: it must be an existing regular file, and it is
+      // resolved before the shell ever sees it. Directories and specials are
+      // refused rather than handed to the desktop to interpret.
+      const resolved = path.resolve(required(filePath, "file path"));
+      let stats: Stats;
+      try {
+        stats = await stat(resolved);
+      } catch {
+        throw new Error(`No such file: ${resolved}`);
+      }
+      if (!stats.isFile()) throw new Error(`Not a file: ${resolved}`);
+      const {shell} = await import("electron");
+      const error = await shell.openPath(resolved);
+      if (error) throw new Error(error);
+    });
+    this.#handle(channels.extensionStatus, () => this.#extensionStatus());
+    this.#handle(channels.extensionDismiss, () => {
+      this.#storage.setPreference("extension-prompt-dismissed", true);
+      return this.#extensionStatus();
+    });
+    this.#handle(channels.extensionOpenInstall, () =>
+      import("electron").then(({shell}) => shell.openExternal(EXTENSION_INSTALL_URL)),
     );
     this.#handle(channels.browserFind, (_event, tabId: string, text: string, forward: boolean) =>
       this.#embeddedBrowser.find(required(tabId, "tab id"), String(text ?? ""), forward !== false),
@@ -1023,6 +1137,12 @@ export class DesktopBackend {
       }
       return this.#providerDto(request.id);
     });
+    this.#handle(channels.providersDiscoverModels, (_event, value: unknown) =>
+      discoverModels(discoverModelsRequest(value)),
+    );
+    this.#handle(channels.providersSetupLocalRuntime, (_event, value: unknown) =>
+      this.#setupLocalRuntime(setupLocalRuntimeRequest(value)),
+    );
     this.#handle(channels.artifactsList, (_event, conversationId: string) =>
       this.#storage.listArtifacts(required(conversationId, "conversation id")),
     );
@@ -1175,6 +1295,7 @@ export class DesktopBackend {
       attachments: request.attachments,
       asGoal: request.asGoal,
       reasoning: request.reasoning,
+      speechMode: request.speechMode,
       runId,
     });
     this.#activeRuns.set(runId, active);
@@ -1206,7 +1327,8 @@ export class DesktopBackend {
     try {
       for await (const event of active.events) {
         const conversationId = this.#storage.getRun(runId)?.conversationId ?? "";
-        // Pages opened and files written during the run feed the Summary panel.
+        // Links the reply cites and files written during the run feed the
+        // Summary panel.
         this.#runResources.record(conversationId, runId, event);
         if (!this.#window.isDestroyed())
           this.#window.webContents.send(
@@ -1298,7 +1420,9 @@ export class DesktopBackend {
   }
 
   #skillDtos(): SkillDto[] {
-    return this.#skills.load().skills.map((skill) => ({
+    // Core integrations stay loaded for the agent; they are only kept out of
+    // the Skills list, which is the optional-add-on surface.
+    return this.#skills.load().skills.filter((skill) => !isCoreIntegrationSkill(skill.name)).map((skill) => ({
       name: skill.name,
       description: skill.description,
       source: skill.source,
@@ -1372,7 +1496,34 @@ export class DesktopBackend {
     }
   }
 
+  /**
+   * Dismissing the chip is a "not now", not a "never". Once the extension is
+   * actually seen reporting, the dismissal is cleared, so if it is later
+   * removed the chip comes back rather than staying silently suppressed.
+   */
+  #extensionStatus(): BrowserExtensionDto {
+    const status = readExtensionStatus();
+    if (status.installed) {
+      if (this.#storage.getPreference("extension-prompt-dismissed")?.value === true)
+        this.#storage.setPreference("extension-prompt-dismissed", false);
+      return {...status, promptToInstall: false};
+    }
+    const dismissed =
+      this.#storage.getPreference("extension-prompt-dismissed")?.value === true;
+    return {...status, promptToInstall: !dismissed};
+  }
+
   async #saveCustomSkill(request: SaveCustomSkillRequest): Promise<void> {
+    // A personal skill may not take a built-in skill's name. The loader keeps
+    // the built-in authoritative, so the write would otherwise succeed and
+    // then be silently ignored — the user edits a skill and nothing changes.
+    const clash = this.#skills
+      .load()
+      .skills.find((candidate) => candidate.name === request.name);
+    if (clash && clash.source !== "flareai")
+      throw new Error(
+        `${request.name} is a built-in skill and cannot be replaced. Save your version under a different name.`,
+      );
     const destination = path.join(this.#customSkillDirectory, request.name);
     if (request.originalName && request.originalName !== request.name) {
       const original = path.join(this.#customSkillDirectory, request.originalName);
@@ -1398,6 +1549,23 @@ export class DesktopBackend {
       delete next[name];
       this.#storage.setPreference("skill-enabled", next);
     }
+  }
+
+  /**
+   * Copies a skill another agent already has into ~/.flareai/skills. A copy,
+   * not a link or a second sourced directory: the other agent stays free to
+   * change or remove its own copy, and the user can edit FlareAI's in place.
+   */
+  async #adoptSkill(displayed: string): Promise<void> {
+    const source = resolveDiscoveredSkill(displayed);
+    const result = new SkillLoader({configured: [source]}).load();
+    const skill = result.skills.find((item) => item.filePath === path.join(source, "SKILL.md"));
+    if (!skill) throw new Error("That folder no longer holds a valid SKILL.md");
+    const destination = path.join(this.#customSkillDirectory, skill.name);
+    const exists = await stat(destination).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error));
+    if (exists) throw new Error(`A skill named ${skill.name} already exists`);
+    await mkdir(this.#customSkillDirectory, {recursive: true});
+    await cp(source, destination, {recursive: true});
   }
 
   async #uploadSkill(files: SkillUploadFile[]): Promise<void> {
@@ -1463,10 +1631,6 @@ export class DesktopBackend {
             utcOffset: `${offsetSign}${offsetHours}:${offsetRemainder}`,
           }
         : undefined,
-      language:
-        settings.language === "system"
-          ? undefined
-          : languageLabel(settings.language),
       locationEnabled: settings.locationEnabled,
       location:
         settings.locationEnabled && settings.location
@@ -1502,7 +1666,12 @@ export class DesktopBackend {
       taskModel: this.#usableRole("task"),
       judgeModel: this.#usableRole("judge"),
       skills: this.#agentSkillOptions,
-      hooks: this.#hooks,
+      // The guard runs first so a built-in skill stays read-only even when the
+      // user's own hooks would have allowed the call.
+      hooks: combineHooks(
+        new ProtectedSkillGuard(officialSkillsHome()),
+        this.#hooks,
+      ),
       onGoalContinuation: ({ conversationId, runId, run }) =>
         this.#trackGoalContinuation(conversationId, runId, run),
     });
@@ -1634,7 +1803,47 @@ export class DesktopBackend {
   }
 
   async #providerDtos(): Promise<ProviderDto[]> {
-    return Promise.all(this.#models.getProviders().map((provider) => this.#providerDto(provider.id)));
+    const configured = await Promise.all(
+      this.#models.getProviders().map((provider) => this.#providerDto(provider.id)),
+    );
+    // A local runtime nobody has set up yet is still offered, in the same list
+    // as everything else, so it is found where providers are looked for rather
+    // than behind a custom-endpoint form.
+    const known = new Set(configured.map((provider) => provider.id));
+    return [
+      ...configured,
+      ...LOCAL_RUNTIMES.filter((runtime) => !known.has(runtime.id)).map((runtime): ProviderDto => ({
+        id: runtime.id,
+        name: runtime.name,
+        baseUrl: runtime.baseUrl,
+        apiKeyLabel: null,
+        supportsOAuth: false,
+        storedCredential: false,
+        configured: false,
+        source: null,
+        modelCount: 0,
+        custom: true,
+        localRuntime: true,
+        apiKeys: [],
+      })),
+    ];
+  }
+
+  /** Reads the models off a local server and files it as a provider under the
+   * runtime's own id, so it keeps its name and logo. */
+  async #setupLocalRuntime(request: SetupLocalRuntimeRequest): Promise<ProviderDto> {
+    const runtime = LOCAL_RUNTIMES.find((item) => item.id === request.id);
+    if (!runtime) throw new Error(`Unknown local runtime: ${request.id}`);
+    const baseUrl = request.baseUrl ?? runtime.baseUrl;
+    const models = await discoverModels({baseUrl});
+    this.#registerCustomProvider({
+      id: runtime.id,
+      name: runtime.name,
+      baseUrl,
+      models: models.map((model) => ({id: model.id, name: model.name ?? model.id})),
+    });
+    this.#persistCustomProviders();
+    return this.#providerDto(runtime.id);
   }
 
   async #providerDto(providerId: string): Promise<ProviderDto> {
@@ -2374,6 +2583,84 @@ function customProviderRequest(value: unknown): CreateCustomProviderRequest {
   return {name, baseUrl: url.toString().replace(/\/$/, ""), logoDataUrl, apiKey, models};
 }
 
+function setupLocalRuntimeRequest(value: unknown): SetupLocalRuntimeRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Runtime setup must be an object");
+  const record = value as Record<string, unknown>;
+  const id = required(record.id, "runtime id");
+  const baseUrl = typeof record.baseUrl === "string" && record.baseUrl.trim()
+    ? discoverModelsRequest({baseUrl: record.baseUrl}).baseUrl
+    : undefined;
+  return {id, baseUrl};
+}
+
+function discoverModelsRequest(value: unknown): DiscoverModelsRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Discovery request must be an object");
+  const record = value as Record<string, unknown>;
+  const rawUrl = required(record.baseUrl, "base URL");
+  let url: URL;
+  try { url = new URL(rawUrl); } catch { throw new Error("base URL must be a valid URL"); }
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    throw new Error("base URL must use HTTP or HTTPS");
+  const apiKey = typeof record.apiKey === "string" && record.apiKey.trim() ? record.apiKey.trim() : undefined;
+  return {baseUrl: url.toString().replace(/\/$/, ""), apiKey};
+}
+
+/** Read an OpenAI-compatible `/models` listing. Local runtimes (Ollama,
+ * LM Studio, vLLM, llama.cpp) all serve it, so one request covers them and any
+ * hosted gateway the user points at. Ollama's native `/api/tags` is the
+ * fallback for the case where the base URL omits the `/v1` suffix. */
+async function discoverModels(
+  request: DiscoverModelsRequest,
+): Promise<Array<{id: string; name?: string}>> {
+  const headers: Record<string, string> = {accept: "application/json"};
+  if (request.apiKey) headers.authorization = `Bearer ${request.apiKey}`;
+  const attempts = [`${request.baseUrl}/models`, `${request.baseUrl}/api/tags`];
+  let lastError = "";
+  for (const endpoint of attempts) {
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {headers, signal: AbortSignal.timeout(8_000)});
+    } catch (cause) {
+      lastError = cause instanceof Error ? cause.message : String(cause);
+      continue;
+    }
+    if (!response.ok) {
+      lastError = `${response.status} ${response.statusText}`.trim();
+      continue;
+    }
+    let payload: unknown;
+    try { payload = await response.json(); } catch { lastError = "response was not JSON"; continue; }
+    const ids = modelIdsFromListing(payload);
+    if (ids.length) return ids.map((id) => ({id}));
+    lastError = "the endpoint listed no models";
+  }
+  throw new Error(`Could not read models from ${request.baseUrl}: ${lastError || "no response"}`);
+}
+
+function modelIdsFromListing(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") return [];
+  const record = payload as Record<string, unknown>;
+  // OpenAI: {data: [{id}]}. Ollama native: {models: [{name}]}.
+  const entries = Array.isArray(record.data)
+    ? record.data
+    : Array.isArray(record.models) ? record.models : [];
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const item = entry as Record<string, unknown>;
+    const id = typeof item.id === "string" && item.id.trim()
+      ? item.id.trim()
+      : typeof item.name === "string" && item.name.trim() ? item.name.trim() : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids.sort((left, right) => left.localeCompare(right));
+}
+
 function updateCustomProviderRequest(value: unknown): UpdateCustomProviderRequest {
   const request = customProviderRequest(value);
   const record = value as Record<string, unknown>;
@@ -2446,6 +2733,23 @@ function optionalStringRecord(value: unknown, label: string): Record<string, str
   if (!value || typeof value !== "object" || Array.isArray(value) || !Object.values(value).every((item) => typeof item === "string"))
     throw new Error(`${label} must contain text values`);
   return value as Record<string, string>;
+}
+
+/**
+ * Carries an existing MCP configuration over from the application-support
+ * directory it used to live in. Copied rather than moved, and only when
+ * ~/.flareai has none: an older build left running against the same machine
+ * still finds its file, and a user who has already configured servers in the
+ * new location never has them overwritten by a stale one.
+ */
+function adoptLegacyMcpConfig(legacy: string, current: string): void {
+  try {
+    if (existsSync(current) || !existsSync(legacy)) return;
+    mkdirSync(path.dirname(current), {recursive: true});
+    copyFileSync(legacy, current);
+  } catch {
+    // A migration is a convenience; the app still starts with no MCP servers.
+  }
 }
 
 function skillInstructions(contents: string): string {

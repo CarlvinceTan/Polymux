@@ -110,3 +110,15 @@ test("says nothing about memory or history when neither is available", () => {
   assert.doesNotMatch(prompt, /search_history/);
   assert.doesNotMatch(prompt, /## Memory/);
 });
+
+test("tells the agent when the user is speaking rather than typing", () => {
+  const prompt = buildSystemPrompt({ speechMode: true });
+
+  assert.match(prompt, /## Speech mode/);
+  assert.match(prompt, /speaking and listening, not reading/);
+});
+
+test("says nothing about speech mode while the user is typing", () => {
+  assert.doesNotMatch(buildSystemPrompt({}), /## Speech mode/);
+  assert.doesNotMatch(buildSystemPrompt({ speechMode: false }), /## Speech mode/);
+});

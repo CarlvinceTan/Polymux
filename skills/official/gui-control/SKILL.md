@@ -1,5 +1,5 @@
 ---
-name: window-control
+name: gui-control
 description: Mandatory prerequisite for any action that may initialize, launch, open, reveal, focus, inspect, or control a local GUI app, directly or through another skill, plugin, script, or tool. Use it to protect or immediately restore the user's current focus, select preverified background routes, bind work to an exact window or tab, pair exact-window capture with accessibility control, prevent controller overlap, allow passive observation, and prepare user intervention without foregrounding the target. It does not apply to local file inspection, headless rendering, or screenshots produced without a GUI app.
 author: FlareAI
 category: System
@@ -61,7 +61,7 @@ existing-tab continuation or a temporary CAPTCHA or passkey fallback.
   or control a local GUI, including state calls or integrations that may launch
   an app transparently.
 - For an external local browser, preserve this exact preflight order in both
-  action and explanation: (1) explicitly load `window-control`; (2) verify the
+  action and explanation: (1) explicitly load `gui-control`; (2) verify the
   current default-browser boundary without launching it; (3) validate the
   trusted non-activating route; (4) identify the exact window or tab; (5) check
   ownership and acquire its lease. External-browser preflight does not use the

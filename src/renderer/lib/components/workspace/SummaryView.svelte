@@ -14,13 +14,20 @@
 <script lang="ts">
   import {taskStatusLabel, taskStatusTone} from '../../conversation/taskStatus';
   import Icon from '../shared/Icon.svelte';
+  import {t, type MessageKey} from '../../i18n';
+
+  const sectionTitles: Record<SummaryViewSection, MessageKey> = {
+    outputs: 'summary.outputs',
+    references: 'summary.references',
+    tasks: 'summary.tasks',
+  };
 
   export let section: SummaryViewSection;
   export let data: SummaryViewData;
   export let onOpenOutput: (output: SummaryOutput) => void = () => {};
   export let onOpenReference: (reference: SummaryReference) => void = () => {};
 
-  $: title = section[0].toUpperCase() + section.slice(1);
+  $: title = $t(sectionTitles[section]);
 </script>
 
 <div class="summary-view">

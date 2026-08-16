@@ -21,6 +21,7 @@
 <script lang="ts">
   import {afterUpdate, onDestroy, onMount} from 'svelte';
   import {renderMarkdown} from '../../conversation/markdown';
+  import {t} from '../../i18n';
 
   /** Enough source for four rendered lines; parsing the whole reply per hover is waste. */
   const PEEK_SOURCE_LIMIT = 600;
@@ -205,7 +206,7 @@
 </script>
 
 {#if items.length}
-  <nav class:interacting={hoveredIndex !== null} class="timeline-rail" aria-label="Conversation timeline" onmouseleave={() => hoveredIndex = null}>
+  <nav class:interacting={hoveredIndex !== null} class="timeline-rail" aria-label={$t('timeline.title')} onmouseleave={() => hoveredIndex = null}>
     {#each items as item, index (item.id)}
       <button
         type="button"
@@ -213,7 +214,7 @@
         class:hovered={hoveredIndex === index}
         class:near={profiles[index]?.near}
         class="timeline-point"
-        aria-label={`Jump to: ${item.prompt || item.reply}`}
+        aria-label={$t('timeline.jumpTo', {text: item.prompt || item.reply})}
         aria-current={activeId === item.id ? 'location' : undefined}
         data-tooltip="none"
         onmouseenter={(event) => hover(index, event)}

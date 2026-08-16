@@ -6,12 +6,14 @@
   import Icon from '../shared/Icon.svelte';
   import InlineChip, {type InlineChipItem, type SubmittedChip} from './InlineChip.svelte';
   import ProviderLogo from '../settings/ProviderLogo.svelte';
+  import {t, translate} from '../../i18n';
 
   export let active = false;
   export let speechModeEnabled = true;
   /** Seconds of silence that end dictation, or null to listen until pressed again. */
   export let dictationAutoStopSeconds: number | null = 6;
-  export let placeholder = 'Ask anything';
+  /** Empty means the default prompt, which follows the language. */
+  export let placeholder = '';
   export let variant: 'default' | 'welcome' = 'default';
   /** `immediate` sends past the queue and steers a run that is already going. */
   export let onSend: (text: string, files: File[], asGoal: boolean, immediate: boolean) => void;
@@ -35,11 +37,11 @@
   let goalEnabled = false;
   let fileDragActive = false;
 
-  const reasoningEffortOptions: Array<{value: ReasoningEffort; label: string}> = [
-    {value: 'off', label: 'Off'},
-    {value: 'low', label: 'Low'},
-    {value: 'medium', label: 'Medium'},
-    {value: 'high', label: 'High'},
+  $: reasoningEffortOptions = [
+    {value: 'off' as ReasoningEffort, label: $t('reasoning.off')},
+    {value: 'low' as ReasoningEffort, label: $t('reasoning.low')},
+    {value: 'medium' as ReasoningEffort, label: $t('reasoning.medium')},
+    {value: 'high' as ReasoningEffort, label: $t('reasoning.high')},
   ];
   /** Models that always think but take no effort level: neither pi-ai nor the
       models.dev catalogue records adjustable levels, so the exceptions live
@@ -110,10 +112,14 @@
   $: primary = (hasContent ? 'send' : active ? 'stop' : speechModeEnabled ? 'mic' : 'send') as 'send' | 'stop' | 'mic';
   $: chips = attachments.map(({file: _file, ...chip}) => chip);
   $: openModel = modelMenuItems.find((model) => modelKey(model) === openModelKey) ?? null;
-  $: modelMenuItems = availableModels.filter((model) => {
-    const query = modelSearch.trim().toLowerCase();
-    return !query || `${model.name} ${model.provider}`.toLowerCase().includes(query);
-  });
+  /** The selected model leads the list so the current choice is visible without
+      scrolling; the rest keep their original order. */
+  $: modelMenuItems = availableModels
+    .filter((model) => {
+      const query = modelSearch.trim().toLowerCase();
+      return !query || `${model.name} ${model.provider}`.toLowerCase().includes(query);
+    })
+    .sort((a, b) => Number(b.selected) - Number(a.selected));
   $: applyInsertion(insertion);
 
   let appliedInsertionId = '';
@@ -131,7 +137,7 @@
     else if (primary === 'mic') {
       const permission = await api.permissions.request('microphone');
       if (permission === 'granted') onVoice();
-      else dictationError = 'Microphone access is off. Enable it in System Settings.';
+      else dictationError = translate('dictation.noPermission');
     }
     else editor?.submit();
   }
@@ -157,7 +163,7 @@
   function effortsFor(model: ModelDto): Array<{value: ReasoningEffort; label: string}> {
     return adjustable(model)
       ? reasoningEffortOptions
-      : [{value: reasoning, label: model.reasoning ? 'Default' : 'None'}];
+      : [{value: reasoning, label: model.reasoning ? $t('reasoning.default') : $t('reasoning.none')}];
   }
 
   /** A menu row and a submenu option are both 28px tall, and the submenu adds
@@ -323,7 +329,7 @@
     };
     recording = next;
     owner = next;
-    void openRecorder(next).catch(() => abandonRecorder(next, 'Dictation could not start. Try again.'));
+    void openRecorder(next).catch(() => abandonRecorder(next, translate('dictation.startFailed')));
   }
 
   /** Hands the mic back and leaves the clip transcribing in the background, so
@@ -372,14 +378,14 @@
     const permission = await api.permissions.request('microphone');
     if (session.closed) return;
     if (permission !== 'granted') {
-      abandonRecorder(session, 'Microphone access is off. Enable it in System Settings.');
+      abandonRecorder(session, translate('dictation.noPermission'));
       return;
     }
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({audio: true});
     } catch {
-      abandonRecorder(session, 'No microphone was found. Connect one and try again.');
+      abandonRecorder(session, translate('dictation.noMicrophone'));
       return;
     }
     session.stream = stream;
@@ -538,7 +544,7 @@
   function dictationFailure(error: unknown): string {
     const message = readableError(error);
     const detail = message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
-    return detail || 'Dictation stopped unexpectedly. Try again.';
+    return detail || translate('dictation.stopped');
   }
 
   onMount(() => {
@@ -569,7 +575,7 @@
         bind:this={editor}
         value={draft}
         {chips}
-        {placeholder}
+        placeholder={placeholder || $t('composer.placeholder')}
         onChange={(text) => draft = text}
         onSubmit={submit}
         onRemove={removeAttachment}
@@ -580,14 +586,14 @@
       type="button"
       data-testid="prompt-primary-button"
       class="flareai-primary"
-      aria-label={primary === 'send' ? 'Send message' : primary === 'stop' ? 'Stop agent' : 'Start speech mode'}
-      data-tooltip-label={primary === 'send' ? (active ? 'Queue (⌘↩ to send now)' : 'Send') : primary === 'stop' ? 'Stop agent' : 'Speech Mode'}
+      aria-label={primary === 'send' ? $t('composer.sendMessage') : primary === 'stop' ? $t('composer.stopAgent') : $t('composer.startSpeechMode')}
+      data-tooltip-label={primary === 'send' ? (active ? $t('composer.queueHint') : $t('composer.send')) : primary === 'stop' ? $t('composer.stopAgent') : $t('composer.speechMode')}
       onclick={primaryAction}
     ><Icon name={primary === 'mic' ? 'waveform' : primary} size={primary === 'stop' ? 22 : 18}/></button>
   </div>
 
   <div class="flareai-prompt-toolbar">
-    <button type="button" onclick={chooseFiles}><Icon name="attach" size={14}/><span>ATTACH</span></button>
+    <button type="button" onclick={chooseFiles}><Icon name="attach" size={14}/><span>{$t('composer.attach')}</span></button>
     <button
       class="dictation-toggle"
       class:active={dictationListening}
@@ -599,28 +605,28 @@
         {#if dictationListening}<span class="dictation-ping" aria-hidden="true"></span>{/if}
         <Icon name="mic" size={14}/>
       </span>
-      <span>{dictationListening ? 'LISTENING…' : 'VOICE'}</span>
+      <span>{dictationListening ? $t('composer.listening') : $t('composer.voice')}</span>
     </button>
     <button
       class="goal-toggle"
       class:active={goalEnabled}
       type="button"
-      aria-label={goalEnabled ? 'Disable goal for next message' : 'Send next message as a goal'}
+      aria-label={goalEnabled ? $t('composer.goalOff') : $t('composer.goalOn')}
       aria-pressed={goalEnabled}
       onclick={() => goalEnabled = !goalEnabled}
-    ><Icon name="goal" size={14}/><span>GOAL</span></button>
+    ><Icon name="goal" size={14}/><span>{$t('composer.goal')}</span></button>
     <div bind:this={modelWrap} class="prompt-option-wrap">
-      <button type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} onclick={() => void toggleModelMenu()}><Icon name="brain" size={14}/><span>MODEL</span></button>
+      <button type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} onclick={() => void toggleModelMenu()}><Icon name="brain" size={14}/><span>{$t('composer.model')}</span></button>
       {#if modelMenuOpen && modelsLoaded}
-        <div class="flareai-dropdown-menu model-menu" role="menu" aria-label="Model options">
+        <div class="flareai-dropdown-menu model-menu" role="menu" aria-label={$t('composer.modelOptions')}>
           <div class="model-menu-search">
             <Icon name="search" size={13}/>
             <input
               bind:this={searchField}
               bind:value={modelSearch}
               type="text"
-              placeholder="Search models"
-              aria-label="Search models"
+              placeholder={$t('composer.searchModels')}
+              aria-label={$t('composer.searchModels')}
               spellcheck="false"
               autocomplete="off"
             />
@@ -628,7 +634,7 @@
               <button
                 type="button"
                 class="model-menu-clear"
-                aria-label="Clear search"
+                aria-label={$t('common.clearSearch')}
                 data-tooltip="none"
                 onclick={() => { modelSearch = ''; searchField?.focus(); }}
               ><Icon name="close" size={12}/></button>
@@ -657,14 +663,14 @@
                 </button>
               </div>
             {:else}
-              <p class="model-menu-empty">No models available</p>
+              <p class="model-menu-empty">{$t('composer.noModels')}</p>
             {/each}
           </div>
           <!-- Outside the scroller: a submenu inside it would be clipped by the
                overflow that makes the list scrollable. -->
           {#if openModel}
-            <div class="flareai-dropdown-menu model-submenu" role="menu" aria-label={`Reasoning for ${openModel.name}`} style:top={`${openModelTop}px`}>
-              <p class="model-submenu-title">Reasoning</p>
+            <div class="flareai-dropdown-menu model-submenu" role="menu" aria-label={$t('composer.reasoningFor', {model: openModel.name})} style:top={`${openModelTop}px`}>
+              <p class="model-submenu-title">{$t('composer.reasoning')}</p>
               {#each effortsFor(openModel) as option (option.value)}
                 <button
                   type="button"

@@ -1,10 +1,11 @@
 <script lang="ts">
   import {onDestroy, onMount, tick} from 'svelte';
   import {readableError} from '../../errors';
-  import type {AppUpdateDto, AppVersionDto, ChronicleStatusDto, GeneralSettingsDto, McpRegistryEntryDto, McpServerDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, ProviderDto, SkillDto, SkillRegistryEntryDto} from '@flareai/protocol';
+  import type {AppUpdateDto, AppVersionDto, BrowserExtensionDto, ChronicleStatusDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, McpRegistryEntryDto, McpServerDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, ProviderDto, SkillDto, SkillRegistryEntryDto} from '@flareai/protocol';
   import {SUPPORTED_LANGUAGES} from '@flareai/protocol';
   import {flareaiApi} from '../../api/flareai';
   import {applyTheme, type ThemeMode} from '../../theme';
+  import {activeLocale, applyLanguage, plural, t, translate} from '../../i18n';
   import {modelCompanyId, providerName} from '../../options/providerBrands';
   import Icon from '../shared/Icon.svelte';
   import Menu from '../shared/Menu.svelte';
@@ -31,6 +32,11 @@
   let chronicle: ChronicleStatusDto | null = null;
   let memory: MemoryStatusDto | null = null;
   let general: GeneralSettingsDto | null = null;
+  let extensionStatus: BrowserExtensionDto | null = null;
+
+  function openExtensionInstall(): void {
+    void api.extension.openInstall().catch(() => {});
+  }
   let updatingMemory = false;
   let updatingChronicle = false;
   let updatingTheme = false;
@@ -53,6 +59,13 @@
   let customProviderKey = '';
   let customProviderModels = '';
   let customProviderLogoDataUrl = '';
+  let discoveringModels = false;
+  /** The address the selected local runtime will be set up on — its default
+   * port until the user says otherwise. */
+  let runtimeUrl = '';
+  /** The model list is a result, not a question — it opens for editing only
+   * when asked for, or when there is nothing to show. */
+  let modelsExpanded = false;
   let loading = true;
   let adding: 'mcp' | 'skills' | null = null;
   let integrationSaving = false;
@@ -98,6 +111,11 @@
   let mcpRegistryRequest = 0;
   let installingMcpRegistryId = '';
   let installingSkill = false;
+  let discoveringSkills = false;
+  let discoveredGroups: DiscoveredSkillGroupDto[] = [];
+  let discoverySearching = false;
+  let discoveryError = '';
+  let adoptingPath = '';
   let skillRegistryQuery = '';
   let registryResults: SkillRegistryEntryDto[] = [];
   let registrySearching = false;
@@ -109,6 +127,10 @@
   let railList: HTMLUListElement;
   let railAtTop = true;
   let railAtBottom = true;
+  let discoveryList: HTMLDivElement;
+  let collapsedGroups = new Set<string>();
+  let discoveryAtTop = true;
+  let discoveryAtBottom = true;
   let currency: Currency = 'USD';
   let currencyRates: Partial<Record<Currency, number>> = {USD: 1};
   let appVersion: AppVersionDto | null = null;
@@ -118,37 +140,37 @@
   let modelMetadata: Record<string, ModelMetadataDto> = {};
   let error = '';
 
-  const modelFilterOptions = [{value: 'default', label: 'Default'}, {value: 'all', label: 'All Companies'}, {value: 'custom', label: 'Custom Provider'}, {value: 'kind-text', label: 'Text models'}, {value: 'kind-image', label: 'Image models'}, {value: 'kind-video', label: 'Video models'}, {value: 'kind-audio', label: 'Speech models'}, {value: 'kind-embedding', label: 'Embedding models'}];
+  $: modelFilterOptions = [{value: 'default', label: $t('reasoning.default')}, {value: 'all', label: $t('settings.allCompanies')}, {value: 'custom', label: $t('settings.customProvider')}, {value: 'kind-text', label: $t('settings.textModels')}, {value: 'kind-image', label: $t('settings.imageModels')}, {value: 'kind-video', label: $t('settings.videoModels')}, {value: 'kind-audio', label: $t('settings.speechModels')}, {value: 'kind-embedding', label: $t('settings.embeddingModels')}];
   /** Every role a model can be given, in the order the expanded row lists them.
    * `main` is what the agent answers with; `task` and `judge` fall back to it,
    * so only those two can be set back to following it. */
   /* `label` is what the UI shows; `job` is the long form the screen-reader
      labels and tooltips still spell out. */
-  const MODEL_ROLES: Array<{value: ModelRole; label: string; job: string; hint: string; followsMain: boolean; kind: ModelKind}> = [
-    {value: 'main', label: 'Main', job: 'main model', hint: 'Answers in chat', followsMain: false, kind: 'text'},
-    {value: 'task', label: 'Task', job: 'task model', hint: 'Runs subagent tasks', followsMain: true, kind: 'text'},
-    {value: 'judge', label: 'Judge', job: 'judge model', hint: 'Decides whether a goal is met', followsMain: true, kind: 'text'},
-    {value: 'speech', label: 'Speech', job: 'speech model', hint: 'Speech mode replies', followsMain: false, kind: 'audio'},
-    {value: 'image', label: 'Image generation', job: 'image generation model', hint: 'Generates images', followsMain: false, kind: 'image'},
-    {value: 'video', label: 'Video generation', job: 'video generation model', hint: 'Generates video', followsMain: false, kind: 'video'},
+  $: MODEL_ROLES = [
+    {value: 'main' as ModelRole, label: $t('settings.roleMain'), job: $t('settings.roleMainJob'), hint: $t('settings.roleMainHint'), followsMain: false, kind: 'text' as ModelKind},
+    {value: 'task' as ModelRole, label: $t('settings.roleTask'), job: $t('settings.roleTaskJob'), hint: $t('settings.roleTaskHint'), followsMain: true, kind: 'text' as ModelKind},
+    {value: 'judge' as ModelRole, label: $t('settings.roleJudge'), job: $t('settings.roleJudgeJob'), hint: $t('settings.roleJudgeHint'), followsMain: true, kind: 'text' as ModelKind},
+    {value: 'speech' as ModelRole, label: $t('settings.roleSpeech'), job: $t('settings.roleSpeechJob'), hint: $t('settings.roleSpeechHint'), followsMain: false, kind: 'audio' as ModelKind},
+    {value: 'image' as ModelRole, label: $t('settings.roleImage'), job: $t('settings.roleImageJob'), hint: $t('settings.roleImageHint'), followsMain: false, kind: 'image' as ModelKind},
+    {value: 'video' as ModelRole, label: $t('settings.roleVideo'), job: $t('settings.roleVideoJob'), hint: $t('settings.roleVideoHint'), followsMain: false, kind: 'video' as ModelKind},
   ];
-  const providerFilterOptions = [{value: 'all', label: 'All providers'}, {value: 'configured', label: 'Configured'}, {value: 'unconfigured', label: 'Not configured'}];
-  const mcpFilterOptions = [{value: 'all', label: 'All MCP servers'}, {value: 'enabled', label: 'Enabled'}, {value: 'disabled', label: 'Disabled'}, {value: 'connected', label: 'Connected'}, {value: 'official', label: 'Official'}, {value: 'custom', label: 'Custom'}];
-  const skillFilterOptions = [{value: 'all', label: 'All'}, {value: 'enabled', label: 'Enabled'}, {value: 'disabled', label: 'Disabled'}, {value: 'official', label: 'Official'}, {value: 'custom', label: 'Custom'}];
-  const modelSortOptions = [{value: 'recommended', label: 'Recommended'}, {value: 'name-asc', label: 'Company A–Z'}, {value: 'name-desc', label: 'Company Z–A'}, {value: 'models-desc', label: 'Most models'}, {value: 'models-asc', label: 'Fewest models'}];
-  const providerSortOptions = [{value: 'default', label: 'Default'}, {value: 'recommended', label: 'Recommended'}, {value: 'name-asc', label: 'Provider A–Z'}, {value: 'name-desc', label: 'Provider Z–A'}, {value: 'models-desc', label: 'Most models'}, {value: 'models-asc', label: 'Fewest models'}];
-  const mcpSortOptions = [{value: 'recommended', label: 'Recommended'}, {value: 'name-asc', label: 'Server A–Z'}, {value: 'name-desc', label: 'Server Z–A'}];
-  const skillSortOptions = [{value: 'recommended', label: 'Recommended'}, {value: 'updated-desc', label: 'Last edited'}, {value: 'name-asc', label: 'Skill A–Z'}, {value: 'name-desc', label: 'Skill Z–A'}];
-  const MODE_HEADERS: Record<Mode, {title: string; description: string}> = {
-    general: {title: 'General', description: 'Manage FlareAI preferences and access.'},
-    hub: {title: 'Hub', description: 'Connect messaging platforms and email accounts.'},
-    drive: {title: 'Drive', description: 'Connect storage providers and choose where files go.'},
-    mcp: {title: 'MCP', description: 'Manage Model Context Protocol servers.'},
-    skills: {title: 'Skills', description: 'Manage the skills available to FlareAI.'},
-    model: {title: 'Models', description: 'Click a model to assign it to a job.'},
-    provider: {title: 'Providers', description: 'Manage model providers and API keys.'},
-    memory: {title: 'Memory', description: 'Review and manage FlareAI memory.'},
-  };
+  $: providerFilterOptions = [{value: 'all', label: $t('settings.allProviders')}, {value: 'configured', label: $t('settings.configured')}, {value: 'unconfigured', label: $t('settings.notConfigured')}];
+  $: mcpFilterOptions = [{value: 'all', label: $t('settings.allMcp')}, {value: 'enabled', label: $t('settings.enabled')}, {value: 'disabled', label: $t('settings.disabled')}, {value: 'connected', label: $t('drive.stateConnected')}, {value: 'official', label: $t('settings.official')}, {value: 'custom', label: $t('settings.custom')}];
+  $: skillFilterOptions = [{value: 'all', label: $t('hub.railAll')}, {value: 'enabled', label: $t('settings.enabled')}, {value: 'disabled', label: $t('settings.disabled')}, {value: 'official', label: $t('settings.official')}, {value: 'custom', label: $t('settings.custom')}];
+  $: modelSortOptions = [{value: 'recommended', label: $t('hub.sortRecommended')}, {value: 'name-asc', label: $t('settings.sortCompanyAsc')}, {value: 'name-desc', label: $t('settings.sortCompanyDesc')}, {value: 'models-desc', label: $t('settings.sortMostModels')}, {value: 'models-asc', label: $t('settings.sortFewestModels')}];
+  $: providerSortOptions = [{value: 'default', label: $t('reasoning.default')}, {value: 'recommended', label: $t('hub.sortRecommended')}, {value: 'name-asc', label: $t('settings.sortProviderAsc')}, {value: 'name-desc', label: $t('settings.sortProviderDesc')}, {value: 'models-desc', label: $t('settings.sortMostModels')}, {value: 'models-asc', label: $t('settings.sortFewestModels')}];
+  $: mcpSortOptions = [{value: 'recommended', label: $t('hub.sortRecommended')}, {value: 'name-asc', label: $t('settings.sortServerAsc')}, {value: 'name-desc', label: $t('settings.sortServerDesc')}];
+  $: skillSortOptions = [{value: 'recommended', label: $t('hub.sortRecommended')}, {value: 'updated-desc', label: $t('settings.lastEdited')}, {value: 'name-asc', label: $t('settings.sortSkillAsc')}, {value: 'name-desc', label: $t('settings.sortSkillDesc')}];
+  $: MODE_HEADERS = {
+    general: {title: $t('settings.tabGeneral'), description: $t('settings.generalBlurb')},
+    hub: {title: $t('workspace.hub'), description: $t('settings.hubBlurb')},
+    drive: {title: $t('workspace.drive'), description: $t('settings.driveBlurb')},
+    mcp: {title: $t('settings.tabMcp'), description: $t('settings.mcpBlurb')},
+    skills: {title: $t('settings.tabSkills'), description: $t('settings.skillsBlurb')},
+    model: {title: $t('settings.tabModels'), description: $t('settings.modelsBlurb')},
+    provider: {title: $t('settings.tabProviders'), description: $t('settings.providersBlurb')},
+    memory: {title: $t('settings.tabMemory'), description: $t('settings.memoryBlurb')},
+  } as Record<Mode, {title: string; description: string}>;
   const recommendedModelCompanies = ['openai', 'anthropic', 'google', 'xai', 'meta', 'deepseek', 'mistral', 'qwen', 'moonshotai', 'minimax', 'cohere', 'perplexity', 'ai21'];
   const currencies: Currency[] = ['USD', 'AUD', 'EUR', 'GBP', 'SGD', 'JPY'];
   const currencySymbols: Record<Currency, string> = {USD: '$', AUD: 'A$', EUR: '€', GBP: '£', SGD: 'S$', JPY: '¥'};
@@ -170,30 +192,27 @@
   $: visibleProviders = selectProviders(providers, query, providerFilter, providerSort);
   $: railEmpty = mode === 'mcp' ? visibleMcp.length === 0 : mode === 'skills' ? visibleSkills.length === 0 : mode === 'model' ? modelCompanies.length === 0 : visibleProviders.length === 0;
   $: languageOptions = SUPPORTED_LANGUAGES.map(({value, label}) => ({value, label}));
-  const autoStopOptions = [
-    {value: '3', label: '3 seconds'},
-    {value: '6', label: '6 seconds'},
-    {value: '10', label: '10 seconds'},
-    {value: '20', label: '20 seconds'},
-    {value: 'off', label: 'Never'},
+  $: autoStopOptions = [
+    ...[3, 6, 10, 20].map((seconds) => ({value: String(seconds), label: plural('settings.seconds', seconds)})),
+    {value: 'off', label: $t('settings.never')},
   ];
   $: buildDetailText = appVersion
     ? `${appVersion.platform}${appVersion.electron ? ` · Electron ${appVersion.electron}` : ''}${appVersion.packaged ? '' : ' · development build'}`
-    : 'Reading build details…';
+    : $t('settings.readingBuild');
   $: versionDetailText = update?.status === 'error' && update.message
     ? `${buildDetailText} · ${update.message}`
     : buildDetailText;
   $: updateSummaryText = checkingUpdate
-    ? 'Checking for updates…'
+    ? $t('settings.checkingUpdates')
     : !update
       ? '—'
       : update.status === 'downloading'
-        ? 'Downloading update…'
+        ? $t('settings.downloadingUpdate')
         : update.status === 'error'
-          ? 'Check failed'
+          ? $t('settings.checkFailed')
           : update.latest && update.latest !== update.version
-            ? `Update available · ${update.latest}`
-            : 'Latest version';
+            ? $t('settings.updateAvailable', {version: update.latest})
+            : $t('settings.latestVersion');
   $: currencyOptions = currencies.filter((code) => currencyRates[code] !== undefined).map((code) => ({value: code, label: code}));
   $: if (!visibleMcp.some((item) => item.id === selectedMcp)) selectedMcp = visibleMcp[0]?.id ?? '';
   $: if (!visibleSkills.some((item) => item.name === selectedSkill)) selectedSkill = visibleSkills[0]?.name ?? '';
@@ -207,8 +226,16 @@
   $: skill = skills.find((item) => item.name === selectedSkill);
   $: modelCompany = modelCompanies.find((item) => item.id === selectedModelProvider);
   $: credentialProvider = providers.find((item) => item.id === selectedCredentialProvider);
+  // Follows the selection, including the automatic one made when the rail is
+  // first filled. Typing in the field does not disturb it.
+  $: runtimeUrl = credentialProvider?.baseUrl ?? '';
   $: visibleCompanyModels = modelCompany?.models ?? [];
-  $: activeRailSubject = mode === 'mcp' ? 'MCP servers' : mode === 'skills' ? 'skills' : mode === 'model' ? 'models' : 'providers';
+  $: activeRailSubject = mode === 'mcp' ? $t('settings.railMcp') : mode === 'skills' ? $t('settings.railSkills') : mode === 'model' ? $t('settings.railModels') : $t('settings.railProviders');
+  /** What the search field says it searches. Singular where the rail's filter
+   * and sort menus name the same thing in the plural — "Search MCP server"
+   * reads as one server's worth of rows, which is what typing there narrows
+   * to. */
+  $: searchRailSubject = mode === 'mcp' ? $t('settings.searchRailMcp') : mode === 'skills' ? $t('settings.railSkills') : mode === 'model' ? $t('settings.searchRailModel') : $t('settings.searchRailProvider');
   $: activeRailFilter = mode === 'mcp' ? mcpFilter : mode === 'skills' ? skillFilter : mode === 'model' ? modelFilter : providerFilter;
   $: activeRailSort = mode === 'mcp' ? mcpSort : mode === 'skills' ? skillSort : mode === 'model' ? modelSort : providerSort;
   $: activeRailDefaultSort = mode === 'provider' ? 'default' : 'recommended';
@@ -218,15 +245,16 @@
   $: modeHeader = MODE_HEADERS[mode];
   $: railContentKey = `${mode}:${query}:${visibleMcp.length}:${visibleSkills.length}:${modelCompanies.length}:${visibleProviders.length}`;
   $: if (railContentKey) void tick().then(measureRailEdges);
+  $: if (discoveringSkills || discoveredGroups) void tick().then(measureDiscoveryEdges);
   $: locationStatusText = !general?.locationEnabled
-    ? 'Not shared with the agent'
+    ? $t('settings.notShared')
     : locating && !general.location
-      ? 'Connecting…'
+      ? $t('hub.connecting')
       : locationError
         ? locationError
         : !general.location
-          ? 'Waiting for location permission'
-          : 'Shared with the agent';
+          ? $t('settings.waitingLocation')
+          : $t('settings.shared');
 
   onDestroy(() => {
     // A registry search debounce that outlives the modal would fire a network
@@ -253,6 +281,24 @@
     railAtBottom = railList.scrollHeight - railList.scrollTop - railList.clientHeight <= 1;
   }
 
+  /** The same edge fade the rail carries, so a scrollable group list reads as
+   * one: solid where the content ends, faded where it runs on. */
+  function measureDiscoveryEdges(): void {
+    if (!discoveryList) return;
+    discoveryAtTop = discoveryList.scrollTop <= 1;
+    discoveryAtBottom =
+      discoveryList.scrollHeight - discoveryList.scrollTop - discoveryList.clientHeight <= 1;
+  }
+
+  /** Collapsing is per agent and reassigns the set, since Svelte tracks the
+   * binding rather than the mutation. */
+  function toggleGroup(id: string): void {
+    const next = new Set(collapsedGroups);
+    if (!next.delete(id)) next.add(id);
+    collapsedGroups = next;
+    void tick().then(measureDiscoveryEdges);
+  }
+
   function matches(value: string, filter: string): boolean {
     return !filter || value.toLocaleLowerCase().includes(filter);
   }
@@ -277,26 +323,26 @@
   }
 
   function skillAuthor(item: SkillDto): string {
-    return item.author ?? (item.source === 'official' ? 'FlareAI' : 'Custom');
+    return item.author ?? (item.source === 'official' ? 'FlareAI' : translate('settings.custom'));
   }
 
   function skillOrigin(item: SkillDto): string {
-    if (item.source === 'official' || item.source === 'bundled') return 'Bundled with FlareAI';
+    if (item.source === 'official' || item.source === 'bundled') return translate('settings.bundled');
     if (item.source === 'flareai') return 'FlareAI · ~/.flareai/skills';
     if (item.source === 'codex') return 'Codex · ~/.codex/skills';
     if (item.source === 'agents') return 'Agents · ~/.agents/skills';
-    return 'Configured folder';
+    return translate('settings.configuredFolder');
   }
 
   function skillUpdated(item: SkillDto): string | undefined {
     if (!item.updatedAt) return undefined;
     const time = Date.parse(item.updatedAt);
     if (Number.isNaN(time)) return undefined;
-    return new Date(time).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'});
+    return new Date(time).toLocaleDateString(activeLocale(), {year: 'numeric', month: 'short', day: 'numeric'});
   }
 
   function mcpOrigin(item: McpServerDto): string {
-    if (item.source === 'official') return 'Bundled with FlareAI';
+    if (item.source === 'official') return translate('settings.bundled');
     if (item.source === 'codex') return 'Codex';
     return 'FlareAI';
   }
@@ -304,7 +350,7 @@
   function mcpAuthor(item: McpServerDto): string {
     if (item.source === 'official') return 'FlareAI';
     if (item.source === 'codex') return 'Codex';
-    return 'Custom';
+    return translate('settings.custom');
   }
 
   function mcpStatus(item: McpServerDto): string {
@@ -337,17 +383,23 @@
     const lines = [`${model.provider}/${model.id}`];
     if (!meta) return lines[0];
     if (meta.description) lines.push('', meta.description, '');
-    if (meta.lab) lines.push(`Lab: ${providerName(meta.lab)}`);
-    if (meta.family) lines.push(`Family: ${meta.family}`);
-    if (meta.releaseDate) lines.push(`Released: ${meta.releaseDate}`);
-    if (meta.knowledgeCutoff) lines.push(`Knowledge cutoff: ${meta.knowledgeCutoff}`);
-    if (meta.openWeights !== undefined) lines.push(meta.openWeights ? 'Open weights' : 'Closed weights');
+    if (meta.lab) lines.push(translate('settings.metaLab', {lab: providerName(meta.lab)}));
+    if (meta.family) lines.push(translate('settings.metaFamily', {family: meta.family}));
+    if (meta.releaseDate) lines.push(translate('settings.metaReleased', {date: meta.releaseDate}));
+    if (meta.knowledgeCutoff) lines.push(translate('settings.metaCutoff', {date: meta.knowledgeCutoff}));
+    if (meta.openWeights !== undefined) lines.push(translate(meta.openWeights ? 'settings.openWeights' : 'settings.closedWeights'));
     const skills = [
-      meta.toolCall ? 'tools' : '',
-      meta.structuredOutput ? 'structured output' : '',
-      meta.attachment ? 'attachments' : '',
+      meta.toolCall ? translate('settings.capabilityTools') : '',
+      meta.structuredOutput ? translate('settings.capabilityStructured') : '',
+      meta.attachment ? translate('settings.capabilityAttachments') : '',
     ].filter(Boolean);
-    if (skills.length) lines.push(`Supports: ${skills.join(', ')}`);
+    // Joined with a separator the catalog owns rather than `Intl.ListFormat`:
+    // this is a bare list of capabilities, and `ListFormat` insists on turning
+    // one into a sentence — French gains an "et", Chinese loses its commas.
+    if (skills.length)
+      lines.push(translate('settings.supports', {
+        capabilities: skills.join(translate('settings.capabilitySeparator')),
+      }));
     return lines.join('\n');
   }
 
@@ -452,13 +504,13 @@
   }
 
   function selectMcp(id: string): void { browsingMcpRegistry = false; selectedMcp = id; adding = null; }
-  function selectSkill(name: string): void { selectedSkill = name; adding = null; }
+  function selectSkill(name: string): void { selectedSkill = name; adding = null; discoveringSkills = false; }
   function selectModelCompany(id: string): void { selectedModelProvider = id; }
 
   async function loadAll(): Promise<void> {
     loading = true;
     try {
-      [mcpServers, skills, models, providers, memory, chronicle, general] = await Promise.all([api.mcp.list(), api.skills.list(), api.models.list(), api.providers.list(), api.memory.status(), api.chronicle.status(), api.general.get()]);
+      [mcpServers, skills, models, providers, memory, chronicle, general, extensionStatus] = await Promise.all([api.mcp.list(), api.skills.list(), api.models.list(), api.providers.list(), api.memory.status(), api.chronicle.status(), api.general.get(), api.extension.status()]);
       currency = general.currency ?? defaultCurrency(general.location);
       error = '';
       // Catalogue detail is decoration: it loads after the lists, and a
@@ -523,6 +575,10 @@
     updatingLanguage = true;
     try {
       general = await api.general.update({language});
+      // Applied from the answer rather than the request: the backend is what
+      // decides the stored value, and the interface should redraw in the
+      // language that was actually saved.
+      applyLanguage(general.language);
       error = '';
     } catch (reason) {
       error = readableError(reason);
@@ -623,7 +679,7 @@
       error = '';
       if (denied && openSettingsWhenDenied) await api.permissions.openSettings('location');
     } catch {
-      locationError = 'Could not determine location';
+      locationError = translate('settings.locationFailed');
     } finally {
       locating = false;
     }
@@ -683,14 +739,20 @@
   }
 
   function formatBytes(value: number): string {
-    if (value < 1024) return `${value} B`;
-    if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
-    if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
-    return `${(value / 1024 ** 3).toFixed(1)} GB`;
+    if (value < 1024) return translate('drive.unitBytes', {size: value.toLocaleString(activeLocale())});
+    if (value < 1024 ** 2) return translate('drive.unitKilobytes', {size: decimal(value / 1024)});
+    if (value < 1024 ** 3) return translate('drive.unitMegabytes', {size: decimal(value / 1024 ** 2)});
+    return translate('drive.unitGigabytes', {size: decimal(value / 1024 ** 3)});
+  }
+
+  function decimal(value: number): string {
+    return value.toLocaleString(activeLocale(), {minimumFractionDigits: 1, maximumFractionDigits: 1});
   }
 
   function formatMemoryTime(value: string | null | undefined): string {
-    return value ? new Date(value).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : 'None';
+    return value
+      ? new Date(value).toLocaleString(activeLocale(), {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})
+      : translate('reasoning.none');
   }
 
   function defaultCurrency(location: GeneralSettingsDto['location']): Currency {
@@ -755,6 +817,7 @@
     adding = kind;
     editingIntegration = false;
     installingSkill = false;
+    discoveringSkills = false;
     browsingMcpRegistry = false;
     if (kind === 'mcp') {
       customMcpId = ''; customMcpName = ''; customMcpDescription = ''; customMcpTransport = 'stdio'; customMcpTarget = ''; customMcpArgs = ''; customMcpEnvironment = ''; customMcpCwd = '';
@@ -861,6 +924,47 @@
     customMcpTransport = 'streamable-http';
     customMcpTarget = entry.url;
     customMcpEnvironment = entry.requiredHeaders.map((header) => `${header}=`).join('\n');
+  }
+
+  /**
+   * Reads the other agents' skill directories on this machine. Re-run on every
+   * visit rather than cached: skills arrive from another agent's installer at
+   * any time, and a stale list is worse than a moment's wait.
+   */
+  function beginDiscoverSkills(): void {
+    skillAddMenuOpen = false;
+    adding = null;
+    installingSkill = false;
+    selectedSkill = '';
+    discoveringSkills = true;
+    discoveryError = '';
+    collapsedGroups = new Set();
+    void (async () => {
+      discoverySearching = true;
+      try {
+        discoveredGroups = await api.skills.discover();
+        // Folded up, so a machine with several agents opens as a readable list
+        // of who has skills rather than a wall of rows. One agent has nothing
+        // to survey, so its skills are the answer and stay on show.
+        collapsedGroups = discoveredGroups.length > 1
+          ? new Set(discoveredGroups.map((group) => group.id))
+          : new Set();
+      } catch (reason) {
+        discoveredGroups = [];
+        discoveryError = readableError(reason);
+      } finally { discoverySearching = false; }
+    })();
+  }
+
+  /** Adopting keeps the scan open: a visit is usually about several skills. */
+  async function adoptDiscoveredSkill(entry: DiscoveredSkillDto): Promise<void> {
+    adoptingPath = entry.path;
+    try {
+      skills = await api.skills.adopt(entry.path);
+      discoveredGroups = await api.skills.discover();
+      error = '';
+    } catch (reason) { error = readableError(reason); }
+    finally { adoptingPath = ''; }
   }
 
   function beginInstallSkill(): void {
@@ -1024,7 +1128,7 @@
   function keyValueLines(value: string): Record<string, string> | undefined {
     const entries = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
       const separator = line.indexOf('=');
-      if (separator < 1) throw new Error(`Use KEY=value for “${line}”.`);
+      if (separator < 1) throw new Error(translate('settings.useKeyValue', {line}));
       return [line.slice(0, separator).trim(), line.slice(separator + 1)] as const;
     });
     return entries.length ? Object.fromEntries(entries) : undefined;
@@ -1067,6 +1171,20 @@
   function roleHoldsModel(role: ModelRole, item: ModelDto, roles: ModelRolesDto | null): boolean {
     const assignment = roleAssignment(role, roles);
     return !!assignment && assignment.provider === item.provider && assignment.id === item.id;
+  }
+
+  /** Set to Main only earns its place when pressing it would change something:
+   * the role has its own model, and that model is not already what main holds
+   * (an unassigned role is following main already). */
+  function canFollowMain(role: {value: ModelRole; followsMain: boolean}, item: ModelDto, roles: ModelRolesDto | null): boolean {
+    if (!role.followsMain) return false;
+    const assignment = roleAssignment(role.value, roles);
+    if (!assignment) return false;
+    const main = roleAssignment('main', roles);
+    // On the main model's own row, Set already lands the role on that model —
+    // two buttons for one outcome, so only Set stays.
+    if (main && main.provider === item.provider && main.id === item.id) return false;
+    return !main || main.provider !== assignment.provider || main.id !== assignment.id;
   }
 
   /** What the role points at today, in the words the row shows under its name. */
@@ -1135,6 +1253,62 @@
     editingCustomProviderId = '';
     selectedCredentialProvider = id;
     credentialKey = '';
+    runtimeUrl = providers.find((item) => item.id === id)?.baseUrl ?? '';
+    error = '';
+  }
+
+  /** Replaces the list rather than adding to it: the server is the authority
+   * on what it can serve, and a model it no longer loads should not linger. */
+  async function detectCustomProviderModels(): Promise<void> {
+    if (!customProviderUrl.trim()) {
+      error = translate('settings.customProviderRequired');
+      return;
+    }
+    discoveringModels = true;
+    try {
+      const detected = await api.providers.discoverModels({
+        baseUrl: customProviderUrl.trim(),
+        apiKey: customProviderKey.trim() || undefined,
+      });
+      customProviderModels = detected.map((model) => model.id).join('\n');
+      error = detected.length ? '' : translate('settings.noModelsDetected');
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      discoveringModels = false;
+    }
+  }
+
+  /** A known local runtime needs nothing but its address, so setting one up is
+   * one button: FlareAI asks the server what it serves and files it under the
+   * runtime's own name. */
+  async function setupLocalRuntime(provider: ProviderDto): Promise<void> {
+    savingCredential = true;
+    error = '';
+    try {
+      const updated = await api.providers.setupLocalRuntime({
+        id: provider.id,
+        baseUrl: runtimeUrl.trim() || undefined,
+      });
+      [providers, models] = await Promise.all([api.providers.list(), api.models.list()]);
+      selectedCredentialProvider = updated.id;
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      savingCredential = false;
+    }
+  }
+
+  function customProviderModelIdList(text: string): string[] {
+    return text.split(/\r?\n/).map((line) => line.split('|', 1)[0]!.trim()).filter(Boolean);
+  }
+
+  /** The address is the only thing a local server needs, so leaving that field
+   * is the moment to go and ask it what it has — but only when the user has
+   * not already put a list in by hand. */
+  function detectOnUrlSettled(): void {
+    if (!customProviderUrl.trim() || customProviderModels.trim() || discoveringModels) return;
+    void detectCustomProviderModels();
   }
 
   function beginCustomProvider(): void {
@@ -1145,6 +1319,7 @@
     customProviderKey = '';
     customProviderModels = '';
     customProviderLogoDataUrl = '';
+    modelsExpanded = false;
     openRailMenu = null;
     error = '';
   }
@@ -1157,6 +1332,7 @@
     customProviderKey = '';
     customProviderLogoDataUrl = provider.logoDataUrl ?? '';
     customProviderModels = models.filter((model) => model.provider === provider.id).map((model) => `${model.id}${model.name !== model.id ? ` | ${model.name}` : ''}`).join('\n');
+    modelsExpanded = false;
     error = '';
   }
 
@@ -1165,7 +1341,7 @@
     const file = input.files?.[0];
     if (!file) return;
     if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'].includes(file.type) || file.size > 1_000_000) {
-      error = 'Choose a PNG, JPEG, WebP, GIF, or SVG image under 1 MB.';
+      error = translate('settings.imageTooLarge');
       input.value = '';
       return;
     }
@@ -1184,7 +1360,7 @@
       return {id, name: name || undefined};
     });
     if (!customProviderName.trim() || !customProviderUrl.trim() || parsedModels.length === 0) {
-      error = 'Provider name, base URL, and at least one model are required.';
+      error = translate('settings.customProviderRequired');
       return;
     }
     savingCredential = true;
@@ -1345,24 +1521,24 @@
 {#snippet pendingToggle()}<span class="chronicle-toggle pending" aria-hidden="true"><span></span></span>{/snippet}
 
 <div class="options-modal-backdrop" role="presentation" onpointerdown={noteBackdropPress} onclick={closeFromBackdrop}>
-  <div class="options-modal" class:settling={!settled} role="dialog" aria-modal="true" aria-label="Settings">
+  <div class="options-modal" class:settling={!settled} role="dialog" aria-modal="true" aria-label={$t('settings.title')}>
     <header class="options-header">
       <div>
         <h2>{modeHeader.title}</h2>
         <p>{modeHeader.description}</p>
       </div>
-      <button type="button" class="options-close" aria-label="Close Settings" data-tooltip-label="Close" onclick={onClose}><Icon name="close" size={18}/></button>
+      <button type="button" class="options-close" aria-label={$t('settings.close')} data-tooltip-label={$t('settings.closeShort')} onclick={onClose}><Icon name="close" size={18}/></button>
     </header>
 
-    <div class="options-mode" role="tablist" aria-label="General, hub, drive, MCP, skills, model, provider, or memory">
-      <button type="button" role="tab" aria-selected={mode === 'general'} class:active={mode === 'general'} onclick={() => selectMode('general')}>General</button>
-      <button type="button" role="tab" aria-selected={mode === 'hub'} class:active={mode === 'hub'} onclick={() => selectMode('hub')}>Hub</button>
-      <button type="button" role="tab" aria-selected={mode === 'drive'} class:active={mode === 'drive'} onclick={() => selectMode('drive')}>Drive</button>
+    <div class="options-mode" role="tablist" aria-label={$t('settings.tabsLabel')}>
+      <button type="button" role="tab" aria-selected={mode === 'general'} class:active={mode === 'general'} onclick={() => selectMode('general')}>{$t('settings.tabGeneral')}</button>
+      <button type="button" role="tab" aria-selected={mode === 'hub'} class:active={mode === 'hub'} onclick={() => selectMode('hub')}>{$t('workspace.hub')}</button>
+      <button type="button" role="tab" aria-selected={mode === 'drive'} class:active={mode === 'drive'} onclick={() => selectMode('drive')}>{$t('workspace.drive')}</button>
       <button type="button" role="tab" aria-selected={mode === 'mcp'} class:active={mode === 'mcp'} onclick={() => selectMode('mcp')}>MCP</button>
-      <button type="button" role="tab" aria-selected={mode === 'skills'} class:active={mode === 'skills'} onclick={() => selectMode('skills')}>Skills</button>
-      <button type="button" role="tab" aria-selected={mode === 'model'} class:active={mode === 'model'} onclick={() => selectMode('model')}>Models</button>
-      <button type="button" role="tab" aria-selected={mode === 'provider'} class:active={mode === 'provider'} onclick={() => selectMode('provider')}>Provider</button>
-      <button type="button" role="tab" aria-selected={mode === 'memory'} class:active={mode === 'memory'} onclick={() => selectMode('memory')}>Memory</button>
+      <button type="button" role="tab" aria-selected={mode === 'skills'} class:active={mode === 'skills'} onclick={() => selectMode('skills')}>{$t('settings.tabSkills')}</button>
+      <button type="button" role="tab" aria-selected={mode === 'model'} class:active={mode === 'model'} onclick={() => selectMode('model')}>{$t('settings.tabModels')}</button>
+      <button type="button" role="tab" aria-selected={mode === 'provider'} class:active={mode === 'provider'} onclick={() => selectMode('provider')}>{$t('settings.tabProvider')}</button>
+      <button type="button" role="tab" aria-selected={mode === 'memory'} class:active={mode === 'memory'} onclick={() => selectMode('memory')}>{$t('settings.tabMemory')}</button>
     </div>
 
     {#if error}<p class="options-error" role="alert">{error}</p>{/if}
@@ -1374,9 +1550,9 @@
     {:else if mode === 'general'}
       <div class="general-options" role="tabpanel">
         <section class="general-setting-row">
-          <span class="option-mark large"><Icon name="sun" size={18}/></span>
-          <span class="general-setting-copy"><h4>Theme</h4><small>Choose how FlareAI appears</small></span>
-          <div class="theme-switch" role="radiogroup" aria-label="Theme">
+          <span class="option-mark large"><Icon name="sun-moon" size={18}/></span>
+          <span class="general-setting-copy"><h4>{$t('settings.theme')}</h4><small>{$t('settings.themeHint')}</small></span>
+          <div class="theme-switch" role="radiogroup" aria-label={$t('settings.theme')}>
             {#each ['light', 'dark', 'system'] as theme}
               <button type="button" role="radio" aria-checked={general?.theme === theme} class:active={general?.theme === theme} disabled={updatingTheme || !general} onclick={() => void setTheme(theme as ThemeMode)}>{theme[0].toLocaleUpperCase() + theme.slice(1)}</button>
             {/each}
@@ -1384,19 +1560,32 @@
         </section>
         <section class="general-setting-row">
           <span class="option-mark large"><Icon name="book-open" size={18}/></span>
-          <span class="general-setting-copy"><h4>Language</h4><small>The language FlareAI replies in</small></span>
+          <span class="general-setting-copy"><h4>{$t('settings.language')}</h4><small>{$t('settings.languageHint')}</small></span>
           <div class="setting-menu language" class:busy={updatingLanguage || !general}>
-            <Menu options={languageOptions} value={general?.language ?? 'system'} label="Language" wide onChange={(value) => void setLanguage(value)}/>
+            <Menu options={languageOptions} value={general?.language ?? 'system'} label={$t('settings.language')} wide onChange={(value) => void setLanguage(value)}/>
           </div>
+        </section>
+        <!-- Always present, unlike the title-bar chip: once that is dismissed
+             this row is the only way back to the install page. It states the
+             installed case rather than disappearing, so the setting does not
+             look missing to someone who came looking for it. -->
+        <section class="general-setting-row">
+          <span class="option-mark large"><img class="extension-row-mark" src="flareai.svg" alt=""/></span>
+          <span class="general-setting-copy"><h4>{$t('extension.title')}</h4><small>{$t('extension.hint')}</small></span>
+          {#if extensionStatus?.installed}
+            <span class="extension-installed">{$t('extension.installed')}</span>
+          {:else}
+            <button type="button" class="permission-retry" onclick={() => void openExtensionInstall()}>{$t('extension.install')}</button>
+          {/if}
         </section>
         <section class="general-setting-row">
           <span class="option-mark large"><Icon name="waveform" size={18}/></span>
-          <span class="general-setting-copy"><h4>Speech mode</h4><small>Enable real-time speech-to-speech conversations</small></span>
-          {#if general}<button type="button" class:enabled={general.speechModeEnabled} class="chronicle-toggle" role="switch" aria-label="Enable speech mode" aria-checked={general.speechModeEnabled} disabled={updatingSpeechMode} onclick={() => void setSpeechModeEnabled(!general!.speechModeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+          <span class="general-setting-copy"><h4>{$t('settings.speechMode')}</h4><small>{$t('settings.speechModeHint')}</small></span>
+          {#if general}<button type="button" class:enabled={general.speechModeEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableSpeechMode')} aria-checked={general.speechModeEnabled} disabled={updatingSpeechMode} onclick={() => void setSpeechModeEnabled(!general!.speechModeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
         </section>
         <section class="general-setting-row">
           <span class="option-mark large"><Icon name="mic-off" size={18}/></span>
-          <span class="general-setting-copy"><h4>Stop dictation when silent</h4><small>How long the composer's voice button keeps listening once it stops hearing you</small></span>
+          <span class="general-setting-copy"><h4>{$t('settings.autoStop')}</h4><small>{$t('settings.autoStopHint')}</small></span>
           <div class="setting-menu language" class:busy={updatingAutoStop || !general}>
             <Menu
               options={autoStopOptions}
@@ -1409,60 +1598,60 @@
         </section>
         <section class="general-setting-row">
           <span class="option-mark large"><Icon name="clock" size={18}/></span>
-          <span class="general-setting-copy"><h4>Time</h4><small>{general?.timeEnabled ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'Not shared with the agent'}</small></span>
-          {#if general}<button type="button" class:enabled={general.timeEnabled} class="chronicle-toggle" role="switch" aria-label="Enable time access" aria-checked={general.timeEnabled} disabled={updatingTime} onclick={() => void setTimeEnabled(!general!.timeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+          <span class="general-setting-copy"><h4>{$t('settings.time')}</h4><small>{general?.timeEnabled ? Intl.DateTimeFormat().resolvedOptions().timeZone : $t('settings.notShared')}</small></span>
+          {#if general}<button type="button" class:enabled={general.timeEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableTime')} aria-checked={general.timeEnabled} disabled={updatingTime} onclick={() => void setTimeEnabled(!general!.timeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
         </section>
         <section class="general-setting-row">
           <span class="option-mark large"><Icon name="globe" size={18}/></span>
-          <span class="general-setting-copy"><h4>Location</h4><small>{locationStatusText}</small></span>
+          <span class="general-setting-copy"><h4>{$t('settings.location')}</h4><small>{locationStatusText}</small></span>
           {#if general?.locationEnabled && !locating && (locationError || !general.location)}
-            <button type="button" class="permission-retry" onclick={() => void refreshLocation(true)}>Try again</button>
+            <button type="button" class="permission-retry" onclick={() => void refreshLocation(true)}>{$t('common.tryAgain')}</button>
           {/if}
-          {#if general}<button type="button" class:enabled={general.locationEnabled} class="chronicle-toggle" role="switch" aria-label="Enable location access" aria-checked={general.locationEnabled} disabled={updatingLocation} onclick={() => void setLocationEnabled(!general!.locationEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+          {#if general}<button type="button" class:enabled={general.locationEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableLocation')} aria-checked={general.locationEnabled} disabled={updatingLocation} onclick={() => void setLocationEnabled(!general!.locationEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
         </section>
         <section class="general-setting-row">
           <span class="option-mark large"><Icon name="verified" size={18}/></span>
           <span class="general-setting-copy"><h4>Version {appVersion?.version ?? '—'}</h4><small>{versionDetailText}</small></span>
           {#if update?.status === 'ready'}
-            <button type="button" class="permission-retry" onclick={() => void installUpdate()}>Install now</button>
+            <button type="button" class="permission-retry" onclick={() => void installUpdate()}>{$t('settings.installNow')}</button>
           {:else}
             <span class="setting-value">{updateSummaryText}</span>
-            <button type="button" class="update-refresh" class:spinning={checkingUpdate || update?.status === 'downloading'} aria-label="Check for updates" data-tooltip-label="Check for updates" disabled={checkingUpdate || update?.status === 'downloading'} onclick={() => void checkForUpdates()}><Icon name="reload" size={13}/></button>
+            <button type="button" class="update-refresh" class:spinning={checkingUpdate || update?.status === 'downloading'} aria-label={$t('settings.checkForUpdates')} data-tooltip-label={$t('settings.checkForUpdates')} disabled={checkingUpdate || update?.status === 'downloading'} onclick={() => void checkForUpdates()}><Icon name="reload" size={13}/></button>
           {/if}
         </section>
       </div>
     {:else if mode === 'memory'}
       <div class="memory-options" role="tabpanel">
         <header class="options-detail-header">
-          <span class="options-title-group"><h3>Memory</h3></span>
+          <span class="options-title-group"><h3>{$t('settings.tabMemory')}</h3></span>
         </header>
         <section class="chronicle-section local-memory-section">
           <header>
-            <span><h4>Local memory</h4></span>
-            {#if memory}<button type="button" class:enabled={memory.enabled} class="chronicle-toggle" role="switch" aria-label="Enable Memory" aria-checked={memory.enabled} disabled={updatingMemory} onclick={() => void setMemoryEnabled(!memory!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+            <span><h4>{$t('settings.localMemory')}</h4></span>
+            {#if memory}<button type="button" class:enabled={memory.enabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableMemory')} aria-checked={memory.enabled} disabled={updatingMemory} onclick={() => void setMemoryEnabled(!memory!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </header>
-          <p>The compact memory summary is included automatically. FlareAI searches the full registry and earlier conversations only when prior context could materially help. Durable memories are added or removed only when you explicitly ask.</p>
-          <div class="chronicle-inline-stats" aria-label="Memory storage"><span>{memory?.memories ?? 0} memories</span><span>{formatBytes(memory?.storedBytes ?? 0)}</span><span>Latest: {formatMemoryTime(memory?.latestMemoryAt)}</span><span>Consolidated: {formatMemoryTime(memory?.consolidatedAt)}</span>{#if (memory?.pendingMemories ?? 0) > 0}<span>{memory?.pendingMemories} pending</span>{/if}</div>
+          <p>{$t('settings.memoryBody')}</p>
+          <div class="chronicle-inline-stats" aria-label={$t('settings.memoryStorage')}><span>{plural('settings.memoriesCount', memory?.memories ?? 0)}</span><span>{formatBytes(memory?.storedBytes ?? 0)}</span><span>{$t('settings.memoryLatest', {time: formatMemoryTime(memory?.latestMemoryAt)})}</span><span>{$t('settings.memoryConsolidated', {time: formatMemoryTime(memory?.consolidatedAt)})}</span>{#if (memory?.pendingMemories ?? 0) > 0}<span>{$t('settings.memoryPending', {count: memory?.pendingMemories ?? 0})}</span>{/if}</div>
         </section>
         {#if memory?.consolidationError}
           <section class="chronicle-error">
-            <span><h4>Memory consolidation failed</h4><p>{memory.consolidationError}</p><small>The existing summary is still in use.{#if memory.consolidationRetryAfter} Retrying automatically after {formatMemoryTime(memory.consolidationRetryAfter)}.{:else} Retrying on the next turn.{/if}</small></span>
+            <span><h4>{$t('settings.consolidationFailed')}</h4><p>{memory.consolidationError}</p><small>{$t('settings.consolidationFallback')}{#if memory.consolidationRetryAfter}{$t('settings.consolidationRetryAt', {time: formatMemoryTime(memory.consolidationRetryAfter)})}{:else}{$t('settings.consolidationRetryNext')}{/if}</small></span>
           </section>
         {/if}
         <div class="memory-divider"></div>
         <div class="chronicle-group" class:disabled={!memory?.enabled}>
           <section class="chronicle-section">
             <header>
-              <span><h4>Chronicle</h4>{#if !chronicle?.running}<small>Recent screen context is off</small>{/if}</span>
-              {#if chronicle}<button type="button" class:enabled={chronicle.enabled} class="chronicle-toggle" role="switch" aria-label="Enable Chronicle" aria-checked={chronicle.enabled} disabled={!memory?.enabled || updatingChronicle} onclick={() => void setChronicleEnabled(!chronicle!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+              <span><h4>{$t('settings.chronicle')}</h4>{#if !chronicle?.running}<small>{$t('settings.chronicleOff')}</small>{/if}</span>
+              {#if chronicle}<button type="button" class:enabled={chronicle.enabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableChronicle')} aria-checked={chronicle.enabled} disabled={!memory?.enabled || updatingChronicle} onclick={() => void setChronicleEnabled(!chronicle!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
             </header>
-            <p>Private, local history of what you were working on, with adaptive sampling and rolling 24-hour retention. It automatically pauses while your Mac is locked, idle, or thermally constrained.</p>
+            <p>{$t('settings.chronicleBody')}</p>
             <div class="chronicle-inline-stats"><span>{chronicle?.storedFrames ?? 0} captures</span><span>{formatBytes(chronicle?.storedBytes ?? 0)}</span><span>Latest: {formatMemoryTime(chronicle?.lastCapturedAt)}</span></div>
           </section>
           {#if chronicle?.lastError}
             <section class="chronicle-error">
-              <span><h4>Capture unavailable</h4><p>{chronicle.lastError}</p><small>You may need to allow Accessibility for FlareAI in macOS System Settings.</small></span>
-              <button type="button" disabled={!memory?.enabled || updatingChronicle} onclick={() => void retryChronicle()}>{updatingChronicle ? 'Trying…' : 'Try again'}</button>
+              <span><h4>{$t('settings.captureUnavailable')}</h4><p>{chronicle.lastError}</p><small>{$t('settings.captureHint')}</small></span>
+              <button type="button" disabled={!memory?.enabled || updatingChronicle} onclick={() => void retryChronicle()}>{updatingChronicle ? $t('settings.trying') : $t('common.tryAgain')}</button>
             </section>
           {/if}
         </div>
@@ -1473,46 +1662,46 @@
       <div class="options-rail">
         <div class="options-search">
           <Icon name="search" size={15}/>
-          <input bind:value={search} type="search" placeholder={`Search ${mode === 'mcp' ? 'MCP server' : mode === 'model' ? 'model' : mode}`} aria-label={`Search ${mode === 'mcp' ? 'MCP server' : mode === 'model' ? 'model' : mode}`}/>
-          {#if search}<button type="button" class="search-clear" aria-label="Clear" data-tooltip-label="Clear" onclick={() => search = ''}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
+          <input bind:value={search} type="search" placeholder={$t('settings.searchIn', {subject: searchRailSubject})} aria-label={$t('settings.searchIn', {subject: searchRailSubject})}/>
+          {#if search}<button type="button" class="search-clear" aria-label={$t('settings.clear')} data-tooltip-label={$t('settings.clear')} onclick={() => search = ''}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
         </div>
 
         <ul class="options-rail-list" class:empty-state={railEmpty} class:at-top={railAtTop} class:at-bottom={railAtBottom} bind:this={railList} onscroll={measureRailEdges}>
           {#if mode === 'mcp'}
             {#each visibleMcp as item (item.id)}
               <li><button type="button" class:selected={adding !== 'mcp' && item.id === selectedMcp} class:integration-disabled={!item.enabled} class="options-rail-row" onclick={() => selectMcp(item.id)}>
-                <span class="options-rail-copy"><span class="skill-name-line"><strong>{item.name}</strong>{#if item.source === 'official'}<span class="official-rail-stamp" aria-label="Official"><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span><small>{mcpAuthor(item)} · <span class="state-text" data-state={item.status}>{mcpStatus(item)}</span></small></span>
+                <span class="options-rail-copy"><span class="skill-name-line"><strong>{item.name}</strong>{#if item.source === 'official'}<span class="official-rail-stamp" aria-label={$t('settings.official')}><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span><small>{mcpAuthor(item)} · <span class="state-text" data-state={item.status}>{mcpStatus(item)}</span></small></span>
               </button></li>
-            {:else}<li class="options-empty rail-empty">{loading ? 'Loading MCP servers…' : !query && mcpServers.length === 0 ? 'No MCP servers yet' : 'No MCP servers found'}</li>{/each}
+            {:else}<li class="options-empty rail-empty">{loading ? $t('settings.loadingMcp') : !query && mcpServers.length === 0 ? $t('settings.noMcpYet') : $t('settings.noMcpFound')}</li>{/each}
           {:else if mode === 'skills'}
             {#each visibleSkills as item (item.name)}
               <li><button type="button" class:selected={adding !== 'skills' && item.name === selectedSkill} class:integration-disabled={!item.enabled} class="options-rail-row" onclick={() => selectSkill(item.name)}>
-                <span class="options-rail-copy"><span class="skill-name-line"><strong>{skillTitle(item)}</strong>{#if item.source === 'official'}<span class="official-rail-stamp" aria-label="Official"><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span><small>{skillAuthor(item)} · <span class="state-text" data-state={item.enabled ? 'active' : 'inactive'}>{item.enabled ? 'Active' : 'Inactive'}</span></small></span>
+                <span class="options-rail-copy"><span class="skill-name-line"><strong>{skillTitle(item)}</strong>{#if item.source === 'official'}<span class="official-rail-stamp" aria-label={$t('settings.official')}><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span><small>{skillAuthor(item)} · <span class="state-text" data-state={item.enabled ? 'active' : 'inactive'}>{item.enabled ? $t('settings.active') : $t('settings.inactive')}</span></small></span>
               </button></li>
-            {:else}<li class="options-empty rail-empty">{loading ? 'Loading skills…' : !query && skills.length === 0 ? 'No skills yet' : 'No skills found'}</li>{/each}
+            {:else}<li class="options-empty rail-empty">{loading ? $t('settings.loadingSkills') : !query && skills.length === 0 ? $t('settings.noSkillsYet') : $t('settings.noSkillsFound')}</li>{/each}
           {:else if mode === 'model'}
             {#each modelCompanies as company (company.id)}
               <li><button type="button" class:selected={company.id === selectedModelProvider} class="options-rail-row provider-row" onclick={() => selectModelCompany(company.id)}>
                 <span class="provider-mark"><ProviderLogo provider={company.id} logoDataUrl={company.logoDataUrl} size={18}/></span>
                 <span class="options-rail-copy"><span class="options-name"><strong>{company.name}</strong></span><small>{company.models.length} {company.models.length === 1 ? 'model' : 'models'}</small></span>
               </button></li>
-            {:else}<li class="options-empty rail-empty">{loading ? 'Loading model companies…' : 'No model companies found'}</li>{/each}
+            {:else}<li class="options-empty rail-empty">{loading ? $t('settings.loadingCompanies') : $t('settings.noCompaniesFound')}</li>{/each}
           {:else}
             {#each visibleProviders as item (item.id)}
               <li><button type="button" class:selected={!addingCustomProvider && item.id === selectedCredentialProvider} class:has-check={!item.custom && item.configured} class="options-rail-row provider-row" onclick={() => chooseCredentialProvider(item.id)}>
                 <span class="provider-mark"><ProviderLogo provider={item.id} logoDataUrl={item.logoDataUrl} size={18}/></span>
-                <span class="options-rail-copy"><span class="options-name"><strong>{item.name}</strong>{#if item.custom}<i>Custom</i>{/if}</span><small>{item.modelCount} {item.modelCount === 1 ? 'model' : 'models'}</small></span>
-                {#if !item.custom && item.configured}<span class="configured-check" aria-label="Configured"><Icon name="check" size={13}/></span>{/if}
+                <span class="options-rail-copy"><span class="options-name"><strong>{item.name}</strong>{#if item.custom && !item.localRuntime}<i>{$t('settings.custom')}</i>{/if}</span><small>{plural('settings.modelCount', item.modelCount)}</small></span>
+                {#if !item.custom && item.configured}<span class="configured-check" aria-label={$t('settings.configured')}><Icon name="check" size={13}/></span>{/if}
               </button></li>
-            {:else}<li class="options-empty rail-empty">{loading ? 'Loading providers…' : 'No providers found'}</li>{/each}
+            {:else}<li class="options-empty rail-empty">{loading ? $t('settings.loadingProviders') : $t('settings.noProvidersFound')}</li>{/each}
           {/if}
         </ul>
 
         <div class="options-rail-tools">
             <div class="rail-tool-wrap">
-              <button type="button" class:active={activeRailFilter !== activeRailDefaultFilter} class="rail-tool" aria-label={`Filter ${activeRailSubject}`} aria-haspopup="menu" aria-expanded={openRailMenu === 'filter'} data-tooltip-label="Filter" onclick={() => toggleRailMenu('filter')}><Icon name="filter" size={15}/></button>
+              <button type="button" class:active={activeRailFilter !== activeRailDefaultFilter} class="rail-tool" aria-label={$t('settings.filterSubject', {subject: activeRailSubject})} aria-haspopup="menu" aria-expanded={openRailMenu === 'filter'} data-tooltip-label={$t('drive.filter')} onclick={() => toggleRailMenu('filter')}><Icon name="filter" size={15}/></button>
               {#if openRailMenu === 'filter'}
-                <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={`Filter ${activeRailSubject}`}>
+                <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('settings.filterSubject', {subject: activeRailSubject})}>
                   {#each activeRailFilterOptions as option (option.value)}
                     <button type="button" class="flareai-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailFilter} onclick={() => chooseRailOption('filter', option.value)}><span>{option.label}</span>{#if option.value === activeRailFilter}<Icon name="check" size={13}/>{/if}</button>
                   {/each}
@@ -1520,9 +1709,9 @@
               {/if}
             </div>
             <div class="rail-tool-wrap">
-              <button type="button" class:active={activeRailSort !== activeRailDefaultSort} class="rail-tool" aria-label={`Sort ${activeRailSubject}`} aria-haspopup="menu" aria-expanded={openRailMenu === 'sort'} data-tooltip-label="Sort" onclick={() => toggleRailMenu('sort')}><Icon name="sort" size={15}/></button>
+              <button type="button" class:active={activeRailSort !== activeRailDefaultSort} class="rail-tool" aria-label={$t('settings.sortSubject', {subject: activeRailSubject})} aria-haspopup="menu" aria-expanded={openRailMenu === 'sort'} data-tooltip-label={$t('hub.sort')} onclick={() => toggleRailMenu('sort')}><Icon name="sort" size={15}/></button>
               {#if openRailMenu === 'sort'}
-                <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={`Sort ${activeRailSubject}`}>
+                <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('settings.sortSubject', {subject: activeRailSubject})}>
                   {#each activeRailSortOptions as option (option.value)}
                     <button type="button" class="flareai-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailSort} onclick={() => chooseRailOption('sort', option.value)}><span>{option.label}</span>{#if option.value === activeRailSort}<Icon name="check" size={13}/>{/if}</button>
                   {/each}
@@ -1531,9 +1720,9 @@
             </div>
             {#if mode === 'model'}
               <div class="rail-tool-wrap">
-                <button type="button" class:active={openRailMenu === 'setup'} class="rail-tool rail-tool-text" aria-haspopup="menu" aria-expanded={openRailMenu === 'setup'} onclick={() => toggleRailMenu('setup')}>View Setup</button>
+                <button type="button" class:active={openRailMenu === 'setup'} class="rail-tool rail-tool-text" aria-haspopup="menu" aria-expanded={openRailMenu === 'setup'} onclick={() => toggleRailMenu('setup')}>{$t('settings.viewSetup')}</button>
                 {#if openRailMenu === 'setup'}
-                  <div class="flareai-dropdown-menu rail-tool-menu role-setup-menu" role="menu" aria-label="Model setup">
+                  <div class="flareai-dropdown-menu rail-tool-menu role-setup-menu" role="menu" aria-label={$t('settings.modelSetup')}>
                     {#each MODEL_ROLES as role (role.value)}
                       <div class="role-setup-row" role="menuitem"><span>{role.label}</span><strong>{roleSetupValue(role, modelRoles)}</strong></div>
                     {/each}
@@ -1542,141 +1731,177 @@
               </div>
             {/if}
             {#if mode === 'mcp'}
-              <button type="button" class:active={browsingMcpRegistry} class="rail-tool" aria-label="Browse MCP Marketplace" data-tooltip-label="MCP Marketplace" onclick={beginMcpMarketplace}><Icon name="storefront" size={15}/></button>
-              <button type="button" class:active={adding === 'mcp'} class="rail-tool" aria-label="Add MCP server" data-tooltip-label="Add MCP server" onclick={() => beginAdd('mcp')}><Icon name="plus" size={15}/></button>
+              <button type="button" class:active={browsingMcpRegistry} class="rail-tool" aria-label={$t('settings.browseMcpMarketplace')} data-tooltip-label={$t('settings.mcpMarketplace')} onclick={beginMcpMarketplace}><Icon name="storefront" size={15}/></button>
+              <button type="button" class:active={adding === 'mcp'} class="rail-tool" aria-label={$t('settings.addMcpServer')} data-tooltip-label={$t('settings.addMcpServer')} onclick={() => beginAdd('mcp')}><Icon name="plus" size={15}/></button>
             {:else if mode === 'skills'}
               <div class="rail-tool-wrap">
-                <button type="button" class:active={adding === 'skills' || skillAddMenuOpen} class="rail-tool" aria-label="Add Skills" aria-haspopup="menu" aria-expanded={skillAddMenuOpen} data-tooltip-label="Add Skills" onclick={() => { openRailMenu = null; skillAddMenuOpen = !skillAddMenuOpen; }}><Icon name="plus" size={15}/></button>
+                <button type="button" class:active={adding === 'skills' || skillAddMenuOpen} class="rail-tool" aria-label={$t('settings.addSkills')} aria-haspopup="menu" aria-expanded={skillAddMenuOpen} data-tooltip-label={$t('settings.addSkills')} onclick={() => { openRailMenu = null; skillAddMenuOpen = !skillAddMenuOpen; }}><Icon name="plus" size={15}/></button>
                 {#if skillAddMenuOpen}
-                  <div class="flareai-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label="Add Skills">
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => beginAdd('skills')}><span>Create Custom</span></button>
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={beginInstallSkill}><span>Install from Vercel Skills</span></button>
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => skillFolderInput.click()}><span>Upload Skills</span></button>
-                    <input bind:this={skillFolderInput} class="skill-folder-input" type="file" webkitdirectory multiple aria-label="Upload skill folder" onchange={(event) => void uploadSkillFolder(event)}/>
+                  <div class="flareai-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label={$t('settings.addSkills')}>
+                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => beginAdd('skills')}><span>{$t('settings.createCustom')}</span></button>
+                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={beginDiscoverSkills}><span>{$t('settings.autoDiscovery')}</span></button>
+                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={beginInstallSkill}><span>{$t('settings.installFromVercel')}</span></button>
+                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => skillFolderInput.click()}><span>{$t('settings.uploadSkills')}</span></button>
+                    <input bind:this={skillFolderInput} class="skill-folder-input" type="file" webkitdirectory multiple aria-label={$t('settings.uploadSkillFolder')} onchange={(event) => void uploadSkillFolder(event)}/>
                   </div>
                 {/if}
               </div>
             {/if}
             {#if mode === 'provider'}
-              <button type="button" class:active={addingCustomProvider} class="rail-tool" aria-label="Add custom provider" data-tooltip-label="Add custom provider" onclick={beginCustomProvider}><Icon name="plus" size={15}/></button>
+              <button type="button" class:active={addingCustomProvider} class="rail-tool" aria-label={$t('settings.addCustomProvider')} data-tooltip-label={$t('settings.addCustomProvider')} onclick={beginCustomProvider}><Icon name="plus" size={15}/></button>
             {/if}
           </div>
       </div>
 
-      <div class:directory-open={(mode === 'skills' && adding === 'skills' && installingSkill) || (mode === 'mcp' && browsingMcpRegistry)} class:mcp-detail={mode === 'mcp' && !!mcp && !adding && !browsingMcpRegistry} class:skill-detail={mode === 'skills' && !!skill && !adding} class="options-detail" role="tabpanel">
+      <div class:directory-open={(mode === 'skills' && (discoveringSkills || (adding === 'skills' && installingSkill))) || (mode === 'mcp' && browsingMcpRegistry)} class:mcp-detail={mode === 'mcp' && !!mcp && !adding && !browsingMcpRegistry} class:skill-detail={mode === 'skills' && !!skill && !adding} class="options-detail" role="tabpanel">
         {#if mode === 'mcp' && browsingMcpRegistry}
           <header class="options-detail-header"><span class="options-title-group"><h3>MCP Marketplace</h3></span></header>
           <section class="skill-registry">
             <div class="model-search">
               <Icon name="search" size={14}/>
-              <input bind:value={mcpRegistryQuery} type="search" placeholder="Search MCP Marketplace" aria-label="Search MCP Marketplace" spellcheck="false" oninput={() => searchMcpMarketplace()}/>
-              {#if mcpRegistryQuery}<button type="button" class="search-clear" aria-label="Clear" data-tooltip-label="Clear" onclick={clearMcpMarketplaceSearch}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
+              <input bind:value={mcpRegistryQuery} type="search" placeholder={$t('settings.searchMcpMarketplace')} aria-label={$t('settings.searchMcpMarketplace')} spellcheck="false" oninput={() => searchMcpMarketplace()}/>
+              {#if mcpRegistryQuery}<button type="button" class="search-clear" aria-label={$t('settings.clear')} data-tooltip-label={$t('settings.clear')} onclick={clearMcpMarketplaceSearch}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
             </div>
             <ul class="skill-registry-results">
               {#each mcpRegistryResults as entry (entry.id)}
                 <li>
                   <span class="skill-registry-copy"><strong>{entry.name}</strong><small>{entry.description}</small></span>
                   {#if mcpServers.some((item) => item.url === entry.url && item.editable)}
-                    <button type="button" class="permission-retry" disabled={installingMcpRegistryId !== ''} onclick={() => void uninstallMcpRegistryEntry(entry)}>{installingMcpRegistryId === entry.id ? 'Uninstalling…' : 'Uninstall'}</button>
+                    <button type="button" class="permission-retry" disabled={installingMcpRegistryId !== ''} onclick={() => void uninstallMcpRegistryEntry(entry)}>{installingMcpRegistryId === entry.id ? $t('settings.uninstalling') : $t('settings.uninstall')}</button>
                   {:else if mcpServers.some((item) => item.url === entry.url)}
-                    <span class="skill-registry-installed">Installed</span>
+                    <span class="skill-registry-installed">{$t('settings.installed')}</span>
                   {:else if entry.requiredHeaders.length}
-                    <button type="button" class="permission-retry" onclick={() => configureMcpRegistryEntry(entry)}>Configure</button>
+                    <button type="button" class="permission-retry" onclick={() => configureMcpRegistryEntry(entry)}>{$t('settings.configure')}</button>
                   {:else}
-                    <button type="button" class="permission-retry" disabled={installingMcpRegistryId !== ''} onclick={() => void installMcpRegistryEntry(entry)}>{installingMcpRegistryId === entry.id ? 'Installing…' : 'Install'}</button>
+                    <button type="button" class="permission-retry" disabled={installingMcpRegistryId !== ''} onclick={() => void installMcpRegistryEntry(entry)}>{installingMcpRegistryId === entry.id ? $t('settings.installing') : $t('settings.install')}</button>
                   {/if}
                 </li>
               {:else}
-                <li class="skill-registry-empty">{mcpRegistrySearching ? 'Searching…' : mcpRegistryError || 'No remote MCP servers matched that search.'}</li>
+                <li class="skill-registry-empty">{mcpRegistrySearching ? $t('settings.searching') : mcpRegistryError || $t('settings.noRemoteMcp')}</li>
               {/each}
             </ul>
-            <div class="custom-provider-actions"><button type="button" onclick={() => { browsingMcpRegistry = false; selectedMcp = visibleMcp[0]?.id ?? ''; }}>Done</button></div>
+            <div class="custom-provider-actions"><button type="button" onclick={() => { browsingMcpRegistry = false; selectedMcp = visibleMcp[0]?.id ?? ''; }}>{$t('settings.done')}</button></div>
           </section>
         {:else if mode === 'mcp' && adding === 'mcp'}
-          <header class="options-detail-header"><span class="option-mark large"><Icon name={editingIntegration ? 'edit' : 'plus'} size={18}/></span><span class="options-title-group"><h3>{editingIntegration ? 'Edit MCP server' : 'Add MCP server'}</h3></span></header>
+          <header class="options-detail-header"><span class="option-mark large"><Icon name={editingIntegration ? 'edit' : 'plus'} size={18}/></span><span class="options-title-group"><h3>{editingIntegration ? $t('settings.editMcpServer') : $t('settings.addMcpServer')}</h3></span></header>
           <form class="custom-integration-form" onsubmit={(event) => { event.preventDefault(); void saveCustomMcp(); }}>
-            <label>Server ID<input bind:value={customMcpId} disabled={editingIntegration} placeholder="my-server" required/></label>
-            <label>Name<input bind:value={customMcpName} placeholder="My server" required/></label>
-            <label>Description<input bind:value={customMcpDescription} placeholder="What this MCP server provides"/></label>
-            <label>Transport<select bind:value={customMcpTransport}><option value="stdio">Local command</option><option value="streamable-http">Remote HTTP</option></select></label>
-            <label>{customMcpTransport === 'stdio' ? 'Command' : 'URL'}<input bind:value={customMcpTarget} placeholder={customMcpTransport === 'stdio' ? 'node' : 'https://example.com/mcp'} required/></label>
-            {#if customMcpTransport === 'stdio'}<label>Arguments<textarea bind:value={customMcpArgs} placeholder="One argument per line"></textarea></label><label>Working directory<input bind:value={customMcpCwd} placeholder="Optional"/></label>{/if}
-            <label>{customMcpTransport === 'stdio' ? 'Environment' : 'Headers'}<textarea bind:value={customMcpEnvironment} placeholder="KEY=value, one per line"></textarea></label>
-            <div class="custom-provider-actions"><button type="button" onclick={() => adding = null}>Cancel</button><button class="credential-primary" type="submit" disabled={integrationSaving}>{integrationSaving ? 'Saving…' : 'Save'}</button></div>
+            <label>{$t('settings.serverId')}<input bind:value={customMcpId} disabled={editingIntegration} placeholder="my-server" required/></label>
+            <label>{$t('settings.name')}<input bind:value={customMcpName} placeholder={$t('settings.serverNamePlaceholder')} required/></label>
+            <label>{$t('settings.description')}<input bind:value={customMcpDescription} placeholder={$t('settings.mcpDescriptionPlaceholder')}/></label>
+            <label>{$t('settings.transport')}<select bind:value={customMcpTransport}><option value="stdio">{$t('settings.localCommand')}</option><option value="streamable-http">{$t('settings.remoteHttp')}</option></select></label>
+            <label>{customMcpTransport === 'stdio' ? $t('settings.command') : $t('settings.url')}<input bind:value={customMcpTarget} placeholder={customMcpTransport === 'stdio' ? 'node' : 'https://example.com/mcp'} required/></label>
+            {#if customMcpTransport === 'stdio'}<label>{$t('settings.arguments')}<textarea bind:value={customMcpArgs} placeholder={$t('settings.argumentsPlaceholder')}></textarea></label><label>{$t('settings.workingDirectory')}<input bind:value={customMcpCwd} placeholder={$t('settings.optional')}/></label>{/if}
+            <label>{customMcpTransport === 'stdio' ? $t('settings.environment') : $t('settings.headers')}<textarea bind:value={customMcpEnvironment} placeholder={$t('settings.keyValuePlaceholder')}></textarea></label>
+            <div class="custom-provider-actions"><button type="button" onclick={() => adding = null}>{$t('common.cancel')}</button><button class="credential-primary" type="submit" disabled={integrationSaving}>{integrationSaving ? $t('hub.saving') : $t('common.save')}</button></div>
           </form>
+        {:else if mode === 'skills' && discoveringSkills}
+          <header class="options-detail-header"><span class="options-title-group"><h3>{$t('settings.autoDiscovery')}</h3></span></header>
+          <section class="skill-registry">
+            <p class="discovery-lede">{$t('settings.discoveryLede')} <code>~/.flareai/skills</code>{$t('settings.discoveryLedeTail')}</p>
+            <div class="discovery-groups" class:at-top={discoveryAtTop} class:at-bottom={discoveryAtBottom} bind:this={discoveryList} onscroll={measureDiscoveryEdges}>
+              {#each discoveredGroups as group (group.id)}
+                <section class="discovery-group">
+                  <button type="button" class="discovery-group-header" aria-expanded={!collapsedGroups.has(group.id)} onclick={() => toggleGroup(group.id)}>
+                    <span class="discovery-group-heading"><h4>{group.label}</h4><code>{group.directory}</code></span>
+                    <span class="discovery-count">{group.skills.length} {group.skills.length === 1 ? 'skill' : 'skills'}</span>
+                    <span class:collapsed={collapsedGroups.has(group.id)} class="discovery-chevron"><!--
+                      Stroke width scales with the icon's box, so a 17px mark
+                      at the 1.7 default would draw heavier than the 15px rail
+                      tools. 1.5 lands it on the same painted thickness.
+                    --><Icon name="chevron" size={17} strokeWidth={1.5}/></span>
+                  </button>
+                  <ul class:collapsed={collapsedGroups.has(group.id)} class="skill-registry-results discovery-list">
+                    {#each group.skills as entry (entry.path)}
+                      <li>
+                        <span class="skill-registry-copy"><strong>{entry.name}</strong><small>{entry.path}</small></span>
+                        {#if entry.state === 'loaded'}
+                          <span class="skill-registry-installed">{$t('settings.inUse')}</span>
+                        {:else}
+                          <button type="button" class="permission-retry" disabled={adoptingPath !== ''} onclick={() => void adoptDiscoveredSkill(entry)}>{adoptingPath === entry.path ? $t('settings.adding') : $t('settings.add')}</button>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                </section>
+              {:else}
+                <p class="discovery-empty">{discoverySearching ? $t('settings.scanning') : discoveryError ? discoveryError : $t('settings.noDiscoveredSkills')}</p>
+              {/each}
+            </div>
+            <div class="custom-provider-actions"><button type="button" onclick={() => { discoveringSkills = false; selectedSkill = visibleSkills[0]?.name ?? ''; }}>{$t('settings.done')}</button></div>
+          </section>
         {:else if mode === 'skills' && adding === 'skills' && installingSkill}
-          <header class="options-detail-header"><span class="options-title-group"><h3>Vercel Skills</h3></span></header>
+          <header class="options-detail-header"><span class="options-title-group"><h3>{$t('settings.vercelSkills')}</h3></span></header>
           <section class="skill-registry">
             <div class="model-search">
               <Icon name="search" size={14}/>
-              <input bind:value={skillRegistryQuery} type="search" placeholder="Search Vercel Skills" aria-label="Search Vercel Skills" spellcheck="false" oninput={searchRegistry}/>
-              {#if skillRegistryQuery}<button type="button" class="search-clear" aria-label="Clear" data-tooltip-label="Clear" onclick={clearSkillRegistrySearch}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
+              <input bind:value={skillRegistryQuery} type="search" placeholder={$t('settings.searchVercelSkills')} aria-label={$t('settings.searchVercelSkills')} spellcheck="false" oninput={searchRegistry}/>
+              {#if skillRegistryQuery}<button type="button" class="search-clear" aria-label={$t('settings.clear')} data-tooltip-label={$t('settings.clear')} onclick={clearSkillRegistrySearch}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
             </div>
             <ul class="skill-registry-results">
               {#each registryResults as entry (entry.id)}
                 <li>
                   <span class="skill-registry-copy"><strong>{entry.name}</strong><small>{entry.source} · {formatInstalls(entry.installs)} installs</small></span>
                   {#if skills.some((item) => item.name === entry.name && item.editable)}
-                    <button type="button" class="permission-retry" disabled={installingRegistryId !== ''} onclick={() => void uninstallRegistryEntry(entry)}>{installingRegistryId === entry.id ? 'Uninstalling…' : 'Uninstall'}</button>
+                    <button type="button" class="permission-retry" disabled={installingRegistryId !== ''} onclick={() => void uninstallRegistryEntry(entry)}>{installingRegistryId === entry.id ? $t('settings.uninstalling') : $t('settings.uninstall')}</button>
                   {:else if skills.some((item) => item.name === entry.name)}
-                    <span class="skill-registry-installed">Installed</span>
+                    <span class="skill-registry-installed">{$t('settings.installed')}</span>
                   {:else}
-                    <button type="button" class="permission-retry" disabled={installingRegistryId !== ''} onclick={() => void installRegistryEntry(entry)}>{installingRegistryId === entry.id ? 'Installing…' : 'Install'}</button>
+                    <button type="button" class="permission-retry" disabled={installingRegistryId !== ''} onclick={() => void installRegistryEntry(entry)}>{installingRegistryId === entry.id ? $t('settings.installing') : $t('settings.install')}</button>
                   {/if}
                 </li>
               {:else}
-                <li class="skill-registry-empty">{registrySearching ? 'Searching…' : registryError ? registryError : skillRegistryQuery.trim().length < 2 ? 'Type to search Vercel Skills.' : 'No skills matched that search.'}</li>
+                <li class="skill-registry-empty">{registrySearching ? $t('settings.searching') : registryError ? registryError : skillRegistryQuery.trim().length < 2 ? $t('settings.typeToSearchVercel') : $t('settings.noSkillsMatched')}</li>
               {/each}
             </ul>
-            <div class="custom-provider-actions"><button type="button" onclick={() => { adding = null; installingSkill = false; }}>Done</button></div>
+            <div class="custom-provider-actions"><button type="button" onclick={() => { adding = null; installingSkill = false; }}>{$t('settings.done')}</button></div>
           </section>
         {:else if mode === 'skills' && adding === 'skills'}
-          <header class="options-detail-header"><span class="option-mark large"><Icon name={editingIntegration ? 'edit' : 'plus'} size={18}/></span><span class="options-title-group"><h3>{editingIntegration ? 'Edit Skill' : 'Add Skill'}</h3></span></header>
+          <header class="options-detail-header"><span class="option-mark large"><Icon name={editingIntegration ? 'edit' : 'plus'} size={18}/></span><span class="options-title-group"><h3>{editingIntegration ? $t('settings.editSkill') : $t('settings.addSkill')}</h3></span></header>
           <form class="custom-integration-form skill-form" onsubmit={(event) => { event.preventDefault(); void saveCustomSkill(); }}>
-            <label>Name<input bind:value={customSkillName} placeholder="my-skill" required/></label>
-            <label>Description<input bind:value={customSkillDescription} placeholder="When FlareAI should use this skill" required/></label>
-            <label>Instructions<textarea class="instructions" bind:value={customSkillInstructions} placeholder="Skill instructions" required></textarea></label>
-            <div class="custom-provider-actions"><button type="button" onclick={() => adding = null}>Cancel</button><button class="credential-primary" type="submit" disabled={integrationSaving}>{integrationSaving ? 'Saving…' : 'Save'}</button></div>
+            <label>{$t('settings.name')}<input bind:value={customSkillName} placeholder={$t('settings.skillNamePlaceholder')} required/></label>
+            <label>{$t('settings.description')}<input bind:value={customSkillDescription} placeholder={$t('settings.skillDescriptionPlaceholder')} required/></label>
+            <label>{$t('settings.instructions')}<textarea class="instructions" bind:value={customSkillInstructions} placeholder={$t('settings.instructionsPlaceholder')} required></textarea></label>
+            <div class="custom-provider-actions"><button type="button" onclick={() => adding = null}>{$t('common.cancel')}</button><button class="credential-primary" type="submit" disabled={integrationSaving}>{integrationSaving ? $t('hub.saving') : $t('common.save')}</button></div>
           </form>
         {:else if mode === 'mcp' && mcp}
           <header class="options-detail-header">
             <span class="options-title-group"><h3>{mcp.name}</h3></span>
-            {#if mcp.editable}<button type="button" class="provider-edit" aria-label="Edit MCP server" onclick={() => editMcp(mcp)}><Icon name="edit" size={14}/></button><button type="button" class="provider-edit destructive" aria-label="Delete MCP server" disabled={integrationSaving} onclick={() => void removeMcp(mcp)}><Icon name="trash" size={14}/></button>{/if}
-            <button type="button" class:enabled={mcp.enabled} class="chronicle-toggle" role="switch" aria-label="Enable MCP server" aria-checked={mcp.enabled} disabled={mcpUpdatingIds.has(mcp.id)} onclick={() => void setMcpEnabled(mcp)}><span></span></button>
+            {#if mcp.editable}<button type="button" class="provider-edit" aria-label={$t('settings.editMcpServer')} onclick={() => editMcp(mcp)}><Icon name="edit" size={14}/></button><button type="button" class="provider-edit destructive" aria-label={$t('settings.deleteMcpServer')} disabled={integrationSaving} onclick={() => void removeMcp(mcp)}><Icon name="trash" size={14}/></button>{/if}
+            <button type="button" class:enabled={mcp.enabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableMcpServer')} aria-checked={mcp.enabled} disabled={mcpUpdatingIds.has(mcp.id)} onclick={() => void setMcpEnabled(mcp)}><span></span></button>
           </header>
-          <section class="options-detail-block"><h4>Description</h4><p>{mcp.description ?? 'No description provided.'}</p></section>
+          <section class="options-detail-block"><h4>{$t('settings.description')}</h4><p>{mcp.description ?? $t('settings.noDescription')}</p></section>
           <section class="options-detail-block">
-            <h4>Details</h4>
+            <h4>{$t('settings.details')}</h4>
             <dl class="skill-meta">
-              <div><dt>Source</dt><dd>{mcpOrigin(mcp)}</dd></div>
-              <div><dt>Transport</dt><dd>{mcp.transport === 'stdio' ? 'Stdio' : 'Streamable HTTP'}</dd></div>
-              <div><dt>Status</dt><dd class="state-text" data-state={mcp.error ? 'error' : mcp.status} title={mcp.error ?? undefined}>{mcp.error ?? mcpStatus(mcp)}</dd></div>
-              <div><dt>Availability</dt><dd>{mcp.enabled ? 'Enabled' : 'Disabled'}</dd></div>
+              <div><dt>{$t('settings.source')}</dt><dd>{mcpOrigin(mcp)}</dd></div>
+              <div><dt>{$t('settings.transport')}</dt><dd>{mcp.transport === 'stdio' ? 'Stdio' : 'Streamable HTTP'}</dd></div>
+              <div><dt>{$t('settings.status')}</dt><dd class="state-text" data-state={mcp.error ? 'error' : mcp.status} title={mcp.error ?? undefined}>{mcp.error ?? mcpStatus(mcp)}</dd></div>
+              <div><dt>{$t('settings.availability')}</dt><dd>{mcp.enabled ? $t('settings.enabled') : $t('settings.disabled')}</dd></div>
             </dl>
           </section>
           <div class="options-resources">
-            <section><header><h4>Tools</h4><span>{mcp.toolNames.length}</span></header><ul>{#each mcp.toolNames as name}<li><Icon name="wrench" size={14}/>{mcpToolName(name)}</li>{:else}<li class="muted">No tools exposed</li>{/each}</ul></section>
-            <section><header><h4>Resources</h4><span>{mcp.resourceUris.length}</span></header><ul>{#each mcp.resourceUris as uri}<li><Icon name="link" size={14} strokeWidth={1}/>{mcpResourceName(uri)}</li>{:else}<li class="muted">No resources exposed</li>{/each}</ul></section>
+            <section><header><h4>{$t('settings.tools')}</h4><span>{mcp.toolNames.length}</span></header><ul>{#each mcp.toolNames as name}<li><Icon name="wrench" size={14}/>{mcpToolName(name)}</li>{:else}<li class="muted">{$t('settings.noTools')}</li>{/each}</ul></section>
+            <section><header><h4>{$t('settings.resources')}</h4><span>{mcp.resourceUris.length}</span></header><ul>{#each mcp.resourceUris as uri}<li><Icon name="link" size={14} strokeWidth={1}/>{mcpResourceName(uri)}</li>{:else}<li class="muted">{$t('settings.noResources')}</li>{/each}</ul></section>
           </div>
         {:else if mode === 'skills' && skill}
           <header class="options-detail-header">
-            <span class="options-title-group"><h3>{skillTitle(skill)}</h3>{#if skill.source === 'official'}<span class="options-badge official-badge"><Icon name="verified" size={11} strokeWidth={1.8}/><span>Official</span></span>{/if}</span>
+            <span class="options-title-group"><h3>{skillTitle(skill)}</h3>{#if skill.source === 'official'}<span class="options-badge official-badge"><Icon name="verified" size={11} strokeWidth={1.8}/><span>{$t('settings.official')}</span></span>{/if}</span>
             <div class="skill-detail-actions">
-              {#if skill.editable}<button type="button" class="provider-edit" aria-label="Edit skill" onclick={() => editSkill(skill)}><Icon name="edit" size={14}/></button><button type="button" class="provider-edit destructive" aria-label="Delete skill" disabled={integrationSaving} onclick={() => void removeSkill(skill)}><Icon name="trash" size={14}/></button>{/if}
-              <button type="button" class:enabled={skill.enabled} class="chronicle-toggle" role="switch" aria-label="Enable skill" aria-checked={skill.enabled} disabled={integrationSaving} onclick={() => void setSkillEnabled(skill)}><span></span></button>
+              {#if skill.editable}<button type="button" class="provider-edit" aria-label={$t('settings.editSkill')} onclick={() => editSkill(skill)}><Icon name="edit" size={14}/></button><button type="button" class="provider-edit destructive" aria-label={$t('settings.deleteSkill')} disabled={integrationSaving} onclick={() => void removeSkill(skill)}><Icon name="trash" size={14}/></button>{/if}
+              <button type="button" class:enabled={skill.enabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableSkill')} aria-checked={skill.enabled} disabled={integrationSaving} onclick={() => void setSkillEnabled(skill)}><span></span></button>
             </div>
           </header>
-          <section class="options-detail-block"><h4>Description</h4><p class="skill-description">{skill.description}</p></section>
+          <section class="options-detail-block"><h4>{$t('settings.description')}</h4><p class="skill-description">{skill.description}</p></section>
           <section class="options-detail-block">
-            <h4>Details</h4>
+            <h4>{$t('settings.details')}</h4>
             <dl class="skill-meta">
-              <div><dt>Author</dt><dd>{skillAuthor(skill)}</dd></div>
-              <div><dt>Category</dt><dd>{skill.category ?? 'General'}</dd></div>
-              <div><dt>Last edited</dt><dd>{skillUpdated(skill) ?? 'Unknown'}</dd></div>
-              <div><dt>Source</dt><dd>{skillOrigin(skill)}</dd></div>
+              <div><dt>{$t('settings.author')}</dt><dd>{skillAuthor(skill)}</dd></div>
+              <div><dt>{$t('settings.category')}</dt><dd>{skill.category ?? $t('settings.categoryGeneral')}</dd></div>
+              <div><dt>{$t('settings.lastEdited')}</dt><dd>{skillUpdated(skill) ?? $t('hub.unknown')}</dd></div>
+              <div><dt>{$t('settings.source')}</dt><dd>{skillOrigin(skill)}</dd></div>
             </dl>
           </section>
-          {#if skill.disableModelInvocation}<section class="options-detail-block"><h4>Invocation</h4><p>Only available when explicitly requested.</p></section>{/if}
+          {#if skill.disableModelInvocation}<section class="options-detail-block"><h4>{$t('settings.invocation')}</h4><p>{$t('settings.invocationExplicit')}</p></section>{/if}
           <p class="options-path">{skill.filePath}</p>
         {:else if mode === 'model' && modelCompany}
           <header class="options-detail-header provider-detail-header model-detail-header">
@@ -1684,12 +1909,12 @@
             <span class="options-title-group"><h3>{modelCompany.name}</h3><span class="model-count">{modelCompany.models.length} {modelCompany.models.length === 1 ? 'model' : 'models'}</span></span>
           </header>
           <div class="pricing-toolbar">
-            <p class="pricing-note">Prices are per 1M tokens. Some rates may be unavailable or not applicable.</p>
+            <p class="pricing-note">{$t('settings.pricingNote')}</p>
             <div class="currency-menu"><Menu options={currencyOptions} bind:value={currency} label="Currency" onChange={(value) => void setCurrency(value)}/></div>
           </div>
           <div class="model-table-wrap">
             <table class="model-table">
-              <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache hit</th><th>Cache write</th><th>Context</th></tr></thead>
+              <thead><tr><th>{$t('settings.columnModel')}</th><th>{$t('settings.columnInput')}</th><th>{$t('settings.columnOutput')}</th><th>{$t('settings.columnCacheHit')}</th><th>{$t('settings.columnCacheWrite')}</th><th>{$t('settings.columnContext')}</th></tr></thead>
               <tbody>
                 {#each visibleCompanyModels as item (`${item.provider}/${item.id}`)}
                   {@const key = `${item.provider}/${item.id}`}
@@ -1697,7 +1922,7 @@
                        along a price cell is aimed at the same row. Keyboard
                        access stays on the button the row wraps. -->
                   <tr class:active={item.selected} class:expanded={expandedModelKey === key} class="model-row" onclick={() => toggleModelRow(item)}>
-                    <td><button type="button" class="model-row-name" data-tooltip-label={modelTooltip(item)} data-tooltip-delay="1500" data-tooltip-wide aria-expanded={expandedModelKey === key} aria-label={`Assign ${item.name}`} onclick={(event) => {event.stopPropagation(); toggleModelRow(item);}}><strong>{item.name}</strong><small>{modelSubtitle(item)}</small></button></td>
+                    <td><button type="button" class="model-row-name" data-tooltip-label={modelTooltip(item)} data-tooltip-delay="1500" data-tooltip-wide aria-expanded={expandedModelKey === key} aria-label={$t('settings.assignModel', {model: item.name})} onclick={(event) => {event.stopPropagation(); toggleModelRow(item);}}><strong>{item.name}</strong><small>{modelSubtitle(item)}</small></button></td>
                     <td>{formatPrice(item.cost.input, currency, currencyRates)}</td>
                     <td>{formatPrice(item.cost.output, currency, currencyRates)}</td>
                     <td>{formatPrice(item.cost.cacheRead, currency, currencyRates)}</td>
@@ -1713,81 +1938,113 @@
                             <div class="model-role" class:held>
                               <span class="model-role-copy"><strong>{role.label}</strong><small>{roleStatus(role, modelRoles)}</small></span>
                               <span class="model-role-actions">
-                                {#if role.followsMain}
-                                  <button type="button" class="model-role-reset" disabled={!roleAssignment(role.value, modelRoles) || assigningRole !== ''} onclick={() => void resetModelRole(role.value)}>Set to Main</button>
+                                {#if canFollowMain(role, item, modelRoles)}
+                                  <button type="button" class="model-role-reset" disabled={assigningRole !== ''} onclick={() => void resetModelRole(role.value)}>{$t('settings.setToMain')}</button>
                                 {/if}
-                                <button type="button" class="model-role-change" disabled={held || assigningRole !== ''} aria-label={held ? `${item.name} is the ${role.job}` : `Set ${item.name} as the ${role.job}`} data-tooltip-label={role.hint} onclick={() => void assignModelRole(role.value, item)}>
-                                  {held ? 'Current' : assigningRole === `${role.value}:${key}` ? 'Setting…' : 'Set'}
+                                <button type="button" class="model-role-change" disabled={held || assigningRole !== ''} aria-label={held ? $t('settings.roleHeld', {model: item.name, job: role.job}) : $t('settings.roleSet', {model: item.name, job: role.job})} data-tooltip-label={role.hint} onclick={() => void assignModelRole(role.value, item)}>
+                                  {held ? $t('settings.current') : assigningRole === `${role.value}:${key}` ? $t('settings.setting') : $t('settings.set')}
                                 </button>
                               </span>
                             </div>
                           {:else}
-                            <p class="model-roles-empty">This model can’t be assigned to a job.</p>
+                            <p class="model-roles-empty">{$t('settings.noRoles')}</p>
                           {/each}
                         </div>
                       </td>
                     </tr>
                   {/if}
                 {:else}
-                  <tr><td class="model-table-empty" colspan="6">No models found</td></tr>
+                  <tr><td class="model-table-empty" colspan="6">{$t('settings.noModelsFound')}</td></tr>
                 {/each}
               </tbody>
             </table>
           </div>
         {:else if mode === 'provider' && addingCustomProvider}
           <header class="options-detail-header provider-detail-header">
-            <label class="custom-provider-logo" aria-label="Upload provider image">
-              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" aria-label="Custom provider image" onchange={(event) => void chooseCustomProviderLogo(event)}/>
+            <label class="custom-provider-logo" aria-label={$t('settings.uploadProviderImage')}>
+              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" aria-label={$t('settings.customProviderImage')} onchange={(event) => void chooseCustomProviderLogo(event)}/>
               <span class="option-mark large custom-provider-logo-preview">
                 {#if customProviderLogoDataUrl}<img src={customProviderLogoDataUrl} alt=""/>{:else}<Icon name="plus" size={18}/>{/if}
               </span>
             </label>
-            <span class="options-title-group"><h3>{editingCustomProviderId ? 'Edit custom provider' : 'Add custom provider'}</h3><span class="options-badge">OpenAI compatible</span></span>
+            <span class="options-title-group"><h3>{editingCustomProviderId ? $t('settings.editCustomProvider') : $t('settings.addCustomProvider')}</h3><span class="options-badge">{$t('settings.openAiCompatible')}</span></span>
           </header>
           <form class="custom-provider-form" onsubmit={(event) => {event.preventDefault(); void createCustomProvider();}}>
-            <p>Connect an OpenAI-compatible Chat Completions endpoint and define the models it exposes.</p>
-            <label><span class="field-label">Provider name <span class="required-mark" aria-hidden="true">*</span></span><input bind:value={customProviderName} aria-label="Custom provider name" placeholder="Local AI" autocomplete="off" required/></label>
-            <label><span class="field-label">Base URL <span class="required-mark" aria-hidden="true">*</span></span><input bind:value={customProviderUrl} aria-label="Custom provider base URL" placeholder="http://localhost:11434/v1" autocomplete="off" spellcheck="false" required/></label>
-            {#if !editingCustomProviderId}<label>API key <small>Optional for local endpoints</small><input bind:value={customProviderKey} aria-label="Custom provider API key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false"/></label>{/if}
-            <label><span class="field-label">Models <span class="required-mark" aria-hidden="true">*</span></span><textarea bind:value={customProviderModels} aria-label="Custom provider models" rows="5" placeholder={'model-id | Display name\nanother-model'} required></textarea><small>One model per line. Add a display name after a vertical bar if needed.</small></label>
+            <p>{$t('settings.customProviderBlurb')}</p>
+            <label><span class="field-label">{$t('settings.providerName')} <span class="required-mark" aria-hidden="true">*</span></span><input bind:value={customProviderName} aria-label={$t('settings.customProviderName')} placeholder={$t('settings.providerNamePlaceholder')} autocomplete="off" required/></label>
+            <label><span class="field-label">{$t('settings.baseUrl')} <span class="required-mark" aria-hidden="true">*</span></span><input bind:value={customProviderUrl} aria-label={$t('settings.customProviderBaseUrl')} placeholder="http://localhost:11434/v1" autocomplete="off" spellcheck="false" required onblur={detectOnUrlSettled}/></label>
+            {#if !editingCustomProviderId}<label>{$t('settings.apiKey')} <small>{$t('settings.apiKeyOptional')}</small><input bind:value={customProviderKey} aria-label={$t('settings.customProviderApiKey')} type="password" placeholder={$t('settings.pasteApiKey')} autocomplete="off" spellcheck="false"/></label>{/if}
+            <div class="models-field-header">
+              <span class="field-label">{$t('settings.models')} <span class="required-mark" aria-hidden="true">*</span></span>
+              <button type="button" class="detect-models" disabled={discoveringModels || !customProviderUrl.trim()} onclick={() => void detectCustomProviderModels()}>{discoveringModels ? $t('settings.detectingModels') : $t('settings.detectModels')}</button>
+            </div>
+            {#if customProviderModelIdList(customProviderModels).length > 0 && !modelsExpanded}
+              <!-- Detection answered the question, so the list reads as a
+                   result. Editing it by hand stays one click away. -->
+              {@const modelIds = customProviderModelIdList(customProviderModels)}
+              <div class="models-summary">
+                <span>{plural('settings.modelsFound', modelIds.length)}</span>
+                <button type="button" onclick={() => (modelsExpanded = true)}>{$t('settings.editModels')}</button>
+              </div>
+              <p class="models-summary-list">{modelIds.slice(0, 6).join(', ')}{modelIds.length > 6 ? '…' : ''}</p>
+            {:else}
+              <label><textarea bind:value={customProviderModels} aria-label={$t('settings.customProviderModels')} rows="5" placeholder={'model-id | Display name\nanother-model'} required></textarea><small>{$t('settings.modelsHint')}</small></label>
+            {/if}
             <div class="custom-provider-actions">
-              <button type="button" onclick={() => {addingCustomProvider = false; editingCustomProviderId = '';}}>Cancel</button>
-              <button type="submit" class="credential-primary" disabled={savingCredential}>{savingCredential ? 'Saving…' : editingCustomProviderId ? 'Save changes' : 'Add provider'}</button>
+              <button type="button" onclick={() => {addingCustomProvider = false; editingCustomProviderId = '';}}>{$t('common.cancel')}</button>
+              <button type="submit" class="credential-primary" disabled={savingCredential}>{savingCredential ? $t('hub.saving') : editingCustomProviderId ? $t('settings.saveChanges') : $t('settings.addProvider')}</button>
             </div>
           </form>
         {:else if mode === 'provider' && credentialProvider}
           <header class="options-detail-header provider-detail-header">
             <span class="provider-mark large"><ProviderLogo provider={credentialProvider.id} logoDataUrl={credentialProvider.logoDataUrl} size={22}/></span>
-            <span class="options-title-group"><h3>{credentialProvider.name}</h3><span class:good={credentialProvider.configured} class="options-badge">{credentialProvider.configured ? 'Configured' : credentialProvider.storedCredential ? 'Saved' : 'Not configured'}</span></span>
-            {#if credentialProvider.custom}<button type="button" class="provider-edit" aria-label={`Edit ${credentialProvider.name}`} onclick={() => editCustomProvider(credentialProvider)}><Icon name="edit" size={14}/></button>{/if}
+            <span class="options-title-group"><h3>{credentialProvider.name}</h3><span class:good={credentialProvider.configured} class="options-badge">{credentialProvider.configured ? $t('settings.configured') : credentialProvider.storedCredential ? $t('settings.saved') : $t('settings.notConfigured')}</span></span>
+            {#if credentialProvider.custom && !credentialProvider.localRuntime}<button type="button" class="provider-edit" aria-label={$t('settings.editProvider', {provider: credentialProvider.name})} onclick={() => editCustomProvider(credentialProvider)}><Icon name="edit" size={14}/></button>{/if}
           </header>
+          {#if credentialProvider.localRuntime}
+            <!-- A server on this machine: the address is the whole question, and
+                 the models are read off it rather than typed. -->
+            <section class="credential-panel">
+              <div class="credential-copy">
+                <h4>{$t('settings.localRuntime')}</h4>
+                <p>{$t('settings.localRuntimeBlurb', {provider: credentialProvider.name})}</p>
+              </div>
+              <form class="credential-form" onsubmit={(event) => {event.preventDefault(); void setupLocalRuntime(credentialProvider!);}}>
+                <div class="credential-input-row">
+                  <input bind:value={runtimeUrl} aria-label={$t('settings.baseUrl')} autocomplete="off" spellcheck="false" placeholder={credentialProvider.baseUrl}/>
+                  <button type="submit" class="credential-primary" disabled={savingCredential}>{savingCredential ? $t('settings.detectingModels') : $t('settings.connectRuntime')}</button>
+                </div>
+              </form>
+            </section>
+          {:else}
           <section class="credential-panel">
             <div class="credential-copy">
               <h4>API key</h4>
-              <p>{credentialProvider.apiKeyLabel ?? `Configure credentials for ${credentialProvider.name}.`} Saved keys are encrypted by the operating system and are never displayed again. Add more than one and FlareAI rotates through them automatically, retrying with the next key whenever one is rate limited or rejected.</p>
+              <p>{credentialProvider.apiKeyLabel ?? $t('settings.configureCredentials', {provider: credentialProvider.name})} {$t('settings.credentialsBlurb')}</p>
             </div>
             {#if credentialProvider.apiKeyLabel}
               <form class="credential-form" onsubmit={(event) => {event.preventDefault(); void saveCredential();}}>
                 <div class="credential-input-row">
-                  <input id="provider-api-key" bind:value={credentialKey} aria-label="API key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter API key"/>
-                  <button type="submit" class="credential-primary" disabled={savingCredential || !credentialKey.trim()}>{savingCredential ? 'Saving…' : 'Add key'}</button>
+                  <input id="provider-api-key" bind:value={credentialKey} aria-label={$t('settings.apiKey')} type="password" autocomplete="off" spellcheck="false" placeholder={$t('settings.enterApiKey')}/>
+                  <button type="submit" class="credential-primary" disabled={savingCredential || !credentialKey.trim()}>{savingCredential ? $t('hub.saving') : $t('settings.addKey')}</button>
                 </div>
               </form>
             {:else}
-              <p class="credential-unavailable">This provider does not accept an API key through FlareAI.</p>
+              <p class="credential-unavailable">{$t('settings.noApiKeySupport')}</p>
             {/if}
             <div class="credential-keys">
               {#each credentialProvider.apiKeys as key (key.id)}
                 <div class="credential-key-row">
                   <span class="credential-key-state" class:active={key.status === 'ready'} class:invalid={key.status === 'invalid'} class:limited={key.status === 'rate_limited'}></span>
-                  <span><strong>{key.label}</strong><small class="state-text" data-state={key.status}>{key.status === 'invalid' ? 'Invalid' : key.status === 'rate_limited' ? 'Rate limited' : 'Ready'}</small></span>
-                  <button type="button" aria-label={`Remove ${key.label}`} data-tooltip-label="Remove" disabled={savingCredential} onclick={() => void removeCredential(key.id)}><Icon name="trash" size={14}/></button>
+                  <span><strong>{key.label}</strong><small class="state-text" data-state={key.status}>{key.status === 'invalid' ? $t('settings.keyInvalid') : key.status === 'rate_limited' ? $t('settings.keyRateLimited') : $t('settings.keyReady')}</small></span>
+                  <button type="button" aria-label={$t('settings.removeKey', {label: key.label})} data-tooltip-label={$t('hub.remove')} disabled={savingCredential} onclick={() => void removeCredential(key.id)}><Icon name="trash" size={14}/></button>
                 </div>
               {/each}
             </div>
           </section>
+          {/if}
         {:else}
-          <p class="options-empty detail">Select an item to view its details.</p>
+          <p class="options-empty detail">{$t('settings.selectItem')}</p>
         {/if}
       </div>
     </div>
@@ -1805,6 +2062,10 @@
   .options-error{margin:0 18px 8px;padding:7px 10px;border-radius:8px;background:var(--neutral-100);color:var(--neutral-700);font-size:12px}
   .general-options{flex:1;min-height:0;overflow-y:auto;padding:2px var(--options-detail-edge) 20px calc(var(--options-content-edge) + var(--options-tab-inline))}.general-setting-row{display:flex;align-items:center;gap:11px;min-height:62px;border-bottom:1px solid var(--neutral-200)}.general-setting-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}.general-setting-copy h4{margin:0;color:var(--neutral-900);font-size:12.5px;font-weight:570}.general-setting-copy small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.permission-retry{height:28px;flex:none;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.permission-retry:hover,.permission-retry:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.setting-menu{flex:none}.setting-menu.language{--select-menu-rows:5}.setting-menu.busy{pointer-events:none;opacity:.5}.setting-menu :global(.select-menu-trigger){height:28px;border-radius:8px;font-size:10.5px}.theme-switch{display:flex;flex:none;gap:2px;padding:2px;border-radius:9px;background:var(--neutral-100)}.theme-switch button{height:26px;border:0;border-radius:7px;padding:0 9px;background:transparent;color:var(--neutral-500);cursor:pointer;font-family:inherit;font-size:10.5px}.theme-switch button:hover,.theme-switch button:focus-visible{outline:0;color:var(--neutral-900)}.theme-switch button.active{background:var(--app-surface);color:var(--neutral-950);box-shadow:0 1px 3px rgba(0,0,0,.09)}.theme-switch button:disabled{cursor:default;opacity:.5}
   .permission-retry:disabled{cursor:default;opacity:.55}
+  /* The row keeps the app mark rather than a generic puzzle piece, so the
+     extension reads as part of FlareAI in both places it is offered. */
+  .extension-row-mark{width:18px;height:18px;border-radius:4px}
+  .extension-installed{flex:none;color:var(--neutral-500);font-size:10.5px;font-weight:550}
   .setting-value{flex:none;display:flex;align-items:center;color:var(--neutral-500);font-size:10.5px;font-weight:550;line-height:1}
   .update-refresh{width:16px;height:16px;flex:none;display:flex;align-items:center;justify-content:center;margin-left:-7px;border:0;border-radius:5px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer;line-height:0;transform:translateY(1px)}
   .update-refresh:hover,.update-refresh:focus-visible{outline:0;color:var(--neutral-950)}
@@ -1821,7 +2082,7 @@
   /* A product's own icon already carries its shape and ground, so the house
      tile would read as a second, mismatched container behind it. */
   .option-mark.large{width:34px;height:34px;border-radius:10px}
-  .options-detail.directory-open{display:flex;flex-direction:column;overflow:hidden}.skill-registry{min-height:0;flex:1;display:flex;flex-direction:column;gap:12px;margin-top:14px}.skill-registry-results{flex:1;min-height:0;overflow-y:auto;margin:0;padding:0;list-style:none}.skill-registry-results li{display:flex;align-items:center;gap:12px;min-height:44px;border-bottom:1px solid var(--neutral-100)}.skill-registry-results li:last-child{border-bottom:0}.skill-registry-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.skill-registry-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:540}.skill-registry-copy small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.skill-registry-installed{flex:none;color:var(--neutral-400);font-size:10.5px;font-weight:550}.skill-registry-results .skill-registry-empty{height:100%;display:grid;place-items:center;border:0;color:var(--neutral-400);text-align:center;font-size:11.5px}
+  .options-detail.directory-open{display:flex;flex-direction:column;overflow:hidden}.skill-registry{min-height:0;flex:1;display:flex;flex-direction:column;gap:12px;margin-top:14px}.skill-registry-results{flex:1;min-height:0;overflow-y:auto;margin:0;padding:0;list-style:none}.skill-registry-results li{display:flex;align-items:center;gap:12px;min-height:44px;border-bottom:1px solid var(--neutral-100)}.skill-registry-results li:last-child{border-bottom:0}.skill-registry-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.skill-registry-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:540}.skill-registry-copy small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.skill-registry-installed{flex:none;color:var(--neutral-400);font-size:10.5px;font-weight:550}.discovery-lede{margin:0;color:var(--neutral-400);font-size:11.5px;line-height:1.5}.discovery-lede code{color:var(--neutral-500);font-size:11px}.discovery-groups{--rail-mask-top:transparent;--rail-mask-bottom:transparent;flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:18px;padding:6px 0;-webkit-mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom));mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom))}.discovery-groups.at-top{--rail-mask-top:#000}.discovery-groups.at-bottom{--rail-mask-bottom:#000}.discovery-group-header{width:100%;display:flex;align-items:center;gap:8px;padding:0 0 6px;border:0;border-bottom:1px solid var(--neutral-200);background:transparent;text-align:left;cursor:pointer}.discovery-group-heading{min-width:0;flex:1;display:flex;align-items:baseline;gap:8px}.discovery-group-header:focus-visible{outline:0}.discovery-group h4{margin:0;color:var(--neutral-950);font-size:14px;font-weight:620;letter-spacing:-.01em}.discovery-group-header code{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.discovery-count{flex:none;color:var(--neutral-400);font-size:10.5px;font-weight:550}.discovery-chevron{display:flex;flex:none;align-items:center;color:var(--neutral-500)}.discovery-group-header h4,.discovery-group-header code,.discovery-count,.discovery-chevron{transition:color .15s ease}.discovery-chevron{transition:transform .15s ease,color .15s ease}.discovery-group-header:hover code,.discovery-group-header:focus-visible code,.discovery-group-header:hover .discovery-count,.discovery-group-header:focus-visible .discovery-count,.discovery-group-header:hover .discovery-chevron,.discovery-group-header:focus-visible .discovery-chevron{color:var(--neutral-900)}.discovery-chevron.collapsed{transform:rotate(-90deg)}.discovery-list.collapsed{display:none}.discovery-list{flex:none;overflow:visible}.discovery-empty{margin:auto;color:var(--neutral-400);text-align:center;font-size:11.5px}.skill-registry-results .skill-registry-empty{height:100%;display:grid;place-items:center;border:0;color:var(--neutral-400);text-align:center;font-size:11.5px}
   .skill-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 18px;margin:8px 0 0;max-width:460px}.skill-meta div{min-width:0;display:flex;flex-direction:column;gap:2px}.skill-meta dt{color:var(--neutral-400);font-size:10.5px;font-weight:550;letter-spacing:.02em}.skill-meta dd{margin:0;overflow:hidden;color:var(--neutral-700);text-overflow:ellipsis;white-space:nowrap;font-size:12px}.options-rail-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.options-rail-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:530}.options-rail-copy small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;text-transform:capitalize}.options-name{display:flex;align-items:center;gap:5px}.options-name strong{min-width:0;flex:1}.options-name i{padding:1px 5px;border-radius:5px;background:#fff;color:var(--neutral-600);font-size:9px;font-style:normal}
   .provider-mark{width:26px;height:26px;display:grid;flex:none;place-items:center;border:1px solid var(--neutral-200);border-radius:8px;background:#fff}.provider-mark.large{width:34px;height:34px;border-radius:10px}.provider-row.selected .provider-mark{border-color:rgba(0,0,0,.08)}.provider-row.has-check{position:relative}.provider-row.has-check .options-rail-copy{-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px));mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px))}.configured-check{position:absolute;top:0;right:15px;bottom:0;width:18px;display:grid;place-items:center;color:var(--neutral-600)}
   .options-rail-tools{position:relative;flex:none;display:flex;align-items:center;justify-content:flex-start;gap:2px;margin-top:2px}.rail-tool-wrap{position:relative}.rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}.rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}.rail-tool-menu .flareai-dropdown-item>span{min-width:0;flex:1}.rail-tool-text{width:auto;padding:0 9px;font-family:inherit;font-size:11px;font-weight:540}.role-setup-menu{width:252px;padding:5px}.role-setup-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:5px 7px;color:var(--neutral-500);font-size:11px}.role-setup-row>span{flex:none;white-space:nowrap}.role-setup-row+.role-setup-row{border-top:1px solid var(--neutral-100)}.role-setup-row strong{min-width:0;overflow:hidden;color:var(--neutral-800);text-align:right;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:540}
@@ -1834,7 +2095,7 @@
   .options-path{margin:24px 0 0;overflow-wrap:anywhere;color:var(--neutral-400);font-size:10.5px}.options-empty{width:100%;padding:24px 8px;color:var(--neutral-400);text-align:center;font-size:12px}.options-empty.detail{display:grid;min-height:100%;place-items:center;margin:0}
   .provider-detail-header{padding-bottom:12px}.model-detail-header .model-count{transform:translateY(-2px)}.model-count{margin-left:auto;color:var(--neutral-500);font-size:11px;font-weight:450;white-space:nowrap}.pricing-toolbar{display:flex;align-items:flex-start;gap:12px;margin:-7px 0 10px}.pricing-note{min-width:0;flex:1;margin:0;padding-top:6px;color:var(--neutral-500);font-size:11px}/* Lifted against the note's first line: the trigger is much taller than the
      11px text, so flex-start alignment leaves it sitting visibly low. */
-  .currency-menu{flex:none;margin-top:-5px}.currency-menu :global(.select-menu-trigger){height:26px;min-width:58px;border-radius:8px;padding:0 7px 0 9px;font-size:10.5px}.model-search{height:30px;display:flex;align-items:center;gap:7px;border-bottom:1px solid var(--neutral-200);color:var(--neutral-400)}.model-search:focus-within{border-color:var(--neutral-500);color:var(--neutral-600)}.model-search input{-webkit-appearance:none;appearance:none;min-width:0;flex:1;border:0;padding:0;background:transparent;color:var(--neutral-950);outline:0;font-family:inherit;font-size:11.5px}.model-search input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}.model-search input::placeholder{color:var(--neutral-400)}.model-table-wrap{overflow:auto}.model-table{width:100%;border-collapse:collapse;table-layout:fixed}.model-table th{height:31px;padding:0 10px;border-bottom:1px solid var(--neutral-200);background:transparent;color:var(--neutral-500);text-align:right;white-space:nowrap;font-size:10.5px;font-weight:540}.model-table th:first-child{width:34%;text-align:left}.model-table th:last-child{width:12%}.model-table td{height:46px;padding:0 10px;border-bottom:1px solid var(--neutral-100);color:var(--neutral-700);text-align:right;white-space:nowrap;font-size:11.5px;font-variant-numeric:tabular-nums}.model-table tbody tr:last-child td{border-bottom:0}.model-table tbody tr:hover td{background:var(--neutral-50)}.model-table tr.active td{background:var(--neutral-100)}.model-table td:first-child{text-align:left}.model-table .model-table-empty{text-align:center;color:var(--neutral-400);font-size:11px}.model-row-name{width:100%;display:flex;flex-direction:column;gap:1px;overflow:hidden;border:0;padding:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.model-row-name:disabled{cursor:default}.model-row-name strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:540}.model-row-name small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:9.5px;font-weight:400}.model-row-name:not(:disabled):hover strong,.model-row-name:not(:disabled):focus-visible strong{color:var(--flare-blue,#2384cb)}.model-row-name:focus-visible{outline:none}
+  .currency-menu{flex:none;margin-top:-5px}.currency-menu :global(.select-menu-trigger){height:26px;min-width:58px;border-radius:8px;padding:0 7px 0 9px;font-size:10.5px}.model-search{height:30px;display:flex;align-items:center;gap:7px;border-bottom:1px solid var(--neutral-200);color:var(--neutral-400)}.model-search:focus-within{border-color:var(--neutral-500);color:var(--neutral-600)}.model-search input{-webkit-appearance:none;appearance:none;min-width:0;flex:1;border:0;padding:0;background:transparent;color:var(--neutral-950);outline:0;font-family:inherit;font-size:11.5px}.model-search input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}.model-search input::placeholder{color:var(--neutral-400)}.model-table-wrap{overflow:auto}.model-table{width:100%;border-collapse:collapse;table-layout:fixed}.model-table th{height:31px;padding:0 10px;border-bottom:1px solid var(--neutral-200);background:transparent;color:var(--neutral-500);text-align:right;white-space:nowrap;font-size:10.5px;font-weight:540}.model-table th:first-child{width:34%;text-align:left}.model-table th:last-child{width:12%}.model-table td{height:46px;padding:0 10px;border-bottom:1px solid var(--neutral-100);color:var(--neutral-700);text-align:right;white-space:nowrap;font-size:11.5px;font-variant-numeric:tabular-nums}.model-table tbody tr:last-child td{border-bottom:0}.model-table tbody tr:hover td{background:var(--neutral-50)}.model-table tr.active td{background:var(--neutral-100)}.model-table td:first-child{text-align:left}.model-table .model-table-empty{text-align:center;color:var(--neutral-400);font-size:11px}.model-row-name{width:100%;display:flex;flex-direction:column;gap:1px;overflow:hidden;border:0;padding:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.model-row-name:disabled{cursor:default}.model-row-name strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:540}.model-row-name small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:9.5px;font-weight:400}.model-row-name:not(:disabled):hover strong,.model-row-name:not(:disabled):focus-visible strong{color:var(--flare-blue,#2384cb)}.model-row-name:focus-visible{outline:none}
   .provider-edit{width:28px;height:28px;display:grid;flex:none;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.provider-edit:hover,.provider-edit:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-900)}
   .search-clear{appearance:none;width:13px;height:20px;display:grid;flex:none;place-items:center;border:0;padding:0;background:transparent;box-shadow:none;color:var(--neutral-400);cursor:pointer}.search-clear:hover,.search-clear:focus-visible{outline:0;background:transparent;box-shadow:none;color:var(--neutral-800)}
   .provider-edit.destructive:hover,.provider-edit.destructive:focus-visible{color:#a44343}.provider-edit:disabled{cursor:default;opacity:.45}
@@ -1844,12 +2105,16 @@
   .custom-integration-form{max-width:440px;padding-top:16px}.custom-integration-form>label{display:flex;flex-direction:column;gap:5px;margin-bottom:10px;color:var(--neutral-700);font-size:11px;font-weight:540}.custom-integration-form input,.custom-integration-form select,.custom-integration-form textarea{width:100%;border:1px solid var(--neutral-200);border-radius:8px;background:var(--input-surface);color:var(--neutral-950);outline:none;font:inherit;font-size:11.5px}.custom-integration-form input,.custom-integration-form select{height:32px;padding:0 10px}.custom-integration-form textarea{min-height:58px;padding:8px 10px;resize:vertical;line-height:1.4}.custom-integration-form textarea.instructions{min-height:150px}.custom-integration-form input:focus,.custom-integration-form select:focus,.custom-integration-form textarea:focus{border-color:var(--neutral-400)}.custom-integration-form input:disabled{color:var(--neutral-400);background:var(--neutral-100)}
   .custom-integration-form.skill-form{width:100%;max-width:none}
   .field-label{display:inline}.required-mark{color:#b44949}
+  .models-summary{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 4px;color:var(--neutral-700);font-size:11px;font-weight:540}.models-summary>button{border:0;border-radius:6px;padding:2px 6px;background:transparent;color:var(--neutral-500);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:540;text-decoration:underline}.models-summary>button:hover,.models-summary>button:focus-visible{outline:0;color:var(--neutral-950)}
+  .models-summary-list{margin:0 0 11px;overflow:hidden;color:var(--neutral-400);font-size:10.5px;line-height:1.5;overflow-wrap:anywhere}
+  .models-field-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 5px;color:var(--neutral-700);font-size:11px;font-weight:540}
+  .detect-models{height:22px;border:1px solid var(--neutral-200);border-radius:7px;padding:0 8px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10px;font-weight:540}.detect-models:hover,.detect-models:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.detect-models:disabled{cursor:default;opacity:.5}
   .custom-provider-logo{display:block;flex:none;cursor:pointer}.custom-provider-logo>input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.custom-provider-logo-preview{position:relative;overflow:hidden;transition:background-color .14s ease}.custom-provider-logo:hover .custom-provider-logo-preview,.custom-provider-logo:focus-within .custom-provider-logo-preview{background:var(--neutral-300)}.custom-provider-logo-preview img{width:100%;height:100%;display:block;object-fit:cover}
   .skill-add-menu{min-width:142px}.skill-folder-input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
   .credential-keys{margin-top:12px}.credential-key-row{min-height:42px;display:flex;align-items:center;gap:9px;padding:0 6px;border-bottom:1px solid var(--neutral-100)}.credential-key-state{width:7px;height:7px;flex:none;border-radius:50%;background:var(--neutral-300)}.credential-key-state.active{background:#4da46a}.credential-key-state.invalid{background:#c65a5a}.credential-key-state.limited{background:#c8973c}.credential-key-row>span:nth-child(2){min-width:0;flex:1;display:flex;flex-direction:column}.credential-key-row strong{color:var(--neutral-800);font-size:11.5px;font-weight:520}.credential-key-row small{color:var(--neutral-400);font-size:10px}.credential-key-row button{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:var(--neutral-400);cursor:pointer}.credential-key-row button:hover{background:var(--neutral-100);color:#a44343}.credential-unavailable{margin:22px 0 0;padding:10px;border-radius:9px;background:var(--neutral-100);color:var(--neutral-500);font-size:12px}
   .model-table tr.model-row{cursor:pointer}.model-table tr.expanded td{background:var(--neutral-100)}.model-table tr.model-roles-row td{height:auto;padding:0;background:var(--neutral-50);border-bottom:1px solid var(--neutral-100)}.model-table tr.model-roles-row:hover td{background:var(--neutral-50)}
-  .model-roles{display:flex;flex-direction:column;padding:4px 10px 8px}.model-roles-empty{margin:0;padding:8px 0;color:var(--neutral-400);font-size:11px}.model-role{min-height:34px;display:flex;align-items:center;gap:12px;white-space:normal}.model-role+.model-role{border-top:1px solid var(--neutral-100)}.model-role-copy{min-width:0;flex:1;display:flex;align-items:baseline;gap:8px}.model-role-copy strong{flex:none;color:var(--neutral-800);font-size:11px;font-weight:540}.model-role-copy small{min-width:0;overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:10px}.model-role.held .model-role-copy small{color:var(--flare-blue,#2384cb)}
-  .model-role-actions{flex:none;display:flex;align-items:center;gap:4px}.model-role-reset,.model-role-change{height:24px;border:1px solid var(--neutral-200);border-radius:7px;padding:0 9px;background:var(--neutral-0,#fff);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px}.model-role-reset{border-color:transparent;border-radius:0;padding:0 6px;background:transparent;color:var(--neutral-400)}.model-role-reset:hover:not(:disabled),.model-role-reset:focus-visible:not(:disabled){outline:0;background:transparent;color:var(--neutral-900)}.model-role-change:hover:not(:disabled){background:var(--neutral-100);color:var(--neutral-950)}.model-role-change:disabled,.model-role-reset:disabled{cursor:default;opacity:.55}.model-role.held .model-role-change{border-color:transparent;background:transparent;color:var(--flare-blue,#2384cb);opacity:1}
+  .model-roles{display:flex;flex-direction:column;padding:4px 10px 8px}.model-roles-empty{margin:0;padding:8px 0;color:var(--neutral-400);font-size:11px}.model-role{min-height:34px;display:flex;align-items:center;gap:12px;white-space:normal}.model-role+.model-role{border-top:1px solid var(--neutral-100)}.model-role-copy{min-width:0;flex:1;display:flex;align-items:baseline;gap:8px}.model-role-copy strong{flex:none;color:var(--neutral-800);font-size:11px;font-weight:540}.model-role-copy small{min-width:0;overflow:hidden;color:var(--neutral-600);text-overflow:ellipsis;white-space:nowrap;font-size:10px}.model-role.held .model-role-copy small{color:var(--flare-blue,#2384cb)}
+  .model-role-actions{flex:none;display:flex;align-items:center;gap:4px}.model-role-reset,.model-role-change{height:24px;border:1px solid var(--neutral-200);border-radius:7px;padding:0 9px;background:var(--neutral-0,#fff);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px}.model-role-reset{border-color:transparent;border-radius:0;padding:0 6px;background:transparent;color:var(--neutral-600)}.model-role-reset:hover:not(:disabled),.model-role-reset:focus-visible:not(:disabled){outline:0;background:transparent;color:var(--neutral-900)}.model-role-change:hover:not(:disabled){background:var(--neutral-100);color:var(--neutral-950)}.model-role-change:disabled,.model-role-reset:disabled{cursor:default;opacity:.55}.model-role.held .model-role-change{border-color:transparent;background:transparent;color:var(--flare-blue,#2384cb);opacity:1}
   @keyframes backdrop-in{from{opacity:0}}@keyframes modal-in{from{opacity:0;transform:translateY(10px) scale(.985)}}
   @media(max-width:700px){.options-modal{width:calc(100vw - 24px);height:calc(100vh - 24px)}.options-header{padding:24px 22px 16px}.options-body{grid-template-columns:210px minmax(0,1fr)}.options-body:after{left:210px}.options-resources{grid-template-columns:1fr}}
 </style>

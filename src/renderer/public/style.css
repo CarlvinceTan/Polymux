@@ -193,11 +193,18 @@ button:focus-visible, [contenteditable]:focus-visible { outline: 2px solid rgba(
 main { --chat-drawer-column: 0px; --content-right-column: 0px; --content-composer-column: 0px; position: relative; height: 100vh; display: grid; grid-template-columns: var(--chat-drawer-column) minmax(0,1fr) var(--content-right-column); overflow-x: hidden; background: var(--main-panel-background); transition: --chat-drawer-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-right-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-composer-column var(--drawer-motion-duration) var(--drawer-motion-ease); }
 main.summary-open, main.summary-open .conversation-column, main.summary-open .sticky-composer, main.summary-open .composer-column-content { transition-duration: var(--summary-motion-duration); }
 main.workspace-resizing, main.workspace-resizing .conversation-column, main.workspace-resizing .sticky-composer, main.workspace-resizing .composer-column-content,
-main.chat-drawer-resizing, main.chat-drawer-resizing .conversation-column, main.chat-drawer-resizing .sticky-composer, main.chat-drawer-resizing .composer-column-content { transition: none; }
-main.workspace-resizing .speech-orb.in-chat, main.chat-drawer-resizing .speech-orb.in-chat { transition: none; }
+main.chat-drawer-resizing, main.chat-drawer-resizing .conversation-column, main.chat-drawer-resizing .sticky-composer, main.chat-drawer-resizing .composer-column-content,
+/* A window-edge drag reclamps the drawers every frame; the open/close motion
+   would leave the content column and its fixed chrome behind the viewport and
+   under the workspace panel. */
+main.window-resizing, main.window-resizing .conversation-column, main.window-resizing .sticky-composer, main.window-resizing .composer-column-content { transition: none; }
+main.workspace-resizing .speech-orb.in-chat, main.chat-drawer-resizing .speech-orb.in-chat, main.window-resizing .speech-orb.in-chat { transition: none; }
 main.workspace-resizing .scroll-to-latest,
 main.chat-drawer-resizing .scroll-to-latest,
+main.window-resizing .scroll-to-latest,
+main.window-resizing .timeline-rail,
 main.chat-drawer-resizing .timeline-rail { transition: none; }
+main.window-resizing .workspace-drawer.open { transition: none; }
 
 /* Never transform, filter, or contain this column. The composer and its queue
    are position:fixed inside it, and any of those would make it their containing
@@ -327,7 +334,32 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 
 /* App shell chrome */
 .top-controls, .left-controls { position: fixed; top: var(--titlebar-control-top); display: flex; gap: var(--main-control-gap); }
-.top-controls { z-index: 50; right: 8px; }
+.top-controls { z-index: 50; right: 8px; align-items: center; }
+/* A notice rather than a control: a bordered grey rectangle carrying a label,
+   which leaves once the extension reports. The install half and the dismiss
+   half are separate buttons sharing the one plate, divided by a rule drawn at
+   the same weight and colour as the border around them — and set the same
+   distance from the words on one side as from the × on the other. Sized to the
+   icon buttons beside it so the row still reads as one line. */
+.extension-chip { --extension-chip-rule: var(--neutral-300); -webkit-app-region: no-drag; box-sizing: border-box; display: flex; align-items: center; height: 24px; margin-right: 4px; border: 1px solid var(--extension-chip-rule); border-radius: 7px; background: var(--neutral-100); color: var(--neutral-700); white-space: nowrap; }
+.extension-chip > button { height: 100%; display: flex; align-items: center; border: 0; background: transparent; color: inherit; font: inherit; font-size: 11.5px; font-weight: 500; cursor: pointer; transition: color .15s; }
+.extension-chip > button:focus-visible { outline: 2px solid var(--neutral-500); outline-offset: -2px; border-radius: 6px; }
+.extension-chip-install { padding: 0 7px; }
+/* Less than one step down from the resting colour, not four: the ground
+   already shifts on hover, so the label only has to follow it rather than
+   announce itself. Landing between 700 and 800 keeps the move at ~14/255 per
+   channel, which reads as the label warming rather than changing weight. Both
+   respond to the chip, so pointing at either half lights the whole pill. */
+.extension-chip:hover { background: var(--neutral-200); }
+.extension-chip:hover .extension-chip-install { color: color-mix(in srgb,var(--neutral-800) 45%,var(--neutral-700)); }
+/* All four horizontal gaps come out at 7px: edge-to-label, label-to-rule,
+   rule-to-×, ×-to-edge. The label's are plain padding. The ×'s subtract the
+   4.08px its glyph leaves blank inside its own box — the close path draws
+   7..17 of a 24 viewBox, so 7/24 of a 14px svg is empty on each side. */
+.extension-chip > .extension-chip-dismiss { display: grid; place-items: center; padding: 0 2.92px; border-left: 1px solid var(--extension-chip-rule); color: var(--neutral-400); }
+/* No hover response: the divider already separates it from the label, and a
+   highlight behind the glyph read as a second control inside the pill. */
+.extension-chip-dismiss svg { display: block; width: 14px; height: 14px; }
 /* --chrome-inset collapses when full screen takes the traffic lights, so the
    controls belong at the window edge instead. Position is never animated — see
    the chrome-inset note above — the opacity is, and only on the way back out. */
@@ -346,7 +378,7 @@ main.chat-drawer-open .conversation-title-bar { left: var(--chat-drawer-offset);
 main.workspace-open .conversation-title-bar { right: var(--content-right-column); }
 /* Resizing is direct manipulation: track the drawer edge immediately so the
    title can never lag underneath it. Open/close changes retain the slide. */
-main.chat-drawer-resizing .conversation-title-bar, main.workspace-resizing .conversation-title-bar { transition: none; }
+main.chat-drawer-resizing .conversation-title-bar, main.workspace-resizing .conversation-title-bar, main.window-resizing .conversation-title-bar { transition: none; }
 /* Sits above the translucent title bar so the rule stays crisp and continuous
    across the full viewport instead of being washed out beneath it. */
 main.has-conversation::after { content: ''; pointer-events: none; position: fixed; z-index: 29; top: calc(var(--app-topbar-height) - 1px); right: 0; left: 0; height: 1px; background: var(--neutral-200); }
@@ -459,8 +491,14 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
 .activity-detail-toggle[aria-expanded="true"] .activity-row-line > svg { transform: rotate(180deg); }
 .activity-detail-toggle:hover .activity-row-line > svg { color: var(--neutral-950); }
 .agent-activity-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 14px 2px 0; list-style: none; }
+/* Collapsed streaming keeps one visible row; the outgoing and incoming rows
+   share a single grid cell so the swap never nudges the layout. */
+.agent-activity-list.solo { display: grid; grid-template-columns: 1fr; }
+.agent-activity-list.solo > li { grid-area: 1 / 1; }
 .agent-activity-list li { display: flex; align-items: flex-start; gap: 9px; min-width: 0; color: var(--neutral-950); font-size: 13px; line-height: 1.4; }
-.agent-activity-list li > svg { flex: none; margin-top: 1px; color: var(--neutral-950); }
+/* Centre the glyph on the first text line: the line box is 1.4em tall and the
+   glyph 17px, so half the difference lifts its centre onto the text's. */
+.agent-activity-list li > svg { flex: none; margin-top: calc((1.4em - 17px) / 2); color: var(--neutral-950); }
 .agent-activity-list li.active { color: var(--neutral-950); font-weight: 450; }
 .agent-activity-list li.live, .agent-activity-list li.active:not(.commentary), .agent-activity.streaming .agent-activity-list li:not(.commentary) { position: relative; isolation: isolate; }
 /* One glimmer for the whole row: a single highlight sweeps across the icon and
@@ -1046,7 +1084,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .speech-orb-chat-toggle:hover { background: transparent; color: var(--neutral-950); }
 .speech-orb-content { position: relative; z-index: 1; width: 100%; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; margin: 0 auto; padding: 72px 24px 42px; }
 .voice-orb { position: relative; width: clamp(400px,46vw,580px); aspect-ratio: 1; display: block; }
-.voice-orb::before { content: ''; pointer-events: none; position: absolute; inset: 22%; border-radius: 50%; background: radial-gradient(circle,rgba(35,132,203,.14) 0,rgba(35,132,203,.07) 38%,rgba(22,48,79,.025) 58%,transparent 74%); filter: blur(24px); }
+.voice-orb::before { content: ''; pointer-events: none; position: absolute; inset: 31%; border-radius: 50%; background: radial-gradient(circle,rgba(35,132,203,.16) 0,rgba(35,132,203,.08) 42%,rgba(22,48,79,.02) 62%,transparent 78%); filter: blur(16px); }
 .voice-orb canvas { position: relative; z-index: 1; width: 100%; height: 100%; display: block; }
 .speech-orb:not(.in-chat) .voice-orb { margin-bottom: clamp(-164px,-11vw,-104px); }
 .speech-orb.error .voice-orb { opacity: .75; }
@@ -1150,7 +1188,7 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 /* The label variant: it names a place rather than holding a value, so it drops
    the field's outline and keeps only the hover highlight — which covers the
    icon and the name together, since both sit inside the button. */
-.select-menu-trigger.plain { width: auto; height: auto; gap: 6px; border-color: transparent; border-radius: 6px; padding: 4px 8px; background: transparent; color: var(--neutral-600); font: inherit; transition: background .15s, color .15s; }
+.select-menu-trigger.plain { width: auto; height: auto; gap: 6px; border-color: transparent; border-radius: 6px; padding: 4px 8px; background: transparent; color: var(--neutral-950); font: inherit; transition: background .15s, color .15s; }
 .select-menu-trigger.plain:hover, .select-menu-trigger.plain[aria-expanded='true'] { border-color: transparent; background: var(--neutral-100); color: var(--neutral-950); }
 /* A long option list scrolls inside the menu rather than running off the
    surface it opens over. `--select-menu-rows` sets how many rows stay visible;
@@ -1200,7 +1238,10 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .onb-ink .onb-state { color: var(--disc-ink-soft); }
 .onb-ink .onb-button { --onb-button-edge: rgb(from var(--disc-ink) r g b / .28); --onb-button-surface: transparent; color: var(--disc-ink); }
 .onb-ink .onb-button.primary { --onb-button-edge: var(--disc-ink); --onb-button-surface: var(--disc-ink); color: var(--disc-fill); }
-.onb-ink .onb-quiet { color: var(--disc-ink-soft); }
+/* Skip and back sit alone with no surface behind them, so the soft tone the
+   prose uses reads as too faint for something clickable — they carry more of
+   the ink than the copy around them. */
+.onb-ink .onb-quiet { color: rgb(from var(--disc-ink) r g b / .84); }
 .onb-ink .onb-quiet:hover { color: var(--disc-ink); }
 .onb-ink .onb-field > span { color: var(--disc-ink-soft); }
 .onb-ink .onb-field input { border-color: rgb(from var(--disc-ink) r g b / .28); background: rgb(from var(--disc-ink) r g b / .08); color: var(--disc-ink); }
@@ -1239,15 +1280,15 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .onb-button:disabled { cursor: default; opacity: .45; }
 .onb-button:focus-visible { outline: 2px solid var(--neutral-500); outline-offset: 2px; }
 
-.onb-quiet { border: 0; padding: 0; background: transparent; color: var(--neutral-500); font-family: inherit; font-size: 12.5px; cursor: pointer; }
+.onb-quiet { border: 0; padding: 0; background: transparent; color: var(--neutral-700); font-family: inherit; font-size: 12.5px; cursor: pointer; }
 .onb-quiet:hover { color: var(--neutral-900); }
 .onb-quiet:focus-visible { outline: 2px solid var(--neutral-500); outline-offset: 3px; border-radius: 4px; }
 /* Both are the bare word, on the same centre line as whatever they stand
    beside: with no half-leading of their own, box centre is text centre. */
-.onb-back, .onb-skip { display: inline-flex; align-items: center; line-height: 1; }
+.onb-skip-setup, .onb-step-back { display: inline-flex; align-items: center; line-height: 1; }
 /* Further off the primary than the row's own gap: the button carries a plate
    and the word does not, so at an equal gap the two read as crowded. */
-.onb-actions .onb-skip { margin-left: 10px; }
+.onb-actions .onb-step-back { margin-left: 10px; }
 
 .onb-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 26px; }
 .onb-note { margin: 12px 0 0; color: var(--neutral-500); font-size: 11.5px; line-height: 1.5; }
@@ -1343,6 +1384,18 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-row-top strong { overflow: hidden; color: var(--neutral-900); text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 545; }
 .hub-view-row-top em { flex: none; color: var(--neutral-400); font-style: normal; font-size: 10px; }
 .hub-view-row-subject { overflow: hidden; color: var(--neutral-600); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+/* A chat row is a picture, two lines of copy, and a count — so it lays out
+   across rather than down, unlike the mail rows above it. */
+.hub-view-row:has(.hub-view-chat-copy) { flex-direction: row; align-items: center; gap: 9px; }
+.hub-view-chat-avatar { flex: none; width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: var(--neutral-100); }
+.hub-view-chat-avatar.placeholder { display: grid; place-items: center; color: var(--neutral-500); font-size: 11px; font-weight: 560; }
+.hub-view-chat-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.hub-view-chat-copy .hub-view-row-top time { flex: none; color: var(--neutral-400); font-size: 10px; }
+.hub-view-chat-preview { overflow: hidden; color: var(--neutral-500); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+/* An unread row leads with weight, the way every chat client marks one. */
+.hub-view-row.unread .hub-view-row-top strong { font-weight: 640; }
+.hub-view-row.unread .hub-view-chat-preview { color: var(--neutral-700); }
+.hub-view-chat-unread { flex: none; min-width: 17px; height: 17px; display: grid; place-items: center; padding: 0 5px; border-radius: 9px; background: var(--neutral-900); color: var(--app-bg); font-size: 9.5px; font-weight: 600; }
 .hub-view-row-meta { display: flex; gap: 5px; color: var(--neutral-400); }
 .hub-view-row-meta:empty { display: none; }
 /* Unread is carried by weight and a colour shift rather than a dot, so the
@@ -1412,6 +1465,17 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-bubble p { margin: 0; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
 .hub-view-bubble-who { display: block; margin-bottom: 2px; color: var(--neutral-500); font-size: 10px; font-weight: 560; }
 .hub-view-bubble em { display: block; margin-top: 3px; opacity: .6; font-style: normal; font-size: 9.5px; }
+/* Media sits flush to the bubble's padding rather than filling it: an image
+   bled to the edges loses the rounded corner the bubble is drawn with. */
+.hub-view-bubble-image { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+.hub-view-bubble-video { display: block; max-width: 100%; border-radius: 8px; }
+.hub-view-bubble-audio { display: block; width: 220px; max-width: 100%; height: 32px; }
+.hub-view-bubble-file { display: inline-flex; align-items: center; gap: 5px; color: inherit; font-size: 11.5px; text-decoration: none; }
+.hub-view-bubble-file:hover { text-decoration: underline; }
+/* Reads as a quiet link inside the bubble, and inherits the bubble's colour so
+   it stays legible on both the light and the dark (own-message) ground. */
+.hub-view-bubble-viewin { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 0; border: 0; background: none; color: inherit; opacity: .75; font: inherit; font-size: 11px; cursor: pointer; }
+.hub-view-bubble-viewin:hover { opacity: 1; text-decoration: underline; }
 
 .hub-view-composer { display: flex; align-items: center; gap: 8px; flex: none; padding: 10px 14px 14px; border-top: 1px solid var(--neutral-200); }
 .hub-view-composer input { min-width: 0; flex: 1; height: 34px; border: 1px solid var(--neutral-200); border-radius: 10px; padding: 0 11px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 12.5px; }
@@ -1478,11 +1542,14 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .onb-cover { position: absolute; inset: 0; z-index: 3; pointer-events: none; --cover-r: 0px; }
 /* Solid disc growing from the centre: setup's own circle, inverted. */
 .onb-cover.fill { background: radial-gradient(circle at 50% 50%, var(--cover-ink,#0a0a0a) var(--cover-r), transparent calc(var(--cover-r) + 1px)); animation: cover-open .62s cubic-bezier(.4,0,.2,1) both; }
-/* The same circle as a hole, so at radius zero the window is still solid ink
-   and the swap from the fill has no seam in it. */
-.onb-cover.hole { background: radial-gradient(circle at 50% 50%, transparent var(--cover-r), var(--cover-ink,#0a0a0a) calc(var(--cover-r) + 1px)); animation: cover-open .84s cubic-bezier(.4,0,.2,1) both; }
+/* Once the fill has the window solid, the ink simply thins away over the same
+   stretch the growing hole used to take — the app is already mounted beneath,
+   so the fade is the reveal. Full ink on the first frame, so the swap from the
+   fill has no seam in it. */
+.onb-cover.hole { background: var(--cover-ink,#0a0a0a); animation: cover-clear .84s cubic-bezier(.4,0,.2,1) both; }
 @keyframes cover-open { from { --cover-r: 0px; } to { --cover-r: var(--cover-max, 120vmax); } }
-@media (prefers-reduced-motion: reduce) { .onb-cover { animation: none; --cover-r: var(--cover-max, 120vmax); } }
+@keyframes cover-clear { from { opacity: 1; } to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .onb-cover { animation: none; --cover-r: var(--cover-max, 120vmax); } .onb-cover.hole { opacity: 0; } }
 
 /* Startup splash. Lives in index.html and is styled here so the whole sequence
    — the mark drawing itself, then the lockup opening — is on screen with
@@ -1511,6 +1578,40 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
   position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; pointer-events: none; background: var(--app-bg);
 }
 .startup-splash.leaving { will-change: opacity; animation: startup-cover-out .24s ease forwards; }
+/* Lifting onto the app rather than onto setup: nothing underneath matches the
+   lockup, so it is shown out on its own first, and only then does the ground
+   it stood on go — by which time there is no brand left to read as sitting
+   over the interface. The cover's own fade is longer to match, so the app
+   arrives rather than appearing.
+
+   Opacity and nothing else, on both halves. The lockup holds the exact
+   position it landed in for the whole of the exit: any movement here — a
+   settle, a drift, a scale, which reads as one on a lockup this size — makes
+   the brand look like it is leaving the screen rather than simply being over
+   with, and it is the last thing seen before the app.
+
+   `startup-brand-in` is repeated ahead of the exit so adding this rule extends
+   the element's animation list instead of replacing it, which would drop the
+   pose that sequence is holding — and dropping it is itself a jump, because
+   the travel that rule ends on is what put the lockup where it is. */
+.startup-splash.leaving.to-app { animation: startup-cover-out .42s ease .34s forwards; }
+/* The app's own half of that. It is held at nothing while the splash is up —
+   invisible either way behind an opaque cover — and comes up as the cover goes
+   down, so the two cross on the shared background instead of the interface
+   being uncovered whole. Starting it a beat after the lockup's fade begins is
+   what makes the handover read as one movement: the name is on its way out as
+   the app arrives, and neither is ever seen sitting on the other.
+
+   Setup takes neither class: it wants the app exactly as it is underneath. */
+.app-under-splash { opacity: 0; }
+.app-entering { animation: app-fade-in .52s ease .3s both; }
+@keyframes app-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.startup-splash.leaving.to-app .startup-brand {
+  will-change: opacity;
+  animation: startup-brand-in 1.22s cubic-bezier(.5,0,.2,1) 1.08s both,
+             startup-brand-out .42s ease forwards;
+}
+@keyframes startup-brand-out { from { opacity: 1; } to { opacity: 0; } }
 
 /* Opening pose: the lockup is pushed right by exactly what the wordmark and its
    gap add to the left of centre, which puts the mark's own centre on the
@@ -1653,6 +1754,11 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
    plain class selectors here would simply lose to the rules above. */
 @media (prefers-reduced-motion: reduce) {
   :root[data-splash] .startup-brand { transform: none; animation: none; }
+  /* Same reason again, one class further along: the staged exit's own rule is
+     more specific still, so it has to be put down by name. The cover's plain
+     fade is all that is left of the lift. */
+  :root[data-splash] .startup-splash.leaving.to-app .startup-brand { animation: none; }
+  .app-entering { animation: none; opacity: 1; }
   :root[data-splash] .startup-word-slide { transform: none; animation: none; }
   :root[data-splash] .startup-mark path { transform: none; animation: none; }
 }

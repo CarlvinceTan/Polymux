@@ -15,6 +15,7 @@
   import Icon from '../shared/Icon.svelte';
   import PlatformLogo from '../shared/PlatformLogo.svelte';
   import {MAIN_UI_ICON_STROKE_WIDTH, RAIL_TILE_SIZE} from '../../layout/iconSizing';
+  import {activeLocale, t, translate} from '../../i18n';
 
   type IconName = ComponentProps<typeof Icon>['name'];
 
@@ -88,18 +89,18 @@
   /** Which slice of the folder the list shows. Applied here rather than in the
    * IMAP query so switching back is instant and costs no round trip. */
   type Filter = 'all' | 'unread' | 'flagged' | 'attachments';
-  const FILTERS: Array<{id: Filter; label: string; icon: IconName}> = [
-    {id: 'all', label: 'All messages', icon: 'mail'},
-    {id: 'unread', label: 'Unread', icon: 'bolt'},
-    {id: 'flagged', label: 'Flagged', icon: 'bolt'},
-    {id: 'attachments', label: 'With attachments', icon: 'attach'},
+  $: FILTERS = [
+    {id: 'all' as Filter, label: $t('hub.filterAll'), icon: 'mail' as IconName},
+    {id: 'unread' as Filter, label: $t('hub.filterUnread'), icon: 'bolt' as IconName},
+    {id: 'flagged' as Filter, label: $t('hub.filterFlagged'), icon: 'bolt' as IconName},
+    {id: 'attachments' as Filter, label: $t('hub.filterAttachments'), icon: 'attach' as IconName},
   ];
   type Sort = 'date-desc' | 'date-asc' | 'subject' | 'from';
-  const SORTS: Array<{id: Sort; label: string}> = [
-    {id: 'date-desc', label: 'Newest first'},
-    {id: 'date-asc', label: 'Oldest first'},
-    {id: 'subject', label: 'By subject'},
-    {id: 'from', label: 'By sender'},
+  $: SORTS = [
+    {id: 'date-desc' as Sort, label: $t('hub.sortNewest')},
+    {id: 'date-asc' as Sort, label: $t('hub.sortOldest')},
+    {id: 'subject' as Sort, label: $t('hub.sortSubject')},
+    {id: 'from' as Sort, label: $t('hub.sortSender')},
   ];
   let filter: Filter = 'all';
   let sort: Sort = 'date-desc';
@@ -358,6 +359,14 @@
     try {
       chatMessages = await api.comms.chatMessages(chat.id, 60);
       error = '';
+      // Reading it is what makes it read — on the homeserver as well as here,
+      // so the count clears on the phone too. The badge is cleared locally
+      // rather than re-listing every room for one number.
+      const newest = chatMessages.at(-1) ?? chatMessages[0];
+      if (newest && (chat.unread ?? 0) > 0) {
+        await api.comms.chatMarkRead(chat.id, newest.id).catch(() => {});
+        chats = chats.map((item) => (item.id === chat.id ? {...item, unread: 0} : item));
+      }
     } catch (cause) {
       error = readableError(cause);
       chatMessages = [];
@@ -425,7 +434,7 @@
     if (!source || source.kind !== 'mail') return;
     const target = folders.find((folder) => folder.role === role);
     if (!target) {
-      error = `This account has no ${role} folder.`;
+      error = folderMissing(role);
       return;
     }
     busy = `move:${envelope.id}`;
@@ -508,7 +517,7 @@
         );
       } else {
         const target = folders.find((item) => item.role === action);
-        if (!target) throw new Error(`This account has no ${action} folder.`);
+        if (!target) throw new Error(folderMissing(action));
         await api.comms.mailMove(ids, target.name, account, folder);
         envelopes = envelopes.filter((item) => !ids.includes(item.id));
         if (openEnvelope && ids.includes(openEnvelope.id)) closeReader();
@@ -669,14 +678,34 @@
     });
   }
 
+  /** Which mailbox an action needs, named the way the app names it rather than
+   * by the role's internal spelling. */
+  function folderMissing(role: 'junk' | 'trash' | 'archive'): string {
+    return translate('hub.noFolder', {folder: translate(FOLDER_ROLE_NAMES[role])});
+  }
+
+  const FOLDER_ROLE_NAMES = {
+    junk: 'hub.junk',
+    trash: 'hub.trash',
+    archive: 'hub.archive',
+  } as const;
+
+  /** Reply and forward prefixes are conventions of the mail client, and every
+   * locale has its own — "Re:" is near-universal, "Fwd:" is not. */
   function prefixed(subject: string, mode: ComposeMode): string {
-    if (mode === 'forward') return /^fwd:/i.test(subject) ? subject : `Fwd: ${subject}`;
-    return /^re:/i.test(subject) ? subject : `Re: ${subject}`;
+    if (mode === 'forward') {
+      const prefix = translate('hub.forwardPrefix');
+      return subject.toLowerCase().startsWith(prefix.toLowerCase()) ? subject : `${prefix} ${subject}`;
+    }
+    const prefix = translate('hub.replyPrefix');
+    return subject.toLowerCase().startsWith(prefix.toLowerCase()) ? subject : `${prefix} ${subject}`;
   }
 
   function quote(message: MailMessageDto): string {
-    const who = message.from?.name ?? message.from?.address ?? 'someone';
-    const head = message.date ? `On ${message.date}, ${who} wrote:` : `${who} wrote:`;
+    const who = message.from?.name ?? message.from?.address ?? translate('hub.someone');
+    const head = message.date
+      ? translate('hub.quoteHeadDated', {date: message.date, who})
+      : translate('hub.quoteHead', {who});
     return [head, ...message.body.split('\n').map((line) => `> ${line}`)].join('\n');
   }
 
@@ -734,18 +763,26 @@
     const today = new Date();
     const sameDay = parsed.toDateString() === today.toDateString();
     return sameDay
-      ? parsed.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})
-      : parsed.toLocaleDateString([], {month: 'short', day: 'numeric'});
+      ? parsed.toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit'})
+      : parsed.toLocaleDateString(activeLocale(), {month: 'short', day: 'numeric'});
+  }
+
+  /**
+   * The stamp on a chat row. Same shape as a mail row's, but tolerant of the
+   * null a room that has never carried a message comes back with.
+   */
+  function chatTime(value: string | null | undefined): string {
+    return value ? when(value) : '';
   }
 
   function sender(envelope: MailEnvelopeDto): string {
-    return envelope.from.name ?? envelope.from.address ?? 'Unknown';
+    return envelope.from.name ?? envelope.from.address ?? $t('hub.unknown');
   }
 </script>
 
 <div class="hub-view">
   <div class="hub-view-grid" class:reading={!!openMail || !!openEnvelope || !!activeChat || composing}>
-  <nav class="hub-view-rail" aria-label="Message sources">
+  <nav class="hub-view-rail" aria-label={$t('hub.sources')}>
     {#each linked as bridge (bridge.platform)}
       {@const ids = bridge.accounts.map((item) => item.id)}
       {@const grouped = ids.length > 1}
@@ -790,7 +827,7 @@
         onclick={pickMail}
       >
         <PlatformLogo platform="mail" size={RAIL_TILE_SIZE} />
-        <span>Mail</span>
+        <span>{$t('hub.mail')}</span>
       </button>
       {#if grouped && expanded}
         <ul class="hub-view-accounts">
@@ -811,12 +848,12 @@
 
     {#if linked.length === 0 && accounts.length === 0 && !loading}
       <p class="hub-view-rail-empty">
-        Connect a platform or a mailbox in Settings → Communications.
+        {$t('hub.railEmpty')}
       </p>
     {/if}
   </nav>
 
-  <section class="hub-view-list" aria-label="Messages">
+  <section class="hub-view-list" aria-label={$t('hub.messages')}>
     {#if source?.kind === 'mail'}
       <header class="hub-view-list-head">
         <!-- The mailbox picker lives with the list it filters, not in the
@@ -876,7 +913,7 @@
         </div>
         <input
           type="search"
-          placeholder="Search this folder"
+          placeholder={$t('hub.searchFolder')}
           bind:value={search}
           onkeydown={(event) => {
             if (event.key === 'Enter') void loadEnvelopes();
@@ -893,8 +930,8 @@
             type="button"
             class="hub-view-icon-button"
             class:on={filter !== 'all'}
-            title="Filter messages"
-            aria-label="Filter messages"
+            title={$t('hub.filterMessages')}
+            aria-label={$t('hub.filterMessages')}
             aria-expanded={filterMenu}
             onclick={() => (filterMenu = !filterMenu)}
           >
@@ -917,7 +954,7 @@
                   </button>
                 </li>
               {/each}
-              <li class="hub-view-menu-heading">Sort</li>
+              <li class="hub-view-menu-heading">{$t('hub.sort')}</li>
               {#each SORTS as option (option.id)}
                 <li>
                   <button
@@ -945,18 +982,18 @@
       {#if selected.size > 0}
         <div class="hub-view-selection">
           <span>{selected.size} selected</span>
-          <button type="button" disabled={selectionBusy} onclick={() => void bulk('read')}>Read</button>
-          <button type="button" disabled={selectionBusy} onclick={() => void bulk('unread')}>Unread</button>
-          <button type="button" disabled={selectionBusy} onclick={() => void bulk('flag')}>Flag</button>
-          <button type="button" disabled={selectionBusy} onclick={() => void bulk('archive')}>Archive</button>
+          <button type="button" disabled={selectionBusy} onclick={() => void bulk('read')}>{$t('hub.markRead')}</button>
+          <button type="button" disabled={selectionBusy} onclick={() => void bulk('unread')}>{$t('hub.markUnread')}</button>
+          <button type="button" disabled={selectionBusy} onclick={() => void bulk('flag')}>{$t('hub.flag')}</button>
+          <button type="button" disabled={selectionBusy} onclick={() => void bulk('archive')}>{$t('hub.archive')}</button>
           {#if currentFolder?.role === 'trash' || currentFolder?.role === 'junk'}
             <button type="button" class="destructive" disabled={selectionBusy} onclick={() => void erase([...selected])}>
               Delete
             </button>
           {:else}
-            <button type="button" disabled={selectionBusy} onclick={() => void bulk('trash')}>Delete</button>
+            <button type="button" disabled={selectionBusy} onclick={() => void bulk('trash')}>{$t('common.delete')}</button>
           {/if}
-          <button type="button" onclick={() => (selected = new Set())}>Cancel</button>
+          <button type="button" onclick={() => (selected = new Set())}>{$t('common.cancel')}</button>
         </div>
       {/if}
       <ul class="hub-view-rows">
@@ -991,17 +1028,17 @@
               disabled={busy === 'more'}
               onclick={() => void loadEnvelopes(true)}
             >
-              {busy === 'more' ? 'Loading…' : 'Load more'}
+              {busy === 'more' ? $t('common.loading') : $t('hub.loadMore')}
             </button>
           </li>
         {/if}
         {#if visibleEnvelopes.length === 0}
           <li class="hub-view-empty">
             {busy === 'envelopes' || busy === 'folders'
-              ? 'Loading…'
+              ? $t('common.loading')
               : envelopes.length > 0
-                ? 'Nothing matches this filter.'
-                : 'Nothing here.'}
+                ? $t('hub.noneMatchFilter')
+                : $t('hub.nothingHere')}
           </li>
         {/if}
       </ul>
@@ -1013,21 +1050,46 @@
               type="button"
               class="hub-view-row"
               class:active={activeChat?.id === chat.id}
+              class:unread={(chat.unread ?? 0) > 0}
               onclick={() => void openChat(chat)}
             >
-              <span class="hub-view-row-top"><strong>{chat.name}</strong></span>
+              {#if chat.avatarUrl}
+                <img class="hub-view-chat-avatar" src={chat.avatarUrl} alt="" loading="lazy" />
+              {:else}
+                <!-- An initial, so a row without a picture still lines up with
+                     the rows that have one. -->
+                <span class="hub-view-chat-avatar placeholder" aria-hidden="true"
+                  >{chat.name.trim().charAt(0).toUpperCase()}</span
+                >
+              {/if}
+              <span class="hub-view-chat-copy">
+                <span class="hub-view-row-top">
+                  <strong>{chat.name}</strong>
+                  {#if chat.lastActivity}
+                    <time datetime={chat.lastActivity}>{chatTime(chat.lastActivity)}</time>
+                  {/if}
+                </span>
+                {#if chat.preview}
+                  <span class="hub-view-chat-preview">{chat.preview}</span>
+                {/if}
+              </span>
+              {#if (chat.unread ?? 0) > 0}
+                <span class="hub-view-chat-unread" aria-label={$t('hub.unreadCount', {count: chat.unread ?? 0})}
+                  >{chat.unread! > 99 ? '99+' : chat.unread}</span
+                >
+              {/if}
             </button>
           </li>
         {:else}
-          <li class="hub-view-empty">No conversations yet.</li>
+          <li class="hub-view-empty">{$t('hub.noConversations')}</li>
         {/each}
       </ul>
     {:else}
-      <p class="hub-view-empty">{loading ? 'Loading…' : 'Pick a source.'}</p>
+      <p class="hub-view-empty">{loading ? $t('common.loading') : $t('hub.pickSource')}</p>
     {/if}
   </section>
 
-  <section class="hub-view-reader" aria-label="Reading pane">
+  <section class="hub-view-reader" aria-label={$t('hub.readingPane')}>
     {#if error}
       <p class="hub-view-error" role="alert">{error}</p>
     {/if}
@@ -1037,7 +1099,7 @@
         <button type="button" class="hub-view-back" onclick={closeReader}>
           <Icon name="back" size={13} /> Back
         </button>
-        <h2>{composeDraft ? 'Edit draft' : composeReply ? 'Reply' : 'New message'}</h2>
+        <h2>{composeDraft ? $t('hub.editDraft') : composeReply ? $t('hub.reply') : $t('hub.newMessage')}</h2>
       </header>
       <div class="hub-view-compose-form">
         <!-- The Cc toggle sits beside the field rather than inside its label:
@@ -1045,7 +1107,7 @@
              tree, which makes it unreachable by anything but a mouse. -->
         <div class="hub-view-compose-row">
           <label>
-            <span>To</span>
+            <span>{$t('hub.to')}</span>
             <input bind:value={composeTo} spellcheck="false" placeholder="name@example.com" />
           </label>
           {#if !showCopies}
@@ -1056,16 +1118,16 @@
         </div>
         {#if showCopies}
           <label>
-            <span>Cc</span>
+            <span>{$t('hub.cc')}</span>
             <input bind:value={composeCc} spellcheck="false" placeholder="name@example.com" />
           </label>
           <label>
-            <span>Bcc</span>
+            <span>{$t('hub.bcc')}</span>
             <input bind:value={composeBcc} spellcheck="false" placeholder="name@example.com" />
           </label>
         {/if}
         <label>
-          <span>Subject</span>
+          <span>{$t('hub.subject')}</span>
           <input bind:value={composeSubject} />
         </label>
         {#if composeFiles.length > 0}
@@ -1075,7 +1137,7 @@
                 {fileName(file)}
                 <button
                   type="button"
-                  title="Remove"
+                  title={$t('hub.removeAttachment')}
                   onclick={() => (composeFiles = composeFiles.filter((item) => item !== file))}
                 >
                   <Icon name="close" size={11} />
@@ -1084,14 +1146,14 @@
             {/each}
           </div>
         {/if}
-        <textarea bind:value={composeBody} placeholder="Write your message"></textarea>
+        <textarea bind:value={composeBody} placeholder={$t('hub.writeMessage')}></textarea>
         <footer>
           <button type="button" onclick={() => void attachFiles()}>
             <Icon name="attach" size={13} /> Attach
           </button>
-          <button type="button" onclick={() => (composing = false)}>Cancel</button>
+          <button type="button" onclick={() => (composing = false)}>{$t('common.cancel')}</button>
           <button type="button" disabled={busy === 'save-draft'} onclick={() => void sendMail(true)}>
-            {busy === 'save-draft' ? 'Saving…' : 'Save draft'}
+            {busy === 'save-draft' ? $t('hub.saving') : $t('hub.saveDraft')}
           </button>
           <button
             type="button"
@@ -1099,7 +1161,7 @@
             disabled={busy === 'send-mail' || !composeTo.trim()}
             onclick={() => void sendMail(false)}
           >
-            {busy === 'send-mail' ? 'Sending…' : 'Send'}
+            {busy === 'send-mail' ? $t('hub.sending') : $t('composer.send')}
           </button>
         </footer>
       </div>
@@ -1112,7 +1174,7 @@
         <p>
           {openMail?.from?.name ??
             openMail?.from?.address ??
-            (openEnvelope ? sender(openEnvelope) : 'Unknown sender')}
+            (openEnvelope ? sender(openEnvelope) : $t('hub.unknownSender'))}
           {#if openMail?.date ?? openEnvelope?.date}<em>· {openMail?.date ?? openEnvelope?.date}</em>{/if}
         </p>
         {#if openMail && (openMail.to.length > 0 || openMail.cc.length > 0)}
@@ -1125,26 +1187,26 @@
         {/if}
         <div class="hub-view-reader-actions">
           <div class="hub-view-action-group">
-            <button type="button" disabled={!openMail} title="Reply" onclick={() => startCompose('reply')}>
+            <button type="button" disabled={!openMail} title={$t('hub.reply')} onclick={() => startCompose('reply')}>
               <Icon name="back" size={13} /> Reply
             </button>
-            <button type="button" disabled={!openMail} title="Reply all" onclick={() => startCompose('reply-all')}>
+            <button type="button" disabled={!openMail} title={$t('hub.replyAll')} onclick={() => startCompose('reply-all')}>
               <Icon name="users" size={13} />
             </button>
-            <button type="button" disabled={!openMail} title="Forward" onclick={() => startCompose('forward')}>
+            <button type="button" disabled={!openMail} title={$t('hub.forward')} onclick={() => startCompose('forward')}>
               <Icon name="forward" size={13} />
             </button>
           </div>
           {#if openEnvelope}
             {@const envelope = openEnvelope}
             <div class="hub-view-action-group">
-              <button type="button" title="Archive" onclick={() => void moveMail(envelope, 'archive')}>
+              <button type="button" title={$t('hub.archive')} onclick={() => void moveMail(envelope, 'archive')}>
                 <Icon name="archive" size={13} />
               </button>
-              <button type="button" title="Junk" onclick={() => void moveMail(envelope, 'junk')}>
+              <button type="button" title={$t('hub.junk')} onclick={() => void moveMail(envelope, 'junk')}>
                 <Icon name="close" size={13} />
               </button>
-              <button type="button" class="destructive" title="Delete" onclick={() => void moveMail(envelope, 'trash')}>
+              <button type="button" class="destructive" title={$t('common.delete')} onclick={() => void moveMail(envelope, 'trash')}>
                 <Icon name="trash" size={13} />
               </button>
             </div>
@@ -1157,7 +1219,7 @@
             >
               <button
                 type="button"
-                title="Move to folder"
+                title={$t('hub.moveToFolder')}
                 aria-expanded={moveMenu}
                 onclick={() => (moveMenu = !moveMenu)}
               >
@@ -1180,12 +1242,12 @@
               <button
                 type="button"
                 class:on={envelope.flagged}
-                title={envelope.flagged ? 'Unflag' : 'Flag'}
+                title={envelope.flagged ? $t('hub.unflag') : $t('hub.flag')}
                 onclick={() => void toggleFlag(envelope)}
               >
                 <Icon name="bolt" size={13} filled={envelope.flagged} />
               </button>
-              <button type="button" title="Mark as unread" onclick={() => void markUnread(envelope)}>
+              <button type="button" title={$t('hub.markUnread')} onclick={() => void markUnread(envelope)}>
                 <Icon name="mail" size={13} />
               </button>
             </div>
@@ -1194,7 +1256,7 @@
                 <button
                   type="button"
                   class="destructive"
-                  title="Delete permanently"
+                  title={$t('hub.deletePermanently')}
                   onclick={() => void erase([envelope.id])}
                 >
                   <Icon name="trash" size={13} /> Delete permanently
@@ -1234,7 +1296,7 @@
             {/each}
             {#if attachmentPaths.length === 0}
               <button type="button" disabled={busy === 'attachments'} onclick={() => void saveAttachments()}>
-                <Icon name="download" size={12} /> {busy === 'attachments' ? 'Saving…' : 'Save'}
+                <Icon name="download" size={12} /> {busy === 'attachments' ? $t('hub.saving') : $t('common.save')}
               </button>
             {:else}
               {#each attachmentPaths as saved (saved)}
@@ -1264,13 +1326,13 @@
       {:else if readerLoading}
         <!-- Placeholder lines in the shape of a message, so the pane the click
              opened is already the final one and only its body fills in. -->
-        <div class="hub-view-body hub-view-skeleton" aria-busy="true" aria-label="Loading message">
+        <div class="hub-view-body hub-view-skeleton" aria-busy="true" aria-label={$t('hub.loadingMessage')}>
           {#each SKELETON_LINES as width, index (index)}
             <span class="hub-view-skeleton-line" style={`width:${width}`}></span>
           {/each}
         </div>
       {:else}
-        <p class="hub-view-empty">This message could not be loaded.</p>
+        <p class="hub-view-empty">{$t('hub.messageFailed')}</p>
       {/if}
     {:else if activeChat}
       <header class="hub-view-reader-head">
@@ -1282,18 +1344,63 @@
       <div class="hub-view-thread">
         {#each chatMessages as message (message.id)}
           <div class="hub-view-bubble" class:mine={message.mine}>
-            {#if !message.mine}<span class="hub-view-bubble-who">{message.sender}</span>{/if}
-            <p>{message.body}</p>
+            <!-- The contact's own name. A bridged sender id reads
+                 `@whatsapp_614…:server`, which names nobody. -->
+            {#if !message.mine}
+              <span class="hub-view-bubble-who">{message.senderName ?? message.sender}</span>
+            {/if}
+            {#each message.attachments ?? [] as attachment (attachment.url)}
+              {#if attachment.kind === 'image'}
+                <img
+                  class="hub-view-bubble-image"
+                  src={attachment.url}
+                  alt={attachment.name}
+                  width={attachment.width ?? undefined}
+                  height={attachment.height ?? undefined}
+                  loading="lazy"
+                />
+              {:else if attachment.kind === 'audio'}
+                <!-- Voice notes are most of what arrives on these networks, so
+                     they play in place rather than downloading first. -->
+                <audio class="hub-view-bubble-audio" controls preload="metadata" src={attachment.url}
+                ></audio>
+              {:else if attachment.kind === 'video'}
+                <!-- svelte-ignore a11y_media_has_caption -->
+                <!-- A video someone sent over WhatsApp has no caption track to
+                     offer; there is nothing to point this at. -->
+                <video class="hub-view-bubble-video" controls preload="metadata" src={attachment.url}
+                ></video>
+              {:else}
+                <a class="hub-view-bubble-file" href={attachment.url} download={attachment.name}>
+                  <Icon name="attach" size={13} />
+                  {attachment.name}
+                </a>
+              {/if}
+            {/each}
+            {#if message.body}<p>{message.body}</p>{/if}
+            {#if message.viewIn}
+              <!-- Media the bridge could not carry across. The source app can
+                   still show it, so the placeholder opens that app rather than
+                   leaving the reader at a dead end. -->
+              <button
+                type="button"
+                class="hub-view-bubble-viewin"
+                onclick={() => void api.browser.openExternal(message.viewIn!.url)}
+              >
+                <Icon name="link" size={12} />
+                {$t('hub.viewIn', {app: message.viewIn.app})}
+              </button>
+            {/if}
             <em>{when(message.sentAt)}</em>
           </div>
         {:else}
-          <p class="hub-view-empty">No messages yet.</p>
+          <p class="hub-view-empty">{$t('hub.noMessages')}</p>
         {/each}
       </div>
       <div class="hub-view-composer">
         <input
           bind:value={draft}
-          placeholder={`Message ${activeChat.name}`}
+          placeholder={$t('hub.messagePlaceholder', {name: activeChat.name})}
           onkeydown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
@@ -1308,8 +1415,8 @@
     {:else}
       <div class="hub-view-blank">
         <Icon name="chat" size={30} />
-        <h2>Nothing open</h2>
-        <p>Pick a conversation or a message.</p>
+        <h2>{$t('hub.nothingOpen')}</h2>
+        <p>{$t('hub.nothingOpenBody')}</p>
       </div>
     {/if}
   </section>

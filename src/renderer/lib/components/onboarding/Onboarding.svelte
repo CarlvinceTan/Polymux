@@ -5,6 +5,7 @@
   import PermissionsStep from './PermissionsStep.svelte';
   import PlatformsStep from './PlatformsStep.svelte';
   import MindOrb from './MindOrb.svelte';
+  import {t, type MessageKey} from '../../i18n';
 
   interface Props {
     api: FlareAIApi;
@@ -78,10 +79,10 @@
    * How setup is leaving, in three beats. `squeezing` closes the disc's edge
    * in on itself — the words hold their size and are swallowed by the rim, not
    * shrunk with it. `filling` then plays the same circle inverted: an empty one
-   * grows from the same centre until the window is all ink. `opening` opens a
-   * clear circle in that ink and grows it until the app is all that is left.
-   * The app is mounted underneath this screen already, so the reveal is real
-   * rather than a picture of one.
+   * grows from the same centre until the window is all ink. `opening` then
+   * thins that ink away to nothing over the same stretch. The app is mounted
+   * underneath this screen already, so the reveal is real rather than a
+   * picture of one.
    */
   let closing = $state<'' | 'squeezing' | 'filling' | 'opening'>('');
   /** Radius enough to clear the window's far corners. */
@@ -125,26 +126,123 @@
    *
    * The travel of the pan itself, plus a beat for the tail of a trackpad
    * flick, which keeps sending events long after the fingers have left.
+   *
+   * The wheel re-arms a little before the pan lands, so someone moving through
+   * the deck at pace is not made to wait on the last of the settle. It is only
+   * the tail end: earlier than that and the screen being scrolled away from is
+   * still the one on the screen, so the step would read as coming from nowhere.
    */
   const PAN_MS = 1050;
+  const PAN_ARM_MS = PAN_MS - 220;
   const GESTURE_QUIET_MS = 260;
+
+  /**
+   * Which screen the corner is dressed for. It follows the deck a pan behind:
+   * the deck is a camera move and the chrome sits still above it, so a control
+   * fading in or out mid-travel reads as a second, unrelated animation
+   * competing with the pan. Letting the corner change only once the screens are
+   * at rest keeps the two apart — the deck moves, then the corner settles.
+   *
+   * Started a fade before the pan lands, so the control it brings in is fully
+   * there the moment the screens stop rather than still arriving after them.
+   */
+  const CORNER_FADE_MS = 240;
+  /**
+   * How far before the pan lands the corner is finished. Enough that the
+   * control has plainly settled while the screens are still coasting to a
+   * stop, rather than the two finishing on the same frame.
+   */
+  const CORNER_LEAD_MS = 260;
+  let settled = $state(0);
+  $effect(() => {
+    const arriving = index;
+    const landed = setTimeout(() => {
+      settled = arriving;
+    }, Math.max(0, PAN_MS - CORNER_FADE_MS - CORNER_LEAD_MS));
+    return () => clearTimeout(landed);
+  });
+
+  /**
+   * The corner carries one control, and which one depends on where setup is.
+   * Nothing to skip on the opening screen, where setup has not been proposed
+   * yet; nothing to skip on the closing one either, where it is all behind you
+   * — that screen has only somewhere to go back to, and the way back rides the
+   * corner there rather than crowding the one button that ends setup.
+   */
+  /**
+   * The exception to waiting for the deck: on the way to either end of it, the
+   * corner lets go straight away. It sits still while the screens travel, so
+   * holding it across a pan onto the opening or closing screen reads as the
+   * button following you onto a screen it has no business on — better it fades
+   * where it stands and stays behind with the step it belongs to. Between
+   * steps it does hold, since it is on duty at both ends of that pan.
+   */
+  const skippable = $derived(
+    index > 0 && index < STEPS.length - 1 && settled > 0 && settled < STEPS.length - 1,
+  );
+  /**
+   * Gone the moment Get started is pressed: setup is on its way out, and a way
+   * back to a screen that is being closed over is a control with nowhere to
+   * lead. It fades rather than disappears, over the beat before the disc
+   * squeezes shut.
+   *
+   * And gone the moment it is used, for the same reason the skip does at the
+   * ends of the deck: the corner sits still while the screens travel, so it
+   * fades where it stands rather than riding the pan back to a step it does
+   * not belong to. The skip then takes the cell once that pan has landed.
+   */
+  const cornerBack = $derived(
+    index === STEPS.length - 1 && settled === STEPS.length - 1 && !finishing,
+  );
+
   /** Enough that a nudge is not a step, low enough that a flick always is. */
-  const WHEEL_THRESHOLD = 42;
+  const WHEEL_THRESHOLD = 22;
+  /**
+   * Momentum arrives as an unbroken stream of shrinking deltas, so a gap or a
+   * delta that grows again is the hand back on the pad. Only the tail of the
+   * old flick is allowed to hold the deck off; a real new gesture takes it back
+   * immediately, rather than waiting out an inertia it had nothing to do with.
+   */
+  const INERTIA_GAP_MS = 90;
+  const INERTIA_RISE = 1.3;
   let travelling = false;
   let unlockAt = 0;
   let rolled = 0;
   let settle: ReturnType<typeof setTimeout> | undefined;
+  let lastAt = 0;
+  let lastMagnitude = 0;
+  /** Whether the gesture in progress belongs to a scroller under the pointer. */
+  let surrendered = false;
 
   function wheel(event: WheelEvent): void {
-    if (closing !== '' || step === 'ready') return;
-    // A scroller with somewhere left to go keeps its own wheel: a provider
-    // list mid-scroll must not throw the deck to the next screen.
-    if (scrollable(event.target as Element | null, event.deltaY)) return;
+    // The finale is the end of the deck forwards, but not backwards: scrolling
+    // up off it returns to the last step it was reached from.
+    if (closing !== '' || (step === 'ready' && event.deltaY > 0)) return;
+    const now = Date.now();
+    const magnitude = Math.abs(event.deltaY);
+    const started = now - lastAt > INERTIA_GAP_MS || magnitude > lastMagnitude * INERTIA_RISE;
+    lastAt = now;
+    lastMagnitude = magnitude;
+    // A list under the pointer keeps its own wheel, and keeps it for the rest
+    // of the gesture: the tail of a flick that scrolled a list to its end must
+    // not carry on into the deck.
+    if (started) surrendered = scrollable(event.target as Element | null);
+    if (surrendered) return;
     event.preventDefault();
-    // Still panning, or still being pushed by the tail of the last flick.
-    if (travelling || Date.now() < unlockAt) {
-      unlockAt = Date.now() + GESTURE_QUIET_MS;
+    // Still panning: nothing is taken, and only coasting keeps the hold alive.
+    if (travelling) {
+      if (!started) unlockAt = now + GESTURE_QUIET_MS;
       return;
+    }
+    if (now < unlockAt) {
+      // Coasting off the last flick — hold, and keep holding while it coasts.
+      if (!started) {
+        unlockAt = now + GESTURE_QUIET_MS;
+        return;
+      }
+      // A gesture of its own: the hold was never about this one.
+      unlockAt = 0;
+      rolled = 0;
     }
     rolled += event.deltaY;
     // The gesture is over when the events stop, whether or not it moved far
@@ -156,8 +254,8 @@
     rolled = 0;
     if (forward ? index >= STEPS.length - 1 : index <= 0) return;
     travelling = true;
-    unlockAt = Date.now() + PAN_MS + GESTURE_QUIET_MS;
-    setTimeout(() => (travelling = false), PAN_MS);
+    unlockAt = now + PAN_ARM_MS + GESTURE_QUIET_MS;
+    setTimeout(() => (travelling = false), PAN_ARM_MS);
     if (forward) next();
     else back();
   }
@@ -171,29 +269,51 @@
     return () => node.removeEventListener('wheel', wheel);
   });
 
-  /** Whether anything under the pointer can still take this wheel itself. */
-  function scrollable(from: Element | null, delta: number): boolean {
+  /**
+   * Whether the pointer is over a list of its own. A scroller keeps the wheel
+   * whichever way it is turned and wherever it currently sits: the ends of a
+   * list are not a way through to the deck, or a mouse — whose every notch is
+   * a gesture of its own — would step the deck the moment the list ran out,
+   * and a list that opens at its top could never be scrolled up at all.
+   * The deck is moved from anywhere else on the screen, which is most of it.
+   */
+  function scrollable(from: Element | null): boolean {
     for (let node = from; node && node !== document.body; node = node.parentElement) {
+      // The screen's own copy column scrolls when a step outgrows the window,
+      // but it is the screen — the wheel over its heading, its note or its
+      // buttons belongs to the deck, as it does over any other part of the
+      // page. Only a list drawn inside a step counts as having a wheel of its
+      // own, so the walk stops at the slide.
+      if (node.classList.contains('onb-slide')) return false;
+      if (node.classList.contains('onb-mind-copy')) continue;
       const room = node.scrollHeight - node.clientHeight;
-      if (room > 1 && /auto|scroll/.test(getComputedStyle(node).overflowY)) {
-        if (delta > 0 ? node.scrollTop < room - 1 : node.scrollTop > 1) return true;
-      }
+      if (room > 1 && /auto|scroll/.test(getComputedStyle(node).overflowY)) return true;
     }
     return false;
   }
 
-  // Every step offers to be passed over, in its own action row. The handler is
+  /**
+   * Past the whole of setup, not one screen of it: the deck pans from wherever
+   * it is to the closing screen, over every step in between, so leaving reads
+   * as scrolling to the end rather than as the window being closed. Nothing is
+   * answered on the way — the steps passed over keep whatever they had.
+   */
+  function skipSetup(): void {
+    index = STEPS.length - 1;
+  }
+
+  // Every step carries its own way back, in its own action row. The handler is
   // handed down rather than passed as a prop so a step can place it wherever
   // its actions live without every step needing to thread it through.
-  setContext('onb-skip', {skip: next});
+  setContext('onb-deck', {back});
 
   /** What the rail's dots are called out loud. */
-  const STEP_LABELS: Record<Step, string> = {
-    welcome: 'Welcome',
-    platforms: 'Accounts',
-    model: 'Model',
-    permissions: 'Permissions',
-    ready: 'Summary',
+  const STEP_LABELS: Record<Step, MessageKey> = {
+    welcome: 'onboarding.stepWelcome',
+    platforms: 'onboarding.stepAccounts',
+    model: 'onboarding.stepModel',
+    permissions: 'onboarding.stepPermissions',
+    ready: 'onboarding.stepSummary',
   };
 
   /**
@@ -246,28 +366,51 @@
   class:revealed
   class:squeezing={closing !== ''}
   class:opening={closing === 'opening'}
-  aria-label="Set up FlareAI"
+  aria-label={$t('onboarding.title')}
   bind:this={root}
 >
   <!-- No brand lockup here: setup already says FlareAI on the welcome screen,
        and after that the name in the corner is just furniture. The bar stays
        for the drag region and the way out. -->
   <header class="onb-chrome" class:on-hub={step === 'platforms'}>
-    <!-- The way back, and only that: forward and past belong to the screen
-         being answered, so they sit in its own action row. Nothing to go back
-         to on the welcome screen, so it fades out there rather than being
-         taken away — a control that vanishes the instant it is used reads as
-         a glitch in the middle of a pan that is still running. -->
-    <button
-      type="button"
-      class="onb-quiet onb-back"
-      class:shown={index > 0}
-      tabindex={index > 0 ? 0 : -1}
-      aria-hidden={index === 0}
-      onclick={back}
-    >
-      Back
-    </button>
+    <!-- The corner holds whichever secondary action the screen has: the way out
+         while setup is still being answered, and the way back once it is over.
+         They are stacked on the one spot rather than laid out side by side, so
+         the two never shift each other and each can fade in its own time —
+         being used is never what makes one vanish. -->
+    <div class="onb-corner">
+      <button
+        type="button"
+        class="onb-quiet onb-skip-setup"
+        class:shown={skippable}
+        tabindex={skippable ? 0 : -1}
+        aria-hidden={!skippable}
+        onclick={skipSetup}
+      >
+        <!-- Two prints of the same word, one over the other: the hub's is
+             drawn as the difference against the arc behind it, the other in
+             plain ink. Crossing between the two screens fades one into the
+             other, so the colour arrives with the pan rather than flipping the
+             moment the step changes. -->
+        <span class="onb-corner-label">
+          <span class="ink">{$t('onboarding.skipSetup')}</span>
+          <span class="lit" aria-hidden="true">{$t('onboarding.skipSetup')}</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        class="onb-quiet onb-skip-setup"
+        class:shown={cornerBack}
+        tabindex={cornerBack ? 0 : -1}
+        aria-hidden={!cornerBack}
+        onclick={back}
+      >
+        <span class="onb-corner-label">
+          <span class="ink">{$t('onboarding.back')}</span>
+          <span class="lit" aria-hidden="true">{$t('onboarding.back')}</span>
+        </span>
+      </button>
+    </div>
   </header>
 
   <!-- Every screen is mounted and stacked; moving on pans the whole column up
@@ -314,7 +457,7 @@
                 </svg>
                 <span>FlareAI</span>
               </h1>
-              <button type="button" class="onb-hero-start" onclick={next}>Start</button>
+              <button type="button" class="onb-hero-start" onclick={next}>{$t('onboarding.start')}</button>
             </div>
           </div>
         {:else if name === 'platforms'}
@@ -346,10 +489,14 @@
           <!-- The one line that ends setup, on the ground that then closes over
                the app. -->
           <div class="onb-disc onb-ink"><div class="onb-disc-inner">
-            <h1 class="onb-title onb-finale">You're ready to go.</h1>
+            <h1 class="onb-title onb-finale">{$t('onboarding.ready')}</h1>
             <div class="onb-actions onb-actions-centre">
+              <!-- The one thing left to do, alone on the disc. Skipping setup
+                   lands here, so the steps passed over stay reachable — but
+                   from the window's corner, where the way out was, rather than
+                   from beside the button that ends setup. -->
               <button type="button" class="onb-button primary" disabled={finishing} onclick={() => void finish()}>
-                Get started
+                {$t('onboarding.getStarted')}
               </button>
             </div>
           </div></div>
@@ -367,7 +514,7 @@
     class="onb-dots"
     class:shown={step !== 'welcome'}
     class:on-ink={step === 'permissions'}
-    aria-label={`Step ${dotIndex + 1} of ${dotted.length}`}
+    aria-label={$t('onboarding.stepOf', {step: dotIndex + 1, total: dotted.length})}
     aria-hidden={step === 'welcome'}
   >
     {#each dotted as name, position (name)}
@@ -380,7 +527,7 @@
           class="onb-dot"
           class:done={position < dotIndex}
           class:current={position === dotIndex}
-          aria-label={`Go to ${STEP_LABELS[name]}`}
+          aria-label={$t('onboarding.goToStep', {step: $t(STEP_LABELS[name])})}
           aria-current={position === dotIndex ? 'step' : undefined}
           tabindex={step === 'welcome' ? -1 : 0}
           onclick={() => goto(position)}
@@ -418,13 +565,26 @@
     opacity:0;transition:opacity .3s ease .05s}
   .onb.revealed .onb-chrome{opacity:1}
   .onb-chrome button{-webkit-app-region:no-drag}
-  .onb-back{opacity:0;pointer-events:none;transition:opacity .3s ease}
-  .onb-back.shown{opacity:1;pointer-events:auto}
+  /* One cell, both controls in it: they cross-fade in place instead of sliding
+     each other along the bar, and the corner keeps the width of whichever is
+     the wider of the two. */
+  .onb-corner{display:grid;justify-items:end;align-items:center}
+  .onb-corner>*{grid-area:1/1}
+  /* Matches CORNER_FADE_MS above: the two are one timing. */
+  .onb-skip-setup{opacity:0;pointer-events:none;transition:opacity .24s ease}
+  .onb-skip-setup.shown{opacity:1;pointer-events:auto}
   /* On the platforms step the arc may or may not have reached this corner,
-     depending on how wide the window is, so the way back cannot be given one
+     depending on how wide the window is, so the corner cannot be given one
      colour: drawn as the difference against whatever is behind it, it comes out
-     dark on the page and light on the arc without having to know which. */
-  .onb-chrome.on-hub :global(.onb-quiet){color:#fff;mix-blend-mode:difference}
+     dark on the page and light on the arc without having to know which.
+     Blend modes do not interpolate, so the change is carried by two prints of
+     the word fading past each other over the length of the pan — the corner
+     changes colour as the screens travel, in either direction. */
+  .onb-corner-label{display:grid;justify-items:end;align-items:center}
+  .onb-corner-label>*{grid-area:1/1;transition:opacity .62s ease}
+  .onb-corner-label .lit{color:#fff;mix-blend-mode:difference;opacity:0}
+  .onb-chrome.on-hub .onb-corner-label .ink{opacity:0}
+  .onb-chrome.on-hub .onb-corner-label .lit{opacity:1}
 
   /* The camera. One column of window-tall screens, moved by whole screens; the
      transition on the transform is the pan itself. Absolute rather than a flex
@@ -467,14 +627,19 @@
      A scroller clips both axes, not just the one it scrolls, so the column
      also carries side padding cancelled by an equal negative margin: the
      provider cards swell past their own box on hover, and without that slack
-     the clip edge sheared the outermost ones. */
+     the clip edge sheared the outermost ones.
+
+     The top of that padding is the heavier half: a column long enough to
+     scroll starts at its own top edge, and an eyebrow sitting level with the
+     traffic lights reads as crowding them rather than as the start of a
+     page. */
   /* Dropped below the true centre line by however much it takes to put the
      step's own grid on it — the step measures that and sets --mind-shift. A
      transform rather than a margin, so it changes neither the column's height
      nor how much of it the scroller can reach, and so the measurement cannot
      chase its own result. */
   .onb-mind-copy{min-width:0;min-height:0;max-height:100%;overflow-y:auto;
-    scrollbar-width:none;padding-block:clamp(18px,4vh,34px);
+    scrollbar-width:none;padding-block:clamp(44px,8vh,78px) clamp(18px,4vh,34px);
     padding-inline:10px;margin-inline:-10px;transform:translateY(var(--mind-shift,0px))}
   .onb-mind-copy::-webkit-scrollbar{display:none}
   .onb-mind-orb{position:relative;align-self:stretch;min-width:0;min-height:0;display:grid;place-items:center;
@@ -523,12 +688,11 @@
 
   .onb-disc{clip-path:circle(50.5%);transition:clip-path .52s cubic-bezier(.55,0,.3,1)}
   .onb.squeezing .onb-disc{clip-path:circle(0%)}
-  /* Then the same circle inverted, twice over: first a solid disc of the same
-     ink grows from the same centre until the window is all ink, then a clear
-     circle grows in that ink until the app is all that is left. One element
-     plays both — solid while filling, and while opening a hole whose shadow
-     paints everything outside it, so at size zero the window is still solid
-     and the swap between the two beats has no seam. */
+  /* Then the same circle inverted: a solid disc of the same ink grows from the
+     same centre until the window is all ink, and that ink then fades off to
+     leave the app. One element plays both — the growing disc while filling,
+     a full-bleed sheet while opening, so the swap between the two beats has
+     no seam. */
   .onb.opening{background:transparent}
   .onb.opening .onb-track,.onb.opening .onb-chrome,.onb.opening .onb-dots{opacity:0;visibility:hidden}
   /* The cover itself is styled globally, next to its `@property`. */
@@ -628,6 +792,7 @@
     .onb.revealed .onb-hero-start{animation:none}
     .onb-track{transition:none}
     .onb-hero-start,.onb-hero-start::before,.onb-chrome{transition:none}
+    .onb-corner-label>*{transition:none}
     .onb-dots,.onb-dot{transition:none}
   }
 </style>

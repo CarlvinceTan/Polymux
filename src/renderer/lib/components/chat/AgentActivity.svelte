@@ -27,6 +27,10 @@
     kind: AgentActivityKind;
     status: AgentActivityStatus;
     label: string;
+    /** Overrides the kind's glyph when the activity has one of its own. Set
+     * when the row is built, because the label it used to be inferred from is
+     * translated and so is no longer a stable key. */
+    icon?: 'globe';
     target?: string;
     result?: string;
     steps?: AgentActivityStep[];
@@ -35,8 +39,11 @@
 
 <script lang="ts">
   import {onMount} from 'svelte';
+  import {fade, fly} from 'svelte/transition';
+  import {cubicOut} from 'svelte/easing';
   import {activityDuration, collapseActivities, formatElapsedSeconds, nextDurationTickDelay} from '../../conversation/activities';
   import Icon from '../shared/Icon.svelte';
+  import {t} from '../../i18n';
 
   export let activities: AgentActivityItem[] = [];
   export let startedAt: string | undefined = undefined;
@@ -56,6 +63,12 @@
   // behind the dropdown. While streaming, the latest activity doubles as the
   // live status line.
   $: visibleActivities = expanded ? collapsed : streaming && latest ? [latest] : [];
+  // Collapsed streaming shows exactly one row, so a swap is a handoff: the
+  // outgoing row fades out, then the incoming one slides up into its place.
+  // Rows are stacked in a single grid cell so the two never push each other.
+  $: solo = !expanded && streaming;
+  const OUT_MS = 140;
+  const IN_MS = 240;
 
   /**
    * A fixed 1s interval drifts and gets coalesced whenever the main thread is
@@ -93,12 +106,6 @@
     return {update: measure, destroy: () => observer.disconnect()};
   }
 
-  // A few activities read better with their own glyph than with their kind's
-  // generic one — the browser skill is a globe, not a sparkle.
-  const labelIcons: Record<string, 'globe'> = {
-    'Using Browser': 'globe',
-  };
-
   const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat'> = {
     thinking: 'brain',
     compacting: 'compact',
@@ -115,22 +122,25 @@
   };
 </script>
 
-<section class:streaming class:expanded class="agent-activity" aria-label="Agent activity">
+<section class:streaming class:expanded class="agent-activity" aria-label={$t('activity.title')}>
   <button
     type="button"
     class="agent-activity-heading"
     aria-expanded={expanded}
     onclick={() => activities.length && (expanded = !expanded)}
   >
-    <span>{streaming ? 'Working' : 'Worked'} for {formatElapsedSeconds(elapsed)}</span>
+    <span>{streaming ? $t('activity.workingFor', {elapsed: formatElapsedSeconds(elapsed)}) : $t('activity.workedFor', {elapsed: formatElapsedSeconds(elapsed)})}</span>
     {#if activities.length}<Icon name="chevron" size={14}/>{/if}
   </button>
 
   {#if visibleActivities.length}
-    <ul class="agent-activity-list" aria-live="polite">
+    <ul class="agent-activity-list" class:solo aria-live="polite">
       {#each visibleActivities as activity (activity.id)}
-        <li use:glint={activity.label} class:active={activity.status === 'active'} class:live={streaming && activity.status === 'active'} class:failed={activity.status === 'failed'} class:commentary={activity.kind === 'commentary'}>
-          <Icon name={labelIcons[activity.label] ?? activityIcons[activity.kind]} size={17}/>
+        <li
+          in:fly|local={{y: solo ? 9 : 0, duration: solo ? IN_MS : 0, delay: solo ? OUT_MS : 0, easing: cubicOut}}
+          out:fade|local={{duration: solo ? OUT_MS : 0, easing: cubicOut}}
+          use:glint={activity.label} class:active={activity.status === 'active'} class:live={streaming && activity.status === 'active'} class:failed={activity.status === 'failed'} class:commentary={activity.kind === 'commentary'}>
+          <Icon name={activity.icon ?? activityIcons[activity.kind]} size={17}/>
           {#if expanded && (activity.result || activity.steps?.length)}
             <button
               type="button"

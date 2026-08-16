@@ -192,6 +192,9 @@ export class Homeserver {
 
     if (rest[0] === "v3" && rest[1] === "profile") return this.#profile(response, method, rest, body);
 
+    if (method === "GET" && rest[0] === "v3" && rest[1] === "sync")
+      return this.#sync(response, auth);
+
     if (method === "POST" && rest[0] === "v3" && rest[1] === "createRoom")
       return this.#createRoom(response, auth, body, query);
 
@@ -546,6 +549,32 @@ export class Homeserver {
       })),
       ...(last && events.length === limit ? {next_token: String(last.streamOrder)} : {}),
     });
+  }
+
+  /**
+   * A deliberately partial `/sync`: one snapshot of every joined room, with the
+   * state, the newest message, the unread count and the member count. No
+   * streaming, no `since`, no long poll.
+   *
+   * Bridges here are pushed their events as appservice transactions and never
+   * call this. It exists for FlareAI's own chat list, which otherwise needs a
+   * name, a member list and a last message per room — four hundred round trips
+   * for a couple of hundred rooms, to assemble what one query already knows.
+   */
+  #sync(response: ServerResponse, auth: AuthContext): void {
+    const unread = this.#store.unreadCounts(auth.userId);
+    const join: Record<string, unknown> = {};
+    for (const roomId of this.#store.roomsForUser(auth.userId)) {
+      const timeline = this.#store.messages(roomId, {limit: 1, dir: "b"});
+      join[roomId] = {
+        state: {events: this.#store.fullState(roomId).map(clientEvent)},
+        // `messages` reads backwards; a timeline runs oldest to newest.
+        timeline: {events: timeline.events.map(clientEvent).reverse()},
+        unread_notifications: {notification_count: unread.get(roomId) ?? 0},
+        summary: {"m.joined_member_count": this.#store.members(roomId, "join").length},
+      };
+    }
+    this.#json(response, 200, {next_batch: String(this.#store.maxStreamOrder()), rooms: {join}});
   }
 
   async #appservicePing(

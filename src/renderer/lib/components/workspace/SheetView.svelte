@@ -1,16 +1,18 @@
 <script lang="ts">
-  export let title = 'Spreadsheet';
+  import {t} from '../../i18n';
+
+  export let title = '';
   export let columns = 6;
   export let rows = 14;
 
   const columnName = (index: number) => String.fromCharCode(65 + index);
 </script>
 
-<div class="artifact-draft spreadsheet-draft" aria-label={title}>
+<div class="artifact-draft spreadsheet-draft" aria-label={title || $t('view.spreadsheet')}>
   <table>
     <thead>
       <tr>
-        <th scope="col"><span class="visually-hidden">Row</span></th>
+        <th scope="col"><span class="visually-hidden">{$t('view.row')}</span></th>
         {#each Array.from({length: columns}, (_, index) => index) as column (column)}
           <th scope="col">{columnName(column)}</th>
         {/each}

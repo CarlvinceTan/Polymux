@@ -8,7 +8,7 @@
     | 'brain' | 'compact' | 'compress' | 'sparkles' | 'bot'
     | 'connections' | 'link' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
     | 'document' | 'presentation' | 'folder' | 'pdf' | 'spreadsheet' | 'image' | 'audio' | 'video' | 'code'
-    | 'calendar' | 'clock' | 'sun' | 'goal' | 'users' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
+    | 'calendar' | 'clock' | 'sun' | 'sun-moon' | 'goal' | 'users' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
     | 'folder-plus' | 'upload' | 'home' | 'folder-move' | 'info'
     | 'mail' | 'storefront' | 'settings';
   export let size = 20;
@@ -201,6 +201,20 @@
     <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
   {:else if name === 'sun'}
     <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/>
+  {:else if name === 'sun-moon'}
+    <!-- Light and dark as one mark: the sun sits back, the moon overlaps it from
+         the right. The mask knocks a clear halo out of the sun where the moon
+         crosses it, the same trick the onboarding platform stack uses with its
+         background-coloured rings. -->
+    <mask id="sun-moon-knockout">
+      <rect x="0" y="0" width="24" height="24" fill="white"/>
+      <circle cx="16" cy="12" r="7.15" fill="black"/>
+    </mask>
+    <g mask="url(#sun-moon-knockout)">
+      <circle cx="7.4" cy="12" r="3.35"/>
+      <path d="M7.4 5.5v1.9M7.4 16.6v1.9M0.9 12h1.9M11.9 12h1.9M2.8 7.4l.95.95M12 7.4l-.95.95M2.8 16.6l.95-.95M12 16.6l-.95-.95"/>
+    </g>
+    <path d="M16 5.5a4.3 4.3 0 0 0 6.5 6.5 6.5 6.5 0 1 1-6.5-6.5"/>
   {:else if name === 'goal'}
     <path d="M20.9 10.5a9 9 0 1 1-7.4-7.4"/><path d="M16.4 11.1a4.5 4.5 0 1 1-3.6-3.6"/><circle cx="12" cy="12" r="1.4"/><path d="m12 12 5-5"/><path d="M17 7V3.5L20.5 7H17Z" fill="currentColor"/>
   {:else if name === 'users'}

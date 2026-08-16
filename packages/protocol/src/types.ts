@@ -79,7 +79,9 @@ export interface ChronicleEntryDto {
 }
 export interface GeneralSettingsDto {
   theme: "light" | "dark" | "system";
-  /** BCP 47 tag the agent replies in, or "system" to follow the host locale. */
+  /** BCP 47 tag the interface is drawn in, or "system" to follow the host
+   * locale. It steers the UI only — what language the agent replies in stays
+   * the user's business, decided by what they write to it. */
   language: string;
   currency: "USD" | "AUD" | "EUR" | "GBP" | "SGD" | "JPY" | null;
   speechModeEnabled: boolean;
@@ -220,6 +222,28 @@ export interface SkillRegistryEntryDto {
   source: string;
   installs: number;
 }
+/** One skill found sitting in another agent's directory on this machine. */
+export interface DiscoveredSkillDto {
+  name: string;
+  description: string;
+  /** The skill's own folder, shown so the user can see where it came from. */
+  path: string;
+  /**
+   * "loaded" — FlareAI already reads this skill, either because the directory
+   * is one it sources or because a skill of that name is installed already.
+   * "available" — it can be copied into ~/.flareai/skills.
+   */
+  state: "loaded" | "available";
+}
+/** Skills found under one agent's home, e.g. every skill in ~/.codex/skills. */
+export interface DiscoveredSkillGroupDto {
+  id: string;
+  /** The agent the directory belongs to, e.g. "Codex". */
+  label: string;
+  /** The scanned directory, with the home directory shortened to "~". */
+  directory: string;
+  skills: DiscoveredSkillDto[];
+}
 export interface ModelDto {
   provider: string;
   id: string;
@@ -290,6 +314,10 @@ export interface ProviderDto {
   source: string | null;
   modelCount: number;
   custom: boolean;
+  /** A model server on this machine that FlareAI knows how to set up. Offered
+   * in the provider list before it exists, so it is found where every other
+   * provider is found rather than behind a custom-endpoint form. */
+  localRuntime?: boolean;
   apiKeys: Array<{
     id: string;
     label: string;
@@ -306,6 +334,17 @@ export interface CreateCustomProviderRequest {
 }
 export interface UpdateCustomProviderRequest extends Omit<CreateCustomProviderRequest, "apiKey"> {
   id: string;
+}
+/** Turn a known local runtime into a configured provider by reading the models
+ * off it. `baseUrl` overrides the runtime's default port. */
+export interface SetupLocalRuntimeRequest {
+  id: string;
+  baseUrl?: string;
+}
+/** Ask a local or remote OpenAI-compatible endpoint what it can serve. */
+export interface DiscoverModelsRequest {
+  baseUrl: string;
+  apiKey?: string;
 }
 
 export type RunEventDto = {
@@ -342,6 +381,19 @@ export interface ReferenceDto {
   metadata: JsonValue;
 }
 
+/** State of the FlareAI browser extension, which backs `browser_tabs`. */
+export interface BrowserExtensionDto {
+  /** True while a recent tab snapshot proves the extension is reporting. */
+  installed: boolean;
+  /** ISO timestamp of the last snapshot, or null if it has never reported. */
+  lastReportedAt: string | null;
+  /**
+   * True when the title-bar chip should be shown: not installed, and not
+   * dismissed since the last time it was seen installed.
+   */
+  promptToInstall: boolean;
+}
+
 export interface StartRunRequest {
   conversationId: ConversationId;
   text: string;
@@ -349,6 +401,12 @@ export interface StartRunRequest {
   attachments?: string[];
   asGoal?: boolean;
   reasoning?: ReasoningEffort;
+  /**
+   * Set while the user is driving the conversation by speech rather than
+   * typing. Transcribed speech arrives as ordinary text, so without this the
+   * agent cannot tell the two apart and cannot shape replies for listening.
+   */
+  speechMode?: boolean;
 }
 export interface StartRunResponse {
   runId: RunId;
@@ -762,16 +820,57 @@ export interface ChatDto {
   id: string;
   name: string;
   platform: string;
+  /** Room avatar as an http(s) url the renderer can show, when it has one. */
+  avatarUrl?: string | null;
+  /** Unread messages the account has not acknowledged. */
+  unread?: number;
+  /**
+   * When the newest message landed, as an ISO string. Drives the ordering of
+   * the list: a chat list sorted by anything but recency is a list nobody can
+   * find their last conversation in.
+   */
+  lastActivity?: string | null;
+  /** One line of the newest message, for the row under the name. */
+  preview?: string | null;
+  /** Whether this is a group, which is drawn and named differently. */
+  group?: boolean;
+}
+
+/** An image, voice note, video, or file carried by a message. */
+export interface ChatAttachmentDto {
+  kind: "image" | "audio" | "video" | "file";
+  /** Resolvable url for the bytes, already authenticated. */
+  url: string;
+  name: string;
+  mimeType: string | null;
+  size: number | null;
+  /** Natural dimensions for an image or video, when the sender gave them. */
+  width?: number | null;
+  height?: number | null;
+  /** Playback length in seconds, for audio and video. */
+  duration?: number | null;
 }
 
 export interface ChatMessageDto {
   id: string;
   chatId: string;
   sender: string;
+  /** The sender's own name, rather than the `@platform_id:server` puppet. */
+  senderName?: string;
+  senderAvatarUrl?: string | null;
   body: string;
   sentAt: string;
   /** True when the signed-in account sent it. */
   mine: boolean;
+  /** Media the message carries. Text messages have none. */
+  attachments?: ChatAttachmentDto[];
+  /**
+   * Set when the message holds something FlareAI cannot bring across — a
+   * voice note on a network with no media API, a photo whose key the source
+   * app never unlocked. Names the app that can show it, and how to open it,
+   * so the placeholder is a way through rather than a dead end.
+   */
+  viewIn?: {app: string; url: string} | null;
 }
 
 export interface CommsStatusDto {
@@ -900,6 +999,14 @@ export interface DriveS3ConfigRequest {
 }
 
 export interface FlareAIApi {
+  extension: {
+    /** Whether the browser extension is installed, and whether to prompt. */
+    status(): Promise<BrowserExtensionDto>;
+    /** Hides the title-bar chip until the extension is seen and lost again. */
+    dismiss(): Promise<BrowserExtensionDto>;
+    /** Opens the install page in the user's own browser. */
+    openInstall(): Promise<void>;
+  };
   general: {
     get(): Promise<GeneralSettingsDto>;
     update(settings: GeneralSettingsUpdate): Promise<GeneralSettingsDto>;
@@ -1008,6 +1115,13 @@ export interface FlareAIApi {
     install(spec: string): Promise<SkillDto[]>;
     /** Searches the skills.sh directory (minimum two characters). */
     searchRegistry(query: string): Promise<SkillRegistryEntryDto[]>;
+    /**
+     * Scans the skill directories of the other agents installed on this
+     * machine, grouped by which one they belong to.
+     */
+    discover(): Promise<DiscoveredSkillGroupDto[]>;
+    /** Copies a discovered skill's folder into ~/.flareai/skills. */
+    adopt(path: string): Promise<SkillDto[]>;
   };
   /**
    * Messaging bridges and email accounts. Linking runs entirely here rather
@@ -1080,6 +1194,8 @@ export interface FlareAIApi {
     chats(): Promise<ChatDto[]>;
     chatMessages(chatId: string, limit?: number, before?: string): Promise<ChatMessageDto[]>;
     chatSend(chatId: string, text: string): Promise<ChatMessageDto>;
+    /** Marks a chat read up to `messageId`, clearing its unread count. */
+    chatMarkRead(chatId: string, messageId: string): Promise<void>;
     mailFolders(account?: string): Promise<MailFolderDto[]>;
     mailEnvelopes(request: MailListRequest): Promise<MailEnvelopeDto[]>;
     mailMessage(id: string, account?: string, folder?: string): Promise<MailMessageDto>;
@@ -1139,6 +1255,13 @@ export interface FlareAIApi {
     setVisible(tabId: string, visible: boolean): Promise<void>;
     close(tabId: string): Promise<void>;
     openExternal(url: string): Promise<void>;
+    /**
+     * Reveals a local file in its default application. Separate from
+     * `openExternal` because the path comes from model-written markdown: the
+     * main process resolves and checks it rather than handing the string to
+     * the shell.
+     */
+    openPath(filePath: string): Promise<void>;
     find(tabId: string, text: string, forward: boolean): Promise<void>;
     stopFind(tabId: string): Promise<void>;
     print(tabId: string): Promise<void>;
@@ -1196,5 +1319,9 @@ export interface FlareAIApi {
     removeApiKey(provider: string, keyId: string): Promise<ProviderDto>;
     createCustom(request: CreateCustomProviderRequest): Promise<ProviderDto>;
     updateCustom(request: UpdateCustomProviderRequest): Promise<ProviderDto>;
+    discoverModels(
+      request: DiscoverModelsRequest,
+    ): Promise<Array<{id: string; name?: string}>>;
+    setupLocalRuntime(request: SetupLocalRuntimeRequest): Promise<ProviderDto>;
   };
 }

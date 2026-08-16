@@ -6,6 +6,7 @@
   import {onDestroy, onMount} from 'svelte';
   import Icon from '../shared/Icon.svelte';
   import {startVoiceOrb, type RealtimeVoiceState, type VoiceOrbHandle} from '../../voice/voiceOrb';
+  import {t, type MessageKey} from '../../i18n';
 
   export let state: SpeechOrbState = 'connecting';
   /** Docked into the conversation rather than filling the window. */
@@ -25,16 +26,16 @@
   let orbCanvas: HTMLCanvasElement;
   let orb: VoiceOrbHandle | null = null;
 
-  const statusLabels: Record<SpeechOrbState, string> = {
-    connecting: 'Connecting…',
-    listening: 'Listening',
-    thinking: 'Thinking',
-    speaking: 'Speaking',
-    error: 'Voice is unavailable',
-    ended: 'Voice ended',
+  const statusLabels: Record<SpeechOrbState, MessageKey> = {
+    connecting: 'voice.connecting',
+    listening: 'voice.listening',
+    thinking: 'voice.thinking',
+    speaking: 'voice.speaking',
+    error: 'voice.unavailable',
+    ended: 'voice.ended',
   };
 
-  $: status = paused ? 'Paused' : statusLabels[state];
+  $: status = paused ? $t('voice.paused') : $t(statusLabels[state]);
   $: orbState = (state === 'ended' ? 'closed' : state) as RealtimeVoiceState;
   $: orb?.setState(orbState, {muted, paused});
 
@@ -73,7 +74,7 @@
   class:in-chat={inChat}
   class:error={state === 'error'}
   class={`speech-orb voice-${state}`}
-  aria-label="Realtime voice conversation"
+  aria-label={$t('voice.title')}
 >
   <div class="speech-orb-content">
     <!-- The focused surface is only the orb and its controls; speech state is
@@ -99,13 +100,13 @@
     </div>
 
     <div class="speech-orb-actions">
-      <div class="speech-orb-controls" aria-label="Voice controls">
-        <button type="button" class:active={paused} aria-label={state === 'error' ? 'Try again' : paused ? 'Start voice' : 'Pause voice'} onclick={onTogglePaused}><Icon name={state === 'error' ? 'reload' : paused ? 'play' : 'pause'} size={18}/></button>
-        <button type="button" class:active={muted} aria-label={muted ? 'Unmute microphone' : 'Mute microphone'} onclick={onToggleMuted}><Icon name={muted ? 'mic-off' : 'mic'} size={18}/></button>
-        <button type="button" class:active={outputMuted} aria-label={outputMuted ? 'Unmute speaker' : 'Mute speaker'} onclick={onToggleOutputMuted}><Icon name={outputMuted ? 'speaker-off' : 'speaker'} size={18}/></button>
-        <button type="button" class="voice-exit" aria-label="Exit speech mode" onclick={onClose}><Icon name="close" size={18}/></button>
+      <div class="speech-orb-controls" aria-label={$t('voice.controls')}>
+        <button type="button" class:active={paused} aria-label={state === 'error' ? $t('common.tryAgain') : paused ? $t('voice.start') : $t('voice.pause')} onclick={onTogglePaused}><Icon name={state === 'error' ? 'reload' : paused ? 'play' : 'pause'} size={18}/></button>
+        <button type="button" class:active={muted} aria-label={muted ? $t('voice.unmuteMic') : $t('voice.muteMic')} onclick={onToggleMuted}><Icon name={muted ? 'mic-off' : 'mic'} size={18}/></button>
+        <button type="button" class:active={outputMuted} aria-label={outputMuted ? $t('voice.unmuteSpeaker') : $t('voice.muteSpeaker')} onclick={onToggleOutputMuted}><Icon name={outputMuted ? 'speaker-off' : 'speaker'} size={18}/></button>
+        <button type="button" class="voice-exit" aria-label={$t('voice.exit')} onclick={onClose}><Icon name="close" size={18}/></button>
       </div>
-      <button type="button" class="speech-orb-chat-toggle" onclick={onToggleChat}>{inChat ? 'Expand' : 'Minimise'}</button>
+      <button type="button" class="speech-orb-chat-toggle" onclick={onToggleChat}>{inChat ? $t('common.expand') : $t('common.minimise')}</button>
     </div>
   </div>
 </section>

@@ -59,12 +59,13 @@ const names: Record<string, string> = {
   baidu: 'Baidu', tencent: 'Tencent', stepfun: 'StepFun', upstage: 'Upstage', inflection: 'Inflection',
   liquid: 'Liquid AI', bytedance: 'ByteDance', skywork: 'Skywork', tii: 'TII', internlm: 'InternLM',
   rwkv: 'RWKV', dolphin: 'Cognitive Computations', openbmb: 'OpenBMB',
+  ollama: 'Ollama', lmstudio: 'LM Studio', vllm: 'vLLM', 'llama-cpp': 'llama.cpp',
 };
 
 const authorAliases: Record<string, string> = {
   'meta-llama': 'meta', 'mistralai': 'mistral', 'deepseek-ai': 'deepseek',
-  'minimaxai': 'minimax', 'minimax-ai': 'minimax', 'qwen': 'qwen',
-  'alibaba': 'qwen', 'ibm-granite': 'ibm', 'z-ai': 'zai', 'zhipuai': 'zai',
+  'minimaxai': 'minimax', 'minimax-ai': 'minimax', 'qwen': 'alibaba',
+  'alibaba': 'alibaba', 'hunyuan': 'tencent', 'ibm-granite': 'ibm', 'z-ai': 'zai', 'zhipuai': 'zai',
   'moonshot': 'moonshotai', 'x-ai': 'xai', 'amazon': 'amazon',
   'thudm': 'zai', '01-ai': 'yi', '01ai': 'yi', 'zero-one-ai': 'yi',
   'nous': 'nousresearch', 'nousresearch': 'nousresearch',
@@ -97,6 +98,12 @@ export function companyId(provider: string): string {
   if (id === 'kimi-coding') return 'moonshotai';
   if (id.startsWith('openrouter')) return 'openrouter';
   if (id.startsWith('radius')) return 'radius';
+  // Local runtimes, whose ids come from the preset's name and may carry a
+  // suffix when the user already has one of that runtime configured.
+  if (id.startsWith('lm-studio') || id.startsWith('lmstudio')) return 'lmstudio';
+  if (id.startsWith('ollama')) return 'ollama';
+  if (id.startsWith('vllm')) return 'vllm';
+  if (id.startsWith('llama-cpp') || id.startsWith('llama.cpp')) return 'llama-cpp';
   return id;
 }
 
@@ -128,7 +135,10 @@ export function modelCompanyId(model: {provider: string; id: string; name: strin
     [/\bllama\b/, 'meta'],
     [/\bmistral\b|\bcodestral\b|\bdevstral\b|\bministral\b/, 'mistral'],
     [/\bdeepseek\b/, 'deepseek'],
-    [/\bqwen\b/, 'qwen'],
+    // Version suffixes run straight into the family name (`qwen3.7-max`,
+    // `hy3`), so these can't end on a word boundary.
+    [/\bqwen|\bqwq\b|\bqvq\b/, 'alibaba'],
+    [/\bhunyuan\b|\bhy\d/, 'tencent'],
     [/\bkimi\b|\bmoonshot\b/, 'moonshotai'],
     [/\bminimax\b/, 'minimax'],
     [/\bglm\b|\bz\.ai\b/, 'zai'],

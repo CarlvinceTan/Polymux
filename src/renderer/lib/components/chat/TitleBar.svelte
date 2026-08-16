@@ -3,8 +3,9 @@
   import Icon from '../shared/Icon.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH, SETTINGS_ICON_SIZE, SETTINGS_ICON_STROKE_WIDTH} from '../../layout/iconSizing';
   import type {PanelMode} from '../../state/panels';
+  import {t} from '../../i18n';
 
-  export let title = 'New chat';
+  export let title = '';
   export let showTitle = false;
   export let showSummary = false;
   export let hideNewChat = false;
@@ -19,6 +20,9 @@
   export let onOpenDrive: () => void = () => {};
   export let onOpenSchedule: () => void = () => {};
   export let onOpenHub: () => void = () => {};
+  export let showExtensionPrompt = false;
+  export let onInstallExtension: () => void = () => {};
+  export let onDismissExtension: () => void = () => {};
 
   let editing = false;
   let draft = '';
@@ -82,13 +86,13 @@
 <!-- The shell controls and title stay as separate fixed boxes. The title is
      centred against the full window rather than the chat grid, so opening a
      drawer never shifts the conversation name. -->
-<div class="left-controls" aria-label="Chat controls">
+<div class="left-controls" aria-label={$t('titlebar.chatControls')}>
   <button
     type="button"
     class="title-bar-icon-button"
-    aria-label="Toggle Chats"
+    aria-label={$t('titlebar.toggleChats')}
     aria-pressed={chatDrawerOpen}
-    data-tooltip-label="Chats"
+    data-tooltip-label={$t('titlebar.chats')}
     data-tooltip-align="start"
     onclick={onToggleChatDrawer}
   >
@@ -98,8 +102,8 @@
     <button
       type="button"
       class="title-bar-icon-button new-chat-button"
-      aria-label="New Chat"
-      data-tooltip-label="New Chat"
+      aria-label={$t('titlebar.newChat')}
+      data-tooltip-label={$t('titlebar.newChat')}
       data-tooltip-align="start"
       onclick={onNewChat}
     >
@@ -111,8 +115,8 @@
       <button
         type="button"
         class="title-bar-icon-button"
-        aria-label="Search Chats"
-        data-tooltip-label="Search Chats"
+        aria-label={$t('titlebar.searchChats')}
+        data-tooltip-label={$t('titlebar.searchChats')}
         data-tooltip-align="start"
         onclick={onSearchChats}
       >
@@ -122,15 +126,44 @@
   {/if}
 </div>
 
-<div class="top-controls" aria-label="Panels">
+<div class="top-controls" aria-label={$t('titlebar.panels')}>
+  <!-- Sits ahead of the panel icons so it reads as a notice about the app
+       rather than another panel toggle. It is a link with its own dismiss,
+       not a toggle, so the two actions are separate controls. -->
+  {#if showExtensionPrompt}
+    <span class="extension-chip">
+      <button
+        type="button"
+        class="extension-chip-install"
+        onclick={onInstallExtension}
+      >
+        {$t('extension.install')}
+      </button>
+      <!-- No tooltip and no hover state: the divider and the glyph already say
+           what it does, and a second tooltip next to the chip's own reads as
+           two competing labels. Opting out by name is what the search fields'
+           × does — dropping the label alone is not enough, since an icon-only
+           button falls back to its aria-label. The aria-label stays, so a
+           screen reader still names it. -->
+      <button
+        type="button"
+        class="extension-chip-dismiss"
+        aria-label={$t('extension.dismiss')}
+        data-tooltip="none"
+        onclick={onDismissExtension}
+      >
+        <Icon name="close" size={14}/>
+      </button>
+    </span>
+  {/if}
   <!-- Both open a workspace tab, so once the drawer is showing they would be
        duplicating its own + menu. They move into that menu instead. -->
   {#if mode !== 'workspace'}
     <button
       type="button"
       class="title-bar-icon-button"
-      aria-label="Open Drive"
-      data-tooltip-label="Drive"
+      aria-label={$t('titlebar.openDrive')}
+      data-tooltip-label={$t('workspace.drive')}
       data-tooltip-align="end"
       onclick={onOpenDrive}
     >
@@ -139,8 +172,8 @@
     <button
       type="button"
       class="title-bar-icon-button"
-      aria-label="Open Hub"
-      data-tooltip-label="Hub"
+      aria-label={$t('titlebar.openHub')}
+      data-tooltip-label={$t('workspace.hub')}
       data-tooltip-align="end"
       onclick={onOpenHub}
     >
@@ -149,8 +182,8 @@
     <button
       type="button"
       class="title-bar-icon-button"
-      aria-label="Open Schedule"
-      data-tooltip-label="Schedule"
+      aria-label={$t('titlebar.openSchedule')}
+      data-tooltip-label={$t('workspace.schedule')}
       data-tooltip-align="end"
       onclick={onOpenSchedule}
     >
@@ -160,8 +193,8 @@
   <button
     type="button"
     class="title-bar-icon-button"
-    aria-label="Settings"
-    data-tooltip-label="Settings"
+    aria-label={$t('titlebar.settings')}
+    data-tooltip-label={$t('titlebar.settings')}
     data-tooltip-align="end"
     onclick={onOpenSettings}
   >
@@ -172,9 +205,9 @@
       type="button"
       class="title-bar-icon-button"
       class:active={mode === 'summary'}
-      aria-label="Toggle Summary"
+      aria-label={$t('titlebar.toggleSummary')}
       aria-pressed={mode === 'summary'}
-      data-tooltip-label="Summary"
+      data-tooltip-label={$t('titlebar.summary')}
       data-tooltip-align="end"
       onclick={() => onTogglePanel('summary')}
     >
@@ -185,9 +218,9 @@
     type="button"
     class="title-bar-icon-button"
     class:active={mode === 'workspace'}
-    aria-label="Toggle Workspace"
+    aria-label={$t('titlebar.toggleWorkspace')}
     aria-pressed={mode === 'workspace'}
-    data-tooltip-label="Workspace"
+    data-tooltip-label={$t('titlebar.workspace')}
     data-tooltip-align="end"
     onclick={() => onTogglePanel('workspace')}
   >
@@ -196,11 +229,11 @@
 </div>
 
 {#if showTitle}
-  <header class="conversation-title-bar" aria-label="Conversation title">
+  <header class="conversation-title-bar" aria-label={$t('titlebar.conversationTitle')}>
     {#if editing}
-      <input bind:this={input} bind:value={draft} size={titleInputSize} aria-label="Rename conversation" onkeydown={keydown} onblur={save}/>
+      <input bind:this={input} bind:value={draft} size={titleInputSize} aria-label={$t('titlebar.renameConversation')} onkeydown={keydown} onblur={save}/>
     {:else}
-      <button bind:this={titleButton} type="button" title={title} aria-label={`Rename conversation: ${title}`} data-tooltip="none" onclick={startEditing}>{title}</button>
+      <button bind:this={titleButton} type="button" title={title} aria-label={$t('titlebar.renameConversationNamed', {title})} data-tooltip="none" onclick={startEditing}>{title}</button>
     {/if}
   </header>
 {/if}

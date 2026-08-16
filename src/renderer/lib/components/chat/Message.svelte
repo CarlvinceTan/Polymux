@@ -35,6 +35,7 @@
   import {renderMarkdown} from '../../conversation/markdown';
   import Icon from '../shared/Icon.svelte';
   import MessageAction from './MessageAction.svelte';
+  import {t, translate} from '../../i18n';
 
   export let message: MessageData;
   export let streaming = false;
@@ -45,6 +46,8 @@
   export let onFeedback: (id: string, feedback: MessageFeedback) => void = () => {};
   export let onOpenFile: (name: string) => void = () => {};
   export let onOpenLink: (url: string, title: string) => void = () => {};
+  /** A file link inside the reply, distinct from onOpenFile's attachments. */
+  export let onOpenFilePath: (path: string) => void = () => {};
 
   let editing = false;
   let draft = '';
@@ -152,14 +155,24 @@
       // Resolved from the block rather than the button's sibling, so the copy
       // action keeps working wherever it sits inside the code block header.
       const code = copy.closest('.markdown-code-block')?.querySelector('pre code')?.textContent ?? '';
-      copy.textContent = await copyText(code) ? 'Copied' : 'Copy failed';
-      setTimeout(() => copy.textContent = 'Copy', 1400);
+      copy.textContent = translate(await copyText(code) ? 'common.copied' : 'common.copyFailed');
+      setTimeout(() => copy.textContent = translate('common.copy'), 1400);
       return;
     }
 
     const anchor = target?.closest<HTMLAnchorElement>('.markdown-body a[href]');
     if (!anchor) return;
     const url = new URL(anchor.href, window.location.href);
+    // A file link opens in its own application rather than the browser, and
+    // the path is taken from the dataset the renderer decoded, not from the
+    // href, so no one has to re-parse a file url here.
+    if (url.protocol === 'file:') {
+      const filePath = anchor.dataset.filePath;
+      if (!filePath) return;
+      event.preventDefault();
+      onOpenFilePath(filePath);
+      return;
+    }
     if (!['http:', 'https:'].includes(url.protocol)) return;
     event.preventDefault();
     onOpenLink(url.href, anchor.textContent?.trim() || url.hostname);
@@ -217,18 +230,18 @@
 <article id={`message-${message.id}`} class:assistant={message.role === 'assistant'} class:editing class="message message-group">
   {#if editing}
     <div class="message-edit-shell">
-      <textarea bind:this={editArea} bind:value={draft} aria-label="Edit message" rows="3" onkeydown={editKeydown}></textarea>
+      <textarea bind:this={editArea} bind:value={draft} aria-label={$t('message.edit')} rows="3" onkeydown={editKeydown}></textarea>
       {#if editFiles.length}
-        <div class="message-edit-attachments" aria-label="New attachments">
+        <div class="message-edit-attachments" aria-label={$t('message.newAttachments')}>
           {#each editFiles as file (`${file.name}-${file.size}-${file.lastModified}`)}<span><Icon name="file" size={12}/>{file.name}</span>{/each}
         </div>
       {/if}
       <div class="message-edit-controls">
         <input bind:this={editFileInput} class="visually-hidden" type="file" multiple tabindex="-1" aria-hidden="true" onchange={selectEditFiles}/>
-        <button type="button" class="edit-attach" aria-label="Attach files" data-tooltip-label="Attach" onclick={() => editFileInput.click()}><Icon name="attach" size={16}/></button>
+        <button type="button" class="edit-attach" aria-label={$t('message.attachFiles')} data-tooltip-label={$t('message.attach')} onclick={() => editFileInput.click()}><Icon name="attach" size={16}/></button>
         <span class="message-edit-actions">
-          <button type="button" onclick={cancelEdit}>Cancel</button>
-          <button type="button" class="save" onclick={submitEdit}>Send</button>
+          <button type="button" onclick={cancelEdit}>{$t('common.cancel')}</button>
+          <button type="button" class="save" onclick={submitEdit}>{$t('composer.send')}</button>
         </span>
       </div>
     </div>
@@ -242,14 +255,14 @@
             <p>{message.text}</p>
           {/if}
         {:else if streaming && !activityVisible}
-          <span class="thinking" role="status" aria-label="Assistant is responding"><i></i><i></i><i></i></span>
+          <span class="thinking" role="status" aria-label={$t('message.responding')}><i></i><i></i><i></i></span>
         {:else if streaming}
           <!-- The live activity row above carries the working shimmer; pulse
                dots beneath it would be a second, redundant indicator. -->
         {:else}
           <!-- A stopped or cancelled turn leaves no text behind: say so rather
                than pulse dots at a run that is already over. -->
-          <p class="message-stopped">Stopped</p>
+          <p class="message-stopped">{$t('message.stopped')}</p>
         {/if}
       </div>
     {/if}
@@ -259,8 +272,8 @@
         {#each message.files as file (file)}
           <button type="button" class="file-card" onclick={() => onOpenFile(file)}>
             <span class="file-icon"><Icon name="file" size={22}/></span>
-            <span class="file-copy"><strong>{file}</strong><small>Attachment</small></span>
-            <span class="open-in"><Icon name="expand" size={14}/>Open</span>
+            <span class="file-copy"><strong>{file}</strong><small>{$t('message.attachment')}</small></span>
+            <span class="open-in"><Icon name="expand" size={14}/>{$t('common.open')}</span>
           </button>
         {/each}
       </div>
@@ -270,16 +283,16 @@
       <div class="message-footer">
         {#if sentTime}<time class="message-time" datetime={message.sentAt}>{sentTime}</time>{/if}
         {#if message.role === 'user' || (message.text && !streaming)}
-          <div class="message-actions" aria-label={`${message.role === 'user' ? 'User' : 'Assistant'} message actions`}>
-            <MessageAction icon={copied ? 'check' : 'copy'} label={copied ? 'Copied' : 'Copy'} onAction={copyMessage}/>
-            {#if message.role === 'user'}<MessageAction icon="edit" label="Edit" onAction={startEdit}/>{/if}
+          <div class="message-actions" aria-label={message.role === 'user' ? $t('message.userActions') : $t('message.assistantActions')}>
+            <MessageAction icon={copied ? 'check' : 'copy'} label={copied ? $t('common.copied') : $t('common.copy')} onAction={copyMessage}/>
+            {#if message.role === 'user'}<MessageAction icon="edit" label={$t('common.edit')} onAction={startEdit}/>{/if}
             {#if message.role === 'assistant'}
-              <MessageAction icon="thumb-up" label="Good response" active={message.feedback === 'up'} onAction={() => toggleFeedback('up')}/>
-              <MessageAction icon="thumb-down" label="Bad response" active={message.feedback === 'down'} onAction={() => toggleFeedback('down')}/>
+              <MessageAction icon="thumb-up" label={$t('message.goodResponse')} active={message.feedback === 'up'} onAction={() => toggleFeedback('up')}/>
+              <MessageAction icon="thumb-down" label={$t('message.badResponse')} active={message.feedback === 'down'} onAction={() => toggleFeedback('down')}/>
             {/if}
           </div>
         {/if}
-        {#if message.asGoal}<span class="message-goal-label"><Icon name="goal" size={15}/>Sent as goal</span>{/if}
+        {#if message.asGoal}<span class="message-goal-label"><Icon name="goal" size={15}/>{$t('message.sentAsGoal')}</span>{/if}
       </div>
     {/if}
   {/if}
