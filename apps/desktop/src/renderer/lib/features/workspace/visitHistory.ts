@@ -1,4 +1,5 @@
 import {writable} from 'svelte/store';
+import {flareaiApi} from '../../api/flareai';
 
 /**
  * Pages visited in the embedded browser, most recent first. The workspace
@@ -30,15 +31,67 @@ function normalized(value: string): string {
 /**
  * The renderer's CSP is `img-src 'self' data: blob:`, so an icon is only ever
  * usable as bytes it already holds — the main process fetches favicons and
- * hands them over as `data:` urls (src/main/favicon.ts). This list outlives
- * the build that wrote it, though, and entries stored before that carry the
- * site's own `/favicon.ico` url instead. Loading one is a guaranteed CSP
- * violation on the console at every launch, for an icon that can never appear,
- * so a remote value is dropped rather than kept and re-tried forever.
+ * hands them over as `data:` urls (src/main/browser/favicon.ts). Anything else
+ * is a guaranteed CSP violation on the console for an icon that can never
+ * appear, so a remote value is dropped rather than kept and re-tried forever.
  */
 function usableIcon(favicon: string | null | undefined): string | null {
   if (!favicon) return null;
   return /^(data|blob):/i.test(favicon) ? favicon : null;
+}
+
+function originOf(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Sites already asked about under the current scheme. Icons are no longer
+ * stored with the history, so without this the five rows on screen would each
+ * cost an ipc round trip on every redraw. */
+let asked = new Map<string, Promise<string | null>>();
+
+/**
+ * Fills in the icons for the visits given.
+ *
+ * A site serves one mark per colour scheme, and this list outlives both a theme
+ * change and a restart — so an icon stored alongside a visit is only right
+ * until the user switches theme, and wrong forever after on a site that ships a
+ * single scheme-specific mark. Resolving when the row is drawn is what keeps
+ * the answer current; the main process replies from its own per-origin,
+ * per-scheme cache, so this is a round trip rather than a fetch.
+ *
+ * The trailing argument is a reactivity trigger, not a value this reads.
+ */
+export function resolveVisitFavicons(visits: Visit[], _revision = 0): void {
+  for (const visit of visits) {
+    const origin = originOf(visit.url);
+    // Checked before anything async so a redraw caused by the update below
+    // stops here rather than asking again.
+    if (!origin || asked.has(origin)) continue;
+    const pending = flareaiApi().browser.favicon(origin).catch((): null => null);
+    asked.set(origin, pending);
+    void pending.then((favicon) => {
+      if (!usableIcon(favicon)) return;
+      visitHistory.update((entries) =>
+        entries.map((entry) => (originOf(entry.url) === origin ? {...entry, favicon} : entry)),
+      );
+    });
+  }
+}
+
+/**
+ * Drops what was resolved under the previous scheme, so the next draw asks
+ * again. The icons already on screen are deliberately left in place: a stale
+ * mark holds the row better than a globe does for the moment the right one
+ * takes to arrive, and if the stale one is invisible the drawer's own probe
+ * shows the globe anyway.
+ */
+export function forgetVisitFavicons(): void {
+  asked = new Map();
 }
 
 /** Hosts whose result pages are a step on the way somewhere, not a
@@ -88,9 +141,24 @@ function load(): Visit[] {
       // Lists written before search results were excluded still hold them.
       .filter((entry) => worthKeeping(entry.url))
       .slice(0, CAP)
-      .map((entry) => ({...entry, favicon: usableIcon(entry.favicon)}));
+      // Icons are resolved per scheme when a row is drawn, never read back:
+      // lists written by an older build still carry bytes, and those were
+      // chosen under whichever theme was in use when they were stored.
+      .map((entry) => ({url: entry.url, title: entry.title, favicon: null}));
   } catch {
     return [];
+  }
+}
+
+/** Icons are left out on purpose — see `resolveVisitFavicons`. Dropping them
+ * also keeps the list well clear of the storage quota, which a couple of dozen
+ * inline images had been eating into. */
+function persist(entries: Visit[]): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(KEY, JSON.stringify(entries.map(({url, title}) => ({url, title}))));
+  } catch {
+    // A full or unavailable store only costs the suggestions, not the visit.
   }
 }
 
@@ -120,13 +188,7 @@ export function recordVisit(visit: Visit): void {
       },
       ...entries.filter((entry) => normalized(entry.url) !== url),
     ].slice(0, CAP);
-    if (typeof localStorage !== 'undefined') {
-      try {
-        localStorage.setItem(KEY, JSON.stringify(next));
-      } catch {
-        // A full or unavailable store only costs the suggestions, not the visit.
-      }
-    }
+    persist(next);
     return next;
   });
 }

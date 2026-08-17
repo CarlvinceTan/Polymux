@@ -306,10 +306,38 @@
     }
   }
 
-  function sortRail<T extends {name: string}>(entries: T[], sort: string): T[] {
-    if (sort === 'recommended') return entries;
+  /**
+   * "Recommended" is what is linked, first. The catalogue order underneath it
+   * is a fixed list the user has no part in, so a platform they actually
+   * connected can sit at the bottom of it — WeChat does — while a dozen rows
+   * they have never linked are what the rail opens on. Sorting is stable, so
+   * within each group the catalogue order stands.
+   *
+   * Mail keeps the top whatever its own state, matching where the tab opens.
+   */
+  function sortRail<T extends {name: string; key: string; state: string}>(
+    entries: T[],
+    sort: string,
+  ): T[] {
+    if (sort === 'recommended')
+      return [...entries].sort((a, b) => railRank(a) - railRank(b));
     const ordered = [...entries].sort((a, b) => a.name.localeCompare(b.name));
     return sort === 'name-desc' ? ordered.reverse() : ordered;
+  }
+
+  function railRank(entry: {key: string; state: string}): number {
+    if (entry.key === 'mail') return 0;
+    switch (entry.state) {
+      case 'connected':
+        return 1;
+      // Linked, and saying so: it belongs with the platforms in use rather
+      // than among the ones never set up.
+      case 'connecting':
+      case 'error':
+        return 2;
+      default:
+        return 3;
+    }
   }
 
   function toggleRailMenu(menu: RailMenu): void {

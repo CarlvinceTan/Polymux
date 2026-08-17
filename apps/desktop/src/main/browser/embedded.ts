@@ -2,8 +2,8 @@ import { mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BrowserDownloadDto, BrowserEventDto } from "@flareai/protocol";
-import { shell, WebContentsView, type BrowserWindow, type WebContents } from "electron";
-import { faviconDataUrl } from "./favicon.js";
+import { nativeTheme, shell, WebContentsView, type BrowserWindow, type WebContents } from "electron";
+import { clearFaviconCache, tabFaviconDataUrl } from "./favicon.js";
 
 /**
  * The workspace browser: one WebContentsView per browser tab, attached to the
@@ -21,6 +21,8 @@ export class EmbeddedBrowser {
   readonly #downloads: BrowserDownloadDto[] = [];
   readonly #downloadsDir: string;
   readonly #send: (event: BrowserEventDto) => void;
+  /** One per live tab, re-resolving that tab's icon for the current scheme. */
+  readonly #faviconRefreshers = new Map<string, () => void>();
   #downloadsWired = false;
 
   constructor(options: {
@@ -31,6 +33,16 @@ export class EmbeddedBrowser {
     this.#window = options.window;
     this.#downloadsDir = options.downloadsDir;
     this.#send = options.send;
+    // Sites serve a different mark per colour scheme, so a theme change makes
+    // every icon on screen the one chosen for the theme the user just left.
+    // Settings clears the cache when the *preference* changes, which is a
+    // different event: under 'system' the preference never moves and the
+    // appearance does, so without this an OS flip would leave a whole strip of
+    // tabs holding the wrong mark until each happened to navigate.
+    nativeTheme.on("updated", () => {
+      clearFaviconCache();
+      for (const refresh of this.#faviconRefreshers.values()) refresh();
+    });
   }
 
   /**
@@ -116,6 +128,7 @@ export class EmbeddedBrowser {
     const view = this.#views.get(tabId);
     if (!view) return;
     this.#views.delete(tabId);
+    this.#faviconRefreshers.delete(tabId);
     if (!this.#window.isDestroyed()) this.#window.contentView.removeChildView(view);
     if (!view.webContents.isDestroyed()) view.webContents.close();
     this.#send({ type: "closed", tabId });
@@ -283,6 +296,10 @@ export class EmbeddedBrowser {
     // belongs to the current page may be shown.
     let faviconSource: string | null = null;
     let faviconUrl: string | null = null;
+    // Bumped by everything that invalidates a resolution already in flight — a
+    // navigation, a newly reported icon, a theme change — so a late answer to a
+    // superseded question is dropped rather than painted over the current page.
+    let faviconRequest = 0;
     const emit = (): void => {
       if (contents.isDestroyed()) return;
       this.#send({
@@ -298,29 +315,36 @@ export class EmbeddedBrowser {
         },
       });
     };
+    // The renderer cannot load a remote icon itself, so the bytes are fetched
+    // here and reported once they arrive; until then the tab keeps showing
+    // whatever it has, which after a navigation is the globe. What Chromium
+    // reported is only a candidate — the page is read first, because Chromium
+    // ignores the `media` attribute that says which scheme an icon is for.
+    const resolveFavicon = (): void => {
+      const request = (faviconRequest += 1);
+      void tabFaviconDataUrl(contents.session, contents.getURL(), faviconSource, {
+        prefersDark: nativeTheme.shouldUseDarkColors,
+      }).then((dataUrl) => {
+        if (contents.isDestroyed() || faviconRequest !== request) return;
+        faviconUrl = dataUrl;
+        emit();
+      });
+    };
+    this.#faviconRefreshers.set(tabId, () => {
+      if (!contents.isDestroyed()) resolveFavicon();
+    });
     contents.on("page-favicon-updated", (_event, favicons) => {
       const source = favicons[0] ?? null;
       if (source === faviconSource) return;
       faviconSource = source;
-      if (!source) {
-        faviconUrl = null;
-        emit();
-        return;
-      }
-      // The renderer cannot load a remote icon itself, so the bytes are
-      // fetched here and reported once they arrive; until then the tab keeps
-      // showing whatever it has, which after a navigation is the globe.
-      void faviconDataUrl(contents.session, source).then((dataUrl) => {
-        if (contents.isDestroyed() || faviconSource !== source) return;
-        faviconUrl = dataUrl;
-        emit();
-      });
+      resolveFavicon();
     });
     contents.on("did-navigate", (): void => {
       // A navigation invalidates the previous page's icon until the new one
       // reports; without this the old favicon lingers on the wrong site.
       faviconSource = null;
       faviconUrl = null;
+      faviconRequest += 1;
       emit();
     });
     contents.on("did-navigate-in-page", emit);

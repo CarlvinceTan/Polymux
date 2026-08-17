@@ -27,7 +27,10 @@ export function hasOnboardingFlag(value: unknown): boolean {
  * it on light chrome: Luma's mark is white, and vanishes. The theme the user
  * sees is the one pages should be answering, so it is set here.
  *
- * Cached icons were fetched under the old scheme, so they go with it.
+ * Cached icons were fetched under the old scheme, so they go with it. That is
+ * belt and braces: the embedded browser also drops them on `nativeTheme`'s own
+ * `updated`, which is the event that covers an OS appearance flip while the
+ * preference here sits on 'system' and never moves.
  */
 
 export function applyThemeSource(theme: GeneralSettingsDto["theme"]): void {

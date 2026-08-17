@@ -2253,6 +2253,30 @@ test.describe('workspace drawer', () => {
     await expect(drawer.locator('.tab')).toContainText('Example Two');
   });
 
+  test('an icon stored with a visit is not trusted, since it was chosen for a theme', async ({page}) => {
+    await page.addInitScript(() => {
+      // A 1x1 black png: perfectly decodable, and exactly the kind of value
+      // older builds wrote alongside the visit.
+      const stored = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
+        {url: 'https://example.com/one', title: 'Example One', favicon: stored},
+        {url: 'https://example.com/two', title: 'Example Two'},
+        {url: 'https://example.com/three', title: 'Example Three'},
+      ]));
+    });
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+
+    await expect(drawer.locator('.workspace-launcher-suggestion')).toHaveCount(3);
+    // Sites serve one mark per colour scheme, so stored bytes are dropped on
+    // load and the icon is asked for again. This build has no main process to
+    // ask, so every row keeps the globe rather than showing a mark chosen under
+    // a theme nobody is in any more.
+    await expect(drawer.locator('.workspace-launcher-suggestion .tab-favicon img')).toHaveCount(0);
+    await expect(drawer.locator('.workspace-launcher-suggestion .tab-favicon svg')).toHaveCount(3);
+  });
+
   test('leaves search-result pages out of the recent list', async ({page}) => {
     await page.addInitScript(() => {
       localStorage.setItem('flareaiBrowserHistory', JSON.stringify([

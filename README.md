@@ -50,8 +50,8 @@ Synapse. The binaries are not in git; fetch them before packaging:
 npm run bridges:fetch
 ```
 
-That pulls 13 pinned bridges (~580 MB) into `bridges/`, verifying each against the
-checksum upstream publishes for it, and `npm run make` runs it automatically. Eleven
+That pulls 14 pinned bridges (~610 MB) into `bridges/`, verifying each against the
+checksum upstream publishes for it, and `npm run make` runs it automatically. Twelve
 come from GitHub releases; iMessage and Google Chat have no usable release, so they
 come from pinned mau.dev CI commits with hashes recorded in the script. `bridges/`
 ships as an `extraResource`, and at runtime `BridgeHost` searches the bundled copy

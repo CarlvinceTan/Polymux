@@ -26,6 +26,11 @@ export type IconScaler = (bytes: Buffer, size: number) => Promise<string | null>
 const CACHE_LIMIT = 256;
 const cache = new Map<string, string | null>();
 
+/** The icon urls a site declares, kept apart from the icons themselves: this is
+ * the answer to "what does this origin offer under this scheme", which costs a
+ * page fetch, and every navigation within a site asks it again. */
+const declarations = new Map<string, string[]>();
+
 /** Big enough for any real icon, small enough that a mis-served video or
  * installer is dropped rather than buffered. */
 const MAX_BYTES = 512 * 1024;
@@ -55,6 +60,7 @@ const EXTENSION_TYPES: Record<string, string> = {
  */
 export function clearFaviconCache(): void {
   cache.clear();
+  declarations.clear();
 }
 
 /**
@@ -114,23 +120,82 @@ export async function siteFaviconDataUrl(
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
 
-  const resolved = await resolveSiteIcon(session, origin, scale, prefersDark).catch((): null => null);
+  const declared = await declaredIconUrls(session, origin, prefersDark);
+  const resolved = await firstIcon(session, [...declared, `${origin}/favicon.ico`], scale);
   remember(key, resolved);
   return resolved;
 }
 
-async function resolveSiteIcon(
+/**
+ * The icon for a browser tab, given both the page it is showing and whatever
+ * Chromium reported for it.
+ *
+ * Chromium reports a page's icons in document order and ignores the `media`
+ * attribute entirely, so the icon it names first is as likely to be the one
+ * built for the opposite colour scheme as the right one — which is how a white
+ * mark ends up on light chrome. Reading the page here applies the same
+ * scheme ranking the rest of this module uses, and Chromium's own answer is
+ * kept behind it: it is the one that catches an icon a script installed after
+ * load, which is not in the html this reads.
+ *
+ * Never rejects: a tab whose icon cannot be resolved is a tab with a globe.
+ */
+export async function tabFaviconDataUrl(
   session: FaviconSession,
-  origin: string,
-  scale: IconScaler,
-  prefersDark: boolean,
+  pageUrl: string,
+  reported: string | null,
+  options: {scale?: IconScaler; prefersDark?: boolean} = {},
 ): Promise<string | null> {
-  const declared = await pageIconUrls(session, origin, prefersDark).catch((): string[] => []);
-  for (const candidate of [...declared, `${origin}/favicon.ico`]) {
-    const icon = await fetchFavicon(session, candidate, scale).catch((): null => null);
+  const {scale = scaleWithNativeImage, prefersDark = false} = options;
+  let origin: string | null = null;
+  try {
+    const parsed = new URL(pageUrl);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") origin = parsed.origin;
+  } catch {
+    // A tab on about:blank or a file has no site to read; whatever Chromium
+    // reported is then the only candidate there is.
+  }
+  const declared = origin ? await declaredIconUrls(session, origin, prefersDark) : [];
+  const candidates = [...declared];
+  if (reported) candidates.push(reported);
+  if (origin) candidates.push(`${origin}/favicon.ico`);
+  return firstIcon(session, candidates, scale);
+}
+
+/** The first candidate that yields an icon, in the order given. Each is cached
+ * by url, so a candidate shared between tabs is fetched once. */
+async function firstIcon(
+  session: FaviconSession,
+  candidates: string[],
+  scale: IconScaler,
+): Promise<string | null> {
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const icon = await faviconDataUrl(session, candidate, scale);
     if (icon) return icon;
   }
   return null;
+}
+
+/** `pageIconUrls` behind the declaration cache, and behind a catch: a site
+ * whose page cannot be read declares nothing. */
+async function declaredIconUrls(
+  session: FaviconSession,
+  origin: string,
+  prefersDark: boolean,
+): Promise<string[]> {
+  const key = `${prefersDark ? "dark" : "light"}:${origin}`;
+  const cached = declarations.get(key);
+  if (cached) return cached;
+  const urls = await pageIconUrls(session, origin, prefersDark).catch((): string[] => []);
+  if (declarations.size >= CACHE_LIMIT) {
+    const oldest = declarations.keys().next();
+    if (!oldest.done) declarations.delete(oldest.value);
+  }
+  declarations.set(key, urls);
+  return urls;
 }
 
 /** How much of a page is worth reading to find its `<link rel="icon">`: the

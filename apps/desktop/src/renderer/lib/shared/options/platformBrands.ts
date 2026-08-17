@@ -20,6 +20,7 @@ import telegram from '../../../assets/platforms/telegram.svg?url';
 import twitter from '../../../assets/platforms/twitter.svg?url';
 import wechat from '../../../assets/platforms/wechat.svg?url';
 import whatsapp from '../../../assets/platforms/whatsapp.svg?url';
+import zulip from '../../../assets/platforms/zulip.svg?url';
 
 /**
  * Each company's own mark, in full colour, keyed the way the bridge fleet and
@@ -43,6 +44,7 @@ const bridgeLogos: Record<string, string> = {
   twitter,
   bluesky,
   gvoice,
+  zulip,
   imessage,
   wechat,
   matrix,

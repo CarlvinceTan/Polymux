@@ -153,6 +153,14 @@ export class Communications {
   /** Connection-test outcomes, which are too slow to redo on every status read. */
   readonly #emailStatus = new Map<string, {status: "ok" | "error"; error: string | null}>();
   /**
+   * What each bridge was last seen as, so a state that changed without anyone
+   * asking for it can be pushed. Every other publish follows an action the
+   * user took here; a bridge that comes up on its own — the WeChat relay is
+   * started by the status read itself — has no such moment, and a window
+   * already open would otherwise keep the list it happened to load with.
+   */
+  readonly #bridgeStates = new Map<string, string>();
+  /**
    * Cookie steps handed to the UI, keyed `<platform>:<stepId>`. The sign-in
    * window needs the exact url and field list the bridge asked for, and the
    * renderer is not trusted to hand those back.
@@ -367,7 +375,7 @@ export class Communications {
         setup: row.setup ?? (await setupOf(platforms.find((entry) => entry.value === row.platform)!)),
       })),
     );
-    return {
+    const result: CommsStatusDto = {
       hub: {
         baseUrl: this.#baseUrl,
         homeserverUrl: this.#homeserverUrl,
@@ -396,6 +404,13 @@ export class Communications {
         }),
       },
     };
+    // Read last, and only told about a change: a status read is not itself
+    // news, and re-sending an unchanged fleet on every poll would repaint
+    // every open window for nothing.
+    const moved = bridges.some((bridge) => this.#bridgeStates.get(bridge.platform) !== bridge.state);
+    for (const bridge of bridges) this.#bridgeStates.set(bridge.platform, bridge.state);
+    if (moved) this.#onChange(result);
+    return result;
   }
 
   async setHubUrl(baseUrl: string): Promise<CommsStatusDto> {

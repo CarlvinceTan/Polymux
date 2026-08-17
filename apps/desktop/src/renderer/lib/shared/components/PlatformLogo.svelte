@@ -14,12 +14,13 @@
     siX,
     siWechat,
     siWhatsapp,
+    siZulip,
   } from 'simple-icons';
 
   type Platform =
     | 'whatsapp' | 'telegram' | 'signal' | 'discord' | 'slack' | 'messenger' | 'instagram'
     | 'linkedin' | 'googlechat' | 'gmessages' | 'twitter' | 'bluesky' | 'gvoice'
-    | 'imessage' | 'wechat' | 'matrix' | 'mail';
+    | 'zulip' | 'imessage' | 'wechat' | 'matrix' | 'mail';
 
   interface Props {
     platform: Platform;
@@ -74,6 +75,7 @@
     twitter: siX,
     bluesky: siBluesky,
     gvoice,
+    zulip: siZulip,
     imessage: siImessage,
     wechat: siWechat,
     // Matrix ships as pure black, which vanishes against a dark surface.

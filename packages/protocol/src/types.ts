@@ -501,6 +501,7 @@ export type CommsPlatform =
   | "twitter"
   | "bluesky"
   | "gvoice"
+  | "zulip"
   | "imessage"
   | "wechat"
   | "matrix";

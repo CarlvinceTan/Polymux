@@ -354,6 +354,9 @@
     void load();
     const unsubscribe = api.comms.subscribe((next) => {
       status = next;
+      // Into the session cache as well, or the next mount paints the rail from
+      // a snapshot older than the push that has already corrected it.
+      session.status = next;
     });
     // Pushed the moment a message lands, whichever platform it came from: the
     // homeserver is where every bridge delivers, so it knows before any poll
@@ -737,9 +740,26 @@
 
   async function refreshOpen(): Promise<void> {
     if (typeof document !== 'undefined' && document.hidden) return;
+    await refreshSources();
     if (activeChat) await refreshChat();
     else if (source?.kind === 'mail') await refreshEnvelopes();
     else if (source?.kind === 'platform') await refreshChats();
+  }
+
+  /**
+   * The rail itself. A platform can arrive without anyone linking it here —
+   * WeChat comes up as a relay against the app on this Mac, and reading the
+   * status is what starts it — so a rail that only ever reflects the status
+   * this mount opened with leaves a working platform off the list until the
+   * tab is left and come back to.
+   */
+  async function refreshSources(): Promise<void> {
+    try {
+      status = await api.comms.status();
+      session.status = status;
+    } catch {
+      // Quiet, for the same reason as the other polls.
+    }
   }
 
   /** The conversation list's own unread counts and previews. */

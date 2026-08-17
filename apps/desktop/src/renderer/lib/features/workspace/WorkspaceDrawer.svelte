@@ -7,29 +7,131 @@
    * worked. Both live outside the component so a new chat — which mounts a
    * fresh drawer — does not have to re-learn what it already knows, and so no
    * icon is ever put on screen before it is known to render.
+   *
+   * Keyed by theme as well as by url: the verdict is partly about the chrome
+   * the icon is drawn on, so it does not survive a light/dark flip.
    */
   const faviconProbes = new Map<string, Promise<boolean>>();
   const faviconReady = new Set<string>();
 
-  /** Resolves true only when the bytes actually decode to an image. */
+  /** Always 'light' or 'dark' — `theme.ts` resolves 'system' before writing. */
+  function chromeTheme(): 'light' | 'dark' {
+    return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+  }
+
+  function probeKey(url: string): string {
+    return `${chromeTheme()}\n${url}`;
+  }
+
+  /**
+   * Resolves true only when the bytes decode to an image *and* that image would
+   * be visible on the tab strip.
+   *
+   * A site gets one favicon and picks a side: Luma's is a white mark, meant for
+   * the dark chrome its own page has. Sites that ship both declare them with a
+   * `media` attribute, which is what the main process ranks on — but that only
+   * covers icons resolved by reading the page, and Chromium ignores `media`
+   * entirely when it reports a tab's icon. So a white-on-transparent mark
+   * reaches a light tab strip regularly, and paints as nothing at all: a tab
+   * with no visible icon and no globe either, which reads as a rendering bug.
+   *
+   * Measuring the pixels catches every route into that state at once, without
+   * caring which of them delivered the icon. An icon that cannot be seen is
+   * treated the same as an icon that failed to decode — the globe holds the
+   * slot, which is at least a mark the user can find the tab by.
+   */
   function probeFavicon(url: string): Promise<boolean> {
     // The CSP (`img-src 'self' data: blob:`) blocks a remote icon before it is
     // ever fetched, so probing one buys a console violation and nothing else.
     // Icons reach the renderer as bytes; anything else never had a chance.
     if (!/^(data|blob):/i.test(url)) return Promise.resolve(false);
-    const known = faviconProbes.get(url);
+    const key = probeKey(url);
+    const known = faviconProbes.get(key);
     if (known) return known;
-    const probe = new Promise<boolean>((resolve) => {
+    const probe = new Promise<HTMLImageElement | null>((resolve) => {
       const image = new Image();
-      image.onload = () => resolve(image.naturalWidth > 0);
-      image.onerror = () => resolve(false);
+      image.onload = () => resolve(image.naturalWidth > 0 ? image : null);
+      image.onerror = () => resolve(null);
       image.src = url;
-    }).then((ok) => {
-      if (ok) faviconReady.add(url);
+    }).then((image) => {
+      const ok = !!image && visibleOnChrome(image);
+      if (ok) faviconReady.add(key);
       return ok;
     });
-    faviconProbes.set(url, probe);
+    faviconProbes.set(key, probe);
     return probe;
+  }
+
+  /** The size the tab draws an icon at; measuring it at any other size only
+   * invents detail the user will never see. */
+  const PROBE_SIZE = 16;
+  /** How far a pixel has to sit from the chrome behind it to count as one the
+   * user can make out. Well under the difference between a real mark and its
+   * background, well over the fringe an anti-aliased edge leaves behind. */
+  const MIN_PIXEL_CONTRAST = 0.14;
+  /** And how much of the icon has to clear that bar. A white mark with a few
+   * stray dark pixels is still a white mark; a tenth of the square carrying
+   * real contrast is a shape. */
+  const MIN_VISIBLE_FRACTION = 0.04;
+
+  function visibleOnChrome(image: HTMLImageElement): boolean {
+    const canvas = document.createElement('canvas');
+    canvas.width = PROBE_SIZE;
+    canvas.height = PROBE_SIZE;
+    const context = canvas.getContext('2d', {willReadFrequently: true});
+    // Every icon arrives as a `data:` url from the main process, so readback is
+    // same-origin and does not taint. If a canvas is unavailable anyway, an
+    // unmeasured icon is shown rather than hidden — failing towards the site's
+    // own mark is the smaller error.
+    if (!context) return true;
+    let pixels: Uint8ClampedArray;
+    try {
+      context.drawImage(image, 0, 0, PROBE_SIZE, PROBE_SIZE);
+      pixels = context.getImageData(0, 0, PROBE_SIZE, PROBE_SIZE).data;
+    } catch {
+      return true;
+    }
+    const background = chromeLuminance();
+    let visible = 0;
+    for (let at = 0; at < pixels.length; at += 4) {
+      const alpha = pixels[at + 3] / 255;
+      if (!alpha) continue;
+      const luminance = (0.2126 * pixels[at] + 0.7152 * pixels[at + 1] + 0.0722 * pixels[at + 2]) / 255;
+      // What the user actually sees is the pixel composited over the chrome, so
+      // a translucent mark is measured at the strength it is drawn with.
+      if (Math.abs(luminance - background) * alpha >= MIN_PIXEL_CONTRAST) visible += 1;
+    }
+    return visible >= pixels.length / 4 * MIN_VISIBLE_FRACTION;
+  }
+
+  /** The tab's own background, so the test is against the surface the icon
+   * lands on rather than against an assumption about the theme. */
+  function chromeLuminance(): number {
+    const token = getComputedStyle(document.documentElement).getPropertyValue('--neutral-100').trim();
+    const parsed = parseLuminance(token);
+    if (parsed !== null) return parsed;
+    return chromeTheme() === 'dark' ? 0.16 : 0.95;
+  }
+
+  function parseLuminance(colour: string): number | null {
+    let red: number;
+    let green: number;
+    let blue: number;
+    const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(colour);
+    const rgb = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(colour);
+    if (hex) {
+      const digits = hex[1].length === 3 ? hex[1].replace(/./g, (d) => d + d) : hex[1];
+      red = parseInt(digits.slice(0, 2), 16);
+      green = parseInt(digits.slice(2, 4), 16);
+      blue = parseInt(digits.slice(4, 6), 16);
+    } else if (rgb) {
+      red = Number(rgb[1]);
+      green = Number(rgb[2]);
+      blue = Number(rgb[3]);
+    } else {
+      return null;
+    }
+    return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
   }
 
   /** Drive, schedule and the side chat are places rather than documents: there
@@ -47,7 +149,14 @@
   import {onDestroy} from 'svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import {leasedUrls, isLeased} from './agentSurfaceLeases';
-  import {visitHistory, HISTORY_SUGGESTION_LIMIT, HISTORY_SUGGESTION_MINIMUM} from './visitHistory';
+  import {
+    visitHistory,
+    resolveVisitFavicons,
+    forgetVisitFavicons,
+    HISTORY_SUGGESTION_LIMIT,
+    HISTORY_SUGGESTION_MINIMUM,
+  } from './visitHistory';
+  import {onThemeChange} from '../../shared/theme';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import {SPLIT_LAYOUT_MIN_WIDTH, clampPanelWidth, workspaceResizeBounds} from '../../shared/layout/layoutSizing';
   import DocumentView from './DocumentView.svelte';
@@ -203,14 +312,36 @@
    */
   let faviconsSettled = 0;
 
+  /**
+   * Bumped when the theme changes, which retests every icon on screen: a mark
+   * that was invisible on light chrome is usually the visible one on dark, and
+   * the verdict is keyed per theme precisely so it can be revisited. Nothing
+   * else in the drawer changes on a theme flip, so without this the strip would
+   * hold the previous theme's answer until a tab happened to open or close.
+   */
+  let themeRevision = 0;
+
+  onDestroy(onThemeChange(() => {
+    // History icons are resolved per scheme rather than stored, so the ones
+    // held for the theme just left are dropped and asked for again below.
+    forgetVisitFavicons();
+    themeRevision += 1;
+  }));
+
+  // A visit carries a url, not an icon; the icon for it is fetched when the row
+  // is on screen, and again after a theme change.
+  $: resolveVisitFavicons(historySuggestions, themeRevision);
+
   $: void testFavicons([
     ...tabs.map((tab) => tab.favicon),
     ...historySuggestions.map((visit) => visit.favicon),
-  ]);
+  ], themeRevision);
 
-  function testFavicons(candidates: Array<string | null | undefined>): void {
+  /** The trailing argument is a reactivity trigger, not a value this reads. */
+  function testFavicons(candidates: Array<string | null | undefined>, _revision = 0): void {
     for (const favicon of candidates) {
-      if (!favicon || faviconReady.has(favicon) || faviconProbes.has(favicon)) continue;
+      const key = probeKey(favicon ?? '');
+      if (!favicon || faviconReady.has(key) || faviconProbes.has(key)) continue;
       void probeFavicon(favicon).then(() => {
         // Nudges the template: the sets themselves live outside the component.
         faviconsSettled += 1;
@@ -220,7 +351,7 @@
 
   /** The second argument is the redraw signal, not a value this reads. */
   function usableFavicon(favicon?: string | null, _settled = 0): string | null {
-    return favicon && faviconReady.has(favicon) ? favicon : null;
+    return favicon && faviconReady.has(probeKey(favicon)) ? favicon : null;
   }
 
   function resizeFromPointer(clientX: number): void {
@@ -297,7 +428,7 @@
           <button type="button" class="tab-main" onclick={() => onSelect(tab.id)}>
             {#if tab.kind === 'browser'}
               <span class="tab-favicon" class:controlled={isLeased($leasedUrls, tab.url)}>
-                {#if usableFavicon(tab.favicon, faviconsSettled)}<img src={tab.favicon} alt="" draggable="false"/>{:else}<Icon name="globe" size={16}/>{/if}
+                {#if usableFavicon(tab.favicon, faviconsSettled + themeRevision)}<img src={tab.favicon} alt="" draggable="false"/>{:else}<Icon name="globe" size={16}/>{/if}
                 {#if isLeased($leasedUrls, tab.url)}
                   <svg class="tab-cursor-badge" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.04536 4.45259C2.7582 3.60299 3.60299 2.7582 4.45259 3.04536L14.1828 6.33403C15.1637 6.66558 15.0872 8.08006 14.0715 8.39045L10.2994 9.54319C9.93919 9.65327 9.65327 9.93919 9.54319 10.2994L8.39046 14.0715C8.08007 15.0872 6.66558 15.1637 6.33404 14.1828L3.04536 4.45259Z" fill="black" stroke="white" stroke-width="1.5" stroke-linejoin="round" paint-order="stroke fill"/></svg>
                 {/if}
@@ -370,7 +501,7 @@
             {#each historySuggestions as visit (visit.url)}
               <button type="button" class="workspace-launcher-suggestion" onclick={() => onOpenUrl(visit.url, visit.title)}>
                 <span class="tab-favicon">
-                  {#if usableFavicon(visit.favicon, faviconsSettled)}<img src={visit.favicon} alt="" draggable="false"/>{:else}<Icon name="globe" size={16}/>{/if}
+                  {#if usableFavicon(visit.favicon, faviconsSettled + themeRevision)}<img src={visit.favicon} alt="" draggable="false"/>{:else}<Icon name="globe" size={16}/>{/if}
                 </span>
                 <span>{visit.title}</span>
               </button>

@@ -44,6 +44,7 @@ const FLEET = [
   {binary: "mautrix-twitter", repo: "twitter", tag: "v0.2606.0"},
   {binary: "mautrix-bluesky", repo: "bluesky", tag: "v0.2510.0"},
   {binary: "mautrix-gvoice", repo: "gvoice", tag: "v0.2605.0"},
+  {binary: "mautrix-zulip", repo: "zulip", tag: "v0.2511.0"},
 ];
 
 /**

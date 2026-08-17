@@ -136,6 +136,7 @@ export const COMMS_PLATFORMS: {
   { value: "twitter", label: "X", route: "twitter", bot: "twitterbot" },
   { value: "bluesky", label: "Bluesky", route: "bluesky", bot: "blueskybot" },
   { value: "gvoice", label: "Google Voice", route: "gvoice", bot: "gvoicebot" },
+  { value: "zulip", label: "Zulip", route: "zulip", bot: "zulipbot" },
   { value: "imessage", label: "iMessage", route: "imessage", bot: "imessagebot" },
   // No mautrix bridge exists for WeChat, so there is nothing to route to. It
   // stays listed because the hub is where it would arrive if one appears.

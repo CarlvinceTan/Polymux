@@ -4,6 +4,7 @@ import {
   clearFaviconCache,
   faviconDataUrl,
   siteFaviconDataUrl,
+  tabFaviconDataUrl,
   type FaviconSession,
   type IconScaler,
 } from "./favicon.js";
@@ -177,4 +178,72 @@ test("a site that cannot be read at all is a site with no icon", async () => {
 
   assert.equal(await siteFaviconDataUrl(remote, "https://gone.test", { scale }), null);
   assert.equal(await siteFaviconDataUrl(remote, "not a url", { scale }), null);
+});
+
+test("a tab takes the page's scheme-ranked icon over the one Chromium reported", async () => {
+  clearFaviconCache();
+  // Chromium reports icons in document order and ignores `media`, so on Luma it
+  // names the white mark first — the one that vanishes on light chrome.
+  const reported = "https://tab-luma.test/favicons/favicon-white.ico";
+  const routes = {
+    "https://tab-luma.test": { type: "text/html", body: LUMA_PAGE.replace(/luma\.test/g, "tab-luma.test") },
+    "https://tab-luma.test/favicons/favicon-black.ico": { type: "image/x-icon", body: "png-black" },
+    "https://tab-luma.test/favicons/favicon-white.ico": { type: "image/x-icon", body: "png-white" },
+    "https://tab-luma.test/favicon.ico": { ok: false },
+  };
+  const light = siteSession(routes);
+
+  assert.equal(
+    await tabFaviconDataUrl(light, "https://tab-luma.test/dream-machine", reported, {
+      scale: named,
+      prefersDark: false,
+    }),
+    "data:image/png;base64,black",
+  );
+  assert.ok(!light.calls.includes(reported));
+});
+
+test("a tab keeps Chromium's icon for a page whose html declares none", async () => {
+  clearFaviconCache();
+  // The mark a script installed after load is not in the html, so what the page
+  // reported is the only place it exists.
+  const reported = "https://spa.test/assets/injected.png";
+  const remote = siteSession({
+    "https://spa.test": { type: "text/html", body: "<!doctype html><title>App</title>" },
+    "https://spa.test/favicon.ico": { ok: false },
+    [reported]: { type: "image/png" },
+  });
+
+  assert.equal(await tabFaviconDataUrl(remote, "https://spa.test/app", reported, { scale }), PNG_DATA_URL);
+});
+
+test("a tab on no site at all still shows what Chromium reported", async () => {
+  clearFaviconCache();
+  const reported = "https://elsewhere.test/icon.png";
+  const remote = siteSession({ [reported]: { type: "image/png" } });
+
+  assert.equal(await tabFaviconDataUrl(remote, "about:blank", reported, { scale }), PNG_DATA_URL);
+  // Nothing was read for a page that has no origin to read.
+  assert.deepEqual(remote.calls, [reported]);
+});
+
+test("a tab with nothing to go on is a tab with a globe", async () => {
+  clearFaviconCache();
+  const remote = siteSession({});
+
+  assert.equal(await tabFaviconDataUrl(remote, "https://empty.test/x", null, { scale }), null);
+});
+
+test("a site's declarations are read once, however many tabs ask", async () => {
+  clearFaviconCache();
+  const routes = {
+    "https://shared.test": { type: "text/html", body: "<!doctype html><title>Shared</title>" },
+    "https://shared.test/favicon.ico": { type: "image/png" },
+  };
+  const remote = siteSession(routes);
+
+  await tabFaviconDataUrl(remote, "https://shared.test/one", null, { scale });
+  await tabFaviconDataUrl(remote, "https://shared.test/two", null, { scale });
+
+  assert.deepEqual(remote.calls, ["https://shared.test", "https://shared.test/favicon.ico"]);
 });

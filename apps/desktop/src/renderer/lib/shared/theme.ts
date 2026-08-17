@@ -19,6 +19,22 @@ function storedMode(): ThemeMode | undefined {
 // known choice is the best answer; 'system' is the default a fresh profile gets.
 let mode: ThemeMode = storedMode() ?? 'system';
 
+const listeners = new Set<() => void>();
+
+/**
+ * Called when the applied theme actually changes — not when the preference is
+ * re-stated, and not on the first paint, where `theme-boot.js` has already put
+ * the right theme on the document.
+ *
+ * Anything holding a value that was chosen *for* a colour scheme subscribes
+ * here. Site favicons are the case that matters: a site serves one mark per
+ * scheme, so every icon resolved before the flip is now the wrong one.
+ */
+export function onThemeChange(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 export function applyTheme(next: ThemeMode): void {
   mode = next;
   try {
@@ -36,8 +52,10 @@ export function applyTheme(next: ThemeMode): void {
   // splash's slide. That is where the animation was being knocked off its
   // frames; theme-boot has already applied the same answer before first paint.
   const root = document.documentElement;
-  if (root.dataset.theme !== theme) root.dataset.theme = theme;
+  const changed = root.dataset.theme !== theme;
+  if (changed) root.dataset.theme = theme;
   if (root.style.colorScheme !== theme) root.style.colorScheme = theme;
+  if (changed) for (const listener of listeners) listener();
 }
 
 export function startThemeSync(): () => void {

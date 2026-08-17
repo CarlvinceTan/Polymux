@@ -207,6 +207,9 @@ export const BRIDGE_FLEET: readonly BridgeSpec[] = [
   {platform: "twitter", binary: "mautrix-twitter"},
   {platform: "bluesky", binary: "mautrix-bluesky"},
   {platform: "gvoice", binary: "mautrix-gvoice"},
+  // Self-hosted and cloud Zulip both work: the organisation's own URL is part
+  // of the login rather than the config, so nothing here has to name a server.
+  {platform: "zulip", binary: "mautrix-zulip"},
   // Reads the Messages database on this Mac rather than a remote network.
   {platform: "imessage", binary: "mautrix-imessage", preflight: messagesDatabaseAccess},
 ];

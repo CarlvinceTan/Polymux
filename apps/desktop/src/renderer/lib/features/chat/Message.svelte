@@ -1,9 +1,27 @@
 <script module lang="ts">
   import {flareaiApi} from '../../api/flareai';
+  import {onThemeChange} from '../../shared/theme';
 
   /** Site icons for links, asked for once per site and shared by every message
    * on screen — the same handful of sites recur across a conversation. */
-  const linkFavicons = new Map<string, Promise<string | null>>();
+  let linkFavicons = new Map<string, Promise<string | null>>();
+
+  // Held per colour scheme, like every other favicon: a site serves one mark
+  // for light chrome and another for dark, so what was resolved before a theme
+  // change is the wrong icon after it.
+  // Refreshed in place rather than by clearing `faviconAsked` and waiting for
+  // the observer: it watches for links being added, and a theme change adds
+  // none.
+  onThemeChange(() => {
+    linkFavicons = new Map();
+    for (const image of document.querySelectorAll<HTMLImageElement>('img[data-link-favicon]')) {
+      const source = image.dataset.linkFavicon;
+      if (!source) continue;
+      void linkFavicon(source).then((dataUrl) => {
+        if (dataUrl) image.src = dataUrl;
+      });
+    }
+  });
 
   function linkFavicon(url: string): Promise<string | null> {
     let pending = linkFavicons.get(url);

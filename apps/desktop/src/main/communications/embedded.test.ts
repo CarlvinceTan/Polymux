@@ -232,3 +232,56 @@ test("a stored external address is the only thing that disables embedded mode", 
     await rm(directory, {recursive: true, force: true});
   }
 });
+
+/**
+ * A bridge can change state with nobody asking it to — the WeChat relay is
+ * started by the status read itself, and a binary the host was holding back
+ * can come up later. Every other push follows an action taken in the tab, so
+ * without this a window already open keeps the fleet it happened to load with.
+ */
+test("a bridge that changes state on its own is pushed to open windows", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-embedded-"));
+  const hs = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
+  await hs.start();
+  const pushes: string[] = [];
+  let whatsappRunning = false;
+  const comms = new Communications({
+    credentials: memoryCredentials(),
+    storage: memoryPreferences(),
+    onChange: (status) => {
+      const bridge = status.bridges.find((item) => item.platform === "whatsapp");
+      if (bridge) pushes.push(bridge.state);
+    },
+    embedded: {
+      baseUrl: hs.baseUrl,
+      directory,
+      provision: (localpart) => hs.createLocalUser(localpart),
+      // Only WhatsApp moves; the rest are absent, so the fleet around it is
+      // steady and any push has exactly one cause.
+      inventory: async () => [
+        {platform: "whatsapp", binary: "mautrix-whatsapp", installed: true, running: whatsappRunning},
+      ],
+    },
+    emailConfigPath: path.join(directory, "himalaya.toml"),
+    run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
+  });
+
+  try {
+    const first = await comms.status();
+    assert.equal(first.bridges.find((item) => item.platform === "whatsapp")?.state, "dormant");
+    const afterFirst = pushes.length;
+
+    // Read again with nothing changed: a status read is not itself news.
+    await comms.status();
+    assert.equal(pushes.length, afterFirst, "an unchanged fleet must not be re-pushed");
+
+    // Now it is up, and the tab never asked for it.
+    whatsappRunning = true;
+    const moved = await comms.status();
+    assert.notEqual(moved.bridges.find((item) => item.platform === "whatsapp")?.state, "dormant");
+    assert.equal(pushes.length, afterFirst + 1, "the change must reach open windows");
+  } finally {
+    await hs.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+});
