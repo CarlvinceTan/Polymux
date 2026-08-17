@@ -6,6 +6,7 @@ import {homedir, tmpdir} from "node:os";
 import {promisify} from "node:util";
 import path from "node:path";
 import type {Homeserver} from "./server.js";
+import {loadHeadImages} from "./wechat-head-images.js";
 
 /**
  * WeChat, bridged into the embedded homeserver.
@@ -34,12 +35,17 @@ const run: (
  * descriptor rather than a url — so the bytes come from the CLI, which owns
  * the key derivation.
  */
-const CLI_PATHS = [
-  process.env.FLAREAI_WECHAT_CLI,
-  `${homedir()}/.local/bin/wechat-use`,
-  "/opt/homebrew/bin/wechat-use",
-  "/usr/local/bin/wechat-use",
-].filter((entry): entry is string => Boolean(entry));
+function cliPaths(): string[] {
+  // Read when used rather than when this module loads: an override set after
+  // startup — a test's stand-in, a path the user configures later — would
+  // otherwise never be seen.
+  return [
+    process.env.FLAREAI_WECHAT_CLI,
+    `${homedir()}/.local/bin/wechat-use`,
+    "/opt/homebrew/bin/wechat-use",
+    "/usr/local/bin/wechat-use",
+  ].filter((entry): entry is string => Boolean(entry));
+}
 /** Extraction can fall back to a CDN replay, so it gets room to finish. */
 const MEDIA_TIMEOUT_MS = 30_000;
 /** Keychain item the relay reads its own bearer from. */
@@ -73,6 +79,22 @@ const PROBE_TIMEOUT_MS = 1_500;
 const RECONNECT_MS = [1_000, 2_000, 5_000, 15_000, 30_000];
 /** Remote ids are remembered this long, so a replayed stream is not re-posted. */
 const SEEN_TTL_MS = 30 * 24 * 3_600 * 1_000;
+
+/** How long a chat's own-message list is trusted before it is read again. */
+const SELF_SENT_TTL_MS = 15_000;
+/** How far back that list reaches. Deep enough for an import, not a history. */
+const SELF_SENT_WINDOW = 200;
+/** A local database read; it either answers quickly or is not worth waiting for. */
+const SELF_SENT_TIMEOUT_MS = 5_000;
+
+/** A sticker larger than this is not a sticker; it is not brought across. */
+const MAX_STICKER_BYTES = 8 * 1024 * 1024;
+
+/** How much of an already-read conversation to import, so it has a last line. */
+const BACKFILL_MIN = 10;
+
+/** Stands in until the relay names a sender, and never replaces a real name. */
+const UNKNOWN_SENDER = "WeChat contact";
 /** How long an outbound message may wait for its own echo to come back. */
 const ECHO_TTL_MS = 5 * 60 * 1_000;
 
@@ -99,21 +121,127 @@ export interface WeChatBridgeOptions {
   binaryDirectories?: string[];
 }
 
-/** A message as the relay's `hermes` shape presents it. */
+/**
+ * A message as the relay's `hermes` shape presents it. The relay is not
+ * consistent about case — chats arrive with `unread_count`, messages with
+ * `chatId` — so both spellings are declared and `normalise` folds them
+ * together. A missed `sender_name` is not a quiet loss: the puppet is keyed on
+ * the sender, so everyone in a group collapses into one nameless contact.
+ */
 interface RelayMessage {
   messageId?: string | number;
+  message_id?: string | number;
   chatId?: string;
+  chat_id?: string;
   chatName?: string;
+  chat_name?: string;
   display_name?: string;
   senderId?: string;
+  sender_id?: string;
   senderName?: string;
+  sender_name?: string;
   body?: string;
   timestamp?: number;
   isGroup?: boolean;
+  is_group?: boolean;
   fromSelf?: boolean;
+  from_self?: boolean;
   hasMedia?: boolean;
+  has_media?: boolean;
   mediaType?: string;
+  media_type?: string;
   messageKind?: string;
+  message_kind?: string;
+  /**
+   * A contact's picture. The relay in use today sends none of these, so the
+   * list falls back to an initial; the spellings are the ones WeChat's own
+   * store and the tools around it use, so whichever a build supplies is
+   * picked up without another change here.
+   */
+  avatar?: string;
+  avatarUrl?: string;
+  avatar_url?: string;
+  head_img?: string;
+  head_img_url?: string;
+  small_head_url?: string;
+  big_head_url?: string;
+}
+
+/** The first usable picture url on a relay payload, whatever it calls it. */
+function avatarUrlOf(item: RelayMessage | RelayChat): string | null {
+  const candidates = [
+    item.avatar,
+    item.avatarUrl,
+    item.avatar_url,
+    item.head_img,
+    item.head_img_url,
+    item.big_head_url,
+    item.small_head_url,
+  ];
+  const found = candidates.find(
+    (value) => typeof value === "string" && /^https?:\/\//i.test(value),
+  );
+  return found ?? null;
+}
+
+/**
+ * When the message was sent, in milliseconds. The relay counts in seconds,
+ * but not every build does, so a value already large enough to be milliseconds
+ * is left alone rather than being multiplied into the year 55000.
+ */
+function originalTimestamp(item: RelayMessage): number | null {
+  const raw = Number(item.timestamp);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  return Math.round(raw > 1e12 ? raw : raw * 1000);
+}
+
+/** The five entities an XML attribute out of WeChat can carry. */
+function unescapeXml(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function numberAttribute(xml: string, name: string): number | null {
+  const raw = Number(new RegExp(`${name}\\s*=\\s*"(\\d+)"`, "i").exec(xml)?.[1]);
+  return Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
+/**
+ * What a picture is, from its first bytes. WeChat's sticker CDN labels
+ * everything `application/octet-stream`, and most stickers are animated GIFs,
+ * so trusting the header would send them all across as the wrong type.
+ */
+function imageTypeOf(bytes: Uint8Array): string | null {
+  const starts = (...signature: number[]): boolean =>
+    signature.every((byte, index) => bytes[index] === byte);
+  if (starts(0x47, 0x49, 0x46, 0x38)) return "image/gif";
+  if (starts(0x89, 0x50, 0x4e, 0x47)) return "image/png";
+  if (starts(0xff, 0xd8, 0xff)) return "image/jpeg";
+  // RIFF????WEBP — the format tag sits after the four-byte length.
+  if (starts(0x52, 0x49, 0x46, 0x46))
+    return String.fromCharCode(...bytes.subarray(8, 12)) === "WEBP" ? "image/webp" : null;
+  return null;
+}
+
+/** Every field under the camelCase name the rest of the bridge reads. */
+function normalise(item: RelayMessage): RelayMessage {
+  return {
+    ...item,
+    messageId: item.messageId ?? item.message_id,
+    chatId: item.chatId ?? item.chat_id,
+    chatName: item.chatName ?? item.chat_name,
+    senderId: item.senderId ?? item.sender_id,
+    senderName: item.senderName ?? item.sender_name,
+    isGroup: item.isGroup ?? item.is_group,
+    fromSelf: item.fromSelf ?? item.from_self,
+    hasMedia: item.hasMedia ?? item.has_media,
+    mediaType: item.mediaType ?? item.media_type,
+    messageKind: item.messageKind ?? item.message_kind,
+  };
 }
 
 interface BridgeState {
@@ -129,6 +257,10 @@ interface BridgeState {
    */
   outboundEchoes: Array<{chatId: string; body: string; timestamp: number}>;
   lastRemoteTimestamp: number;
+  /** Contact pictures already uploaded, by WeChat id, so each is sent once. */
+  avatarUris?: Record<string, string>;
+  /** Rooms and puppets already wearing theirs, so it is not re-set per message. */
+  avatarsApplied?: Record<string, boolean>;
 }
 
 interface Registration {
@@ -145,6 +277,8 @@ function emptyState(): BridgeState {
     seenRemote: {},
     seenTransactions: {},
     outboundEchoes: [],
+    avatarUris: {},
+    avatarsApplied: {},
     lastRemoteTimestamp: Math.floor(Date.now() / 1000) - 60,
   };
 }
@@ -155,6 +289,22 @@ export class WeChatBridge {
   readonly #fetch: typeof globalThis.fetch;
   #state: BridgeState = emptyState();
   #registration: Registration | null = null;
+  /** Uploaded contact pictures by source url; null means it could not be had. */
+  readonly #avatars = new Map<string, string | null>();
+  /**
+   * The participant number that means "this account", and the timestamps of
+   * its own messages per chat. Both come from WeChat's own store; see
+   * `#sentByAccount`. `undefined` means not yet calibrated, `null` means the
+   * calibration is not available on this machine.
+   */
+  #selfId: string | null | undefined;
+  readonly #selfSent = new Map<string, {at: number; timestamps: Set<number>}>();
+  /**
+   * WeChat's own picture store, read once per run. Held as the promise rather
+   * than the result so a burst of messages arriving together waits on one read
+   * instead of starting one each.
+   */
+  #headImages: Promise<Map<string, Uint8Array>> | null = null;
   #server: Server | null = null;
   #stopped = false;
   /** Aborts the event stream on close; a `for await` on it never ends by itself. */
@@ -216,6 +366,11 @@ export class WeChatBridge {
     // must not sit behind it. Rooms appear as they are imported.
     void this.#backfill().catch((error: unknown) =>
       this.#log(`[wechat] initial import delayed: ${message(error)}`),
+    );
+    // Conversations opened before this run have no picture yet; giving them
+    // one is independent of the import and runs beside it.
+    void this.#syncRoomAvatars().catch((error: unknown) =>
+      this.#log(`[wechat] contact pictures delayed: ${message(error)}`),
     );
     void this.#consume();
     return true;
@@ -384,21 +539,45 @@ export class WeChatBridge {
 
   // ---- inbound: WeChat to Matrix ------------------------------------------
 
+  /**
+   * Every conversation the account has, not only the ones with something
+   * unread. A chat with nothing waiting is still a chat the user expects to
+   * find here, and importing only unread ones left the list a fraction of what
+   * WeChat itself shows.
+   */
+  async #chatList(): Promise<RelayChat[]> {
+    // `/chats` is the whole list where the relay offers it; `/unread` is the
+    // fallback for a relay that predates it, and is a strict subset.
+    const listed = await this.#relay<RelayChat[] | {rows?: RelayChat[]}>("/chats").catch(
+      (): null => null,
+    );
+    const source = listed ?? (await this.#relay<RelayChat[] | {rows?: RelayChat[]}>("/unread"));
+    return Array.isArray(source) ? source : (source.rows ?? []);
+  }
+
   async #backfill(): Promise<void> {
-    const unread = await this.#relay<RelayChat[] | {rows?: RelayChat[]}>("/unread");
-    const chats = Array.isArray(unread) ? unread : (unread.rows ?? []);
+    const chats = await this.#chatList();
     for (const chat of chats) {
       const chatId = String(chat.username ?? chat.chatId ?? "");
+      if (!chatId) continue;
       const count = Math.max(0, Number(chat.unread_count ?? chat.unreadCount ?? 0));
-      if (!chatId || !count) continue;
+      // Unread decides how much to pull, not whether to pull: a read chat
+      // still gets a page so it has a room, a name, and a last line.
       const history = await this.#relay<RelayMessage[] | {rows?: RelayMessage[]}>(
-        `/chat/${encodeURIComponent(chatId)}/history?limit=${Math.min(50, count)}`,
+        `/chat/${encodeURIComponent(chatId)}/history?limit=${Math.min(50, Math.max(count, BACKFILL_MIN))}`,
       ).catch((): RelayMessage[] => []);
       const messages = (Array.isArray(history) ? history : (history.rows ?? [])).sort(
         (a, b) => Number(a.timestamp) - Number(b.timestamp),
       );
+      const face = avatarUrlOf(chat);
       for (const item of messages)
-        await this.#ingest({...item, display_name: chat.display_name}).catch((error: unknown) =>
+        await this.#ingest({
+          ...item,
+          display_name: chat.display_name,
+          // The chat list knows the conversation's picture even when a single
+          // message does not carry one.
+          ...(face && !avatarUrlOf(item) ? {avatar: face} : {}),
+        }).catch((error: unknown) =>
           this.#log(`[wechat] import failed: ${message(error)}`),
         );
     }
@@ -434,15 +613,23 @@ export class WeChatBridge {
     }
   }
 
-  async #ingest(item: RelayMessage): Promise<void> {
+  async #ingest(raw: RelayMessage): Promise<void> {
+    const item = normalise(raw);
     const chatId = String(item.chatId ?? "");
     if (!chatId) return;
     const remoteId = stableId(item);
     if (this.#state.seenRemote[remoteId]) return;
 
+    // Whether the account sent this, from anywhere — this app, the phone, or
+    // WeChat on the desk. The relay only marks its own sends and system
+    // notices, so a message typed in WeChat itself came through as the
+    // contact's: the conversation showed one side of itself twice and none of
+    // the user's own words.
+    const mine = Boolean(item.fromSelf) || (await this.#sentByAccount(chatId, item));
+
     // Our own send, coming back around. Matched on content rather than id
     // because the relay assigns its own once WeChat accepts it.
-    if (item.fromSelf) {
+    if (mine) {
       const body = bodyOf(item);
       const index = this.#state.outboundEchoes.findIndex(
         (echo) =>
@@ -458,13 +645,24 @@ export class WeChatBridge {
 
     const roomId = await this.#portal(chatId, item);
     let sender = this.#owner;
-    if (!item.fromSelf) {
+    if (!mine) {
       sender = this.#puppet(item.senderId || item.senderName || chatId);
-      await this.#ensureVirtualUser(sender, item.senderName || "WeChat contact");
+      await this.#ensureVirtualUser(sender, item.senderName || UNKNOWN_SENDER);
+      const face = avatarUrlOf(item);
+      if (face) await this.#setPuppetAvatar(sender, face);
+      // Otherwise the picture WeChat itself holds for them, which is the only
+      // place today's relay leaves one.
+      else await this.#applyLocalAvatar({user: sender}, item.senderId || chatId);
       await this.#join(roomId, sender);
     }
+    // Stamped with when WeChat says it was sent, not when we imported it.
+    // Without this an import lands a week of history all at the current
+    // moment: every conversation shows the same time and the list cannot be
+    // ordered by recency — which is not how the same list looks for a mautrix
+    // bridge, and those two lists are meant to be the same list.
+    const sentAt = originalTimestamp(item);
     await this.#matrix(
-      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(`wechat-${randomUUID()}`)}`,
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(`wechat-${randomUUID()}`)}${sentAt ? `?ts=${sentAt}` : ""}`,
       {
         method: "PUT",
         as: sender,
@@ -487,6 +685,30 @@ export class WeChatBridge {
    * image; everything else is text, because that is all the relay can give.
    */
   async #content(chatId: string, item: RelayMessage): Promise<Record<string, unknown>> {
+    // A sticker's body is the `<emoji>` document WeChat sends, and that
+    // document names where the picture is: an ordinary CDN url that needs no
+    // credentials. Carrying it across turns "[Sticker]" into the sticker.
+    if (item.messageKind === "emoticon") {
+      const media = await this.#sticker(item).catch((error: unknown): null => {
+        this.#log(`[wechat] sticker not retrievable: ${message(error)}`);
+        return null;
+      });
+      if (media)
+        return {
+          msgtype: "m.image",
+          body: "Sticker",
+          url: media.uri,
+          info: {
+            mimetype: media.mimeType,
+            size: media.size,
+            ...(media.width ? {w: media.width} : {}),
+            ...(media.height ? {h: media.height} : {}),
+          },
+          // Marks what it actually is, for anything that cares to tell a
+          // sticker from a photo. It renders as a picture either way.
+          "co.flareai.sticker": true,
+        };
+    }
     if (item.messageKind === "image" && item.messageId) {
       const media = await this.#image(chatId, String(item.messageId)).catch(
         (error: unknown): null => {
@@ -515,6 +737,129 @@ export class WeChatBridge {
   }
 
   /**
+   * Whether the account itself sent a message, decided from WeChat's own
+   * store rather than from the relay.
+   *
+   * WeChat numbers the participants of each conversation and stamps every
+   * message with that number; the relay does not pass it on. The CLI does, and
+   * the number standing for the account is the one on every message in the
+   * file-transfer chat — a chat that by definition only ever holds messages
+   * the account sent to itself. That is the same calibration the CLI itself
+   * uses when asked which messages are one's own.
+   *
+   * Answers are per chat and short-lived: a lookup costs a subprocess, and a
+   * conversation being read arrives faster than one is worth spending per
+   * message.
+   */
+  async #sentByAccount(chatId: string, item: RelayMessage): Promise<boolean> {
+    const at = Number(item.timestamp);
+    if (!Number.isFinite(at) || at <= 0) return false;
+    const self = await this.#selfSenderId();
+    if (!self) return false;
+    const known = this.#selfSent.get(chatId);
+    const fresh =
+      known && Date.now() - known.at < SELF_SENT_TTL_MS
+        ? known.timestamps
+        : await this.#loadSelfSent(chatId, self);
+    return fresh.has(at);
+  }
+
+  /** The participant number WeChat gives this account. Calibrated once. */
+  async #selfSenderId(): Promise<string | null> {
+    if (this.#selfId !== undefined) return this.#selfId;
+    const rows = await this.#cliHistory("filehelper", 1);
+    // Every message in the file-transfer chat is one the account sent itself,
+    // so whichever number they carry is this account's.
+    this.#selfId = rows[0]?.real_sender_id != null ? String(rows[0].real_sender_id) : null;
+    if (!this.#selfId) this.#log("[wechat] could not tell which messages are the account's own");
+    return this.#selfId;
+  }
+
+  async #loadSelfSent(chatId: string, self: string): Promise<Set<number>> {
+    const rows = await this.#cliHistory(chatId, SELF_SENT_WINDOW);
+    const timestamps = new Set(
+      rows
+        .filter((row) => String(row.real_sender_id ?? "") === self)
+        .map((row) => Number(row.create_time))
+        .filter((value) => Number.isFinite(value) && value > 0),
+    );
+    this.#selfSent.set(chatId, {at: Date.now(), timestamps});
+    return timestamps;
+  }
+
+  /** A slice of a conversation as WeChat's own store holds it. */
+  async #cliHistory(
+    chatId: string,
+    limit: number,
+  ): Promise<Array<{create_time?: number; real_sender_id?: string | number}>> {
+    for (const cli of cliPaths()) {
+      const result = (await run(
+        cli,
+        ["history", chatId, "--json", "-n", String(limit), "--fields", "create_time,real_sender_id"],
+        {timeout: SELF_SENT_TIMEOUT_MS},
+      ).catch((): null => null)) as {stdout: string} | null;
+      if (!result) continue;
+      try {
+        const parsed = JSON.parse(result.stdout) as
+          | Array<{create_time?: number; real_sender_id?: string | number}>
+          | {rows?: Array<{create_time?: number; real_sender_id?: string | number}>};
+        return Array.isArray(parsed) ? parsed : (parsed.rows ?? []);
+      } catch {
+        // The tool prints progress on stderr and json on stdout; anything else
+        // is a build that does not answer this, and guessing is worse than
+        // leaving the relay's own answer alone.
+      }
+    }
+    return [];
+  }
+
+  /**
+   * The picture behind a sticker message. The `<emoji>` document carries a
+   * plain `cdnurl`; the encrypted variant beside it needs a key exchange this
+   * has no part in, so only the plain one is used and a sticker without one
+   * falls back to the text placeholder.
+   */
+  async #sticker(
+    item: RelayMessage,
+  ): Promise<{
+    uri: string;
+    mimeType: string;
+    size: number;
+    width: number | null;
+    height: number | null;
+  } | null> {
+    const body = item.body ?? "";
+    const url = unescapeXml(/cdnurl\s*=\s*"([^"]+)"/i.exec(body)?.[1] ?? "");
+    if (!/^https?:\/\//i.test(url)) return null;
+    const response = await this.#fetch(url, {signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS)});
+    if (!response.ok) throw new Error(`sticker returned ${response.status}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_STICKER_BYTES) return null;
+    // The CDN answers `application/octet-stream` whatever it is holding, so
+    // the bytes themselves have to say.
+    const mimeType = imageTypeOf(bytes);
+    if (!mimeType) return null;
+    const registration = await this.#registration_();
+    const upload = await this.#fetch(
+      new URL("/_matrix/media/v3/upload?filename=sticker", this.#options.homeserver.baseUrl),
+      {
+        method: "POST",
+        headers: {Authorization: `Bearer ${registration.asToken}`, "Content-Type": mimeType},
+        body: bytes,
+      },
+    );
+    if (!upload.ok) throw new Error(`upload returned ${upload.status}`);
+    const {content_uri: uri} = (await upload.json()) as {content_uri: string};
+    return {
+      uri,
+      mimeType,
+      size: bytes.byteLength,
+      width: numberAttribute(body, "width"),
+      height: numberAttribute(body, "height"),
+    };
+  }
+
+  /**
    * Pulls an image out of WeChat and into the homeserver's media store. The
    * CLI writes it to a file, which is then uploaded and deleted — the copy
    * that matters is the one Matrix now holds.
@@ -525,7 +870,7 @@ export class WeChatBridge {
   ): Promise<{uri: string; name: string; mimeType: string; size: number} | null> {
     const target = path.join(tmpdir(), `flareai-wechat-${randomBytes(8).toString("hex")}.bin`);
     let extracted: {mime?: string; absolutePath?: string; error?: string} | null = null;
-    for (const cli of CLI_PATHS) {
+    for (const cli of cliPaths()) {
       const result = (await run(
         cli,
         ["image", "get", messageId, "--chat", chatId, "--out", target, "--json"],
@@ -568,6 +913,139 @@ export class WeChatBridge {
     return {uri, name: `wechat-${messageId}.jpg`, mimeType, size: bytes.length};
   }
 
+  /**
+   * Fetches a contact picture and puts it in the media repository, returning
+   * its `mxc://` id. Cached by url: the same picture is on every message a
+   * contact sends, and re-uploading it per message would be absurd.
+   */
+  async #avatarMedia(url: string): Promise<string | null> {
+    const cached = this.#avatars.get(url);
+    if (cached !== undefined) return cached;
+    try {
+      const response = await this.#fetch(url, {signal: AbortSignal.timeout(10_000)});
+      if (!response.ok) throw new Error(`avatar returned ${response.status}`);
+      const mimeType = response.headers.get("content-type") ?? "image/jpeg";
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength === 0) throw new Error("avatar was empty");
+      const registration = await this.#registration_();
+      const upload = await this.#fetch(
+        new URL("/_matrix/media/v3/upload?filename=avatar", this.#options.homeserver.baseUrl),
+        {
+          method: "POST",
+          headers: {Authorization: `Bearer ${registration.asToken}`, "Content-Type": mimeType},
+          body: bytes,
+        },
+      );
+      if (!upload.ok) throw new Error(`upload returned ${upload.status}`);
+      const {content_uri: uri} = (await upload.json()) as {content_uri: string};
+      this.#avatars.set(url, uri);
+      return uri;
+    } catch (error) {
+      this.#log(`[wechat] avatar not retrievable: ${message(error)}`);
+      // Remembered as absent so a picture that cannot be fetched is not
+      // fetched again on every message from that contact.
+      this.#avatars.set(url, null);
+      return null;
+    }
+  }
+
+  /**
+   * The picture WeChat holds for a contact or group, uploaded to the media
+   * repository and remembered so it is only ever sent once.
+   */
+  async #localAvatar(username: string): Promise<string | null> {
+    if (!username) return null;
+    const known = this.#state.avatarUris?.[username];
+    if (known) return known;
+    if (!this.#headImages) this.#headImages = loadHeadImages({log: (line) => this.#log(line)});
+    const bytes = (await this.#headImages).get(username);
+    if (!bytes) return null;
+    const uri = await this.#uploadAvatar(bytes, "image/jpeg");
+    if (!uri) return null;
+    this.#state.avatarUris = {...(this.#state.avatarUris ?? {}), [username]: uri};
+    this.#save();
+    return uri;
+  }
+
+  /**
+   * Puts WeChat's picture for `username` on a room or a puppet, at most once
+   * each. Rooms opened before this existed are covered too: applying is keyed
+   * on the target rather than on the moment the portal was made.
+   */
+  async #applyLocalAvatar(target: {room?: string; user?: string}, username: string): Promise<void> {
+    const key = target.room ? `room:${target.room}` : `user:${target.user}`;
+    if (this.#state.avatarsApplied?.[key]) return;
+    const uri = await this.#localAvatar(username);
+    if (!uri) return;
+    const request = target.room
+      ? this.#matrix(
+          `/_matrix/client/v3/rooms/${encodeURIComponent(target.room)}/state/m.room.avatar/`,
+          {method: "PUT", as: this.botId, body: {url: uri}},
+        )
+      : this.#matrix(
+          `/_matrix/client/v3/profile/${encodeURIComponent(target.user ?? "")}/avatar_url`,
+          {method: "PUT", as: target.user, body: {avatar_url: uri}},
+        );
+    const done = await request.then(() => true).catch(() => false);
+    if (!done) return;
+    this.#state.avatarsApplied = {...(this.#state.avatarsApplied ?? {}), [key]: true};
+    this.#save();
+  }
+
+  /**
+   * Gives the conversations already open the pictures they never had. Without
+   * this only rooms created from here on would get one, which for an account
+   * that has been bridged for a while is none of them.
+   */
+  async #syncRoomAvatars(): Promise<void> {
+    for (const [chatId, room] of Object.entries(this.#state.rooms))
+      await this.#applyLocalAvatar({room: room.roomId}, chatId).catch((error: unknown) =>
+        this.#log(`[wechat] avatar for ${room.roomId} failed: ${message(error)}`),
+      );
+  }
+
+  /** Puts bytes in the media repository and returns their `mxc://` id. */
+  async #uploadAvatar(bytes: Uint8Array, mimeType: string): Promise<string | null> {
+    try {
+      const registration = await this.#registration_();
+      const upload = await this.#fetch(
+        new URL("/_matrix/media/v3/upload?filename=avatar", this.#options.homeserver.baseUrl),
+        {
+          method: "POST",
+          headers: {Authorization: `Bearer ${registration.asToken}`, "Content-Type": mimeType},
+          body: new Uint8Array(bytes),
+        },
+      );
+      if (!upload.ok) throw new Error(`upload returned ${upload.status}`);
+      const {content_uri: uri} = (await upload.json()) as {content_uri: string};
+      return uri;
+    } catch (error) {
+      this.#log(`[wechat] avatar upload failed: ${message(error)}`);
+      return null;
+    }
+  }
+
+  /** Puts a contact's picture on their puppet, once. */
+  async #setPuppetAvatar(userId: string, url: string): Promise<void> {
+    const uri = await this.#avatarMedia(url);
+    if (!uri) return;
+    await this.#matrix(`/_matrix/client/v3/profile/${encodeURIComponent(userId)}/avatar_url`, {
+      method: "PUT",
+      as: userId,
+      body: {avatar_url: uri},
+    }).catch((): undefined => undefined);
+  }
+
+  /** Puts a conversation's picture on its portal, so the chat list shows it. */
+  async #setRoomAvatar(roomId: string, url: string): Promise<void> {
+    const uri = await this.#avatarMedia(url);
+    if (!uri) return;
+    await this.#matrix(
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state/m.room.avatar/`,
+      {method: "PUT", as: this.botId, body: {url: uri}},
+    ).catch((): undefined => undefined);
+  }
+
   /** The portal room for a conversation, created on first sight of it. */
   async #portal(chatId: string, item: RelayMessage): Promise<string> {
     const known = this.#state.rooms[chatId];
@@ -606,6 +1084,9 @@ export class WeChatBridge {
       as: this.#owner,
       body: {},
     }).catch((): undefined => undefined);
+    const face = avatarUrlOf(item);
+    if (face) await this.#setRoomAvatar(created.room_id, face);
+    else await this.#applyLocalAvatar({room: created.room_id}, chatId);
     this.#state.rooms[chatId] = {roomId: created.room_id, isGroup: Boolean(item.isGroup)};
     this.#state.roomToChat[created.room_id] = chatId;
     this.#save();
@@ -624,7 +1105,11 @@ export class WeChatBridge {
 
   async #ensureVirtualUser(userId: string, displayName: string): Promise<void> {
     const profile = `/_matrix/client/v3/profile/${encodeURIComponent(userId)}`;
-    const known = await this.#matrix(profile).catch((): null => null);
+    const known = await this.#matrix<{displayname?: string}>(profile).catch((): null => null);
+    // A message that arrived without a sender name must not rename someone the
+    // bridge has already learned: one anonymous line would turn a whole group
+    // conversation back into "WeChat contact".
+    if (known?.displayname && displayName === UNKNOWN_SENDER) return;
     if (!known)
       await this.#matrix("/_matrix/client/v3/register", {
         method: "POST",
@@ -791,6 +1276,13 @@ interface RelayChat {
   display_name?: string;
   unread_count?: number;
   unreadCount?: number;
+  avatar?: string;
+  avatarUrl?: string;
+  avatar_url?: string;
+  head_img?: string;
+  head_img_url?: string;
+  small_head_url?: string;
+  big_head_url?: string;
 }
 
 interface MatrixEvent {

@@ -78,9 +78,9 @@ function highlightCode(pre: Element): void {
 /**
  * Web links read as running text rather than raw urls: the site's own icon,
  * then a short label, underlined like any other link instead of boxed into a
- * chip that interrupts the sentence. The icon is the site's own `/favicon.ico`
- * — no third-party favicon service, so rendering a link tells nobody the user
- * was sent it. It sits behind a globe that only gets replaced once the real
+ * chip that interrupts the sentence. The icon is the site's own — fetched
+ * from the site, never through a third-party favicon service, so rendering a
+ * link tells nobody the user was sent it. It sits behind a globe that only gets replaced once the real
  * icon loads, which is also the fallback for a site that has none.
  *
  * The image is left without a `src`: the renderer's CSP allows no remote
@@ -108,7 +108,7 @@ function decorateLink(document: Document, anchor: HTMLAnchorElement): void {
   icon.innerHTML = GLOBE_SVG
   const favicon = document.createElement('img')
   favicon.className = 'link-favicon'
-  favicon.dataset.linkFavicon = `${url.origin}/favicon.ico`
+  favicon.dataset.linkFavicon = url.origin
   favicon.alt = ''
   icon.append(favicon)
 

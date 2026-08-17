@@ -6,6 +6,7 @@
     | 'searching'
     | 'running'
     | 'task'
+    | 'memory'
     | 'skill'
     | 'tool'
     | 'resource'
@@ -87,6 +88,13 @@
     return () => window.clearTimeout(timer);
   });
 
+  /** How far through its current cycle a looping animation is, 0–1. */
+  function cycleFraction(animation: Animation): number {
+    const duration = Number(animation.effect?.getComputedTiming().duration) || 0;
+    if (!duration) return 0;
+    return ((Number(animation.currentTime) || 0) % duration) / duration;
+  }
+
   /**
    * The glimmer sweeps at a fixed speed, so a long label takes longer to cross
    * than a short one. CSS cannot read the row's ink width, so the row reports it
@@ -94,11 +102,35 @@
    * duration from it.
    */
   function glint(node: HTMLElement, _label: string) {
+    /**
+     * The width feeds the cycle length, so every remeasure — the first one after
+     * mount, and each label change after that — hands the running sweep a new
+     * duration. The browser keeps the animation's start time across that change,
+     * so the same elapsed time lands on a different fraction of the new cycle
+     * and the wave snaps backwards mid-pass. Carrying the old fraction over onto
+     * the new duration keeps the pass continuous through the change.
+     */
     const measure = () => {
       const row = node.getBoundingClientRect();
       const label = node.querySelector('.activity-copy > span, .activity-copy .activity-row-line > span');
-      const right = label ? label.getBoundingClientRect().right : row.right;
-      node.style.setProperty('--glint-ink', String(Math.max(40, Math.round(right - row.left))));
+      const box = label ? label.getBoundingClientRect() : row;
+      const ink = String(Math.max(40, Math.round(box.right - row.left)));
+      // Where the label starts within the row, so it can place the wave from the
+      // row's head position rather than from its own left edge.
+      node.style.setProperty('--glint-label', `${Math.round(box.left - row.left)}px`);
+      if (node.style.getPropertyValue('--glint-ink') === ink) return;
+      const running = node.getAnimations({subtree: true}).filter((animation) => animation.effect);
+      const fractions = running.map(cycleFraction);
+      node.style.setProperty('--glint-ink', ink);
+      // Reading a custom property flushes the pending style recalc, so the
+      // durations read below are the new ones rather than the ones being
+      // replaced — without it the carried-over fraction lands on the old cycle
+      // and the sweep still jumps.
+      void getComputedStyle(node).getPropertyValue('--glint-cycle');
+      running.forEach((animation, index) => {
+        const duration = Number(animation.effect?.getComputedTiming().duration) || 0;
+        if (duration) animation.currentTime = fractions[index] * duration;
+      });
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -106,13 +138,14 @@
     return {update: measure, destroy: () => observer.disconnect()};
   }
 
-  const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat'> = {
+  const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat' | 'archive'> = {
     thinking: 'brain',
     compacting: 'compact',
     reading: 'book-open',
     searching: 'search',
     running: 'terminal',
     task: 'task',
+    memory: 'archive',
     skill: 'sparkles',
     tool: 'wrench',
     resource: 'link',

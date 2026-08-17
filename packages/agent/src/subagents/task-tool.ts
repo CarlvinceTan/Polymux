@@ -14,15 +14,38 @@ export type SubagentRunner = (
 export function createTaskTool(run: SubagentRunner): AgentTool {
   return {
     name: "task",
-    description:
-      "Delegate a concrete, bounded subtask to an independent FlareAI subagent and return its result. Multiple task calls may run concurrently.",
+    description: [
+      "Delegate a bounded piece of work to an independent FlareAI subagent and return its result.",
+      "",
+      "## When to use",
+      "Use this whenever the user asks for work to be done rather than explained: research, diagnosis, drafting, building, multi-step execution. Call it instead of doing the work yourself. Send one call per independent piece of work in the same turn and they run in parallel.",
+      "",
+      "Do the work yourself only for a short factual answer, a clarifying question, or safety triage.",
+      "",
+      "- The subagent's result is not shown to the user — relay what matters.",
+      "- Subagents cannot delegate further; split the work yourself.",
+      "- Keep dependent, irreversible, paid, or outward-facing steps sequential, and get approval before them.",
+    ].join("\n"),
     executionMode: "parallel",
     parameters: {
       type: "object",
       properties: {
-        description: { type: "string" },
-        prompt: { type: "string" },
-        context: { type: "string", enum: ["none", "recent"] },
+        description: {
+          type: "string",
+          description:
+            "Short label for the subtask, shown to the user in the activity trail.",
+        },
+        prompt: {
+          type: "string",
+          description:
+            "The complete standalone instruction. The subagent does not see the conversation, so include everything it needs.",
+        },
+        context: {
+          type: "string",
+          enum: ["none", "recent"],
+          description:
+            'Defaults to "none". Use "recent" only when the subtask genuinely depends on what was just discussed.',
+        },
       },
       required: ["description", "prompt"],
       additionalProperties: false,

@@ -238,6 +238,45 @@ test("a bridge's own credentials are written to its config and read back", async
   });
 });
 
+test("a bridge is configured to bring history across, and repaired if it is not", async () => {
+  const {host, root} = await hostWith(["mautrix-signal"], {
+    spawn: (() => fakeChild()) as unknown as typeof spawnFn,
+  });
+  const configPath = path.join(root, "bridges", "signal", "config.yaml");
+  await seedRegistration(root, "signal");
+
+  await host.ensure("signal");
+  // Without this a bridge creates its rooms and syncs their members but brings
+  // across nothing that was said before it was linked, so every conversation
+  // opens empty. The binaries default it off.
+  assert.match(await readFile(configPath, "utf8"), /^backfill:\n\s+enabled: true/m);
+
+  // The binaries write their own defaults back when they upgrade a config in
+  // place, which turns it off again; a config already in that state is
+  // repaired rather than left as the one thing that cannot be fixed by using
+  // the app.
+  const disabled = [
+    "homeserver:",
+    "    address: http://127.0.0.1:1",
+    "backfill:",
+    "    # Whether to do backfilling at all.",
+    "    enabled: false",
+    "    max_initial_messages: 50",
+    "encryption:",
+    "    enabled: false",
+    "",
+  ].join("\n");
+  await writeFile(configPath, disabled, "utf8");
+  // Stopped and started again, which is what a relaunch is: the repair belongs
+  // to starting a bridge, not to asking for one that is already up.
+  await host.close();
+  await host.ensure("signal");
+
+  const repaired = await readFile(configPath, "utf8");
+  assert.match(repaired, /^backfill:\n\s+#.*\n\s+enabled: true/m);
+  assert.match(repaired, /^encryption:\n\s+enabled: false/m, "and only that section is touched");
+});
+
 test("configuring a shared binary keeps its network mode", async () => {
   const {host} = await hostWith(["mautrix-meta"]);
   await host.configureNetwork("instagram", {some_key: "value"});

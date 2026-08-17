@@ -27,10 +27,11 @@ import type {
   ProviderDto,
   ReferenceDto,
   RunEventDto,
+  ScheduleDto,
   SkillDto,
   StartRunRequest,
 } from '@flareai/protocol';
-import {LOCAL_RUNTIMES} from '@flareai/protocol';
+import {LOCAL_RUNTIMES, parseDriveSourceId} from '@flareai/protocol';
 
 let browserApi: FlareAIApi | undefined;
 
@@ -206,6 +207,12 @@ function createBrowserDemoApi(): FlareAIApi {
     {id: 'c2', chatId: '!wa-jules:local', sender: 'You', body: 'Yes — 2pm works.', sentAt: new Date(now - 3_500_000).toISOString(), mine: true},
     {id: 'c3', chatId: '!wa-family:local', sender: 'Mum', body: 'Dinner Sunday?', sentAt: new Date(now - 86_400_000).toISOString(), mine: false},
     {id: 'c4', chatId: '!tg-devs:local', sender: 'Priya', body: 'Shipped the build, logs look clean.', sentAt: new Date(now - 7_200_000).toISOString(), mine: false},
+    // A second message from the same person, close behind: a group names the
+    // first of someone's run and lets the rest follow it.
+    {id: 'c6', chatId: '!wa-family:local', sender: 'Mum', body: 'Roast if you can make it.', sentAt: new Date(now - 86_340_000).toISOString(), mine: false},
+    {id: 'c7', chatId: '!wa-family:local', sender: 'Dad', body: 'I can bring dessert.', sentAt: new Date(now - 86_280_000).toISOString(), mine: false},
+    // A sticker, which is carried as an image but drawn at a sticker's size.
+    {id: 'c5', chatId: '!wa-jules:local', sender: 'Jules Tan', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
   ];
   const demoMailFolders: MailFolderDto[] = [
     {name: 'INBOX', label: 'INBOX', role: 'inbox'},
@@ -310,6 +317,8 @@ function createBrowserDemoApi(): FlareAIApi {
       openSettings: async () => {},
     },
     dictation: {
+      // Nothing to fetch: the demo has no model behind it.
+      prepare: async () => {},
       // whisper.cpp lives in the desktop app, so the demo stands in for it —
       // revealing the canned sentence a few words at a time, the way real
       // passes over a growing recording do. Without this the composer's voice
@@ -404,6 +413,56 @@ function createBrowserDemoApi(): FlareAIApi {
       },
       get: async (conversationId) => goals.get(conversationId) ?? null,
     },
+    /**
+     * The demo keeps schedules in memory and never fires one: the clock and
+     * the agent both live in the main process. It seeds a row per state so the
+     * view — greyed-out finished rows, the unread dot, the detail panel — can
+     * be worked on in a browser.
+     */
+    schedules: (() => {
+      const hour = 3_600_000;
+      let items: ScheduleDto[] = demoSchedules(now, hour);
+      const listeners = new Set<(items: ScheduleDto[]) => void>();
+      const publish = () => { for (const listener of listeners) listener(items); };
+      const patch = (id: string, change: (item: ScheduleDto) => ScheduleDto) => {
+        items = items.map((item) => item.id === id ? change(item) : item);
+        publish();
+        const found = items.find((item) => item.id === id);
+        if (!found) throw new Error(`Schedule not found: ${id}`);
+        return found;
+      };
+      return {
+        list: async () => items,
+        create: async (input) => {
+          const created: ScheduleDto = {
+            id: crypto.randomUUID(),
+            title: input.title,
+            prompt: input.prompt,
+            frequency: input.frequency,
+            status: 'active',
+            createdAt: Date.now(),
+            nextRunAt: Date.now() + hour,
+            history: [],
+            unread: false,
+          };
+          items = [...items, created];
+          publish();
+          return created;
+        },
+        update: async (id, change) => patch(id, (item) => ({
+          ...item,
+          ...change,
+          status: change.status ?? item.status,
+        })),
+        remove: async (id) => { items = items.filter((item) => item.id !== id); publish(); },
+        runNow: async (id) => patch(id, (item) => ({...item, status: 'running', lastRunAt: Date.now()})),
+        markRead: async (id) => patch(id, (item) => ({...item, unread: false})),
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      };
+    })(),
     files: {paths: async (files) => files.map((file) => file.name)},
     resources: {
       artifacts: async (conversationId) => demoArtifacts(conversationId),
@@ -563,11 +622,39 @@ function createBrowserDemoApi(): FlareAIApi {
       chatMarkRead: async (chatId) => {
         demoChats = demoChats.map((chat) => (chat.id === chatId ? {...chat, unread: 0} : chat));
       },
-      chatMessages: async (chatId) => demoChatMessages.filter((item) => item.chatId === chatId),
-      chatSend: async (chatId, text) => {
-        const sent: ChatMessageDto = {id: crypto.randomUUID(), chatId, sender: 'You', body: text, sentAt: new Date().toISOString(), mine: true};
+      chatMessages: async (chatId) => ({
+        // Newest first, the way the real hub answers — the thread is drawn in
+        // that order, and a demo that hands them back the other way round
+        // exercises a view nobody ever sees.
+        messages: demoChatMessages
+          .filter((item) => item.chatId === chatId)
+          .sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt)),
+        // The demo holds one page; there is never an older one to walk to.
+        nextBefore: null,
+      }),
+      chatSend: async (chatId, text, replyTo) => {
+        const sent: ChatMessageDto = {id: crypto.randomUUID(), chatId, sender: 'You', body: text, sentAt: new Date().toISOString(), mine: true, replyTo: replyTo ?? null, reactions: []};
         demoChatMessages = [sent, ...demoChatMessages];
         return sent;
+      },
+      // The demo has no homeserver to upload to and no microphone to open, so
+      // the file and voice paths are accepted and go nowhere.
+      chatSendFiles: async () => {},
+      chatPickFiles: async () => [],
+      chatSendAudio: async () => {},
+      chatReact: async (_chatId, messageId, key) => {
+        demoChatMessages = demoChatMessages.map((item) =>
+          item.id === messageId
+            ? {...item, reactions: [...(item.reactions ?? []), {key, count: 1, mineEventId: `demo-${key}`}]}
+            : item,
+        );
+        return `demo-${key}`;
+      },
+      chatUnreact: async (_chatId, reactionId) => {
+        demoChatMessages = demoChatMessages.map((item) => ({
+          ...item,
+          reactions: (item.reactions ?? []).filter((entry) => entry.mineEventId !== reactionId),
+        }));
       },
       mailFolders: async () => demoMailFolders,
       mailEnvelopes: async (request) => {
@@ -632,6 +719,8 @@ function createBrowserDemoApi(): FlareAIApi {
         return {...account, status: 'ok', error: null};
       },
       subscribe: () => () => {},
+      // The demo has no homeserver delivering anything, so nothing ever fires.
+      subscribeActivity: () => () => {},
     },
     mcp: {
       list: async () => demoMcpServers,
@@ -684,75 +773,81 @@ function createBrowserDemoApi(): FlareAIApi {
         }
         return demoDriveStatus;
       },
-      list: async (provider, path) => demoDriveFolder(provider, path ?? ''),
-      createFolder: async (provider, parentPath, name) => {
-        const folder = demoDriveFolder(provider, parentPath);
+      conversationFolder: async (conversationId) =>
+        `/demo/Documents/FlareAI/${conversationId.slice(0, 8)}`,
+      list: async (source, path) => demoDriveFolder(source, path ?? ''),
+      createFolder: async (source, parentPath, name) => {
+        const folder = demoDriveFolder(source, parentPath);
         // The same collision the real adapters raise, so the drive's error
         // path is reachable in the demo rather than only in the packaged app.
         if (folder.some((entry) => entry.name === name))
           throw new Error(`A folder named ${name} already exists here.`);
         const entry: DriveEntryDto = {
           id: `${parentPath}/${name}`, name, kind: 'folder', size: null,
-          modifiedAt: new Date().toISOString(), provider, path: `${parentPath}/${name}`, mimeType: null,
+          modifiedAt: new Date().toISOString(), provider: parseDriveSourceId(source).provider,
+          path: `${parentPath}/${name}`, mimeType: null,
         };
         folder.push(entry);
         return entry;
       },
       // A browser tab has no file picker to open, so the demo stands in with a
       // file of its own rather than doing nothing and looking broken.
-      upload: async (provider, parentPath) => {
+      upload: async (source, parentPath) => {
         const entry: DriveEntryDto = {
           id: `${parentPath}/upload-${demoDriveUploads += 1}.png`,
           name: `Uploaded ${demoDriveUploads}.png`, kind: 'file', size: 128_400,
-          modifiedAt: new Date().toISOString(), provider,
+          modifiedAt: new Date().toISOString(), provider: parseDriveSourceId(source).provider,
           path: `${parentPath}/upload-${demoDriveUploads}.png`, mimeType: 'image/png',
         };
-        demoDriveFolder(provider, parentPath).push(entry);
+        demoDriveFolder(source, parentPath).push(entry);
         return [entry];
       },
-      download: async (_provider, path) => `/demo/downloads/${path}`,
-      remove: async (provider, paths) => {
+      download: async (_source, path) => `/demo/downloads/${path}`,
+      remove: async (source, paths) => {
         for (const [key, entries] of demoDriveFolders) {
-          if (!key.startsWith(`${provider}:`)) continue;
+          if (!key.startsWith(`${source}:`)) continue;
           demoDriveFolders.set(key, entries.filter((entry) => !paths.includes(entry.path)));
         }
       },
-      rename: async (provider, path, name) => {
-        const entry = demoDriveFind(provider, path);
+      rename: async (source, path, name) => {
+        const entry = demoDriveFind(source, path);
         if (entry) entry.name = name;
         return entry ?? {
           id: path, name, kind: 'file', size: null,
-          modifiedAt: new Date().toISOString(), provider, path, mimeType: null,
+          modifiedAt: new Date().toISOString(),
+          provider: parseDriveSourceId(source).provider, path, mimeType: null,
         };
       },
-      move: async (provider, paths, destinationFolder) => paths.map((path) => {
-        const entry = demoDriveFind(provider, path);
+      move: async (source, paths, destinationFolder) => paths.map((path) => {
+        const entry = demoDriveFind(source, path);
         const moved: DriveEntryDto = {
           ...(entry ?? {
             id: path, name: path.slice(path.lastIndexOf('/') + 1), kind: 'file' as const,
-            size: null, modifiedAt: new Date().toISOString(), provider, path, mimeType: null,
+            size: null, modifiedAt: new Date().toISOString(),
+            provider: parseDriveSourceId(source).provider, path, mimeType: null,
           }),
           path: `${destinationFolder}/${path.slice(path.lastIndexOf('/') + 1)}`,
         };
         for (const [key, entries] of demoDriveFolders)
-          if (key.startsWith(`${provider}:`))
+          if (key.startsWith(`${source}:`))
             demoDriveFolders.set(key, entries.filter((item) => item.path !== path));
-        demoDriveFolder(provider, destinationFolder).push(moved);
+        demoDriveFolder(source, destinationFolder).push(moved);
         return moved;
       }),
-      copy: async (provider, paths) => paths.map((path) => {
-        const entry = demoDriveFind(provider, path);
+      copy: async (source, paths) => paths.map((path) => {
+        const entry = demoDriveFind(source, path);
         const parent = path.slice(0, path.lastIndexOf('/'));
         const copied: DriveEntryDto = {
           ...(entry ?? {
             id: path, name: 'Item', kind: 'file' as const, size: null,
-            modifiedAt: new Date().toISOString(), provider, path, mimeType: null,
+            modifiedAt: new Date().toISOString(),
+            provider: parseDriveSourceId(source).provider, path, mimeType: null,
           }),
           id: `${path}-copy`,
           name: `${entry?.name ?? 'Item'} copy`,
           path: `${path}-copy`,
         };
-        demoDriveFolder(provider, parent).push(copied);
+        demoDriveFolder(source, parent).push(copied);
         return copied;
       }),
       subscribe: () => () => {},
@@ -1058,6 +1153,90 @@ function createBrowserDemoApi(): FlareAIApi {
   return api;
 }
 
+/** One row per state the schedule view draws differently. */
+function demoSchedules(now: number, hour: number): ScheduleDto[] {
+  return [
+    {
+      id: 'demo-brief',
+      title: 'Morning brief',
+      prompt: 'Summarise my inbox and calendar for the day.',
+      frequency: {kind: 'weekly', days: [1, 2, 3, 4, 5], time: '08:00'},
+      status: 'active',
+      createdAt: now - 30 * 24 * hour,
+      nextRunAt: now + 14 * hour,
+      lastRunAt: now - 10 * hour,
+      unread: true,
+      history: [{
+        id: 'demo-brief-run',
+        startedAt: now - 10 * hour,
+        finishedAt: now - 10 * hour + 42_000,
+        outcome: 'succeeded',
+        conversationId: 'welcome',
+        summary: 'Read 24 new messages, flagged 3 needing a reply today, and listed the four meetings on the calendar with their prep notes.',
+      }],
+    },
+    {
+      id: 'demo-inbox',
+      title: 'Triage inbox',
+      prompt: 'Triage new mail and flag anything that needs a reply.',
+      frequency: {kind: 'hourly', interval: 2},
+      status: 'running',
+      createdAt: now - 20 * 24 * hour,
+      nextRunAt: now + 2 * hour,
+      lastRunAt: now - hour,
+      unread: false,
+      history: [{id: 'demo-inbox-run', startedAt: now - 60_000, outcome: 'running'}],
+    },
+    {
+      id: 'demo-report',
+      title: 'Weekly spend report',
+      prompt: 'Total this week’s spend and compare it to last week.',
+      frequency: {kind: 'weekly', days: [5], time: '17:00'},
+      status: 'paused',
+      createdAt: now - 60 * 24 * hour,
+      lastRunAt: now - 96 * hour,
+      unread: false,
+      history: [],
+    },
+    {
+      id: 'demo-backup',
+      title: 'Archive finished work',
+      prompt: 'Move finished documents into the archive folder.',
+      frequency: {kind: 'weekly', days: [0], time: '02:00'},
+      status: 'failed',
+      createdAt: now - 90 * 24 * hour,
+      nextRunAt: now + 70 * hour,
+      lastRunAt: now - 98 * hour,
+      unread: true,
+      history: [{
+        id: 'demo-backup-run',
+        startedAt: now - 98 * hour,
+        finishedAt: now - 98 * hour + 9_000,
+        outcome: 'failed',
+        error: 'The archive folder is not connected in Drive.',
+      }],
+    },
+    {
+      id: 'demo-invite',
+      title: 'Send the launch invite',
+      prompt: 'Email the launch invitation to the press list.',
+      frequency: {kind: 'once', at: now - 26 * hour},
+      status: 'done',
+      createdAt: now - 5 * 24 * hour,
+      lastRunAt: now - 26 * hour,
+      unread: false,
+      history: [{
+        id: 'demo-invite-run',
+        startedAt: now - 26 * hour,
+        finishedAt: now - 26 * hour + 18_000,
+        outcome: 'succeeded',
+        conversationId: 'research',
+        summary: 'Sent the invitation to all 38 addresses on the press list and saved the delivery report to Drive.',
+      }],
+    },
+  ];
+}
+
 function conversation(id: string, title: string, timestamp: number): ConversationDto {
   const date = new Date(timestamp).toISOString();
   return {id, title, createdAt: date, updatedAt: date, archivedAt: null};
@@ -1086,6 +1265,13 @@ const demoDriveStatus: DriveStatusDto = {
     {id: 'onedrive', name: 'OneDrive', kind: 'oauth', state: 'unconfigured', accounts: [], usage: null, root: null, error: 'This build has no OneDrive client credentials.'},
     {id: 's3', name: 'S3 storage', kind: 's3', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
   ],
+  // Two local places plus one signed-in account, which is enough for the
+  // switcher to show a provider icon next to an account name.
+  sources: [
+    {id: 'local#outputs', provider: 'local', accountId: 'outputs', name: 'This Mac', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/Documents/FlareAI', error: null},
+    {id: 'local#home', provider: 'local', accountId: 'home', name: 'This Mac', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/home', error: null},
+    {id: 'google-drive#default', provider: 'google-drive', accountId: 'default', name: 'Google Drive', accountLabel: 'demo@example.com', state: 'connected', usage: {used: 6_200_000_000, total: 15_000_000_000}, root: 'FlareAI', error: null},
+  ],
 };
 
 function demoDriveConnect(provider: DriveProviderId, connected: boolean): DriveStatusDto {
@@ -1111,27 +1297,28 @@ function demoDriveConnect(provider: DriveProviderId, connected: boolean): DriveS
 const demoDriveFolders = new Map<string, DriveEntryDto[]>();
 let demoDriveUploads = 0;
 
-function demoDriveFolder(provider: DriveProviderId, path: string): DriveEntryDto[] {
-  const key = `${provider}:${path}`;
+function demoDriveFolder(source: string, path: string): DriveEntryDto[] {
+  const key = `${source}:${path}`;
   const known = demoDriveFolders.get(key);
   if (known) return known;
-  const seeded = path ? [] : demoDriveSeed(provider);
+  const seeded = path ? [] : demoDriveSeed(source);
   demoDriveFolders.set(key, seeded);
   return seeded;
 }
 
 /** Finds an entry wherever it currently sits. */
-function demoDriveFind(provider: DriveProviderId, path: string): DriveEntryDto | undefined {
+function demoDriveFind(source: string, path: string): DriveEntryDto | undefined {
   for (const [key, entries] of demoDriveFolders) {
-    if (!key.startsWith(`${provider}:`)) continue;
+    if (!key.startsWith(`${source}:`)) continue;
     const found = entries.find((entry) => entry.path === path);
     if (found) return found;
   }
   return undefined;
 }
 
-function demoDriveSeed(provider: DriveProviderId): DriveEntryDto[] {
+function demoDriveSeed(source: string): DriveEntryDto[] {
   const now = new Date().toISOString();
+  const {provider} = parseDriveSourceId(source);
   return [
     // Slash-separated so the parent of an entry can be read off its path, the
     // way every real provider's addressing allows.

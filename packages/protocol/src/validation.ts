@@ -228,6 +228,54 @@ export function driveProvider(value: unknown): DriveProviderId {
   return value as DriveProviderId;
 }
 
+/**
+ * The two folders the local provider always offers, independent of any account
+ * the user connects.
+ *
+ * These live here rather than beside the drive types because `types.ts` carries
+ * no runtime values: a module of pure types is erased at transpile, and an
+ * exported constant sitting in it is missing by the time the renderer imports
+ * it.
+ */
+export const DRIVE_LOCAL_OUTPUTS = "outputs";
+export const DRIVE_LOCAL_HOME = "home";
+
+/** Builds a source id, and takes one apart again. Kept in one place so the
+ * renderer and the main process cannot disagree about the separator. */
+export function driveSourceId(
+  provider: DriveProviderId,
+  accountId: string,
+): string {
+  return `${provider}#${accountId}`;
+}
+
+export function parseDriveSourceId(
+  id: string,
+): {provider: DriveProviderId; accountId: string} {
+  const hash = id.indexOf("#");
+  // A bare provider id is what older preferences and the save order hold, and
+  // it means the provider's first account.
+  if (hash < 0) return {provider: id as DriveProviderId, accountId: ""};
+  return {
+    provider: id.slice(0, hash) as DriveProviderId,
+    accountId: id.slice(hash + 1),
+  };
+}
+
+/**
+ * Checks a source id — `<provider>#<accountId>`, or a bare provider id meaning
+ * that provider's first account. The account half is only checked for shape:
+ * which accounts exist is the drive's business, and it answers with a clear
+ * error of its own for one it does not hold.
+ */
+export function driveSource(value: unknown): string {
+  if (typeof value !== "string" || value === "")
+    throw new Error(`${String(value)} is not a storage location`);
+  const hash = value.indexOf("#");
+  driveProvider(hash < 0 ? value : value.slice(0, hash));
+  return value;
+}
+
 export function driveProviderLabel(value: DriveProviderId): string {
   return DRIVE_PROVIDERS.find((item) => item.value === value)?.label ?? value;
 }

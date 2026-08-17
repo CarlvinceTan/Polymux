@@ -22,7 +22,13 @@
   /** One storage backend the drive can be pointed at. Only backends that can
    * actually be opened are passed, so there is no state to carry: offering a
    * source is the host saying it is reachable. */
-  export type DriveSource = {id: string; name: string; icon?: MenuOption['icon']};
+  export type DriveSource = {
+    id: string;
+    name: string;
+    icon?: MenuOption['icon'];
+    /** Which backend it is, so the switch can wear that backend's mark. */
+    provider?: DriveProviderId;
+  };
 
   export type DriveSortKey = 'name' | 'size' | 'kind' | 'modified';
   export type DriveFilter = 'all' | 'images' | 'documents' | 'videos';
@@ -231,7 +237,18 @@
   $: items = sortEntries(filterEntries(current.children ?? [], searchQuery, activeFilter), sortKey, sortAscending);
   /** The switch only earns its place once there is something to switch to. */
   $: showSourceMenu = sources.length > 1;
-  $: sourceOptions = sources.map((source) => ({value: source.id, label: source.name, icon: source.icon ?? 'drive'}));
+  $: sourceOptions = sources.map((source) => ({
+    value: source.id,
+    label: source.name,
+    // A source without a glyph of its own wears its backend's mark: the brand
+    // tile for a cloud account, and — since local storage is not a brand — the
+    // same outline drive glyph the workspace tab carries.
+    icon: source.icon ?? (source.provider && source.provider !== 'local' ? undefined : ('drive' as const)),
+    provider: source.icon || !source.provider || source.provider === 'local' ? undefined : source.provider,
+  }));
+  /** The switch stands in for the root crumb where it is shown, so the crumb
+   * only names the source when there is no switch to do it. */
+  $: rootLabel = sources.find((source) => source.id === activeSourceId)?.name ?? title;
   /** A folder still being fetched is not an empty one, and saying so would be
    * wrong for exactly as long as the request takes. */
   $: showEmptyOverlay = items.length === 0 && !loading;
@@ -650,6 +667,14 @@
 <svelte:window onclick={dismiss} onkeydown={dismiss}/>
 
 <div class="fb">
+  {#if loading && items.length === 0}
+    <!-- A folder being fetched shows that it is being fetched: the pane was
+         simply blank until whatever it holds arrived. -->
+    <div class="fb-loading" role="status" aria-label={$t('common.loading')}>
+      <span class="loading-dots"><i></i><i></i><i></i></span>
+    </div>
+  {/if}
+
   {#if showEmptyOverlay}
     <div class="fb-empty" aria-hidden="true">
       <Icon name={searchQuery.trim() ? 'search' : 'folder'} size={56} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
@@ -684,6 +709,7 @@
         icon="drive"
         plain
         onChange={selectSource}
+        onTriggerClick={crumbs.length > 1 ? () => openCrumb(0) : null}
       />
     {/if}
 
@@ -703,7 +729,9 @@
             {#if index === 0}
               <span class="fb-home"><Icon name="home" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></span>
             {/if}
-            <span>{index === 0 ? title : crumb.name}</span>
+            <!-- The root crumb names the storage being browsed, not the tab it
+                 is in: "Drive" is where you are, which the tab already says. -->
+            <span>{index === 0 ? rootLabel : crumb.name}</span>
           </button>
         {/if}
       {/each}

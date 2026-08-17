@@ -1,5 +1,5 @@
 <script lang="ts">
-  import {setContext} from 'svelte';
+  import {onMount, setContext} from 'svelte';
   import type {FlareAIApi} from '@flareai/protocol';
   import ModelStep from './ModelStep.svelte';
   import PermissionsStep from './PermissionsStep.svelte';
@@ -31,6 +31,15 @@
   type Step = (typeof STEPS)[number];
 
   let index = $state(0);
+
+  /**
+   * The speech-to-text model is fetched while setup is still being read, so
+   * voice works on the first press rather than stalling on a download the
+   * moment it is wanted. It runs behind the screens with nothing to show for
+   * itself: it costs a one-off ~148MB, it is finished long before setup is,
+   * and if it fails there is a step here that never mentioned it.
+   */
+  onMount(() => void api.dictation.prepare().catch(() => {}));
 
   /**
    * The camera's height, and the deck's unit of travel.

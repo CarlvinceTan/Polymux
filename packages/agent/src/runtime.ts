@@ -248,6 +248,9 @@ export class FlareAIAgent {
       messages.push({ role: "user", content: text });
       durableSequences.push(null);
     }
+    // One flag drives both the tool and the policy that describes it, so a
+    // subagent is never told to delegate with no `task` tool to delegate with.
+    const delegation = input.includeSubagents !== false;
     const memory = this.memory.promptContext(input.conversationId);
     const chronicle = this.#options.chronicle?.promptContext();
     const environment = this.#options.environment?.promptContext();
@@ -258,6 +261,7 @@ export class FlareAIAgent {
       memorySummary: memory.enabled ? memory.summary : undefined,
       memoryRegistryPath: memory.enabled ? memory.registryPath : undefined,
       historySearch: true,
+      delegation,
       memories: memory.enabled ? memory.conversationMemories : [],
       chronicle: chronicle?.enabled ? chronicle : undefined,
       environment,
@@ -271,7 +275,7 @@ export class FlareAIAgent {
       ...createMemoryTools(this.memory, input.conversationId),
       ...createHistoryTools(this.#options.storage, input.conversationId),
     ];
-    if (input.includeSubagents !== false)
+    if (delegation)
       tools.push(
         createTaskTool((request, signal) =>
           this.#runSubagent(input.conversationId, runId, request, signal),

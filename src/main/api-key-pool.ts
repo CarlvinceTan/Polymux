@@ -2,6 +2,13 @@ import {mkdir, readFile, rename, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {SECURE_STORAGE_UNAVAILABLE, quarantineUnreadable, type SecretCipher} from "./credential-store.js";
 
+/**
+ * Shown when the stored keys exist but this process holds the wrong OS key.
+ * Adding a key would overwrite the file, so the pool refuses and says why.
+ */
+export const API_KEYS_LOCKED =
+  "Your saved API keys cannot be read by this build of FlareAI, so they have been left untouched rather than overwritten. Start FlareAI normally and allow keychain access to use them.";
+
 export interface ApiKeySummary {
   id: string;
   label: string;
@@ -28,6 +35,9 @@ export class EncryptedApiKeyPool {
   readonly #statuses = new Map<string, ApiKeySummary["status"]>();
   #writes: Promise<unknown> = Promise.resolve();
   #loaded?: Promise<PoolFile>;
+  /** Set when the stored file exists but this process cannot decrypt it. The
+   * keys are still in there, so nothing may overwrite them. */
+  #locked = false;
 
   constructor(filePath: string, cipher: SecretCipher) {
     this.#filePath = filePath;
@@ -111,6 +121,9 @@ export class EncryptedApiKeyPool {
     const operation = this.#writes.catch((): undefined => undefined).then(async () => {
       if (!this.#cipher.isEncryptionAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE);
       const file = await this.#load();
+      // Writing now would encrypt an empty pool over keys that are still
+      // there and still valid for the app that owns them.
+      if (this.#locked) throw new Error(API_KEYS_LOCKED);
       await change(file);
       await mkdir(path.dirname(this.#filePath), {recursive: true});
       const encrypted = this.#cipher.encryptString(JSON.stringify(file)).toString("base64");
@@ -140,17 +153,32 @@ export class EncryptedApiKeyPool {
     });
     if (!encoded) return {version: 1, providers: {}};
     if (!this.#cipher.isEncryptionAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE);
+    let plaintext: string;
+    try {
+      plaintext = this.#cipher.decryptString(Buffer.from(encoded, "base64"));
+    } catch {
+      // This process cannot read the file, which is not the same as the file
+      // being broken. The usual cause is a different app identity holding a
+      // different OS key — `electron .` during development, a re-signed dev
+      // bundle, a renamed app, or keychain access denied so Chromium fell back
+      // to a throwaway session key. The real app, launched normally, still
+      // decrypts it perfectly. Renaming it here would take the user's keys
+      // away from the app that owns them, so the file is left exactly where it
+      // is and the pool locks instead: reads report empty, writes refuse.
+      this.#locked = true;
+      console.warn(
+        `API keys at ${this.#filePath} could not be decrypted by this process (its OS encryption key does not match). The file has been left untouched — start FlareAI normally, and allow keychain access, to use the keys again.`,
+      );
+      return {version: 1, providers: {}};
+    }
     let file: PoolFile;
     try {
-      file = JSON.parse(this.#cipher.decryptString(Buffer.from(encoded, "base64"))) as PoolFile;
+      // Decryption succeeded, so this really is our file and its contents are
+      // damaged rather than merely unreadable. Nothing can recover it, and
+      // leaving it in place would wedge every pool operation forever.
+      file = JSON.parse(plaintext) as PoolFile;
       if (!file.providers || typeof file.providers !== "object") throw new Error("malformed pool file");
     } catch {
-      // The OS key that encrypted this file no longer matches — a dev bundle
-      // was re-signed under a new identity, keychain access was denied and
-      // Chromium fell back to a throwaway session key, or the login keychain
-      // was reset. The ciphertext is unrecoverable; keeping it wedges every
-      // pool operation (add, list, chat) behind a decrypt error forever.
-      // Move it aside and start with an empty pool so keys can be re-added.
       await quarantineUnreadable(this.#filePath);
       return {version: 1, providers: {}};
     }

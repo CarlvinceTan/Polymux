@@ -2,15 +2,15 @@
   export let name:
     | 'summary' | 'panel' | 'panel-left' | 'plus' | 'close' | 'send' | 'mic' | 'waveform' | 'stop'
     | 'attach' | 'options' | 'verified' | 'globe' | 'file' | 'task' | 'back'
-    | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down'
+    | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down' | 'arrow-up'
     | 'bolt' | 'document-text' | 'paper-airplane' | 'history' | 'archive' | 'drive' | 'new-chat'
     | 'copy' | 'check' | 'edit' | 'thumb-up' | 'thumb-down' | 'search' | 'terminal' | 'wrench' | 'book-open'
     | 'brain' | 'compact' | 'compress' | 'sparkles' | 'bot'
-    | 'connections' | 'link' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
+    | 'connections' | 'mcp' | 'link' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
     | 'document' | 'presentation' | 'folder' | 'pdf' | 'spreadsheet' | 'image' | 'audio' | 'video' | 'code'
     | 'calendar' | 'clock' | 'sun' | 'sun-moon' | 'goal' | 'users' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
     | 'folder-plus' | 'upload' | 'home' | 'folder-move' | 'info'
-    | 'mail' | 'storefront' | 'settings';
+    | 'mail' | 'inbox' | 'spam' | 'storefront' | 'settings';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -74,7 +74,8 @@
   {:else if name === 'file'}
     <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M15 2v5h5"/>
   {:else if name === 'task'}
-    <circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 6h4a4 4 0 0 1 4 4v0M16 14v0a4 4 0 0 1-4 4H8"/>
+    <!-- Delegation: one source node branching out to two workers. -->
+    <circle cx="5" cy="12" r="2.25"/><circle cx="19" cy="6.5" r="2.25"/><circle cx="19" cy="17.5" r="2.25"/><path d="M7.25 12h5.25M12.5 6.5v11M12.5 6.5h4.25M12.5 17.5h4.25"/>
   {:else if name === 'back'}
     <path d="m15 18-6-6 6-6"/>
   {:else if name === 'forward'}
@@ -99,6 +100,8 @@
     <path d="m8 10 4 4 4-4"/>
   {:else if name === 'arrow-down'}
     <path d="M12 4v16M6 14l6 6 6-6"/>
+  {:else if name === 'arrow-up'}
+    <path d="M12 20V4M6 10l6-6 6 6"/>
   {:else if name === 'bolt'}
     <path d="M13 2 4.5 13h7L11 22l8.5-12h-7z"/>
   {:else if name === 'document-text'}
@@ -149,11 +152,10 @@
       <path d="M17.8 15.6c-1.3-.3-2.7.2-3.4 1.3"/>
     </g>
   {:else if name === 'compact' || name === 'compress'}
-    <path d="M12 2.5v19"/>
-    <path d="M7 2.5C10.5 7.5 10.5 16.5 7 21.5"/>
-    <path d="M17 2.5C13.5 7.5 13.5 16.5 17 21.5"/>
-    <path d="M1.5 12h5M4 9.2l2.5 2.8L4 14.8"/>
-    <path d="M22.5 12h-5M20 9.2l-2.5 2.8 2.5 2.8"/>
+    <!-- Lines tapering shorter with a spark at the tail: the conversation
+         trimmed down and polished, not merely squeezed. -->
+    <path d="M4 6h16M4 11h11M4 16h6"/>
+    <path d="m17.5 14 .8 1.8 1.8.8-1.8.8-.8 1.8-.8-1.8-1.8-.8 1.8-.8z"/>
   {:else if name === 'sparkles'}
     <path d="m12 3-1.9 4.9a2.5 2.5 0 0 1-1.2 1.2L4 11l4.9 1.9a2.5 2.5 0 0 1 1.2 1.2L12 19l1.9-4.9a2.5 2.5 0 0 1 1.2-1.2L20 11l-4.9-1.9a2.5 2.5 0 0 1-1.2-1.2Z"/>
     <path d="M19 17v4M21 19h-4M5 4v3M6.5 5.5h-3"/>
@@ -161,6 +163,14 @@
     <path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>
   {:else if name === 'connections'}
     <path d="m10 13 4-4M7.5 15.5l-1 1a3.5 3.5 0 0 1-5-5l3-3a3.5 3.5 0 0 1 5 0M16.5 8.5l1-1a3.5 3.5 0 0 1 5 5l-3 3a3.5 3.5 0 0 1-5 0"/>
+  {:else if name === 'mcp'}
+    <!-- The Model Context Protocol mark, redrawn on the 24 grid. The stroke is
+         held at the set's width rather than scaled with the artwork, so it
+         sits at the same weight as every other icon beside it. -->
+    <g transform="translate(1.44 1.44) scale(.88)" vector-effect="non-scaling-stroke">
+      <path d="M3.08 12.04 11.43 3.69c1.15-1.15 3.02-1.15 4.18 0 1.15 1.15 1.15 3.02 0 4.18L9.3 14.18"/>
+      <path d="m9.39 14.09 6.22-6.22c1.15-1.15 3.02-1.15 4.18 0l.04.04c1.15 1.15 1.15 3.02 0 4.18l-7.56 7.55c-.38.39-.38 1.01 0 1.39l1.55 1.55"/>
+    </g>
   {:else if name === 'link'}
     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" transform="translate(1.68 1.68) scale(.86)" vector-effect="non-scaling-stroke"/>
   {:else if name === 'grip'}
@@ -231,6 +241,12 @@
     <path d="M3 20h18"/><rect x="5" y="11" width="3.6" height="9" rx="1"/><rect x="10.2" y="6" width="3.6" height="14" rx="1"/><rect x="15.4" y="9" width="3.6" height="11" rx="1"/>
   {:else if name === 'mail'}
     <rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4.5 8.2 6.6 4.6a1.6 1.6 0 0 0 1.8 0l6.6-4.6"/>
+  {:else if name === 'inbox'}
+    <path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+  {:else if name === 'spam'}
+    <!-- The archive tray with a cross through it: junk is filed away and
+         struck out, which reads apart from the bin beside it. -->
+    <rect x="3" y="4" width="18" height="4" rx="1.5"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="m10 12 4 4m0-4-4 4"/>
   {:else if name === 'storefront'}
     <path d="M4 10v10h16V10M3 10l2-6h14l2 6"/><path d="M3 10a3 3 0 0 0 5 2 3 3 0 0 0 4 0 3 3 0 0 0 4 0 3 3 0 0 0 5-2M9 20v-5h6v5"/>
   {:else if name === 'settings'}

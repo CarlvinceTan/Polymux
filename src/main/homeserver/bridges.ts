@@ -588,6 +588,13 @@ export class BridgeHost {
       this.#options.log?.(`[${bridge.name}] config was seeded in a layout this bridge rejects; reseeding`);
       await writeFile(configPath, this.#seedConfig(bridge), "utf8");
       await rm(registrationPath, {force: true});
+    } else if (BACKFILL_DISABLED.test(existing)) {
+      // The binaries write their own defaults back into the config when they
+      // upgrade it in place, and their default is no backfill at all. A config
+      // seeded before FlareAI asked for it stays that way forever otherwise,
+      // which is a bridge that can only ever show what arrives from now on.
+      this.#options.log?.(`[${bridge.name}] backfill was disabled in the config; enabling it`);
+      await writeFile(configPath, existing.replace(BACKFILL_DISABLED, "$1true"), "utf8");
     } else if (bridge.network) {
       // A shared binary that predates its `network:` block (or gained new
       // required keys) exits at startup. Merge in what the spec requires,
@@ -814,6 +821,12 @@ export class BridgeHost {
       "bridge:",
       "    permissions:",
       `        "${homeserver.serverName}": user`,
+      // Without this a bridge creates its portals, syncs their members, and
+      // brings across nothing that was said before it was linked: every
+      // conversation opens empty until someone sends the next message. The
+      // binaries default it off, so it has to be asked for.
+      "backfill:",
+      "    enabled: true",
       "provisioning:",
       `    shared_secret: ${provisioningSecret}`,
       "    allow_matrix_auth: true",
@@ -835,6 +848,20 @@ export class BridgeHost {
  * config has none yet. Everything else in the file — including whatever the
  * binary added when it upgraded the config in place — is left alone.
  */
+/**
+ * A `backfill:` block whose own `enabled:` is off. Anchored to the block so it
+ * cannot match the `enabled:` of some other section that happens to follow.
+ *
+ * The indented line is `[ \t][^\n]*` and not `[ \t]+.*`: the latter lets the
+ * two halves split a line's leading whitespace in every possible way, and the
+ * lazy repeat multiplies those choices across lines. On a `backfill:` block
+ * that has no disabled `enabled:` — the common case, including every config
+ * this branch has already repaired — the match has to fail, and failing means
+ * walking that product. Two dozen lines was enough to wedge the main process
+ * for minutes, which is what an unresponsive window at startup looked like.
+ */
+const BACKFILL_DISABLED = /(^backfill:\n(?:[ \t][^\n]*\n)*?[ \t]+enabled:[ \t]*)false/m;
+
 export function withNetwork(source: string, values: Record<string, string>): string {
   const block = ["network:", ...Object.entries(values).map(([key, value]) => `    ${key}: ${value}`)].join(
     "\n",

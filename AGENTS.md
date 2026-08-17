@@ -69,6 +69,15 @@ etc. individually. `npm run test:ui` covers the renderer.
 If a suite is already failing before your change, say so explicitly rather than
 folding it into your own result.
 
+## UI conventions
+
+Visual rules for the renderer live in [DESIGN.md](DESIGN.md): centre-on-centre
+alignment, centred empty and loading states, no stray chrome (borders round
+icons, hover pills, scrollbars, explanatory copy), edge fades on scrollable
+lists, ellipsis-and-tooltip rules, motion, and spacing. Read it before changing
+or adding UI and check the result against it — these are standing defaults, not
+one-off requests.
+
 ## Packaging and signing
 
 `npm run package` builds the app into `out/`; `npm run make` also produces the

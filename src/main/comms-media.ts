@@ -52,6 +52,15 @@ export function serveMedia(auth: () => MediaAuth): void {
       const response = await net.fetch(target.toString(), {
         headers: {Authorization: `Bearer ${token}`},
       });
+      // The homeserver stores media by id alone, with no federation and no
+      // remote-media proxy, so anything a bridge advertises on another server
+      // can never resolve here. That is worth saying once with the mxc in
+      // hand: it is the difference between "the picture is missing" and "the
+      // bridge pointed us at a server we do not have."
+      if (!response.ok)
+        console.warn(
+          `[media] ${response.status} for mxc://${server}/${mediaId} — the homeserver does not hold this media`,
+        );
       return response;
     } catch (cause) {
       return new Response(cause instanceof Error ? cause.message : "Media fetch failed", {

@@ -207,6 +207,39 @@ test("round-trips the MSC2659 appservice ping", async () => {
   }
 });
 
+test("an invite written as plain state still reaches the local user", async () => {
+  const {hs, asToken, cleanup} = await startHarness();
+  try {
+    const user = hs.createLocalUser("flareai");
+    const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
+      token: asToken,
+      query: {user_id: "@whatsapp_61400000000:flareai.test"},
+      body: {name: "Jules Tan (WA)", is_direct: true},
+    });
+    const roomId = created.body.room_id as string;
+    // bridgev2 invites by PUTting the member event rather than calling
+    // `/invite`. Taking that as a plain state write skipped the invite-to-join
+    // hop, and the portal sat unanswered — a room the user was never in, which
+    // `/sync` does not report and the chat list therefore cannot show.
+    const invited = await call(
+      hs,
+      "PUT",
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent(user.userId)}`,
+      {
+        token: asToken,
+        query: {user_id: "@whatsapp_61400000000:flareai.test"},
+        body: {membership: "invite", is_direct: true},
+      },
+    );
+    assert.equal(invited.status, 200);
+
+    const joined = await call(hs, "GET", "/_matrix/client/v3/joined_rooms", {token: user.accessToken});
+    assert.deepEqual(joined.body.joined_rooms, [roomId]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("a portal room reaches the local user without an autojoin daemon", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {

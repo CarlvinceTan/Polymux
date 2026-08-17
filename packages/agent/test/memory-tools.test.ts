@@ -41,7 +41,7 @@ test("the agent can remember, list, and forget through its tools", async () => {
   assert.equal(saved.scope, "user");
   assert.equal(saved.kind, "preference");
 
-  const listed = payload(await call(tools, "list_memory")) as Array<{
+  const listed = payload(await call(tools, "recall")) as Array<{
     id: string;
     content: string;
   }>;
@@ -52,6 +52,25 @@ test("the agent can remember, list, and forget through its tools", async () => {
   assert.equal(memory.list("conversation").length, 0);
   // Forgetting archives the note rather than destroying it.
   assert.equal(readdirSync(memory.archiveDirectory).length, 1);
+});
+
+test("recall narrows to the memories matching every query word", async () => {
+  const memory = vault();
+  const tools = createMemoryTools(memory, "conversation");
+  await call(tools, "remember", { content: "Studies at the University of Melbourne" });
+  await call(tools, "remember", { content: "Prefers Melbourne or Sydney for startup roles" });
+  await call(tools, "remember", { content: "Runs the FlareAI desktop agent locally" });
+
+  const matches = payload(await call(tools, "recall", { query: "melbourne startup" })) as Array<{
+    content: string;
+  }>;
+  assert.equal(matches.length, 1);
+  assert.match(matches[0]?.content ?? "", /startup roles/);
+
+  // Nothing on the subject is an answer, not a failure.
+  const empty = await call(tools, "recall", { query: "sailing" });
+  assert.notEqual(empty.isError, true);
+  assert.deepEqual(payload(empty), []);
 });
 
 test("conversation-scoped memory stays out of the user scope", async () => {
@@ -87,7 +106,7 @@ test("forgetting an unknown id is an error, not a silent success", async () => {
   const missing = await call(tools, "forget", { id: "does-not-exist" });
 
   assert.equal(missing.isError, true);
-  assert.match(String(missing.content), /list_memory/);
+  assert.match(String(missing.content), /recall/);
 });
 
 test("disabled memory offers the agent no memory tools at all", () => {

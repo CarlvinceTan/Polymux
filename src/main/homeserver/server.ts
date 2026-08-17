@@ -31,6 +31,13 @@ export interface HomeserverOptions {
    * daemon. Bridge ghosts handle their own membership.
    */
   autoJoin?: boolean;
+  /**
+   * Called as a message lands, whoever wrote it. This server is where every
+   * bridge delivers, so it is the one place that knows a conversation has
+   * moved — which is what lets the app show a message as it arrives rather
+   * than whenever it next thinks to ask.
+   */
+  onActivity?: (activity: {roomId: string; sender: string; type: string}) => void;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -100,6 +107,35 @@ export class Homeserver {
       });
     });
     for (const appservice of this.#store.appservices()) this.#wakePusher(appservice.id);
+    this.#healInvites();
+  }
+
+  /**
+   * Accepts invitations that were never answered. The invite-to-join hop only
+   * fires as an invite arrives, so portals invited before it covered every code
+   * path — or while the app was not running — sit unanswered: rooms the user
+   * owns, full of their conversations, that `/sync` cannot report because it
+   * only reports rooms one has joined. Left alone they never recover, so the
+   * backlog is cleared once at startup.
+   */
+  #healInvites(): void {
+    if (!this.#options.autoJoin) return;
+    for (const userId of this.#store.userIds()) {
+      if (!this.#isLocalHuman(userId)) continue;
+      for (const roomId of this.#store.roomsForUser(userId, "invite")) {
+        const invite = this.#store.stateEvent(roomId, "m.room.member", userId);
+        // Only invitations from our own bridges, which is what the hop covers.
+        if (!invite || !this.#isAppserviceUser(invite.sender)) continue;
+        this.#append({
+          roomId,
+          sender: userId,
+          type: "m.room.member",
+          stateKey: userId,
+          content: {membership: "join"},
+          ts: Date.now(),
+        });
+      }
+    }
   }
 
   async close(): Promise<void> {
@@ -257,6 +293,21 @@ export class Homeserver {
       const bot = this.#fullUserId(appservice.senderLocalpart);
       if (!masquerade) return {userId: bot, appservice};
       if (masquerade === bot || this.#inNamespace(appservice, masquerade))
+        return {userId: masquerade, appservice};
+      /**
+       * A bridge may also speak as the account it bridges for. This is what
+       * every Matrix bridge calls double puppeting, and elsewhere it needs the
+       * user's own access token to do it — the point being that a bridge on
+       * some other server must not be able to write as you.
+       *
+       * Here it is the same person either way: this server is local, single
+       * user, never federates, and every appservice on it is one FlareAI
+       * installed and supervises. Without this a message the user sent in
+       * WhatsApp or WeChat itself cannot be attributed to them at all — it has
+       * to arrive as the person they were talking to, which is worse than
+       * wrong, it is unreadable.
+       */
+      if (this.#isLocalHuman(masquerade) && this.#store.userExists(masquerade))
         return {userId: masquerade, appservice};
       return null;
     }
@@ -426,6 +477,21 @@ export class Homeserver {
       return this.#json(response, 200, {event_id: event.eventId});
     }
     if (rest[0] === "state") {
+      /**
+       * Membership written as plain state still has to go through membership
+       * handling. A bridge that creates a portal by PUTting `m.room.member`
+       * rather than calling `/invite` — which mautrix's bridgev2 bridges do —
+       * would otherwise skip the invite-to-join hop, and the invitation sits
+       * unanswered forever: the room exists, the user is not in it, and
+       * `/sync` reports only joined rooms, so the conversation is nowhere.
+       */
+      if (method === "PUT" && rest[1] === "m.room.member" && rest[2]) {
+        const membership = (body as {membership?: string}).membership ?? "";
+        const {membership: _membership, ...extra} = (body ?? {}) as Record<string, unknown>;
+        this.#membershipEvent(roomId, auth.userId, rest[2], membership, query, extra);
+        const event = this.#store.stateEvent(roomId, "m.room.member", rest[2]);
+        return this.#json(response, 200, {event_id: event?.eventId ?? ""});
+      }
       if (method === "PUT" && rest[1]) {
         const event = this.#append({
           roomId,
@@ -806,6 +872,8 @@ export class Homeserver {
       txnKey: input.txnKey ?? null,
     });
     for (const appservice of this.#store.appservices()) this.#wakePusher(appservice.id);
+    if (input.type === "m.room.message" || input.type === "m.sticker")
+      this.#options.onActivity?.({roomId: input.roomId, sender: input.sender, type: input.type});
     return event;
   }
 

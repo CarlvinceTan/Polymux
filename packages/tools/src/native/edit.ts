@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { JsonObject } from "@flareai/inference";
 import type { AgentTool, ToolEnvironment } from "../types.js";
-import { stringInput } from "../types.js";
+import { stringInput, workingDirectory } from "../types.js";
 import { withFileMutation } from "../mutation-queue.js";
 
 type Replacement = { oldText: string; newText: string };
@@ -47,8 +47,11 @@ export function createEditTool(environment: ToolEnvironment): AgentTool {
       required: ["path", "edits"],
       additionalProperties: false,
     },
-    async execute(input) {
-      const path = resolve(environment.cwd, stringInput(input, "path", "edit"));
+    async execute(input, context) {
+      const path = resolve(
+        workingDirectory(environment, context),
+        stringInput(input, "path", "edit"),
+      );
       const edits = replacements(input);
       await withFileMutation(path, async () => {
         let content = await readFile(path, "utf8");

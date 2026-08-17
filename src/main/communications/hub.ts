@@ -2,6 +2,7 @@ import {readFile} from "node:fs/promises";
 import {createHmac} from "node:crypto";
 import path from "node:path";
 import {mediaUrl} from "./media-url.js";
+import {COMMS_PLATFORMS} from "@flareai/protocol";
 import type {
   CommsBridgeAccountDto,
   CommsBridgeDto,
@@ -257,9 +258,19 @@ export class MatrixHub {
         },
       }),
     );
-    const sync = await this.#client<SyncResponse>(
+    let sync = await this.#client<SyncResponse>(
       `/_matrix/client/v3/sync?filter=${filter}&timeout=0`,
     );
+    // A bridge creates a portal by inviting us to it, and `/sync` only reports
+    // rooms we have joined — so an unanswered invite is a conversation that
+    // exists on the homeserver and appears nowhere. These are portals our own
+    // bridge fleet made on our own homeserver at our own request, so they are
+    // accepted rather than queued for someone to accept by hand.
+    if (await this.#acceptInvites(sync)) {
+      sync = await this.#client<SyncResponse>(
+        `/_matrix/client/v3/sync?filter=${filter}&timeout=0`,
+      );
+    }
     const joined = Object.entries(sync.rooms?.join ?? {});
     const userId = this.#auth().userId;
     const rooms = joined.map(([roomId, room]) => {
@@ -333,7 +344,8 @@ export class MatrixHub {
     const result = await this.#client<{end?: string; chunk?: RawEvent[]; state?: RawEvent[]}>(
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/messages?${params}`,
     );
-    const messages = (result.chunk ?? []).filter(isMessage).map(toMessage);
+    const chunk = result.chunk ?? [];
+    const messages = withReactions(chunk.filter(isMessage).map(toMessage), chunk, this.#auth().userId);
     return {
       nextBefore: result.end ?? null,
       // A bridged sender is `@whatsapp_614…:server`, which is unreadable in a
@@ -468,14 +480,108 @@ export class MatrixHub {
     );
   }
 
-  async send(roomId: string, body: string): Promise<string> {
-    // A transaction id makes the send idempotent if the request is retried.
-    const txnId = `flareai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  async send(roomId: string, body: string, replyTo?: string): Promise<string> {
     const result = await this.#client<{event_id?: string}>(
-      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${txnId}`,
-      {method: "PUT", body: {msgtype: "m.text", body}},
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${this.#txnId()}`,
+      {
+        method: "PUT",
+        body: {
+          msgtype: "m.text",
+          body,
+          ...(replyTo
+            ? {"m.relates_to": {"m.in_reply_to": {event_id: replyTo}}}
+            : {}),
+        },
+      },
     );
     return result.event_id ?? "";
+  }
+
+  /**
+   * Sends already-uploaded media. The upload is separate because a file has to
+   * reach the server before an event can point at it.
+   */
+  async sendMedia(
+    roomId: string,
+    file: {url: string; name: string; msgtype: string; mimetype: string; size: number},
+  ): Promise<string> {
+    const result = await this.#client<{event_id?: string}>(
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${this.#txnId()}`,
+      {
+        method: "PUT",
+        body: {
+          msgtype: file.msgtype,
+          body: file.name,
+          url: file.url,
+          info: {mimetype: file.mimetype, size: file.size},
+        },
+      },
+    );
+    return result.event_id ?? "";
+  }
+
+  /** Uploads bytes to the media repository and returns their `mxc://` id. */
+  async upload(name: string, mimetype: string, bytes: Uint8Array): Promise<string> {
+    const {matrixToken} = this.#auth();
+    const response = await fetch(
+      `${this.#homeserverUrl}/_matrix/media/v3/upload?filename=${encodeURIComponent(name)}`,
+      {
+        method: "POST",
+        headers: {"Content-Type": mimetype, Authorization: `Bearer ${matrixToken}`},
+        body: bytes as unknown as BodyInit,
+      },
+    );
+    if (!response.ok) throw new Error(`upload failed: ${response.status}`);
+    const result = (await response.json()) as {content_uri?: string};
+    if (!result.content_uri) throw new Error("upload returned no media id");
+    return result.content_uri;
+  }
+
+  /** Puts an emoji on a message, and returns the reaction's own event id. */
+  async react(roomId: string, eventId: string, key: string): Promise<string> {
+    const result = await this.#client<{event_id?: string}>(
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.reaction/${this.#txnId()}`,
+      {
+        method: "PUT",
+        body: {"m.relates_to": {rel_type: "m.annotation", event_id: eventId, key}},
+      },
+    );
+    return result.event_id ?? "";
+  }
+
+  /** Takes an event back: how a reaction is removed and a message deleted. */
+  async redact(roomId: string, eventId: string): Promise<void> {
+    await this.#client(
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/redact/${encodeURIComponent(eventId)}/${this.#txnId()}`,
+      {method: "PUT", body: {}},
+    );
+  }
+
+  /** A transaction id makes a send idempotent if the request is retried. */
+  #txnId(): string {
+    return `flareai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  /**
+   * Joins every room we have been invited to, and answers whether any join
+   * landed — the caller re-syncs when one did, so the list drawn afterwards
+   * includes them. One that fails is skipped rather than failing the list: the
+   * rooms already joined are still worth showing.
+   */
+  async #acceptInvites(sync: SyncResponse): Promise<boolean> {
+    const invited = Object.keys(sync.rooms?.invite ?? {});
+    if (invited.length === 0) return false;
+    const joined = await Promise.all(
+      invited.map((roomId) =>
+        this.#client(`/_matrix/client/v3/join/${encodeURIComponent(roomId)}`, {
+          method: "POST",
+          body: {},
+        })
+          .then(() => true)
+          .catch(() => false),
+      ),
+    );
+    return joined.some(Boolean);
   }
 
   async #roomName(roomId: string): Promise<string> {
@@ -831,6 +937,13 @@ export interface MatrixAttachment {
   width: number | null;
   height: number | null;
   duration: number | null;
+  /**
+   * A sticker rather than a picture someone took. It is carried as an image
+   * because that is what it is made of, but it is shown at a sticker's size —
+   * blown up to the width of the thread it reads as a photo, which is not how
+   * any messenger displays one.
+   */
+  sticker?: boolean;
 }
 
 export interface MatrixMessage {
@@ -846,6 +959,17 @@ export interface MatrixMessage {
   attachments: MatrixAttachment[];
   /** Where to go to see media that could not be carried across. */
   viewIn: {app: string; url: string} | null;
+  /** One entry per distinct emoji on this message. */
+  reactions: MatrixReaction[];
+  /** The event this message answers, when it is a reply. */
+  replyTo: string | null;
+}
+
+export interface MatrixReaction {
+  key: string;
+  count: number;
+  /** The signed-in account's own reaction event, so it can be taken back. */
+  mineEventId: string | null;
 }
 
 interface RawEvent {
@@ -866,10 +990,22 @@ interface RawEvent {
     avatar_url?: string;
     /** Written by a bridge onto media it could not fetch; see `viewIn`. */
     "co.flareai.view_in"?: {app?: string; url?: string};
+    /** Set by the WeChat bridge on a sticker, which it sends as a picture. */
+    "co.flareai.sticker"?: boolean;
     /** Set on `m.bridge`: which network the room is a portal for. */
     protocol?: {id?: string};
     /** mautrix marks direct chats "dm" here; groups carry their own type. */
     "com.beeper.room_type"?: string;
+    /**
+     * How one event points at another: a reaction annotates the message it is
+     * on, a reply quotes the one it answers. Both are read here.
+     */
+    "m.relates_to"?: {
+      rel_type?: string;
+      event_id?: string;
+      key?: string;
+      "m.in_reply_to"?: {event_id?: string};
+    };
     info?: {
       mimetype?: string;
       size?: number;
@@ -883,6 +1019,8 @@ interface RawEvent {
 
 interface SyncResponse {
   rooms?: {
+    /** Rooms a bridge has invited us to but that we have not joined yet. */
+    invite?: Record<string, unknown>;
     join?: Record<
       string,
       {
@@ -897,7 +1035,50 @@ interface SyncResponse {
   };
 }
 
+/**
+ * Folds the page's `m.reaction` events onto the messages they annotate. Only
+ * the reactions in the same page can be seen, which is what a page of history
+ * carries: a reaction added long after the message is on a later page and
+ * shows up when that part of the room is read.
+ */
+function withReactions(
+  messages: MatrixMessage[],
+  chunk: RawEvent[],
+  userId: string | undefined,
+): MatrixMessage[] {
+  const byTarget = new Map<string, MatrixReaction[]>();
+  for (const event of chunk) {
+    if (event.type !== "m.reaction") continue;
+    const relation = event.content?.["m.relates_to"];
+    const target = relation?.event_id;
+    const key = relation?.key;
+    if (!target || !key) continue;
+    const list = byTarget.get(target) ?? [];
+    const existing = list.find((item) => item.key === key);
+    const mine = Boolean(userId) && event.sender === userId ? (event.event_id ?? null) : null;
+    if (existing) {
+      existing.count += 1;
+      existing.mineEventId = existing.mineEventId ?? mine;
+    } else {
+      list.push({key, count: 1, mineEventId: mine});
+    }
+    byTarget.set(target, list);
+  }
+  if (byTarget.size === 0) return messages;
+  return messages.map((message) => ({
+    ...message,
+    reactions: byTarget.get(message.eventId) ?? [],
+  }));
+}
+
+/**
+ * Whether an event belongs in a conversation. Stickers are their own event
+ * type rather than a kind of message, and leaving them out did not render them
+ * plainly — it dropped them: a sticker sent on WhatsApp or Telegram simply was
+ * not in the thread, with nothing to say one had been sent.
+ */
 function isMessage(event: RawEvent | undefined): event is RawEvent {
+  if (event?.type === "m.sticker") return true;
   return event?.type === "m.room.message" && typeof event.content?.body === "string";
 }
 
@@ -917,18 +1098,40 @@ function isBridgeBot(userId: string): boolean {
  * one calls Messenger "facebook". Anything unlisted passes through, so a
  * bridge added later is filed under its own id rather than lost.
  */
-const BRIDGE_PROTOCOLS: Record<string, string> = {
-  discordgo: "discord",
-  facebookgo: "messenger",
+/**
+ * Names a bridge uses for itself that are not the name the app files it under.
+ * Only the genuine renames belong here: Meta's bridge calls Messenger
+ * "facebook", and its ghosts are prefixed to match.
+ */
+const BRIDGE_ALIASES: Record<string, string> = {
   facebook: "messenger",
-  instagramgo: "instagram",
-  gmessagesgo: "gmessages",
-  twittergo: "twitter",
+  fb: "messenger",
+  ig: "instagram",
 };
 
+/** Every platform the rail can file a room under. */
+const KNOWN_PLATFORMS = new Set(COMMS_PLATFORMS.map((entry) => entry.value as string));
+
+/**
+ * Which platform a bridge's own id means. mautrix's Go bridges append the
+ * language to their protocol id — `discordgo`, `gmessagesgo` — so the suffix
+ * is taken off and the result checked against the platforms the app knows,
+ * rather than each bridge being listed by hand: a hand-written list is a list
+ * that is missing whichever bridge nobody has linked yet, and a room filed
+ * under a platform that does not exist appears in no tab at all.
+ */
 function platformOfProtocol(id: string | undefined): string | null {
   if (!id) return null;
-  return BRIDGE_PROTOCOLS[id] ?? id;
+  return normalisePlatform(id) ?? id;
+}
+
+function normalisePlatform(value: string): string | null {
+  const name = value.toLowerCase();
+  if (BRIDGE_ALIASES[name]) return BRIDGE_ALIASES[name];
+  if (KNOWN_PLATFORMS.has(name)) return name;
+  const trimmed = name.replace(/go$/, "");
+  if (BRIDGE_ALIASES[trimmed]) return BRIDGE_ALIASES[trimmed];
+  return KNOWN_PLATFORMS.has(trimmed) ? trimmed : null;
 }
 
 function platformOfRoom(members: string[]): string {
@@ -944,6 +1147,9 @@ function platformOfRoom(members: string[]): string {
  * reads as noise in a list, so it is named by what it is instead.
  */
 function previewOf(event: RawEvent): string {
+  // Either shape of sticker: its own event type, or a picture a bridge marked
+  // as one because it sends stickers as images.
+  if (event.type === "m.sticker" || event.content?.["co.flareai.sticker"]) return "Sticker";
   switch (event.content?.msgtype) {
     case "m.image":
       return "Photo";
@@ -966,7 +1172,9 @@ const ATTACHMENT_KINDS: Record<string, MatrixAttachment["kind"]> = {
 };
 
 function attachmentsOf(event: RawEvent): MatrixAttachment[] {
-  const kind = ATTACHMENT_KINDS[event.content?.msgtype ?? ""];
+  // A sticker carries no msgtype; the event type is what says it is a picture.
+  const sticker = event.type === "m.sticker" || Boolean(event.content?.["co.flareai.sticker"]);
+  const kind = sticker ? "image" : ATTACHMENT_KINDS[event.content?.msgtype ?? ""];
   const url = mediaUrl(event.content?.url);
   if (!kind || !url) return [];
   const info = event.content?.info ?? {};
@@ -981,6 +1189,7 @@ function attachmentsOf(event: RawEvent): MatrixAttachment[] {
       height: info.h ?? null,
       // Matrix counts in milliseconds; seconds is what a player wants.
       duration: info.duration ? info.duration / 1000 : null,
+      ...(sticker ? {sticker: true} : {}),
     },
   ];
 }
@@ -1000,6 +1209,8 @@ function toMessage(event: RawEvent): MatrixMessage {
     body: attachments.length > 0 ? "" : (event.content?.body ?? ""),
     sentAt: new Date(event.origin_server_ts ?? 0).toISOString(),
     attachments,
+    reactions: [],
+    replyTo: event.content?.["m.relates_to"]?.["m.in_reply_to"]?.event_id ?? null,
     viewIn: event.content?.["co.flareai.view_in"]?.url
       ? {
           app: event.content["co.flareai.view_in"].app ?? "the app",
@@ -1016,22 +1227,11 @@ function toMessage(event: RawEvent): MatrixMessage {
 function platformFromSender(sender: string): string | null {
   const localpart = sender.startsWith("@") ? sender.slice(1) : sender;
   const prefix = localpart.split("_")[0]?.toLowerCase();
-  const known = [
-    "whatsapp",
-    "telegram",
-    "discord",
-    "messenger",
-    "instagram",
-    "linkedin",
-    "imessage",
-    "wechat",
-  ];
-  if (prefix && known.includes(prefix)) return prefix;
-  // Meta's bridges use `fb`/`ig` prefixes in some deployments.
-  if (prefix === "fb") return "messenger";
-  if (prefix === "ig") return "instagram";
-  if (prefix === "signal") return "signal";
-  return null;
+  // Measured against the platform list rather than a copy of it: Slack,
+  // Google Messages, X, Bluesky and Google Voice were all absent from the
+  // copy, so their rooms fell through to "matrix" and were missing from the
+  // tab their own ghosts named.
+  return prefix ? normalisePlatform(prefix) : null;
 }
 
 interface RawFlow {

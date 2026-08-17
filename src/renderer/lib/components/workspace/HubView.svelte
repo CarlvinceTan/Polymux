@@ -1,8 +1,113 @@
+<script module lang="ts">
+  import type {
+    ChatDto as CachedChatDto,
+    ChatMessageDto as CachedMessageDto,
+    CommsStatusDto as CachedStatusDto,
+    MailEnvelopeDto as CachedEnvelopeDto,
+    MailFolderDto as CachedFolderDto,
+    MailMessageDto as CachedMailDto,
+  } from '@flareai/protocol';
+  import {flareaiApi} from '../../api/flareai';
+
+  /** Which source the rail has selected: a platform, or a mailbox folder. */
+  export type Source =
+    | {kind: 'platform'; platform: string; account?: string}
+    | {kind: 'mail'; account: string; folder: string};
+
+  /**
+   * What the hub already knows, kept outside the component.
+   *
+   * The hub is a workspace tab, so leaving it and coming back mounts a fresh
+   * one — and every mount used to start from nothing: status, then the room
+   * list, then the conversation, each a round trip before anything appeared.
+   * Holding the last answers here means a return paints immediately and the
+   * fetches behind it only correct what changed. Nothing is persisted; this
+   * lives as long as the window does.
+   */
+  const session: {
+    status: CachedStatusDto | null;
+    chats: CachedChatDto[];
+    messages: Map<string, {messages: CachedMessageDto[]; nextBefore: string | null}>;
+    mailboxes: Map<
+      string,
+      {folders: CachedFolderDto[]; envelopes: CachedEnvelopeDto[]; page: number; moreToLoad: boolean}
+    >;
+    /** Message bodies already fetched, keyed account, folder and id. */
+    mail: Map<string, CachedMailDto>;
+    /**
+     * Where the user was. Data alone is not enough to come back to: without
+     * this a return starts on no source at all, picks a default, and rebuilds
+     * the pane the user had already been looking at.
+     */
+    source: Source | null;
+    activeChatId: string | null;
+    openGroups: Record<string, boolean>;
+  } = {
+    status: null,
+    chats: [],
+    messages: new Map(),
+    mailboxes: new Map(),
+    mail: new Map(),
+    source: null,
+    activeChatId: null,
+    openGroups: {},
+  };
+
+  /** Guards against two callers warming the hub at once. */
+  let warming: Promise<void> | null = null;
+
+  /**
+   * Fetches what the hub opens onto, before it is opened.
+   *
+   * Mail is the slow half — folders, then a page of envelopes, per account —
+   * and it used to start only when the tab did, so the first open sat on a
+   * spinner. Called from the app once it is idle, this has the mailboxes and
+   * the conversation list already in hand by the time anyone clicks Hub.
+   * Every failure is silent: this is work nobody asked for yet.
+   */
+  export async function warmHub(): Promise<void> {
+    if (warming) return warming;
+    warming = (async () => {
+      const api = flareaiApi();
+      try {
+        const status = await api.comms.status();
+        session.status = status;
+        session.chats = await api.comms.chats().catch(() => session.chats);
+        for (const account of status.email.accounts) {
+          try {
+            const folders = await api.comms.mailFolders(account.id);
+            const inbox = folders.find((item) => item.role === 'inbox')?.name ?? folders[0]?.name ?? 'INBOX';
+            const envelopes = await api.comms.mailEnvelopes({
+              account: account.id,
+              folder: inbox,
+              page: 1,
+              pageSize: 50,
+              sort: 'date-desc',
+            });
+            session.mailboxes.set(`${account.id}|${inbox}`, {
+              folders,
+              envelopes,
+              page: 1,
+              moreToLoad: envelopes.length === 50,
+            });
+          } catch {
+            // One mailbox that will not answer is not the others' problem.
+          }
+        }
+      } catch {
+        // The hub will ask again itself when it opens.
+      }
+    })();
+    return warming;
+  }
+</script>
+
 <script lang="ts">
-  import {onMount, type ComponentProps} from 'svelte';
+  import {onMount, tick, type ComponentProps} from 'svelte';
   import type {
     ChatDto,
     ChatMessageDto,
+    ChatReactionDto,
     CommsStatusDto,
     MailEnvelopeDto,
     MailFolderDto,
@@ -10,7 +115,6 @@
     FlareAIApi,
   } from '@flareai/protocol';
   import DOMPurify from 'dompurify';
-  import {flareaiApi} from '../../api/flareai';
   import {readableError} from '../../errors';
   import Icon from '../shared/Icon.svelte';
   import PlatformLogo from '../shared/PlatformLogo.svelte';
@@ -27,14 +131,18 @@
    * pane shows — the same three-column shape a mail client uses, because the
    * two halves of this view are the same task with different transports.
    */
-  type Source =
-    | {kind: 'platform'; platform: string; account?: string}
-    | {kind: 'mail'; account: string; folder: string};
-
-  let status: CommsStatusDto | null = null;
-  let chats: ChatDto[] = [];
-  let source: Source | null = null;
-  let loading = true;
+  // Whatever the last mount learned, on screen before the first request.
+  let status: CommsStatusDto | null = session.status;
+  let chats: ChatDto[] = session.chats;
+  let source: Source | null = session.source;
+  /**
+   * Captured here, at the top of the instance, because the statements that
+   * keep the session in step run before `onMount` — and on a fresh mount they
+   * would write `null` over the very thing the mount is about to restore.
+   */
+  const restoringChatId = session.activeChatId;
+  /** Only the first visit has nothing to show; later ones refresh in place. */
+  let loading = !session.status;
   let error = '';
   let busy = '';
 
@@ -42,6 +150,11 @@
   let activeChat: ChatDto | null = null;
   let chatMessages: ChatMessageDto[] = [];
   let draft = '';
+  /** Token for the page of older messages, null once the room's start is in. */
+  let chatBefore: string | null = null;
+  /** The thread's scroller, so reaching its top can pull the page before. */
+  let threadEl: HTMLDivElement | null = null;
+  const CHAT_PAGE = 40;
 
   // Mail
   let folders: MailFolderDto[] = [];
@@ -81,6 +194,14 @@
    * its row selects that account outright.
    */
   let openGroups: Record<string, boolean> = {};
+  /** Chats whose avatar the homeserver would not serve, so the row falls back
+   * to its initial rather than retrying a picture that is not there. */
+  let brokenAvatars = new Set<string>();
+  /** The rail fades its edges only where the content actually runs on, the
+   * same rule the settings rail follows. */
+  let railElement: HTMLElement;
+  let railAtTop = true;
+  let railAtBottom = true;
   /** Whether the mailbox dropdown over the message list is showing. */
   let folderMenu = false;
   /** Remote images stay unloaded until the reader asks for them, per message. */
@@ -158,12 +279,26 @@
 
   $: accounts = status?.email.accounts ?? [];
   $: linked = (status?.bridges ?? []).filter((bridge) => bridge.state === 'connected');
+  // Expanding a group changes how far the rail scrolls, so the edges are
+  // re-read whenever its content does.
+  $: if (linked.length || accounts.length || openGroups) void tick().then(measureRailEdges);
   /** Chats belonging to whichever platform the rail has selected. */
-  $: visibleChats = chatsFor(source, chats);
+  $: visibleChats = chatsFor(source, chats, chatSearch);
+  /** What the box over the conversation list is filtering on. */
+  let chatSearch = '';
 
-  function chatsFor(current: Source | null, list: ChatDto[]): ChatDto[] {
+  function chatsFor(current: Source | null, list: ChatDto[], query: string): ChatDto[] {
     if (current?.kind !== 'platform') return [];
-    return list.filter((chat) => chat.platform === current.platform);
+    const needle = query.trim().toLowerCase();
+    return list.filter(
+      (chat) =>
+        chat.platform === current.platform &&
+        // Name and last line, which is what someone scanning for a
+        // conversation actually remembers about it.
+        (!needle ||
+          chat.name.toLowerCase().includes(needle) ||
+          (chat.preview ?? '').toLowerCase().includes(needle)),
+    );
   }
   $: mailAccount = source?.kind === 'mail' ? source.account : '';
   $: mailFolder = source?.kind === 'mail' ? source.folder : '';
@@ -175,6 +310,16 @@
 
   /** Ragged widths, so the placeholder reads as prose rather than a block. */
   const SKELETON_LINES = ['92%', '84%', '96%', '61%', '88%', '73%', '90%', '46%'];
+  /** Placeholder rows, in the shape of the rows that are coming. */
+  const SKELETON_ROWS = [0, 1, 2, 3, 4, 5, 6, 7];
+  /** Placeholder bubbles: alternating sides, so the thread reads as a thread. */
+  const SKELETON_BUBBLES = [
+    {mine: false, width: '58%'},
+    {mine: true, width: '44%'},
+    {mine: false, width: '72%'},
+    {mine: true, width: '38%'},
+    {mine: false, width: '50%'},
+  ];
 
   const FOLDER_ORDER: MailFolderDto['role'][] = [
     'inbox',
@@ -185,11 +330,11 @@
     'trash',
   ];
   const FOLDER_ICONS: Record<MailFolderDto['role'], IconName> = {
-    inbox: 'mail',
-    drafts: 'edit',
-    sent: 'send',
-    archive: 'folder',
-    junk: 'trash',
+    inbox: 'inbox',
+    drafts: 'file',
+    sent: 'paper-airplane',
+    archive: 'archive',
+    junk: 'spam',
     trash: 'trash',
     flagged: 'bolt',
     other: 'folder',
@@ -203,33 +348,151 @@
   }
 
   onMount(() => {
+    // What the last visit was looking at, back on screen before a single
+    // request goes out. `load` corrects it behind this.
+    restoreView();
     void load();
-    return api.comms.subscribe((next) => {
+    const unsubscribe = api.comms.subscribe((next) => {
       status = next;
     });
+    // Pushed the moment a message lands, whichever platform it came from: the
+    // homeserver is where every bridge delivers, so it knows before any poll
+    // would. The timer below stays as the backstop for anything that never
+    // reaches the homeserver at all.
+    const unsubscribeActivity = api.comms.subscribeActivity((activity) => {
+      if (document.hidden) return;
+      if (activeChat && activity.chatId === activeChat.id) void refreshChat();
+      else void refreshChats();
+    });
+    const timer = setInterval(() => void refreshOpen(), REFRESH_MS);
+    // Coming back to the window is when stale content is most obvious, so it
+    // does not wait out the rest of the interval.
+    const onVisible = (): void => {
+      if (!document.hidden) void refreshOpen();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      unsubscribe();
+      unsubscribeActivity();
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   });
 
+  /**
+   * Puts the pane back the way it was left: the same source, the same folder
+   * or conversation, painted from what the session already holds. Returning to
+   * the hub should look like coming back to a window, not like opening one.
+   */
+  function restoreView(): void {
+    openGroups = {...session.openGroups};
+    if (!source) return;
+    if (source.kind === 'mail') {
+      const warmed = mailCache.get(cacheKey(source.account, source.folder));
+      if (warmed) {
+        folders = warmed.folders;
+        envelopes = warmed.envelopes;
+        page = warmed.page;
+        moreToLoad = warmed.moreToLoad;
+      }
+    }
+    const chat = restoringChatId ? chats.find((item) => item.id === restoringChatId) : null;
+    if (!chat) return;
+    const known = session.messages.get(chat.id);
+    activeChat = chat;
+    chatMessages = known?.messages ?? [];
+    chatBefore = known?.nextBefore ?? null;
+  }
+
   async function load(): Promise<void> {
-    loading = true;
+    loading = !session.status;
     try {
       status = await api.comms.status();
-      chats = await api.comms.chats().catch(() => []);
-      // Open on something useful rather than an empty pane: the first mailbox
-      // if there is one, otherwise the first linked platform.
-      const account = status.email.accounts.find((item) => item.isDefault) ?? status.email.accounts[0];
-      if (account) {
-        openGroups = {...openGroups, mail: true};
-        await selectMail(account.id);
-      }
-      else {
-        const first = (status.bridges ?? []).find((bridge) => bridge.state === 'connected');
-        if (first) selectPlatform(first.platform);
+      session.status = status;
+      chats = await api.comms.chats().catch(() => session.chats);
+      session.chats = chats;
+      if (source) {
+        // Already looking at something, restored above: bring it up to date
+        // rather than choosing somewhere else to be.
+        await refreshOpen();
+      } else {
+        // Open on something useful rather than an empty pane: the first mailbox
+        // if there is one, otherwise the first linked platform.
+        const account = status.email.accounts.find((item) => item.isDefault) ?? status.email.accounts[0];
+        if (account) {
+          openGroups = {...openGroups, mail: true};
+          await selectMail(account.id);
+        } else {
+          const first = (status.bridges ?? []).find((bridge) => bridge.state === 'connected');
+          if (first) selectPlatform(first.platform);
+        }
       }
       error = '';
+      // Warms what the user is most likely to open next, behind whatever is on
+      // screen now: the other mailboxes, and the conversations at the top of
+      // the list. Both are ordinary reads — the same ones opening them would
+      // make — done before they are asked for rather than after.
+      void prefetchMail();
+      void prefetchChats();
     } catch (cause) {
       error = readableError(cause);
     } finally {
       loading = false;
+    }
+  }
+
+  /**
+   * The head of the most recent conversations, fetched one at a time so a busy
+   * account does not open twenty requests at once. Only ones never read this
+   * session are fetched, and only while nothing else is loading — a prefetch
+   * that slows the thing the user actually clicked is worse than no prefetch.
+   */
+  const PREFETCH_CHATS = 8;
+
+  function mailKey(account: string, folder: string, id: string): string {
+    return `${account}|${folder}|${id}`;
+  }
+
+  /**
+   * The bodies at the top of the open folder. Reading one is the next thing
+   * that happens after a folder is listed, so the first few are fetched while
+   * the list is being looked at. Stops as soon as a message is opened: the
+   * click deserves the connection more than the guess does.
+   */
+  const PREFETCH_MAIL = 5;
+
+  async function prefetchMailBodies(): Promise<void> {
+    if (!source || source.kind !== 'mail') return;
+    const mailbox = source;
+    for (const envelope of envelopes.slice(0, PREFETCH_MAIL)) {
+      if (openMail || openEnvelope) return;
+      if (source.kind !== 'mail' || source.folder !== mailbox.folder) return;
+      const key = mailKey(mailbox.account, mailbox.folder, envelope.id);
+      if (session.mail.has(key)) continue;
+      try {
+        session.mail.set(
+          key,
+          await api.comms.mailMessage(envelope.id, mailbox.account, mailbox.folder),
+        );
+      } catch {
+        // Guessed-at work; the click that needs it will report any trouble.
+      }
+    }
+  }
+
+  async function prefetchChats(): Promise<void> {
+    for (const chat of chats.slice(0, PREFETCH_CHATS)) {
+      if (session.messages.has(chat.id)) continue;
+      if (activeChat) return;
+      try {
+        const page = await api.comms.chatMessages(chat.id, CHAT_PAGE);
+        session.messages.set(chat.id, {messages: page.messages, nextBefore: page.nextBefore});
+      } catch {
+        // Work done ahead of being asked for: the real read reports anything
+        // genuinely wrong.
+      }
     }
   }
 
@@ -246,10 +509,27 @@
     openGroups = {...openGroups, [key]: !openGroups[key]};
   }
 
+  // Whatever the pane is showing is what a return should show.
+  $: session.source = source;
+  $: session.activeChatId = activeChat?.id ?? null;
+  $: session.openGroups = openGroups;
+
   /**
    * One click on a rail row: expand the accounts when there is a choice to
    * make, otherwise go straight to the only account there is.
    */
+  /** Reassigns the set: Svelte tracks the binding, not the mutation. */
+  function markAvatarBroken(id: string): void {
+    brokenAvatars = new Set(brokenAvatars).add(id);
+  }
+
+  function measureRailEdges(): void {
+    if (!railElement) return;
+    railAtTop = railElement.scrollTop <= 1;
+    railAtBottom =
+      railElement.scrollHeight - railElement.scrollTop - railElement.clientHeight <= 1;
+  }
+
   function pickPlatform(platform: string, ids: string[]): void {
     if (ids.length > 1) toggleGroup(`platform:${platform}`);
     else selectPlatform(platform, ids[0]);
@@ -260,12 +540,53 @@
     else if (accounts[0]) void selectMail(accounts[0].id);
   }
 
+  /**
+   * What has already been fetched for a mailbox, so opening one is instant
+   * rather than a wait. Filled in the background once the hub knows which
+   * accounts exist, and kept up to date by whatever the list loads afterwards.
+   */
+  const mailCache = session.mailboxes;
+
+  function cacheKey(account: string, folder: string): string {
+    return `${account}|${folder}`;
+  }
+
+  /**
+   * Pulls each account's inbox in the background, one at a time so a machine
+   * with ten mailboxes does not open ten IMAP connections at once. Failures are
+   * silent: this is work done ahead of being asked for, and the real fetch on
+   * click reports anything genuinely wrong.
+   */
+  async function prefetchMail(): Promise<void> {
+    for (const account of status?.email.accounts ?? []) {
+      if (source?.kind === 'mail' && source.account === account.id) continue;
+      try {
+        const list = await api.comms.mailFolders(account.id);
+        const inbox = list.find((item) => item.role === 'inbox')?.name ?? list[0]?.name ?? 'INBOX';
+        const batch = await api.comms.mailEnvelopes({
+          account: account.id,
+          folder: inbox,
+          page: 1,
+          pageSize: PAGE_SIZE,
+          sort: 'date-desc',
+        });
+        mailCache.set(cacheKey(account.id, inbox), {
+          folders: list,
+          envelopes: batch,
+          page: 1,
+          moreToLoad: batch.length === PAGE_SIZE,
+        });
+      } catch {
+        // Nothing to report: the mailbox is simply not warmed.
+      }
+    }
+  }
+
   async function selectMail(account: string, folder?: string): Promise<void> {
     openMail = null;
     openEnvelope = null;
     composing = false;
     activeChat = null;
-    busy = 'folders';
     const switching = !source || source.kind !== 'mail' || source.account !== account;
     // Commit to the mailbox before fetching it, so the list keeps its header —
     // picker, search, compose — while the folders load rather than dropping
@@ -274,19 +595,45 @@
     // The rows on screen belong to the folder being left; keeping them under
     // the new folder's name would misreport what is in it.
     envelopes = [];
+    search = '';
+    rowsScrolled = false;
     source = {kind: 'mail', account, folder: folder ?? 'INBOX'};
+    // A mailbox warmed in the background paints now; only one that was never
+    // reached has to be waited for.
+    const warmed = warmMailbox(account, folder);
+    busy = warmed ? '' : 'folders';
     try {
-      if (switching) folders = await api.comms.mailFolders(account);
+      if (folders.length === 0) folders = await api.comms.mailFolders(account);
       const target =
         folder ?? folders.find((item) => item.role === 'inbox')?.name ?? folders[0]?.name ?? 'INBOX';
       source = {kind: 'mail', account, folder: target};
-      await loadEnvelopes();
+      // Warmed rows are already on screen; the fetch behind them only replaces
+      // what changed, so the list does not blink back to empty.
+      if (warmed) await refreshEnvelopes();
+      else await loadEnvelopes();
       error = '';
     } catch (cause) {
       error = readableError(cause);
     } finally {
       busy = '';
     }
+  }
+
+  /** Paints a prefetched mailbox, and says whether there was one. */
+  function warmMailbox(account: string, folder?: string): boolean {
+    for (const [key, entry] of mailCache) {
+      const [cachedAccount, cachedFolder] = key.split('|');
+      if (cachedAccount !== account) continue;
+      if (folder && cachedFolder !== folder) continue;
+      folders = entry.folders;
+      envelopes = entry.envelopes;
+      page = entry.page;
+      moreToLoad = entry.moreToLoad;
+      selected = new Set();
+      source = {kind: 'mail', account, folder: cachedFolder};
+      return true;
+    }
+    return false;
   }
 
   // Guards overlapping list fetches (search vs. sort change): only the most
@@ -313,13 +660,95 @@
       page = wanted;
       envelopes = more ? [...envelopes, ...batch] : batch;
       if (!more) selected = new Set();
+      rememberMailbox();
       error = '';
+      if (!more) void prefetchMailBodies();
     } catch (cause) {
       if (fetchId !== envelopeFetch) return;
       error = readableError(cause);
       if (!more) envelopes = [];
     } finally {
       busy = '';
+    }
+  }
+
+  /** The message list's scroller, so reaching its end pulls the next page. */
+  let rowsEl: HTMLUListElement | null = null;
+
+  /** Whether the list has been scrolled far enough to offer a way back up. */
+  let rowsScrolled = false;
+
+  function scrollRowsToTop(): void {
+    rowsEl?.scrollTo({top: 0, behavior: 'smooth'});
+  }
+
+  function onRowsScroll(): void {
+    if (!rowsEl) return;
+    rowsScrolled = rowsEl.scrollTop > 400;
+    if (!moreToLoad || busy === 'more' || busy === 'envelopes') return;
+    const fromEnd = rowsEl.scrollHeight - rowsEl.clientHeight - rowsEl.scrollTop;
+    if (fromEnd < 240) void loadEnvelopes(true);
+  }
+
+  /**
+   * Mail that landed since the list was drawn. The first page is re-read and
+   * merged in at the top; the pages already scrolled past keep their place,
+   * which a plain reload would throw away.
+   */
+  async function refreshEnvelopes(): Promise<void> {
+    if (!source || source.kind !== 'mail' || busy) return;
+    const mailbox = source;
+    const fetchId = ++envelopeFetch;
+    try {
+      const batch = await api.comms.mailEnvelopes({
+        account: mailbox.account,
+        folder: mailbox.folder,
+        page: 1,
+        pageSize: PAGE_SIZE,
+        sort,
+        query: search.trim() || undefined,
+      });
+      if (fetchId !== envelopeFetch) return;
+      if (source.kind !== 'mail' || source.account !== mailbox.account || source.folder !== mailbox.folder)
+        return;
+      const byId = new Map(batch.map((item) => [item.id, item]));
+      // The fresh copy wins for anything the first page still covers — that is
+      // how a message read or flagged on the phone stops looking unread here.
+      const rest = envelopes.filter((item) => !byId.has(item.id));
+      envelopes = [...batch, ...rest];
+      rememberMailbox();
+    } catch {
+      // Same as the chat poll: a missed refresh is not an error worth showing.
+    }
+  }
+
+  /** Keeps the warm copy of the open mailbox in step with what is on screen. */
+  function rememberMailbox(): void {
+    if (!source || source.kind !== 'mail' || search.trim()) return;
+    mailCache.set(cacheKey(source.account, source.folder), {folders, envelopes, page, moreToLoad});
+  }
+
+  /**
+   * Live-ish updates. The main process pushes bridge state, not traffic, so
+   * new messages are found by asking — on a timer while the window has focus,
+   * and once more the moment it regains it after being away.
+   */
+  const REFRESH_MS = 20_000;
+
+  async function refreshOpen(): Promise<void> {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (activeChat) await refreshChat();
+    else if (source?.kind === 'mail') await refreshEnvelopes();
+    else if (source?.kind === 'platform') await refreshChats();
+  }
+
+  /** The conversation list's own unread counts and previews. */
+  async function refreshChats(): Promise<void> {
+    try {
+      chats = await api.comms.chats();
+      session.chats = chats;
+    } catch {
+      // Quiet, for the same reason as the other polls.
     }
   }
 
@@ -355,23 +784,141 @@
 
   async function openChat(chat: ChatDto): Promise<void> {
     activeChat = chat;
-    busy = `chat:${chat.id}`;
+    awayFromLatest = false;
+    // A conversation read earlier in this session opens on what it said then,
+    // including however far back it had been scrolled, and is corrected by the
+    // read behind it. Only a conversation never opened waits.
+    const known = session.messages.get(chat.id);
+    chatMessages = known?.messages ?? [];
+    chatBefore = known?.nextBefore ?? null;
+    busy = known ? '' : `chat:${chat.id}`;
     try {
-      chatMessages = await api.comms.chatMessages(chat.id, 60);
+      const page = await api.comms.chatMessages(chat.id, CHAT_PAGE);
+      if (activeChat?.id !== chat.id) return;
+      chatMessages = known ? mergeChatPage(known.messages, page.messages) : page.messages;
+      chatBefore = known ? known.nextBefore : page.nextBefore;
+      rememberChat(chat.id);
       error = '';
       // Reading it is what makes it read — on the homeserver as well as here,
       // so the count clears on the phone too. The badge is cleared locally
       // rather than re-listing every room for one number.
-      const newest = chatMessages.at(-1) ?? chatMessages[0];
+      // The page arrives newest first, so the read marker is the head of it.
+      const newest = chatMessages[0];
       if (newest && (chat.unread ?? 0) > 0) {
         await api.comms.chatMarkRead(chat.id, newest.id).catch(() => {});
         chats = chats.map((item) => (item.id === chat.id ? {...item, unread: 0} : item));
       }
     } catch (cause) {
+      // A cached conversation stays on screen: it is what the room said a
+      // moment ago, which beats an empty pane and an error.
+      if (!known) chatMessages = [];
       error = readableError(cause);
-      chatMessages = [];
     } finally {
       busy = '';
+    }
+  }
+
+  /** Newest first, with the fresh page's copies winning on the overlap. */
+  function mergeChatPage(known: ChatMessageDto[], fresh: ChatMessageDto[]): ChatMessageDto[] {
+    const byId = new Map(fresh.map((item) => [item.id, item]));
+    return [...fresh, ...known.filter((item) => !byId.has(item.id))];
+  }
+
+  function rememberChat(chatId: string): void {
+    session.messages.set(chatId, {messages: chatMessages, nextBefore: chatBefore});
+  }
+
+  /**
+   * Whether this message begins a run from one person. The thread is newest
+   * first, so the message above it is the next in the array; a name repeated
+   * over every bubble of someone's five-message burst is noise, and every
+   * messenger names the first and lets the rest follow.
+   */
+  function startsSenderRun(index: number): boolean {
+    const message = chatMessages[index];
+    const above = chatMessages[index + 1];
+    if (!message) return false;
+    // A stamp between them starts a new run whoever sent it.
+    return !above || above.sender !== message.sender || startsRun(index);
+  }
+
+  /**
+   * The name to put over a message. Falls back to the local part of the
+   * sender id, so a bridge that never resolved a profile still shows
+   * something a person can tell apart rather than a full `@id:server`.
+   */
+  function senderLabel(message: ChatMessageDto): string {
+    const name = message.senderName?.trim();
+    if (name && name !== message.sender) return name;
+    return message.sender.replace(/^@/, '').split(':')[0];
+  }
+
+  /**
+   * The page before the one on screen. The thread is `column-reverse`, so
+   * older messages append to the end of the array and the browser holds the
+   * reader's place for them — nothing has to be measured or restored.
+   */
+  async function loadOlderChat(): Promise<void> {
+    if (!activeChat || !chatBefore || busy === 'chat-older') return;
+    const chatId = activeChat.id;
+    const from = chatBefore;
+    busy = 'chat-older';
+    try {
+      const page = await api.comms.chatMessages(chatId, CHAT_PAGE, from);
+      if (activeChat?.id !== chatId || chatBefore !== from) return;
+      const known = new Set(chatMessages.map((item) => item.id));
+      chatMessages = [...chatMessages, ...page.messages.filter((item) => !known.has(item.id))];
+      if (activeChat) rememberChat(activeChat.id);
+      // A page that adds nothing new is the end of what the bridge backfilled;
+      // trusting only the token would spin on it forever.
+      chatBefore = page.messages.length === 0 ? null : page.nextBefore;
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  /** Whether the thread has been scrolled up far enough to offer a way back. */
+  let awayFromLatest = false;
+
+  function scrollToLatest(): void {
+    // `column-reverse` puts the newest message at offset zero.
+    threadEl?.scrollTo({top: 0, behavior: 'smooth'});
+  }
+
+  function onThreadScroll(): void {
+    if (!threadEl) return;
+    // The menu is pinned to the viewport, so scrolling the thread out from
+    // under it would leave it pointing at the wrong message.
+    if (messageMenu) closeMessageMenu();
+    awayFromLatest = Math.abs(threadEl.scrollTop) > 240;
+    if (!chatBefore) return;
+    // `column-reverse` puts the newest at scrollTop 0 and counts away from it;
+    // the sign of that offset differs by engine, so distance is what is read.
+    const fromTop = threadEl.scrollHeight - threadEl.clientHeight - Math.abs(threadEl.scrollTop);
+    if (fromTop < 240) void loadOlderChat();
+  }
+
+  /**
+   * Newly arrived messages in the open conversation. Only the head of the room
+   * is re-read and merged, so a long scrolled-back history is left alone.
+   */
+  async function refreshChat(): Promise<void> {
+    if (!activeChat || busy) return;
+    const chatId = activeChat.id;
+    try {
+      const page = await api.comms.chatMessages(chatId, 20);
+      if (activeChat?.id !== chatId) return;
+      const known = new Set(chatMessages.map((item) => item.id));
+      const fresh = page.messages.filter((item) => !known.has(item.id));
+      if (fresh.length === 0) return;
+      chatMessages = [...fresh, ...chatMessages];
+      if (activeChat) rememberChat(activeChat.id);
+      const newest = fresh[0];
+      if (newest) await api.comms.chatMarkRead(chatId, newest.id).catch(() => {});
+    } catch {
+      // A failed poll is not worth a banner; the next one takes its place.
     }
   }
 
@@ -380,10 +927,364 @@
     if (!activeChat || !text) return;
     busy = 'send-chat';
     const chatId = activeChat.id;
+    const answering = replyTo?.id;
     try {
-      const sent = await api.comms.chatSend(chatId, text);
+      const sent = await api.comms.chatSend(chatId, text, answering);
       chatMessages = [sent, ...chatMessages];
+      if (activeChat) rememberChat(activeChat.id);
       draft = '';
+      replyTo = null;
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  // ---- message actions ----------------------------------------------------
+
+  /**
+   * The actions offered on a message are the ones every network in the hub
+   * carries: an emoji on it, an answer to it, and its text on the clipboard.
+   * Anything one platform has and the others do not would be a button that
+   * fails on most of the list, so it is not offered.
+   */
+  const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉', '😮', '🙏'];
+
+  /** The message the composer is answering, if any. */
+  let replyTo: ChatMessageDto | null = null;
+  /** Which message has its emoji row open. */
+  let reactingTo = '';
+  let copied = '';
+  /**
+   * The message actions, as a context menu rather than a row of icons under
+   * every bubble: they are occasional, and a permanent row of them competes
+   * with the conversation it is attached to. `x`/`y` are viewport coordinates
+   * of the click, so the menu opens where the pointer already is.
+   */
+  let messageMenu: {message: ChatMessageDto; x: number; y: number} | null = null;
+  let messageMenuEl: HTMLDivElement | undefined;
+
+  function openMessageMenu(event: MouseEvent, message: ChatMessageDto): void {
+    event.preventDefault();
+    reactingTo = '';
+    messageMenu = {message, x: event.clientX, y: event.clientY};
+    void tick().then(clampMessageMenu);
+  }
+
+  /** Keeps the menu on screen when the click lands near an edge — a menu that
+   * opens half outside the window is worse than one a few pixels off. */
+  function clampMessageMenu(): void {
+    if (!messageMenu || !messageMenuEl) return;
+    const {width, height} = messageMenuEl.getBoundingClientRect();
+    const margin = 8;
+    messageMenu = {
+      ...messageMenu,
+      x: Math.max(margin, Math.min(messageMenu.x, window.innerWidth - width - margin)),
+      y: Math.max(margin, Math.min(messageMenu.y, window.innerHeight - height - margin)),
+    };
+  }
+
+  function closeMessageMenu(): void {
+    messageMenu = null;
+    reactingTo = '';
+  }
+
+  function startReply(message: ChatMessageDto): void {
+    replyTo = message;
+    reactingTo = '';
+    composerInput?.focus();
+  }
+
+  async function copyMessage(message: ChatMessageDto): Promise<void> {
+    const text = message.body || message.attachments?.[0]?.name || '';
+    if (!text) return;
+    await navigator.clipboard.writeText(text).catch(() => {});
+    copied = message.id;
+    setTimeout(() => {
+      if (copied === message.id) copied = '';
+    }, 1_200);
+  }
+
+  /**
+   * Adds the emoji, or takes it back when it is already ours — the same tap
+   * doing both, as every messenger behaves. The bubble is updated first so the
+   * reaction lands under the pointer rather than a round trip later.
+   */
+  async function react(message: ChatMessageDto, key: string): Promise<void> {
+    if (!activeChat) return;
+    const chatId = activeChat.id;
+    const existing = (message.reactions ?? []).find((item) => item.key === key);
+    reactingTo = '';
+    const mineEventId = existing?.mineEventId ?? null;
+    updateMessage(message.id, (item) => ({
+      ...item,
+      reactions: applyReaction(item.reactions ?? [], key, mineEventId ? null : 'pending'),
+    }));
+    try {
+      if (mineEventId) {
+        await api.comms.chatUnreact(chatId, mineEventId);
+      } else {
+        const id = await api.comms.chatReact(chatId, message.id, key);
+        updateMessage(message.id, (item) => ({
+          ...item,
+          reactions: (item.reactions ?? []).map((entry) =>
+            entry.key === key ? {...entry, mineEventId: id} : entry,
+          ),
+        }));
+      }
+    } catch (cause) {
+      error = readableError(cause);
+      // Put the bubble back the way it was rather than leaving a reaction that
+      // only exists here.
+      updateMessage(message.id, (item) => ({
+        ...item,
+        reactions: applyReaction(item.reactions ?? [], key, mineEventId),
+      }));
+    }
+  }
+
+  /** Adds or removes one emoji from a message's tally. */
+  function applyReaction(
+    reactions: ChatReactionDto[],
+    key: string,
+    mineEventId: string | null,
+  ): ChatReactionDto[] {
+    const existing = reactions.find((item) => item.key === key);
+    if (!existing) return [...reactions, {key, count: 1, mineEventId}];
+    // Adding when it is already ours is the undo, and vice versa.
+    const adding = !existing.mineEventId;
+    const count = existing.count + (adding ? 1 : -1);
+    if (count <= 0) return reactions.filter((item) => item.key !== key);
+    return reactions.map((item) =>
+      item.key === key ? {...item, count, mineEventId: adding ? mineEventId : null} : item,
+    );
+  }
+
+  function updateMessage(id: string, change: (message: ChatMessageDto) => ChatMessageDto): void {
+    chatMessages = chatMessages.map((item) => (item.id === id ? change(item) : item));
+  }
+
+  /** The line quoted above a reply, when the message it answers is loaded. */
+  function quoted(message: ChatMessageDto): ChatMessageDto | null {
+    if (!message.replyTo) return null;
+    return chatMessages.find((item) => item.id === message.replyTo) ?? null;
+  }
+
+  // ---- composer -----------------------------------------------------------
+
+  let composerInput: HTMLInputElement | null = null;
+  /** The recorder, while a voice note is being taken. */
+  async function attachToChat(): Promise<void> {
+    if (!activeChat) return;
+    const chatId = activeChat.id;
+    const paths = await api.comms.chatPickFiles();
+    if (paths.length === 0) return;
+    busy = 'attach';
+    try {
+      await api.comms.chatSendFiles(chatId, paths);
+      // The files come back as messages of their own on the next read.
+      await refreshChat();
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  /**
+   * A voice note, recorded in place.
+   *
+   * Three states, the way every messenger does it: nothing (the composer is a
+   * text field), recording (the field becomes a running meter), and paused
+   * (the same meter, with the take playable before it is sent). Nothing
+   * touches disk — the recording lives as blob parts until it is either sent
+   * or thrown away.
+   */
+  type VoiceState = 'idle' | 'recording' | 'paused';
+  let voiceState: VoiceState = 'idle';
+  let recorder: MediaRecorder | null = null;
+  let voiceStream: MediaStream | null = null;
+  let voiceParts: Blob[] = [];
+  /** Seconds recorded, counted while running rather than measured after. */
+  let elapsed = 0;
+  let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+  /** Loudness samples, oldest first, drawn as the bars across the field. */
+  let levels: number[] = [];
+  let meter: {context: AudioContext; analyser: AnalyserNode; timer: number} | null = null;
+  /** The take so far, for playing back before sending. */
+  let previewUrl = '';
+  let previewing = false;
+  let preview: HTMLAudioElement | null = null;
+  /** How many bars the meter holds before the oldest scrolls off. */
+  const METER_BARS = 56;
+
+  function clockOf(seconds: number): string {
+    const whole = Math.floor(seconds);
+    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+  }
+
+  async function startVoice(): Promise<void> {
+    if (!activeChat || voiceState !== 'idle') return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      const capture = new MediaRecorder(stream);
+      voiceParts = [];
+      capture.ondataavailable = (event) => {
+        if (event.data.size > 0) voiceParts = [...voiceParts, event.data];
+      };
+      // A timeslice means parts accumulate as it runs, so a pause can offer
+      // the take for playback without stopping the recorder.
+      capture.start(1_000);
+      recorder = capture;
+      voiceStream = stream;
+      voiceState = 'recording';
+      elapsed = 0;
+      levels = [];
+      startClock();
+      startMeter(stream);
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+      await discardVoice();
+    }
+  }
+
+  function startClock(): void {
+    stopClock();
+    elapsedTimer = setInterval(() => (elapsed += 0.1), 100);
+  }
+
+  function stopClock(): void {
+    if (elapsedTimer) clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+
+  /**
+   * Samples how loud the microphone is, so the bars move with the voice rather
+   * than animating on their own. Uses the time-domain signal: it is the level,
+   * which is what a recording meter shows, not a spectrum.
+   */
+  function startMeter(stream: MediaStream): void {
+    stopMeter();
+    try {
+      const context = new AudioContext();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 1024;
+      context.createMediaStreamSource(stream).connect(analyser);
+      const samples = new Uint8Array(analyser.fftSize);
+      const timer = window.setInterval(() => {
+        analyser.getByteTimeDomainData(samples);
+        let sum = 0;
+        for (const sample of samples) sum += (sample - 128) ** 2;
+        const rms = Math.sqrt(sum / samples.length) / 128;
+        const next = [...levels, Math.min(1, rms * 3)];
+        levels = next.length > METER_BARS ? next.slice(next.length - METER_BARS) : next;
+      }, 100);
+      meter = {context, analyser, timer};
+    } catch {
+      // A meter is decoration; a recording without one still records.
+    }
+  }
+
+  function stopMeter(): void {
+    if (!meter) return;
+    window.clearInterval(meter.timer);
+    void meter.context.close().catch(() => {});
+    meter = null;
+  }
+
+  /** Holds the take where it is, and makes it playable. */
+  function pauseVoice(): void {
+    if (voiceState !== 'recording' || !recorder) return;
+    recorder.pause();
+    stopClock();
+    stopMeter();
+    voiceState = 'paused';
+    // Flushes what has been captured so far into a part, so the preview is the
+    // whole take rather than everything bar the last second.
+    recorder.requestData();
+    setTimeout(() => {
+      if (voiceState !== 'paused') return;
+      revokePreview();
+      previewUrl = URL.createObjectURL(new Blob(voiceParts, {type: recorder?.mimeType || 'audio/webm'}));
+    }, 60);
+  }
+
+  function resumeVoice(): void {
+    if (voiceState !== 'paused' || !recorder || !voiceStream) return;
+    stopPreview();
+    recorder.resume();
+    startClock();
+    startMeter(voiceStream);
+    voiceState = 'recording';
+  }
+
+  function togglePreview(): void {
+    if (!previewUrl) return;
+    if (previewing) return stopPreview();
+    preview = new Audio(previewUrl);
+    preview.onended = () => (previewing = false);
+    void preview.play().then(() => (previewing = true)).catch(() => (previewing = false));
+  }
+
+  function stopPreview(): void {
+    preview?.pause();
+    preview = null;
+    previewing = false;
+  }
+
+  function revokePreview(): void {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = '';
+  }
+
+  /** Throws the take away without sending it. */
+  async function discardVoice(): Promise<void> {
+    stopClock();
+    stopMeter();
+    stopPreview();
+    revokePreview();
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+    voiceStream?.getTracks().forEach((track) => track.stop());
+    recorder = null;
+    voiceStream = null;
+    voiceParts = [];
+    voiceState = 'idle';
+    elapsed = 0;
+    levels = [];
+  }
+
+  /** Ends the take and sends it. */
+  async function sendVoice(): Promise<void> {
+    if (!activeChat || voiceState === 'idle' || !recorder) return;
+    const chatId = activeChat.id;
+    const capture = recorder;
+    const type = capture.mimeType || 'audio/webm';
+    stopClock();
+    stopMeter();
+    stopPreview();
+    const finished = new Promise<void>((resolve) => {
+      capture.onstop = () => resolve();
+    });
+    if (capture.state !== 'inactive') capture.stop();
+    await finished;
+    voiceStream?.getTracks().forEach((track) => track.stop());
+    const blob = new Blob(voiceParts, {type});
+    revokePreview();
+    recorder = null;
+    voiceStream = null;
+    voiceParts = [];
+    voiceState = 'idle';
+    elapsed = 0;
+    levels = [];
+    if (blob.size === 0) return;
+    busy = 'voice';
+    try {
+      await api.comms.chatSendAudio(chatId, new Uint8Array(await blob.arrayBuffer()), blob.type);
+      await refreshChat();
       error = '';
     } catch (cause) {
       error = readableError(cause);
@@ -398,15 +1299,19 @@
     // sender, subject, date — and fill the body in when it arrives. Waiting on
     // the fetch before showing anything reads as a dead click.
     openEnvelope = envelope;
-    openMail = null;
+    // A message read or prefetched earlier opens on its own body rather than
+    // on the skeleton; the fetch behind it only replaces what changed.
+    const cached = session.mail.get(mailKey(source.account, source.folder, envelope.id));
+    openMail = cached ?? null;
     // Each message earns its own answer on remote content.
     allowRemote = false;
     attachmentPaths = [];
     void loadThread(envelope);
     composing = false;
-    busy = `mail:${envelope.id}`;
+    busy = cached ? '' : `mail:${envelope.id}`;
     try {
       const message = await api.comms.mailMessage(envelope.id, source.account, source.folder);
+      session.mail.set(mailKey(source.account, source.folder, envelope.id), message);
       // A slower earlier click must not overwrite whatever is open now.
       if (openEnvelope?.id !== envelope.id) return;
       openMail = message;
@@ -419,7 +1324,7 @@
       }
       error = '';
     } catch (cause) {
-      if (openEnvelope?.id === envelope.id) {
+      if (openEnvelope?.id === envelope.id && !cached) {
         error = readableError(cause);
         openMail = null;
       }
@@ -775,14 +1680,94 @@
     return value ? when(value) : '';
   }
 
+  /** The clock part of every stamp in a thread: 12-hour, as asked for. */
+  function clockTime(parsed: Date): string {
+    return parsed.toLocaleTimeString(activeLocale(), {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  }
+
+  /** The time on a single bubble. */
+  function messageTime(value: string): string {
+    const parsed = new Date(value.replace(' ', 'T'));
+    return Number.isNaN(parsed.getTime()) ? value : clockTime(parsed);
+  }
+
+  /**
+   * The centred stamp over a run of messages, saying when the run began. It
+   * says as much as it has to and no more, widening a step at a time as the
+   * message recedes: the clock alone today, then Yesterday, then the weekday
+   * while it is still this week, then the date, then the year as well.
+   */
+  function dividerStamp(value: string): string {
+    const parsed = new Date(value.replace(' ', 'T'));
+    if (Number.isNaN(parsed.getTime())) return value;
+    const time = clockTime(parsed);
+    const today = startOfDay(new Date());
+    const days = Math.round((today.getTime() - startOfDay(parsed).getTime()) / DAY_MS);
+    if (days <= 0) return time;
+    if (days === 1) return `${$t('chats.yesterday')} ${time}`;
+    if (days < 7)
+      return `${parsed.toLocaleDateString(activeLocale(), {weekday: 'long'})} ${time}`;
+    const day = String(parsed.getDate()).padStart(2, '0');
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    return parsed.getFullYear() === new Date().getFullYear()
+      ? `${day}/${month} ${time}`
+      : `${parsed.getFullYear()} ${day}/${month} ${time}`;
+  }
+
+  function startOfDay(value: Date): Date {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+
+  const DAY_MS = 86_400_000;
+  /** A pause this long makes the next message the start of a new run. */
+  const RUN_GAP_MS = 30 * 60_000;
+
+  /**
+   * Whether a stamp belongs over this message. The thread is newest first, so
+   * the message before it in time is the next one in the array — a stamp goes
+   * in when that one is a different day or long enough ago to be a separate
+   * sitting, and over the oldest message on screen, which always starts a run.
+   */
+  function startsRun(index: number): boolean {
+    const message = chatMessages[index];
+    const older = chatMessages[index + 1];
+    if (!message) return false;
+    if (!older) return true;
+    const at = new Date(message.sentAt.replace(' ', 'T')).getTime();
+    const before = new Date(older.sentAt.replace(' ', 'T')).getTime();
+    if (Number.isNaN(at) || Number.isNaN(before)) return false;
+    return (
+      at - before > RUN_GAP_MS ||
+      startOfDay(new Date(at)).getTime() !== startOfDay(new Date(before)).getTime()
+    );
+  }
+
   function sender(envelope: MailEnvelopeDto): string {
     return envelope.from.name ?? envelope.from.address ?? $t('hub.unknown');
   }
 </script>
 
+<svelte:window
+  onkeydown={(event) => { if (event.key === 'Escape' && messageMenu) { event.stopPropagation(); closeMessageMenu(); } }}
+  onclick={(event) => {
+    if (messageMenu && !(event.target as HTMLElement).closest('.hub-view-message-menu')) closeMessageMenu();
+  }}
+/>
+
 <div class="hub-view">
   <div class="hub-view-grid" class:reading={!!openMail || !!openEnvelope || !!activeChat || composing}>
-  <nav class="hub-view-rail" aria-label={$t('hub.sources')}>
+  <nav
+    class="hub-view-rail"
+    class:at-top={railAtTop}
+    class:at-bottom={railAtBottom}
+    aria-label={$t('hub.sources')}
+    bind:this={railElement}
+    onscroll={measureRailEdges}
+  >
     {#each linked as bridge (bridge.platform)}
       {@const ids = bridge.accounts.map((item) => item.id)}
       {@const grouped = ids.length > 1}
@@ -996,7 +1981,15 @@
           <button type="button" onclick={() => (selected = new Set())}>{$t('common.cancel')}</button>
         </div>
       {/if}
-      <ul class="hub-view-rows">
+      {#if rowsScrolled}
+        <!-- Rides over the top of the list once the reader is well down it,
+             which is the only point at which getting back matters. -->
+        <button type="button" class="hub-view-to-top" onclick={scrollRowsToTop}>
+          <Icon name="arrow-up" size={13} />
+          {$t('hub.scrollToTop')}
+        </button>
+      {/if}
+      <ul class="hub-view-rows" bind:this={rowsEl} onscroll={onRowsScroll}>
         {#each visibleEnvelopes as envelope (envelope.id)}
           <li>
             <button
@@ -1028,21 +2021,45 @@
               disabled={busy === 'more'}
               onclick={() => void loadEnvelopes(true)}
             >
-              {busy === 'more' ? $t('common.loading') : $t('hub.loadMore')}
+              {#if busy === 'more'}
+                <span class="loading-dots" role="status" aria-label={$t('common.loading')}><i></i><i></i><i></i></span>
+              {:else}
+                {$t('hub.loadMore')}
+              {/if}
             </button>
           </li>
         {/if}
         {#if visibleEnvelopes.length === 0}
-          <li class="hub-view-empty">
-            {busy === 'envelopes' || busy === 'folders'
-              ? $t('common.loading')
-              : envelopes.length > 0
-                ? $t('hub.noneMatchFilter')
-                : $t('hub.nothingHere')}
-          </li>
+          {#if busy === 'envelopes' || busy === 'folders'}
+            <li class="hub-view-loading-rows" role="status" aria-label={$t('common.loading')}>
+              {#each SKELETON_ROWS as index (index)}
+                <span class="hub-view-row hub-view-row-skeleton" aria-hidden="true">
+                  <span class="hub-view-chat-copy">
+                    <span class="hub-view-skeleton-line" style="width:38%"></span>
+                    <span class="hub-view-skeleton-line" style="width:82%"></span>
+                  </span>
+                </span>
+              {/each}
+            </li>
+          {:else}
+            <li class="hub-view-empty">
+              {envelopes.length > 0 ? $t('hub.noneMatchFilter') : $t('hub.nothingHere')}
+            </li>
+          {/if}
         {/if}
       </ul>
     {:else if source?.kind === 'platform'}
+      <!-- The same head, and the same bare search field, the mailbox list
+           above uses: the two halves of the hub are one list with different
+           transports, and a second search treatment would say otherwise. -->
+      <div class="hub-view-list-head">
+        <input
+          bind:value={chatSearch}
+          type="search"
+          placeholder={$t('hub.searchConversations')}
+          aria-label={$t('hub.searchConversations')}
+        />
+      </div>
       <ul class="hub-view-rows">
         {#each visibleChats as chat (chat.id)}
           <li>
@@ -1053,8 +2070,19 @@
               class:unread={(chat.unread ?? 0) > 0}
               onclick={() => void openChat(chat)}
             >
-              {#if chat.avatarUrl}
-                <img class="hub-view-chat-avatar" src={chat.avatarUrl} alt="" loading="lazy" />
+              {#if chat.avatarUrl && !brokenAvatars.has(chat.id)}
+                <!-- Bridged avatars are fetched from the homeserver's
+                     authenticated media endpoint, which answers 404 for a
+                     picture the bridge referenced but never uploaded. The
+                     initial below is the fallback: a broken-image glyph is
+                     worse than no picture at all. -->
+                <img
+                  class="hub-view-chat-avatar"
+                  src={chat.avatarUrl}
+                  alt=""
+                  loading="lazy"
+                  onerror={() => markAvatarBroken(chat.id)}
+                />
               {:else}
                 <!-- An initial, so a row without a picture still lines up with
                      the rows that have one. -->
@@ -1062,6 +2090,9 @@
                   >{chat.name.trim().charAt(0).toUpperCase()}</span
                 >
               {/if}
+              <!-- Two lines, each with its own right-hand element: the time
+                   sits against the name, the unread count against the preview,
+                   so both columns centre on the line they belong to. -->
               <span class="hub-view-chat-copy">
                 <span class="hub-view-row-top">
                   <strong>{chat.name}</strong>
@@ -1069,23 +2100,45 @@
                     <time datetime={chat.lastActivity}>{chatTime(chat.lastActivity)}</time>
                   {/if}
                 </span>
-                {#if chat.preview}
-                  <span class="hub-view-chat-preview">{chat.preview}</span>
-                {/if}
+                <span class="hub-view-chat-bottom">
+                  <span class="hub-view-chat-preview">{chat.preview ?? ''}</span>
+                  {#if (chat.unread ?? 0) > 0}
+                    <span class="hub-view-chat-unread" aria-label={$t('hub.unreadCount', {count: chat.unread ?? 0})}
+                      >{chat.unread! > 99 ? '99+' : chat.unread}</span
+                    >
+                  {/if}
+                </span>
               </span>
-              {#if (chat.unread ?? 0) > 0}
-                <span class="hub-view-chat-unread" aria-label={$t('hub.unreadCount', {count: chat.unread ?? 0})}
-                  >{chat.unread! > 99 ? '99+' : chat.unread}</span
-                >
-              {/if}
             </button>
           </li>
         {:else}
-          <li class="hub-view-empty">{$t('hub.noConversations')}</li>
+          {#if loading}
+            <!-- The rows that are coming, in their own shape: a spinner in the
+                 middle of an empty column says less than the list arriving. -->
+            {#each SKELETON_ROWS as index (index)}
+              <li class="hub-view-row hub-view-row-skeleton" aria-hidden="true">
+                <span class="hub-view-chat-avatar hub-view-skeleton-line"></span>
+                <span class="hub-view-chat-copy">
+                  <span class="hub-view-skeleton-line" style="width:42%"></span>
+                  <span class="hub-view-skeleton-line" style="width:76%"></span>
+                </span>
+              </li>
+            {/each}
+          {:else}
+            <li class="hub-view-empty">
+              {chatSearch.trim() ? $t('common.noMatches') : $t('hub.noConversations')}
+            </li>
+          {/if}
         {/each}
       </ul>
     {:else}
-      <p class="hub-view-empty">{loading ? $t('common.loading') : $t('hub.pickSource')}</p>
+      <p class="hub-view-empty">
+        {#if loading}
+          <span class="loading-dots" role="status" aria-label={$t('common.loading')}><i></i><i></i><i></i></span>
+        {:else}
+          {$t('hub.pickSource')}
+        {/if}
+      </p>
     {/if}
   </section>
 
@@ -1335,24 +2388,52 @@
         <p class="hub-view-empty">{$t('hub.messageFailed')}</p>
       {/if}
     {:else if activeChat}
-      <header class="hub-view-reader-head">
-        <button type="button" class="hub-view-back" onclick={closeReader}>
-          <Icon name="back" size={13} /> Back
+      <header class="hub-view-reader-head hub-view-chat-head">
+        <!-- The chevron sits beside the name rather than above it: in a
+             conversation the name is the title, and a labelled row of its own
+             costs a line that the thread would rather have. -->
+        <button
+          type="button"
+          class="hub-view-back hub-view-back-icon"
+          aria-label={$t('browser.back')}
+          onclick={closeReader}
+        >
+          <Icon name="back" size={15} />
         </button>
         <h2>{activeChat.name}</h2>
       </header>
-      <div class="hub-view-thread">
-        {#each chatMessages as message (message.id)}
+      <div class="hub-view-thread" bind:this={threadEl} onscroll={onThreadScroll}>
+        {#each chatMessages as message, index (message.id)}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="hub-view-bubble-row"
+            class:mine={message.mine}
+            oncontextmenu={(event) => openMessageMenu(event, message)}
+          >
+          <!-- Who sent it, above the bubble and aligned to its leading edge —
+               named in a group, where it is the only way to tell people apart,
+               and left out of a direct chat, where the header already says it.
+               A bridged sender id reads `@whatsapp_614…:server`, which names
+               nobody, so the name the bridge resolved is what shows. -->
+          {#if !message.mine && activeChat.group && startsSenderRun(index)}
+            <span class="hub-view-bubble-who">{senderLabel(message)}</span>
+          {/if}
           <div class="hub-view-bubble" class:mine={message.mine}>
-            <!-- The contact's own name. A bridged sender id reads
-                 `@whatsapp_614…:server`, which names nobody. -->
-            {#if !message.mine}
-              <span class="hub-view-bubble-who">{message.senderName ?? message.sender}</span>
+            {#if quoted(message)}
+              <!-- What this answers, kept short: the point is recognition, and
+                   the message it quotes is a scroll away. -->
+              <span class="hub-view-quote">
+                <strong>{senderLabel(quoted(message)!)}</strong>
+                {quoted(message)!.body || $t('hub.attachment')}
+              </span>
+            {:else if message.replyTo}
+              <span class="hub-view-quote">{$t('hub.replyToEarlier')}</span>
             {/if}
             {#each message.attachments ?? [] as attachment (attachment.url)}
               {#if attachment.kind === 'image'}
                 <img
                   class="hub-view-bubble-image"
+                  class:sticker={attachment.sticker}
                   src={attachment.url}
                   alt={attachment.name}
                   width={attachment.width ?? undefined}
@@ -1391,26 +2472,208 @@
                 {$t('hub.viewIn', {app: message.viewIn.app})}
               </button>
             {/if}
-            <em>{when(message.sentAt)}</em>
+            {#if (message.reactions ?? []).length > 0}
+              <span class="hub-view-reactions">
+                {#each message.reactions ?? [] as reaction (reaction.key)}
+                  <button
+                    type="button"
+                    class="hub-view-reaction"
+                    class:mine={Boolean(reaction.mineEventId)}
+                    onclick={() => void react(message, reaction.key)}
+                  >
+                    {reaction.key}
+                    {#if reaction.count > 1}<span>{reaction.count}</span>{/if}
+                  </button>
+                {/each}
+              </span>
+            {/if}
+            <em>{messageTime(message.sentAt)}</em>
           </div>
+          </div>
+          <!-- After the bubble in the DOM, which `column-reverse` paints above
+               it: the stamp introduces the run that starts here. -->
+          {#if startsRun(index)}
+            <p class="hub-view-stamp">{dividerStamp(message.sentAt)}</p>
+          {/if}
         {:else}
-          <p class="hub-view-empty">{$t('hub.noMessages')}</p>
+          {#if busy.startsWith('chat:')}
+            {#each SKELETON_BUBBLES as bubble, index (index)}
+              <div class="hub-view-bubble-row" class:mine={bubble.mine} aria-hidden="true">
+                <div class="hub-view-bubble hub-view-bubble-skeleton" class:mine={bubble.mine} style={`width:${bubble.width}`}></div>
+              </div>
+            {/each}
+          {:else}
+            <p class="hub-view-empty">{$t('hub.noMessages')}</p>
+          {/if}
         {/each}
+        <!-- Last in the DOM, so `column-reverse` puts it at the top of the
+             thread — where the history being fetched is about to appear. -->
+        {#if busy === 'chat-older'}
+          <p class="hub-view-older">
+            <span class="loading-dots" role="status" aria-label={$t('common.loading')}><i></i><i></i><i></i></span>
+          </p>
+        {/if}
       </div>
-      <div class="hub-view-composer">
-        <input
-          bind:value={draft}
-          placeholder={$t('hub.messagePlaceholder', {name: activeChat.name})}
-          onkeydown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void sendChat();
-            }
-          }}
-        />
-        <button type="button" disabled={busy === 'send-chat' || !draft.trim()} onclick={() => void sendChat()}>
-          <Icon name="send" size={15} />
+
+      {#if messageMenu}
+        {@const target = messageMenu.message}
+        <!-- Fixed to the viewport rather than to the thread: the thread
+             scrolls, and a menu that scrolls with it would drift away from the
+             message it was opened on. -->
+        <div
+          class="flareai-dropdown-menu hub-view-message-menu"
+          role="menu"
+          bind:this={messageMenuEl}
+          style:left={`${messageMenu.x}px`}
+          style:top={`${messageMenu.y}px`}
+        >
+          <span class="hub-view-emoji-row">
+            {#each QUICK_REACTIONS as emoji (emoji)}
+              <button type="button" onclick={() => { void react(target, emoji); closeMessageMenu(); }}>{emoji}</button>
+            {/each}
+          </span>
+          <button
+            class="flareai-dropdown-item"
+            role="menuitem"
+            onclick={() => { startReply(target); closeMessageMenu(); }}
+          ><Icon name="back" size={14} /><span>{$t('hub.reply')}</span></button>
+          <button
+            class="flareai-dropdown-item"
+            role="menuitem"
+            onclick={() => { void copyMessage(target); closeMessageMenu(); }}
+          ><Icon name="copy" size={14} /><span>{$t('common.copy')}</span></button>
+        </div>
+      {/if}
+      {#if awayFromLatest}
+        <!-- Sits over the foot of the thread, above the composer: the way back
+             to the newest message once the reader has scrolled up from it. -->
+        <button type="button" class="hub-view-to-latest" onclick={scrollToLatest}>
+          <Icon name="arrow-down" size={13} />
+          {$t('chat.scrollToBottom')}
         </button>
+      {/if}
+      {#if replyTo}
+        <!-- What the next message will answer, with a way out of it. -->
+        <div class="hub-view-replying">
+          <Icon name="back" size={12} />
+          <span><strong>{senderLabel(replyTo)}</strong> {replyTo.body || $t('hub.attachment')}</span>
+          <button type="button" aria-label={$t('common.cancel')} onclick={() => (replyTo = null)}>
+            <Icon name="close" size={12} />
+          </button>
+        </div>
+      {/if}
+      <!-- One bar in three states. Nothing recorded: a text field with attach
+           beside it, and one primary button that is the microphone until there
+           is something to send. Recording: the field becomes the meter, and
+           attach and the microphone step aside — there is nothing to attach to
+           a take in progress. -->
+      <div class="hub-view-composer" class:capturing={voiceState !== 'idle'}>
+        {#if voiceState === 'idle'}
+          <input
+            bind:this={composerInput}
+            bind:value={draft}
+            placeholder={$t('hub.messagePlaceholder', {name: activeChat.name})}
+            onkeydown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void sendChat();
+              }
+            }}
+          />
+          <button
+            type="button"
+            title={$t('hub.attachFiles')}
+            aria-label={$t('hub.attachFiles')}
+            disabled={busy === 'attach'}
+            onclick={() => void attachToChat()}
+          >
+            <Icon name="attach" size={15} />
+          </button>
+          {#if draft.trim()}
+            <button
+              type="button"
+              class="hub-view-primary"
+              title={$t('hub.send')}
+              aria-label={$t('hub.send')}
+              disabled={busy === 'send-chat'}
+              onclick={() => void sendChat()}
+            >
+              <Icon name="send" size={15} />
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="hub-view-primary"
+              title={$t('hub.recordVoice')}
+              aria-label={$t('hub.recordVoice')}
+              disabled={busy === 'voice'}
+              onclick={() => void startVoice()}
+            >
+              <Icon name="mic" size={15} />
+            </button>
+          {/if}
+        {:else}
+          <button
+            type="button"
+            class="hub-view-discard"
+            title={$t('hub.discardRecording')}
+            aria-label={$t('hub.discardRecording')}
+            onclick={() => void discardVoice()}
+          >
+            <Icon name="trash" size={15} />
+          </button>
+          <div class="hub-view-take">
+            {#if voiceState === 'paused'}
+              <button
+                type="button"
+                class="hub-view-take-play"
+                title={previewing ? $t('common.pause') : $t('hub.playRecording')}
+                aria-label={previewing ? $t('common.pause') : $t('hub.playRecording')}
+                onclick={togglePreview}
+              >
+                <Icon name={previewing ? 'pause' : 'play'} size={12} />
+              </button>
+            {:else}
+              <!-- The dot says it is live, the way a recorder's light does. -->
+              <span class="hub-view-take-live" aria-hidden="true"></span>
+            {/if}
+            <span class="hub-view-take-clock">{clockOf(elapsed)}</span>
+            <span class="hub-view-take-wave" aria-hidden="true">
+              {#each levels as level, index (index)}
+                <i style={`height:${Math.max(2, Math.round(level * 18))}px`}></i>
+              {/each}
+            </span>
+          </div>
+          {#if voiceState === 'recording'}
+            <button
+              type="button"
+              title={$t('hub.pauseRecording')}
+              aria-label={$t('hub.pauseRecording')}
+              onclick={pauseVoice}
+            >
+              <Icon name="pause" size={15} />
+            </button>
+          {:else}
+            <button
+              type="button"
+              title={$t('hub.resumeRecording')}
+              aria-label={$t('hub.resumeRecording')}
+              onclick={resumeVoice}
+            >
+              <Icon name="mic" size={15} />
+            </button>
+          {/if}
+          <button
+            type="button"
+            class="hub-view-primary hub-view-send-voice"
+            title={$t('hub.send')}
+            aria-label={$t('hub.send')}
+            disabled={busy === 'voice'}
+            onclick={() => void sendVoice()}
+          >
+            <Icon name="send" size={15} />
+          </button>
+        {/if}
       </div>
     {:else}
       <div class="hub-view-blank">

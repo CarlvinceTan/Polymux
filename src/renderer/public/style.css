@@ -131,6 +131,19 @@
   initial-value: 0px;
 }
 
+/* The chat drawer's edge, readable by the fixed chrome anchored to it. The
+   grid track above cannot serve: a track is laid out on `main` and does not
+   inherit. Registered, so it interpolates with the track rather than jumping
+   to the closed value the moment the drawer starts sliding — chrome that read
+   an unregistered var settled a whole slide early and the drawer rode over it.
+   Anything positioned off this must not transition that position itself: the
+   value already arrives animated, and easing it twice puts it behind. */
+@property --chat-drawer-offset {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
 @property --content-right-column {
   syntax: "<length>";
   inherits: true;
@@ -169,6 +182,14 @@ html, body { overflow: hidden; }
 /* Scrollbars stay hidden on every scrollable surface; scrolling still works. */
 * { scrollbar-width: none; -ms-overflow-style: none; }
 *::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* Every scrollable column in Settings wears this: the content softens into the
+   edge it runs past, and goes solid at an edge it is scrolled hard against, so
+   the fade always means "there is more this way". `at-top`/`at-bottom` are kept
+   in step by the `scrollFade` action in lib/scrollFade.ts. */
+.scroll-fade { --scroll-fade-top: transparent; --scroll-fade-bottom: transparent; -webkit-mask-image: linear-gradient(to bottom, var(--scroll-fade-top), #000 6px, #000 calc(100% - 6px), var(--scroll-fade-bottom)); mask-image: linear-gradient(to bottom, var(--scroll-fade-top), #000 6px, #000 calc(100% - 6px), var(--scroll-fade-bottom)); }
+.scroll-fade.at-top { --scroll-fade-top: #000; }
+.scroll-fade.at-bottom { --scroll-fade-bottom: #000; }
+
 body { background: var(--app-bg); }
 button, input, textarea { font: inherit; }
 button { color: inherit; -webkit-tap-highlight-color: transparent; }
@@ -193,8 +214,16 @@ button:focus-visible, [contenteditable]:focus-visible { outline: 2px solid rgba(
 :root[data-platform="darwin"] .inactive-traffic-lights i { width: 14px; height: 14px; border: 1px solid rgba(0,0,0,.1); border-radius: 50%; background: #c8c8c8; box-shadow: inset 0 0 0 .5px rgba(255,255,255,.18); }
 .top-controls, .left-controls, .title-bar-icon-button, .conversation-title-bar > button, .conversation-title-bar > input { -webkit-app-region: no-drag; }
 
-main { --chat-drawer-column: 0px; --content-right-column: 0px; --content-composer-column: 0px; position: relative; height: 100vh; display: grid; grid-template-columns: var(--chat-drawer-column) minmax(0,1fr) var(--content-right-column); overflow-x: hidden; background: var(--main-panel-background); transition: --chat-drawer-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-right-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-composer-column var(--drawer-motion-duration) var(--drawer-motion-ease); }
-main.summary-open, main.summary-open .conversation-column, main.summary-open .sticky-composer, main.summary-open .composer-column-content { transition-duration: var(--summary-motion-duration); }
+main { --chat-drawer-column: 0px; --content-right-column: 0px; --content-composer-column: 0px; position: relative; height: 100vh; display: grid; grid-template-columns: var(--chat-drawer-column) minmax(0,1fr) var(--content-right-column); overflow-x: hidden; background: var(--main-panel-background); transition: --chat-drawer-column var(--drawer-motion-duration) var(--drawer-motion-ease), --chat-drawer-offset var(--drawer-motion-duration) var(--drawer-motion-ease), --content-right-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-composer-column var(--drawer-motion-duration) var(--drawer-motion-ease); }
+/* Summary clears its column quicker than a drawer slides, but that shorter
+   duration belongs only to the properties Summary drives. The chat drawer's
+   track, and the fixed chrome anchored to its edge, keep the drawer's own
+   duration: shortened along with the rest, the content settled at its
+   drawer-closed place while the drawer was still sliding out, and the drawer
+   rode over it for the rest of the slide. */
+main.summary-open { transition: --chat-drawer-column var(--drawer-motion-duration) var(--drawer-motion-ease), --chat-drawer-offset var(--drawer-motion-duration) var(--drawer-motion-ease), --content-right-column var(--summary-motion-duration) var(--drawer-motion-ease), --content-composer-column var(--summary-motion-duration) var(--drawer-motion-ease); }
+main.summary-open .conversation-column, main.summary-open .composer-column-content { transition-duration: var(--summary-motion-duration); }
+main.summary-open .sticky-composer { transition: transform var(--summary-motion-duration) var(--drawer-motion-ease), opacity var(--summary-motion-duration) var(--drawer-motion-ease); }
 main.workspace-resizing, main.workspace-resizing .conversation-column, main.workspace-resizing .sticky-composer, main.workspace-resizing .composer-column-content,
 main.chat-drawer-resizing, main.chat-drawer-resizing .conversation-column, main.chat-drawer-resizing .sticky-composer, main.chat-drawer-resizing .composer-column-content,
 /* A window-edge drag reclamps the drawers every frame; the open/close motion
@@ -380,8 +409,7 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
    Sharing row 1 with the conversation column overlays it on the scrolling
    content instead of taking a row of its own, and the column width animates
    with the panel for free rather than on a parallel transition. */
-.conversation-title-bar { pointer-events: none; position: fixed; z-index: 28; top: 0; right: 0; left: 0; height: var(--app-topbar-height); display: grid; place-items: center; overflow:hidden; border-bottom: 0; background: var(--app-titlebar); backdrop-filter: blur(14px); transition: opacity var(--drawer-fade-duration) ease; }
-main.chat-drawer-open .conversation-title-bar { left: var(--chat-drawer-offset); }
+.conversation-title-bar { pointer-events: none; position: fixed; z-index: 28; top: 0; right: 0; left: var(--chat-drawer-offset); height: var(--app-topbar-height); display: grid; place-items: center; overflow:hidden; border-bottom: 0; background: var(--app-titlebar); backdrop-filter: blur(14px); transition: opacity var(--drawer-fade-duration) ease; }
 main.workspace-open .conversation-title-bar { right: var(--content-right-column); }
 /* Resizing is direct manipulation: track the drawer edge immediately so the
    title can never lag underneath it. Open/close changes retain the slide. */
@@ -511,16 +539,24 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
    glyph 17px, so half the difference lifts its centre onto the text's. */
 .agent-activity-list li > svg { flex: none; margin-top: calc((1.4em - 17px) / 2); color: var(--neutral-950); }
 .agent-activity-list li.active { color: var(--neutral-950); font-weight: 450; }
-.agent-activity-list li.live, .agent-activity-list li.active:not(.commentary), .agent-activity.streaming .agent-activity-list li:not(.commentary) { position: relative; isolation: isolate; }
 /* One glimmer for the whole row: a single highlight sweeps across the icon and
-   the label as one wave, lightening the ink it passes over. */
-.agent-activity-list li.live::after, .agent-activity-list li.active:not(.commentary)::after, .agent-activity.streaming .agent-activity-list li:not(.commentary)::after { content: ""; position: absolute; z-index: 1; top: 0; bottom: 0; left: 0; width: 150px; pointer-events: none; background-image: linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,.35) 30%,rgba(255,255,255,.92) 50%,rgba(255,255,255,.35) 70%,rgba(255,255,255,0) 100%); mix-blend-mode: screen; animation: activity-glint-sweep calc((var(--glint-ink,120) + 450) / 200 * 1s) linear infinite; }
-/* Dark mode brightens rather than darkens, and dodges rather than multiplies:
-   multiplying black over an already-dark row dragged the row's own background
-   down with the ink, so the sweep read as a moving black patch. Dodge leaves
-   near-black almost untouched while driving light ink to full white, so only
-   the text and the glyph carry the wave. */
-:root[data-theme="dark"] .agent-activity-list li.live::after, :root[data-theme="dark"] .agent-activity-list li.active:not(.commentary)::after, :root[data-theme="dark"] .agent-activity.streaming .agent-activity-list li:not(.commentary)::after { background-image: linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,.14) 30%,rgba(255,255,255,.4) 50%,rgba(255,255,255,.14) 70%,rgba(255,255,255,0) 100%); mix-blend-mode: color-dodge; }
+   the label as one wave. It is painted into the ink itself — the row rests at a
+   dimmed grey and the wave carries it up to full ink — rather than as a blended
+   overlay band. A band has to lighten whatever it crosses, and on dark mode's
+   near-black row that read as a grey box sliding past the text. Clipping the
+   gradient to the glyphs means only the ink can carry the wave, so the same
+   rule works in both themes. */
+.agent-activity-list li.live, .agent-activity-list li.active:not(.commentary), .agent-activity.streaming .agent-activity-list li:not(.commentary) { position: relative; --glint-wave: 80; --glint-cycle: calc((var(--glint-ink,120) + 2 * var(--glint-wave)) / 200 * 1s); animation: activity-glint-pass var(--glint-cycle) linear infinite; }
+/* The label reads the row's head position and subtracts its own offset, so its
+   gradient sits where the wave actually is rather than running on a clock of its
+   own. `background-color` carries the resting grey: it is clipped to the text
+   alongside the image, so the letters the wave has not reached still have ink. */
+.agent-activity-list li.live .activity-copy > span:first-child, .agent-activity-list li.active:not(.commentary) .activity-copy > span:first-child, .agent-activity.streaming .agent-activity-list li:not(.commentary) .activity-copy > span:first-child { background-color: var(--neutral-500); background-image: linear-gradient(90deg,var(--neutral-500) 0%,var(--neutral-950) 50%,var(--neutral-500) 100%); background-size: calc(var(--glint-wave) * 2px) 100%; background-repeat: no-repeat; background-position: calc((var(--glint-head) - var(--glint-wave)) * 1px - var(--glint-label,26px)) 0; -webkit-background-clip: text; background-clip: text; color: transparent; }
+/* An SVG's stroke cannot carry a background, so the glyph reads the head
+   position directly instead: how far the wave is from the glyph's centre, over
+   the same falloff distance the gradient uses, is how far its colour sits from
+   full ink. Same wave, same maths, no second animation to drift out of step. */
+.agent-activity-list li.live > svg, .agent-activity-list li.active:not(.commentary) > svg, .agent-activity.streaming .agent-activity-list li:not(.commentary) > svg { color: color-mix(in srgb, var(--neutral-950), var(--neutral-500) calc(clamp(0, abs(var(--glint-head) - 8.5) / var(--glint-wave), 1) * 100%)); }
 .agent-activity-list li.failed { color: #a92914; }
 .agent-activity-list li.failed > svg { color: #a92914; }
 /* Red is reserved for a finished run; while the agent is still working every row reads as ordinary ink. */
@@ -530,13 +566,26 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
 .agent-activity-list li.commentary .activity-copy > span:first-child { white-space: pre-wrap; overflow-wrap: anywhere; }
 .activity-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .activity-copy small { color: var(--neutral-500); font-size: 11px; }
-.activity-target { color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
-@keyframes activity-glint-sweep {
-  0% { transform: translateX(-150px); }
-  100% { transform: translateX(calc(var(--glint-ink,120) * 1px + 300px)); }
+/* The label's ink goes transparent while the glimmer paints it, so the dotted
+   rule needs a colour of its own or it vanishes for the length of the run. */
+.activity-target { color: inherit; text-decoration: underline dotted; text-decoration-color: var(--neutral-500); text-underline-offset: 3px; }
+/* One wave, one clock. The head is a position in the row's own space, running
+   from just off the glyph's left to just past the label's right, and every part
+   of the row derives its own appearance from it — so the glyph and the letters
+   light in the order the wave reaches them instead of on separate timers. */
+@property --glint-head {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: -80;
+}
+@keyframes activity-glint-pass {
+  from { --glint-head: calc(0 - var(--glint-wave)); }
+  to { --glint-head: calc(var(--glint-ink,120) + var(--glint-wave)); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .agent-activity-list li.live::after, .agent-activity-list li.active:not(.commentary)::after, .agent-activity.streaming .agent-activity-list li:not(.commentary)::after { animation: none; content: none; }
+  .agent-activity-list li.live, .agent-activity-list li.active:not(.commentary), .agent-activity.streaming .agent-activity-list li:not(.commentary) { animation: none; }
+  .agent-activity-list li.live .activity-copy > span:first-child, .agent-activity-list li.active:not(.commentary) .activity-copy > span:first-child, .agent-activity.streaming .agent-activity-list li:not(.commentary) .activity-copy > span:first-child { background-image: none; background-color: transparent; color: inherit; }
+  .agent-activity-list li.live > svg, .agent-activity-list li.active:not(.commentary) > svg, .agent-activity.streaming .agent-activity-list li:not(.commentary) > svg { color: var(--neutral-950); }
 }
 
 .message:not(.assistant) { width: fit-content; max-width: 85%; margin-left: auto; }
@@ -571,17 +620,15 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
 @keyframes working-pulse { 0%,60%,100%{opacity:.4;transform:scale(1)}30%{opacity:1;transform:scale(1.35)} }
 @media (prefers-reduced-motion: reduce) { .thinking i { animation: none; } }
 
-.scroll-to-latest { position: fixed; z-index: 32; left: 50%; bottom: calc(124px + var(--queue-height)); width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--neutral-200); border-radius: 50%; padding: 0; background: var(--app-translucent); color: var(--neutral-700); box-shadow: 0 4px 14px rgba(0,0,0,.16); transform: translateX(-50%); cursor: pointer; animation: jump-to-latest-in .15s ease-out; transition: left var(--drawer-motion-duration) var(--drawer-motion-ease), bottom .18s ease, transform .15s ease, box-shadow .15s; backdrop-filter: blur(10px); }
+.scroll-to-latest { position: fixed; z-index: 32; left: 50%; bottom: calc(124px + var(--queue-height)); width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--neutral-200); border-radius: 50%; padding: 0; background: var(--app-translucent); color: var(--neutral-700); box-shadow: 0 4px 14px rgba(0,0,0,.16); transform: translateX(-50%); cursor: pointer; animation: jump-to-latest-in .15s ease-out; transition: bottom .18s ease, transform .15s ease, box-shadow .15s; backdrop-filter: blur(10px); }
 .scroll-to-latest:hover { transform: translateX(-50%) scale(1.08); box-shadow: 0 5px 18px rgba(0,0,0,.18); }
-main.summary-open .scroll-to-latest { left: calc((100vw - 337px) / 2); }
-main.chat-drawer-open.summary-open .scroll-to-latest { left: calc(var(--chat-drawer-offset) + (100vw - var(--chat-drawer-offset) - 337px) / 2); }
-main.workspace-open .scroll-to-latest { left: calc((100vw - var(--content-right-column)) / 2); }
-main.chat-drawer-open .scroll-to-latest { left: calc(var(--chat-drawer-offset) + (100vw - var(--chat-drawer-offset)) / 2); }
-main.chat-drawer-open.workspace-open .scroll-to-latest { left: calc(var(--chat-drawer-offset) + (100vw - var(--chat-drawer-offset) - var(--content-right-column)) / 2); }
+main .scroll-to-latest { left: calc(var(--chat-drawer-offset) + (100vw - var(--chat-drawer-offset)) / 2); }
+main.summary-open .scroll-to-latest { left: calc(var(--chat-drawer-offset) + (100vw - var(--chat-drawer-offset) - 337px) / 2); }
+main.workspace-open .scroll-to-latest { left: calc(var(--chat-drawer-offset) + (100vw - var(--chat-drawer-offset) - var(--content-right-column)) / 2); }
 main.workspace-expanded .scroll-to-latest { display: none; }
 @keyframes jump-to-latest-in { from { opacity: 0; transform: translate(-50%,4px); } }
 
-.sticky-composer { position: fixed; z-index: 20; right: var(--content-composer-column); bottom: 0; left: var(--chat-drawer-offset); display: flex; justify-content: center; padding-bottom: 18px; background: linear-gradient(to bottom,transparent 0,var(--app-bg) 28px); transition: left var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), opacity var(--drawer-motion-duration) var(--drawer-motion-ease); }
+.sticky-composer { position: fixed; z-index: 20; right: var(--content-composer-column); bottom: 0; left: var(--chat-drawer-offset); display: flex; justify-content: center; padding-bottom: 18px; background: linear-gradient(to bottom,transparent 0,var(--app-bg) 28px); transition: transform var(--drawer-motion-duration) var(--drawer-motion-ease), opacity var(--drawer-motion-duration) var(--drawer-motion-ease); }
 /* Expansion is an overlay slide. ChatPane keeps its docked geometry underneath
    instead of fading, translating, or reflowing while Workspace crosses it. */
 main.workspace-expanded .sticky-composer { pointer-events: none; }
@@ -665,10 +712,12 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .summary-panel { position: fixed; z-index: 25; top: calc(var(--app-topbar-height) + 16px); right: 16px; width: min(301px,calc(100vw - 32px)); max-height: calc(100vh - var(--app-topbar-height) - 32px); overflow: visible; padding: 15px; border: 1px solid var(--neutral-200); border-radius: 20px; background: var(--neutral-50); box-shadow: none; animation: panel-in var(--drawer-fade-duration) var(--drawer-motion-ease) var(--drawer-panel-delay) backwards; }
 .summary-panel section { padding: 14px 0 15px; border-bottom: 1px solid var(--neutral-200); } .summary-panel section:first-of-type { padding-top: 0; } .summary-panel section:last-of-type { padding-bottom: 0; border-bottom: 0; }
 .summary-panel header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; } .summary-panel h2 { margin: 0; color: var(--neutral-800); font-size: 13px; font-weight: 560; } .summary-panel header > button, .summary-panel header > .summary-menu-wrap > button { width: 22px; height: 22px; display: grid; place-items: center; border: 0; padding: 0; background: none; color: var(--neutral-500); cursor: pointer; }
-.summary-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 5px; border: 0; border-radius: 10px; background: transparent; color: var(--neutral-900); text-align: left; font-size: 12.5px; cursor: pointer; } .summary-row:hover, .summary-row:focus-visible { outline: none; background: var(--neutral-200); } .summary-row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .summary-row.muted { color: var(--neutral-700); } .mini-file { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; color: var(--neutral-600); background: #fff; border: 1px solid var(--neutral-200); }
+.summary-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 5px; border: 0; border-radius: 10px; background: transparent; color: var(--neutral-900); text-align: left; font-size: 12.5px; cursor: pointer; } .summary-row:hover, .summary-row:focus-visible { outline: none; background: var(--neutral-200); } .summary-row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .summary-row.muted { color: var(--neutral-700); } .mini-file { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; color: var(--neutral-600); background: transparent; border: 0; }
 .browser-tab-icon { position: relative; flex: none; width: 20px; height: 20px; display: grid; place-items: center; overflow: hidden; border-radius: 5px; color: var(--neutral-700); background: var(--neutral-200); } .browser-summary-row .browser-tab-title { min-width: 0; flex: 1; overflow: hidden; color: var(--neutral-900); text-overflow: ellipsis; white-space: nowrap; } .browser-summary-row .browser-tab-host { min-width: 0; max-width: 44%; overflow: hidden; color: var(--neutral-600); text-overflow: ellipsis; white-space: nowrap; } .browser-summary-row.in-use .browser-tab-title, .browser-summary-row.in-use .browser-tab-host { color: var(--neutral-500); }
 .summary-view-all { width: 100%; display: flex; align-items: center; justify-content: space-between; margin-top: 2px; padding: 5px; border: 0; border-radius: 10px; background: transparent; color: var(--neutral-600); font-size: 11.5px; cursor: pointer; } .summary-view-all:hover { color: var(--neutral-900); background: var(--neutral-200); }
-.empty-row { margin: 5px 0 2px; color: var(--neutral-600); font-size: 11.5px; } .task-row { display: flex; align-items: flex-start; gap: 9px; padding: 5px 3px; } .task-row strong, .task-row small { display: block; } .task-row strong { color: var(--neutral-900); font-size: 12px; font-weight: 520; } .task-row small { margin-top: 2px; color: var(--neutral-600); font-size: 10.5px; } .status-dot { flex: none; width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--neutral-400); }
+.empty-row { margin: 5px 0 2px; color: var(--neutral-600); font-size: 11.5px; } .task-row { display: flex; align-items: flex-start; gap: 9px; padding: 5px 3px; } .task-row strong, .task-row small { display: block; } .task-row strong { color: var(--neutral-900); font-size: 12px; font-weight: 520; } .task-row small { margin-top: 2px; color: var(--neutral-600); font-size: 10.5px; } /* Centre the dot on the title's first line rather than the row box, so it stays
+   aligned whether or not the task has a second line of detail. */
+.status-dot { flex: none; width: 7px; height: 7px; font-size: 12px; margin-top: calc((1lh - 7px) / 2); border-radius: 50%; background: var(--neutral-400); }
 /* A delegated task reads at a glance: working, finished, or failed. */
 .status-dot.running { background: #d9a406; box-shadow: 0 0 0 3px rgba(217,164,6,.18); animation: task-pulse 1.4s ease-in-out infinite; }
 .status-dot.done { background: #1f7a4d; box-shadow: 0 0 0 3px rgba(31,122,77,.16); }
@@ -707,7 +756,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .workspace-resize-handle:focus-visible { outline: none; }
 .workspace-drawer.expanded .workspace-resize-handle { display: none; }
 
-.summary-view { height: 100%; overflow: auto; padding: 28px 30px 40px; background: var(--main-panel-background); } .summary-view > header { max-width: 760px; margin: 0 auto 18px; padding-bottom: 14px; border-bottom: 1px solid var(--neutral-200); } .summary-view h1 { margin: 0; color: var(--neutral-950); font-size: 20px; font-weight: 560; } .summary-view-rows { max-width: 760px; margin: 0 auto; } .summary-page-row { width: 100%; min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 9px 10px; border: 0; border-bottom: 1px solid var(--neutral-100); border-radius: 16px; background: transparent; color: var(--neutral-900); text-align: left; font-size: 14px; cursor: pointer; } .summary-page-row:hover:not(.task) { background: var(--neutral-50); } .summary-page-row > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .summary-page-row.task { cursor: default; } .summary-page-row.task strong { font-size: 14px; font-weight: 520; } .summary-page-icon { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 8px; background: var(--neutral-100); color: var(--neutral-500); }
+.summary-view { height: 100%; overflow: auto; padding: 28px 30px 40px; background: var(--main-panel-background); } .summary-view > header { max-width: 760px; margin: 0 auto 18px; padding-bottom: 14px; border-bottom: 1px solid var(--neutral-200); } .summary-view h1 { margin: 0; color: var(--neutral-950); font-size: 20px; font-weight: 560; } .summary-view-rows { max-width: 760px; margin: 0 auto; } .summary-page-row { width: 100%; min-height: 48px; display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 0; border-radius: 16px; background: transparent; color: var(--neutral-900); text-align: left; font-size: 14px; cursor: pointer; } .summary-page-row:hover:not(.task) { background: var(--neutral-50); } .summary-page-row > span:last-child, .summary-page-row.task > strong { flex: 1 1 auto; min-width: 0; padding-bottom: 9px; border-bottom: 1px solid var(--neutral-100); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .summary-page-row.task { cursor: default; } .summary-page-row.task strong { font-size: 14px; font-weight: 520; } .summary-page-icon { width: 30px; height: 30px; flex: none; margin-bottom: 9px; display: grid; place-items: center; border-radius: 8px; background: var(--neutral-100); color: var(--neutral-500); }
 
 /* The strip reserves exactly the two fixed title-bar controls (settings and
    workspace) plus one more standard gap, so the expand button reads as the
@@ -1044,14 +1093,76 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .schedule-row.menu-open { background: var(--neutral-50); }
 .schedule-row-menu { position: absolute; z-index: 80; right: 14px; width: 172px; padding: 5px; }
 
-.schedule-frequency-editor { position: absolute; z-index: 80; right: 14px; width: 306px; padding: 10px; border-radius: 14px; border: 1px solid var(--neutral-200); background: var(--app-surface); box-shadow: 0 14px 34px rgba(0,0,0,.16); animation: panel-in .12s ease-out; }
-.schedule-frequency-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 8px; color: var(--neutral-500); font-size: 11.5px; font-weight: 550; letter-spacing: .02em; text-transform: uppercase; }
+/* A finished row is history: still readable, but it stops competing with the
+   rows that have something coming. */
+.schedule-row.finished .list-row-label, .schedule-row.finished .list-row-meta { color: var(--neutral-400); }
+.schedule-row.finished .list-row-icon { background: var(--neutral-50); color: var(--neutral-400); }
+.schedule-row.finished .schedule-status { color: var(--neutral-400); }
+/* The unread mark: the same dot on the row and on the workspace tab, so the
+   one on the tab reads as a promise of the one inside. */
+.schedule-unread, .tab-unread { flex: none; width: 7px; height: 7px; border-radius: 999px; background: var(--accent-500, #2f6df6); }
+.schedule-unread { margin-left: 2px; }
+.tab-icon { position: relative; display: grid; place-items: center; }
+.tab-unread { position: absolute; top: -1px; right: -2px; box-shadow: 0 0 0 2px var(--app-surface); }
+
+.schedule-detail { position: absolute; z-index: 80; right: 14px; left: 14px; max-width: 420px; margin-left: auto; max-height: 60%; overflow: auto; padding: 12px; border-radius: 14px; border: 1px solid var(--neutral-200); background: var(--app-surface); box-shadow: 0 14px 34px rgba(0,0,0,.16); animation: panel-in .12s ease-out; }
+.schedule-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--neutral-950); font-size: 13px; font-weight: 580; }
+.schedule-detail-cadence { margin: 2px 0 0; color: var(--neutral-500); font-size: 12px; }
+.schedule-detail-section { margin-top: 12px; }
+.schedule-detail-section h4 { margin: 0 0 5px; color: var(--neutral-500); font-size: 11px; font-weight: 550; letter-spacing: .02em; text-transform: uppercase; }
+.schedule-detail-prompt, .schedule-detail-summary, .schedule-detail-empty { margin: 0; color: var(--neutral-900); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; }
+.schedule-detail-empty { color: var(--neutral-500); }
+.schedule-detail-error { margin: 4px 0 0; color: var(--danger-500, #c0392b); font-size: 12.5px; line-height: 1.5; }
+.schedule-outcome { display: flex; align-items: center; gap: 7px; margin: 0 0 5px; color: var(--neutral-950); font-size: 12.5px; font-weight: 550; }
+.schedule-outcome em { margin-left: auto; color: var(--neutral-500); font-style: normal; font-size: 11.5px; font-weight: 450; font-variant-numeric: tabular-nums; }
+.schedule-outcome-dot { flex: none; width: 7px; height: 7px; border-radius: 999px; background: var(--neutral-400); }
+.schedule-outcome.succeeded .schedule-outcome-dot, .schedule-outcome-dot.succeeded { background: var(--success-500, #2f9e5f); }
+.schedule-outcome.failed .schedule-outcome-dot, .schedule-outcome-dot.failed { background: var(--danger-500, #c0392b); }
+.schedule-detail-open { display: inline-flex; align-items: center; gap: 5px; margin-top: 9px; height: 26px; border: 1px solid var(--neutral-200); border-radius: 9px; padding: 0 9px 0 7px; background: transparent; color: var(--neutral-900); cursor: pointer; font-size: 12px; font-weight: 550; }
+.schedule-detail-open:hover { background: var(--neutral-100); }
+.schedule-detail-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.schedule-detail-history li { display: flex; align-items: baseline; gap: 7px; color: var(--neutral-500); font-size: 12px; }
+.schedule-detail-history-time { flex: none; font-variant-numeric: tabular-nums; }
+.schedule-detail-history-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Writing a schedule takes the whole view rather than floating over it: it is
+   its own task, not an aside to reading the table. The list is still there
+   behind the back button, exactly as it was left. */
+.schedule-composer { display: flex; flex: 1; min-height: 0; flex-direction: column; min-height: 0; background: var(--app-surface); }
+.schedule-composer-bar { flex: none; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px; }
+.schedule-composer-bar h3 { flex: 1; min-width: 0; overflow: hidden; margin: 0; color: var(--neutral-950); font-size: 13px; font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-composer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px 24px; }
+.schedule-composer-field { display: block; margin-bottom: 14px; }
+.schedule-composer-field > span { display: block; margin: 0 2px 5px; color: var(--neutral-500); font-size: 11px; font-weight: 550; letter-spacing: .02em; text-transform: uppercase; }
+.schedule-composer-field input, .schedule-composer-field textarea { width: 100%; border: 1px solid var(--neutral-200); border-radius: 10px; padding: 8px 10px; background: var(--input-surface); color: var(--neutral-950); font: inherit; font-size: 13px; line-height: 1.5; resize: vertical; }
+.schedule-composer-field input:focus, .schedule-composer-field textarea:focus { border-color: var(--neutral-400); outline: 0; background: var(--prompt-surface-active); }
+.schedule-composer-field em { display: block; margin: 5px 2px 0; color: var(--neutral-500); font-style: normal; font-size: 11.5px; line-height: 1.45; }
+/* The heading carries the gear, the way the reference does: the pickers are
+   the normal way in, and the expression is behind one deliberate click. */
+.schedule-composer-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 7px; }
+.schedule-composer-heading h4 { margin: 0 2px; color: var(--neutral-500); font-size: 11px; font-weight: 550; letter-spacing: .02em; text-transform: uppercase; }
+.schedule-composer-save { flex: none; height: 28px; border: 0; border-radius: 9px; padding: 0 14px; background: var(--neutral-900); color: var(--app-surface); cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 550; }
+.schedule-composer-save:hover:not(:disabled) { background: var(--neutral-950); }
+.schedule-composer-save:disabled { opacity: .45; cursor: default; }
+
+.schedule-cron { border: 1px solid var(--neutral-200); border-radius: 12px; padding: 10px 12px 11px; }
+/* Monospaced, and spaced out: the fields are positional, so the eye has to be
+   able to count them. */
+.schedule-cron-input { width: 100%; border: 1px solid var(--neutral-200); border-radius: 9px; padding: 7px 10px; background: var(--input-surface); color: var(--neutral-950); font-family: var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace); font-size: 13px; letter-spacing: .04em; }
+.schedule-cron-input:focus { border-color: var(--neutral-400); outline: 0; background: var(--prompt-surface-active); }
+.schedule-cron-input.invalid { border-color: var(--danger-500,#c0392b); }
+.schedule-cron-legend { margin: 6px 2px 0; color: var(--neutral-400); font-size: 10.5px; letter-spacing: .01em; }
+.schedule-cron-error { margin: 7px 2px 0; color: var(--danger-500,#c0392b); font-size: 11.5px; line-height: 1.45; }
+.schedule-cron-next { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 8px 2px 0; color: var(--neutral-500); font-size: 11.5px; }
+.schedule-cron-next > span { color: var(--neutral-400); font-weight: 550; text-transform: uppercase; letter-spacing: .02em; font-size: 10.5px; }
+.schedule-cron-next em { color: var(--neutral-900); font-style: normal; font-variant-numeric: tabular-nums; }
+.schedule-cron-hint { margin: 9px 2px 0; color: var(--neutral-500); font-size: 11.5px; line-height: 1.5; }
+
+/* The close control is shared with the detail panel. */
 .schedule-frequency-close { display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--neutral-500); cursor: pointer; }
 .schedule-frequency-close:hover { background: var(--neutral-100); color: var(--neutral-950); }
-/* No `overflow: hidden` to round the corners: the rows hold dropdowns that
-   open past the group's bottom edge, and clipping cut them off. */
 .schedule-frequency-rows { border: 1px solid var(--neutral-200); border-radius: 12px; }
-.schedule-frequency-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 40px; padding: 4px 12px; color: var(--neutral-950); font-size: 13px; }
+.schedule-frequency-row { --select-menu-rows: 6; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 40px; padding: 4px 12px; color: var(--neutral-950); font-size: 13px; }
 .schedule-frequency-row + .schedule-frequency-row { border-top: 1px solid var(--neutral-100); }
 .schedule-frequency-row > span:first-child { flex: none; }
 .schedule-frequency-value { display: flex; align-items: baseline; gap: 5px; color: var(--neutral-500); }
@@ -1060,10 +1171,6 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .schedule-frequency-value input:focus { border-color: var(--neutral-400); outline: 0; }
 .schedule-frequency-value em { font-style: normal; font-size: 12.5px; }
 .schedule-frequency-static { color: var(--neutral-500); font-size: 12.5px; text-align: right; }
-.schedule-frequency-days { display: flex; gap: 2px; }
-.schedule-day { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 11.5px; font-weight: 550; }
-.schedule-day:hover { background: var(--neutral-100); color: var(--neutral-900); }
-.schedule-day.on { background: var(--neutral-900); color: var(--app-surface); }
 /* The sentence the row will show, so an edit is checked against its result
    rather than against the fields that produced it. */
 .schedule-frequency-summary { margin: 9px 4px 2px; color: var(--neutral-500); font-size: 12px; }
@@ -1153,7 +1260,7 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
   .conversation-column { width: min(792px,calc(100vw - 8px)); }
   main.workspace-open .conversation-column { width: min(792px,calc(100vw - 8px)); }
   .sticky-composer, main.workspace-open .sticky-composer, main.chat-drawer-open .sticky-composer, main.chat-drawer-open.workspace-open .sticky-composer { right: 0; left: 0; }
-  main.workspace-open .scroll-to-latest, main.chat-drawer-open .scroll-to-latest, main.chat-drawer-open.workspace-open .scroll-to-latest { left: 50%; }
+  main .scroll-to-latest, main.workspace-open .scroll-to-latest, main.chat-drawer-open.workspace-open .scroll-to-latest { left: 50%; }
   main.summary-open .conversation-column { width: min(792px,calc(100vw - 8px)); margin: 0 auto; }
   main.summary-open .sticky-composer, main.chat-drawer-open.summary-open .sticky-composer { right: 0; left: 0; }
   main.summary-open .scroll-to-latest, main.chat-drawer-open.summary-open .scroll-to-latest { left: 50%; }
@@ -1341,11 +1448,17 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-back:hover { color: var(--neutral-950); }
 .hub-view-grid > * { min-width: 0; min-height: 0; }
 
-.hub-view-rail { min-width: 0; overflow-y: auto; padding: 12px 8px; border-right: 1px solid var(--neutral-200); }
+/* The same edge fade the settings rail carries, and by the same rule: solid
+   where the list ends, faded only where it runs on past the edge. */
+.hub-view-rail { --rail-mask-top: transparent; --rail-mask-bottom: transparent; min-width: 0; overflow-y: auto; padding: 12px 8px; border-right: 1px solid var(--neutral-200); -webkit-mask-image: linear-gradient(to bottom,var(--rail-mask-top),#000 12px,#000 calc(100% - 12px),var(--rail-mask-bottom)); mask-image: linear-gradient(to bottom,var(--rail-mask-top),#000 12px,#000 calc(100% - 12px),var(--rail-mask-bottom)); }
+.hub-view-rail.at-top { --rail-mask-top: #000; }
+.hub-view-rail.at-bottom { --rail-mask-bottom: #000; }
 .hub-view-rail-heading { margin: 12px 6px 5px; color: var(--neutral-400); font-size: 9px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
 .hub-view-rail-heading:first-child { margin-top: 2px; }
 .hub-view-rail-empty { margin: 4px 6px; color: var(--neutral-400); font-size: 10.5px; line-height: 1.45; }
-.hub-view-source { width: 100%; display: grid; grid-template-columns: 17px minmax(0,1fr); align-items: center; gap: 8px; border: 0; border-radius: 8px; padding: 7px 8px; background: transparent; color: var(--neutral-800); cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 520; text-align: left; }
+/* `margin` rather than a gap on the rail: the highlight is the row, so the
+   space between highlights has to belong to the rows themselves. */
+.hub-view-source { width: 100%; display: grid; grid-template-columns: 17px minmax(0,1fr); align-items: center; gap: 9px; margin: 2px 0; border: 0; border-radius: 10px; padding: 7px 9px; background: transparent; color: var(--neutral-800); cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 520; text-align: left; }
 .hub-view-source:hover { background: var(--neutral-100); }
 .hub-view-source.active { background: var(--neutral-100); color: var(--neutral-950); }
 .hub-view-source > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1360,7 +1473,7 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-accounts button:hover { background: var(--neutral-100); color: var(--neutral-900); }
 .hub-view-accounts button.active { background: var(--neutral-200); color: var(--neutral-950); font-weight: 540; }
 
-.hub-view-list { flex-direction: column; overflow: hidden; border-right: 1px solid var(--neutral-200); }
+.hub-view-list { position: relative; flex-direction: column; overflow: hidden; border-right: 1px solid var(--neutral-200); }
 .hub-view-list-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; flex: none; padding: 10px 10px 8px; border-bottom: 1px solid var(--neutral-200); }
 .hub-view-folder-picker { position: relative; display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1 0 100%; }
 .hub-view-list-account { min-width: 0; overflow: hidden; color: var(--neutral-500); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
@@ -1399,7 +1512,11 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-rows > li.hub-view-empty { flex: 1; }
 .hub-view-row { width: 100%; display: flex; flex-direction: column; gap: 2px; border: 0; border-bottom: 1px solid var(--neutral-100); padding: 9px 11px; background: transparent; color: var(--neutral-700); cursor: pointer; font-family: inherit; text-align: left; }
 .hub-view-row:hover { background: var(--neutral-50); }
-.hub-view-row.active { background: var(--neutral-100); }
+/* The open conversation is marked plainly: a tint alone is easy to lose
+   against the hover state, so the row also carries a bar on its leading edge. */
+.hub-view-row.active { position: relative; background: var(--neutral-150, var(--neutral-100)); }
+.hub-view-row.active::before { content: ''; position: absolute; inset: 4px auto 4px 0; width: 3px; border-radius: 0 3px 3px 0; background: var(--neutral-950); }
+.hub-view-row.active strong { color: var(--neutral-950); }
 .hub-view-row.picked { background: var(--neutral-200); }
 .hub-view-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .hub-view-row-top strong { overflow: hidden; color: var(--neutral-900); text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 545; }
@@ -1408,11 +1525,20 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 /* A chat row is a picture, two lines of copy, and a count — so it lays out
    across rather than down, unlike the mail rows above it. */
 .hub-view-row:has(.hub-view-chat-copy) { flex-direction: row; align-items: center; gap: 9px; }
-.hub-view-chat-avatar { flex: none; width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: var(--neutral-100); }
+/* Rounded squares rather than circles: a contact photo keeps its corners, and
+   the radius is proportionate to the 28px tile rather than a fixed curve that
+   would read differently if the tile ever changes size. */
+.hub-view-chat-avatar { flex: none; width: 28px; height: 28px; border-radius: 8px; object-fit: cover; background: var(--neutral-100); }
 .hub-view-chat-avatar.placeholder { display: grid; place-items: center; color: var(--neutral-500); font-size: 11px; font-weight: 560; }
 .hub-view-chat-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+/* Chat rows centre the name against its time, rather than sharing a baseline
+   the way a mail row's sender and date do. */
+.hub-view-chat-copy .hub-view-row-top { align-items: center; }
 .hub-view-chat-copy .hub-view-row-top time { flex: none; color: var(--neutral-400); font-size: 10px; }
-.hub-view-chat-preview { overflow: hidden; color: var(--neutral-500); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+/* The preview line and its unread count, centred on each other the way the
+   name and the time above them are. */
+.hub-view-chat-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hub-view-chat-preview { min-width: 0; flex: 1; overflow: hidden; color: var(--neutral-500); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 /* An unread row leads with weight, the way every chat client marks one. */
 .hub-view-row.unread .hub-view-row-top strong { font-weight: 640; }
 .hub-view-row.unread .hub-view-chat-preview { color: var(--neutral-700); }
@@ -1424,8 +1550,17 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-row.unread .hub-view-row-top strong { color: var(--neutral-950); font-weight: 640; }
 .hub-view-row.unread .hub-view-row-subject { color: var(--neutral-800); }
 
-.hub-view-reader { flex-direction: column; overflow: hidden; }
+.hub-view-reader { position: relative; flex-direction: column; overflow: hidden; }
+/* Floats over the foot of the thread rather than sitting in the column, so
+   showing it never shifts the messages under the pointer. Same round shape the
+   conversation pane uses for the same job. */
+.hub-view-to-latest { position: absolute; z-index: 3; left: 50%; bottom: 68px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--neutral-200); border-radius: 999px; padding: 5px 12px 5px 10px; background: var(--app-translucent, var(--app-surface)); color: var(--neutral-700); box-shadow: 0 4px 14px rgb(0 0 0 / .16); font-family: inherit; font-size: 11px; transform: translateX(-50%); cursor: pointer; backdrop-filter: blur(10px); }
+.hub-view-to-latest:hover { color: var(--neutral-950); }
 .hub-view-reader-head { flex: none; padding: 14px 18px 12px; border-bottom: 1px solid var(--neutral-200); }
+/* The chevron reads as part of the title rather than a step above it. */
+.hub-view-chat-head { display: flex; align-items: center; gap: 8px; }
+.hub-view-chat-head h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-view-back-icon { margin-bottom: 0; margin-left: -4px; flex: none; }
 .hub-view-reader-head h2 { margin: 0; color: var(--neutral-950); font-size: 15px; font-weight: 580; letter-spacing: -.01em; }
 .hub-view-recipients { color: var(--neutral-400) !important; font-size: 11px !important; }
 .hub-view-reader-head p { margin: 4px 0 0; color: var(--neutral-500); font-size: 11.5px; }
@@ -1479,16 +1614,71 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-skeleton-line { height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--neutral-100) 25%, var(--neutral-200) 37%, var(--neutral-100) 63%); background-size: 400% 100%; animation: hub-view-shimmer 1.4s ease infinite; }
 @keyframes hub-view-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 @media (prefers-reduced-motion: reduce) { .hub-view-skeleton-line { animation: none; } }
+/* Placeholder rows and bubbles carry the shape of what is loading, so the list
+   does not jump when the real thing replaces them. */
+.hub-view-row-skeleton { pointer-events: none; }
+.hub-view-row-skeleton .hub-view-chat-copy { gap: 6px; padding: 2px 0; }
+.hub-view-row-skeleton .hub-view-chat-avatar { border-radius: 8px; }
+.hub-view-loading-rows { display: flex; flex-direction: column; }
+.hub-view-bubble-skeleton { height: 34px; background: linear-gradient(90deg, var(--neutral-100) 25%, var(--neutral-200) 37%, var(--neutral-100) 63%); background-size: 400% 100%; animation: hub-view-shimmer 1.4s ease infinite; }
+.hub-view-bubble-skeleton.mine { background: linear-gradient(90deg, var(--neutral-200) 25%, var(--neutral-100) 37%, var(--neutral-200) 63%); background-size: 400% 100%; }
+@media (prefers-reduced-motion: reduce) { .hub-view-bubble-skeleton { animation: none; } }
 
 .hub-view-thread { min-height: 0; flex: 1; display: flex; flex-direction: column-reverse; gap: 8px; overflow-y: auto; padding: 16px 18px; }
+.hub-view-stamp { flex: none; align-self: center; margin: 8px 0 4px; color: var(--neutral-400); text-align: center; font-size: 11px; }
+/* Three dots rising in turn, so a wait reads as work rather than as a stalled
+   word. Reduced-motion gets the dots without the movement. */
+/* Floats over the head of the list rather than sitting in it, so appearing
+   never shifts the rows under the pointer. */
+.hub-view-to-top { position: absolute; z-index: 4; left: 50%; top: 8px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--neutral-200); border-radius: 999px; padding: 5px 12px 5px 10px; background: var(--app-translucent, var(--app-surface)); color: var(--neutral-700); box-shadow: 0 4px 14px rgb(0 0 0 / .14); font-family: inherit; font-size: 11px; cursor: pointer; transform: translateX(-50%); backdrop-filter: blur(10px); }
+.hub-view-to-top:hover { color: var(--neutral-950); }
+.hub-view-dots { display: inline-flex; align-items: center; gap: 3px; }
+.hub-view-dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .35; animation: hub-dots 1.05s infinite ease-in-out; }
+.hub-view-dots i:nth-child(2) { animation-delay: .15s; }
+.hub-view-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes hub-dots { 0%, 70%, 100% { opacity: .3; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .hub-view-dots i { animation: none; } }
+.hub-view-older { flex: none; margin: 0; padding: 4px 0 8px; color: var(--neutral-400); text-align: center; font-size: 11px; }
+/* The actions sit under the message they act on, lined up with its edge —
+   left under an incoming message, right under one of your own. Reserving no
+   height for them would make the thread jump on every hover, so the row keeps
+   the space and only the paint is revealed. */
+.hub-view-bubble-row { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.hub-view-bubble-row.mine { align-items: flex-end; }
 .hub-view-bubble { max-width: 76%; align-self: flex-start; border-radius: 13px; padding: 8px 11px; background: var(--neutral-100); color: var(--neutral-900); }
+/* The message actions live in a context menu opened by right-clicking the
+   bubble, rather than a row of icons under every message: they are used
+   occasionally, and a permanent row competes with the conversation itself.
+   Fixed to the viewport so it opens exactly where the pointer is. */
+.hub-view-message-menu { position: fixed; z-index: 90; width: 178px; padding: 5px; }
+.hub-view-emoji-row { display: flex; gap: 2px; padding: 1px 2px 5px; border-bottom: 1px solid var(--neutral-100); margin-bottom: 4px; }
+.hub-view-emoji-row button { flex: 1; border: 0; border-radius: 7px; padding: 3px 0; background: transparent; font-size: 15px; line-height: 1; cursor: pointer; }
+.hub-view-emoji-row button:hover { background: var(--neutral-100); }
+.hub-view-reactions { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+.hub-view-reaction { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--neutral-200); border-radius: 999px; padding: 1px 6px; background: var(--app-surface); color: var(--neutral-700); font-size: 11px; line-height: 1.5; cursor: pointer; }
+.hub-view-reaction.mine { border-color: var(--neutral-500); }
+.hub-view-quote { display: block; margin-bottom: 4px; border-left: 2px solid currentColor; padding-left: 6px; opacity: .7; font-size: 11px; line-height: 1.35; }
+.hub-view-quote strong { display: block; font-weight: 560; }
+/* Tucked just above the field it belongs to, sharing its margin. */
+.hub-view-replying { display: flex; align-items: center; gap: 6px; flex: none; margin: 0 14px -4px; border-radius: 10px 10px 0 0; padding: 7px 12px 9px; background: var(--neutral-100); color: var(--neutral-500); font-size: 11.5px; }
+.hub-view-replying span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-view-replying strong { color: var(--neutral-950); font-weight: 560; }
+.hub-view-replying button { display: inline-flex; border: 0; padding: 0; background: none; color: inherit; cursor: pointer; }
 .hub-view-bubble.mine { align-self: flex-end; background: var(--neutral-950); color: var(--app-bg); }
 .hub-view-bubble p { margin: 0; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
-.hub-view-bubble-who { display: block; margin-bottom: 2px; color: var(--neutral-500); font-size: 10px; font-weight: 560; }
+/* Outside the bubble rather than in it, lined up with the bubble's leading
+   edge and quiet enough to read past: it labels the message, it is not part of
+   what was said. */
+.hub-view-bubble-who { display: block; max-width: 76%; margin: 2px 0 2px 10px; overflow: hidden; color: var(--neutral-500); text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 540; }
 .hub-view-bubble em { display: block; margin-top: 3px; opacity: .6; font-style: normal; font-size: 9.5px; }
 /* Media sits flush to the bubble's padding rather than filling it: an image
    bled to the edges loses the rounded corner the bubble is drawn with. */
 .hub-view-bubble-image { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+/* A sticker is drawn at a sticker's size, near enough to what WeChat and every
+   other messenger shows: filling the bubble reads as a photo of one rather
+   than as the sticker itself. The corner radius goes too — a sticker is
+   usually transparent, and rounding it clips the artwork. */
+.hub-view-bubble-image.sticker { width: 132px; max-width: 60%; border-radius: 0; }
 .hub-view-bubble-video { display: block; max-width: 100%; border-radius: 8px; }
 .hub-view-bubble-audio { display: block; width: 220px; max-width: 100%; height: 32px; }
 .hub-view-bubble-file { display: inline-flex; align-items: center; gap: 5px; color: inherit; font-size: 11.5px; text-decoration: none; }
@@ -1498,10 +1688,36 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-bubble-viewin { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 0; border: 0; background: none; color: inherit; opacity: .75; font: inherit; font-size: 11px; cursor: pointer; }
 .hub-view-bubble-viewin:hover { opacity: 1; text-decoration: underline; }
 
-.hub-view-composer { display: flex; align-items: center; gap: 8px; flex: none; padding: 10px 14px 14px; border-top: 1px solid var(--neutral-200); }
-.hub-view-composer input { min-width: 0; flex: 1; height: 34px; border: 1px solid var(--neutral-200); border-radius: 10px; padding: 0 11px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 12.5px; }
-.hub-view-composer input:focus-visible { border-color: var(--neutral-500); outline: 0; }
-.hub-view-composer button { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border: 0; border-radius: 9px; background: var(--neutral-950); color: var(--app-bg); cursor: pointer; }
+/* One rounded field, the way the prompt input is drawn: the text and its three
+   controls share a border rather than sitting in a row of separate boxes.
+   Attach, voice, then send, all inside that border. */
+.hub-view-composer { display: flex; align-items: center; gap: 2px; flex: none; margin: 10px 14px 14px; border: 1px solid var(--neutral-200); border-radius: 21px; padding: 4px 5px 4px 14px; background: var(--app-surface); }
+.hub-view-composer:focus-within { border-color: var(--neutral-500); }
+.hub-view-composer input { min-width: 0; flex: 1; height: 32px; border: 0; padding: 0; background: transparent; color: var(--neutral-950); font-family: inherit; font-size: 12.5px; }
+.hub-view-composer input:focus-visible { outline: 0; }
+/* Attach and voice are quiet; only send carries the filled treatment, so the
+   field has one obvious action and two tools beside it. */
+.hub-view-composer button { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border: 0; border-radius: 50%; background: transparent; color: var(--neutral-500); cursor: pointer; }
+.hub-view-composer button:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-950); }
+/* While a take is running the field is a meter, so the ground shifts with it:
+   the trash and the send button sit outside a pill holding the clock and the
+   bars, which is the shape every messenger uses for this. */
+.hub-view-composer.capturing { gap: 6px; border-color: transparent; background: transparent; padding: 4px 0; }
+.hub-view-take { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; height: 34px; border: 1px solid var(--neutral-200); border-radius: 21px; padding: 0 14px; background: var(--app-surface); overflow: hidden; }
+.hub-view-take-clock { flex: none; color: var(--neutral-700); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+/* The recorder's light. It pulses so a paused take is unmistakably not live. */
+.hub-view-take-live { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--danger, #d64545); animation: hub-take-live 1.4s ease-in-out infinite; }
+@keyframes hub-take-live { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .hub-view-take-live { animation: none; } }
+.hub-view-take-play { display: grid; place-items: center; flex: none; width: 20px; height: 20px; border: 0; border-radius: 50%; padding: 0; background: var(--neutral-100); color: var(--neutral-700); cursor: pointer; }
+/* Bars run right to left as they arrive, so the newest sound is at the end
+   and the oldest scrolls off the front. */
+.hub-view-take-wave { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 2px; height: 20px; overflow: hidden; }
+.hub-view-take-wave i { flex: none; width: 2px; border-radius: 1px; background: var(--neutral-500); }
+.hub-view-discard { color: var(--neutral-500); }
+/* The one filled button, whichever job it is doing: send text, or send take. */
+.hub-view-composer .hub-view-primary { background: var(--neutral-950); color: var(--app-bg); }
+.hub-view-composer .hub-view-primary:hover:not(:disabled) { background: var(--neutral-950); color: var(--app-bg); }
 .hub-view-composer button:disabled { cursor: default; opacity: .4; }
 
 .hub-view-compose-form { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding: 16px 18px 20px; }

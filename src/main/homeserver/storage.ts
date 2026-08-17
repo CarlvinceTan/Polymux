@@ -158,6 +158,13 @@ export class HomeserverStore {
       .run(userId, appserviceId ?? null, new Date().toISOString());
   }
 
+  /** Every account on this server, for sweeps that are not about one user. */
+  userIds(): string[] {
+    return (this.#db.prepare("SELECT user_id FROM users").all() as Array<{user_id: string}>).map(
+      (row) => row.user_id,
+    );
+  }
+
   userExists(userId: string): boolean {
     return !!this.#db.prepare("SELECT 1 FROM users WHERE user_id = ?").get(userId);
   }

@@ -1,9 +1,11 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createWriteStream, existsSync } from "node:fs";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -15,6 +17,16 @@ const MODEL_NAMES = [
   "ggml-small.bin",
   "ggml-base.bin",
 ];
+
+/**
+ * Fetched on first use when the directory is empty. Base is the smallest model
+ * that dictates English well, and at ~148MB it lands in seconds; the larger
+ * `ggml-small.en.bin` still wins if someone drops it in by hand.
+ */
+const DEFAULT_MODEL_NAME = "ggml-base.en.bin";
+const MODEL_BASE_URL =
+  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
+const MODEL_DOWNLOAD_TIMEOUT = 10 * 60_000;
 
 /** Absolute candidates cover Dock launches, where Homebrew is not on PATH. */
 const BINARY_CANDIDATES = [
@@ -62,9 +74,21 @@ export class WhisperDictation {
   /** Set once starting fails, so every later pass goes straight to the CLI. */
   #serverUnavailable = false;
   #idleTimer: NodeJS.Timeout | null = null;
+  /** Shared so overlapping passes wait on one download rather than racing. */
+  #downloading: Promise<string> | null = null;
 
   constructor(options: WhisperDictationOptions) {
     this.#modelDirectory = options.modelDirectory;
+  }
+
+  /**
+   * Puts the model on the machine ahead of the first recording, so pressing
+   * the microphone transcribes rather than waiting on a download. Called
+   * during setup and when the composer mounts; a no-op once the model is
+   * there, and overlapping calls share the one download.
+   */
+  async prepare(): Promise<void> {
+    await this.#modelPath();
   }
 
   /**
@@ -74,6 +98,9 @@ export class WhisperDictation {
    */
   async transcribe(audio: Buffer, final = true): Promise<string> {
     if (!audio.length) return "";
+    // Resolved up front so a failed download surfaces once, rather than being
+    // swallowed by the server path and retried by the CLI behind it.
+    await this.#modelPath();
     const served = await this.#transcribeOnServer(audio);
     if (served !== null) return served;
     return this.#transcribeWithCli(audio, final);
@@ -122,7 +149,7 @@ export class WhisperDictation {
    * a partial is replaced by the pass behind it and can decode greedily, while
    * the text a partial leaves behind cannot. */
   async #transcribeWithCli(audio: Buffer, final: boolean): Promise<string> {
-    const model = this.#modelPath();
+    const model = await this.#modelPath();
     const directory = await mkdtemp(path.join(tmpdir(), "flareai-dictation-"));
     try {
       const wavPath = path.join(directory, "clip.wav");
@@ -161,7 +188,7 @@ export class WhisperDictation {
       this.#serverUnavailable = true;
       return null;
     }
-    const model = this.#modelPath();
+    const model = await this.#modelPath();
     const port = await freePort();
     const child = spawn(
       binary,
@@ -200,14 +227,49 @@ export class WhisperDictation {
     this.#idleTimer.unref?.();
   }
 
-  #modelPath(): string {
+  /** The installed model, downloading the default one if none is present. */
+  async #modelPath(): Promise<string> {
+    const installed = this.#installedModel();
+    if (installed) return installed;
+    this.#downloading ??= this.#downloadModel().finally(() => {
+      this.#downloading = null;
+    });
+    return this.#downloading;
+  }
+
+  #installedModel(): string | null {
     for (const name of MODEL_NAMES) {
       const candidate = path.join(this.#modelDirectory, name);
       if (existsSync(candidate)) return candidate;
     }
-    throw new Error(
-      `Dictation model is missing. Download ggml-small.en.bin from huggingface.co/ggerganov/whisper.cpp into ${this.#modelDirectory}`,
-    );
+    return null;
+  }
+
+  /** Written to a sibling temp file and renamed, so an interrupted download
+   * cannot leave a truncated model that whisper would then fail to load. */
+  async #downloadModel(): Promise<string> {
+    const destination = path.join(this.#modelDirectory, DEFAULT_MODEL_NAME);
+    await mkdir(this.#modelDirectory, { recursive: true });
+    const partial = `${destination}.partial`;
+    try {
+      const response = await fetch(`${MODEL_BASE_URL}${DEFAULT_MODEL_NAME}`, {
+        signal: AbortSignal.timeout(MODEL_DOWNLOAD_TIMEOUT),
+      });
+      if (!response.ok || !response.body)
+        throw new Error(`the download returned ${response.status}`);
+      await pipeline(
+        Readable.fromWeb(response.body as import("node:stream/web").ReadableStream),
+        createWriteStream(partial),
+      );
+      await rename(partial, destination);
+      return destination;
+    } catch (error) {
+      await rm(partial, { force: true });
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Could not download the dictation model (${detail}). Put ${DEFAULT_MODEL_NAME} from huggingface.co/ggerganov/whisper.cpp in ${this.#modelDirectory} to use dictation offline.`,
+      );
+    }
   }
 
   async #runBinary(args: string[]): Promise<{ stdout: string }> {

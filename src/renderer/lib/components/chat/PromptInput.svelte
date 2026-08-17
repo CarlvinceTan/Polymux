@@ -548,6 +548,11 @@
   }
 
   onMount(() => {
+    // Fetches the speech-to-text model if setup never got to it — on a machine
+    // that already has it this costs nothing, and it means the microphone is
+    // ready long before anyone presses it. Failures are the download's to
+    // report when dictation is actually used.
+    if (speechModeEnabled) void api.dictation.prepare().catch(() => {});
     window.addEventListener('dragenter', windowDragEnter);
     window.addEventListener('dragover', windowDragOver);
     window.addEventListener('dragleave', windowDragLeave);

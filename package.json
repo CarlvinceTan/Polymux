@@ -32,7 +32,8 @@
     "test:backend": "npm run test:inference && npm run test:core && npm run test:storage && npm run test:chronicle && npm run test:tools && npm run test:agent && npm run test:protocol && npm run test:main",
     "icons": "node scripts/build-icons.mjs",
     "bridges:fetch": "node scripts/fetch-bridges.mjs",
-    "publish:updates": "node scripts/publish-updates.mjs"
+    "publish:updates": "node scripts/publish-updates.mjs",
+    "memories:import": "tsx scripts/import-codex-memories.mts"
   },
   "license": "UNLICENSED",
   "dependencies": {

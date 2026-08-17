@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { AgentTool, ToolEnvironment } from "../types.js";
-import { stringInput } from "../types.js";
+import { stringInput, workingDirectory } from "../types.js";
 import { withFileMutation } from "../mutation-queue.js";
 
 export function createWriteTool(environment: ToolEnvironment): AgentTool {
@@ -15,9 +15,9 @@ export function createWriteTool(environment: ToolEnvironment): AgentTool {
       required: ["path", "content"],
       additionalProperties: false,
     },
-    async execute(input) {
+    async execute(input, context) {
       const path = resolve(
-        environment.cwd,
+        workingDirectory(environment, context),
         stringInput(input, "path", "write"),
       );
       const content = stringInput(input, "content", "write");

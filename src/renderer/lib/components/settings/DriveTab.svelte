@@ -8,6 +8,7 @@
     FlareAIApi,
   } from '@flareai/protocol';
   import {readableError} from '../../errors';
+  import {scrollFade} from '../../scrollFade';
   import Icon from '../shared/Icon.svelte';
   import {activeLocale, locale, plural, t, translate, withLocale, type MessageKey} from '../../i18n';
   import {driveProviderDescription, driveProviderName} from '../../i18n/names';
@@ -110,10 +111,15 @@
     }
   }
 
-  async function disconnect(provider: DriveProviderDto): Promise<void> {
-    busy = `disconnect:${provider.id}`;
+  /** Drops one account. Omitting it signs the whole provider out, which is what
+   * the S3 form's single connection wants. */
+  async function disconnect(
+    provider: DriveProviderDto,
+    accountId?: string,
+  ): Promise<void> {
+    busy = `disconnect:${provider.id}:${accountId ?? ''}`;
     try {
-      status = await api.drive.disconnect(provider.id);
+      status = await api.drive.disconnect(provider.id, accountId);
       error = '';
     } catch (cause) {
       error = readableError(cause);
@@ -230,7 +236,7 @@
     {/if}
 
     <div class="drive-body">
-      <ul class="drive-rail">
+      <ul class="drive-rail" use:scrollFade={providers.length}>
         {#each providers as provider (provider.id)}
           <li>
             <button
@@ -246,7 +252,10 @@
               <span>
                 <strong>{providerName(provider)}</strong>
                 <small>
-                  {#if accountLabel(provider)}{accountLabel(provider)} · {/if}<span
+                  <!-- The separator is part of the expression: written as
+                       markup, the compiler trims the trailing space and the
+                       dot ends up stuck to the word after it. -->
+                  {#if accountLabel(provider)}{`${accountLabel(provider)} · `}{/if}<span
                     class="state-text"
                     data-state={provider.state}
                   >{stateLabel(provider)}</span>
@@ -257,7 +266,7 @@
         {/each}
       </ul>
 
-      <div class="drive-detail">
+      <div class="drive-detail" use:scrollFade={selected}>
         {#if editingS3}
           <header class="drive-detail-header">
             <h3>{$t('drive.s3')}</h3>
@@ -347,16 +356,29 @@
                     <button
                       type="button"
                       class="destructive"
-                      disabled={busy === `disconnect:${active.id}`}
-                      onclick={() => void disconnect(active)}
+                      disabled={busy === `disconnect:${active.id}:${account.id}`}
+                      onclick={() => void disconnect(active, account.id)}
                     >
-                      {busy === `disconnect:${active.id}` ? $t('drive.disconnecting') : $t('drive.disconnect')}
+                      {busy === `disconnect:${active.id}:${account.id}` ? $t('drive.disconnecting') : $t('drive.disconnect')}
                     </button>
                   {/if}
                 </p>
               {/each}
               {#if active.root}
                 <p class="drive-hint">{$t('drive.filesLiveIn')} <code>{active.root}</code></p>
+              {/if}
+              <!-- Several accounts of one provider can be signed in at once,
+                   and each becomes its own entry in the drive's switch. -->
+              {#if active.kind === 'oauth'}
+                <footer class="drive-actions">
+                  <button
+                    type="button"
+                    disabled={busy === `connect:${active.id}`}
+                    onclick={() => void connect(active)}
+                  >
+                    {busy === `connect:${active.id}` ? $t('drive.waitingForSignIn') : $t('drive.addAccount')}
+                  </button>
+                </footer>
               {/if}
             {:else if active.state === 'unconfigured'}
               <p class="drive-hint warn">
@@ -385,14 +407,14 @@
 
           {#if active.id === 'local'}
             <section class="drive-block">
-              <h4>{$t('drive.folder')}</h4>
+              <h4>{$t('drive.outputLocation')}</h4>
               <p class="drive-value">
                 <code>{active.root ?? '—'}</code>
                 <button type="button" disabled={busy === 'local-root'} onclick={() => void chooseFolder()}>
                   {$t('common.change')}
                 </button>
               </p>
-              <p class="drive-hint">{$t('drive.localFolderHint')}</p>
+              <p class="drive-hint">{$t('drive.outputLocationHint')}</p>
             </section>
           {/if}
 

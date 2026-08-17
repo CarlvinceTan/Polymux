@@ -834,6 +834,91 @@ test("compaction renders images as placeholders instead of inlining base64", asy
   }
 });
 
+test("the task tool reaches the model with its delegation guidance", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Draft a launch plan and research the competitors",
+    }).result;
+
+    const task = inference.requests[0]?.tools?.find(
+      (item) => item.name === "task",
+    );
+    assert.ok(task, "the task tool must be offered on a top-level run");
+    // The description carries the delegation policy, so a model that never
+    // reads the orchestration skill still knows when to reach for it.
+    assert.match(task.description, /## When to use/);
+    assert.match(task.description, /run in parallel/);
+    assert.match(task.description, /Do the work yourself only/);
+    // The same rule is stated in the system prompt, where a small model that
+    // skims tool descriptions still meets it.
+    const system = inference.requests[0]?.systemPrompt ?? "";
+    assert.match(system, /## Delegation/);
+    assert.match(system, /call the `task` tool rather than doing the work yourself/);
+    // Every parameter is documented: a bare schema left the model guessing
+    // that the subagent cannot see the conversation.
+    const properties = task.parameters.properties as Record<
+      string,
+      { description?: string }
+    >;
+    for (const key of ["description", "prompt", "context"])
+      assert.ok(
+        properties[key]?.description,
+        `${key} must describe itself to the model`,
+      );
+    assert.match(properties.prompt.description ?? "", /standalone/);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a subagent is neither given the task tool nor told to delegate", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Research something",
+      includeSubagents: false,
+    }).result;
+
+    const request = inference.requests[0];
+    assert.ok(
+      !request?.tools?.some((item) => item.name === "task"),
+      "a subagent must not be able to delegate further",
+    );
+    // Telling a model to call a tool it does not have is an instruction it can
+    // only fail: the policy has to travel with the tool.
+    assert.doesNotMatch(request?.systemPrompt ?? "", /## Delegation/);
+  } finally {
+    storage.close();
+  }
+});
+
 test("task tool adds no internal concurrency cap", async () => {
   let active = 0;
   let maximum = 0;

@@ -27,7 +27,11 @@ export class GoogleDrive implements DriveAdapter {
   /** The `FlareAI` folder's id, looked up once per connection. */
   #rootId: string | null = null;
 
-  constructor(secrets: DriveSecretStore, parent: () => BrowserWindow | undefined) {
+  constructor(
+    secrets: DriveSecretStore,
+    parent: () => BrowserWindow | undefined,
+    accountId?: string,
+  ) {
     this.#oauth = new OAuthClient(
       this.id,
       oauthAppFromEnv(this.id, {
@@ -46,6 +50,7 @@ export class GoogleDrive implements DriveAdapter {
       }),
       secrets,
       parent,
+      accountId,
     );
   }
 

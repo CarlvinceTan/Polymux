@@ -1,4 +1,4 @@
-import type { BrowserEventDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, RunEventDto } from "@flareai/protocol";
+import type { BrowserEventDto, ChatActivityDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, RunEventDto, ScheduleDto } from "@flareai/protocol";
 import { channels } from "@flareai/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
@@ -35,6 +35,7 @@ const api: FlareAIApi = {
       ipcRenderer.invoke(channels.permissionsOpenSettings, permission),
   },
   dictation: {
+    prepare: () => ipcRenderer.invoke(channels.dictationPrepare),
     transcribe: (audio, final) =>
       ipcRenderer.invoke(channels.dictationTranscribe, audio, final),
   },
@@ -60,6 +61,20 @@ const api: FlareAIApi = {
         listener(value);
       ipcRenderer.on(channels.runEvent, receive);
       return () => ipcRenderer.removeListener(channels.runEvent, receive);
+    },
+  },
+  schedules: {
+    list: () => ipcRenderer.invoke(channels.schedulesList),
+    create: (input) => ipcRenderer.invoke(channels.schedulesCreate, input),
+    update: (id, patch) => ipcRenderer.invoke(channels.schedulesUpdate, id, patch),
+    remove: (id) => ipcRenderer.invoke(channels.schedulesRemove, id),
+    runNow: (id) => ipcRenderer.invoke(channels.schedulesRunNow, id),
+    markRead: (id) => ipcRenderer.invoke(channels.schedulesMarkRead, id),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, items: ScheduleDto[]) =>
+        listener(items);
+      ipcRenderer.on(channels.schedulesChanged, receive);
+      return () => ipcRenderer.removeListener(channels.schedulesChanged, receive);
     },
   },
   goals: {
@@ -142,7 +157,17 @@ const api: FlareAIApi = {
     chats: () => ipcRenderer.invoke(channels.commsChats),
     chatMessages: (chatId, limit, before) =>
       ipcRenderer.invoke(channels.commsChatMessages, chatId, limit, before),
-    chatSend: (chatId, text) => ipcRenderer.invoke(channels.commsChatSend, chatId, text),
+    chatSend: (chatId, text, replyTo) =>
+      ipcRenderer.invoke(channels.commsChatSend, chatId, text, replyTo),
+    chatSendFiles: (chatId, paths) =>
+      ipcRenderer.invoke(channels.commsChatSendFiles, chatId, paths),
+    chatPickFiles: () => ipcRenderer.invoke(channels.commsChatPickFiles),
+    chatSendAudio: (chatId, bytes, mimetype) =>
+      ipcRenderer.invoke(channels.commsChatSendAudio, chatId, bytes, mimetype),
+    chatReact: (chatId, messageId, key) =>
+      ipcRenderer.invoke(channels.commsChatReact, chatId, messageId, key),
+    chatUnreact: (chatId, reactionId) =>
+      ipcRenderer.invoke(channels.commsChatUnreact, chatId, reactionId),
     chatMarkRead: (chatId, messageId) =>
       ipcRenderer.invoke(channels.commsChatMarkRead, chatId, messageId),
     mailFolders: (account) => ipcRenderer.invoke(channels.commsMailFolders, account),
@@ -169,6 +194,12 @@ const api: FlareAIApi = {
       ipcRenderer.on(channels.commsChanged, receive);
       return () => ipcRenderer.removeListener(channels.commsChanged, receive);
     },
+    subscribeActivity(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: ChatActivityDto) =>
+        listener(value);
+      ipcRenderer.on(channels.commsActivity, receive);
+      return () => ipcRenderer.removeListener(channels.commsActivity, receive);
+    },
   },
   drive: {
     status: () => ipcRenderer.invoke(channels.driveStatus),
@@ -179,19 +210,21 @@ const api: FlareAIApi = {
     setSaveOrder: (order) => ipcRenderer.invoke(channels.driveSetSaveOrder, order),
     setLocalRoot: (path) => ipcRenderer.invoke(channels.driveSetLocalRoot, path),
     saveS3: (config) => ipcRenderer.invoke(channels.driveSaveS3, config),
-    list: (provider, path) => ipcRenderer.invoke(channels.driveList, provider, path),
-    createFolder: (provider, parentPath, name) =>
-      ipcRenderer.invoke(channels.driveCreateFolder, provider, parentPath, name),
-    upload: (provider, parentPath, paths) =>
-      ipcRenderer.invoke(channels.driveUpload, provider, parentPath, paths),
-    download: (provider, path) =>
-      ipcRenderer.invoke(channels.driveDownload, provider, path),
-    remove: (provider, paths) => ipcRenderer.invoke(channels.driveRemove, provider, paths),
-    rename: (provider, path, name) =>
-      ipcRenderer.invoke(channels.driveRename, provider, path, name),
-    move: (provider, paths, destinationFolder) =>
-      ipcRenderer.invoke(channels.driveMove, provider, paths, destinationFolder),
-    copy: (provider, paths) => ipcRenderer.invoke(channels.driveCopy, provider, paths),
+    conversationFolder: (conversationId) =>
+      ipcRenderer.invoke(channels.driveConversationFolder, conversationId),
+    list: (source, path) => ipcRenderer.invoke(channels.driveList, source, path),
+    createFolder: (source, parentPath, name) =>
+      ipcRenderer.invoke(channels.driveCreateFolder, source, parentPath, name),
+    upload: (source, parentPath, paths) =>
+      ipcRenderer.invoke(channels.driveUpload, source, parentPath, paths),
+    download: (source, path) =>
+      ipcRenderer.invoke(channels.driveDownload, source, path),
+    remove: (source, paths) => ipcRenderer.invoke(channels.driveRemove, source, paths),
+    rename: (source, path, name) =>
+      ipcRenderer.invoke(channels.driveRename, source, path, name),
+    move: (source, paths, destinationFolder) =>
+      ipcRenderer.invoke(channels.driveMove, source, paths, destinationFolder),
+    copy: (source, paths) => ipcRenderer.invoke(channels.driveCopy, source, paths),
     subscribe(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: DriveStatusDto) =>
         listener(value);

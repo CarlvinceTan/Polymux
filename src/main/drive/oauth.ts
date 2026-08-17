@@ -16,6 +16,15 @@ import type {DriveSecretStore} from "./types.js";
 export const OAUTH_REDIRECT_PORT = 47665;
 export const OAUTH_REDIRECT_URI = `http://127.0.0.1:${OAUTH_REDIRECT_PORT}/drive/callback`;
 
+/**
+ * The account id the first connection of a provider carries.
+ *
+ * Builds before multi-account stored one credential per provider, with no id
+ * at all. Naming that account rather than minting a uuid for it is what lets
+ * the old credential be found again after the upgrade.
+ */
+export const LEGACY_ACCOUNT_ID = "default";
+
 /** How long a consent window may sit unanswered before the flow gives up. */
 const AUTHORIZE_TIMEOUT_MS = 5 * 60 * 1000;
 /** Refresh an access token this long before it actually expires, so a call
@@ -81,16 +90,23 @@ export class OAuthClient {
    * not each spend the refresh token, which some providers rotate. */
   #refreshing: Promise<StoredTokens> | null = null;
 
+  /** Which of the provider's accounts these tokens belong to. Scoping the
+   * credential id by account is what lets two Google Drives be signed in at
+   * once instead of the second sign-in overwriting the first. */
+  readonly #accountId: string;
+
   constructor(
     provider: DriveProviderId,
     app: OAuthApp | null,
     secrets: DriveSecretStore,
     parent: () => BrowserWindowType | undefined,
+    accountId = LEGACY_ACCOUNT_ID,
   ) {
     this.#provider = provider;
     this.#app = app;
     this.#secrets = secrets;
     this.#parent = parent;
+    this.#accountId = accountId;
   }
 
   /** False when this build has no client credentials for the provider. */
@@ -166,6 +182,10 @@ export class OAuthClient {
 
   async clear(): Promise<void> {
     await this.#secrets.clear(this.#credentialId());
+    // The pre-accounts credential has to go with it, or the first account
+    // would read it back on the next probe and appear still connected.
+    if (this.#accountId === LEGACY_ACCOUNT_ID)
+      await this.#secrets.clear(`drive:${this.#provider}`);
   }
 
   async #refresh(refreshToken: string): Promise<StoredTokens> {
@@ -343,11 +363,18 @@ export class OAuthClient {
   }
 
   #credentialId(): string {
-    return `drive:${this.#provider}`;
+    return `drive:${this.#provider}:${this.#accountId}`;
   }
 
   async #read(): Promise<StoredTokens | null> {
-    const raw = await this.#secrets.read(this.#credentialId());
+    const raw =
+      (await this.#secrets.read(this.#credentialId())) ??
+      // Before accounts were scoped there was one credential per provider.
+      // The first account inherits it, so an existing connection survives the
+      // upgrade rather than silently signing the user out.
+      (this.#accountId === LEGACY_ACCOUNT_ID
+        ? await this.#secrets.read(`drive:${this.#provider}`)
+        : undefined);
     if (!raw) return null;
     try {
       return JSON.parse(raw) as StoredTokens;

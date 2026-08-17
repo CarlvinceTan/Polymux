@@ -11,8 +11,9 @@
   import ChatSearchModal from './lib/components/shell/ChatSearchModal.svelte';
   import SummaryPanel, {type SummarySection, type ReferenceItem} from './lib/components/workspace/SummaryPanel.svelte';
   import WorkspaceDrawer, {SINGLETON_TAB_IDS, type WorkspaceTab, type WorkspaceTabKind} from './lib/components/workspace/WorkspaceDrawer.svelte';
+  import {warmHub} from './lib/components/workspace/HubView.svelte';
   import {driveEntryKind, type DriveEntry} from './lib/components/workspace/DriveView.svelte';
-  import type {ScheduleItem, ScheduleFrequency} from './lib/components/workspace/ScheduleView.svelte';
+  import {unreadScheduleCount, type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './lib/components/workspace/ScheduleView.svelte';
   import Tooltip from './lib/components/shared/Tooltip.svelte';
   import {recordVisit} from './lib/browser/visitHistory';
   import SettingsModal from './lib/components/settings/SettingsModal.svelte';
@@ -189,17 +190,10 @@
   let tasks: SummaryTask[] = [];
   let workspaceTabs: WorkspaceTab[] = [];
   let activeTabId: string | null = null;
-  /** There is no scheduling backend yet, so the desktop starts empty. The
-   * browser demo — the same one that supplies demo chats and mail — seeds a few
-   * rows so the view can be worked on outside the app. */
-  const demoHour = 3_600_000;
-  const demoNow = Date.now();
-  let scheduleItems: ScheduleItem[] = window.flareai ? [] : [
-    {id: 'demo-brief', title: 'Morning brief', frequency: {kind: 'weekly', days: [1, 2, 3, 4, 5], time: '08:00'}, status: 'active', prompt: 'Summarise my inbox and calendar for the day.', nextRunAt: demoNow + 14 * demoHour, lastRunAt: demoNow - 10 * demoHour},
-    {id: 'demo-inbox', title: 'Triage inbox', frequency: {kind: 'hourly', interval: 2}, status: 'running', prompt: 'Triage new mail and flag anything that needs a reply.', nextRunAt: demoNow + 2 * demoHour, lastRunAt: demoNow - demoHour},
-    {id: 'demo-report', title: 'Weekly spend report', frequency: {kind: 'weekly', days: [5], time: '17:00'}, status: 'paused', prompt: 'Total this week\u2019s spend and compare it to last week.', lastRunAt: demoNow - 96 * demoHour},
-    {id: 'demo-backup', title: 'Archive finished work', frequency: {kind: 'weekly', days: [0], time: '02:00'}, status: 'failed', prompt: 'Move finished documents into the archive folder.', nextRunAt: demoNow + 70 * demoHour, lastRunAt: demoNow - 98 * demoHour},
-  ];
+  /** Owned by the main process, which keeps the clock and the run history;
+   * this is a mirror kept current by `schedules.subscribe`. */
+  let scheduleItems: ScheduleItem[] = [];
+  let scheduleError = '';
 
 
   $: mode = panelState.mode;
@@ -324,6 +318,11 @@
       if (!onboardingOpen) void api.permissions.ensureFirstRun().catch(() => {});
     }).catch(() => {});
     refreshExtensionStatus();
+    // The hub's mailboxes and conversations, fetched while the user is reading
+    // whatever they opened the app for. It is the slowest tab to build and the
+    // one most likely to be opened, so it is worth having ready; the delay
+    // keeps it out of the way of the first paint.
+    setTimeout(() => void warmHub(), 2_500);
     windowActive = document.hasFocus();
     unsubscribeEvents = api.runs.subscribe(handleRunEvent);
     // A tab the agent opened for itself becomes a real workspace tab, so its
@@ -1012,112 +1011,119 @@
     else openTab({id: crypto.randomUUID(), title: translate('workspace.newTab'), kind});
   }
 
-  /** Sizes and dates the desktop has no local filesystem to report yet, so the
-   * browser demo supplies a folder that exercises every column. */
-  const demoDriveFiles: DriveEntry[] = window.flareai ? [] : [
-    {id: 'demo-f1', name: 'Launch plan.docx', kind: 'document', size: 48_310, modifiedAt: demoNow - 2 * demoHour},
-    {id: 'demo-f2', name: 'Q3 regional revenue breakdown (final).xlsx', kind: 'spreadsheet', size: 1_284_912, modifiedAt: demoNow - 26 * demoHour},
-    {id: 'demo-f3', name: 'Launch deck.pptx', kind: 'presentation', size: 8_420_115, modifiedAt: demoNow - 50 * demoHour},
-    {id: 'demo-f4', name: 'hero.png', kind: 'image', size: 640_220, modifiedAt: demoNow - 5 * demoHour},
-    {id: 'demo-f5', name: 'walkthrough.mp4', kind: 'video', size: 42_118_300, modifiedAt: demoNow - 120 * demoHour},
-    {id: 'demo-f6', name: 'notes.md', kind: 'document', size: 3_902, modifiedAt: demoNow - demoHour},
-  ];
-
-  /** The agent's files for this conversation, browsable as a small tree: what it
-   * produced and what it was given, kept apart. */
-  $: conversationDriveRoot = {
-    id: 'drive-root',
-    name: $t('workspace.drive'),
-    kind: 'folder',
-    children: [
-      {id: 'drive-outputs', name: $t('summary.outputs'), kind: 'folder', children: [...demoDriveFiles, ...outputs.map(({id, name}) => ({id, name, kind: driveEntryKind(name)}))]},
-      {id: 'drive-references', name: $t('summary.references'), kind: 'folder', children: references.map(({id, title, kind, uri}) => ({
-        id,
-        name: title,
-        kind: kind === 'web' ? 'file' : driveEntryKind(title),
-        uri,
-      }))},
-    ],
-  } satisfies DriveEntry;
-
   /**
    * Storage, beyond this conversation's own files.
    *
    * The conversation's own files are one source among the connected providers,
    * each browsed a folder at a time.
    */
-  const CONVERSATION_SOURCE = 'conversation';
+  /** This chat's own output folder, and this Mac. Both are the local provider;
+   * they differ in where they are rooted. */
+  const OUTPUTS_SOURCE = 'local#outputs';
+  const HOME_SOURCE = 'local#home';
   let driveStatus: DriveStatusDto | null = null;
-  let driveSourceId = CONVERSATION_SOURCE;
+  let driveSourceId = OUTPUTS_SOURCE;
   let driveLoading = false;
   let driveError = '';
-  /** True once the user has picked a source themselves, after which the drive
-   * stops choosing one for them. */
-  let driveSourceChosen = false;
-  /** Folders already fetched, keyed `<provider>:<path>`. Cleared when the
-   * source changes, since a path only means something inside its provider. */
+  /** Folders already fetched, keyed `<source>:<path>`. Cleared when the source
+   * changes, since a path only means something inside its own source. */
   let driveFolders: Record<string, DriveEntry[]> = {};
+  /** The absolute path of this conversation's output folder, which is where
+   * the outputs source is rooted. Empty until the main process answers. */
+  let conversationFolder = '';
+
+  onMount(() => {
+    void applySchedule(Promise.resolve());
+    return api.schedules.subscribe((items) => {
+      scheduleItems = items;
+    });
+  });
 
   onMount(() => {
     void loadDriveStatus();
     return api.drive.subscribe((next) => {
       driveStatus = next;
-      adoptPreferredSource();
     });
   });
 
   async function loadDriveStatus(): Promise<void> {
     try {
       driveStatus = await api.drive.status();
-      adoptPreferredSource();
     } catch {
       // A drive that cannot be reached is not a reason to fail the workspace;
-      // the source picker simply offers this conversation alone.
+      // the source picker simply comes up empty.
     }
   }
 
   /**
-   * Opens the drive on the storage the save order names first.
+   * Follows the open conversation to its own output folder.
    *
-   * The conversation's files are a view of what a run produced — nothing can be
-   * created or uploaded into them — so opening there would greet every user
-   * with a toolbar that cannot do anything. Starting where a new file would go
-   * means the actions are live from the first frame, and "This chat" is one
-   * click away in the switch.
+   * The folder is created by the main process on the way back, so the drive can
+   * be opened on a chat that has not written anything yet and still show a real
+   * place rather than an error.
    */
-  function adoptPreferredSource(): void {
-    if (driveSourceChosen || driveSourceId !== CONVERSATION_SOURCE) return;
-    const preferred = (driveStatus?.saveOrder ?? []).find(
-      (id) => driveStatus?.providers.find((entry) => entry.id === id)?.state === 'connected',
-    );
-    if (!preferred) return;
-    driveSourceId = preferred;
-    void loadDriveFolder('');
+  $: void openConversationFolder(activeId);
+
+  async function openConversationFolder(conversationId: string): Promise<void> {
+    if (!conversationId) return;
+    try {
+      const folder = await api.drive.conversationFolder(conversationId);
+      if (folder === conversationFolder) return;
+      conversationFolder = folder;
+      // The cached tree belongs to the chat that just closed.
+      driveFolders = {};
+      if (driveSourceId === OUTPUTS_SOURCE) await loadDriveFolder(folder);
+    } catch {
+      // An output root that cannot be created leaves the outputs source empty;
+      // every other source still opens.
+    }
   }
 
-  $: driveSources = [
-    {id: CONVERSATION_SOURCE, name: $t('drive.thisChat'), icon: 'chat' as const},
-    // Only connected providers are offered: a source in the switch is a
-    // promise that opening it will show something.
-    ...(driveStatus?.providers ?? [])
-      .filter((provider) => provider.state === 'connected')
-      .map((provider) => ({id: provider.id, name: provider.name})),
-  ];
+  /** Where a source's root sits. Only the outputs source is rooted somewhere
+   * other than the provider's own root, since it follows the conversation. */
+  $: driveRootPath = driveSourceId === OUTPUTS_SOURCE ? conversationFolder : '';
 
-  $: driveRoot =
-    driveSourceId === CONVERSATION_SOURCE
-      ? conversationDriveRoot
-      : ({
-          id: 'drive-root',
-          name: driveSources.find((source) => source.id === driveSourceId)?.name ?? $t('workspace.drive'),
-          kind: 'folder',
-          // The root's path is the empty string for every provider, which is
-          // what lets one tree builder serve all of them. `driveFolders` is
-          // named here rather than only inside the builder because a reactive
-          // statement tracks what it references itself, not what its callees
-          // read — without it the tree would never see a folder arrive.
-          children: driveBranch(driveFolders, driveSourceId, ''),
-        } satisfies DriveEntry);
+  /**
+   * The places the drive can open, in the order the switch shows them.
+   *
+   * This chat's own output folder leads, since that is where the agent writes
+   * and so what the user most often wants; this Mac follows; then every signed
+   * in cloud account. An account's address trails its provider's name because
+   * two Google Drives are otherwise the same entry twice.
+   *
+   * Only connected sources are offered: a source in the switch is a promise
+   * that opening it will show something.
+   */
+  $: driveSources = (driveStatus?.sources ?? [])
+    .filter((source) => source.state === 'connected')
+    .map((source) => {
+      // The home folder is a place rather than a storage backend, so it wears a
+      // house instead of the drive mark the other local source carries.
+      if (source.id === HOME_SOURCE)
+        return {id: source.id, name: $t('drive.home'), icon: 'home' as const};
+      return {
+        id: source.id,
+        name:
+          source.id === OUTPUTS_SOURCE
+            ? $t('drive.thisChat')
+            : source.accountLabel
+              ? `${source.name} – ${source.accountLabel}`
+              : source.name,
+        provider: source.provider,
+      };
+    });
+
+  $: driveRoot = {
+    id: 'drive-root',
+    name: driveSources.find((source) => source.id === driveSourceId)?.name ?? $t('workspace.drive'),
+    kind: 'folder',
+    // Every source but the outputs folder is rooted at the empty path, which
+    // is what lets one tree builder serve all of them. `driveFolders` is named
+    // here rather than only inside the builder because a reactive statement
+    // tracks what it references itself, not what its callees read — without it
+    // the tree would never see a folder arrive.
+    children: driveBranch(driveFolders, driveSourceId, driveRootPath),
+  } satisfies DriveEntry;
 
   /**
    * Builds a folder's children out of what has been fetched, attaching each
@@ -1137,20 +1143,25 @@
 
   function selectDriveSource(id: string): void {
     driveSourceId = id;
-    driveFolders = {};
-    if (id !== CONVERSATION_SOURCE) void loadDriveFolder('');
+    // The cache is keyed by source as well as path, so what was fetched for
+    // the source being left stays valid — and coming back to it paints from
+    // that rather than fetching the same folders again.
+    void loadDriveFolder(id === OUTPUTS_SOURCE ? conversationFolder : '');
   }
 
-  /** Fetches one folder from the active provider. */
+  /**
+   * Fetches one folder from the active source. A folder already fetched is
+   * shown while the fresh copy is on its way, so opening one that has been
+   * seen is instant and only its contents change under you.
+   */
   async function loadDriveFolder(path: string): Promise<void> {
-    if (driveSourceId === CONVERSATION_SOURCE) return;
-    const provider = driveSourceId as DriveProviderId;
-    driveLoading = true;
+    const source = driveSourceId;
+    driveLoading = driveFolders[`${source}:${path}`] === undefined;
     try {
-      const entries = await api.drive.list(provider, path);
+      const entries = await api.drive.list(source, path);
       driveFolders = {
         ...driveFolders,
-        [`${provider}:${path}`]: entries.map((entry) => ({
+        [`${source}:${path}`]: entries.map((entry) => ({
           // The provider's path is the id the drive navigates by: it is
           // unique within the provider and is what every action takes back.
           id: entry.path,
@@ -1174,57 +1185,55 @@
   }
 
   /**
-   * The drive's toolbar actions, live only on a real storage provider — the
-   * conversation tree is a view of what the agent produced, not a folder
-   * anything can be written into.
+   * The drive's toolbar actions.
+   *
+   * Live on every source: this chat's folder is a real folder on disk now
+   * rather than a listing of what a run produced, so there is nowhere in the
+   * switch that cannot be written to.
    */
-  $: driveActions =
-    driveSourceId === CONVERSATION_SOURCE
-      ? null
-      : {
-          newFolder: (parent: DriveEntry, name: string) => void runDriveAction(async (provider) => {
-            await api.drive.createFolder(provider, driveFolderPath(parent), name);
-            return driveFolderPath(parent);
-          }),
-          upload: (parent: DriveEntry) => void runDriveAction(async (provider) => {
-            // No paths means the main process opens a file picker.
-            await api.drive.upload(provider, driveFolderPath(parent));
-            return driveFolderPath(parent);
-          }),
-          rename: (entry: DriveEntry, name: string) => void runDriveAction(async (provider) => {
-            await api.drive.rename(provider, entry.id, name);
-            return driveParentPath(entry);
-          }),
-          move: (entries: DriveEntry[], destination: DriveEntry) => void runDriveAction(async (provider) => {
-            const from = driveParentPath(entries[0]);
-            await api.drive.move(provider, entries.map((entry) => entry.id), driveFolderPath(destination));
-            // Both ends of the move changed, and the destination is only
-            // worth re-reading if it has ever been opened.
-            await loadDriveFolder(driveFolderPath(destination));
-            return from;
-          }),
-          duplicate: (entries: DriveEntry[]) => void runDriveAction(async (provider) => {
-            await api.drive.copy(provider, entries.map((entry) => entry.id));
-            return driveParentPath(entries[0]);
-          }),
-          download: (entry: DriveEntry) => void runDriveAction(async (provider) => {
-            await api.drive.download(provider, entry.id);
-            return null;
-          }),
-          remove: (entries: DriveEntry[]) => void runDriveAction(async (provider) => {
-            await api.drive.remove(provider, entries.map((entry) => entry.id));
-            return driveParentPath(entries[0]);
-          }),
-        };
+  $: driveActions = {
+    newFolder: (parent: DriveEntry, name: string) => void runDriveAction(async (source) => {
+      await api.drive.createFolder(source, driveFolderPath(parent), name);
+      return driveFolderPath(parent);
+    }),
+    upload: (parent: DriveEntry) => void runDriveAction(async (source) => {
+      // No paths means the main process opens a file picker.
+      await api.drive.upload(source, driveFolderPath(parent));
+      return driveFolderPath(parent);
+    }),
+    rename: (entry: DriveEntry, name: string) => void runDriveAction(async (source) => {
+      await api.drive.rename(source, entry.id, name);
+      return driveParentPath(entry);
+    }),
+    move: (entries: DriveEntry[], destination: DriveEntry) => void runDriveAction(async (source) => {
+      const from = driveParentPath(entries[0]);
+      await api.drive.move(source, entries.map((entry) => entry.id), driveFolderPath(destination));
+      // Both ends of the move changed, and the destination is only worth
+      // re-reading if it has ever been opened.
+      await loadDriveFolder(driveFolderPath(destination));
+      return from;
+    }),
+    duplicate: (entries: DriveEntry[]) => void runDriveAction(async (source) => {
+      await api.drive.copy(source, entries.map((entry) => entry.id));
+      return driveParentPath(entries[0]);
+    }),
+    download: (entry: DriveEntry) => void runDriveAction(async (source) => {
+      await api.drive.download(source, entry.id);
+      return null;
+    }),
+    remove: (entries: DriveEntry[]) => void runDriveAction(async (source) => {
+      await api.drive.remove(source, entries.map((entry) => entry.id));
+      return driveParentPath(entries[0]);
+    }),
+  };
 
   /** Runs a drive action and reloads whichever folder it changed. */
   async function runDriveAction(
-    action: (provider: DriveProviderId) => Promise<string | null>,
+    action: (source: string) => Promise<string | null>,
   ): Promise<void> {
-    if (driveSourceId === CONVERSATION_SOURCE) return;
     driveError = '';
     try {
-      const reload = await action(driveSourceId as DriveProviderId);
+      const reload = await action(driveSourceId);
       if (reload !== null) await loadDriveFolder(reload);
     } catch (cause) {
       // Shown rather than logged: a name already taken or a provider that has
@@ -1234,9 +1243,10 @@
     }
   }
 
-  /** The root folder's path is the empty string, not its synthetic id. */
+  /** The root folder answers with wherever the active source is rooted, not
+   * with its synthetic id. */
   function driveFolderPath(entry: DriveEntry): string {
-    return entry.id === 'drive-root' ? '' : entry.id;
+    return entry.id === 'drive-root' ? driveRootPath : entry.id;
   }
 
   /** Which folder an entry sits in, so a change to it reloads the right one.
@@ -1253,36 +1263,59 @@
     openTab({id: entry.id, title: entry.name, kind: entry.kind === 'image' ? 'photo' : entry.kind === 'video' ? 'video' : entry.kind === 'spreadsheet' ? 'sheet' : entry.kind === 'presentation' ? 'slides' : 'document'});
   }
 
+  /**
+   * Every edit goes to the main process and comes back as a fresh list: it
+   * owns the clock, so it is the only side that can say when a schedule next
+   * runs. Nothing here recomputes a next run for itself.
+   */
+  async function applySchedule(action: Promise<unknown>): Promise<void> {
+    try {
+      await action;
+      scheduleItems = await api.schedules.list();
+    } catch (error) {
+      scheduleError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   function toggleSchedule(item: ScheduleItem): void {
-    scheduleItems = scheduleItems.map((entry) => entry.id === item.id
-      ? {...entry, status: entry.status === 'paused' ? 'active' : 'paused'}
-      : entry);
+    void applySchedule(api.schedules.update(item.id, {
+      status: item.status === 'paused' ? 'active' : 'paused',
+    }));
   }
 
   function deleteSchedule(item: ScheduleItem): void {
-    scheduleItems = scheduleItems.filter((entry) => entry.id !== item.id);
+    void applySchedule(api.schedules.remove(item.id));
   }
 
-  function updateScheduleFrequency(item: ScheduleItem, frequency: ScheduleFrequency): void {
-    scheduleItems = scheduleItems.map((entry) => entry.id === item.id ? {...entry, frequency} : entry);
+  function markScheduleRead(item: ScheduleItem): void {
+    void applySchedule(api.schedules.markRead(item.id));
   }
 
-  /** Running a schedule by hand is the same ask the schedule itself makes, so
-   * it goes through the chat rather than a side channel: the run then has a
-   * conversation to report into, like every other one. */
+  /** Firing by hand is the same run the clock would have started, so it goes
+   * through the scheduler rather than the composer: it lands in the schedule's
+   * own conversation and is recorded in its history like any other run. */
   function runScheduleNow(item: ScheduleItem): void {
-    workspaceExpanded = false;
-    void send(item.prompt ?? item.title, []);
+    void applySchedule(api.schedules.runNow(item.id));
+  }
+
+  /** Opens the conversation a run reported into. */
+  function openScheduleRun(item: ScheduleItem, run?: ScheduleRun): void {
+    const conversationId = run?.conversationId ?? item.history.find((entry) => entry.conversationId)?.conversationId;
+    if (!conversationId) return;
+    void openChat(conversationId);
   }
 
   /**
-   * There is no scheduling backend yet, so creating one is a request rather
-   * than a form: the composer is seeded with the sentence the agent needs and
-   * the user finishes it in their own words.
+   * A schedule written in the view rather than asked for in the chat: the
+   * sheet collects the instruction and the cadence, and this saves it. Asking
+   * the agent still works — it has a tool for exactly this — but it is no
+   * longer the only way to make one.
    */
-  function createSchedule(): void {
-    workspaceExpanded = false;
-    composerInsertion = {id: crypto.randomUUID(), text: translate('schedule.composerSeed')};
+  function saveSchedule(
+    input: {title: string; prompt: string; frequency: ScheduleFrequency},
+    id: string | null,
+  ): void {
+    void applySchedule(id ? api.schedules.update(id, input) : api.schedules.create(input));
   }
 
   function openVisit(url: string, title: string): void {
@@ -1700,12 +1733,16 @@
     onSelectDriveSource={selectDriveSource}
     onDriveNavigate={(entry) => void loadDriveFolder(entry.id)}
     {scheduleItems}
+    {scheduleError}
+    unreadSchedules={unreadScheduleCount(scheduleItems)}
+    onDismissScheduleError={() => (scheduleError = '')}
+    onOpenScheduleRun={openScheduleRun}
+    onMarkScheduleRead={markScheduleRead}
     onOpenDriveEntry={openDriveEntry}
     onToggleSchedule={toggleSchedule}
-    onCreateSchedule={createSchedule}
+    onSaveSchedule={saveSchedule}
     onDeleteSchedule={deleteSchedule}
     onRunSchedule={runScheduleNow}
-    onScheduleFrequency={updateScheduleFrequency}
     onSelect={(id) => activeTabId = id}
     onClose={closeTab}
     onNew={newTab}

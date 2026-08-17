@@ -25,16 +25,26 @@ export default defineConfig({
   root: 'src/renderer',
   cacheDir: path.join(projectRoot, 'node_modules', forgeDriven ? '.vite-app' : '.vite-web'),
   plugins: [svelte()],
-  // Forge also merges `resolve.preserveSymlinks: true`, which makes the
-  // workspace's own packages resolve inside node_modules, so the dependency
-  // optimizer treats them as third-party and prebundles them. That bundle is
-  // only invalidated by lockfile or config changes — never by edits to
-  // packages/* — so a new export in @flareai/protocol leaves the renderer
-  // importing the stale bundle and dying at module load with "does not provide
-  // an export". Serving it as source keeps it always current; un-ignoring it
-  // in the watcher lets edits reach a running dev server too.
-  optimizeDeps: {exclude: ['@flareai/protocol']},
-  server: {watch: {ignored: ['!**/node_modules/@flareai/**']}},
+  // Forge merges `resolve.preserveSymlinks: true`, which makes the workspace's
+  // own packages resolve through node_modules. Vite serves anything under
+  // node_modules with a `?v=<hash>` query and `Cache-Control: immutable`, and
+  // that hash only changes when the lockfile or the optimizer's config does —
+  // never when packages/* is edited. So adding an export to @flareai/protocol
+  // left the renderer holding a year-long cached copy without it, dying at
+  // module load with "does not provide an export" and painting nothing. It
+  // survived restarts because the staleness lived in the browser's HTTP cache
+  // rather than in Vite's, which is why clearing cacheDir only fixed it until
+  // the hash was reused again.
+  //
+  // Pointing the specifier straight at the source defeats all of it: the module
+  // is project source, served `no-cache` and revalidated on every load, watched
+  // for edits like any other file. `optimizeDeps.exclude` cannot substitute —
+  // it stops the prebundling but not the immutable caching.
+  resolve: {
+    alias: {
+      '@flareai/protocol': path.join(projectRoot, 'packages/protocol/src/index.ts'),
+    },
+  },
   build: {
     outDir: path.join(projectRoot, '.vite/renderer/main_window'),
     emptyOutDir: true,

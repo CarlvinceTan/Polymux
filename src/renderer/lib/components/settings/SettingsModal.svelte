@@ -1,6 +1,51 @@
+<script module lang="ts">
+  import type {
+    BrowserExtensionDto as CachedExtensionDto,
+    ChronicleStatusDto as CachedChronicleDto,
+    GeneralSettingsDto as CachedGeneralDto,
+    McpServerDto as CachedMcpDto,
+    MemoryStatusDto as CachedMemoryDto,
+    ModelDto as CachedModelDto,
+    ProviderDto as CachedProviderDto,
+    SkillDto as CachedSkillDto,
+  } from '@flareai/protocol';
+
+  /**
+   * The last answers Settings had, kept outside the component.
+   *
+   * The modal is destroyed when it closes, so every open used to wait on eight
+   * requests before showing a single row — servers, skills, models, providers
+   * and four status reads. Reopening now paints what it knew and corrects it
+   * behind the panel. Nothing here is persisted: it lasts as long as the
+   * window, which is as long as the answers are worth trusting.
+   */
+  const settingsSnapshot: {
+    loaded: boolean;
+    mcpServers: CachedMcpDto[];
+    skills: CachedSkillDto[];
+    models: CachedModelDto[];
+    providers: CachedProviderDto[];
+    memory: CachedMemoryDto | null;
+    chronicle: CachedChronicleDto | null;
+    general: CachedGeneralDto | null;
+    extensionStatus: CachedExtensionDto | null;
+  } = {
+    loaded: false,
+    mcpServers: [],
+    skills: [],
+    models: [],
+    providers: [],
+    memory: null,
+    chronicle: null,
+    general: null,
+    extensionStatus: null,
+  };
+</script>
+
 <script lang="ts">
-  import {onDestroy, onMount, tick} from 'svelte';
+  import {onDestroy, onMount, tick, type ComponentProps} from 'svelte';
   import {readableError} from '../../errors';
+  import {scrollFade} from '../../scrollFade';
   import type {AppUpdateDto, AppVersionDto, BrowserExtensionDto, ChronicleStatusDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, McpRegistryEntryDto, McpServerDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, ProviderDto, SkillDto, SkillRegistryEntryDto} from '@flareai/protocol';
   import {SUPPORTED_LANGUAGES} from '@flareai/protocol';
   import {flareaiApi} from '../../api/flareai';
@@ -16,6 +61,7 @@
   export let onClose: () => void;
   export let onGeneralChange: (settings: GeneralSettingsDto) => void = () => {};
 
+  type IconName = ComponentProps<Icon>['name'];
   type Mode = 'general' | 'hub' | 'drive' | 'mcp' | 'skills' | 'model' | 'provider' | 'memory';
   type RailMenu = 'filter' | 'sort' | 'setup';
   type ModelKind = 'text' | 'image' | 'video' | 'audio' | 'embedding';
@@ -25,14 +71,18 @@
   let mode: Mode = 'general';
   let settled = false;
   let search = '';
-  let mcpServers: McpServerDto[] = [];
-  let skills: SkillDto[] = [];
-  let models: ModelDto[] = [];
-  let providers: ProviderDto[] = [];
-  let chronicle: ChronicleStatusDto | null = null;
-  let memory: MemoryStatusDto | null = null;
-  let general: GeneralSettingsDto | null = null;
-  let extensionStatus: BrowserExtensionDto | null = null;
+  /** The rail's filter over the tab list, kept apart from `search`, which is
+   * the per-tab list filter inside the content column. */
+  let navSearch = '';
+  // Whatever the last visit learned, on screen before the first request.
+  let mcpServers: McpServerDto[] = settingsSnapshot.mcpServers;
+  let skills: SkillDto[] = settingsSnapshot.skills;
+  let models: ModelDto[] = settingsSnapshot.models;
+  let providers: ProviderDto[] = settingsSnapshot.providers;
+  let chronicle: ChronicleStatusDto | null = settingsSnapshot.chronicle;
+  let memory: MemoryStatusDto | null = settingsSnapshot.memory;
+  let general: GeneralSettingsDto | null = settingsSnapshot.general;
+  let extensionStatus: BrowserExtensionDto | null = settingsSnapshot.extensionStatus;
 
   function openExtensionInstall(): void {
     void api.extension.openInstall().catch(() => {});
@@ -66,7 +116,23 @@
   /** The model list is a result, not a question — it opens for editing only
    * when asked for, or when there is nothing to show. */
   let modelsExpanded = false;
-  let loading = true;
+  /** Only a first open has nothing to show; later ones refresh in place. */
+  let loading = !settingsSnapshot.loaded;
+  /**
+   * Kept in step with the panel rather than written once on load: a key added
+   * or a server toggled changes these lists after the fetch, and the next open
+   * should show what the last one ended with.
+   */
+  $: Object.assign(settingsSnapshot, {
+    mcpServers,
+    skills,
+    models,
+    providers,
+    memory,
+    chronicle,
+    general,
+    extensionStatus,
+  });
   let adding: 'mcp' | 'skills' | null = null;
   let integrationSaving = false;
   let mcpUpdatingIds = new Set<string>();
@@ -98,7 +164,6 @@
   let providerFilter = 'all';
   let providerSort = 'default';
   let openRailMenu: RailMenu | null = null;
-  let swallowBackdropClose = false;
   let skillAddMenuOpen = false;
   let browsingMcpRegistry = false;
   let mcpRegistryQuery = '';
@@ -124,13 +189,7 @@
   let registryRequest = 0;
   let installingRegistryId = '';
   let skillFolderInput: HTMLInputElement;
-  let railList: HTMLUListElement;
-  let railAtTop = true;
-  let railAtBottom = true;
-  let discoveryList: HTMLDivElement;
   let collapsedGroups = new Set<string>();
-  let discoveryAtTop = true;
-  let discoveryAtBottom = true;
   let currency: Currency = 'USD';
   let currencyRates: Partial<Record<Currency, number>> = {USD: 1};
   let appVersion: AppVersionDto | null = null;
@@ -243,9 +302,26 @@
   $: activeRailFilterOptions = mode === 'mcp' ? mcpFilterOptions : mode === 'skills' ? skillFilterOptions : mode === 'model' ? modelFilterOptions : providerFilterOptions;
   $: activeRailSortOptions = mode === 'mcp' ? mcpSortOptions : mode === 'skills' ? skillSortOptions : mode === 'model' ? modelSortOptions : providerSortOptions;
   $: modeHeader = MODE_HEADERS[mode];
+  /* One icon per tab, all from the shared set at one size, so the rail reads as
+     a single strip rather than eight separately chosen marks. */
+  $: navTabs = [
+    {id: 'general' as Mode, icon: 'settings' as IconName, label: $t('settings.tabGeneral')},
+    {id: 'hub' as Mode, icon: 'chat' as IconName, label: $t('workspace.hub')},
+    {id: 'drive' as Mode, icon: 'drive' as IconName, label: $t('workspace.drive')},
+    {id: 'mcp' as Mode, icon: 'mcp' as IconName, label: 'MCP'},
+    {id: 'skills' as Mode, icon: 'sparkles' as IconName, label: $t('settings.tabSkills')},
+    {id: 'model' as Mode, icon: 'bot' as IconName, label: $t('settings.tabModels')},
+    {id: 'provider' as Mode, icon: 'bolt' as IconName, label: $t('settings.tabProvider')},
+    {id: 'memory' as Mode, icon: 'brain' as IconName, label: $t('settings.tabMemory')},
+  ];
+  /* The rail's own search narrows the tab list. It never hides the tab you are
+     on: a filter that emptied the page out from under you would read as the
+     setting having been removed. */
+  $: navQuery = navSearch.trim().toLowerCase();
+  $: visibleNavTabs = navQuery
+    ? navTabs.filter((tab) => tab.id === mode || tab.label.toLowerCase().includes(navQuery))
+    : navTabs;
   $: railContentKey = `${mode}:${query}:${visibleMcp.length}:${visibleSkills.length}:${modelCompanies.length}:${visibleProviders.length}`;
-  $: if (railContentKey) void tick().then(measureRailEdges);
-  $: if (discoveringSkills || discoveredGroups) void tick().then(measureDiscoveryEdges);
   $: locationStatusText = !general?.locationEnabled
     ? $t('settings.notShared')
     : locating && !general.location
@@ -275,28 +351,12 @@
     });
   });
 
-  function measureRailEdges(): void {
-    if (!railList) return;
-    railAtTop = railList.scrollTop <= 1;
-    railAtBottom = railList.scrollHeight - railList.scrollTop - railList.clientHeight <= 1;
-  }
-
-  /** The same edge fade the rail carries, so a scrollable group list reads as
-   * one: solid where the content ends, faded where it runs on. */
-  function measureDiscoveryEdges(): void {
-    if (!discoveryList) return;
-    discoveryAtTop = discoveryList.scrollTop <= 1;
-    discoveryAtBottom =
-      discoveryList.scrollHeight - discoveryList.scrollTop - discoveryList.clientHeight <= 1;
-  }
-
   /** Collapsing is per agent and reassigns the set, since Svelte tracks the
    * binding rather than the mutation. */
   function toggleGroup(id: string): void {
     const next = new Set(collapsedGroups);
     if (!next.delete(id)) next.add(id);
     collapsedGroups = next;
-    void tick().then(measureDiscoveryEdges);
   }
 
   function matches(value: string, filter: string): boolean {
@@ -477,7 +537,12 @@
   }
 
   function selectProviders(items: ProviderDto[], searchFilter: string, stateFilter: string, sort: string): ProviderDto[] {
-    const visible = items.filter((item) => matches(`${item.name} ${item.id} ${item.source ?? ''}`, searchFilter))
+    const visible = items
+      // A hosted provider with nothing to offer is noise in the rail. Local
+      // runtimes stay: they list no models until they are set up, which is the
+      // point of showing them.
+      .filter((item) => item.localRuntime || item.modelCount > 0)
+      .filter((item) => matches(`${item.name} ${item.id} ${item.source ?? ''}`, searchFilter))
       .filter((item) => stateFilter === 'all'
         || stateFilter === 'configured' && item.configured
         || stateFilter === 'unconfigured' && !item.configured);
@@ -508,10 +573,11 @@
   function selectModelCompany(id: string): void { selectedModelProvider = id; }
 
   async function loadAll(): Promise<void> {
-    loading = true;
+    loading = !settingsSnapshot.loaded;
     try {
       [mcpServers, skills, models, providers, memory, chronicle, general, extensionStatus] = await Promise.all([api.mcp.list(), api.skills.list(), api.models.list(), api.providers.list(), api.memory.status(), api.chronicle.status(), api.general.get(), api.extension.status()]);
       currency = general.currency ?? defaultCurrency(general.location);
+      settingsSnapshot.loaded = true;
       error = '';
       // Catalogue detail is decoration: it loads after the lists, and a
       // failure leaves the models on screen exactly as they were.
@@ -1417,29 +1483,6 @@
     }
   }
 
-  /**
-   * Runs before the window-level dismissal, since the backdrop is the press
-   * target: it records whether a rail menu was still open, so the press that
-   * retires the menu is not also read as a press to close the whole modal.
-   * Queried from the DOM rather than local state so the tabs that own their own
-   * rail menus, such as Hub, are covered by the same rule.
-   */
-  function noteBackdropPress(event: PointerEvent): void {
-    // Every press inside the modal bubbles through here, so the flag is set
-    // from scratch on each one and only for presses on the backdrop itself.
-    swallowBackdropClose =
-      event.target === event.currentTarget && !!document.querySelector('.rail-tool-menu');
-  }
-
-  function closeFromBackdrop(event: MouseEvent): void {
-    if (event.target !== event.currentTarget) return;
-    if (swallowBackdropClose) {
-      swallowBackdropClose = false;
-      return;
-    }
-    onClose();
-  }
-
   function toggleRailMenu(menu: RailMenu): void {
     openRailMenu = openRailMenu === menu ? null : menu;
   }
@@ -1520,26 +1563,38 @@
      already showing that value, so its slide only ever means a user click. -->
 {#snippet pendingToggle()}<span class="chronicle-toggle pending" aria-hidden="true"><span></span></span>{/snippet}
 
-<div class="options-modal-backdrop" role="presentation" onpointerdown={noteBackdropPress} onclick={closeFromBackdrop}>
-  <div class="options-modal" class:settling={!settled} role="dialog" aria-modal="true" aria-label={$t('settings.title')}>
-    <header class="options-header">
-      <div>
-        <h2>{modeHeader.title}</h2>
-        <p>{modeHeader.description}</p>
-      </div>
-      <button type="button" class="options-close" aria-label={$t('settings.close')} data-tooltip-label={$t('settings.closeShort')} onclick={onClose}><Icon name="close" size={18}/></button>
-    </header>
+<!-- A page, not a sheet: it takes the whole window, so the title bar's own drag
+     strip is gone and this one stands in for it. -->
+<div class="options-page" class:settling={!settled} role="dialog" aria-modal="true" aria-label={$t('settings.title')}>
+  <div class="options-page-drag" aria-hidden="true"></div>
+  <nav class="options-nav" aria-label={$t('settings.tabsLabel')}>
+    <!-- Padded past the traffic lights rather than dropped below them, and on
+         the same --chrome-inset the chat controls use: full screen takes the
+         lights away and both strips move to the window edge together. -->
+    <button type="button" class="options-back" onclick={onClose}>
+      <Icon name="back" size={16} strokeWidth={1.8}/><span>{$t('settings.backToApp')}</span>
+    </button>
 
-    <div class="options-mode" role="tablist" aria-label={$t('settings.tabsLabel')}>
-      <button type="button" role="tab" aria-selected={mode === 'general'} class:active={mode === 'general'} onclick={() => selectMode('general')}>{$t('settings.tabGeneral')}</button>
-      <button type="button" role="tab" aria-selected={mode === 'hub'} class:active={mode === 'hub'} onclick={() => selectMode('hub')}>{$t('workspace.hub')}</button>
-      <button type="button" role="tab" aria-selected={mode === 'drive'} class:active={mode === 'drive'} onclick={() => selectMode('drive')}>{$t('workspace.drive')}</button>
-      <button type="button" role="tab" aria-selected={mode === 'mcp'} class:active={mode === 'mcp'} onclick={() => selectMode('mcp')}>MCP</button>
-      <button type="button" role="tab" aria-selected={mode === 'skills'} class:active={mode === 'skills'} onclick={() => selectMode('skills')}>{$t('settings.tabSkills')}</button>
-      <button type="button" role="tab" aria-selected={mode === 'model'} class:active={mode === 'model'} onclick={() => selectMode('model')}>{$t('settings.tabModels')}</button>
-      <button type="button" role="tab" aria-selected={mode === 'provider'} class:active={mode === 'provider'} onclick={() => selectMode('provider')}>{$t('settings.tabProvider')}</button>
-      <button type="button" role="tab" aria-selected={mode === 'memory'} class:active={mode === 'memory'} onclick={() => selectMode('memory')}>{$t('settings.tabMemory')}</button>
+    <div class="options-search options-nav-search">
+      <Icon name="search" size={15}/>
+      <input bind:value={navSearch} type="search" placeholder={$t('settings.searchSettings')} aria-label={$t('settings.searchSettings')}/>
+      {#if navSearch}<button type="button" class="search-clear" aria-label={$t('settings.clear')} data-tooltip-label={$t('settings.clear')} onclick={() => navSearch = ''}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
     </div>
+
+    <div class="options-nav-list" role="tablist" use:scrollFade={visibleNavTabs.length} aria-label={$t('settings.tabsLabel')}>
+      {#each visibleNavTabs as tab (tab.id)}
+        <button type="button" role="tab" class="options-nav-item" aria-selected={mode === tab.id} class:active={mode === tab.id} onclick={() => selectMode(tab.id)}>
+          <Icon name={tab.icon} size={16} strokeWidth={1.7}/><span>{tab.label}</span>
+        </button>
+      {/each}
+    </div>
+  </nav>
+
+  <div class="options-page-content">
+    <header class="options-header">
+      <h2>{modeHeader.title}</h2>
+      <p>{modeHeader.description}</p>
+    </header>
 
     {#if error}<p class="options-error" role="alert">{error}</p>{/if}
 
@@ -1548,76 +1603,88 @@
     {:else if mode === 'drive'}
       <DriveTab {api} />
     {:else if mode === 'general'}
-      <div class="general-options" role="tabpanel">
-        <section class="general-setting-row">
-          <span class="option-mark large"><Icon name="sun-moon" size={18}/></span>
-          <span class="general-setting-copy"><h4>{$t('settings.theme')}</h4><small>{$t('settings.themeHint')}</small></span>
-          <div class="theme-switch" role="radiogroup" aria-label={$t('settings.theme')}>
-            {#each [['light', 'settings.themeLight'], ['dark', 'settings.themeDark'], ['system', 'settings.themeSystem']] as const as [theme, label]}
-              <button type="button" role="radio" aria-checked={general?.theme === theme} class:active={general?.theme === theme} disabled={updatingTheme || !general} onclick={() => void setTheme(theme as ThemeMode)}>{$t(label)}</button>
-            {/each}
-          </div>
+      <div class="general-options" role="tabpanel" use:scrollFade>
+        <section class="general-group">
+          <h3>{$t('settings.groupAppearance')}</h3>
+          <section class="general-setting-row">
+            <span class="option-mark large"><Icon name="sun-moon" size={18}/></span>
+            <span class="general-setting-copy"><h4>{$t('settings.theme')}</h4><small>{$t('settings.themeHint')}</small></span>
+            <div class="theme-switch" role="radiogroup" aria-label={$t('settings.theme')}>
+              {#each [['light', 'settings.themeLight'], ['dark', 'settings.themeDark'], ['system', 'settings.themeSystem']] as const as [theme, label]}
+                <button type="button" role="radio" aria-checked={general?.theme === theme} class:active={general?.theme === theme} disabled={updatingTheme || !general} onclick={() => void setTheme(theme as ThemeMode)}>{$t(label)}</button>
+              {/each}
+            </div>
+          </section>
+          <section class="general-setting-row">
+            <span class="option-mark large"><Icon name="book-open" size={18}/></span>
+            <span class="general-setting-copy"><h4>{$t('settings.language')}</h4><small>{$t('settings.languageHint')}</small></span>
+            <div class="setting-menu language" class:busy={updatingLanguage || !general}>
+              <Menu options={languageOptions} value={general?.language ?? 'system'} label={$t('settings.language')} wide onChange={(value) => void setLanguage(value)}/>
+            </div>
+          </section>
         </section>
-        <section class="general-setting-row">
-          <span class="option-mark large"><Icon name="book-open" size={18}/></span>
-          <span class="general-setting-copy"><h4>{$t('settings.language')}</h4><small>{$t('settings.languageHint')}</small></span>
-          <div class="setting-menu language" class:busy={updatingLanguage || !general}>
-            <Menu options={languageOptions} value={general?.language ?? 'system'} label={$t('settings.language')} wide onChange={(value) => void setLanguage(value)}/>
-          </div>
+        <section class="general-group">
+          <h3>{$t('settings.groupVoice')}</h3>
+          <section class="general-setting-row">
+            <span class="option-mark large"><Icon name="waveform" size={18}/></span>
+            <span class="general-setting-copy"><h4>{$t('settings.speechMode')}</h4><small>{$t('settings.speechModeHint')}</small></span>
+            {#if general}<button type="button" class:enabled={general.speechModeEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableSpeechMode')} aria-checked={general.speechModeEnabled} disabled={updatingSpeechMode} onclick={() => void setSpeechModeEnabled(!general!.speechModeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+          </section>
+          <section class="general-setting-row">
+            <span class="option-mark large"><Icon name="mic-off" size={18}/></span>
+            <span class="general-setting-copy"><h4>{$t('settings.autoStop')}</h4><small>{$t('settings.autoStopHint')}</small></span>
+            <div class="setting-menu language" class:busy={updatingAutoStop || !general}>
+              <Menu
+                options={autoStopOptions}
+                value={general?.dictationAutoStopSeconds === null ? 'off' : String(general?.dictationAutoStopSeconds ?? 6)}
+                label="Stop dictation when silent"
+                wide
+                onChange={(value) => void setDictationAutoStop(value)}
+              />
+            </div>
+          </section>
         </section>
-        <!-- Always present, unlike the title-bar chip: once that is dismissed
-             this row is the only way back to the install page. It states the
-             installed case rather than disappearing, so the setting does not
-             look missing to someone who came looking for it. -->
-        <section class="general-setting-row">
-          <span class="option-mark large"><img class="extension-row-mark" src="flareai.svg" alt=""/></span>
-          <span class="general-setting-copy"><h4>{$t('extension.title')}</h4><small>{$t('extension.hint')}</small></span>
-          {#if extensionStatus?.installed}
-            <span class="extension-installed">{$t('extension.installed')}</span>
-          {:else}
-            <button type="button" class="permission-retry" onclick={() => void openExtensionInstall()}>{$t('extension.install')}</button>
-          {/if}
+        <section class="general-group">
+          <h3>{$t('settings.groupContext')}</h3>
+          <section class="general-setting-row">
+            <span class="option-mark large"><Icon name="clock" size={18}/></span>
+            <span class="general-setting-copy"><h4>{$t('settings.time')}</h4><small>{general?.timeEnabled ? Intl.DateTimeFormat().resolvedOptions().timeZone : $t('settings.notShared')}</small></span>
+            {#if general}<button type="button" class:enabled={general.timeEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableTime')} aria-checked={general.timeEnabled} disabled={updatingTime} onclick={() => void setTimeEnabled(!general!.timeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+          </section>
+          <section class="general-setting-row">
+            <span class="option-mark large"><Icon name="globe" size={18}/></span>
+            <span class="general-setting-copy"><h4>{$t('settings.location')}</h4><small>{locationStatusText}</small></span>
+            {#if general?.locationEnabled && !locating && (locationError || !general.location)}
+              <button type="button" class="permission-retry" onclick={() => void refreshLocation(true)}>{$t('common.tryAgain')}</button>
+            {/if}
+            {#if general}<button type="button" class:enabled={general.locationEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableLocation')} aria-checked={general.locationEnabled} disabled={updatingLocation} onclick={() => void setLocationEnabled(!general!.locationEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+          </section>
         </section>
-        <section class="general-setting-row">
-          <span class="option-mark large"><Icon name="waveform" size={18}/></span>
-          <span class="general-setting-copy"><h4>{$t('settings.speechMode')}</h4><small>{$t('settings.speechModeHint')}</small></span>
-          {#if general}<button type="button" class:enabled={general.speechModeEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableSpeechMode')} aria-checked={general.speechModeEnabled} disabled={updatingSpeechMode} onclick={() => void setSpeechModeEnabled(!general!.speechModeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
-        </section>
-        <section class="general-setting-row">
-          <span class="option-mark large"><Icon name="mic-off" size={18}/></span>
-          <span class="general-setting-copy"><h4>{$t('settings.autoStop')}</h4><small>{$t('settings.autoStopHint')}</small></span>
-          <div class="setting-menu language" class:busy={updatingAutoStop || !general}>
-            <Menu
-              options={autoStopOptions}
-              value={general?.dictationAutoStopSeconds === null ? 'off' : String(general?.dictationAutoStopSeconds ?? 6)}
-              label="Stop dictation when silent"
-              wide
-              onChange={(value) => void setDictationAutoStop(value)}
-            />
-          </div>
-        </section>
-        <section class="general-setting-row">
-          <span class="option-mark large"><Icon name="clock" size={18}/></span>
-          <span class="general-setting-copy"><h4>{$t('settings.time')}</h4><small>{general?.timeEnabled ? Intl.DateTimeFormat().resolvedOptions().timeZone : $t('settings.notShared')}</small></span>
-          {#if general}<button type="button" class:enabled={general.timeEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableTime')} aria-checked={general.timeEnabled} disabled={updatingTime} onclick={() => void setTimeEnabled(!general!.timeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
-        </section>
-        <section class="general-setting-row">
-          <span class="option-mark large"><Icon name="globe" size={18}/></span>
-          <span class="general-setting-copy"><h4>{$t('settings.location')}</h4><small>{locationStatusText}</small></span>
-          {#if general?.locationEnabled && !locating && (locationError || !general.location)}
-            <button type="button" class="permission-retry" onclick={() => void refreshLocation(true)}>{$t('common.tryAgain')}</button>
-          {/if}
-          {#if general}<button type="button" class:enabled={general.locationEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableLocation')} aria-checked={general.locationEnabled} disabled={updatingLocation} onclick={() => void setLocationEnabled(!general!.locationEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
-        </section>
-        <section class="general-setting-row">
-          <span class="option-mark large"><Icon name="verified" size={18}/></span>
-          <span class="general-setting-copy"><h4>Version {appVersion?.version ?? '—'}</h4><small>{versionDetailText}</small></span>
-          {#if update?.status === 'ready'}
-            <button type="button" class="permission-retry" onclick={() => void installUpdate()}>{$t('settings.installNow')}</button>
-          {:else}
-            <span class="setting-value">{updateSummaryText}</span>
-            <button type="button" class="update-refresh" class:spinning={checkingUpdate || update?.status === 'downloading'} aria-label={$t('settings.checkForUpdates')} data-tooltip-label={$t('settings.checkForUpdates')} disabled={checkingUpdate || update?.status === 'downloading'} onclick={() => void checkForUpdates()}><Icon name="reload" size={13}/></button>
-          {/if}
+        <section class="general-group">
+          <h3>{$t('settings.groupAbout')}</h3>
+          <!-- Always present, unlike the title-bar chip: once that is dismissed
+               this row is the only way back to the install page. It states the
+               installed case rather than disappearing, so the setting does not
+               look missing to someone who came looking for it. -->
+          <section class="general-setting-row">
+            <span class="option-mark large"><img class="extension-row-mark" src="flareai.svg" alt=""/></span>
+            <span class="general-setting-copy"><h4>{$t('extension.title')}</h4><small>{$t('extension.hint')}</small></span>
+            {#if extensionStatus?.installed}
+              <span class="extension-installed">{$t('extension.installed')}</span>
+            {:else}
+              <button type="button" class="permission-retry" onclick={() => void openExtensionInstall()}>{$t('extension.install')}</button>
+            {/if}
+          </section>
+          <section class="general-setting-row">
+            <span class="option-mark large"><Icon name="verified" size={18}/></span>
+            <span class="general-setting-copy"><h4>Version {appVersion?.version ?? '—'}</h4><small>{versionDetailText}</small></span>
+            {#if update?.status === 'ready'}
+              <button type="button" class="permission-retry" onclick={() => void installUpdate()}>{$t('settings.installNow')}</button>
+            {:else}
+              <span class="setting-value">{updateSummaryText}</span>
+              <button type="button" class="update-refresh" class:spinning={checkingUpdate || update?.status === 'downloading'} aria-label={$t('settings.checkForUpdates')} data-tooltip-label={$t('settings.checkForUpdates')} disabled={checkingUpdate || update?.status === 'downloading'} onclick={() => void checkForUpdates()}><Icon name="reload" size={13}/></button>
+            {/if}
+          </section>
         </section>
       </div>
     {:else if mode === 'memory'}
@@ -1666,7 +1733,7 @@
           {#if search}<button type="button" class="search-clear" aria-label={$t('settings.clear')} data-tooltip-label={$t('settings.clear')} onclick={() => search = ''}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
         </div>
 
-        <ul class="options-rail-list" class:empty-state={railEmpty} class:at-top={railAtTop} class:at-bottom={railAtBottom} bind:this={railList} onscroll={measureRailEdges}>
+        <ul class="options-rail-list" class:empty-state={railEmpty} use:scrollFade={railContentKey}>
           {#if mode === 'mcp'}
             {#each visibleMcp as item (item.id)}
               <li><button type="button" class:selected={adding !== 'mcp' && item.id === selectedMcp} class:integration-disabled={!item.enabled} class="options-rail-row" onclick={() => selectMcp(item.id)}>
@@ -1753,7 +1820,7 @@
           </div>
       </div>
 
-      <div class:directory-open={(mode === 'skills' && (discoveringSkills || (adding === 'skills' && installingSkill))) || (mode === 'mcp' && browsingMcpRegistry)} class:mcp-detail={mode === 'mcp' && !!mcp && !adding && !browsingMcpRegistry} class:skill-detail={mode === 'skills' && !!skill && !adding} class="options-detail" role="tabpanel">
+      <div class:directory-open={(mode === 'skills' && (discoveringSkills || (adding === 'skills' && installingSkill))) || (mode === 'mcp' && browsingMcpRegistry)} class:mcp-detail={mode === 'mcp' && !!mcp && !adding && !browsingMcpRegistry} class:skill-detail={mode === 'skills' && !!skill && !adding} class="options-detail" role="tabpanel" use:scrollFade={mode}>
         {#if mode === 'mcp' && browsingMcpRegistry}
           <header class="options-detail-header"><span class="options-title-group"><h3>MCP Marketplace</h3></span></header>
           <section class="skill-registry">
@@ -1762,7 +1829,7 @@
               <input bind:value={mcpRegistryQuery} type="search" placeholder={$t('settings.searchMcpMarketplace')} aria-label={$t('settings.searchMcpMarketplace')} spellcheck="false" oninput={() => searchMcpMarketplace()}/>
               {#if mcpRegistryQuery}<button type="button" class="search-clear" aria-label={$t('settings.clear')} data-tooltip-label={$t('settings.clear')} onclick={clearMcpMarketplaceSearch}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
             </div>
-            <ul class="skill-registry-results">
+            <ul class="skill-registry-results" use:scrollFade>
               {#each mcpRegistryResults as entry (entry.id)}
                 <li>
                   <span class="skill-registry-copy"><strong>{entry.name}</strong><small>{entry.description}</small></span>
@@ -1798,7 +1865,7 @@
           <header class="options-detail-header"><span class="options-title-group"><h3>{$t('settings.autoDiscovery')}</h3></span></header>
           <section class="skill-registry">
             <p class="discovery-lede">{$t('settings.discoveryLede')} <code>~/.flareai/skills</code>{$t('settings.discoveryLedeTail')}</p>
-            <div class="discovery-groups" class:at-top={discoveryAtTop} class:at-bottom={discoveryAtBottom} bind:this={discoveryList} onscroll={measureDiscoveryEdges}>
+            <div class="discovery-groups" use:scrollFade={collapsedGroups}>
               {#each discoveredGroups as group (group.id)}
                 <section class="discovery-group">
                   <button type="button" class="discovery-group-header" aria-expanded={!collapsedGroups.has(group.id)} onclick={() => toggleGroup(group.id)}>
@@ -1837,7 +1904,7 @@
               <input bind:value={skillRegistryQuery} type="search" placeholder={$t('settings.searchVercelSkills')} aria-label={$t('settings.searchVercelSkills')} spellcheck="false" oninput={searchRegistry}/>
               {#if skillRegistryQuery}<button type="button" class="search-clear" aria-label={$t('settings.clear')} data-tooltip-label={$t('settings.clear')} onclick={clearSkillRegistrySearch}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
             </div>
-            <ul class="skill-registry-results">
+            <ul class="skill-registry-results" use:scrollFade>
               {#each registryResults as entry (entry.id)}
                 <li>
                   <span class="skill-registry-copy"><strong>{entry.name}</strong><small>{entry.source} · {formatInstalls(entry.installs)} installs</small></span>
@@ -2053,19 +2120,46 @@
 </div>
 
 <style>
-  .options-modal-backdrop{position:fixed;z-index:1000;inset:0;display:grid;place-items:center;padding:48px;background:rgba(20,20,20,.28);backdrop-filter:blur(5px);animation:backdrop-in .16s ease-out}
-  .options-modal{--options-content-edge:14px;--options-detail-edge:32px;--options-tab-inline:11px;--options-divider-gap:15px;width:min(780px,calc(100vw - 96px));height:min(620px,calc(100vh - 96px));display:flex;flex-direction:column;overflow:hidden;border:0;border-radius:20px;background:var(--app-bg);box-shadow:0 24px 80px rgba(0,0,0,.3);animation:modal-in .22s cubic-bezier(.22,1,.36,1)}
-  .options-modal.settling :global(*){transition:none!important;animation:none!important}
-  .options-header{flex:none;display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:30px 32px 18px}.options-header>div{min-width:0}.options-header h2{margin:0;color:var(--neutral-950);font-size:28px;font-weight:570;letter-spacing:-.025em}
+  /* A page rather than a sheet: it fills the window, so it carries its own drag
+     strip and the same --chrome-inset the chat controls use. */
+  .options-page{--options-content-edge:14px;--options-detail-edge:32px;--options-tab-inline:11px;--options-divider-gap:15px;position:fixed;z-index:1000;inset:0;display:grid;grid-template-columns:232px minmax(0,1fr);overflow:hidden;background:var(--app-bg);animation:options-page-in .16s ease-out}
+  .options-page.settling :global(*){transition:none!important;animation:none!important}
+  /* The window has no title bar of its own while this is up, so the top strip
+     stays draggable. It sits under the controls, which opt back out. */
+  .options-page-drag{position:absolute;z-index:0;top:0;right:0;left:0;height:var(--app-topbar-height);-webkit-app-region:drag}
+  .options-nav{position:relative;z-index:1;min-height:0;display:flex;flex-direction:column;gap:10px;padding:0 12px 14px;border-right:1px solid var(--neutral-200);-webkit-app-region:no-drag}
+  /* Clears the traffic lights instead of dropping below them; full screen zeroes
+     --chrome-inset and the label slides to the window edge, exactly as the new
+     chat and search controls do. */
+  .options-back{align-self:flex-start;height:28px;display:flex;align-items:center;gap:8px;margin:calc(var(--titlebar-control-top,14px)) 0 6px;margin-left:calc(var(--chrome-inset) + 8px);border:0;border-radius:9px;padding:0 8px 0 6px;background:transparent;color:var(--neutral-600);cursor:pointer;font-family:inherit;font-size:13px;font-weight:520;transition:color .15s,background .15s}
+  .options-back:hover,.options-back:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
+  .options-back span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .options-nav-search{flex:none;margin:0 2px}
+  .options-nav-list{min-height:0;flex:1;display:flex;flex-direction:column;gap:1px;overflow-y:auto;padding:2px}
+  .options-nav-item{width:100%;height:32px;display:flex;align-items:center;gap:8px;border:0;border-radius:9px;padding:0 9px;background:transparent;color:var(--neutral-600);cursor:pointer;text-align:left;font-family:inherit;font-size:13px;transition:color .15s,background .15s}
+  .options-nav-item :global(svg){flex:none}
+  .options-nav-item span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .options-nav-item:hover,.options-nav-item:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
+  .options-nav-item.active{background:var(--neutral-200);color:var(--neutral-950);font-weight:540}
+  .options-page-content{position:relative;z-index:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;-webkit-app-region:no-drag}
+  /* A plain cross-fade: the page arrives over the app in place, and a fade that
+     also scaled would read as a second, contradictory movement. */
+  @keyframes options-page-in{from{opacity:0}}
+  .options-header{flex:none;min-width:0;padding:calc(var(--app-topbar-height) - 4px) var(--options-detail-edge) 18px calc(var(--options-content-edge) + var(--options-tab-inline))}.options-header h2{margin:0;color:var(--neutral-950);font-size:28px;font-weight:570;letter-spacing:-.025em}
   /* Explicit line boxes, not glyph-driven ones: scripts with taller ascenders
      (CJK, Thai, Devanagari) would otherwise grow the header and shift the tab
      row down as you switch tabs. Both lines are short by design, so clipping
      the overflow costs nothing and keeps the height constant. */
   .options-header h2{height:35px;line-height:35px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.options-header p{margin:7px 0 0;height:19px;overflow:hidden;color:var(--neutral-600);text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;line-height:19px}
-  .options-close{width:32px;height:32px;display:grid;flex:none;place-items:center;border:0;border-radius:10px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.options-close:hover,.options-close:focus-visible{outline:none;background:var(--neutral-100);color:var(--neutral-950)}
-  .options-mode{align-self:flex-start;display:flex;gap:4px;margin:0 var(--options-detail-edge) 14px var(--options-content-edge)}.options-mode button{border:0;border-radius:8px;padding:5px var(--options-tab-inline);background:transparent;color:var(--neutral-500);cursor:pointer;font-family:inherit;font-size:13px}.options-mode button:hover{color:var(--neutral-900)}.options-mode button.active{background:var(--neutral-100);color:var(--neutral-950);font-weight:540}
   .options-error{margin:0 18px 8px;padding:7px 10px;border-radius:8px;background:var(--neutral-100);color:var(--neutral-700);font-size:12px}
   .general-options{flex:1;min-height:0;overflow-y:auto;padding:2px var(--options-detail-edge) 20px calc(var(--options-content-edge) + var(--options-tab-inline))}.general-setting-row{display:flex;align-items:center;gap:11px;min-height:62px;border-bottom:1px solid var(--neutral-200)}.general-setting-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}.general-setting-copy h4{margin:0;color:var(--neutral-900);font-size:12.5px;font-weight:570}.general-setting-copy small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.permission-retry{height:28px;flex:none;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.permission-retry:hover,.permission-retry:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.setting-menu{flex:none}.setting-menu.language{--select-menu-rows:5}.setting-menu.busy{pointer-events:none;opacity:.5}.setting-menu :global(.select-menu-trigger){height:28px;border-radius:8px;font-size:10.5px}.theme-switch{display:flex;flex:none;gap:2px;padding:2px;border-radius:9px;background:var(--neutral-100)}.theme-switch button{height:26px;border:0;border-radius:7px;padding:0 9px;background:transparent;color:var(--neutral-500);cursor:pointer;font-family:inherit;font-size:10.5px}.theme-switch button:hover,.theme-switch button:focus-visible{outline:0;color:var(--neutral-900)}.theme-switch button.active{background:var(--app-surface);color:var(--neutral-950);box-shadow:0 1px 3px rgba(0,0,0,.09)}.theme-switch button:disabled{cursor:default;opacity:.5}
+  /* Grouped like the rest of the page: a small heading, then its rows. The
+     last row in a group drops its rule so the group ends on space, not on a
+     line that would read as the start of the next one. */
+  .general-group{display:block;margin:0 0 26px}
+  .general-group:last-child{margin-bottom:0}
+  .general-group>h3{margin:0 0 2px;color:var(--neutral-500);font-size:11.5px;font-weight:560;letter-spacing:.01em}
+  .general-group>.general-setting-row:last-child{border-bottom:0}
   .permission-retry:disabled{cursor:default;opacity:.55}
   /* The row keeps the app mark rather than a generic puzzle piece, so the
      extension reads as part of FlareAI in both places it is offered. */
@@ -2082,14 +2176,14 @@
   .memory-options{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 20px calc(var(--options-content-edge) + var(--options-tab-inline))}.memory-options>.options-detail-header{flex:none;align-items:flex-start}.memory-options>.options-path{flex:none;margin-top:auto;padding-top:12px}.local-memory-section{margin-top:18px}.memory-divider{height:1px;flex:none;margin:14px 0;background:var(--neutral-200)}.chronicle-group{transition:opacity .15s ease}.chronicle-group.disabled{opacity:.42}.chronicle-section>header{display:flex;align-items:center;justify-content:space-between;gap:16px}.chronicle-section>header>span{display:flex;min-width:0;flex-direction:column;gap:2px}.chronicle-section h4{margin:0;color:var(--neutral-900);font-size:12.5px;font-weight:570}.chronicle-section small{color:var(--neutral-400);font-size:10.5px}.chronicle-section>p{max-width:610px;margin:6px 0;color:var(--neutral-600);font-size:11px;line-height:1.45}.chronicle-inline-stats{display:flex;flex-wrap:wrap;gap:12px;color:var(--neutral-400);font-size:10px}.chronicle-toggle{width:36px;height:20px;flex:none;border:0;border-radius:999px;padding:2px;background:var(--neutral-300);cursor:pointer;transition:background .15s ease}.chronicle-toggle span{width:16px;height:16px;display:block;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .15s ease,background .15s ease}.chronicle-toggle.pending{display:block;cursor:default;opacity:.5}.chronicle-toggle.enabled{background:var(--neutral-900)}.chronicle-toggle.enabled span{transform:translateX(16px)}:global(:root[data-theme="dark"]) .chronicle-toggle{background:#484848}:global(:root[data-theme="dark"]) .chronicle-toggle span{background:#d8d8d8}:global(:root[data-theme="dark"]) .chronicle-toggle.enabled{background:#e7e7e7}:global(:root[data-theme="dark"]) .chronicle-toggle.enabled span{background:#242424}.chronicle-toggle:disabled{cursor:default;opacity:.5}.chronicle-error{display:flex;align-items:center;gap:12px;margin-top:10px;padding:9px 11px;border-radius:9px;background:#fff5f5;color:#8f3e3e}.chronicle-error>span{min-width:0;flex:1}.chronicle-error h4,.chronicle-error p,.chronicle-error small{margin:0}.chronicle-error h4{font-size:11px}.chronicle-error p{margin-top:3px;font-size:11px}.chronicle-error small{display:block;margin-top:3px;opacity:.75;font-size:10px}.chronicle-error button{height:28px;flex:none;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:8px;padding:0 10px;background:var(--app-surface);color:inherit;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.chronicle-error button:hover,.chronicle-error button:focus-visible{outline:0;background:var(--neutral-100)}.chronicle-error button:disabled{cursor:default;opacity:.55}:global(:root[data-theme="dark"]) .chronicle-error{background:#321f1f;color:#eea7a7}:global(:root[data-theme="dark"]) .chronicle-error button{border-color:#704242;background:#442727;color:#f0b0b0}:global(:root[data-theme="dark"]) .chronicle-error button:hover,:global(:root[data-theme="dark"]) .chronicle-error button:focus-visible{background:#553030;color:#ffd0d0}
   .options-body{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}.options-body:after{content:'';position:absolute;top:6px;bottom:12px;left:220px;width:1px;background:var(--neutral-200)}
   .options-rail{min-height:0;display:flex;flex-direction:column;gap:6px;padding:0 var(--options-divider-gap) 12px var(--options-content-edge)}.options-search{display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border:1px solid var(--neutral-200);border-radius:9px;background:var(--input-surface);color:var(--neutral-500)}.options-search:focus-within{border-color:var(--neutral-400);background:var(--prompt-surface-active)}.options-search input{-webkit-appearance:none;appearance:none;min-width:0;flex:1;border:0;padding:0;background:transparent;color:var(--neutral-950);outline:none;font-size:12.5px}.options-search input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
-  .options-rail-list{--rail-mask-top:transparent;--rail-mask-bottom:transparent;flex:1;min-height:0;overflow-y:auto;margin:0;padding:6px 0;list-style:none;-webkit-mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom));mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom))}.options-rail-list.at-top{--rail-mask-top:#000}.options-rail-list.at-bottom{--rail-mask-bottom:#000}.options-rail-list.empty-state{display:flex;align-items:center;justify-content:center;-webkit-mask-image:none;mask-image:none}.options-rail-list li{display:flex}.options-rail-list .rail-empty{justify-content:center;padding:0 8px}.options-rail-row{width:100%;display:flex;align-items:center;gap:10px;margin:2px 0;padding:5px 9px;border:0;border-radius:10px;background:transparent;text-align:left;cursor:pointer}.options-rail-row:hover,.options-rail-row:focus-visible{outline:0;background:var(--neutral-100)}.options-rail-row.selected{background:var(--neutral-200)}
+  .options-rail-list{flex:1;min-height:0;overflow-y:auto;margin:0;padding:6px 0;list-style:none}.options-rail-list.empty-state{display:flex;align-items:center;justify-content:center;-webkit-mask-image:none;mask-image:none}.options-rail-list li{display:flex}.options-rail-list .rail-empty{justify-content:center;padding:0 8px}.options-rail-row{width:100%;display:flex;align-items:center;gap:10px;margin:2px 0;padding:5px 9px;border:0;border-radius:10px;background:transparent;text-align:left;cursor:pointer}.options-rail-row:hover,.options-rail-row:focus-visible{outline:0;background:var(--neutral-100)}.options-rail-row.selected{background:var(--neutral-200)}
   .options-rail-row.integration-disabled{opacity:.52}.options-rail-row.integration-disabled.selected{opacity:.72}
   .skill-name-line{min-width:0;display:flex;align-items:center;gap:4px}.skill-name-line strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.official-rail-stamp{width:14px;height:14px;display:grid;flex:none;place-items:center;color:var(--neutral-500);transform:translateY(1px)}
   .option-mark{flex:none;width:26px;height:26px;display:grid;place-items:center;border-radius:8px;background:var(--neutral-200);color:var(--neutral-700)}
   /* A product's own icon already carries its shape and ground, so the house
      tile would read as a second, mismatched container behind it. */
   .option-mark.large{width:34px;height:34px;border-radius:10px}
-  .options-detail.directory-open{display:flex;flex-direction:column;overflow:hidden}.skill-registry{min-height:0;flex:1;display:flex;flex-direction:column;gap:12px;margin-top:14px}.skill-registry-results{flex:1;min-height:0;overflow-y:auto;margin:0;padding:0;list-style:none}.skill-registry-results li{display:flex;align-items:center;gap:12px;min-height:44px;border-bottom:1px solid var(--neutral-100)}.skill-registry-results li:last-child{border-bottom:0}.skill-registry-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.skill-registry-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:540}.skill-registry-copy small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.skill-registry-installed{flex:none;color:var(--neutral-400);font-size:10.5px;font-weight:550}.discovery-lede{margin:0;color:var(--neutral-400);font-size:11.5px;line-height:1.5}.discovery-lede code{color:var(--neutral-500);font-size:11px}.discovery-groups{--rail-mask-top:transparent;--rail-mask-bottom:transparent;flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:18px;padding:6px 0;-webkit-mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom));mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom))}.discovery-groups.at-top{--rail-mask-top:#000}.discovery-groups.at-bottom{--rail-mask-bottom:#000}.discovery-group-header{width:100%;display:flex;align-items:center;gap:8px;padding:0 0 6px;border:0;border-bottom:1px solid var(--neutral-200);background:transparent;text-align:left;cursor:pointer}.discovery-group-heading{min-width:0;flex:1;display:flex;align-items:baseline;gap:8px}.discovery-group-header:focus-visible{outline:0}.discovery-group h4{margin:0;color:var(--neutral-950);font-size:14px;font-weight:620;letter-spacing:-.01em}.discovery-group-header code{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.discovery-count{flex:none;color:var(--neutral-400);font-size:10.5px;font-weight:550}.discovery-chevron{display:flex;flex:none;align-items:center;color:var(--neutral-500)}.discovery-group-header h4,.discovery-group-header code,.discovery-count,.discovery-chevron{transition:color .15s ease}.discovery-chevron{transition:transform .15s ease,color .15s ease}.discovery-group-header:hover code,.discovery-group-header:focus-visible code,.discovery-group-header:hover .discovery-count,.discovery-group-header:focus-visible .discovery-count,.discovery-group-header:hover .discovery-chevron,.discovery-group-header:focus-visible .discovery-chevron{color:var(--neutral-900)}.discovery-chevron.collapsed{transform:rotate(-90deg)}.discovery-list.collapsed{display:none}.discovery-list{flex:none;overflow:visible}.discovery-empty{margin:auto;color:var(--neutral-400);text-align:center;font-size:11.5px}.skill-registry-results .skill-registry-empty{height:100%;display:grid;place-items:center;border:0;color:var(--neutral-400);text-align:center;font-size:11.5px}
+  .options-detail.directory-open{display:flex;flex-direction:column;overflow:hidden}.skill-registry{min-height:0;flex:1;display:flex;flex-direction:column;gap:12px;margin-top:14px}.skill-registry-results{flex:1;min-height:0;overflow-y:auto;margin:0;padding:0;list-style:none}.skill-registry-results li{display:flex;align-items:center;gap:12px;min-height:44px;border-bottom:1px solid var(--neutral-100)}.skill-registry-results li:last-child{border-bottom:0}.skill-registry-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.skill-registry-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:540}.skill-registry-copy small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.skill-registry-installed{flex:none;color:var(--neutral-400);font-size:10.5px;font-weight:550}.discovery-lede{margin:0;color:var(--neutral-400);font-size:11.5px;line-height:1.5}.discovery-lede code{color:var(--neutral-500);font-size:11px}.discovery-groups{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:18px;padding:6px 0}.discovery-group-header{width:100%;display:flex;align-items:center;gap:8px;padding:0 0 6px;border:0;border-bottom:1px solid var(--neutral-200);background:transparent;text-align:left;cursor:pointer}.discovery-group-heading{min-width:0;flex:1;display:flex;align-items:baseline;gap:8px}.discovery-group-header:focus-visible{outline:0}.discovery-group h4{margin:0;color:var(--neutral-950);font-size:14px;font-weight:620;letter-spacing:-.01em}.discovery-group-header code{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.discovery-count{flex:none;color:var(--neutral-400);font-size:10.5px;font-weight:550}.discovery-chevron{display:flex;flex:none;align-items:center;color:var(--neutral-500)}.discovery-group-header h4,.discovery-group-header code,.discovery-count,.discovery-chevron{transition:color .15s ease}.discovery-chevron{transition:transform .15s ease,color .15s ease}.discovery-group-header:hover code,.discovery-group-header:focus-visible code,.discovery-group-header:hover .discovery-count,.discovery-group-header:focus-visible .discovery-count,.discovery-group-header:hover .discovery-chevron,.discovery-group-header:focus-visible .discovery-chevron{color:var(--neutral-900)}.discovery-chevron.collapsed{transform:rotate(-90deg)}.discovery-list.collapsed{display:none}.discovery-list{flex:none;overflow:visible}.discovery-empty{margin:auto;color:var(--neutral-400);text-align:center;font-size:11.5px}.skill-registry-results .skill-registry-empty{height:100%;display:grid;place-items:center;border:0;color:var(--neutral-400);text-align:center;font-size:11.5px}
   .skill-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 18px;margin:8px 0 0;max-width:460px}.skill-meta div{min-width:0;display:flex;flex-direction:column;gap:2px}.skill-meta dt{color:var(--neutral-400);font-size:10.5px;font-weight:550;letter-spacing:.02em}.skill-meta dd{margin:0;overflow:hidden;color:var(--neutral-700);text-overflow:ellipsis;white-space:nowrap;font-size:12px}.options-rail-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.options-rail-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:530}.options-rail-copy small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;text-transform:capitalize}.options-name{display:flex;align-items:center;gap:5px}.options-name strong{min-width:0;flex:1}.options-name i{padding:1px 5px;border-radius:5px;background:#fff;color:var(--neutral-600);font-size:9px;font-style:normal}
   .provider-mark{width:26px;height:26px;display:grid;flex:none;place-items:center;border:1px solid var(--neutral-200);border-radius:8px;background:#fff}.provider-mark.large{width:34px;height:34px;border-radius:10px}.provider-row.selected .provider-mark{border-color:rgba(0,0,0,.08)}.provider-row.has-check{position:relative}.provider-row.has-check .options-rail-copy{-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px));mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px))}.configured-check{position:absolute;top:0;right:15px;bottom:0;width:18px;display:grid;place-items:center;color:var(--neutral-600)}
   .options-rail-tools{position:relative;flex:none;display:flex;align-items:center;justify-content:flex-start;gap:2px;margin-top:2px}.rail-tool-wrap{position:relative}.rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}.rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}.rail-tool-menu .flareai-dropdown-item>span{min-width:0;flex:1}.rail-tool-text{width:auto;padding:0 9px;font-family:inherit;font-size:11px;font-weight:540}.role-setup-menu{width:252px;padding:5px}.role-setup-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:5px 7px;color:var(--neutral-500);font-size:11px}.role-setup-row>span{flex:none;white-space:nowrap}.role-setup-row+.role-setup-row{border-top:1px solid var(--neutral-100)}.role-setup-row strong{min-width:0;overflow:hidden;color:var(--neutral-800);text-align:right;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:540}
@@ -2122,6 +2216,5 @@
   .model-table tr.model-row{cursor:pointer}.model-table tr.expanded td{background:var(--neutral-100)}.model-table tr.model-roles-row td{height:auto;padding:0;background:var(--neutral-50);border-bottom:1px solid var(--neutral-100)}.model-table tr.model-roles-row:hover td{background:var(--neutral-50)}
   .model-roles{display:flex;flex-direction:column;padding:4px 10px 8px}.model-roles-empty{margin:0;padding:8px 0;color:var(--neutral-400);font-size:11px}.model-role{min-height:34px;display:flex;align-items:center;gap:12px;white-space:normal}.model-role+.model-role{border-top:1px solid var(--neutral-100)}.model-role-copy{min-width:0;flex:1;display:flex;align-items:baseline;gap:8px}.model-role-copy strong{flex:none;color:var(--neutral-800);font-size:11px;font-weight:540}.model-role-copy small{min-width:0;overflow:hidden;color:var(--neutral-600);text-overflow:ellipsis;white-space:nowrap;font-size:10px}.model-role.held .model-role-copy small{color:var(--flare-blue,#2384cb)}
   .model-role-actions{flex:none;display:flex;align-items:center;gap:4px}.model-role-reset,.model-role-change{height:24px;border:1px solid var(--neutral-200);border-radius:7px;padding:0 9px;background:var(--neutral-0,#fff);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px}.model-role-reset{border-color:transparent;border-radius:0;padding:0 6px;background:transparent;color:var(--neutral-600)}.model-role-reset:hover:not(:disabled),.model-role-reset:focus-visible:not(:disabled){outline:0;background:transparent;color:var(--neutral-900)}.model-role-change:hover:not(:disabled){background:var(--neutral-100);color:var(--neutral-950)}.model-role-change:disabled,.model-role-reset:disabled{cursor:default;opacity:.55}.model-role.held .model-role-change{border-color:transparent;background:transparent;color:var(--flare-blue,#2384cb);opacity:1}
-  @keyframes backdrop-in{from{opacity:0}}@keyframes modal-in{from{opacity:0;transform:translateY(10px) scale(.985)}}
-  @media(max-width:700px){.options-modal{width:calc(100vw - 24px);height:calc(100vh - 24px)}.options-header{padding:24px 22px 16px}.options-body{grid-template-columns:210px minmax(0,1fr)}.options-body:after{left:210px}.options-resources{grid-template-columns:1fr}}
+  @media(max-width:900px){.options-page{grid-template-columns:198px minmax(0,1fr)}.options-header{padding-bottom:14px}.options-body{grid-template-columns:210px minmax(0,1fr)}.options-body:after{left:210px}.options-resources{grid-template-columns:1fr}}
 </style>

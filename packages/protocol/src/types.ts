@@ -849,6 +849,8 @@ export interface ChatAttachmentDto {
   height?: number | null;
   /** Playback length in seconds, for audio and video. */
   duration?: number | null;
+  /** A sticker, which is shown at a sticker's size rather than a photo's. */
+  sticker?: boolean;
 }
 
 export interface ChatMessageDto {
@@ -871,6 +873,31 @@ export interface ChatMessageDto {
    * so the placeholder is a way through rather than a dead end.
    */
   viewIn?: {app: string; url: string} | null;
+  /** One entry per distinct emoji on the message. */
+  reactions?: ChatReactionDto[];
+  /** The message this one answers, when it is a reply. */
+  replyTo?: string | null;
+}
+
+export interface ChatReactionDto {
+  key: string;
+  count: number;
+  /** Set when the signed-in account is one of the reactors, so it can undo it. */
+  mineEventId?: string | null;
+}
+
+export interface ChatActivityDto {
+  /** The conversation that moved. */
+  chatId: string;
+  /** Who wrote it, so a view can tell its own echo from someone else's. */
+  sender: string;
+}
+
+export interface ChatPageDto {
+  /** Newest first, the order the thread paints in. */
+  messages: ChatMessageDto[];
+  /** Passed back as `before` for the older page, or null at the room's start. */
+  nextBefore: string | null;
 }
 
 export interface CommsStatusDto {
@@ -958,8 +985,36 @@ export interface DriveProviderDto {
   error: string | null;
 }
 
+/**
+ * One browsable place in the drive: a provider plus the account it is signed in
+ * as. Providers can hold several accounts, so the provider id alone no longer
+ * says where a file should go — every drive operation addresses a source.
+ *
+ * The id is `<provider>#<accountId>`, opaque above the drive manager. The local
+ * provider spends its two accounts on the folders the app always offers: the
+ * output root and this Mac's home folder.
+ */
+export interface DriveSourceDto {
+  id: string;
+  provider: DriveProviderId;
+  accountId: string;
+  /** The provider's own name — "Google Drive", "This Mac". */
+  name: string;
+  /** Which account, when the provider can hold more than one. Null for local.
+   * The switcher reads as `<name> – <accountLabel>` when this is set, which is
+   * what tells two connected Google accounts apart. */
+  accountLabel: string | null;
+  state: DriveProviderState;
+  usage: DriveUsageDto | null;
+  root: string | null;
+  error: string | null;
+}
+
 export interface DriveStatusDto {
   providers: DriveProviderDto[];
+  /** Every place that can be browsed right now, in the order the switcher
+   * should show them: the output folder, this Mac, then connected accounts. */
+  sources: DriveSourceDto[];
   /**
    * Write preference, most-preferred first. A new file goes to the first
    * provider in this list that is currently connected, which is how the drive
@@ -996,6 +1051,80 @@ export interface DriveS3ConfigRequest {
   prefix: string | null;
   /** Required by most S3-compatible services, which do not do vhost addressing. */
   forcePathStyle: boolean;
+}
+
+/** 0 is Sunday, matching `Date#getDay`. */
+export type ScheduleWeekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+/**
+ * How often a schedule fires, as data rather than prose. The main process
+ * computes every next run from these fields and the view renders the same
+ * fields as a sentence, so neither side can drift from the other.
+ *
+ * `time` is 24-hour "HH:MM" read in `timeZone`, defaulting to this Mac's zone.
+ */
+export type ScheduleFrequencyDto =
+  | {kind: "once"; at: number; timeZone?: string}
+  | {kind: "hourly"; interval?: number; minute?: number; timeZone?: string}
+  | {kind: "daily"; interval?: number; time: string; timeZone?: string}
+  | {kind: "weekly"; interval?: number; days: ScheduleWeekday[]; time: string; timeZone?: string}
+  | {kind: "monthly"; interval?: number; dayOfMonth: number; time: string; timeZone?: string}
+  | {kind: "yearly"; interval?: number; month: number; dayOfMonth: number; time: string; timeZone?: string}
+  /**
+   * Anything the pickers cannot say — "every 15 minutes on weekdays between 9
+   * and 5". Standard five-field cron, read in `timeZone`.
+   */
+  | {kind: "cron"; expression: string; timeZone?: string};
+
+/**
+ * `done` is a one-off that has already fired: it has no next run, so it is
+ * neither active nor paused, and the view greys it out rather than showing a
+ * cadence that will never come round again.
+ */
+export type ScheduleStatusDto = "active" | "paused" | "running" | "failed" | "done";
+
+/** One firing, kept so the detail panel can say what the agent actually did. */
+export interface ScheduleRunDto {
+  id: string;
+  startedAt: number;
+  finishedAt?: number;
+  outcome: "running" | "succeeded" | "failed";
+  /** The agent's own account of the run — its closing message, trimmed. */
+  summary?: string;
+  error?: string;
+  /** Where the run happened, so the detail panel can open the full thread. */
+  conversationId?: string;
+  runId?: string;
+}
+
+export interface ScheduleDto {
+  id: string;
+  title: string;
+  /** The instruction the agent runs each time. */
+  prompt: string;
+  frequency: ScheduleFrequencyDto;
+  status: ScheduleStatusDto;
+  createdAt: number;
+  nextRunAt?: number;
+  lastRunAt?: number;
+  /** Newest first, capped — the whole history is not worth keeping forever. */
+  history: ScheduleRunDto[];
+  /** A finished run the user has not opened yet. Drives the blue dot. */
+  unread: boolean;
+}
+
+export interface ScheduleInput {
+  title: string;
+  prompt: string;
+  frequency: ScheduleFrequencyDto;
+}
+
+export interface SchedulePatch {
+  title?: string;
+  prompt?: string;
+  frequency?: ScheduleFrequencyDto;
+  /** Only the two states the user can choose; the rest the scheduler owns. */
+  status?: "active" | "paused";
 }
 
 export interface FlareAIApi {
@@ -1037,6 +1166,14 @@ export interface FlareAIApi {
     openSettings(permission: SystemPermissionKind | "location"): Promise<void>;
   };
   dictation: {
+    /**
+     * Downloads the local speech-to-text model if it is not on the machine
+     * yet, so the first press of the microphone transcribes straight away
+     * instead of waiting on ~148MB. Safe to call at any time and as often as
+     * you like: it resolves immediately once the model is in place, and
+     * overlapping calls share the one download.
+     */
+    prepare(): Promise<void>;
     /**
      * Transcribes a mono 16kHz 16-bit WAV recording with the local
      * speech-to-text engine and resolves to the recognised text.
@@ -1192,8 +1329,24 @@ export interface FlareAIApi {
     ): Promise<CommsStatusDto>;
     /** Conversations across every linked messaging platform. */
     chats(): Promise<ChatDto[]>;
-    chatMessages(chatId: string, limit?: number, before?: string): Promise<ChatMessageDto[]>;
-    chatSend(chatId: string, text: string): Promise<ChatMessageDto>;
+    /**
+     * One page of a conversation, newest first, with the token that reaches
+     * the page before it. Scrolling back up a long history is walking that
+     * token until it comes back null.
+     */
+    chatMessages(chatId: string, limit?: number, before?: string): Promise<ChatPageDto>;
+    /** `replyTo` quotes an earlier message, the way every network does it. */
+    chatSend(chatId: string, text: string, replyTo?: string): Promise<ChatMessageDto>;
+    /** Sends files into a conversation, one message each. */
+    chatSendFiles(chatId: string, paths: string[]): Promise<void>;
+    /** Opens the file picker for the composer's attach button. */
+    chatPickFiles(): Promise<string[]>;
+    /** Sends a recorded voice note, as bytes rather than a file on disk. */
+    chatSendAudio(chatId: string, bytes: Uint8Array, mimetype: string): Promise<void>;
+    /** Puts an emoji on a message. */
+    chatReact(chatId: string, messageId: string, key: string): Promise<string>;
+    /** Takes a reaction back, given the id `chatReact` returned. */
+    chatUnreact(chatId: string, reactionId: string): Promise<void>;
     /** Marks a chat read up to `messageId`, clearing its unread count. */
     chatMarkRead(chatId: string, messageId: string): Promise<void>;
     mailFolders(account?: string): Promise<MailFolderDto[]>;
@@ -1227,6 +1380,11 @@ export interface FlareAIApi {
     /** Opens IMAP and SMTP connections to prove the account works. */
     emailTest(id: string): Promise<CommsEmailAccountDto>;
     subscribe(listener: (status: CommsStatusDto) => void): () => void;
+    /**
+     * Fires as a message lands in a conversation, so the open thread updates
+     * as it arrives rather than whenever it is next polled.
+     */
+    subscribeActivity(listener: (activity: ChatActivityDto) => void): () => void;
   };
   models: {
     list(): Promise<ModelDto[]>;
@@ -1292,26 +1450,48 @@ export interface FlareAIApi {
      * closes it.
      */
     connect(provider: DriveProviderId): Promise<DriveStatusDto>;
-    /** Drops stored credentials. Omitting `accountId` disconnects them all. */
+    /** Drops one account's stored credentials. Omitting `accountId`
+     * disconnects every account of the provider. */
     disconnect(provider: DriveProviderId, accountId?: string): Promise<DriveStatusDto>;
     setSaveOrder(order: DriveProviderId[]): Promise<DriveStatusDto>;
-    /** Points the local provider at a folder. Passing null opens a picker. */
+    /**
+     * Points the local provider at the folder agent output is written to.
+     * Passing null opens a picker. Defaults to `~/Documents/FlareAI`.
+     */
     setLocalRoot(path: string | null): Promise<DriveStatusDto>;
     saveS3(config: DriveS3ConfigRequest): Promise<DriveStatusDto>;
-    /** One folder's contents. `path` empty means the provider's root. */
-    list(provider: DriveProviderId, path?: string): Promise<DriveEntryDto[]>;
-    createFolder(provider: DriveProviderId, parentPath: string, name: string): Promise<DriveEntryDto>;
+    /** The folder this conversation's output is written into, created on
+     * demand as a subfolder of the output root. */
+    conversationFolder(conversationId: string): Promise<string>;
+    /** One folder's contents. `path` empty means the source's root. */
+    list(source: string, path?: string): Promise<DriveEntryDto[]>;
+    createFolder(source: string, parentPath: string, name: string): Promise<DriveEntryDto>;
     /** Uploads files chosen on this Mac. Empty `paths` opens a picker. */
-    upload(provider: DriveProviderId, parentPath: string, paths?: string[]): Promise<DriveEntryDto[]>;
+    upload(source: string, parentPath: string, paths?: string[]): Promise<DriveEntryDto[]>;
     /** Fetches to the downloads folder and resolves to where it landed. */
-    download(provider: DriveProviderId, path: string): Promise<string>;
-    remove(provider: DriveProviderId, paths: string[]): Promise<void>;
-    rename(provider: DriveProviderId, path: string, name: string): Promise<DriveEntryDto>;
-    /** Moves entries into another folder of the same provider. */
-    move(provider: DriveProviderId, paths: string[], destinationFolder: string): Promise<DriveEntryDto[]>;
+    download(source: string, path: string): Promise<string>;
+    remove(source: string, paths: string[]): Promise<void>;
+    rename(source: string, path: string, name: string): Promise<DriveEntryDto>;
+    /** Moves entries into another folder of the same source. */
+    move(source: string, paths: string[], destinationFolder: string): Promise<DriveEntryDto[]>;
     /** Duplicates entries alongside themselves. */
-    copy(provider: DriveProviderId, paths: string[]): Promise<DriveEntryDto[]>;
+    copy(source: string, paths: string[]): Promise<DriveEntryDto[]>;
     subscribe(listener: (status: DriveStatusDto) => void): () => void;
+  };
+  /**
+   * Recurring instructions the agent runs on its own. The main process owns
+   * the clock and the run history; the renderer only ever edits and reads.
+   */
+  schedules: {
+    list(): Promise<ScheduleDto[]>;
+    create(input: ScheduleInput): Promise<ScheduleDto>;
+    update(id: string, patch: SchedulePatch): Promise<ScheduleDto>;
+    remove(id: string): Promise<void>;
+    /** Fires the schedule now without disturbing its cadence. */
+    runNow(id: string): Promise<ScheduleDto>;
+    /** Clears the unread mark a finished run left behind. */
+    markRead(id: string): Promise<ScheduleDto>;
+    subscribe(listener: (items: ScheduleDto[]) => void): () => void;
   };
   providers: {
     list(): Promise<ProviderDto[]>;

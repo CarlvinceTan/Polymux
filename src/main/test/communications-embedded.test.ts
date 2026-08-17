@@ -64,6 +64,40 @@ async function startFakeBridge(): Promise<{
   };
 }
 
+test("a message landing is announced as it happens, not when next asked for", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-activity-"));
+  const seen: Array<{roomId: string; sender: string; type: string}> = [];
+  const hs = new Homeserver({
+    serverName: "flareai.local",
+    dataDirectory: directory,
+    onActivity: (activity) => seen.push(activity),
+  });
+  await hs.start();
+  try {
+    const user = hs.createLocalUser("flareai");
+    const created = await fetch(`${hs.baseUrl}/_matrix/client/v3/createRoom`, {
+      method: "POST",
+      headers: {Authorization: `Bearer ${user.accessToken}`, "Content-Type": "application/json"},
+      body: JSON.stringify({name: "A room"}),
+    });
+    const {room_id: roomId} = (await created.json()) as {room_id: string};
+    await fetch(
+      `${hs.baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/t1`,
+      {
+        method: "PUT",
+        headers: {Authorization: `Bearer ${user.accessToken}`, "Content-Type": "application/json"},
+        body: JSON.stringify({msgtype: "m.text", body: "hello"}),
+      },
+    );
+
+    // Only conversation traffic: creating the room wrote a pile of state, and
+    // a view woken for each of those would be woken for nothing.
+    assert.deepEqual(seen, [{roomId, sender: user.userId, type: "m.room.message"}]);
+  } finally {
+    await hs.close();
+  }
+});
+
 test("zero-config connect and a full message round-trip on the embedded hub", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "flareai-embedded-"));
   const bridge = await startFakeBridge();

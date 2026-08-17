@@ -20,7 +20,11 @@ export class DropboxDrive implements DriveAdapter {
   readonly id = "dropbox" as const;
   readonly #oauth: OAuthClient;
 
-  constructor(secrets: DriveSecretStore, parent: () => BrowserWindow | undefined) {
+  constructor(
+    secrets: DriveSecretStore,
+    parent: () => BrowserWindow | undefined,
+    accountId?: string,
+  ) {
     this.#oauth = new OAuthClient(
       this.id,
       oauthAppFromEnv(this.id, {
@@ -38,6 +42,7 @@ export class DropboxDrive implements DriveAdapter {
       }),
       secrets,
       parent,
+      accountId,
     );
   }
 

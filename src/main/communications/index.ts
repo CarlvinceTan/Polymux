@@ -673,9 +673,41 @@ export class Communications {
     return this.#hub.markRead(chatId, messageId);
   }
 
-  async sendChat(chatId: string, text: string): Promise<string> {
+  async sendChat(chatId: string, text: string, replyTo?: string): Promise<string> {
     await this.#load();
-    return this.#hub.send(chatId, text);
+    return this.#hub.send(chatId, text, replyTo);
+  }
+
+  /**
+   * Sends files into a conversation. Each one is uploaded and then posted as
+   * its own message, which is how every network carries an attachment.
+   */
+  async sendChatFiles(
+    chatId: string,
+    files: Array<{name: string; mimetype: string; bytes: Uint8Array}>,
+  ): Promise<void> {
+    await this.#load();
+    for (const file of files) {
+      const url = await this.#hub.upload(file.name, file.mimetype, file.bytes);
+      await this.#hub.sendMedia(chatId, {
+        url,
+        name: file.name,
+        mimetype: file.mimetype,
+        size: file.bytes.byteLength,
+        msgtype: msgtypeOf(file.mimetype),
+      });
+    }
+  }
+
+  async reactToChat(chatId: string, messageId: string, key: string): Promise<string> {
+    await this.#load();
+    return this.#hub.react(chatId, messageId, key);
+  }
+
+  /** Takes back a reaction, given the reaction event's own id. */
+  async unreactChat(chatId: string, reactionId: string): Promise<void> {
+    await this.#load();
+    return this.#hub.redact(chatId, reactionId);
   }
 
   async mailFolders(account?: string): Promise<MailFolderDto[]> {
@@ -880,3 +912,11 @@ const runCommand: CommandRunner = (command, args, input) =>
     child.on("close", (code) => resolve({code: code ?? -1, stdout, stderr}));
     child.stdin.end(input ?? "");
   });
+
+/** Which kind of message carries a file, so clients render it in place. */
+function msgtypeOf(mimetype: string): string {
+  if (mimetype.startsWith("image/")) return "m.image";
+  if (mimetype.startsWith("audio/")) return "m.audio";
+  if (mimetype.startsWith("video/")) return "m.video";
+  return "m.file";
+}

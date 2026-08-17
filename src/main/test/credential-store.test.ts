@@ -106,26 +106,29 @@ test("rejects incomplete OpenCode keys instead of treating them as configured", 
   }
 });
 
-test("recovers when the pool file can no longer be decrypted", async () => {
+test("keys this process cannot decrypt are left alone, not moved or overwritten", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "flareai-key-pool-stale-"));
   const file = path.join(directory, "api-keys.json");
   try {
-    // A key saved under a previous OS encryption key.
-    await new EncryptedApiKeyPool(file, cipher).add("openai", "sk-lost-forever");
+    // The user's real keys, saved by the real app.
+    await new EncryptedApiKeyPool(file, cipher).add("openai", "sk-the-users-real-key");
+    const original = await readFile(file, "utf8");
 
-    const reopened = new EncryptedApiKeyPool(file, mismatchedCipher);
-    assert.deepEqual(await reopened.list("openai"), [], "unreadable keys are dropped");
-    await reopened.add("openai", "sk-fresh-secret");
-    assert.deepEqual((await reopened.candidates("openai")).map((item) => item.key), ["sk-fresh-secret"]);
+    // Another build — `electron .`, a re-signed bundle, a denied keychain
+    // prompt — holds a different OS key. It cannot read the file, but the file
+    // is not broken, so it must survive untouched.
+    const other = new EncryptedApiKeyPool(file, mismatchedCipher);
+    assert.deepEqual(await other.list("openai"), [], "unreadable keys are reported as absent");
+    await assert.rejects(other.add("openai", "sk-would-clobber"), /left untouched rather than overwritten/);
 
     const names = await readdir(directory);
-    assert.equal(names.filter((name) => name.startsWith("api-keys.json.unreadable-")).length, 1, "the stale file is quarantined");
+    assert.deepEqual(names, ["api-keys.json"], "nothing is quarantined or left behind");
+    assert.equal(await readFile(file, "utf8"), original, "the ciphertext is byte-for-byte unchanged");
 
-    const onDisk = await readFile(file, "utf8");
-    assert.doesNotMatch(onDisk, /sk-fresh-secret/);
+    // The app that owns the keys still has them.
     assert.deepEqual(
-      (await new EncryptedApiKeyPool(file, cipher).list("openai")).map((item) => item.label),
-      ["sk-f••••cret"],
+      (await new EncryptedApiKeyPool(file, cipher).candidates("openai")).map((item) => item.key),
+      ["sk-the-users-real-key"],
     );
   } finally {
     await rm(directory, {recursive: true, force: true});

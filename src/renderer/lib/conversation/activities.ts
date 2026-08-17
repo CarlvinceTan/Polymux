@@ -49,6 +49,21 @@ export function activityPresentation(
   if (normalized === 'skill' || normalized.startsWith('skill_') || normalized.startsWith('skill.')) {
     return skillActivity(typeof input.name === 'string' ? input.name : '');
   }
+  // Memory is checked before the generic search and tool rules: recall is a
+  // search, but "Recalling memory" is what the user needs to see, and the row
+  // is the only place the app tells them their memory was touched at all.
+  if (normalized === 'remember' || normalized === 'save_memory') {
+    return {kind: 'memory', label: translate('activity.remembering')};
+  }
+  if (normalized === 'recall' || normalized === 'list_memory' || normalized.includes('search_memory')) {
+    return {kind: 'memory', label: translate('activity.recalling')};
+  }
+  if (normalized === 'forget' || normalized === 'delete_memory') {
+    return {kind: 'memory', label: translate('activity.forgetting')};
+  }
+  if (normalized === 'search_history' || normalized === 'read_conversation') {
+    return {kind: 'memory', label: translate('activity.searchingHistory')};
+  }
   if (normalized.includes('compact') || normalized.includes('compress') || normalized.includes('optimis') || normalized.includes('optimiz')) {
     return {kind: 'compacting', label: translate('activity.compacting')};
   }
@@ -116,6 +131,7 @@ const condensedLabels: Record<AgentActivityKind, MessageKey> = {
   searching: 'activity.summary.searching',
   running: 'activity.summary.running',
   task: 'activity.summary.task',
+  memory: 'activity.summary.memory',
   skill: 'activity.summary.skill',
   tool: 'activity.summary.tool',
   resource: 'activity.summary.resource',

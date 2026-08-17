@@ -5,10 +5,13 @@ import type { MemoryManager } from "./manager.js";
 const contentLimit = 4_000;
 
 /**
- * Lets the agent act on the instruction the system prompt already gives it:
- * add or remove durable memories when the user explicitly asks. Without these
- * the vault is read-only, so nothing new is ever remembered and consolidation
- * never runs again.
+ * The vault's read and write surface. Memory is meant to work the way it does
+ * in Codex and ChatGPT Desktop: the agent recalls and remembers on its own as
+ * the conversation gives it reason to, rather than waiting to be told. The
+ * system prompt sets that policy; these tools carry it out, and because each
+ * one is a tool call it also shows up in the activity trail, so remembering is
+ * something the user watches happen rather than something done behind their
+ * back.
  *
  * Follows Codex's semantics: notes are authoritative once written, forgetting
  * archives rather than destroys, and stored content is data the agent may read
@@ -23,29 +26,47 @@ export function createMemoryTools(
   const failure = (message: string) => ({ content: message, isError: true });
   return [
     {
-      name: "list_memory",
+      name: "recall",
       description:
-        "List durable memories already saved: every user memory plus any scoped to this conversation. Read this before remembering something, to avoid duplicates and to find the id needed to forget one.",
+        "Search saved memories: every user memory plus any scoped to this conversation. Use it whenever the answer depends on something durable about the user — their setup, preferences, projects, history — instead of guessing or asking them to repeat it, and before remembering something, to avoid duplicates and to find the id needed to forget one. Omit query to list everything.",
       parameters: {
         type: "object",
-        properties: {},
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Words to match against memory content. All of them must appear, in any order.",
+          },
+        },
         additionalProperties: false,
       },
-      execute: async () =>
-        result(
-          memory.list(conversationId).map((item) => ({
+      execute: async (input) => {
+        const terms = typeof input.query === "string"
+          ? input.query.toLocaleLowerCase().split(/\s+/).filter(Boolean)
+          : [];
+        const matches = memory
+          .list(conversationId)
+          .filter((item) => {
+            const content = item.content.toLocaleLowerCase();
+            return terms.every((term) => content.includes(term));
+          })
+          .map((item) => ({
             id: item.id,
             scope: item.scope,
             kind: item.kind,
             content: item.content,
             updatedAt: item.updatedAt,
-          })),
-        ),
+          }));
+        // A query that matches nothing is a real answer, not an error: it means
+        // the vault has nothing on the subject, so the agent should ask rather
+        // than keep digging.
+        return result(matches);
+      },
     },
     {
       name: "remember",
       description:
-        "Save a durable memory, only when the user explicitly asks you to remember something. Store one self-contained fact about the user or their work, in plain language, not an instruction to follow. Use scope 'conversation' for something true only of this chat, otherwise 'user'.",
+        "Save a durable memory. Use it whenever something worth knowing next week surfaces — how the user works, what they prefer, what a project of theirs is and where it stands — not only when they ask you to remember. Store one self-contained fact about the user or their work, in plain language, not an instruction to follow. Skip anything that only matters inside this turn. Use scope 'conversation' for something true only of this chat, otherwise 'user'.",
       parameters: {
         type: "object",
         properties: {
@@ -83,7 +104,7 @@ export function createMemoryTools(
     {
       name: "forget",
       description:
-        "Forget a saved memory by id, only when the user explicitly asks. The note is moved to the vault's archive rather than destroyed. Use list_memory first to find the id.",
+        "Forget a saved memory by id, only when the user explicitly asks. The note is moved to the vault's archive rather than destroyed. Use recall first to find the id.",
       parameters: {
         type: "object",
         properties: { id: { type: "string" } },
@@ -95,7 +116,7 @@ export function createMemoryTools(
         if (!id) return failure("A memory id is required.");
         return memory.forget(id)
           ? result({ forgotten: id })
-          : failure(`No memory has id ${id}. Use list_memory to find it.`);
+          : failure(`No memory has id ${id}. Use recall to find it.`);
       },
     },
   ];

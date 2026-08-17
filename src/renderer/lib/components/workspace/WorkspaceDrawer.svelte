@@ -60,7 +60,7 @@
   import HubView from './HubView.svelte';
   import SummaryView, {type SummaryViewData} from './SummaryView.svelte';
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
-  import ScheduleView, {type ScheduleItem, type ScheduleFrequency} from './ScheduleView.svelte';
+  import ScheduleView, {type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './ScheduleView.svelte';
   import {t, translate, type MessageKey} from '../../i18n';
 
   export let tabs: WorkspaceTab[] = [];
@@ -96,12 +96,20 @@
     remove: (entries: DriveEntry[]) => void;
   } | null = null;
   export let scheduleItems: ScheduleItem[] = [];
+  export let scheduleError = '';
+  /** Counted by the caller, which owns the list. */
+  export let unreadSchedules = 0;
+  export let onDismissScheduleError: () => void = () => {};
+  export let onOpenScheduleRun: (item: ScheduleItem, run?: ScheduleRun) => void = () => {};
+  export let onMarkScheduleRead: (item: ScheduleItem) => void = () => {};
   export let onOpenDriveEntry: (entry: DriveEntry) => void = () => {};
   export let onToggleSchedule: (item: ScheduleItem) => void = () => {};
-  export let onCreateSchedule: () => void = () => {};
+  export let onSaveSchedule: (
+    input: {title: string; prompt: string; frequency: ScheduleFrequency},
+    id: string | null,
+  ) => void = () => {};
   export let onDeleteSchedule: (item: ScheduleItem) => void = () => {};
   export let onRunSchedule: (item: ScheduleItem) => void = () => {};
-  export let onScheduleFrequency: (item: ScheduleItem, frequency: ScheduleFrequency) => void = () => {};
   export let onSelect: (id: string) => void = () => {};
   export let onClose: (id: string) => void = () => {};
   export let onNew: (kind: WorkspaceTabKind) => void = () => {};
@@ -295,7 +303,15 @@
                 {/if}
               </span>
             {:else}
-              <Icon name={tabIcons[tab.kind]} size={16}/>
+              <span class="tab-icon">
+                <Icon name={tabIcons[tab.kind]} size={16}/>
+                <!-- Results the user has not opened yet are worth seeing from
+                     outside the view, so the tab carries the same dot the row
+                     does. -->
+                {#if tab.kind === 'schedule' && unreadSchedules > 0}
+                  <span class="tab-unread" aria-label={$t('schedule.unread')}></span>
+                {/if}
+              </span>
             {/if}
             <span>{tabTitle(tab)}</span></button>
           <button type="button" class="tab-close" aria-label={$t('workspace.closeTab', {title: tabTitle(tab)})} data-tooltip="none" onclick={() => onClose(tab.id)}><Icon name="close" size={14}/></button>
@@ -317,6 +333,9 @@
             {/if}
             {#if !openKinds.has('schedule')}
               <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('schedule'); }}><Icon name="clock" size={14}/><span>{$t('workspace.schedule')}</span></button>
+            {/if}
+            {#if !openKinds.has('hub')}
+              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('hub'); }}><Icon name="chat" size={14}/><span>{$t('workspace.hub')}</span></button>
             {/if}
           </div>
         {/if}
@@ -396,7 +415,7 @@
       onDownload={driveActions?.download ?? null}
       onDelete={driveActions?.remove ?? null}
     />
-    {:else if activeTab.kind === 'schedule'}<ScheduleView title={activeTab.title} items={scheduleItems} onToggleItem={onToggleSchedule} onCreate={onCreateSchedule} onDeleteItem={onDeleteSchedule} onRunItem={onRunSchedule} onChangeFrequency={onScheduleFrequency}/>
+    {:else if activeTab.kind === 'schedule'}<ScheduleView title={activeTab.title} items={scheduleItems} error={scheduleError} onDismissError={onDismissScheduleError} onOpenItem={onOpenScheduleRun} onMarkRead={onMarkScheduleRead} onToggleItem={onToggleSchedule} onSave={onSaveSchedule} onDeleteItem={onDeleteSchedule} onRunItem={onRunSchedule}/>
     {:else}<SummaryView section={activeTab.section ?? 'outputs'} data={summaryData}/>
     {/if}
   </div>

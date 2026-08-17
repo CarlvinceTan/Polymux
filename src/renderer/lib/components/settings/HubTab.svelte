@@ -13,6 +13,7 @@
   } from '@flareai/protocol';
   import {COMMS_EMAIL_PRESETS, permissionPrompts} from '@flareai/protocol';
   import {readableError} from '../../errors';
+  import {scrollFade} from '../../scrollFade';
   import {qrSvgPath} from '../../qr';
   import {bridgeLogo, mailLogo} from '../../options/platformBrands';
   import {emailPresetHint, qrInstructions} from '../../i18n/names';
@@ -50,9 +51,6 @@
   let railFilter = 'all';
   let railSort = 'recommended';
   let openRailMenu: RailMenu | null = null;
-  let railList: HTMLUListElement;
-  let railAtTop = true;
-  let railAtBottom = true;
 
   // Bridge linking
   let step: CommsLoginStepDto | null = null;
@@ -241,7 +239,6 @@
   // The masks are painted from measurements, so they are re-taken whenever the
   // list's contents change under them.
   $: railContentKey = `${railFilter}:${railSort}:${visibleRail.length}`;
-  $: if (railContentKey) void tick().then(measureRailEdges);
 
   function isSelected(section: Section, current: Section | null): boolean {
     if (!current || current.kind !== section.kind) return false;
@@ -265,12 +262,6 @@
     if (sort === 'recommended') return entries;
     const ordered = [...entries].sort((a, b) => a.name.localeCompare(b.name));
     return sort === 'name-desc' ? ordered.reverse() : ordered;
-  }
-
-  function measureRailEdges(): void {
-    if (!railList) return;
-    railAtTop = railList.scrollTop <= 1;
-    railAtBottom = railList.scrollHeight - railList.scrollTop - railList.clientHeight <= 1;
   }
 
   function toggleRailMenu(menu: RailMenu): void {
@@ -621,10 +612,7 @@
           class="comms-rail"
           class:empty-state={railEmpty || loading}
           class:loading
-          class:at-top={railAtTop}
-          class:at-bottom={railAtBottom}
-          bind:this={railList}
-          onscroll={measureRailEdges}
+          use:scrollFade={railContentKey}
         >
           {#if loading}
             <li class="comms-rail-loading">{$t('hub.checkingAccounts')}</li>
@@ -720,7 +708,7 @@
         </div>
       </div>
 
-      <div class="comms-detail">
+      <div class="comms-detail" use:scrollFade={selected}>
         {#if editingEmail}
           <header class="comms-detail-header">
             <h3>{emailOriginalId ? $t('hub.editMailbox', {name: emailOriginalId}) : $t('hub.addMailbox')}</h3>
@@ -1066,9 +1054,7 @@
   .comms-rail-column{min-height:0;display:flex;flex-direction:column;gap:6px;padding-right:4px;border-right:1px solid var(--neutral-200)}
   /* Same fade as the MCP/Skills rails: the mask only opens at an edge the list
      is actually scrolled away from, so a short list keeps crisp ends. */
-  .comms-rail{--rail-mask-top:transparent;--rail-mask-bottom:transparent;min-height:0;flex:1;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px 0;overflow-y:auto;list-style:none;-webkit-mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom));mask-image:linear-gradient(to bottom,var(--rail-mask-top),#000 6px,#000 calc(100% - 6px),var(--rail-mask-bottom))}
-  .comms-rail.at-top{--rail-mask-top:#000}
-  .comms-rail.at-bottom{--rail-mask-bottom:#000}
+  .comms-rail{min-height:0;flex:1;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px 0;overflow-y:auto;list-style:none}
   .comms-rail.empty-state{-webkit-mask-image:none;mask-image:none}
   .comms-rail>li{margin:0}
   .comms-rail-empty{padding:6px 8px;color:var(--neutral-400);font-size:10.5px}

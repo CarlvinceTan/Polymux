@@ -133,7 +133,7 @@ test.describe('welcome view', () => {
     await expect(toolbar.getByText('TEAMS')).toHaveCount(0);
   });
 
-  test('opens Settings as a Teams-style modal with connections, models and memory controls', async ({page}) => {
+  test('opens Settings as a full page with connections, models and memory controls', async ({page}) => {
     await page.route('https://api.frankfurter.dev/v2/rates**', (route) => route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify([
@@ -151,19 +151,21 @@ test.describe('welcome view', () => {
     await expect(modal).toBeVisible();
     await expect(modal.getByRole('heading', {name: 'General'})).toBeVisible();
     await expect(modal.getByText('Manage FlareAI preferences and access.')).toBeVisible();
+    // A full page now, not a sheet: it fills the window and starts at its corner.
     const modalBounds = await modal.boundingBox();
+    const viewport = page.viewportSize();
     expect(modalBounds).not.toBeNull();
-    expect(modalBounds!.width).toBeLessThanOrEqual(782);
-    expect(modalBounds!.x).toBeGreaterThanOrEqual(48);
-    expect(modalBounds!.y).toBeGreaterThanOrEqual(48);
+    expect(modalBounds!.x).toBe(0);
+    expect(modalBounds!.y).toBe(0);
+    expect(modalBounds!.width).toBe(viewport!.width);
     await expect(modal).toHaveCSS('border-style', 'none');
     await expect(page.getByRole('menu')).toHaveCount(0);
     await expect(modal.getByRole('tab')).toHaveText(['General', 'Hub', 'Drive', 'MCP', 'Skills', 'Models', 'Provider', 'Memory']);
     const tabMetrics = await modal.getByRole('tab').first().evaluate((node) => {
       const style = getComputedStyle(node);
-      return {fontSize: style.fontSize, padding: style.padding, radius: style.borderRadius};
+      return {fontSize: style.fontSize, height: style.height, radius: style.borderRadius, icons: node.querySelectorAll('svg').length};
     });
-    expect(tabMetrics).toEqual({fontSize: '13px', padding: '5px 11px', radius: '8px'});
+    expect(tabMetrics).toEqual({fontSize: '13px', height: '32px', radius: '9px', icons: 1});
     const timeAccess = modal.getByRole('switch', {name: 'Enable time access'});
     const locationAccess = modal.getByRole('switch', {name: 'Enable location access'});
     const theme = modal.getByRole('radiogroup', {name: 'Theme'});
@@ -368,7 +370,7 @@ test.describe('welcome view', () => {
 
     await modal.getByRole('tab', {name: 'Models'}).click();
     await expect(modal.getByRole('heading', {name: 'Models'})).toBeVisible();
-    await expect(modal.getByText('Click a model to assign it to a job.')).toBeVisible();
+    await expect(modal.getByText('Click a model to assign it to a role.')).toBeVisible();
     await expect(modal.getByLabel(/Selected model:/)).toHaveCount(0);
     await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['OpenAI']);
     await modal.getByRole('button', {name: 'Filter models'}).click();
@@ -435,7 +437,7 @@ test.describe('welcome view', () => {
     await expect(modal.getByText('openrouter/google/gemini-3.1-pro-preview')).toBeVisible();
     await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
     const paneAlignment = await modal.evaluate((dialog) => {
-      const search = dialog.querySelector('.options-search')!.getBoundingClientRect();
+      const search = dialog.querySelector('.options-rail .options-search')!.getBoundingClientRect();
       const detail = dialog.querySelector('.options-detail-header')!.getBoundingClientRect();
       return Math.round(detail.top - search.top);
     });
@@ -692,12 +694,11 @@ test.describe('welcome view', () => {
       return Math.round(panel.getBoundingClientRect().bottom - path.bottom);
     });
     expect(memoryPathBottomGap).toBe(20);
+    // The page title and the panel headings below it share one left edge.
     const sharedLeftEdge = await modal.evaluate((node) => {
-      const firstTab = node.querySelector('.options-mode button')!;
-      const tabBounds = firstTab.getBoundingClientRect();
-      const tabPadding = Number.parseFloat(getComputedStyle(firstTab).paddingLeft);
+      const pageTitle = node.querySelector('.options-header h2')!.getBoundingClientRect();
       const memoryTitle = node.querySelector('.memory-options h3')!.getBoundingClientRect();
-      return Math.round(memoryTitle.left - (tabBounds.left + tabPadding));
+      return Math.round(memoryTitle.left - pageTitle.left);
     });
     expect(sharedLeftEdge).toBe(0);
     await expect(modal.getByText('Durable memories are added or removed only when you explicitly ask.')).toBeVisible();
@@ -947,7 +948,7 @@ test.describe('welcome view', () => {
     await expect(speechMode).toHaveAttribute('aria-checked', 'true');
     await speechMode.click();
     await expect(speechMode).toHaveAttribute('aria-checked', 'false');
-    await modal.getByRole('button', {name: 'Close Settings'}).click();
+    await modal.getByRole('button', {name: 'Back to app'}).click();
 
     const send = page.getByRole('button', {name: 'Send message'});
     await expect(send).toBeVisible();
@@ -1579,11 +1580,16 @@ test.describe('conversation', () => {
     const liveRow = page.locator('.agent-activity-list li.live');
     await expect(liveRow).toHaveCount(1);
     await expect(page.getByRole('status', {name: 'Assistant is responding'})).toHaveCount(0);
+    // The wave is painted into the row's own ink — a blended overlay band would
+    // light the row's background too, which on dark mode read as a grey box.
+    // One animation drives the whole row: the glyph and the label both read its
+    // head position, so they light in the order the wave reaches them.
     const label = await liveRow.evaluate((node) => {
-      const style = getComputedStyle(node, '::after');
-      return {name: style.animationName, timing: style.animationTimingFunction};
+      const style = getComputedStyle(node);
+      const text = getComputedStyle(node.querySelector('.activity-copy > span:first-child')!);
+      return {name: style.animationName, timing: style.animationTimingFunction, clip: text.webkitBackgroundClip ?? text.backgroundClip, glyphAnimation: getComputedStyle(node.querySelector('svg')!).animationName};
     });
-    expect(label).toEqual({name: 'activity-glint-sweep', timing: 'linear'});
+    expect(label).toEqual({name: 'activity-glint-pass', timing: 'linear', clip: 'text', glyphAnimation: 'none'});
 
     await page.getByRole('button', {name: 'Stop agent'}).click();
     await expect(liveRow).toHaveCount(0);
@@ -1717,6 +1723,20 @@ test.describe('panels', () => {
     await expect(summaryCard(page)).toBeVisible();
   });
 
+  test('the new-tab menu opens the Hub, and stops offering it once it is open', async ({page}) => {
+    await page.goto('/');
+    await send(page, 'hub from the menu');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await page.getByLabel('New tab', {exact: true}).click();
+    // Drive and Schedule leave the title bar while the drawer is open and live
+    // in this menu instead; the Hub sits beside them and was missing from it.
+    await page.getByRole('menuitem', {name: 'Hub'}).click();
+    await expect(page.locator('.hub-view')).toBeVisible();
+
+    await page.getByLabel('New tab', {exact: true}).click();
+    await expect(page.getByRole('menuitem', {name: 'Hub'})).toHaveCount(0);
+  });
+
   test('clicking away from the address bar drops the caret and keeps the typed text', async ({page}) => {
     await page.goto('/');
     await send(page, 'address focus');
@@ -1837,6 +1857,47 @@ const expandAllChatGroups = async (page: Page) => {
 };
 
 test.describe('chat drawer', () => {
+  /**
+   * The content beside the drawer is anchored to the drawer's own edge, so the
+   * two have to move as one for the whole slide — not merely agree once it has
+   * settled. Summary is the case that broke: its quicker column duration was
+   * applied to every property `main` transitions, so the content arrived at its
+   * drawer-closed place a third of a slide early and the drawer, still sliding,
+   * ran over it.
+   */
+  for (const surface of ['summary', 'workspace'] as const) {
+    test(`keeps the content beside it on its edge for the whole slide (${surface})`, async ({page}) => {
+      await page.setViewportSize({width: 1300, height: 800});
+      await page.goto('/');
+      await send(page, 'in step');
+      if (surface === 'workspace') {
+        await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+        await expect(workspaceDrawer(page)).toHaveClass(/open/);
+      } else {
+        await expect(summaryCard(page)).toBeVisible();
+      }
+      await page.waitForTimeout(600);
+
+      const edges = () => page.evaluate(() => {
+        const right = (selector: string) => Math.round(document.querySelector(selector)!.getBoundingClientRect().right);
+        const left = (selector: string) => Math.round(document.querySelector(selector)!.getBoundingClientRect().left);
+        return {drawer: right('aside.chat-drawer'), composer: left('.sticky-composer'), title: left('.conversation-title-bar')};
+      });
+
+      for (const step of ['open', 'close']) {
+        await page.getByRole('button', {name: 'Toggle Chats'}).click();
+        for (let frame = 0; frame < 5; frame++) {
+          await page.waitForTimeout(70);
+          const {drawer, composer, title} = await edges();
+          // A hairline of rounding is fine; a drawer riding over the content is not.
+          expect(Math.abs(composer - drawer), `${step} frame ${frame} composer`).toBeLessThanOrEqual(2);
+          expect(Math.abs(title - drawer), `${step} frame ${frame} title bar`).toBeLessThanOrEqual(2);
+        }
+        await page.waitForTimeout(500);
+      }
+    });
+  }
+
   test('opens as a sheet, groups by recency, and closes again', async ({page}) => {
     await page.goto('/');
     const drawer = chatDrawer(page);
@@ -2031,6 +2092,135 @@ test.describe('workspace drawer', () => {
     await expect(drawer.locator('.schedule-view')).toBeVisible();
   });
 
+  test('schedule orders unread results first and finished rows last', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Schedule'}).click();
+
+    const rows = drawer.locator('.schedule-row');
+    // Unread results at the top, then what is coming up, then the rows that
+    // are finished with.
+    await expect(rows.nth(0).locator('.schedule-unread')).toBeVisible();
+    await expect(rows.nth(1).locator('.schedule-unread')).toBeVisible();
+    await expect(rows.last()).toHaveClass(/finished/);
+    await expect(drawer.locator('.tab .tab-unread')).toBeVisible();
+  });
+
+  test('schedule is written in a sheet, with its own prompt and cadence', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Schedule'}).click();
+
+    await drawer.getByRole('button', {name: 'New schedule'}).click();
+    const sheet = drawer.locator('.schedule-composer');
+    await expect(sheet).toBeVisible();
+    // It takes the whole view rather than floating over the list.
+    await expect(drawer.locator('.schedule-row')).toHaveCount(0);
+    // Nothing to save until both halves are written.
+    await expect(sheet.getByRole('button', {name: 'Save'})).toBeDisabled();
+
+    await sheet.locator('input[type="text"]').first().fill('Evening wrap-up');
+    await sheet.locator('textarea').fill('Summarise what changed today.');
+    await sheet.getByRole('button', {name: 'Save'}).click();
+
+    await expect(sheet).toHaveCount(0);
+    await expect(drawer.locator('.schedule-row', {hasText: 'Evening wrap-up'})).toBeVisible();
+  });
+
+  test('schedule time picker stays on screen when it opens near the bottom', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Schedule'}).click();
+    await drawer.getByRole('button', {name: 'New schedule'}).click();
+
+    const sheet = drawer.locator('.schedule-composer');
+    // The time row sits low in the sheet and its list carries forty-eight
+    // rows, which is the case that used to run off the bottom of the window.
+    await sheet.getByRole('button', {name: 'Time of day'}).click();
+    const list = sheet.locator('.select-menu-list');
+    await expect(list).toBeVisible();
+
+    const box = (await list.boundingBox())!;
+    const trigger = (await sheet.getByRole('button', {name: 'Time of day'}).boundingBox())!;
+    const viewport = page.viewportSize()!;
+    // Below the trigger, always — never flipped above it.
+    expect(box.y).toBeGreaterThanOrEqual(trigger.y);
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    // And it stays a short list: the fit is achieved by scrolling within the
+    // row cap, not by growing the box to fill the window.
+    expect(box.height).toBeLessThanOrEqual(220);
+  });
+
+  test('schedule editing opens the same sheet, filled in', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Schedule'}).click();
+
+    // The cadence cell drops out at narrow widths, so the row menu is the way
+    // in that is always there. Both open the same sheet.
+    await drawer.locator('.schedule-row', {hasText: 'Morning brief'}).locator('.schedule-more').click();
+    await drawer.getByRole('menuitem', {name: 'Edit'}).click();
+    const sheet = drawer.locator('.schedule-composer');
+    await expect(sheet).toBeVisible();
+    await expect(sheet.locator('input[type="text"]').first()).toHaveValue('Morning brief');
+    await expect(sheet.locator('textarea')).toHaveValue(/Summarise my inbox/);
+    // The weekdays read as one dropdown rather than seven toggles.
+    await expect(sheet.getByRole('button', {name: 'Days of the week'})).toContainText('weekdays');
+
+    await sheet.locator('input[type="text"]').first().fill('Morning brief v2');
+    await sheet.getByRole('button', {name: 'Save'}).click();
+    await expect(drawer.locator('.schedule-row', {hasText: 'Morning brief v2'})).toBeVisible();
+  });
+
+  test('schedule cadence can be written as cron, and previews its next runs', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Schedule'}).click();
+    await drawer.getByRole('button', {name: 'New schedule'}).click();
+
+    const sheet = drawer.locator('.schedule-composer');
+    // The gear carries the picked cadence across rather than starting blank.
+    await sheet.getByRole('button', {name: 'Advanced'}).click();
+    const cron = sheet.locator('.schedule-cron-input');
+    await expect(cron).toHaveValue('0 9 * * *');
+    await expect(sheet.locator('.schedule-cron-next em').first()).toBeVisible();
+
+    // A bad expression says what is wrong and blocks the save.
+    await cron.fill('0 0 * *');
+    await expect(sheet.locator('.schedule-cron-error')).toContainText('five fields');
+    await sheet.locator('input[type="text"]').first().fill('Queue sweep');
+    await sheet.locator('textarea').fill('Check the queue.');
+    await expect(sheet.getByRole('button', {name: 'Save'})).toBeDisabled();
+
+    await cron.fill('*/15 9-17 * * 1-5');
+    await expect(sheet.locator('.schedule-cron-error')).toHaveCount(0);
+    await sheet.getByRole('button', {name: 'Save'}).click();
+
+    const row = drawer.locator('.schedule-row', {hasText: 'Queue sweep'});
+    await expect(row).toBeVisible();
+    await expect(row).toContainText('*/15 9-17 * * 1-5');
+  });
+
+  test('schedule opens a run’s details and clears the unread mark', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Schedule'}).click();
+
+    await drawer.locator('.schedule-row', {hasText: 'Morning brief'}).locator('.schedule-row-main').click();
+    const detail = drawer.locator('.schedule-detail');
+    await expect(detail).toContainText('Succeeded');
+    await expect(detail).toContainText('flagged 3 needing a reply');
+    await expect(detail).toContainText('Summarise my inbox and calendar');
+    // Reading the result is what clears the dot.
+    await expect(drawer.locator('.schedule-row', {hasText: 'Morning brief'}).locator('.schedule-unread')).toHaveCount(0);
+  });
+
   test('sends a launcher suggestion to the chat instead of opening a view', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
@@ -2061,6 +2251,30 @@ test.describe('workspace drawer', () => {
     await drawer.getByRole('button', {name: 'Example Two'}).click();
     await expect(drawer.locator('.tab')).toHaveCount(1);
     await expect(drawer.locator('.tab')).toContainText('Example Two');
+  });
+
+  test('leaves search-result pages out of the recent list', async ({page}) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
+        {url: 'https://www.google.com/search?q=nus+chatgpt+edu', title: 'nus chatgpt edu - Google Search'},
+        {url: 'https://duckduckgo.com/?q=ai+events+singapore', title: 'ai events singapore at DuckDuckGo'},
+        {url: 'https://www.bing.com/search?q=luma+ai', title: 'luma ai - Search'},
+        {url: 'https://example.com/one', title: 'Example One'},
+        {url: 'https://lumalabs.ai/dream-machine', title: 'Luma AI'},
+        {url: 'https://docs.google.com/document/d/abc', title: 'A shared doc'},
+      ]));
+    });
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+
+    await expect(drawer.locator('.workspace-launcher-heading')).toHaveText('Recent');
+    await expect(drawer.locator('.workspace-launcher-suggestion')).toHaveCount(3);
+    await expect(drawer.locator('.workspace-launcher-suggestion')).toHaveText([
+      'Example One',
+      'Luma AI',
+      'A shared doc',
+    ]);
   });
 
   test('keeps the create suggestions until the history is worth showing', async ({page}) => {
@@ -2265,7 +2479,7 @@ test.describe('dictation', () => {
     await row.getByRole('button').first().click();
     await row.getByRole('menuitemradio', {name: label}).click();
     await expect(row.getByRole('button').first()).toContainText(label);
-    await page.getByRole('button', {name: 'Close Settings'}).click();
+    await page.getByRole('button', {name: 'Back to app'}).click();
   }
 
   const voiceButton = (page: Page) => page.locator('.flareai-prompt-toolbar button', {hasText: /VOICE|LISTENING/});
@@ -2594,12 +2808,139 @@ test.describe('hub view', () => {
     await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
     await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
 
-    await expect(view.locator('.hub-view-bubble')).toHaveCount(2);
-    await view.locator('.hub-view-composer input').fill('See you then.');
-    await view.locator('.hub-view-composer button').click();
+    // Two messages and a sticker.
     await expect(view.locator('.hub-view-bubble')).toHaveCount(3);
+    await view.locator('.hub-view-composer input').fill('See you then.');
+    // Send only appears once there is something to send; before that the
+    // primary button is the microphone.
+    await view.locator('.hub-view-composer button[aria-label="Send"]').click();
+    await expect(view.locator('.hub-view-bubble')).toHaveCount(4);
     // The sent message is attributed to the user, not the remote side.
     await expect(view.locator('.hub-view-bubble.mine').first()).toContainText('See you then.');
+  });
+
+  test('returning to a conversation paints what it knew rather than reloading', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+    await expect(view.locator('.hub-view-bubble').first()).toBeVisible();
+
+    // Away and back. The second visit is served from what the first learned,
+    // so there is no skeleton in between.
+    await view.locator('.hub-view-back').click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+    await expect(view.locator('.hub-view-bubble-skeleton')).toHaveCount(0);
+    await expect(view.locator('.hub-view-bubble').first()).toBeVisible();
+  });
+
+  test('leaving the hub and coming back keeps the pane rather than rebuilding it', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+    await expect(view.locator('.hub-view-bubble').first()).toBeVisible();
+
+    // The hub is a workspace tab, so leaving destroys it. What it was looking
+    // at has to survive that, or coming back starts from a default source and
+    // rebuilds the pane the user was already in.
+    await page.getByRole('button', {name: 'New tab', exact: true}).click();
+    await page.getByRole('menuitem', {name: 'Browser'}).click();
+    await page.locator('.tab', {hasText: 'Hub'}).locator('.tab-main').click();
+
+    await expect(page.locator('.hub-view .hub-view-bubble').first()).toBeVisible();
+    await expect(page.locator('.hub-view .hub-view-bubble-skeleton')).toHaveCount(0);
+  });
+
+  test('a group names who sent each run of messages, above the bubble', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Family'}).click();
+
+    // The label belongs to the row, outside the bubble, not inside it.
+    await expect(view.locator('.hub-view-bubble .hub-view-bubble-who')).toHaveCount(0);
+    const names = view.locator('.hub-view-bubble-who');
+    // Newest first: Dad's message, then the run of two from Mum named once.
+    await expect(names).toHaveText(['Dad', 'Mum']);
+
+    // A direct chat says who it is in the header, so the bubbles do not.
+    await view.locator('.hub-view-back').click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+    await expect(view.locator('.hub-view-bubble-who')).toHaveCount(0);
+  });
+
+  test('the composer offers the microphone until there is something to send', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const composer = view.locator('.hub-view-composer');
+    // Empty: one primary button, and it records rather than sends nothing.
+    await expect(composer.locator('button[aria-label="Record a voice message"]')).toBeVisible();
+    await expect(composer.locator('button[aria-label="Send"]')).toHaveCount(0);
+
+    await composer.locator('input').fill('typing');
+    await expect(composer.locator('button[aria-label="Send"]')).toBeVisible();
+    await expect(composer.locator('button[aria-label="Record a voice message"]')).toHaveCount(0);
+
+    // Attach stays available either way; it is not part of the swap.
+    await expect(composer.locator('button[aria-label="Attach files"]')).toBeVisible();
+    await composer.locator('input').fill('');
+    await expect(composer.locator('button[aria-label="Record a voice message"]')).toBeVisible();
+  });
+
+  test('reacts to a message, and answers it with the original quoted', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    // The actions live in a context menu on the message, opened where the
+    // pointer is, rather than in a row of icons under every bubble.
+    const first = view.locator('.hub-view-bubble-row').first();
+    const menu = page.locator('.hub-view-message-menu');
+    await first.click({button: 'right'});
+    await expect(menu).toBeVisible();
+    await menu.locator('.hub-view-emoji-row button', {hasText: '👍'}).click();
+    await expect(menu).toHaveCount(0);
+    await expect(first.locator('.hub-view-reaction')).toContainText('👍');
+
+    await first.click({button: 'right'});
+    await menu.getByRole('menuitem', {name: 'Reply'}).click();
+    // The bar says what is being answered before the answer is written.
+    await expect(view.locator('.hub-view-replying')).toBeVisible();
+    await view.locator('.hub-view-composer input').fill('Works for me.');
+    await view.locator('.hub-view-composer button[aria-label="Send"]').click();
+    await expect(view.locator('.hub-view-replying')).toHaveCount(0);
+    await expect(view.locator('.hub-view-bubble.mine').first()).toContainText('Works for me.');
+  });
+
+  test('filters the conversation list from the box above it', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    const rows = view.locator('.hub-view-rows .hub-view-row');
+    const all = await rows.count();
+    await view.locator('.hub-view-list-head input[type="search"]').fill('Jules');
+    await expect(rows).toHaveCount(1);
+    await view.locator('.hub-view-list-head input[type="search"]').fill('');
+    await expect(rows).toHaveCount(all);
+  });
+
+  test('a sticker is drawn at a sticker\'s size, not the width of the thread', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const sticker = view.locator('.hub-view-bubble-image.sticker');
+    await expect(sticker).toBeVisible();
+    // Blown up to the bubble's width a sticker reads as a photo of one, which
+    // is not how any messenger shows them.
+    const box = await sticker.boundingBox();
+    expect(box!.width).toBeLessThanOrEqual(140);
   });
 
   test('composes a new mail, with copies and attachments', async ({page}) => {
@@ -2741,7 +3082,7 @@ test.describe('interface language', () => {
     // the dialog has to be found again under the Spanish one.
     await expect(page.getByRole('dialog', {name: 'Ajustes'})).toBeVisible();
     await expect(page.getByText('El idioma de la interfaz de FlareAI')).toBeVisible();
-    await page.getByRole('button', {name: 'Cerrar los ajustes'}).click();
+    await page.getByRole('button', {name: 'Volver a la app'}).click();
 
     // …and so does the app behind it, down to the composer's placeholder.
     await expect(page.getByRole('heading', {name: '¿En qué puedo ayudarle?'})).toBeVisible();

@@ -48,6 +48,16 @@ const EXTENSION_TYPES: Record<string, string> = {
 };
 
 /**
+ * Drops everything fetched so far. Sites serve a different icon per colour
+ * scheme, so a theme change invalidates what is held here: the cached bytes
+ * were chosen under the old scheme and would keep a white-on-white icon on
+ * screen for as long as the tab lives.
+ */
+export function clearFaviconCache(): void {
+  cache.clear();
+}
+
+/**
  * The icon at `url` as a `data:` url, or null when there is none to show —
  * which the renderer draws as the browser globe. Never rejects: a site with a
  * broken, missing or hostile icon is a site whose tab shows a globe.
@@ -60,13 +70,128 @@ export async function faviconDataUrl(
   const cached = cache.get(url);
   if (cached !== undefined) return cached;
   const resolved = await fetchFavicon(session, url, scale).catch((): null => null);
+  remember(url, resolved);
+  return resolved;
+}
+
+function remember(key: string, value: string | null): void {
   // Insertion-ordered, so the oldest key is the first one out.
   if (cache.size >= CACHE_LIMIT) {
     const oldest = cache.keys().next();
     if (!oldest.done) cache.delete(oldest.value);
   }
-  cache.set(url, resolved);
+  cache.set(key, value);
+}
+
+/**
+ * The icon for a *site*, rather than for an icon url that is already known.
+ *
+ * `/favicon.ico` is the last resort here, not the first guess. Sites routinely
+ * declare their real mark in the page instead — often twice, once per colour
+ * scheme — and Luma is the case in point: `/favicon.ico` redirects to its own
+ * 404 page, while the page names a black icon for light and a white one for
+ * dark. Reading the page is what gets the right one of those, so it is read
+ * first and the conventional path is kept behind it for sites that only have
+ * that.
+ *
+ * Never rejects: a site whose page cannot be read is a site with a globe.
+ */
+export async function siteFaviconDataUrl(
+  session: FaviconSession,
+  siteUrl: string,
+  options: {scale?: IconScaler; prefersDark?: boolean} = {},
+): Promise<string | null> {
+  const {scale = scaleWithNativeImage, prefersDark = false} = options;
+  let origin: string;
+  try {
+    origin = new URL(siteUrl).origin;
+  } catch {
+    return null;
+  }
+  // Held per scheme as well as per site: the two answers are different icons,
+  // and a theme change clears the whole cache anyway.
+  const key = `site:${prefersDark ? "dark" : "light"}:${origin}`;
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+
+  const resolved = await resolveSiteIcon(session, origin, scale, prefersDark).catch((): null => null);
+  remember(key, resolved);
   return resolved;
+}
+
+async function resolveSiteIcon(
+  session: FaviconSession,
+  origin: string,
+  scale: IconScaler,
+  prefersDark: boolean,
+): Promise<string | null> {
+  const declared = await pageIconUrls(session, origin, prefersDark).catch((): string[] => []);
+  for (const candidate of [...declared, `${origin}/favicon.ico`]) {
+    const icon = await fetchFavicon(session, candidate, scale).catch((): null => null);
+    if (icon) return icon;
+  }
+  return null;
+}
+
+/** How much of a page is worth reading to find its `<link rel="icon">`: the
+ * head comes first, and a document that buries it past this is a document
+ * whose icon is not worth the bytes. */
+const MAX_PAGE_BYTES = 256 * 1024;
+
+/**
+ * The icon urls a page declares, best first.
+ *
+ * A `media` attribute is the whole point of reading the page, so one that
+ * contradicts the scheme in use is dropped rather than ranked: a white mark on
+ * light chrome is worse than no mark at all. Among the rest, an icon that
+ * names the current scheme beats one that names none, which beats a
+ * touch icon — those are built for a home screen and are usually a padded
+ * square rather than the site's mark.
+ */
+async function pageIconUrls(
+  session: FaviconSession,
+  origin: string,
+  prefersDark: boolean,
+): Promise<string[]> {
+  const response = await session.fetch(origin);
+  if (!response.ok) return [];
+  const type = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (type && type !== "text/html" && type !== "application/xhtml+xml") return [];
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const html = bytes.subarray(0, MAX_PAGE_BYTES).toString("utf8");
+
+  const ranked: {url: string; rank: number}[] = [];
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    const rel = attribute(tag, "rel")?.toLowerCase() ?? "";
+    if (!/(^|\s)(shortcut\s+)?(icon|apple-touch-icon(-precomposed)?)(\s|$)/.test(rel)) continue;
+    const href = attribute(tag, "href");
+    if (!href) continue;
+    const media = attribute(tag, "media")?.toLowerCase() ?? "";
+    const wantsDark = media.includes("prefers-color-scheme: dark") || media.includes("prefers-color-scheme:dark");
+    const wantsLight = media.includes("prefers-color-scheme: light") || media.includes("prefers-color-scheme:light");
+    if ((wantsDark && !prefersDark) || (wantsLight && prefersDark)) continue;
+    let url: string;
+    try {
+      url = new URL(href, origin).href;
+    } catch {
+      continue;
+    }
+    const touch = rel.includes("apple-touch-icon");
+    ranked.push({url, rank: (wantsDark || wantsLight ? 2 : 1) - (touch ? 2 : 0)});
+  }
+  // A stable sort keeps document order among equals, which is the order the
+  // site itself put them in.
+  return ranked
+    .sort((a, b) => b.rank - a.rank)
+    .map((entry) => entry.url)
+    .filter((url, at, all) => all.indexOf(url) === at);
+}
+
+/** Attributes as written in real markup: quoted either way, or bare. */
+function attribute(tag: string, name: string): string | null {
+  const match = new RegExp(`\\b${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i").exec(tag);
+  if (!match) return null;
+  return match[2] ?? match[3] ?? match[4] ?? null;
 }
 
 async function fetchFavicon(

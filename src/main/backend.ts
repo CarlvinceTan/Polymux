@@ -28,6 +28,10 @@ import type {
   ProviderDto,
   ReasoningEffort,
   RunEventDto,
+  ScheduleDto,
+  ScheduleInput,
+  SchedulePatch,
+  ScheduleWeekday,
   SkillDto,
   SkillUploadFile,
   MailListRequest,
@@ -42,11 +46,13 @@ import {
   commsPlatform,
   driveProvider,
   driveS3Config,
+  driveSource,
   isCoreIntegrationSkill,
   LOCAL_RUNTIMES,
   SUPPORTED_LANGUAGES,
   supportedLanguage,
   validateGoalCommand,
+  cronError,
   validateSaveEmailAccount,
   validateStartRun,
 } from "@flareai/protocol";
@@ -61,7 +67,7 @@ import {
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {createProvider, type Model, type MutableModels} from "@earendil-works/pi-ai";
 import {openAICompletionsApi} from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import {app, safeStorage, session, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent} from "electron";
+import {app, nativeTheme, safeStorage, session, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent} from "electron";
 import {EncryptedCredentialStore} from "./credential-store.js";
 import {
   appVersion,
@@ -86,7 +92,7 @@ import {installSkillPackage, searchSkillRegistry} from "./skill-registry.js";
 import {searchMcpRegistry} from "./mcp-registry.js";
 import {ModelCatalog} from "./model-catalog.js";
 import {EmbeddedBrowser} from "./embedded-browser.js";
-import {faviconDataUrl} from "./favicon.js";
+import {clearFaviconCache, siteFaviconDataUrl} from "./favicon.js";
 import {RotatingInference} from "./rotating-inference.js";
 import {
   AccessibilityChronicleFrames,
@@ -94,6 +100,8 @@ import {
 } from "./chronicle.js";
 import {AxReader} from "./ax-reader.js";
 import {FileReloadWatcher} from "./file-reload-watcher.js";
+import {Scheduler} from "./scheduler.js";
+import {createScheduleTool} from "./schedule-tools.js";
 import {Communications} from "./communications/index.js";
 import {Drive} from "./drive/index.js";
 import {sessionScopedSnapshot} from "./workspace-snapshot.js";
@@ -116,6 +124,7 @@ interface BridgeInventory {
 }
 import {cancelCookieLogin, runCookieLogin} from "./communications/cookie-login.js";
 import {createCommunicationsTools} from "./communications-tools.js";
+import {createDriveTools} from "./drive-tools.js";
 import {parse as parseToml} from "smol-toml";
 import {FirstRunPermissions} from "./first-run-permissions.js";
 import {
@@ -146,6 +155,12 @@ export interface DesktopBackendOptions {
     bridges?: BridgeInventory;
     /** Brings the in-process WeChat bridge up for FlareAI's own account. */
     startWeChat?: (owner: string) => Promise<boolean>;
+    /**
+     * Registers who to tell when a conversation moves. The homeserver is built
+     * before the window, so it reports into the host and the host hands the
+     * listener over here.
+     */
+    onActivity?: (listener: (activity: {roomId: string; sender: string; type: string}) => void) => void;
   };
 }
 
@@ -182,6 +197,7 @@ export class DesktopBackend {
   readonly #hooks = new HookEngine();
   readonly #agentSurface = new AgentSurfaceServer();
   readonly #runResources: RunResourceRecorder;
+  readonly #scheduler: Scheduler;
   readonly #surfaceMenubar = new AgentSurfaceAdapter({
     onStop: () => {
       // "Stop Using <App>" from the Computer Use pill: end browser control
@@ -213,10 +229,14 @@ export class DesktopBackend {
   readonly #embeddedBrowser: EmbeddedBrowser;
   readonly #comms: Communications;
   readonly #drive: Drive;
+  /** Pins every run's tools to one folder, overriding the per-conversation
+   * output folders. Set by tests and by hosts that embed the backend. */
+  readonly #toolDirectory: string | undefined;
 
   constructor(options: DesktopBackendOptions) {
     this.#window = options.window;
     this.#ipcMain = options.ipcMain;
+    this.#toolDirectory = options.toolDirectory;
     this.#skills = new SkillLoader({
       official: options.officialSkillDirectories,
     });
@@ -246,7 +266,10 @@ export class DesktopBackend {
     );
     this.#goals = new GoalManager(this.#storage);
     this.#memory = new MemoryManager({
-      directory: path.join(options.dataDirectory, "memories"),
+      // Outside the Electron data directory on purpose: the vault is plain
+      // Markdown meant to be opened, searched, and edited by hand, and it is
+      // the same layout Codex keeps at ~/.codex/memories.
+      directory: path.join(homedir(), ".flareai", "memories"),
       legacyStorage: this.#storage,
     });
     this.#chronicle = new ChronicleManager({
@@ -292,6 +315,15 @@ export class DesktopBackend {
       this.#codexMcpConfigPath,
       () => this.#requestMcpReload(),
     );
+    // A message landing anywhere in the hub is pushed straight to the window,
+    // so a conversation on screen updates as it arrives.
+    options.hub?.onActivity?.((activity) => {
+      if (this.#closing || this.#window.isDestroyed()) return;
+      this.#window.webContents.send(channels.commsActivity, {
+        chatId: activity.roomId,
+        sender: activity.sender,
+      });
+    });
     this.#comms = new Communications({
       credentials: this.#credentials,
       // App-scoped and possibly absent; the backend only points comms at it.
@@ -382,17 +414,30 @@ export class DesktopBackend {
       },
     });
     this.#runResources = new RunResourceRecorder(this.#storage);
+    this.#scheduler = new Scheduler(this.#storage, (schedule) => this.#runSchedule(schedule));
+    this.#scheduler.subscribe((items) => {
+      if (!this.#closing && !this.#window.isDestroyed())
+        this.#window.webContents.send(channels.schedulesChanged, items);
+    });
     this.#registry = new ToolRegistry(
-      createNativeTools({ cwd: options.toolDirectory ?? homedir() }),
+      createNativeTools({ cwd: (context) => this.#runDirectory(context.runId) }),
     );
     for (const tool of createBrowserControlTools(this.#agentSurface))
       this.#registry.register(tool);
     // The in-app Browser is the default surface for web work, so the agent
     // drives it directly rather than through the user's external browser.
     this.#registry.register(createInAppBrowserTool(this.#embeddedBrowser));
+    // Asking for something to happen every morning is a chat request like any
+    // other, so the agent needs a way to write one down.
+    this.#registry.register(createScheduleTool(this.#scheduler));
     // Messaging and email are app capabilities rather than an MCP server the
     // user has to register, so their tools are always present.
     for (const tool of createCommunicationsTools(this.#comms))
+      this.#registry.register(tool);
+    // Same reasoning as messaging: the drives the user connected in Settings
+    // are an app capability, so the agent can act on all of them without an
+    // MCP server standing in between.
+    for (const tool of createDriveTools(this.#drive))
       this.#registry.register(tool);
     // Loopback only; a failed bind (port in use) degrades to no browser control.
     void this.#agentSurface.start().catch(() => {});
@@ -439,6 +484,7 @@ export class DesktopBackend {
 
   register(): void {
     if (this.#firstRunPermissions.completed()) this.#chronicle.start();
+    this.#scheduler.start();
     // Accessibility capture cannot ask through a media-access dialog the way
     // microphone capture can; surface the system prompt at launch so text
     // capture does not fail silently until the user visits Options.
@@ -448,9 +494,11 @@ export class DesktopBackend {
       systemPermissionStatus("accessibility") !== "granted"
     )
       void requestSystemPermission("accessibility");
+    applyThemeSource(this.#generalSettings().theme);
     this.#handle(channels.generalGet, () => this.#generalSettings());
     this.#handle(channels.generalUpdate, (_event, value: unknown) => {
       const next = generalSettingsUpdate(value, this.#generalSettings());
+      applyThemeSource(next.theme);
       this.#storage.setPreference("general-access", {
         theme: next.theme,
         language: next.language,
@@ -480,6 +528,7 @@ export class DesktopBackend {
     this.#handle(channels.permissionsOpenSettings, (_event, value: unknown) =>
       openSystemPermissionSettings(systemPermission(value, true)),
     );
+    this.#handle(channels.dictationPrepare, () => this.#dictation.prepare());
     this.#handle(channels.dictationTranscribe, (_event, audio: unknown, final: unknown) =>
       this.#dictation.transcribe(audioBuffer(audio), final !== false),
     );
@@ -585,6 +634,22 @@ export class DesktopBackend {
     );
     this.#handle(channels.goalsGet, (_event, conversationId: string) =>
       this.#goals.get(required(conversationId, "conversation id")),
+    );
+    this.#handle(channels.schedulesList, () => this.#scheduler.list());
+    this.#handle(channels.schedulesCreate, (_event, value: unknown) =>
+      this.#scheduler.create(scheduleInput(value)),
+    );
+    this.#handle(channels.schedulesUpdate, (_event, id: string, value: unknown) =>
+      this.#scheduler.update(required(id, "schedule id"), schedulePatch(value)),
+    );
+    this.#handle(channels.schedulesRemove, (_event, id: string) => {
+      this.#scheduler.remove(required(id, "schedule id"));
+    });
+    this.#handle(channels.schedulesRunNow, (_event, id: string) =>
+      this.#scheduler.runNow(required(id, "schedule id")),
+    );
+    this.#handle(channels.schedulesMarkRead, (_event, id: string) =>
+      this.#scheduler.markRead(required(id, "schedule id")),
     );
     this.#handle(channels.memoryStatus, () => this.#memory.status());
     this.#handle(channels.memorySetEnabled, (_event, enabled: boolean) => {
@@ -722,20 +787,27 @@ export class DesktopBackend {
           typeof before === "string" ? before : undefined,
         );
         const me = this.#comms.userId;
-        return result.messages.map(
-          (message): ChatMessageDto => ({
-            id: message.eventId,
-            chatId: message.roomId || required(chatId, "chat id"),
-            sender: message.sender,
-            senderName: message.senderName || message.sender,
-            senderAvatarUrl: message.senderAvatarUrl,
-            body: message.body,
-            sentAt: message.sentAt,
-            mine: Boolean(me) && message.sender === me,
-            attachments: message.attachments,
-            viewIn: message.viewIn,
-          }),
-        );
+        return {
+          // Carried through so the reader can walk further back: without it
+          // a conversation stops at whatever the first page happened to hold.
+          nextBefore: result.nextBefore ?? null,
+          messages: result.messages.map(
+            (message): ChatMessageDto => ({
+              id: message.eventId,
+              chatId: message.roomId || required(chatId, "chat id"),
+              sender: message.sender,
+              senderName: message.senderName || message.sender,
+              senderAvatarUrl: message.senderAvatarUrl,
+              body: message.body,
+              sentAt: message.sentAt,
+              mine: Boolean(me) && message.sender === me,
+              attachments: message.attachments,
+              viewIn: message.viewIn,
+              reactions: message.reactions,
+              replyTo: message.replyTo,
+            }),
+          ),
+        };
       },
     );
     this.#handle(channels.commsChatMarkRead, (_event, chatId: unknown, messageId: unknown) =>
@@ -746,10 +818,11 @@ export class DesktopBackend {
     // handed the whole message — an id alone lands in the thread as a blank.
     this.#handle(
       channels.commsChatSend,
-      async (_event, chatId: unknown, text: unknown): Promise<ChatMessageDto> => {
+      async (_event, chatId: unknown, text: unknown, replyTo: unknown): Promise<ChatMessageDto> => {
         const room = required(chatId, "chat id");
         const body = required(text, "message");
-        const eventId = await this.#comms.sendChat(room, body);
+        const answering = typeof replyTo === "string" ? replyTo : undefined;
+        const eventId = await this.#comms.sendChat(room, body, answering);
         return {
           id: eventId,
           chatId: room,
@@ -760,8 +833,55 @@ export class DesktopBackend {
           sentAt: new Date().toISOString(),
           mine: true,
           attachments: [],
+          reactions: [],
+          replyTo: answering ?? null,
         };
       },
+    );
+    this.#handle(channels.commsChatSendFiles, async (_event, chatId: unknown, paths: unknown) => {
+      const {readFile} = await import("node:fs/promises");
+      const files = await Promise.all(
+        optionalStringArray(paths, "paths").map(async (file) => ({
+          name: path.basename(file),
+          mimetype: mimetypeOf(file),
+          bytes: new Uint8Array(await readFile(file)),
+        })),
+      );
+      await this.#comms.sendChatFiles(required(chatId, "chat id"), files);
+    });
+    this.#handle(channels.commsChatPickFiles, async () => {
+      const {dialog} = await import("electron");
+      const result = await dialog.showOpenDialog({
+        properties: ["openFile", "multiSelections"],
+        title: "Attach files",
+      });
+      return result.canceled ? [] : result.filePaths;
+    });
+    this.#handle(
+      channels.commsChatSendAudio,
+      async (_event, chatId: unknown, bytes: unknown, mimetype: unknown) => {
+        if (!(bytes instanceof Uint8Array)) throw new Error("voice note must be bytes");
+        const type = typeof mimetype === "string" && mimetype ? mimetype : "audio/webm";
+        // Named for when it was taken, which is all a voice note has to go on.
+        const name = `voice-${new Date().toISOString().replace(/[:.]/g, "-")}.${
+          type.includes("ogg") ? "ogg" : type.includes("mp4") ? "m4a" : "webm"
+        }`;
+        await this.#comms.sendChatFiles(required(chatId, "chat id"), [
+          {name, mimetype: type, bytes},
+        ]);
+      },
+    );
+    this.#handle(
+      channels.commsChatReact,
+      (_event, chatId: unknown, messageId: unknown, key: unknown) =>
+        this.#comms.reactToChat(
+          required(chatId, "chat id"),
+          required(messageId, "message id"),
+          required(key, "reaction"),
+        ),
+    );
+    this.#handle(channels.commsChatUnreact, (_event, chatId: unknown, reactionId: unknown) =>
+      this.#comms.unreactChat(required(chatId, "chat id"), required(reactionId, "reaction id")),
     );
     this.#handle(channels.commsMailFolders, (_event, account: unknown) =>
       this.#comms.mailFolders(typeof account === "string" ? account : undefined),
@@ -981,9 +1101,14 @@ export class DesktopBackend {
       this.#embeddedBrowser.screenshot(required(tabId, "tab id")),
     );
     // Links in chat show the site's icon too, and the renderer is no more able
-    // to load one there than it is in a tab.
+    // to load one there than it is in a tab. The renderer hands over the link's
+    // own address rather than a guess at an icon path: which icon is right
+    // depends on what the page declares and on the scheme in use, and only this
+    // side knows the second of those.
     this.#handle(channels.browserFavicon, (_event, url: string) =>
-      faviconDataUrl(session.defaultSession, required(url, "url")),
+      siteFaviconDataUrl(session.defaultSession, required(url, "url"), {
+        prefersDark: nativeTheme.shouldUseDarkColors,
+      }),
     );
     this.#handle(channels.browserDownloadsList, () => this.#embeddedBrowser.downloads());
     this.#handle(channels.browserOpenDownload, (_event, id: string) =>
@@ -1016,38 +1141,48 @@ export class DesktopBackend {
     this.#handle(channels.driveSaveS3, (_event, config: unknown) =>
       this.#drive.saveS3(driveS3Config(config)),
     );
-    this.#handle(channels.driveList, (_event, provider: unknown, target: unknown) =>
+    this.#handle(
+      channels.driveConversationFolder,
+      (_event, conversationId: unknown) => {
+        const id = required(conversationId, "conversation id");
+        return this.#drive.conversationFolder(
+          id,
+          this.#storage.getConversation(id)?.title,
+        );
+      },
+    );
+    this.#handle(channels.driveList, (_event, source: unknown, target: unknown) =>
       this.#drive.list(
-        driveProvider(provider),
+        driveSource(source),
         typeof target === "string" ? target : "",
       ),
     );
     this.#handle(
       channels.driveCreateFolder,
-      (_event, provider: unknown, parentPath: unknown, name: unknown) =>
+      (_event, source: unknown, parentPath: unknown, name: unknown) =>
         this.#drive.createFolder(
-          driveProvider(provider),
+          driveSource(source),
           typeof parentPath === "string" ? parentPath : "",
           required(name, "folder name"),
         ),
     );
     this.#handle(
       channels.driveUpload,
-      (_event, provider: unknown, parentPath: unknown, paths: unknown) =>
+      (_event, source: unknown, parentPath: unknown, paths: unknown) =>
         this.#drive.upload(
-          driveProvider(provider),
+          driveSource(source),
           typeof parentPath === "string" ? parentPath : "",
           Array.isArray(paths)
             ? paths.filter((entry): entry is string => typeof entry === "string")
             : undefined,
         ),
     );
-    this.#handle(channels.driveDownload, (_event, provider: unknown, target: unknown) =>
-      this.#drive.download(driveProvider(provider), required(target, "file path")),
+    this.#handle(channels.driveDownload, (_event, source: unknown, target: unknown) =>
+      this.#drive.download(driveSource(source), required(target, "file path")),
     );
-    this.#handle(channels.driveRemove, (_event, provider: unknown, paths: unknown) =>
+    this.#handle(channels.driveRemove, (_event, source: unknown, paths: unknown) =>
       this.#drive.remove(
-        driveProvider(provider),
+        driveSource(source),
         Array.isArray(paths)
           ? paths.filter((entry): entry is string => typeof entry === "string")
           : [],
@@ -1055,27 +1190,27 @@ export class DesktopBackend {
     );
     this.#handle(
       channels.driveRename,
-      (_event, provider: unknown, target: unknown, name: unknown) =>
+      (_event, source: unknown, target: unknown, name: unknown) =>
         this.#drive.rename(
-          driveProvider(provider),
+          driveSource(source),
           required(target, "file path"),
           required(name, "name"),
         ),
     );
     this.#handle(
       channels.driveMove,
-      (_event, provider: unknown, paths: unknown, destination: unknown) =>
+      (_event, source: unknown, paths: unknown, destination: unknown) =>
         this.#drive.move(
-          driveProvider(provider),
+          driveSource(source),
           Array.isArray(paths)
             ? paths.filter((entry): entry is string => typeof entry === "string")
             : [],
           typeof destination === "string" ? destination : "",
         ),
     );
-    this.#handle(channels.driveCopy, (_event, provider: unknown, paths: unknown) =>
+    this.#handle(channels.driveCopy, (_event, source: unknown, paths: unknown) =>
       this.#drive.copy(
-        driveProvider(provider),
+        driveSource(source),
         Array.isArray(paths)
           ? paths.filter((entry): entry is string => typeof entry === "string")
           : [],
@@ -1238,6 +1373,7 @@ export class DesktopBackend {
     this.#mcpConfigWatcher.stop();
     this.#codexMcpConfigWatcher.stop();
     this.#chronicle.stop();
+    this.#scheduler.stop();
     this.#dictation.close();
     const activeRuns = [...this.#activeRuns.values()];
     for (const run of activeRuns)
@@ -1248,6 +1384,10 @@ export class DesktopBackend {
       ...activeRuns.map((run) => run.result),
       ...(this.#mcpReloadInFlight ? [this.#mcpReloadInFlight] : []),
     ]);
+    // Consolidation is started after a turn and runs in the background, so on
+    // quit it can still be in flight. Waiting for it is what makes a session's
+    // memory survive the app closing rather than dying with the process.
+    await this.#agent?.settleGoalWork();
     await this.#mcp.close();
     this.#storage.close();
   }
@@ -1281,6 +1421,32 @@ export class DesktopBackend {
       ?.control.cancel(new Error("Superseded by a new user message"));
   }
 
+  /**
+   * Where a run's file tools work.
+   *
+   * Each conversation writes into its own folder under the output root, so what
+   * one chat produced can be found as a group instead of heaped in with every
+   * other chat's. A run whose conversation cannot be read — a tool call arriving
+   * after the conversation was deleted — falls back to the root rather than
+   * failing the call.
+   */
+  #runDirectory(runId: string): string {
+    if (this.#toolDirectory) return this.#toolDirectory;
+    const conversationId = this.#storage.getRun(runId)?.conversationId;
+    if (!conversationId) return this.#drive.outputRoot();
+    try {
+      return this.#drive.conversationFolderSync(
+        conversationId,
+        this.#storage.getConversation(conversationId)?.title,
+      );
+    } catch {
+      // An output root that cannot be created — a folder the user moved onto a
+      // volume that is no longer mounted — must not take every tool down with
+      // it; the home folder always exists.
+      return homedir();
+    }
+  }
+
   async #startRun(
     request: ReturnType<typeof validateStartRun>,
   ): Promise<{ runId: string }> {
@@ -1301,6 +1467,60 @@ export class DesktopBackend {
     this.#activeRuns.set(runId, active);
     void this.#forwardEvents(runId, active);
     return { runId };
+  }
+
+  /**
+   * One firing of a schedule. It runs through the same agent as a typed
+   * message — a schedule is an instruction the user wrote, just delivered by
+   * the clock — and lands in a conversation of its own so the thread can be
+   * opened and read like any other.
+   */
+  async #runSchedule(schedule: ScheduleDto): Promise<{
+    summary?: string;
+    conversationId?: string;
+    runId?: string;
+  }> {
+    if (!schedule.prompt.trim())
+      throw new Error("This schedule has no instruction to run");
+    // Every firing appends to the same conversation, so the thread reads as
+    // one recurring task rather than a new chat each morning.
+    const previous = schedule.history.find((entry) => entry.conversationId)?.conversationId;
+    const conversationId = (previous && this.#storage.getConversation(previous)?.id)
+      ?? this.#storage.createConversation({
+        id: randomUUID(),
+        title: schedule.title,
+      }).id;
+    const before = this.#storage.listMessages(conversationId).length;
+    const {runId} = await this.#startRun({
+      conversationId,
+      text: schedule.prompt,
+      messageId: randomUUID(),
+      attachments: [],
+    } as ReturnType<typeof validateStartRun>);
+    const active = this.#activeRuns.get(runId);
+    // #forwardEvents owns the events and the settling; awaiting the same
+    // promise here only waits for the end of it.
+    if (active) await active.result;
+    const run = this.#storage.getRun(runId);
+    if (run?.status === "failed")
+      throw new Error(typeof run.error === "string" && run.error ? run.error : "The scheduled run failed");
+    return {conversationId, runId, summary: this.#runSummary(conversationId, before)};
+  }
+
+  /** The agent's closing words, as the account of what the run achieved. */
+  #runSummary(conversationId: string, afterCount: number): string | undefined {
+    const produced = this.#storage.listMessages(conversationId).slice(afterCount);
+    for (let index = produced.length - 1; index >= 0; index -= 1) {
+      const message = produced[index];
+      if (message.role !== "assistant") continue;
+      const text = typeof message.content === "string"
+        ? message.content
+        : JSON.stringify(message.content);
+      const trimmed = text.trim();
+      if (!trimmed) continue;
+      return trimmed.length > 1200 ? `${trimmed.slice(0, 1200)}…` : trimmed;
+    }
+    return undefined;
   }
 
   async #prepareMcpForRun(): Promise<void> {
@@ -2048,6 +2268,94 @@ function mailListRequest(value: unknown): MailListRequest {
 
 const MAIL_SORTS = ["date-desc", "date-asc", "subject", "from"];
 
+const SCHEDULE_KINDS = ["once", "hourly", "daily", "weekly", "monthly", "yearly", "cron"];
+
+/**
+ * A cadence from the renderer. Only the fields the kind actually uses are
+ * read: the scheduler stores what it is given, so an unchecked field would
+ * outlive the window it came from.
+ */
+function scheduleFrequency(value: unknown): ScheduleInput["frequency"] {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Frequency must be an object");
+  const input = value as Record<string, unknown>;
+  const kind = input.kind;
+  if (typeof kind !== "string" || !SCHEDULE_KINDS.includes(kind))
+    throw new Error(`Unsupported schedule frequency: ${String(kind)}`);
+  const timeZone = typeof input.timeZone === "string" ? input.timeZone : undefined;
+  const interval = typeof input.interval === "number" && Number.isFinite(input.interval)
+    ? Math.min(99, Math.max(1, Math.round(input.interval)))
+    : undefined;
+  const time = /^\d{1,2}:\d{2}$/.test(String(input.time)) ? String(input.time) : "09:00";
+  const dayOfMonth = Math.min(31, Math.max(1, Math.round(Number(input.dayOfMonth) || 1)));
+  switch (kind) {
+    case "cron": {
+      const expression = typeof input.expression === "string" ? input.expression.trim() : "";
+      // Rejected here rather than stored and discovered at fire time: a
+      // schedule that can never run is not a schedule.
+      const problem = cronError(expression);
+      if (problem) throw new Error(problem);
+      return {kind: "cron", expression, timeZone};
+    }
+    case "once": {
+      const at = Number(input.at);
+      if (!Number.isFinite(at)) throw new Error("A one-off schedule needs a time");
+      return {kind: "once", at, timeZone};
+    }
+    case "hourly":
+      return {
+        kind: "hourly",
+        interval,
+        minute: Math.min(59, Math.max(0, Math.round(Number(input.minute) || 0))),
+        timeZone,
+      };
+    case "daily":
+      return {kind: "daily", interval, time, timeZone};
+    case "weekly": {
+      const days = Array.isArray(input.days)
+        ? [...new Set(input.days.map(Number).filter((day) => day >= 0 && day <= 6))]
+        : [];
+      if (!days.length) throw new Error("A weekly schedule needs at least one day");
+      return {kind: "weekly", interval, days: days as ScheduleWeekday[], time, timeZone};
+    }
+    case "monthly":
+      return {kind: "monthly", interval, dayOfMonth, time, timeZone};
+    default:
+      return {
+        kind: "yearly",
+        interval,
+        month: Math.min(11, Math.max(0, Math.round(Number(input.month) || 0))),
+        dayOfMonth,
+        time,
+        timeZone,
+      };
+  }
+}
+
+function scheduleInput(value: unknown): ScheduleInput {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Schedule must be an object");
+  const input = value as Record<string, unknown>;
+  return {
+    title: required(input.title, "title"),
+    prompt: required(input.prompt, "prompt"),
+    frequency: scheduleFrequency(input.frequency),
+  };
+}
+
+function schedulePatch(value: unknown): SchedulePatch {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Schedule patch must be an object");
+  const input = value as Record<string, unknown>;
+  const status = input.status === "active" || input.status === "paused" ? input.status : undefined;
+  return {
+    ...(typeof input.title === "string" ? {title: input.title} : {}),
+    ...(typeof input.prompt === "string" ? {prompt: input.prompt} : {}),
+    ...(input.frequency !== undefined ? {frequency: scheduleFrequency(input.frequency)} : {}),
+    ...(status ? {status} : {}),
+  };
+}
+
 function sendMailRequest(value: unknown): SendMailRequest {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Mail request must be an object");
@@ -2279,6 +2587,24 @@ function hasOnboardingFlag(value: unknown): boolean {
     !Array.isArray(value) &&
     "onboardingCompleted" in (value as Record<string, unknown>)
   );
+}
+
+/**
+ * Puts Chromium's colour scheme on the app's theme rather than the system's.
+ *
+ * Every embedded page — a browser tab, an OAuth window — resolves
+ * `prefers-color-scheme` against `nativeTheme`, and so does the `media`
+ * attribute a site puts on its `<link rel="icon">`. Left on the system default,
+ * a light app on a dark Mac asks sites for their dark-mode icon and then draws
+ * it on light chrome: Luma's mark is white, and vanishes. The theme the user
+ * sees is the one pages should be answering, so it is set here.
+ *
+ * Cached icons were fetched under the old scheme, so they go with it.
+ */
+function applyThemeSource(theme: GeneralSettingsDto["theme"]): void {
+  if (nativeTheme.themeSource === theme) return;
+  nativeTheme.themeSource = theme;
+  clearFaviconCache();
 }
 
 function generalSettingsPreference(value: unknown): GeneralSettingsDto {
@@ -2778,4 +3104,30 @@ function positiveRate(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
     : null;
+}
+
+/**
+ * A file's media type from its name. Enough to decide whether a network shows
+ * an attachment inline as a picture, a voice note, or a plain download.
+ */
+function mimetypeOf(file: string): string {
+  const types: Record<string, string> = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".heic": "image/heic",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wav": "audio/wav",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+  };
+  return types[path.extname(file).toLowerCase()] ?? "application/octet-stream";
 }

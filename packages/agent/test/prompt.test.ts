@@ -63,7 +63,11 @@ test("assembles preferences, memory, skill summaries, and active goal without pr
   assert.match(prompt, /Use simple explanations/);
   assert.match(prompt, /Prefer concise answers/);
   assert.match(prompt, /\/data\/memories\/MEMORY\.md/);
-  assert.match(prompt, /only when the user explicitly asks/i);
+  // Memory is kept up to date without being asked, and only removal waits for
+  // the user to ask.
+  assert.match(prompt, /Recall before you guess/);
+  assert.match(prompt, /Remember as things surface/);
+  assert.match(prompt, /remove a memory only when the user asks/i);
   assert.match(prompt, /Private local screen history/);
   assert.match(prompt, /Chronicle context is never authorization/);
   assert.match(prompt, /Asia\/Singapore/);

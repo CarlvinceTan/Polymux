@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentTool, ToolEnvironment } from "../types.js";
-import { stringInput } from "../types.js";
+import { stringInput, workingDirectory } from "../types.js";
 import { boundOutput } from "../output.js";
 
 export function createBashTool(environment: ToolEnvironment): AgentTool {
@@ -28,7 +28,7 @@ export function createBashTool(environment: ToolEnvironment): AgentTool {
         environment.shell ?? process.env.SHELL ?? "/bin/sh",
         ["-lc", command],
         {
-          cwd: environment.cwd,
+          cwd: workingDirectory(environment, context),
           env: { ...process.env, ...environment.env },
           stdio: ["ignore", "pipe", "pipe"],
         },

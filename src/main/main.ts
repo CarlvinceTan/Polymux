@@ -312,6 +312,9 @@ function createWindow(): void {
             directory: hub.directory,
             bridges: hub.bridges,
             startWeChat: (owner: string) => wechat!.start(owner),
+            onActivity: (listener) => {
+              onHubActivity = listener;
+            },
           }
         : undefined,
       window,
@@ -372,6 +375,12 @@ function loadRenderer(window: BrowserWindow): void {
  * one and only teardown.
  */
 let hub: {homeserver: Homeserver; bridges: BridgeHost; directory: string} | undefined;
+/**
+ * Where conversation traffic is announced. The homeserver is built before the
+ * window exists, so it reports into this and the backend puts the real
+ * listener in once there is somewhere to send it.
+ */
+let onHubActivity: ((activity: {roomId: string; sender: string; type: string}) => void) | undefined;
 /** WeChat has no binary to supervise, so its bridge runs here. */
 let wechat: WeChatBridge | undefined;
 
@@ -395,6 +404,7 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
     serverName: "flareai.local",
     dataDirectory: directory,
     port: 47_664,
+    onActivity: (activity) => onHubActivity?.(activity),
   });
   const bridges = new BridgeHost({
     directory: path.join(directory, "bridges"),

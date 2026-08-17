@@ -115,12 +115,61 @@ test("uploads nothing when the picker is cancelled", async () => {
   }
 });
 
+test("gives each conversation its own folder under the output root", async () => {
+  const {root, drive, cleanup} = await fixture();
+  try {
+    const first = await drive.conversationFolder("11111111-aaaa", "Q3 planning");
+    const second = await drive.conversationFolder("22222222-bbbb", "Q3 planning");
+
+    // Same title, different chats: the id is what keeps them apart, so one
+    // chat's output never lands in another's folder.
+    assert.notEqual(first, second);
+    assert.equal(path.dirname(first), root);
+    assert.ok(path.basename(first).startsWith("Q3 planning"));
+
+    // Created on the way back, so the drive can open on a chat that has not
+    // written anything yet.
+    assert.ok((await readdir(root)).includes(path.basename(first)));
+
+    // Asking twice is the common case — every tool call does it — and must
+    // answer with the same folder rather than making a second one.
+    assert.equal(await drive.conversationFolder("11111111-aaaa", "Q3 planning"), first);
+
+    // A title with a separator in it must not write outside the root.
+    const awkward = await drive.conversationFolder("33333333-cccc", "Reports/2024");
+    assert.equal(path.dirname(awkward), root);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("offers the output folder and this Mac as separate sources", async () => {
+  const {root, drive, cleanup} = await fixture();
+  try {
+    const status = await drive.status();
+    const local = status.sources.filter((source) => source.provider === "local");
+
+    assert.deepEqual(local.map((source) => source.id), [
+      "local#outputs",
+      "local#home",
+    ]);
+    // The two differ only in where they are rooted, which is the whole point:
+    // one is confined to the output folder, the other reaches the home folder.
+    assert.equal(local[0].root, root);
+    assert.notEqual(local[1].root, root);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("names the storage a new file would go to", async () => {
   const {drive, cleanup} = await fixture();
   try {
     // Only the local disk can be connected without credentials, so it is what
-    // the save order resolves to — and what the drive opens on.
-    assert.equal(await drive.preferredProvider(), "local");
+    // the save order resolves to — and what the drive opens on. The output
+    // folder specifically, not this Mac: a new file belongs where the agent
+    // writes, not loose in the home directory.
+    assert.equal(await drive.preferredSource(), "local#outputs");
   } finally {
     await cleanup();
   }

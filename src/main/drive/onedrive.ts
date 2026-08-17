@@ -22,7 +22,11 @@ export class OneDrive implements DriveAdapter {
   /** The app folder's item id, looked up once per connection. */
   #rootId: string | null = null;
 
-  constructor(secrets: DriveSecretStore, parent: () => BrowserWindow | undefined) {
+  constructor(
+    secrets: DriveSecretStore,
+    parent: () => BrowserWindow | undefined,
+    accountId?: string,
+  ) {
     this.#oauth = new OAuthClient(
       this.id,
       oauthAppFromEnv(this.id, {
@@ -35,6 +39,7 @@ export class OneDrive implements DriveAdapter {
       }),
       secrets,
       parent,
+      accountId,
     );
   }
 

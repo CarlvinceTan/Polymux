@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import type { AgentTool, ToolEnvironment } from "../types.js";
-import { stringInput } from "../types.js";
+import { stringInput, workingDirectory } from "../types.js";
 import { boundOutput } from "../output.js";
 
 const imageTypes: Record<string, string> = {
@@ -27,8 +27,11 @@ export function createReadTool(environment: ToolEnvironment): AgentTool {
       required: ["path"],
       additionalProperties: false,
     },
-    async execute(input) {
-      const path = resolve(environment.cwd, stringInput(input, "path", "read"));
+    async execute(input, context) {
+      const path = resolve(
+        workingDirectory(environment, context),
+        stringInput(input, "path", "read"),
+      );
       const mimeType = imageTypes[extname(path).toLowerCase()];
       if (mimeType)
         return {

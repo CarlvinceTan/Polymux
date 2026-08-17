@@ -33,10 +33,24 @@
   };
   // The local drive is not a brand, so it gets a device rather than a logo —
   // and it is drawn filled like the others so every mark shares one weight.
+  //
+  // Two stacked bays with a status light each: the ordinary drive glyph, which
+  // reads as storage at 16px in a way a monitor does not. The rings and the
+  // lights both come out of one path — under evenodd the bay's inner cutout
+  // clears the outer shape and the light sits inside that, filling again.
   const local: Mark = {
     hex: '52525B',
     rule: 'evenodd',
-    path: 'M3.8 4h16.4a1.8 1.8 0 0 1 1.8 1.8v9.4a1.8 1.8 0 0 1-1.8 1.8h-6.4v2h3a1 1 0 0 1 0 2H7.2a1 1 0 0 1 0-2h3v-2H3.8A1.8 1.8 0 0 1 2 15.2V5.8A1.8 1.8 0 0 1 3.8 4Zm.2 2v9h16V6Z',
+    path: [
+      // Upper bay.
+      'M4.5 3.5H19.5A2 2 0 0 1 21.5 5.5V9A2 2 0 0 1 19.5 11H4.5A2 2 0 0 1 2.5 9V5.5A2 2 0 0 1 4.5 3.5Z',
+      'M5 5H19A1 1 0 0 1 20 6V8.5A1 1 0 0 1 19 9.5H5A1 1 0 0 1 4 8.5V6A1 1 0 0 1 5 5Z',
+      'M6.5 6.35A.9.9 0 1 1 6.5 8.15A.9.9 0 1 1 6.5 6.35Z',
+      // Lower bay, the same shape dropped by 9.5.
+      'M4.5 13H19.5A2 2 0 0 1 21.5 15V18.5A2 2 0 0 1 19.5 20.5H4.5A2 2 0 0 1 2.5 18.5V15A2 2 0 0 1 4.5 13Z',
+      'M5 14.5H19A1 1 0 0 1 20 15.5V18A1 1 0 0 1 19 19H5A1 1 0 0 1 4 18V15.5A1 1 0 0 1 5 14.5Z',
+      'M6.5 15.85A.9.9 0 1 1 6.5 17.65A.9.9 0 1 1 6.5 15.85Z',
+    ].join(''),
   };
 
   const MARKS: Record<DriveProviderId, Mark> = {

@@ -41,6 +41,43 @@ function usableIcon(favicon: string | null | undefined): string | null {
   return /^(data|blob):/i.test(favicon) ? favicon : null;
 }
 
+/** Hosts whose result pages are a step on the way somewhere, not a
+ * destination. Matched on the registrable-looking tail so regional domains
+ * (google.com.sg, bing.co.uk) and `www.`/`search.` prefixes all land. */
+const SEARCH_HOSTS = [
+  'google.',
+  'bing.',
+  'duckduckgo.',
+  'yahoo.',
+  'baidu.',
+  'yandex.',
+  'ecosia.',
+  'startpage.',
+  'search.brave.',
+  'qwant.',
+  'mojeek.',
+  'searx.',
+  'lite.duckduckgo.',
+];
+/** The query keys the engines above put the terms under. */
+const SEARCH_PARAMS = ['q', 'query', 'p', 'wd', 'text', 'k', 'eddt'];
+
+/**
+ * A search-results page is the agent's own work showing through — the user
+ * asked for a site, not for the query that found it. Anything on a known
+ * engine's host is dropped, as is any `/search?q=` style url elsewhere.
+ */
+function isSearchResult(url: URL): boolean {
+  const host = url.hostname.toLowerCase();
+  const hasTerms = SEARCH_PARAMS.some((key) => Boolean(url.searchParams.get(key)));
+  const searchPath = /(^|\/)(search|results)(\/|$)/i.test(url.pathname);
+  // An engine's own product pages (docs.google.com/document/…) are real
+  // destinations, so a known host only counts when it is being searched.
+  const engineHost = SEARCH_HOSTS.some((engine) => host === engine.slice(0, -1) || host.includes(engine));
+  if (engineHost && (hasTerms || searchPath)) return true;
+  return searchPath && hasTerms;
+}
+
 function load(): Visit[] {
   if (typeof localStorage === 'undefined') return [];
   try {
@@ -48,6 +85,8 @@ function load(): Visit[] {
     if (!Array.isArray(stored)) return [];
     return stored
       .filter((entry): entry is Visit => Boolean(entry) && typeof (entry as Visit).url === 'string')
+      // Lists written before search results were excluded still hold them.
+      .filter((entry) => worthKeeping(entry.url))
       .slice(0, CAP)
       .map((entry) => ({...entry, favicon: usableIcon(entry.favicon)}));
   } catch {
@@ -57,10 +96,15 @@ function load(): Visit[] {
 
 export const visitHistory = writable<Visit[]>(load());
 
-/** A blank tab has no page behind it yet, and internal pages are not somewhere
- * the user can be offered to go back to. */
+/** A blank tab has no page behind it yet, internal pages are not somewhere the
+ * user can be offered to go back to, and search results are not a destination. */
 function worthKeeping(url: string): boolean {
-  return Boolean(url) && /^https?:/i.test(url);
+  if (!url || !/^https?:/i.test(url)) return false;
+  try {
+    return !isSearchResult(new URL(url));
+  } catch {
+    return false;
+  }
 }
 
 export function recordVisit(visit: Visit): void {

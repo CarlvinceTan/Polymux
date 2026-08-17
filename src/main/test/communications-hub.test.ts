@@ -149,6 +149,109 @@ test("treats an empty login list as not linked", async () => {
   });
 });
 
+test("every bridge's rooms are filed under the platform its tab uses", async () => {
+  // Each of these was filed under a name no tab matches — the go-suffixed
+  // protocol id passed through raw, or a ghost prefix that the hand-written
+  // list of platforms had never been extended to cover — which put the
+  // conversation in the app but in no tab that could reach it.
+  const rooms = {
+    "!slack:local": {protocol: "slackgo", ghost: "@slack_U1:local", expect: "slack"},
+    "!signal:local": {protocol: "signalgo", ghost: "@signal_2:local", expect: "signal"},
+    "!twitter:local": {protocol: "twittergo", ghost: "@twitter_3:local", expect: "twitter"},
+    "!gvoice:local": {protocol: "gvoicego", ghost: "@gvoice_4:local", expect: "gvoice"},
+    "!bluesky:local": {protocol: "blueskygo", ghost: "@bluesky_5:local", expect: "bluesky"},
+    "!chat:local": {protocol: "googlechatgo", ghost: "@googlechat_6:local", expect: "googlechat"},
+    // Meta's is a genuine rename rather than a suffix, both in the protocol
+    // id and in the ghosts.
+    "!meta:local": {protocol: "facebookgo", ghost: "@facebook_7:local", expect: "messenger"},
+  };
+  const join: Record<string, unknown> = {};
+  for (const [roomId, room] of Object.entries(rooms))
+    join[roomId] = {
+      state: {
+        events: [
+          {type: "m.room.name", state_key: "", content: {name: roomId}},
+          {type: "m.bridge", state_key: "x", content: {protocol: {id: room.protocol}}},
+          {type: "m.room.member", state_key: room.ghost, content: {membership: "join"}},
+          {type: "m.room.member", state_key: "@me:local", content: {membership: "join"}},
+        ],
+      },
+      timeline: {events: []},
+    };
+  await withHub({"GET /_matrix/client/v3/sync": {body: {rooms: {join}}}}, async (hub) => {
+    const listed = await hub.rooms();
+    const byId = new Map(listed.map((room) => [room.roomId, room.platform]));
+    for (const [roomId, room] of Object.entries(rooms))
+      assert.equal(byId.get(roomId), room.expect, `${roomId} filed under ${byId.get(roomId)}`);
+  });
+});
+
+test("a room is filed by its ghosts when the bridge writes no protocol id", async () => {
+  await withHub(
+    {
+      "GET /_matrix/client/v3/sync": {
+        body: {
+          rooms: {
+            join: {
+              "!slack:local": {
+                state: {
+                  events: [
+                    {type: "m.room.name", state_key: "", content: {name: "Standup"}},
+                    {type: "m.room.member", state_key: "@slack_U1:local", content: {membership: "join"}},
+                    {type: "m.room.member", state_key: "@me:local", content: {membership: "join"}},
+                  ],
+                },
+                timeline: {events: []},
+              },
+            },
+          },
+        },
+      },
+    },
+    async (hub) => {
+      const [room] = await hub.rooms();
+      assert.equal(room.platform, "slack");
+    },
+  );
+});
+
+test("a sticker is carried into the thread rather than dropped", async () => {
+  // Stickers are their own event type. Reading only `m.room.message` did not
+  // render them plainly — it left them out of the conversation altogether,
+  // which is what every mautrix bridge sends a sticker as.
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/room1/messages": {
+        body: {
+          end: null,
+          chunk: [
+            {
+              type: "m.sticker",
+              event_id: "$sticker",
+              room_id: "room1",
+              sender: "@whatsapp_1:local",
+              origin_server_ts: 1_000,
+              content: {
+                body: "party parrot",
+                url: "mxc://local/parrot",
+                info: {mimetype: "image/webp", w: 240, h: 240},
+              },
+            },
+          ],
+        },
+      },
+    },
+    async (hub) => {
+      const {messages} = await hub.messages("room1", 10);
+      assert.equal(messages.length, 1);
+      const [attachment] = messages[0].attachments;
+      assert.equal(attachment?.kind, "image");
+      assert.equal(attachment?.width, 240);
+      assert.match(attachment?.url ?? "", /parrot/);
+    },
+  );
+});
+
 test("a platform with no bridge route is reported as unavailable", async () => {
   await withHub({}, async (hub, calls) => {
     const bridge = await hub.bridge("imessage", "iMessage", null);
