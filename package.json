@@ -28,7 +28,7 @@
     "test:agent": "tsx --test packages/agent/test/**/*.test.ts",
     "test:tools": "tsx --test packages/tools/test/**/*.test.ts",
     "test:protocol": "tsx --test packages/protocol/test/**/*.test.ts",
-    "test:main": "tsx --test src/main/test/**/*.test.ts",
+    "test:main": "tsx --test src/main/**/*.test.ts",
     "test:backend": "npm run test:inference && npm run test:core && npm run test:storage && npm run test:chronicle && npm run test:tools && npm run test:agent && npm run test:protocol && npm run test:main",
     "icons": "node scripts/build-icons.mjs",
     "bridges:fetch": "node scripts/fetch-bridges.mjs",

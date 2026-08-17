@@ -339,6 +339,12 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
    and the caret each want air off the rounded edge. */
 .model-menu-row .flareai-dropdown-item { gap: 8px; padding-right: 10px; padding-left: 10px; }
 .model-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Same tile Settings puts a provider behind (`.provider-mark`), scaled to the
+   menu's 14px mark. It earns its keep on the monochrome logos: lobehub draws
+   those with `fill="currentColor"`, which resolves to black inside the <img>'s
+   own document rather than inheriting the UI colour, so on the dark theme a
+   bare mark is black on near-black. The light tile is what makes it read. */
+.model-menu-mark { width: 20px; height: 20px; display: grid; flex: none; place-items: center; border: 1px solid var(--neutral-200); border-radius: 6px; background: #fff; }
 .model-menu-row .flareai-dropdown-item.active { background: var(--neutral-50); color: var(--neutral-950); }
 .model-menu-caret { flex: none; display: grid; place-items: center; color: var(--neutral-400); transform: rotate(-90deg); }
 .model-menu-empty { margin: 0; padding: 8px; color: var(--neutral-400); font-size: 11px; font-weight: 450; text-align: center; }

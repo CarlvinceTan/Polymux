@@ -1,19 +1,23 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { copyFile, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import type { Stats } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
+import {readFileSync} from "node:fs";
+import {copyFile, cp, mkdir, readFile, rename, rm, stat, writeFile} from "node:fs/promises";
+import type {Stats} from "node:fs";
+import {randomUUID} from "node:crypto";
+import {homedir} from "node:os";
 import path from "node:path";
-import { GoalManager, MemoryManager, FlareAIAgent, SkillLoader, type SkillLoaderOptions } from "@flareai/agent";
-import { ChronicleManager } from "@flareai/chronicle";
-import type { ActiveAgentRun, AgentRunEvent } from "@flareai/core";
-import type { InferenceModel, InferenceService, ModelRef } from "@flareai/inference";
-import { PiInference } from "@flareai/inference/pi";
+import {
+  GoalManager,
+  MemoryManager,
+  FlareAIAgent,
+  SkillLoader,
+  type SkillLoaderOptions,
+} from "@flareai/agent";
+import {ChronicleManager} from "@flareai/chronicle";
+import type {ActiveAgentRun} from "@flareai/core";
+import type {InferenceModel, InferenceService, ModelRef} from "@flareai/inference";
+import {PiInference} from "@flareai/inference/pi";
 import type {
   ChatDto,
   ChatMessageDto,
-  CreateCustomProviderRequest,
-  DiscoverModelsRequest,
   SetupLocalRuntimeRequest,
   BrowserExtensionDto,
   GeneralSettingsDto,
@@ -26,20 +30,12 @@ import type {
   ModelRoleAssignmentDto,
   ModelRolesDto,
   ProviderDto,
-  ReasoningEffort,
   RunEventDto,
   ScheduleDto,
-  ScheduleInput,
-  SchedulePatch,
-  ScheduleWeekday,
   SkillDto,
   SkillUploadFile,
-  MailListRequest,
-  SendMailRequest,
   SystemPermissionKind,
-  UpdateCustomProviderRequest,
   JsonValue,
-  WorkspaceSnapshotDto,
 } from "@flareai/protocol";
 import {
   channels,
@@ -49,64 +45,114 @@ import {
   driveSource,
   isCoreIntegrationSkill,
   LOCAL_RUNTIMES,
-  SUPPORTED_LANGUAGES,
-  supportedLanguage,
   validateGoalCommand,
-  cronError,
   validateSaveEmailAccount,
   validateStartRun,
 } from "@flareai/protocol";
-import { SqliteStorage } from "@flareai/storage/sqlite";
-import type { StoredMessage } from "@flareai/storage";
+import {SqliteStorage} from "@flareai/storage/sqlite";
+import type {StoredMessage} from "@flareai/storage";
 import {
   createNativeTools,
   importMcpServers,
   McpManager,
   ToolRegistry,
 } from "@flareai/tools";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import {builtinModels} from "@earendil-works/pi-ai/providers/all";
 import {createProvider, type Model, type MutableModels} from "@earendil-works/pi-ai";
 import {openAICompletionsApi} from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import {app, nativeTheme, safeStorage, session, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent} from "electron";
-import {EncryptedCredentialStore} from "./credential-store.js";
+import {
+  app,
+  nativeTheme,
+  safeStorage,
+  session,
+  type BrowserWindow,
+  type IpcMain,
+  type IpcMainInvokeEvent,
+} from "electron";
+import {eventDto, storedEventDto} from "./backend/dto.js";
+import {
+  WORKSPACE_BOOT_ID,
+  audioBuffer,
+  chronicleQuery,
+  customMcpRequest,
+  customSkillRequest,
+  json,
+  knownRate,
+  loginValues,
+  mailListRequest,
+  number,
+  optionalStringArray,
+  positiveRate,
+  required,
+  scheduleInput,
+  schedulePatch,
+  sendMailRequest,
+  skillUploadFiles,
+  systemPermission,
+  workspaceSnapshot,
+} from "./backend/requests.js";
+import {
+  applyThemeSource,
+  generalSettingsPreference,
+  generalSettingsUpdate,
+  hasOnboardingFlag,
+} from "./backend/settings.js";
+import type {CustomProviderConfig} from "./backend/models.js";
+import {
+  customProviderPreference,
+  customProviderRequest,
+  discoverModels,
+  discoverModelsRequest,
+  modelFromEnvironment,
+  modelPreference,
+  modelRole,
+  modelRolesPreference,
+  setupLocalRuntimeRequest,
+  updateCustomProviderRequest,
+} from "./backend/models.js";
+import {
+  adoptLegacyMcpConfig,
+  approximateLocation,
+  browserAppName,
+  browserBundleId,
+  mimetypeOf,
+  skillInstructions,
+} from "./backend/host.js";
+import {EncryptedCredentialStore} from "./system/credential-store.js";
 import {
   appVersion,
   checkForUpdates,
   installUpdate,
   startUpdateChecks,
   stopUpdateChecks,
-} from "./updater.js";
-import { HookEngine } from "./hooks.js";
-import { officialSkillsHome } from "./official-skills.js";
-import { EXTENSION_INSTALL_URL, readExtensionStatus } from "./browser-extension.js";
-import { ProtectedSkillGuard, combineHooks } from "./protected-skills.js";
-import { AgentSurfaceServer } from "./agent-surface.js";
-import { AgentSurfaceAdapter } from "./agent-surface-adapter.js";
-import { createBrowserControlTools } from "./browser-control-tools.js";
-import { createInAppBrowserTool } from "./in-app-browser-tools.js";
-import { RunResourceRecorder } from "./run-resources.js";
-import {EncryptedApiKeyPool} from "./api-key-pool.js";
-import {WhisperDictation} from "./dictation.js";
-import {discoverAgentSkills, resolveDiscoveredSkill} from "./skill-discovery.js";
-import {installSkillPackage, searchSkillRegistry} from "./skill-registry.js";
-import {searchMcpRegistry} from "./mcp-registry.js";
-import {ModelCatalog} from "./model-catalog.js";
-import {EmbeddedBrowser} from "./embedded-browser.js";
-import {clearFaviconCache, siteFaviconDataUrl} from "./favicon.js";
-import {RotatingInference} from "./rotating-inference.js";
-import {
-  AccessibilityChronicleFrames,
-  ElectronChronicleSystem,
-} from "./chronicle.js";
-import {AxReader} from "./ax-reader.js";
-import {FileReloadWatcher} from "./file-reload-watcher.js";
-import {Scheduler} from "./scheduler.js";
-import {createScheduleTool} from "./schedule-tools.js";
+} from "./system/updater.js";
+import {HookEngine} from "./agent/hooks.js";
+import {officialSkillsHome} from "./skills/official.js";
+import {EXTENSION_INSTALL_URL, readExtensionStatus} from "./browser/extension.js";
+import {ProtectedSkillGuard, combineHooks} from "./skills/protected.js";
+import {AgentSurfaceServer} from "./agent/surface.js";
+import {AgentSurfaceAdapter} from "./agent/surface-adapter.js";
+import {createBrowserControlTools} from "./browser/control-tools.js";
+import {createInAppBrowserTool} from "./browser/embedded-tools.js";
+import {RunResourceRecorder} from "./agent/run-resources.js";
+import {EncryptedApiKeyPool} from "./inference/api-key-pool.js";
+import {WhisperDictation} from "./system/dictation.js";
+import {discoverAgentSkills, resolveDiscoveredSkill} from "./skills/discovery.js";
+import {installSkillPackage, searchSkillRegistry} from "./skills/registry.js";
+import {searchMcpRegistry} from "./mcp/registry.js";
+import {ModelCatalog} from "./inference/model-catalog.js";
+import {EmbeddedBrowser} from "./browser/embedded.js";
+import {siteFaviconDataUrl} from "./browser/favicon.js";
+import {RotatingInference} from "./inference/rotating.js";
+import {AccessibilityChronicleFrames, ElectronChronicleSystem} from "./agent/chronicle.js";
+import {AxReader} from "./system/ax-reader.js";
+import {FileReloadWatcher} from "./system/file-reload-watcher.js";
+import {Scheduler} from "./scheduler/index.js";
+import {createScheduleTool} from "./scheduler/tools.js";
 import {Communications} from "./communications/index.js";
 import {Drive} from "./drive/index.js";
-import {sessionScopedSnapshot} from "./workspace-snapshot.js";
+import {sessionScopedSnapshot} from "./workspace/snapshot.js";
 import type {Homeserver} from "./homeserver/index.js";
-
 /** The part of BridgeHost the backend needs: what is installed, and what is held back. */
 interface BridgeInventory {
   inventory: () => Promise<
@@ -123,15 +169,16 @@ interface BridgeInventory {
   ensure: (platform: string) => Promise<void>;
 }
 import {cancelCookieLogin, runCookieLogin} from "./communications/cookie-login.js";
-import {createCommunicationsTools} from "./communications-tools.js";
-import {createDriveTools} from "./drive-tools.js";
+import {createCommunicationsTools} from "./communications/tools.js";
+import {createDriveTools} from "./drive/tools.js";
 import {parse as parseToml} from "smol-toml";
-import {FirstRunPermissions} from "./first-run-permissions.js";
+import {FirstRunPermissions} from "./system/first-run-permissions.js";
 import {
+
   openSystemPermissionSettings,
   requestSystemPermission,
   systemPermissionStatus,
-} from "./system-permissions.js";
+} from "./system/permissions.js";
 
 export interface DesktopBackendOptions {
   dataDirectory: string;
@@ -162,14 +209,6 @@ export interface DesktopBackendOptions {
      */
     onActivity?: (listener: (activity: {roomId: string; sender: string; type: string}) => void) => void;
   };
-}
-
-interface CustomProviderConfig {
-  id: string;
-  name: string;
-  baseUrl: string;
-  logoDataUrl?: string;
-  models: Array<{id: string; name: string}>;
 }
 
 export class DesktopBackend {
@@ -2205,929 +2244,4 @@ export class DesktopBackend {
   }
 }
 
-function eventDto(event: AgentRunEvent, conversationId: string): RunEventDto {
-  return {
-    runId: event.runId,
-    conversationId,
-    sequence: event.sequence,
-    timestamp: event.timestamp,
-    type: event.type,
-    payload: json(event),
-  };
-}
-function storedEventDto(
-  event: {
-    runId: string;
-    sequence: number;
-    type: string;
-    payload: unknown;
-    createdAt: string;
-  },
-  conversationId: string,
-): RunEventDto {
-  const timestamp =
-    typeof event.payload === "object" &&
-    event.payload &&
-    "timestamp" in event.payload
-      ? Number(event.payload.timestamp)
-      : Date.parse(event.createdAt);
-  return {
-    runId: event.runId,
-    conversationId,
-    sequence: event.sequence,
-    timestamp,
-    type: event.type,
-    payload: json(event.payload),
-  };
-}
-function json(value: unknown) {
-  return JSON.parse(JSON.stringify(value));
-}
-function required(value: unknown, label: string): string {
-  if (typeof value !== "string" || !value.trim())
-    throw new Error(`${label} must be a non-empty string`);
-  return value.trim();
-}
-/**
- * Answers to a bridge login step. Field ids come from the bridge, so the map is
- * accepted as-is apart from requiring every value to be a string.
- */
-function mailListRequest(value: unknown): MailListRequest {
-  const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  return {
-    account: typeof input.account === "string" ? input.account : undefined,
-    folder: typeof input.folder === "string" ? input.folder : undefined,
-    page: typeof input.page === "number" ? input.page : undefined,
-    pageSize: typeof input.pageSize === "number" ? input.pageSize : undefined,
-    sort: MAIL_SORTS.includes(input.sort as string)
-      ? (input.sort as MailListRequest["sort"])
-      : undefined,
-    query: typeof input.query === "string" && input.query.trim() ? input.query : undefined,
-  };
-}
-
-const MAIL_SORTS = ["date-desc", "date-asc", "subject", "from"];
-
-const SCHEDULE_KINDS = ["once", "hourly", "daily", "weekly", "monthly", "yearly", "cron"];
-
-/**
- * A cadence from the renderer. Only the fields the kind actually uses are
- * read: the scheduler stores what it is given, so an unchecked field would
- * outlive the window it came from.
- */
-function scheduleFrequency(value: unknown): ScheduleInput["frequency"] {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Frequency must be an object");
-  const input = value as Record<string, unknown>;
-  const kind = input.kind;
-  if (typeof kind !== "string" || !SCHEDULE_KINDS.includes(kind))
-    throw new Error(`Unsupported schedule frequency: ${String(kind)}`);
-  const timeZone = typeof input.timeZone === "string" ? input.timeZone : undefined;
-  const interval = typeof input.interval === "number" && Number.isFinite(input.interval)
-    ? Math.min(99, Math.max(1, Math.round(input.interval)))
-    : undefined;
-  const time = /^\d{1,2}:\d{2}$/.test(String(input.time)) ? String(input.time) : "09:00";
-  const dayOfMonth = Math.min(31, Math.max(1, Math.round(Number(input.dayOfMonth) || 1)));
-  switch (kind) {
-    case "cron": {
-      const expression = typeof input.expression === "string" ? input.expression.trim() : "";
-      // Rejected here rather than stored and discovered at fire time: a
-      // schedule that can never run is not a schedule.
-      const problem = cronError(expression);
-      if (problem) throw new Error(problem);
-      return {kind: "cron", expression, timeZone};
-    }
-    case "once": {
-      const at = Number(input.at);
-      if (!Number.isFinite(at)) throw new Error("A one-off schedule needs a time");
-      return {kind: "once", at, timeZone};
-    }
-    case "hourly":
-      return {
-        kind: "hourly",
-        interval,
-        minute: Math.min(59, Math.max(0, Math.round(Number(input.minute) || 0))),
-        timeZone,
-      };
-    case "daily":
-      return {kind: "daily", interval, time, timeZone};
-    case "weekly": {
-      const days = Array.isArray(input.days)
-        ? [...new Set(input.days.map(Number).filter((day) => day >= 0 && day <= 6))]
-        : [];
-      if (!days.length) throw new Error("A weekly schedule needs at least one day");
-      return {kind: "weekly", interval, days: days as ScheduleWeekday[], time, timeZone};
-    }
-    case "monthly":
-      return {kind: "monthly", interval, dayOfMonth, time, timeZone};
-    default:
-      return {
-        kind: "yearly",
-        interval,
-        month: Math.min(11, Math.max(0, Math.round(Number(input.month) || 0))),
-        dayOfMonth,
-        time,
-        timeZone,
-      };
-  }
-}
-
-function scheduleInput(value: unknown): ScheduleInput {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Schedule must be an object");
-  const input = value as Record<string, unknown>;
-  return {
-    title: required(input.title, "title"),
-    prompt: required(input.prompt, "prompt"),
-    frequency: scheduleFrequency(input.frequency),
-  };
-}
-
-function schedulePatch(value: unknown): SchedulePatch {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Schedule patch must be an object");
-  const input = value as Record<string, unknown>;
-  const status = input.status === "active" || input.status === "paused" ? input.status : undefined;
-  return {
-    ...(typeof input.title === "string" ? {title: input.title} : {}),
-    ...(typeof input.prompt === "string" ? {prompt: input.prompt} : {}),
-    ...(input.frequency !== undefined ? {frequency: scheduleFrequency(input.frequency)} : {}),
-    ...(status ? {status} : {}),
-  };
-}
-
-function sendMailRequest(value: unknown): SendMailRequest {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Mail request must be an object");
-  const input = value as Record<string, unknown>;
-  const to = optionalStringArray(input.to, "to");
-  if (to.length === 0) throw new Error("At least one recipient is required");
-  return {
-    account: typeof input.account === "string" ? input.account : undefined,
-    to,
-    cc: optionalStringArray(input.cc, "cc"),
-    bcc: optionalStringArray(input.bcc, "bcc"),
-    subject: typeof input.subject === "string" ? input.subject : "",
-    body: typeof input.body === "string" ? input.body : "",
-    draft: input.draft === true,
-    attachments: optionalStringArray(input.attachments, "attachments"),
-    inReplyTo: typeof input.inReplyTo === "string" ? input.inReplyTo : undefined,
-    references: optionalStringArray(input.references, "references"),
-    replacesDraft: draftReference(input.replacesDraft),
-  };
-}
-
-/** The draft an edited message replaces, when it came from one. */
-function draftReference(value: unknown): SendMailRequest["replacesDraft"] {
-  if (!value || typeof value !== "object") return null;
-  const input = value as Record<string, unknown>;
-  return typeof input.id === "string" && typeof input.folder === "string"
-    ? {id: input.id, folder: input.folder}
-    : null;
-}
-
-/** Identifies this run of the app, for the snapshot drawer-openness rule. */
-const WORKSPACE_BOOT_ID = randomUUID();
-
-/**
- * A workspace snapshot from the renderer: tab records with whatever fields
- * they carried, plus the active tab and drawer state. Tab kinds are validated
- * by the renderer on restore, so storage only guards the shape.
- */
-function workspaceSnapshot(value: unknown): WorkspaceSnapshotDto {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Workspace snapshot must be an object");
-  const input = value as Record<string, unknown>;
-  const tabs = Array.isArray(input.tabs) ? input.tabs : [];
-  return {
-    tabs: tabs
-      .filter((tab): tab is Record<string, unknown> => !!tab && typeof tab === "object")
-      .map((tab) => ({
-        id: String(tab.id ?? ""),
-        title: String(tab.title ?? ""),
-        kind: String(tab.kind ?? ""),
-        ...(typeof tab.url === "string" ? {url: tab.url} : {}),
-        ...(typeof tab.favicon === "string" ? {favicon: tab.favicon} : {}),
-        ...(typeof tab.section === "string" ? {section: tab.section} : {}),
-      }))
-      .filter((tab) => tab.id && tab.kind),
-    activeTabId: typeof input.activeTabId === "string" ? input.activeTabId : null,
-    open: input.open === true,
-  };
-}
-
-function loginValues(value: unknown): Record<string, string> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Login values must be an object");
-  const entries = Object.entries(value as Record<string, unknown>);
-  for (const [key, item] of entries)
-    if (typeof item !== "string") throw new Error(`${key} must be a string`);
-  return Object.fromEntries(entries) as Record<string, string>;
-}
-function optionalStringArray(value: unknown, label: string): string[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
-  return value.map((item, index) => required(item, `${label}[${index}]`));
-}
-
-/**
- * Every kind the protocol declares, as a map rather than a list of literals so
- * that a kind added to SystemPermissionKind fails to compile here instead of
- * being rejected at the IPC boundary — which is how Accessibility ended up
- * unaskable from onboarding while both sides of it worked.
- */
-const SYSTEM_PERMISSIONS: Record<SystemPermissionKind, true> = {
-  microphone: true,
-  "screen-recording": true,
-  accessibility: true,
-  "full-disk-access": true,
-};
-
-function systemPermission(value: unknown): SystemPermissionKind;
-function systemPermission(
-  value: unknown,
-  includeLocation: true,
-): SystemPermissionKind | "location";
-function systemPermission(
-  value: unknown,
-  includeLocation = false,
-): SystemPermissionKind | "location" {
-  if (typeof value === "string" && Object.hasOwn(SYSTEM_PERMISSIONS, value))
-    return value as SystemPermissionKind;
-  if (includeLocation && value === "location") return "location";
-  throw new Error(`Unknown system permission: ${String(value)}`);
-}
-function number(value: unknown): number {
-  if (!Number.isSafeInteger(value) || Number(value) < 0)
-    throw new Error("sequence must be a non-negative integer");
-  return Number(value);
-}
-
-function chronicleQuery(value: unknown): {
-  since?: Date;
-  until?: Date;
-  limit?: number;
-} {
-  if (value === undefined) return {};
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Chronicle query must be an object");
-  const record = value as Record<string, unknown>;
-  const result: { since?: Date; until?: Date; limit?: number } = {};
-  for (const key of ["since", "until"] as const) {
-    const raw = record[key];
-    if (raw === undefined) continue;
-    if (typeof raw !== "string" || !Number.isFinite(Date.parse(raw)))
-      throw new Error(`${key} must be an ISO timestamp`);
-    result[key] = new Date(raw);
-  }
-  if (record.limit !== undefined) {
-    if (!Number.isSafeInteger(record.limit) || Number(record.limit) < 1)
-      throw new Error("limit must be a positive integer");
-    result.limit = Math.min(Number(record.limit), 1_000);
-  }
-  return result;
-}
-
-export function modelFromEnvironment(
-  value = process.env.FLAREAI_MODEL,
-): ModelRef | undefined {
-  if (!value) return undefined;
-  const separator = value.indexOf("/");
-  if (separator <= 0 || separator === value.length - 1)
-    throw new Error("FLAREAI_MODEL must use provider/model format");
-  return {
-    provider: value.slice(0, separator),
-    id: value.slice(separator + 1),
-  };
-}
-
-/**
- * City-level position from the network. Chromium's own geolocation needs a
- * Google API key (or a CoreLocation grant the dev bundle rarely holds), so
- * the renderer falls back to this whenever the platform service fails; for
- * agent context — weather, local time, nearby places — city-level is enough.
- */
-async function approximateLocation(): Promise<NonNullable<GeneralSettingsDto["location"]>> {
-  const services = ["https://ipwho.is/", "https://ipapi.co/json/"];
-  let failure = "the network location services did not respond";
-  for (const service of services) {
-    try {
-      const response = await fetch(service, {
-        signal: AbortSignal.timeout(6_000),
-        headers: { accept: "application/json" },
-      });
-      if (!response.ok) continue;
-      const body = (await response.json()) as Record<string, unknown>;
-      const latitude = Number(body.latitude);
-      const longitude = Number(body.longitude);
-      if (Number.isFinite(latitude) && Number.isFinite(longitude))
-        return {
-          latitude,
-          longitude,
-          // IP geolocation is city-scale; advertise that honestly.
-          accuracy: 25_000,
-          updatedAt: new Date().toISOString(),
-        };
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
-    }
-  }
-  throw new Error(`Could not determine an approximate location: ${failure}`);
-}
-
-function audioBuffer(value: unknown): Buffer {
-  if (Buffer.isBuffer(value)) return value;
-  if (value instanceof ArrayBuffer) return Buffer.from(value);
-  if (ArrayBuffer.isView(value))
-    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-  throw new Error("Dictation audio must be binary");
-}
-
-const BROWSER_IDENTITIES: Record<string, { name: string; bundleId: string }> = {
-  chrome: { name: "Google Chrome", bundleId: "com.google.Chrome" },
-  brave: { name: "Brave Browser", bundleId: "com.brave.Browser" },
-  edge: { name: "Microsoft Edge", bundleId: "com.microsoft.edgemac" },
-  arc: { name: "Arc", bundleId: "company.thebrowser.Browser" },
-  chromium: { name: "Chromium", bundleId: "org.chromium.Chromium" },
-};
-
-function tabContextBrowser(): { name: string; bundleId: string } | null {
-  try {
-    const payload = JSON.parse(
-      readFileSync(
-        path.join(
-          homedir(),
-          "Library",
-          "Application Support",
-          "flareai-tab-context",
-          "tabs.json",
-        ),
-        "utf8",
-      ),
-    ) as { browser?: string };
-    return BROWSER_IDENTITIES[payload.browser ?? ""] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function browserAppName(): string {
-  return tabContextBrowser()?.name ?? "Browser";
-}
-
-function browserBundleId(): string | undefined {
-  return tabContextBrowser()?.bundleId;
-}
-
-/** Whether a stored settings record predates the first-run setup flag. */
-function hasOnboardingFlag(value: unknown): boolean {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    "onboardingCompleted" in (value as Record<string, unknown>)
-  );
-}
-
-/**
- * Puts Chromium's colour scheme on the app's theme rather than the system's.
- *
- * Every embedded page — a browser tab, an OAuth window — resolves
- * `prefers-color-scheme` against `nativeTheme`, and so does the `media`
- * attribute a site puts on its `<link rel="icon">`. Left on the system default,
- * a light app on a dark Mac asks sites for their dark-mode icon and then draws
- * it on light chrome: Luma's mark is white, and vanishes. The theme the user
- * sees is the one pages should be answering, so it is set here.
- *
- * Cached icons were fetched under the old scheme, so they go with it.
- */
-function applyThemeSource(theme: GeneralSettingsDto["theme"]): void {
-  if (nativeTheme.themeSource === theme) return;
-  nativeTheme.themeSource = theme;
-  clearFaviconCache();
-}
-
-function generalSettingsPreference(value: unknown): GeneralSettingsDto {
-  const defaults: GeneralSettingsDto = {
-    theme: "light",
-    language: "system",
-    currency: null,
-    speechModeEnabled: true,
-    dictationAutoStopSeconds: 6,
-    timeEnabled: true,
-    locationEnabled: true,
-    reasoningLevel: "medium",
-    onboardingCompleted: false,
-    location: null,
-  };
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return defaults;
-  const record = value as Record<string, unknown>;
-  return {
-    theme:
-      record.theme === "light" || record.theme === "dark" || record.theme === "system"
-        ? record.theme
-        : defaults.theme,
-    language: supportedLanguage(record.language) ?? defaults.language,
-    currency: supportedCurrency(record.currency),
-    speechModeEnabled:
-      typeof record.speechModeEnabled === "boolean"
-        ? record.speechModeEnabled
-        : defaults.speechModeEnabled,
-    dictationAutoStopSeconds:
-      record.dictationAutoStopSeconds === null
-        ? null
-        : (autoStopSeconds(record.dictationAutoStopSeconds) ??
-          defaults.dictationAutoStopSeconds),
-    timeEnabled:
-      typeof record.timeEnabled === "boolean"
-        ? record.timeEnabled
-        : defaults.timeEnabled,
-    locationEnabled:
-      typeof record.locationEnabled === "boolean"
-        ? record.locationEnabled
-        : defaults.locationEnabled,
-    onboardingCompleted:
-      typeof record.onboardingCompleted === "boolean"
-        ? record.onboardingCompleted
-        : defaults.onboardingCompleted,
-    // `thinkingLevel` is the pre-rename key: settings written before the
-    // rename still carry it, so an existing choice is not reset to the default.
-    reasoningLevel:
-      reasoningEffort(
-        record.reasoningLevel ?? record.thinkingLevel,
-        defaults.reasoningLevel,
-      ) ?? defaults.reasoningLevel,
-    location: locationPreference(record.location),
-  };
-}
-
-function generalSettingsUpdate(
-  value: unknown,
-  current: GeneralSettingsDto,
-): GeneralSettingsDto {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("General settings must be an object");
-  const record = value as Record<string, unknown>;
-  if (
-    record.theme !== undefined &&
-    record.theme !== "light" &&
-    record.theme !== "dark" &&
-    record.theme !== "system"
-  )
-    throw new Error("theme must be light, dark, or system");
-  if (record.language !== undefined && !supportedLanguage(record.language))
-    throw new Error(
-      `language must be one of: ${SUPPORTED_LANGUAGES.map((item) => item.value).join(", ")}`,
-    );
-  if (record.currency !== undefined && record.currency !== null && !supportedCurrency(record.currency))
-    throw new Error("currency must be USD, AUD, EUR, GBP, SGD, or JPY");
-  if (record.timeEnabled !== undefined && typeof record.timeEnabled !== "boolean")
-    throw new Error("timeEnabled must be a boolean");
-  if (
-    record.onboardingCompleted !== undefined &&
-    typeof record.onboardingCompleted !== "boolean"
-  )
-    throw new Error("onboardingCompleted must be a boolean");
-  if (
-    record.speechModeEnabled !== undefined &&
-    typeof record.speechModeEnabled !== "boolean"
-  )
-    throw new Error("speechModeEnabled must be a boolean");
-  if (
-    record.dictationAutoStopSeconds !== undefined &&
-    record.dictationAutoStopSeconds !== null &&
-    !autoStopSeconds(record.dictationAutoStopSeconds)
-  )
-    throw new Error(
-      `dictationAutoStopSeconds must be null or a whole number of seconds between ${AUTO_STOP_MIN_SECONDS} and ${AUTO_STOP_MAX_SECONDS}`,
-    );
-  if (
-    record.locationEnabled !== undefined &&
-    typeof record.locationEnabled !== "boolean"
-  )
-    throw new Error("locationEnabled must be a boolean");
-  if (
-    record.reasoningLevel !== undefined &&
-    !reasoningEffort(record.reasoningLevel, null)
-  )
-    throw new Error("reasoningLevel must be a supported reasoning effort");
-  const locationEnabled =
-    typeof record.locationEnabled === "boolean"
-      ? record.locationEnabled
-      : current.locationEnabled;
-  const location =
-    record.location === undefined
-      ? current.location
-      : record.location === null
-        ? null
-        : requiredLocation(record.location);
-  const onboardingCompleted =
-    typeof record.onboardingCompleted === "boolean"
-      ? record.onboardingCompleted
-      : current.onboardingCompleted;
-  return {
-    onboardingCompleted,
-    theme:
-      record.theme === "light" || record.theme === "dark" || record.theme === "system"
-        ? record.theme
-        : current.theme,
-    language: supportedLanguage(record.language) ?? current.language,
-    currency:
-      record.currency === undefined
-        ? current.currency
-        : record.currency === null
-          ? null
-          : supportedCurrency(record.currency),
-    speechModeEnabled:
-      typeof record.speechModeEnabled === "boolean"
-        ? record.speechModeEnabled
-        : current.speechModeEnabled,
-    dictationAutoStopSeconds:
-      record.dictationAutoStopSeconds === undefined
-        ? current.dictationAutoStopSeconds
-        : record.dictationAutoStopSeconds === null
-          ? null
-          : (autoStopSeconds(record.dictationAutoStopSeconds) as number),
-    timeEnabled:
-      typeof record.timeEnabled === "boolean"
-        ? record.timeEnabled
-        : current.timeEnabled,
-    locationEnabled,
-    location: locationEnabled ? location : null,
-    reasoningLevel:
-      record.reasoningLevel === undefined
-        ? current.reasoningLevel
-        : (reasoningEffort(record.reasoningLevel, current.reasoningLevel) as ReasoningEffort),
-  };
-}
-
-const REASONING_EFFORTS: ReasoningEffort[] = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
-
-/** Returns the value when it names a supported effort, otherwise the fallback.
- * The fallback may be null when the caller needs to know whether a raw value
- * was accepted at all (update validation). */
-function reasoningEffort(
-  value: unknown,
-  fallback: ReasoningEffort | null,
-): ReasoningEffort | null {
-  return typeof value === "string" &&
-    REASONING_EFFORTS.includes(value as ReasoningEffort)
-    ? (value as ReasoningEffort)
-    : fallback;
-}
-
-const AUTO_STOP_MIN_SECONDS = 2;
-const AUTO_STOP_MAX_SECONDS = 60;
-
-/** Returns the value when it is a usable silence window, otherwise null. Null
- * doubles as "never stop on its own", so callers separate that case out before
- * asking. */
-function autoStopSeconds(value: unknown): number | null {
-  return typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= AUTO_STOP_MIN_SECONDS &&
-    value <= AUTO_STOP_MAX_SECONDS
-    ? value
-    : null;
-}
-
-function supportedCurrency(
-  value: unknown,
-): Exclude<GeneralSettingsDto["currency"], null> | null {
-  return value === "USD" || value === "AUD" || value === "EUR" ||
-    value === "GBP" || value === "SGD" || value === "JPY"
-    ? value
-    : null;
-}
-
-function locationPreference(value: unknown): GeneralSettingsDto["location"] {
-  try {
-    return value === null || value === undefined ? null : requiredLocation(value);
-  } catch {
-    return null;
-  }
-}
-
-function requiredLocation(value: unknown): NonNullable<GeneralSettingsDto["location"]> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("location must be an object or null");
-  const record = value as Record<string, unknown>;
-  const latitude = Number(record.latitude);
-  const longitude = Number(record.longitude);
-  const accuracy = Number(record.accuracy);
-  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90)
-    throw new Error("location latitude is invalid");
-  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180)
-    throw new Error("location longitude is invalid");
-  if (!Number.isFinite(accuracy) || accuracy < 0)
-    throw new Error("location accuracy is invalid");
-  if (typeof record.updatedAt !== "string" || !Number.isFinite(Date.parse(record.updatedAt)))
-    throw new Error("location updatedAt is invalid");
-  return { latitude, longitude, accuracy, updatedAt: record.updatedAt };
-}
-
-const MODEL_ROLES: ModelRole[] = ["main", "task", "judge", "speech", "image", "video"];
-
-function modelRole(value: unknown): ModelRole {
-  if (typeof value === "string" && (MODEL_ROLES as string[]).includes(value))
-    return value as ModelRole;
-  throw new Error(`Unknown model role: ${String(value)}`);
-}
-
-function modelRolesPreference(value: unknown): Partial<Record<ModelRole, ModelRef>> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const record = value as Record<string, unknown>;
-  const roles: Partial<Record<ModelRole, ModelRef>> = {};
-  for (const role of MODEL_ROLES) {
-    if (role === "main") continue;
-    const ref = modelPreference(record[role]);
-    if (ref) roles[role] = ref;
-  }
-  return roles;
-}
-
-function modelPreference(value: unknown): ModelRef | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  if (typeof record.provider !== "string" || typeof record.id !== "string")
-    return undefined;
-  return { provider: record.provider, id: record.id };
-}
-
-function customProviderPreference(value: unknown): CustomProviderConfig[] {
-  if (!Array.isArray(value)) return [];
-  const configs: CustomProviderConfig[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const record = item as Record<string, unknown>;
-    if (typeof record.id !== "string" || typeof record.name !== "string" || typeof record.baseUrl !== "string" || !Array.isArray(record.models)) continue;
-    const models = record.models.flatMap((model) => {
-      if (!model || typeof model !== "object" || Array.isArray(model)) return [];
-      const entry = model as Record<string, unknown>;
-      return typeof entry.id === "string" && typeof entry.name === "string" ? [{id: entry.id, name: entry.name}] : [];
-    });
-    const logoDataUrl = validProviderLogo(record.logoDataUrl);
-    if (models.length) configs.push({id: record.id, name: record.name, baseUrl: record.baseUrl, logoDataUrl, models});
-  }
-  return configs;
-}
-
-function customProviderRequest(value: unknown): CreateCustomProviderRequest {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Custom provider must be an object");
-  const record = value as Record<string, unknown>;
-  const name = required(record.name, "provider name");
-  const rawUrl = required(record.baseUrl, "base URL");
-  let url: URL;
-  try { url = new URL(rawUrl); } catch { throw new Error("base URL must be a valid URL"); }
-  if (url.protocol !== "http:" && url.protocol !== "https:")
-    throw new Error("base URL must use HTTP or HTTPS");
-  if (!Array.isArray(record.models) || record.models.length === 0)
-    throw new Error("at least one model is required");
-  const seen = new Set<string>();
-  const models = record.models.map((model) => {
-    if (!model || typeof model !== "object" || Array.isArray(model))
-      throw new Error("each model must be an object");
-    const entry = model as Record<string, unknown>;
-    const id = required(entry.id, "model id");
-    if (seen.has(id)) throw new Error(`duplicate model id: ${id}`);
-    seen.add(id);
-    const modelName = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : undefined;
-    return {id, name: modelName};
-  });
-  const apiKey = typeof record.apiKey === "string" && record.apiKey.trim() ? record.apiKey.trim() : undefined;
-  const logoDataUrl = validProviderLogo(record.logoDataUrl);
-  return {name, baseUrl: url.toString().replace(/\/$/, ""), logoDataUrl, apiKey, models};
-}
-
-function setupLocalRuntimeRequest(value: unknown): SetupLocalRuntimeRequest {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Runtime setup must be an object");
-  const record = value as Record<string, unknown>;
-  const id = required(record.id, "runtime id");
-  const baseUrl = typeof record.baseUrl === "string" && record.baseUrl.trim()
-    ? discoverModelsRequest({baseUrl: record.baseUrl}).baseUrl
-    : undefined;
-  return {id, baseUrl};
-}
-
-function discoverModelsRequest(value: unknown): DiscoverModelsRequest {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Discovery request must be an object");
-  const record = value as Record<string, unknown>;
-  const rawUrl = required(record.baseUrl, "base URL");
-  let url: URL;
-  try { url = new URL(rawUrl); } catch { throw new Error("base URL must be a valid URL"); }
-  if (url.protocol !== "http:" && url.protocol !== "https:")
-    throw new Error("base URL must use HTTP or HTTPS");
-  const apiKey = typeof record.apiKey === "string" && record.apiKey.trim() ? record.apiKey.trim() : undefined;
-  return {baseUrl: url.toString().replace(/\/$/, ""), apiKey};
-}
-
-/** Read an OpenAI-compatible `/models` listing. Local runtimes (Ollama,
- * LM Studio, vLLM, llama.cpp) all serve it, so one request covers them and any
- * hosted gateway the user points at. Ollama's native `/api/tags` is the
- * fallback for the case where the base URL omits the `/v1` suffix. */
-async function discoverModels(
-  request: DiscoverModelsRequest,
-): Promise<Array<{id: string; name?: string}>> {
-  const headers: Record<string, string> = {accept: "application/json"};
-  if (request.apiKey) headers.authorization = `Bearer ${request.apiKey}`;
-  const attempts = [`${request.baseUrl}/models`, `${request.baseUrl}/api/tags`];
-  let lastError = "";
-  for (const endpoint of attempts) {
-    let response: Response;
-    try {
-      response = await fetch(endpoint, {headers, signal: AbortSignal.timeout(8_000)});
-    } catch (cause) {
-      lastError = cause instanceof Error ? cause.message : String(cause);
-      continue;
-    }
-    if (!response.ok) {
-      lastError = `${response.status} ${response.statusText}`.trim();
-      continue;
-    }
-    let payload: unknown;
-    try { payload = await response.json(); } catch { lastError = "response was not JSON"; continue; }
-    const ids = modelIdsFromListing(payload);
-    if (ids.length) return ids.map((id) => ({id}));
-    lastError = "the endpoint listed no models";
-  }
-  throw new Error(`Could not read models from ${request.baseUrl}: ${lastError || "no response"}`);
-}
-
-function modelIdsFromListing(payload: unknown): string[] {
-  if (!payload || typeof payload !== "object") return [];
-  const record = payload as Record<string, unknown>;
-  // OpenAI: {data: [{id}]}. Ollama native: {models: [{name}]}.
-  const entries = Array.isArray(record.data)
-    ? record.data
-    : Array.isArray(record.models) ? record.models : [];
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const item = entry as Record<string, unknown>;
-    const id = typeof item.id === "string" && item.id.trim()
-      ? item.id.trim()
-      : typeof item.name === "string" && item.name.trim() ? item.name.trim() : "";
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    ids.push(id);
-  }
-  return ids.sort((left, right) => left.localeCompare(right));
-}
-
-function updateCustomProviderRequest(value: unknown): UpdateCustomProviderRequest {
-  const request = customProviderRequest(value);
-  const record = value as Record<string, unknown>;
-  return {id: required(record.id, "provider id"), ...request};
-}
-
-function integrationId(value: unknown, label: string): string {
-  const id = required(value, label);
-  if (!/^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/i.test(id))
-    throw new Error(`${label} may contain letters, numbers, dashes, underscores, and dots`);
-  return id;
-}
-
-function customMcpRequest(value: unknown): SaveCustomMcpRequest {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("MCP server must be an object");
-  const record = value as Record<string, unknown>;
-  const id = integrationId(record.id, "MCP id");
-  const name = required(record.name, "MCP name");
-  const description = optionalText(record.description);
-  const transport = record.transport === "streamable-http" ? "streamable-http" : "stdio";
-  const args = optionalStrings(record.args, "MCP arguments");
-  const env = optionalStringRecord(record.env, "MCP environment");
-  const headers = optionalStringRecord(record.headers, "MCP headers");
-  if (transport === "stdio")
-    return {id, name, description, transport, command: required(record.command, "MCP command"), args, env, cwd: optionalText(record.cwd)};
-  const url = required(record.url, "MCP URL");
-  const parsed = new URL(url);
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-    throw new Error("MCP URL must use HTTP or HTTPS");
-  return {id, name, description, transport, url: parsed.toString(), headers};
-}
-
-function customSkillRequest(value: unknown): SaveCustomSkillRequest {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Skill must be an object");
-  const record = value as Record<string, unknown>;
-  const name = integrationId(record.name, "skill name");
-  const originalName = record.originalName === undefined
-    ? undefined
-    : integrationId(record.originalName, "original skill name");
-  const description = required(record.description, "skill description");
-  if (/\r|\n/.test(description)) throw new Error("skill description must be one line");
-  const instructions = required(record.instructions, "skill instructions");
-  return {originalName, name, description, instructions};
-}
-
-function skillUploadFiles(value: unknown): SkillUploadFile[] {
-  if (!Array.isArray(value) || value.length === 0) throw new Error("Choose a skill folder to upload");
-  return value.map((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Invalid skill folder");
-    const record = item as Record<string, unknown>;
-    return {path: required(record.path, "skill file path"), relativePath: required(record.relativePath, "skill relative path")};
-  });
-}
-
-function optionalText(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function optionalStrings(value: unknown, label: string): string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || !value.every((item) => typeof item === "string"))
-    throw new Error(`${label} must be a list of strings`);
-  return value.map((item) => item.trim()).filter(Boolean);
-}
-
-function optionalStringRecord(value: unknown, label: string): Record<string, string> | undefined {
-  if (value === undefined) return undefined;
-  if (!value || typeof value !== "object" || Array.isArray(value) || !Object.values(value).every((item) => typeof item === "string"))
-    throw new Error(`${label} must contain text values`);
-  return value as Record<string, string>;
-}
-
-/**
- * Carries an existing MCP configuration over from the application-support
- * directory it used to live in. Copied rather than moved, and only when
- * ~/.flareai has none: an older build left running against the same machine
- * still finds its file, and a user who has already configured servers in the
- * new location never has them overwritten by a stale one.
- */
-function adoptLegacyMcpConfig(legacy: string, current: string): void {
-  try {
-    if (existsSync(current) || !existsSync(legacy)) return;
-    mkdirSync(path.dirname(current), {recursive: true});
-    copyFileSync(legacy, current);
-  } catch {
-    // A migration is a convenience; the app still starts with no MCP servers.
-  }
-}
-
-function skillInstructions(contents: string): string {
-  if (!contents.startsWith("---")) return contents.trim();
-  const end = contents.indexOf("\n---", 3);
-  return end < 0 ? contents.trim() : contents.slice(end + 4).trim();
-}
-
-function validProviderLogo(value: unknown): string | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (typeof value !== "string" || value.length > 1_500_000 || !/^data:image\/(?:png|jpeg|webp|gif|svg\+xml);base64,[a-z0-9+/=\s]+$/i.test(value))
-    throw new Error("provider image must be a PNG, JPEG, WebP, GIF, or SVG under 1 MB");
-  return value;
-}
-
-/** Zero is a real price — free models publish it — so only a missing or
- * malformed rate becomes null (rendered as "unavailable"). */
-function knownRate(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : null;
-}
-
-/** For rates where zero means "not offered" rather than "free". */
-function positiveRate(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? value
-    : null;
-}
-
-/**
- * A file's media type from its name. Enough to decide whether a network shows
- * an attachment inline as a picture, a voice note, or a plain download.
- */
-function mimetypeOf(file: string): string {
-  const types: Record<string, string> = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".heic": "image/heic",
-    ".mp4": "video/mp4",
-    ".mov": "video/quicktime",
-    ".webm": "video/webm",
-    ".mp3": "audio/mpeg",
-    ".m4a": "audio/mp4",
-    ".ogg": "audio/ogg",
-    ".opus": "audio/ogg",
-    ".wav": "audio/wav",
-    ".pdf": "application/pdf",
-    ".txt": "text/plain",
-  };
-  return types[path.extname(file).toLowerCase()] ?? "application/octet-stream";
-}
+export {modelFromEnvironment} from "./backend/models.js";

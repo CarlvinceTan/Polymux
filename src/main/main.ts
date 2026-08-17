@@ -6,14 +6,14 @@ import started from "electron-squirrel-startup";
 import { channels } from "@flareai/protocol";
 import { DesktopBackend, modelFromEnvironment } from "./backend.js";
 import { BridgeHost, Homeserver } from "./homeserver/index.js";
-import { registerMediaScheme, serveMedia } from "./comms-media.js";
+import { registerMediaScheme, serveMedia } from "./communications/media.js";
 import { WeChatBridge, WECHAT_FALLBACK_DIRECTORIES } from "./homeserver/wechat-bridge.js";
 import { loadShippedCredentials } from "./homeserver/shipped-credentials.js";
-import { installOfficialSkills } from "./official-skills.js";
+import { installOfficialSkills } from "./skills/official.js";
 import {
   FLAREAI_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
-} from "./window-buttons.js";
+} from "./system/window-buttons.js";
 
 // `npm start` runs the app as a child of the CLI, so its stdout and stderr are
 // pipes. Kill the terminal (or let the launcher exit) and the read end goes

@@ -1,42 +1,42 @@
 <script lang="ts">
   import {onDestroy, onMount} from 'svelte';
-  import {readableError} from './lib/errors';
+  import {readableError} from './lib/shared/errors';
   import type {ArtifactDto, BrowserExtensionDto, ConversationDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto} from '@flareai/protocol';
-  import TitleBar from './lib/components/chat/TitleBar.svelte';
-  import ChatPane, {type ChatMessage} from './lib/components/chat/ChatPane.svelte';
-  import TimelineRail, {TIMELINE_RAIL_MINIMUM} from './lib/components/chat/TimelineRail.svelte';
-  import type {ActiveGoal} from './lib/components/chat/GoalBar.svelte';
-  import SpeechOrb from './lib/components/chat/SpeechOrb.svelte';
-  import ChatDrawer, {type ChatEntry} from './lib/components/shell/ChatDrawer.svelte';
-  import ChatSearchModal from './lib/components/shell/ChatSearchModal.svelte';
-  import SummaryPanel, {type SummarySection, type ReferenceItem} from './lib/components/workspace/SummaryPanel.svelte';
-  import WorkspaceDrawer, {SINGLETON_TAB_IDS, type WorkspaceTab, type WorkspaceTabKind} from './lib/components/workspace/WorkspaceDrawer.svelte';
-  import {warmHub} from './lib/components/workspace/HubView.svelte';
-  import {driveEntryKind, type DriveEntry} from './lib/components/workspace/DriveView.svelte';
-  import {unreadScheduleCount, type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './lib/components/workspace/ScheduleView.svelte';
-  import Tooltip from './lib/components/shared/Tooltip.svelte';
-  import {recordVisit} from './lib/browser/visitHistory';
-  import SettingsModal from './lib/components/settings/SettingsModal.svelte';
-  import Onboarding from './lib/components/onboarding/Onboarding.svelte';
+  import TitleBar from './lib/features/chat/TitleBar.svelte';
+  import ChatPane, {type ChatMessage} from './lib/features/chat/ChatPane.svelte';
+  import TimelineRail, {TIMELINE_RAIL_MINIMUM} from './lib/features/chat/TimelineRail.svelte';
+  import type {ActiveGoal} from './lib/features/chat/GoalBar.svelte';
+  import SpeechOrb from './lib/features/chat/SpeechOrb.svelte';
+  import ChatDrawer, {type ChatEntry} from './lib/features/shell/ChatDrawer.svelte';
+  import ChatSearchModal from './lib/features/shell/ChatSearchModal.svelte';
+  import SummaryPanel, {type SummarySection, type ReferenceItem} from './lib/features/workspace/SummaryPanel.svelte';
+  import WorkspaceDrawer, {SINGLETON_TAB_IDS, type WorkspaceTab, type WorkspaceTabKind} from './lib/features/workspace/WorkspaceDrawer.svelte';
+  import {warmHub} from './lib/features/workspace/HubView.svelte';
+  import {driveEntryKind, type DriveEntry} from './lib/features/workspace/DriveView.svelte';
+  import {unreadScheduleCount, type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './lib/features/workspace/ScheduleView.svelte';
+  import Tooltip from './lib/shared/components/Tooltip.svelte';
+  import {recordVisit} from './lib/features/workspace/visitHistory';
+  import SettingsModal from './lib/features/settings/SettingsModal.svelte';
+  import Onboarding from './lib/features/onboarding/Onboarding.svelte';
   import {flareaiApi} from './lib/api/flareai';
-  import {applyTheme, startThemeSync} from './lib/theme';
-  import {applyLanguage, startLanguageSync, t, translate, type MessageKey} from './lib/i18n';
+  import {applyTheme, startThemeSync} from './lib/shared/theme';
+  import {applyLanguage, startLanguageSync, t, translate, type MessageKey} from './i18n';
   import {
     conversationPanelState,
     initialPanelState,
     summaryWasDismissed,
     togglePanelState,
     type PanelState,
-  } from './lib/state/panels';
+  } from './lib/shared/state/panels';
   import {
     MIN_CHAT_DRAWER_WIDTH,
     MIN_WORKSPACE_WIDTH,
     SPLIT_LAYOUT_MIN_WIDTH,
     SUMMARY_RESERVED_COLUMN,
     resolvePanelWidths,
-  } from './lib/layout/layoutSizing';
-  import {activityPresentation, upsertActivity} from './lib/conversation/activities';
-  import type {AgentActivityItem} from './lib/components/chat/AgentActivity.svelte';
+  } from './lib/shared/layout/layoutSizing';
+  import {activityPresentation, upsertActivity} from './lib/features/chat/activities';
+  import type {AgentActivityItem} from './lib/features/chat/AgentActivity.svelte';
 
   type Conversation = ChatEntry & {messages: ChatMessage[]; goal?: ActiveGoal};
   type SummaryTask = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'};
