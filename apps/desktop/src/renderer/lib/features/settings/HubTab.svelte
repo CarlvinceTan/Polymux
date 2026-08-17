@@ -65,6 +65,10 @@
    */
   let settling: CommsPlatform | null = null;
 
+  // Bridge setup — the credentials a bridge needs before it can run at all.
+  let setupValues: Record<string, string> = {};
+  let setupPlatform: CommsPlatform | null = null;
+
   // Email form
   let editingEmail = false;
   let emailForm = blankEmail();
@@ -161,6 +165,50 @@
   // branch is pulled into a local first.
   $: activeBridge = pickBridge(selected, bridges);
   $: mailOpen = selected?.kind === 'mail';
+  /** A bridge that cannot even start until its own credentials are recorded. */
+  $: needsSetup = Boolean(activeBridge?.setup && !activeBridge.setup.configured);
+  $: setupReady = Boolean(
+    activeBridge?.setup?.fields.every((field) => (setupValues[field.id] ?? '').trim() !== ''),
+  );
+  // Opening a platform is the signal that it is wanted, so its bridge starts
+  // now. Without this a bridge parked as `dormant` reports no login methods and
+  // the pane has nothing to offer — the whole platform reads as unconnectable.
+  $: void wakeSelected(selected);
+  // Typed credentials belong to the platform they were typed under, not to
+  // whichever one the rail lands on next.
+  $: if (activeBridge?.platform !== setupPlatform) {
+    setupPlatform = activeBridge?.platform ?? null;
+    setupValues = {};
+  }
+
+  /** Platforms already asked for this session; a bridge starts once. */
+  const wokenPlatforms = new Set<CommsPlatform>();
+
+  async function wakeSelected(section: Section | null): Promise<void> {
+    if (section?.kind !== 'bridge') return;
+    const platform = section.platform;
+    if (wokenPlatforms.has(platform)) return;
+    wokenPlatforms.add(platform);
+    const next = await api.comms.wake(platform).catch((): null => null);
+    if (next) status = next;
+  }
+
+  async function saveSetup(platform: CommsPlatform): Promise<void> {
+    busy = 'setup';
+    try {
+      status = await api.comms.bridgeSetup(platform, setupValues);
+      setupValues = {};
+      error = '';
+      // Recorded credentials only take effect once the bridge is back up, and
+      // it is parked until something asks for it.
+      wokenPlatforms.delete(platform);
+      await wakeSelected({kind: 'bridge', platform});
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
   $: mailSummary = !status?.email.tooling.installed
     ? $t('drive.stateUnavailable')
     : emailAccounts.length === 0
@@ -919,7 +967,49 @@
                 {/each}
               </section>
             {/if}
-            {#if activeBridge.flows.length > 0 && activeBridge.state !== 'unavailable'}
+            {#if needsSetup && activeBridge.setup}
+            <!-- Telegram and its like will not run on someone else's
+                 application, so the pair is asked for here. Without this the
+                 pane offered no login methods and no way to get any. -->
+            <section class="comms-block">
+              <h4>{$t('hub.setupTitle', {platform: activeBridge.name})}</h4>
+              <p class="comms-hint">{$t('hub.setupBlurb', {platform: activeBridge.name})}</p>
+              <div class="comms-form">
+                {#each activeBridge.setup.fields as field (field.id)}
+                  <label>
+                    <span>{field.name}</span>
+                    <input
+                      type={field.secret ? 'password' : 'text'}
+                      spellcheck="false"
+                      autocomplete="off"
+                      value={setupValues[field.id] ?? ''}
+                      oninput={(event) =>
+                        (setupValues = {
+                          ...setupValues,
+                          [field.id]: (event.currentTarget as HTMLInputElement).value,
+                        })}
+                    />
+                    {#if field.description}<small>{field.description}</small>{/if}
+                  </label>
+                {/each}
+              </div>
+              {#if activeBridge.setup.fields[0]?.helpUrl}
+                <p class="comms-hint">
+                  {$t('hub.setupHelp', {url: activeBridge.setup.fields[0].helpUrl})}
+                </p>
+              {/if}
+              <footer class="comms-actions">
+                <button
+                  type="button"
+                  class="primary"
+                  disabled={busy === 'setup' || !setupReady}
+                  onclick={() => void saveSetup(activeBridge.platform)}
+                >
+                  {busy === 'setup' ? $t('hub.saving') : $t('common.save')}
+                </button>
+              </footer>
+            </section>
+            {:else if activeBridge.flows.length > 0 && activeBridge.state !== 'unavailable'}
             <section class="comms-block">
               <h4>{activeBridge.accounts.length > 0 ? $t('hub.addAnotherAccount') : $t('hub.howToLink')}</h4>
               <ul class="comms-flows">
@@ -955,6 +1045,10 @@
               {/if}
               {#if stepError}<p class="comms-hint warn">{stepError}</p>{/if}
             </section>
+            {:else if activeBridge.state === 'dormant'}
+            <!-- Opening the platform already asked for its bridge, so this is
+                 the gap before its login methods arrive, not a dead end. -->
+            <p class="comms-muted">{$t('platforms.startingPlatform', {platform: activeBridge.name})}</p>
             {:else if activeBridge.state !== 'unavailable' && activeBridge.accounts.length === 0}
             <p class="comms-muted">
               {$t('hub.noLinkMethod')}

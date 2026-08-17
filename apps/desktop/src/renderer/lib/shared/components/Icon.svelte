@@ -164,12 +164,15 @@
   {:else if name === 'connections'}
     <path d="m10 13 4-4M7.5 15.5l-1 1a3.5 3.5 0 0 1-5-5l3-3a3.5 3.5 0 0 1 5 0M16.5 8.5l1-1a3.5 3.5 0 0 1 5 5l-3 3a3.5 3.5 0 0 1-5 0"/>
   {:else if name === 'mcp'}
-    <!-- The Model Context Protocol mark, redrawn on the 24 grid. The stroke is
-         held at the set's width rather than scaled with the artwork, so it
-         sits at the same weight as every other icon beside it. -->
-    <g transform="translate(1.44 1.44) scale(.88)" vector-effect="non-scaling-stroke">
-      <path d="M3.08 12.04 11.43 3.69c1.15-1.15 3.02-1.15 4.18 0 1.15 1.15 1.15 3.02 0 4.18L9.3 14.18"/>
-      <path d="m9.39 14.09 6.22-6.22c1.15-1.15 3.02-1.15 4.18 0l.04.04c1.15 1.15 1.15 3.02 0 4.18l-7.56 7.55c-.38.39-.38 1.01 0 1.39l1.55 1.55"/>
+    <!-- The Model Context Protocol mark exactly as its owners draw it, lifted
+         from `@lobehub/icons-static-svg/icons/mcp.svg` — already a dependency,
+         already on the 24 grid. It is an outlined fill rather than a stroke,
+         so `strokeWidth` cannot reach it; the outline is 1.65 wide, which is
+         the set's weight, and the mark reads diagonally, so at native scale it
+         sits beside the 18-unit upright icons without looking larger. -->
+    <g fill="currentColor" fill-rule="evenodd" stroke="none">
+      <path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z"/>
+      <path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z"/>
     </g>
   {:else if name === 'link'}
     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" transform="translate(1.68 1.68) scale(.86)" vector-effect="non-scaling-stroke"/>

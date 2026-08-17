@@ -694,6 +694,9 @@ const messages: Catalog = {
   'hub.unlink': 'Verknüpfung lösen',
   'hub.addAnotherAccount': 'Weiteres Konto hinzufügen',
   'hub.howToLink': 'Wie möchten Sie es verknüpfen?',
+  'hub.setupTitle': '{platform} einrichten',
+  'hub.setupBlurb': '{platform} braucht eine eigene Anwendung, bevor die Verbindung steht. Lege eine an — das dauert eine Minute — und füge dann die Werte ein, die du bekommst.',
+  'hub.setupHelp': 'Du bekommst sie unter {url}',
   'hub.showQr': 'QR anzeigen',
   'hub.start': 'Starten',
   'hub.setupFirst':

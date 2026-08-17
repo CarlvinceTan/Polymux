@@ -45,6 +45,7 @@
   const api = flareaiApi();
   let conversations: Conversation[] = [];
   let activeId = '';
+  let openingId = '';
   let draftConversation: Conversation = emptyDraft();
   let runByConversation: Record<string, string> = {};
   let liveAssistantByConversation: Record<string, string> = {};
@@ -454,6 +455,7 @@
   function switchTo(id: string): void {
     stashWorkspace();
     activeId = id;
+    openingId = id;
     workspaceExpanded = false;
   }
 
@@ -463,10 +465,31 @@
     clearConversationResources();
   }
 
+  /**
+   * A chat whose messages are not cached yet is loaded *before* activeId moves.
+   * Switching first would render it with an empty message list, and every
+   * surface keyed on `active.messages.length === 0` — the welcome pane, the
+   * title, the summary panel — would flash the new-chat state for the frames
+   * the fetch takes. openingId drops a load the user has already switched past.
+   */
   async function openChat(id: string): Promise<void> {
-    switchTo(id);
-    await restoreWorkspace(id);
-    await loadConversation(id);
+    if (id === activeId) return;
+    openingId = id;
+    const cached = conversations.find((chat) => chat.id === id);
+    if (cached && cached.messages.length === 0) {
+      await loadConversation(id, () => {
+        if (openingId !== id) return false;
+        switchTo(id);
+        return true;
+      });
+      if (openingId !== id) return;
+      await restoreWorkspace(id);
+    } else {
+      switchTo(id);
+      await restoreWorkspace(id);
+      await loadConversation(id);
+    }
+    if (openingId !== id) return;
     await drainQueue(id);
   }
 
@@ -482,6 +505,7 @@
       const created = await api.conversations.create(title);
       conversationId = created.id;
       activeId = created.id;
+      openingId = created.id;
       conversations = [{...fromConversation(created), messages: []}, ...conversations];
     } else if (!active.title) {
       await rename(title);
@@ -616,7 +640,7 @@
     }
   }
 
-  async function loadConversation(id: string): Promise<void> {
+  async function loadConversation(id: string, onLoaded?: () => boolean): Promise<void> {
     try {
       const [storedMessages, storedGoal, artifacts, storedReferences] = await Promise.all([
         api.conversations.messages(id),
@@ -626,7 +650,8 @@
       ]);
       const current = conversations.find((chat) => chat.id === id)?.messages ?? [];
       updateConversation(id, (chat) => ({...chat, messages: mergeMessages(storedMessages, current), goal: fromGoal(storedGoal)}));
-      applyResources(artifacts, storedReferences);
+      if (onLoaded && !onLoaded()) return;
+      if (activeId === id) applyResources(artifacts, storedReferences);
     } catch (error) {
       console.error('Could not load the conversation:', readableError(error));
     }
