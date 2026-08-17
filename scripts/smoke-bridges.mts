@@ -15,11 +15,11 @@ import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
-import {Homeserver} from "../src/main/homeserver/server.js";
-import {BridgeHost} from "../src/main/homeserver/bridges.js";
+import {Homeserver} from "../apps/desktop/src/main/homeserver/server.js";
+import {BridgeHost} from "../apps/desktop/src/main/homeserver/bridges.js";
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const binaries = path.join(repo, "bridges");
+const binaries = path.join(repo, "resources", "bridges");
 const directory = await mkdtemp(path.join(tmpdir(), "flareai-smoke-"));
 
 const homeserver = new Homeserver({

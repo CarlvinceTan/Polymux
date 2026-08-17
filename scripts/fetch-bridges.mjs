@@ -13,7 +13,7 @@
  * a supervised child process with access to the user's accounts, so "probably
  * fine" is not a state worth packaging.
  *
- *   node scripts/fetch-bridges.mjs            # download into ./bridges
+ *   node scripts/fetch-bridges.mjs            # download into ./resources/bridges
  *   node scripts/fetch-bridges.mjs --dry-run  # resolve and verify availability
  *   node scripts/fetch-bridges.mjs --force    # re-download what is present
  */
@@ -24,7 +24,7 @@ import path from "node:path";
 import {fileURLToPath} from "node:url";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const outputDirectory = path.join(root, "bridges");
+const outputDirectory = path.join(root, "resources", "bridges");
 
 /**
  * Pinned releases from GitHub. `binary` is the name BridgeHost looks for; the

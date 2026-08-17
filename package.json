@@ -13,14 +13,14 @@
     "prestart": "node scripts/dev-app-name.mjs",
     "start": "node scripts/dev-start.mjs",
     "start:onboarding": "FLAREAI_ONBOARDING=1 node scripts/dev-start.mjs",
-    "renderer:dev": "vite --config vite.renderer.config.ts",
+    "renderer:dev": "vite --config apps/desktop/vite.renderer.config.ts",
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",
-    "check": "svelte-check --tsconfig ./src/renderer/tsconfig.json && tsc --noEmit",
-    "renderer:build": "vite build --config vite.renderer.config.ts",
-    "renderer:preview": "vite preview --config vite.renderer.config.ts",
-    "test:ui": "playwright test --config src/renderer/playwright.config.ts",
+    "check": "svelte-check --tsconfig ./apps/desktop/src/renderer/tsconfig.json && tsc --noEmit",
+    "renderer:build": "vite build --config apps/desktop/vite.renderer.config.ts",
+    "renderer:preview": "vite preview --config apps/desktop/vite.renderer.config.ts",
+    "test:ui": "playwright test --config apps/desktop/src/renderer/playwright.config.ts",
     "test:storage": "tsx --test packages/storage/test/**/*.test.ts",
     "test:chronicle": "tsx --test packages/chronicle/test/**/*.test.ts",
     "test:inference": "tsx --test packages/inference/test/**/*.test.ts",
@@ -28,7 +28,7 @@
     "test:agent": "tsx --test packages/agent/test/**/*.test.ts",
     "test:tools": "tsx --test packages/tools/test/**/*.test.ts",
     "test:protocol": "tsx --test packages/protocol/test/**/*.test.ts",
-    "test:main": "tsx --test src/main/**/*.test.ts",
+    "test:main": "tsx --test apps/desktop/src/main/**/*.test.ts",
     "test:backend": "npm run test:inference && npm run test:core && npm run test:storage && npm run test:chronicle && npm run test:tools && npm run test:agent && npm run test:protocol && npm run test:main",
     "icons": "node scripts/build-icons.mjs",
     "bridges:fetch": "node scripts/fetch-bridges.mjs",
@@ -78,5 +78,8 @@
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vite": "^8.0.5"
+  },
+  "config": {
+    "forge": "./apps/desktop/forge.config.ts"
   }
 }

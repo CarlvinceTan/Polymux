@@ -38,7 +38,7 @@ jobs:
       # re-downloading the same pinned versions.
       - uses: actions/cache@v4
         with:
-          path: bridges
+          path: resources/bridges
           key: bridges-${{ runner.os }}-${{ hashFiles('scripts/fetch-bridges.mjs') }}
 
       - name: Import macOS signing certificate

@@ -10,14 +10,16 @@
     "skipLibCheck": true,
     "sourceMap": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
   "include": [
-    "forge.config.ts",
-    "forge.env.d.ts",
-    "src/main/**/*.ts",
-    "src/preload/**/*.ts",
+    "apps/desktop/forge.config.ts",
+    "apps/desktop/forge.env.d.ts",
+    "apps/desktop/src/main/**/*.ts",
+    "apps/desktop/src/preload/**/*.ts",
     "packages/**/*.ts",
-    "vite.*.config.ts"
+    "apps/desktop/vite.*.config.ts"
   ]
 }

@@ -6,9 +6,12 @@ src/renderer/test-results
 test-results
 
 # Bundled mautrix bridge binaries, fetched by scripts/fetch-bridges.mjs
-/bridges/
+/resources/bridges/
 
 # Electron Forge build output
 /out/
 .DS_Store
 /dist/
+
+# Claude Code local settings (shared project settings stay tracked)
+.claude/settings.local.json

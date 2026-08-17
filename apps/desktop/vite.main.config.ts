@@ -1,5 +1,12 @@
 import {builtinModules} from 'node:module';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {defineConfig} from 'vite';
+
+// Resolved from this file rather than the working directory: Electron Forge
+// runs from the repo root, a bare `vite` run does not, and the entry is the
+// same file either way.
+const appRoot = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * The main process runs as an ES module inside Electron, where `require` does
@@ -40,7 +47,7 @@ export default defineConfig({
       external: ['electron', 'electron-squirrel-startup', ...nodeBuiltins],
     },
     lib: {
-      entry: 'src/main/main.ts',
+      entry: path.join(appRoot, 'src/main/main.ts'),
       fileName: () => 'main.js',
       formats: ['es'],
     },

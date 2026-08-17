@@ -83,25 +83,6 @@ export function supportedLanguage(value: unknown): string | null {
 }
 
 /**
- * Bundled skills that back a first-class surface of the app rather than an
- * optional add-on: GUI/browser control, and the Hub's email and messaging
- * integrations. They are always loaded, and the Hub tab is where the user
- * configures them, so listing them again in Settings → Skills would offer a
- * toggle that contradicts the surface it belongs to.
- */
-export const CORE_INTEGRATION_SKILLS = [
-  "browser-use",
-  "gui-control",
-  "email",
-  "himalaya",
-  "message",
-] as const;
-
-export function isCoreIntegrationSkill(name: string): boolean {
-  return (CORE_INTEGRATION_SKILLS as readonly string[]).includes(name);
-}
-
-/**
  * Every platform the Communications tab lists, in display order. `route` is
  * the path segment the hub proxies a bridge's provisioning API under; a null
  * route means the bridge has no remote account to link — it either runs

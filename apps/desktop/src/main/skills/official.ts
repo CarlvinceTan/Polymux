@@ -13,6 +13,20 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 
+/**
+ * The skills that back a first-class surface of the app rather than an
+ * optional add-on. Membership is the folder a skill shipped in — `core` is
+ * always loaded and configured from the surface it belongs to (the Hub tab,
+ * say) instead of the Skills list, so there is no separate list of names to
+ * keep in step with the directory.
+ */
+export function coreSkillNames(source: string): string[] {
+  if (!existsSync(source)) return [];
+  return readdirSync(source, {withFileTypes: true})
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+}
+
 /** Where the mirrored copy lives, next to the personal skills it shadows. */
 export function officialSkillsHome(home = homedir()): string {
   return path.join(home, ".flareai", "official-skills");
@@ -29,21 +43,28 @@ const MANIFEST = ".installed.json";
  *
  * The mirror is app-owned: an update rewrites it, and `ProtectedSkillGuard`
  * keeps the agent's file tools out of it. Personal skills belong in
- * `~/.flareai/skills`; a built-in skill of the same name stays authoritative
- * in the loader, so saving one under a built-in's name is refused rather than
- * silently ignored.
+ * `~/.flareai/skills`; a bundled skill of the same name stays authoritative
+ * in the loader, so saving one under a bundled skill's name is refused rather
+ * than silently ignored.
+ *
+ * Several source trees are merged flat into the one mirror — `skills/core` and
+ * `skills/official` ship separately because the tiers differ in the interface,
+ * not on disk. The loader sees one directory of skills either way.
  */
-export function installOfficialSkills(source: string, home = homedir()): string {
+export function installOfficialSkills(sources: string | string[], home = homedir()): string {
   const target = officialSkillsHome(home);
-  if (!existsSync(source)) return target;
-  const digest = treeDigest(source);
+  const present = (Array.isArray(sources) ? sources : [sources]).filter((source) =>
+    existsSync(source),
+  );
+  if (!present.length) return target;
+  const digest = present.map((source) => treeDigest(source)).join(":");
   if (readManifest(target) === digest) return target;
   // Staged next to the target and swapped in: a crash or a quit mid-copy
   // leaves the previous mirror whole rather than a half-written skill set.
   const staging = `${target}.installing`;
   rmSync(staging, {recursive: true, force: true});
   mkdirSync(path.dirname(target), {recursive: true});
-  cpSync(source, staging, {recursive: true});
+  for (const source of present) cpSync(source, staging, {recursive: true});
   writeFileSync(path.join(staging, MANIFEST), `${JSON.stringify({digest})}\n`);
   const retired = `${target}.retiring`;
   rmSync(retired, {recursive: true, force: true});

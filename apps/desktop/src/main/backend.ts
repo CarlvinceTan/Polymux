@@ -43,7 +43,6 @@ import {
   driveProvider,
   driveS3Config,
   driveSource,
-  isCoreIntegrationSkill,
   LOCAL_RUNTIMES,
   validateGoalCommand,
   validateSaveEmailAccount,
@@ -187,6 +186,14 @@ export interface DesktopBackendOptions {
   model?: ModelRef;
   toolDirectory?: string;
   officialSkillDirectories?: string[];
+  /**
+   * Skills that back a first-class surface rather than an optional add-on:
+   * always loaded, and kept out of the Skills list because the surface they
+   * belong to is where they are configured. The set is the contents of
+   * `resources/skills/core`, read at startup, so shipping a skill into that
+   * folder is the whole of making it core.
+   */
+  coreSkills?: string[];
   codexConfigPath?: string;
   /** Path to the bundled native/ax-reader.swift accessibility helper. */
   axReaderSourcePath?: string;
@@ -225,6 +232,7 @@ export class DesktopBackend {
   readonly #apiKeys: EncryptedApiKeyPool;
   readonly #inference: InferenceService;
   readonly #skills: SkillLoader;
+  readonly #coreSkills: ReadonlySet<string>;
   readonly #agentSkillOptions: SkillLoaderOptions;
   readonly #goals: GoalManager;
   readonly #memory: MemoryManager;
@@ -276,6 +284,7 @@ export class DesktopBackend {
     this.#window = options.window;
     this.#ipcMain = options.ipcMain;
     this.#toolDirectory = options.toolDirectory;
+    this.#coreSkills = new Set(options.coreSkills ?? []);
     this.#skills = new SkillLoader({
       official: options.officialSkillDirectories,
     });
@@ -283,7 +292,8 @@ export class DesktopBackend {
       official: options.officialSkillDirectories,
       // Core integrations have no Skills-list toggle, so nothing may switch
       // them off — including a stale preference from before they were core.
-      isEnabled: (skill) => isCoreIntegrationSkill(skill.name) || this.#integrationEnabled("skill-enabled", skill.name),
+      isEnabled: (skill) =>
+        this.#coreSkills.has(skill.name) || this.#integrationEnabled("skill-enabled", skill.name),
     };
     this.#storage = new SqliteStorage(
       path.join(options.dataDirectory, "flareai.sqlite"),
@@ -1681,7 +1691,7 @@ export class DesktopBackend {
   #skillDtos(): SkillDto[] {
     // Core integrations stay loaded for the agent; they are only kept out of
     // the Skills list, which is the optional-add-on surface.
-    return this.#skills.load().skills.filter((skill) => !isCoreIntegrationSkill(skill.name)).map((skill) => ({
+    return this.#skills.load().skills.filter((skill) => !this.#coreSkills.has(skill.name)).map((skill) => ({
       name: skill.name,
       description: skill.description,
       source: skill.source,

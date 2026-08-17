@@ -7,7 +7,8 @@ import type {
 } from "@flareai/core";
 
 /**
- * Built-in skills ship with the app and are mirrored, app-owned, into
+ * Bundled skills — `resources/skills/core` and `resources/skills/official`
+ * alike — ship with the app and are mirrored, app-owned, into
  * `~/.flareai/official-skills`. The Skills tab already refuses to edit them
  * (`editable` is true only for `~/.flareai/skills`), but the mirror is an
  * ordinary writable directory, so the agent's own file tools could still
@@ -24,7 +25,7 @@ import type {
 const PATH_ARGUMENTS: Record<string, string> = { write: "path", edit: "path" };
 
 const MESSAGE =
-  "Built-in skills are read-only. They are mirrored from the app bundle and " +
+  "Bundled skills are read-only. They are mirrored from the app bundle and " +
   "any edit here is reverted on update. To customise one, copy it into " +
   "~/.flareai/skills and edit that copy.";
 

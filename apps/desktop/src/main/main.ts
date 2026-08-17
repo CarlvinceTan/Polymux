@@ -9,7 +9,7 @@ import { BridgeHost, Homeserver } from "./homeserver/index.js";
 import { registerMediaScheme, serveMedia } from "./communications/media.js";
 import { WeChatBridge, WECHAT_FALLBACK_DIRECTORIES } from "./homeserver/wechat-bridge.js";
 import { loadShippedCredentials } from "./homeserver/shipped-credentials.js";
-import { installOfficialSkills } from "./skills/official.js";
+import { coreSkillNames, installOfficialSkills } from "./skills/official.js";
 import {
   FLAREAI_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
@@ -305,6 +305,7 @@ function createWindow(): void {
     backend = new DesktopBackend({
       dataDirectory: app.getPath("userData"),
       officialSkillDirectories: [officialSkillDirectory()],
+      coreSkills: coreSkillNames(bundledResource("skills", "core")),
       axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
       hub: hub
         ? {
@@ -541,13 +542,23 @@ app.on("will-quit", (event) => {
  * `~/.flareai`, so every skill the app runs lives in the user's own directory.
  */
 function officialSkillDirectory(): string {
-  return installOfficialSkills(bundledResource("skills", "official"));
+  return installOfficialSkills([
+    bundledResource("skills", "core"),
+    bundledResource("skills", "official"),
+  ]);
 }
 
+/**
+ * A path inside `resources/` — the skills, the native helpers and the bridge
+ * binaries, everything shipped beside the code rather than bundled into it.
+ * The tree is copied wholesale by `extraResource`, so the same segments
+ * resolve in a packaged app and in a checkout; the prefix lives here so call
+ * sites name what they want rather than where the packager put it.
+ */
 function bundledResource(...segments: string[]): string {
   const candidates = [
-    path.join(process.resourcesPath, ...segments),
-    path.join(app.getAppPath(), ...segments),
+    path.join(process.resourcesPath, "resources", ...segments),
+    path.join(app.getAppPath(), "resources", ...segments),
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }

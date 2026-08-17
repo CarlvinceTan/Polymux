@@ -7,9 +7,13 @@ import {VitePlugin} from '@electron-forge/plugin-vite';
 import {FusesPlugin} from '@electron-forge/plugin-fuses';
 import {FuseV1Options, FuseVersion} from '@electron/fuses';
 
+// Forge runs from the repo root (package.json's `config.forge` points here),
+// so every path in this file is written relative to that root rather than to
+// this file's own directory.
+const app = 'apps/desktop';
 const icon = process.platform === 'win32'
-  ? 'assets/appicon.ico'
-  : 'assets/appicon.icns';
+  ? `${app}/assets/appicon.ico`
+  : `${app}/assets/appicon.icns`;
 
 /**
  * Signing is switched on by the environment, not by editing this file. Without
@@ -38,10 +42,11 @@ const notarising = Boolean(
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    // `bridges` holds the mautrix binaries fetched by scripts/fetch-bridges.mjs.
-    // They are not in git (half a gigabyte of build output); run
-    // `npm run bridges:fetch` before packaging, which the prepackage hook does.
-    extraResource: ['skills', 'native', 'bridges'],
+    // Everything shipped beside the code: skills, the native helpers, and the
+    // mautrix binaries under `resources/bridges`. Those binaries are not in git
+    // (half a gigabyte of build output); run `npm run bridges:fetch` before
+    // packaging, which the prepackage hook does.
+    extraResource: ['resources'],
     extendInfo: {
       NSLocationUsageDescription: 'FlareAI uses your location only when Location access is enabled in General settings.',
       NSLocationWhenInUseUsageDescription: 'FlareAI uses your location only when Location access is enabled in General settings.',
@@ -60,7 +65,7 @@ const config: ForgeConfig = {
             // signed by anyone else, and they arrive ad-hoc signed from their
             // own releases.
             optionsForFile: () => ({
-              entitlements: 'assets/entitlements.plist',
+              entitlements: `${app}/assets/entitlements.plist`,
               hardenedRuntime: true,
             }),
           },
@@ -87,20 +92,20 @@ const config: ForgeConfig = {
     new VitePlugin({
       build: [
         {
-          entry: 'src/main/main.ts',
-          config: 'vite.main.config.ts',
+          entry: `${app}/src/main/main.ts`,
+          config: `${app}/vite.main.config.ts`,
           target: 'main',
         },
         {
-          entry: 'src/preload/preload.ts',
-          config: 'vite.preload.config.ts',
+          entry: `${app}/src/preload/preload.ts`,
+          config: `${app}/vite.preload.config.ts`,
           target: 'preload',
         },
       ],
       renderer: [
         {
           name: 'main_window',
-          config: 'vite.renderer.config.ts',
+          config: `${app}/vite.renderer.config.ts`,
         },
       ],
     }),

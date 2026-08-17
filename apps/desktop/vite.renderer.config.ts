@@ -3,7 +3,10 @@ import {fileURLToPath} from 'node:url';
 import {defineConfig} from 'vite';
 import {svelte} from '@sveltejs/vite-plugin-svelte';
 
-const projectRoot = path.dirname(fileURLToPath(import.meta.url));
+const appRoot = path.dirname(fileURLToPath(import.meta.url));
+// node_modules, the shared packages and the .vite output all live at the repo
+// root, two levels up from apps/desktop.
+const projectRoot = path.join(appRoot, '..', '..');
 
 // This config is served two ways: by Electron Forge for the app itself, and by
 // a bare `vite` for working on the renderer in a browser. Forge merges its own
@@ -22,7 +25,7 @@ const forgeDriven = process.argv.some((argument) => argument.includes('electron-
 // never load it. Pinning the absolute path keeps both builds writing to the
 // same place.
 export default defineConfig({
-  root: 'src/renderer',
+  root: path.join(appRoot, 'src/renderer'),
   cacheDir: path.join(projectRoot, 'node_modules', forgeDriven ? '.vite-app' : '.vite-web'),
   plugins: [svelte()],
   // Forge merges `resolve.preserveSymlinks: true`, which makes the workspace's

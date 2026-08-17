@@ -75,13 +75,13 @@ const logos: Record<string, string> = {
 // excluded: they're wide, and these render in a square tile.
 const ICONS = import.meta.glob<string>(
   [
-    '../../../../../node_modules/@lobehub/icons-static-svg/icons/*.svg',
-    '!../../../../../node_modules/@lobehub/icons-static-svg/icons/*-text.svg',
-    '!../../../../../node_modules/@lobehub/icons-static-svg/icons/*-text-cn.svg',
-    '!../../../../../node_modules/@lobehub/icons-static-svg/icons/*-brand.svg',
-    '!../../../../../node_modules/@lobehub/icons-static-svg/icons/*-brand-color.svg',
-    '!../../../../../node_modules/@lobehub/icons-static-svg/icons/*-combine.svg',
-    '!../../../../../node_modules/@lobehub/icons-static-svg/icons/*-combine-color.svg',
+    '../../../../../../../node_modules/@lobehub/icons-static-svg/icons/*.svg',
+    '!../../../../../../../node_modules/@lobehub/icons-static-svg/icons/*-text.svg',
+    '!../../../../../../../node_modules/@lobehub/icons-static-svg/icons/*-text-cn.svg',
+    '!../../../../../../../node_modules/@lobehub/icons-static-svg/icons/*-brand.svg',
+    '!../../../../../../../node_modules/@lobehub/icons-static-svg/icons/*-brand-color.svg',
+    '!../../../../../../../node_modules/@lobehub/icons-static-svg/icons/*-combine.svg',
+    '!../../../../../../../node_modules/@lobehub/icons-static-svg/icons/*-combine-color.svg',
   ],
   {query: '?url', import: 'default', eager: true},
 );

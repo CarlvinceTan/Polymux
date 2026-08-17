@@ -48,7 +48,7 @@ function processTable() {
 /**
  * A dev app left over from an earlier `npm start` owns the single-instance lock
  * on the userData directory, so the instance this run is about to launch quits
- * itself before it ever opens a window (see the lock in src/main/main.ts).
+ * itself before it ever opens a window (see the lock in apps/desktop/src/main/main.ts).
  * Forge does not notice — it keeps its dev servers up and its terminal quiet —
  * and the only FlareAI on screen stays the old one, still on its old bundle.
  * That reads exactly like `npm start` hanging on a blank window, so retire the
