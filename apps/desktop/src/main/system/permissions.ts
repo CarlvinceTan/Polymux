@@ -3,9 +3,12 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { desktopCapturer, shell, systemPreferences } from "electron";
 import type {
+  AppPermissionKind,
   SystemPermissionKind,
   SystemPermissionStatus,
 } from "@flareai/protocol";
+import { isAppPermissionKind } from "@flareai/protocol";
+import type { AppPermissions } from "./app-permissions.js";
 
 /** Where each grant lives in System Settings. */
 const SETTINGS_PANE: Record<SystemPermissionKind | "location", string> = {
@@ -14,7 +17,48 @@ const SETTINGS_PANE: Record<SystemPermissionKind | "location", string> = {
   accessibility: "Privacy_Accessibility",
   "full-disk-access": "Privacy_AllFiles",
   location: "Privacy_LocationServices",
+  reminders: "Privacy_Reminders",
+  calendars: "Privacy_Calendars",
+  contacts: "Privacy_Contacts",
+  photos: "Privacy_Photos",
+  automation: "Privacy_Automation",
 };
+
+/**
+ * The native helper behind the grants Electron cannot reach, installed once by
+ * the backend. Process-wide like the Electron APIs beside it, because there is
+ * one set of grants per running app and nothing here is worth threading
+ * through every caller.
+ */
+let helper: AppPermissions | undefined;
+
+/**
+ * The last answer the helper gave for each app grant. It exists because
+ * reading one costs a child process while half the callers — the ambient
+ * capability checks that run on every turn — are synchronous and cannot wait.
+ * They get the last reading; anything that acts on the answer calls
+ * `permissionStatus` and gets a fresh one, which also refreshes this.
+ */
+const lastAppStatus = new Map<AppPermissionKind, SystemPermissionStatus>();
+
+export function useAppPermissions(instance: AppPermissions): void {
+  helper = instance;
+}
+
+/**
+ * A fresh reading, including the app grants the sync form can only remember.
+ * Anything that is about to act on the answer should ask through this.
+ */
+export async function permissionStatus(
+  permission: SystemPermissionKind,
+): Promise<SystemPermissionStatus> {
+  if (process.platform !== "darwin") return "granted";
+  if (!isAppPermissionKind(permission)) return systemPermissionStatus(permission);
+  if (!helper) return "unknown";
+  const status = await helper.status(permission);
+  lastAppStatus.set(permission, status);
+  return status;
+}
 
 /**
  * macOS exposes no API for Full Disk Access: nothing to query, nothing to
@@ -43,10 +87,17 @@ export function fullDiskAccessStatus(home = homedir()): SystemPermissionStatus {
   }
 }
 
+/**
+ * What is granted right now, without waiting. App grants answer from the last
+ * reading — "unknown" until something has asked for one — so a caller that
+ * needs certainty uses `permissionStatus` instead.
+ */
 export function systemPermissionStatus(
   permission: SystemPermissionKind,
 ): SystemPermissionStatus {
   if (process.platform !== "darwin") return "granted";
+  if (isAppPermissionKind(permission))
+    return lastAppStatus.get(permission) ?? "unknown";
   if (permission === "accessibility")
     return systemPreferences.isTrustedAccessibilityClient(false)
       ? "granted"
@@ -61,6 +112,15 @@ export async function requestSystemPermission(
   permission: SystemPermissionKind,
 ): Promise<SystemPermissionStatus> {
   if (process.platform !== "darwin") return "granted";
+
+  if (isAppPermissionKind(permission)) {
+    // The framework call *is* the prompt, so there is nothing to raise
+    // separately and nothing to poll: the helper returns once the user has
+    // answered, or straight away when the grant was already decided.
+    const status = helper ? await helper.request(permission) : "unknown";
+    lastAppStatus.set(permission, status);
+    return status;
+  }
 
   if (permission === "microphone") {
     await systemPreferences.askForMediaAccess("microphone");

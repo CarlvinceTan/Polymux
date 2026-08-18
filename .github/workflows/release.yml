@@ -81,7 +81,7 @@ jobs:
           # without a release. Same secrets the build baked in as the fallback.
           FLAREAI_TELEGRAM_API_ID: ${{ secrets.FLAREAI_TELEGRAM_API_ID }}
           FLAREAI_TELEGRAM_API_HASH: ${{ secrets.FLAREAI_TELEGRAM_API_HASH }}
-        run: npm run publish:updates
+        run: npm run updates
 
       # A GitHub Release is where people get their *first* install; updates
       # after that come from R2 and never touch this.

@@ -55,6 +55,7 @@ export interface MemoryStatusDto {
   consolidationRetryAfter: string | null;
   pendingMemories: number;
 }
+export type ChronicleCapturePolicy = "all" | "except" | "only";
 export interface ChronicleStatusDto {
   enabled: boolean;
   running: boolean;
@@ -63,6 +64,21 @@ export interface ChronicleStatusDto {
   lastError: string | null;
   storedFrames: number;
   storedBytes: number;
+  storedEvents: number;
+  /** "all" records everywhere; "except" and "only" read the lists below. */
+  capturePolicy: ChronicleCapturePolicy;
+  apps: string[];
+  sites: string[];
+  recordPrivateBrowsing: boolean;
+  interactionEvents: boolean;
+  distilledThrough: string | null;
+}
+export interface ChronicleSettingsPatchDto {
+  capturePolicy?: ChronicleCapturePolicy;
+  apps?: string[];
+  sites?: string[];
+  recordPrivateBrowsing?: boolean;
+  interactionEvents?: boolean;
 }
 export interface ChronicleEntryDto {
   id: string;
@@ -91,8 +107,38 @@ export interface GeneralSettingsDto {
   timeEnabled: boolean;
   locationEnabled: boolean;
   reasoningLevel: ReasoningEffort;
+  /**
+   * Whether the full settings surface is on offer. Off by default: basic mode
+   * hides the composer's model picker and the Model and Memory tabs, leaving
+   * the model to be chosen from whichever provider is configured and every
+   * memory option switched on.
+   */
+  advancedMode: boolean;
   /** False until the first-run setup has been finished or dismissed. */
   onboardingCompleted: boolean;
+  /**
+   * Whether the app may *use* each OS permission, independently of whether
+   * macOS has granted it. Switching one off stops the app reaching for the
+   * capability without touching the grant, so turning it back on needs no
+   * second trip through System Settings.
+   */
+  permissions: Record<SystemPermissionKind, boolean>;
+  /**
+   * Whether the app may post system notifications at all, and which events
+   * earn one. The master switch is kept separate from the per-event map so
+   * turning it off silences everything without forgetting which events the
+   * user had chosen — flipping it back on restores that choice rather than
+   * every event at once.
+   */
+  notificationsEnabled: boolean;
+  notifications: Record<NotificationKind, boolean>;
+  /**
+   * The master switch over every app grant a skill can declare. Off means the
+   * app refuses to use them and never asks for one, and — the point of keeping
+   * it separate from the grants themselves — it takes nothing back from macOS,
+   * so switching it on again costs no second trip through System Settings.
+   */
+  appPermissionsEnabled: boolean;
   location: {
     latitude: number;
     longitude: number;
@@ -109,9 +155,34 @@ export interface GeneralSettingsUpdate {
   timeEnabled?: boolean;
   locationEnabled?: boolean;
   reasoningLevel?: ReasoningEffort;
+  advancedMode?: boolean;
   onboardingCompleted?: boolean;
+  permissions?: Partial<Record<SystemPermissionKind, boolean>>;
+  notificationsEnabled?: boolean;
+  notifications?: Partial<Record<NotificationKind, boolean>>;
+  appPermissionsEnabled?: boolean;
   location?: GeneralSettingsDto["location"];
 }
+/**
+ * An event worth interrupting the user for. Each one is a row in Settings and
+ * a key in the map above, so adding a kind here is all it takes for the row
+ * and its stored switch to follow.
+ */
+export type NotificationKind =
+  | "schedule-completed"
+  | "schedule-failed"
+  | "agent-completed"
+  | "agent-attention"
+  | "message-received";
+
+export const NOTIFICATION_KINDS: NotificationKind[] = [
+  "schedule-completed",
+  "schedule-failed",
+  "agent-completed",
+  "agent-attention",
+  "message-received",
+];
+
 /** How much the model is asked to reason before answering. Mirrors the
  * inference package's effort levels so the renderer can persist the choice
  * without importing the inference package directly. */
@@ -123,7 +194,12 @@ export type ReasoningEffort =
   | "high"
   | "xhigh"
   | "max";
-export type SystemPermissionKind =
+/**
+ * The grants the app reaches for itself, for capabilities it ships with. Every
+ * one of them is Electron's to ask for, and each is a row in Settings whether
+ * or not anything is currently using it.
+ */
+export type BuiltInPermissionKind =
   | "microphone"
   | "screen-recording"
   | "accessibility"
@@ -131,6 +207,45 @@ export type SystemPermissionKind =
   // System Settings, so it is never "not-determined" — either this process can
   // read what the grant covers or it cannot.
   | "full-disk-access";
+
+/**
+ * The grants a *skill* needs, because it drives one of the user's own apps.
+ * Electron can neither read nor prompt for these, so they go through the
+ * native helper; and unlike the built-in ones they are asked for when a skill
+ * that declares one is installed, rather than at first run.
+ */
+export type AppPermissionKind =
+  | "reminders"
+  | "calendars"
+  | "contacts"
+  | "photos"
+  // Driving another application, which macOS records per (FlareAI, target app)
+  // pair rather than as one switch. It is presented as one row all the same:
+  // the pane it opens is the one place any of those pairs can be changed.
+  | "automation";
+
+export type SystemPermissionKind = BuiltInPermissionKind | AppPermissionKind;
+
+export const BUILT_IN_PERMISSION_KINDS: BuiltInPermissionKind[] = [
+  "microphone",
+  "screen-recording",
+  "accessibility",
+  "full-disk-access",
+];
+
+export const APP_PERMISSION_KINDS: AppPermissionKind[] = [
+  "reminders",
+  "calendars",
+  "contacts",
+  "photos",
+  "automation",
+];
+
+export function isAppPermissionKind(
+  value: unknown,
+): value is AppPermissionKind {
+  return APP_PERMISSION_KINDS.includes(value as AppPermissionKind);
+}
 export type SystemPermissionStatus =
   | "not-determined"
   | "granted"
@@ -175,6 +290,31 @@ export interface SaveCustomMcpRequest {
   url?: string;
   headers?: Record<string, string>;
 }
+export interface DiscoveredMcpDto {
+  id: string;
+  name: string;
+  description?: string;
+  transport: "stdio" | "streamable-http";
+  /** The command or url the server runs on, shown as its one-line detail. */
+  target: string;
+  /** The agent whose configuration it was found in, e.g. "codex". */
+  source: string;
+  /** The scanned file, with the home directory shortened to "~". */
+  path: string;
+  /**
+   * "loaded" — FlareAI already runs a server with this id.
+   * "available" — it can be copied into ~/.flareai/mcp.json.
+   */
+  state: "loaded" | "available";
+}
+/** Servers found in one agent's configuration file. */
+export interface DiscoveredMcpGroupDto {
+  id: string;
+  /** The agent the file belongs to, e.g. "Codex". */
+  label: string;
+  path: string;
+  servers: DiscoveredMcpDto[];
+}
 export interface McpChangeDto {
   servers: McpServerDto[];
   error: string | null;
@@ -187,6 +327,13 @@ export interface McpRegistryEntryDto {
   repository?: string;
   requiredHeaders: string[];
 }
+/** One page of registry results. `nextCursor` is empty once the registry has
+ * nothing further; entries can be empty while it is not, because remote-less
+ * servers are dropped after the page arrives. */
+export interface McpRegistryPageDto {
+  entries: McpRegistryEntryDto[];
+  nextCursor: string;
+}
 export interface SkillDto {
   name: string;
   description: string;
@@ -194,6 +341,14 @@ export interface SkillDto {
   filePath: string;
   disableModelInvocation: boolean;
   allowedTools: string[];
+  /**
+   * The app grants this skill declared in its own frontmatter, e.g.
+   * `permissions: reminders`. Read from the SKILL.md rather than a list kept
+   * here, so a skill installed from anywhere can say what it needs — and so
+   * installing it can ask for that grant instead of leaving the agent to hit
+   * the refusal mid-run.
+   */
+  permissions: AppPermissionKind[];
   enabled: boolean;
   editable: boolean;
   instructions?: string;
@@ -244,6 +399,74 @@ export interface DiscoveredSkillGroupDto {
   directory: string;
   skills: DiscoveredSkillDto[];
 }
+/**
+ * What a plugin brings with it. A plugin is installed and removed whole, so
+ * these are reported rather than listed as separate rows: the Skills and MCP
+ * tabs stay a view of what the user added directly, and everything a plugin
+ * contributed is read on its own card.
+ */
+export interface PluginContributionsDto {
+  /** Skill names, loaded by the agent but deliberately absent from Skills. */
+  skills: string[];
+  /** MCP server ids, connected but deliberately absent from the MCP tab. */
+  mcpServers: string[];
+  /** Counted rather than named: FlareAI has no surface for these yet. */
+  commands: number;
+  agents: number;
+  hooks: number;
+}
+/**
+ * A name a plugin contributes that the user already has standalone. The
+ * plugin's copy is what runs, so the clash is surfaced on the plugin's card
+ * rather than silently resolved.
+ */
+export interface PluginConflictDto {
+  kind: "skill" | "mcp";
+  name: string;
+  /** Where the standalone copy came from, e.g. "flareai" or "official". */
+  existingSource: string;
+}
+export interface PluginDto {
+  /** "<marketplace>/<plugin>", unique across every marketplace added. */
+  id: string;
+  name: string;
+  description: string;
+  version?: string;
+  author?: string;
+  homepage?: string;
+  /** The marketplace it was installed from, by id. */
+  marketplace: string;
+  marketplaceName: string;
+  /** The installed folder, with the home directory shortened to "~". */
+  directory: string;
+  enabled: boolean;
+  contributions: PluginContributionsDto;
+  conflicts: PluginConflictDto[];
+  /** Set when the plugin is installed but could not be read. */
+  error?: string;
+}
+/** One entry of a marketplace's catalog, installed or not. */
+export interface MarketplacePluginDto {
+  id: string;
+  name: string;
+  description: string;
+  version?: string;
+  author?: string;
+  homepage?: string;
+  /** True when a plugin of this id is already installed. */
+  installed: boolean;
+}
+export interface PluginMarketplaceDto {
+  id: string;
+  name: string;
+  /** The `owner/repo` (or URL) the catalog was added from. */
+  source: string;
+  /** How many plugins its catalog lists, or 0 when it could not be read. */
+  pluginCount: number;
+  /** True for the marketplace FlareAI ships with, which cannot be removed. */
+  builtin: boolean;
+  error?: string;
+}
 export interface ModelDto {
   provider: string;
   id: string;
@@ -263,16 +486,26 @@ export interface ModelDto {
 }
 /**
  * The jobs a model can be assigned to. `main` is the model the agent answers
- * with; `task` and `judge` are overrides that fall back to `main` when unset.
- * `speech`, `image` and `video` are recorded preferences for the generation
- * surfaces — nothing calls them yet, so they only persist a choice.
+ * with; `task`, `judge` and `compaction` are overrides that fall back to `main`
+ * when unset. `speech`, `image` and `video` are recorded preferences for the
+ * generation surfaces — nothing calls them yet, so they only persist a choice.
  */
-export type ModelRole = "main" | "task" | "judge" | "speech" | "image" | "video";
+export type ModelRole =
+  | "main"
+  | "task"
+  | "judge"
+  | "compaction"
+  | "speech"
+  | "image"
+  | "video";
 export interface ModelRoleAssignmentDto {
   provider: string;
   id: string;
   /** Display name of the assigned model, or its id when it is unknown. */
   name: string;
+  /** How hard the role's model is asked to think. Absent when the model takes
+   * no effort level, in which case the provider's own default applies. */
+  reasoning?: ReasoningEffort;
 }
 /**
  * What each role currently points at. `null` means nothing is assigned: for
@@ -350,6 +583,10 @@ export interface DiscoverModelsRequest {
 export type RunEventDto = {
   runId: RunId;
   conversationId: ConversationId;
+  /** Set when this run is a subagent's: the run that delegated to it. The
+   * renderer routes those events to the task's own transcript rather than into
+   * the conversation the parent is writing. */
+  parentRunId?: RunId | null;
   sequence: number;
   timestamp: number;
   type: string;
@@ -437,6 +674,120 @@ export interface BrowserDownloadDto {
   path: string;
   kind: "document" | "image" | "pdf" | "spreadsheet" | "file";
   completedAt: string;
+  url: string;
+  state: "progressing" | "paused" | "completed" | "cancelled" | "interrupted";
+  receivedBytes: number;
+  /** Zero when the server sent no length, which is why progress is reported as
+   * bytes rather than a fraction the UI would have to guard. */
+  totalBytes: number;
+}
+
+export interface BrowserSettingsDto {
+  /** Where downloads land when the user is not asked each time. */
+  downloadDirectory: string;
+  askWhereToSave: boolean;
+  autofillEnabled: boolean;
+}
+
+export type PermissionDecisionDto = "allow" | "deny" | "ask";
+
+/** The permissions the embedded browser will negotiate on a site's behalf.
+ * Deliberately shorter than Electron's own list: anything absent stays denied
+ * outright rather than gaining a prompt nobody designed. */
+export type BrowserPermissionDto =
+  | "geolocation"
+  | "media"
+  | "notifications"
+  | "clipboard-read"
+  | "pointerLock"
+  | "fullscreen"
+  | "openExternal";
+
+export interface SitePermissionDto {
+  origin: string;
+  permission: BrowserPermissionDto;
+  decision: PermissionDecisionDto;
+  updatedAt: string;
+}
+
+/** A site the browser is holding data for. Cookie counts come from the cookie
+ * jar itself; Electron exposes no per-origin storage figure, so none is
+ * promised here. */
+export interface BrowserSiteDto {
+  origin: string;
+  cookies: number;
+  permissions: number;
+  logins: number;
+}
+
+/** A saved login as the renderer is allowed to see it. The password is not a
+ * field: it is returned only by an explicit, one-at-a-time reveal. */
+export interface SavedLoginDto {
+  id: string;
+  origin: string;
+  username: string;
+  source: "manual" | "import";
+  updatedAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface BrowserProfileDto {
+  id: string;
+  name: string;
+  path: string;
+  /** False when the profile is present but unreadable — Safari without Full
+   * Disk Access, or a Firefox profile behind a Primary Password. `reason` says
+   * which, so the UI can tell the user what to do instead of failing blankly. */
+  readable: boolean;
+  reason: string | null;
+}
+
+export interface BrowserSourceDto {
+  id: string;
+  name: string;
+  family: "chromium" | "firefox" | "safari";
+  profiles: BrowserProfileDto[];
+  /** Set when nothing can be read from this browser directly and the only way
+   * in is a file the user exports themselves. */
+  fileImportOnly: boolean;
+}
+
+export interface BrowserImportRequestDto {
+  sourceId: string;
+  profileId: string;
+  cookies: boolean;
+  passwords: boolean;
+  history: boolean;
+}
+
+export interface BrowserImportResultDto {
+  cookiesImported: number;
+  cookiesSkipped: number;
+  passwordsImported: number;
+  passwordsSkipped: number;
+  historyImported: number;
+  historySkipped: number;
+  /** Human-readable reasons things were skipped, deduplicated. Empty on a
+   * clean run. */
+  problems: string[];
+}
+
+/** One page in the browsing history. `visitCount` is what survives collapsing
+ * repeat visits onto a single url. */
+export interface BrowserHistoryEntryDto {
+  url: string;
+  title: string;
+  visitedAt: string;
+  visitCount: number;
+  source: "local" | "import";
+}
+
+/** A live permission request from a page, waiting on the user. */
+export interface BrowserPermissionPromptDto {
+  id: string;
+  tabId: string;
+  origin: string;
+  permission: BrowserPermissionDto;
 }
 export interface BrowserFoundDto {
   tabId: string;
@@ -458,7 +809,13 @@ export type BrowserEventDto =
   /** The page took keyboard focus. Clicks inside the embedded web contents
    * never reach the renderer, so this is how the chrome around it knows to
    * drop its own focus (the address bar's caret, above all). */
-  | { type: "focus"; tabId: string };
+  | { type: "focus"; tabId: string }
+  /** A page asked for a capability and nothing is stored for it yet. The
+   * renderer prompts; `browser.respondToPermission` settles it. */
+  | { type: "permission"; prompt: BrowserPermissionPromptDto }
+  /** A login was saved, imported or removed. Sent so an open Settings tab
+   * reflects a password captured in a browser tab without being reopened. */
+  | { type: "logins" };
 
 export interface AppVersionDto {
   version: string;
@@ -770,6 +1127,8 @@ export interface MailMessageDto {
   from: MailAddressDto | null;
   to: MailAddressDto[];
   cc: MailAddressDto[];
+  /** Only ever present on a message we sent: a received one never carries it. */
+  bcc: MailAddressDto[];
   date: string;
   /** The message as text, always present — the fallback when there is no
    * HTML part, and what a reader falls back to if the markup is unusable. */
@@ -796,6 +1155,8 @@ export interface MailListRequest {
   query?: string;
 }
 
+/** How a message announces its priority to the recipient's mail client. */
+export type MailImportance = "high" | "normal" | "low";
 export interface SendMailRequest {
   account?: string;
   to: string[];
@@ -807,6 +1168,9 @@ export interface SendMailRequest {
   draft?: boolean;
   /** Absolute paths to files to attach. */
   attachments?: string[];
+  /** Marks the message urgent or low priority for the recipient's client.
+   * "normal" is the default and writes no header. */
+  importance?: MailImportance;
   /** Message-ID being answered, so the reply threads for the recipient. */
   inReplyTo?: string;
   /** The chain so far, which the reply extends. */
@@ -894,6 +1258,31 @@ export interface ChatActivityDto {
   sender: string;
 }
 
+/**
+ * What the hub knew when the app last quit, handed back in one read.
+ *
+ * The hub's panes are network-bound, so a launch used to be a skeleton until
+ * IMAP and the homeserver answered. This is the paint-first half: the renderer
+ * seeds itself from here before its first frame, then fetches and replaces
+ * whatever moved. Everything in it is a copy — stale by definition, never
+ * authoritative, and safe to be empty.
+ */
+export interface HubSnapshotDto {
+  status: CommsStatusDto | null;
+  chats: ChatDto[];
+  /** A folder's first page, with the folder list it was read against. */
+  mailboxes: Array<{
+    account: string;
+    folder: string;
+    folders: MailFolderDto[];
+    envelopes: MailEnvelopeDto[];
+  }>;
+  /** Message bodies already read, so opening one again is instant. */
+  mail: Array<{account: string; folder: string; message: MailMessageDto}>;
+  /** The newest page of the conversations most recently looked at. */
+  messages: Array<{chatId: string; messages: ChatMessageDto[]; nextBefore: string | null}>;
+}
+
 export interface ChatPageDto {
   /** Newest first, the order the thread paints in. */
   messages: ChatMessageDto[];
@@ -909,6 +1298,67 @@ export interface CommsStatusDto {
     accounts: CommsEmailAccountDto[];
   };
 }
+
+/**
+ * A surface the agent has been asked to show, pushed to the renderer so the
+ * workspace opens on it.
+ *
+ * The agent works in places the user cannot see — a draft saved to a mailbox,
+ * a file written to a drive, a schedule it wrote down — and "show me" is then
+ * an instruction to *navigate*, not to describe. This is that instruction: a
+ * surface, and enough to say where inside it to land.
+ */
+export interface WorkspaceRevealDto {
+  surface: WorkspaceSurface;
+  /**
+   * Whether this may move what the user is looking at. False lands the request
+   * where it belongs — a draft in its composer — without opening the workspace
+   * or fronting a tab, which is how a delegated run writes something the user
+   * finds waiting rather than being switched to. Defaults to true.
+   */
+  focus?: boolean;
+  /** Hub, mail half: the mailbox, the folder, and the message to open. */
+  mail?: {
+    account: string;
+    folder?: string;
+    /** Folder-relative id. Without one the newest message in the folder wins,
+     * which is what "the draft you just wrote" means. */
+    messageId?: string;
+    /** Narrows that fallback to the newest message carrying this subject. */
+    subject?: string;
+    /**
+     * Opens the mail composer already written, instead of landing on a
+     * message. Nothing is saved or sent: the user reads it in the pane they
+     * would have typed it in, and decides.
+     *
+     * `mode` other than "new" answers the message `messageId`/`subject` names:
+     * the composer opens as a real reply or forward — recipients, Re:/Fwd:
+     * subject, quoted body, threading headers — with `body` above the quote.
+     */
+    compose?: {
+      to?: string;
+      cc?: string;
+      bcc?: string;
+      subject?: string;
+      body?: string;
+      /** Absolute paths, the same as a message sent outright takes. */
+      attachments?: string[];
+      importance?: MailImportance;
+      mode?: "new" | "reply" | "reply-all" | "forward";
+    };
+  };
+  /**
+   * Hub, messaging half: the room to open, by id or by name. `draft` fills
+   * that chat's message box without sending — the messaging half's equivalent
+   * of `mail.compose`.
+   */
+  chat?: {id?: string; name?: string; draft?: string; replyTo?: string};
+  /** Drive: which source to browse, and the folder to land in. */
+  drive?: {source?: string; path?: string};
+}
+
+/** The workspace surfaces the agent can ask for by name. */
+export type WorkspaceSurface = "hub" | "drive" | "schedule" | "chat" | "summary";
 
 /**
  * What the workspace looked like for one conversation: which tabs were open,
@@ -932,11 +1382,18 @@ export interface WorkspaceSnapshotDto {
 /**
  * Backends the drive can read and write. `local` is this Mac's filesystem and
  * is always present; the rest are accounts the user connects. Adding one means
- * adding an adapter in `src/main/drive` and a case here — nothing else in the
+ * adding an adapter in `packages/drive` and a case here — nothing else in the
  * drive is provider-aware.
+ *
+ * `all` is not a backend at all: it is the virtual drive, the union of every
+ * connected source. It holds nothing of its own and cannot be connected or
+ * disconnected, which is why it carries the `virtual` kind and stays out of
+ * the settings list.
  */
 export type DriveProviderId =
+  | "all"
   | "local"
+  | "network"
   | "google-drive"
   | "dropbox"
   | "onedrive"
@@ -946,7 +1403,7 @@ export type DriveProviderId =
  * How a provider is connected, which is what decides the shape of its settings
  * panel: a folder picker, an OAuth button, or a credentials form.
  */
-export type DriveProviderKind = "local" | "oauth" | "s3";
+export type DriveProviderKind = "virtual" | "local" | "network" | "oauth" | "s3";
 
 /**
  * `unconfigured` is distinct from `logged-out` on purpose: the first means this
@@ -1001,9 +1458,10 @@ export interface DriveSourceDto {
   accountId: string;
   /** The provider's own name — "Google Drive", "This Mac". */
   name: string;
-  /** Which account, when the provider can hold more than one. Null for local.
+  /** Which account, set only when the provider has more than one signed in.
    * The switcher reads as `<name> – <accountLabel>` when this is set, which is
-   * what tells two connected Google accounts apart. */
+   * what tells two connected Google accounts apart; with a single account
+   * there is nothing to tell apart and this is null. */
   accountLabel: string | null;
   state: DriveProviderState;
   usage: DriveUsageDto | null;
@@ -1038,6 +1496,27 @@ export interface DriveEntryDto {
    * `list` to descend into a folder. */
   path: string;
   mimeType: string | null;
+  /**
+   * The provider's own token for *this* version of the entry — a Dropbox rev,
+   * an S3 or Graph ETag, mtime and size for a local file. Opaque: it is only
+   * ever compared for equality, never parsed or ordered.
+   *
+   * It is what makes a write conditional. A run that read a file holds the
+   * version it read, and its write says "only if the file is still that one",
+   * so an edit made in between — by another chat, by the user in the provider's
+   * own web page, from their phone — fails the write instead of silently
+   * replacing what it never saw. Null means the provider offered none, and the
+   * write proceeds unconditionally.
+   */
+  version?: string | null;
+  /**
+   * Where the provider shows this file on the web, when it has such a page.
+   *
+   * Only the cloud providers do: a local or network file lives on a volume and
+   * is opened in the OS file browser instead, and an S3 object has no
+   * user-facing page at all. Null means there is nothing to open.
+   */
+  webUrl?: string | null;
 }
 
 export interface DriveS3ConfigRequest {
@@ -1147,6 +1626,12 @@ export interface FlareAIApi {
     /** Restarts into a downloaded update. No-op when none is staged. */
     installUpdate(): Promise<AppUpdateDto>;
     /**
+     * Posts a sample notification past every switch, so Settings can show
+     * whether the OS is letting them through at all. Answers "unsupported"
+     * where the platform will never show one.
+     */
+    testNotification(): Promise<"posted" | "unsupported">;
+    /**
      * Network-based approximate location (city-level), used when the
      * platform geolocation service cannot produce a position.
      */
@@ -1164,6 +1649,18 @@ export interface FlareAIApi {
     ensureFirstRun(): Promise<FirstRunPermissionDto>;
     status(permission: SystemPermissionKind): Promise<SystemPermissionStatus>;
     request(permission: SystemPermissionKind): Promise<SystemPermissionStatus>;
+    /**
+     * Asks macOS for every grant the app is entitled to ask for and does not
+     * already have, in one pass. It is the button behind "ask again": each
+     * grant macOS has already decided is left alone, because it shows its
+     * dialog once and System Settings is the only place a refusal changes.
+     *
+     * Answers with the grants that are still not given, so a caller can offer
+     * that pane rather than leaving a button that appears to do nothing —
+     * which is what a sweep looks like when everything has already been
+     * decided and there is no dialog left to raise.
+     */
+    requestAll(): Promise<AppPermissionKind[]>;
     openSettings(permission: SystemPermissionKind | "location"): Promise<void>;
   };
   dictation: {
@@ -1210,6 +1707,8 @@ export interface FlareAIApi {
   workspace: {
     snapshot(conversationId: ConversationId): Promise<WorkspaceSnapshotDto | null>;
     saveSnapshot(conversationId: ConversationId, snapshot: WorkspaceSnapshotDto): Promise<void>;
+    /** What the agent asks to be shown; the drawer opens on it. */
+    subscribeReveal(listener: (request: WorkspaceRevealDto) => void): () => void;
   };
   files: { paths(files: File[]): Promise<string[]> };
   resources: {
@@ -1224,6 +1723,9 @@ export interface FlareAIApi {
   chronicle: {
     status(): Promise<ChronicleStatusDto>;
     setEnabled(enabled: boolean): Promise<ChronicleStatusDto>;
+    update(patch: ChronicleSettingsPatchDto): Promise<ChronicleStatusDto>;
+    /** Deletes every frame and event captured in the window. */
+    forget(since: string, until: string): Promise<ChronicleStatusDto>;
     entries(options?: {
       since?: string;
       until?: string;
@@ -1236,7 +1738,15 @@ export interface FlareAIApi {
     setEnabled(id: string, enabled: boolean): Promise<McpServerDto[]>;
     saveCustom(request: SaveCustomMcpRequest): Promise<McpServerDto[]>;
     removeCustom(id: string): Promise<McpServerDto[]>;
-    searchRegistry(query: string): Promise<McpRegistryEntryDto[]>;
+    searchRegistry(query: string, cursor?: string): Promise<McpRegistryPageDto>;
+    /**
+     * Scans the MCP configuration files of the other agents installed on this
+     * machine, grouped by which one they belong to.
+     */
+    discover(): Promise<DiscoveredMcpGroupDto[]>;
+    /** Copies a discovered server into ~/.flareai/mcp.json, where it becomes
+     * an ordinary FlareAI entry: editable, and removable. */
+    adopt(groupId: string, serverId: string): Promise<McpServerDto[]>;
     subscribe(listener: (change: McpChangeDto) => void): () => void;
   };
   skills: {
@@ -1252,7 +1762,7 @@ export interface FlareAIApi {
      */
     install(spec: string): Promise<SkillDto[]>;
     /** Searches the skills.sh directory (minimum two characters). */
-    searchRegistry(query: string): Promise<SkillRegistryEntryDto[]>;
+    searchRegistry(query: string, limit?: number): Promise<SkillRegistryEntryDto[]>;
     /**
      * Scans the skill directories of the other agents installed on this
      * machine, grouped by which one they belong to.
@@ -1262,12 +1772,43 @@ export interface FlareAIApi {
     adopt(path: string): Promise<SkillDto[]>;
   };
   /**
+   * Claude Code plugins: a bundle of skills, MCP servers, commands, agents and
+   * hooks installed as one unit from a marketplace. Whatever a plugin brings
+   * stays on its own card — the `skills` and `mcp` surfaces above list only
+   * what the user added directly.
+   */
+  plugins: {
+    list(): Promise<PluginDto[]>;
+    setEnabled(id: string, enabled: boolean): Promise<PluginDto[]>;
+    /** Installs `<marketplace>/<plugin>` from an added marketplace. */
+    install(id: string): Promise<PluginDto[]>;
+    remove(id: string): Promise<PluginDto[]>;
+    marketplaces(): Promise<PluginMarketplaceDto[]>;
+    /** Adds a marketplace by `owner/repo` or a github.com URL. */
+    addMarketplace(source: string): Promise<PluginMarketplaceDto[]>;
+    removeMarketplace(id: string): Promise<PluginMarketplaceDto[]>;
+    /** Every added marketplace's catalog, filtered by `query` when given. */
+    browse(query?: string): Promise<MarketplacePluginDto[]>;
+    /**
+     * Installs a plugin folder chosen on this machine — one holding a
+     * `.claude-plugin/plugin.json` — under the local marketplace, which is
+     * where anything not from a repository is filed.
+     */
+    upload(files: File[]): Promise<PluginDto[]>;
+  };
+  /**
    * Messaging bridges and email accounts. Linking runs entirely here rather
    * than through a bridge's management room, so a QR scan or cookie sign-in is
    * a step in this API rather than a chat command the user has to type.
    */
   comms: {
     status(): Promise<CommsStatusDto>;
+    /**
+     * What the hub showed last time, read from disk rather than the network.
+     * Called before the first paint: it is what lets the hub open on content
+     * instead of a skeleton, and every fetch after it is a correction.
+     */
+    snapshot(): Promise<HubSnapshotDto>;
     /** Re-probes the hub, every bridge, and the email tooling. */
     refresh(): Promise<CommsStatusDto>;
     /**
@@ -1392,8 +1933,14 @@ export interface FlareAIApi {
     select(provider: string, id: string): Promise<ModelDto>;
     /** What every role currently points at. */
     roles(): Promise<ModelRolesDto>;
-    /** Points `role` at a model. Assigning `main` also switches the agent. */
-    assignRole(role: ModelRole, provider: string, id: string): Promise<ModelRolesDto>;
+    /** Points `role` at a model, at the reasoning level chosen with it when the
+     * model takes one. Assigning `main` also switches the agent. */
+    assignRole(
+      role: ModelRole,
+      provider: string,
+      id: string,
+      reasoning?: ReasoningEffort,
+    ): Promise<ModelRolesDto>;
     /** Clears a role's override so it follows the main model again. */
     clearRole(role: ModelRole): Promise<ModelRolesDto>;
     /** Catalogue detail for the current models, keyed `<provider>:<id>`. */
@@ -1406,7 +1953,10 @@ export interface FlareAIApi {
    */
   browser: {
     embedded: boolean;
-    open(tabId: string, url?: string): Promise<void>;
+    /** Answers with the tab's live page, so a pane mounting over a tab that
+     * already loaded — every tab the agent opens — knows there is a page there
+     * without waiting on a state event that is not coming. */
+    open(tabId: string, url?: string): Promise<{url: string; title: string}>;
     navigate(tabId: string, url: string): Promise<void>;
     history(tabId: string, delta: -1 | 1): Promise<void>;
     reload(tabId: string): Promise<void>;
@@ -1434,6 +1984,70 @@ export interface FlareAIApi {
     downloads(): Promise<BrowserDownloadDto[]>;
     openDownload(id: string): Promise<void>;
     openDownloadsFolder(): Promise<void>;
+    pauseDownload(id: string): Promise<BrowserDownloadDto[]>;
+    resumeDownload(id: string): Promise<BrowserDownloadDto[]>;
+    cancelDownload(id: string): Promise<BrowserDownloadDto[]>;
+    /** Forgets one entry. The file on disk is left where it is — this is the
+     * history, not the download. */
+    removeDownload(id: string): Promise<BrowserDownloadDto[]>;
+    clearDownloads(): Promise<BrowserDownloadDto[]>;
+    settings(): Promise<BrowserSettingsDto>;
+    /** Passing `downloadDirectory: null` opens the folder picker in the main
+     * process, the same way the drive's local root is chosen. */
+    updateSettings(
+      patch: Partial<Omit<BrowserSettingsDto, "downloadDirectory">> & {
+        downloadDirectory?: string | null;
+      },
+    ): Promise<BrowserSettingsDto>;
+    permissions(): Promise<SitePermissionDto[]>;
+    setPermission(
+      origin: string,
+      permission: BrowserPermissionDto,
+      decision: PermissionDecisionDto,
+    ): Promise<SitePermissionDto[]>;
+    /** Drops one site's decisions, or every site's when origin is omitted. */
+    clearPermissions(origin?: string): Promise<SitePermissionDto[]>;
+    /** Answers a live prompt. `remember` stores the decision for next time. */
+    respondToPermission(
+      id: string,
+      decision: "allow" | "deny",
+      remember: boolean,
+    ): Promise<void>;
+    sites(): Promise<BrowserSiteDto[]>;
+    /** Clears one site's cookies, storage and caches. Chromium clears cookies
+     * at the registrable domain, so neighbouring subdomains go with it. */
+    clearSiteData(origin: string): Promise<BrowserSiteDto[]>;
+    /** The whole jar: cookies, storage, caches and history. Saved logins are
+     * kept unless `logins` is set. */
+    clearBrowsingData(options: {
+      cookies: boolean;
+      cache: boolean;
+      downloads: boolean;
+      permissions: boolean;
+      logins: boolean;
+    }): Promise<void>;
+    logins(): Promise<SavedLoginDto[]>;
+    saveLogin(
+      origin: string,
+      username: string,
+      password: string,
+    ): Promise<SavedLoginDto[]>;
+    /** Returns one password in the clear, for a reveal or copy the user asked
+     * for. Never called to populate a list. */
+    revealLogin(id: string): Promise<string | null>;
+    deleteLogin(id: string): Promise<SavedLoginDto[]>;
+    /** The browsers found on this machine, with their readable profiles. */
+    importSources(): Promise<BrowserSourceDto[]>;
+    /** Pages visited, newest first. `query` matches url or title. Named apart
+     * from `history` above, which is this tab's back/forward navigation. */
+    browsingHistory(options?: {query?: string; limit?: number}): Promise<BrowserHistoryEntryDto[]>;
+    forgetHistoryEntry(url: string): Promise<BrowserHistoryEntryDto[]>;
+    /** Everything, or just what an import brought in. */
+    clearHistory(options?: {source?: "import"}): Promise<BrowserHistoryEntryDto[]>;
+    importFrom(request: BrowserImportRequestDto): Promise<BrowserImportResultDto>;
+    /** The fallback path: a passwords CSV or a Netscape cookies.txt the user
+     * exported themselves. Passing no path opens the file picker. */
+    importFile(path?: string): Promise<BrowserImportResultDto>;
     subscribe(listener: (event: BrowserEventDto) => void): () => void;
   };
   /**
@@ -1460,10 +2074,29 @@ export interface FlareAIApi {
      * Passing null opens a picker. Defaults to `~/Documents/FlareAI`.
      */
     setLocalRoot(path: string | null): Promise<DriveStatusDto>;
+    /**
+     * Adds a network share by its mount point. Passing no path opens a folder
+     * picker. Several can be connected at once, each its own place in the
+     * drive; adding one already there renames it rather than duplicating it.
+     */
+    addShare(path?: string | null, label?: string): Promise<DriveStatusDto>;
+    /**
+     * Shows an entry where it actually lives.
+     *
+     * For this Mac and for a network share that is the OS file browser, which
+     * is the honest answer: the file is a file on a volume. Cloud providers
+     * have no such place, so they are the caller's to open on the web.
+     */
+    revealEntry(source: string, path: string): Promise<void>;
+    /**
+     * Opens the file itself, the way double-clicking it in the OS file browser
+     * would. Only for entries that are on a volume; a cloud file has no such
+     * path and is opened at its `webUrl` instead.
+     */
+    openEntry(source: string, path: string): Promise<void>;
+    /** Forgets a share. The files on the server are untouched. */
+    removeShare(id: string): Promise<DriveStatusDto>;
     saveS3(config: DriveS3ConfigRequest): Promise<DriveStatusDto>;
-    /** The folder this conversation's output is written into, created on
-     * demand as a subfolder of the output root. */
-    conversationFolder(conversationId: string): Promise<string>;
     /** One folder's contents. `path` empty means the source's root. */
     list(source: string, path?: string): Promise<DriveEntryDto[]>;
     createFolder(source: string, parentPath: string, name: string): Promise<DriveEntryDto>;

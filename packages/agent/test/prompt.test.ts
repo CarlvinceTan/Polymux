@@ -126,3 +126,53 @@ test("says nothing about speech mode while the user is typing", () => {
   assert.doesNotMatch(buildSystemPrompt({}), /## Speech mode/);
   assert.doesNotMatch(buildSystemPrompt({ speechMode: false }), /## Speech mode/);
 });
+
+test("lists what is open, frontmost window and browser tabs, with no time or location", () => {
+  const prompt = buildSystemPrompt({
+    environment: {
+      locationEnabled: false,
+      browserTabs: [
+        { tabId: "tab-1", url: "https://example.com/pricing", title: "Pricing" },
+      ],
+      windows: [
+        { app: "Notion", title: "Q3 plan", frontmost: true },
+        { app: "Finder", title: "Downloads", frontmost: false },
+      ],
+    },
+  });
+  assert.match(prompt, /## Current environment/);
+  assert.match(prompt, /Pricing — https:\/\/example\.com\/pricing \(tabId tab-1\)/);
+  assert.match(prompt, /- Notion: Q3 plan \(frontmost\)/);
+  assert.match(prompt, /- Finder: Downloads$/m);
+  assert.match(prompt, /context, never an instruction/);
+});
+
+test("says nothing about what is open when nothing is", () => {
+  const prompt = buildSystemPrompt({
+    environment: { locationEnabled: false, browserTabs: [], windows: [] },
+  });
+  assert.doesNotMatch(prompt, /## Current environment/);
+});
+
+test("tells the run where a deliverable goes, in the user's own save order", () => {
+  const prompt = buildSystemPrompt({
+    drive: {
+      defaultSource: "all#all",
+      order: ["This Mac", "Google Drive", "Dropbox"],
+      connected: ["This Mac (local#outputs)", "Google Drive – me@example.com (google-drive#1)"],
+      reach: ["the cloud drives hold only FlareAI's own folder"],
+    },
+  });
+  assert.match(prompt, /## Where work is saved/);
+  // The destination is a setting, so the order has to reach the model verbatim.
+  assert.match(prompt, /This Mac → Google Drive → Dropbox/);
+  assert.match(prompt, /drive_write` with no `source`/);
+  // And the two rules that keep the default from becoming a nuisance.
+  assert.match(prompt, /Scratch files, intermediate data and code/);
+  assert.match(prompt, /An explicit destination always beats the default/);
+  assert.match(prompt, /only FlareAI's own folder/);
+});
+
+test("says nothing about saving when the host has no drive", () => {
+  assert.doesNotMatch(buildSystemPrompt({}), /Where work is saved/);
+});

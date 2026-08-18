@@ -63,6 +63,6 @@ When reviewing edits:
 
 ## Coordination
 
-- Let `message` and `email` handle platform routing and safety.
+- Let `message-use` and `email-use` handle platform routing and safety.
 - Use this skill after the platform skill has identified the person, latest context, and whether the user wants draft-only or send.
 - If a relationship-memory tool exists, use it before drafting to retrieve person aliases, cross-platform context, open loops, and relevant outgoing examples.

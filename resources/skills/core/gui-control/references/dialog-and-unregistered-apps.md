@@ -93,7 +93,7 @@ coverage.
 Treat project-local, ad hoc, unsigned, frequently rebuilt, or explicitly
 temporary development apps as ephemeral:
 
-- do not add them to `app-control-registry.json` or the persistent compatibility
+- do not enroll them in this installation's registry or the persistent compatibility
   inventory;
 - prefer the owning project's backend or test interface;
 - when GUI use is explicitly needed, audit the exact current build for that

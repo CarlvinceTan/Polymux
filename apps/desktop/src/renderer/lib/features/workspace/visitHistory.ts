@@ -3,18 +3,14 @@ import {flareaiApi} from '../../api/flareai';
 
 /**
  * Pages visited in the embedded browser, most recent first. The workspace
- * launcher offers these instead of the generic create-something suggestions
- * once there are enough of them to be worth showing, so it survives restarts
- * in localStorage rather than living for one window's lifetime.
+ * launcher lists these under Recent, so the store survives restarts in
+ * localStorage rather than living for one window's lifetime.
  */
 export type Visit = {url: string; title: string; favicon?: string | null};
 
-/** Below this the list reads as noise, so the launcher falls back to the
- * create-something suggestions. */
-export const HISTORY_SUGGESTION_MINIMUM = 3;
 /** What the launcher shows at most; the store keeps a little more so closing
  * one entry still leaves a full list. */
-export const HISTORY_SUGGESTION_LIMIT = 5;
+export const HISTORY_SUGGESTION_LIMIT = 3;
 const KEY = 'flareaiBrowserHistory';
 const CAP = 24;
 

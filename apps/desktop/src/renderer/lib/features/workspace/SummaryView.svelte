@@ -2,7 +2,7 @@
   export type SummaryViewSection = 'outputs' | 'references' | 'tasks';
   export type SummaryOutput = {id: string; name: string};
   export type SummaryReference = {id: string; title: string; kind?: 'web' | 'file' | 'other'};
-  export type SummaryTask = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'};
+  export type SummaryTask = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'; runId?: string; prompt?: string};
 
   export type SummaryViewData = {
     outputs: SummaryOutput[];
@@ -12,7 +12,8 @@
 </script>
 
 <script lang="ts">
-  import {taskStatusLabel, taskStatusTone} from './taskStatus';
+  import {taskStatusLabel} from './taskStatus';
+  import TaskGlyph from '../../shared/components/TaskGlyph.svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import {t, type MessageKey} from '../../../i18n';
 
@@ -26,6 +27,7 @@
   export let data: SummaryViewData;
   export let onOpenOutput: (output: SummaryOutput) => void = () => {};
   export let onOpenReference: (reference: SummaryReference) => void = () => {};
+  export let onOpenTask: (task: SummaryTask) => void = () => {};
 
   $: title = $t(sectionTitles[section]);
 </script>
@@ -47,9 +49,9 @@
       {/each}
     {:else}
       {#each data.tasks as task (task.id)}
-        <div class="summary-page-row task">
-          <span class={`status-dot ${taskStatusTone(task.status)}`} title={taskStatusLabel(task.status)}></span><strong>{task.title}</strong>
-        </div>
+        <button type="button" class="summary-page-row task" onclick={() => onOpenTask(task)}>
+          <TaskGlyph id={task.id} status={task.status} size={17} label={taskStatusLabel(task.status)}/><strong>{task.title}</strong>
+        </button>
       {/each}
     {/if}
   </div>

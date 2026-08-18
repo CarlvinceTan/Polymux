@@ -1,13 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {JsonObject} from "@flareai/inference";
+import type {ControlSession} from "./embedded.js";
 import {createInAppBrowserTool, type InAppBrowser} from "./embedded-tools.js";
 
-function fakeBrowser(overrides: Partial<InAppBrowser> = {}): InAppBrowser & {calls: string[]} {
+/**
+ * The page half of the tool now runs the shared @flareai/browser-use
+ * handlers, which talk CDP. The fake answers CDP directly, so these tests
+ * cover the tool's own job — workspace tabs, argument shaping, reporting —
+ * against the real handlers rather than against stand-ins for them.
+ */
+function fakeBrowser(
+  overrides: Partial<InAppBrowser> = {},
+  cdp: (method: string, params: Record<string, unknown>) => unknown = () => ({}),
+): InAppBrowser & {calls: string[]; sent: string[]} {
   const calls: string[] = [];
+  const sent: string[] = [];
   const tabs = [{tabId: "tab-1", url: "https://example.com/", title: "Example"}];
+  const session: ControlSession = {
+    send: async (method, params = {}) => {
+      sent.push(method);
+      return (cdp(method, params as Record<string, unknown>) ?? {}) as Record<string, unknown>;
+    },
+    refs: new Map(),
+    observers: {dialog: null},
+    cursor: null,
+    paced: () => 0,
+    moveCursor: async () => {},
+  };
   return {
     calls,
+    sent,
     tabs: () => tabs,
     reveal: (tabId) => { calls.push(`show ${tabId}`); },
     openAgentTab: async (url, show) => {
@@ -19,10 +42,7 @@ function fakeBrowser(overrides: Partial<InAppBrowser> = {}): InAppBrowser & {cal
     navigate: (tabId, url) => { calls.push(`navigate ${tabId} ${url}`); },
     settle: async (tabId) => tabs.find((tab) => tab.tabId === tabId)!,
     pageInfo: (tabId) => tabs.find((tab) => tab.tabId === tabId)!,
-    readPage: async (tabId, maxChars) => { calls.push(`read ${tabId} ${maxChars}`); return "page text"; },
-    click: async (tabId, selector) => { calls.push(`click ${selector}`); return true; },
-    type: async (tabId, selector, text, submit) => { calls.push(`type ${selector} ${text} ${submit}`); return true; },
-    scroll: async () => true,
+    session: async (tabId) => { calls.push(`session ${tabId}`); return session; },
     close: (tabId) => { calls.push(`close ${tabId}`); },
     ...overrides,
   };
@@ -59,26 +79,64 @@ test("open can reveal the page when the user asked to see it", async () => {
 });
 
 test("read returns the page text alongside the page it came from", async () => {
-  const browser = fakeBrowser();
+  const browser = fakeBrowser({}, (method) =>
+    method === "Runtime.evaluate" ? {result: {value: "page text"}} : {},
+  );
   const result = await run(browser, {action: "read", tabId: "tab-1", maxChars: 500});
   const payload = JSON.parse(result.content);
   assert.equal(payload.content, "page text");
   assert.equal(payload.pageUrl, "https://example.com/");
-  assert.deepEqual(browser.calls, ["read tab-1 500"]);
+  assert.deepEqual(browser.calls, ["session tab-1"]);
 });
 
-test("typing with submit reports where the tab ended up", async () => {
+test("the in-app browser answers the same page actions as the extension", async () => {
+  const browser = fakeBrowser({}, (method) => {
+    if (method === "Accessibility.getFullAXTree")
+      return {
+        nodes: [
+          {
+            nodeId: "1",
+            ignored: false,
+            role: {value: "button"},
+            name: {value: "Buy"},
+            backendDOMNodeId: 7,
+          },
+        ],
+      };
+    return {};
+  });
+  const result = await run(browser, {action: "snapshot", tabId: "tab-1", interactive: true});
+  assert.match(JSON.parse(result.content).content, /- button "Buy" \[ref=e1\]/);
+  assert.ok(browser.sent.includes("Accessibility.getFullAXTree"));
+});
+
+test("a screenshot comes back as an image block", async () => {
+  const browser = fakeBrowser({}, (method) =>
+    method === "Page.captureScreenshot" ? {data: "AAAA"} : {},
+  );
+  const result = (await createInAppBrowserTool(browser).execute(
+    {action: "screenshot", tabId: "tab-1"},
+    {} as never,
+  )) as {content: Array<Record<string, unknown>>};
+  assert.equal(result.content[1].type, "image");
+  assert.equal(result.content[1].data, "AAAA");
+});
+
+test("an action with no target is refused before it reaches the page", async () => {
   const browser = fakeBrowser();
-  const result = await run(browser, {action: "type", tabId: "tab-1", selector: "#q", text: "flareai", submit: true});
-  assert.equal(JSON.parse(result.content).ok, true);
-  assert.deepEqual(browser.calls, ["type #q flareai true"]);
+  const result = await run(browser, {action: "click", tabId: "tab-1"});
+  assert.equal(result.isError, true);
+  assert.match(result.content, /requires a target/);
+  assert.deepEqual(browser.sent, []);
 });
 
-test("a selector that matches nothing is an error, not a silent success", async () => {
-  const browser = fakeBrowser({click: async () => false});
-  const result = await run(browser, {action: "click", tabId: "tab-1", selector: ".missing"});
+test("a blocking dialog is reported instead of letting the command hang", async () => {
+  const browser = fakeBrowser();
+  const session = await browser.session("tab-1");
+  session.observers.dialog = {type: "confirm", message: "Leave site?"};
+  const result = await run(browser, {action: "read", tabId: "tab-1"});
   assert.equal(result.isError, true);
-  assert.match(result.content, /matches \.missing/);
+  assert.match(result.content, /confirm dialog is blocking/);
 });
 
 test("plain terms search Google, a bare host just gains a scheme", async () => {

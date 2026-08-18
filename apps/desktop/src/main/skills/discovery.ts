@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { SkillLoader } from "@flareai/agent";
 import type { DiscoveredSkillGroupDto } from "@flareai/protocol";
+import { flareaiDirectoryName } from "../system/paths.js";
 
 /**
  * The agents whose names we know how to write, in the order their groups are
@@ -73,9 +74,11 @@ const SKILL_FOLDERS = ["skills", "skill"];
 
 /**
  * FlareAI's own directories. Its personal skills are already the Skills list,
- * and its mirror of the bundled set is not something to adopt from.
+ * and its mirror of the bundled set is not something to adopt from. A side
+ * instance excludes the user's `~/.flareai` as well as its own: that is the
+ * other FlareAI run, not another agent.
  */
-const SELF = new Set([".flareai"]);
+const SELF = new Set([".flareai", flareaiDirectoryName()]);
 
 /**
  * Reads every agent skill directory on this machine: `~/.<agent>/skills` and

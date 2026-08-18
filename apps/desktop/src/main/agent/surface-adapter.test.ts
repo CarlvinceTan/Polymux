@@ -108,7 +108,10 @@ test("publishes a window lease with the Codex-compatible shape and token", async
     assert.equal(auth, "Bearer test-token");
     assert.equal(body.kind, "window");
     assert.equal(body.state, "active");
-    assert.deepEqual(body.agent, {id: "flareai", name: "FlareAI"});
+    // The agent is Flare; the app it ships in is FlareAI. `id` is the stable
+    // identifier the service routes stop-requests by, so only `name` follows
+    // the agent's own name.
+    assert.deepEqual(body.agent, {id: "flareai", name: "Flare"});
     assert.deepEqual(body.app, {name: "Google Chrome", bundleId: "com.google.Chrome"});
     assert.deepEqual(body.control, {sessionId: "flareai-browser"});
   });

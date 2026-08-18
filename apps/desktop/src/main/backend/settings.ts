@@ -1,9 +1,19 @@
 import {clearFaviconCache} from "../browser/favicon.js";
 import {SUPPORTED_LANGUAGES, supportedLanguage} from "@flareai/protocol";
-import type {GeneralSettingsDto, ReasoningEffort} from "@flareai/protocol";
+import type {BrowserSettingsDto, GeneralSettingsDto, ReasoningEffort} from "@flareai/protocol";
 import {app, nativeTheme} from "electron";
 import {rename} from "node:fs/promises";
 import {parse as parseToml} from "smol-toml";
+import {
+  DEFAULT_PERMISSION_SWITCHES,
+  permissionSwitches,
+  permissionSwitchesUpdate,
+} from "./permission-settings.js";
+import {
+  DEFAULT_NOTIFICATION_SWITCHES,
+  notificationSwitches,
+  notificationSwitchesUpdate,
+} from "./notification-settings.js";
 import {number} from "./requests.js";
 
 /** Stored general settings: reading a preference back into a DTO, and folding
@@ -49,7 +59,20 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
     timeEnabled: true,
     locationEnabled: true,
     reasoningLevel: "medium",
+    advancedMode: false,
     onboardingCompleted: false,
+    // Every capability is on by default: the OS grant is the real gate, and
+    // this switch exists to turn one off without giving the grant back.
+    permissions: {...DEFAULT_PERMISSION_SWITCHES},
+    // Same reasoning as the permission switches: on by default, because the
+    // OS grant is the real gate and a notification the user never asked to
+    // silence is the behaviour they expect.
+    notificationsEnabled: true,
+    notifications: {...DEFAULT_NOTIFICATION_SWITCHES},
+    // On by default for the same reason as the switches it covers: the OS
+    // grant is the real gate, and a skill installed to do a job should be able
+    // to ask for what that job needs.
+    appPermissionsEnabled: true,
     location: null,
   };
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -62,6 +85,10 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
         : defaults.theme,
     language: supportedLanguage(record.language) ?? defaults.language,
     currency: supportedCurrency(record.currency),
+    advancedMode:
+      typeof record.advancedMode === "boolean"
+        ? record.advancedMode
+        : defaults.advancedMode,
     speechModeEnabled:
       typeof record.speechModeEnabled === "boolean"
         ? record.speechModeEnabled
@@ -90,9 +117,20 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
         record.reasoningLevel ?? record.thinkingLevel,
         defaults.reasoningLevel,
       ) ?? defaults.reasoningLevel,
+    permissions: permissionSwitches(record.permissions, defaults.permissions),
+    notificationsEnabled:
+      typeof record.notificationsEnabled === "boolean"
+        ? record.notificationsEnabled
+        : defaults.notificationsEnabled,
+    notifications: notificationSwitches(record.notifications, defaults.notifications),
+    appPermissionsEnabled:
+      typeof record.appPermissionsEnabled === "boolean"
+        ? record.appPermissionsEnabled
+        : defaults.appPermissionsEnabled,
     location: locationPreference(record.location),
   };
 }
+
 
 export function generalSettingsUpdate(
   value: unknown,
@@ -114,6 +152,11 @@ export function generalSettingsUpdate(
     );
   if (record.currency !== undefined && record.currency !== null && !supportedCurrency(record.currency))
     throw new Error("currency must be USD, AUD, EUR, GBP, SGD, or JPY");
+  if (
+    record.notificationsEnabled !== undefined &&
+    typeof record.notificationsEnabled !== "boolean"
+  )
+    throw new Error("notificationsEnabled must be a boolean");
   if (record.timeEnabled !== undefined && typeof record.timeEnabled !== "boolean")
     throw new Error("timeEnabled must be a boolean");
   if (
@@ -121,6 +164,8 @@ export function generalSettingsUpdate(
     typeof record.onboardingCompleted !== "boolean"
   )
     throw new Error("onboardingCompleted must be a boolean");
+  if (record.advancedMode !== undefined && typeof record.advancedMode !== "boolean")
+    throw new Error("advancedMode must be a boolean");
   if (
     record.speechModeEnabled !== undefined &&
     typeof record.speechModeEnabled !== "boolean"
@@ -160,6 +205,20 @@ export function generalSettingsUpdate(
       : current.onboardingCompleted;
   return {
     onboardingCompleted,
+    // A partial update patches the map rather than replacing it, so a row can
+    // send only the switch the user just moved.
+    permissions: permissionSwitchesUpdate(record.permissions, current.permissions),
+    // The master switch and the per-kind map move independently: silencing
+    // everything must not forget which kinds were chosen underneath.
+    notificationsEnabled:
+      typeof record.notificationsEnabled === "boolean"
+        ? record.notificationsEnabled
+        : current.notificationsEnabled,
+    notifications: notificationSwitchesUpdate(record.notifications, current.notifications),
+    appPermissionsEnabled:
+      typeof record.appPermissionsEnabled === "boolean"
+        ? record.appPermissionsEnabled
+        : current.appPermissionsEnabled,
     theme:
       record.theme === "light" || record.theme === "dark" || record.theme === "system"
         ? record.theme
@@ -171,6 +230,10 @@ export function generalSettingsUpdate(
         : record.currency === null
           ? null
           : supportedCurrency(record.currency),
+    advancedMode:
+      typeof record.advancedMode === "boolean"
+        ? record.advancedMode
+        : current.advancedMode,
     speechModeEnabled:
       typeof record.speechModeEnabled === "boolean"
         ? record.speechModeEnabled
@@ -268,4 +331,56 @@ export function requiredLocation(value: unknown): NonNullable<GeneralSettingsDto
   if (typeof record.updatedAt !== "string" || !Number.isFinite(Date.parse(record.updatedAt)))
     throw new Error("location updatedAt is invalid");
   return { latitude, longitude, accuracy, updatedAt: record.updatedAt };
+}
+
+/**
+ * Stored browser settings. The download directory defaults to the OS one, and
+ * a stored path is taken as written: a folder the user picked and later moved
+ * is recreated on next use rather than silently swapped back to the default,
+ * which would put files somewhere they are not looking for them.
+ */
+export function browserSettingsPreference(value: unknown): BrowserSettingsDto {
+  const defaults: BrowserSettingsDto = {
+    downloadDirectory: app.getPath("downloads"),
+    askWhereToSave: false,
+    autofillEnabled: true,
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaults;
+  const record = value as Record<string, unknown>;
+  return {
+    downloadDirectory:
+      typeof record.downloadDirectory === "string" && record.downloadDirectory.trim()
+        ? record.downloadDirectory
+        : defaults.downloadDirectory,
+    askWhereToSave:
+      typeof record.askWhereToSave === "boolean"
+        ? record.askWhereToSave
+        : defaults.askWhereToSave,
+    autofillEnabled:
+      typeof record.autofillEnabled === "boolean"
+        ? record.autofillEnabled
+        : defaults.autofillEnabled,
+  };
+}
+
+/** Folds a partial update onto current settings; `undefined` means unchanged. */
+export function browserSettingsUpdate(
+  patch: {
+    downloadDirectory?: string | null;
+    askWhereToSave?: boolean;
+    autofillEnabled?: boolean;
+  },
+  current: BrowserSettingsDto,
+  chosenDirectory: string | null,
+): BrowserSettingsDto {
+  return {
+    // A null directory in the patch asked for the picker. If the user cancelled
+    // it, `chosenDirectory` is null too and the current one stands.
+    downloadDirectory:
+      patch.downloadDirectory === null
+        ? (chosenDirectory ?? current.downloadDirectory)
+        : (patch.downloadDirectory ?? current.downloadDirectory),
+    askWhereToSave: patch.askWhereToSave ?? current.askWhereToSave,
+    autofillEnabled: patch.autofillEnabled ?? current.autofillEnabled,
+  };
 }

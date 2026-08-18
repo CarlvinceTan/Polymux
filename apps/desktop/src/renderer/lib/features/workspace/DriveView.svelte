@@ -17,6 +17,9 @@
     /** Which backend the entry lives on. Absent for the conversation's own
      * files, which belong to no storage provider. */
     provider?: DriveProviderId;
+    /** The provider's own page for this file, when it has one. Only the cloud
+     * providers do; a file on a volume is opened from the volume instead. */
+    webUrl?: string | null;
   };
 
   /** One storage backend the drive can be pointed at. Only backends that can
@@ -28,6 +31,9 @@
     icon?: MenuOption['icon'];
     /** Which backend it is, so the switch can wear that backend's mark. */
     provider?: DriveProviderId;
+    /** The account or share this source speaks for, named the way the user
+     * knows it. Shown when a file is selected, to say where it lives. */
+    accountLabel?: string | null;
   };
 
   export type DriveSortKey = 'name' | 'size' | 'kind' | 'modified';
@@ -115,6 +121,9 @@
   export let sources: DriveSource[] = [];
   export let activeSourceId = '';
   export let onSelectSource: (id: string) => void = () => {};
+  /** Opens the selected entry where it actually lives — the OS file browser
+   * for this Mac and for a share. */
+  export let onReveal: (entry: DriveEntry) => void = () => {};
   /**
    * Fired when a folder is opened, before its contents are shown. Cloud
    * providers list one folder at a time, so the host uses this to fill in
@@ -236,7 +245,10 @@
   $: current = crumbs[crumbs.length - 1] ?? root;
   $: items = sortEntries(filterEntries(current.children ?? [], searchQuery, activeFilter), sortKey, sortAscending);
   /** The switch only earns its place once there is something to switch to. */
-  $: showSourceMenu = sources.length > 1;
+  /* Every connected place is listed together now, so there is nothing to
+     switch between and the root is just Home. The switch is kept only for a
+     build with no virtual drive to fall back on. */
+  $: showSourceMenu = sources.length > 1 && !sources.some((source) => source.provider === 'all');
   $: sourceOptions = sources.map((source) => ({
     value: source.id,
     label: source.name,
@@ -248,13 +260,22 @@
   }));
   /** The switch stands in for the root crumb where it is shown, so the crumb
    * only names the source when there is no switch to do it. */
-  $: rootLabel = sources.find((source) => source.id === activeSourceId)?.name ?? title;
+  $: rootLabel = showSourceMenu
+    ? (sources.find((source) => source.id === activeSourceId)?.name ?? title)
+    : $t('drive.home');
   /** A folder still being fetched is not an empty one, and saying so would be
    * wrong for exactly as long as the request takes. */
   $: showEmptyOverlay = items.length === 0 && !loading;
   $: selection = items.filter((entry) => selectedIds.has(entry.id));
   $: primary = selection.find((entry) => entry.id === primaryId) ?? selection[0] ?? null;
   $: isMultiSelection = selection.length > 1;
+  /** The selected entry's own place, when it has one. Local files get no
+   * button: they are already on this Mac, which is the assumption the row
+   * badge spends nothing on either. */
+  $: selectedSource =
+    primary && primary.provider && primary.provider !== 'local'
+      ? (sources.find((source) => primary!.id.startsWith(`${source.id}/`)) ?? null)
+      : null;
   /** One selected item names itself at the end of the path, the way the old
    * browser trailed the breadcrumb with it. */
   $: selectedCrumbLabel = selection.length === 1 ? selection[0].name : '';
@@ -572,6 +593,23 @@
     nameInput?.setSelectionRange(0, dot > 0 ? dot : initial.length);
   }
 
+  /**
+   * The name the New Folder field opens on: the suggestion, stepped past the
+   * siblings already using it. The drive itself does the same on the way in,
+   * so what is typed here is what lands rather than a name silently changed
+   * underneath.
+   */
+  function suggestedFolderName(): string {
+    const suggestion = $t('drive.untitledFolder');
+    const taken = new Set(
+      (current.children ?? []).map((entry) => entry.name.toLowerCase()),
+    );
+    if (!taken.has(suggestion.toLowerCase())) return suggestion;
+    let index = 1;
+    while (taken.has(`${suggestion} ${index}`.toLowerCase())) index += 1;
+    return `${suggestion} ${index}`;
+  }
+
   function cancelNaming(): void {
     renaming = null;
     nameDraft = '';
@@ -713,6 +751,29 @@
       />
     {/if}
 
+    {#if selectedSource && primary}
+      <!-- Only once something is selected, and only when it is somewhere other
+           than this Mac: the icon names where, the tooltip names which account
+           or share, and pressing it opens that place. -->
+      <button
+        type="button"
+        class="fb-where"
+        aria-label={selectedSource.accountLabel
+          ? `${providerLabel(primary.provider!)} · ${selectedSource.accountLabel}`
+          : providerLabel(primary.provider!)}
+        data-tooltip-label={selectedSource.accountLabel
+          ? `${providerLabel(primary.provider!)} · ${selectedSource.accountLabel}`
+          : providerLabel(primary.provider!)}
+        onclick={() => onReveal(primary!)}
+      >
+        <Icon
+          name={primary.provider === 'network' ? 'globe' : 'cloud'}
+          size={MAIN_UI_ICON_SIZE}
+          strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}
+        />
+      </button>
+    {/if}
+
     <nav class="fb-breadcrumbs" aria-label={$t('drive.files')}>
       {#each crumbs as crumb, index (crumb.id)}
         <!-- The switch already names the root, so the crumb for it would only
@@ -828,7 +889,7 @@
         aria-label={$t('drive.newFolder')}
         data-tooltip-label={$t('drive.newFolder')}
         disabled={!onNewFolder}
-        onclick={() => void startNaming(NEW_FOLDER_ROW, $t('drive.untitledFolder'))}
+        onclick={() => void startNaming(NEW_FOLDER_ROW, suggestedFolderName())}
       ><Icon name="folder-plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
 
       <button
@@ -988,9 +1049,22 @@
                      Mac, which is the assumption worth not spending a mark on. -->
                 <!-- A plain `title`: the shared tooltip only reads buttons, and
                      this badge is part of the row's label rather than a control. -->
-                <span class="fb-provider-badge" title={providerLabel(entry.provider)}>
-                  <DriveProviderLogo provider={entry.provider} size={11} plain/>
+                <!-- Where it is, not whose it is: one mark for the network
+                     and one for the cloud, because the row only has to say
+                     that the file is not on this Mac. Which provider it is
+                     the name beside it answers, on hover. -->
+                <span class="fb-provider-badge">
+                  <Icon
+                    name={entry.provider === 'network' ? 'globe' : 'cloud'}
+                    size={12}
+                    strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}
+                  />
                 </span>
+                <!-- The mark says a file is not on this Mac; the name says
+                     where it is instead. It appears on hover so the column
+                     stays quiet at rest, and is lighter than the filename so
+                     it reads as provenance rather than as part of the name. -->
+                <span class="fb-provider-name">{providerLabel(entry.provider)}</span>
               {/if}
             {/if}
           </span>

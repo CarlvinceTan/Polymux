@@ -15,3 +15,9 @@ test-results
 
 # Claude Code local settings (shared project settings stay tracked)
 .claude/settings.local.json
+
+# Local OAuth client ids and other development-only environment values
+.env
+
+# Python bytecode from skill scripts run in place
+__pycache__/

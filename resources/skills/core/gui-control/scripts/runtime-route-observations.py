@@ -13,7 +13,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DEFAULT_STATE = Path.home() / ".flareai" / "window-control" / "route-observations.json"
+def flareai_home() -> Path:
+    """FlareAI's home, honouring a side instance the way the app itself does."""
+    instance = (os.environ.get("FLAREAI_DEV_INSTANCE") or "").strip()
+    return Path.home() / (f".flareai-{instance}" if instance else ".flareai")
+
+
+# Beside the route registry and the lease state: one place holds everything this
+# installation has learnt about this machine's apps.
+DEFAULT_STATE = flareai_home() / "state" / "window-control" / "route-observations.json"
+LEGACY_STATE = flareai_home() / "window-control" / "route-observations.json"
 
 
 def app_identity(app_path: Path) -> dict[str, str]:
@@ -35,6 +44,20 @@ def app_identity(app_path: Path) -> dict[str, str]:
 def stable_app_identity(identity: dict[str, str]) -> tuple[str, str, str]:
     """Identify the installed app independently of version/build metadata."""
     return (identity["path"], identity["bundle_id"], identity["executable"])
+
+
+def resolve_state(path: Path) -> Path:
+    """Adopts a cache left at the pre-`state/` location rather than starting over."""
+    if not path.exists() and LEGACY_STATE.exists() and path != LEGACY_STATE:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        LEGACY_STATE.replace(path)
+    return path
+
+
+def list_observations(args: argparse.Namespace) -> int:
+    observations = load_state(resolve_state(Path(args.state)))["observations"]
+    print(json.dumps({"observations": observations}, indent=2, sort_keys=True))
+    return 0
 
 
 def load_state(path: Path) -> dict:
@@ -62,7 +85,7 @@ def save_state(path: Path, data: dict) -> None:
 
 def lookup(args: argparse.Namespace) -> int:
     identity = app_identity(Path(args.app_path))
-    observations = load_state(Path(args.state))["observations"]
+    observations = load_state(resolve_state(Path(args.state)))["observations"]
     matches = [
         item
         for item in observations
@@ -90,7 +113,7 @@ def lookup(args: argparse.Namespace) -> int:
 
 
 def record(args: argparse.Namespace) -> int:
-    path = Path(args.state)
+    path = resolve_state(Path(args.state))
     data = load_state(path)
     identity = app_identity(Path(args.app_path))
     entry = {
@@ -132,6 +155,8 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("--prepared-state", required=True)
     add.add_argument("--result", choices=("success", "failure"), required=True)
     add.set_defaults(func=record)
+    every = commands.add_parser("list")
+    every.set_defaults(func=list_observations)
     return root
 
 

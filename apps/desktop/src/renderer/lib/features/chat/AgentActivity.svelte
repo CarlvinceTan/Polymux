@@ -44,6 +44,7 @@
   import {cubicOut} from 'svelte/easing';
   import {activityDuration, collapseActivities, formatElapsedSeconds, nextDurationTickDelay} from './activities';
   import Icon from '../../shared/components/Icon.svelte';
+  import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import {t} from '../../../i18n';
 
   export let activities: AgentActivityItem[] = [];
@@ -138,6 +139,13 @@
     return {update: measure, destroy: () => observer.disconnect()};
   }
 
+  /** The closed row's one line: the prose's first paragraph line, with the rest
+   * left to the disclosure. The line itself is truncated in CSS, so no length
+   * is guessed here. */
+  function leadLine(text: string): string {
+    return text.split('\n').find((line) => line.trim().length > 0)?.trim() ?? text;
+  }
+
   const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat' | 'archive'> = {
     thinking: 'brain',
     compacting: 'compact',
@@ -163,7 +171,7 @@
     onclick={() => activities.length && (expanded = !expanded)}
   >
     <span>{streaming ? $t('activity.workingFor', {elapsed: formatElapsedSeconds(elapsed)}) : $t('activity.workedFor', {elapsed: formatElapsedSeconds(elapsed)})}</span>
-    {#if activities.length}<Icon name="chevron" size={14}/>{/if}
+    {#if activities.length}<Icon name="chevron" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>{/if}
   </button>
 
   {#if visibleActivities.length}
@@ -174,7 +182,26 @@
           out:fade|local={{duration: solo ? OUT_MS : 0, easing: cubicOut}}
           use:glint={activity.label} class:active={activity.status === 'active'} class:live={streaming && activity.status === 'active'} class:failed={activity.status === 'failed'} class:commentary={activity.kind === 'commentary'}>
           <Icon name={activity.icon ?? activityIcons[activity.kind]} size={17}/>
-          {#if expanded && (activity.result || activity.steps?.length)}
+          {#if expanded && activity.kind === 'commentary'}
+            <!-- A commentary row carries the model's own prose, which runs to
+                 paragraphs. Opening the trail should not dump all of it: the row
+                 shows its opening line and holds the rest behind its own
+                 disclosure, like every other row's detail. -->
+            <button
+              type="button"
+              class="activity-copy activity-detail-toggle"
+              aria-expanded={Boolean(detailOpen[activity.id])}
+              onclick={() => detailOpen = {...detailOpen, [activity.id]: !detailOpen[activity.id]}}
+            >
+              <span class="activity-row-line">
+                <span class="activity-lede">{leadLine(activity.label)}</span>
+                <Icon name="chevron" size={13}/>
+              </span>
+              {#if detailOpen[activity.id]}
+                <span class="activity-prose">{activity.label}</span>
+              {/if}
+            </button>
+          {:else if expanded && (activity.result || activity.steps?.length)}
             <button
               type="button"
               class="activity-copy activity-detail-toggle"

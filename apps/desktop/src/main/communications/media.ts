@@ -1,5 +1,5 @@
 import { protocol, net } from "electron";
-import { MEDIA_SCHEME, mediaUrl } from "./media-url.js";
+import { MEDIA_SCHEME, mediaUrl } from "@flareai/hub";
 
 export { MEDIA_SCHEME, mediaUrl };
 
@@ -28,6 +28,10 @@ export function registerMediaScheme(): void {
   ]);
 }
 
+/** How long a media request waits for sign-in before giving up; see below. */
+const SIGN_IN_POLL_MS = 100;
+const SIGN_IN_GRACE_ATTEMPTS = 50;
+
 export interface MediaAuth {
   homeserverUrl: string;
   token: string | null;
@@ -37,7 +41,19 @@ export interface MediaAuth {
  * sign-in that happens later is picked up without re-registering. */
 export function serveMedia(auth: () => MediaAuth): void {
   protocol.handle(MEDIA_SCHEME, async (request) => {
-    const {homeserverUrl, token} = auth();
+    /**
+     * Signing in to the hub happens after the window is up, so the pictures
+     * already on screen at launch ask for their bytes before there is a token
+     * to ask with. Answering 401 straight away made every one of them fail at
+     * once — and a failed <img> is not retried by the page, so they stayed
+     * empty until the conversation was reopened. Waiting out the gap is the
+     * difference between a thread that fills in and one that looks broken.
+     */
+    let {homeserverUrl, token} = auth();
+    for (let attempt = 0; !token && attempt < SIGN_IN_GRACE_ATTEMPTS; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, SIGN_IN_POLL_MS));
+      ({homeserverUrl, token} = auth());
+    }
     if (!token) return new Response("Not signed in", {status: 401});
     const url = new URL(request.url);
     // `host` is the media's origin server; the path carries its id.

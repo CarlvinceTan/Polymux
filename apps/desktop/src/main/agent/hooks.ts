@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { flareaiPath } from "../system/paths.js";
 import type {
   AgentToolResult,
   ToolCallBlock,
@@ -53,7 +53,7 @@ export class HookEngine implements ToolHooks {
   #loadedMtime = -1;
   #loadError: string | null = null;
 
-  constructor(configPath = path.join(homedir(), ".flareai", "hooks.json")) {
+  constructor(configPath = flareaiPath("hooks.json")) {
     this.#configPath = configPath;
   }
 

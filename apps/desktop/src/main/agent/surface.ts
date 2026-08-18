@@ -17,9 +17,10 @@ import { randomUUID } from "node:crypto";
  *    finished control command.
  *
  * Control extends the lease shape: a lease may carry one pending `command`
- * (navigate, click, type, scroll, read) that the extension's content script
- * executes in the matched tab, animating the cursor first for pointer
- * actions. The server binds to 127.0.0.1 only.
+ * that the extension's background worker executes against the matched tab over
+ * CDP, asking the content script to animate the cursor first for pointer
+ * actions. See `SurfaceCommandKind` for the full set. The server binds to
+ * 127.0.0.1 only.
  */
 
 export interface SurfaceTab {
@@ -36,20 +37,115 @@ export interface SurfaceCursor {
   moveSequence: number;
 }
 
+/** Every command the extension can execute against a leased tab. */
+export type SurfaceCommandKind =
+  // Navigation
+  | "navigate"
+  | "back"
+  | "forward"
+  | "reload"
+  // Reading the page
+  | "snapshot"
+  | "read"
+  | "screenshot"
+  | "eval"
+  | "get"
+  | "console"
+  | "network"
+  // Pointer and keyboard
+  | "click"
+  | "dblclick"
+  | "hover"
+  | "drag"
+  | "type"
+  | "fill"
+  | "press"
+  | "keydown"
+  | "keyup"
+  | "mousemove"
+  | "mousedown"
+  | "mouseup"
+  | "scroll"
+  // Form controls
+  | "check"
+  | "uncheck"
+  | "select"
+  | "upload"
+  // Dialogs and waiting
+  | "dialog"
+  | "wait"
+  // Tabs (executed against the browser, not a bound tab)
+  | "tabs"
+  | "tabNew"
+  | "tabClose";
+
 export interface SurfaceCommand {
   id: string;
-  kind: "navigate" | "click" | "type" | "scroll" | "read";
+  kind: SurfaceCommandKind;
   /** Input pacing: calm (default) reads as an unhurried human; fast is the
    * quickest profile that still looks human. */
   pace?: "fast" | "calm";
-  url?: string;
+  /** Target: a ref from the last snapshot (preferred), a semantic locator, a
+   * CSS selector, or a viewport point. */
+  ref?: string;
+  /** Semantic locators — what the element is, rather than where it sits.
+   * The text locator is `locatorText`, because `text` is what `type` and
+   * `fill` enter. */
+  role?: string;
+  locatorText?: string;
+  label?: string;
+  placeholder?: string;
+  testid?: string;
+  /** Narrows a role match to one accessible name. */
+  name?: string;
+  exact?: boolean;
+  /** Which match to take when a locator matches several. */
+  index?: number;
   selector?: string;
-  text?: string;
   x?: number;
   y?: number;
+  url?: string;
+  text?: string;
+  key?: string;
+  value?: string;
+  expression?: string;
+  property?: string;
+  attribute?: string;
+  files?: string[];
+  button?: "left" | "middle" | "right";
+  deltaX?: number;
   deltaY?: number;
   submit?: boolean;
   maxChars?: number;
+  /** snapshot filters */
+  interactive?: boolean;
+  compact?: boolean;
+  urls?: boolean;
+  depth?: number;
+  frames?: boolean;
+  /** screenshot */
+  format?: "png" | "jpeg";
+  quality?: number;
+  fullPage?: boolean;
+  /** console / network */
+  clear?: boolean;
+  filter?: string;
+  method?: string;
+  requestId?: string;
+  /** drag destination */
+  toRef?: string;
+  toSelector?: string;
+  toX?: number;
+  toY?: number;
+  /** dialog */
+  accept?: boolean;
+  status?: boolean;
+  /** wait */
+  ms?: number;
+  timeoutMs?: number;
+  fn?: string;
+  /** tabs */
+  tabId?: number;
 }
 
 export interface SurfaceCommandResult {
@@ -58,6 +154,8 @@ export interface SurfaceCommandResult {
   pageUrl?: string;
   pageTitle?: string;
   content?: string;
+  /** Base64 image returned by `screenshot`, handed to the model as an image. */
+  image?: { data: string; mimeType: string };
 }
 
 export interface SurfaceLease {
@@ -76,7 +174,9 @@ const LEASE_TTL_MS = 120_000;
 // browser-host CDP port; FlareAI takes the next port up.
 const DEFAULT_PORT = 47_654;
 const MAX_WAIT_MS = 25_000;
-const MAX_BODY_BYTES = 1024 * 1024;
+// Sized for a full-page base64 screenshot, which is the largest thing the
+// extension ever posts back.
+const MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 interface PendingCommand {
   resolve: (result: SurfaceCommandResult) => void;
@@ -275,6 +375,7 @@ export class AgentSurfaceServer {
           pageTitle:
             typeof body.pageTitle === "string" ? body.pageTitle : undefined,
           content: typeof body.content === "string" ? body.content : undefined,
+          image: parseImage(body.image),
         });
       }
       json(response, 200, { ok: true });
@@ -296,6 +397,15 @@ export class AgentSurfaceServer {
       this.#waiters.add(waiter);
     });
   }
+}
+
+function parseImage(
+  value: unknown,
+): { data: string; mimeType: string } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { data, mimeType } = value as Record<string, unknown>;
+  if (typeof data !== "string" || typeof mimeType !== "string") return undefined;
+  return { data, mimeType };
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {

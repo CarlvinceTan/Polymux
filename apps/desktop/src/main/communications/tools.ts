@@ -275,7 +275,7 @@ function createEmailSendTool(comms: Communications): AgentTool {
   return {
     name: "email_send",
     description:
-      "Send an email from one of the user's mailboxes. This delivers immediately, so show the user the exact From, To, Cc, Subject, and body and get their approval before calling it.",
+      "Send an email from one of the user's mailboxes. This delivers immediately, so show the user the exact From, To, Cc, Subject, and body and get their approval before calling it. Pass draft: true to save it to the Drafts folder instead of sending — nothing leaves the mailbox, so a draft needs no approval; follow it with workspace_show (surface 'hub', the same account, folder 'Drafts') so the user can read and send it themselves — or, if you are a delegated run and have no such tool, say where it is in your answer.",
     parameters: {
       type: "object",
       properties: {
@@ -285,6 +285,17 @@ function createEmailSendTool(comms: Communications): AgentTool {
         bcc: {type: "array", items: {type: "string"}},
         subject: {type: "string"},
         body: {type: "string"},
+        draft: {type: "boolean", description: "Save to Drafts instead of sending"},
+        attachments: {
+          type: "array",
+          items: {type: "string"},
+          description: "Absolute paths of files to attach",
+        },
+        importance: {
+          type: "string",
+          enum: ["high", "normal", "low"],
+          description: "Marks the message urgent or low priority for the recipient; omit for normal",
+        },
       },
       required: ["to", "subject", "body"],
       additionalProperties: false,
@@ -299,6 +310,14 @@ function createEmailSendTool(comms: Communications): AgentTool {
             bcc: Array.isArray(input.bcc) ? stringList(input.bcc, "bcc") : [],
             subject: requireString(input.subject, "subject"),
             body: requireString(input.body, "body"),
+            draft: input.draft === true,
+            attachments: Array.isArray(input.attachments)
+              ? stringList(input.attachments, "attachments")
+              : undefined,
+            importance:
+              input.importance === "high" || input.importance === "low"
+                ? input.importance
+                : undefined,
           }),
         );
       } catch (error) {

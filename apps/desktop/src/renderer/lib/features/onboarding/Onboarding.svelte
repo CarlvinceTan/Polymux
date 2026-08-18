@@ -560,12 +560,12 @@
 </section>
 
 <style>
-  .onb{position:fixed;inset:0;z-index:60;overflow:hidden;background:var(--app-bg);--cover-ink:#0a0a0a}
+  .onb{position:fixed;inset:0;z-index:60;overflow:hidden;background:var(--app-bg);--cover-ink:#0a0a0a;--cover-on-ink:#fff}
   /* The cover is the disc turned inside out, so it is painted in the disc's
      own fill rather than in a colour of its own. */
-  :global(:root[data-theme="dark"]) .onb{--cover-ink:#fafafa}
+  :global(:root[data-theme="dark"]) .onb{--cover-ink:#fafafa;--cover-on-ink:#0a0a0a}
   @media (prefers-color-scheme:dark){
-    :global(:root:not([data-theme="light"])) .onb{--cover-ink:#fafafa}
+    :global(:root:not([data-theme="light"])) .onb{--cover-ink:#fafafa;--cover-on-ink:#0a0a0a}
   }
 
   /* Above the platforms arc, which is painted from a fixed layer at z-index 0.
@@ -591,7 +591,7 @@
      changes colour as the screens travel, in either direction. */
   .onb-corner-label{display:grid;justify-items:end;align-items:center}
   .onb-corner-label>*{grid-area:1/1;transition:opacity .62s ease}
-  .onb-corner-label .lit{color:#fff;mix-blend-mode:difference;opacity:0}
+  .onb-corner-label .lit{color:var(--cover-on-ink);opacity:0}
   .onb-chrome.on-hub .onb-corner-label .ink{opacity:0}
   .onb-chrome.on-hub .onb-corner-label .lit{opacity:1}
 

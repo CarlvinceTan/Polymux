@@ -35,7 +35,7 @@ Other useful commands:
 
 ```sh
 npm run check
-npm run test:backend
+npm run test
 npm run test:ui
 npm run package
 npm run make
@@ -47,7 +47,7 @@ Messaging runs through mautrix bridges that FlareAI supervises itself — no Doc
 Synapse. The binaries are not in git; fetch them before packaging:
 
 ```sh
-npm run bridges:fetch
+npm run bridges
 ```
 
 That pulls 14 pinned bridges (~610 MB) into `bridges/`, verifying each against the
@@ -65,7 +65,7 @@ A universal app would not fix it either: an x86 app slice still has no x86 bridg
 behind it.
 
 Rather than let that ship, `npm run package -- --arch=x64` and
-`npm run bridges:fetch -- --arch=x64` both refuse. An Intel build packages, installs
+`npm run bridges -- --arch=x64` both refuse. An Intel build packages, installs
 and opens perfectly well, and has no messaging in it — the kind of failure nobody
 notices until a user reports it.
 
@@ -101,13 +101,20 @@ go into the same OS-encrypted credential store as the model provider keys.
 
 The three OAuth providers need client credentials, which are read from the
 environment and never committed. A build without them reports that provider as
-unavailable rather than offering a button that could only fail:
+unavailable rather than offering a button that could only fail.
+
+Copy `.env.example` to `.env` and fill in the ids you have; `npm start` reads it,
+and it is git-ignored so the values stay on your machine:
 
 ```sh
-FLAREAI_GOOGLE_DRIVE_CLIENT_ID=... FLAREAI_GOOGLE_DRIVE_CLIENT_SECRET=... \
-FLAREAI_DROPBOX_CLIENT_ID=... \
-FLAREAI_ONEDRIVE_CLIENT_ID=... \
-npm start
+cp .env.example .env
+```
+
+Anything already in the environment takes precedence, so a value can still be
+overridden for a single run:
+
+```sh
+FLAREAI_GOOGLE_DRIVE_CLIENT_ID=... npm start
 ```
 
 Register each app as a **desktop/native** client with the redirect URI
@@ -119,7 +126,7 @@ and keys are entered in Settings → Drive.
 
 `FLAREAI_MODEL` uses `provider/model` format. Credentials are resolved by `pi-ai`; environment credentials are suitable for development until the settings UI and operating-system credential store are added.
 
-Skills are discovered from `~/.flareai/skills`, `~/.agents/skills`, bundled locations, and explicitly configured locations. MCP servers use the conventional JSON `mcpServers` shape in the app data directory's `mcp.json`, with stdio and Streamable HTTP transports supported. FlareAI watches this file for changes and reloads MCP connections automatically; changes made during an agent run are applied after it settles and are available to the next prompt in the same chat.
+Skills are discovered from `~/.flareai/skills`, `~/.agents/skills`, bundled locations, and explicitly configured locations. MCP servers use the conventional JSON `mcpServers` shape in `~/.flareai/mcp.json`, with stdio and Streamable HTTP transports supported. FlareAI watches this file for changes and reloads MCP connections automatically; changes made during an agent run are applied after it settles and are available to the next prompt in the same chat.
 
 Durable memory uses a Codex Desktop-style local Markdown vault under the app data directory's `memories` folder. `memory_summary.md` supplies compact always-on context, `MEMORY.md` is the searchable registry, explicit memories live as reviewable notes under `extensions/ad_hoc/notes`, and completed turns are recorded under `rollout_summaries`. Existing SQLite memories are imported once; automatic context compaction remains separate in SQLite.
 

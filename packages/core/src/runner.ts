@@ -316,6 +316,7 @@ export class AgentRunner {
             turns,
             signal,
             emit,
+            request.subagentRun === true,
           );
           context.messages.push(...results);
           await setStatus("running");
@@ -383,6 +384,7 @@ export class AgentRunner {
     turn: number,
     signal: AbortSignal,
     emit: (event: AgentRunEventInput) => Promise<void>,
+    subagent = false,
   ): Promise<ToolResultInferenceMessage[]> {
     const execute = async (
       call: ToolCallBlock,
@@ -435,6 +437,7 @@ export class AgentRunner {
           turn,
           callId: call.id,
           signal,
+          subagent,
           emitProgress: (message, data) =>
             emit({
               type: "tool.progress",

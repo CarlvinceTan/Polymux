@@ -183,7 +183,7 @@ himalaya message forward 42
 cat message.txt | himalaya template send
 ```
 
-Use this only when `email` has authorized immediate sending. The normal route
+Use this only when `email-use` has authorized immediate sending. The normal route
 is to save the completed template to the selected account's Drafts folder:
 
 ```bash

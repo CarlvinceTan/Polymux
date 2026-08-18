@@ -17,6 +17,7 @@
  * Pass through any extra arguments: `node scripts/dev-start.mjs --inspect`.
  */
 import {execFileSync, spawn} from 'node:child_process';
+import {existsSync} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -29,12 +30,68 @@ const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const forge = path.join(projectRoot, 'node_modules/.bin/electron-forge');
 
 /**
+ * Loads `.env` from the repo root, if there is one.
+ *
+ * This is where the OAuth client ids for Drive, Dropbox and OneDrive live in
+ * development, so they survive between runs instead of being retyped in front
+ * of every `npm start`. The file is git-ignored and never packaged: a shipped
+ * build has no `.env` to read, and configures those providers through its own
+ * settings instead.
+ *
+ * Anything already in the environment wins — `FOO=bar npm start` is how you
+ * override a stored value for one run, and it would be surprising if a file
+ * quietly took precedence over what was typed on the command line.
+ */
+function loadEnvFile() {
+  const file = path.join(projectRoot, '.env');
+  if (!existsSync(file)) return;
+  const before = {...process.env};
+  try {
+    process.loadEnvFile(file);
+  } catch (cause) {
+    // A malformed .env should not stop the app from starting; say so and
+    // carry on with whatever the environment already holds.
+    console.warn(`Ignoring .env: ${cause instanceof Error ? cause.message : cause}`);
+    return;
+  }
+  Object.assign(process.env, before);
+}
+
+loadEnvFile();
+
+/**
+ * `npm start -- --isolated[=name]` runs a *side* instance: its own userData
+ * directory, and so its own single-instance lock, and its own homeserver port
+ * (see main.ts). Nothing it does reaches the FlareAI the user already has
+ * open, which is the point — an agent can start the app to look at a change
+ * without taking the user's session away from them.
+ *
+ * The flag is consumed here rather than forwarded: Forge would pass it to
+ * Electron, which has no idea what it means. The app reads the name off
+ * FLAREAI_DEV_INSTANCE instead, so `FLAREAI_DEV_INSTANCE=review npm start`
+ * works the same way.
+ */
+const forwarded = [];
+let instance = process.env.FLAREAI_DEV_INSTANCE?.trim() || '';
+for (const argument of process.argv.slice(2)) {
+  const match = /^--isolated(?:=(.+))?$/.exec(argument);
+  if (match) instance = match[1]?.trim() || instance || 'side';
+  else forwarded.push(argument);
+}
+if (instance) process.env.FLAREAI_DEV_INSTANCE = instance;
+
+/**
  * Every `ps` line, as `{pid, ppid, command}`. Anything unreadable is treated as
  * "no processes": the preflight below is a convenience, never a gate.
+ *
+ * `-e` appends each process's environment to the command text, which is the
+ * only way from outside to tell a side instance from the ordinary run — and
+ * the retirement below has to leave side instances alone, since they hold no
+ * lock this run wants.
  */
 function processTable() {
   try {
-    return execFileSync('ps', ['-axo', 'pid=,ppid=,command='], {encoding: 'utf8'})
+    return execFileSync('ps', ['-axeo', 'pid=,ppid=,command='], {encoding: 'utf8'})
       .split('\n')
       .flatMap((line) => {
         const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
@@ -60,7 +117,7 @@ function processTable() {
  * helper processes keep theirs — and their parent is the main process.
  */
 async function retirePreviousDevApp() {
-  const table = processTable();
+  const table = processTable().filter((entry) => !entry.command.includes('FLAREAI_DEV_INSTANCE='));
   const distribution = path.join(projectRoot, 'node_modules/electron/dist/');
   const helpers = table.filter((entry) => entry.command.startsWith(distribution));
   const helperPids = new Set(helpers.map((entry) => entry.pid));
@@ -140,9 +197,18 @@ async function retirePreviousDevApp() {
   }
 }
 
-await retirePreviousDevApp();
+// A side instance is meant to run *beside* whatever is already up, so the
+// preflight that clears the previous run is exactly what it must not do.
+if (instance) {
+  console.error(
+    `Starting the "${instance}" FlareAI instance beside any run already open; ` +
+      `its data lives in a userData directory of its own.`,
+  );
+} else {
+  await retirePreviousDevApp();
+}
 
-const child = spawn(forge, ['start', ...process.argv.slice(2)], {
+const child = spawn(forge, ['start', ...forwarded], {
   cwd: projectRoot,
   stdio: ['inherit', 'inherit', 'pipe'],
 });

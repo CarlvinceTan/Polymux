@@ -1,8 +1,8 @@
-import {readFileSync} from "node:fs";
-import {copyFile, cp, mkdir, readFile, rename, rm, stat, writeFile} from "node:fs/promises";
+import {existsSync, readFileSync} from "node:fs";
+import {copyFile, cp, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile} from "node:fs/promises";
 import type {Stats} from "node:fs";
 import {randomUUID} from "node:crypto";
-import {homedir} from "node:os";
+import {homedir, tmpdir} from "node:os";
 import path from "node:path";
 import {
   GoalManager,
@@ -17,24 +17,32 @@ import type {InferenceModel, InferenceService, ModelRef} from "@flareai/inferenc
 import {PiInference} from "@flareai/inference/pi";
 import type {
   ChatDto,
+  MailFolderDto,
   ChatMessageDto,
   SetupLocalRuntimeRequest,
   BrowserExtensionDto,
+  BrowserImportResultDto,
+  BrowserSettingsDto,
   GeneralSettingsDto,
   GoalCommandRequest,
   McpServerDto,
+  PluginDto,
   SaveCustomMcpRequest,
   SaveCustomSkillRequest,
   ModelDto,
   ModelRole,
   ModelRoleAssignmentDto,
   ModelRolesDto,
+  ReasoningEffort,
   ProviderDto,
   RunEventDto,
   ScheduleDto,
   SkillDto,
   SkillUploadFile,
+  AppPermissionKind,
   SystemPermissionKind,
+  SystemPermissionStatus,
+  WorkspaceRevealDto,
   JsonValue,
 } from "@flareai/protocol";
 import {
@@ -44,6 +52,7 @@ import {
   driveS3Config,
   driveSource,
   LOCAL_RUNTIMES,
+  isAppPermissionKind,
   validateGoalCommand,
   validateSaveEmailAccount,
   validateStartRun,
@@ -61,18 +70,28 @@ import {createProvider, type Model, type MutableModels} from "@earendil-works/pi
 import {openAICompletionsApi} from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
   app,
+  dialog,
   nativeTheme,
+  Notification,
   safeStorage,
   session,
+  shell,
   type BrowserWindow,
   type IpcMain,
   type IpcMainInvokeEvent,
 } from "electron";
-import {eventDto, storedEventDto} from "./backend/dto.js";
+import {assistantText, eventDto, storedEventDto} from "./backend/dto.js";
 import {
   WORKSPACE_BOOT_ID,
   audioBuffer,
+  browserHistoryQuery,
+  browserImportRequest,
+  browserPermission,
+  browserSettingsPatch,
+  chroniclePatch,
   chronicleQuery,
+  chronicleRange,
+  clearDataOptions,
   customMcpRequest,
   customSkillRequest,
   json,
@@ -81,6 +100,8 @@ import {
   mailListRequest,
   number,
   optionalStringArray,
+  origin,
+  permissionDecision,
   positiveRate,
   required,
   scheduleInput,
@@ -92,11 +113,15 @@ import {
 } from "./backend/requests.js";
 import {
   applyThemeSource,
+  browserSettingsPreference,
+  browserSettingsUpdate,
   generalSettingsPreference,
   generalSettingsUpdate,
   hasOnboardingFlag,
+  reasoningEffort,
 } from "./backend/settings.js";
 import type {CustomProviderConfig} from "./backend/models.js";
+import type {RoleSelection} from "./backend/models.js";
 import {
   customProviderPreference,
   customProviderRequest,
@@ -133,25 +158,54 @@ import {AgentSurfaceServer} from "./agent/surface.js";
 import {AgentSurfaceAdapter} from "./agent/surface-adapter.js";
 import {createBrowserControlTools} from "./browser/control-tools.js";
 import {createInAppBrowserTool} from "./browser/embedded-tools.js";
+import {createHubDraftTool, createWorkspaceTool} from "./workspace/tools.js";
 import {RunResourceRecorder} from "./agent/run-resources.js";
 import {EncryptedApiKeyPool} from "./inference/api-key-pool.js";
 import {WhisperDictation} from "./system/dictation.js";
 import {discoverAgentSkills, resolveDiscoveredSkill} from "./skills/discovery.js";
 import {installSkillPackage, searchSkillRegistry} from "./skills/registry.js";
+import {declaredPermissions, permissionsToRequest} from "./skills/permissions.js";
+import {discoverAgentMcpServers, resolveDiscoveredMcp} from "./mcp/discovery.js";
 import {searchMcpRegistry} from "./mcp/registry.js";
+import {PluginRegistry} from "./plugins/registry.js";
+import {readManifest as readPluginManifest} from "./plugins/manifest.js";
 import {ModelCatalog} from "./inference/model-catalog.js";
+import {Autofill, AUTOFILL_CHANNEL, autofillMessage} from "./browser/autofill.js";
+import {BrowsingData} from "./browser/data.js";
+import {Downloads} from "./browser/downloads.js";
 import {EmbeddedBrowser} from "./browser/embedded.js";
+import {EncryptedLoginVault} from "./browser/logins.js";
+import {SitePermissions, originOf} from "./browser/permissions.js";
+import {applyImport} from "./browser/import/apply.js";
+import {discoverBrowsers, importFrom} from "./browser/import/discovery.js";
+import {importFromFile} from "./browser/import/files.js";
+import type {ImportedData} from "./browser/import/types.js";
 import {siteFaviconDataUrl} from "./browser/favicon.js";
 import {RotatingInference} from "./inference/rotating.js";
 import {AccessibilityChronicleFrames, ElectronChronicleSystem} from "./agent/chronicle.js";
-import {AxReader} from "./system/ax-reader.js";
+import {NativeInteractionEvents} from "./agent/interaction-events.js";
+import {AxReader, type AxWindow} from "./system/ax-reader.js";
 import {FileReloadWatcher} from "./system/file-reload-watcher.js";
+import {flareaiPath} from "./system/paths.js";
+import {
+  Notifier,
+  notificationBody,
+  type NotificationRequest,
+} from "./system/notifications.js";
 import {Scheduler} from "./scheduler/index.js";
 import {createScheduleTool} from "./scheduler/tools.js";
 import {Communications} from "./communications/index.js";
-import {Drive} from "./drive/index.js";
+import {HubCache} from "./communications/cache.js";
+import {Drive, createDriveTools} from "@flareai/drive";
+import {electronConsent} from "./system/drive-consent.js";
 import {sessionScopedSnapshot} from "./workspace/snapshot.js";
-import type {Homeserver} from "./homeserver/index.js";
+import type {Homeserver, MatrixRoom} from "@flareai/hub";
+/**
+ * How recent a message has to be to be worth announcing. Anything older is
+ * history a bridge is catching up on rather than something just said.
+ */
+const MESSAGE_NOTIFICATION_MAX_AGE_MS = 60_000;
+
 /** The part of BridgeHost the backend needs: what is installed, and what is held back. */
 interface BridgeInventory {
   inventory: () => Promise<
@@ -169,14 +223,18 @@ interface BridgeInventory {
 }
 import {cancelCookieLogin, runCookieLogin} from "./communications/cookie-login.js";
 import {createCommunicationsTools} from "./communications/tools.js";
-import {createDriveTools} from "./drive/tools.js";
 import {parse as parseToml} from "smol-toml";
 import {FirstRunPermissions} from "./system/first-run-permissions.js";
+import {AppPermissions} from "./system/app-permissions.js";
+import {Reminders} from "./reminders/index.js";
+import {createRemindersTools} from "./reminders/tools.js";
 import {
 
   openSystemPermissionSettings,
+  permissionStatus,
   requestSystemPermission,
   systemPermissionStatus,
+  useAppPermissions,
 } from "./system/permissions.js";
 
 export interface DesktopBackendOptions {
@@ -197,6 +255,11 @@ export interface DesktopBackendOptions {
   codexConfigPath?: string;
   /** Path to the bundled native/ax-reader.swift accessibility helper. */
   axReaderSourcePath?: string;
+  axEventsSourcePath?: string;
+  /** Path to the bundled native/app-permissions.swift privacy helper. */
+  appPermissionsSourcePath?: string;
+  /** Path to the bundled native/reminders.swift EventKit helper. */
+  remindersSourcePath?: string;
   /**
    * The app-scoped message hub. It outlives this backend: closing a window
    * closes the backend, but the hub and its bridges run until the app quits.
@@ -209,12 +272,22 @@ export interface DesktopBackendOptions {
     bridges?: BridgeInventory;
     /** Brings the in-process WeChat bridge up for FlareAI's own account. */
     startWeChat?: (owner: string) => Promise<boolean>;
+    /** Takes it back down again, when WeChat is unlinked from the Hub tab. */
+    stopWeChat?: () => Promise<void>;
     /**
      * Registers who to tell when a conversation moves. The homeserver is built
      * before the window, so it reports into the host and the host hands the
      * listener over here.
      */
-    onActivity?: (listener: (activity: {roomId: string; sender: string; type: string}) => void) => void;
+    onActivity?: (
+      listener: (activity: {
+        roomId: string;
+        sender: string;
+        senderName: string | null;
+        type: string;
+        ts: number;
+      }) => void,
+    ) => void;
   };
 }
 
@@ -224,8 +297,9 @@ export class DesktopBackend {
   readonly #storage: SqliteStorage;
   #agent?: FlareAIAgent;
   #model?: ModelRef;
-  /** Per-role model overrides. An absent role follows the main model. */
-  #roleOverrides: Partial<Record<ModelRole, ModelRef>> = {};
+  /** Per-role model overrides, each with the reasoning level it was assigned
+   * at. An absent role follows the main model. */
+  #roleOverrides: Partial<Record<ModelRole, RoleSelection>> = {};
   readonly #models: MutableModels;
   readonly #customProviders = new Map<string, CustomProviderConfig>();
   readonly #credentials: EncryptedCredentialStore;
@@ -238,12 +312,24 @@ export class DesktopBackend {
   readonly #memory: MemoryManager;
   readonly #chronicle: ChronicleManager;
   readonly #firstRunPermissions: FirstRunPermissions;
+  readonly #reminders: Reminders;
+  /**
+   * App grants macOS has given a final answer for this session, so the sweep
+   * before each run costs nothing once every answer is in. Deliberately not
+   * persisted: a restart is the cheapest possible way to notice a grant that
+   * changed while the app was not running.
+   */
+  readonly #permissionsSettled = new Set<AppPermissionKind>();
   readonly #dictation: WhisperDictation;
   readonly #mcp = new McpManager();
   readonly #registry: ToolRegistry;
   readonly #hooks = new HookEngine();
   readonly #agentSurface = new AgentSurfaceServer();
   readonly #runResources: RunResourceRecorder;
+  readonly #notifier: Notifier;
+  /** Runs a schedule started, so the schedule's own notification is not
+   * doubled by the one every finished run would otherwise get. */
+  readonly #scheduledRunIds = new Set<string>();
   readonly #scheduler: Scheduler;
   readonly #surfaceMenubar = new AgentSurfaceAdapter({
     onStop: () => {
@@ -264,20 +350,41 @@ export class DesktopBackend {
     string,
     ReturnType<typeof importMcpServers>[number]
   >();
+  readonly #plugins = new PluginRegistry();
+  /** Read once, on the first thing that needs it. */
+  #pluginsLoaded?: Promise<void>;
+  /** The namespaced ids of the servers plugins contribute, so the MCP tab can
+   * be given everything except them: a plugin is configured on its own card,
+   * and a row there that could not be edited or removed would be a dead end. */
+  readonly #pluginMcpIds = new Set<string>();
   readonly #mcpConfigPath: string;
   readonly #customSkillDirectory: string;
   readonly #mcpConfigWatcher: FileReloadWatcher;
   readonly #codexMcpConfigPath: string;
-  readonly #codexMcpConfigWatcher: FileReloadWatcher;
   #mcpReloadPending = false;
   #mcpReloadInFlight?: Promise<McpServerDto[]>;
   #closing = false;
   readonly #modelCatalog: ModelCatalog;
   readonly #embeddedBrowser: EmbeddedBrowser;
+  readonly #axReader: AxReader;
+  /** Last window listing, and when it was taken. See #openWindows(). */
+  #windowSnapshot: {at: number; windows: AxWindow[]} = {at: 0, windows: []};
+  #windowRefresh?: Promise<void>;
+  readonly #sitePermissions: SitePermissions;
+  readonly #downloads: Downloads;
+  readonly #loginVault: EncryptedLoginVault;
+  readonly #autofill: Autofill;
+  readonly #browsingData: BrowsingData;
   readonly #comms: Communications;
+  /** The hub's first screen, kept across quitting. */
+  readonly #hubCache: HubCache;
+  /** The last folder list read per account, so an envelope page can be cached
+   * with the folders it belongs beside — the mail pane needs both, and they
+   * arrive on separate calls. */
+  readonly #mailFolders = new Map<string, MailFolderDto[]>();
   readonly #drive: Drive;
-  /** Pins every run's tools to one folder, overriding the per-conversation
-   * output folders. Set by tests and by hosts that embed the backend. */
+  /** Pins every run's tools to one folder, overriding the default output
+   * folder. Set by tests and by hosts that embed the backend. */
   readonly #toolDirectory: string | undefined;
 
   constructor(options: DesktopBackendOptions) {
@@ -287,9 +394,11 @@ export class DesktopBackend {
     this.#coreSkills = new Set(options.coreSkills ?? []);
     this.#skills = new SkillLoader({
       official: options.officialSkillDirectories,
+      personal: flareaiPath("skills"),
     });
     this.#agentSkillOptions = {
       official: options.officialSkillDirectories,
+      personal: flareaiPath("skills"),
       // Core integrations have no Skills-list toggle, so nothing may switch
       // them off — including a stale preference from before they were core.
       isEnabled: (skill) =>
@@ -318,50 +427,124 @@ export class DesktopBackend {
       // Outside the Electron data directory on purpose: the vault is plain
       // Markdown meant to be opened, searched, and edited by hand, and it is
       // the same layout Codex keeps at ~/.codex/memories.
-      directory: path.join(homedir(), ".flareai", "memories"),
+      directory: flareaiPath("memories"),
       legacyStorage: this.#storage,
+    });
+    this.#axReader = new AxReader({
+      sourcePath: options.axReaderSourcePath ?? "",
+      cacheDirectory: path.join(options.dataDirectory, "bin"),
+    });
+    // Installed before anything reads a grant, so the first status query has a
+    // helper to ask rather than answering "unknown" and offering Settings for
+    // a permission that was granted all along.
+    useAppPermissions(
+      new AppPermissions({
+        sourcePath: options.appPermissionsSourcePath ?? "",
+        cacheDirectory: path.join(options.dataDirectory, "bin"),
+      }),
+    );
+    this.#reminders = new Reminders({
+      sourcePath: options.remindersSourcePath ?? "",
+      cacheDirectory: path.join(options.dataDirectory, "bin"),
+      access: {ensure: () => this.#requireAppPermission("reminders")},
     });
     this.#chronicle = new ChronicleManager({
       directory: path.join(options.dataDirectory, "chronicle"),
-      frames: new AccessibilityChronicleFrames(new AxReader({
-        sourcePath: options.axReaderSourcePath ?? "",
-        cacheDirectory: path.join(options.dataDirectory, "bin"),
-      })),
+      frames: new AccessibilityChronicleFrames(this.#axReader),
       system: new ElectronChronicleSystem(),
+      interactions: new NativeInteractionEvents({
+        sourcePath: options.axEventsSourcePath ?? "",
+        cacheDirectory: path.join(options.dataDirectory, "bin"),
+      }),
     });
     this.#dictation = new WhisperDictation({
       modelDirectory: path.join(options.dataDirectory, "whisper"),
     });
     this.#firstRunPermissions = new FirstRunPermissions({
       store: this.#storage,
-      microphoneEnabled: () => this.#generalSettings().speechModeEnabled,
-      screenRecordingEnabled: () => false,
       status: systemPermissionStatus,
-      request: requestSystemPermission,
       onReady: () => this.#chronicle.start(),
     });
     this.#modelCatalog = new ModelCatalog({cacheDir: options.dataDirectory});
+    this.#downloads = new Downloads({
+      records: this.#storage,
+      preferences: () => {
+        const settings = this.#browserSettings();
+        return {
+          directory: settings.downloadDirectory,
+          askWhereToSave: settings.askWhereToSave,
+        };
+      },
+      send: (downloads) => {
+        if (!this.#closing && !this.#window.isDestroyed())
+          this.#window.webContents.send(channels.browserEvent, {type: "downloads", downloads});
+      },
+      shell: {
+        openPath: (target) => void shell.openPath(target),
+        showItemInFolder: (target) => shell.showItemInFolder(target),
+      },
+    });
     this.#embeddedBrowser = new EmbeddedBrowser({
       window: options.window,
-      downloadsDir: app.getPath("downloads"),
+      downloads: this.#downloads,
       send: (event) => {
         if (!this.#closing && !this.#window.isDestroyed())
           this.#window.webContents.send(channels.browserEvent, event);
+      },
+      onVisit: (visit) => {
+        // Local browsing lands in the same table an import writes to, tagged
+        // so "clear what I imported" stays a separate act from clearing what
+        // the user did here.
+        this.#storage.recordVisit({url: visit.url, title: visit.title, source: "local"});
+      },
+      onTabReset: (tabId) => this.#sitePermissions.dismissTab(tabId),
+    });
+    this.#loginVault = new EncryptedLoginVault(
+      path.join(options.dataDirectory, "logins.json"),
+      safeStorage,
+    );
+    this.#autofill = new Autofill({
+      records: this.#storage,
+      vault: this.#loginVault,
+      enabled: () => this.#browserSettings().autofillEnabled,
+      changed: () => {
+        if (!this.#closing && !this.#window.isDestroyed())
+          this.#window.webContents.send(channels.browserEvent, {type: "logins"});
+      },
+    });
+    this.#browsingData = new BrowsingData({
+      session: () => session.defaultSession,
+      records: this.#storage,
+    });
+    this.#sitePermissions = new SitePermissions({
+      records: this.#storage,
+      tabIdFor: (contents) => this.#embeddedBrowser.tabIdFor(contents),
+      prompt: (prompt) => {
+        if (this.#closing || this.#window.isDestroyed()) return;
+        this.#window.webContents.send(channels.browserEvent, {
+          type: "permission",
+          prompt,
+        });
+        // The run is stopped until this is answered, so it is worth saying so
+        // to a user who has looked away.
+        this.#notifier.notify({
+          kind: "agent-attention",
+          title: "FlareAI needs your answer",
+          body: notificationBody(
+            `${prompt.origin || "A page"} is asking for ${prompt.permission}.`,
+          ),
+        });
       },
     });
     // FlareAI's own configuration lives in ~/.flareai next to its skills, not
     // buried in the platform's application-support directory: it is a file the
     // user is meant to be able to open, and a skill or script may be asked to.
-    this.#mcpConfigPath = path.join(homedir(), ".flareai", "mcp.json");
+    this.#mcpConfigPath = flareaiPath("mcp.json");
     adoptLegacyMcpConfig(path.join(options.dataDirectory, "mcp.json"), this.#mcpConfigPath);
-    this.#customSkillDirectory = path.join(homedir(), ".flareai", "skills");
+    this.#customSkillDirectory = flareaiPath("skills");
     this.#codexMcpConfigPath = options.codexConfigPath ?? path.join(homedir(), ".codex", "config.toml");
     this.#mcpConfigWatcher = new FileReloadWatcher(
       this.#mcpConfigPath,
-      () => this.#requestMcpReload(),
-    );
-    this.#codexMcpConfigWatcher = new FileReloadWatcher(
-      this.#codexMcpConfigPath,
       () => this.#requestMcpReload(),
     );
     // A message landing anywhere in the hub is pushed straight to the window,
@@ -372,7 +555,23 @@ export class DesktopBackend {
         chatId: activity.roomId,
         sender: activity.sender,
       });
+      // Only what a person actually said, and never the user's own message
+      // coming back down their own sync.
+      if (activity.type !== "m.room.message") return;
+      if (this.#comms?.userId && activity.sender === this.#comms.userId) return;
+      // A bridge backfills a conversation's history when it connects, and
+      // every one of those events lands here exactly like a live one. They
+      // have already been read wherever they came from, so announcing them
+      // fires a burst of notifications for messages the user answered days
+      // ago; only a message that just arrived is news.
+      if (Date.now() - activity.ts > MESSAGE_NOTIFICATION_MAX_AGE_MS) return;
+      this.#notifier.notify({
+        kind: "message-received",
+        title: activity.senderName || activity.sender || "New message",
+        body: "Sent you a message.",
+      });
     });
+    this.#hubCache = new HubCache(this.#storage);
     this.#comms = new Communications({
       credentials: this.#credentials,
       // App-scoped and possibly absent; the backend only points comms at it.
@@ -397,6 +596,7 @@ export class DesktopBackend {
               ? (platform) => options.hub!.bridges!.ensure(platform)
               : undefined,
             startWeChat: options.hub.startWeChat,
+            stopWeChat: options.hub.stopWeChat,
           }
         : undefined,
       storage: {
@@ -456,14 +656,50 @@ export class DesktopBackend {
         },
         downloads: () => app.getPath("downloads"),
       },
-      parent: () => (this.#window.isDestroyed() ? undefined : this.#window),
+      consent: electronConsent(() =>
+        this.#window.isDestroyed() ? undefined : this.#window,
+      ),
       onChange: (status) => {
         if (!this.#closing && !this.#window.isDestroyed())
           this.#window.webContents.send(channels.driveChanged, status);
       },
     });
     this.#runResources = new RunResourceRecorder(this.#storage);
-    this.#scheduler = new Scheduler(this.#storage, (schedule) => this.#runSchedule(schedule));
+    this.#notifier = new Notifier({
+      preferences: () => {
+        const general = this.#generalSettings();
+        return {enabled: general.notificationsEnabled, kinds: general.notifications};
+      },
+      present: (request) => this.#presentNotification(request),
+      supported: () => Notification.isSupported(),
+      // The window is re-aimed when one closes and another opens, so this is
+      // read at post time rather than captured here.
+      focused: () =>
+        !this.#closing && !this.#window.isDestroyed() && this.#window.isFocused(),
+    });
+    // A schedule that fires while the user is elsewhere is the case system
+    // notifications exist for, so both outcomes are announced around the run
+    // rather than from inside the scheduler, which owns the clock and no UI.
+    this.#scheduler = new Scheduler(this.#storage, async (schedule) => {
+      try {
+        const result = await this.#runSchedule(schedule);
+        this.#notifier.notify({
+          kind: "schedule-completed",
+          title: schedule.title,
+          body: notificationBody(result.summary ?? "This scheduled task finished."),
+        });
+        return result;
+      } catch (error) {
+        this.#notifier.notify({
+          kind: "schedule-failed",
+          title: schedule.title,
+          body: notificationBody(
+            error instanceof Error ? error.message : String(error),
+          ),
+        });
+        throw error;
+      }
+    });
     this.#scheduler.subscribe((items) => {
       if (!this.#closing && !this.#window.isDestroyed())
         this.#window.webContents.send(channels.schedulesChanged, items);
@@ -471,11 +707,20 @@ export class DesktopBackend {
     this.#registry = new ToolRegistry(
       createNativeTools({ cwd: (context) => this.#runDirectory(context.runId) }),
     );
+    for (const tool of createRemindersTools(this.#reminders))
+      this.#registry.register(tool);
     for (const tool of createBrowserControlTools(this.#agentSurface))
       this.#registry.register(tool);
     // The in-app Browser is the default surface for web work, so the agent
     // drives it directly rather than through the user's external browser.
     this.#registry.register(createInAppBrowserTool(this.#embeddedBrowser));
+    // The work the agent does lands in places the user cannot see while it
+    // happens, so it needs a way to answer "show me" by opening one.
+    // Both halves of the workspace surface run off the same revealer: one
+    // shows a pane, the other writes into it. Only the showing half is kept
+    // from delegated runs.
+    this.#registry.register(createWorkspaceTool(this.#workspaceRevealer()));
+    this.#registry.register(createHubDraftTool(this.#workspaceRevealer()));
     // Asking for something to happen every morning is a chat request like any
     // other, so the agent needs a way to write one down.
     this.#registry.register(createScheduleTool(this.#scheduler));
@@ -490,7 +735,9 @@ export class DesktopBackend {
       this.#registry.register(tool);
     // Loopback only; a failed bind (port in use) degrades to no browser control.
     void this.#agentSurface.start().catch(() => {});
-    // Mirror active browser-control leases into the user's Agent Surface
+    // Prime the window listing so the first turn of the session has one.
+    this.#openWindows();
+    // Mirror active browser-use leases into the user's Agent Surface
     // menu-bar pill (the ChatGPT-desktop-style Computer Use capsule), when
     // that presentation layer is installed.
     this.#agentSurface.onLeasesChanged = (leases) => {
@@ -524,6 +771,10 @@ export class DesktopBackend {
   attachWindow(window: BrowserWindow): void {
     this.#window = window;
     this.#embeddedBrowser.attachWindow(window);
+    // The handlers hang off the session, which outlives any one window, but
+    // they close over which webContents is the app's own — so they are
+    // reinstalled for each window rather than once at construction.
+    this.#sitePermissions.install(window.webContents.session, window.webContents);
   }
 
   /** Rescues the embedded browser's pages before their window is destroyed. */
@@ -532,33 +783,60 @@ export class DesktopBackend {
   }
 
   register(): void {
+    // The first window never goes through attachWindow, so it installs its
+    // permission handlers from here; every later window installs from there.
+    this.#sitePermissions.install(this.#window.webContents.session, this.#window.webContents);
+    this.#registerAutofill();
     if (this.#firstRunPermissions.completed()) this.#chronicle.start();
     this.#scheduler.start();
-    // Accessibility capture cannot ask through a media-access dialog the way
-    // microphone capture can; surface the system prompt at launch so text
-    // capture does not fail silently until the user visits Options.
-    const chronicleSettings = this.#chronicle.settings();
-    if (
-      chronicleSettings.enabled &&
-      systemPermissionStatus("accessibility") !== "granted"
-    )
-      void requestSystemPermission("accessibility");
+    // Nothing is asked for here. A permission dialog at launch is one nobody
+    // pressed anything to get, and it arrives before there is even a window to
+    // explain it — so the grant is asked for where the user is: in onboarding,
+    // from the button on its row in Settings, or at the moment something
+    // actually needs it. Chronicle without the grant captures nothing and says
+    // so on its own row, which is the honest state rather than a surprise.
     applyThemeSource(this.#generalSettings().theme);
+    // Basic mode owns no memory switches, so it holds them all on.
+    if (!this.#generalSettings().advancedMode) this.#enableAllMemory();
     this.#handle(channels.generalGet, () => this.#generalSettings());
     this.#handle(channels.generalUpdate, (_event, value: unknown) => {
-      const next = generalSettingsUpdate(value, this.#generalSettings());
+      const previous = this.#generalSettings();
+      const next = generalSettingsUpdate(value, previous);
       applyThemeSource(next.theme);
+      // Basic mode has no Memory tab, so it cannot be the mode that leaves
+      // memory switched off with nowhere to switch it back on.
+      if (!next.advancedMode && previous.advancedMode !== next.advancedMode)
+        this.#enableAllMemory();
       this.#storage.setPreference("general-access", {
         theme: next.theme,
         language: next.language,
         currency: next.currency,
+        advancedMode: next.advancedMode,
         speechModeEnabled: next.speechModeEnabled,
+        dictationAutoStopSeconds: next.dictationAutoStopSeconds,
         timeEnabled: next.timeEnabled,
         locationEnabled: next.locationEnabled,
+        reasoningLevel: next.reasoningLevel,
         onboardingCompleted: next.onboardingCompleted,
+        permissions: next.permissions,
+        notificationsEnabled: next.notificationsEnabled,
+        notifications: next.notifications,
         location: next.location,
       });
       return next;
+    });
+    // Deliberately past every switch, including the focus check: this is sent
+    // from Settings, where the window is certainly in front, and its whole job
+    // is to show whether the OS lets one through. Gating it behind the very
+    // switches the user is trying to test would answer the wrong question.
+    this.#handle(channels.generalTestNotification, () => {
+      if (!Notification.isSupported()) return "unsupported" as const;
+      this.#presentNotification({
+        kind: "agent-completed",
+        title: "FlareAI",
+        body: "System notifications are working.",
+      });
+      return "posted" as const;
     });
     this.#handle(channels.generalLocate, () => approximateLocation());
     this.#handle(channels.generalVersion, () => appVersion());
@@ -566,7 +844,7 @@ export class DesktopBackend {
     this.#handle(channels.generalInstallUpdate, () => installUpdate());
     startUpdateChecks();
     this.#handle(channels.permissionsStatus, (_event, value: unknown) =>
-      systemPermissionStatus(systemPermission(value)),
+      permissionStatus(systemPermission(value)),
     );
     this.#handle(channels.permissionsEnsureFirstRun, () =>
       this.#firstRunPermissions.ensure(),
@@ -574,13 +852,18 @@ export class DesktopBackend {
     this.#handle(channels.permissionsRequest, (_event, value: unknown) =>
       requestSystemPermission(systemPermission(value)),
     );
+    this.#handle(channels.permissionsRequestAll, () => this.#ensurePermissions());
     this.#handle(channels.permissionsOpenSettings, (_event, value: unknown) =>
       openSystemPermissionSettings(systemPermission(value, true)),
     );
-    this.#handle(channels.dictationPrepare, () => this.#dictation.prepare());
-    this.#handle(channels.dictationTranscribe, (_event, audio: unknown, final: unknown) =>
-      this.#dictation.transcribe(audioBuffer(audio), final !== false),
-    );
+    this.#handle(channels.dictationPrepare, () => {
+      this.#requireMicrophone();
+      return this.#dictation.prepare();
+    });
+    this.#handle(channels.dictationTranscribe, (_event, audio: unknown, final: unknown) => {
+      this.#requireMicrophone();
+      return this.#dictation.transcribe(audioBuffer(audio), final !== false);
+    });
     this.#handle(channels.conversationsList, () =>
       this.#storage.listConversations(),
     );
@@ -672,10 +955,13 @@ export class DesktopBackend {
       channels.runEventsList,
       (_event, runId: string, afterSequence = 0) => {
         const id = required(runId, "run id");
-        const conversationId = this.#storage.getRun(id)?.conversationId ?? "";
+        const run = this.#storage.getRun(id);
+        const conversationId = run?.conversationId ?? "";
         return this.#storage
           .listRunEvents(id, number(afterSequence))
-          .map((event) => storedEventDto(event, conversationId));
+          .map((event) =>
+            storedEventDto(event, conversationId, run?.parentRunId ?? null),
+          );
       },
     );
     this.#handle(channels.goalsExecute, (_event, value: unknown) =>
@@ -716,12 +1002,19 @@ export class DesktopBackend {
       }
       return status;
     });
+    this.#handle(channels.chronicleUpdate, (_event, value: unknown) =>
+      this.#chronicle.update(chroniclePatch(value)),
+    );
+    this.#handle(channels.chronicleForget, (_event, since: unknown, until: unknown) => {
+      const range = chronicleRange(since, until);
+      return this.#chronicle.forget(range.since, range.until);
+    });
     this.#handle(channels.chronicleEntries, (_event, value?: unknown) => {
       const options = chronicleQuery(value);
       return this.#chronicle.store.entries(options);
     });
     this.#handle(channels.mcpList, () =>
-      this.#mcp.snapshots().map((snapshot) => this.#mcpDto(snapshot)),
+      this.#mcpDtos(this.#mcp.snapshots()),
     );
     this.#handle(channels.mcpReload, () => this.reloadMcp());
     this.#handle(channels.mcpSetEnabled, async (_event, id: string, enabled: boolean) => {
@@ -736,9 +1029,22 @@ export class DesktopBackend {
       await this.#removeCustomMcp(required(id, "MCP id"));
       return this.#reloadMcpAfterMutation();
     });
-    this.#handle(channels.mcpSearchRegistry, (_event, query: unknown) =>
-      searchMcpRegistry(typeof query === "string" ? query : ""),
+    this.#handle(channels.mcpSearchRegistry, (_event, query: unknown, cursor: unknown) =>
+      searchMcpRegistry(typeof query === "string" ? query : "", typeof cursor === "string" ? cursor : ""),
     );
+    this.#handle(channels.mcpDiscover, () =>
+      discoverAgentMcpServers(new Set(this.#mcpConfigs.keys())),
+    );
+    this.#handle(channels.mcpAdopt, async (_event, groupId: unknown, serverId: unknown) => {
+      const found = resolveDiscoveredMcp(
+        required(groupId, "MCP group id"),
+        required(serverId, "MCP id"),
+      );
+      await this.#writeMcpConfig((servers) => {
+        servers[found.id] = found.entry;
+      });
+      return this.#reloadMcpAfterMutation();
+    });
     this.#handle(channels.workspaceSnapshotGet, (_event, conversationId: unknown) => {
       const stored = this.#storage.getPreference(
         `workspace-snapshot:${required(conversationId, "conversation id")}`,
@@ -756,7 +1062,15 @@ export class DesktopBackend {
         );
       },
     );
-    this.#handle(channels.commsStatus, () => this.#comms.status());
+    // Every read below records what it answered with, so the next launch has
+    // it before the network does. The cache is written to, never read from,
+    // here: the one read is the snapshot the renderer seeds from.
+    this.#handle(channels.commsSnapshot, () => this.#hubCache.snapshot());
+    this.#handle(channels.commsStatus, async () => {
+      const status = await this.#comms.status();
+      this.#hubCache.putStatus(status);
+      return status;
+    });
     this.#handle(channels.commsRefresh, () => this.#comms.refresh());
     this.#handle(channels.commsWake, (_event, value: unknown) =>
       this.#comms.wake(commsPlatform(value)),
@@ -768,7 +1082,13 @@ export class DesktopBackend {
     this.#handle(channels.commsSignIn, (_event, userId: unknown, password: unknown) =>
       this.#comms.signIn(required(userId, "Matrix user ID"), required(password, "password")),
     );
-    this.#handle(channels.commsSignOut, () => this.#comms.signOut());
+    // Signing out takes the copy with it: a stale inbox left on disk is a
+    // privacy problem, not merely a wrong screen.
+    this.#handle(channels.commsSignOut, async () => {
+      const status = await this.#comms.signOut();
+      this.#hubCache.clear();
+      return status;
+    });
     this.#handle(channels.commsLoginStart, (_event, platform: unknown, flowId: unknown) =>
       this.#comms.loginStart(commsPlatform(platform), required(flowId, "login method")),
     );
@@ -814,7 +1134,7 @@ export class DesktopBackend {
     // and mxc uris into the UI.
     this.#handle(channels.commsChats, async () => {
       const rooms = await this.#comms.chats();
-      return rooms.map(
+      const chats = rooms.map(
         (room): ChatDto => ({
           id: room.roomId,
           name: room.name,
@@ -826,6 +1146,8 @@ export class DesktopBackend {
           group: room.group,
         }),
       );
+      this.#hubCache.putChats(chats);
+      return chats;
     });
     this.#handle(
       channels.commsChatMessages,
@@ -836,7 +1158,7 @@ export class DesktopBackend {
           typeof before === "string" ? before : undefined,
         );
         const me = this.#comms.userId;
-        return {
+        const page = {
           // Carried through so the reader can walk further back: without it
           // a conversation stops at whatever the first page happened to hold.
           nextBefore: result.nextBefore ?? null,
@@ -857,6 +1179,12 @@ export class DesktopBackend {
             }),
           ),
         };
+        // Only the newest page is worth keeping: it is what a conversation
+        // opens on, and a page reached by scrolling back is one the reader is
+        // already looking at.
+        if (typeof before !== "string")
+          this.#hubCache.putChatPage(required(chatId, "chat id"), page.messages, page.nextBefore);
+        return page;
       },
     );
     this.#handle(channels.commsChatMarkRead, (_event, chatId: unknown, messageId: unknown) =>
@@ -932,20 +1260,36 @@ export class DesktopBackend {
     this.#handle(channels.commsChatUnreact, (_event, chatId: unknown, reactionId: unknown) =>
       this.#comms.unreactChat(required(chatId, "chat id"), required(reactionId, "reaction id")),
     );
-    this.#handle(channels.commsMailFolders, (_event, account: unknown) =>
-      this.#comms.mailFolders(typeof account === "string" ? account : undefined),
-    );
-    this.#handle(channels.commsMailEnvelopes, (_event, value: unknown) =>
-      this.#comms.mailEnvelopes(mailListRequest(value)),
-    );
+    this.#handle(channels.commsMailFolders, async (_event, account: unknown) => {
+      const folders = await this.#comms.mailFolders(
+        typeof account === "string" ? account : undefined,
+      );
+      if (typeof account === "string") this.#mailFolders.set(account, folders);
+      return folders;
+    });
+    this.#handle(channels.commsMailEnvelopes, async (_event, value: unknown) => {
+      const request = mailListRequest(value);
+      const envelopes = await this.#comms.mailEnvelopes(request);
+      // The first page of a plain listing is what the mail pane opens on. A
+      // search or a later page is where the user went next, and caching it
+      // would only push out the screen worth having.
+      const folders = request.account ? this.#mailFolders.get(request.account) : undefined;
+      if (folders && request.account && request.folder && !request.query && (request.page ?? 1) === 1)
+        this.#hubCache.putMailbox(request.account, request.folder, folders, envelopes);
+      return envelopes;
+    });
     this.#handle(
       channels.commsMailMessage,
-      (_event, id: unknown, account: unknown, folder: unknown) =>
-        this.#comms.mailMessage(
+      async (_event, id: unknown, account: unknown, folder: unknown) => {
+        const message = await this.#comms.mailMessage(
           required(id, "message id"),
           typeof account === "string" ? account : undefined,
           typeof folder === "string" ? folder : undefined,
-        ),
+        );
+        if (typeof account === "string" && typeof folder === "string")
+          this.#hubCache.putMail(account, folder, message);
+        return message;
+      },
     );
     this.#handle(channels.commsMailSend, async (_event, value: unknown) => {
       const request = sendMailRequest(value);
@@ -958,6 +1302,7 @@ export class DesktopBackend {
         body: request.body,
         draft: request.draft,
         attachments: request.attachments,
+        importance: request.importance,
         inReplyTo: request.inReplyTo,
         references: request.references,
       });
@@ -1024,16 +1369,26 @@ export class DesktopBackend {
     this.#handle(channels.commsEmailSave, (_event, value: unknown) =>
       this.#comms.emailSave(validateSaveEmailAccount(value)),
     );
-    this.#handle(channels.commsEmailRemove, (_event, id: unknown) =>
-      this.#comms.emailRemove(required(id, "account id")),
-    );
+    this.#handle(channels.commsEmailRemove, async (_event, id: unknown) => {
+      const status = await this.#comms.emailRemove(required(id, "account id"));
+      // Same reason as signing out: the mail of an account that has been
+      // removed must not survive it on disk.
+      this.#hubCache.clear();
+      this.#mailFolders.clear();
+      return status;
+    });
     this.#handle(channels.commsEmailTest, (_event, id: unknown) =>
       this.#comms.emailTest(required(id, "account id")),
     );
     this.#handle(channels.skillsList, () => this.#skillDtos());
     this.#handle(channels.skillsReload, () => this.#skillDtos());
-    this.#handle(channels.skillsSetEnabled, (_event, name: string, enabled: boolean) => {
-      this.#setIntegrationEnabled("skill-enabled", required(name, "skill name"), enabled);
+    this.#handle(channels.skillsSetEnabled, async (_event, name: string, enabled: boolean) => {
+      const skill = required(name, "skill name");
+      this.#setIntegrationEnabled("skill-enabled", skill, enabled);
+      // Switching a skill on is the moment its grants are worth asking for:
+      // the user is here, and the alternative is the agent meeting the refusal
+      // on its own halfway through the first thing it is asked to do.
+      if (enabled) await this.#ensurePermissions([skill]);
       return this.#skillDtos();
     });
     this.#handle(channels.skillsSaveCustom, async (_event, value: unknown) => {
@@ -1045,22 +1400,80 @@ export class DesktopBackend {
       return this.#skillDtos();
     });
     this.#handle(channels.skillsUpload, async (_event, value: unknown) => {
-      await this.#uploadSkill(skillUploadFiles(value));
+      const installed = await this.#uploadSkill(skillUploadFiles(value));
+      await this.#ensurePermissions(installed);
       return this.#skillDtos();
     });
     this.#handle(channels.skillsInstall, async (_event, spec: unknown) => {
-      await installSkillPackage(required(spec, "skill package"), this.#customSkillDirectory);
+      const installed = await installSkillPackage(
+        required(spec, "skill package"),
+        this.#customSkillDirectory,
+      );
+      await this.#ensurePermissions(installed.map((skill) => skill.name));
       return this.#skillDtos();
     });
-    this.#handle(channels.skillsSearchRegistry, (_event, query: unknown) =>
-      searchSkillRegistry(typeof query === "string" ? query : ""),
+    this.#handle(channels.skillsSearchRegistry, (_event, query: unknown, limit: unknown) =>
+      searchSkillRegistry(
+        typeof query === "string" ? query : "",
+        typeof limit === "number" && Number.isFinite(limit) ? limit : 15,
+      ),
     );
     this.#handle(channels.skillsDiscover, () =>
       discoverAgentSkills(new Set(this.#skills.load().skills.map((skill) => skill.name))),
     );
     this.#handle(channels.skillsAdopt, async (_event, target: unknown) => {
-      await this.#adoptSkill(required(target, "skill path"));
+      const adopted = await this.#adoptSkill(required(target, "skill path"));
+      await this.#ensurePermissions(adopted ? [adopted] : undefined);
       return this.#skillDtos();
+    });
+    this.#handle(channels.pluginsList, () => this.#pluginDtos());
+    this.#handle(channels.pluginsSetEnabled, async (_event, id: unknown, enabled: unknown) => {
+      this.#setIntegrationEnabled("plugin-enabled", required(id, "plugin id"), enabled);
+      // Switching a plugin off has to stop its servers and drop its skills,
+      // both of which the reload is what actually does.
+      await this.#reloadMcpAfterMutation();
+      return this.#pluginDtos();
+    });
+    this.#handle(channels.pluginsInstall, async (_event, id: unknown) => {
+      await this.#ensurePlugins();
+      await this.#plugins.install(required(id, "plugin id"));
+      await this.#reloadMcpAfterMutation();
+      return this.#pluginDtos();
+    });
+    this.#handle(channels.pluginsRemove, async (_event, id: unknown) => {
+      await this.#ensurePlugins();
+      await this.#plugins.remove(required(id, "plugin id"));
+      await this.#reloadMcpAfterMutation();
+      return this.#pluginDtos();
+    });
+    this.#handle(channels.pluginsMarketplaces, async () => {
+      await this.#ensurePlugins();
+      return this.#plugins.marketplaces();
+    });
+    this.#handle(channels.pluginsAddMarketplace, async (_event, source: unknown) => {
+      await this.#ensurePlugins();
+      await this.#plugins.addMarketplace(required(source, "marketplace"));
+      return this.#plugins.marketplaces();
+    });
+    this.#handle(channels.pluginsRemoveMarketplace, async (_event, id: unknown) => {
+      await this.#ensurePlugins();
+      await this.#plugins.removeMarketplace(required(id, "marketplace id"));
+      return this.#plugins.marketplaces();
+    });
+    this.#handle(channels.pluginsBrowse, async (_event, query: unknown) => {
+      await this.#ensurePlugins();
+      const result = await this.#plugins.browse(typeof query === "string" ? query : "");
+      const errors = Object.values(result.errors);
+      // Every marketplace failing is a failure; one of several failing is a
+      // shorter list, and saying so would bury the plugins that did arrive.
+      if (errors.length && !result.plugins.length) throw new Error(errors[0]!);
+      return result.plugins;
+    });
+    this.#handle(channels.pluginsUpload, async (_event, value: unknown) => {
+      await this.#ensurePlugins();
+      await this.#uploadPlugin(skillUploadFiles(value));
+      await this.#reloadMcpAfterMutation();
+      return this.#pluginDtos();
     });
     this.#handle(channels.modelsList, () =>
       this.#inference.listModels().map((model) => this.#modelDto(model)),
@@ -1074,12 +1487,16 @@ export class DesktopBackend {
       return this.#selectModel(ref);
     });
     this.#handle(channels.modelsRoles, () => this.#modelRoles());
-    this.#handle(channels.modelsAssignRole, (_event, role: unknown, provider: unknown, modelId: unknown) =>
-      this.#assignRole(modelRole(role), {
+    this.#handle(channels.modelsAssignRole, (_event, role: unknown, provider: unknown, modelId: unknown, reasoning: unknown) => {
+      const effort = reasoning === undefined ? null : reasoningEffort(reasoning, null);
+      if (reasoning !== undefined && !effort)
+        throw new Error("reasoning must be a supported reasoning effort");
+      return this.#assignRole(modelRole(role), {
         provider: required(provider, "provider"),
         id: required(modelId, "model id"),
-      }),
-    );
+        ...(effort ? {reasoning: effort} : {}),
+      });
+    });
     this.#handle(channels.modelsClearRole, (_event, role: unknown) =>
       this.#clearRole(modelRole(role)),
     );
@@ -1137,6 +1554,123 @@ export class DesktopBackend {
     this.#handle(channels.extensionOpenInstall, () =>
       import("electron").then(({shell}) => shell.openExternal(EXTENSION_INSTALL_URL)),
     );
+    this.#handle(channels.browserHistoryList, (_event, options: unknown) =>
+      this.#storage.listHistory(browserHistoryQuery(options)),
+    );
+    this.#handle(channels.browserHistoryForget, (_event, url: unknown) => {
+      this.#storage.deleteHistoryEntry(required(url, "url"));
+      return this.#storage.listHistory({});
+    });
+    this.#handle(channels.browserHistoryClear, (_event, options: unknown) => {
+      const input = options && typeof options === "object" ? (options as Record<string, unknown>) : {};
+      this.#storage.clearHistory(input.source === "import" ? {source: "import"} : {});
+      return this.#storage.listHistory({});
+    });
+    this.#handle(channels.browserImportSources, () => discoverBrowsers());
+    this.#handle(channels.browserImportRun, async (_event, request: unknown) => {
+      // The browser and profile are looked up from the id rather than taken as
+      // a path, so a payload cannot name a file of its own choosing.
+      const data = await importFrom(browserImportRequest(request));
+      return this.#applyImport(data);
+    });
+    this.#handle(channels.browserImportFile, async (_event, file: unknown) => {
+      const chosen =
+        file === undefined || file === null
+          ? ((
+              await dialog.showOpenDialog(this.#window, {
+                properties: ["openFile"],
+                filters: [{name: "Exported passwords or cookies", extensions: ["csv", "txt"]}],
+              })
+            ).filePaths[0] ?? null)
+          : required(file, "file");
+      if (!chosen)
+        return {
+          cookiesImported: 0,
+          cookiesSkipped: 0,
+          passwordsImported: 0,
+          passwordsSkipped: 0,
+          historyImported: 0,
+          historySkipped: 0,
+          problems: [],
+        };
+      return this.#applyImport(await importFromFile(chosen));
+    });
+    this.#handle(channels.browserSitesList, () => this.#browsingData.sites());
+    this.#handle(channels.browserClearSiteData, (_event, site: unknown) =>
+      this.#browsingData.clearSite(origin(site)),
+    );
+    this.#handle(channels.browserClearBrowsingData, async (_event, options: unknown) => {
+      const wanted = clearDataOptions(options);
+      await this.#browsingData.clearAll(wanted);
+      if (wanted.downloads) this.#downloads.clear();
+      if (wanted.permissions) this.#sitePermissions.clear();
+      if (wanted.logins) await this.#autofill.clear();
+    });
+    this.#handle(channels.browserLoginsList, () => this.#autofill.list());
+    this.#handle(
+      channels.browserLoginSave,
+      (_event, site: unknown, username: unknown, password: unknown) =>
+        this.#autofill.save(origin(site), required(username, "username"), required(password, "password")),
+    );
+    this.#handle(channels.browserLoginReveal, (_event, id: unknown) =>
+      this.#autofill.reveal(required(id, "login id")),
+    );
+    this.#handle(channels.browserLoginDelete, (_event, id: unknown) =>
+      this.#autofill.delete(required(id, "login id")),
+    );
+    this.#handle(channels.browserSettingsGet, () => this.#browserSettings());
+    this.#handle(channels.browserSettingsUpdate, async (_event, patch: unknown) => {
+      const requested = browserSettingsPatch(patch);
+      // A null directory asks for the picker, which only this side can open.
+      // Parented to the window, like the drive's own folder chooser.
+      const chosen =
+        requested.downloadDirectory === null
+          ? ((
+              await dialog.showOpenDialog(this.#window, {
+                properties: ["openDirectory", "createDirectory"],
+              })
+            ).filePaths[0] ?? null)
+          : null;
+      const settings = browserSettingsUpdate(requested, this.#browserSettings(), chosen);
+      this.#storage.setPreference("browser-settings", {...settings});
+      return settings;
+    });
+    this.#handle(channels.browserPauseDownload, (_event, id: unknown) =>
+      this.#downloads.pause(required(id, "download id")),
+    );
+    this.#handle(channels.browserResumeDownload, (_event, id: unknown) =>
+      this.#downloads.resume(required(id, "download id")),
+    );
+    this.#handle(channels.browserCancelDownload, (_event, id: unknown) =>
+      this.#downloads.cancel(required(id, "download id")),
+    );
+    this.#handle(channels.browserRemoveDownload, (_event, id: unknown) =>
+      this.#downloads.remove(required(id, "download id")),
+    );
+    this.#handle(channels.browserClearDownloads, () => this.#downloads.clear());
+    this.#handle(channels.browserPermissionsList, () => this.#sitePermissions.list());
+    this.#handle(
+      channels.browserPermissionSet,
+      (_event, site: unknown, permission: unknown, decision: unknown) =>
+        this.#sitePermissions.set(
+          origin(site),
+          browserPermission(permission),
+          permissionDecision(decision),
+        ),
+    );
+    this.#handle(channels.browserPermissionsClear, (_event, site: unknown) =>
+      this.#sitePermissions.clear(site === undefined ? undefined : origin(site)),
+    );
+    this.#handle(
+      channels.browserPermissionRespond,
+      (_event, id: unknown, decision: unknown, remember: unknown) => {
+        this.#sitePermissions.respond(
+          required(id, "prompt id"),
+          decision === "allow" ? "allow" : "deny",
+          remember === true,
+        );
+      },
+    );
     this.#handle(channels.browserFind, (_event, tabId: string, text: string, forward: boolean) =>
       this.#embeddedBrowser.find(required(tabId, "tab id"), String(text ?? ""), forward !== false),
     );
@@ -1187,18 +1721,55 @@ export class DesktopBackend {
     this.#handle(channels.driveSetLocalRoot, (_event, target: unknown) =>
       this.#drive.setLocalRoot(typeof target === "string" ? target : null),
     );
+    this.#handle(channels.driveRevealEntry, async (_event, source: unknown, target: unknown) => {
+      // `describe` resolves the entry through whichever source holds it, which
+      // is what turns a virtual-drive path back into a real one on disk.
+      const entry = await this.#drive.describe(driveSource(source), required(target, "path"));
+      const onDisk = entry.path.includes("#") ? entry.path.slice(entry.path.indexOf("/") + 1) : entry.path;
+      // Nothing to say if it cannot be shown — an unmounted share is not an
+      // error the user can do anything with from here.
+      if (existsSync(onDisk)) shell.showItemInFolder(onDisk);
+    });
+    this.#handle(channels.driveOpenEntry, async (_event, source: unknown, target: unknown) => {
+      const from = driveSource(source);
+      const path_ = required(target, "path");
+      const entry = await this.#drive.describe(from, path_);
+      const onDisk = entry.path.includes("#") ? entry.path.slice(entry.path.indexOf("/") + 1) : entry.path;
+      // A file on a volume opens where it already is. Silent on failure by
+      // design: a share that went away mid-session should do nothing rather
+      // than raise an error the user cannot act on.
+      if (existsSync(onDisk)) {
+        await shell.openPath(onDisk);
+        return;
+      }
+      // Otherwise it lives somewhere with no page to send the user to — an S3
+      // object, or any provider that does not publish a link. Fetching it and
+      // handing it to the application that owns the type is the nearest thing
+      // to opening it, and beats a control that does nothing.
+      const downloaded = await this.#drive.download(from, path_);
+      await shell.openPath(downloaded);
+    });
+    this.#handle(channels.driveAddShare, async (_event, target: unknown, label: unknown) => {
+      // No path means the user is choosing one, which is a folder picker over
+      // whatever they have mounted rather than a bespoke "browse the network"
+      // dialog: macOS already puts shares under /Volumes once they are open.
+      const chosen =
+        typeof target === "string" && target
+          ? target
+          : ((
+              await dialog.showOpenDialog(this.#window, {
+                properties: ["openDirectory"],
+                defaultPath: "/Volumes",
+              })
+            ).filePaths[0] ?? null);
+      if (!chosen) return this.#drive.status();
+      return this.#drive.addShare(chosen, typeof label === "string" ? label : undefined);
+    });
+    this.#handle(channels.driveRemoveShare, (_event, id: unknown) =>
+      this.#drive.removeShare(required(id, "share")),
+    );
     this.#handle(channels.driveSaveS3, (_event, config: unknown) =>
       this.#drive.saveS3(driveS3Config(config)),
-    );
-    this.#handle(
-      channels.driveConversationFolder,
-      (_event, conversationId: unknown) => {
-        const id = required(conversationId, "conversation id");
-        return this.#drive.conversationFolder(
-          id,
-          this.#storage.getConversation(id)?.title,
-        );
-      },
     );
     this.#handle(channels.driveList, (_event, source: unknown, target: unknown) =>
       this.#drive.list(
@@ -1353,7 +1924,6 @@ export class DesktopBackend {
       },
     );
     this.#mcpConfigWatcher.start();
-    this.#codexMcpConfigWatcher.start();
   }
 
   async reloadMcp(): Promise<McpServerDto[]> {
@@ -1370,39 +1940,25 @@ export class DesktopBackend {
   }
 
   async #performMcpReload(): Promise<McpServerDto[]> {
+    await this.#migrateCodexMcpConfig();
     const source = await readFile(this.#mcpConfigPath, "utf8").catch(
       (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return "{}";
         throw error;
       },
     );
-    const codexSource = await readFile(this.#codexMcpConfigPath, "utf8").catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return "";
-        throw error;
-      },
-    );
-    const codexConfigs = codexSource
-      ? importMcpServers(parseToml(codexSource)).map((config) => ({
-          ...config,
-          metadata: {...config.metadata, source: "codex"},
-        }))
-      : [];
-    const flareaiConfigs = importMcpServers(JSON.parse(source)).map((config) => ({
+    // ~/.flareai/mcp.json is the one place servers are read from, which is what
+    // makes every one of them editable and removable in Settings. Another
+    // agent's servers arrive through Auto discovery, as copies.
+    const configs = importMcpServers(JSON.parse(source)).map((config) => ({
       ...config,
       metadata: {...config.metadata, source: "flareai"},
-    }));
-    // A FlareAI-local entry intentionally overrides a Codex entry with the same
-    // id, so personal experiments never require changing ChatGPT's setup.
-    const configs = [...new Map(
-      [...codexConfigs, ...flareaiConfigs].map((config) => [config.id, config]),
-    ).values()].map((config) => ({
-      ...config,
       enabled: this.#integrationEnabled("mcp-enabled", config.id, config.enabled !== false),
     }));
+    const plugins = await this.#pluginMcpConfigs();
     this.#mcpConfigs.clear();
-    for (const config of configs) this.#mcpConfigs.set(config.id, config);
-    this.#mcp.configure(configs);
+    for (const config of [...configs, ...plugins]) this.#mcpConfigs.set(config.id, config);
+    this.#mcp.configure([...configs, ...plugins]);
     const snapshots = await this.#mcp.connectEnabled();
     for (const name of this.#mcpToolNames) this.#registry.remove(name);
     this.#mcpToolNames.clear();
@@ -1410,7 +1966,82 @@ export class DesktopBackend {
       this.#registry.register(tool);
       this.#mcpToolNames.add(tool.name);
     }
-    return snapshots.map((snapshot) => this.#mcpDto(snapshot));
+    return this.#mcpDtos(snapshots);
+  }
+
+  /** The state file is read once, and every later caller waits on that read
+   * rather than starting another. */
+  #ensurePlugins(): Promise<void> {
+    this.#pluginsLoaded ??= this.#plugins.load().catch((error: unknown) => {
+      // A plugins.json we cannot write leaves the app without plugins, not
+      // without MCP servers: the reload this sits inside must still finish.
+      console.error("Could not read installed plugins", error);
+      this.#pluginsLoaded = undefined;
+    });
+    return this.#pluginsLoaded;
+  }
+
+  /**
+   * Every enabled plugin's servers, and — as a side effect, because the two
+   * are read from the same folders — the skill directories the agent loads
+   * them from.
+   *
+   * A plugin's server ids are namespaced with the plugin they came from, so a
+   * plugin cannot take over a server the user configured themselves and two
+   * plugins shipping the same server both run. The Plugins tab reports the
+   * clash under its own name; nothing here silently drops one.
+   */
+  async #pluginMcpConfigs(): Promise<ReturnType<typeof importMcpServers>> {
+    await this.#ensurePlugins();
+    const runtimes = this.#plugins.runtime((id) => this.#integrationEnabled("plugin-enabled", id));
+    this.#pluginMcpIds.clear();
+    // Replaced rather than appended to: a disabled or removed plugin has to
+    // lose its skills on the next run, not keep them until a restart.
+    this.#agentSkillOptions.configured = runtimes.flatMap((runtime) =>
+      runtime.skillDirectory ? [runtime.skillDirectory] : [],
+    );
+    return runtimes.flatMap((runtime) =>
+      runtime.mcpServers.map((server) => {
+        const id = `plugin:${runtime.pluginId}:${server.id}`;
+        this.#pluginMcpIds.add(id);
+        return {...server, id, metadata: {...server.metadata, source: "plugin"}};
+      }),
+    );
+  }
+
+  /** Snapshots as the MCP tab sees them: everything except what a plugin
+   * brought, which belongs to its plugin's card instead. */
+  #mcpDtos(snapshots: ReturnType<McpManager["snapshots"]>): McpServerDto[] {
+    return snapshots
+      .filter((snapshot) => !this.#pluginMcpIds.has(snapshot.id))
+      .map((snapshot) => this.#mcpDto(snapshot));
+  }
+
+  /**
+   * FlareAI used to run Codex's servers straight out of ~/.codex/config.toml,
+   * which left them unremovable here. They are copied across once so nothing
+   * a user already had disappears; after that the copy is theirs, and deleting
+   * it stays deleted rather than being re-imported on the next reload.
+   */
+  async #migrateCodexMcpConfig(): Promise<void> {
+    if (this.#storage.getPreference("mcp-codex-migrated")?.value === true) return;
+    const codexSource = await readFile(this.#codexMcpConfigPath, "utf8").catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      },
+    );
+    const codexConfigs = codexSource ? importMcpServers(parseToml(codexSource)) : [];
+    if (codexConfigs.length)
+      await this.#writeMcpConfig((servers) => {
+        for (const config of codexConfigs) {
+          // A FlareAI entry of the same id wins: it was the deliberate local
+          // override of Codex's, and stays that way.
+          if (config.id in servers) continue;
+          servers[config.id] = {...config.metadata, name: config.name ?? config.id};
+        }
+      });
+    this.#storage.setPreference("mcp-codex-migrated", true);
   }
 
   async close(): Promise<void> {
@@ -1420,7 +2051,6 @@ export class DesktopBackend {
     void this.#agentSurface.close();
     this.#embeddedBrowser.closeAll();
     this.#mcpConfigWatcher.stop();
-    this.#codexMcpConfigWatcher.stop();
     this.#chronicle.stop();
     this.#scheduler.stop();
     this.#dictation.close();
@@ -1460,6 +2090,18 @@ export class DesktopBackend {
     void this.#forwardEvents(runId, active);
   }
 
+  /**
+   * A subagent's events would otherwise reach storage and stop there: the
+   * runtime starts the run itself, so nothing forwards it. Tracked like any
+   * other run — cancelling the parent already cancels it through the tool call's
+   * signal, so this only adds the event stream the task transcript reads.
+   */
+  #trackSubagentRun(runId: string, active: ActiveAgentRun): void {
+    if (this.#closing) return;
+    this.#activeRuns.set(runId, active);
+    void this.#forwardEvents(runId, active);
+  }
+
   /** The user speaking outranks a goal continuation still working. */
   #preemptGoalContinuation(conversationId: string): void {
     const runId = this.#goalContinuations.get(conversationId);
@@ -1484,10 +2126,7 @@ export class DesktopBackend {
     const conversationId = this.#storage.getRun(runId)?.conversationId;
     if (!conversationId) return this.#drive.outputRoot();
     try {
-      return this.#drive.conversationFolderSync(
-        conversationId,
-        this.#storage.getConversation(conversationId)?.title,
-      );
+      return this.#drive.outputFolderSync();
     } catch {
       // An output root that cannot be created — a folder the user moved onto a
       // volume that is no longer mounted — must not take every tool down with
@@ -1546,6 +2185,7 @@ export class DesktopBackend {
       messageId: randomUUID(),
       attachments: [],
     } as ReturnType<typeof validateStartRun>);
+    this.#scheduledRunIds.add(runId);
     const active = this.#activeRuns.get(runId);
     // #forwardEvents owns the events and the settling; awaiting the same
     // promise here only waits for the end of it.
@@ -1556,16 +2196,64 @@ export class DesktopBackend {
     return {conversationId, runId, summary: this.#runSummary(conversationId, before)};
   }
 
+  /**
+   * Hands a notification to the OS. Clicking it brings the app back, which is
+   * the only thing every one of these notifications is asking the user to do —
+   * a notification that does nothing when clicked reads as broken.
+   */
+  #presentNotification(request: NotificationRequest): void {
+    const notification = new Notification({title: request.title, body: request.body});
+    notification.on("click", () => {
+      if (this.#closing || this.#window.isDestroyed()) return;
+      if (this.#window.isMinimized()) this.#window.restore();
+      this.#window.show();
+      this.#window.focus();
+      app.focus({steal: true});
+    });
+    notification.show();
+  }
+
+  /**
+   * Announces a finished top-level run. Delegated runs are the agent talking
+   * to itself and a scheduled run has already been announced as a schedule,
+   * so neither earns a second interruption.
+   */
+  #notifyRunSettled(runId: string): void {
+    const wasScheduled = this.#scheduledRunIds.delete(runId);
+    if (wasScheduled) return;
+    const run = this.#storage.getRun(runId);
+    if (!run || run.parentRunId) return;
+    const conversation = run.conversationId
+      ? this.#storage.getConversation(run.conversationId)
+      : null;
+    const title = conversation?.title?.trim() || "FlareAI";
+    if (run.status === "failed") {
+      this.#notifier.notify({
+        kind: "agent-completed",
+        title,
+        body: notificationBody(
+          typeof run.error === "string" && run.error ? run.error : "The run failed.",
+        ),
+      });
+      return;
+    }
+    const summary = run.conversationId
+      ? this.#runSummary(run.conversationId, 0)
+      : undefined;
+    this.#notifier.notify({
+      kind: "agent-completed",
+      title,
+      body: notificationBody(summary ?? "The agent finished."),
+    });
+  }
+
   /** The agent's closing words, as the account of what the run achieved. */
   #runSummary(conversationId: string, afterCount: number): string | undefined {
     const produced = this.#storage.listMessages(conversationId).slice(afterCount);
     for (let index = produced.length - 1; index >= 0; index -= 1) {
       const message = produced[index];
       if (message.role !== "assistant") continue;
-      const text = typeof message.content === "string"
-        ? message.content
-        : JSON.stringify(message.content);
-      const trimmed = text.trim();
+      const trimmed = assistantText(message.content);
       if (!trimmed) continue;
       return trimmed.length > 1200 ? `${trimmed.slice(0, 1200)}…` : trimmed;
     }
@@ -1595,14 +2283,15 @@ export class DesktopBackend {
   async #forwardEvents(runId: string, active: ActiveAgentRun): Promise<void> {
     try {
       for await (const event of active.events) {
-        const conversationId = this.#storage.getRun(runId)?.conversationId ?? "";
+        const run = this.#storage.getRun(runId);
+        const conversationId = run?.conversationId ?? "";
         // Links the reply cites and files written during the run feed the
         // Summary panel.
         this.#runResources.record(conversationId, runId, event);
         if (!this.#window.isDestroyed())
           this.#window.webContents.send(
             channels.runEvent,
-            eventDto(event, conversationId),
+            eventDto(event, conversationId, run?.parentRunId ?? null),
           );
       }
       await active.result;
@@ -1619,11 +2308,14 @@ export class DesktopBackend {
         this.#goalContinuations.delete(goalConversation);
       if (this.#activeRuns.size === 0 && this.#mcpReloadPending)
         await this.#reloadMcpAndPublish();
+      this.#notifyRunSettled(runId);
       if (!this.#window.isDestroyed()) {
-        const conversationId = this.#storage.getRun(runId)?.conversationId ?? "";
+        const settled = this.#storage.getRun(runId);
+        const conversationId = settled?.conversationId ?? "";
         this.#window.webContents.send(channels.runEvent, {
           runId,
           conversationId,
+          parentRunId: settled?.parentRunId ?? null,
           sequence: Number.MAX_SAFE_INTEGER,
           timestamp: Date.now(),
           type: "run.settled",
@@ -1650,7 +2342,7 @@ export class DesktopBackend {
       this.#publishMcpChange({ servers, error: null });
     } catch (error) {
       this.#publishMcpChange({
-        servers: this.#mcp.snapshots().map((snapshot) => this.#mcpDto(snapshot)),
+        servers: this.#mcpDtos(this.#mcp.snapshots()),
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -1659,7 +2351,7 @@ export class DesktopBackend {
   async #reloadMcpAfterMutation(): Promise<McpServerDto[]> {
     if (this.#activeRuns.size || this.#mcpReloadInFlight) {
       this.#mcpReloadPending = true;
-      return this.#mcp.snapshots().map((snapshot) => this.#mcpDto(snapshot));
+      return this.#mcpDtos(this.#mcp.snapshots());
     }
     return this.reloadMcp();
   }
@@ -1688,6 +2380,73 @@ export class DesktopBackend {
     );
   }
 
+  /**
+   * Asks macOS for everything the app is entitled to ask for and does not yet
+   * have, so a grant is settled while the user is here rather than in the
+   * middle of a run. Called when a skill is installed or switched on — with
+   * that skill's name — and again before every run with no names at all.
+   *
+   * Three rules keep it quiet. A grant macOS has already decided is never
+   * asked for twice, because it shows its dialog once and a second call only
+   * costs a process. A grant the user switched off is not asked for at all —
+   * that switch is a refusal to use the capability, not a request to be
+   * reminded of it. And a permission macOS has no dialog for is skipped
+   * outright: "asking" for Full Disk Access means opening System Settings,
+   * which is a thing to do when someone pressed a button, never something to
+   * do to them because a run was starting.
+   */
+  async #ensurePermissions(names?: Iterable<string>): Promise<AppPermissionKind[]> {
+    // App grants only. The app's own permissions are swept below and each has
+    // a row with its own Allow button, so folding them in here would let a
+    // press on "ask again" — which sits with the skill grants — open the
+    // Microphone pane instead, and on a fresh build that is what it would
+    // always do.
+    const withheld: AppPermissionKind[] = [];
+    if (process.platform !== "darwin") return withheld;
+    const settings = this.#generalSettings();
+    const only = names ? new Set(names) : undefined;
+    const declared = new Set<AppPermissionKind>();
+    for (const skill of this.#skills.load().skills) {
+      // Without names this is the pre-run sweep, which covers what is actually
+      // loaded: every core skill, and the optional ones switched on.
+      const active = only
+        ? only.has(skill.name)
+        : this.#coreSkills.has(skill.name) ||
+          this.#integrationEnabled("skill-enabled", skill.name);
+      if (active) for (const kind of declaredPermissions(skill)) declared.add(kind);
+    }
+    const statuses = new Map<AppPermissionKind, SystemPermissionStatus>();
+    for (const kind of declared) {
+      if (this.#permissionsSettled.has(kind)) continue;
+      const status = await permissionStatus(kind);
+      statuses.set(kind, status);
+      // "not-determined" is the only status worth revisiting: a granted one is
+      // done, and a refused one cannot be changed from here. Nothing is
+      // remembered across a restart, so a grant reset outside the app is
+      // noticed the next time FlareAI runs.
+      if (status !== "not-determined") this.#permissionsSettled.add(kind);
+    }
+    const {kinds} = permissionsToRequest(
+      statuses.keys(),
+      settings,
+      (kind) => statuses.get(kind) ?? "unknown",
+    );
+    for (const kind of kinds) {
+      this.#permissionsSettled.add(kind);
+      if ((await requestSystemPermission(kind)) !== "granted") withheld.push(kind);
+    }
+    // A grant that was already decided against is reported too. macOS will not
+    // show its dialog a second time, so the caller offering System Settings is
+    // the only thing left that can change the answer.
+    for (const [kind, status] of statuses)
+      if (status !== "not-determined" && status !== "granted" && !withheld.includes(kind))
+        withheld.push(kind);
+    // The app's own grants are deliberately not swept here. Each has a row
+    // with its own button, and a run starting is not a reason to ask for a
+    // capability that run may never use.
+    return withheld;
+  }
+
   #skillDtos(): SkillDto[] {
     // Core integrations stay loaded for the agent; they are only kept out of
     // the Skills list, which is the optional-add-on surface.
@@ -1698,6 +2457,7 @@ export class DesktopBackend {
       filePath: skill.filePath,
       disableModelInvocation: skill.disableModelInvocation,
       allowedTools: skill.allowedTools ?? [],
+      permissions: declaredPermissions(skill),
       enabled: this.#integrationEnabled("skill-enabled", skill.name),
       editable: skill.source === "flareai",
       instructions: skill.source === "flareai" ? skillInstructions(readFileSync(skill.filePath, "utf8")) : undefined,
@@ -1708,14 +2468,36 @@ export class DesktopBackend {
     }));
   }
 
-  #integrationEnabled(key: "skill-enabled" | "mcp-enabled", id: string, fallback = true): boolean {
+  /**
+   * The installed plugins, each told what of its own the user already has
+   * standalone. The comparison is made here rather than in the registry
+   * because this is where both lists exist: the Skills tab's own skills, and
+   * the servers configured in ~/.flareai/mcp.json.
+   */
+  #pluginDtos(): PluginDto[] {
+    const skills = new Map(
+      this.#skills.load().skills.map((skill) => [skill.name, skill.source] as const),
+    );
+    const mcpServers = new Map(
+      [...this.#mcpConfigs.values()]
+        .filter((config) => !this.#pluginMcpIds.has(config.id))
+        .map((config) => [config.id, "flareai"] as const),
+    );
+    return this.#plugins.list({
+      skills,
+      mcpServers,
+      isEnabled: (id) => this.#integrationEnabled("plugin-enabled", id),
+    });
+  }
+
+  #integrationEnabled(key: "skill-enabled" | "mcp-enabled" | "plugin-enabled", id: string, fallback = true): boolean {
     const value = this.#storage.getPreference(key)?.value;
     if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
     const stored = (value as Record<string, unknown>)[id];
     return typeof stored === "boolean" ? stored : fallback;
   }
 
-  #setIntegrationEnabled(key: "skill-enabled" | "mcp-enabled", id: string, enabled: unknown): void {
+  #setIntegrationEnabled(key: "skill-enabled" | "mcp-enabled" | "plugin-enabled", id: string, enabled: unknown): void {
     if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
     const value = this.#storage.getPreference(key)?.value;
     const current = value && typeof value === "object" && !Array.isArray(value)
@@ -1724,7 +2506,14 @@ export class DesktopBackend {
     this.#storage.setPreference(key, {...current, [id]: enabled});
   }
 
-  async #saveCustomMcp(request: SaveCustomMcpRequest): Promise<void> {
+  /**
+   * Every server FlareAI runs is written here, so one editor covers adding a
+   * custom server, adopting a discovered one and removing either. The file is
+   * replaced by rename, so a crash mid-write leaves the previous list intact.
+   */
+  async #writeMcpConfig(
+    edit: (servers: Record<string, unknown>) => void,
+  ): Promise<void> {
     const source = await readFile(this.#mcpConfigPath, "utf8").catch(
       (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? "{}" : Promise.reject(error),
     );
@@ -1733,9 +2522,7 @@ export class DesktopBackend {
     const servers = existing && typeof existing === "object" && !Array.isArray(existing)
       ? {...existing as Record<string, unknown>}
       : {};
-    servers[request.id] = request.transport === "stdio"
-      ? {name: request.name, description: request.description, command: request.command, args: request.args, env: request.env, cwd: request.cwd}
-      : {name: request.name, description: request.description, url: request.url, headers: request.headers};
+    edit(servers);
     root.mcpServers = servers;
     await mkdir(path.dirname(this.#mcpConfigPath), {recursive: true});
     const temporary = `${this.#mcpConfigPath}.tmp`;
@@ -1743,20 +2530,19 @@ export class DesktopBackend {
     await rename(temporary, this.#mcpConfigPath);
   }
 
+  async #saveCustomMcp(request: SaveCustomMcpRequest): Promise<void> {
+    await this.#writeMcpConfig((servers) => {
+      servers[request.id] = request.transport === "stdio"
+        ? {name: request.name, description: request.description, command: request.command, args: request.args, env: request.env, cwd: request.cwd}
+        : {name: request.name, description: request.description, url: request.url, headers: request.headers};
+    });
+  }
+
   async #removeCustomMcp(id: string): Promise<void> {
-    const source = await readFile(this.#mcpConfigPath, "utf8").catch(
-      (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? "{}" : Promise.reject(error),
-    );
-    const root = JSON.parse(source) as Record<string, unknown>;
-    const existing = root.mcpServers;
-    if (!existing || typeof existing !== "object" || Array.isArray(existing) || !(id in existing))
-      throw new Error(`MCP server is not removable: ${id}`);
-    const servers = {...existing as Record<string, unknown>};
-    delete servers[id];
-    root.mcpServers = servers;
-    const temporary = `${this.#mcpConfigPath}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(root, null, 2)}\n`, "utf8");
-    await rename(temporary, this.#mcpConfigPath);
+    await this.#writeMcpConfig((servers) => {
+      if (!(id in servers)) throw new Error(`MCP server is not removable: ${id}`);
+      delete servers[id];
+    });
     const cached = this.#storage.getPreference("mcp-capabilities")?.value;
     if (cached && typeof cached === "object" && !Array.isArray(cached)) {
       const next = {...cached};
@@ -1825,7 +2611,7 @@ export class DesktopBackend {
    * not a link or a second sourced directory: the other agent stays free to
    * change or remove its own copy, and the user can edit FlareAI's in place.
    */
-  async #adoptSkill(displayed: string): Promise<void> {
+  async #adoptSkill(displayed: string): Promise<string> {
     const source = resolveDiscoveredSkill(displayed);
     const result = new SkillLoader({configured: [source]}).load();
     const skill = result.skills.find((item) => item.filePath === path.join(source, "SKILL.md"));
@@ -1835,9 +2621,10 @@ export class DesktopBackend {
     if (exists) throw new Error(`A skill named ${skill.name} already exists`);
     await mkdir(this.#customSkillDirectory, {recursive: true});
     await cp(source, destination, {recursive: true});
+    return skill.name;
   }
 
-  async #uploadSkill(files: SkillUploadFile[]): Promise<void> {
+  async #uploadSkill(files: SkillUploadFile[]): Promise<string[]> {
     const skillFiles = files.filter((file) => file.relativePath.split("/").length === 2 && path.basename(file.relativePath) === "SKILL.md");
     if (skillFiles.length !== 1) throw new Error("Choose one skill folder with a SKILL.md at its top level");
     const rootName = skillFiles[0]!.relativePath.split("/")[0]!;
@@ -1861,10 +2648,69 @@ export class DesktopBackend {
       const exists = await stat(destination).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error));
       if (exists) throw new Error(`A skill named ${skill.name} already exists`);
       await rename(temporary, destination);
+      return [skill.name];
     } catch (error) {
       await rm(temporary, {recursive: true, force: true});
       throw error;
     }
+  }
+
+  /**
+   * Copies a chosen plugin folder in. The folder is assembled in a staging
+   * directory first and only handed to the registry once its manifest reads,
+   * so a folder that turns out not to be a plugin leaves nothing behind.
+   */
+  async #uploadPlugin(files: SkillUploadFile[]): Promise<void> {
+    const manifests = files.filter((file) =>
+      file.relativePath.split("/").length === 3
+      && file.relativePath.split("/")[1] === ".claude-plugin"
+      && path.basename(file.relativePath) === "plugin.json");
+    if (manifests.length !== 1)
+      throw new Error("Choose one plugin folder with a .claude-plugin/plugin.json inside it");
+    const rootName = manifests[0]!.relativePath.split("/")[0]!;
+    const selected = files.filter((file) => file.relativePath.startsWith(`${rootName}/`));
+    const staging = await mkdtemp(path.join(tmpdir(), "flareai-plugin-upload-"));
+    try {
+      for (const file of selected) {
+        const relative = file.relativePath.slice(rootName.length + 1);
+        if (!relative || path.isAbsolute(relative) || relative.split(/[\\/]/).includes(".."))
+          throw new Error("Plugin folder contains an invalid path");
+        const destination = path.join(staging, relative);
+        await mkdir(path.dirname(destination), {recursive: true});
+        await copyFile(file.path, destination);
+      }
+      await this.#plugins.installLocal(staging, readPluginManifest(staging).name);
+    } finally {
+      await rm(staging, {recursive: true, force: true});
+    }
+  }
+
+  /** Writes decoded data into this app's own session and vault. Kept in one
+   * place so every import route — a browser, a file — lands the same way. */
+  #applyImport(data: ImportedData): Promise<BrowserImportResultDto> {
+    return applyImport(data, {
+      cookies: session.defaultSession.cookies,
+      visits: {
+        record: (visits) =>
+          this.#storage.recordVisits(
+            visits.map((visit) => ({
+              url: visit.url,
+              title: visit.title,
+              visitedAt: new Date(visit.visitedAt * 1000).toISOString(),
+              visitCount: visit.visitCount,
+              source: "import" as const,
+            })),
+          ),
+      },
+      logins: {
+        save: (origin, username, password, source) =>
+          this.#autofill.save(origin, username, password, source),
+      },
+    });
+  }
+
+  #browserSettings(): BrowserSettingsDto {
+    return browserSettingsPreference(this.#storage.getPreference("browser-settings")?.value);
   }
 
   #generalSettings(): GeneralSettingsDto {
@@ -1880,6 +2726,100 @@ export class DesktopBackend {
     )
       return {...settings, onboardingCompleted: true};
     return settings;
+  }
+
+  /**
+   * What is open on the machine, for the ambient context block. Titles only,
+   * and only while accessibility is granted — the same permission Chronicle
+   * reads through. Cached briefly so a burst of runs costs one listing, and a
+   * failure answers with the last reading rather than failing the turn.
+   */
+  /**
+   * Whether a capability is available right now: the OS grant *and* the user's
+   * own switch for it in Settings. Turning the switch off leaves the grant
+   * alone, so switching it back on costs nothing.
+   */
+  /**
+   * Settles an app grant at the moment a tool needs it, which is the whole
+   * reason such a capability is a tool rather than a shelled-out command: this
+   * is a real point of use, so the dialog raised here is one the user's own
+   * request brought about, and the tool waits for the answer instead of
+   * failing and leaving them to work out why.
+   *
+   * The switches come first and never prompt. Turning a capability off is a
+   * refusal to use it, so the honest answer is to say so — raising a system
+   * dialog for something the user has switched off would be absurd.
+   */
+  async #requireAppPermission(kind: AppPermissionKind): Promise<string | null> {
+    const settings = this.#generalSettings();
+    if (!settings.appPermissionsEnabled)
+      return "App access for skills is switched off in Settings → General → Permissions.";
+    if (!settings.permissions[kind])
+      return `${kind} access is switched off in Settings → General → Permissions.`;
+    if ((await permissionStatus(kind)) === "granted") return null;
+    if ((await requestSystemPermission(kind)) === "granted") return null;
+    // macOS raises its dialog once. Past that the only thing that changes the
+    // answer is the pane, so say where rather than asking again next turn.
+    return `FlareAI has not been given access to ${kind}. Allow it in System Settings → Privacy & Security.`;
+  }
+
+  #permissionAvailable(kind: SystemPermissionKind): boolean {
+    const settings = this.#generalSettings();
+    // The master switch covers every app grant at once. It is a refusal to use
+    // them, not a revocation: macOS still holds whatever it granted, so
+    // switching it back on needs no second trip through System Settings.
+    if (isAppPermissionKind(kind) && !settings.appPermissionsEnabled) return false;
+    if (!settings.permissions[kind]) return false;
+    return systemPermissionStatus(kind) === "granted";
+  }
+
+  /** The switch is the app's own, so the refusal names it rather than macOS. */
+  #requireMicrophone(): void {
+    if (!this.#generalSettings().permissions.microphone)
+      throw new Error("Microphone access is switched off in Settings → General → Permissions");
+  }
+
+  /** The seam both workspace tools drive: a pane to show, and what the hub is
+   * linked to, which is what says whether a draft has anywhere to land. */
+  #workspaceRevealer() {
+    return {
+      reveal: (request: WorkspaceRevealDto) => {
+        if (!this.#closing && !this.#window.isDestroyed())
+          this.#window.webContents.send(channels.workspaceReveal, request);
+      },
+      linked: async () => {
+        const status = await this.#comms.status();
+        return {
+          mailAccounts: status.email.accounts.map((account) => ({
+            id: account.id,
+            email: account.email,
+          })),
+          chats: (await this.#comms.chats().catch((): MatrixRoom[] => [])).map((chat) => ({
+            id: chat.roomId,
+            name: chat.name,
+          })),
+        };
+      },
+    };
+  }
+
+  #openWindows(): AxWindow[] {
+    if (!this.#permissionAvailable("accessibility")) return [];
+    // The prompt is built synchronously, so the listing is prefetched rather
+    // than awaited: an ageing snapshot starts a refresh for the next turn and
+    // this one answers with what is already in hand.
+    if (!this.#windowRefresh && Date.now() - this.#windowSnapshot.at > 3_000) {
+      this.#windowRefresh = this.#axReader
+        .windows(process.pid)
+        .then((result) => {
+          if (result.trusted) this.#windowSnapshot = {at: Date.now(), windows: result.windows};
+        })
+        .catch(() => {})
+        .finally(() => {
+          this.#windowRefresh = undefined;
+        });
+    }
+    return this.#windowSnapshot.windows;
   }
 
   #environmentPromptContext() {
@@ -1905,7 +2845,23 @@ export class DesktopBackend {
         settings.locationEnabled && settings.location
           ? settings.location
           : undefined,
+      browserTabs: this.#embeddedBrowser.tabs(),
+      // Frontmost first: the window the user is actually in is the one an
+      // ambiguous "this" most often means.
+      windows: this.#openWindows()
+        .map(({app, title, frontmost}) => ({app, title, frontmost}))
+        .sort((left, right) => Number(right.frontmost) - Number(left.frontmost)),
     };
+  }
+
+  /** Switch every memory surface on, for the mode that offers no way to. */
+  #enableAllMemory(): void {
+    if (!this.#memory.status().enabled) this.#memory.setEnabled(true);
+    if (this.#chronicle.settings().enabled) return;
+    // Switched on, never asked for: this runs at launch in basic mode, and a
+    // dialog raised from here is one the user did nothing to invite.
+    this.#chronicle.setEnabled(true);
+    void this.#chronicle.captureOnce().catch(() => {});
   }
 
   #selectModel(ref: ModelRef, persist = true): ModelDto {
@@ -1927,6 +2883,7 @@ export class DesktopBackend {
       storage: this.#storage,
       memory: this.#memory,
       chronicle: this.#chronicle,
+      drive: { promptContext: () => this.#drive.promptContext() },
       environment: { promptContext: () => this.#environmentPromptContext() },
       tools: this.#registry,
       model: ref,
@@ -1934,6 +2891,12 @@ export class DesktopBackend {
       // an override that no longer resolves simply stops applying.
       taskModel: this.#usableRole("task"),
       judgeModel: this.#usableRole("judge"),
+      compactionModel: this.#usableRole("compaction"),
+      // The level chosen with a role's model applies wherever that model runs;
+      // undefined leaves the run on the level it was started at.
+      taskReasoning: this.#usableRole("task")?.reasoning,
+      judgeReasoning: this.#usableRole("judge")?.reasoning,
+      compactionReasoning: this.#usableRole("compaction")?.reasoning,
       skills: this.#agentSkillOptions,
       // The guard runs first so a built-in skill stays read-only even when the
       // user's own hooks would have allowed the call.
@@ -1943,36 +2906,55 @@ export class DesktopBackend {
       ),
       onGoalContinuation: ({ conversationId, runId, run }) =>
         this.#trackGoalContinuation(conversationId, runId, run),
+      onSubagentRun: ({ runId, run }) => this.#trackSubagentRun(runId, run),
     });
   }
 
   /** A stored override only counts while the model it names still exists. */
-  #usableRole(role: ModelRole): ModelRef | undefined {
+  #usableRole(role: ModelRole): RoleSelection | undefined {
     const ref = this.#roleOverrides[role];
     return ref && this.#inference.getModel(ref) ? ref : undefined;
   }
 
   #modelRoles(): ModelRolesDto {
-    const assignment = (ref: ModelRef | undefined): ModelRoleAssignmentDto | null => {
+    const assignment = (ref: RoleSelection | undefined): ModelRoleAssignmentDto | null => {
       if (!ref) return null;
       const model = this.#inference.getModel(ref);
       if (!model) return null;
-      return { provider: ref.provider, id: ref.id, name: model.name ?? ref.id };
+      // A model that never reasons reports no level, so the row can say so
+      // rather than implying a choice the provider ignores.
+      const reasoning = model.reasoning ? ref.reasoning : undefined;
+      return {
+        provider: ref.provider,
+        id: ref.id,
+        name: model.name ?? ref.id,
+        ...(reasoning ? {reasoning} : {}),
+      };
     };
+    // Main's level is the one runs are started at, which the composer owns, so
+    // it is read back from the general settings rather than stored twice.
     return {
-      main: assignment(this.#model),
+      main: assignment(
+        this.#model
+          ? {...this.#model, reasoning: this.#generalSettings().reasoningLevel}
+          : undefined,
+      ),
       task: assignment(this.#usableRole("task")),
       judge: assignment(this.#usableRole("judge")),
+      compaction: assignment(this.#usableRole("compaction")),
       speech: assignment(this.#usableRole("speech")),
       image: assignment(this.#usableRole("image")),
       video: assignment(this.#usableRole("video")),
     };
   }
 
-  async #assignRole(role: ModelRole, ref: ModelRef): Promise<ModelRolesDto> {
+  async #assignRole(role: ModelRole, ref: RoleSelection): Promise<ModelRolesDto> {
     await this.#assertProviderConfigured(ref.provider);
     if (role === "main") {
       this.#selectModel(ref);
+      // Main runs read their level from the general settings, so a level chosen
+      // with the main model lands there — the composer picks it up as its own.
+      if (ref.reasoning) this.#setReasoningLevel(ref.reasoning);
       return this.#modelRoles();
     }
     if (!this.#inference.getModel(ref))
@@ -1998,11 +2980,34 @@ export class DesktopBackend {
       Object.fromEntries(
         Object.entries(this.#roleOverrides).map(([role, ref]) => [
           role,
-          { provider: ref.provider, id: ref.id },
+          {
+            provider: ref.provider,
+            id: ref.id,
+            ...(ref.reasoning ? {reasoning: ref.reasoning} : {}),
+          },
         ]),
       ),
     );
     if (this.#model) this.#buildAgent(this.#model);
+  }
+
+  /** Writes the level main runs start at, leaving every other general setting
+   * as it stands. */
+  #setReasoningLevel(reasoning: ReasoningEffort): void {
+    const settings = this.#generalSettings();
+    this.#storage.setPreference("general-access", {
+      theme: settings.theme,
+      language: settings.language,
+      currency: settings.currency,
+      advancedMode: settings.advancedMode,
+      speechModeEnabled: settings.speechModeEnabled,
+      dictationAutoStopSeconds: settings.dictationAutoStopSeconds,
+      timeEnabled: settings.timeEnabled,
+      locationEnabled: settings.locationEnabled,
+      reasoningLevel: reasoning,
+      onboardingCompleted: settings.onboardingCompleted,
+      location: settings.location,
+    });
   }
 
   #modelDto(model: InferenceModel): ModelDto {
@@ -2250,6 +3255,29 @@ export class DesktopBackend {
       )
         throw new Error("Rejected IPC from an untrusted frame");
       return listener(event, ...(args as T));
+    });
+  }
+
+  /**
+   * The autofill channel, which is the one place a *web page* talks to the
+   * main process. Everything else is rejected unless it came from the app
+   * window; this is rejected unless it came from a browser tab we opened.
+   *
+   * The origin is taken from the sender's own URL rather than from the
+   * message, so a page cannot claim to be a site it is not and read back the
+   * password saved for it.
+   */
+  #registerAutofill(): void {
+    this.#ipcMain.on(AUTOFILL_CHANNEL, (event, payload: unknown) => {
+      if (!this.#embeddedBrowser.tabIdFor(event.sender)) return;
+      const message = autofillMessage(payload);
+      if (!message) return;
+      const actual = originOf(event.sender.getURL());
+      if (!actual || actual !== message.origin) return;
+      if (message.kind === "submitted")
+        void this.#autofill
+          .captureSubmission(message)
+          .catch((error: unknown) => console.warn("Could not save the submitted login", error));
     });
   }
 }

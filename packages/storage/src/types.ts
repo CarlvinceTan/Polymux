@@ -151,6 +151,59 @@ export interface Attachment {
   createdAt: Timestamp;
 }
 
+/** What a site is allowed to ask the embedded browser for. `ask` is stored
+ * rather than implied by absence, so a site the user has explicitly reset is
+ * distinguishable from one that has never come up. */
+export type PermissionDecision = "allow" | "deny" | "ask";
+
+export interface SitePermission {
+  origin: string;
+  permission: string;
+  decision: PermissionDecision;
+  updatedAt: Timestamp;
+}
+
+export type DownloadState =
+  "progressing" | "paused" | "completed" | "cancelled" | "interrupted";
+
+export interface BrowserDownload {
+  id: Id;
+  url: string;
+  filename: string;
+  path: string;
+  mimeType: string | null;
+  receivedBytes: number;
+  totalBytes: number;
+  state: DownloadState;
+  startedAt: Timestamp;
+  finishedAt: Timestamp | null;
+}
+
+/** The public half of a saved login. The password lives in the encrypted
+ * vault under this row's `id` and never enters the database. */
+/** One page in the browsing history: a url, not a visit. `visitCount` is what
+ * survives from collapsing repeat visits into a single row. */
+export interface HistoryEntry {
+  url: string;
+  title: string;
+  visitedAt: string;
+  visitCount: number;
+  source: "local" | "import";
+}
+
+export type NewHistoryEntry = Pick<HistoryEntry, "url"> &
+  Partial<Pick<HistoryEntry, "title" | "visitedAt" | "visitCount" | "source">>;
+
+export interface SavedLogin {
+  id: Id;
+  origin: string;
+  username: string;
+  source: "manual" | "import";
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  lastUsedAt: Timestamp | null;
+}
+
 export type NewConversation = Pick<Conversation, "id" | "title"> &
   Partial<Pick<Conversation, "metadata">>;
 export type NewMessage = Pick<
@@ -186,3 +239,10 @@ export type NewReference = Pick<
 > &
   Partial<Pick<StoredReference, "runId" | "metadata">>;
 export type NewAttachment = Omit<Attachment, "createdAt">;
+export type NewBrowserDownload = Pick<
+  BrowserDownload,
+  "id" | "url" | "filename" | "path"
+> &
+  Partial<Pick<BrowserDownload, "mimeType" | "totalBytes" | "state">>;
+export type NewSavedLogin = Pick<SavedLogin, "id" | "origin" | "username"> &
+  Partial<Pick<SavedLogin, "source">>;

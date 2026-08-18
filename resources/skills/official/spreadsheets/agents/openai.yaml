@@ -1,8 +1,0 @@
-interface:
-  display_name: "Spreadsheets"
-  short_description: "Analyze and edit spreadsheet files"
-  icon_small: "./assets/spreadsheets.svg"
-  icon_large: "./assets/spreadsheets.svg"
-  brand_color: "#1F7A4D"
-  default_prompt: "Use the Spreadsheets skill to work with this workbook."
-

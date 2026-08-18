@@ -1,9 +1,14 @@
-import {expect, test, type Page} from '@playwright/test';
+import {readFileSync} from 'node:fs';
+import {expect, test, type Locator, type Page} from '@playwright/test';
 
 const editor = (page: Page) => page.getByRole('textbox', {name: 'Message FlareAI'});
 const chatDrawer = (page: Page) => page.locator('aside.chat-drawer');
 const workspaceDrawer = (page: Page) => page.locator('aside.workspace-drawer');
 const summaryCard = (page: Page) => page.locator('aside.summary-panel');
+/** The launcher's Recent rows: the second group, since the first is the fixed
+ * list of views to open. */
+const recentRows = (drawer: Locator) =>
+  drawer.locator('.workspace-launcher-rows').last().locator('.workspace-launcher-row');
 
 /** The composer's contenteditable does not take synthetic key events from
     `fill`, so a prompt is typed the way a person types it. */
@@ -147,7 +152,7 @@ test.describe('welcome view', () => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
 
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
     await expect(modal).toBeVisible();
     await expect(modal.getByRole('heading', {name: 'General'})).toBeVisible();
     await expect(modal.getByText('Manage FlareAI preferences and access.')).toBeVisible();
@@ -160,7 +165,7 @@ test.describe('welcome view', () => {
     expect(modalBounds!.width).toBe(viewport!.width);
     await expect(modal).toHaveCSS('border-style', 'none');
     await expect(page.getByRole('menu')).toHaveCount(0);
-    await expect(modal.getByRole('tab')).toHaveText(['General', 'Hub', 'Drive', 'MCP', 'Skills', 'Models', 'Provider', 'Memory']);
+    await expect(modal.getByRole('tab')).toHaveText(['General', 'Hub', 'Drive', 'Browser', 'Plugins', 'MCP', 'Skills', 'Models', 'Provider', 'Memory']);
     const tabMetrics = await modal.getByRole('tab').first().evaluate((node) => {
       const style = getComputedStyle(node);
       return {fontSize: style.fontSize, height: style.height, radius: style.borderRadius, icons: node.querySelectorAll('svg').length};
@@ -273,6 +278,9 @@ test.describe('welcome view', () => {
     expect(emptyMcpAlignment).toEqual({justifyContent: 'center', textAlign: 'center'});
     await mcpSearch.fill('');
     await modal.getByRole('button', {name: 'Add MCP server'}).click();
+    await expect(modal.getByRole('menuitem', {name: 'Create Custom'})).toBeVisible();
+    await expect(modal.getByRole('menuitem', {name: 'Auto Discovery'})).toBeVisible();
+    await modal.getByRole('menuitem', {name: 'Create Custom'}).click();
     await expect(modal.getByRole('heading', {name: 'Add MCP server'})).toBeVisible();
     await modal.getByRole('button', {name: /Filesystem/}).click();
 
@@ -295,12 +303,14 @@ test.describe('welcome view', () => {
     await modal.getByRole('button', {name: 'Add Skills'}).click();
     await expect(modal.getByRole('menuitem', {name: 'Create Custom'})).toBeVisible();
     await expect(modal.getByRole('menuitem', {name: 'Upload Skills'})).toBeVisible();
-    await expect(modal.getByRole('menuitem', {name: 'Install from Vercel Skills'})).toBeVisible();
+    // The Vercel directory is a marketplace, so it rides the storefront icon
+    // beside the +, exactly as the MCP marketplace does.
+    await expect(modal.getByRole('menuitem', {name: 'Install from Vercel Skills'})).toHaveCount(0);
+    await expect(modal.getByRole('button', {name: 'Install from Vercel Skills'})).toBeVisible();
     await modal.getByRole('menuitem', {name: 'Create Custom'}).click();
     await expect(modal.getByRole('heading', {name: 'Add Skill'})).toBeVisible();
     await modal.getByRole('button', {name: 'Cancel'}).click();
-    await modal.getByRole('button', {name: 'Add Skills'}).click();
-    await modal.getByRole('menuitem', {name: 'Install from Vercel Skills'}).click();
+    await modal.getByRole('button', {name: 'Install from Vercel Skills'}).click();
     await expect(modal.getByRole('heading', {name: 'Vercel Skills'})).toBeVisible();
     // Searching the directory lists registry entries with install counts.
     await modal.getByLabel('Search Vercel Skills').fill('find');
@@ -370,10 +380,18 @@ test.describe('welcome view', () => {
 
     await modal.getByRole('tab', {name: 'Models'}).click();
     await expect(modal.getByRole('heading', {name: 'Models'})).toBeVisible();
-    await expect(modal.getByText('Click a model to assign it to a role.')).toBeVisible();
+    await expect(modal.getByText('Set the model and reasoning level for each role.')).toBeVisible();
     await expect(modal.getByLabel(/Selected model:/)).toHaveCount(0);
-    await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['OpenAI']);
+    // The tab opens on the roles, not the catalogue: the directory is how one
+    // of them is filled, and it is reached from that role's own row.
+    await expect(modal.locator('.role-options .general-setting-copy h4')).toHaveText(['Main', 'Task', 'Judge', 'Compaction', 'Speech', 'Image generation', 'Video generation']);
+    await modal.getByRole('button', {name: /as the main model/}).click();
+    // The directory asks for something different, and says so.
+    await expect(modal.getByText('Click a model to assign it to a role.')).toBeVisible();
+    // It opens filtered to the only kind of model the job can take, and the
+    // rail's own filter carries that rather than narrowing behind its back.
     await modal.getByRole('button', {name: 'Filter models'}).click();
+    await expect(modal.getByRole('menu', {name: 'Filter models'}).getByRole('menuitemradio', {name: 'Text models'})).toHaveAttribute('aria-checked', 'true');
     await modal.getByRole('menuitemradio', {name: 'All Companies'}).click();
     const companySearch = modal.getByRole('searchbox', {name: 'Search model'});
     await expect(companySearch).toHaveAttribute('placeholder', 'Search model');
@@ -447,7 +465,9 @@ test.describe('welcome view', () => {
     await expect(companyLogo).toHaveAttribute('src', /Anthropic/i);
     const modelTableStyle = await modal.locator('.model-table-wrap').evaluate((wrapper) => {
       const count = document.querySelector('.model-count')!;
-      const header = wrapper.querySelector('th')!;
+      // The headings are pinned above the scroller rather than inside it, so
+      // only the rows move under them.
+      const header = document.querySelector('.model-table-head th')!;
       const detailHeader = count.closest('.options-detail-header')!;
       return {
         wrapperBorder: getComputedStyle(wrapper).borderStyle,
@@ -474,67 +494,38 @@ test.describe('welcome view', () => {
     expect(currencyPosition).toEqual({topOffset: -5, rightGap: 0});
     await currencyMenu.click();
     await modal.getByRole('menuitemradio', {name: 'AUD'}).click();
-    const sonnetRow = modal.getByRole('button', {name: 'Assign Claude Sonnet 4.5'}).locator('xpath=ancestor::tr');
+    const sonnetRow = modal.getByRole('button', {name: /Set Claude Sonnet 4.5 as the/}).locator('xpath=ancestor::tr');
     await expect(sonnetRow.locator('td').nth(1)).toHaveText('A$4.50');
     await currencyMenu.click();
     await modal.getByRole('menuitemradio', {name: 'USD'}).click();
-    await expect(modal.locator('.model-table thead')).toContainText('InputOutputCache hitCache writeContext');
-    const sonnet = modal.getByRole('button', {name: 'Assign Claude Sonnet 4.5'});
+    await expect(modal.locator('.model-columns thead')).toContainText('InputOutputCache hitCache writeContext');
+    const sonnet = modal.getByRole('button', {name: /Set Claude Sonnet 4.5 as the/});
     await expect(sonnet).toBeVisible();
     await expect(sonnet.locator('xpath=ancestor::tr')).toContainText('$3.00$15.00$0.300$3.75');
-    await sonnet.click();
-    const sonnetRoles = modal.locator('.model-roles');
-    // A text model only offers the jobs a text model can do.
-    await expect(sonnetRoles.locator('.model-role-copy strong')).toHaveText(['Main', 'Task', 'Judge']);
-    await expect(sonnetRoles.locator('.model-role').first()).toContainText('GPT-5.6 Terra');
-    // A falling-back role names the model it uses rather than saying so.
-    await expect(sonnetRoles.locator('.model-role').nth(1)).toContainText('GPT-5.6 Terra');
-    // Task and judge follow main here, so there is nothing to put back and the
-    // button that would do it stays out of the row entirely.
-    await expect(sonnetRoles.getByRole('button', {name: 'Set to Main'})).toHaveCount(0);
-    // View Setup lists every job at once, including the ones this row can't take.
-    await modal.getByRole('button', {name: 'View Setup'}).click();
-    const setupMenu = modal.getByRole('menu', {name: 'Model setup'});
-    await expect(setupMenu.locator('.role-setup-row')).toHaveText([
-      'MainGPT-5.6 Terra',
-      'TaskGPT-5.6 Terra',
-      'JudgeGPT-5.6 Terra',
-      'SpeechNot set',
-      'Image generationNot set',
-      'Video generationNot set',
-    ]);
-    await modal.getByRole('button', {name: 'View Setup'}).click();
-    await expect(setupMenu).toHaveCount(0);
-    // An unconfigured provider fails on assignment, not on opening the row.
+    // The row is the whole gesture — no level to pick first, no job to choose:
+    // the directory was opened for one. An unconfigured provider fails on that
+    // pick, and the directory stays open rather than reporting from elsewhere.
     await expect(modal.locator('.options-error')).toHaveCount(0);
-    await modal.getByRole('button', {name: 'Set Claude Sonnet 4.5 as the main model'}).click();
-    await expect(modal.locator('.options-error')).toContainText('Anthropic is not configured');
     await sonnet.click();
-    await expect(modal.locator('.model-roles')).toHaveCount(0);
-    // The price cells belong to the same row, so they open and close it too.
+    await expect(modal.locator('.options-error')).toContainText('Anthropic is not configured');
+    await expect(modal.locator('.model-table')).toBeVisible();
+    // The price cells belong to the same row, so they pick from it too.
     await sonnetRow.locator('td').nth(2).click();
-    await expect(modal.locator('.model-roles')).toHaveCount(1);
-    await sonnetRow.locator('td').nth(2).click();
-    await expect(modal.locator('.model-roles')).toHaveCount(0);
+    await expect(modal.locator('.options-error')).toContainText('Anthropic is not configured');
+    // The way back sits with the rail's own controls, beside filter and sort.
+    await modal.getByRole('button', {name: 'Back to roles', exact: true}).click();
+    await expect(modal.locator('.model-table')).toHaveCount(0);
 
-    // A role with no consumer yet still records the choice, and the row it was
-    // set from is the one that reads back as current.
+    // A role with no consumer yet still records the choice, and the roles view
+    // reads it back the moment the directory closes.
+    const judgeRow = modal.locator('.role-options .general-setting-row').nth(2);
+    await judgeRow.getByRole('button', {name: /as the judge model/}).click();
     await modal.getByRole('button', {name: /OpenAI.*2 models/}).click();
-    await modal.getByRole('button', {name: 'Assign GPT-5.6 Sol'}).click();
-    const solRoles = modal.locator('.model-roles');
-    // A text model is not offered the generation jobs it could never do.
-    await expect(solRoles.locator('.model-role-copy strong')).toHaveText(['Main', 'Task', 'Judge']);
-    await modal.getByRole('button', {name: 'Set GPT-5.6 Sol as the judge model'}).click();
-    await expect(modal.getByRole('button', {name: 'GPT-5.6 Sol is the judge model'})).toBeDisabled();
-    const judgeRole = solRoles.locator('.model-role').nth(2);
-    await expect(judgeRole).toContainText('GPT-5.6 Sol');
-    await judgeRole.getByRole('button', {name: 'Set to Main'}).click();
-    await expect(judgeRole).toContainText('GPT-5.6 Terra');
-    // Back to following main, so the button that put it there has nothing left
-    // to do and goes away.
-    await expect(judgeRole.getByRole('button', {name: 'Set to Main'})).toHaveCount(0);
-    await modal.getByRole('button', {name: 'Assign GPT-5.6 Sol'}).click();
-    await expect(modal.locator('.model-roles')).toHaveCount(0);
+    await modal.getByRole('button', {name: /Set GPT-5.6 Sol as the judge model/}).click();
+    await expect(modal.locator('.model-table')).toHaveCount(0);
+    await expect(judgeRow).toContainText('GPT-5.6 Sol');
+
+    await modal.getByRole('button', {name: /as the main model/}).click();
     await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
     await modal.getByRole('button', {name: /Google.*1 model/}).click();
     await expect(modal.getByRole('heading', {name: 'Google'})).toBeVisible();
@@ -655,13 +646,14 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('heading', {name: 'Local Studio'})).toBeVisible();
 
     await modal.getByRole('tab', {name: 'Models'}).click();
+    await modal.getByRole('button', {name: /as the main model/}).click();
     await modal.getByRole('button', {name: 'Filter models'}).click();
     await modal.getByRole('menuitemradio', {name: 'Custom Provider'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong')).toHaveText(['Local Studio']);
     await expect(modal.getByRole('heading', {name: 'Local Studio'})).toBeVisible();
     await expect(modal.locator('.provider-detail-header .provider-logo img')).toBeVisible();
-    await modal.getByRole('button', {name: 'Assign Studio Chat'}).click();
-    await expect(modal.locator('.model-roles .model-role').first()).toContainText('Main');
+    await modal.getByRole('button', {name: /Set Studio Chat as the main model/}).click();
+    await expect(modal.locator('.role-options .general-setting-row').first()).toContainText('Studio Chat');
 
     await modal.getByRole('tab', {name: 'Memory'}).click();
     await expect(modal.locator('.memory-options .option-mark')).toHaveCount(0);
@@ -716,7 +708,7 @@ test.describe('welcome view', () => {
   test('a local runtime sits with the other providers and needs only connecting', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
     await modal.getByRole('tab', {name: 'Provider'}).click();
 
     // Found by name, in the same rail as the hosted providers.
@@ -740,7 +732,7 @@ test.describe('welcome view', () => {
   test('auto discovery lists other agents\' skills grouped by where they were found', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
     await modal.getByRole('tab', {name: 'Skills'}).click();
     await modal.getByRole('button', {name: 'Add Skills'}).click();
     await modal.getByRole('menuitem', {name: 'Auto Discovery'}).click();
@@ -847,7 +839,7 @@ test.describe('welcome view', () => {
   test('a scan that finds one agent opens it, since there is nothing to survey', async ({page}) => {
     await page.goto('/?one-agent');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
     await modal.getByRole('tab', {name: 'Skills'}).click();
     await modal.getByRole('button', {name: 'Add Skills'}).click();
     await modal.getByRole('menuitem', {name: 'Auto Discovery'}).click();
@@ -859,7 +851,7 @@ test.describe('welcome view', () => {
   test('toggles integrations and edits FlareAI-owned skills and MCP servers', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
 
     await modal.getByRole('tab', {name: 'MCP'}).click();
     const mcpToggle = modal.getByRole('switch', {name: 'Enable MCP server'});
@@ -909,7 +901,7 @@ test.describe('welcome view', () => {
     });
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
     const locationRow = modal.locator('.general-setting-row').filter({hasText: 'Location'});
     const retry = locationRow.getByRole('button', {name: 'Try again'});
     await expect(retry).toBeVisible();
@@ -923,7 +915,7 @@ test.describe('welcome view', () => {
   test('the provider panel explains that extra keys rotate automatically', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
     await modal.getByRole('tab', {name: 'Provider'}).click();
     await expect(modal.getByRole('switch', {name: 'Enable auto API key rotation'})).toHaveCount(0);
     await expect(modal.getByText('rotates through them automatically')).toBeVisible();
@@ -943,7 +935,7 @@ test.describe('welcome view', () => {
   test('speech mode can be disabled and replaced by the Send button', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
     const speechMode = modal.getByRole('switch', {name: 'Enable speech mode'});
     await expect(speechMode).toHaveAttribute('aria-checked', 'true');
     await speechMode.click();
@@ -959,6 +951,34 @@ test.describe('welcome view', () => {
 });
 
 test.describe('design system', () => {
+  test('every icon name the sheet declares is one it can actually draw', () => {
+    // A name in the union with no branch in the `{#if}` chain type-checks
+    // perfectly and renders an empty <svg> — the icon is simply absent, which
+    // is how three of the browser tab's rail marks shipped blank. Nothing but
+    // reading the file catches it.
+    const sheet = readFileSync(
+      new URL('../lib/shared/components/Icon.svelte', import.meta.url),
+      'utf8',
+    );
+    const union = sheet.slice(sheet.indexOf('export let name:'), sheet.indexOf('export let size'));
+    const declared = [...union.matchAll(/'([a-z0-9-]+)'/gi)].map((match) => match[1]!);
+    const drawn = new Set(
+      [...sheet.matchAll(/name === '([a-z0-9-]+)'/gi)].map((match) => match[1]!),
+    );
+    expect(declared.length).toBeGreaterThan(50);
+
+    const undrawn = declared.filter((name) => !drawn.has(name));
+    expect(undrawn, `declared but never drawn: ${undrawn.join(', ')}`).toEqual([]);
+
+    // And the reverse: a branch for a name the union dropped is dead code.
+    const undeclared = [...drawn].filter((name) => !declared.includes(name));
+    expect(undeclared, `drawn but not declared: ${undeclared.join(', ')}`).toEqual([]);
+
+    // Each name is drawn once; a second branch for it is unreachable.
+    const duplicated = [...new Set(declared.filter((n, i) => declared.indexOf(n) !== i))];
+    expect(duplicated, `declared twice: ${duplicated.join(', ')}`).toEqual([]);
+  });
+
   test('publishes the shared motion and colour tokens', async ({page}) => {
     await page.goto('/');
     const tokens = await page.evaluate(() => {
@@ -1062,12 +1082,13 @@ test.describe('design system', () => {
   test('model rows reveal a rich tooltip only after a deliberate pause', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
     await modal.getByRole('tab', {name: 'Models'}).click();
+    await modal.getByRole('button', {name: /as the main model/}).click();
     await modal.getByRole('button', {name: 'Filter models'}).click();
     await modal.getByRole('menuitemradio', {name: 'All Companies'}).click();
     await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
-    const sonnet = modal.getByRole('button', {name: 'Assign Claude Sonnet 4.5'});
+    const sonnet = modal.getByRole('button', {name: /Set Claude Sonnet 4.5 as the/});
 
     await sonnet.hover();
     await expect(page.locator('.shared-tooltip')).toHaveCount(0);
@@ -1081,31 +1102,68 @@ test.describe('design system', () => {
     await expect(tooltip).toHaveCSS('white-space', 'pre-line');
   });
 
-  test('Set to Main appears only for a job that has been given its own model', async ({page}) => {
+  test('a role takes a model from the directory and its level from a menu', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog', {name: 'Settings'});
+    const modal = page.getByRole('region', {name: 'Settings'});
     await modal.getByRole('tab', {name: 'Models'}).click();
+    const roles = modal.locator('.role-options .general-setting-row');
+    const taskRow = roles.nth(1);
+
+    // The columns are named once and each control sits under its own title.
+    await expect(modal.locator('.role-columns')).toHaveText('Role ReasoningModel');
+    const columnCentres = await modal.locator('.role-options').evaluate((view) => {
+      const centre = (node: Element) => {
+        const box = node.getBoundingClientRect();
+        return Math.round(box.left + box.width / 2);
+      };
+      const left = (node: Element) => Math.round(node.getBoundingClientRect().left);
+      const titles = view.querySelectorAll('.role-columns .role-controls > span');
+      const controls = view.querySelector('.general-setting-row .role-controls')!;
+      const trigger = controls.querySelector('.select-menu-trigger')!;
+      const model = controls.querySelector('.role-model')!;
+      return {
+        effort: centre(titles[0]) - centre(trigger),
+        model: centre(titles[1]) - centre(model),
+        // Titles and values start on the same line, not centred in the column.
+        effortLeft: Math.round(left(titles[0]) + Number.parseFloat(getComputedStyle(titles[0]).paddingLeft)) - Math.round(left(trigger) + Number.parseFloat(getComputedStyle(trigger).paddingLeft)),
+        modelLeft: Math.round(left(titles[1]) + Number.parseFloat(getComputedStyle(titles[1]).paddingLeft)) - Math.round(left(model) + Number.parseFloat(getComputedStyle(model).paddingLeft)),
+      };
+    });
+    expect(columnCentres).toEqual({effort: 0, model: 0, effortLeft: 0, modelLeft: 0});
+
+    await expect(taskRow).toContainText('GPT-5.6 Terra');
+
+    // One click in the directory fills the job it was opened for and hands the
+    // roles back: there is nothing else to press.
+    await taskRow.getByRole('button', {name: /as the task model/}).click();
+    await expect(modal.locator('.model-table')).toBeVisible();
     await modal.getByRole('button', {name: /OpenAI.*2 models/}).click();
-    await modal.getByRole('button', {name: 'Assign GPT-5.6 Sol'}).click();
+    await modal.getByRole('button', {name: /Set GPT-5.6 Sol as the task model/}).click();
+    await expect(modal.locator('.model-table')).toHaveCount(0);
+    await expect(taskRow).toContainText('GPT-5.6 Sol');
 
-    const roles = modal.locator('.model-roles');
-    const setToMain = roles.getByRole('button', {name: 'Set to Main'});
-    // Every job still follows main, so pressing it would change nothing and it
-    // is not offered.
-    await expect(setToMain).toHaveCount(0);
+    // The pick carries a level with it — one step up from the chat model's,
+    // because this job runs unattended — and the menu is where it changes.
+    const level = taskRow.getByRole('button', {name: /Reasoning for/});
+    await expect(level).toContainText('Medium');
+    await level.click();
+    await modal.getByRole('menuitemradio', {name: 'Low'}).click();
+    await expect(level).toContainText('Low');
+    await expect(taskRow).toContainText('GPT-5.6 Sol');
+    // Not reasoning at all is a level like any other, and it is what None means.
+    await level.click();
+    await expect(modal.getByRole('menu', {name: /Reasoning for/}).getByRole('menuitemradio')).toHaveText(['None', 'Low', 'Medium', 'High']);
+    await modal.getByRole('menuitemradio', {name: 'None'}).click();
+    await expect(level).toContainText('None');
 
-    // Giving Task its own model is what earns the button — and only Task's row
-    // gets one.
-    await roles.getByRole('button', {name: 'Set GPT-5.6 Sol as the task model'}).click();
-    await expect(setToMain).toHaveCount(1);
-    await expect(setToMain).toBeEnabled();
-    await expect(roles.locator('.model-role').nth(1)).toContainText('GPT-5.6 Sol');
-
-    // Pressing it hands the job back to main, and the button leaves with it.
-    await setToMain.click();
-    await expect(setToMain).toHaveCount(0);
-    await expect(roles.locator('.model-role').nth(1)).toContainText('GPT-5.6 Terra');
+    // A job filled by a model that cannot reason still reads from a menu, so
+    // the rows line up — None is simply its only answer.
+    const speechRow = modal.locator('.role-options .general-setting-row').nth(4);
+    const speechLevel = speechRow.getByRole('button', {name: /Reasoning for/});
+    await expect(speechLevel).toContainText('None');
+    await speechLevel.click();
+    await expect(modal.getByRole('menu', {name: /Reasoning for/}).getByRole('menuitemradio')).toHaveText(['None']);
   });
 
   test('MODEL lists the available models and picks a reasoning level per model', async ({page}) => {
@@ -1326,10 +1384,10 @@ test.describe('design system', () => {
         const rect = node.getBoundingClientRect();
         return {left: rect.left, width: rect.width, centre: rect.top + rect.height / 2};
       }));
-    expect(boxes).toHaveLength(9);
+    expect(boxes).toHaveLength(6);
     // Every icon button shares the 26px line; the text title retains its
     // optical 25px line.
-    expect(boxes.map((box) => box.centre)).toEqual([26, 26, 26, 26, 26, 26, 26, 26, 25]);
+    expect(boxes.map((box) => box.centre)).toEqual([26, 26, 26, 26, 26, 25]);
     const chatDrawerGlyph = await page.locator('[data-icon="panel-left"]').boundingBox();
     const newChatGlyph = await page.locator('[data-icon="new-chat"]').boundingBox();
     expect(chatDrawerGlyph!.y + chatDrawerGlyph!.height / 2).toBe(26);
@@ -1497,6 +1555,62 @@ test.describe('conversation', () => {
     await expect(summaryCard(page).getByText('Prepare the response')).toHaveCount(0);
   });
 
+  test('opens a delegated task as a read-only run in the workspace', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_task__');
+
+    const row = summaryCard(page).getByRole('button', {name: /Compare the two providers/});
+    await expect(row).toBeVisible({timeout: 4000});
+    // The mark carries the status by motion alone: its arms travel outward while
+    // the subagent works, and the same lines sit still once it is done.
+    const arms = await row.locator('svg.task-glyph.running path').evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const style = getComputedStyle(node);
+        return {
+          cycle: `${style.animationName}|${style.animationDuration}|${style.animationDelay}`,
+          // The offset one cycle costs. Negative is what makes the travel
+          // outward, and |end| === dash + gap is what closes the loop seamlessly.
+          end: parseFloat(node.style.getPropertyValue('--end')),
+          span: parseFloat(node.style.getPropertyValue('--bar')) + parseFloat(node.style.getPropertyValue('--gap')),
+        };
+      }));
+    expect(arms.length).toBeGreaterThan(3);
+    expect(arms.every((arm) => arm.cycle.startsWith('task-flare|'))).toBe(true);
+    // Symmetric: every arm shares one period and one start, so the mark keeps
+    // its symmetry right through the travel.
+    expect(new Set(arms.map((arm) => arm.cycle)).size).toBe(1);
+    // Outward only, and one whole cycle per period.
+    expect(arms.every((arm) => arm.end < 0)).toBe(true);
+    expect(arms.every((arm) => Math.abs(Math.abs(arm.end) - arm.span) < 0.02)).toBe(true);
+    // And it is actually running. Polled rather than sampled twice: under a
+    // loaded machine two reads a fixed moment apart can land on the same frame.
+    const offset = () => row.locator('svg.task-glyph.running path').first()
+      .evaluate((node) => parseFloat(getComputedStyle(node).strokeDashoffset));
+    const first = await offset();
+    await expect.poll(offset, {timeout: 4000}).not.toBe(first);
+    await expect(row.locator('svg.task-glyph.done')).toBeVisible({timeout: 6000});
+    expect(await row.locator('svg.task-glyph path').first()
+      .evaluate((node) => getComputedStyle(node).animationName)).toBe('none');
+    await row.click();
+
+    const view = page.locator('.task-view');
+    await expect(view).toBeVisible();
+    // The orchestrator's half of the exchange, then the subagent's own.
+    await expect(view).toContainText('Compare the two providers and report which is cheaper.');
+    await expect(view).toContainText('The second provider is cheaper at this volume.');
+    // The subagent's own tool trail, folded exactly as the chat pane folds the
+    // main run's.
+    await view.locator('.agent-activity-heading').click();
+    await expect(view.locator('.agent-activity-list')).toContainText('Reading Files');
+
+    // Nothing here is addressed to anyone: the subagent answers to the run that
+    // sent it, so the transcript offers no composer and no way to edit it.
+    await expect(view.getByRole('textbox')).toHaveCount(0);
+    await view.locator('.message').first().hover();
+    await expect(view.getByRole('button', {name: 'Edit'})).toHaveCount(0);
+    await expect(view.getByRole('button', {name: 'Good response'})).toHaveCount(0);
+  });
+
   test('reports how long the agent worked', async ({page}) => {
     await page.goto('/');
     await send(page, 'timing');
@@ -1514,13 +1628,24 @@ test.describe('conversation', () => {
     // The run's mid-run narration nests inside the activity group as a
     // commentary row; the repeated reads still collapse to one tool row.
     await expect(page.locator('.agent-activity-list li.commentary')).toContainText('I’ll read the skill files first');
+    // Every row in the trail is finished, so none of them shimmers — the
+    // glimmer belongs to the step the agent is actually on.
+    expect(await page.locator('.agent-activity-list li').evaluateAll(
+      (nodes) => nodes.map((node) => getComputedStyle(node).animationName))).toEqual(['none', 'none']);
     await expect(page.locator('.agent-activity-list .activity-copy')).toHaveCount(2);
     await expect(page.locator('.agent-activity')).toHaveCount(1);
     await expect(page.locator('.message.assistant')).toHaveCount(1);
 
     // A row with captured output opens its own detail, ChatGPT-style: the
     // tool's reported sub-steps as an indented trail, then its result excerpt.
-    const detailToggle = page.locator('.activity-detail-toggle');
+    // Commentary is prose, so its row stays one line until it is opened too.
+    const commentary = page.locator('.agent-activity-list li.commentary .activity-detail-toggle');
+    await expect(commentary).toHaveAttribute('aria-expanded', 'false');
+    await expect(commentary.locator('.activity-prose')).toHaveCount(0);
+    await commentary.click();
+    await expect(commentary.locator('.activity-prose')).toContainText('I’ll read the skill files first');
+
+    const detailToggle = page.locator('.agent-activity-list li:not(.commentary) .activity-detail-toggle');
     await expect(detailToggle).toHaveCount(1);
     await expect(detailToggle.locator('small')).toHaveCount(0);
     await detailToggle.click();
@@ -1776,11 +1901,10 @@ test.describe('panels', () => {
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await expect(summaryButton).toHaveCount(0);
 
-    // Closing brings it straight back alongside Drive/Hub/Schedule — one set
-    // of controls appearing together, not a straggler after the slide.
+    // Closing brings it straight back, in step with the rest of the title bar
+    // rather than as a straggler after the slide.
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await expect(summaryButton).toBeVisible();
-    await expect(page.getByRole('button', {name: 'Open Drive'})).toBeVisible();
   });
 
   test('opening a panel never reflows the conversation column away from centre', async ({page}) => {
@@ -2221,18 +2345,7 @@ test.describe('workspace drawer', () => {
     await expect(drawer.locator('.schedule-row', {hasText: 'Morning brief'}).locator('.schedule-unread')).toHaveCount(0);
   });
 
-  test('sends a launcher suggestion to the chat instead of opening a view', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
-    const drawer = workspaceDrawer(page);
-
-    await drawer.getByRole('button', {name: 'Create a presentation'}).click();
-    await expect(drawer.locator('.workspace-launcher')).toBeVisible();
-    await expect(drawer.locator('.tab')).toHaveCount(0);
-    await expect(page.locator('.message:not(.assistant)').first()).toContainText('I want to create a presentation.');
-  });
-
-  test('offers recent pages once enough have been visited, and opens one', async ({page}) => {
+  test('offers the pages already visited, and opens one', async ({page}) => {
     await page.addInitScript(() => {
       localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
         {url: 'https://example.com/one', title: 'Example One'},
@@ -2244,9 +2357,8 @@ test.describe('workspace drawer', () => {
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const drawer = workspaceDrawer(page);
 
-    await expect(drawer.locator('.workspace-launcher-heading')).toHaveText('Recent');
-    await expect(drawer.locator('.workspace-launcher-suggestion')).toHaveCount(3);
-    await expect(drawer.getByRole('button', {name: 'Create a document'})).toHaveCount(0);
+    await expect(drawer.locator('.workspace-launcher-heading').last()).toHaveText('Recent');
+    await expect(recentRows(drawer)).toHaveCount(3);
 
     await drawer.getByRole('button', {name: 'Example Two'}).click();
     await expect(drawer.locator('.tab')).toHaveCount(1);
@@ -2268,13 +2380,13 @@ test.describe('workspace drawer', () => {
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const drawer = workspaceDrawer(page);
 
-    await expect(drawer.locator('.workspace-launcher-suggestion')).toHaveCount(3);
+    await expect(recentRows(drawer)).toHaveCount(3);
     // Sites serve one mark per colour scheme, so stored bytes are dropped on
     // load and the icon is asked for again. This build has no main process to
     // ask, so every row keeps the globe rather than showing a mark chosen under
     // a theme nobody is in any more.
-    await expect(drawer.locator('.workspace-launcher-suggestion .tab-favicon img')).toHaveCount(0);
-    await expect(drawer.locator('.workspace-launcher-suggestion .tab-favicon svg')).toHaveCount(3);
+    await expect(recentRows(drawer).locator('.tab-favicon img')).toHaveCount(0);
+    await expect(recentRows(drawer).locator('.tab-favicon svg')).toHaveCount(3);
   });
 
   test('leaves search-result pages out of the recent list', async ({page}) => {
@@ -2292,16 +2404,16 @@ test.describe('workspace drawer', () => {
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const drawer = workspaceDrawer(page);
 
-    await expect(drawer.locator('.workspace-launcher-heading')).toHaveText('Recent');
-    await expect(drawer.locator('.workspace-launcher-suggestion')).toHaveCount(3);
-    await expect(drawer.locator('.workspace-launcher-suggestion')).toHaveText([
+    await expect(drawer.locator('.workspace-launcher-heading').last()).toHaveText('Recent');
+    await expect(recentRows(drawer)).toHaveCount(3);
+    await expect(recentRows(drawer)).toHaveText([
       'Example One',
       'Luma AI',
       'A shared doc',
     ]);
   });
 
-  test('keeps the create suggestions until the history is worth showing', async ({page}) => {
+  test('offers however few pages have been visited, and no section at all with none', async ({page}) => {
     await page.addInitScript(() => {
       localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
         {url: 'https://example.com/one', title: 'Example One'},
@@ -2311,8 +2423,19 @@ test.describe('workspace drawer', () => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
 
-    await expect(workspaceDrawer(page).locator('.workspace-launcher-heading')).toHaveText('Suggestions');
-    await expect(workspaceDrawer(page).getByRole('button', {name: 'Create a document'})).toBeVisible();
+    const drawer = workspaceDrawer(page);
+    await expect(drawer.locator('.workspace-launcher-heading').last()).toHaveText('Recent');
+    await expect(recentRows(drawer)).toHaveCount(2);
+  });
+
+  test('leaves the launcher on the views alone when nothing has been visited', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+
+    const drawer = workspaceDrawer(page);
+    // Only "Open": an empty Recent heading over nothing is chrome, not a list.
+    await expect(drawer.locator('.workspace-launcher-heading')).toHaveText(['Open']);
+    await expect(drawer.getByRole('button', {name: 'Browser'})).toBeVisible();
   });
 
   test('header actions ride the panel rather than appearing before it lands', async ({page}) => {
@@ -2632,13 +2755,17 @@ test.describe('first-run setup', () => {
     // Permissions are requested one at a time, each from its own button.
     await expect(setup.getByRole('heading')).toContainText('only what you want');
     const allow = setup.getByRole('button', {name: 'Allow'});
-    await expect(allow).toHaveCount(2);
+    // Microphone, screen reading and screen recording — every grant macOS
+    // raises a dialog for. Setup is where they are asked for, so a grant that
+    // had no row here would have nowhere left to be offered except the moment
+    // something needed it.
+    await expect(allow).toHaveCount(3);
     await allow.first().click();
     await expect(setup.getByText('Allowed').first()).toBeVisible();
     // Full Disk Access is the one macOS never prompts for, so its row offers
     // the pane it is switched on in rather than an Allow that does nothing.
     await expect(setup.getByRole('button', {name: 'Open Settings'})).toBeVisible();
-    // Continue means "all three are settled", so it stays out of reach while
+    // Continue means "all of them are settled", so it stays out of reach while
     // any of them is not — here, the one macOS only grants from its own pane.
     await expect(setup.getByRole('button', {name: 'Continue'})).toBeDisabled();
     // Every step carries its own way back, beside the way forward.
@@ -2714,7 +2841,7 @@ test.describe('hub settings mail', () => {
   test('the rail carries one Mail entry and the pane lists every mailbox', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog');
+    const modal = page.locator('.options-page');
     await modal.getByRole('tab', {name: 'Hub'}).click();
 
     // One entry, summarising the set — not a row per account.
@@ -2741,16 +2868,150 @@ test.describe('hub settings mail', () => {
 });
 
 test.describe('hub view', () => {
+  /**
+   * The reading pane's actions, wherever they currently live: a strip of bare
+   * icons when the pane has room for all of them, and one ⋮ menu when it does
+   * not. Returns whichever holds them, with the menu opened.
+   */
+  const mailActions = async (view: import('@playwright/test').Locator) => {
+    const strip = view.locator('.hub-view-reader-actions');
+    const more = strip.getByRole('button', {name: 'More actions'});
+    if (await more.count()) await more.click();
+    return strip;
+  };
+
+  /**
+   * The hub opens on whatever sits at the top of the rail, which in the demo is
+   * a platform, so a test about mail says which mailbox it means. Mail carries
+   * several accounts, so its row folds open rather than selecting one.
+   */
+  const openMailbox = async (view: import('@playwright/test').Locator) => {
+    await view.locator('.hub-view-source', {hasText: 'Mail'}).click();
+    await view.locator('.hub-view-accounts button', {hasText: 'demo@example.com'}).click();
+  };
+
   const openView = async (page: import('@playwright/test').Page) => {
     await page.goto('/');
-    // The title-bar Hub button opens the tab the same way Drive does.
-    await page.getByRole('button', {name: 'Open Hub'}).click();
+    // The workspace launcher opens the tab the same way Drive does.
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await page.locator('.workspace-launcher-row', {hasText: 'Hub'}).click();
     await expect(page.locator('.hub-view')).toBeVisible();
   };
+
+  test('a drafted message is written into that chat’s box, not sent', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+
+    await page.evaluate(() => {
+      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+        surface: 'hub',
+        chat: {name: 'Jules Tan', draft: 'Thursday works — see you at 2.'},
+      });
+    });
+
+    await expect(view.locator('.hub-view-thread')).toBeVisible();
+    await expect(view.locator('.hub-view-composer input')).toHaveValue('Thursday works — see you at 2.');
+    // Prefilled, never sent: the thread still ends where it did.
+    await expect(view.locator('.hub-view-thread')).not.toContainText('Thursday works');
+  });
+
+  test('a drafted mail opens the composer already written, saved nowhere', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+
+    await page.evaluate(() => {
+      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+        surface: 'hub',
+        mail: {
+          account: 'demo@example.com',
+          compose: {to: 'dana@example.com', subject: 'Friday', body: 'Are we still on?'},
+        },
+      });
+    });
+
+    const composer = view.locator('.hub-view-compose-form');
+    await expect(composer).toBeVisible();
+    await expect(composer.locator('input').first()).toHaveValue('dana@example.com');
+    await expect(composer.locator('textarea')).toHaveValue('Are we still on?');
+  });
+
+  test('a drafted reply answers the message it names, quoted above the box', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+
+    await page.evaluate(() => {
+      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+        surface: 'hub',
+        chat: {name: 'Jules Tan', replyTo: 'c1', draft: 'Yes — 2pm works.'},
+      });
+    });
+
+    // The composer says what it is answering, the same as pressing Reply does.
+    await expect(view.locator('.hub-view-replying')).toContainText('Are we still on for Thursday?');
+    await expect(view.locator('.hub-view-composer input')).toHaveValue('Yes — 2pm works.');
+  });
+
+  test('a drafted mail reply opens as a real reply, with the words above the quote', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+
+    await page.evaluate(() => {
+      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+        surface: 'hub',
+        mail: {
+          account: 'demo@example.com',
+          folder: 'INBOX',
+          messageId: '1',
+          compose: {mode: 'reply', body: 'Thanks — I will be there.'},
+        },
+      });
+    });
+
+    const composer = view.locator('.hub-view-compose-form');
+    await expect(composer).toBeVisible();
+    // Recipient and Re: subject come from the message, not from the agent.
+    await expect(composer.locator('input').first()).toHaveValue(/example\.com/);
+    await expect(composer.locator('input').nth(1)).toHaveValue(/^Re: /);
+    const body = composer.locator('textarea');
+    await expect(body).toHaveValue(/^Thanks — I will be there\./);
+    await expect(body).toHaveValue(/wrote:|>/);
+  });
+
+  test('a drafted mail arrives with copies, attachments and the important flag set', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+
+    await page.evaluate(() => {
+      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+        surface: 'hub',
+        mail: {
+          account: 'demo@example.com',
+          compose: {
+            to: 'dana@example.com',
+            cc: 'sam@example.com',
+            bcc: 'records@example.com',
+            subject: 'Friday',
+            body: 'Are we still on?',
+            attachments: ['/Users/demo/Documents/agenda.pdf'],
+            importance: 'high',
+          },
+        },
+      });
+    });
+
+    const composer = view.locator('.hub-view-compose-form');
+    await expect(composer.locator('input').first()).toHaveValue('dana@example.com');
+    // The copy lines unfold on their own, since there is something in them.
+    await expect(composer.locator('input').nth(1)).toHaveValue('sam@example.com');
+    await expect(composer.locator('input').nth(2)).toHaveValue('records@example.com');
+    await expect(composer.locator('.hub-view-file')).toContainText('agenda.pdf');
+    await expect(composer.getByRole('switch', {name: 'Mark as important'})).toHaveAttribute('aria-checked', 'true');
+  });
 
   test('lists linked platforms and mailbox folders, and reads a message', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
+    await openMailbox(view);
 
     // Sources carry their platform mark, not a generic bubble.
     await expect(view.locator('.hub-view-source', {hasText: 'WhatsApp'})).toBeVisible();
@@ -2773,10 +3034,49 @@ test.describe('hub view', () => {
 
     await expect(view.getByRole('heading', {name: 'Q3 numbers'})).toBeVisible();
     await expect(view.getByText('The quarterly numbers are attached.')).toBeVisible();
+    // Every action the message can take is reachable and named, whether the
+    // pane is wide enough for the icon strip or has folded it into ⋮.
+    const actions = await mailActions(view);
     for (const action of ['Reply', 'Reply all', 'Forward', 'Archive', 'Junk', 'Delete', 'Move to folder'])
-      await expect(view.getByRole('button', {name: action, exact: true})).toBeVisible();
+      await expect(actions.getByRole('button', {name: action, exact: true})).toBeVisible();
     // Opening marks it read.
     await expect(rows.first()).not.toHaveClass(/unread/);
+  });
+
+  test('opens on the source at the top of the rail', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    // The rail is the user's own arrangement, so its first row is where the hub
+    // opens — not a mailbox chosen by rule behind their ordering.
+    const first = view.locator('.hub-view-source').first();
+    await expect(first).toHaveClass(/active/);
+    // And nothing is expanded for them: every multi-account source starts folded.
+    await expect(view.locator('.hub-view-accounts')).toHaveCount(0);
+  });
+
+  test('a dragged source is carried under the pointer and lands where it is let go', async ({
+    page,
+  }) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const names = () => view.locator('.hub-view-source span').allInnerTexts();
+    const before = await names();
+
+    const first = view.locator('.hub-view-source').first();
+    const second = view.locator('.hub-view-source').nth(1);
+    const from = (await first.boundingBox())!;
+    const to = (await second.boundingBox())!;
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    // Past the middle of the row below, which is where a row counts as passed.
+    await page.mouse.move(from.x + from.width / 2, to.y + to.height * 0.75, {steps: 6});
+    // Mid-drag the row is drawn under the pointer rather than left in place.
+    await expect(view.locator('.hub-view-source-row.carried')).toHaveCount(1);
+    await page.mouse.up();
+
+    expect(await names()).toEqual([before[1], before[0], ...before.slice(2)]);
+    // And the click the drag ends with does not also select what was dragged.
+    await expect(view.locator('.hub-view-source').nth(1)).toHaveClass(/active/);
   });
 
   test('folds account lists under their platform row', async ({page}) => {
@@ -2784,8 +3084,11 @@ test.describe('hub view', () => {
     const view = page.locator('.hub-view');
     const mailRow = view.locator('.hub-view-source', {hasText: 'Mail'});
 
-    // Mail is one row, with its mailboxes' accounts inline underneath it.
+    // Mail is one row, and it starts folded: a source with more than one
+    // account waits to be asked rather than opening its list for you.
     await expect(mailRow).toHaveCount(1);
+    await expect(view.locator('.hub-view-accounts button', {hasText: 'demo@work.example'})).toBeHidden();
+    await mailRow.click();
     await expect(view.locator('.hub-view-accounts button', {hasText: 'demo@work.example'})).toBeVisible();
     await mailRow.click();
     await expect(view.locator('.hub-view-accounts button', {hasText: 'demo@work.example'})).toBeHidden();
@@ -2802,6 +3105,7 @@ test.describe('hub view', () => {
   test('filters the list down to unread messages', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
+    await openMailbox(view);
     await expect(view.locator('.hub-view-row')).toHaveCount(3);
 
     await view.getByRole('button', {name: 'Filter messages'}).click();
@@ -2819,9 +3123,10 @@ test.describe('hub view', () => {
   test('moves a message to junk', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
+    await openMailbox(view);
     await expect(view.locator('.hub-view-row')).toHaveCount(3);
     await view.locator('.hub-view-row').first().click();
-    await view.getByRole('button', {name: 'Junk'}).click();
+    await (await mailActions(view)).getByRole('button', {name: 'Junk', exact: true}).click();
     // The row leaves the folder it was moved out of.
     await expect(view.locator('.hub-view-row')).toHaveCount(2);
   });
@@ -2970,6 +3275,7 @@ test.describe('hub view', () => {
   test('composes a new mail, with copies and attachments', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
+    await openMailbox(view);
     await view.getByRole('button', {name: 'New'}).click();
     await expect(view.getByRole('heading', {name: 'New message'})).toBeVisible();
     await expect(view.getByRole('button', {name: 'Send'})).toBeDisabled();
@@ -2987,11 +3293,33 @@ test.describe('hub view', () => {
     await expect(view.locator('.hub-view-file')).toContainText('demo-attachment.pdf');
   });
 
+  test('a message shows its images, and never a broken one', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await openMailbox(view);
+    await view.locator('.hub-view-row', {hasText: 'Invoice ready'}).click();
+
+    const body = view.locator('.hub-view-html');
+    await expect(body).toBeVisible();
+    // Nothing stands between the reader and the sender's images: they load,
+    // and there is no bar asking for permission to be a mail.
+    await expect(view.getByRole('button', {name: /remote images/i})).toHaveCount(0);
+    const images = body.locator('img');
+    await expect(images).toHaveCount(1);
+    // A `cid:` image addresses a part of the message itself, which nothing in
+    // a browser can fetch — it goes, rather than sitting there broken.
+    await expect(body.locator('img[src^="cid:"]')).toHaveCount(0);
+    await expect(images.first()).toHaveAttribute('src', 'https://example.com/seal.png');
+    // The sender learns the mail was opened; they need not learn where from.
+    await expect(images.first()).toHaveAttribute('referrerpolicy', 'no-referrer');
+  });
+
   test('replies to the sender with the message quoted', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
+    await openMailbox(view);
     await view.locator('.hub-view-row').first().click();
-    await view.getByRole('button', {name: 'Reply', exact: true}).click();
+    await (await mailActions(view)).getByRole('button', {name: 'Reply', exact: true}).click();
 
     await expect(view.getByRole('heading', {name: 'Reply'})).toBeVisible();
     const fields = view.locator('.hub-view-compose-form input');
@@ -3006,6 +3334,7 @@ test.describe('hub view', () => {
   test('acts on several messages at once', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
+    await openMailbox(view);
     const rows = view.locator('.hub-view-row');
     await rows.nth(0).click({modifiers: ['Meta']});
     await rows.nth(1).click({modifiers: ['Meta']});
@@ -3023,6 +3352,7 @@ test.describe('hub view', () => {
   test('shows the attachments and recipients of a message', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
+    await openMailbox(view);
     await view.locator('.hub-view-row').first().click();
 
     await expect(view.locator('.hub-view-recipients')).toContainText('demo@example.com');
@@ -3036,7 +3366,7 @@ test.describe('hub multi-account', () => {
   test('a platform lists every linked account and still offers to add more', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
-    const modal = page.getByRole('dialog');
+    const modal = page.locator('.options-page');
     await modal.getByRole('tab', {name: 'Hub'}).click();
 
     // The rail summarises plurality instead of naming only the first account.
@@ -3077,7 +3407,8 @@ test.describe('workspace persistence', () => {
     await openFromHistory(page, 'Planning a product launch');
 
     // Open the Hub view in this chat's workspace.
-    await page.getByRole('button', {name: 'Open Hub'}).click();
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await page.locator('.workspace-launcher-row', {hasText: 'Hub'}).click();
     await expect(page.locator('.hub-view')).toBeVisible();
 
     // A different chat starts from its own (empty) workspace, not this one's.
@@ -3099,12 +3430,12 @@ test.describe('interface language', () => {
     await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
 
     await page.getByRole('button', {name: 'Settings'}).click();
-    await page.getByRole('dialog', {name: 'Settings'}).getByRole('button', {name: 'Language'}).click();
+    await page.getByRole('region', {name: 'Settings'}).getByRole('button', {name: 'Language'}).click();
     await page.getByRole('menuitemradio', {name: 'Español'}).click();
 
-    // The modal retranslates in place — including its own accessible name, so
-    // the dialog has to be found again under the Spanish one.
-    await expect(page.getByRole('dialog', {name: 'Ajustes'})).toBeVisible();
+    // The page retranslates in place — including its own accessible name, so
+    // the region has to be found again under the Spanish one.
+    await expect(page.getByRole('region', {name: 'Ajustes'})).toBeVisible();
     await expect(page.getByText('El idioma de la interfaz de FlareAI')).toBeVisible();
     await page.getByRole('button', {name: 'Volver a la app'}).click();
 
@@ -3119,7 +3450,7 @@ test.describe('interface language', () => {
 
     // Arabic is the one right-to-left language, and it flips the whole layout.
     await page.getByRole('button', {name: 'Ajustes'}).click();
-    await page.getByRole('dialog').getByRole('button', {name: 'Idioma'}).click();
+    await page.locator('.options-page').getByRole('button', {name: 'Idioma'}).click();
     await page.getByRole('menuitemradio', {name: 'العربية'}).click();
     await expect(page.locator('html')).toHaveAttribute('lang', 'ar');
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
@@ -3242,17 +3573,316 @@ test.describe('browser extension prompt', () => {
 
     // The chip is a "not now"; the Settings row is how it stays reachable.
     await page.getByRole('button', {name: 'Settings'}).click();
-    await expect(page.getByRole('dialog').getByText('Browser extension')).toBeVisible();
-    await expect(page.getByRole('dialog').getByRole('button', {name: 'Install extension'})).toBeVisible();
+    await expect(page.locator('.options-page').getByText('Browser extension')).toBeVisible();
+    await expect(page.locator('.options-page').getByRole('button', {name: 'Install extension'})).toBeVisible();
   });
 
   test('settings reports an extension that is already installed', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
 
-    const dialog = page.getByRole('dialog');
-    await expect(dialog.getByText('Browser extension')).toBeVisible();
-    await expect(dialog.getByText('Installed', {exact: true})).toBeVisible();
-    await expect(dialog.getByRole('button', {name: 'Install extension'})).toBeHidden();
+    const settings = page.locator('.options-page');
+    await expect(settings.getByText('Browser extension')).toBeVisible();
+    await expect(settings.getByText('Installed', {exact: true})).toBeVisible();
+    await expect(settings.getByRole('button', {name: 'Install extension'})).toBeHidden();
+  });
+});
+
+test.describe('browser settings', () => {
+  async function openBrowserTab(page: import('@playwright/test').Page) {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('region', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'Browser'}).click();
+    return modal;
+  }
+
+  test('opens on passwords, and the rail reaches every section', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    await expect(modal.getByRole('heading', {name: 'Browser'})).toBeVisible();
+    await expect(
+      modal.getByText('Passwords, downloads, site permissions and browsing data.'),
+    ).toBeVisible();
+
+    // Five sections, in the order the rail lists them.
+    const rail = modal.locator('.browser-rail button');
+    await expect(rail).toHaveText(['Passwords', 'Downloads', 'History', 'Site permissions', 'Browsing data', 'Import']);
+    // Icons in one strip are all one size, and the same size the settings nav
+    // beside it uses — the section rail is a rail, not a smaller cousin.
+    const sizes = await rail.locator('svg').evaluateAll((nodes) =>
+      [...new Set(nodes.map((node) => node.getAttribute('width')))]);
+    expect(sizes).toEqual(['16']);
+    const navSizes = await modal.locator('.options-nav-item svg').evaluateAll((nodes) =>
+      [...new Set(nodes.map((node) => node.getAttribute('width')))]);
+    expect(navSizes).toEqual(sizes);
+  });
+
+  test('the section rail keeps the rhythm of every other rail in settings', async ({page}) => {
+    // Settings has one content-rail idiom, used by MCP, Skills and Models.
+    // The browser tab's section rail is one of those, not a special case, so
+    // its spacing is measured against the real thing rather than pinned to
+    // numbers that can drift apart from it.
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('region', {name: 'Settings'});
+
+    await modal.getByRole('tab', {name: 'MCP'}).click();
+    const shared = await modal.locator('.options-rail-row').first().evaluate((node) => {
+      const next = node.parentElement!.nextElementSibling?.querySelector('.options-rail-row') ?? null;
+      const style = getComputedStyle(node);
+      const box = node.getBoundingClientRect();
+      return {
+        radius: style.borderRadius,
+        innerGap: style.gap,
+        gap: next ? +(next.getBoundingClientRect().top - box.bottom).toFixed(1) : null,
+      };
+    });
+
+    await modal.getByRole('tab', {name: 'Browser'}).click();
+    const rail = modal.locator('.browser-rail button');
+    const mine = await rail.first().evaluate((node) => {
+      const rows = [...node.closest('.browser-rail')!.querySelectorAll('button')];
+      const style = getComputedStyle(node);
+      return {
+        radius: style.borderRadius,
+        innerGap: style.gap,
+        gap: +(rows[1]!.getBoundingClientRect().top - rows[0]!.getBoundingClientRect().bottom).toFixed(1),
+      };
+    });
+
+    expect(mine.radius).toBe(shared.radius);
+    expect(mine.innerGap).toBe(shared.innerGap);
+    if (shared.gap !== null) expect(mine.gap).toBe(shared.gap);
+  });
+
+  test('a saved password is listed without its secret until it is asked for', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    const list = modal.locator('.browser-list li');
+    await expect(list).toHaveCount(2);
+    await expect(list.first()).toContainText('github.com');
+    await expect(list.first()).toContainText('demo@example.com');
+    // The password is not on screen, and not merely hidden in the markup.
+    await expect(modal.getByText('correct-horse-battery')).toHaveCount(0);
+
+    await list.first().getByRole('button', {name: 'Show password'}).click();
+    await expect(modal.getByText('correct-horse-battery')).toBeVisible();
+    // One at a time: revealing is a per-entry request, so the other stays shut.
+    await expect(modal.getByText('demo-password-2')).toHaveCount(0);
+
+    await list.first().getByRole('button', {name: 'Hide password'}).click();
+    await expect(modal.getByText('correct-horse-battery')).toHaveCount(0);
+  });
+
+  test('deleting a password takes it out of the list', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    const list = modal.locator('.browser-list li');
+    await list.first().getByRole('button', {name: 'Delete password'}).click();
+    await expect(list).toHaveCount(1);
+    await expect(modal.getByText('github.com')).toHaveCount(0);
+  });
+
+  test('autofill is a switch that reports its own state', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    const autofill = modal.getByRole('switch', {name: 'Save and fill passwords'});
+    await expect(autofill).toHaveAttribute('aria-checked', 'true');
+    await autofill.click();
+    await expect(autofill).toHaveAttribute('aria-checked', 'false');
+  });
+
+  test('the download location is shown and can be changed', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    await modal.getByRole('button', {name: 'Downloads', exact: true}).click();
+    await expect(modal.getByText('/demo/Downloads')).toBeVisible();
+
+    // Passing no path opens the picker in the main process; the demo stands in
+    // for it and answers with the folder that was chosen.
+    await modal.getByRole('button', {name: 'Change'}).click();
+    await expect(modal.getByText('/demo/Documents/FlareAI')).toBeVisible();
+
+    const ask = modal.getByRole('switch', {name: 'Ask where to save each file'});
+    await expect(ask).toHaveAttribute('aria-checked', 'false');
+    await ask.click();
+    await expect(ask).toHaveAttribute('aria-checked', 'true');
+  });
+
+  test('a download in flight offers what can be done to it', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    await modal.getByRole('button', {name: 'Downloads', exact: true}).click();
+    const rows = modal.locator('.browser-list li');
+
+    // A finished download opens; a running one pauses or cancels. The controls
+    // follow the state rather than being shown greyed out.
+    const finished = rows.filter({hasText: 'report (1).pdf'});
+    await expect(finished.getByRole('button', {name: 'Open'})).toBeVisible();
+    await expect(finished.getByRole('button', {name: 'Pause'})).toHaveCount(0);
+
+    const running = rows.filter({hasText: 'dataset.csv'});
+    // Binary units, one decimal until three figures — the drive tab's rule.
+    await expect(running).toContainText('4.0 MB');
+    await expect(running).toContainText('11.3 MB');
+    await running.getByRole('button', {name: 'Pause'}).click();
+    await expect(running.getByRole('button', {name: 'Resume'})).toBeVisible();
+  });
+
+  test('history lists pages, searches them, and forgets one', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    await modal.getByRole('button', {name: 'History', exact: true}).click();
+
+    const rows = modal.locator('.browser-history-list li');
+    await expect(rows).toHaveCount(3);
+    await expect(rows.first()).toContainText('Anthropic · GitHub');
+    // A page seen more than once says so, which is what makes the list rankable.
+    await expect(rows.filter({hasText: 'Hacker News'})).toContainText('48 visits');
+
+    await modal.getByPlaceholder('Search history').fill('notion');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText('Roadmap');
+
+    await modal.getByPlaceholder('Search history').fill('');
+    await expect(rows).toHaveCount(3);
+    await rows.filter({hasText: 'Roadmap'}).getByRole('button', {name: 'Forget this page'}).click();
+    await expect(rows).toHaveCount(2);
+  });
+
+  test('clearing all history confirms in place first', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    await modal.getByRole('button', {name: 'History', exact: true}).click();
+    await modal.getByRole('button', {name: 'Clear history'}).click();
+
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(modal.getByText('Clear all browsing history?')).toBeVisible();
+    await modal.getByRole('button', {name: 'Cancel'}).click();
+    await expect(modal.locator('.browser-history-list li')).toHaveCount(3);
+
+    await modal.getByRole('button', {name: 'Clear history'}).click();
+    await modal.getByRole('button', {name: 'Clear', exact: true}).click();
+    await expect(modal.getByText('No pages visited yet')).toBeVisible();
+  });
+
+  test('a site permission can be changed from the table', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    await modal.getByRole('button', {name: 'Site permissions'}).click();
+
+    const rows = modal.locator('.browser-table tbody tr');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.first()).toContainText('maps.example.com');
+    await expect(rows.first()).toContainText('Location');
+
+    const decision = rows.first().getByRole('combobox');
+    await expect(decision).toHaveValue('allow');
+    await decision.selectOption('deny');
+    await expect(decision).toHaveValue('deny');
+  });
+
+  test('clearing one site confirms in place rather than opening a dialog', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    await modal.getByRole('button', {name: 'Browsing data'}).click();
+
+    const site = modal.locator('.browser-list li').filter({hasText: 'github.com'});
+    await expect(site).toContainText('14 cookies');
+    await site.getByRole('button', {name: 'Clear'}).click();
+
+    // The confirmation takes the row over: what is about to be cleared is
+    // already on screen behind it, so no dialog opens.
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(site).toContainText('Clear github.com and its subdomains?');
+    await site.getByRole('button', {name: 'Cancel'}).click();
+    await expect(site).toContainText('14 cookies');
+
+    await site.getByRole('button', {name: 'Clear'}).click();
+    await site.getByRole('button', {name: 'Clear', exact: true}).last().click();
+    await expect(modal.locator('.browser-list li').filter({hasText: 'github.com'})).toHaveCount(0);
+  });
+
+  test('discovered browsers say what can and cannot be read', async ({page}) => {
+    const modal = await openBrowserTab(page);
+    await modal.getByRole('button', {name: 'Import'}).click();
+    await modal.getByRole('button', {name: 'Scan for browsers'}).click();
+
+    const chrome = modal.locator('.browser-source').filter({hasText: 'Google Chrome'});
+    await expect(chrome).toContainText('Person 1');
+    await expect(chrome.getByRole('button', {name: 'Import'})).toBeVisible();
+
+    // Safari can only give up cookies, and only with Full Disk Access — the
+    // tab says so instead of failing blankly when the import returns nothing.
+    const safari = modal.locator('.browser-source').filter({hasText: 'Safari'});
+    await expect(safari).toContainText('Full Disk Access');
+    await expect(safari).toContainText('Passwords can only be imported from a file you export.');
+    await expect(safari.getByRole('button', {name: 'Import'})).toHaveCount(0);
+
+    await chrome.getByRole('button', {name: 'Import'}).click();
+    await expect(modal.getByText('Imported 128 cookies, 6 passwords and 2,140 pages.')).toBeVisible();
+    await expect(modal.getByText('Some items were skipped')).toBeVisible();
+  });
+});
+
+test.describe('notification settings', () => {
+  async function openNotifications(page: import('@playwright/test').Page) {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.getByRole('region', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'General'}).click();
+    await modal.getByRole('heading', {name: 'Notifications', exact: true}).scrollIntoViewIfNeeded();
+    return modal;
+  }
+
+  /** The five events, in the order the group lists them. */
+  const KIND_ROWS = [
+    'Scheduled task finished',
+    'Scheduled task failed',
+    'Agent finished',
+    'Agent needs you',
+    'New message',
+  ];
+
+  test('offers one row per event, all on to begin with', async ({page}) => {
+    const modal = await openNotifications(page);
+    await expect(modal.getByRole('switch', {name: 'Enable system notifications'})).toHaveAttribute('aria-checked', 'true');
+    for (const name of KIND_ROWS)
+      await expect(modal.getByRole('switch', {name, exact: true})).toHaveAttribute('aria-checked', 'true');
+  });
+
+  test('the master switch greys the rows below it and stops them answering', async ({page}) => {
+    const modal = await openNotifications(page);
+    const group = modal.locator('.chronicle-group').filter({hasText: 'Scheduled task finished'});
+    const first = modal.getByRole('switch', {name: 'Scheduled task finished', exact: true});
+    await expect(group).not.toHaveClass(/disabled/);
+    await expect(first).toBeEnabled();
+
+    await modal.getByRole('switch', {name: 'Enable system notifications'}).click();
+
+    // Greyed, not hidden: the choice underneath stays readable.
+    await expect(group).toHaveClass(/disabled/);
+    await expect(group).toHaveCSS('opacity', '0.42');
+    for (const name of KIND_ROWS)
+      await expect(modal.getByRole('switch', {name, exact: true})).toBeDisabled();
+    await expect(modal.getByRole('button', {name: 'Send a test'})).toBeHidden();
+  });
+
+  test('a kind switched off is remembered across the master switch', async ({page}) => {
+    const modal = await openNotifications(page);
+    const failed = modal.getByRole('switch', {name: 'Scheduled task failed', exact: true});
+    const finished = modal.getByRole('switch', {name: 'Scheduled task finished', exact: true});
+    await failed.click();
+    await expect(failed).toHaveAttribute('aria-checked', 'false');
+    // One switch moving leaves its neighbours alone.
+    await expect(finished).toHaveAttribute('aria-checked', 'true');
+
+    const master = modal.getByRole('switch', {name: 'Enable system notifications'});
+    await master.click();
+    await master.click();
+
+    // Silencing everything must not rewrite what the user chose underneath.
+    await expect(failed).toHaveAttribute('aria-checked', 'false');
+    await expect(finished).toHaveAttribute('aria-checked', 'true');
+  });
+
+  test('says so when the system will not show a notification at all', async ({page}) => {
+    const modal = await openNotifications(page);
+    await expect(modal.getByText('Let FlareAI notify you outside the app')).toBeVisible();
+    await modal.getByRole('button', {name: 'Send a test'}).click();
+    // The browser demo has no notification centre behind it, so the row is
+    // expected to report exactly that rather than claim success.
+    await expect(modal.getByText('Your system is not showing notifications')).toBeVisible();
   });
 });

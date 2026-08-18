@@ -1,9 +1,6 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rename } from "node:fs/promises";
-import path from "node:path";
 import { promisify } from "node:util";
+import { SwiftHelper } from "./swift-helper.js";
 
 const run = promisify(execFile);
 
@@ -16,6 +13,19 @@ export interface AxSnapshot {
   pid?: number;
   title?: string;
   text?: string;
+  /** Page URL when the window is a browser's; absent for a native app. */
+  url?: string;
+  /** Best-effort private-browsing marker, read off the window title. */
+  isPrivate?: boolean;
+}
+
+/** One titled window of an ordinary running application. */
+export interface AxWindow {
+  app: string;
+  bundleId?: string;
+  pid: number;
+  title: string;
+  frontmost: boolean;
 }
 
 export interface AxReaderOptions {
@@ -31,57 +41,42 @@ export interface AxReaderOptions {
  * directory, so packaged installs need no build step of their own.
  */
 export class AxReader {
-  readonly #options: AxReaderOptions;
-  #binary?: Promise<string>;
+  readonly #helper: SwiftHelper;
 
   constructor(options: AxReaderOptions) {
-    this.#options = options;
+    this.#helper = new SwiftHelper({
+      name: "ax-reader",
+      sourcePath: options.sourcePath,
+      cacheDirectory: options.cacheDirectory,
+      missingCompilerMessage:
+        "Accessibility capture needs the Swift compiler. Install the Xcode Command Line Tools: xcode-select --install",
+      missingSourceMessage: (path) => `Accessibility helper source is missing at ${path}`,
+    });
   }
 
   async snapshot(skipPid?: number): Promise<AxSnapshot> {
-    const binary = await this.#ensureBinary();
-    const args = skipPid === undefined ? [] : ["--skip-pid", String(skipPid)];
+    return this.#read<AxSnapshot>(skipPid === undefined ? [] : ["--skip-pid", String(skipPid)]);
+  }
+
+  /**
+   * Every titled window currently open, across applications. Titles only —
+   * this is the ambient "what is open" reading, not a page capture, so it
+   * costs one AX round trip per app and carries no window text.
+   */
+  async windows(skipPid?: number): Promise<{ trusted: boolean; windows: AxWindow[] }> {
+    return this.#read<{ trusted: boolean; windows: AxWindow[] }>([
+      "--windows",
+      ...(skipPid === undefined ? [] : ["--skip-pid", String(skipPid)]),
+    ]);
+  }
+
+  async #read<T>(args: string[]): Promise<T> {
+    const binary = await this.#helper.binary();
     const { stdout } = await run(binary, args, {
       timeout: 8_000,
       maxBuffer: 4 * 1024 * 1024,
     });
     const line = stdout.trim().split(/\r?\n/).pop() ?? "";
-    return JSON.parse(line) as AxSnapshot;
-  }
-
-  #ensureBinary(): Promise<string> {
-    this.#binary ??= this.#compile().catch((error: unknown) => {
-      // A failed build must not poison every later capture attempt.
-      this.#binary = undefined;
-      throw error;
-    });
-    return this.#binary;
-  }
-
-  async #compile(): Promise<string> {
-    if (process.platform !== "darwin")
-      throw new Error("Accessibility capture is only available on macOS");
-    if (!existsSync(this.#options.sourcePath))
-      throw new Error(`Accessibility helper source is missing at ${this.#options.sourcePath}`);
-    const source = readFileSync(this.#options.sourcePath);
-    const revision = createHash("sha256").update(source).digest("hex").slice(0, 12);
-    const binary = path.join(this.#options.cacheDirectory, `ax-reader-${revision}`);
-    if (existsSync(binary)) return binary;
-    await mkdir(this.#options.cacheDirectory, { recursive: true });
-    const building = `${binary}.build`;
-    try {
-      await run("swiftc", ["-O", "-o", building, this.#options.sourcePath], {
-        timeout: 120_000,
-        maxBuffer: 4 * 1024 * 1024,
-      });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        throw new Error(
-          "Accessibility capture needs the Swift compiler. Install the Xcode Command Line Tools: xcode-select --install",
-        );
-      throw error;
-    }
-    await rename(building, binary);
-    return binary;
+    return JSON.parse(line) as T;
   }
 }

@@ -60,6 +60,14 @@ def recorder_state(root: Path) -> tuple[dict, list[str]]:
     try:
         value = json.loads(settings.read_text(encoding="utf-8"))
         state["enabled"] = bool(value.get("enabled", True))
+        # What the user allowed Chronicle to see. Reported rather than judged:
+        # an excluded app is a choice, and the point of surfacing it is that a
+        # gap in the evidence has an explanation other than "it did not happen".
+        state["capture_policy"] = value.get("capturePolicy", "all")
+        state["listed_apps"] = value.get("apps", [])
+        state["listed_sites"] = value.get("sites", [])
+        state["records_private_browsing"] = value.get("recordPrivateBrowsing", True)
+        state["interaction_events"] = value.get("interactionEvents", True)
     except (OSError, ValueError):
         # Missing settings mean FlareAI is using its defaults; not an error.
         state["enabled"] = None
@@ -76,6 +84,7 @@ def parse_args() -> argparse.Namespace:
         default=Path.home() / "Library/Application Support/FlareAI/chronicle",
     )
     parser.add_argument("--frame-fresh-seconds", type=float, default=120.0)
+    parser.add_argument("--event-fresh-seconds", type=float, default=600.0)
     parser.add_argument("--timeline-fresh-seconds", type=float, default=1200.0)
     return parser.parse_args()
 
@@ -87,6 +96,7 @@ def main() -> int:
 
     recorder, errors = recorder_state(root)
     frame = file_state(newest_file(root / "index", ".jsonl"), now, args.frame_fresh_seconds)
+    events = file_state(newest_file(root / "events", ".jsonl"), now, args.event_fresh_seconds)
     timeline = file_state(
         root / "timeline.md" if (root / "timeline.md").is_file() else None,
         now,
@@ -101,6 +111,14 @@ def main() -> int:
         warnings.append("No Chronicle timeline is available")
     elif not timeline["fresh"]:
         warnings.append("Chronicle timeline is stale")
+    if recorder.get("interaction_events") is False:
+        warnings.append("Interaction events are switched off; only window text is recorded")
+    elif not events["available"]:
+        warnings.append("No Chronicle interaction events are available")
+    if recorder.get("capture_policy", "all") != "all":
+        warnings.append("A capture policy is limiting which apps and sites are recorded")
+    if recorder.get("records_private_browsing") is False:
+        warnings.append("Private browsing windows are excluded from capture")
 
     status = "unavailable" if errors else "degraded" if warnings else "ok"
     report = {
@@ -108,6 +126,7 @@ def main() -> int:
         "checked_unix": now,
         "recorder": recorder,
         "latest_frame_index": frame,
+        "latest_events": events,
         "timeline": timeline,
         "errors": errors,
         "warnings": warnings,

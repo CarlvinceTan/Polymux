@@ -5,18 +5,27 @@ import type {
   ChronicleStatusDto,
   CommsEmailAccountDto,
   CommsStatusDto,
+  DiscoveredMcpGroupDto,
   DiscoveredSkillGroupDto,
+  BrowserDownloadDto,
+  BrowserHistoryEntryDto,
+  BrowserSettingsDto,
+  BrowserSiteDto,
+  BrowserSourceDto,
   DriveEntryDto,
   DriveProviderId,
   DriveStatusDto,
   MailEnvelopeDto,
   MailFolderDto,
+  WorkspaceRevealDto,
   WorkspaceSnapshotDto,
   ConversationDto,
   GoalDto,
   GeneralSettingsDto,
   JsonValue,
   McpServerDto,
+  SavedLoginDto,
+  SitePermissionDto,
   MessageDto,
   FlareAIApi,
   ModelDto,
@@ -25,9 +34,13 @@ import type {
   ModelRoleAssignmentDto,
   ModelRolesDto,
   ProviderDto,
+  ReasoningEffort,
   ReferenceDto,
   RunEventDto,
   ScheduleDto,
+  MarketplacePluginDto,
+  PluginDto,
+  PluginMarketplaceDto,
   SkillDto,
   StartRunRequest,
 } from '@flareai/protocol';
@@ -68,17 +81,22 @@ function createBrowserDemoApi(): FlareAIApi {
   const listeners = new Set<(event: RunEventDto) => void>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const runConversations = new Map<string, string>();
-  let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string}>> = {};
+  let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string; reasoning?: ReasoningEffort}>> = {};
   const demoRoles = (): ModelRolesDto => {
-    const assignment = (ref?: {provider: string; id: string}): ModelRoleAssignmentDto | null => {
+    const assignment = (ref?: {provider: string; id: string; reasoning?: ReasoningEffort}): ModelRoleAssignmentDto | null => {
       const model = ref && demoModels.find((item) => item.provider === ref.provider && item.id === ref.id);
-      return model ? {provider: model.provider, id: model.id, name: model.name} : null;
+      if (!model) return null;
+      const reasoning = model.reasoning ? ref?.reasoning : undefined;
+      return {provider: model.provider, id: model.id, name: model.name, ...(reasoning ? {reasoning} : {})};
     };
     const main = demoModels.find((item) => item.selected);
+    // Main's level lives in the general settings, the same place the composer
+    // reads it from, so the two can never disagree.
     return {
-      main: assignment(main),
+      main: assignment(main && {provider: main.provider, id: main.id, reasoning: demoGeneral.reasoningLevel}),
       task: assignment(demoRoleOverrides.task),
       judge: assignment(demoRoleOverrides.judge),
+      compaction: assignment(demoRoleOverrides.compaction),
       speech: assignment(demoRoleOverrides.speech),
       image: assignment(demoRoleOverrides.image),
       video: assignment(demoRoleOverrides.video),
@@ -114,12 +132,50 @@ function createBrowserDemoApi(): FlareAIApi {
     })),
   ];
   const demoSkills: SkillDto[] = [
-    {name: 'documents', description: 'Create and edit document files.', source: 'flareai', filePath: '~/.flareai/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], enabled: true, editable: true, instructions: 'Create and edit document files.', updatedAt: '2026-07-02T09:30:00.000Z'},
-    {name: 'personal-research', description: 'Personal research workflow.', source: 'flareai', filePath: '~/.flareai/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], enabled: true, editable: true, instructions: 'Personal research workflow.', updatedAt: '2026-05-18T14:00:00.000Z'},
-    {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], enabled: true, editable: false, displayName: 'PDF', author: 'FlareAI', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
+    {name: 'documents', description: 'Create and edit document files.', source: 'flareai', filePath: '~/.flareai/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], permissions: [], enabled: true, editable: true, instructions: 'Create and edit document files.', updatedAt: '2026-07-02T09:30:00.000Z'},
+    {name: 'personal-research', description: 'Personal research workflow.', source: 'flareai', filePath: '~/.flareai/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], permissions: [], enabled: true, editable: true, instructions: 'Personal research workflow.', updatedAt: '2026-05-18T14:00:00.000Z'},
+    {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], permissions: [], enabled: true, editable: false, displayName: 'PDF', author: 'FlareAI', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
     // No core integration here: browser/GUI control and the Hub's email and
     // messaging skills are first-class surfaces and never list as add-ons.
-    {name: 'spreadsheets', description: 'Create, analyze, and edit spreadsheets.', source: 'official', filePath: '/skills/official/spreadsheets/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], enabled: true, editable: false, displayName: 'Spreadsheets', author: 'FlareAI', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
+    {name: 'spreadsheets', description: 'Create, analyze, and edit spreadsheets.', source: 'official', filePath: '/skills/official/spreadsheets/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], permissions: [], enabled: true, editable: false, displayName: 'Spreadsheets', author: 'FlareAI', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
+  ];
+  const demoPlugins: PluginDto[] = [
+    {
+      id: 'claude-code/code-review',
+      name: 'code-review',
+      description: 'Automated code review for pull requests using several specialised agents.',
+      version: '1.0.0',
+      author: 'Anthropic',
+      marketplace: 'claude-code',
+      marketplaceName: 'claude-code-plugins',
+      directory: '~/.flareai/plugins/claude-code/code-review',
+      enabled: true,
+      contributions: {skills: ['review-diff'], mcpServers: [], commands: 1, agents: 3, hooks: 0},
+      conflicts: [],
+    },
+    {
+      id: 'claude-code/pdf-tools',
+      name: 'pdf-tools',
+      description: 'Read and rewrite PDFs from a chat.',
+      version: '0.4.2',
+      author: 'Anthropic',
+      marketplace: 'claude-code',
+      marketplaceName: 'claude-code-plugins',
+      directory: '~/.flareai/plugins/claude-code/pdf-tools',
+      enabled: false,
+      contributions: {skills: ['pdf'], mcpServers: ['pdf-server'], commands: 0, agents: 0, hooks: 2},
+      // A name the demo's own skills already carry, so the warning has
+      // something true to point at.
+      conflicts: [{kind: 'skill', name: 'pdf', existingSource: 'official'}],
+    },
+  ];
+  const demoMarketplaces: PluginMarketplaceDto[] = [
+    {id: 'claude-code', name: 'claude-code-plugins', source: 'anthropics/claude-code', pluginCount: 3, builtin: true},
+  ];
+  const demoCatalog: MarketplacePluginDto[] = [
+    {id: 'claude-code/code-review', name: 'code-review', description: 'Automated code review for pull requests.', version: '1.0.0', author: 'Anthropic', installed: true},
+    {id: 'claude-code/pdf-tools', name: 'pdf-tools', description: 'Read and rewrite PDFs from a chat.', version: '0.4.2', author: 'Anthropic', installed: true},
+    {id: 'claude-code/commit-commands', name: 'commit-commands', description: 'Commit workflows, written as commands.', version: '1.1.0', author: 'Anthropic', installed: false},
   ];
   const demoDiscoveredSkills: DiscoveredSkillGroupDto[] = [
     {id: 'claude', label: 'Claude', directory: '~/.claude/skills', skills: [
@@ -131,6 +187,15 @@ function createBrowserDemoApi(): FlareAIApi {
     ]},
     {id: 'agents', label: 'Shared skills', directory: '~/.agents/skills', skills: [
       {name: 'find-skills', description: 'Search the skills directory.', path: '~/.agents/skills/find-skills', state: 'loaded'},
+    ]},
+  ];
+  const demoDiscoveredMcp: DiscoveredMcpGroupDto[] = [
+    {id: 'claude:claude_desktop_config.json', label: 'Claude', path: '~/Library/Application Support/Claude/claude_desktop_config.json', servers: [
+      {id: 'memory', name: 'Memory', description: 'Remember facts across chats.', transport: 'stdio', target: 'npx', source: 'claude', path: '~/Library/Application Support/Claude/claude_desktop_config.json', state: 'available'},
+    ]},
+    {id: 'codex:config.toml', label: 'Codex', path: '~/.codex/config.toml', servers: [
+      {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', transport: 'stdio', target: 'node', source: 'codex', path: '~/.codex/config.toml', state: 'loaded'},
+      {id: 'linear', name: 'Linear', transport: 'streamable-http', target: 'https://mcp.linear.app/sse', source: 'codex', path: '~/.codex/config.toml', state: 'available'},
     ]},
   ];
   const demoMcpServers: McpServerDto[] = [
@@ -198,6 +263,9 @@ function createBrowserDemoApi(): FlareAIApi {
     );
   };
   // Newest first with unread counts, the way the hub now returns them.
+  const demoRevealListeners = new Set<(request: WorkspaceRevealDto) => void>();
+  (window as unknown as {flareaiDemoReveal?: (request: WorkspaceRevealDto) => void}).flareaiDemoReveal =
+    (request) => demoRevealListeners.forEach((listener) => listener(request));
   let demoChats: ChatDto[] = [
     {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp', unread: 2, lastActivity: new Date(now - 3_500_000).toISOString(), preview: 'Yes — 2pm works.', group: false, avatarUrl: null},
     {id: '!tg-devs:local', name: 'Dev Chat', platform: 'telegram', unread: 0, lastActivity: new Date(now - 7_200_000).toISOString(), preview: 'Shipped the build, logs look clean.', group: true, avatarUrl: null},
@@ -213,10 +281,14 @@ function createBrowserDemoApi(): FlareAIApi {
     {id: 'c6', chatId: '!wa-family:local', sender: 'Mum', body: 'Roast if you can make it.', sentAt: new Date(now - 86_340_000).toISOString(), mine: false},
     {id: 'c7', chatId: '!wa-family:local', sender: 'Dad', body: 'I can bring dessert.', sentAt: new Date(now - 86_280_000).toISOString(), mine: false},
     // A sticker, which is carried as an image but drawn at a sticker's size.
-    {id: 'c5', chatId: '!wa-jules:local', sender: 'Jules Tan', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
+    // A real 1x1 GIF, terminator and all. The bytes have to decode: the thread
+    // now swaps an image the homeserver would not serve for a named chip, and
+    // a truncated fixture is indistinguishable from one, so a placeholder that
+    // merely looked like a GIF made the sticker vanish from the demo.
+    {id: 'c5', chatId: '!wa-jules:local', sender: 'Jules Tan', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
   ];
   const demoMailFolders: MailFolderDto[] = [
-    {name: 'INBOX', label: 'INBOX', role: 'inbox'},
+    {name: 'INBOX', label: 'Inbox', role: 'inbox'},
     {name: '[Gmail]/Drafts', label: 'Drafts', role: 'drafts'},
     {name: '[Gmail]/Sent Mail', label: 'Sent Mail', role: 'sent'},
     {name: '[Gmail]/All Mail', label: 'All Mail', role: 'archive'},
@@ -226,12 +298,34 @@ function createBrowserDemoApi(): FlareAIApi {
   let demoEnvelopes: Array<{folder: string; body: string; html?: string; envelope: MailEnvelopeDto}> = [
     {folder: 'INBOX', body: 'The quarterly numbers are attached. Let me know if you want the breakdown by region before Thursday.', envelope: {id: '1', subject: 'Q3 numbers', from: {name: 'Priya Raman', address: 'priya@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 5_400_000).toISOString(), seen: false, flagged: false, answered: false, draft: false, hasAttachment: true}},
     {folder: 'INBOX', body: 'Reminder that the office will be closed on Monday.', envelope: {id: '2', subject: 'Closed Monday', from: {name: 'Office', address: 'office@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 90_000_000).toISOString(), seen: true, flagged: true, answered: false, draft: false, hasAttachment: false}},
-    {folder: 'INBOX', body: 'Your invoice for August is ready to view.', html: '<div style="font-family:system-ui"><h2 style="margin:0 0 8px">Invoice #1042</h2><p>Your invoice for August is <b>ready to view</b>.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left" style="border-bottom:1px solid #ddd">Item</th><th align="right" style="border-bottom:1px solid #ddd">Amount</th></tr><tr><td>Subscription</td><td align="right">$42.00</td></tr></table><p><a href="https://example.com/invoice/1042">View invoice</a></p></div>', envelope: {id: '3', subject: 'Invoice ready', from: {name: 'Billing', address: 'billing@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 172_800_000).toISOString(), seen: true, flagged: false, answered: true, draft: false, hasAttachment: false}},
+    {folder: 'INBOX', body: 'Your invoice for August is ready to view.', html: '<div style="font-family:system-ui"><img src="cid:logo@example" alt="Billing"><img src="https://example.com/seal.png" alt="Paid"><h2 style="margin:0 0 8px">Invoice #1042</h2><p>Your invoice for August is <b>ready to view</b>.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left" style="border-bottom:1px solid #ddd">Item</th><th align="right" style="border-bottom:1px solid #ddd">Amount</th></tr><tr><td>Subscription</td><td align="right">$42.00</td></tr></table><p><a href="https://example.com/invoice/1042">View invoice</a></p></div>', envelope: {id: '3', subject: 'Invoice ready', from: {name: 'Billing', address: 'billing@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 172_800_000).toISOString(), seen: true, flagged: false, answered: true, draft: false, hasAttachment: false}},
     {folder: '[Gmail]/Spam', body: 'You have definitely won a prize.', envelope: {id: '4', subject: 'YOU WON', from: {name: null, address: 'noreply@spam.example'}, to: null, date: new Date(now - 200_000_000).toISOString(), seen: false, flagged: false, answered: false, draft: false, hasAttachment: false}},
   ];
   const demoWorkspaceSnapshots = new Map<string, WorkspaceSnapshotDto>();
   let demoDictationPass = 0;
   let demoChronicleEnabled = true;
+  let demoChronicleSettings: Pick<
+    ChronicleStatusDto,
+    'capturePolicy' | 'apps' | 'sites' | 'recordPrivateBrowsing' | 'interactionEvents'
+  > = {
+    capturePolicy: 'all',
+    apps: [],
+    sites: [],
+    recordPrivateBrowsing: true,
+    interactionEvents: true,
+  };
+  const demoChronicleStatus = (): ChronicleStatusDto => ({
+    ...demoChronicleSettings,
+    enabled: demoChronicleEnabled,
+    running: demoChronicleEnabled,
+    directory: '/demo/chronicle',
+    lastCapturedAt: null,
+    lastError: null,
+    storedFrames: 0,
+    storedBytes: 0,
+    storedEvents: 0,
+    distilledThrough: null,
+  });
   let demoMemoryEnabled = true;
   let demoGeneral: GeneralSettingsDto = {
     theme: 'light',
@@ -241,6 +335,9 @@ function createBrowserDemoApi(): FlareAIApi {
     // machine's timezone (this machine resolves to SGD).
     currency: 'USD',
     speechModeEnabled: true,
+    // On, unlike the app's default: the Playwright suite drives the whole
+    // settings surface, and basic mode hides half of it.
+    advancedMode: true,
     dictationAutoStopSeconds: 6,
     timeEnabled: true,
     locationEnabled: true,
@@ -248,6 +345,10 @@ function createBrowserDemoApi(): FlareAIApi {
     // The demo is a returning user; the Playwright suite drives the main UI,
     // not first-run setup. Flip to false to preview setup in the browser.
     onboardingCompleted: !onboardingPreview,
+    permissions: {microphone: true, 'screen-recording': true, accessibility: true, 'full-disk-access': true, reminders: true, calendars: true, contacts: true, photos: true, automation: true},
+    appPermissionsEnabled: true,
+    notificationsEnabled: true,
+    notifications: {'schedule-completed': true, 'schedule-failed': true, 'agent-completed': true, 'agent-attention': true, 'message-received': true},
     location: null,
   };
 
@@ -289,6 +390,10 @@ function createBrowserDemoApi(): FlareAIApi {
         demoGeneral = {
           ...demoGeneral,
           ...settings,
+          // A partial patch, matching the real backend: a row sends only the
+          // switch it moved.
+          permissions: {...demoGeneral.permissions, ...settings.permissions},
+          notifications: {...demoGeneral.notifications, ...settings.notifications},
           location:
             settings.locationEnabled === false
               ? null
@@ -302,6 +407,9 @@ function createBrowserDemoApi(): FlareAIApi {
       version: async () => ({version: '0.1.0', electron: '', platform: 'browser', packaged: false}),
       checkForUpdates: async () => demoUpdate,
       installUpdate: async () => demoUpdate,
+      // The browser demo has no OS notification centre behind it, so it says
+      // so rather than claiming a notification the user will never see.
+      testNotification: async () => 'unsupported' as const,
     },
     // A browser tab has no traffic lights to move out of, so the state never
     // changes and the subscription has nothing to tear down.
@@ -311,6 +419,7 @@ function createBrowserDemoApi(): FlareAIApi {
       // The onboarding preview starts from a genuine first run, so the states
       // setup actually has to handle are the ones on screen.
       status: async () => (onboardingPreview ? 'not-determined' : 'granted'),
+      requestAll: async () => [],
       request: async () => {
         await new Promise((resolve) => setTimeout(resolve, 600));
         return 'granted';
@@ -393,6 +502,15 @@ function createBrowserDemoApi(): FlareAIApi {
       snapshot: async (conversationId) => demoWorkspaceSnapshots.get(conversationId) ?? null,
       saveSnapshot: async (conversationId, snapshot) => {
         demoWorkspaceSnapshots.set(conversationId, structuredClone(snapshot));
+      },
+      // Nothing drives the agent in the demo, so nothing ever asks to be shown.
+      // The demo has no agent to ask for a surface, so the reveal channel is
+      // driven from the page instead: `window.flareaiDemoReveal(request)` fans
+      // out to whoever subscribed, which is how the workspace's reveal and
+      // draft-prefill behaviour is reachable in the browser build.
+      subscribeReveal: (listener) => {
+        demoRevealListeners.add(listener);
+        return () => demoRevealListeners.delete(listener);
       },
     },
     goals: {
@@ -505,31 +623,24 @@ function createBrowserDemoApi(): FlareAIApi {
       },
     },
     chronicle: {
-      status: async () => ({
-        enabled: demoChronicleEnabled,
-        running: demoChronicleEnabled,
-        directory: '/demo/chronicle',
-        lastCapturedAt: null,
-        lastError: null,
-        storedFrames: 0,
-        storedBytes: 0,
-      }),
+      status: async () => demoChronicleStatus(),
       setEnabled: async (enabled) => {
         demoChronicleEnabled = enabled;
-        return {
-          enabled,
-          running: enabled,
-          directory: '/demo/chronicle',
-          lastCapturedAt: null,
-          lastError: null,
-          storedFrames: 0,
-          storedBytes: 0,
-        };
+        return demoChronicleStatus();
       },
+      update: async (patch) => {
+        demoChronicleSettings = {...demoChronicleSettings, ...patch};
+        return demoChronicleStatus();
+      },
+      forget: async () => demoChronicleStatus(),
       entries: async () => [],
     },
     comms: {
       status: async () => demoCommsStatus,
+      // The demo's data is already in memory, so there is nothing on disk for
+      // a snapshot to be: it hands back an empty one and the demo hub fetches
+      // as it always did.
+      snapshot: async () => ({status: null, chats: [], mailboxes: [], mail: [], messages: []}),
       refresh: async () => demoCommsStatus,
       // Nothing to start in a browser tab; the demo's bridges are always up.
       wake: async () => demoCommsStatus,
@@ -669,7 +780,7 @@ function createBrowserDemoApi(): FlareAIApi {
       mailMessage: async (id) => {
         const found = demoEnvelopes.find((item) => item.envelope.id === id);
         if (!found) throw new Error(`No message ${id}`);
-        return {id, subject: found.envelope.subject, from: found.envelope.from, to: found.envelope.to ? [found.envelope.to] : [], cc: [], date: found.envelope.date, body: found.body, html: found.html ?? null, attachments: found.envelope.hasAttachment ? [{name: 'q3-report.pdf', mime: 'application/pdf'}] : [], messageId: `<demo-${id}@example.com>`, references: []};
+        return {id, subject: found.envelope.subject, from: found.envelope.from, to: found.envelope.to ? [found.envelope.to] : [], cc: [], bcc: [], date: found.envelope.date, body: found.body, html: found.html ?? null, attachments: found.envelope.hasAttachment ? [{name: 'q3-report.pdf', mime: 'application/pdf'}] : [], messageId: `<demo-${id}@example.com>`, references: []};
       },
       mailSend: async () => {},
       mailDelete: async (ids) => {
@@ -743,10 +854,28 @@ function createBrowserDemoApi(): FlareAIApi {
         demoMcpServers.splice(index, 1);
         return demoMcpServers;
       },
-      searchRegistry: async (query) => [
-        {id: 'io.github/example/files', name: 'Files', description: 'Browse and manage files.', url: 'https://example.com/files/mcp', requiredHeaders: []},
-        {id: 'io.github/example/issues', name: 'Issues', description: `Search ${query || 'project'} issues.`, url: 'https://example.com/issues/mcp', repository: 'https://github.com/example/issues', requiredHeaders: ['Authorization']},
-      ],
+      discover: async () => demoDiscoveredMcp.map((group) => ({
+        ...group,
+        servers: group.servers.map((entry) => ({
+          ...entry,
+          state: demoMcpServers.some((item) => item.id === entry.id) ? 'loaded' as const : 'available' as const,
+        })),
+      })),
+      adopt: async (groupId, serverId) => {
+        const entry = demoDiscoveredMcp.find((group) => group.id === groupId)?.servers.find((item) => item.id === serverId);
+        if (!entry) throw new Error(`That MCP server is no longer in ${groupId}`);
+        demoMcpServers.push({id: entry.id, name: entry.name, description: entry.description, source: 'flareai', editable: true, enabled: true, transport: entry.transport, status: 'connected', toolNames: [], resourceUris: [], promptNames: [], ...(entry.transport === 'stdio' ? {command: entry.target} : {url: entry.target})});
+        return demoMcpServers;
+      },
+      // One page, and no second one: the demo directory is two rows long, so
+      // its cursor is always empty and the list never asks for more.
+      searchRegistry: async (query) => ({
+        entries: [
+          {id: 'io.github/example/files', name: 'Files', description: 'Browse and manage files.', url: 'https://example.com/files/mcp', requiredHeaders: []},
+          {id: 'io.github/example/issues', name: 'Issues', description: `Search ${query || 'project'} issues.`, url: 'https://example.com/issues/mcp', repository: 'https://github.com/example/issues', requiredHeaders: ['Authorization']},
+        ],
+        nextCursor: '',
+      }),
       subscribe: () => () => {},
     },
     drive: {
@@ -758,6 +887,33 @@ function createBrowserDemoApi(): FlareAIApi {
       disconnect: async (provider) => demoDriveConnect(provider, false),
       setSaveOrder: async (order) => {
         demoDriveStatus.saveOrder = order;
+        return demoDriveStatus;
+      },
+      revealEntry: async () => {},
+      openEntry: async () => {},
+      addShare: async (sharePath, label) => {
+        const target = sharePath || '/Volumes/Studio';
+        const id = target;
+        demoDriveStatus.sources = [
+          ...demoDriveStatus.sources.filter((source) => source.id !== `network#${id}`),
+          {
+            id: `network#${id}`,
+            provider: 'network',
+            accountId: id,
+            name: 'Network',
+            accountLabel: label || target.split('/').pop() || target,
+            state: 'connected',
+            usage: {used: 2_100_000_000_000, total: 8_000_000_000_000},
+            root: target,
+            error: null,
+          },
+        ];
+        return demoDriveStatus;
+      },
+      removeShare: async (id) => {
+        demoDriveStatus.sources = demoDriveStatus.sources.filter(
+          (source) => source.id !== `network#${id}` && source.id !== id,
+        );
         return demoDriveStatus;
       },
       setLocalRoot: async (path) => {
@@ -774,8 +930,6 @@ function createBrowserDemoApi(): FlareAIApi {
         }
         return demoDriveStatus;
       },
-      conversationFolder: async (conversationId) =>
-        `/demo/Documents/FlareAI/${conversationId.slice(0, 8)}`,
       list: async (source, path) => demoDriveFolder(source, path ?? ''),
       createFolder: async (source, parentPath, name) => {
         const folder = demoDriveFolder(source, parentPath);
@@ -859,17 +1013,20 @@ function createBrowserDemoApi(): FlareAIApi {
       install: async (spec) => {
         const name = spec.trim().replace(/\/+$/, '').split('/').pop() ?? 'installed-skill';
         if (demoSkills.some((item) => item.name === name)) throw new Error(`A skill named ${name} already exists`);
-        demoSkills.push({name, description: `Installed from ${spec.trim()}.`, source: 'flareai', filePath: `~/.flareai/skills/${name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], enabled: true, editable: true, instructions: `Installed from ${spec.trim()}.`, updatedAt: '2026-08-14T03:00:00.000Z'});
+        demoSkills.push({name, description: `Installed from ${spec.trim()}.`, source: 'flareai', filePath: `~/.flareai/skills/${name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], permissions: [], enabled: true, editable: true, instructions: `Installed from ${spec.trim()}.`, updatedAt: '2026-08-14T03:00:00.000Z'});
         return demoSkills;
       },
-      searchRegistry: async (query) => {
+      searchRegistry: async (query, limit = 15) => {
         const directory = [
           {id: 'vercel-labs/agent-skills/vercel-react-best-practices', name: 'vercel-react-best-practices', source: 'vercel-labs/agent-skills', installs: 630_723},
           {id: 'vercel-labs/skills/find-skills', name: 'find-skills', source: 'vercel-labs/skills', installs: 120_345},
           {id: 'vercel-labs/agent-skills/web-design-guidelines', name: 'web-design-guidelines', source: 'vercel-labs/agent-skills', installs: 84_210},
         ];
         const text = query.trim().toLowerCase();
-        return text.length < 2 ? [] : directory.filter((entry) => entry.name.includes(text) || entry.source.includes(text));
+        if (text.length === 1) return [];
+        return directory
+          .filter((entry) => !text || entry.name.includes(text) || entry.source.includes(text))
+          .slice(0, limit);
       },
       // `?one-agent` narrows the scan to a single agent, which is how the one
       // interesting variation of the discovery pane — nothing to survey, so it
@@ -890,7 +1047,7 @@ function createBrowserDemoApi(): FlareAIApi {
         const entry = demoDiscoveredSkills.flatMap((group) => group.skills).find((item) => item.path === path);
         if (!entry) throw new Error('That skill is not in a directory FlareAI scans');
         if (demoSkills.some((item) => item.name === entry.name)) throw new Error(`A skill named ${entry.name} already exists`);
-        demoSkills.push({name: entry.name, description: entry.description, source: 'flareai', filePath: `~/.flareai/skills/${entry.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], enabled: true, editable: true, instructions: entry.description, updatedAt: '2026-08-16T09:00:00.000Z'});
+        demoSkills.push({name: entry.name, description: entry.description, source: 'flareai', filePath: `~/.flareai/skills/${entry.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], permissions: [], enabled: true, editable: true, instructions: entry.description, updatedAt: '2026-08-16T09:00:00.000Z'});
         return demoSkills;
       },
       setEnabled: async (name, enabled) => {
@@ -900,7 +1057,7 @@ function createBrowserDemoApi(): FlareAIApi {
       },
       saveCustom: async (request) => {
         const index = demoSkills.findIndex((candidate) => candidate.name === (request.originalName ?? request.name));
-        const next: SkillDto = {name: request.name, description: request.description, instructions: request.instructions, source: 'flareai', filePath: `~/.flareai/skills/${request.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], enabled: index >= 0 ? demoSkills[index]!.enabled : true, editable: true};
+        const next: SkillDto = {name: request.name, description: request.description, instructions: request.instructions, source: 'flareai', filePath: `~/.flareai/skills/${request.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], permissions: [], enabled: index >= 0 ? demoSkills[index]!.enabled : true, editable: true};
         if (index >= 0) demoSkills.splice(index, 1, next); else demoSkills.push(next);
         return demoSkills;
       },
@@ -928,7 +1085,7 @@ function createBrowserDemoApi(): FlareAIApi {
       // back to when offline.
       metadata: async () => demoModelMetadata,
       roles: async () => demoRoles(),
-      assignRole: async (role, provider, id) => {
+      assignRole: async (role, provider, id, reasoning) => {
         const model = demoModels.find((item) => item.provider === provider && item.id === id);
         if (!model) throw new Error(`Unknown model: ${provider}/${id}`);
         const providerState = demoProviders.find((item) => item.id === provider);
@@ -936,9 +1093,10 @@ function createBrowserDemoApi(): FlareAIApi {
           throw new Error(`${providerState.name} is not configured. Add its API key in Settings → Provider, or choose a configured model.`);
         if (role === 'main') {
           demoModels = demoModels.map((item) => ({...item, selected: item === model}));
+          if (reasoning) demoGeneral = {...demoGeneral, reasoningLevel: reasoning};
           return demoRoles();
         }
-        demoRoleOverrides = {...demoRoleOverrides, [role]: {provider, id}};
+        demoRoleOverrides = {...demoRoleOverrides, [role]: {provider, id, reasoning}};
         return demoRoles();
       },
       clearRole: async (role) => {
@@ -953,7 +1111,7 @@ function createBrowserDemoApi(): FlareAIApi {
     // iframe rendering.
     browser: {
       embedded: false,
-      open: async () => {},
+      open: async () => ({url: '', title: ''}),
       navigate: async () => {},
       history: async () => {},
       reload: async () => {},
@@ -969,10 +1127,180 @@ function createBrowserDemoApi(): FlareAIApi {
       // In a plain browser tab the page's own CSP is what it is, so a link's
       // icon falls back to the globe rather than being fetched for it.
       favicon: async () => null,
-      downloads: async () => [],
+      downloads: async () => [...demoBrowserDownloads],
       openDownload: async () => {},
       openDownloadsFolder: async () => {},
+      // Outside Electron there is no session, jar or keychain, so the demo
+      // keeps its own state and mutates it — enough to exercise every state
+      // the Browser tab renders.
+      pauseDownload: async (id) => demoBrowserDownloadState(id, 'paused'),
+      resumeDownload: async (id) => demoBrowserDownloadState(id, 'progressing'),
+      cancelDownload: async (id) => demoBrowserDownloadState(id, 'cancelled'),
+      removeDownload: async (id) => {
+        const at = demoBrowserDownloads.findIndex((entry) => entry.id === id);
+        if (at >= 0) demoBrowserDownloads.splice(at, 1);
+        return [...demoBrowserDownloads];
+      },
+      clearDownloads: async () => {
+        demoBrowserDownloads.length = 0;
+        return [];
+      },
+      settings: async () => ({...demoBrowserSettings}),
+      updateSettings: async (patch) => {
+        if (patch.askWhereToSave !== undefined) demoBrowserSettings.askWhereToSave = patch.askWhereToSave;
+        if (patch.autofillEnabled !== undefined) demoBrowserSettings.autofillEnabled = patch.autofillEnabled;
+        // null asks the main process for a picker, which the demo stands in for.
+        if (patch.downloadDirectory === null) demoBrowserSettings.downloadDirectory = '/demo/Documents/FlareAI';
+        else if (patch.downloadDirectory !== undefined) demoBrowserSettings.downloadDirectory = patch.downloadDirectory;
+        return {...demoBrowserSettings};
+      },
+      permissions: async () => [...demoBrowserPermissions],
+      setPermission: async (site, permission, decision) => {
+        const existing = demoBrowserPermissions.find((row) => row.origin === site && row.permission === permission);
+        if (existing) existing.decision = decision;
+        else demoBrowserPermissions.push({origin: site, permission, decision, updatedAt: new Date().toISOString()});
+        return [...demoBrowserPermissions];
+      },
+      clearPermissions: async (site) => {
+        demoBrowserPermissions = site
+          ? demoBrowserPermissions.filter((row) => row.origin !== site)
+          : [];
+        return [...demoBrowserPermissions];
+      },
+      respondToPermission: async () => {},
+      sites: async () => [...demoBrowserSites],
+      clearSiteData: async (site) => {
+        demoBrowserSites = demoBrowserSites.filter((row) => row.origin !== site);
+        demoBrowserPermissions = demoBrowserPermissions.filter((row) => row.origin !== site);
+        return [...demoBrowserSites];
+      },
+      clearBrowsingData: async (options) => {
+        if (options.cookies) demoBrowserSites = [];
+        if (options.downloads) demoBrowserDownloads.length = 0;
+        if (options.permissions) demoBrowserPermissions = [];
+        if (options.logins) {
+          demoBrowserLogins.length = 0;
+          demoBrowserPasswords.clear();
+        }
+      },
+      logins: async () => [...demoBrowserLogins],
+      saveLogin: async (site, username, password) => {
+        const existing = demoBrowserLogins.find((row) => row.origin === site && row.username === username);
+        const id = existing?.id ?? crypto.randomUUID();
+        if (!existing)
+          demoBrowserLogins.push({id, origin: site, username, source: 'manual', updatedAt: new Date().toISOString(), lastUsedAt: null});
+        demoBrowserPasswords.set(id, password);
+        return [...demoBrowserLogins];
+      },
+      revealLogin: async (id) => demoBrowserPasswords.get(id) ?? null,
+      deleteLogin: async (id) => {
+        const at = demoBrowserLogins.findIndex((row) => row.id === id);
+        if (at >= 0) demoBrowserLogins.splice(at, 1);
+        demoBrowserPasswords.delete(id);
+        return [...demoBrowserLogins];
+      },
+      browsingHistory: async (options) => {
+        const query = options?.query?.trim().toLowerCase();
+        const rows = query
+          ? demoBrowserHistory.filter(
+              (row) =>
+                row.url.toLowerCase().includes(query) || row.title.toLowerCase().includes(query),
+            )
+          : [...demoBrowserHistory];
+        return rows
+          .sort((a, b) => b.visitedAt.localeCompare(a.visitedAt))
+          .slice(0, options?.limit ?? 200);
+      },
+      forgetHistoryEntry: async (url) => {
+        const at = demoBrowserHistory.findIndex((row) => row.url === url);
+        if (at >= 0) demoBrowserHistory.splice(at, 1);
+        return [...demoBrowserHistory];
+      },
+      clearHistory: async (options) => {
+        const keep = options?.source === 'import'
+          ? demoBrowserHistory.filter((row) => row.source !== 'import')
+          : [];
+        demoBrowserHistory.length = 0;
+        demoBrowserHistory.push(...keep);
+        return [...demoBrowserHistory];
+      },
+      importSources: async () => demoBrowserSources,
+      importFrom: async (request) => ({
+        cookiesImported: request.cookies ? 128 : 0,
+        cookiesSkipped: request.cookies ? 4 : 0,
+        passwordsImported: request.passwords ? 6 : 0,
+        passwordsSkipped: 0,
+        historyImported: request.history ? 2_140 : 0,
+        historySkipped: request.history ? 12 : 0,
+        problems: request.cookies ? ['the cookie has already expired (4 items)'] : [],
+      }),
+      importFile: async () => ({
+        cookiesImported: 0,
+        cookiesSkipped: 0,
+        passwordsImported: 3,
+        passwordsSkipped: 1,
+        historyImported: 0,
+        historySkipped: 0,
+        problems: ['the login has no password'],
+      }),
       subscribe: () => () => {},
+    },
+    /**
+     * The demo world outside Electron. One installed plugin and a small
+     * catalogue rather than an empty list, so the tab can be seen — and
+     * tested — with something in it.
+     */
+    plugins: {
+      list: async () => demoPlugins,
+      setEnabled: async (id, enabled) => {
+        const item = demoPlugins.find((candidate) => candidate.id === id);
+        if (item) item.enabled = enabled;
+        return demoPlugins;
+      },
+      install: async (id) => {
+        const entry = demoCatalog.find((candidate) => candidate.id === id);
+        if (!entry) throw new Error(`Unknown plugin: ${id}`);
+        entry.installed = true;
+        demoPlugins.push({
+          id: entry.id,
+          name: entry.name,
+          description: entry.description,
+          version: entry.version,
+          author: entry.author,
+          marketplace: 'claude-code',
+          marketplaceName: 'claude-code-plugins',
+          directory: `~/.flareai/plugins/claude-code/${entry.name}`,
+          enabled: true,
+          contributions: {skills: [], mcpServers: [], commands: 1, agents: 0, hooks: 0},
+          conflicts: [],
+        });
+        return demoPlugins;
+      },
+      remove: async (id) => {
+        const index = demoPlugins.findIndex((candidate) => candidate.id === id);
+        if (index >= 0) demoPlugins.splice(index, 1);
+        const entry = demoCatalog.find((candidate) => candidate.id === id);
+        if (entry) entry.installed = false;
+        return demoPlugins;
+      },
+      marketplaces: async () => demoMarketplaces,
+      addMarketplace: async (source) => {
+        const repo = source.trim().split('/').pop() ?? source;
+        if (!demoMarketplaces.some((entry) => entry.id === repo))
+          demoMarketplaces.push({id: repo, name: repo, source: source.trim(), pluginCount: 0, builtin: false});
+        return demoMarketplaces;
+      },
+      removeMarketplace: async (id) => {
+        const index = demoMarketplaces.findIndex((entry) => entry.id === id && !entry.builtin);
+        if (index >= 0) demoMarketplaces.splice(index, 1);
+        return demoMarketplaces;
+      },
+      browse: async (query) => {
+        const text = (query ?? '').trim().toLowerCase();
+        return demoCatalog.filter((entry) =>
+          !text || `${entry.name} ${entry.description}`.toLowerCase().includes(text));
+      },
+      upload: async () => demoPlugins,
     },
     providers: {
       list: async () => demoProviders.map((provider) => providerWithKeys(provider)),
@@ -1105,6 +1433,33 @@ function createBrowserDemoApi(): FlareAIApi {
     const held = /^__demo_run_(\d+)__$/.exec(request.text);
     const duration = held ? Number(held[1]) : 900;
     const isActivityDemo = request.text === '__demo_activity__';
+    // A delegated task, its subagent's run, and the link between them, which is
+    // what lets a task row open the run it started.
+    if (request.text === '__demo_task__') {
+      const childRunId = 'demo-subagent-run';
+      const call = {
+        id: 'demo-task-1',
+        name: 'task',
+        arguments: {description: 'Compare the two providers', prompt: 'Compare the two providers and report which is cheaper.'},
+      };
+      emit(runId, request.conversationId, 'tool.started', {toolCall: call});
+      emit(runId, request.conversationId, 'tool.progress', {toolCallId: call.id, message: '', data: {childRunId}});
+      emit(childRunId, request.conversationId, 'run.started', {}, runId);
+      emit(childRunId, request.conversationId, 'message.reasoning.delta', {delta: 'Weighing the two price sheets'}, runId);
+      emit(childRunId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-subagent-read', name: 'read', arguments: {path: '/pricing.md'}}}, runId);
+      timers.set(runId, setTimeout(() => {
+        const answer = 'The second provider is cheaper at this volume.';
+        emit(childRunId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-subagent-read', name: 'read', arguments: {path: '/pricing.md'}}, result: {content: 'Read 40 lines.'}}, runId);
+        emit(childRunId, request.conversationId, 'message.text.delta', {delta: answer}, runId);
+        emit(childRunId, request.conversationId, 'run.completed', {result: {lastAgentMessage: answer}}, runId);
+        emit(runId, request.conversationId, 'tool.completed', {toolCall: call, result: {content: answer}});
+        const text = 'The subagent reports the second provider is cheaper.';
+        emit(runId, request.conversationId, 'message.text.delta', {delta: text});
+        items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [{type: 'text', text}], Date.now(), runId, {phase: 'final'}));
+        finishDemoRun(runId, 'run.completed', {hadWorkActivity: true, lastAgentMessage: text, durationMs: 300});
+      }, 300));
+      return {runId};
+    }
     if (isActivityDemo) {
       const args = {path: '/skills/browser-use/SKILL.md'};
       const commentary = 'I’ll read the skill files first to see what applies here.';
@@ -1143,11 +1498,17 @@ function createBrowserDemoApi(): FlareAIApi {
   }
 
   let emitSequence = 0;
-  function emit(runId: string, conversationId: string, type: string, body: Record<string, JsonValue>): void {
+  function emit(
+    runId: string,
+    conversationId: string,
+    type: string,
+    body: Record<string, JsonValue>,
+    parentRunId: string | null = null,
+  ): void {
     // A real run's events carry increasing sequences, and the renderer keys
     // per-event UI (like tool sub-steps) off them, so the demo must too.
     const sequence = ++emitSequence;
-    const event: RunEventDto = {runId, conversationId, sequence, timestamp: Date.now(), type, payload: {runId, conversationId, sequence, timestamp: Date.now(), type, ...body}};
+    const event: RunEventDto = {runId, conversationId, parentRunId, sequence, timestamp: Date.now(), type, payload: {runId, conversationId, sequence, timestamp: Date.now(), type, ...body}};
     for (const listener of listeners) listener(event);
   }
 
@@ -1261,6 +1622,9 @@ const demoDriveStatus: DriveStatusDto = {
   saveOrder: ['google-drive', 'dropbox', 'onedrive', 's3', 'local'],
   providers: [
     {id: 'local', name: 'This Mac', kind: 'local', state: 'connected', accounts: [{id: 'local', name: 'FlareAI', email: null}], usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/FlareAI', error: null},
+    // A share that is not mounted right now, which is the state worth seeing:
+    // it stays listed so it can be reconnected or forgotten.
+    {id: 'network', name: 'Network', kind: 'network', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
     {id: 'google-drive', name: 'Google Drive', kind: 'oauth', state: 'connected', accounts: [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}], usage: {used: 6_200_000_000, total: 15_000_000_000}, root: 'FlareAI', error: null},
     {id: 'dropbox', name: 'Dropbox', kind: 'oauth', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
     {id: 'onedrive', name: 'OneDrive', kind: 'oauth', state: 'unconfigured', accounts: [], usage: null, root: null, error: 'This build has no OneDrive client credentials.'},
@@ -1269,6 +1633,9 @@ const demoDriveStatus: DriveStatusDto = {
   // Two local places plus one signed-in account, which is enough for the
   // switcher to show a provider icon next to an account name.
   sources: [
+    // The virtual drive the manager now puts at the head of the list: every
+    // connected place at once, which is what the workspace opens into.
+    {id: 'all#all', provider: 'all', accountId: 'all', name: 'All storage', accountLabel: null, state: 'connected', usage: {used: 418_200_000_000, total: 1_009_000_000_000}, root: '', error: null},
     {id: 'local#outputs', provider: 'local', accountId: 'outputs', name: 'This Mac', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/Documents/FlareAI', error: null},
     {id: 'local#home', provider: 'local', accountId: 'home', name: 'This Mac', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/home', error: null},
     {id: 'google-drive#default', provider: 'google-drive', accountId: 'default', name: 'Google Drive', accountLabel: 'demo@example.com', state: 'connected', usage: {used: 6_200_000_000, total: 15_000_000_000}, root: 'FlareAI', error: null},
@@ -1320,6 +1687,16 @@ function demoDriveFind(source: string, path: string): DriveEntryDto | undefined 
 function demoDriveSeed(source: string): DriveEntryDto[] {
   const now = new Date().toISOString();
   const {provider} = parseDriveSourceId(source);
+  // The virtual drive is every place at once, so its root mixes providers —
+  // which is the only way to see the badge doing its job: an unmarked file is
+  // on this Mac, a marked one says where it actually lives.
+  if (provider === 'all')
+    return [
+      {id: 'all#all/Reports', name: 'Reports', kind: 'folder', size: null, modifiedAt: now, provider: 'google-drive', path: 'all#all/Reports', mimeType: null},
+      {id: 'all#all/Launch brief.docx', name: 'Launch brief.docx', kind: 'file', size: 48_310, modifiedAt: now, provider: 'google-drive', path: 'all#all/Launch brief.docx', mimeType: null},
+      {id: 'all#all/Budget.xlsx', name: 'Budget.xlsx', kind: 'file', size: 21_004, modifiedAt: now, provider: 'dropbox', path: 'all#all/Budget.xlsx', mimeType: null},
+      {id: 'all#all/Notes.md', name: 'Notes.md', kind: 'file', size: 1_820, modifiedAt: now, provider: 'local', path: 'all#all/Notes.md', mimeType: null},
+    ];
   return [
     // Slash-separated so the parent of an entry can be read off its path, the
     // way every real provider's addressing allows.
@@ -1332,6 +1709,79 @@ function demoArtifacts(conversationId: string): ArtifactDto[] {
   return [{id: 'launch-brief', conversationId, runId: null, kind: 'document', name: 'Launch brief.docx', path: '/tmp/Launch brief.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), metadata: {}}];
 }
 
+function demoBrowserDownloadState(
+  id: string,
+  state: BrowserDownloadDto['state'],
+): BrowserDownloadDto[] {
+  const entry = demoBrowserDownloads.find((row) => row.id === id);
+  if (entry) entry.state = state;
+  return [...demoBrowserDownloads];
+}
+
 function demoReferences(conversationId: string): ReferenceDto[] {
   return [{id: 'flareai-site', conversationId, runId: null, kind: 'web', title: 'flarehq.co', uri: 'https://flarehq.co', createdAt: new Date().toISOString(), metadata: {}}];
 }
+
+/**
+ * The demo browser's own state, mutated in place.
+ *
+ * Stateful for the same reason the demo drive is: a stub that always answered
+ * with the same rows made saving, revealing and clearing look like they did
+ * nothing, which is exactly the failure the real tab must not have. The
+ * passwords are obvious fakes — this file ships in the renderer bundle.
+ */
+const demoBrowserSettings: BrowserSettingsDto = {
+  downloadDirectory: '/demo/Downloads',
+  askWhereToSave: false,
+  autofillEnabled: true,
+};
+
+const demoBrowserLogins: SavedLoginDto[] = [
+  {id: 'login-github', origin: 'https://github.com', username: 'demo@example.com', source: 'manual', updatedAt: '2026-08-17T09:00:00.000Z', lastUsedAt: '2026-08-17T10:00:00.000Z'},
+  {id: 'login-notion', origin: 'https://www.notion.so', username: 'demo@example.com', source: 'import', updatedAt: '2026-08-16T09:00:00.000Z', lastUsedAt: null},
+];
+
+const demoBrowserPasswords = new Map<string, string>([
+  ['login-github', 'correct-horse-battery'],
+  ['login-notion', 'demo-password-2'],
+]);
+
+const demoBrowserDownloads: BrowserDownloadDto[] = [
+  {id: 'download-1', title: 'report (1).pdf', path: '/demo/Downloads/report (1).pdf', kind: 'pdf', completedAt: '14:20', url: 'https://files.example/report.pdf', state: 'completed', receivedBytes: 248_000, totalBytes: 248_000},
+  {id: 'download-2', title: 'dataset.csv', path: '/demo/Downloads/dataset.csv', kind: 'spreadsheet', completedAt: '14:18', url: 'https://files.example/dataset.csv', state: 'progressing', receivedBytes: 4_200_000, totalBytes: 11_800_000},
+];
+
+let demoBrowserPermissions: SitePermissionDto[] = [
+  {origin: 'https://maps.example.com', permission: 'geolocation', decision: 'allow', updatedAt: '2026-08-17T09:00:00.000Z'},
+  {origin: 'https://news.example.com', permission: 'notifications', decision: 'deny', updatedAt: '2026-08-17T09:00:00.000Z'},
+];
+
+let demoBrowserSites: BrowserSiteDto[] = [
+  {origin: 'https://github.com', cookies: 14, permissions: 0, logins: 1},
+  {origin: 'https://maps.example.com', cookies: 3, permissions: 1, logins: 0},
+];
+
+const demoBrowserHistory: BrowserHistoryEntryDto[] = [
+  {url: 'https://github.com/anthropics', title: 'Anthropic · GitHub', visitedAt: '2026-08-18T09:10:00.000Z', visitCount: 12, source: 'local'},
+  {url: 'https://www.notion.so/Roadmap', title: 'Roadmap', visitedAt: '2026-08-18T08:40:00.000Z', visitCount: 3, source: 'local'},
+  {url: 'https://news.ycombinator.com/', title: 'Hacker News', visitedAt: '2026-08-17T21:02:00.000Z', visitCount: 48, source: 'import'},
+];
+
+const demoBrowserSources: BrowserSourceDto[] = [
+  {
+    id: 'chromium:chrome',
+    name: 'Google Chrome',
+    family: 'chromium',
+    profiles: [{id: 'Default', name: 'Person 1', path: '/demo/Chrome/Default', readable: true, reason: null}],
+    fileImportOnly: false,
+  },
+  {
+    id: 'safari',
+    name: 'Safari',
+    family: 'safari',
+    // The real Safari source reports exactly this when the app has no Full
+    // Disk Access, so the demo shows the state the user is most likely to hit.
+    profiles: [{id: 'safari', name: 'Safari', path: '/demo/Safari', readable: false, reason: 'FlareAI needs Full Disk Access to read Safari’s cookies.'}],
+    fileImportOnly: true,
+  },
+];

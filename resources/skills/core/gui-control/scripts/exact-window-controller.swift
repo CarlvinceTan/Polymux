@@ -261,7 +261,7 @@ struct Main {
             let controls = uniqueAXElements(walk(window)).prefix(500).map { element -> [String: Any] in
                 var actionNames: CFArray?
                 AXUIElementCopyActionNames(element, &actionNames)
-                return [
+                var row: [String: Any] = [
                     "role": axString(element, kAXRoleAttribute as CFString),
                     "title": axString(element, kAXTitleAttribute as CFString),
                     "description": axString(element, kAXDescriptionAttribute as CFString),
@@ -269,8 +269,20 @@ struct Main {
                     "identifier": axString(element, "AXIdentifier" as CFString),
                     "actions": actionNames as? [String] ?? []
                 ]
+                // Screen frame of the control, so a caller can show the user
+                // where an action is about to happen. Reading it costs two AX
+                // round trips per control and never activates the app.
+                if let origin = axPoint(element), let size = axSize(element) {
+                    row["frame"] = [
+                        "x": origin.x,
+                        "y": origin.y,
+                        "width": size.width,
+                        "height": size.height
+                    ]
+                }
+                return row
             }.filter { row in
-                row.contains { key, value in key != "actions" && String(describing: value) != "" }
+                row.contains { key, value in key != "actions" && key != "frame" && String(describing: value) != "" }
             }
             ensureNoActivation(pid: options.pid, before: before)
             printJSON(["status": "inspected", "window_id": windowID, "controls": controls])

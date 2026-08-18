@@ -9,6 +9,8 @@
   export let placeholder = '';
   export let active = false;
   export let speechModeEnabled = true;
+  export let advancedMode = false;
+  export let onOpenPlugins: () => void = () => {};
   export let dictationAutoStopSeconds: number | null = 6;
   export let showComposer = true;
   export let onSend: (text: string, files: File[], asGoal: boolean, immediate: boolean) => void = () => {};
@@ -72,6 +74,6 @@
     <p>{subtitle || $t('welcome.subtitle')}</p>
   </div>
   {#if showComposer}
-    <PromptInput variant="welcome" {active} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied}/>
+    <PromptInput variant="welcome" {active} {speechModeEnabled} {advancedMode} {onOpenPlugins} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied}/>
   {/if}
 </div>

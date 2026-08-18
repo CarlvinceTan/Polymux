@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import type {Credential, CredentialStore} from "@earendil-works/pi-ai";
 import {Communications} from "./index.js";
-import {Homeserver} from "../homeserver/server.js";
+import {Homeserver} from "@flareai/hub";
 
 /**
  * The tier-3 loop, end to end: FlareAI's comms service running against the
@@ -66,7 +66,8 @@ async function startFakeBridge(): Promise<{
 
 test("a message landing is announced as it happens, not when next asked for", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "flareai-activity-"));
-  const seen: Array<{roomId: string; sender: string; type: string}> = [];
+  const seen: Array<{roomId: string; sender: string; senderName: string | null; type: string; ts: number}> =
+    [];
   const hs = new Homeserver({
     serverName: "flareai.local",
     dataDirectory: directory,
@@ -92,7 +93,13 @@ test("a message landing is announced as it happens, not when next asked for", as
 
     // Only conversation traffic: creating the room wrote a pile of state, and
     // a view woken for each of those would be woken for nothing.
-    assert.deepEqual(seen, [{roomId, sender: user.userId, type: "m.room.message"}]);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.roomId, roomId);
+    assert.equal(seen[0]?.sender, user.userId);
+    assert.equal(seen[0]?.type, "m.room.message");
+    // The timestamp is what tells a live message from history a bridge is
+    // backfilling, so it has to arrive with one.
+    assert.ok(typeof seen[0]?.ts === "number" && seen[0].ts > 0);
   } finally {
     await hs.close();
   }
@@ -280,6 +287,66 @@ test("a bridge that changes state on its own is pushed to open windows", async (
     const moved = await comms.status();
     assert.notEqual(moved.bridges.find((item) => item.platform === "whatsapp")?.state, "dormant");
     assert.equal(pushes.length, afterFirst + 1, "the change must reach open windows");
+  } finally {
+    await hs.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+/**
+ * WeChat has no login to end — the account is whichever one WeChat.app holds —
+ * so unlinking it means one thing: stop carrying that app's messages. The
+ * choice has to survive a status read, which is the very thing that would
+ * otherwise start the relay again a moment later.
+ */
+test("unlinking WeChat stops the relay and is remembered across status reads", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-wechat-"));
+  const hs = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
+  await hs.start();
+  const calls: string[] = [];
+  const comms = new Communications({
+    credentials: memoryCredentials(),
+    storage: memoryPreferences(),
+    onChange: () => {},
+    embedded: {
+      baseUrl: hs.baseUrl,
+      directory,
+      provision: (localpart) => hs.createLocalUser(localpart),
+      inventory: async () => [],
+      startWeChat: async () => {
+        calls.push("start");
+        return false;
+      },
+      stopWeChat: async () => {
+        calls.push("stop");
+      },
+    },
+    emailConfigPath: path.join(directory, "himalaya.toml"),
+    run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
+  });
+
+  try {
+    await comms.status();
+    assert.deepEqual(calls, ["start"], "reading the status is what brings the relay up");
+
+    const unlinked = await comms.bridgeLogout("wechat", "wxid_test");
+    const row = (status: typeof unlinked) =>
+      status.bridges.find((item) => item.platform === "wechat")!;
+    assert.deepEqual(calls, ["start", "stop"]);
+    assert.equal(row(unlinked).state, "logged-out");
+    assert.equal(row(unlinked).accounts.length, 0);
+    assert.equal(row(unlinked).flows.length, 1, "an unlinked relay offers the way back in");
+
+    // The read that follows must not undo the choice.
+    const later = await comms.status();
+    assert.equal(row(later).state, "logged-out");
+    assert.deepEqual(calls, ["start", "stop"], "an unlinked relay is not started again");
+
+    // Linking is one button: nothing to ask for, so it completes on the spot.
+    const step = await comms.loginStart("wechat", "relay");
+    assert.equal(step.type, "complete");
+    assert.deepEqual(calls, ["start", "stop", "start"]);
+    assert.notEqual(row(await comms.status()).state, "logged-out");
   } finally {
     await hs.close();
     await rm(directory, {recursive: true, force: true});

@@ -2,8 +2,16 @@ import path from "node:path";
 import {homedir} from "node:os";
 import {spawn} from "node:child_process";
 import {randomBytes} from "node:crypto";
-import {shippedNetworkConfig} from "../homeserver/shipped-credentials.js";
-import type {CredentialStore} from "@earendil-works/pi-ai";
+import {
+  EmailAccounts,
+  MatrixHub,
+  probeWeChatRelay,
+  shippedNetworkConfig,
+  type CommandResult,
+  type CommandRunner,
+  type MatrixMessage,
+  type MatrixRoom,
+} from "@flareai/hub";
 import {
   COMMS_PLATFORMS,
   type CommsBridgeDto,
@@ -20,9 +28,7 @@ import {
   type SaveEmailAccountRequest,
   type SystemPermissionKind,
 } from "@flareai/protocol";
-import {EmailAccounts, type CommandResult, type CommandRunner} from "./email.js";
-import {MatrixHub, type MatrixMessage, type MatrixRoom} from "./hub.js";
-import {probeWeChatRelay} from "./wechat-relay.js";
+import type {CredentialStore} from "@earendil-works/pi-ai";
 
 /** Credential key the hub's access token is stored under. */
 const HUB_CREDENTIAL_ID = "matrix-hub";
@@ -33,6 +39,18 @@ const DEFAULT_HUB_URL = "http://127.0.0.1:18080";
  * admin API, so provisioning has to reach the server directly.
  */
 const DEFAULT_HOMESERVER_URL = "http://127.0.0.1:8008";
+/** Preference key holding whether WeChat's relay is linked to the hub. */
+const WECHAT_PREFERENCE = "comms-wechat";
+/**
+ * WeChat's one way in. There is no sign-in to drive — the account is whichever
+ * one WeChat.app holds — so linking is a single button that starts carrying
+ * that app's messages, and unlinking stops it again.
+ */
+const WECHAT_FLOW = {
+  id: "relay",
+  name: "Use WeChat on this Mac",
+  description: "Reads and sends through the WeChat app you are already signed in to.",
+};
 
 export interface CookieLoginRequest {
   platform: CommsPlatform;
@@ -93,6 +111,12 @@ export interface EmbeddedHub {
    * to exist first, so it is started here rather than with the hub.
    */
   startWeChat?: (owner: string) => Promise<boolean>;
+  /**
+   * Takes the WeChat bridge back down. Unlinking cannot sign anything out —
+   * the account belongs to WeChat.app — so what it does is stop carrying that
+   * app's messages into the hub.
+   */
+  stopWeChat?: () => Promise<void>;
   /** Values already recorded for a bridge's own configuration. */
   networkConfig?: (platform: string) => Promise<Record<string, string>>;
   /**
@@ -313,6 +337,21 @@ export class Communications {
      * otherwise the tab reports "unavailable" over a platform that is working.
      */
     const relayRow = async (entry: (typeof platforms)[number]): Promise<CommsBridgeDto> => {
+      // Unlinked is a choice the user made here, and it has to survive a
+      // status read — which is the very thing that would otherwise start the
+      // relay again a second later.
+      if (!this.#weChatLinked())
+        return {
+          platform: entry.value,
+          name: entry.label,
+          api: "none",
+          state: "logged-out",
+          accounts: [],
+          flows: [WECHAT_FLOW],
+          setup: null,
+          managementRoomHint: null,
+          error: null,
+        };
       // Two independent questions, and both have to be yes. A relay reports on
       // its link to the WeChat app, not on where it delivers: one configured
       // against another homeserver is entirely healthy and still invisible
@@ -485,6 +524,14 @@ export class Communications {
   }
 
   async loginStart(platform: CommsPlatform, flowId: string): Promise<CommsLoginStepDto> {
+    if (platform === "wechat") {
+      // Nothing to ask for and nobody to ask: the relay signs in as whoever
+      // WeChat.app is. Linking is recording the choice and bringing it up.
+      this.#setWeChatLinked(true);
+      await this.#load();
+      if (this.#userId) await this.#embedded?.startWeChat?.(this.#userId).catch(() => false);
+      return {type: "complete", loginId: "wechat", accountId: null, accountName: null};
+    }
     const {route, api} = await this.#target(platform);
     if (api === "legacy") {
       // A legacy bridge has no step machine; present the one field it accepts
@@ -589,6 +636,14 @@ export class Communications {
   }
 
   async bridgeLogout(platform: CommsPlatform, accountId: string): Promise<CommsStatusDto> {
+    if (platform === "wechat") {
+      // There is no session to end — the account is WeChat.app's. Unlinking
+      // stops the relay carrying it into the hub, and is remembered so the
+      // next status read does not quietly start it again.
+      this.#setWeChatLinked(false);
+      await this.#embedded?.stopWeChat?.().catch((): void => undefined);
+      return this.#publish();
+    }
     const {route, api} = await this.#target(platform);
     await this.#hub.logout(route, accountId, api);
     return this.#publish();
@@ -799,9 +854,10 @@ export class Communications {
     body: string;
     draft?: boolean;
     attachments?: string[];
+    importance?: "high" | "normal" | "low";
     inReplyTo?: string;
     references?: string[];
-  }): Promise<{sent: true; from: string}> {
+  }): Promise<{sent: boolean; saved?: string; account: string; from: string}> {
     const accounts = await this.#email.list();
     const account = options.account
       ? accounts.find((item) => item.id === options.account)
@@ -818,7 +874,11 @@ export class Communications {
       ? `${account.displayName} <${account.email}>`
       : account.email;
     await this.#email.send({...options, account: account.id, from});
-    return {sent: true, from};
+    // A draft went to the mailbox rather than to anyone: saying "sent" here
+    // would have the agent report a message the recipient never got.
+    return options.draft
+      ? {sent: false, saved: "Drafts", account: account.id, from}
+      : {sent: true, account: account.id, from};
   }
 
   /** Resolves the provisioning route for a platform, or explains why there is none. */
@@ -867,6 +927,23 @@ export class Communications {
     const status = await this.status();
     this.#onChange(status);
     return status;
+  }
+
+  /**
+   * Whether WeChat should be carried into the hub. Linked is the default: the
+   * relay signs in as the app on this Mac, so someone who has WeChat open has
+   * already done the only thing linking asks of them. Only an explicit unlink
+   * is recorded.
+   */
+  #weChatLinked(): boolean {
+    const stored = this.#storage.getPreference(WECHAT_PREFERENCE)?.value;
+    if (!stored || typeof stored !== "object") return true;
+    const linked = (stored as Record<string, unknown>).linked;
+    return typeof linked === "boolean" ? linked : true;
+  }
+
+  #setWeChatLinked(linked: boolean): void {
+    this.#storage.setPreference(WECHAT_PREFERENCE, {linked});
   }
 
   #persistHub(): void {

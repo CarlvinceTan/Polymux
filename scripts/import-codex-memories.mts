@@ -13,7 +13,7 @@
  * Chronicle rollout summaries are deliberately left behind: they describe
  * Codex sessions, and FlareAI keeps its own chronicle.
  *
- * Usage: npm run memories:import -- [sourceVault] [targetVault]
+ * Usage: npm run memories -- [sourceVault] [targetVault]
  */
 import { copyFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";

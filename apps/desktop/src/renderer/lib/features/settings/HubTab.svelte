@@ -1,3 +1,17 @@
+<script lang="ts" context="module">
+  import type {CommsStatusDto as CachedStatusDto} from '@flareai/protocol';
+
+  /**
+   * The last status the Hub tab saw, kept outside the component.
+   *
+   * Settings destroys the tab when the mode changes, so every return to Hub
+   * used to wait on a fresh status read and flash its loading rail first. The
+   * tab now paints what it knew and corrects it behind the pane. Window-lived,
+   * never persisted — which is exactly as long as the answer is worth trusting.
+   */
+  const hubSnapshot: {status: CachedStatusDto | null} = {status: null};
+</script>
+
 <script lang="ts">
   import {onMount, tick} from 'svelte';
   import type {
@@ -25,32 +39,16 @@
 
   type Section = {kind: 'bridge'; platform: CommsPlatform} | {kind: 'mail'};
 
-  let status: CommsStatusDto | null = null;
+  let status: CommsStatusDto | null = hubSnapshot.status;
+  $: if (status) hubSnapshot.status = status;
   // Mail heads the rail whatever the fleet turns out to hold, so the opening
   // section is set here rather than waiting on the first status — the pane is
   // filled the moment the tab is opened, not a beat later. `keepSelectionOnRail`
   // still moves it if a filter hides Mail.
   let selected: Section | null = {kind: 'mail'};
-  let loading = true;
+  let loading = !hubSnapshot.status;
   let error = '';
   let busy = '';
-
-  // Rail chrome, matched to the MCP/Skills rails in SettingsModal.
-  type RailMenu = 'filter' | 'sort';
-  $: railFilterOptions = [
-    {value: 'all', label: $t('hub.railAll')},
-    {value: 'linked', label: $t('hub.railLinked')},
-    {value: 'unlinked', label: $t('hub.railUnlinked')},
-    {value: 'attention', label: $t('hub.railAttention')},
-  ];
-  $: railSortOptions = [
-    {value: 'recommended', label: $t('hub.sortRecommended')},
-    {value: 'name-asc', label: $t('hub.sortNameAsc')},
-    {value: 'name-desc', label: $t('hub.sortNameDesc')},
-  ];
-  let railFilter = 'all';
-  let railSort = 'recommended';
-  let openRailMenu: RailMenu | null = null;
 
   // Bridge linking
   let step: CommsLoginStepDto | null = null;
@@ -83,7 +81,9 @@
   });
 
   async function load(): Promise<void> {
-    loading = true;
+    // Only an empty pane waits — a reopened tab already has rows on screen and
+    // corrects them in place rather than blanking back to the loading rail.
+    loading = !status;
     error = '';
     try {
       status = await api.comms.status();
@@ -247,82 +247,46 @@
       label: bridgeLabel(bridge),
     })),
   ];
-  // Both the filter and the sort are passed in rather than read off the
-  // closure: a value only touched inside a helper is not a dependency Svelte
-  // tracks, so the rail would keep showing the previous selection's list.
-  $: visibleRail = sortRail(
-    railEntries.filter((entry) => matchesFilter(entry.state, railFilter)),
-    railSort,
-  );
+  $: visibleRail = sortRail(railEntries);
   $: railEmpty = visibleRail.length === 0;
-  /**
-   * A filter that hides the open section would otherwise leave the detail pane
-   * showing something the rail no longer offers a way back to — so the
-   * selection moves when the *filter* changes, or when the open platform has
-   * left the fleet entirely.
-   *
-   * Deliberately not on every status read: signing in changes a platform's
-   * state, and under "Not linked" that drops it out of the filtered list. Left
-   * to this rule, logging in to WhatsApp would throw you off WhatsApp at the
-   * moment it succeeded — the one screen you are certainly still reading.
-   */
-  let railFilterAt = railFilter;
-  // In a function, and handed its inputs, for the reason the sort above is:
-  // what a reactive statement re-runs on is what it reads at the top level.
-  $: keepSelectionOnRail(railFilter, visibleRail, railEntries);
+  // In a function, and handed its inputs, because what a reactive statement
+  // re-runs on is what it reads at the top level.
+  $: keepSelectionOnRail(visibleRail, railEntries);
 
-  function keepSelectionOnRail(
-    filter: string,
-    visible: typeof railEntries,
-    all: typeof railEntries,
-  ): void {
-    const filterChanged = filter !== railFilterAt;
-    railFilterAt = filter;
+  /**
+   * A platform that has left the fleet would otherwise leave the detail pane
+   * showing something the rail no longer offers a way back to.
+   *
+   * Deliberately not a reason to move on every status read: signing in changes
+   * a platform's state, and a selection that jumped on that would throw you off
+   * WhatsApp at the moment logging in to it succeeded — the one screen you are
+   * certainly still reading.
+   */
+  function keepSelectionOnRail(visible: typeof railEntries, all: typeof railEntries): void {
     if (!visible.length) return;
-    if (visible.some((entry) => isSelected(entry.section, selected))) return;
-    // Still on the fleet, just filtered out of view: the selection stands.
-    if (selected !== null && !filterChanged && all.some((entry) => isSelected(entry.section, selected))) return;
+    if (selected !== null && all.some((entry) => isSelected(entry.section, selected))) return;
     selected = visible[0].section;
   }
   // The masks are painted from measurements, so they are re-taken whenever the
   // list's contents change under them.
-  $: railContentKey = `${railFilter}:${railSort}:${visibleRail.length}`;
+  $: railContentKey = `${visibleRail.length}`;
 
   function isSelected(section: Section, current: Section | null): boolean {
     if (!current || current.kind !== section.kind) return false;
     return section.kind !== 'bridge' || (current.kind === 'bridge' && current.platform === section.platform);
   }
 
-  function matchesFilter(state: string, filter: string): boolean {
-    switch (filter) {
-      case 'linked':
-        return state === 'connected';
-      case 'unlinked':
-        return state === 'logged-out' || state === 'dormant';
-      case 'attention':
-        return state === 'error' || state === 'unreachable' || state === 'unavailable';
-      default:
-        return true;
-    }
-  }
-
   /**
-   * "Recommended" is what is linked, first. The catalogue order underneath it
-   * is a fixed list the user has no part in, so a platform they actually
-   * connected can sit at the bottom of it — WeChat does — while a dozen rows
-   * they have never linked are what the rail opens on. Sorting is stable, so
-   * within each group the catalogue order stands.
+   * What is linked, first. The catalogue order underneath it is a fixed list
+   * the user has no part in, so a platform they actually connected can sit at
+   * the bottom of it — WeChat does — while a dozen rows they have never linked
+   * are what the rail opens on. Sorting is stable, so within each group the
+   * catalogue order stands.
    *
    * Mail keeps the top whatever its own state, matching where the tab opens.
    */
-  function sortRail<T extends {name: string; key: string; state: string}>(
-    entries: T[],
-    sort: string,
-  ): T[] {
-    if (sort === 'recommended')
-      return [...entries].sort((a, b) => railRank(a) - railRank(b));
-    const ordered = [...entries].sort((a, b) => a.name.localeCompare(b.name));
-    return sort === 'name-desc' ? ordered.reverse() : ordered;
+  function sortRail<T extends {name: string; key: string; state: string}>(entries: T[]): T[] {
+    return [...entries].sort((a, b) => railRank(a) - railRank(b));
   }
 
   function railRank(entry: {key: string; state: string}): number {
@@ -338,33 +302,6 @@
       default:
         return 3;
     }
-  }
-
-  function toggleRailMenu(menu: RailMenu): void {
-    openRailMenu = openRailMenu === menu ? null : menu;
-  }
-
-  function chooseRailOption(menu: RailMenu, value: string): void {
-    if (menu === 'filter') railFilter = value;
-    else railSort = value;
-    openRailMenu = null;
-  }
-
-  /**
-   * Only the open menu and the button that opened it hold a press. Testing the
-   * whole tools row instead would make its blank stretch — which runs the full
-   * width of the rail — a dead zone where a press reads as outside the menu but
-   * dismisses nothing.
-   */
-  function closeRailMenu(event: PointerEvent): void {
-    const target = event.target;
-    const wrap = target instanceof Element ? target.closest('.rail-tool-wrap') : null;
-    if (wrap?.querySelector('.rail-tool-menu')) return;
-    openRailMenu = null;
-  }
-
-  function railKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape' && openRailMenu) openRailMenu = null;
   }
 
   function pickBridge(section: Section | null, list: CommsBridgeDto[]): CommsBridgeDto | null {
@@ -669,8 +606,6 @@
   }
 </script>
 
-<svelte:window onpointerdown={closeRailMenu} onkeydown={railKeydown} />
-
 <div class="comms" role="tabpanel">
     {#if error}
       <div class="comms-error" role="alert">
@@ -702,7 +637,7 @@
               >
                 <span class="comms-mark">
                   {#if entry.logo}
-                    <img src={entry.logo} alt="" aria-hidden="true" />
+                    <img src={entry.logo} data-logo={entry.key} alt="" aria-hidden="true" />
                   {:else}
                     <span class="comms-mark-letter">{entry.name.charAt(0)}</span>
                   {/if}
@@ -720,68 +655,6 @@
           {/if}
         </ul>
 
-        <div class="comms-rail-tools">
-          <div class="rail-tool-wrap">
-            <button
-              type="button"
-              class="rail-tool"
-              class:active={railFilter !== 'all'}
-              aria-label={$t('hub.filterPlatforms')}
-              aria-haspopup="menu"
-              aria-expanded={openRailMenu === 'filter'}
-              data-tooltip-label={$t('drive.filter')}
-              onclick={() => toggleRailMenu('filter')}
-            >
-              <Icon name="filter" size={15} />
-            </button>
-            {#if openRailMenu === 'filter'}
-              <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('hub.filterPlatforms')}>
-                {#each railFilterOptions as option (option.value)}
-                  <button
-                    type="button"
-                    class="flareai-dropdown-item"
-                    role="menuitemradio"
-                    aria-checked={option.value === railFilter}
-                    onclick={() => chooseRailOption('filter', option.value)}
-                  >
-                    <span>{option.label}</span>
-                    {#if option.value === railFilter}<Icon name="check" size={13} />{/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-          <div class="rail-tool-wrap">
-            <button
-              type="button"
-              class="rail-tool"
-              class:active={railSort !== 'recommended'}
-              aria-label={$t('hub.sortPlatforms')}
-              aria-haspopup="menu"
-              aria-expanded={openRailMenu === 'sort'}
-              data-tooltip-label={$t('hub.sort')}
-              onclick={() => toggleRailMenu('sort')}
-            >
-              <Icon name="sort" size={15} />
-            </button>
-            {#if openRailMenu === 'sort'}
-              <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('hub.sortPlatforms')}>
-                {#each railSortOptions as option (option.value)}
-                  <button
-                    type="button"
-                    class="flareai-dropdown-item"
-                    role="menuitemradio"
-                    aria-checked={option.value === railSort}
-                    onclick={() => chooseRailOption('sort', option.value)}
-                  >
-                    <span>{option.label}</span>
-                    {#if option.value === railSort}<Icon name="check" size={13} />{/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        </div>
       </div>
 
       <div class="comms-detail" use:scrollFade={selected}>
@@ -878,7 +751,10 @@
             </p>
           </header>
 
-          {#if activeBridge.error && activeBridge.state !== 'unavailable'}
+          <!-- The bridge's error is just its first account's (see hub.ts), so
+               showing it here as well as on the row would say it twice. The
+               row is the more precise of the two: it names the account. -->
+          {#if activeBridge.error && activeBridge.state !== 'unavailable' && !activeBridge.accounts.some((account) => account.error)}
             <p class="comms-hint warn">{activeBridge.error}</p>
           {/if}
 
@@ -981,15 +857,15 @@
                 {#each activeBridge.accounts as account (account.id)}
                   <p class="comms-value">
                     <code>{account.name}</code>
-                    <!-- A relay account belongs to the app on this Mac, not to
-                         a login FlareAI made: there is nothing here to undo. -->
-                    {#if activeBridge.api !== 'none'}
-                      <button
-                        type="button"
-                        class="destructive"
-                        disabled={busy === `unlink:${activeBridge.platform}:${account.id}`}
-                        onclick={() => void unlink(activeBridge, account)}>{$t('hub.unlink')}</button>
-                    {/if}
+                    <!-- A relay account belongs to the app on this Mac, so
+                         unlinking it stops FlareAI carrying its messages
+                         rather than signing anything out — but it is still the
+                         way off the platform, and belongs on the row. -->
+                    <button
+                      type="button"
+                      class="destructive"
+                      disabled={busy === `unlink:${activeBridge.platform}:${account.id}`}
+                      onclick={() => void unlink(activeBridge, account)}>{$t('hub.unlink')}</button>
                   </p>
                   {#if account.error}<p class="comms-hint warn">{account.error}</p>{/if}
                 {/each}
@@ -1184,12 +1060,6 @@
      fleet is on its way the rail has no rows for it to head. */
   .comms-rail.loading{justify-content:center}
   .comms-rail-loading{padding:0 8px;color:var(--neutral-400);text-align:center;font-size:10.5px}
-  .comms-rail-tools{position:relative;flex:none;display:flex;align-items:center;gap:2px}
-  .rail-tool-wrap{position:relative}
-  .rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}
-  .rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}
-  .rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}
-  .rail-tool-menu .flareai-dropdown-item>span{min-width:0;flex:1}
   .comms-rail button:not(.comms-add){width:100%;display:flex;align-items:center;gap:9px;border:0;border-radius:8px;padding:7px 8px;background:transparent;color:var(--neutral-700);cursor:pointer;font-family:inherit;text-align:left}
   .comms-rail button:not(.comms-add):hover{background:var(--neutral-100)}
   .comms-rail button.active{background:var(--neutral-100);color:var(--neutral-950)}

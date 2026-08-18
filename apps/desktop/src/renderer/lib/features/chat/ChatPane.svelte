@@ -46,6 +46,8 @@
   export let goal: ActiveGoal | null = null;
   export let speechMode = false;
   export let speechModeEnabled = true;
+  export let advancedMode = false;
+  export let onOpenPlugins: () => void = () => {};
   export let dictationAutoStopSeconds: number | null = 6;
   export let showJumpToLatest = false;
   export let onSend: (text: string, files: File[], asGoal: boolean, immediate: boolean) => void = () => {};
@@ -163,6 +165,8 @@
         showComposer={!speechMode}
         active={running}
         {speechModeEnabled}
+        {advancedMode}
+        {onOpenPlugins}
         {dictationAutoStopSeconds}
         {placeholder}
         {onSend}
@@ -211,7 +215,7 @@
           />
         {/if}
         {#if !speechMode}
-          <PromptInput active={running} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied}/>
+          <PromptInput active={running} {speechModeEnabled} {advancedMode} {onOpenPlugins} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied}/>
         {/if}
       </div>
     </div>

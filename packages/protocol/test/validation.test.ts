@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DRIVE_PROVIDERS,
+  DRIVE_CONNECTABLE,
   driveProvider,
   driveS3Config,
   driveSaveOrder,
@@ -51,7 +51,10 @@ test("accepts only storage providers this build knows", () => {
 });
 
 test("keeps every storage provider reachable in the save order", () => {
-  const all = DRIVE_PROVIDERS.map((entry) => entry.value);
+  // Connectable, not every provider: the save order answers where a new file
+  // goes, and the virtual drive holds nothing — naming it would make it the
+  // destination for the files it only shows.
+  const all = DRIVE_CONNECTABLE.map((entry) => entry.value);
   // A stored order naming only some providers must still list the rest, or
   // one left out of it could never be written to again.
   assert.deepEqual(driveSaveOrder(["s3"]), [

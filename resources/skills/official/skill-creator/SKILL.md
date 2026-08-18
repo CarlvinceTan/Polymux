@@ -23,8 +23,8 @@ preferences, fragile workflows, and reusable resources needed for reliable work.
   triggers and important nearby boundaries.
 - Avoid duplicating instructions between the core and references.
 - Add only resources the workflow consumes. Test every changed script.
-- Treat `agents/openai.yaml` and its referenced icons as part of the finished
-  user experience, not optional cleanup.
+- Treat `flare.yaml` as part of the finished user experience, not optional
+  cleanup.
 
 ## Structure and resources
 
@@ -33,8 +33,7 @@ Every skill requires `SKILL.md`. Add only the resources it uses:
 - `scripts/` for deterministic or repeatedly reused operations;
 - `references/` for detailed or variant-specific material loaded on demand;
 - `assets/` for templates, icons, fonts, and files used in outputs;
-- `agents/openai.yaml` for the name, description, prompt, and visual identity
-  shown in FlareAI.
+- `flare.yaml` for the display name shown in FlareAI.
 
 Keep the core workflow and routing in `SKILL.md`. Move schemas, provider
 details, long examples, and conditional variants into directly linked
@@ -62,12 +61,9 @@ reference files that the workflow never consumes.
    - Keep references one level from `SKILL.md` and state exactly when to read
      each one.
    - Remove all unused placeholders and resources.
-   - Read [references/openai_yaml.md](references/openai_yaml.md), then create or
-     update `agents/openai.yaml`. Use a clear, unique display name; a concise
-     description of the skill's value; a one-sentence default prompt that
-     explicitly invokes `$skill-name`; and distinct, meaningful icons when the
-     FlareAI surface supports them. Preserve suitable existing identity assets,
-     but replace generic, misleading, missing, or copied icons.
+   - Read [references/flare_yaml.md](references/flare_yaml.md), then create or
+     update `flare.yaml` with a clear, unique display name. Skip the file when
+     the folder name already title-cases into that name.
 5. **Validate the authored content**
    - Run `scripts/quick_validate.py <skill-folder>`.
    - Exercise every changed script and at least one representative workflow.

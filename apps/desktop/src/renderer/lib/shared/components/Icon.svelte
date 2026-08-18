@@ -1,16 +1,19 @@
 <script lang="ts">
   export let name:
-    | 'summary' | 'panel' | 'panel-left' | 'plus' | 'close' | 'send' | 'mic' | 'waveform' | 'stop'
+    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'waveform' | 'stop'
     | 'attach' | 'options' | 'verified' | 'globe' | 'file' | 'task' | 'back'
     | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down' | 'arrow-up'
     | 'bolt' | 'document-text' | 'paper-airplane' | 'history' | 'archive' | 'drive' | 'new-chat'
     | 'copy' | 'check' | 'edit' | 'thumb-up' | 'thumb-down' | 'search' | 'terminal' | 'wrench' | 'book-open'
     | 'brain' | 'compact' | 'compress' | 'sparkles' | 'bot'
-    | 'connections' | 'mcp' | 'link' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
+    | 'connections' | 'mcp' | 'link' | 'puzzle' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
     | 'document' | 'presentation' | 'folder' | 'pdf' | 'spreadsheet' | 'image' | 'audio' | 'video' | 'code'
     | 'calendar' | 'clock' | 'sun' | 'sun-moon' | 'goal' | 'users' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
     | 'folder-plus' | 'upload' | 'home' | 'folder-move' | 'info'
-    | 'mail' | 'inbox' | 'spam' | 'storefront' | 'settings';
+    | 'mail' | 'inbox' | 'spam' | 'storefront' | 'settings' | 'cloud'
+    | 'reply' | 'reply-all' | 'mail-forward' | 'flag'
+    | 'key' | 'shield' | 'eye' | 'eye-off' | 'external' | 'import'
+    | 'pin' | 'pin-off' | 'bell';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -36,6 +39,14 @@
     <!-- The Workspace panel mirrored: same frame, divider on the leading edge,
          so the two drawer controls read as one pair. -->
     <rect x="4" y="4.5" width="16" height="15" rx="3"/><path d="M9 5v14"/>
+  {:else if name === 'screen-record'}
+    <!-- The record mark: a ring with its dot, at the same weight as the other
+         permission icons. -->
+    <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.6" fill="currentColor" stroke="none"/>
+  {:else if name === 'apps'}
+    <!-- Four app tiles: the grants below are per-app, so the mark reads as
+         apps rather than as another kind of protection. -->
+    <rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>
   {:else if name === 'plus'}
     <path d="M12 5v14M5 12h14"/>
   {:else if name === 'close'}
@@ -54,6 +65,8 @@
     <path d="M5 10v4h4l5 4V6l-5 4zM17 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>
   {:else if name === 'speaker-off'}
     <path d="M5 10v4h4l5 4V6l-5 4zM17 10l4 4M21 10l-4 4"/>
+  {:else if name === 'bell'}
+    <path d="M6 10a6 6 0 0 1 12 0c0 3.2.7 5 1.5 6h-15C5.3 15 6 13.2 6 10M10 19.5a2.2 2.2 0 0 0 4 0"/>
   {:else if name === 'chat'}
     <path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/>
   {:else if name === 'waveform'}
@@ -69,6 +82,8 @@
     <path d="M4 5h8m3 0h1M4 10h1m3 0h8M4 15h5m3 0h4M12 3v4M5 8v4M9 13v4" transform="scale(1.2)" stroke-width="1.5"/>
   {:else if name === 'verified'}
     <path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>
+  {:else if name === 'cloud'}
+    <path d="M7.4 19.5A4.9 4.9 0 0 1 6.9 9.75 6.1 6.1 0 0 1 18.4 10.4 4.55 4.55 0 0 1 17.6 19.5z"/>
   {:else if name === 'globe'}
     <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>
   {:else if name === 'file'}
@@ -80,6 +95,21 @@
     <path d="m15 18-6-6 6-6"/>
   {:else if name === 'forward'}
     <path d="m9 18 6-6-6-6"/>
+  {:else if name === 'flag'}
+    <!-- A pennant on its pole: the pole stays a hairline while the flag itself
+         fills in for a message that is flagged. -->
+    <path d="M6 21V4"/><path d="M6 4.8h11l-2.3 3.5 2.3 3.5H6z"/>
+  {:else if name === 'reply'}
+    <!-- A message turning back the way it came: the arrow lands on the left,
+         and the line under it curves away to where the mail was going. -->
+    <path d="M9 8 4.5 12 9 16"/><path d="M4.5 12h9a6 6 0 0 1 6 6v1"/>
+  {:else if name === 'reply-all'}
+    <!-- The same turn, with a second arrowhead behind it for the rest of the
+         recipients. -->
+    <path d="M8 8 3.5 12 8 16"/><path d="m12.5 8-2.5 2.2"/><path d="M8 12h6.5a5.5 5.5 0 0 1 5.5 5.5V19"/>
+  {:else if name === 'mail-forward'}
+    <!-- Reply, mirrored: the message carries on past where it stopped. -->
+    <path d="m15 8 4.5 4L15 16"/><path d="M19.5 12h-9a6 6 0 0 0-6 6v1"/>
   {:else if name === 'reload'}
     <path d="M20 11a8 8 0 1 1-2.34-5.66L20 7.7M20 3v4.7h-4.7"/>
   {:else if name === 'download'}
@@ -176,6 +206,11 @@
     </g>
   {:else if name === 'link'}
     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" transform="translate(1.68 1.68) scale(.86)" vector-effect="non-scaling-stroke"/>
+  {:else if name === 'puzzle'}
+    <!-- The single classic piece: knobs out of the top and right edges, sockets
+         cut into the bottom and left, so it reads as an extension mark rather
+         than as four interlocking pieces at 18px. -->
+    <path d="M6 6h3a2.4 2.4 0 1 1 4 0h3a2 2 0 0 1 2 2v3a2.4 2.4 0 1 1 0 4v3a2 2 0 0 1-2 2h-3a2.4 2.4 0 1 0-4 0H6a2 2 0 0 1-2-2v-3a2.4 2.4 0 1 0 0-4V8a2 2 0 0 1 2-2z"/>
   {:else if name === 'grip'}
     <circle cx="9" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1" fill="currentColor" stroke="none"/>
   {:else if name === 'steer'}
@@ -221,13 +256,13 @@
          background-coloured rings. -->
     <mask id="sun-moon-knockout">
       <rect x="0" y="0" width="24" height="24" fill="white"/>
-      <circle cx="16" cy="12" r="7.15" fill="black"/>
+      <circle cx="16.28" cy="12" r="7.29" fill="black"/>
     </mask>
     <g mask="url(#sun-moon-knockout)">
-      <circle cx="7.4" cy="12" r="3.35"/>
-      <path d="M7.4 5.5v1.9M7.4 16.6v1.9M0.9 12h1.9M11.9 12h1.9M2.8 7.4l.95.95M12 7.4l-.95.95M2.8 16.6l.95-.95M12 16.6l-.95-.95"/>
+      <circle cx="7.5" cy="12" r="3.42"/>
+      <path d="M7.5 5.45v1.85M7.5 16.7v1.85M0.95 12h1.85M12.2 12h1.85M2.87 7.37l1.31 1.31M12.13 7.37l-1.31 1.31M2.87 16.63l1.31-1.31M12.13 16.63l-1.31-1.31"/>
     </g>
-    <path d="M16 5.5a4.3 4.3 0 0 0 6.5 6.5 6.5 6.5 0 1 1-6.5-6.5"/>
+    <path d="M16.28 5.37a4.39 4.39 0 0 0 6.63 6.63 6.63 6.63 0 1 1-6.63-6.63"/>
   {:else if name === 'goal'}
     <path d="M20.9 10.5a9 9 0 1 1-7.4-7.4"/><path d="M16.4 11.1a4.5 4.5 0 1 1-3.6-3.6"/><circle cx="12" cy="12" r="1.4"/><path d="m12 12 5-5"/><path d="M17 7V3.5L20.5 7H17Z" fill="currentColor"/>
   {:else if name === 'users'}
@@ -258,5 +293,37 @@
     <path d="M4 6h16M7 12h10M10 18h4"/>
   {:else if name === 'sort'}
     <path d="M8 6h10M8 12h7M8 18h4M4 5v14M2 17l2 2 2-2"/>
+  {:else if name === 'key'}
+    <circle cx="8" cy="15" r="3.5"/><path d="m10.6 12.4 7.4-7.4M15.5 7.5l2 2M18 5l2 2"/>
+  {:else if name === 'shield'}
+    <path d="M12 3.5 5.5 6v5.6c0 3.9 2.7 6.9 6.5 8.4 3.8-1.5 6.5-4.5 6.5-8.4V6z"/>
+  {:else if name === 'eye'}
+    <path d="M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>
+  {:else if name === 'eye-off'}
+    <!-- The same eye, struck through: the shown and hidden states are one
+         stroke apart, so the button does not appear to change icon families. -->
+    <path d="M10.7 6.7A10 10 0 0 1 12 6.5c6 0 9.5 5.5 9.5 5.5a17.4 17.4 0 0 1-3.5 3.9M7.1 8.4A17.2 17.2 0 0 0 2.5 12S6 17.5 12 17.5c1 0 2-.2 2.9-.5"/><path d="M9.9 9.9a2.8 2.8 0 0 0 4.2 4.2"/><path d="m4 4 16 16"/>
+  {:else if name === 'pin'}
+    <!-- Leaning rather than upright: a pin pushed into a board sits at an
+         angle, handle up and to the right, needle down and to the left. The
+         whole glyph is drawn straight and turned as one, so the head stays
+         square to the needle instead of being redrawn skewed. -->
+    <g transform="rotate(45 12 12)">
+      <path d="M9 3.5h6l-.7 5.2 3.2 3.1H6.5l3.2-3.1z"/><path d="M12 11.8V20.5"/>
+    </g>
+  {:else if name === 'pin-off'}
+    <!-- The same pin at the same angle, struck through: pinned and unpinned are
+         one stroke apart, the way the eye pair is. The stroke keeps its own
+         diagonal rather than turning with the pin, so it reads as a strike
+         rather than as part of the glyph. -->
+    <g transform="rotate(45 12 12)">
+      <path d="M9.6 3.5H15l-.7 5.2 3.2 3.1h-4.1M9.4 11.8H6.5l3.2-3.1-.2-1.6"/><path d="M12 13.6v6.9"/>
+    </g>
+    <path d="m4 4 16 16"/>
+  {:else if name === 'import'}
+    <path d="M12 4v9M12 13l3.5-3.5M12 13 8.5 9.5"/><path d="M5 15.5V18a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2.5"/>
+  {:else if name === 'external'}
+    <!-- The arrow leaving a frame, matching the 'link' pair beside it. -->
+    <path d="M14 4.5h5.5V10M19.5 4.5 11 13"/><path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5"/>
   {/if}
 </svg>

@@ -1596,7 +1596,7 @@
   .pf-seat:disabled{cursor:default}
   /* No entrance of their own: the seats are riding a wheel that is already
      rolling, and a stagger on top of that reads as two animations arguing. */
-  .pf-seat-mark{display:grid;place-items:center;width:100%;height:100%;border-radius:50%;border:1px solid var(--neutral-200);background:var(--app-bg);color:var(--neutral-800);font-size:14.5px;font-weight:650;transition:border-color .22s,color .22s}
+  .pf-seat-mark{display:grid;place-items:center;width:100%;height:100%;border-radius:50%;border:1px solid rgb(from var(--hub-ink) r g b / .16);background:var(--hub-fill);color:var(--hub-ink-soft);font-size:14.5px;font-weight:650;transition:border-color .22s,color .22s}
   .pf-seat-mark img{width:50%;height:50%;object-fit:contain}
   .pf-seat-tick{display:none}
   /* Carried for screen readers only. Painted, it runs outward from the rim
@@ -1606,7 +1606,7 @@
   .pf-seat-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
   /* Already linked. The ring stays the same weight as every other seat — a
      darker one here reads as "selected", which it is not. */
-  .pf-seat.done .pf-seat-tick{position:absolute;right:-1px;bottom:-1px;display:grid;place-items:center;width:15px;height:15px;border-radius:50%;border:1.5px solid var(--app-bg);background:var(--neutral-900);color:var(--app-bg)}
+  .pf-seat.done .pf-seat-tick{position:absolute;right:-1px;bottom:-1px;display:grid;place-items:center;width:15px;height:15px;border-radius:50%;border:1.5px solid var(--app-bg);background:var(--hub-ink);color:var(--hub-fill)}
   /* Barely held back while its hub is down — every seat opens either way, so
      this is a hint, not a "keep out". */
   .pf-seat.idle{opacity:calc(var(--fade,1) * .92)}
@@ -1614,11 +1614,11 @@
   /* The chosen seat rides the middle of the arc, a size up from the rest. */
   .pf-seat.open{transform:translate(-50%,-50%) scale(1.3)}
   /* Chosen reads as size and a darker ring — no fill, so the logo stays itself. */
-  .pf-seat.open .pf-seat-mark{border-color:var(--neutral-950);background:var(--app-bg)}
+  .pf-seat.open .pf-seat-mark{border-color:var(--hub-ink);background:var(--hub-fill)}
   .pf-seat:hover,.pf-seat:focus-visible{z-index:1}
   .pf-seat:hover:not(:disabled),.pf-seat:focus-visible{transform:translate(-50%,-50%) scale(1.22)}
   .pf-seat.open:hover,.pf-seat.open:focus-visible{transform:translate(-50%,-50%) scale(1.3)}
-  .pf-seat:hover:not(:disabled) .pf-seat-mark,.pf-seat:focus-visible .pf-seat-mark{border-color:var(--neutral-500);color:var(--neutral-950)}
+  .pf-seat:hover:not(:disabled) .pf-seat-mark,.pf-seat:focus-visible .pf-seat-mark{border-color:rgb(from var(--hub-ink) r g b / .45);color:var(--hub-ink)}
   .pf-seat:focus-visible{outline:none}
 
   /* Inside the circle, clear of the rim, and reading against the fill. */

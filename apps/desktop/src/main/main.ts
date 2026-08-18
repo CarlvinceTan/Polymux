@@ -5,10 +5,8 @@ import { fileURLToPath } from "node:url";
 import started from "electron-squirrel-startup";
 import { channels } from "@flareai/protocol";
 import { DesktopBackend, modelFromEnvironment } from "./backend.js";
-import { BridgeHost, Homeserver } from "./homeserver/index.js";
+import { BridgeHost, Homeserver, WeChatBridge, WECHAT_FALLBACK_DIRECTORIES, loadShippedCredentials } from "@flareai/hub";
 import { registerMediaScheme, serveMedia } from "./communications/media.js";
-import { WeChatBridge, WECHAT_FALLBACK_DIRECTORIES } from "./homeserver/wechat-bridge.js";
-import { loadShippedCredentials } from "./homeserver/shipped-credentials.js";
 import { coreSkillNames, installOfficialSkills } from "./skills/official.js";
 import {
   FLAREAI_TRAFFIC_LIGHT_POSITION,
@@ -36,6 +34,30 @@ let quitting = false;
 if (started) {
   quitting = true;
   app.quit();
+}
+
+// A side instance: `npm start -- --isolated` (or any FLAREAI_DEV_INSTANCE
+// value) runs a second FlareAI that shares nothing with the one already open.
+// Everything that makes two runs collide is keyed off the name — the userData
+// directory, and with it Electron's single-instance lock, plus the hub's
+// homeserver port — so an agent can start the app to check a change without
+// evicting the session the user is sitting in front of.
+const devInstance = process.env.FLAREAI_DEV_INSTANCE?.trim();
+if (devInstance) {
+  app.setPath("userData", `${app.getPath("userData")}-${devInstance}`);
+}
+
+/**
+ * The port the embedded homeserver listens on: 47664 for the ordinary run, and
+ * a deterministic offset from it for a named side instance. Deterministic
+ * rather than "any free port" because the bridge configs on disk name the
+ * homeserver by URL, so the same instance has to come back on the same port.
+ */
+function homeserverPort(): number {
+  if (!devInstance) return 47_664;
+  let hash = 0;
+  for (const character of devInstance) hash = (hash * 31 + character.charCodeAt(0)) % 200;
+  return 47_665 + hash;
 }
 
 // The credential store, API-key pool, and SQLite database all live in one
@@ -138,7 +160,12 @@ function createWindow(): void {
   // diagnosed, an invisible one just looks like the app refused to start.
   const reveal = (): void => {
     if (window.isDestroyed() || window.isVisible()) return;
-    window.show();
+    // A side instance is an agent's test run, opened beside the window the user
+    // is working in. It appears without taking focus, so a check on a change
+    // never pulls the user out of what they were typing; `npm start` — the
+    // user's own run, including onboarding — shows and focuses as normal.
+    if (devInstance) window.showInactive();
+    else window.show();
     // Only now is the splash on screen. A hidden Electron window still reports
     // its document as visible, so the renderer cannot tell this moment for
     // itself, and a slide started before it is a slide spent behind a window
@@ -274,23 +301,10 @@ function createWindow(): void {
     sendFullscreen();
   });
 
-  const windowSession = window.webContents.session;
-  windowSession.setPermissionCheckHandler(
-    (webContents, permission, _origin, details) =>
-      webContents === window.webContents &&
-      (permission === "geolocation" ||
-        (permission === "media" && details.mediaType === "audio")),
-  );
-  windowSession.setPermissionRequestHandler(
-    (webContents, permission, callback, details) => {
-      const ownWindow = webContents === window.webContents;
-      const mediaTypes = "mediaTypes" in details ? details.mediaTypes : undefined;
-      const audioOnly = permission === "media" &&
-        mediaTypes?.length === 1 &&
-        mediaTypes[0] === "audio";
-      callback(ownWindow && (permission === "geolocation" || audioOnly));
-    },
-  );
+  // Permission handling belongs to the backend's SitePermissions, installed
+  // when the window attaches. It has to be one place: the app window and every
+  // browser tab share this session, so a handler written for the window alone
+  // denied every page in every tab with no way to grant.
 
   // `close` fires while the window is still alive; this is the last moment
   // the embedded browser can lift its pages out before they die with it.
@@ -307,12 +321,16 @@ function createWindow(): void {
       officialSkillDirectories: [officialSkillDirectory()],
       coreSkills: coreSkillNames(bundledResource("skills", "core")),
       axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
+      axEventsSourcePath: bundledResource("native", "ax-events.swift"),
+      appPermissionsSourcePath: bundledResource("native", "app-permissions.swift"),
+      remindersSourcePath: bundledResource("native", "reminders.swift"),
       hub: hub
         ? {
             homeserver: hub.homeserver,
             directory: hub.directory,
             bridges: hub.bridges,
             startWeChat: (owner: string) => wechat!.start(owner),
+            stopWeChat: () => wechat!.close(),
             onActivity: (listener) => {
               onHubActivity = listener;
             },
@@ -344,7 +362,7 @@ function loadRenderer(window: BrowserWindow): void {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
     url.searchParams.set("coldStart", coldStart ? "1" : "0");
-    // `npm run start:onboarding` reopens first-run setup over this machine's
+    // `npm run onboarding` reopens first-run setup over this machine's
     // real profile without recording that it ran. Only the dev-server branch
     // reads it, so a packaged build has no way to reach it.
     if (process.env.FLAREAI_ONBOARDING === "1")
@@ -381,7 +399,15 @@ let hub: {homeserver: Homeserver; bridges: BridgeHost; directory: string} | unde
  * window exists, so it reports into this and the backend puts the real
  * listener in once there is somewhere to send it.
  */
-let onHubActivity: ((activity: {roomId: string; sender: string; type: string}) => void) | undefined;
+let onHubActivity:
+  | ((activity: {
+      roomId: string;
+      sender: string;
+      senderName: string | null;
+      type: string;
+      ts: number;
+    }) => void)
+  | undefined;
 /** WeChat has no binary to supervise, so its bridge runs here. */
 let wechat: WeChatBridge | undefined;
 
@@ -404,7 +430,7 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   const homeserver = new Homeserver({
     serverName: "flareai.local",
     dataDirectory: directory,
-    port: 47_664,
+    port: homeserverPort(),
     onActivity: (activity) => onHubActivity?.(activity),
   });
   const bridges = new BridgeHost({

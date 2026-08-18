@@ -1,6 +1,7 @@
 <script lang="ts">
   import {onMount} from 'svelte';
   import type {
+    DriveSourceDto,
     DriveProviderDto,
     DriveProviderId,
     DriveS3ConfigRequest,
@@ -141,6 +142,36 @@
     }
   }
 
+  /** The shares, which are the network provider's sources rather than its
+   * accounts: each is its own place in the drive, mounted or not. */
+  $: shares = (status?.sources ?? []).filter((source) => source.provider === 'network');
+
+  /** No path means the main process opens a folder picker, which is how a
+   * share is chosen: macOS already puts a mounted one under /Volumes. */
+  async function addShare(): Promise<void> {
+    busy = 'add-share';
+    try {
+      status = await api.drive.addShare();
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function removeShare(share: DriveSourceDto): Promise<void> {
+    busy = `share:${share.id}`;
+    try {
+      status = await api.drive.removeShare(share.accountId);
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
   function blankS3(): DriveS3ConfigRequest {
     return {
       bucket: '',
@@ -266,7 +297,10 @@
         {/each}
       </ul>
 
-      <div class="drive-detail" use:scrollFade={selected}>
+      <!-- The right column: what the selected provider says, and beneath
+           it the one setting that is about all of them at once. -->
+      <div class="drive-column">
+        <div class="drive-detail" use:scrollFade={selected}>
         {#if editingS3}
           <header class="drive-detail-header">
             <h3>{$t('drive.s3')}</h3>
@@ -346,9 +380,53 @@
             <p class="drive-hint warn">{active.error}</p>
           {/if}
 
+          {#if active.kind !== 'local'}
+            <!-- Skipped for this Mac: it has nothing to connect to, and its
+                 folder is named by the storage block below instead. -->
           <section class="drive-block">
-            <h4>{$t('drive.connection')}</h4>
-            {#if active.state === 'connected'}
+            {#if active.kind === 'network'}
+              <h4>{$t('drive.shares')}</h4>
+              {#if shares.length === 0}
+                <p class="drive-hint">{$t('drive.sharesHint')}</p>
+              {:else}
+                <ul class="drive-shares">
+                  {#each shares as share (share.id)}
+                    <li>
+                      <span class="drive-share">
+                        <strong>{share.accountLabel ?? share.name}</strong>
+                        <!-- A share that is not mounted is not an error: it
+                             says so, and stays listed so it can come back. -->
+                        <small class:warn={share.state !== 'connected'}>
+                          {share.state === 'connected'
+                            ? share.root
+                            : $t('drive.shareNotMounted')}
+                        </small>
+                      </span>
+                      <button
+                        type="button"
+                        class="destructive"
+                        disabled={busy === `share:${share.id}`}
+                        onclick={() => void removeShare(share)}
+                      >
+                        {$t('drive.forget')}
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+              <footer class="drive-actions">
+                <button
+                  type="button"
+                  class="primary"
+                  disabled={busy === 'add-share'}
+                  onclick={() => void addShare()}
+                >
+                  {busy === 'add-share' ? $t('drive.adding') : $t('drive.addShare')}
+                </button>
+              </footer>
+            {:else}
+              <h4>{$t('drive.connection')}</h4>
+              {#if active.state === 'connected'}
               {#each active.accounts as account (account.id)}
                 <p class="drive-value">
                   <code>{account.email ?? account.name}</code>
@@ -403,18 +481,20 @@
                 </button>
               </footer>
             {/if}
+            {/if}
           </section>
+          {/if}
 
           {#if active.id === 'local'}
             <section class="drive-block">
-              <h4>{$t('drive.outputLocation')}</h4>
+              <h4>{$t('drive.storageLocation')}</h4>
               <p class="drive-value">
                 <code>{active.root ?? '—'}</code>
                 <button type="button" disabled={busy === 'local-root'} onclick={() => void chooseFolder()}>
                   {$t('common.change')}
                 </button>
               </p>
-              <p class="drive-hint">{$t('drive.outputLocationHint')}</p>
+              <p class="drive-hint">{$t('drive.storageLocationHint')}</p>
             </section>
           {/if}
 
@@ -446,46 +526,47 @@
           {/if}
         {/if}
 
-        {#if !editingS3}
-          <section class="drive-block">
-            <h4>{$t('drive.whereNewFilesGo')}</h4>
-            <p class="drive-hint">{$t('drive.saveOrderHint')}</p>
-            {#if writable.length === 0}
-              <p class="drive-muted">{$t('drive.nothingConnected')}</p>
-            {:else}
-              <ol class="drive-order">
-                {#each writable as provider, index (provider.id)}
-                  <li>
-                    <span class="drive-rank" class:primary={index === 0}>{index + 1}</span>
-                    <span class="drive-order-name">
-                      <strong>{providerName(provider)}</strong>
-                      {#if index === 0}<em>{$t('drive.primary')}</em>{/if}
-                    </span>
-                    <span class="drive-order-actions">
-                      <button
-                        type="button"
-                        class="up"
-                        aria-label={$t('drive.moveUp', {provider: providerName(provider)})}
-                        disabled={index === 0 || busy === 'order'}
-                        onclick={() => void move(provider.id, -1)}
-                      >
-                        <Icon name="chevron" size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={$t('drive.moveDown', {provider: providerName(provider)})}
-                        disabled={index === writable.length - 1 || busy === 'order'}
-                        onclick={() => void move(provider.id, 1)}
-                      >
-                        <Icon name="chevron" size={12} />
-                      </button>
-                    </span>
-                  </li>
-                {/each}
-              </ol>
-            {/if}
-          </section>
-        {/if}
+        </div>
+          {#if !editingS3}
+            <section class="drive-block">
+              <h4>{$t('drive.whereNewFilesGo')}</h4>
+              <p class="drive-hint">{$t('drive.saveOrderHint')}</p>
+              {#if writable.length === 0}
+                <p class="drive-muted">{$t('drive.nothingConnected')}</p>
+              {:else}
+                <ol class="drive-order">
+                  {#each writable as provider, index (provider.id)}
+                    <li>
+                      <span class="drive-rank" class:primary={index === 0}>{index + 1}</span>
+                      <span class="drive-order-name">
+                        <strong>{providerName(provider)}</strong>
+                        {#if index === 0}<em>{$t('drive.primary')}</em>{/if}
+                      </span>
+                      <span class="drive-order-actions">
+                        <button
+                          type="button"
+                          class="up"
+                          aria-label={$t('drive.moveUp', {provider: providerName(provider)})}
+                          disabled={index === 0 || busy === 'order'}
+                          onclick={() => void move(provider.id, -1)}
+                        >
+                          <Icon name="chevron" size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={$t('drive.moveDown', {provider: providerName(provider)})}
+                          disabled={index === writable.length - 1 || busy === 'order'}
+                          onclick={() => void move(provider.id, 1)}
+                        >
+                          <Icon name="chevron" size={12} />
+                        </button>
+                      </span>
+                    </li>
+                  {/each}
+                </ol>
+              {/if}
+            </section>
+          {/if}
       </div>
     </div>
   {/if}
@@ -499,17 +580,22 @@
   .drive-error button{height:26px;flex:none;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:7px;padding:0 9px;background:var(--app-surface);color:inherit;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
   :global(:root[data-theme="dark"]) .drive-error{background:#321f1f;color:#eea7a7}
 
-  .drive-body{min-height:0;flex:1;display:grid;grid-template-columns:186px 1fr;gap:var(--options-divider-gap)}
-  .drive-rail{min-height:0;display:flex;flex-direction:column;gap:4px;margin:0;padding:0 4px 0 0;overflow-y:auto;list-style:none;border-right:1px solid var(--neutral-200)}
+  .drive-body{min-width:0;min-height:0;flex:1;display:grid;grid-template-columns:186px minmax(0,1fr);gap:var(--options-divider-gap)}
+  .drive-rail{min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px 12px;overflow-y:auto;list-style:none;border-right:1px solid var(--neutral-200)}
   .drive-rail>li{margin:0}
-  .drive-rail button{width:100%;display:flex;align-items:center;gap:9px;border:0;border-radius:8px;padding:7px 8px;background:transparent;color:var(--neutral-700);cursor:pointer;font-family:inherit;text-align:left}
+  .drive-rail button{width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:10px;padding:5px 9px;background:transparent;color:var(--neutral-700);cursor:pointer;font-family:inherit;text-align:left}
   .drive-rail button:hover{background:var(--neutral-100)}
   .drive-rail button.active{background:var(--neutral-100);color:var(--neutral-950)}
   .drive-rail button>span{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
   .drive-rail strong{overflow:hidden;color:var(--neutral-900);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:540}
   .drive-rail small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:9.5px}
 
-  .drive-detail{min-height:0;overflow-y:auto;padding-right:2px}
+    /* The right column. What the selected provider says scrolls; where new
+     files go is about every provider at once, so it sits under that rather
+     than being repeated in each tab. */
+  .drive-column{min-width:0;min-height:0;display:flex;flex-direction:column}
+  .drive-detail{min-width:0;min-height:0;flex:1;overflow-y:auto;padding-right:2px}
+  .drive-column>:global(.drive-block){flex:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--neutral-200)}
   .drive-detail-header{position:relative;margin-bottom:14px}
   .drive-detail-header h3{margin:0;color:var(--neutral-950);font-size:14px;font-weight:580}
   .drive-detail-header p{max-width:520px;margin:5px 0 0;color:var(--neutral-600);font-size:11px;line-height:1.5}
@@ -542,6 +628,16 @@
   .drive-check{flex-direction:row!important;align-items:center;gap:7px!important}
   .drive-check input{width:14px;height:14px;flex:none}
 
+  /* One row per share, mounted or not. The row is a place rather than an
+     account, so it leads with what the user called it and says underneath
+     where it is — or that it is not there right now. */
+  .drive-shares{margin:8px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+  .drive-shares li{display:flex;align-items:center;gap:10px;padding:8px 11px;border:1px solid var(--neutral-200);border-radius:9px}
+  .drive-share{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+  .drive-share strong{font-size:11.5px;font-weight:545;color:var(--neutral-900);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .drive-share small{font-size:10px;color:var(--neutral-500);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .drive-share small.warn{color:var(--neutral-600)}
+  .drive-shares button{flex:none}
   .drive-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:12px}
   .drive-actions button{height:29px;border:1px solid var(--neutral-200);border-radius:8px;padding:0 12px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:11px;font-weight:550}
   .drive-actions button:hover{background:var(--neutral-100);color:var(--neutral-950)}

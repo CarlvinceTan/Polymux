@@ -6,6 +6,13 @@ export interface Skill {
   source: "official" | "codex" | "flareai" | "agents" | "bundled" | "configured";
   disableModelInvocation: boolean;
   allowedTools?: string[];
+  /**
+   * App grants the skill declares in its frontmatter, e.g.
+   * `permissions: reminders calendars`. Kept as written rather than checked
+   * against a list of known grants: this package has no opinion on what the
+   * host can ask macOS for, and the host drops what it does not recognise.
+   */
+  permissions?: string[];
   displayName?: string;
   author?: string;
   category?: string;

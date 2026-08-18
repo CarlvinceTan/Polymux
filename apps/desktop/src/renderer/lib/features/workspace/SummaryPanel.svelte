@@ -2,11 +2,12 @@
   export type SummarySection = 'outputs' | 'references' | 'tasks';
   export type OutputItem = {id: string; name: string};
   export type ReferenceItem = {id: string; title: string; kind?: 'web' | 'file' | 'other'; uri?: string};
-  export type TaskItem = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'};
+  export type TaskItem = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'; runId?: string; prompt?: string};
 </script>
 
 <script lang="ts">
-  import {taskStatusLabel, taskStatusTone} from './taskStatus';
+  import {taskStatusLabel} from './taskStatus';
+  import TaskGlyph from '../../shared/components/TaskGlyph.svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import {t} from '../../../i18n';
 
@@ -15,6 +16,7 @@
   export let tasks: TaskItem[] = [];
   export let onOpenOutput: (output: OutputItem) => void = () => {};
   export let onOpenReference: (reference: ReferenceItem) => void = () => {};
+  export let onOpenTask: (task: TaskItem) => void = () => {};
   export let onViewAll: (section: SummarySection) => void = () => {};
   export let onAttachReferences: (files: File[]) => void = () => {};
 
@@ -100,7 +102,9 @@
     <header><h2>{$t('summary.tasks')}</h2></header>
     {#if tasks.length}
       {#each tasks.slice(0, previewLimit) as task (task.id)}
-        <div class="task-row"><span class={`status-dot ${taskStatusTone(task.status)}`} title={taskStatusLabel(task.status)}></span><strong>{task.title}</strong></div>
+        <!-- A task row opens its own workspace tab, where the subagent's run
+             can be read; the dot alone said it was working and nothing else. -->
+        <button type="button" class="task-row" onclick={() => onOpenTask(task)}><TaskGlyph id={task.id} status={task.status} label={taskStatusLabel(task.status)}/><strong>{task.title}</strong></button>
       {/each}
       {#if tasks.length > previewLimit}<button type="button" class="summary-view-all" onclick={() => onViewAll('tasks')}><span>{$t('summary.viewAll')}</span><Icon name="forward" size={12}/></button>{/if}
     {:else}<p class="empty-row">{$t('summary.tasksEmpty')}</p>{/if}

@@ -63,7 +63,7 @@ export class AgentSurfaceAdapter {
     this.#tokenPath =
       options.tokenPath ?? path.join(homedir(), ".agent-surface", "token");
     this.#agentId = options.agentId ?? "flareai";
-    this.#agentName = options.agentName ?? "FlareAI";
+    this.#agentName = options.agentName ?? "Flare";
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.#refreshMs = options.refreshMs ?? DEFAULT_REFRESH_MS;
     this.#stopPollMs = options.stopPollMs ?? DEFAULT_STOP_POLL_MS;

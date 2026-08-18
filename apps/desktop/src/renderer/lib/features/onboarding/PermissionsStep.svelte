@@ -34,6 +34,11 @@
       reason: 'permission.screenReadingReason',
     },
     {
+      kind: 'screen-recording',
+      title: 'permission.screenRecording',
+      reason: 'permission.screenRecordingReason',
+    },
+    {
       kind: 'full-disk-access',
       title: 'permission.fullDisk',
       reason: 'permission.fullDiskReason',

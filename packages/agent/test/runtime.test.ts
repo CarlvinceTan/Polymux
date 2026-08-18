@@ -496,6 +496,53 @@ test("a saved summary is reused after a restart instead of being rebuilt", async
   }
 });
 
+test("the compaction role writes the summary while the run model sets the threshold", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const older = storage.appendMessage({
+      id: "older",
+      conversationId: "conversation",
+      role: "user",
+      content: "a".repeat(400),
+    });
+    const recent = storage.appendMessage({
+      id: "recent",
+      conversationId: "conversation",
+      role: "user",
+      content: "recent",
+    });
+    const messages = [
+      { role: "user" as const, content: "a".repeat(400) },
+      { role: "user" as const, content: "recent" },
+    ];
+    const inference = new FakeInference();
+    inference.responses.push([answer("summary from the compaction model")]);
+
+    const compacted = await new CompactionManager(inference, storage, {
+      reserveTokens: 20,
+      keepRecentTokens: 10,
+    }).transform(
+      "conversation",
+      model,
+      { messages },
+      new AbortController().signal,
+      undefined,
+      [older.sequence, recent.sequence],
+      { model: { provider: "test", id: "summarizer" }, reasoning: "low" },
+    );
+
+    assert.match(compacted.systemPrompt ?? "", /summary from the compaction model/);
+    assert.deepEqual(inference.requests[0]?.model, {
+      provider: "test",
+      id: "summarizer",
+    });
+    assert.equal(inference.requests[0]?.reasoning, "low");
+  } finally {
+    storage.close();
+  }
+});
+
 test("a saved summary is discarded when the turns it described have changed", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
@@ -1100,6 +1147,53 @@ test("a paused goal is not driven and a user turn resets the budget", async () =
     // No judge call: a paused goal does not drive the loop.
     assert.equal(inference.requests.length, 1);
     assert.equal(agent.goalLoop.turnsUsed("conversation"), 0);
+  } finally {
+    storage.close();
+  }
+});
+
+test("what is on screen belongs to the run the user is talking to", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    storage.createRun({ id: "parent", conversationId: "conversation", status: "running" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("top-level")], [answer("delegated")]);
+    const tools = new ToolRegistry();
+    const stub = {
+      description: "",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { content: "" };
+      },
+    };
+    tools.register({ ...stub, name: "workspace_show", mainAgentOnly: true });
+    tools.register({ ...stub, name: "hub_draft" });
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools,
+      model,
+      compaction: { enabled: false },
+    });
+
+    await agent.start({ conversationId: "conversation", text: "show me the hub" }).result;
+    const own = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(own.includes("workspace_show"));
+    assert.ok(own.includes("hub_draft"));
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "write the reply",
+      parentRunId: "parent",
+      includeSubagents: false,
+    }).result;
+    const delegated = inference.requests[1]?.tools?.map((tool) => tool.name) ?? [];
+    // The delegated run may still do the work — it just cannot decide what the
+    // user is looking at while several of them finish at once.
+    assert.ok(!delegated.includes("workspace_show"));
+    assert.ok(delegated.includes("hub_draft"));
   } finally {
     storage.close();
   }

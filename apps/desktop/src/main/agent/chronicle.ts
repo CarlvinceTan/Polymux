@@ -35,6 +35,7 @@ export class AccessibilityChronicleFrames implements ChronicleFrameSource {
       `# ${snapshot.app}${title ? ` — ${title}` : ""}`,
       "",
       ...(snapshot.bundleId ? [`Bundle: ${snapshot.bundleId}`] : []),
+      ...(snapshot.url ? [`URL: ${snapshot.url}`] : []),
       "",
       text || "(no readable text)",
       "",
@@ -48,6 +49,13 @@ export class AccessibilityChronicleFrames implements ChronicleFrameSource {
       image: new TextEncoder().encode(document),
       signature: textSignature(`${title}\n${text}`),
       kind: "text",
+      // Identity the capture policy is judged against. It travels with the
+      // frame rather than being re-derived later, so the policy sees exactly
+      // the window that was read.
+      app: snapshot.app,
+      ...(snapshot.bundleId ? { bundleId: snapshot.bundleId } : {}),
+      ...(snapshot.url ? { url: snapshot.url } : {}),
+      ...(snapshot.isPrivate ? { privateBrowsing: true } : {}),
     }];
   }
 }

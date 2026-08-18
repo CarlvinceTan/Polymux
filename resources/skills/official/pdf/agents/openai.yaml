@@ -1,8 +1,0 @@
-interface:
-  display_name: "PDF"
-  short_description: "Read, create, and verify PDF files"
-  icon_small: "./assets/pdf.svg"
-  icon_large: "./assets/pdf.svg"
-  brand_color: "#DC2626"
-  default_prompt: "Use the PDF skill to work with this file."
-

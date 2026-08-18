@@ -13,17 +13,23 @@ export interface FirstRunPermissionResult {
 
 export interface FirstRunPermissionOptions {
   store: PermissionPreferenceStore;
-  microphoneEnabled: () => boolean;
-  screenRecordingEnabled: () => boolean;
   status: (permission: SystemPermissionKind) => SystemPermissionStatus;
-  request: (permission: SystemPermissionKind) => Promise<SystemPermissionStatus>;
   onReady: () => void;
 }
 
 const preferenceKey = "first-run-permissions-requested";
 
-/** Requests only permissions for features that are enabled, in sequence, so
- * macOS never stacks native consent prompts on top of one another. */
+/**
+ * Marks first run as done and starts what waits on it. It asks macOS for
+ * nothing, and that is the whole point: this runs at launch, and a consent
+ * dialog nobody pressed anything to get — arriving before there is a window to
+ * explain it — is the surest way to a permanent "Don't Allow". The grants are
+ * asked for where a person is looking at a reason: the onboarding permissions
+ * step, the button on each row in Settings, or the moment something needs one.
+ *
+ * The statuses are still reported, because what a caller wants to know here is
+ * what it may do, not what it just asked for.
+ */
 export class FirstRunPermissions {
   readonly #options: FirstRunPermissionOptions;
   #pending?: Promise<FirstRunPermissionResult>;
@@ -44,13 +50,7 @@ export class FirstRunPermissions {
 
   async #ensure(): Promise<FirstRunPermissionResult> {
     const firstRun = !this.completed();
-    if (firstRun) {
-      if (this.#options.microphoneEnabled())
-        await this.#options.request("microphone");
-      if (this.#options.screenRecordingEnabled())
-        await this.#options.request("screen-recording");
-      this.#options.store.setPreference(preferenceKey, true);
-    }
+    if (firstRun) this.#options.store.setPreference(preferenceKey, true);
     this.#options.onReady();
     return {
       firstRun,

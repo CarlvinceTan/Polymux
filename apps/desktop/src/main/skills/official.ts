@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { flareaiHome } from "../system/paths.js";
 
 /**
  * The skills that back a first-class surface of the app rather than an
@@ -29,7 +30,7 @@ export function coreSkillNames(source: string): string[] {
 
 /** Where the mirrored copy lives, next to the personal skills it shadows. */
 export function officialSkillsHome(home = homedir()): string {
-  return path.join(home, ".flareai", "official-skills");
+  return path.join(flareaiHome(home), "official-skills");
 }
 
 const MANIFEST = ".installed.json";

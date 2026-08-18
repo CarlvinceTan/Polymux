@@ -15,7 +15,15 @@ import time
 from pathlib import Path
 
 
-STATE_DIR = Path.home() / ".flareai" / "state"
+def flareai_home() -> Path:
+    """FlareAI's home, honouring a side instance the way the app itself does."""
+    instance = (os.environ.get("FLAREAI_DEV_INSTANCE") or "").strip()
+    return Path.home() / (f".flareai-{instance}" if instance else ".flareai")
+
+
+# Instance-scoped deliberately: two runs sharing one lease file would hand a
+# side instance a lease over a window the user's own session is driving.
+STATE_DIR = flareai_home() / "state"
 REGISTRY = STATE_DIR / "window-control-leases.json"
 LOCK_FILE = STATE_DIR / "window-control-leases.lock"
 

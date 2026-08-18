@@ -10,6 +10,10 @@
 
   export let active = false;
   export let speechModeEnabled = true;
+  /** Basic mode leaves the model to whichever provider is configured, so the
+   * picker has nothing to ask and is left out of the option strip. */
+  export let advancedMode = false;
+  export let onOpenPlugins: () => void = () => {};
   /** Seconds of silence that end dictation, or null to listen until pressed again. */
   export let dictationAutoStopSeconds: number | null = 6;
   /** Empty means the default prompt, which follows the language. */
@@ -620,6 +624,14 @@
       aria-pressed={goalEnabled}
       onclick={() => goalEnabled = !goalEnabled}
     ><Icon name="goal" size={14}/><span>{$t('composer.goal')}</span></button>
+    {#if !advancedMode}
+    <!-- Basic mode has no model selector, and this stands in its place: the
+         one surface where what the agent can do is added to or taken away. It
+         opens Settings rather than holding a menu of its own — configuring a
+         plugin is a page's worth of work, not a dropdown's. -->
+    <button type="button" onclick={onOpenPlugins}><Icon name="puzzle" size={14}/><span>{$t('composer.plugins')}</span></button>
+    {/if}
+    {#if advancedMode}
     <div bind:this={modelWrap} class="prompt-option-wrap">
       <button type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} onclick={() => void toggleModelMenu()}><Icon name="brain" size={14}/><span>{$t('composer.model')}</span></button>
       {#if modelMenuOpen && modelsLoaded}
@@ -696,6 +708,7 @@
         </div>
       {/if}
     </div>
+    {/if}
   </div>
   {#if dictationError}<p class="dictation-error" role="alert">{dictationError}</p>{/if}
 </div>

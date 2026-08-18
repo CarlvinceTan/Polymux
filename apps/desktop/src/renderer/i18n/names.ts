@@ -9,10 +9,13 @@ import {translate, type MessageKey} from './index';
  * English and is replaced here, where the interface language is known. Product
  * names are left exactly as they are: "Dropbox" is Dropbox in every language,
  * and only the two entries that describe something rather than name it — this
- * machine, and generic S3 storage — have anything to translate.
+ * machine, generic S3 storage, and the virtual drive — have anything to
+ * translate.
  */
 const PROVIDER_NAMES: Partial<Record<DriveProviderId, MessageKey>> = {
+  all: 'drive.all',
   local: 'drive.thisMac',
+  network: 'drive.network',
   s3: 'drive.s3',
 };
 
@@ -21,7 +24,12 @@ export function driveProviderName(id: DriveProviderId, fallback: string): string
   return key ? translate(key) : fallback;
 }
 
-const PROVIDER_DESCRIPTIONS: Record<DriveProviderId, MessageKey> = {
+/**
+ * Only the providers Settings can list. The virtual drive has no row there —
+ * it is a view of the others rather than something to connect — so it has no
+ * blurb to translate.
+ */
+const PROVIDER_DESCRIPTIONS: Partial<Record<DriveProviderId, MessageKey>> = {
   local: 'drive.about.local',
   'google-drive': 'drive.about.googleDrive',
   dropbox: 'drive.about.dropbox',

@@ -1,4 +1,8 @@
-import type { InferenceService, ModelRef } from "@flareai/inference";
+import type {
+  InferenceService,
+  ModelRef,
+  ReasoningEffort,
+} from "@flareai/inference";
 
 /**
  * `done` when the objective is satisfied or unreachable, `continue` when more
@@ -42,6 +46,7 @@ export class GoalJudge {
     objective: string,
     lastAgentMessage: string,
     signal?: AbortSignal,
+    reasoning?: ReasoningEffort,
   ): Promise<GoalJudgement> {
     const response = lastAgentMessage.trim();
     if (!response)
@@ -60,6 +65,7 @@ export class GoalJudge {
             content: `Goal: ${objective}\n\nAgent's most recent response:\n${response.slice(0, RESPONSE_LIMIT)}`,
           },
         ],
+        reasoning,
         signal,
       })) {
         if (event.type === "done")

@@ -43,3 +43,37 @@ export function scrollFade(node: HTMLElement, _cue?: unknown) {
     },
   };
 }
+
+/**
+ * The same behaviour turned on its side, for a row that scrolls horizontally:
+ * faded at an edge the content runs past, solid at an edge the row is scrolled
+ * hard against, so the leftmost tab at the far left — and the rightmost at the
+ * far right — is never dimmed by a fade that means "there is more this way".
+ */
+export function scrollFadeX(node: HTMLElement, _cue?: unknown) {
+  node.classList.add('scroll-fade-x');
+
+  function measure(): void {
+    node.classList.toggle('at-start', node.scrollLeft <= 1);
+    node.classList.toggle(
+      'at-end',
+      node.scrollWidth - node.scrollLeft - node.clientWidth <= 1,
+    );
+  }
+
+  measure();
+  node.addEventListener('scroll', measure, {passive: true});
+  const resize = new ResizeObserver(measure);
+  resize.observe(node);
+  const mutations = new MutationObserver(measure);
+  mutations.observe(node, {childList: true, subtree: true, characterData: true});
+
+  return {
+    update: measure,
+    destroy(): void {
+      node.removeEventListener('scroll', measure);
+      resize.disconnect();
+      mutations.disconnect();
+    },
+  };
+}

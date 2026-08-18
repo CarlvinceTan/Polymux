@@ -1,7 +1,0 @@
-interface:
-  display_name: "Browser"
-  short_description: "In-app first with organised external tabs"
-  icon_small: "./assets/browser-use-small.svg"
-  icon_large: "./assets/browser-use.svg"
-  brand_color: "#3B82F6"
-  default_prompt: "Use $browser-use to handle this website in-app first and organise any necessary default-browser tabs without interrupting me."

@@ -6,6 +6,7 @@ import {MakerRpm} from '@electron-forge/maker-rpm';
 import {VitePlugin} from '@electron-forge/plugin-vite';
 import {FusesPlugin} from '@electron-forge/plugin-fuses';
 import {FuseV1Options, FuseVersion} from '@electron/fuses';
+import {PERMISSION_USAGE_DESCRIPTIONS} from './src/main/system/permission-usage.js';
 
 // Forge runs from the repo root (package.json's `config.forge` points here),
 // so every path in this file is written relative to that root rather than to
@@ -44,7 +45,7 @@ const config: ForgeConfig = {
     asar: true,
     // Everything shipped beside the code: skills, the native helpers, and the
     // mautrix binaries under `resources/bridges`. Those binaries are not in git
-    // (half a gigabyte of build output); run `npm run bridges:fetch` before
+    // (half a gigabyte of build output); run `npm run bridges` before
     // packaging, which the prepackage hook does.
     extraResource: ['resources'],
     extendInfo: {
@@ -52,6 +53,11 @@ const config: ForgeConfig = {
       NSLocationWhenInUseUsageDescription: 'FlareAI uses your location only when Location access is enabled in General settings.',
       NSMicrophoneUsageDescription: 'FlareAI uses the microphone only when you start voice input or speech mode.',
       NSSpeechRecognitionUsageDescription: 'FlareAI converts speech to text only when you start voice dictation.',
+      // Reminders, Calendars, Contacts, Photos and controlling other apps. The
+      // same record is linked into the native permission helper, which is what
+      // actually raises these prompts: macOS kills a process that touches a
+      // privacy class it has no description for, so the two must not drift.
+      ...PERMISSION_USAGE_DESCRIPTIONS,
     },
     appBundleId: 'com.flarehq.flareai',
     executableName: 'FlareAI',
@@ -98,6 +104,14 @@ const config: ForgeConfig = {
         },
         {
           entry: `${app}/src/preload/preload.ts`,
+          config: `${app}/vite.preload.config.ts`,
+          target: 'preload',
+        },
+        {
+          // The second preload runs inside embedded browser tabs rather than
+          // the app window: Electron ships no credential autofill, so finding
+          // and filling login forms has to happen in the page itself.
+          entry: `${app}/src/preload/autofill.ts`,
           config: `${app}/vite.preload.config.ts`,
           target: 'preload',
         },

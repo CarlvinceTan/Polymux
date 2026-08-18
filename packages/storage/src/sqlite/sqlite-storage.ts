@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { Storage } from "../contracts.js";
+import type { CommsCacheEntry, Storage } from "../contracts.js";
 import type {
   AgentRun,
   Artifact,
@@ -28,6 +28,15 @@ import type {
   Goal,
   GoalStatus,
   NewGoal,
+  BrowserDownload,
+  DownloadState,
+  NewBrowserDownload,
+  HistoryEntry,
+  NewHistoryEntry,
+  NewSavedLogin,
+  PermissionDecision,
+  SavedLogin,
+  SitePermission,
 } from "../types.js";
 import { migrate } from "./migrations.js";
 
@@ -191,6 +200,64 @@ function attachment(row: Row): Attachment {
     sha256: nullableText(row.sha256),
     createdAt: text(row.created_at),
   };
+}
+
+function sitePermission(row: Row): SitePermission {
+  return {
+    origin: text(row.origin),
+    permission: text(row.permission),
+    decision: text(row.decision) as PermissionDecision,
+    updatedAt: text(row.updated_at),
+  };
+}
+function browserDownload(row: Row): BrowserDownload {
+  return {
+    id: text(row.id),
+    url: text(row.url),
+    filename: text(row.filename),
+    path: text(row.path),
+    mimeType: nullableText(row.mime_type),
+    receivedBytes: Number(row.received_bytes),
+    totalBytes: Number(row.total_bytes),
+    state: text(row.state) as DownloadState,
+    startedAt: text(row.started_at),
+    finishedAt: nullableText(row.finished_at),
+  };
+}
+function historyEntry(row: Row): HistoryEntry {
+  return {
+    url: text(row.url),
+    title: text(row.title),
+    visitedAt: text(row.visited_at),
+    visitCount: Number(row.visit_count ?? 1),
+    source: text(row.source) as HistoryEntry["source"],
+  };
+}
+
+function savedLogin(row: Row): SavedLogin {
+  return {
+    id: text(row.id),
+    origin: text(row.origin),
+    username: text(row.username),
+    source: text(row.source) as SavedLogin["source"],
+    createdAt: text(row.created_at),
+    updatedAt: text(row.updated_at),
+    lastUsedAt: nullableText(row.last_used_at),
+  };
+}
+
+function commsCacheEntry(row: Row): CommsCacheEntry {
+  return {
+    key: text(row.key),
+    value: text(row.value),
+    fetchedAt: text(row.fetched_at),
+  };
+}
+
+/** A key is caller-supplied and can hold `%` or `_`, which LIKE would read as
+ * wildcards — escaping them keeps a prefix a prefix. */
+function likePrefix(prefix: string): string {
+  return prefix.replace(/[\\%_]/g, (character) => `\\${character}`);
 }
 
 export interface SqliteStorageOptions {
@@ -868,5 +935,341 @@ export class SqliteStorage implements Storage {
           .run(conversationId).changes,
       ) > 0
     );
+  }
+
+  setSitePermission(
+    origin: string,
+    permission: string,
+    decision: PermissionDecision,
+  ): SitePermission {
+    const now = this.#clock();
+    this.database
+      .prepare(
+        "INSERT INTO site_permissions (origin,permission,decision,updated_at) VALUES (?,?,?,?) ON CONFLICT(origin,permission) DO UPDATE SET decision=excluded.decision,updated_at=excluded.updated_at",
+      )
+      .run(origin, permission, decision, now);
+    return { origin, permission, decision, updatedAt: now };
+  }
+
+  getSitePermission(origin: string, permission: string): SitePermission | null {
+    const row = this.database
+      .prepare("SELECT * FROM site_permissions WHERE origin=? AND permission=?")
+      .get(origin, permission) as Row | undefined;
+    return row ? sitePermission(row) : null;
+  }
+
+  listSitePermissions(origin?: string): SitePermission[] {
+    const rows =
+      origin === undefined
+        ? this.database
+            .prepare(
+              "SELECT * FROM site_permissions ORDER BY origin, permission",
+            )
+            .all()
+        : this.database
+            .prepare(
+              "SELECT * FROM site_permissions WHERE origin=? ORDER BY permission",
+            )
+            .all(origin);
+    return (rows as Row[]).map(sitePermission);
+  }
+
+  clearSitePermissions(origin?: string): number {
+    return Number(
+      origin === undefined
+        ? this.database.prepare("DELETE FROM site_permissions").run().changes
+        : this.database
+            .prepare("DELETE FROM site_permissions WHERE origin=?")
+            .run(origin).changes,
+    );
+  }
+
+  startDownload(input: NewBrowserDownload): BrowserDownload {
+    const now = this.#clock();
+    this.database
+      .prepare(
+        "INSERT INTO browser_downloads (id,url,filename,path,mime_type,received_bytes,total_bytes,state,started_at,finished_at) VALUES (?,?,?,?,?,0,?,?,?,NULL)",
+      )
+      .run(
+        input.id,
+        input.url,
+        input.filename,
+        input.path,
+        input.mimeType ?? null,
+        input.totalBytes ?? 0,
+        input.state ?? "progressing",
+        now,
+      );
+    return this.#download(input.id)!;
+  }
+
+  updateDownload(
+    id: Id,
+    patch: {
+      state?: DownloadState;
+      receivedBytes?: number;
+      totalBytes?: number;
+      path?: string;
+    },
+  ): BrowserDownload | null {
+    const current = this.#download(id);
+    if (!current) return null;
+    const state = patch.state ?? current.state;
+    // A download reaches its end once and stays there: the first terminal
+    // state stamps the time, and a later progress event cannot unstamp it.
+    const settled = state === "progressing" || state === "paused";
+    this.database
+      .prepare(
+        "UPDATE browser_downloads SET state=?,received_bytes=?,total_bytes=?,path=?,finished_at=? WHERE id=?",
+      )
+      .run(
+        state,
+        patch.receivedBytes ?? current.receivedBytes,
+        patch.totalBytes ?? current.totalBytes,
+        patch.path ?? current.path,
+        settled ? null : (current.finishedAt ?? this.#clock()),
+        id,
+      );
+    return this.#download(id);
+  }
+
+  listDownloads(options: { limit?: number } = {}): BrowserDownload[] {
+    const rows =
+      options.limit === undefined
+        ? this.database
+            .prepare("SELECT * FROM browser_downloads ORDER BY started_at DESC")
+            .all()
+        : this.database
+            .prepare(
+              "SELECT * FROM browser_downloads ORDER BY started_at DESC LIMIT ?",
+            )
+            .all(options.limit);
+    return (rows as Row[]).map(browserDownload);
+  }
+
+  deleteDownload(id: Id): boolean {
+    return (
+      Number(
+        this.database
+          .prepare("DELETE FROM browser_downloads WHERE id=?")
+          .run(id).changes,
+      ) > 0
+    );
+  }
+
+  clearDownloads(): number {
+    return Number(
+      this.database.prepare("DELETE FROM browser_downloads").run().changes,
+    );
+  }
+
+  recordVisit(input: NewHistoryEntry): HistoryEntry {
+    const row = this.#writeVisit(input);
+    return historyEntry(row);
+  }
+
+  recordVisits(entries: NewHistoryEntry[]): number {
+    if (!entries.length) return 0;
+    // One transaction for the lot. An imported history is tens of thousands of
+    // rows, and a statement each commits separately — minutes instead of the
+    // second this takes.
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const entry of entries) this.#writeVisit(entry);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    return entries.length;
+  }
+
+  #writeVisit(input: NewHistoryEntry): Row {
+    const visitedAt = input.visitedAt ?? this.#clock();
+    const count = Math.max(1, Math.trunc(input.visitCount ?? 1));
+    const source = input.source ?? "local";
+    // The two sources count differently, and conflating them is what made a
+    // repeated import inflate a page's total.
+    //
+    // A local visit is a *delta*: this page, once more, so it adds. A browser's
+    // exported `visit_count` is an *absolute* — the running total it has kept
+    // for that url since the profile was made — so importing the same profile
+    // twice must land on the same number, not twice it. Hence MAX, which makes
+    // a re-import idempotent and still lets a later, larger export raise it.
+    //
+    // The visited time takes whichever is newer either way: an import carries
+    // times from years ago and must not drag a page the user opened this
+    // morning back down the list.
+    const merge =
+      source === "import"
+        ? "visit_count = MAX(visit_count, excluded.visit_count)"
+        : "visit_count = visit_count + excluded.visit_count";
+    this.database
+      .prepare(
+        `INSERT INTO browser_history (url,title,visited_at,visit_count,source)
+         VALUES (?,?,?,?,?)
+         ON CONFLICT(url) DO UPDATE SET
+           ${merge},
+           visited_at = MAX(visited_at, excluded.visited_at),
+           title = CASE WHEN excluded.title <> '' THEN excluded.title ELSE title END`,
+      )
+      .run(input.url, input.title ?? "", visitedAt, count, source);
+    return this.database
+      .prepare("SELECT * FROM browser_history WHERE url=?")
+      .get(input.url) as Row;
+  }
+
+  listHistory(options: {query?: string; limit?: number} = {}): HistoryEntry[] {
+    const limit = Math.max(1, Math.trunc(options.limit ?? 200));
+    const query = options.query?.trim();
+    const rows = query
+      ? (this.database
+          .prepare(
+            `SELECT * FROM browser_history
+             WHERE url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
+             ORDER BY visited_at DESC LIMIT ?`,
+          )
+          .all(`%${escapeLike(query)}%`, `%${escapeLike(query)}%`, limit) as Row[])
+      : (this.database
+          .prepare("SELECT * FROM browser_history ORDER BY visited_at DESC LIMIT ?")
+          .all(limit) as Row[]);
+    return rows.map(historyEntry);
+  }
+
+  deleteHistoryEntry(url: string): boolean {
+    return (
+      Number(
+        this.database.prepare("DELETE FROM browser_history WHERE url=?").run(url)
+          .changes ?? 0,
+      ) > 0
+    );
+  }
+
+  clearHistory(options: {source?: HistoryEntry["source"]} = {}): number {
+    const result = options.source
+      ? this.database
+          .prepare("DELETE FROM browser_history WHERE source=?")
+          .run(options.source)
+      : this.database.prepare("DELETE FROM browser_history").run();
+    return Number(result.changes ?? 0);
+  }
+
+  upsertSavedLogin(input: NewSavedLogin): SavedLogin {
+    const now = this.#clock();
+    // Re-saving an account the user already has keeps the original row and its
+    // id, because the id is what the vault files the password under: a new one
+    // would strand the old secret and lose the password that was just updated.
+    this.database
+      .prepare(
+        "INSERT INTO saved_logins (id,origin,username,source,created_at,updated_at,last_used_at) VALUES (?,?,?,?,?,?,NULL) ON CONFLICT(origin,username) DO UPDATE SET updated_at=excluded.updated_at",
+      )
+      .run(
+        input.id,
+        input.origin,
+        input.username,
+        input.source ?? "manual",
+        now,
+        now,
+      );
+    return savedLogin(
+      this.database
+        .prepare("SELECT * FROM saved_logins WHERE origin=? AND username=?")
+        .get(input.origin, input.username) as Row,
+    );
+  }
+
+  getSavedLogin(id: Id): SavedLogin | null {
+    const row = this.database
+      .prepare("SELECT * FROM saved_logins WHERE id=?")
+      .get(id) as Row | undefined;
+    return row ? savedLogin(row) : null;
+  }
+
+  listSavedLogins(origin?: string): SavedLogin[] {
+    const rows =
+      origin === undefined
+        ? this.database
+            .prepare("SELECT * FROM saved_logins ORDER BY origin, username")
+            .all()
+        : this.database
+            .prepare(
+              "SELECT * FROM saved_logins WHERE origin=? ORDER BY last_used_at DESC, username",
+            )
+            .all(origin);
+    return (rows as Row[]).map(savedLogin);
+  }
+
+  touchSavedLogin(id: Id): SavedLogin | null {
+    const now = this.#clock();
+    this.database
+      .prepare("UPDATE saved_logins SET last_used_at=? WHERE id=?")
+      .run(now, id);
+    return this.getSavedLogin(id);
+  }
+
+  deleteSavedLogin(id: Id): boolean {
+    return (
+      Number(
+        this.database
+          .prepare("DELETE FROM saved_logins WHERE id=?")
+          .run(id).changes,
+      ) > 0
+    );
+  }
+
+  readCommsCache(key: string): CommsCacheEntry | null {
+    const row = this.database
+      .prepare("SELECT * FROM comms_cache WHERE key=?")
+      .get(key) as Row | undefined;
+    return row ? commsCacheEntry(row) : null;
+  }
+
+  listCommsCache(prefix: string): CommsCacheEntry[] {
+    return (
+      this.database
+        .prepare(
+          "SELECT * FROM comms_cache WHERE key LIKE ? ESCAPE '\\' ORDER BY fetched_at DESC",
+        )
+        .all(`${likePrefix(prefix)}%`) as Row[]
+    ).map(commsCacheEntry);
+  }
+
+  writeCommsCache(key: string, value: string): CommsCacheEntry {
+    const fetchedAt = this.#clock();
+    this.database
+      .prepare(
+        `INSERT INTO comms_cache (key,value,fetched_at) VALUES (?,?,?)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value, fetched_at=excluded.fetched_at`,
+      )
+      .run(key, value, fetchedAt);
+    return { key, value, fetchedAt };
+  }
+
+  deleteCommsCache(prefix: string): number {
+    return Number(
+      this.database
+        .prepare("DELETE FROM comms_cache WHERE key LIKE ? ESCAPE '\\'")
+        .run(`${likePrefix(prefix)}%`).changes,
+    );
+  }
+
+  trimCommsCache(prefix: string, keep: number): number {
+    return Number(
+      this.database
+        .prepare(
+          `DELETE FROM comms_cache WHERE key IN (
+             SELECT key FROM comms_cache WHERE key LIKE ? ESCAPE '\\'
+             ORDER BY fetched_at DESC LIMIT -1 OFFSET ?
+           )`,
+        )
+        .run(`${likePrefix(prefix)}%`, Math.max(0, Math.trunc(keep))).changes,
+    );
+  }
+
+  #download(id: Id): BrowserDownload | null {
+    const row = this.database
+      .prepare("SELECT * FROM browser_downloads WHERE id=?")
+      .get(id) as Row | undefined;
+    return row ? browserDownload(row) : null;
   }
 }

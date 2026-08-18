@@ -18,9 +18,6 @@
   export let onSearchChats: () => void = () => {};
   export let onTogglePanel: (mode: 'summary' | 'workspace') => void = () => {};
   export let onOpenSettings: () => void = () => {};
-  export let onOpenDrive: () => void = () => {};
-  export let onOpenSchedule: () => void = () => {};
-  export let onOpenHub: () => void = () => {};
   export let showExtensionPrompt = false;
   export let onInstallExtension: () => void = () => {};
   export let onDismissExtension: () => void = () => {};
@@ -171,53 +168,8 @@
       </button>
     </span>
   {/if}
-  <!-- Both open a workspace tab, so once the drawer is showing they would be
-       duplicating its own + menu. They move into that menu instead. -->
-  {#if mode !== 'workspace'}
-    <button
-      type="button"
-      class="title-bar-icon-button"
-      aria-label={$t('titlebar.openDrive')}
-      transition:fade={iconFade}
-      data-tooltip-label={$t('workspace.drive')}
-      data-tooltip-align="end"
-      onclick={onOpenDrive}
-    >
-      <Icon name="drive" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
-    </button>
-    <button
-      type="button"
-      class="title-bar-icon-button"
-      aria-label={$t('titlebar.openHub')}
-      transition:fade={iconFade}
-      data-tooltip-label={$t('workspace.hub')}
-      data-tooltip-align="end"
-      onclick={onOpenHub}
-    >
-      <Icon name="chat" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
-    </button>
-    <button
-      type="button"
-      class="title-bar-icon-button"
-      aria-label={$t('titlebar.openSchedule')}
-      transition:fade={iconFade}
-      data-tooltip-label={$t('workspace.schedule')}
-      data-tooltip-align="end"
-      onclick={onOpenSchedule}
-    >
-      <Icon name="clock" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
-    </button>
-  {/if}
-  <button
-    type="button"
-    class="title-bar-icon-button"
-    aria-label={$t('titlebar.settings')}
-    data-tooltip-label={$t('titlebar.settings')}
-    data-tooltip-align="end"
-    onclick={onOpenSettings}
-  >
-    <Icon name="settings" size={SETTINGS_ICON_SIZE} strokeWidth={SETTINGS_ICON_STROKE_WIDTH}/>
-  </button>
+  <!-- Drive, Hub and Schedule are reached from the workspace drawer's own +
+       menu and launcher; the title bar keeps only settings and the panels. -->
   {#if showSummary && mode !== 'workspace'}
     <button
       type="button"
@@ -233,6 +185,16 @@
       <Icon name="summary" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
     </button>
   {/if}
+  <button
+    type="button"
+    class="title-bar-icon-button"
+    aria-label={$t('titlebar.settings')}
+    data-tooltip-label={$t('titlebar.settings')}
+    data-tooltip-align="end"
+    onclick={onOpenSettings}
+  >
+    <Icon name="settings" size={SETTINGS_ICON_SIZE} strokeWidth={SETTINGS_ICON_STROKE_WIDTH}/>
+  </button>
   <button
     type="button"
     class="title-bar-icon-button"

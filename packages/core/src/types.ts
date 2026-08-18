@@ -38,6 +38,10 @@ export interface AgentToolContext {
   turn: number;
   callId: string;
   signal: AbortSignal;
+  /** True while the call comes from a delegated run rather than the agent the
+   * user is talking to. What is on screen belongs to the user's own run, so a
+   * tool that would move it reads this rather than assuming it may. */
+  subagent?: boolean;
   emitProgress(message: string, data?: JsonValue): Promise<void>;
 }
 
@@ -59,6 +63,12 @@ export interface AgentTool {
   name: string;
   description: string;
   parameters: JsonObject;
+  /**
+   * Withheld from delegated runs. Several subagents work at once and none of
+   * them can see the screen, so a tool that decides what the user is looking
+   * at belongs to the one run the user is actually talking to.
+   */
+  mainAgentOnly?: boolean;
   strict?: "prefer" | "require";
   executionMode?: ToolExecutionMode;
   execute(
@@ -85,6 +95,8 @@ export interface AgentRunRequest {
   model: ModelRef;
   context: AgentContext;
   tools?: AgentTool[];
+  /** Marks the whole run as delegated, which every tool call inherits. */
+  subagentRun?: boolean;
   reasoning?: ReasoningEffort;
   temperature?: number;
   maxOutputTokens?: number;

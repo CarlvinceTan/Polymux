@@ -6,7 +6,8 @@
   import {onDestroy, onMount, tick} from 'svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import {flareaiApi} from '../../api/flareai';
-  import {t} from '../../../i18n';
+  import {t, type MessageKey} from '../../../i18n';
+  import type {BrowserPermissionDto, BrowserPermissionPromptDto} from '@flareai/protocol';
 
   export let tabId = '';
   export let title = '';
@@ -17,14 +18,50 @@
   export let onState: (patch: {title?: string; url?: string; favicon?: string | null}) => void = () => {};
 
   const api = flareaiApi();
+
+  const PERMISSION_LABELS: Record<BrowserPermissionDto, MessageKey> = {
+    geolocation: 'browser.permissionGeolocation',
+    media: 'browser.permissionMedia',
+    notifications: 'browser.permissionNotifications',
+    'clipboard-read': 'browser.permissionClipboardRead',
+    pointerLock: 'browser.permissionPointerLock',
+    fullscreen: 'browser.permissionFullscreen',
+    openExternal: 'browser.permissionOpenExternal',
+  };
+
+  function promptText(prompt: BrowserPermissionPromptDto): string {
+    let site = prompt.origin;
+    try {
+      site = new URL(prompt.origin).host;
+    } catch {
+      // An origin that will not parse is shown as it came, which is still more
+      // use than saying nothing about who is asking.
+    }
+    return $t('browser.permissionPrompt', {
+      site,
+      permission: $t(PERMISSION_LABELS[prompt.permission]).toLowerCase(),
+    });
+  }
+
+  function answerPermission(decision: 'allow' | 'deny'): void {
+    if (!permissionPrompt) return;
+    void api.browser.respondToPermission(permissionPrompt.id, decision, rememberPermission);
+    permissionPrompt = null;
+    rememberPermission = false;
+  }
   // The embedded browser is real Chromium hosted by the main process. Without
   // it (browser demo, tests) the old iframe rendering stands in, with its
   // framing-header limitations.
   const embedded = api.browser.embedded && Boolean(tabId);
 
+  let permissionPrompt: BrowserPermissionPromptDto | null = null;
+  let rememberPermission = false;
   let draft = url ?? '';
   let currentUrl = url ?? '';
-  let pageLoaded = false;
+  // A tab that arrives with a url already has a page behind the view — the
+  // agent's tabs do — so the empty state must not paint over it while the
+  // first state event is still on its way.
+  let pageLoaded = Boolean(url);
   let canGoBack = false;
   let canGoForward = false;
   let refreshing = false;
@@ -169,10 +206,9 @@
   function reportBounds(): void {
     if (!surface) return;
     const box = surface.getBoundingClientRect();
-    // A tab with nothing loaded has no document behind the view, so it shows
-    // the empty state through it — and swallows every click without reporting
-    // one, which used to leave the address bar holding the caret. Keeping the
-    // view out of the way until a page exists hands those clicks to the DOM.
+    // A tab with nothing loaded swallows every click without reporting one,
+    // which used to leave the address bar holding the caret. Keeping the view
+    // out of the way until a page exists hands those clicks to the DOM.
     const rect = pageLoaded ? box : {x: box.x, y: box.y, width: 0, height: 0};
     const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
     if (key === lastBounds) return;
@@ -182,7 +218,17 @@
 
   onMount(() => {
     if (!embedded) return;
-    void api.browser.open(tabId, url || undefined);
+    // The answer is the tab's live page. A tab the agent opened finished
+    // loading before this pane existed, so its state events are already spent:
+    // asking is the only way to learn there is a page behind the view, and
+    // without it the empty state sits over a loaded page for good.
+    void api.browser.open(tabId, url || undefined).then((page) => {
+      if (!page.url) return;
+      pageLoaded = true;
+      currentUrl = page.url;
+      if (!addressDirty && document.activeElement !== addressInput) draft = page.url;
+      onState({title: page.title || undefined, url: page.url});
+    });
     unsubscribe = api.browser.subscribe((event) => {
       if (event.type === 'state' && event.state.tabId === tabId) {
         currentUrl = event.state.url;
@@ -201,6 +247,9 @@
         downloads = event.downloads;
       } else if (event.type === 'found' && event.found.tabId === tabId) {
         findMatches = {matches: event.found.matches, activeMatch: event.found.activeMatch};
+      } else if (event.type === 'permission' && event.prompt.tabId === tabId) {
+        permissionPrompt = event.prompt;
+        rememberPermission = false;
       }
     });
     void api.browser.downloads().then((value) => downloads = value);
@@ -281,6 +330,24 @@
   </div>
 </div>
 
+{#if permissionPrompt}
+  <!-- In the chrome rather than over the page: the page is a WebContentsView
+       the compositor puts above the renderer's DOM, so an overlay on the
+       surface would be behind it. -->
+  <div class="browser-permission" role="alertdialog" aria-label={promptText(permissionPrompt)}>
+    <Icon name="info" size={14}/>
+    <span class="browser-permission-text">{promptText(permissionPrompt)}</span>
+    <label class="browser-permission-remember">
+      <input type="checkbox" bind:checked={rememberPermission}/>
+      <span>{$t('browser.rememberDecision')}</span>
+    </label>
+    <button type="button" onclick={() => answerPermission('deny')}>{$t('browser.deny')}</button>
+    <button type="button" class="primary" onclick={() => answerPermission('allow')}>
+      {$t('browser.allow')}
+    </button>
+  </div>
+{/if}
+
 {#if findOpen}
   <form class="browser-find" onsubmit={submitFind}>
     <input bind:value={findQuery} aria-label={$t('browser.findInPage')} placeholder={$t('browser.findInPage')} spellcheck="false"/>
@@ -292,22 +359,11 @@
 
 {#if embedded}
   <!-- The page renders in a WebContentsView the main process pins to this
-       surface's rectangle; the empty state shows through until a page loads. -->
-  <div bind:this={surface} class="browser-frame browser-surface">
-    {#if !pageLoaded}
-      <div class="new-tab-empty">
-        <Icon name="globe" size={30}/>
-        <h2>{title || $t('browser.title')}</h2>
-        <p>{$t('browser.empty')}</p>
-      </div>
-    {/if}
-  </div>
+       surface's rectangle. Nothing is drawn here: a tab with no page yet shows
+       the pane's own background, never a card over the page. -->
+  <div bind:this={surface} class="browser-frame browser-surface"></div>
 {:else if url}
   <iframe class="browser-frame" src={url} title={title || $t('browser.title')} sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
 {:else}
-  <div class="new-tab-empty">
-    <Icon name="globe" size={30}/>
-    <h2>{title || $t('browser.title')}</h2>
-    <p>{$t('browser.empty')}</p>
-  </div>
+  <div class="browser-frame"></div>
 {/if}

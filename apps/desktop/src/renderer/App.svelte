@@ -1,7 +1,7 @@
 <script lang="ts">
-  import {onDestroy, onMount} from 'svelte';
+  import {onDestroy, onMount, type ComponentProps} from 'svelte';
   import {readableError} from './lib/shared/errors';
-  import type {ArtifactDto, BrowserExtensionDto, ConversationDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto} from '@flareai/protocol';
+  import type {ArtifactDto, BrowserExtensionDto, ConversationDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto, WorkspaceRevealDto} from '@flareai/protocol';
   import TitleBar from './lib/features/chat/TitleBar.svelte';
   import ChatPane, {type ChatMessage} from './lib/features/chat/ChatPane.svelte';
   import TimelineRail, {TIMELINE_RAIL_MINIMUM} from './lib/features/chat/TimelineRail.svelte';
@@ -11,16 +11,17 @@
   import ChatSearchModal from './lib/features/shell/ChatSearchModal.svelte';
   import SummaryPanel, {type SummarySection, type ReferenceItem} from './lib/features/workspace/SummaryPanel.svelte';
   import WorkspaceDrawer, {SINGLETON_TAB_IDS, type WorkspaceTab, type WorkspaceTabKind} from './lib/features/workspace/WorkspaceDrawer.svelte';
-  import {warmHub} from './lib/features/workspace/HubView.svelte';
+  import {seedHub, warmHub, revealInHub} from './lib/features/workspace/HubView.svelte';
   import {driveEntryKind, type DriveEntry} from './lib/features/workspace/DriveView.svelte';
   import {unreadScheduleCount, type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './lib/features/workspace/ScheduleView.svelte';
-  import Tooltip from './lib/shared/components/Tooltip.svelte';
   import {recordVisit} from './lib/features/workspace/visitHistory';
-  import SettingsModal from './lib/features/settings/SettingsModal.svelte';
+  import Tooltip from './lib/shared/components/Tooltip.svelte';
+  import SettingsPage from './lib/features/settings/SettingsPage.svelte';
   import Onboarding from './lib/features/onboarding/Onboarding.svelte';
   import {flareaiApi} from './lib/api/flareai';
   import {applyTheme, startThemeSync} from './lib/shared/theme';
-  import {applyLanguage, startLanguageSync, t, translate, type MessageKey} from './i18n';
+  import {applyLanguage, locale, startLanguageSync, t, translate, withLocale, type MessageKey} from './i18n';
+  import {driveProviderName} from './i18n/names';
   import {
     conversationPanelState,
     initialPanelState,
@@ -36,10 +37,13 @@
     resolvePanelWidths,
   } from './lib/shared/layout/layoutSizing';
   import {activityPresentation, upsertActivity} from './lib/features/chat/activities';
+  import {applyTaskEvent, emptyTranscript, type TaskTranscript} from './lib/features/workspace/taskTranscript';
   import type {AgentActivityItem} from './lib/features/chat/AgentActivity.svelte';
 
   type Conversation = ChatEntry & {messages: ChatMessage[]; goal?: ActiveGoal};
-  type SummaryTask = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'};
+  /** `id` is the parent's tool call id, which is what a task tab is keyed by;
+   * `runId` is the subagent's own run, and only arrives once it has started. */
+  type SummaryTask = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'; runId?: string; prompt?: string};
   type QueuedSend = {id: string; text: string; files: File[]; asGoal: boolean};
 
   const api = flareaiApi();
@@ -48,6 +52,10 @@
   let openingId = '';
   let draftConversation: Conversation = emptyDraft();
   let runByConversation: Record<string, string> = {};
+  /** Which reasoning block each run's thinking row last appended, so a new
+   * block starts a fresh paragraph instead of continuing the previous one.
+   * Plain bookkeeping, never rendered, so it stays out of reactive state. */
+  const reasoningBlock: Record<string, string> = {};
   let liveAssistantByConversation: Record<string, string> = {};
   /** Messages typed while a run was going. They wait their turn instead of
    * interrupting: only ⌘/Ctrl+Enter (or the Steer action on a queued row)
@@ -146,6 +154,14 @@
   let outputMuted = false;
   let voicePaused = false;
   let settingsOpen = false;
+  /** The tab Settings opens on, set by whatever asked for it. Cleared on close
+   * so the next plain open lands where it always has. */
+  let settingsMode: ComponentProps<SettingsPage>['initialMode'] = '';
+
+  function openSettings(mode: ComponentProps<SettingsPage>['initialMode'] = ''): void {
+    settingsMode = mode;
+    settingsOpen = true;
+  }
   let onboardingOpen = false;
   /**
    * Dev-only: `?onboarding` reopens first-run setup over a profile that has
@@ -165,6 +181,12 @@
   const coldStart = new URLSearchParams(window.location.search).get('coldStart') !== '0';
   let startupVisible = coldStart && startupSplash !== null;
   if (!startupVisible) startupSplash?.remove();
+  // The cover is click-through and the app under it is only held at opacity 0,
+  // so the pointer still reaches the controls behind it — and a tooltip is
+  // portaled to the body, above the splash, where it would be the one piece of
+  // interface visible during the opening. Marking the root keeps them down
+  // until the handover is over.
+  if (startupVisible) document.documentElement.dataset.startup = 'covered';
   let startupLeaving = false;
   /**
    * Whether the splash is lifting onto the app rather than onto setup. Setup
@@ -178,6 +200,8 @@
   let startupDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
   let startupRemovalTimer: ReturnType<typeof setTimeout> | undefined;
   let speechModeEnabled = true;
+  /** Off by default, matching the stored setting: basic mode until asked for. */
+  let advancedMode = false;
   let dictationAutoStopSeconds: number | null = 6;
   let reasoningLevel: ReasoningEffort = 'medium';
   let windowActive = true;
@@ -189,6 +213,13 @@
   let references: ReferenceItem[] = [];
   let tasksByConversation: Record<string, SummaryTask[]> = {};
   let tasks: SummaryTask[] = [];
+  /** A delegated run as it happens, keyed by the task row it belongs to. Live
+   * only: a task tab is not restored with the workspace, so nothing here has to
+   * survive a chat switch. */
+  let taskTranscripts: Record<string, TaskTranscript> = {};
+  /** The subagent's run id back to the task row that started it — events arrive
+   * knowing only the run. */
+  let taskIdByRunId: Record<string, string> = {};
   let workspaceTabs: WorkspaceTab[] = [];
   let activeTabId: string | null = null;
   /** Owned by the main process, which keeps the clock and the run history;
@@ -270,6 +301,7 @@
     unsubscribeEvents?.();
     unsubscribeBrowser?.();
     unsubscribeFullscreen?.();
+    unsubscribeReveal?.();
     cancelAnimationFrame(chromeShiftFrame);
     cancelAnimationFrame(workspaceMotionFrame);
     clearTimeout(resourceRefreshTimer);
@@ -281,6 +313,7 @@
   let unsubscribeEvents: (() => void) | undefined;
   let unsubscribeBrowser: (() => void) | undefined;
   let unsubscribeFullscreen: (() => void) | undefined;
+  let unsubscribeReveal: (() => void) | undefined;
   let chromeShiftFrame = 0;
   let stopThemeSync: (() => void) | undefined;
   let stopLanguageSync: (() => void) | undefined;
@@ -310,6 +343,7 @@
       applyTheme(settings.theme);
       applyLanguage(settings.language);
       speechModeEnabled = settings.speechModeEnabled;
+      advancedMode = settings.advancedMode;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       reasoningLevel = settings.reasoningLevel;
       onboardingOpen = onboardingPreview || !settings.onboardingCompleted;
@@ -319,6 +353,11 @@
       if (!onboardingOpen) void api.permissions.ensureFirstRun().catch(() => {});
     }).catch(() => {});
     refreshExtensionStatus();
+    // What the hub knew when the app last quit, read from disk. It is local
+    // and it is what the hub paints from, so it happens now rather than on the
+    // warm's timer: a Hub opened in the first two seconds should still open on
+    // mail rather than on a skeleton.
+    void seedHub();
     // The hub's mailboxes and conversations, fetched while the user is reading
     // whatever they opened the app for. It is the slowest tab to build and the
     // one most likely to be opened, so it is worth having ready; the delay
@@ -349,6 +388,8 @@
     });
     // macOS hides its traffic lights in full screen; the stylesheet keys the
     // room reserved for them off this attribute, so the controls close the gap.
+    // "Show me the draft you wrote": the agent naming a surface to put up.
+    unsubscribeReveal = api.workspace.subscribeReveal(revealSurface);
     unsubscribeFullscreen = api.window.subscribeFullscreen((fullscreen) => {
       const root = document.documentElement;
       // Main sends this as the window starts travelling, which is the last
@@ -413,6 +454,7 @@
     startupRemovalTimer = setTimeout(() => {
       startupVisible = false;
       startupSplash?.remove();
+      delete document.documentElement.dataset.startup;
     }, toApp ? 860 : 240);
   }
 
@@ -434,6 +476,47 @@
   function changeReasoningLevel(value: ReasoningEffort): void {
     reasoningLevel = value;
     void api.general.update({reasoningLevel: value}).catch(() => {});
+  }
+
+  /**
+   * What the agent asks to be shown.
+   *
+   * The agent works where the user cannot see it — a draft saved to a mailbox,
+   * a file written to a drive — so "show me" has to be able to *navigate*
+   * rather than describe. The tab is opened first, then the surface is told
+   * where to land inside itself; the hub holds the target if its component has
+   * not mounted yet, since both happen in the same breath. This only ever
+   * brings the workspace forward, which is the whole request.
+   *
+   * `focus: false` is the exception, and the reason delegated runs can draft
+   * without fighting over the screen: the request still lands — the words go
+   * into the composer they were written for — but no tab is opened and nothing
+   * is brought forward. If the hub is not mounted the request waits there for
+   * it, so the user finds the draft when they next open it, or when the run
+   * they are talking to shows them.
+   */
+  function revealSurface(request: WorkspaceRevealDto): void {
+    const quiet = request.focus === false;
+    // Summary is a panel rather than a tab — it takes the same space the
+    // workspace does — so showing it means putting that panel up, not opening
+    // something inside the drawer.
+    if (request.surface === 'summary') {
+      if (quiet) return;
+      if (panelState.mode !== 'summary') {
+        summaryDismissed = false;
+        setPanelState(togglePanelState(panelState, 'summary'));
+      }
+      return;
+    }
+    const kind: WorkspaceTabKind = request.surface === 'chat' ? 'side-chat' : request.surface;
+    if (request.surface === 'hub' && (request.mail || request.chat))
+      revealInHub({mail: request.mail, chat: request.chat});
+    if (request.surface === 'drive' && !quiet) {
+      const source = request.drive?.source;
+      if (source && driveSources.some((item) => item.id === source)) driveSourceId = source;
+      void loadDriveFolder(request.drive?.path ?? '');
+    }
+    if (!quiet) newTab(kind);
   }
 
   function openWorkspace(): void {
@@ -539,6 +622,8 @@
     liveAssistantByConversation = {...liveAssistantByConversation, [conversationId]: assistantId};
     runByConversation = {...runByConversation, [conversationId]: `pending:${assistantId}`};
     setConversationTasks(conversationId, []);
+    taskTranscripts = {};
+    taskIdByRunId = {};
 
     try {
       const attachmentPaths = files.length ? await api.files.paths(files) : [];
@@ -660,6 +745,13 @@
   function handleRunEvent(event: RunEventDto): void {
     const conversationId = event.conversationId;
     if (!conversationId) return;
+    // A subagent shares its parent's conversation but not its transcript: its
+    // reasoning and tool trail belong to the task tab, and folding them into the
+    // live assistant message would narrate one run as if it were the other.
+    if (event.parentRunId) {
+      applySubagentEvent(event);
+      return;
+    }
     const payload = asRecord(event.payload);
     if (event.type === 'run.started') runByConversation = {...runByConversation, [conversationId]: event.runId};
     if (event.type === 'message.text.delta') {
@@ -672,13 +764,30 @@
     }
     if (event.type === 'message.reasoning.delta') {
       const id = `${event.runId}:thinking`;
-      updateLiveAssistant(conversationId, (message) => ({
-        ...message,
-        activities: upsertActivity(
-          message.activities ?? [],
-          {id, kind: 'thinking', status: 'active', label: translate('activity.thinking')},
-        ),
-      }));
+      const delta = typeof payload.delta === 'string' ? payload.delta : '';
+      // The whole run shares one thinking row, so a later reasoning block —
+      // a new turn, or a new block within one — is separated from the last
+      // rather than running into its final word.
+      const block = `${typeof payload.turn === 'number' ? payload.turn : 0}:${typeof payload.index === 'number' ? payload.index : 0}`;
+      const separator = reasoningBlock[id] !== undefined && reasoningBlock[id] !== block ? '\n\n' : '';
+      reasoningBlock[id] = block;
+      updateLiveAssistant(conversationId, (message) => {
+        const existing = (message.activities ?? []).find((item) => item.id === id);
+        return {
+          ...message,
+          activities: upsertActivity(
+            message.activities ?? [],
+            {
+              ...existing,
+              id,
+              kind: 'thinking',
+              status: 'active',
+              label: translate('activity.thinking'),
+              result: `${existing?.result ?? ''}${separator}${delta}`,
+            },
+          ),
+        };
+      });
     }
     if (event.type === 'message.completed') {
       const completed = asRecord(payload.message);
@@ -730,15 +839,20 @@
       if (isSubagentTask(name)) {
         const arguments_ = asRecord(call.arguments);
         const description = typeof arguments_.description === 'string' ? arguments_.description.trim() : '';
+        const prompt = typeof arguments_.prompt === 'string' ? arguments_.prompt.trim() : '';
         updateConversationTasks(conversationId, (current) => [
           ...current.filter((task) => task.id !== id),
-          {id, title: description || translate('activity.delegatedTask'), status: 'active'},
+          {id, title: description || translate('activity.delegatedTask'), status: 'active', prompt},
         ]);
       }
     }
     if (event.type === 'tool.progress') {
       const id = typeof payload.toolCallId === 'string' ? payload.toolCallId : '';
       const label = typeof payload.message === 'string' ? payload.message.trim() : '';
+      // The task tool reports its subagent's run id and nothing else, which is
+      // what pairs a task row with the events its run is about to send.
+      const childRunId = typeof asRecord(payload.data).childRunId === 'string' ? String(asRecord(payload.data).childRunId) : '';
+      if (id && childRunId) linkTaskRun(conversationId, id, childRunId);
       // Each progress report becomes a sub-step of its tool's activity row;
       // starting a new step settles the one before it.
       if (id && label) updateLiveAssistant(conversationId, (message) => ({
@@ -854,6 +968,49 @@
 
   function updateConversation(id: string, mutator: (chat: Conversation) => Conversation): void {
     conversations = conversations.map((chat) => chat.id === id ? mutator(chat) : chat);
+  }
+
+  /** Pairs a task row with the subagent run it started, and seeds that run's
+   * transcript with the instruction it was sent — the orchestrator's half of
+   * the conversation, which the subagent's own events never carry. */
+  function linkTaskRun(conversationId: string, taskId: string, runId: string): void {
+    taskIdByRunId = {...taskIdByRunId, [runId]: taskId};
+    updateConversationTasks(conversationId, (current) => current.map((task) => task.id === taskId ? {...task, runId} : task));
+    const prompt = (tasksByConversation[conversationId] ?? []).find((task) => task.id === taskId)?.prompt ?? '';
+    if (!taskTranscripts[taskId]) taskTranscripts = {...taskTranscripts, [taskId]: emptyTranscript(runId, prompt)};
+  }
+
+  function applySubagentEvent(event: RunEventDto): void {
+    const taskId = taskIdByRunId[event.runId];
+    // An event that arrives before the link does has nowhere to go: the tool
+    // call announces the run id first, so this only guards a race.
+    if (!taskId) return;
+    const current = taskTranscripts[taskId] ?? emptyTranscript(event.runId);
+    taskTranscripts = {...taskTranscripts, [taskId]: applyTaskEvent(current, event)};
+  }
+
+  /** Opens a task's run as its own workspace tab. Read-only by construction:
+   * the tab shows what the subagent was asked and what it did, and offers no
+   * way to say anything back to a run that answers to the orchestrator. */
+  function openTask(task: SummaryTask): void {
+    if (task.runId && !taskTranscripts[task.id]) {
+      taskTranscripts = {...taskTranscripts, [task.id]: emptyTranscript(task.runId, task.prompt ?? '')};
+      void replayTask(task.id, task.runId);
+    }
+    openTab({id: task.id, title: task.title, kind: 'task'});
+  }
+
+  /** Rebuilds a transcript from the run's stored events, for a task whose run
+   * finished before its tab was ever opened. */
+  async function replayTask(taskId: string, runId: string): Promise<void> {
+    try {
+      const stored = await api.runs.events(runId);
+      let transcript = taskTranscripts[taskId] ?? emptyTranscript(runId);
+      for (const event of stored) transcript = applyTaskEvent(transcript, event);
+      taskTranscripts = {...taskTranscripts, [taskId]: transcript};
+    } catch (error) {
+      console.error('Could not load the task transcript:', readableError(error));
+    }
   }
 
   function setConversationTasks(conversationId: string, next: SummaryTask[]): void {
@@ -1002,7 +1159,7 @@
     outputs = artifacts.map(({id, name}) => ({id, name}));
     references = storedReferences.map(({id, title, kind, uri}) => ({id, title, kind, uri}));
     const resourceTabs = artifacts.map(artifactTab);
-    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'side-chat' || tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'hub' || tab.kind === 'browser'), ...resourceTabs];
+    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'side-chat' || tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'task'), ...resourceTabs];
     if (activeTabId && !workspaceTabs.some((tab) => tab.id === activeTabId)) activeTabId = workspaceTabs[0]?.id ?? null;
   }
 
@@ -1055,7 +1212,6 @@
   let driveFolders: Record<string, DriveEntry[]> = {};
   /** The absolute path of this conversation's output folder, which is where
    * the outputs source is rooted. Empty until the main process answers. */
-  let conversationFolder = '';
 
   onMount(() => {
     void applySchedule(Promise.resolve());
@@ -1087,32 +1243,15 @@
    * be opened on a chat that has not written anything yet and still show a real
    * place rather than an error.
    */
-  $: void openConversationFolder(activeId);
-
-  async function openConversationFolder(conversationId: string): Promise<void> {
-    if (!conversationId) return;
-    try {
-      const folder = await api.drive.conversationFolder(conversationId);
-      if (folder === conversationFolder) return;
-      conversationFolder = folder;
-      // The cached tree belongs to the chat that just closed.
-      driveFolders = {};
-      if (driveSourceId === OUTPUTS_SOURCE) await loadDriveFolder(folder);
-    } catch {
-      // An output root that cannot be created leaves the outputs source empty;
-      // every other source still opens.
-    }
-  }
-
-  /** Where a source's root sits. Only the outputs source is rooted somewhere
-   * other than the provider's own root, since it follows the conversation. */
-  $: driveRootPath = driveSourceId === OUTPUTS_SOURCE ? conversationFolder : '';
+  /** Every source opens at its own root. Output used to be rooted per chat;
+   * it is one FlareAI folder now, which is that provider's root. */
+  const driveRootPath = '';
 
   /**
    * The places the drive can open, in the order the switch shows them.
    *
-   * This chat's own output folder leads, since that is where the agent writes
-   * and so what the user most often wants; this Mac follows; then every signed
+   * Everything at once leads, then the FlareAI folder the agent writes into,
+   * then this Mac; then every signed
    * in cloud account. An account's address trails its provider's name because
    * two Google Drives are otherwise the same entry twice.
    *
@@ -1126,15 +1265,20 @@
       // house instead of the drive mark the other local source carries.
       if (source.id === HOME_SOURCE)
         return {id: source.id, name: $t('drive.home'), icon: 'home' as const};
+      // The backend names a source in English; anything that describes rather
+      // than brands — "All storage", "This Mac" — is put back into the
+      // interface language here.
+      const name =
+        source.id === OUTPUTS_SOURCE
+          ? $t('drive.outputs')
+          : withLocale($locale, driveProviderName(source.provider, source.name));
       return {
         id: source.id,
-        name:
-          source.id === OUTPUTS_SOURCE
-            ? $t('drive.thisChat')
-            : source.accountLabel
-              ? `${source.name} – ${source.accountLabel}`
-              : source.name,
+        name: source.accountLabel ? `${name} – ${source.accountLabel}` : name,
         provider: source.provider,
+        // Carried through on its own as well as folded into the name: the
+        // drive's toolbar names the account by itself when a file is selected.
+        accountLabel: source.accountLabel,
       };
     });
 
@@ -1171,8 +1315,27 @@
     // The cache is keyed by source as well as path, so what was fetched for
     // the source being left stays valid — and coming back to it paints from
     // that rather than fetching the same folders again.
-    void loadDriveFolder(id === OUTPUTS_SOURCE ? conversationFolder : '');
+    void loadDriveFolder('');
   }
+
+  /** Folders being fetched right now, so a listing asked for twice before the
+   * first answer arrives is not fetched twice. */
+  const driveFetching = new Set<string>();
+
+  /**
+   * Opening the drive is what fetches it.
+   *
+   * Only an explicit open request or a completed action used to load a folder,
+   * so a drive tab restored with the session — or one simply switched back
+   * to — painted an empty folder over files that were really there, and the
+   * only way to see them was to change something. Anything already fetched is
+   * left alone; this is the first read, not a refresh.
+   */
+  $: if (
+    workspaceTabs.some((tab) => tab.id === activeTabId && tab.kind === 'drive')
+    && driveFolders[`${driveSourceId}:${driveRootPath}`] === undefined
+  )
+    void loadDriveFolder(driveRootPath);
 
   /**
    * Fetches one folder from the active source. A folder already fetched is
@@ -1181,7 +1344,10 @@
    */
   async function loadDriveFolder(path: string): Promise<void> {
     const source = driveSourceId;
-    driveLoading = driveFolders[`${source}:${path}`] === undefined;
+    const key = `${source}:${path}`;
+    if (driveFetching.has(key)) return;
+    driveFetching.add(key);
+    driveLoading = driveFolders[key] === undefined;
     try {
       const entries = await api.drive.list(source, path);
       driveFolders = {
@@ -1198,6 +1364,7 @@
           // Carried onto the row so it can wear its provider's mark, the way
           // the old browser badged a file with where it lives.
           provider: entry.provider,
+          webUrl: entry.webUrl ?? null,
         })),
       };
     } catch (cause) {
@@ -1205,6 +1372,7 @@
       // it just reads as an empty folder.
       driveError = readableError(cause);
     } finally {
+      driveFetching.delete(key);
       driveLoading = false;
     }
   }
@@ -1216,6 +1384,21 @@
    * rather than a listing of what a run produced, so there is nowhere in the
    * switch that cannot be written to.
    */
+  /** Opens the selected entry where it lives. Local and network files have a
+   * real place on a volume, so this is the OS file browser. */
+  function revealDriveEntry(entry: DriveEntry): void {
+    // The button says where the file is, so it goes to the provider's page
+    // when there is one and to the file on the volume when there is not.
+    if (entry.webUrl) {
+      void api.browser.openExternal(entry.webUrl);
+      return;
+    }
+    void runDriveAction(async (source) => {
+      await api.drive.revealEntry(source, entry.id);
+      return null;
+    });
+  }
+
   $: driveActions = {
     newFolder: (parent: DriveEntry, name: string) => void runDriveAction(async (source) => {
       await api.drive.createFolder(source, driveFolderPath(parent), name);
@@ -1285,6 +1468,23 @@
   }
 
   function openDriveEntry(entry: DriveEntry): void {
+    // A cloud file has no path on this Mac, so "open it" means its own page at
+    // the provider — the Drive or OneDrive link, which is also the only thing
+    // that can show a Workspace document at all.
+    if (entry.webUrl) {
+      void api.browser.openExternal(entry.webUrl);
+      return;
+    }
+    // Everything else the drive holds opens through the main process: a file
+    // on a volume is handed straight to the application that owns its type,
+    // and one with no page and no path — an S3 object — is fetched first and
+    // then opened, which is the nearest thing to opening it in place.
+    if (entry.provider) {
+      void api.drive.openEntry(driveSourceId, entry.id);
+      return;
+    }
+    // No provider at all: the conversation's own files, which open in the
+    // workspace rather than leaving the app.
     openTab({id: entry.id, title: entry.name, kind: entry.kind === 'image' ? 'photo' : entry.kind === 'video' ? 'video' : entry.kind === 'spreadsheet' ? 'sheet' : entry.kind === 'presentation' ? 'slides' : 'document'});
   }
 
@@ -1336,15 +1536,15 @@
    * the agent still works — it has a tool for exactly this — but it is no
    * longer the only way to make one.
    */
+  function openVisit(url: string, title: string): void {
+    openTab({id: crypto.randomUUID(), title, kind: 'browser', url});
+  }
+
   function saveSchedule(
     input: {title: string; prompt: string; frequency: ScheduleFrequency},
     id: string | null,
   ): void {
     void applySchedule(id ? api.schedules.update(id, input) : api.schedules.create(input));
-  }
-
-  function openVisit(url: string, title: string): void {
-    openTab({id: crypto.randomUUID(), title, kind: 'browser', url});
   }
 
   /**
@@ -1393,17 +1593,7 @@
       ? {...tab, ...patch, title: patch.title ?? tab.title, url: patch.url ?? tab.url, favicon: patch.favicon === undefined ? tab.favicon : patch.favicon}
       : tab);
     const tab = workspaceTabs.find((entry) => entry.id === id);
-    // Browsing the user does here is their own; Summary lists what the agent
-    // used, so only agent-driven pages become references.
     if (tab?.kind === 'browser' && tab.url) recordVisit({url: tab.url, title: tab.title, favicon: tab.favicon});
-  }
-
-  /** A workspace suggestion is a request for the agent, so it goes straight to
-   * the chat as the user's own message. The panel gives up its expanded state
-   * first, since the conversation is behind it. */
-  function suggestPrompt(text: string): void {
-    workspaceExpanded = false;
-    void send(text, []);
   }
 
   const SUMMARY_SECTION_TITLES: Record<SummarySection, MessageKey> = {
@@ -1554,6 +1744,11 @@
     if (typeof value === 'string') return value;
     if (Array.isArray(value)) return value.map(contentText).filter(Boolean).join('\n');
     const record = asRecord(value);
+    // A reasoning block carries its chain of thought in `text`, exactly like a
+    // real text block. Rendering it would put the model's private deliberation
+    // ("The user asks…") in the reply body, so drop it — the thinking activity
+    // is where reasoning belongs.
+    if (record.type === 'reasoning' || record.type === 'thinking') return '';
     if (typeof record.text === 'string') return record.text;
     return record.content === undefined ? '' : contentText(record.content);
   }
@@ -1650,10 +1845,7 @@
     onNewChat={newChat}
     onSearchChats={() => chatSearchOpen = true}
     onTogglePanel={togglePanel}
-    onOpenSettings={() => settingsOpen = true}
-    onOpenDrive={() => newTab('drive')}
-    onOpenHub={() => newTab('hub')}
-    onOpenSchedule={() => newTab('schedule')}
+    onOpenSettings={() => openSettings()}
     showExtensionPrompt={extensionStatus?.promptToInstall ?? false}
     onInstallExtension={installExtension}
     onDismissExtension={dismissExtension}
@@ -1688,6 +1880,8 @@
     goal={active.goal ?? null}
     speechMode={voiceOpen && voiceInChat}
     {speechModeEnabled}
+    {advancedMode}
+    onOpenPlugins={() => openSettings('plugins')}
     {dictationAutoStopSeconds}
     {showJumpToLatest}
     onSend={send}
@@ -1734,6 +1928,7 @@
       {tasks}
       onOpenOutput={(output) => openTab({id: output.id, title: output.name, kind: 'document'})}
       onOpenReference={(reference) => openTab({id: reference.id, title: reference.title, kind: reference.kind === 'web' ? 'browser' : 'document', url: reference.uri})}
+      onOpenTask={openTask}
       onViewAll={viewSummary}
       onAttachReferences={attachReferences}
     />
@@ -1748,8 +1943,13 @@
     motion={workspaceMotionWidth !== null}
     reservedWidth={chatDrawerOpen ? MIN_CHAT_DRAWER_WIDTH : 0}
     summaryData={{outputs, references, tasks}}
+    {taskTranscripts}
+    onOpenTask={openTask}
+    onOpenLink={openLink}
+    onOpenFilePath={openFilePath}
     {driveRoot}
     {driveSources}
+    onDriveReveal={revealDriveEntry}
     {driveSourceId}
     {driveLoading}
     {driveError}
@@ -1771,19 +1971,20 @@
     onSelect={(id) => activeTabId = id}
     onClose={closeTab}
     onNew={newTab}
-    onSuggest={suggestPrompt}
-    onOpenUrl={openVisit}
     onToggleExpand={() => workspaceExpanded = !workspaceExpanded}
     onResize={(value) => { panelPriority = 'workspace'; workspaceWidth = value; }}
     onResizeState={(value) => workspaceResizing = value}
     browserObscured={settingsOpen || (voiceOpen && !voiceInChat)}
+    onOpenUrl={openVisit}
     onTabState={updateTabState}
   />
 
-  {#if settingsOpen}<SettingsModal
-    onClose={() => { settingsOpen = false; refreshExtensionStatus(); }}
+  {#if settingsOpen}<SettingsPage
+    initialMode={settingsMode}
+    onClose={() => { settingsOpen = false; settingsMode = ''; refreshExtensionStatus(); }}
     onGeneralChange={(settings) => {
       speechModeEnabled = settings.speechModeEnabled;
+      advancedMode = settings.advancedMode;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       if (!speechModeEnabled) closeVoice();
     }}

@@ -9,14 +9,14 @@ test("discovers Pi-compatible global skills with progressive metadata", async ()
   const home = await mkdtemp(join(tmpdir(), "flareai-skills-"));
   try {
     const directory = join(home, ".flareai", "skills", "pdf-tools");
-    await mkdir(join(directory, "agents"), { recursive: true });
+    await mkdir(directory, { recursive: true });
     await writeFile(
       join(directory, "SKILL.md"),
       "---\nname: pdf-tools\ndescription: Work with PDF files.\n---\n\n# Instructions",
     );
     await writeFile(
-      join(directory, "agents", "openai.yaml"),
-      'interface:\n  display_name: "PDF Tools"\n',
+      join(directory, "flare.yaml"),
+      'display_name: "PDF Tools"\n',
     );
     const loaded = new SkillLoader({ home }).load();
     assert.equal(loaded.skills[0]?.name, "pdf-tools");
@@ -118,15 +118,15 @@ test("official skills ship with the app and shadow same-named user skills", asyn
 test("surfaces manifest and frontmatter metadata for the skill catalogue", async () => {
   const home = await mkdtemp(join(tmpdir(), "flareai-skill-metadata-"));
   try {
-    const directory = join(home, ".flareai", "skills", "email");
-    await mkdir(join(directory, "agents"), { recursive: true });
+    const directory = join(home, ".flareai", "skills", "email-use");
+    await mkdir(directory, { recursive: true });
     await writeFile(
       join(directory, "SKILL.md"),
-      "---\nname: email\ndescription: Handle email.\nauthor: FlareAI\ncategory: Communication\n---\n",
+      "---\nname: email-use\ndescription: Handle email.\nauthor: FlareAI\ncategory: Communication\n---\n",
     );
     await writeFile(
-      join(directory, "agents", "openai.yaml"),
-      'interface:\n  display_name: "Email"\n',
+      join(directory, "flare.yaml"),
+      'display_name: "Email"\n',
     );
     const loaded = new SkillLoader({ home }).load();
     const skill = loaded.skills[0];

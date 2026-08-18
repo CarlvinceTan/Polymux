@@ -1,4 +1,4 @@
-import type { BrowserEventDto, ChatActivityDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, RunEventDto, ScheduleDto } from "@flareai/protocol";
+import type { BrowserEventDto, ChatActivityDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, RunEventDto, ScheduleDto, WorkspaceRevealDto } from "@flareai/protocol";
 import { channels } from "@flareai/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
@@ -15,6 +15,7 @@ const api: FlareAIApi = {
     version: () => ipcRenderer.invoke(channels.generalVersion),
     checkForUpdates: () => ipcRenderer.invoke(channels.generalCheckUpdates),
     installUpdate: () => ipcRenderer.invoke(channels.generalInstallUpdate),
+    testNotification: () => ipcRenderer.invoke(channels.generalTestNotification),
   },
   window: {
     subscribeFullscreen(listener) {
@@ -31,6 +32,7 @@ const api: FlareAIApi = {
       ipcRenderer.invoke(channels.permissionsStatus, permission),
     request: (permission) =>
       ipcRenderer.invoke(channels.permissionsRequest, permission),
+    requestAll: () => ipcRenderer.invoke(channels.permissionsRequestAll),
     openSettings: (permission) =>
       ipcRenderer.invoke(channels.permissionsOpenSettings, permission),
   },
@@ -87,6 +89,12 @@ const api: FlareAIApi = {
       ipcRenderer.invoke(channels.workspaceSnapshotGet, conversationId),
     saveSnapshot: (conversationId, snapshot) =>
       ipcRenderer.invoke(channels.workspaceSnapshotSave, conversationId, snapshot),
+    subscribeReveal(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: WorkspaceRevealDto) =>
+        listener(value);
+      ipcRenderer.on(channels.workspaceReveal, receive);
+      return () => ipcRenderer.removeListener(channels.workspaceReveal, receive);
+    },
   },
   files: {
     paths: async (files) => files.map((file) => webUtils.getPathForFile(file)),
@@ -113,6 +121,9 @@ const api: FlareAIApi = {
   },
   chronicle: {
     status: () => ipcRenderer.invoke(channels.chronicleStatus),
+    update: (patch: unknown) => ipcRenderer.invoke(channels.chronicleUpdate, patch),
+    forget: (since: string, until: string) =>
+      ipcRenderer.invoke(channels.chronicleForget, since, until),
     setEnabled: (enabled) =>
       ipcRenderer.invoke(channels.chronicleSetEnabled, enabled),
     entries: (options) =>
@@ -124,7 +135,9 @@ const api: FlareAIApi = {
     setEnabled: (id, enabled) => ipcRenderer.invoke(channels.mcpSetEnabled, id, enabled),
     saveCustom: (request) => ipcRenderer.invoke(channels.mcpSaveCustom, request),
     removeCustom: (id) => ipcRenderer.invoke(channels.mcpRemoveCustom, id),
-    searchRegistry: (query) => ipcRenderer.invoke(channels.mcpSearchRegistry, query),
+    searchRegistry: (query, cursor) => ipcRenderer.invoke(channels.mcpSearchRegistry, query, cursor ?? ""),
+    discover: () => ipcRenderer.invoke(channels.mcpDiscover),
+    adopt: (groupId, serverId) => ipcRenderer.invoke(channels.mcpAdopt, groupId, serverId),
     subscribe(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: McpChangeDto) =>
         listener(value);
@@ -134,6 +147,7 @@ const api: FlareAIApi = {
   },
   comms: {
     status: () => ipcRenderer.invoke(channels.commsStatus),
+    snapshot: () => ipcRenderer.invoke(channels.commsSnapshot),
     refresh: () => ipcRenderer.invoke(channels.commsRefresh),
     wake: (platform) => ipcRenderer.invoke(channels.commsWake, platform),
     setHubUrl: (baseUrl) => ipcRenderer.invoke(channels.commsSetHubUrl, baseUrl),
@@ -209,9 +223,11 @@ const api: FlareAIApi = {
       ipcRenderer.invoke(channels.driveDisconnect, provider, accountId),
     setSaveOrder: (order) => ipcRenderer.invoke(channels.driveSetSaveOrder, order),
     setLocalRoot: (path) => ipcRenderer.invoke(channels.driveSetLocalRoot, path),
+    revealEntry: (source, path) => ipcRenderer.invoke(channels.driveRevealEntry, source, path),
+    openEntry: (source, path) => ipcRenderer.invoke(channels.driveOpenEntry, source, path),
+    addShare: (path, label) => ipcRenderer.invoke(channels.driveAddShare, path, label),
+    removeShare: (id) => ipcRenderer.invoke(channels.driveRemoveShare, id),
     saveS3: (config) => ipcRenderer.invoke(channels.driveSaveS3, config),
-    conversationFolder: (conversationId) =>
-      ipcRenderer.invoke(channels.driveConversationFolder, conversationId),
     list: (source, path) => ipcRenderer.invoke(channels.driveList, source, path),
     createFolder: (source, parentPath, name) =>
       ipcRenderer.invoke(channels.driveCreateFolder, source, parentPath, name),
@@ -243,9 +259,23 @@ const api: FlareAIApi = {
       relativePath: file.webkitRelativePath,
     }))),
     install: (spec) => ipcRenderer.invoke(channels.skillsInstall, spec),
-    searchRegistry: (query) => ipcRenderer.invoke(channels.skillsSearchRegistry, query),
+    searchRegistry: (query, limit) => ipcRenderer.invoke(channels.skillsSearchRegistry, query, limit ?? 15),
     discover: () => ipcRenderer.invoke(channels.skillsDiscover),
     adopt: (path) => ipcRenderer.invoke(channels.skillsAdopt, path),
+  },
+  plugins: {
+    list: () => ipcRenderer.invoke(channels.pluginsList),
+    setEnabled: (id, enabled) => ipcRenderer.invoke(channels.pluginsSetEnabled, id, enabled),
+    install: (id) => ipcRenderer.invoke(channels.pluginsInstall, id),
+    remove: (id) => ipcRenderer.invoke(channels.pluginsRemove, id),
+    marketplaces: () => ipcRenderer.invoke(channels.pluginsMarketplaces),
+    addMarketplace: (source) => ipcRenderer.invoke(channels.pluginsAddMarketplace, source),
+    removeMarketplace: (id) => ipcRenderer.invoke(channels.pluginsRemoveMarketplace, id),
+    browse: (query) => ipcRenderer.invoke(channels.pluginsBrowse, query),
+    upload: (files) => ipcRenderer.invoke(channels.pluginsUpload, files.map((file) => ({
+      path: webUtils.getPathForFile(file),
+      relativePath: file.webkitRelativePath,
+    }))),
   },
   models: {
     list: () => ipcRenderer.invoke(channels.modelsList),
@@ -253,8 +283,8 @@ const api: FlareAIApi = {
       ipcRenderer.invoke(channels.modelsSelect, provider, id),
     metadata: () => ipcRenderer.invoke(channels.modelsMetadata),
     roles: () => ipcRenderer.invoke(channels.modelsRoles),
-    assignRole: (role, provider, id) =>
-      ipcRenderer.invoke(channels.modelsAssignRole, role, provider, id),
+    assignRole: (role, provider, id, reasoning) =>
+      ipcRenderer.invoke(channels.modelsAssignRole, role, provider, id, reasoning),
     clearRole: (role) => ipcRenderer.invoke(channels.modelsClearRole, role),
   },
   browser: {
@@ -276,6 +306,33 @@ const api: FlareAIApi = {
     downloads: () => ipcRenderer.invoke(channels.browserDownloadsList),
     openDownload: (id) => ipcRenderer.invoke(channels.browserOpenDownload, id),
     openDownloadsFolder: () => ipcRenderer.invoke(channels.browserOpenDownloadsFolder),
+    pauseDownload: (id) => ipcRenderer.invoke(channels.browserPauseDownload, id),
+    resumeDownload: (id) => ipcRenderer.invoke(channels.browserResumeDownload, id),
+    cancelDownload: (id) => ipcRenderer.invoke(channels.browserCancelDownload, id),
+    removeDownload: (id) => ipcRenderer.invoke(channels.browserRemoveDownload, id),
+    clearDownloads: () => ipcRenderer.invoke(channels.browserClearDownloads),
+    settings: () => ipcRenderer.invoke(channels.browserSettingsGet),
+    updateSettings: (patch) => ipcRenderer.invoke(channels.browserSettingsUpdate, patch),
+    permissions: () => ipcRenderer.invoke(channels.browserPermissionsList),
+    setPermission: (site, permission, decision) =>
+      ipcRenderer.invoke(channels.browserPermissionSet, site, permission, decision),
+    clearPermissions: (site) => ipcRenderer.invoke(channels.browserPermissionsClear, site),
+    respondToPermission: (id, decision, remember) =>
+      ipcRenderer.invoke(channels.browserPermissionRespond, id, decision, remember),
+    sites: () => ipcRenderer.invoke(channels.browserSitesList),
+    clearSiteData: (site) => ipcRenderer.invoke(channels.browserClearSiteData, site),
+    clearBrowsingData: (options) => ipcRenderer.invoke(channels.browserClearBrowsingData, options),
+    logins: () => ipcRenderer.invoke(channels.browserLoginsList),
+    saveLogin: (site, username, password) =>
+      ipcRenderer.invoke(channels.browserLoginSave, site, username, password),
+    revealLogin: (id) => ipcRenderer.invoke(channels.browserLoginReveal, id),
+    deleteLogin: (id) => ipcRenderer.invoke(channels.browserLoginDelete, id),
+    browsingHistory: (options) => ipcRenderer.invoke(channels.browserHistoryList, options),
+    forgetHistoryEntry: (url) => ipcRenderer.invoke(channels.browserHistoryForget, url),
+    clearHistory: (options) => ipcRenderer.invoke(channels.browserHistoryClear, options),
+    importSources: () => ipcRenderer.invoke(channels.browserImportSources),
+    importFrom: (request) => ipcRenderer.invoke(channels.browserImportRun, request),
+    importFile: (path) => ipcRenderer.invoke(channels.browserImportFile, path),
     subscribe(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: BrowserEventDto) =>
         listener(value);

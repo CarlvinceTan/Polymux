@@ -1,6 +1,13 @@
 import type {ModelRef} from "@flareai/inference";
-import type {CreateCustomProviderRequest, DiscoverModelsRequest, ModelRole, SetupLocalRuntimeRequest, UpdateCustomProviderRequest} from "@flareai/protocol";
+import type {CreateCustomProviderRequest, DiscoverModelsRequest, ModelRole, ReasoningEffort, SetupLocalRuntimeRequest, UpdateCustomProviderRequest} from "@flareai/protocol";
 import {json, required, validProviderLogo} from "./requests.js";
+import {reasoningEffort} from "./settings.js";
+
+/** A role's model, plus how hard that model is asked to think in the role.
+ * `reasoning` is absent for a model that takes no effort level. */
+export interface RoleSelection extends ModelRef {
+  reasoning?: ReasoningEffort;
+}
 
 /** A provider the user added by hand: a base URL, a name, and the models
  * they listed for it. */
@@ -33,7 +40,7 @@ export function modelFromEnvironment(
  * agent context — weather, local time, nearby places — city-level is enough.
  */
 
-export const MODEL_ROLES: ModelRole[] = ["main", "task", "judge", "speech", "image", "video"];
+export const MODEL_ROLES: ModelRole[] = ["main", "task", "judge", "compaction", "speech", "image", "video"];
 
 export function modelRole(value: unknown): ModelRole {
   if (typeof value === "string" && (MODEL_ROLES as string[]).includes(value))
@@ -41,14 +48,17 @@ export function modelRole(value: unknown): ModelRole {
   throw new Error(`Unknown model role: ${String(value)}`);
 }
 
-export function modelRolesPreference(value: unknown): Partial<Record<ModelRole, ModelRef>> {
+export function modelRolesPreference(value: unknown): Partial<Record<ModelRole, RoleSelection>> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const record = value as Record<string, unknown>;
-  const roles: Partial<Record<ModelRole, ModelRef>> = {};
+  const roles: Partial<Record<ModelRole, RoleSelection>> = {};
   for (const role of MODEL_ROLES) {
     if (role === "main") continue;
     const ref = modelPreference(record[role]);
-    if (ref) roles[role] = ref;
+    if (!ref) continue;
+    const stored = record[role] as Record<string, unknown>;
+    const reasoning = reasoningEffort(stored.reasoning, null);
+    roles[role] = reasoning ? {...ref, reasoning} : ref;
   }
   return roles;
 }

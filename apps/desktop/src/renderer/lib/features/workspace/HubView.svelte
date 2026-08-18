@@ -5,6 +5,7 @@
     CommsStatusDto as CachedStatusDto,
     MailEnvelopeDto as CachedEnvelopeDto,
     MailFolderDto as CachedFolderDto,
+    MailImportance as CachedImportance,
     MailMessageDto as CachedMailDto,
   } from '@flareai/protocol';
   import {flareaiApi} from '../../api/flareai';
@@ -21,8 +22,12 @@
    * one — and every mount used to start from nothing: status, then the room
    * list, then the conversation, each a round trip before anything appeared.
    * Holding the last answers here means a return paints immediately and the
-   * fetches behind it only correct what changed. Nothing is persisted; this
-   * lives as long as the window does.
+   * fetches behind it only correct what changed.
+   *
+   * `seedHub` fills it from disk before the first paint, so the same is true
+   * of the first open after a launch rather than only of the second open in a
+   * session. Everything in it is a copy: stale by definition, replaced by the
+   * fetch that follows it, and safe to be empty.
    */
   const session: {
     status: CachedStatusDto | null;
@@ -53,8 +58,99 @@
     openGroups: {},
   };
 
+  /** How a message body is keyed wherever it is held: in the session cache
+   * here, and in the snapshot the main process writes. */
+  export function mailKey(account: string, folder: string, id: string): string {
+    return `${account}|${folder}|${id}`;
+  }
+
+  /** How deep the launch warm goes. Deep enough that the first click into
+   * mail or a conversation paints from memory, shallow enough that it is over
+   * long before anyone notices it running. */
+  const WARM_BODIES = 3;
+  const WARM_CHATS = 4;
+
   /** Guards against two callers warming the hub at once. */
   let warming: Promise<void> | null = null;
+  let seeded: Promise<void> | null = null;
+
+  /**
+   * What the hub knew when the app last quit, put back before anything is
+   * fetched.
+   *
+   * This is the difference between a launch that opens on a skeleton and one
+   * that opens on mail. Nothing here is trusted to be current — every pane
+   * still fetches — but a pane with last week's inbox on it while this
+   * morning's arrives beats an empty one, and most of the time the two are
+   * the same. Only empty slots are filled: a session that has already fetched
+   * something holds the newer answer.
+   */
+  export async function seedHub(): Promise<void> {
+    if (seeded) return seeded;
+    seeded = (async () => {
+      try {
+        const snapshot = await flareaiApi().comms.snapshot();
+        session.status ??= snapshot.status;
+        if (!session.chats.length) session.chats = snapshot.chats;
+        for (const mailbox of snapshot.mailboxes) {
+          const key = `${mailbox.account}|${mailbox.folder}`;
+          if (session.mailboxes.has(key)) continue;
+          session.mailboxes.set(key, {
+            folders: mailbox.folders,
+            envelopes: mailbox.envelopes,
+            page: 1,
+            moreToLoad: mailbox.envelopes.length >= 50,
+          });
+        }
+        for (const body of snapshot.mail) {
+          const key = mailKey(body.account, body.folder, body.message.id);
+          if (!session.mail.has(key)) session.mail.set(key, body.message);
+        }
+        for (const page of snapshot.messages)
+          if (!session.messages.has(page.chatId))
+            session.messages.set(page.chatId, {messages: page.messages, nextBefore: page.nextBefore});
+      } catch {
+        // A cache that will not read is a hub that opens the way it used to.
+      }
+    })();
+    return seeded;
+  }
+
+  /**
+   * Where the agent asked the hub to land, and the mounted hub's way of going
+   * there. The tab and the request arrive together — the app opens the tab in
+   * the same breath it forwards this — so a request that beats the mount is
+   * held here and applied by it rather than dropped.
+   */
+  let pendingReveal: WorkspaceRevealTarget | null = null;
+  let showTarget: ((target: WorkspaceRevealTarget) => void) | null = null;
+
+  /** What "show me" means inside the hub: a mailbox and a message in it, or a
+   * conversation. */
+  export type WorkspaceRevealTarget = {
+    mail?: {
+      account: string;
+      folder?: string;
+      messageId?: string;
+      subject?: string;
+      compose?: {
+        to?: string;
+        cc?: string;
+        bcc?: string;
+        subject?: string;
+        body?: string;
+        attachments?: string[];
+        importance?: CachedImportance;
+        mode?: 'new' | 'reply' | 'reply-all' | 'forward';
+      };
+    };
+    chat?: {id?: string; name?: string; draft?: string; replyTo?: string};
+  };
+
+  export function revealInHub(target: WorkspaceRevealTarget): void {
+    if (showTarget) showTarget(target);
+    else pendingReveal = target;
+  }
 
   /**
    * Fetches what the hub opens onto, before it is opened.
@@ -69,6 +165,7 @@
     if (warming) return warming;
     warming = (async () => {
       const api = flareaiApi();
+      await seedHub();
       try {
         const status = await api.comms.status();
         session.status = status;
@@ -90,8 +187,34 @@
               page: 1,
               moreToLoad: envelopes.length === 50,
             });
+            // The top of the inbox, which is what gets opened first. Bodies
+            // are the slowest single thing the hub does — an IMAP fetch and a
+            // MIME export each — so having a few in hand is the difference
+            // between a click that paints and a click that waits. They are
+            // fetched one at a time and only a handful deep: this is work
+            // nobody asked for, and it must not crowd out work someone did.
+            for (const envelope of envelopes.slice(0, WARM_BODIES)) {
+              const key = mailKey(account.id, inbox, envelope.id);
+              if (session.mail.has(key)) continue;
+              try {
+                session.mail.set(key, await api.comms.mailMessage(envelope.id, account.id, inbox));
+              } catch {
+                // The click that needs it will report anything real.
+              }
+            }
           } catch {
             // One mailbox that will not answer is not the others' problem.
+          }
+        }
+        // The conversations at the top of the list, for the same reason: a
+        // chat opens on its newest page, and that page is a round trip.
+        for (const chat of session.chats.slice(0, WARM_CHATS)) {
+          if (session.messages.has(chat.id)) continue;
+          try {
+            const page = await api.comms.chatMessages(chat.id, 50);
+            session.messages.set(chat.id, {messages: page.messages, nextBefore: page.nextBefore});
+          } catch {
+            // Same: guessed-at work reports nothing.
           }
         }
       } catch {
@@ -104,22 +227,29 @@
 
 <script lang="ts">
   import {onMount, tick, type ComponentProps} from 'svelte';
+  import {flip} from 'svelte/animate';
   import type {
     ChatDto,
     ChatMessageDto,
     ChatReactionDto,
+    CommsPlatform,
     CommsStatusDto,
+    MailAddressDto,
     MailEnvelopeDto,
     MailFolderDto,
+    MailImportance,
     MailMessageDto,
     FlareAIApi,
   } from '@flareai/protocol';
   import DOMPurify from 'dompurify';
   import {readableError} from '../../shared/errors';
+  import {displayTime} from '../../shared/displayTime';
   import Icon from '../../shared/components/Icon.svelte';
   import PlatformLogo from '../../shared/components/PlatformLogo.svelte';
   import {MAIN_UI_ICON_STROKE_WIDTH, RAIL_TILE_SIZE} from '../../shared/layout/iconSizing';
   import {activeLocale, t, translate} from '../../../i18n';
+  import {applyOrder, loadRailOrder, moveBy, saveAccountOrder, saveSourceOrder} from './hubRailOrder';
+  import {arrangeChats, hiddenChats, loadChatPrefs, toggleHidden, togglePinned} from './chatPrefs';
 
   type IconName = ComponentProps<typeof Icon>['name'];
 
@@ -168,6 +298,9 @@
   let composeSubject = '';
   let composeBody = '';
   let composeFiles: string[] = [];
+  /** "normal" writes no header; the flag is a toggle rather than a menu
+   * because the low end of the scale is asked for about once a decade. */
+  let composeImportance: MailImportance = 'normal';
   /** Shown only once there is a reason to: an empty Cc line is noise. */
   let showCopies = false;
   /** What a reply must echo back for the recipient's client to thread it. */
@@ -185,6 +318,13 @@
   const PAGE_SIZE = 50;
   /** Other messages carrying this one's subject: the conversation it is part of. */
   let thread: MailEnvelopeDto[] = [];
+  /**
+   * A long chain is a wall of identical rows — a mailing list or an alert
+   * sender says the same subject twenty times over. Only the nearest few show
+   * until asked, so the chain reads as context rather than a second list.
+   */
+  const CHAIN_HEAD = 4;
+  let chainExpanded = false;
   let attachmentPaths: string[] = [];
 
   /**
@@ -197,6 +337,35 @@
   /** Chats whose avatar the homeserver would not serve, so the row falls back
    * to its initial rather than retrying a picture that is not there. */
   let brokenAvatars = new Set<string>();
+  /** Media urls that failed to load, shown as a named file chip instead: a
+   * picture whose bytes are gone would otherwise hold its full frame open as
+   * a blank bubble. */
+  let brokenMedia = new Set<string>();
+  /** How many times each has been asked for, so a blip is not mistaken for a
+   * missing picture. */
+  const mediaAttempts = new Map<string, number>();
+  const MEDIA_TRIES = 3;
+  /**
+   * A first failure is not proof the picture is gone. Media is fetched through
+   * the main process against the homeserver, which answers 401 until the hub
+   * has finished signing in — so every picture already on screen at launch
+   * failed once, and giving up on the first error left them as file chips for
+   * the rest of the session even though the bytes were there all along.
+   */
+  function retryMedia(event: Event, url: string): void {
+    const element = event.currentTarget as HTMLImageElement | HTMLMediaElement | null;
+    const tries = (mediaAttempts.get(url) ?? 0) + 1;
+    mediaAttempts.set(url, tries);
+    if (tries >= MEDIA_TRIES || !element) {
+      brokenMedia = new Set(brokenMedia).add(url);
+      return;
+    }
+    // A fresh query each time, so the failed response is not served back from
+    // cache. Backing off gives sign-in the moment it needs.
+    setTimeout(() => {
+      element.src = `${url}${url.includes('?') ? '&' : '?'}attempt=${tries}`;
+    }, 300 * tries);
+  }
   /** The rail fades its edges only where the content actually runs on, the
    * same rule the settings rail follows. */
   let railElement: HTMLElement;
@@ -204,16 +373,13 @@
   let railAtBottom = true;
   /** Whether the mailbox dropdown over the message list is showing. */
   let folderMenu = false;
-  /** Remote images stay unloaded until the reader asks for them, per message. */
-  let allowRemote = false;
-
   /** Which slice of the folder the list shows. Applied here rather than in the
    * IMAP query so switching back is instant and costs no round trip. */
   type Filter = 'all' | 'unread' | 'flagged' | 'attachments';
   $: FILTERS = [
     {id: 'all' as Filter, label: $t('hub.filterAll'), icon: 'mail' as IconName},
     {id: 'unread' as Filter, label: $t('hub.filterUnread'), icon: 'bolt' as IconName},
-    {id: 'flagged' as Filter, label: $t('hub.filterFlagged'), icon: 'bolt' as IconName},
+    {id: 'flagged' as Filter, label: $t('hub.filterFlagged'), icon: 'flag' as IconName},
     {id: 'attachments' as Filter, label: $t('hub.filterAttachments'), icon: 'attach' as IconName},
   ];
   type Sort = 'date-desc' | 'date-asc' | 'subject' | 'from';
@@ -239,30 +405,56 @@
           : true,
   );
 
-  $: safeHtml = openMail?.html ? sanitiseMail(openMail.html, allowRemote) : '';
-  $: blockedRemote = !allowRemote && !!openMail?.html && REMOTE_SOURCE.test(openMail.html);
-
-  /** An `src` pointing off this machine — what "remote images" means. */
-  const REMOTE_SOURCE = /<img[^>]+\bsrc\s*=\s*["']?(?:https?:)?\/\//i;
+  $: safeHtml = openMail?.html ? sanitiseMail(openMail.html) : '';
 
   /**
    * Strips everything a message has no business carrying — scripts, frames,
-   * forms, stylesheets that would escape into the app's own styling — and,
-   * until asked otherwise, the remote images that make reading a mail visible
-   * to whoever sent it.
+   * forms, stylesheets that would escape into the app's own styling.
+   *
+   * Images are not among them. A mail that arrives as half a layout with a bar
+   * asking permission to be a mail is a worse thing to read than one that
+   * loads, and every mail client the user came from loads them; the cost is
+   * that a sender's tracking pixel learns the message was opened, which is the
+   * same cost those clients pay.
    */
-  function sanitiseMail(html: string, remote: boolean): string {
+  function sanitiseMail(html: string): string {
     const clean = DOMPurify.sanitize(html, {
       FORBID_TAGS: ['script', 'style', 'iframe', 'frame', 'object', 'embed', 'form', 'base', 'link', 'meta'],
       FORBID_ATTR: ['srcset', 'background', 'ping'],
       ALLOW_DATA_ATTR: false,
     });
-    if (remote) return clean;
     const holder = document.createElement('div');
     holder.innerHTML = clean;
-    for (const image of holder.querySelectorAll('img'))
-      if (/^(https?:)?\/\//i.test(image.getAttribute('src') ?? '')) image.removeAttribute('src');
+    for (const image of holder.querySelectorAll('img')) {
+      const src = image.getAttribute('src') ?? '';
+      // `cid:` addresses a MIME part of this very message. Nothing in a
+      // browser can fetch that, so the image would sit there as a broken
+      // glyph with the sender's alt text beside it — worse than absent.
+      // `http:` is refused by the app's own policy and would break the same
+      // way, and both are usually a logo nobody misses.
+      if (!src || /^(cid|http):/i.test(src)) {
+        image.remove();
+        continue;
+      }
+      // The sender learns a mail was opened either way; they need not also
+      // learn which page it was opened from.
+      image.setAttribute('referrerpolicy', 'no-referrer');
+      image.setAttribute('decoding', 'async');
+    }
     return holder.innerHTML;
+  }
+
+  /**
+   * An image that will not load — expired, moved, or refused — leaves a broken
+   * glyph and the sender's alt text in the middle of the layout. Nothing can
+   * be done about the miss, so the space is given back instead.
+   *
+   * Capture, because `error` does not bubble; on the container, because the
+   * markup is `{@html}` and its images have no handlers of their own.
+   */
+  function hideBrokenImage(event: Event): void {
+    const image = event.target;
+    if (image instanceof HTMLImageElement) image.style.display = 'none';
   }
 
   /**
@@ -279,11 +471,327 @@
 
   $: accounts = status?.email.accounts ?? [];
   $: linked = (status?.bridges ?? []).filter((bridge) => bridge.state === 'connected');
+
+  /**
+   * The rail as one arranged list. A platform and the mail group are the same
+   * kind of thing to someone dragging them past each other, so they are built
+   * as one shape here rather than as two blocks the markup keeps in step.
+   */
+  type RailRow = {
+    id: string;
+    platform: CommsPlatform | 'mail';
+    name: string;
+    /** `id` selects, `label` is what the account row reads. */
+    accounts: {id: string; label: string}[];
+  };
+  $: railRows = applyOrder<RailRow>(
+    [
+      ...linked.map((bridge) => ({
+        id: `platform:${bridge.platform}`,
+        platform: bridge.platform,
+        name: bridge.name,
+        accounts: bridge.accounts.map((account) => ({id: account.id, label: account.name})),
+      })),
+      ...(accounts.length > 0
+        ? [
+            {
+              id: 'mail',
+              platform: 'mail' as const,
+              name: $t('hub.mail'),
+              accounts: accounts.map((account) => ({id: account.id, label: account.email})),
+            },
+          ]
+        : []),
+    ],
+    (row) => row.id,
+    railOrder.sources,
+  ).map((row) => ({...row, accounts: applyOrder(row.accounts, (item) => item.id, railOrder.accounts[row.id] ?? [])}));
   // Expanding a group changes how far the rail scrolls, so the edges are
   // re-read whenever its content does.
-  $: if (linked.length || accounts.length || openGroups) void tick().then(measureRailEdges);
-  /** Chats belonging to whichever platform the rail has selected. */
-  $: visibleChats = chatsFor(source, chats, chatSearch);
+  $: if (railRows.length || openGroups) void tick().then(measureRailEdges);
+
+  /** How long a row takes to slide to the place a drag has made for it. */
+  const RAIL_SHUFFLE_MS = 160;
+  /** How far the pointer travels before a press becomes a drag. */
+  const RAIL_DRAG_SLOP = 4;
+  /** How near an edge the pointer has to come before the rail scrolls under it,
+   * and how fast it scrolls once it is hard against that edge. */
+  const RAIL_EDGE_ZONE = 26;
+  const RAIL_EDGE_SPEED = 14;
+  /** Where the rail's arrangement is remembered between runs. */
+  let railOrder = loadRailOrder();
+  /**
+   * What is being dragged, and the layout it is being dragged through: its
+   * scope (`sources`, or a row id for the accounts inside it), its id, and the
+   * slot geometry read once when the drag began. Measuring once is the point —
+   * the rows are animating to their new places while the drag continues, so
+   * measuring them live means aiming at a moving target and reads as jitter.
+   * A drag never crosses scopes: an account cannot become a source, and a
+   * source cannot land inside one.
+   */
+  let dragging: {
+    scope: string;
+    id: string;
+    /** Pointer position, in rail content space, when the drag began. */
+    startY: number;
+    /** The slots the drag moves through, top and height of each. */
+    tops: number[];
+    heights: number[];
+    /** The order those slots were read in. */
+    order: string[];
+    /** How far the carried row is drawn from the slot it currently occupies. */
+    offset: number;
+  } | null = null;
+
+  /** The row settling back into place after a release, kept for as long as that
+   * takes so it slides home rather than snapping there. */
+  let settling: {scope: string; id: string} | null = null;
+
+  /** Where the press began, so a click is told apart from a drag. */
+  let pressed: {scope: string; id: string; y: number} | null = null;
+  /** Set by a drag so the click it ends with does not also select the row. */
+  let dragged = false;
+  /** The last pointer position, which the edge scroll re-reads each frame. */
+  let pointerY = 0;
+  let edgeFrame = 0;
+
+  /**
+   * The rail drags with the pointer rather than with HTML5 drag-and-drop: that
+   * API paints its own translucent, drop-shadowed copy of the row under the
+   * cursor, which is not what this rail should look like, and it offers no say
+   * in when a row counts as passed.
+   */
+  function pressRow(event: PointerEvent, scope: string, id: string): void {
+    if (event.button !== 0) return;
+    pressed = {scope, id, y: event.clientY};
+    dragged = false;
+  }
+
+  /** A pointer position in the rail's own content space, so a scroll during a
+   * drag moves the pointer and the rows it is measured against together. */
+  function contentY(clientY: number): number {
+    if (!railElement) return clientY;
+    return clientY - railElement.getBoundingClientRect().top + railElement.scrollTop;
+  }
+
+  function dragRow(event: PointerEvent): void {
+    if (!pressed) return;
+    pointerY = event.clientY;
+    if (dragging) {
+      stepTowards(event.clientY);
+      return;
+    }
+    // A few pixels of slop, so a click that trembles stays a click.
+    if (Math.abs(event.clientY - pressed.y) < RAIL_DRAG_SLOP) return;
+    // A source with its accounts showing is a block tall enough to cover the
+    // rows a drag is aiming between — the one being carried and every other
+    // one alike — so grabbing a source folds the whole rail down to its
+    // source rows, and what moves is a row past rows.
+    if (pressed.scope === 'sources' && Object.values(openGroups).some(Boolean)) openGroups = {};
+    railElement?.setPointerCapture?.(event.pointerId);
+    const {scope, id} = pressed;
+    // Measured after the fold, not before it: the slots the drag moves through
+    // are the ones it will actually see.
+    void tick().then(() => beginDrag(scope, id));
+  }
+
+  function beginDrag(scope: string, id: string): void {
+    if (!pressed || pressed.scope !== scope || pressed.id !== id) return;
+    const order = currentOrder(scope);
+    const boxes = order.map((rowId) => rowBox(scope, rowId));
+    if (order.indexOf(id) < 0 || boxes.some((box) => !box)) return;
+    dragging = {
+      scope,
+      id,
+      startY: contentY(pointerY),
+      tops: boxes.map((box) => contentY(box!.top)),
+      heights: boxes.map((box) => box!.height),
+      order,
+      offset: 0,
+    };
+    settling = null;
+    dragged = true;
+    edgeFrame ||= requestAnimationFrame(edgeScroll);
+  }
+
+  /**
+   * Places the carried row wherever the pointer has taken it: it is drawn under
+   * the pointer, and the slot it belongs in is however many rows' centres it
+   * has passed. Counting the rows passed rather than swapping with a neighbour
+   * per event is what keeps a fast drag from lagging one row per frame.
+   */
+  function stepTowards(clientY: number): void {
+    if (!dragging) return;
+    const {scope, id, startY, tops, heights, order} = dragging;
+    const from = order.indexOf(id);
+    if (from < 0) return;
+    const top = tops[from] + (contentY(clientY) - startY);
+    const centre = top + heights[from] / 2;
+    let index = 0;
+    for (let slot = 0; slot < order.length; slot += 1) {
+      if (slot !== from && tops[slot] + heights[slot] / 2 < centre) index += 1;
+    }
+    dragging = {...dragging, offset: top - tops[index]};
+    const moved = order.filter((rowId) => rowId !== id);
+    moved.splice(index, 0, id);
+    const shown = currentOrder(scope);
+    if (moved.every((rowId, slot) => rowId === shown[slot])) return;
+    railOrder =
+      scope === 'sources' ? saveSourceOrder(railOrder, moved) : saveAccountOrder(railOrder, scope, moved);
+  }
+
+  /** Dragging to the end of a rail taller than its window has to be possible
+   * without letting go, so the rail scrolls itself while the pointer is held
+   * against an edge — faster the harder against it the pointer is. */
+  function edgeScroll(): void {
+    edgeFrame = 0;
+    if (!dragging || !railElement) return;
+    const box = railElement.getBoundingClientRect();
+    const above = pointerY - box.top;
+    const below = box.bottom - pointerY;
+    const step =
+      above < RAIL_EDGE_ZONE
+        ? -RAIL_EDGE_SPEED * Math.min(1, (RAIL_EDGE_ZONE - above) / RAIL_EDGE_ZONE)
+        : below < RAIL_EDGE_ZONE
+          ? RAIL_EDGE_SPEED * Math.min(1, (RAIL_EDGE_ZONE - below) / RAIL_EDGE_ZONE)
+          : 0;
+    if (step) {
+      const before = railElement.scrollTop;
+      railElement.scrollTop += step;
+      if (railElement.scrollTop !== before) stepTowards(pointerY);
+    }
+    edgeFrame = requestAnimationFrame(edgeScroll);
+  }
+
+  /** Where a row currently sits on screen, which is what the drag's slots are
+   * read from — once, before anything has started animating. */
+  function rowBox(scope: string, id: string): DOMRect | null {
+    if (!railElement) return null;
+    const selector =
+      scope === 'sources'
+        ? `[data-rail-source="${CSS.escape(id)}"]`
+        : `[data-rail-source="${CSS.escape(scope)}"] [data-rail-account="${CSS.escape(id)}"]`;
+    return railElement.querySelector(selector)?.getBoundingClientRect() ?? null;
+  }
+
+  function releaseRow(): void {
+    pressed = null;
+    if (edgeFrame) cancelAnimationFrame(edgeFrame);
+    edgeFrame = 0;
+    if (!dragging) return;
+    // The carried row settles into the place it was let go over rather than
+    // snapping there, so a drag ends where the eye is already looking.
+    const landed = {scope: dragging.scope, id: dragging.id};
+    settling = landed;
+    dragging = null;
+    setTimeout(() => {
+      if (settling === landed) settling = null;
+    }, RAIL_SHUFFLE_MS);
+  }
+
+  /** The ids of a scope as the rail currently shows them, which is what a move
+   * is applied to — the stored list alone omits anything never dragged. */
+  function currentOrder(scope: string): string[] {
+    if (scope === 'sources') return railRows.map((row) => row.id);
+    return railRows.find((row) => row.id === scope)?.accounts.map((account) => account.id) ?? [];
+  }
+
+  /** Keyboard equivalent of the drag, on the focused row. */
+  function nudge(event: KeyboardEvent, scope: string, id: string): void {
+    if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+    event.preventDefault();
+    const step = event.key === 'ArrowUp' ? -1 : 1;
+    const moved = moveBy(currentOrder(scope), id, step);
+    railOrder =
+      scope === 'sources' ? saveSourceOrder(railOrder, moved) : saveAccountOrder(railOrder, scope, moved);
+  }
+  /** Chats belonging to whichever platform the rail has selected, pinned rows
+   * first and hidden ones collected under their own row below. */
+  $: platformChats = chatsFor(source, chats, chatSearch);
+  $: visibleChats = arrangeChats(platformChats, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
+  $: hiddenRows = hiddenChats(platformChats, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
+  // A group with nothing left in it takes its expanded state with it, so it
+  // does not reappear open the next time something is hidden.
+  $: if (hiddenRows.length === 0) hiddenOpen = false;
+  /**
+   * The reading pane's actions as data, so the strip and the overflow menu are
+   * the same list said twice rather than two lists to keep in step.
+   *
+   * `move` is the one that opens something of its own; everything else runs
+   * and closes.
+   */
+  type MailAction = {
+    id: string;
+    icon: IconName;
+    label: string;
+    run?: () => void;
+    disabled?: boolean;
+    destructive?: boolean;
+    on?: boolean;
+    filled?: boolean;
+  };
+
+  /** Menu open over the collapsed strip. */
+  let overflowMenu = false;
+  /** The strip's own width, watched so it can fold before it overflows. */
+  let actionsWidth = 0;
+  /** One icon button, plus the gap after it. */
+  const ACTION_WIDTH = 30;
+  $: mailActions = readerActions(openMail, openEnvelope, currentFolder);
+  // Below what the row needs, every action goes behind one ⋮ rather than
+  // wrapping onto a second line or being cut off at the edge.
+  $: compactActions = actionsWidth > 0 && actionsWidth < mailActions.length * ACTION_WIDTH;
+  // A strip that has grown back has nothing to hold a menu open over.
+  $: if (!compactActions && overflowMenu) overflowMenu = false;
+
+  function readerActions(
+    message: MailMessageDto | null,
+    envelope: MailEnvelopeDto | null,
+    folder: MailFolderDto | null,
+  ): MailAction[] {
+    const actions: MailAction[] = [
+      {id: 'reply', icon: 'reply', label: $t('hub.reply'), disabled: !message, run: () => startCompose('reply')},
+      {id: 'reply-all', icon: 'reply-all', label: $t('hub.replyAll'), disabled: !message, run: () => startCompose('reply-all')},
+      {id: 'forward', icon: 'mail-forward', label: $t('hub.forward'), disabled: !message, run: () => startCompose('forward')},
+    ];
+    if (!envelope) return actions;
+    actions.push(
+      {id: 'archive', icon: 'archive', label: $t('hub.archive'), run: () => void moveMail(envelope, 'archive')},
+      {id: 'junk', icon: 'spam', label: $t('hub.junk'), run: () => void moveMail(envelope, 'junk')},
+      {id: 'trash', icon: 'trash', label: $t('common.delete'), destructive: true, run: () => void moveMail(envelope, 'trash')},
+      {id: 'move', icon: 'folder-move', label: $t('hub.moveToFolder')},
+      {
+        id: 'flag',
+        icon: 'flag',
+        label: envelope.flagged ? $t('hub.unflag') : $t('hub.flag'),
+        on: envelope.flagged,
+        filled: envelope.flagged,
+        run: () => void toggleFlag(envelope),
+      },
+      {id: 'unread', icon: 'mail', label: $t('hub.markUnread'), run: () => void markUnread(envelope)},
+    );
+    if (folder?.role === 'trash' || folder?.role === 'junk')
+      actions.push({
+        id: 'erase',
+        icon: 'close',
+        label: $t('hub.deletePermanently'),
+        destructive: true,
+        run: () => void erase([envelope.id]),
+      });
+    return actions;
+  }
+
+  /** Runs one action from the overflow menu and puts the menu away — except
+   * `move`, whose own list replaces it in place. */
+  function runAction(action: MailAction): void {
+    if (action.id === 'move') {
+      moveMenu = true;
+      return;
+    }
+    overflowMenu = false;
+    action.run?.();
+  }
+
   /** What the box over the conversation list is filtering on. */
   let chatSearch = '';
 
@@ -305,6 +813,25 @@
   /** The folders worth surfacing, in the order a mail client shows them. */
   $: railFolders = orderFolders(folders);
   $: currentFolder = folders.find((folder) => folder.name === mailFolder) ?? null;
+
+  /**
+   * A folder's name as it should be read — applied to every folder label the
+   * pane draws, not only to the IMAP name it falls back on before the folder
+   * list arrives.
+   *
+   * IMAP calls the inbox "INBOX" and Gmail prefixes its own folders with
+   * "[Gmail]/". The backend already resolves both into a label, but that comes
+   * with the folder list — a beat after the pane commits to the mailbox — so
+   * showing the raw name meanwhile flashes INBOX and then corrects itself to
+   * Inbox. A label cached before the backend learned this rule shouts the same
+   * way, which is why it runs over labels too. Same rule as `leafName` in the
+   * hub package, applied here so there is nothing to correct.
+   */
+  function folderLabel(name: string): string {
+    const leaf = name.split('/').pop() ?? name;
+    const trimmed = leaf.replace(/^\[[^\]]+\]\s*/, '') || name;
+    return /^[A-Z]+$/.test(trimmed) ? trimmed.charAt(0) + trimmed.slice(1).toLowerCase() : trimmed;
+  }
   $: currentAccount = accounts.find((account) => account.id === mailAccount) ?? null;
   $: readerLoading = !!openEnvelope && busy === `mail:${openEnvelope.id}`;
 
@@ -336,7 +863,7 @@
     archive: 'archive',
     junk: 'spam',
     trash: 'trash',
-    flagged: 'bolt',
+    flagged: 'flag',
     other: 'folder',
   };
 
@@ -375,7 +902,16 @@
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
+    // From here on the agent's "show me" lands in this instance; anything it
+    // asked for while the tab was being created is waiting.
+    showTarget = (target) => void goTo(target);
+    if (pendingReveal) {
+      const waiting = pendingReveal;
+      pendingReveal = null;
+      void goTo(waiting);
+    }
     return () => {
+      showTarget = null;
       unsubscribe();
       unsubscribeActivity();
       clearInterval(timer);
@@ -383,6 +919,89 @@
       window.removeEventListener('focus', onVisible);
     };
   });
+
+  /**
+   * Goes where the agent asked: a mailbox and the message in it, or a
+   * conversation.
+   *
+   * A message is named by its folder-relative id when the agent has one. It
+   * often does not — a draft it saved through the mail tool comes back without
+   * one — so a subject, or failing that the newest message in the folder,
+   * stands in. That is what "the draft you just wrote" means, and the folder
+   * has just been refetched, so the newest is the one it saved. A draft opens
+   * in the composer rather than the reader, the same as clicking it does.
+   */
+  async function goTo(target: WorkspaceRevealTarget): Promise<void> {
+    if (target.chat) {
+      const wanted = target.chat;
+      if (chats.length === 0) await refreshChats();
+      const found = chats.find(
+        (item) =>
+          (wanted.id && item.id === wanted.id) ||
+          (wanted.name && item.name.toLowerCase() === wanted.name.toLowerCase()),
+      );
+      if (!found) return;
+      await openChat(found);
+      // A draft is written into the box, never sent: the user reads it where
+      // they would have typed it and presses send themselves. Whatever they had
+      // half-typed stays put rather than being overwritten.
+      // Answering a particular message rather than the thread's end: the
+      // composer shows what is being replied to, and the send carries it, the
+      // same as picking Reply on the message would.
+      const answering = wanted.replyTo
+        ? (chatMessages.find((message) => message.id === wanted.replyTo) ?? null)
+        : null;
+      if (answering) replyTo = answering;
+      if (wanted.draft && !draft.trim()) {
+        draft = wanted.draft;
+        await tick();
+        composerInput?.focus();
+      }
+      return;
+    }
+    if (!target.mail) return;
+    const {account, folder, messageId, subject, compose} = target.mail;
+    await selectMail(account, folder);
+    // `selectMail` reports failure through `error` rather than throwing, and a
+    // mailbox that would not open has nothing to land on.
+    if (!source || source.kind !== 'mail' || envelopes.length === 0) return;
+    const wanted = subject?.trim().toLowerCase();
+    const found = messageId
+      ? envelopes.find((item) => item.id === messageId)
+      : wanted
+        ? envelopes.find((item) => item.subject.trim().toLowerCase() === wanted)
+        : envelopes[0];
+    // The mail half's equivalent of a chat draft: the composer opens already
+    // written, saved nowhere. A reply or forward opens the message it answers
+    // first, so the composer is the real one — recipients, Re:/Fwd: subject,
+    // quoted body and the headers that thread it — with the drafted words
+    // above the quote where a person would have typed them.
+    if (compose) {
+      const mode = compose.mode ?? 'new';
+      if (mode !== 'new') {
+        if (!found) return;
+        await readMail(found);
+        startCompose(mode);
+        if (compose.body) composeBody = `${compose.body}\n${composeBody}`;
+      } else {
+        startCompose('new');
+        if (compose.subject) composeSubject = compose.subject;
+        if (compose.body) composeBody = compose.body;
+      }
+      // A reply already knows who it answers; an address given anyway wins.
+      if (compose.to) composeTo = compose.to;
+      if (compose.cc) composeCc = compose.cc;
+      if (compose.bcc) composeBcc = compose.bcc;
+      // Copies stay hidden until there is something in them to read.
+      showCopies = Boolean(composeCc || composeBcc);
+      if (compose.attachments?.length) composeFiles = [...compose.attachments];
+      if (compose.importance) composeImportance = compose.importance;
+      return;
+    }
+    if (!found) return;
+    if (found.draft) await editDraft(found);
+    else await readMail(found);
+  }
 
   /**
    * Puts the pane back the way it was left: the same source, the same folder
@@ -421,16 +1040,24 @@
         // rather than choosing somewhere else to be.
         await refreshOpen();
       } else {
-        // Open on something useful rather than an empty pane: the first mailbox
-        // if there is one, otherwise the first linked platform.
-        const account = status.email.accounts.find((item) => item.isDefault) ?? status.email.accounts[0];
-        if (account) {
-          openGroups = {...openGroups, mail: true};
-          await selectMail(account.id);
-        } else {
-          const first = (status.bridges ?? []).find((bridge) => bridge.state === 'connected');
-          if (first) selectPlatform(first.platform);
+        // Open on whatever sits at the top of the rail. The rail is the user's
+        // own arrangement — they can drag a source to the top — so the first
+        // row is the answer to "where should this open", and picking a
+        // different one by rule would contradict the order they set.
+        //
+        // The rows are derived from `status`, which was only just assigned, so
+        // this waits a tick for that to be reflected rather than reading the
+        // arrangement the hub had a moment ago.
+        await tick();
+        const top = railRows[0];
+        const first = top?.accounts[0];
+        if (top?.platform === 'mail') {
+          if (first) await selectMail(first.id);
         }
+        // A source with one account selects it; one with several opens on the
+        // platform as a whole and stays folded, because expanding it here would
+        // make a choice the user has not made yet.
+        else if (top) selectPlatform(top.platform, top.accounts.length === 1 ? first?.id : undefined);
       }
       error = '';
       // Warms what the user is most likely to open next, behind whatever is on
@@ -453,10 +1080,6 @@
    * that slows the thing the user actually clicked is worse than no prefetch.
    */
   const PREFETCH_CHATS = 8;
-
-  function mailKey(account: string, folder: string, id: string): string {
-    return `${account}|${folder}|${id}`;
-  }
 
   /**
    * The bodies at the top of the open folder. Reading one is the next thing
@@ -776,12 +1399,19 @@
    * The conversation a message belongs to: everything in this folder carrying
    * the same subject once Re:/Fwd: are stripped. IMAP threading proper needs
    * References on every envelope, which the list does not carry, so the
-   * subject is the honest approximation — and the one users recognise.
+   * subject is how the members are found.
+   *
+   * Finding them is not the same as there being a conversation, though. Twenty
+   * three notifications all titled "Security alert" share a subject and answer
+   * nothing; listing them as a thread says the sender was talking to itself.
+   * So a chain has to show evidence of a reply — a Re:/Fwd: among its members,
+   * or one the user answered — before it is shown as one.
    */
   async function loadThread(envelope: MailEnvelopeDto): Promise<void> {
     if (!source || source.kind !== 'mail') return;
     const base = baseSubject(envelope.subject);
     thread = [];
+    chainExpanded = false;
     if (!base) return;
     const found = await api.comms
       .mailEnvelopes({
@@ -793,10 +1423,13 @@
       .catch(() => [] as MailEnvelopeDto[]);
     // A slower earlier click must not put its chain under a newer message.
     if (openEnvelope?.id !== envelope.id) return;
-    // Only worth showing when there is actually a chain.
     const chain = found.filter((item) => baseSubject(item.subject) === base);
-    thread = chain.length > 1 ? chain : [];
+    const replied = chain.some((item) => REPLY_PREFIX.test(item.subject) || item.answered);
+    thread = chain.length > 1 && replied ? chain : [];
   }
+
+  /** A subject that answers or passes on another one. */
+  const REPLY_PREFIX = /^\s*(re|fwd|fw)\s*:/i;
 
   function baseSubject(subject: string): string {
     return subject.replace(/^\s*(re|fwd|fw)\s*:\s*/gi, '').trim().toLowerCase();
@@ -983,8 +1616,34 @@
    * with the conversation it is attached to. `x`/`y` are viewport coordinates
    * of the click, so the menu opens where the pointer already is.
    */
-  let messageMenu: {message: ChatMessageDto; x: number; y: number} | null = null;
+  let messageMenu: {message: ChatMessageDto; x: number; y: number; placed?: boolean} | null = null;
   let messageMenuEl: HTMLDivElement | undefined;
+
+  /**
+   * The chat row's own actions, opened the same way and drawn from the same
+   * styles as the message menu: pinning and hiding are occasional enough that a
+   * permanent control on every row would cost more than it gives.
+   */
+  let chatMenu: {chat: ChatDto; x: number; y: number; placed?: boolean} | null = null;
+  let chatMenuEl: HTMLDivElement | undefined;
+  /** Which chats are pinned or hidden, remembered between runs. */
+  let chatPrefs = loadChatPrefs();
+  /** Whether the hidden group at the foot of the list is expanded. */
+  let hiddenOpen = false;
+
+  function openChatMenu(event: MouseEvent, chat: ChatDto): void {
+    event.preventDefault();
+    closeMessageMenu();
+    chatMenu = {chat, x: event.clientX, y: event.clientY};
+    void tick().then(() => {
+      if (!chatMenu || !chatMenuEl) return;
+      chatMenu = {...chatMenu, ...placeMenu(chatMenu.x, chatMenu.y, chatMenuEl), placed: true};
+    });
+  }
+
+  function closeChatMenu(): void {
+    chatMenu = null;
+  }
 
   function openMessageMenu(event: MouseEvent, message: ChatMessageDto): void {
     event.preventDefault();
@@ -993,17 +1652,44 @@
     void tick().then(clampMessageMenu);
   }
 
+  /**
+   * Where a menu opened at `x`/`y` actually goes.
+   *
+   * A menu opens down and to the right of the pointer, which is where one is
+   * expected. When there is no room for it there it flips to the other side of
+   * the same point — up, or to the left — rather than sliding along the edge:
+   * a menu that has slid is still under the pointer but no longer says which
+   * row it belongs to, and one that has flipped says it exactly. Sliding is
+   * what is left when neither side fits, which only happens on a window
+   * shorter than the menu.
+   */
+  function placeMenu(x: number, y: number, element: HTMLElement): {x: number; y: number} {
+    const rect = element.getBoundingClientRect();
+    const margin = 8;
+    // `position: fixed` is not always relative to the viewport: an ancestor
+    // that establishes a containing block — `.hub-view` does, through
+    // `container-type` — makes the coordinates relative to itself instead, and
+    // a menu placed at the pointer's viewport coordinates then opens that far
+    // down and to the right of it, running off the window near an edge. Rather
+    // than name the ancestor, measure it: the gap between where the menu was
+    // asked to sit and where it actually landed is that origin, whatever
+    // produced it, and is zero when there is none.
+    const originX = rect.left - x;
+    const originY = rect.top - y;
+    const flippedX = x + rect.width > window.innerWidth - margin ? x - rect.width : x;
+    const flippedY = y + rect.height > window.innerHeight - margin ? y - rect.height : y;
+    return {
+      x: Math.max(margin, Math.min(flippedX, window.innerWidth - rect.width - margin)) - originX,
+      y: Math.max(margin, Math.min(flippedY, window.innerHeight - rect.height - margin)) - originY,
+    };
+  }
+
   /** Keeps the menu on screen when the click lands near an edge — a menu that
-   * opens half outside the window is worse than one a few pixels off. */
+   * opens half outside the window is worse than one on the other side of the
+   * pointer. */
   function clampMessageMenu(): void {
     if (!messageMenu || !messageMenuEl) return;
-    const {width, height} = messageMenuEl.getBoundingClientRect();
-    const margin = 8;
-    messageMenu = {
-      ...messageMenu,
-      x: Math.max(margin, Math.min(messageMenu.x, window.innerWidth - width - margin)),
-      y: Math.max(margin, Math.min(messageMenu.y, window.innerHeight - height - margin)),
-    };
+    messageMenu = {...messageMenu, ...placeMenu(messageMenu.x, messageMenu.y, messageMenuEl), placed: true};
   }
 
   function closeMessageMenu(): void {
@@ -1323,8 +2009,6 @@
     // on the skeleton; the fetch behind it only replaces what changed.
     const cached = session.mail.get(mailKey(source.account, source.folder, envelope.id));
     openMail = cached ?? null;
-    // Each message earns its own answer on remote content.
-    allowRemote = false;
     attachmentPaths = [];
     void loadThread(envelope);
     composing = false;
@@ -1511,6 +2195,10 @@
     envelopes = envelopes.map((item) =>
       item.id === envelope.id ? {...item, flagged: next} : item,
     );
+    // The reader holds its own copy of the envelope, and that copy is what the
+    // flag button reads. Without this the row in the list changes and the
+    // button that was just clicked does not.
+    if (openEnvelope?.id === envelope.id) openEnvelope = {...openEnvelope, flagged: next};
     await api.comms
       .mailFlag([envelope.id], 'flagged', next, source.account, source.folder)
       .catch((cause: unknown) => {
@@ -1537,6 +2225,7 @@
     // answered, the way every mail client does.
     composeBody = message && mode !== 'new' ? `\n\n${quote(message)}` : '';
     composeFiles = [];
+    composeImportance = 'normal';
     composeDraft = null;
     // Only an answer continues a chain; a forward starts its own.
     composeReply =
@@ -1651,6 +2340,7 @@
         body: composeBody,
         draft: draftOnly,
         attachments: composeFiles,
+        importance: composeImportance,
         inReplyTo: composeReply?.inReplyTo ?? undefined,
         references: composeReply?.references,
         replacesDraft: composeDraft,
@@ -1662,6 +2352,7 @@
       composeSubject = '';
       composeBody = '';
       composeFiles = [];
+      composeImportance = 'normal';
       composeReply = null;
       composeDraft = null;
       await loadEnvelopes();
@@ -1682,14 +2373,41 @@
     composing = false;
   }
 
+  /**
+   * A mail date, whichever way it arrives.
+   *
+   * An envelope carries "2026-08-18 01:45+00:00"; the message itself carries
+   * the RFC 5322 line its sender wrote — "Fri, 7 Aug 2026 02:24:42 +0000".
+   * Only the first needs its space turned into a `T`, and doing that to the
+   * second breaks it ("Fri,T7 Aug…"), so the plain reading is tried first and
+   * the repair is the fallback rather than the rule.
+   */
+  function mailDate(value: string): Date | null {
+    for (const text of [value, value.replace(' ', 'T')]) {
+      const parsed = new Date(text);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    return null;
+  }
+
+  /** The stamp on a mail row: the shared display time, in its compact form
+   * because the list column is narrow. */
   function when(value: string): string {
-    const parsed = new Date(value.replace(' ', 'T'));
-    if (Number.isNaN(parsed.getTime())) return value;
-    const today = new Date();
-    const sameDay = parsed.toDateString() === today.toDateString();
-    return sameDay
-      ? parsed.toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit'})
-      : parsed.toLocaleDateString(activeLocale(), {month: 'short', day: 'numeric'});
+    return displayTime(value, {compact: true});
+  }
+
+  /**
+   * When a message was sent, as the reader states it.
+   *
+   * A message carries its date as the RFC 5322 line its sender wrote —
+   * "Fri, 7 Aug 2026 02:24:42 +0000" — which is the sender's clock, in their
+   * offset, in English. Printing it verbatim asks the reader to do the
+   * arithmetic. This is the same instant on this machine's clock, in this
+   * machine's zone and the interface's language, on the 12-hour clock the rest
+   * of the view uses. An unparseable date is left exactly as it came.
+   */
+  function stamp(value: string): string {
+    return displayTime(value);
   }
 
   /**
@@ -1711,8 +2429,8 @@
 
   /** The time on a single bubble. */
   function messageTime(value: string): string {
-    const parsed = new Date(value.replace(' ', 'T'));
-    return Number.isNaN(parsed.getTime()) ? value : clockTime(parsed);
+    const parsed = mailDate(value);
+    return parsed ? clockTime(parsed) : value;
   }
 
   /**
@@ -1722,27 +2440,13 @@
    * while it is still this week, then the date, then the year as well.
    */
   function dividerStamp(value: string): string {
-    const parsed = new Date(value.replace(' ', 'T'));
-    if (Number.isNaN(parsed.getTime())) return value;
-    const time = clockTime(parsed);
-    const today = startOfDay(new Date());
-    const days = Math.round((today.getTime() - startOfDay(parsed).getTime()) / DAY_MS);
-    if (days <= 0) return time;
-    if (days === 1) return `${$t('chats.yesterday')} ${time}`;
-    if (days < 7)
-      return `${parsed.toLocaleDateString(activeLocale(), {weekday: 'long'})} ${time}`;
-    const day = String(parsed.getDate()).padStart(2, '0');
-    const month = String(parsed.getMonth() + 1).padStart(2, '0');
-    return parsed.getFullYear() === new Date().getFullYear()
-      ? `${day}/${month} ${time}`
-      : `${parsed.getFullYear()} ${day}/${month} ${time}`;
+    return displayTime(value);
   }
 
   function startOfDay(value: Date): Date {
     return new Date(value.getFullYear(), value.getMonth(), value.getDate());
   }
 
-  const DAY_MS = 86_400_000;
   /** A pause this long makes the next message the start of a new run. */
   const RUN_GAP_MS = 30 * 60_000;
 
@@ -1769,12 +2473,22 @@
   function sender(envelope: MailEnvelopeDto): string {
     return envelope.from.name ?? envelope.from.address ?? $t('hub.unknown');
   }
+
+  /** A recipient field as one line: the name where there is one, the address otherwise. */
+  function names(list: MailAddressDto[]): string {
+    return list.map((item) => item.name ?? item.address).join(', ');
+  }
 </script>
 
 <svelte:window
-  onkeydown={(event) => { if (event.key === 'Escape' && messageMenu) { event.stopPropagation(); closeMessageMenu(); } }}
+  onkeydown={(event) => {
+    if (event.key !== 'Escape') return;
+    if (messageMenu) { event.stopPropagation(); closeMessageMenu(); }
+    else if (chatMenu) { event.stopPropagation(); closeChatMenu(); }
+  }}
   onclick={(event) => {
     if (messageMenu && !(event.target as HTMLElement).closest('.hub-view-message-menu')) closeMessageMenu();
+    if (chatMenu && !(event.target as HTMLElement).closest('.hub-view-chat-menu')) closeChatMenu();
   }}
 />
 
@@ -1785,73 +2499,96 @@
     class:at-top={railAtTop}
     class:at-bottom={railAtBottom}
     aria-label={$t('hub.sources')}
+    class:dragging={!!dragging}
     bind:this={railElement}
     onscroll={measureRailEdges}
+    onpointermove={dragRow}
+    onpointerup={releaseRow}
+    onpointercancel={releaseRow}
   >
-    {#each linked as bridge (bridge.platform)}
-      {@const ids = bridge.accounts.map((item) => item.id)}
-      {@const grouped = ids.length > 1}
-      {@const expanded = openGroups[`platform:${bridge.platform}`] === true}
+    <!-- Rows are draggable: the rail's order is the user's, kept in
+         localStorage, and ⌥↑/⌥↓ on a focused row does the same thing without a
+         pointer. A drag stays in its own list — sources past sources, accounts
+         within the source they belong to. -->
+    {#each railRows as row (row.id)}
+      <!-- The rows a drag is passing slide to their new places rather than
+           jumping there, so the arrangement being made stays legible. -->
+      {@const grouped = row.accounts.length > 1}
+      {@const expanded = openGroups[row.id] === true}
+      <div
+        class="hub-view-source-row"
+        class:carried={dragging?.scope === 'sources' && dragging.id === row.id}
+        class:settling={settling?.scope === 'sources' && settling.id === row.id}
+        data-rail-source={row.id}
+        style={dragging?.scope === 'sources' && dragging.id === row.id
+          ? `transform: translateY(${dragging.offset}px)`
+          : undefined}
+        animate:flip={{
+          duration: dragging?.scope === 'sources' && dragging.id === row.id ? 0 : RAIL_SHUFFLE_MS,
+        }}
+      >
       <button
         type="button"
         class="hub-view-source"
-        class:active={!grouped && source?.kind === 'platform' && source.platform === bridge.platform}
+        class:active={!grouped &&
+          (row.id === 'mail'
+            ? source?.kind === 'mail'
+            : source?.kind === 'platform' && source.platform === row.platform)}
         aria-expanded={grouped ? expanded : undefined}
-        onclick={() => pickPlatform(bridge.platform, ids)}
+        onclick={() => {
+          if (dragged) return;
+          if (row.id === 'mail') pickMail();
+          else
+            pickPlatform(
+              row.platform,
+              row.accounts.map((account) => account.id),
+            );
+        }}
+        onkeydown={(event) => nudge(event, 'sources', row.id)}
+        onpointerdown={(event) => pressRow(event, 'sources', row.id)}
       >
-        <PlatformLogo platform={bridge.platform} size={RAIL_TILE_SIZE} />
-        <span>{bridge.name}</span>
+        <PlatformLogo platform={row.platform} size={RAIL_TILE_SIZE} />
+        <span>{row.name}</span>
       </button>
       {#if grouped && expanded}
         <ul class="hub-view-accounts">
-          {#each bridge.accounts as account (account.id)}
-            <li>
+          {#each row.accounts as account (account.id)}
+            <li
+              data-rail-account={account.id}
+              class:carried={dragging?.scope === row.id && dragging.id === account.id}
+              class:settling={settling?.scope === row.id && settling.id === account.id}
+              style={dragging?.scope === row.id && dragging.id === account.id
+                ? `transform: translateY(${dragging.offset}px)`
+                : undefined}
+              animate:flip={{
+                duration: dragging?.scope === row.id && dragging.id === account.id ? 0 : RAIL_SHUFFLE_MS,
+              }}
+            >
               <button
                 type="button"
-                class:active={source?.kind === 'platform' &&
-                  source.platform === bridge.platform &&
-                  source.account === account.id}
-                onclick={() => selectPlatform(bridge.platform, account.id)}
+                class:active={row.id === 'mail'
+                  ? mailAccount === account.id
+                  : source?.kind === 'platform' &&
+                    source.platform === row.platform &&
+                    source.account === account.id}
+                onclick={() => {
+                  if (dragged) return;
+                  if (row.id === 'mail') void selectMail(account.id);
+                  else selectPlatform(row.platform, account.id);
+                }}
+                onkeydown={(event) => nudge(event, row.id, account.id)}
+                onpointerdown={(event) => pressRow(event, row.id, account.id)}
               >
-                {account.name}
+                {account.label}
               </button>
             </li>
           {/each}
         </ul>
       {/if}
+      </div>
     {/each}
 
-    {#if accounts.length > 0}
-      {@const grouped = accounts.length > 1}
-      {@const expanded = openGroups.mail === true}
-      <button
-        type="button"
-        class="hub-view-source"
-        class:active={!grouped && source?.kind === 'mail'}
-        aria-expanded={grouped ? expanded : undefined}
-        onclick={pickMail}
-      >
-        <PlatformLogo platform="mail" size={RAIL_TILE_SIZE} />
-        <span>{$t('hub.mail')}</span>
-      </button>
-      {#if grouped && expanded}
-        <ul class="hub-view-accounts">
-          {#each accounts as account (account.id)}
-            <li>
-              <button
-                type="button"
-                class:active={mailAccount === account.id}
-                onclick={() => void selectMail(account.id)}
-              >
-                {account.email}
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    {/if}
-
-    {#if linked.length === 0 && accounts.length === 0 && !loading}
+    {#if railRows.length === 0 && !loading}
       <p class="hub-view-rail-empty">
         {$t('hub.railEmpty')}
       </p>
@@ -1884,7 +2621,7 @@
               size={13}
               strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}
             />
-            <span>{currentFolder?.label ?? mailFolder}</span>
+            <span>{folderLabel(currentFolder?.label ?? mailFolder)}</span>
             <Icon name="chevron" size={12} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
           </button>
           {#if folderMenu}
@@ -1904,7 +2641,7 @@
                       size={13}
                       strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}
                     />
-                    {folder.label}
+                    {folderLabel(folder.label)}
                   </button>
                 </li>
               {/each}
@@ -2026,7 +2763,7 @@
               </span>
               <span class="hub-view-row-subject">{envelope.subject}</span>
               <span class="hub-view-row-meta">
-                {#if envelope.flagged}<Icon name="bolt" size={12} />{/if}
+                {#if envelope.flagged}<Icon name="flag" size={12} filled />{/if}
                 {#if envelope.hasAttachment}<Icon name="attach" size={12} />{/if}
                 {#if envelope.answered}<Icon name="back" size={12} />{/if}
               </span>
@@ -2082,55 +2819,7 @@
       </div>
       <ul class="hub-view-rows">
         {#each visibleChats as chat (chat.id)}
-          <li>
-            <button
-              type="button"
-              class="hub-view-row"
-              class:active={activeChat?.id === chat.id}
-              class:unread={(chat.unread ?? 0) > 0}
-              onclick={() => void openChat(chat)}
-            >
-              {#if chat.avatarUrl && !brokenAvatars.has(chat.id)}
-                <!-- Bridged avatars are fetched from the homeserver's
-                     authenticated media endpoint, which answers 404 for a
-                     picture the bridge referenced but never uploaded. The
-                     initial below is the fallback: a broken-image glyph is
-                     worse than no picture at all. -->
-                <img
-                  class="hub-view-chat-avatar"
-                  src={chat.avatarUrl}
-                  alt=""
-                  loading="lazy"
-                  onerror={() => markAvatarBroken(chat.id)}
-                />
-              {:else}
-                <!-- An initial, so a row without a picture still lines up with
-                     the rows that have one. -->
-                <span class="hub-view-chat-avatar placeholder" aria-hidden="true"
-                  >{chat.name.trim().charAt(0).toUpperCase()}</span
-                >
-              {/if}
-              <!-- Two lines, each with its own right-hand element: the time
-                   sits against the name, the unread count against the preview,
-                   so both columns centre on the line they belong to. -->
-              <span class="hub-view-chat-copy">
-                <span class="hub-view-row-top">
-                  <strong>{chat.name}</strong>
-                  {#if chat.lastActivity}
-                    <time datetime={chat.lastActivity}>{chatTime(chat.lastActivity)}</time>
-                  {/if}
-                </span>
-                <span class="hub-view-chat-bottom">
-                  <span class="hub-view-chat-preview">{chat.preview ?? ''}</span>
-                  {#if (chat.unread ?? 0) > 0}
-                    <span class="hub-view-chat-unread" aria-label={$t('hub.unreadCount', {count: chat.unread ?? 0})}
-                      >{chat.unread! > 99 ? '99+' : chat.unread}</span
-                    >
-                  {/if}
-                </span>
-              </span>
-            </button>
-          </li>
+          <li>{@render chatRow(chat, false)}</li>
         {:else}
           {#if loading}
             <!-- The rows that are coming, in their own shape: a spinner in the
@@ -2150,7 +2839,68 @@
             </li>
           {/if}
         {/each}
+        {#if hiddenRows.length > 0}
+          <!-- Hiding a chat does not remove it: what is hidden collects under
+               one row at the foot of the list, which expands into the rows
+               themselves the way a rail source expands into its accounts. -->
+          <li>
+            <button
+              type="button"
+              class="hub-view-row hub-view-hidden-row"
+              aria-expanded={hiddenOpen}
+              onclick={() => (hiddenOpen = !hiddenOpen)}
+            >
+              <span class="hub-view-chat-avatar placeholder" aria-hidden="true">
+                <Icon name="eye-off" size={14} />
+              </span>
+              <span class="hub-view-chat-copy">
+                <span class="hub-view-row-top">
+                  <strong>{$t('hub.hiddenChats')}</strong>
+                  <span class="hub-view-chat-when">
+                    <em>{hiddenRows.length}</em>
+                    <Icon name="chevron" size={12} />
+                  </span>
+                </span>
+              </span>
+            </button>
+          </li>
+          {#if hiddenOpen}
+            {#each hiddenRows as chat (chat.id)}
+              <li>{@render chatRow(chat, true)}</li>
+            {/each}
+          {/if}
+        {/if}
       </ul>
+      {#if chatMenu}
+        {@const target = chatMenu.chat}
+        {@const pinned = chatPrefs.pinned.includes(target.id)}
+        {@const hidden = chatPrefs.hidden.includes(target.id)}
+        <!-- Fixed to the viewport rather than to the list, which scrolls: a
+             menu that scrolled with it would drift off the row it belongs to. -->
+        <div
+          class="flareai-dropdown-menu hub-view-chat-menu"
+          role="menu"
+          bind:this={chatMenuEl}
+          style:left={`${chatMenu.x}px`}
+          style:top={`${chatMenu.y}px`}
+          style:visibility={chatMenu.placed ? 'visible' : 'hidden'}
+        >
+          <button
+            class="flareai-dropdown-item"
+            role="menuitem"
+            onclick={() => { chatPrefs = togglePinned(chatPrefs, target.id); closeChatMenu(); }}
+          ><Icon name={pinned ? 'pin-off' : 'pin'} size={14} /><span
+            >{pinned ? $t('hub.unpinChat') : $t('hub.pinChat')}</span
+          ></button>
+          <button
+            class="flareai-dropdown-item"
+            role="menuitem"
+            onclick={() => { chatPrefs = toggleHidden(chatPrefs, target.id); closeChatMenu(); }}
+          ><Icon name={hidden ? 'eye' : 'eye-off'} size={14} /><span
+            >{hidden ? $t('hub.unhideChat') : $t('hub.hideChat')}</span
+          ></button>
+        </div>
+      {/if}
     {:else}
       <p class="hub-view-empty">
         {#if loading}
@@ -2221,9 +2971,23 @@
         {/if}
         <textarea bind:value={composeBody} placeholder={$t('hub.writeMessage')}></textarea>
         <footer>
+          <div class="hub-view-compose-tools">
           <button type="button" onclick={() => void attachFiles()}>
             <Icon name="attach" size={13} /> Attach
           </button>
+          <button
+            type="button"
+            class="hub-view-importance"
+            class:enabled={composeImportance === 'high'}
+            role="switch"
+            aria-checked={composeImportance === 'high'}
+            aria-label={$t('hub.markImportant')}
+            data-tooltip-label={$t('hub.markImportant')}
+            onclick={() => (composeImportance = composeImportance === 'high' ? 'normal' : 'high')}
+          >
+            <Icon name="flag" size={13} />
+          </button>
+          </div>
           <button type="button" onclick={() => (composing = false)}>{$t('common.cancel')}</button>
           <button type="button" disabled={busy === 'save-draft'} onclick={() => void sendMail(true)}>
             {busy === 'save-draft' ? $t('hub.saving') : $t('hub.saveDraft')}
@@ -2240,121 +3004,171 @@
       </div>
     {:else if openMail || openEnvelope}
       <header class="hub-view-reader-head">
-        <button type="button" class="hub-view-back" onclick={closeReader}>
-          <Icon name="back" size={13} /> Back
-        </button>
-        <h2>{openMail?.subject ?? openEnvelope?.subject ?? ''}</h2>
+        <!-- The chevron sits beside the subject rather than on a line above it,
+             the same way it does in a chat: the subject is the title, and a
+             labelled row of its own costs a line the message would rather have. -->
+        <div class="hub-view-reader-title">
+          <button
+            type="button"
+            class="hub-view-back hub-view-back-icon"
+            aria-label={$t('browser.back')}
+            onclick={closeReader}
+          >
+            <Icon name="back" size={15} />
+          </button>
+          <h2>{openMail?.subject ?? openEnvelope?.subject ?? ''}</h2>
+        </div>
         <p>
           {openMail?.from?.name ??
             openMail?.from?.address ??
             (openEnvelope ? sender(openEnvelope) : $t('hub.unknownSender'))}
-          {#if openMail?.date ?? openEnvelope?.date}<em>· {openMail?.date ?? openEnvelope?.date}</em>{/if}
+          {#if openMail?.date ?? openEnvelope?.date}
+            <em>· {stamp(openMail?.date ?? openEnvelope?.date ?? '')}</em>
+          {/if}
         </p>
-        {#if openMail && (openMail.to.length > 0 || openMail.cc.length > 0)}
+        {#if openMail && (openMail.to.length > 0 || openMail.cc.length > 0 || openMail.bcc.length > 0)}
+          <!-- Each field on its own line and labelled, the way a message states
+               them: a run of names is only readable once you know which field
+               it belongs to. Bcc appears only on messages we sent. -->
           <p class="hub-view-recipients">
-            To {openMail.to.map((item) => item.name ?? item.address).join(', ') || '—'}
+            {#if openMail.to.length > 0}
+              <span><b>To:</b> {names(openMail.to)}</span>
+            {/if}
             {#if openMail.cc.length > 0}
-              · Cc {openMail.cc.map((item) => item.name ?? item.address).join(', ')}
+              <span><b>Cc:</b> {names(openMail.cc)}</span>
+            {/if}
+            {#if openMail.bcc.length > 0}
+              <span><b>Bcc:</b> {names(openMail.bcc)}</span>
             {/if}
           </p>
         {/if}
-        <div class="hub-view-reader-actions">
-          <div class="hub-view-action-group">
-            <button type="button" disabled={!openMail} title={$t('hub.reply')} onclick={() => startCompose('reply')}>
-              <Icon name="back" size={13} /> Reply
-            </button>
-            <button type="button" disabled={!openMail} title={$t('hub.replyAll')} onclick={() => startCompose('reply-all')}>
-              <Icon name="users" size={13} />
-            </button>
-            <button type="button" disabled={!openMail} title={$t('hub.forward')} onclick={() => startCompose('forward')}>
-              <Icon name="forward" size={13} />
-            </button>
-          </div>
-          {#if openEnvelope}
-            {@const envelope = openEnvelope}
-            <div class="hub-view-action-group">
-              <button type="button" title={$t('hub.archive')} onclick={() => void moveMail(envelope, 'archive')}>
-                <Icon name="archive" size={13} />
-              </button>
-              <button type="button" title={$t('hub.junk')} onclick={() => void moveMail(envelope, 'junk')}>
-                <Icon name="close" size={13} />
-              </button>
-              <button type="button" class="destructive" title={$t('common.delete')} onclick={() => void moveMail(envelope, 'trash')}>
-                <Icon name="trash" size={13} />
-              </button>
-            </div>
-            <div
-              class="hub-view-action-group hub-view-move"
-              onfocusout={(event) => {
-                const next = event.relatedTarget;
-                if (!(next instanceof Node) || !event.currentTarget.contains(next)) moveMenu = false;
-              }}
-            >
+        <!-- One strip of bare icons, each saying what it does on hover through
+             the app's own tooltip rather than the system's: these actions are
+             the same weight as every other icon control in the app, so they
+             wear the same nothing — no pill, no rule between them, no label on
+             the one that used to carry text.
+
+             Too narrow for the row and the whole strip folds into one ⋮, where
+             the actions get their names back beside the same icons. Folding
+             all of them together keeps the reading pane's actions in one place
+             at any width, rather than splitting them across a row and a menu. -->
+        <div
+          class="hub-view-reader-actions"
+          class:compact={compactActions}
+          bind:clientWidth={actionsWidth}
+          onfocusout={(event) => {
+            const next = event.relatedTarget;
+            if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
+              moveMenu = false;
+              overflowMenu = false;
+            }
+          }}
+        >
+          {#if compactActions}
+            <div class="hub-view-action-group hub-view-move">
               <button
                 type="button"
-                title={$t('hub.moveToFolder')}
-                aria-expanded={moveMenu}
-                onclick={() => (moveMenu = !moveMenu)}
+                aria-label={$t('hub.moreActions')}
+                aria-expanded={overflowMenu}
+                onclick={() => {
+                  overflowMenu = !overflowMenu;
+                  moveMenu = false;
+                }}
               >
-                <Icon name="folder-move" size={13} />
+                <Icon name="more" size={15} />
               </button>
-              {#if moveMenu}
-                <ul class="hub-view-folder-menu hub-view-menu-right">
-                  {#each railFolders.filter((item) => item.name !== mailFolder) as target (target.name)}
-                    <li>
-                      <button type="button" onclick={() => void moveTo(envelope, target.name)}>
-                        <Icon name={FOLDER_ICONS[target.role] ?? 'folder'} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
-                        {target.label}
-                      </button>
-                    </li>
-                  {/each}
+              {#if overflowMenu}
+                <!-- Opens rightwards: the ⋮ sits at the pane's leading edge, so
+                     a menu anchored to its right edge would hang off the pane
+                     and over the rail beside it. -->
+                <ul class="hub-view-folder-menu">
+                  {#if moveMenu && openEnvelope}
+                    {@const envelope = openEnvelope}
+                    {#each railFolders.filter((item) => item.name !== mailFolder) as target (target.name)}
+                      <li>
+                        <button
+                          type="button"
+                          onclick={() => {
+                            overflowMenu = false;
+                            void moveTo(envelope, target.name);
+                          }}
+                        >
+                          <Icon name={FOLDER_ICONS[target.role] ?? 'folder'} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+                          {target.label}
+                        </button>
+                      </li>
+                    {/each}
+                  {:else}
+                    {#each mailActions as action (action.id)}
+                      <li>
+                        <button
+                          type="button"
+                          class:destructive={action.destructive}
+                          class:on={action.on}
+                          disabled={action.disabled}
+                          onclick={() => runAction(action)}
+                        >
+                          <Icon name={action.icon} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} filled={action.filled} />
+                          {action.label}
+                        </button>
+                      </li>
+                    {/each}
+                  {/if}
                 </ul>
               {/if}
             </div>
-            <div class="hub-view-action-group">
-              <button
-                type="button"
-                class:on={envelope.flagged}
-                title={envelope.flagged ? $t('hub.unflag') : $t('hub.flag')}
-                onclick={() => void toggleFlag(envelope)}
-              >
-                <Icon name="bolt" size={13} filled={envelope.flagged} />
-              </button>
-              <button type="button" title={$t('hub.markUnread')} onclick={() => void markUnread(envelope)}>
-                <Icon name="mail" size={13} />
-              </button>
-            </div>
-            {#if currentFolder?.role === 'trash' || currentFolder?.role === 'junk'}
-              <div class="hub-view-action-group">
+          {:else}
+            {#each mailActions as action (action.id)}
+              {#if action.id === 'move'}
+                <div class="hub-view-action-group hub-view-move">
+                  <button
+                    type="button"
+                    aria-label={action.label}
+                    aria-expanded={moveMenu}
+                    onclick={() => (moveMenu = !moveMenu)}
+                  >
+                    <Icon name={action.icon} size={15} />
+                  </button>
+                  {#if moveMenu && openEnvelope}
+                    {@const envelope = openEnvelope}
+                    <ul class="hub-view-folder-menu hub-view-menu-right">
+                      {#each railFolders.filter((item) => item.name !== mailFolder) as target (target.name)}
+                        <li>
+                          <button type="button" onclick={() => void moveTo(envelope, target.name)}>
+                            <Icon name={FOLDER_ICONS[target.role] ?? 'folder'} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+                            {target.label}
+                          </button>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
+              {:else}
                 <button
                   type="button"
-                  class="destructive"
-                  title={$t('hub.deletePermanently')}
-                  onclick={() => void erase([envelope.id])}
+                  class:destructive={action.destructive}
+                  class:on={action.on}
+                  disabled={action.disabled}
+                  aria-label={action.label}
+                  onclick={() => action.run?.()}
                 >
-                  <Icon name="trash" size={13} /> Delete permanently
+                  <Icon name={action.icon} size={15} filled={action.filled} />
                 </button>
-              </div>
-            {/if}
+              {/if}
+            {/each}
           {/if}
         </div>
       </header>
       {#if openMail}
         {#if safeHtml}
           <!-- The sender's own markup, sanitised: scripts, frames, forms and
-               stylesheets are stripped, links are opened in the real browser
-               rather than inside the app, and remote images stay unloaded
-               until asked for so a mail cannot phone home just by being read. -->
+               stylesheets are stripped, and links are opened in the real
+               browser rather than inside the app. -->
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="hub-view-body hub-view-html" onclick={openLink}>
+          <div class="hub-view-body hub-view-html" onclick={openLink} onerrorcapture={hideBrokenImage}>
             {@html safeHtml}
           </div>
-          {#if blockedRemote}
-            <button type="button" class="hub-view-remote" onclick={() => (allowRemote = true)}>
-              <Icon name="image" size={13} /> Load remote images
-            </button>
-          {/if}
         {:else}
           <div class="hub-view-body">{openMail.body}</div>
         {/if}
@@ -2383,7 +3197,7 @@
         {#if thread.length > 1}
           <div class="hub-view-chain">
             <span class="hub-view-chain-head">Conversation · {thread.length} messages</span>
-            {#each thread as item (item.id)}
+            {#each chainExpanded ? thread : thread.slice(0, CHAIN_HEAD) as item (item.id)}
               <button
                 type="button"
                 class:active={item.id === openEnvelope?.id}
@@ -2391,9 +3205,17 @@
               >
                 <strong>{sender(item)}</strong>
                 <em>{when(item.date)}</em>
-                <span>{item.subject}</span>
               </button>
             {/each}
+            {#if thread.length > CHAIN_HEAD}
+              <button
+                type="button"
+                class="hub-view-chain-more"
+                onclick={() => (chainExpanded = !chainExpanded)}
+              >
+                {chainExpanded ? 'Show less' : `Show all ${thread.length}`}
+              </button>
+            {/if}
           </div>
         {/if}
       {:else if readerLoading}
@@ -2450,7 +3272,16 @@
               <span class="hub-view-quote">{$t('hub.replyToEarlier')}</span>
             {/if}
             {#each message.attachments ?? [] as attachment (attachment.url)}
-              {#if attachment.kind === 'image'}
+              {#if brokenMedia.has(attachment.url)}
+                <!-- The homeserver would not serve these bytes — a picture the
+                     bridge referenced but never carried across. A named chip
+                     says what was here; the blank full-size frame said
+                     nothing, at length. -->
+                <span class="hub-view-bubble-file">
+                  <Icon name="attach" size={13} />
+                  {attachment.name}
+                </span>
+              {:else if attachment.kind === 'image'}
                 <img
                   class="hub-view-bubble-image"
                   class:sticker={attachment.sticker}
@@ -2459,17 +3290,28 @@
                   width={attachment.width ?? undefined}
                   height={attachment.height ?? undefined}
                   loading="lazy"
+                  onerror={(event) => retryMedia(event, attachment.url)}
                 />
               {:else if attachment.kind === 'audio'}
                 <!-- Voice notes are most of what arrives on these networks, so
                      they play in place rather than downloading first. -->
-                <audio class="hub-view-bubble-audio" controls preload="metadata" src={attachment.url}
+                <audio
+                  class="hub-view-bubble-audio"
+                  controls
+                  preload="metadata"
+                  src={attachment.url}
+                  onerror={(event) => retryMedia(event, attachment.url)}
                 ></audio>
               {:else if attachment.kind === 'video'}
                 <!-- svelte-ignore a11y_media_has_caption -->
                 <!-- A video someone sent over WhatsApp has no caption track to
                      offer; there is nothing to point this at. -->
-                <video class="hub-view-bubble-video" controls preload="metadata" src={attachment.url}
+                <video
+                  class="hub-view-bubble-video"
+                  controls
+                  preload="metadata"
+                  src={attachment.url}
+                  onerror={(event) => retryMedia(event, attachment.url)}
                 ></video>
               {:else}
                 <a class="hub-view-bubble-file" href={attachment.url} download={attachment.name}>
@@ -2546,6 +3388,7 @@
           bind:this={messageMenuEl}
           style:left={`${messageMenu.x}px`}
           style:top={`${messageMenu.y}px`}
+          style:visibility={messageMenu.placed ? 'visible' : 'hidden'}
         >
           <span class="hub-view-emoji-row">
             {#each QUICK_REACTIONS as emoji (emoji)}
@@ -2556,7 +3399,7 @@
             class="flareai-dropdown-item"
             role="menuitem"
             onclick={() => { startReply(target); closeMessageMenu(); }}
-          ><Icon name="back" size={14} /><span>{$t('hub.reply')}</span></button>
+          ><Icon name="reply" size={14} /><span>{$t('hub.reply')}</span></button>
           <button
             class="flareai-dropdown-item"
             role="menuitem"
@@ -2564,6 +3407,7 @@
           ><Icon name="copy" size={14} /><span>{$t('common.copy')}</span></button>
         </div>
       {/if}
+
       {#if awayFromLatest}
         <!-- Sits over the foot of the thread, above the composer: the way back
              to the newest message once the reader has scrolled up from it. -->
@@ -2705,3 +3549,67 @@
   </section>
 </div>
 </div>
+
+{#snippet chatRow(chat: ChatDto, nested: boolean)}
+<button
+  type="button"
+  class="hub-view-row"
+  class:nested
+  class:active={activeChat?.id === chat.id}
+  class:unread={(chat.unread ?? 0) > 0}
+  onclick={() => void openChat(chat)}
+  oncontextmenu={(event) => openChatMenu(event, chat)}
+>
+  {#if chat.avatarUrl && !brokenAvatars.has(chat.id)}
+    <!-- Bridged avatars are fetched from the homeserver's
+         authenticated media endpoint, which answers 404 for a
+         picture the bridge referenced but never uploaded. The
+         initial below is the fallback: a broken-image glyph is
+         worse than no picture at all. -->
+    <img
+      class="hub-view-chat-avatar"
+      src={chat.avatarUrl}
+      alt=""
+      loading="lazy"
+      onerror={() => markAvatarBroken(chat.id)}
+    />
+  {:else}
+    <!-- An initial, so a row without a picture still lines up with
+         the rows that have one. -->
+    <span class="hub-view-chat-avatar placeholder" aria-hidden="true"
+      >{chat.name.trim().charAt(0).toUpperCase()}</span
+    >
+  {/if}
+  <!-- Two lines, each with its own right-hand element: the time
+       sits against the name, the unread count against the preview,
+       so both columns centre on the line they belong to. -->
+  <span class="hub-view-chat-copy">
+    <span class="hub-view-row-top">
+      <strong>{chat.name}</strong>
+      <!-- The pin and the time are one trailing group, so the pin
+           reads as a mark on the row's own corner rather than
+           something floating between the two columns, and the two
+           sit on one centre line. -->
+      <span class="hub-view-chat-when">
+        {#if chatPrefs.pinned.includes(chat.id)}
+          <!-- The glyph is decorative, so the state it stands for is said in
+               words for anyone who cannot see it. -->
+          <span class="visually-hidden">{$t('hub.pinned')}</span>
+          <Icon name="pin" size={11} />
+        {/if}
+        {#if chat.lastActivity}
+          <time datetime={chat.lastActivity}>{chatTime(chat.lastActivity)}</time>
+        {/if}
+      </span>
+    </span>
+    <span class="hub-view-chat-bottom">
+      <span class="hub-view-chat-preview">{chat.preview ?? ''}</span>
+      {#if (chat.unread ?? 0) > 0}
+        <span class="hub-view-chat-unread" aria-label={$t('hub.unreadCount', {count: chat.unread ?? 0})}
+          >{chat.unread! > 99 ? '99+' : chat.unread}</span
+        >
+      {/if}
+    </span>
+  </span>
+</button>
+{/snippet}

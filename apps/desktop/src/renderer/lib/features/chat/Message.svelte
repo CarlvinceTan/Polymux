@@ -50,6 +50,7 @@
 <script lang="ts">
   import {onDestroy, tick} from 'svelte';
   import {copyText} from '../../shared/clipboard';
+  import {displayTime} from '../../shared/displayTime';
   import {renderMarkdown} from './markdown';
   import Icon from '../../shared/components/Icon.svelte';
   import MessageAction from './MessageAction.svelte';
@@ -60,6 +61,10 @@
   /** True when an AgentActivity block is rendered above this message; its
    * live shimmer row is the working indicator, so the dots stand down. */
   export let activityVisible = false;
+  /** A transcript rather than a conversation — a delegated task's run, which
+   * nobody can reply to. Copy stays; editing and feedback would both be
+   * addressed to an agent that is not listening. */
+  export let readOnly = false;
   export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
   export let onFeedback: (id: string, feedback: MessageFeedback) => void = () => {};
   export let onOpenFile: (name: string) => void = () => {};
@@ -231,17 +236,7 @@
   }
 
   function formatMessageTime(value?: string): string {
-    if (!value) return '';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '';
-    const time = new Intl.DateTimeFormat(undefined, {hour: 'numeric', minute: '2-digit', hour12: true}).format(date);
-    const startOfDay = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
-    const now = new Date();
-    const days = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
-    if (days === 0) return time;
-    if (days > 0 && days < 7) return `${new Intl.DateTimeFormat(undefined, {weekday: 'long'}).format(date)} ${time}`;
-    const day = new Intl.DateTimeFormat(undefined, {day: 'numeric', month: 'short', ...(date.getFullYear() === now.getFullYear() ? {} : {year: 'numeric'})}).format(date);
-    return `${day}, ${time}`;
+    return value ? displayTime(value) : '';
   }
 </script>
 
@@ -303,8 +298,8 @@
         {#if message.role === 'user' || (message.text && !streaming)}
           <div class="message-actions" aria-label={message.role === 'user' ? $t('message.userActions') : $t('message.assistantActions')}>
             <MessageAction icon={copied ? 'check' : 'copy'} label={copied ? $t('common.copied') : $t('common.copy')} onAction={copyMessage}/>
-            {#if message.role === 'user'}<MessageAction icon="edit" label={$t('common.edit')} onAction={startEdit}/>{/if}
-            {#if message.role === 'assistant'}
+            {#if message.role === 'user' && !readOnly}<MessageAction icon="edit" label={$t('common.edit')} onAction={startEdit}/>{/if}
+            {#if message.role === 'assistant' && !readOnly}
               <MessageAction icon="thumb-up" label={$t('message.goodResponse')} active={message.feedback === 'up'} onAction={() => toggleFeedback('up')}/>
               <MessageAction icon="thumb-down" label={$t('message.badResponse')} active={message.feedback === 'down'} onAction={() => toggleFeedback('down')}/>
             {/if}

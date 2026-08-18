@@ -1,4 +1,4 @@
-import type { AgentTool } from "@flareai/core";
+import type { AgentTool, AgentToolContext } from "@flareai/core";
 import type { JsonObject } from "@flareai/inference";
 
 export interface SubagentRequest {
@@ -6,9 +6,12 @@ export interface SubagentRequest {
   prompt: string;
   context: "none" | "recent";
 }
+/** The tool's own call context is handed straight through: the runtime needs
+ * it to announce the child run's id on the parent's event stream, which is
+ * what lets the UI open a task's transcript while it is still working. */
 export type SubagentRunner = (
   request: SubagentRequest,
-  signal: AbortSignal,
+  context: AgentToolContext,
 ) => Promise<{ runId: string; result: string; status: string }>;
 
 export function createTaskTool(run: SubagentRunner): AgentTool {
@@ -56,7 +59,7 @@ export function createTaskTool(run: SubagentRunner): AgentTool {
         prompt: required(input, "prompt"),
         context: input.context === "recent" ? "recent" : "none",
       };
-      const result = await run(request, context.signal);
+      const result = await run(request, context);
       return {
         content: result.result,
         isError: result.status !== "completed",

@@ -5,6 +5,7 @@ import type {
   InferenceService,
   InputBlock,
   ModelRef,
+  ReasoningEffort,
 } from "@flareai/inference";
 import type { Storage } from "@flareai/storage";
 import { estimateContextTokens, estimateMessageTokens } from "./tokens.js";
@@ -78,6 +79,13 @@ export class CompactionManager {
      * assembled the context knows this mapping, so it has to come in from there.
      */
     durableSequences: ReadonlyArray<number | null> = [],
+    /**
+     * The model that writes the summary, when it is not the one running the
+     * conversation. `model` still decides *whether* to compact — it is that
+     * model's window the history has to fit — so only the summarising call
+     * moves.
+     */
+    summarizer?: { model: ModelRef; reasoning?: ReasoningEffort },
   ): Promise<AgentContext> {
     const modelInfo = this.#inference.getModel(model);
     if (!this.#settings.enabled || !modelInfo) return context;
@@ -133,7 +141,12 @@ export class CompactionManager {
     if (cut <= 0) return context;
     const older = context.messages.slice(0, cut);
     await onCompacting?.();
-    const summary = await this.#summarize(model, older, signal);
+    const summary = await this.#summarize(
+      summarizer?.model ?? model,
+      older,
+      signal,
+      summarizer?.reasoning,
+    );
     const prefix = fingerprint(older);
     this.#storage.saveCompaction({
       id: crypto.randomUUID(),
@@ -171,10 +184,12 @@ export class CompactionManager {
     model: ModelRef,
     messages: AgentContext["messages"],
     signal: AbortSignal,
+    reasoning?: ReasoningEffort,
   ): Promise<string> {
     let answer = "";
     for await (const event of this.#inference.stream({
       model,
+      reasoning,
       systemPrompt: compactionPrompt,
       messages: [{ role: "user", content: transcript(messages) }],
       signal,

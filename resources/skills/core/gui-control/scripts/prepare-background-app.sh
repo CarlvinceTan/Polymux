@@ -25,6 +25,7 @@ verified_launch_args=()
 compatibility_audit="false"
 audit_authorized="false"
 app_path=""
+first_use_launch="false"
 
 usage() {
   print -u2 "Usage: prepare-background-app.sh --app APP_NAME [--process PROCESS_NAME] [--bundle-id ID] [--check-only] [--allow-frontmost-requested] [--compiled-launch] [--launch-even-if-running] [--verify-command-contains TEXT] [--verified-launch-command ABSOLUTE_PATH] [--verified-launch-arg VALUE ...] [--compatibility-audit --user-authorized-compatibility-audit --app-path APP_PATH]"
@@ -337,6 +338,11 @@ if [[ "$compiled_launch" == "true" ]]; then
       command=*) verified_launch_command="${compiled_line#command=}" ;;
       arg=*) verified_launch_args+=("${compiled_line#arg=}") ;;
       launch_behavior=*) launch_behavior="${compiled_line#launch_behavior=}" ;;
+      # No compiled route for this app yet. The launcher offered is the strict
+      # non-activating one and every watcher below is armed either way, so the
+      # first use is as contained as a compiled one — what it lacks is only the
+      # memory, which is written from its outcome.
+      status=first_use_monitored) first_use_launch="true" ;;
     esac
   done <<< "$compiled_output"
   if [[ -z "$compiled_route_id" || -z "$verified_launch_command" ]]; then
@@ -486,6 +492,7 @@ if [[ "$launch_behavior" == "restore_previous_frontmost" ]]; then
       /usr/bin/python3 "${0:A:h}/app-control-registry.py" record-incident \
         --route-id "$compiled_route_id" \
         --app-id "$bundle_id" \
+        --kind launch \
         --controller compiled-foreground-recovery \
         --event foreground_recovery_failed \
         --details "${recovery_result:-Recovery did not return $app_name to the background.}" >/dev/null 2>&1 || true
@@ -724,6 +731,7 @@ if [[ "$strict_recovery_result" == *'"status":"recovery_failed"'* ]]; then
     /usr/bin/python3 "${0:A:h}/app-control-registry.py" record-incident \
       --route-id "$compiled_route_id" \
       --app-id "$bundle_id" \
+      --kind launch \
       --controller compiled-hidden-launch-containment \
       --event foreground_recovery_failed \
       --details "$strict_recovery_result" >/dev/null 2>&1 || true
@@ -747,6 +755,15 @@ if [[ "$strict_recovery_result" == *'"status":"recovered"'* ]]; then
     report "blocked_foreground_recovery_failed"
     exit 11
   fi
+  if [[ "$first_use_launch" == "true" ]]; then
+    # It took focus and recovery worked, so this app is a foregrounding route
+    # rather than a hidden one. Recorded as that: the next launch takes the
+    # monitored recovery path deliberately instead of surprising the user again.
+    /usr/bin/python3 "${0:A:h}/app-control-registry.py" remember-route \
+      --kind foregrounding \
+      --app "$app_name" \
+      --bundle-id "$bundle_id" >/dev/null 2>&1 || true
+  fi
   report "ready_background_recovered_launch"
   exit 0
 fi
@@ -756,6 +773,7 @@ if [[ "$(<"$focus_log")" == "foregrounded" ]] || pid_in_csv "$frontmost_pid_afte
     /usr/bin/python3 "${0:A:h}/app-control-registry.py" record-incident \
       --route-id "$compiled_route_id" \
       --app-id "$bundle_id" \
+      --kind launch \
       --controller compiled-hidden-launch \
       --event unexpected_foreground_activation \
       --details "Monitored launch brought $app_name frontmost." >/dev/null 2>&1 || true
@@ -769,6 +787,7 @@ if [[ "$(<"$window_log")" == *'"status":"window_exposed"'* ]]; then
     /usr/bin/python3 "${0:A:h}/app-control-registry.py" record-incident \
       --route-id "$compiled_route_id" \
       --app-id "$bundle_id" \
+      --kind launch \
       --controller compiled-hidden-launch \
       --event unexpected_window_exposure \
       --details "$(<"$window_log")" >/dev/null 2>&1 || true
@@ -785,6 +804,13 @@ fi
 if [[ "$launch_even_if_running" == "true" ]] && ! has_new_pid "$matching_pids_before" "$matching_pids_after"; then
   report "blocked_launch_unverified"
   exit 8
+fi
+
+if [[ "$first_use_launch" == "true" ]]; then
+  /usr/bin/python3 "${0:A:h}/app-control-registry.py" remember-route \
+    --kind launch \
+    --app "$app_name" \
+    --bundle-id "$bundle_id" >/dev/null 2>&1 || true
 fi
 
 report "ready_hidden_launch"

@@ -170,10 +170,25 @@ export const DRIVE_PROVIDERS: {
   description: string;
 }[] = [
   {
+    value: "all",
+    label: "All storage",
+    kind: "virtual",
+    description: "Everything you have connected, in one place.",
+  },
+  {
     value: "local",
     label: "This Mac",
     kind: "local",
     description: "A folder on this computer. Always available, never synced.",
+  },
+  {
+    value: "network",
+    label: "Network",
+    kind: "network",
+    // A share is a folder like any other until it is not there: the server is
+    // asleep, the VPN is down, the volume was ejected. That is the whole
+    // reason it is not filed under This Mac, which is always connected.
+    description: "A shared folder on your network. Reachable when it is mounted.",
   },
   {
     value: "google-drive",
@@ -221,6 +236,16 @@ export function driveProvider(value: unknown): DriveProviderId {
  */
 export const DRIVE_LOCAL_OUTPUTS = "outputs";
 export const DRIVE_LOCAL_HOME = "home";
+/** The virtual drive's one account: it has nothing to tell apart. */
+export const DRIVE_ALL_ACCOUNT = "all";
+
+/**
+ * Providers a user can actually connect, which is what Settings lists. The
+ * virtual drive is a view of the others rather than one of them.
+ */
+export const DRIVE_CONNECTABLE = DRIVE_PROVIDERS.filter(
+  (entry) => entry.kind !== "virtual",
+);
 
 /** Builds a source id, and takes one apart again. Kept in one place so the
  * renderer and the main process cannot disagree about the separator. */
@@ -269,17 +294,20 @@ export function driveProviderKind(value: DriveProviderId): DriveProviderKind {
 /** Unknown ids are dropped rather than rejected: an order persisted by a build
  * that knew a provider this one does not must still load. */
 export function driveSaveOrder(value: unknown): DriveProviderId[] {
-  if (!Array.isArray(value)) return DRIVE_PROVIDERS.map((item) => item.value);
+  // The save order answers "where does a new file actually go", so the virtual
+  // drive is not a candidate: it holds nothing, and naming it here would make
+  // it the destination for the files it is only supposed to be showing.
+  if (!Array.isArray(value)) return DRIVE_CONNECTABLE.map((item) => item.value);
   const seen = new Set<DriveProviderId>();
   for (const entry of value)
     if (
       typeof entry === "string" &&
-      DRIVE_PROVIDERS.some((item) => item.value === entry)
+      DRIVE_CONNECTABLE.some((item) => item.value === entry)
     )
       seen.add(entry as DriveProviderId);
   // Anything the stored order left out still has to be reachable, so the
   // catalogue's own order fills the tail.
-  for (const item of DRIVE_PROVIDERS) seen.add(item.value);
+  for (const item of DRIVE_CONNECTABLE) seen.add(item.value);
   return [...seen];
 }
 

@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type WorkspaceTabKind = 'document' | 'slides' | 'sheet' | 'photo' | 'video' | 'browser' | 'side-chat' | 'summary' | 'drive' | 'schedule' | 'hub';
+  export type WorkspaceTabKind = 'document' | 'slides' | 'sheet' | 'photo' | 'video' | 'browser' | 'side-chat' | 'summary' | 'drive' | 'schedule' | 'hub' | 'task';
   export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; section?: 'outputs' | 'references' | 'tasks'};
 
   /**
@@ -154,8 +154,8 @@
     resolveVisitFavicons,
     forgetVisitFavicons,
     HISTORY_SUGGESTION_LIMIT,
-    HISTORY_SUGGESTION_MINIMUM,
   } from './visitHistory';
+  import {scrollFadeX} from '../../shared/scrollFade';
   import {onThemeChange} from '../../shared/theme';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import {SPLIT_LAYOUT_MIN_WIDTH, clampPanelWidth, workspaceResizeBounds} from '../../shared/layout/layoutSizing';
@@ -166,6 +166,8 @@
   import VideoView from './VideoView.svelte';
   import BrowserView from './BrowserView.svelte';
   import SideChatView from './SideChatView.svelte';
+  import TaskView from './TaskView.svelte';
+  import type {TaskTranscript} from './taskTranscript';
   import HubView from './HubView.svelte';
   import SummaryView, {type SummaryViewData} from './SummaryView.svelte';
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
@@ -181,9 +183,15 @@
   export let motion = false;
   export let reservedWidth = 0;
   export let summaryData: SummaryViewData = {outputs: [], references: [], tasks: []};
+  /** Subagent transcripts, keyed by the task id the tab carries. */
+  export let taskTranscripts: Record<string, TaskTranscript> = {};
+  export let onOpenLink: (url: string, title: string) => void = () => {};
+  export let onOpenTask: (task: SummaryViewData['tasks'][number]) => void = () => {};
+  export let onOpenFilePath: (path: string) => void = () => {};
   export let driveRoot: DriveEntry = {id: 'drive-root', name: translate('workspace.drive'), kind: 'folder', children: []};
   /** Storage backends the drive can be switched between. */
   export let driveSources: DriveSource[] = [];
+  export let onDriveReveal: (entry: DriveEntry) => void = () => {};
   export let driveSourceId = '';
   export let driveLoading = false;
   export let driveError = '';
@@ -222,9 +230,6 @@
   export let onSelect: (id: string) => void = () => {};
   export let onClose: (id: string) => void = () => {};
   export let onNew: (kind: WorkspaceTabKind) => void = () => {};
-  /** Suggestions are asks for the agent, not files the launcher makes itself:
-   * they send the chat a message rather than opening a blank view. */
-  export let onSuggest: (prompt: string) => void = () => {};
   /** Opens a previously visited page in a browser tab. */
   export let onOpenUrl: (url: string, title: string) => void = () => {};
   export let onToggleExpand: () => void = () => {};
@@ -240,13 +245,14 @@
   let addOpen = false;
 
   $: activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+  /** A task tab is named by its row in Summary and takes its status from it, so
+   * the tab and the row can never disagree. */
+  $: activeTask = summaryData.tasks.find((task) => task.id === activeTab?.id);
   /** The one-of-a-kind views drop out of the menus once they are open: there is
    * nothing left to create, only a tab to click. */
   $: openKinds = new Set(tabs.map((tab) => tab.kind));
-  /** Once the user has browsed enough for the list to be meaningful, picking
-   * up where they left off beats the generic create-something prompts. */
+  /** The pages the launcher offers to pick up again. */
   $: historySuggestions = $visitHistory.slice(0, HISTORY_SUGGESTION_LIMIT);
-  $: showHistory = $visitHistory.length >= HISTORY_SUGGESTION_MINIMUM;
 
   /** Titles of the built-in singleton tabs are named, not typed by anyone, so
    * they are resolved at render time rather than read from the stored title:
@@ -262,7 +268,7 @@
     return key ? $t(key) : tab.title;
   };
 
-  const tabIcons: Record<WorkspaceTabKind, 'document' | 'presentation' | 'spreadsheet' | 'image' | 'video' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock'> = {
+  const tabIcons: Record<WorkspaceTabKind, 'document' | 'presentation' | 'spreadsheet' | 'image' | 'video' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'task'> = {
     document: 'document',
     slides: 'presentation',
     sheet: 'spreadsheet',
@@ -274,6 +280,7 @@
     drive: 'drive',
     schedule: 'clock',
     hub: 'chat',
+    task: 'task',
   };
 
   /** Hides the embedded page only once the closing slide has finished. While
@@ -395,6 +402,25 @@
 
 <svelte:window onclick={dismissMenus} onkeydown={dismissMenus}/>
 
+<!-- The handle is a sibling of the drawer rather than a child of it: the
+     drawer clips its own overflow, and an embedded page is a native view laid
+     over the DOM inside it, so a strip living in there is both clipped and
+     covered. Out here it keeps its full width against the conversation. -->
+<button
+  type="button"
+  class="workspace-resize-handle"
+  class:open={open && !expanded}
+  class:resizing
+  aria-label={$t('workspace.resize')}
+  tabindex={open && !expanded ? 0 : -1}
+  data-tooltip="none"
+  onpointerdown={startResize}
+  onpointermove={dragResize}
+  onpointerup={stopResize}
+  onpointercancel={stopResize}
+  onkeydown={resizeWithKeyboard}
+></button>
+
 <!-- Always mounted so closing is a slide rather than an unmount. `inert` while
      closed keeps its controls out of the tab order. -->
 <aside
@@ -408,21 +434,8 @@
   aria-hidden={!open}
   inert={!open}
 >
-  <button
-    type="button"
-    class="workspace-resize-handle"
-    aria-label={$t('workspace.resize')}
-    tabindex={open && !expanded ? 0 : -1}
-    data-tooltip="none"
-    onpointerdown={startResize}
-    onpointermove={dragResize}
-    onpointerup={stopResize}
-    onpointercancel={stopResize}
-    onkeydown={resizeWithKeyboard}
-  ></button>
-
   <div class="tab-strip">
-    <div class="tabs">
+    <div class="tabs" use:scrollFadeX={`${tabs.length}:${activeTab?.id ?? ''}`}>
       {#each tabs as tab (tab.id)}
         <div class:active={tab.id === activeTab?.id} class="tab">
           <button type="button" class="tab-main" onclick={() => onSelect(tab.id)}>
@@ -487,31 +500,30 @@
   <div class="workspace-content">
     {#if !activeTab}
       <div class="workspace-launcher">
-        <button type="button" class="workspace-launcher-row" onclick={() => onNew('browser')}><Icon name="globe" size={16}/><span>{$t('workspace.browser')}</span></button>
-        {#if !openKinds.has('drive')}
-          <button type="button" class="workspace-launcher-row" onclick={() => onNew('drive')}><Icon name="drive" size={16}/><span>{$t('workspace.drive')}</span></button>
-        {/if}
-        {#if !openKinds.has('schedule')}
-          <button type="button" class="workspace-launcher-row" onclick={() => onNew('schedule')}><Icon name="clock" size={16}/><span>{$t('workspace.schedule')}</span></button>
-        {/if}
-        <button type="button" class="workspace-launcher-row" onclick={() => onNew('hub')}><Icon name="chat" size={16}/><span>{$t('workspace.hub')}</span></button>
-        <p class="workspace-launcher-heading">{showHistory ? $t('workspace.recent') : $t('workspace.suggestions')}</p>
-        <div class="workspace-launcher-suggestions">
-          {#if showHistory}
+        <p class="workspace-launcher-heading">{$t('workspace.open')}</p>
+        <div class="workspace-launcher-rows">
+          <button type="button" class="workspace-launcher-row" onclick={() => onNew('browser')}><Icon name="globe" size={16}/><span>{$t('workspace.browser')}</span></button>
+          {#if !openKinds.has('drive')}
+            <button type="button" class="workspace-launcher-row" onclick={() => onNew('drive')}><Icon name="drive" size={16}/><span>{$t('workspace.drive')}</span></button>
+          {/if}
+          {#if !openKinds.has('schedule')}
+            <button type="button" class="workspace-launcher-row" onclick={() => onNew('schedule')}><Icon name="clock" size={16}/><span>{$t('workspace.schedule')}</span></button>
+          {/if}
+          <button type="button" class="workspace-launcher-row" onclick={() => onNew('hub')}><Icon name="chat" size={16}/><span>{$t('workspace.hub')}</span></button>
+        </div>
+        {#if historySuggestions.length}
+          <p class="workspace-launcher-heading">{$t('workspace.recent')}</p>
+          <div class="workspace-launcher-rows">
             {#each historySuggestions as visit (visit.url)}
-              <button type="button" class="workspace-launcher-suggestion" onclick={() => onOpenUrl(visit.url, visit.title)}>
+              <button type="button" class="workspace-launcher-row" onclick={() => onOpenUrl(visit.url, visit.title)}>
                 <span class="tab-favicon">
                   {#if usableFavicon(visit.favicon, faviconsSettled + themeRevision)}<img src={visit.favicon} alt="" draggable="false"/>{:else}<Icon name="globe" size={16}/>{/if}
                 </span>
                 <span>{visit.title}</span>
               </button>
             {/each}
-          {:else}
-            <button type="button" class="workspace-launcher-suggestion" onclick={() => onSuggest($t('workspace.suggestDocumentPrompt'))}><Icon name="document" size={16}/><span>{$t('workspace.suggestDocument')}</span></button>
-            <button type="button" class="workspace-launcher-suggestion" onclick={() => onSuggest($t('workspace.suggestPresentationPrompt'))}><Icon name="presentation" size={16}/><span>{$t('workspace.suggestPresentation')}</span></button>
-            <button type="button" class="workspace-launcher-suggestion" onclick={() => onSuggest($t('workspace.suggestSpreadsheetPrompt'))}><Icon name="spreadsheet" size={16}/><span>{$t('workspace.suggestSpreadsheet')}</span></button>
-          {/if}
-        </div>
+          </div>
+        {/if}
       </div>
     {:else if activeTab.kind === 'document'}<DocumentView title={activeTab.title}/>
     {:else if activeTab.kind === 'slides'}<SlideView title={activeTab.title}/>
@@ -526,11 +538,20 @@
          covering the menu. -->
     {:else if activeTab.kind === 'browser'}{#key activeTab.id}<BrowserView tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || browserHidden || addOpen} onState={(patch) => onTabState(activeTab.id, patch)}/>{/key}
     {:else if activeTab.kind === 'side-chat'}<SideChatView title={activeTab.title}/>
+    {:else if activeTab.kind === 'task'}<TaskView
+      title={activeTab.title}
+      taskId={activeTab.id}
+      status={activeTask?.status ?? 'active'}
+      transcript={taskTranscripts[activeTab.id] ?? null}
+      {onOpenLink}
+      {onOpenFilePath}
+    />
     {:else if activeTab.kind === 'hub'}<HubView/>
     {:else if activeTab.kind === 'drive'}<DriveView
       title={activeTab.title}
       root={driveRoot}
       sources={driveSources}
+      onReveal={onDriveReveal}
       activeSourceId={driveSourceId}
       loading={driveLoading}
       error={driveError}
@@ -547,7 +568,7 @@
       onDelete={driveActions?.remove ?? null}
     />
     {:else if activeTab.kind === 'schedule'}<ScheduleView title={activeTab.title} items={scheduleItems} error={scheduleError} onDismissError={onDismissScheduleError} onOpenItem={onOpenScheduleRun} onMarkRead={onMarkScheduleRead} onToggleItem={onToggleSchedule} onSave={onSaveSchedule} onDeleteItem={onDeleteSchedule} onRunItem={onRunSchedule}/>
-    {:else}<SummaryView section={activeTab.section ?? 'outputs'} data={summaryData}/>
+    {:else}<SummaryView section={activeTab.section ?? 'outputs'} data={summaryData} {onOpenTask}/>
     {/if}
   </div>
 </aside>

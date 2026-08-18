@@ -84,7 +84,9 @@ proof that the desktop UI visibly refreshed; require a verified host signal or
 tell the user to reopen the task.
 
 Compiled enrollment remains a staged registry change with the complete
-maintenance gate. An app or macOS update marks compiled evidence stale, but it
+maintenance gate, applied with `scripts/app-control-registry.py enroll-route`
+against this installation's own registry — never by editing the file, and never
+into anything that ships with the app. An app or macOS update marks compiled evidence stale, but it
 does not imply the route changed: use the old observation as a hypothesis and
 revalidate only the capability required by the current task.
 

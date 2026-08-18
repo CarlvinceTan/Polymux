@@ -1,5 +1,5 @@
 import {cronError} from "@flareai/protocol";
-import type {MailListRequest, SaveCustomMcpRequest, SaveCustomSkillRequest, ScheduleInput, SchedulePatch, ScheduleWeekday, SendMailRequest, SkillUploadFile, SystemPermissionKind, WorkspaceSnapshotDto} from "@flareai/protocol";
+import type {BrowserImportRequestDto, BrowserPermissionDto, MailListRequest, PermissionDecisionDto, SaveCustomMcpRequest, SaveCustomSkillRequest, ScheduleInput, SchedulePatch, ScheduleWeekday, SendMailRequest, SkillUploadFile, SystemPermissionKind, WorkspaceSnapshotDto} from "@flareai/protocol";
 import {app} from "electron";
 import {randomUUID} from "node:crypto";
 import {parse as parseToml} from "smol-toml";
@@ -144,10 +144,16 @@ export function sendMailRequest(value: unknown): SendMailRequest {
     body: typeof input.body === "string" ? input.body : "",
     draft: input.draft === true,
     attachments: optionalStringArray(input.attachments, "attachments"),
+    importance: mailImportance(input.importance),
     inReplyTo: typeof input.inReplyTo === "string" ? input.inReplyTo : undefined,
     references: optionalStringArray(input.references, "references"),
     replacesDraft: draftReference(input.replacesDraft),
   };
+}
+
+/** Anything but the two flags is "normal", which writes no header at all. */
+export function mailImportance(value: unknown): SendMailRequest["importance"] {
+  return value === "high" || value === "low" ? value : "normal";
 }
 
 /** The draft an edited message replaces, when it came from one. */
@@ -219,6 +225,11 @@ export const SYSTEM_PERMISSIONS: Record<SystemPermissionKind, true> = {
   "screen-recording": true,
   accessibility: true,
   "full-disk-access": true,
+  reminders: true,
+  calendars: true,
+  contacts: true,
+  photos: true,
+  automation: true,
 };
 
 export function systemPermission(value: unknown): SystemPermissionKind;
@@ -265,6 +276,57 @@ export function chronicleQuery(value: unknown): {
     result.limit = Math.min(Number(record.limit), 1_000);
   }
   return result;
+}
+
+export function chroniclePatch(value: unknown): {
+  capturePolicy?: "all" | "except" | "only";
+  apps?: string[];
+  sites?: string[];
+  recordPrivateBrowsing?: boolean;
+  interactionEvents?: boolean;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Chronicle settings must be an object");
+  const record = value as Record<string, unknown>;
+  const patch: {
+    capturePolicy?: "all" | "except" | "only";
+    apps?: string[];
+    sites?: string[];
+    recordPrivateBrowsing?: boolean;
+    interactionEvents?: boolean;
+  } = {};
+  if (record.capturePolicy !== undefined) {
+    if (record.capturePolicy !== "all" && record.capturePolicy !== "except" && record.capturePolicy !== "only")
+      throw new Error("capturePolicy must be all, except or only");
+    patch.capturePolicy = record.capturePolicy;
+  }
+  for (const key of ["apps", "sites"] as const) {
+    const raw = record[key];
+    if (raw === undefined) continue;
+    if (!Array.isArray(raw) || raw.some((item) => typeof item !== "string"))
+      throw new Error(`${key} must be an array of strings`);
+    patch[key] = (raw as string[]).map((item) => item.trim()).filter(Boolean);
+  }
+  for (const key of ["recordPrivateBrowsing", "interactionEvents"] as const) {
+    const raw = record[key];
+    if (raw === undefined) continue;
+    if (typeof raw !== "boolean") throw new Error(`${key} must be a boolean`);
+    patch[key] = raw;
+  }
+  return patch;
+}
+
+/** A closed time range the user asked Chronicle to forget. */
+export function chronicleRange(since: unknown, until: unknown): {since: Date; until: Date} {
+  const parse = (value: unknown, name: string) => {
+    if (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
+      throw new Error(`${name} must be an ISO timestamp`);
+    return new Date(value);
+  };
+  const from = parse(since, "since");
+  const to = parse(until, "until");
+  if (from > to) throw new Error("since must not be after until");
+  return {since: from, until: to};
 }
 
 export function audioBuffer(value: unknown): Buffer {
@@ -379,3 +441,101 @@ export function positiveRate(value: unknown): number | null {
  * A file's media type from its name. Enough to decide whether a network shows
  * an attachment inline as a picture, a voice note, or a plain download.
  */
+
+const BROWSER_PERMISSIONS = [
+  "geolocation",
+  "media",
+  "notifications",
+  "clipboard-read",
+  "pointerLock",
+  "fullscreen",
+  "openExternal",
+];
+
+/** A capability name the embedded browser negotiates. Anything else is a
+ * request for something no prompt was designed for, so it is refused rather
+ * than passed through to Chromium. */
+export function browserPermission(value: unknown): BrowserPermissionDto {
+  if (typeof value !== "string" || !BROWSER_PERMISSIONS.includes(value))
+    throw new Error(`Unknown browser permission: ${String(value)}`);
+  return value as BrowserPermissionDto;
+}
+
+export function permissionDecision(value: unknown): PermissionDecisionDto {
+  if (value !== "allow" && value !== "deny" && value !== "ask")
+    throw new Error(`Unknown permission decision: ${String(value)}`);
+  return value;
+}
+
+/** An origin as `scheme://host[:port]`. Round-tripped through `URL` so a path,
+ * query or fragment the renderer sent is dropped rather than stored as part of
+ * the site's identity. */
+export function origin(value: unknown): string {
+  const parsed = new URL(required(value, "origin"));
+  if (parsed.origin === "null") throw new Error("origin must be a real site");
+  return parsed.origin;
+}
+
+export function browserSettingsPatch(value: unknown): {
+  downloadDirectory?: string | null;
+  askWhereToSave?: boolean;
+  autofillEnabled?: boolean;
+} {
+  const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    // null is meaningful here — it asks the main process to open the picker —
+    // so it is kept, and only absence means "unchanged".
+    downloadDirectory:
+      input.downloadDirectory === null
+        ? null
+        : typeof input.downloadDirectory === "string"
+          ? input.downloadDirectory
+          : undefined,
+    askWhereToSave:
+      typeof input.askWhereToSave === "boolean" ? input.askWhereToSave : undefined,
+    autofillEnabled:
+      typeof input.autofillEnabled === "boolean" ? input.autofillEnabled : undefined,
+  };
+}
+
+export function clearDataOptions(value: unknown): {
+  cookies: boolean;
+  cache: boolean;
+  downloads: boolean;
+  permissions: boolean;
+  logins: boolean;
+} {
+  const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  // Everything defaults off: a malformed payload must not clear more than it
+  // was asked to.
+  return {
+    cookies: input.cookies === true,
+    cache: input.cache === true,
+    downloads: input.downloads === true,
+    permissions: input.permissions === true,
+    logins: input.logins === true,
+  };
+}
+
+export function browserImportRequest(value: unknown): BrowserImportRequestDto {
+  const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    sourceId: required(input.sourceId, "source id"),
+    profileId: required(input.profileId, "profile id"),
+    cookies: input.cookies === true,
+    passwords: input.passwords === true,
+    history: input.history === true,
+  };
+}
+
+/** The options a history read takes. A limit is clamped rather than trusted:
+ * the renderer asking for a million rows is a renderer that hangs. */
+export function browserHistoryQuery(value: unknown): {query?: string; limit?: number} {
+  const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const query = typeof input.query === "string" ? input.query.slice(0, 200) : undefined;
+  const limit =
+    typeof input.limit === "number" && Number.isFinite(input.limit)
+      ? Math.min(1000, Math.max(1, Math.trunc(input.limit)))
+      : undefined;
+  return {query, limit};
+}

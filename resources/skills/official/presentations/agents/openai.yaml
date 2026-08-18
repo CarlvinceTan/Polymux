@@ -1,8 +1,0 @@
-interface:
-  display_name: "Presentations"
-  short_description: "Create and edit polished slide decks"
-  icon_small: "./assets/presentations.svg"
-  icon_large: "./assets/presentations.svg"
-  brand_color: "#C2410C"
-  default_prompt: "Use the Presentations skill to create or edit this deck."
-

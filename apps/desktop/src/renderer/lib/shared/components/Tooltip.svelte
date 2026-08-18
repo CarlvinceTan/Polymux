@@ -46,6 +46,9 @@
   }
 
   function show(button: HTMLButtonElement): void {
+    // The startup cover is click-through, so the pointer reaches the app
+    // behind it; a pill raised then would float over the brand alone.
+    if (document.documentElement.dataset.startup) return;
     const nextLabel = tooltipLabel(button);
     if (!nextLabel) return;
     if (target === button && label === nextLabel && visible) return;

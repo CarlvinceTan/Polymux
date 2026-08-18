@@ -1,10 +1,13 @@
 import type {
   ChronicleEntry,
+  ChronicleFrame,
   ChronicleFrameSource,
   ChroniclePromptContext,
   ChronicleSettings,
   ChronicleStatus,
   ChronicleSystemStateSource,
+  InteractionEvent,
+  InteractionEventSource,
 } from "./types.js";
 import { ChronicleStore } from "./store.js";
 
@@ -12,6 +15,8 @@ export interface ChronicleManagerOptions {
   directory: string;
   frames: ChronicleFrameSource;
   system: ChronicleSystemStateSource;
+  /** Optional; without one the interaction stream simply stays empty. */
+  interactions?: InteractionEventSource;
   clock?: () => Date;
   schedule?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   cancelSchedule?: (timer: ReturnType<typeof setTimeout>) => void;
@@ -23,6 +28,11 @@ export class ChronicleManager {
   readonly store: ChronicleStore;
   readonly #frames: ChronicleFrameSource;
   readonly #system: ChronicleSystemStateSource;
+  readonly #interactions?: InteractionEventSource;
+  /** Events are buffered and flushed together rather than written per click. */
+  #pendingEvents: InteractionEvent[] = [];
+  #flushTimer?: ReturnType<typeof setTimeout>;
+  #interactionsRunning = false;
   readonly #clock: () => Date;
   readonly #schedule: NonNullable<ChronicleManagerOptions["schedule"]>;
   readonly #cancelSchedule: NonNullable<ChronicleManagerOptions["cancelSchedule"]>;
@@ -38,6 +48,7 @@ export class ChronicleManager {
     this.store = new ChronicleStore(options.directory);
     this.#frames = options.frames;
     this.#system = options.system;
+    this.#interactions = options.interactions;
     this.#clock = options.clock ?? (() => new Date());
     this.#schedule = options.schedule ?? ((callback, delay) => setTimeout(callback, delay));
     this.#cancelSchedule = options.cancelSchedule ?? clearTimeout;
@@ -63,18 +74,112 @@ export class ChronicleManager {
     if (this.#running || !this.settings().enabled) return;
     this.#running = true;
     this.#queue(0);
+    this.#startInteractions();
   }
 
   stop(): void {
     this.#running = false;
     if (this.#timer) this.#cancelSchedule(this.#timer);
     this.#timer = undefined;
+    this.#stopInteractions();
+    this.flushEvents();
+  }
+
+  /**
+   * Capture policy, applied to one source's identity. The frame source cannot
+   * decide this itself: the same window is in or out depending on settings the
+   * user changes while the loop runs.
+   */
+  allows(source: {
+    app?: string;
+    bundleId?: string;
+    url?: string;
+    privateBrowsing?: boolean;
+  }): boolean {
+    const settings = this.settings();
+    if (source.privateBrowsing && !settings.recordPrivateBrowsing) return false;
+    if (settings.capturePolicy === "all") return true;
+    const listed = matchesList(source, settings);
+    return settings.capturePolicy === "only" ? listed : !listed;
+  }
+
+  /** Records one interaction event, subject to the same policy as a frame. */
+  record(event: InteractionEvent): void {
+    const settings = this.settings();
+    if (!settings.enabled || !settings.interactionEvents) return;
+    if (!this.allows(event)) return;
+    this.#pendingEvents.push(event);
+    // A burst of clicks is one write rather than one per click, and the delay
+    // is bounded so a quiet stream still lands within a couple of seconds.
+    if (this.#pendingEvents.length >= 64) this.flushEvents();
+    else if (!this.#flushTimer)
+      this.#flushTimer = this.#schedule(() => {
+        this.#flushTimer = undefined;
+        this.flushEvents();
+      }, 2_000);
+  }
+
+  flushEvents(): void {
+    if (this.#flushTimer) {
+      this.#cancelSchedule(this.#flushTimer);
+      this.#flushTimer = undefined;
+    }
+    if (!this.#pendingEvents.length) return;
+    const batch = this.#pendingEvents;
+    this.#pendingEvents = [];
+    try {
+      this.store.saveEvents(batch);
+    } catch (error) {
+      this.#lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  #startInteractions(): void {
+    if (!this.#interactions || this.#interactionsRunning) return;
+    if (!this.settings().interactionEvents) return;
+    this.#interactionsRunning = true;
+    void this.#interactions.start((event) => this.record(event)).catch((error: unknown) => {
+      this.#interactionsRunning = false;
+      this.#lastError = error instanceof Error ? error.message : String(error);
+    });
+  }
+
+  #stopInteractions(): void {
+    if (!this.#interactionsRunning) return;
+    this.#interactionsRunning = false;
+    this.#interactions?.stop();
   }
 
   setEnabled(enabled: boolean): ChronicleStatus {
     this.store.writeSettings({ ...this.settings(), enabled });
     if (enabled) this.start();
     else this.stop();
+    return this.status();
+  }
+
+  /**
+   * Applies a settings patch and brings the interaction stream into line with
+   * it, so switching events off stops the helper rather than only stopping the
+   * writes.
+   */
+  update(patch: Partial<ChronicleSettings>): ChronicleStatus {
+    this.store.writeSettings({ ...this.settings(), ...patch });
+    const settings = this.settings();
+    if (this.#running && settings.interactionEvents) this.#startInteractions();
+    if (!settings.interactionEvents) {
+      this.#stopInteractions();
+      this.flushEvents();
+    }
+    return this.status();
+  }
+
+  forget(since: Date, until: Date): ChronicleStatus {
+    // Buffered events from inside the window would otherwise land after it.
+    this.flushEvents();
+    this.store.forget(since, until);
+    // A capture the user has deleted must not come back as a heartbeat
+    // duplicate, so the change baseline goes with it.
+    this.#previous.clear();
     return this.status();
   }
 
@@ -92,7 +197,7 @@ export class ChronicleManager {
       )
         return [];
       const now = this.#clock();
-      const frames = await this.#frames.capture();
+      const frames = (await this.#frames.capture()).filter((frame) => this.allows(frame));
       const saved = frames.flatMap((frame) => {
         const previous = this.#previous.get(frame.sourceId);
         const change = previous ? signatureDifference(previous.signature, frame.signature) : 1;
@@ -183,4 +288,36 @@ export function frameSignature(bitmap: Uint8Array): Uint8Array {
     signature[target] = Math.round(red * 0.299 + green * 0.587 + blue * 0.114);
   }
   return signature;
+}
+
+/**
+ * A source matches the list when its bundle id or app name matches an entry,
+ * or when its URL's host is an entry or a subdomain of one. One list covers
+ * both apps and sites because the same window can be either: a browser is an
+ * app the user may want blocked wholesale, and a site inside it is not.
+ */
+function matchesList(
+  source: { app?: string; bundleId?: string; url?: string },
+  settings: ChronicleSettings,
+): boolean {
+  const apps = settings.apps.map((item) => item.toLowerCase());
+  const identity = [source.bundleId, source.app]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+  if (identity.some((value) => apps.includes(value))) return true;
+  const host = hostOf(source.url);
+  if (!host) return false;
+  return settings.sites.some((site) => {
+    const candidate = site.toLowerCase().replace(/^\.+|\.+$/g, "");
+    return candidate === host || host.endsWith(`.${candidate}`);
+  });
+}
+
+export function hostOf(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return null;
+  }
 }

@@ -10,6 +10,12 @@ export interface SkillLocation {
 }
 export interface SkillLoaderOptions {
   home?: string;
+  /**
+   * The user's own skills directory. Defaults to `~/.flareai/skills`; the
+   * desktop app passes it explicitly so a side instance loads from the home
+   * its own configuration lives in rather than the user's.
+   */
+  personal?: string;
   official?: string[];
   bundled?: string[];
   configured?: string[];
@@ -39,7 +45,7 @@ export class SkillLoader {
         includeRootMarkdown: false,
       },
       {
-        path: join(home, ".flareai", "skills"),
+        path: options.personal ?? join(home, ".flareai", "skills"),
         source: "flareai",
         includeRootMarkdown: true,
       },
@@ -164,6 +170,7 @@ function loadFile(
       typeof frontmatter["allowed-tools"] === "string"
         ? frontmatter["allowed-tools"].split(/\s+/).filter(Boolean)
         : undefined,
+    permissions: frontmatterList(frontmatter.permissions),
     displayName: manifest.displayName,
     author:
       typeof frontmatter.author === "string" ? frontmatter.author : undefined,
@@ -179,13 +186,19 @@ interface SkillManifest {
   displayName?: string;
 }
 
+/**
+ * `flare.yaml` beside SKILL.md is FlareAI's own skill manifest: the display
+ * identity the harness reads, not something the agent is shown. One field is
+ * defined — `display_name` — and a skill without the file falls back to its
+ * name, so the manifest is optional by design.
+ */
 function skillManifest(baseDir: string): SkillManifest {
-  const metadataPath = join(baseDir, "agents", "openai.yaml");
+  const metadataPath = join(baseDir, "flare.yaml");
   if (!existsSync(metadataPath) || !statSync(metadataPath).isFile()) return {};
   const metadata = readFileSync(metadataPath, "utf8");
   return {
     displayName: metadata.match(
-      /^\s+display_name:\s*["']?([^"'\r\n]+?)["']?\s*$/m,
+      /^\s*display_name:\s*["']?([^"'\r\n]+?)["']?\s*$/m,
     )?.[1],
   };
 }
@@ -244,4 +257,20 @@ export function parseSkillCommand(
   const skill = skills.find((item) => item.name === match[1]);
   if (!skill) throw new Error(`Unknown skill: ${match[1]}`);
   return { skill, arguments: match[2] ?? "" };
+}
+
+/**
+ * A frontmatter field written either as one string — space or comma
+ * separated — or as a YAML list. Both spellings are in the wild, and a skill
+ * that declared its grants the other way would silently declare none.
+ */
+function frontmatterList(value: unknown): string[] | undefined {
+  const items =
+    typeof value === "string"
+      ? value.split(/[,\s]+/)
+      : Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === "string")
+        : [];
+  const cleaned = items.map((item) => item.trim()).filter(Boolean);
+  return cleaned.length ? cleaned : undefined;
 }

@@ -15,8 +15,7 @@ import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
-import {Homeserver} from "../apps/desktop/src/main/homeserver/server.js";
-import {BridgeHost} from "../apps/desktop/src/main/homeserver/bridges.js";
+import {Homeserver, BridgeHost} from "@flareai/hub";
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const binaries = path.join(repo, "resources", "bridges");

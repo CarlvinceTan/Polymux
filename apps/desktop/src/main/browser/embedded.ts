@@ -1,8 +1,16 @@
-import { mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { BrowserDownloadDto, BrowserEventDto } from "@flareai/protocol";
-import { nativeTheme, shell, WebContentsView, type BrowserWindow, type WebContents } from "electron";
+import {
+  createSession,
+  startSession,
+  stopSession,
+} from "@flareai/browser-use";
+import { nativeTheme, WebContentsView, type BrowserWindow, type WebContents } from "electron";
+import { electronTransport, type CdpTransport } from "./cdp.js";
+import { PageCursor } from "./cursor.js";
+import { availablePath, type Downloads } from "./downloads.js";
 import { clearFaviconCache, tabFaviconDataUrl } from "./favicon.js";
 
 /**
@@ -18,21 +26,38 @@ import { clearFaviconCache, tabFaviconDataUrl } from "./favicon.js";
 export class EmbeddedBrowser {
   #window: BrowserWindow;
   readonly #views = new Map<string, WebContentsView>();
-  readonly #downloads: BrowserDownloadDto[] = [];
-  readonly #downloadsDir: string;
+  readonly #sessions = new Map<
+    string,
+    { session: ControlSession; transport: CdpTransport; cursor: PageCursor }
+  >();
+  /** Tabs currently on screen, as the renderer reports them. */
+  readonly #onScreen = new Set<string>();
+  readonly #downloads: Downloads;
   readonly #send: (event: BrowserEventDto) => void;
   /** One per live tab, re-resolving that tab's icon for the current scheme. */
   readonly #faviconRefreshers = new Map<string, () => void>();
-  #downloadsWired = false;
+  /** One per live tab, re-sending that tab's current page state. */
+  readonly #stateEmitters = new Map<string, () => void>();
+  readonly #onTabReset: (tabId: string) => void;
+  readonly #onVisit: (visit: {url: string; title: string}) => void;
 
   constructor(options: {
     window: BrowserWindow;
-    downloadsDir: string;
+    downloads: Downloads;
     send: (event: BrowserEventDto) => void;
+    /** Fired when a tab navigates away or closes, so anything holding state
+     * for the page that was there — an unanswered permission prompt above all
+     * — can let it go rather than wait on a page that no longer exists. */
+    onTabReset?: (tabId: string) => void;
+    /** Records a page the user actually landed on. Optional so the view can be
+     * built in a test without a store behind it. */
+    onVisit?: (visit: {url: string; title: string}) => void;
   }) {
     this.#window = options.window;
-    this.#downloadsDir = options.downloadsDir;
+    this.#downloads = options.downloads;
     this.#send = options.send;
+    this.#onTabReset = options.onTabReset ?? (() => {});
+    this.#onVisit = options.onVisit ?? ((): void => {});
     // Sites serve a different mark per colour scheme, so a theme change makes
     // every icon on screen the one chosen for the theme the user just left.
     // Settings clears the cache when the *preference* changes, which is a
@@ -68,20 +93,29 @@ export class EmbeddedBrowser {
     for (const view of this.#views.values()) this.#window.contentView.removeChildView(view);
   }
 
-  open(tabId: string, url?: string): void {
+  open(tabId: string, url?: string): { url: string; title: string } {
     const existing = this.#views.get(tabId);
     if (existing) {
       // A remount re-opens tabs it already knows about. Navigating again would
       // discard the live page state the detach/attach cycle just preserved,
       // so only a view with nothing loaded takes the url.
       if (url && !existing.webContents.getURL()) this.navigate(tabId, url);
-      return;
+      // A tab the agent opened has finished loading before the renderer mounts
+      // its pane, so no further state event is coming on its own. Without this
+      // snapshot the pane keeps its empty state — a placeholder sitting over a
+      // page that is already there.
+      else this.#stateEmitters.get(tabId)?.();
+      return { url: existing.webContents.getURL(), title: existing.webContents.getTitle() };
     }
     const view = new WebContentsView({
       webPreferences: {
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
+        // Built beside main.js by its own entry in forge.config.ts. It finds
+        // login forms and fills them on request; the page never reaches
+        // anything but the one credential it is handed.
+        preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "autofill.js"),
       },
     });
     this.#views.set(tabId, view);
@@ -89,9 +123,23 @@ export class EmbeddedBrowser {
     // Zero-sized until the renderer reports where the tab's surface sits, so a
     // newly opened view never flashes over unrelated UI.
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-    this.#wireDownloads(view.webContents);
+    this.#downloads.wire(view.webContents.session);
     this.#wireState(tabId, view.webContents);
     if (url) this.navigate(tabId, url);
+    return { url: view.webContents.getURL(), title: view.webContents.getTitle() };
+  }
+
+  /**
+   * The tab a webContents belongs to, or null when it is not one of ours.
+   * Permission handling hangs off this: the session is shared with the app
+   * window, so "is this a page in a browser tab" is the first question asked
+   * of every request.
+   */
+  tabIdFor(contents: WebContents | null): string | null {
+    if (!contents) return null;
+    for (const [tabId, view] of this.#views)
+      if (!view.webContents.isDestroyed() && view.webContents === contents) return tabId;
+    return null;
   }
 
   navigate(tabId: string, url: string): void {
@@ -121,14 +169,19 @@ export class EmbeddedBrowser {
   }
 
   setVisible(tabId: string, visible: boolean): void {
+    if (visible) this.#onScreen.add(tabId);
+    else this.#onScreen.delete(tabId);
     this.#views.get(tabId)?.setVisible(visible);
   }
 
   close(tabId: string): void {
+    this.#releaseSession(tabId);
     const view = this.#views.get(tabId);
     if (!view) return;
     this.#views.delete(tabId);
     this.#faviconRefreshers.delete(tabId);
+    this.#stateEmitters.delete(tabId);
+    this.#onTabReset(tabId);
     if (!this.#window.isDestroyed()) this.#window.contentView.removeChildView(view);
     if (!view.webContents.isDestroyed()) view.webContents.close();
     this.#send({ type: "closed", tabId });
@@ -196,45 +249,57 @@ export class EmbeddedBrowser {
     };
   }
 
-  /** The page's visible text, trimmed to what a tool result can carry. */
-  async readPage(tabId: string, maxChars: number): Promise<string> {
-    return this.#run<string>(tabId, `(() => {
-      const root = document.querySelector('main, article') ?? document.body;
-      return (root?.innerText ?? '').replace(/\n{3,}/g, '\n\n').trim().slice(0, ${Math.max(1, Math.floor(maxChars))});
-    })()`);
+  /**
+   * The agent's control session for a tab, created on first use.
+   *
+   * This is the same session type the browser extension builds for a tab in the
+   * user's own browser, over the same protocol — so the in-app Browser answers
+   * the identical command set rather than the selector-only subset it used to
+   * drive through `executeJavaScript`. Held per tab because the ref map and the
+   * console and network buffers belong to the page, not to one command.
+   */
+  async session(tabId: string): Promise<ControlSession> {
+    const existing = this.#sessions.get(tabId);
+    if (existing) return existing.session;
+    const contents = this.#contents(tabId);
+    if (!contents) throw new Error(`No such browser tab: ${tabId}`);
+    const transport = electronTransport(contents);
+    const cursor = new PageCursor(transport);
+    const session = createSession({
+      ...transport,
+      // The cursor always animates; whether an action waits for it is decided
+      // by `observed`. On a tab nobody is looking at, the work runs at full
+      // speed and the pointer simply follows along behind.
+      moveCursor: (point) => cursor.moveTo(point),
+      observed: () => this.#isWatched(tabId),
+    }) as ControlSession;
+    await startSession(session);
+    // Armed for the life of the session, not just while the tab is on screen —
+    // the user may look over at any point, and the cursor should already be
+    // where the work is rather than appearing once they arrive.
+    await cursor.setActive(true);
+    await cursor.install();
+    this.#sessions.set(tabId, { session, transport, cursor });
+    return session;
   }
 
-  async click(tabId: string, selector: string): Promise<boolean> {
-    return this.#run<boolean>(tabId, `(() => {
-      const element = document.querySelector(${JSON.stringify(selector)});
-      if (!element) return false;
-      element.scrollIntoView({block: 'center'});
-      element.click();
-      return true;
-    })()`);
+  /**
+   * Is a person plausibly looking at this tab? Only then is it worth holding an
+   * action back so the pointer is seen arriving first.
+   */
+  #isWatched(tabId: string): boolean {
+    if (!this.#onScreen.has(tabId)) return false;
+    return this.#window.isFocused() && !this.#window.isMinimized();
   }
 
-  async type(tabId: string, selector: string, text: string, submit: boolean): Promise<boolean> {
-    return this.#run<boolean>(tabId, `(() => {
-      const field = document.querySelector(${JSON.stringify(selector)});
-      if (!field) return false;
-      field.focus();
-      const setter = Object.getOwnPropertyDescriptor(field.constructor.prototype, 'value')?.set;
-      // React and friends listen for the native setter, not a plain assignment.
-      if (setter) setter.call(field, ${JSON.stringify(text)});
-      else field.value = ${JSON.stringify(text)};
-      field.dispatchEvent(new Event('input', {bubbles: true}));
-      field.dispatchEvent(new Event('change', {bubbles: true}));
-      if (${submit ? "true" : "false"}) {
-        field.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
-        field.form?.requestSubmit?.();
-      }
-      return true;
-    })()`);
-  }
-
-  async scroll(tabId: string, deltaY: number): Promise<boolean> {
-    return this.#run<boolean>(tabId, `(() => { window.scrollBy(0, ${Math.round(deltaY)}); return true; })()`);
+  #releaseSession(tabId: string): void {
+    const entry = this.#sessions.get(tabId);
+    if (!entry) return;
+    this.#sessions.delete(tabId);
+    this.#onScreen.delete(tabId);
+    void entry.cursor.setActive(false);
+    stopSession(entry.session);
+    entry.transport.detach();
   }
 
   #contents(tabId: string): WebContents | null {
@@ -268,25 +333,22 @@ export class EmbeddedBrowser {
     if (!contents) return null;
     const image = await contents.capturePage();
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const file = path.join(this.#downloadsDir, `Screenshot ${stamp}.png`);
-    mkdirSync(this.#downloadsDir, { recursive: true });
+    const directory = this.#downloads.directory();
+    const file = availablePath(directory, `Screenshot ${stamp}.png`);
     await writeFile(file, image.toPNG());
-    return this.#recordDownload(file);
+    return this.#downloads.record(file, contents.getURL());
   }
 
   downloads(): BrowserDownloadDto[] {
-    return [...this.#downloads];
+    return this.#downloads.list();
   }
 
   openDownload(id: string): void {
-    const entry = this.#downloads.find((download) => download.id === id);
-    if (entry) void shell.openPath(entry.path);
+    this.#downloads.open(id);
   }
 
   openDownloadsFolder(): void {
-    const latest = this.#downloads[0];
-    if (latest) shell.showItemInFolder(latest.path);
-    else void shell.openPath(this.#downloadsDir);
+    this.#downloads.openFolder();
   }
 
   #wireState(tabId: string, contents: WebContents): void {
@@ -330,6 +392,7 @@ export class EmbeddedBrowser {
         emit();
       });
     };
+    this.#stateEmitters.set(tabId, emit);
     this.#faviconRefreshers.set(tabId, () => {
       if (!contents.isDestroyed()) resolveFavicon();
     });
@@ -339,12 +402,25 @@ export class EmbeddedBrowser {
       faviconSource = source;
       resolveFavicon();
     });
+    // A committed top-level navigation is the moment a page becomes a visit —
+    // not `did-navigate-in-page`, which fires for every anchor and history
+    // push and would file a dozen rows for one page.
+    contents.on("did-navigate", (_event, url): void => {
+      if (/^https?:/i.test(url)) this.#onVisit({url, title: contents.getTitle()});
+    });
+    // The title usually arrives after the navigation, so the row is corrected
+    // once it does rather than being left under a bare url.
+    contents.on("page-title-updated", (_event, title): void => {
+      const url = contents.getURL();
+      if (/^https?:/i.test(url)) this.#onVisit({url, title});
+    });
     contents.on("did-navigate", (): void => {
       // A navigation invalidates the previous page's icon until the new one
       // reports; without this the old favicon lingers on the wrong site.
       faviconSource = null;
       faviconUrl = null;
       faviconRequest += 1;
+      this.#onTabReset(tabId);
       emit();
     });
     contents.on("did-navigate-in-page", emit);
@@ -372,38 +448,18 @@ export class EmbeddedBrowser {
     });
   }
 
-  /** Session-wide download capture, wired once from the first view's session. */
-  #wireDownloads(contents: WebContents): void {
-    if (this.#downloadsWired) return;
-    this.#downloadsWired = true;
-    contents.session.on("will-download", (_event, item) => {
-      mkdirSync(this.#downloadsDir, { recursive: true });
-      item.setSavePath(path.join(this.#downloadsDir, item.getFilename()));
-      item.once("done", (_doneEvent, state) => {
-        if (state === "completed") this.#recordDownload(item.getSavePath());
-      });
-    });
-  }
-
-  #recordDownload(file: string): BrowserDownloadDto {
-    const entry: BrowserDownloadDto = {
-      id: crypto.randomUUID(),
-      title: path.basename(file),
-      path: file,
-      kind: downloadKind(file),
-      completedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    };
-    this.#downloads.unshift(entry);
-    this.#send({ type: "downloads", downloads: this.downloads() });
-    return entry;
-  }
 }
 
-function downloadKind(file: string): BrowserDownloadDto["kind"] {
-  const extension = path.extname(file).toLowerCase();
-  if (extension === ".pdf") return "pdf";
-  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic"].includes(extension)) return "image";
-  if ([".csv", ".xlsx", ".xls", ".numbers", ".tsv"].includes(extension)) return "spreadsheet";
-  if ([".doc", ".docx", ".txt", ".md", ".rtf", ".pages"].includes(extension)) return "document";
-  return "file";
+/**
+ * A @flareai/browser-use session. The package is plain JavaScript so the
+ * browser extension can load it without a build step, so its shape is named
+ * here rather than imported.
+ */
+export interface ControlSession {
+  send(method: string, params?: object): Promise<Record<string, unknown>>;
+  refs: Map<string, number>;
+  observers: { dialog: { type: string; message: string } | null };
+  cursor: { x: number; y: number } | null;
+  paced: (min: number, max: number) => number;
+  moveCursor(point: { x: number; y: number }): Promise<void>;
 }

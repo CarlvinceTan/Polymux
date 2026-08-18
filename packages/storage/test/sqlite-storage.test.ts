@@ -500,3 +500,264 @@ test("drops web references the reply never cited when upgrading an old store", (
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("remembers a site's permission decisions and forgets them on request", () => {
+  const storage = fixture();
+  try {
+    storage.setSitePermission("https://maps.example", "geolocation", "allow");
+    storage.setSitePermission("https://maps.example", "notifications", "deny");
+    storage.setSitePermission("https://other.example", "media", "allow");
+
+    assert.equal(
+      storage.getSitePermission("https://maps.example", "geolocation")?.decision,
+      "allow",
+    );
+    // A later decision replaces the earlier one rather than stacking beside it.
+    storage.setSitePermission("https://maps.example", "geolocation", "deny");
+    assert.equal(
+      storage.getSitePermission("https://maps.example", "geolocation")?.decision,
+      "deny",
+    );
+    assert.equal(storage.listSitePermissions("https://maps.example").length, 2);
+    assert.equal(storage.listSitePermissions().length, 3);
+
+    // Clearing one site leaves the others alone.
+    assert.equal(storage.clearSitePermissions("https://maps.example"), 2);
+    assert.equal(storage.listSitePermissions().length, 1);
+    assert.equal(
+      storage.getSitePermission("https://maps.example", "geolocation"),
+      null,
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("a download stamps its finish once and keeps it through later updates", () => {
+  const storage = fixture();
+  try {
+    storage.startDownload({
+      id: "download-1",
+      url: "https://files.example/report.pdf",
+      filename: "report.pdf",
+      path: "/tmp/report.pdf",
+      totalBytes: 1000,
+    });
+    const progressing = storage.updateDownload("download-1", {
+      receivedBytes: 400,
+    });
+    assert.equal(progressing?.state, "progressing");
+    assert.equal(progressing?.finishedAt, null);
+
+    const done = storage.updateDownload("download-1", {
+      state: "completed",
+      receivedBytes: 1000,
+    });
+    assert.equal(done?.state, "completed");
+    assert.ok(done?.finishedAt, "a finished download records when it finished");
+
+    // A late progress event must not wind the finish time back to null.
+    const late = storage.updateDownload("download-1", { receivedBytes: 1000 });
+    assert.equal(late?.finishedAt, done?.finishedAt);
+
+    assert.equal(storage.updateDownload("missing", { state: "completed" }), null);
+    assert.equal(storage.listDownloads().length, 1);
+    assert.equal(storage.deleteDownload("download-1"), true);
+    assert.equal(storage.listDownloads().length, 0);
+  } finally {
+    storage.close();
+  }
+});
+
+test("re-saving a login keeps the row id the vault filed the password under", () => {
+  const storage = fixture();
+  try {
+    const first = storage.upsertSavedLogin({
+      id: "login-1",
+      origin: "https://shop.example",
+      username: "me@example.com",
+      source: "import",
+    });
+    // The same account saved again must not mint a second id, or the password
+    // already stored under the first one would be stranded.
+    const second = storage.upsertSavedLogin({
+      id: "login-2",
+      origin: "https://shop.example",
+      username: "me@example.com",
+    });
+    assert.equal(second.id, first.id);
+    assert.equal(second.source, "import", "the original source survives");
+    assert.equal(storage.listSavedLogins("https://shop.example").length, 1);
+
+    // A different account on the same site is its own row.
+    storage.upsertSavedLogin({
+      id: "login-3",
+      origin: "https://shop.example",
+      username: "other@example.com",
+    });
+    assert.equal(storage.listSavedLogins("https://shop.example").length, 2);
+
+    assert.equal(storage.getSavedLogin("login-1")?.lastUsedAt, null);
+    assert.ok(storage.touchSavedLogin("login-1")?.lastUsedAt);
+    assert.equal(storage.deleteSavedLogin("login-1"), true);
+    assert.equal(storage.getSavedLogin("login-1"), null);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a page visited twice is one row that counts both", () => {
+  const storage = fixture();
+  storage.recordVisit({url: "https://example.com/a", title: "A", visitedAt: "2026-08-01T10:00:00.000Z"});
+  const second = storage.recordVisit({
+    url: "https://example.com/a",
+    title: "A again",
+    visitedAt: "2026-08-02T10:00:00.000Z",
+  });
+
+  assert.equal(second.visitCount, 2, "a local visit adds one; history is pages, not visits");
+  assert.equal(second.visitedAt, "2026-08-02T10:00:00.000Z");
+  assert.equal(second.title, "A again", "the newer title wins");
+  assert.equal(storage.listHistory().length, 1);
+});
+
+test("an older visit does not drag a page back down the list", () => {
+  const storage = fixture();
+  storage.recordVisit({url: "https://example.com/a", visitedAt: "2026-08-10T10:00:00.000Z"});
+  // What an import carries: real visits, but last made long before the local
+  // one. The page must keep the time it was actually last opened.
+  const merged = storage.recordVisit({
+    url: "https://example.com/a",
+    visitedAt: "2024-01-01T10:00:00.000Z",
+    visitCount: 9,
+    source: "import",
+  });
+  assert.equal(merged.visitedAt, "2026-08-10T10:00:00.000Z", "the newer time stands");
+  assert.equal(merged.visitCount, 9, "and the browser's own total is taken up");
+});
+
+test("a blank title does not overwrite one already known", () => {
+  const storage = fixture();
+  storage.recordVisit({url: "https://example.com/a", title: "Real title"});
+  const after = storage.recordVisit({url: "https://example.com/a", title: ""});
+  assert.equal(after.title, "Real title");
+});
+
+test("history lists newest first and searches url and title", () => {
+  const storage = fixture();
+  storage.recordVisit({url: "https://alpha.example/x", title: "Alpha", visitedAt: "2026-08-01T00:00:00.000Z"});
+  storage.recordVisit({url: "https://beta.example/y", title: "Beta", visitedAt: "2026-08-03T00:00:00.000Z"});
+  storage.recordVisit({url: "https://gamma.example/z", title: "Gamma", visitedAt: "2026-08-02T00:00:00.000Z"});
+
+  assert.deepEqual(
+    storage.listHistory().map((entry) => entry.title),
+    ["Beta", "Gamma", "Alpha"],
+  );
+  assert.deepEqual(storage.listHistory({query: "beta"}).map((e) => e.title), ["Beta"]);
+  assert.deepEqual(storage.listHistory({query: "gamma.example"}).map((e) => e.title), ["Gamma"]);
+  assert.equal(storage.listHistory({limit: 2}).length, 2);
+});
+
+test("a search term's wildcards are matched literally", () => {
+  const storage = fixture();
+  storage.recordVisit({url: "https://example.com/100%", title: "Percent"});
+  storage.recordVisit({url: "https://example.com/other", title: "Other"});
+  // Unescaped, "%" matches everything and the search silently returns the lot.
+  assert.deepEqual(storage.listHistory({query: "100%"}).map((e) => e.title), ["Percent"]);
+});
+
+test("a bulk import writes every row in one go", () => {
+  const storage = fixture();
+  const written = storage.recordVisits([
+    {url: "https://a.example", title: "A", source: "import", visitCount: 1},
+    {url: "https://b.example", title: "B", source: "import"},
+    {url: "https://a.example", title: "A", source: "import", visitCount: 3},
+  ]);
+  assert.equal(written, 3);
+  const rows = storage.listHistory();
+  assert.equal(rows.length, 2, "the repeat collapses onto its url");
+  // 3, not 4: an exported count is that browser's running total for the page,
+  // so the larger stands rather than the two being added together.
+  assert.equal(rows.find((r) => r.url === "https://a.example")!.visitCount, 3);
+});
+
+test("importing the same profile again changes nothing", () => {
+  const storage = fixture();
+  const batch = [
+    {url: "https://a.example", title: "A", visitCount: 40, source: "import" as const},
+    {url: "https://b.example", title: "B", visitCount: 7, source: "import" as const},
+  ];
+  storage.recordVisits(batch);
+  const once = storage.listHistory().map((row) => `${row.url}=${row.visitCount}`).sort();
+  storage.recordVisits(batch);
+  storage.recordVisits(batch);
+
+  assert.deepEqual(
+    storage.listHistory().map((row) => `${row.url}=${row.visitCount}`).sort(),
+    once,
+    "a re-import is idempotent rather than doubling every count",
+  );
+  assert.equal(storage.listHistory().length, 2, "and never duplicates a page");
+});
+
+test("a later export that has more visits still raises the count", () => {
+  const storage = fixture();
+  storage.recordVisits([{url: "https://a.example", visitCount: 40, source: "import"}]);
+  storage.recordVisits([{url: "https://a.example", visitCount: 51, source: "import"}]);
+  assert.equal(storage.listHistory()[0]!.visitCount, 51);
+  // A smaller total is a staler export, and must not lower what is known.
+  storage.recordVisits([{url: "https://a.example", visitCount: 3, source: "import"}]);
+  assert.equal(storage.listHistory()[0]!.visitCount, 51);
+});
+
+test("browsing a page yourself keeps adding to an imported total", () => {
+  const storage = fixture();
+  storage.recordVisits([{url: "https://a.example", visitCount: 40, source: "import"}]);
+  storage.recordVisit({url: "https://a.example", source: "local"});
+  storage.recordVisit({url: "https://a.example", source: "local"});
+  // A local visit is a delta — one more — where an import is an absolute.
+  assert.equal(storage.listHistory()[0]!.visitCount, 42);
+});
+
+test("clearing can take just what was imported", () => {
+  const storage = fixture();
+  storage.recordVisit({url: "https://local.example", source: "local"});
+  storage.recordVisit({url: "https://imported.example", source: "import"});
+
+  assert.equal(storage.clearHistory({source: "import"}), 1);
+  assert.deepEqual(storage.listHistory().map((e) => e.url), ["https://local.example"]);
+  assert.equal(storage.deleteHistoryEntry("https://local.example"), true);
+  assert.equal(storage.deleteHistoryEntry("https://gone.example"), false);
+  assert.equal(storage.listHistory().length, 0);
+});
+
+test("the hub's cache hands back what it was given, newest first", () => {
+  const storage = fixture();
+  storage.writeCommsCache("mail:work|INBOX", "[1]");
+  storage.writeCommsCache("mail:work|Sent", "[2]");
+  assert.equal(storage.readCommsCache("mail:work|INBOX")!.value, "[1]");
+  assert.deepEqual(
+    storage.listCommsCache("mail:").map((entry) => entry.key),
+    ["mail:work|Sent", "mail:work|INBOX"],
+  );
+  // A second write of the same key is a refresh, not a second row.
+  storage.writeCommsCache("mail:work|INBOX", "[3]");
+  assert.equal(storage.listCommsCache("mail:").length, 2);
+  assert.equal(storage.readCommsCache("mail:work|INBOX")!.value, "[3]");
+  assert.equal(storage.readCommsCache("mail:nothing"), null);
+});
+
+test("a prefix stays a prefix, and trimming keeps the head", () => {
+  const storage = fixture();
+  // `%` and `_` are LIKE wildcards; a key holding them must not match its
+  // neighbours.
+  storage.writeCommsCache("body:100%|a", "a");
+  storage.writeCommsCache("body:1000|b", "b");
+  assert.deepEqual(storage.listCommsCache("body:100%|").map((e) => e.key), ["body:100%|a"]);
+
+  for (const id of ["c", "d", "e"]) storage.writeCommsCache(`body:x|${id}`, id);
+  assert.equal(storage.trimCommsCache("body:x|", 2), 1);
+  assert.deepEqual(storage.listCommsCache("body:x|").map((e) => e.value), ["e", "d"]);
+  assert.equal(storage.deleteCommsCache("body:"), 4);
+  assert.equal(storage.listCommsCache("body:").length, 0);
+});

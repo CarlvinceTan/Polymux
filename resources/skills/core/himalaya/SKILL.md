@@ -1,6 +1,6 @@
 ---
 name: himalaya
-description: Himalaya CLI adapter for configured IMAP/SMTP mailboxes. Use whenever a task decides whether a configured mailbox should use Himalaya or a native-mail fallback, or when `email` selects Himalaya, the user asks for Himalaya, or an account needs CLI-level diagnosis. Pair it with `email`; do not replace the general email router. Keep any Apple Mail fallback hidden/background unless user interaction is required, and state this constraint in route explanations.
+description: Himalaya CLI adapter for configured IMAP/SMTP mailboxes. Use whenever a task decides whether a configured mailbox should use Himalaya or a native-mail fallback, or when `email-use` selects Himalaya, the user asks for Himalaya, or an account needs CLI-level diagnosis. Pair it with `email-use`; do not replace the general email router. Keep any Apple Mail fallback hidden/background unless user interaction is required, and state this constraint in route explanations.
 license: AGPL-3.0
 metadata:
   hermes:
@@ -19,15 +19,15 @@ sends. Detect its installed version and compiled capabilities with
 
 ## Safety And Routing
 
-- `email` is authoritative for account routing, signatures, attachments,
+- `email-use` is authoritative for account routing, signatures, attachments,
   draft-first behavior, and send approval. Load it before real mailbox work.
 - Read, list, and bounded search operations may run directly after resolving the account and folder.
-- Save a draft by default. Execute a send command only when `email` determines
+- Save a draft by default. Execute a send command only when `email-use` determines
   that the user's instruction explicitly authorizes sending the finished mail.
 - Never retry a send merely because Himalaya exits non-zero. SMTP delivery may have succeeded before save-to-Sent failed; inspect the correct Sent folder and delivery evidence first.
 - Verify account, folder, current message ID, and destination before copying, moving, deleting, or changing flags. Deletion and consequential reorganization require explicit approval.
 - Keep Himalaya CLI-only. If setup needs a browser or local GUI, load `browser-use` or `gui-control` as applicable and preserve the user's focus.
-- If `email` selects Apple Mail as a fallback, follow its route and
+- If `email-use` selects Apple Mail as a fallback, follow its route and
   `gui-control`; do not duplicate GUI policy here.
 - Prefer `--output json` for structured reads. Do not expose credentials or unnecessary message content in logs.
 

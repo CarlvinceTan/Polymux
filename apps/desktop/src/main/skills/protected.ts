@@ -24,10 +24,24 @@ import type {
 /** Tools that change files, mapped to the argument naming the target path. */
 const PATH_ARGUMENTS: Record<string, string> = { write: "path", edit: "path" };
 
-const MESSAGE =
-  "Bundled skills are read-only. They are mirrored from the app bundle and " +
-  "any edit here is reverted on update. To customise one, copy it into " +
-  "~/.flareai/skills and edit that copy.";
+/**
+ * The tilde spelling of a path under FlareAI's home, derived from the mirror
+ * root rather than written out. A side instance keeps its configuration in
+ * `~/.flareai-<name>` (see system/paths.ts), and both the message the agent is
+ * shown and the shell command it might type have to name the directory that
+ * run actually uses.
+ */
+function tilde(root: string, leaf = path.basename(root)): string {
+  return `~/${path.basename(path.dirname(path.resolve(root)))}/${leaf}`;
+}
+
+function message(root: string): string {
+  return (
+    "Bundled skills are read-only. They are mirrored from the app bundle and " +
+    "any edit here is reverted on update. To customise one, copy it into " +
+    `${tilde(root, "skills")} and edit that copy.`
+  );
+}
 
 export function isInsideProtectedSkills(candidate: string, root: string): boolean {
   const resolvedRoot = path.resolve(root);
@@ -49,8 +63,8 @@ const READ_ONLY_COMMAND =
 export function blocksShellCommand(command: string, root: string): boolean {
   const mentions =
     command.includes(path.resolve(root)) ||
-    command.includes("~/.flareai/official-skills") ||
-    command.includes("$HOME/.flareai/official-skills");
+    command.includes(tilde(root)) ||
+    command.includes(tilde(root).replace("~", "$HOME"));
   return mentions && !READ_ONLY_COMMAND.test(command);
 }
 
@@ -68,12 +82,12 @@ export class ProtectedSkillGuard implements ToolHooks {
         typeof target === "string" &&
         isInsideProtectedSkills(target, this.#root)
       )
-        return { allow: false, message: MESSAGE };
+        return { allow: false, message: message(this.#root) };
     }
     if (call.name === "bash") {
       const command = (call.arguments as Record<string, unknown>).command;
       if (typeof command === "string" && blocksShellCommand(command, this.#root))
-        return { allow: false, message: MESSAGE };
+        return { allow: false, message: message(this.#root) };
     }
     return { allow: true };
   }

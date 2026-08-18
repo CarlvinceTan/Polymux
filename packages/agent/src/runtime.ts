@@ -36,30 +36,57 @@ import {
   MemoryConsolidator,
   type MemoryConsolidationSettings,
 } from "./memory/consolidator.js";
+import type { ChronicleAccess } from "./memory/chronicle-access.js";
+import {
+  ChronicleDistiller,
+  type ChronicleDistillationSettings,
+} from "./memory/chronicle-distiller.js";
+import { createChronicleTools } from "./memory/chronicle-tools.js";
 import { createHistoryTools } from "./memory/history-tools.js";
 import { MemoryManager } from "./memory/manager.js";
 import { createMemoryTools } from "./memory/tools.js";
 import { createTaskTool, type SubagentRequest } from "./subagents/task-tool.js";
+import type { AgentToolContext } from "@flareai/core";
 
-export interface ChronicleContextProvider {
-  promptContext(): {
-    directory: string;
-    instructionsPath: string;
-    enabled: boolean;
-  };
+export type { ChronicleAccess } from "./memory/chronicle-access.js";
+
+/**
+ * Kept as the historical name for what the runtime asks of Chronicle. It is
+ * now the wider reading surface in `ChronicleAccess`: the prompt line the
+ * runtime always used, plus the queries the retrieval tools and the distiller
+ * run. Both additions are optional, so a host supplying only a prompt context
+ * still satisfies it.
+ */
+export type ChronicleContextProvider = ChronicleAccess;
+
+export interface DriveContextProvider {
+  promptContext(): DriveContext | undefined;
+}
+
+export interface DriveContext {
+  defaultSource: string;
+  order: string[];
+  connected: string[];
+  reach: string[];
 }
 
 export interface EnvironmentContextProvider {
-  promptContext(): {
-    time?: { local: string; timeZone: string; utcOffset: string };
-    locationEnabled: boolean;
-    location?: {
-      latitude: number;
-      longitude: number;
-      accuracy: number;
-      updatedAt: string;
-    };
+  promptContext(): EnvironmentContext;
+}
+
+export interface EnvironmentContext {
+  time?: { local: string; timeZone: string; utcOffset: string };
+  locationEnabled: boolean;
+  location?: {
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+    updatedAt: string;
   };
+  /** Tabs open in FlareAI's own browser, newest last. */
+  browserTabs?: Array<{ tabId: string; url: string; title: string }>;
+  /** Titled windows open on the desktop, frontmost first. */
+  windows?: Array<{ app: string; title: string; frontmost: boolean }>;
 }
 
 export interface FlareAIAgentOptions {
@@ -67,6 +94,7 @@ export interface FlareAIAgentOptions {
   storage: Storage;
   memory: MemoryManager;
   chronicle?: ChronicleContextProvider;
+  drive?: DriveContextProvider;
   environment?: EnvironmentContextProvider;
   tools: ToolRegistry;
   model: ModelRef;
@@ -74,12 +102,21 @@ export interface FlareAIAgentOptions {
   taskModel?: ModelRef;
   /** Model the goal judge reads with. Falls back to `model`. */
   judgeModel?: ModelRef;
+  /** Model that writes compaction summaries. Falls back to `model`. */
+  compactionModel?: ModelRef;
+  /** Effort subagent runs think at. Falls back to the parent run's level. */
+  taskReasoning?: ReasoningEffort;
+  /** Effort the goal judge thinks at. Falls back to the run's level. */
+  judgeReasoning?: ReasoningEffort;
+  /** Effort the compaction summary is written at. Falls back to the run's. */
+  compactionReasoning?: ReasoningEffort;
   reasoning?: ReasoningEffort;
   basePrompt?: string;
   communicationPrompt?: string;
   skills?: SkillLoaderOptions;
   compaction?: Partial<CompactionSettings>;
   memoryConsolidation?: Partial<MemoryConsolidationSettings>;
+  chronicleDistillation?: Partial<ChronicleDistillationSettings>;
   maxTurns?: number;
   /** Host lifecycle hooks that can veto or observe every tool call. */
   hooks?: ToolHooks;
@@ -90,6 +127,21 @@ export interface FlareAIAgentOptions {
    * keep it cancellable.
    */
   onGoalContinuation?: (continuation: GoalContinuation) => void;
+  /**
+   * Called when the `task` tool starts a subagent. Subagent runs are started
+   * inside the runtime rather than by the host, so without this the host never
+   * sees them — and their events, which is what a task's transcript is made
+   * of, would reach storage and nothing else.
+   */
+  onSubagentRun?: (subagent: SubagentRun) => void;
+}
+
+export interface SubagentRun {
+  conversationId: string;
+  parentRunId: string;
+  runId: string;
+  description: string;
+  run: ActiveAgentRun;
 }
 
 export interface GoalContinuation {
@@ -135,6 +187,7 @@ export class FlareAIAgent {
   readonly #options: FlareAIAgentOptions;
   readonly #compaction: CompactionManager;
   readonly #consolidator: MemoryConsolidator;
+  readonly #distiller?: ChronicleDistiller;
   readonly #skillLoader: SkillLoader;
   readonly #goalWork = new Set<Promise<void>>();
   constructor(options: FlareAIAgentOptions) {
@@ -156,6 +209,14 @@ export class FlareAIAgent {
       options.memory,
       options.memoryConsolidation,
     );
+    this.#distiller = options.chronicle
+      ? new ChronicleDistiller(
+          options.inference,
+          options.memory,
+          options.chronicle,
+          options.chronicleDistillation,
+        )
+      : undefined;
     this.#skillLoader = new SkillLoader(options.skills);
   }
 
@@ -264,21 +325,30 @@ export class FlareAIAgent {
       delegation,
       memories: memory.enabled ? memory.conversationMemories : [],
       chronicle: chronicle?.enabled ? chronicle : undefined,
+      drive: this.#options.drive?.promptContext(),
       environment,
       skills: skillResult.skills,
       goal: this.goals.get(input.conversationId),
       speechMode: input.speechMode,
     });
+    // The screen is the user's own run's to move: a delegated run never gets
+    // the tools that decide what is on it, and says so in its answer instead.
+    const subagentRun = Boolean(input.parentRunId);
     const tools = [
-      ...this.#options.tools.list(),
+      ...this.#options.tools
+        .list()
+        .filter((tool) => !subagentRun || !tool.mainAgentOnly),
       ...this.goals.tools(input.conversationId),
       ...createMemoryTools(this.memory, input.conversationId),
       ...createHistoryTools(this.#options.storage, input.conversationId),
+      ...(chronicle?.enabled && this.#options.chronicle
+        ? createChronicleTools(this.#options.chronicle)
+        : []),
     ];
     if (delegation)
       tools.push(
-        createTaskTool((request, signal) =>
-          this.#runSubagent(input.conversationId, runId, request, signal),
+        createTaskTool((request, context) =>
+          this.#runSubagent(input.conversationId, runId, request, context),
         ),
       );
     const runner = new AgentRunner({
@@ -293,6 +363,7 @@ export class FlareAIAgent {
       maxTurns: input.maxTurns ?? this.#options.maxTurns,
       context: { systemPrompt, messages },
       tools,
+      subagentRun,
       toolExecution: "parallel",
       signal: input.signal,
       transformContext: ({ context, signal, reportStatus }) =>
@@ -303,6 +374,17 @@ export class FlareAIAgent {
           signal,
           () => reportStatus('compacting'),
           durableSequences,
+          // Whether to compact is still the run model's question — it is its
+          // window that overflows — so only the summarising call moves.
+          this.#options.compactionModel || this.#options.compactionReasoning
+            ? {
+                model: this.#options.compactionModel ?? model,
+                reasoning:
+                  this.#options.compactionReasoning ??
+                  input.reasoning ??
+                  this.#options.reasoning,
+              }
+            : undefined,
         ),
     });
     // The runner appends new messages onto the context it was started with, so
@@ -346,6 +428,8 @@ export class FlareAIAgent {
     const decision = await this.goalLoop.afterRun({
       conversationId: input.conversationId,
       model: this.#options.judgeModel ?? this.#options.model,
+      reasoning:
+        this.#options.judgeReasoning ?? input.reasoning ?? this.#options.reasoning,
       lastAgentMessage: result.lastAgentMessage,
       signal: input.signal,
     });
@@ -371,17 +455,31 @@ export class FlareAIAgent {
     conversationId: string,
     parentRunId: string,
     request: SubagentRequest,
-    signal: AbortSignal,
+    context: AgentToolContext,
   ) {
+    const runId = crypto.randomUUID();
     const active = this.start({
       conversationId,
       text: request.prompt,
+      runId,
       parentRunId,
       includeSubagents: false,
       model: this.#options.taskModel,
-      signal,
+      reasoning: this.#options.taskReasoning,
+      signal: context.signal,
       contextMode: request.context,
     });
+    this.#options.onSubagentRun?.({
+      conversationId,
+      parentRunId,
+      runId,
+      description: request.description,
+      run: active,
+    });
+    // Announced on the *parent* stream, and carrying no message of its own so
+    // no step row appears: the only job of this event is to tell the UI which
+    // run belongs to which task row, while the task is still running.
+    await context.emitProgress("", { childRunId: runId });
     const result = await active.result;
     return {
       runId: result.runId,
@@ -428,8 +526,22 @@ export class FlareAIAgent {
     // Watermark-gated background work: it runs alongside the goal loop rather
     // than before it, so it never delays the turn, but it is tracked so
     // shutdown and tests can wait for it. maybeConsolidate absorbs failures.
-    const memoryWork = this.#consolidator
-      .maybeConsolidate(this.#options.model, new AbortController().signal)
+    // Distillation runs before consolidation and is awaited by it, because
+    // what it writes is exactly what the summary should then fold in — the
+    // other order leaves a screen memory waiting a whole turn for its place in
+    // the briefing.
+    const memoryWork = (this.#distiller
+      ? this.#distiller
+          .maybeDistill(this.#options.model, new AbortController().signal)
+          .then((): void => undefined)
+      : Promise.resolve()
+    )
+      .then(() =>
+        this.#consolidator.maybeConsolidate(
+          this.#options.model,
+          new AbortController().signal,
+        ),
+      )
       .then((): void => undefined);
     this.#goalWork.add(memoryWork);
     void memoryWork.finally(() => this.#goalWork.delete(memoryWork));

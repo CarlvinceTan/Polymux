@@ -264,12 +264,23 @@ route-selection evidence, not a compiled trust registry: reuse it to avoid
 unrelated retesting, then perform the changing session checks and verify the
 requested material result.
 
-The machine-readable registry at
-`references/app-control-registry.json` contains exact pretested route tuples.
-Use `scripts/app-control-registry.py lookup-launch` to verify the current macOS
-build and app bundle identity without launching the app. A matching compiled
-route avoids repeated launch experiments; it never replaces live window,
-focus, user-activity, or lease checks.
+The machine-readable registry holds exact route tuples verified on **this**
+machine. It belongs to the installation, not to the skill: it lives at
+`~/.flareai/state/window-control/app-control-registry.json`, is created empty on
+first use and stamped with the current macOS build, and fills only as audits
+here enroll routes — a route pins an exact host build and app identity, so one
+recorded on another machine or before a macOS update could never be trusted
+anyway. Use `scripts/app-control-registry.py lookup-launch` to verify the
+current macOS build and app bundle identity without launching the app. A
+matching compiled route avoids repeated launch experiments; it never replaces
+live window, focus, user-activity, or lease checks.
+
+The helpers enroll a passing first use themselves — `remember-route` under the
+covers — so routes accumulate as work happens rather than through a separate
+audit. Never hand-edit the registry. A deliberate multi-trial enrollment for an
+app you are not about to use still goes through `enroll-route` and the
+maintenance gate in
+[references/compatibility-audits.md](references/compatibility-audits.md).
 
 Before using exact-window capture or an accessibility action, check the exact
 app/version/capability tuple with `scripts/app-control-registry.py
@@ -383,14 +394,18 @@ must still use a non-activating, exactly window-targeted interface.
   AppleScript, or accessibility harnesses. Its discovery is read-only; every
   later call is lease-enforced and fails closed on ambiguous window or control
   matches.
-- The compiled registry currently verifies full tested coverage for Calculator,
-  Chess, Dictionary, Weather, and VLC on the recorded host/app versions. Read
+- A fresh installation has no compiled routes, and that costs nothing: the first
+  request for an app answers `first_use_monitored` and proceeds under the same
+  watchers, then remembers the outcome, so the second request is compiled. Never
+  report an unaudited app as unsupported — attempt it once and let the result
+  decide. What is genuinely refused is an app already quarantined here.
+- Before classifying any installed app as supported, visual-only, untested or
+  unsafe, read what this installation actually knows —
+  `scripts/app-control-registry.py list-routes` and
+  `scripts/runtime-route-observations.py list` — rather than assuming coverage.
+  A recorded read-only route never implies mutation coverage. Read
   [references/tested-background-launchers.md](references/tested-background-launchers.md)
-  for the exact capabilities and limitations.
-- For any other installed app, read
-  [references/app-compatibility.md](references/app-compatibility.md) before
-  classifying it as supported, visual-only, untested, or unsafe. A recorded
-  read-only route never implies mutation coverage.
+  for how that evidence is produced and what it does not authorize.
 - For a visual-read-only custom canvas, video surface, remote viewer, or
   inaccessible web view, ask the owning skill for a direct protocol or
   app-specific controller before declaring the requested action unsupported.

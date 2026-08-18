@@ -1,4 +1,0 @@
-interface:
-  display_name: "Orchestration"
-  short_description: "Delegate, track, and report multi-step work"
-  default_prompt: "Use $orchestration to delegate, track, and report my tasks."

@@ -1,6 +1,6 @@
 # Himalaya Operations
 
-Use this reference after `email` has selected a configured Himalaya account.
+Use this reference after `email-use` has selected a configured Himalaya account.
 
 ## Inspect accounts and folders
 
@@ -37,8 +37,8 @@ Message IDs are folder-relative. Re-list after changing folders or after mailbox
 
 ## Draft, reply, forward, and send
 
-Follow `email` for all drafting and sending decisions. Save a draft by default;
-do not execute `template send` until `email` determines that the user's current
+Follow `email-use` for all drafting and sending decisions. Save a draft by default;
+do not execute `template send` until `email-use` determines that the user's current
 instruction explicitly authorizes sending the finished message.
 
 Prefer a generated template or stdin over an interactive editor:
@@ -65,7 +65,7 @@ Verify downloaded files before opening or forwarding them.
 ## Copy, move, delete, and flags
 
 First verify the exact account, folder, current message ID, and destination.
-Follow `email` for authorization before deletion or consequential mailbox
+Follow `email-use` for authorization before deletion or consequential mailbox
 reorganization.
 
 ```bash

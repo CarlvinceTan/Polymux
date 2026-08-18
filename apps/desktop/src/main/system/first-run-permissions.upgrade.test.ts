@@ -21,10 +21,7 @@ function store(initial: Record<string, unknown> = {}) {
 function permissions(backing: ReturnType<typeof store>) {
   return new FirstRunPermissions({
     store: backing,
-    microphoneEnabled: () => false,
-    screenRecordingEnabled: () => false,
     status: () => "granted",
-    request: async () => "granted",
     onReady: () => {},
   });
 }

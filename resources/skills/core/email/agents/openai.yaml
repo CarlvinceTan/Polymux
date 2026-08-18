@@ -1,7 +1,0 @@
-interface:
-  display_name: "Email"
-  short_description: "Proactively find and handle relevant email"
-  icon_small: "./assets/email.svg"
-  icon_large: "./assets/email.svg"
-  brand_color: "#2563EB"
-  default_prompt: "Use $email to search relevant email evidence and handle any email task through the right local surface."

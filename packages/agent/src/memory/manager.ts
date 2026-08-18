@@ -5,9 +5,9 @@ import {
   readdirSync,
   renameSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { writeFileAtomicSync } from "@flareai/core";
 import type { MemoryRecord, Storage } from "@flareai/storage";
 
 const notePrefix = "<!-- flareai-memory:";
@@ -193,7 +193,7 @@ export class MemoryManager {
     text: string,
     watermark: string,
   ): MemoryConsolidationState {
-    writeFileSync(this.summaryPath, `${text.trim()}\n`, "utf8");
+    writeFileAtomicSync(this.summaryPath, `${text.trim()}\n`);
     return this.#writeConsolidation({
       watermark,
       consolidatedAt: this.#clock().toISOString(),
@@ -230,10 +230,9 @@ export class MemoryManager {
   #writeConsolidation(
     state: MemoryConsolidationState,
   ): MemoryConsolidationState {
-    writeFileSync(
+    writeFileAtomicSync(
       this.consolidationPath,
       `${JSON.stringify(state, null, 2)}\n`,
-      "utf8",
     );
     return state;
   }
@@ -267,7 +266,7 @@ export class MemoryManager {
   }
 
   setEnabled(enabled: boolean): MemoryVaultStatus {
-    writeFileSync(this.settingsPath, `${JSON.stringify({enabled}, null, 2)}\n`, "utf8");
+    writeFileAtomicSync(this.settingsPath, `${JSON.stringify({enabled}, null, 2)}\n`);
     return this.status();
   }
 
@@ -325,9 +324,9 @@ export class MemoryManager {
       this.archiveDirectory,
     ])
       mkdirSync(directory, { recursive: true });
-    if (!existsSync(this.registryPath)) writeFileSync(this.registryPath, registry([]));
-    if (!existsSync(this.summaryPath)) writeFileSync(this.summaryPath, summary([]));
-    if (!existsSync(this.settingsPath)) writeFileSync(this.settingsPath, `${JSON.stringify({enabled: true}, null, 2)}\n`);
+    if (!existsSync(this.registryPath)) writeFileAtomicSync(this.registryPath, registry([]));
+    if (!existsSync(this.summaryPath)) writeFileAtomicSync(this.summaryPath, summary([]));
+    if (!existsSync(this.settingsPath)) writeFileAtomicSync(this.settingsPath, `${JSON.stringify({enabled: true}, null, 2)}\n`);
   }
 
   #migrateLegacy(storage: Storage): void {
@@ -338,7 +337,7 @@ export class MemoryManager {
       this.#write(memory);
     }
     this.#rebuildIndexes();
-    writeFileSync(marker, `${this.#clock().toISOString()}\n`, "utf8");
+    writeFileAtomicSync(marker, `${this.#clock().toISOString()}\n`);
   }
 
   #write(memory: MemoryRecord): void {
@@ -354,10 +353,9 @@ export class MemoryManager {
       createdAt: memory.createdAt,
       updatedAt: memory.updatedAt,
     });
-    writeFileSync(
+    writeFileAtomicSync(
       target,
       `${notePrefix}${metadata}${noteSuffix}\n${memory.content.trim()}\n`,
-      "utf8",
     );
   }
 
@@ -376,12 +374,12 @@ export class MemoryManager {
 
   #rebuildIndexes(): void {
     const memories = this.#all();
-    writeFileSync(this.registryPath, registry(memories), "utf8");
+    writeFileAtomicSync(this.registryPath, registry(memories));
     // Once consolidation owns the summary, the mechanical dump must not
     // overwrite it. New memories reach the prompt through pendingMemories()
     // until the next job runs.
     if (this.consolidationState().watermark === null)
-      writeFileSync(this.summaryPath, summary(memories), "utf8");
+      writeFileAtomicSync(this.summaryPath, summary(memories));
   }
 }
 

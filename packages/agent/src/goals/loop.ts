@@ -1,4 +1,4 @@
-import type { ModelRef } from "@flareai/inference";
+import type { ModelRef, ReasoningEffort } from "@flareai/inference";
 import type { Goal } from "@flareai/storage";
 import type { GoalJudge, GoalJudgement } from "./judge.js";
 import type { GoalManager } from "./manager.js";
@@ -33,6 +33,8 @@ export interface GoalLoopDecision {
 export interface GoalLoopTurn {
   conversationId: string;
   model: ModelRef;
+  /** Effort the judge reads at, when the judge role carries its own level. */
+  reasoning?: ReasoningEffort;
   lastAgentMessage: string;
   signal?: AbortSignal;
 }
@@ -98,6 +100,7 @@ export class GoalLoop {
       goal.objective,
       turn.lastAgentMessage,
       turn.signal,
+      turn.reasoning,
     );
 
     if (judgement.verdict === "done") {

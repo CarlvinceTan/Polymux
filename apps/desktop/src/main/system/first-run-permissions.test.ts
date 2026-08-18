@@ -3,7 +3,7 @@ import test from "node:test";
 import type {SystemPermissionKind, SystemPermissionStatus} from "@flareai/protocol";
 import {FirstRunPermissions, type PermissionPreferenceStore} from "./first-run-permissions.js";
 
-test("requests enabled OS permissions once and in sequence", async () => {
+test("marks first run done, starts what waits on it, and asks macOS for nothing", async () => {
   const preferences = new Map<string, unknown>();
   const events: string[] = [];
   const store: PermissionPreferenceStore = {
@@ -16,20 +16,19 @@ test("requests enabled OS permissions once and in sequence", async () => {
   ]);
   const manager = new FirstRunPermissions({
     store,
-    microphoneEnabled: () => true,
-    screenRecordingEnabled: () => true,
     status: (permission) => statuses.get(permission)!,
-    request: async (permission) => {
-      events.push(permission);
-      statuses.set(permission, "granted");
-      return "granted";
-    },
     onReady: () => events.push("ready"),
   });
 
   const first = await manager.ensure();
-  assert.deepEqual(events, ["microphone", "screen-recording", "saved", "ready"]);
-  assert.deepEqual(first, {firstRun: true, microphone: "granted", screenRecording: "granted"});
+  // No permission name among the events: this runs at launch, and a consent
+  // dialog raised here is one the user did nothing to invite.
+  assert.deepEqual(events, ["saved", "ready"]);
+  assert.deepEqual(first, {
+    firstRun: true,
+    microphone: "not-determined",
+    screenRecording: "not-determined",
+  });
 
   events.length = 0;
   const later = await manager.ensure();
@@ -37,21 +36,18 @@ test("requests enabled OS permissions once and in sequence", async () => {
   assert.equal(later.firstRun, false);
 });
 
-test("skips permission prompts for disabled first-run features", async () => {
-  const requested: SystemPermissionKind[] = [];
+test("reports what is granted rather than what it just asked for", async () => {
   const store: PermissionPreferenceStore = {
     getPreference: () => null,
     setPreference: () => undefined,
   };
   const manager = new FirstRunPermissions({
     store,
-    microphoneEnabled: () => false,
-    screenRecordingEnabled: () => false,
-    status: () => "not-determined",
-    request: async (permission) => { requested.push(permission); return "granted"; },
+    status: (permission) => permission === "microphone" ? "granted" : "denied",
     onReady: () => undefined,
   });
 
-  await manager.ensure();
-  assert.deepEqual(requested, []);
+  const result = await manager.ensure();
+  assert.equal(result.microphone, "granted");
+  assert.equal(result.screenRecording, "denied");
 });

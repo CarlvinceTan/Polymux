@@ -131,6 +131,80 @@ const migrations: Migration[] = [
     version: 5,
     run: addCompactionFingerprint,
   },
+  {
+    // What the embedded browser remembers between launches. Downloads used to
+    // live in an in-memory array that emptied on quit, and the other two had
+    // nowhere to go at all.
+    //
+    // `saved_logins` deliberately holds no secret: the password sits in the
+    // encrypted vault under this row's id, so a reader of the database learns
+    // only that an account exists, never what it is.
+    //
+    // `IF NOT EXISTS` throughout for the same reason migration 5 checks before
+    // adding its column: a store whose version was wound back by hand re-runs
+    // this step, and it has to upgrade rather than fail on what is already there.
+    version: 6,
+    sql: `
+    CREATE TABLE IF NOT EXISTS site_permissions (
+      origin TEXT NOT NULL, permission TEXT NOT NULL, decision TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY(origin, permission), CHECK(decision IN ('allow','deny','ask'))
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS browser_downloads (
+      id TEXT PRIMARY KEY, url TEXT NOT NULL, filename TEXT NOT NULL, path TEXT NOT NULL,
+      mime_type TEXT, received_bytes INTEGER NOT NULL DEFAULT 0, total_bytes INTEGER NOT NULL DEFAULT 0,
+      state TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
+      CHECK(state IN ('progressing','paused','completed','cancelled','interrupted'))
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS browser_downloads_started_idx ON browser_downloads(started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS saved_logins (
+      id TEXT PRIMARY KEY, origin TEXT NOT NULL, username TEXT NOT NULL, source TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_used_at TEXT,
+      UNIQUE(origin, username), CHECK(source IN ('manual','import'))
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS saved_logins_origin_idx ON saved_logins(origin);
+  `,
+  },
+  {
+    // Browsing history, which the app had nowhere to keep: the renderer's
+    // launcher list held twenty-four entries in localStorage with no times, so
+    // an imported Chrome history had nothing to land in.
+    //
+    // One row per url rather than one per visit. A browser's own history keeps
+    // every visit and aggregates on read; here the list, the search and the
+    // Recent strip all want "pages, most recent first", and an import of
+    // eighty thousand visits collapses to a few thousand pages. `visit_count`
+    // carries what would otherwise be lost.
+    version: 7,
+    sql: `
+    CREATE TABLE IF NOT EXISTS browser_history (
+      url TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '',
+      visited_at TEXT NOT NULL, visit_count INTEGER NOT NULL DEFAULT 1,
+      source TEXT NOT NULL DEFAULT 'local',
+      CHECK(source IN ('local','import'))
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS browser_history_visited_idx ON browser_history(visited_at DESC);
+  `,
+  },
+  {
+    // What the hub showed last time, so it can show it again before the
+    // network answers. One JSON payload per key — the status, the chat list, a
+    // folder's envelopes, a message body — because the shapes are the
+    // protocol's DTOs and this table's job is to hand them back unchanged, not
+    // to model mail a second time.
+    //
+    // Nothing here is authoritative, so there are no foreign keys and no
+    // constraints beyond the key: a row is a copy of something the network
+    // owns, and the worst a stale or dropped one costs is a wait.
+    version: 8,
+    sql: `
+    CREATE TABLE IF NOT EXISTS comms_cache (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL, fetched_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS comms_cache_fetched_idx ON comms_cache(fetched_at DESC);
+  `,
+  },
 ];
 
 /**

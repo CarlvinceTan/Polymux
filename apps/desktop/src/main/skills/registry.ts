@@ -170,11 +170,22 @@ export interface SkillRegistryEntry {
   installs: number;
 }
 
-/** Searches the skills.sh directory — the same index `npx skills find` uses. */
-export async function searchSkillRegistry(query: string): Promise<SkillRegistryEntry[]> {
-  const text = query.trim();
-  if (text.length < 2) return [];
-  const url = `https://skills.sh/api/search?q=${encodeURIComponent(text)}&limit=15`;
+/** What an empty search box shows. skills.sh has no listing endpoint and
+ * refuses a query under two characters, so the featured list is a search of
+ * its own — broad enough to return the directory's most-installed skills, and
+ * replaced the moment the user types. */
+const FEATURED_SKILL_QUERY = "skills";
+
+/** Searches the skills.sh directory — the same index `npx skills find` uses.
+ *
+ * `limit` is how paging works here: the directory takes neither an offset nor
+ * a cursor, so asking for more means asking for a longer list. Callers that
+ * scroll to the bottom raise it and replace what they hold. */
+export async function searchSkillRegistry(query: string, limit = 15): Promise<SkillRegistryEntry[]> {
+  const typed = query.trim();
+  if (typed.length === 1) return [];
+  const text = typed || FEATURED_SKILL_QUERY;
+  const url = `https://skills.sh/api/search?q=${encodeURIComponent(text)}&limit=${Math.max(1, Math.min(200, Math.trunc(limit)))}`;
   const response = await fetch(url, {
     signal: AbortSignal.timeout(10_000),
     headers: { accept: "application/json" },
