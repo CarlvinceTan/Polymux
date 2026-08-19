@@ -3,7 +3,7 @@
  * them.
  *
  * The rail's natural order is whatever the status report happens to list —
- * bridges as the homeserver returns them, mailboxes as Himalaya's config holds
+ * bridges as the homeserver returns them, mailboxes as the account file holds
  * them. That is not an order anyone chose, so the rail lets a row be dragged
  * and remembers where it was put. It survives restarts in localStorage, next to
  * the browser history, because it is a preference about this window rather than

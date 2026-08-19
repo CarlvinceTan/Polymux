@@ -4,7 +4,7 @@ import type {
   ActiveAgentRun,
   AgentTool,
 } from "@flareai/core";
-import { AgentRunner, type ToolHooks } from "@flareai/core";
+import { AgentRunControl, AgentRunner, type ToolHooks } from "@flareai/core";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type {
@@ -45,7 +45,19 @@ import { createChronicleTools } from "./memory/chronicle-tools.js";
 import { createHistoryTools } from "./memory/history-tools.js";
 import { MemoryManager } from "./memory/manager.js";
 import { createMemoryTools } from "./memory/tools.js";
-import { createTaskTool, type SubagentRequest } from "./subagents/task-tool.js";
+import {
+  createCheckTasksTool,
+  createTaskTool,
+  createWaitTaskTool,
+  type SubagentRequest,
+} from "./subagents/task-tool.js";
+import { isFinal, SubagentFleet } from "./subagents/fleet.js";
+import { Ledger } from "./subagents/ledger.js";
+import {
+  createLedgerReadTools,
+  createLedgerWorkerTools,
+} from "./subagents/ledger-tools.js";
+import type { AgentPrompts } from "./prompts/agent-prompts.js";
 import type { AgentToolContext } from "@flareai/core";
 
 export type { ChronicleAccess } from "./memory/chronicle-access.js";
@@ -112,7 +124,13 @@ export interface FlareAIAgentOptions {
   compactionReasoning?: ReasoningEffort;
   reasoning?: ReasoningEffort;
   basePrompt?: string;
-  communicationPrompt?: string;
+  /**
+   * FlareAI's own prompts, read from `resources/prompts` by the host.
+   * `main` is loaded into every run that can delegate and `task` into every
+   * delegated run; the rest belong to the internal agents and fall back
+   * to the wording in this package.
+   */
+  prompts?: AgentPrompts;
   skills?: SkillLoaderOptions;
   compaction?: Partial<CompactionSettings>;
   memoryConsolidation?: Partial<MemoryConsolidationSettings>;
@@ -178,6 +196,21 @@ export interface StartFlareAIRunInput {
    * indistinguishable from typed text, so the prompt has to say which it is.
    */
   speechMode?: boolean;
+  /**
+   * The shared ledger this run reads and writes. Set for a delegating run
+   * (its own, created here) and for a delegated run whose dispatch opted in
+   * with `ledger: true` (the parent's, passed down).
+   */
+  ledger?: Ledger;
+  /** The task name a delegated run's ledger writes are tagged with. */
+  ledgerSource?: string;
+  /**
+   * A continued worker's retained context, seeded ahead of its new
+   * instruction so it resumes where it settled instead of re-browsing. The
+   * rows have no stored sequences, so compaction re-summarises a continued
+   * run from scratch — the accepted cost of resuming a long arc.
+   */
+  seedMessages?: InferenceMessage[];
 }
 
 export class FlareAIAgent {
@@ -195,7 +228,7 @@ export class FlareAIAgent {
     this.goals = new GoalManager(options.storage);
     this.goalLoop = new GoalLoop(
       this.goals,
-      new GoalJudge(options.inference),
+      new GoalJudge(options.inference, options.prompts?.judge),
       options.goalLoop,
     );
     this.memory = options.memory;
@@ -203,11 +236,13 @@ export class FlareAIAgent {
       options.inference,
       options.storage,
       options.compaction,
+      options.prompts?.compaction,
     );
     this.#consolidator = new MemoryConsolidator(
       options.inference,
       options.memory,
       options.memoryConsolidation,
+      options.prompts?.consolidation,
     );
     this.#distiller = options.chronicle
       ? new ChronicleDistiller(
@@ -215,6 +250,8 @@ export class FlareAIAgent {
           options.memory,
           options.chronicle,
           options.chronicleDistillation,
+          undefined,
+          options.prompts?.distillation,
         )
       : undefined;
     this.#skillLoader = new SkillLoader(options.skills);
@@ -304,40 +341,68 @@ export class FlareAIAgent {
       (item) => item.sequence,
     );
     // A subagent's instruction is context for this run alone and is never
-    // stored, so it has no sequence of its own.
+    // stored, so it has no sequence of its own. A continued subagent is seeded
+    // with its retained context first: everything it gathered, then the new
+    // instruction last, as the message it acts on.
     if (input.parentRunId) {
+      for (const seed of input.seedMessages ?? []) {
+        messages.push(seed);
+        durableSequences.push(null);
+      }
       messages.push({ role: "user", content: text });
       durableSequences.push(null);
     }
     // One flag drives both the tool and the policy that describes it, so a
     // subagent is never told to delegate with no `task` tool to delegate with.
+    // The screen is the user's own run's to move: a delegated run never gets
+    // the tools that decide what is on it, and says so in its answer instead.
+    const subagentRun = Boolean(input.parentRunId);
     const delegation = input.includeSubagents !== false;
     const memory = this.memory.promptContext(input.conversationId);
     const chronicle = this.#options.chronicle?.promptContext();
     const environment = this.#options.environment?.promptContext();
     const systemPrompt = buildSystemPrompt({
-      basePrompt: this.#options.basePrompt,
-      communicationPrompt: this.#options.communicationPrompt,
+      // A prompt the host passes directly still wins: the files are the
+      // shipped wording, not a lock on it.
+      basePrompt: this.#options.basePrompt ?? this.#options.prompts?.base,
       preferences: this.#options.storage.listPreferences(),
-      memorySummary: memory.enabled ? memory.summary : undefined,
+      // The whole memory index is the conversation's to hold, and it is most of
+      // the prompt. A delegated run is given a bounded task and the tools to
+      // look anything else up, so it carries the registry's location rather
+      // than its contents — which is what keeps a short task fast now that
+      // every task is delegated.
+      memorySummary:
+        memory.enabled && !subagentRun ? memory.summary : undefined,
       memoryRegistryPath: memory.enabled ? memory.registryPath : undefined,
       historySearch: true,
-      delegation,
       memories: memory.enabled ? memory.conversationMemories : [],
       chronicle: chronicle?.enabled ? chronicle : undefined,
       drive: this.#options.drive?.promptContext(),
       environment,
       skills: skillResult.skills,
-      goal: this.goals.get(input.conversationId),
+      // The goal belongs to the conversation, not to the errand: a subagent
+      // that reads it starts working towards the whole objective instead of
+      // the piece it was sent for.
+      goal: subagentRun ? null : this.goals.get(input.conversationId),
       speechMode: input.speechMode,
     });
-    // The screen is the user's own run's to move: a delegated run never gets
-    // the tools that decide what is on it, and says so in its answer instead.
-    const subagentRun = Boolean(input.parentRunId);
+    // What the run the user is talking to may do with its own hands.
+    //
+    // An orchestrator that holds the work tools uses them: the delegation
+    // policy was in the prompt and lost to the browser being right there. So a
+    // run that can delegate keeps only what cannot be delegated — the tools
+    // that decide what is on screen (`mainAgentOnly`), plus the coordination
+    // and conversation-state tools added below. Everything else is work, and
+    // work goes out. That is also what keeps the coordinator's context free for
+    // the whole picture instead of one subtask's implementation detail.
     const tools = [
       ...this.#options.tools
         .list()
-        .filter((tool) => !subagentRun || !tool.mainAgentOnly),
+        .filter((tool) =>
+          subagentRun
+            ? !tool.mainAgentOnly
+            : !delegation || Boolean(tool.mainAgentOnly),
+        ),
       ...this.goals.tools(input.conversationId),
       ...createMemoryTools(this.memory, input.conversationId),
       ...createHistoryTools(this.#options.storage, input.conversationId),
@@ -345,17 +410,76 @@ export class FlareAIAgent {
         ? createChronicleTools(this.#options.chronicle)
         : []),
     ];
+    // One fleet per run: the tasks a run dispatched, the post between them,
+    // and the reason the run cannot end while one of them is still out. The
+    // ledger sits next to it: one in-memory store per delegating run, shared
+    // by reference with every task dispatched into it with `ledger: true`.
+    const ledger =
+      input.ledger ?? (delegation && !subagentRun ? new Ledger() : undefined);
+    const fleet = new SubagentFleet(ledger);
+    // The parent's reads stay always-on — it cannot know in advance whether a
+    // dispatch will opt into the ledger. A worker gets the write tools only
+    // when its dispatch asked for them and tagged them with its task name.
+    if (ledger)
+      tools.push(
+        ...(input.ledgerSource
+          ? createLedgerWorkerTools(ledger, input.ledgerSource)
+          : createLedgerReadTools(ledger)),
+      );
     if (delegation)
       tools.push(
         createTaskTool((request, context) =>
-          this.#runSubagent(input.conversationId, runId, request, context),
+          this.#runSubagent(
+            input.conversationId,
+            runId,
+            fleet,
+            request,
+            context,
+          ),
         ),
+        createWaitTaskTool(fleet),
+        createCheckTasksTool(fleet),
       );
     const runner = new AgentRunner({
       inference: this.#options.inference,
       eventSink: { append: (event) => this.#persistEvent(event) },
       hooks: this.#options.hooks,
     });
+    // The coordinator's own instructions, loaded rather than built in.
+    //
+    // A skill left in the catalogue is one line the model has to choose to
+    // open — which, on a browsing request, it does not: it opens browser-use
+    // and starts browsing. `agents/main.md` is loaded into every run that can
+    // delegate, so the policy is in front of the coordinator before it decides
+    // anything, without becoming a section of the system prompt that every
+    // subagent then carries too.
+    // Every run gets the brief for the job it is doing: the coordinator's, or
+    // the one written for a run that was sent out and has nobody to ask.
+    const standingPrompt = subagentRun
+      ? this.#options.prompts?.task?.trim()
+      : delegation
+        ? this.#options.prompts?.main?.trim()
+        : "";
+    if (standingPrompt) {
+      // Placed just before the turn it governs, never at the head. Two reasons,
+      // and the first is not cosmetic: `cutThrough` stops at the first message
+      // with no stored row, so a prompt at index 0 would make every compaction
+      // re-summarise the whole conversation instead of reusing the summary it
+      // already has. Second, standing instructions read last are the ones a
+      // model actually follows.
+      const at = Math.max(0, messages.length - 1);
+      messages.splice(at, 0, {
+        role: "user",
+        content: `<agent_prompt name="${subagentRun ? "task" : "main"}">\n${standingPrompt}\n</agent_prompt>`,
+      });
+      durableSequences.splice(at, 0, null);
+    }
+
+    // The control is made here rather than by the runner, so the fleet can post
+    // into it from the moment the run exists — a task that finishes before
+    // `start` returns has somewhere to put its result.
+    const control = new AgentRunControl();
+    fleet.attach(control);
     const active = runner.start({
       runId,
       model,
@@ -386,7 +510,16 @@ export class FlareAIAgent {
               }
             : undefined,
         ),
-    });
+      // A run that dispatched work and then wrote its answer would be hanging
+      // up mid-errand: nobody is left to read what the subagent comes back
+      // with. So the run waits its team out and takes another turn with what
+      // they said, rather than ending on an answer written without them.
+      beforeComplete: async () => {
+        if (!fleet.outstanding().length) return fleet.takePost();
+        await fleet.settleOutstanding();
+        return fleet.takePost();
+      },
+    }, control);
     // The runner appends new messages onto the context it was started with, so
     // the run's additions begin at this index — not at the stored row count,
     // which drifts whenever toInferenceMessage or selectContext drops rows.
@@ -451,44 +584,92 @@ export class FlareAIAgent {
     });
   }
 
+  /**
+   * Starts a delegated run and hands its address back at once. Nothing here
+   * waits: the fleet follows the run to its end and posts the result to the
+   * parent, which is free to keep working — or to say it has nothing better to
+   * do, by calling `wait_task`.
+   */
   async #runSubagent(
     conversationId: string,
     parentRunId: string,
+    fleet: SubagentFleet,
     request: SubagentRequest,
     context: AgentToolContext,
   ) {
     const runId = crypto.randomUUID();
-    const active = this.start({
-      conversationId,
-      text: request.prompt,
-      runId,
-      parentRunId,
-      includeSubagents: false,
-      model: this.#options.taskModel,
-      reasoning: this.#options.taskReasoning,
-      signal: context.signal,
-      contextMode: request.context,
-    });
-    this.#options.onSubagentRun?.({
-      conversationId,
-      parentRunId,
-      runId,
-      description: request.description,
-      run: active,
-    });
-    // Announced on the *parent* stream, and carrying no message of its own so
-    // no step row appears: the only job of this event is to tell the UI which
-    // run belongs to which task row, while the task is still running.
-    await context.emitProgress("", { childRunId: runId });
-    const result = await active.result;
-    return {
-      runId: result.runId,
-      status: result.status,
-      result:
-        assistantText(result) ||
-        result.error?.message ||
-        "Subagent returned no text.",
-    };
+    // Continue-or-fresh is the orchestrator's call per dispatch. A continue
+    // lands only when the named task settled and was retained; anything else
+    // silently degrades to a fresh dispatch — the model's `continue` was a
+    // preference, not a precondition the run should fail over.
+    const prior = request.continue ? fleet.entry(request.continue) : undefined;
+    const seed = prior && isFinal(prior.status) ? prior.retained : undefined;
+    // Spawned (or re-armed) before start(): the runId is already known, and
+    // if start throws the entry exists to be settled as failed rather than
+    // left running forever with no track() behind it.
+    const entry =
+      seed && prior
+        ? fleet.resume(prior.name, runId)!
+        : fleet.spawn(request.description, runId);
+    entry.description = request.description;
+    try {
+      const active = this.start({
+        conversationId,
+        text: request.prompt,
+        runId,
+        parentRunId,
+        includeSubagents: false,
+        model: this.#options.taskModel,
+        reasoning: this.#options.taskReasoning,
+        signal: context.signal,
+        contextMode: request.context,
+        // Ledger participation is per dispatch: only a task whose dispatch
+        // opted in shares the run's store, tagged with its task name.
+        ledger: request.ledger ? fleet.ledger : undefined,
+        ledgerSource: request.ledger ? entry.name : undefined,
+        seedMessages: seed,
+      });
+      this.#options.onSubagentRun?.({
+        conversationId,
+        parentRunId,
+        runId,
+        description: request.description,
+        run: active,
+      });
+      // Announced on the *parent* stream, and carrying no message of its own so
+      // no step row appears: the only job of this event is to tell the UI which
+      // run belongs to which task row, while the task is still running. A
+      // continuation also names the task it resumes, so the UI relinks the new
+      // run to the existing row instead of appending a second one.
+      await context.emitProgress(
+        "",
+        seed ? { childRunId: runId, continueFrom: entry.name } : { childRunId: runId },
+      );
+      fleet.track(
+        entry.name,
+        active.result.then((result) => {
+          // Retention is opt-in: only a dispatch that asked for it leaves its
+          // context behind for a follow-up to resume from.
+          if (request.retain)
+            fleet.storeRetained(entry.name, result.context.messages);
+          return {
+            status: result.status,
+            text:
+              assistantText(result) ||
+              result.error?.message ||
+              "Subagent returned no text.",
+          };
+        }),
+      );
+      return { name: entry.name, continuedFrom: seed ? entry.name : undefined };
+    } catch (error) {
+      fleet.settle(
+        entry.name,
+        "failed",
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
   }
 
   #persistEvent(event: AgentRunEvent): void {

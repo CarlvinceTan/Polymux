@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import type { InferenceService, ModelRef } from "@flareai/inference";
 import type { ChronicleAccess } from "./chronicle-access.js";
 import type { MemoryManager } from "./manager.js";
+import { fillPrompt } from "../prompts/agent-prompts.js";
 
 export interface ChronicleDistillationSettings {
   enabled: boolean;
@@ -22,7 +23,7 @@ export const defaultChronicleDistillationSettings: ChronicleDistillationSettings
   maximumMemories: 8,
 };
 
-const distillationPrompt = (limit: number) =>
+const defaultDistillationPrompt = (limit: number) =>
   `You are reading a few hours of one person's local screen history — text of the windows they had open, and a log of what they did — shortly before the raw capture is deleted. Your job is to keep the small number of things that will still matter next week.
 
 Write at most ${limit} lines. Each line is one durable fact, on its own, starting with "- ".
@@ -62,18 +63,29 @@ export class ChronicleDistiller {
   readonly #clock: () => Date;
   #running = false;
 
+  readonly #prompt?: string;
+  /** `prompt` comes from `resources/prompts/distillation.md`; it states
+   * the line limit as `{limit}`, which is filled in here. */
   constructor(
     inference: InferenceService,
     memory: MemoryManager,
     chronicle: ChronicleAccess,
     settings: Partial<ChronicleDistillationSettings> = {},
     clock: () => Date = () => new Date(),
+    prompt?: string,
   ) {
     this.#inference = inference;
     this.#memory = memory;
     this.#chronicle = chronicle;
     this.#settings = { ...defaultChronicleDistillationSettings, ...settings };
     this.#clock = clock;
+    this.#prompt = prompt?.trim() || undefined;
+  }
+
+  #distillationPrompt(limit: number): string {
+    return this.#prompt
+      ? fillPrompt(this.#prompt, { limit })
+      : defaultDistillationPrompt(limit);
   }
 
   /** Resolves the memories written. Never throws. */
@@ -129,7 +141,7 @@ export class ChronicleDistiller {
     let answer = "";
     for await (const event of this.#inference.stream({
       model,
-      systemPrompt: distillationPrompt(this.#settings.maximumMemories),
+      systemPrompt: this.#distillationPrompt(this.#settings.maximumMemories),
       messages: [{ role: "user", content: history }],
       signal,
     })) {

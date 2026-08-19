@@ -332,6 +332,21 @@ export class AgentRunner {
           continue;
         }
 
+        // Nothing left to say — but possibly something left to hear. Work this
+        // run delegated and has not been told the end of keeps it open for
+        // another turn rather than letting it hang up mid-errand.
+        if (request.beforeComplete) {
+          const outstanding = await request.beforeComplete({
+            runId: request.runId,
+            turn: turns,
+            signal,
+          });
+          if (outstanding.length) {
+            context.messages.push(...outstanding);
+            continue;
+          }
+        }
+
         await setStatus("completed");
         const result: AgentRunResult = {
           runId: request.runId,

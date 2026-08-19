@@ -14,20 +14,6 @@ export { MEDIA_SCHEME, mediaUrl };
  * would mean holding the whole file in the page.
  */
 
-/**
- * Must run before `app.whenReady`: a scheme the renderer treats as ordinary
- * media has to be privileged before any window exists, or `<audio>` and
- * `<video>` refuse to seek within it.
- */
-export function registerMediaScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: MEDIA_SCHEME,
-      privileges: {stream: true, supportFetchAPI: true, bypassCSP: true, secure: true},
-    },
-  ]);
-}
-
 /** How long a media request waits for sign-in before giving up; see below. */
 const SIGN_IN_POLL_MS = 100;
 const SIGN_IN_GRACE_ATTEMPTS = 50;

@@ -33,7 +33,6 @@ export default {
   // Workspace
   'workspace.drive': 'Drive',
   'workspace.schedule': 'Schedule',
-  'workspace.chat': 'Chat',
   'workspace.hub': 'Hub',
   'workspace.newTab': 'New tab',
 
@@ -244,23 +243,18 @@ export default {
   'task.working': 'Working',
 
   // Workspace views
-  'view.document': 'Document',
-  'view.startWriting': 'Start writing…',
-  'view.slides': 'Slides',
-  'view.slideTitle': 'Slide title',
-  'view.slideBody': 'Slide body',
-  'view.slideBodyPlaceholder': 'Supporting detail for this slide.',
+  'open.inApp': 'Open in {app}',
+  'open.inBrowser': 'Open in browser',
+  'open.inWorkspace': 'Open in Workspace',
+  'open.inDefaultApp': 'Open in default app',
+  'open.downloadAndOpen': 'Download and open',
   'view.photo': 'Photo',
   'view.imagePending': 'The image will appear here once it is available.',
   'view.video': 'Video',
   'view.videoPending': 'The video will appear here once it is available.',
-  'view.spreadsheet': 'Spreadsheet',
-  'view.row': 'Row',
   'view.task': 'Task',
+  'view.taskTitle': 'Task: {title}',
   'view.taskEmpty': 'This task has not started working yet.',
-  'view.sideChat': 'Side chat',
-  'view.sideChatEmpty': 'Start a focused conversation about this workspace.',
-  'view.sideChatPlaceholder': 'Ask about this workspace',
 
 
   'summary.viewAll': 'View all',
@@ -680,8 +674,10 @@ export default {
   'hub.hubOffline': 'Hub offline',
   'hub.editMailbox': 'Edit {name}',
   'hub.addMailbox': 'Add a mailbox',
+  'hub.signInWith': 'Sign in with {provider}',
+  'hub.signInOrManual': 'Or set the servers up by hand below.',
   'hub.mailboxFormBlurb':
-    "FlareAI stores the password in your keychain and writes only a lookup into Himalaya's config.",
+    "FlareAI stores the password in your keychain and writes only a lookup into its own account file.",
   'hub.provider': 'Provider',
   'hub.accountName': 'Account name',
   'hub.emailAddress': 'Email address',
@@ -864,7 +860,6 @@ export default {
   'platforms.saveAndContinue': 'Save and continue',
   'platforms.notSigningIn': 'Not signing in',
   'platforms.notChecked': 'Not checked',
-  'platforms.mailNotInstalled': 'Mail support is not installed on this Mac.',
   'platforms.otherProvider': 'Other',
   'platforms.adding': 'Adding…',
   'platforms.addMailbox': 'Add mailbox',

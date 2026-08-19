@@ -1090,6 +1090,11 @@ test.describe('design system', () => {
     await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
     const sonnet = modal.getByRole('button', {name: /Set Claude Sonnet 4.5 as the/});
 
+    // No tooltip is raised while the startup cover is up — it is click-through,
+    // so the pointer reaches the app behind it, and a pill then would float
+    // over the brand alone. The pause being measured here is the tooltip's own,
+    // so wait for the cover to go before starting it.
+    await expect(page.locator('#startup-splash')).toHaveCount(0, {timeout: 10_000});
     await sonnet.hover();
     await expect(page.locator('.shared-tooltip')).toHaveCount(0);
     await expect(page.locator('.shared-tooltip.wide')).toHaveCount(0);
@@ -1555,6 +1560,21 @@ test.describe('conversation', () => {
     await expect(summaryCard(page).getByText('Prepare the response')).toHaveCount(0);
   });
 
+  test('a dispatched task keeps working after the call that started it returns', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_task__');
+
+    // `task` returns the moment the subagent starts, so neither the row nor the
+    // activity that dispatched it may read as finished while the run is still
+    // going — the delegated run's own ending is what settles them.
+    const row = summaryCard(page).getByRole('button', {name: /Compare the two providers/});
+    await expect(row.locator('svg.task-glyph.running')).toBeVisible({timeout: 4000});
+    await expect(page.locator('.agent-activity-list li').filter({hasText: 'Delegating Task'})).toHaveClass(/active/);
+    // …and the delegated run ending is what settles both.
+    await expect(row.locator('svg.task-glyph.running')).toHaveCount(0, {timeout: 4000});
+    await expect(row.locator('svg.task-glyph')).toBeVisible();
+  });
+
   test('opens a delegated task as a read-only run in the workspace', async ({page}) => {
     await page.goto('/');
     await send(page, '__demo_task__');
@@ -1744,6 +1764,9 @@ test.describe('conversation', () => {
 
     await expect(page.getByRole('region', {name: 'Queued messages'})).toHaveCount(0);
     await expect(page.locator('.message:not(.assistant)').nth(1)).toContainText('urgent prompt');
+    // Steering puts the user's message after the assistant that is still
+    // writing; the turn it steered has not stopped and must not say so.
+    await expect(page.locator('.message-stopped')).toHaveCount(0);
   });
 
   test('a queued message can be steered, or edited back into the composer', async ({page}) => {
@@ -2438,6 +2461,23 @@ test.describe('workspace drawer', () => {
     await expect(drawer.getByRole('button', {name: 'Browser'})).toBeVisible();
   });
 
+  test('a row dragged onto a folder moves into it', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Drive'}).click();
+
+    const row = (name: string) => drawer.locator('.fb-row').filter({hasText: name});
+    await expect(row('Launch brief.docx')).toBeVisible();
+
+    await row('Launch brief.docx').dragTo(row('Reports'));
+    await expect(row('Launch brief.docx')).toHaveCount(0);
+
+    // And it is in the folder it was dropped on, not merely gone from here.
+    await row('Reports').dblclick();
+    await expect(row('Launch brief.docx')).toBeVisible();
+  });
+
   test('header actions ride the panel rather than appearing before it lands', async ({page}) => {
     await page.goto('/');
     const action = page.locator('.workspace-header-action').first();
@@ -3021,7 +3061,9 @@ test.describe('hub view', () => {
     // Mailboxes live in a dropdown over the list, not in the rail, and are
     // classified from IMAP special-use flags.
     await view.locator('.hub-view-folder-button').click();
-    for (const folder of ['INBOX', 'Drafts', 'Sent Mail', 'Spam', 'Trash'])
+    // The menu shows each folder's leaf label, not its IMAP path: "INBOX"
+    // shouting beside Drafts and Sent Mail would be the only all-caps row.
+    for (const folder of ['Inbox', 'Drafts', 'Sent Mail', 'Spam', 'Trash'])
       await expect(
         view.locator('.hub-view-folder-menu').getByRole('button', {name: folder, exact: true}),
       ).toBeVisible();

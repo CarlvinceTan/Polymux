@@ -555,6 +555,11 @@
   .prov-detail.compact{min-height:0}
   .prov-detail :global(.onb-note){margin-top:9px}
   .prov-detail :global(.onb-actions){margin-top:18px}
+  /* The same reasoning as `.onb-actions .onb-step-back`: the primary carries a
+     plate and the word beside it does not, so at the row's own gap the two read
+     as crowded. `.onb-quiet`'s -8px margin cancels its padding, so this is the
+     whole of the extra breathing room. */
+  .prov-detail :global(.onb-button + .onb-quiet){margin-left:6px}
 
   /* On any ink ground — disc or slab — the cards sit on the inverted surface
      like everything else. */

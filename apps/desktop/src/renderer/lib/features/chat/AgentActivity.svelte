@@ -142,8 +142,11 @@
   /** The closed row's one line: the prose's first paragraph line, with the rest
    * left to the disclosure. The line itself is truncated in CSS, so no length
    * is guessed here. */
+  /** The first line with something on it. Falls back to the trimmed whole
+   * rather than the raw text: returning what it was given meant a label of
+   * only whitespace came back as whitespace and drew an empty row. */
   function leadLine(text: string): string {
-    return text.split('\n').find((line) => line.trim().length > 0)?.trim() ?? text;
+    return text.split('\n').find((line) => line.trim().length > 0)?.trim() ?? text.trim();
   }
 
   const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat' | 'archive'> = {

@@ -31,7 +31,7 @@ export interface WorkspaceRevealer {
   linked?(): Promise<LinkedHub>;
 }
 
-const SURFACES: WorkspaceSurface[] = ["hub", "drive", "schedule", "chat", "summary"];
+const SURFACES: WorkspaceSurface[] = ["hub", "drive", "schedule", "summary"];
 /** How a drafted mail relates to an existing one. */
 const COMPOSE_MODES = ["new", "reply", "reply-all", "forward"] as const;
 const IMPORTANCE = ["high", "normal", "low"] as const;
@@ -45,7 +45,7 @@ export function createWorkspaceTool(workspace: WorkspaceRevealer): AgentTool {
       "and after finishing work whose result lives in the app rather than in the reply —",
       "a saved draft, a file on a drive, a schedule.",
       "Surfaces: 'hub' is mail and messaging; 'drive' is files; 'schedule' is recurring tasks;",
-      "'chat' is the side chat; 'summary' is the conversation summary.",
+      "'summary' is the conversation summary.",
       "Say where inside the surface to land: for mail give account and folder, and messageId",
       "when you know it — without one the newest message in that folder opens, which is what",
       "'the draft you just wrote' means; subject narrows that to the newest carrying it.",

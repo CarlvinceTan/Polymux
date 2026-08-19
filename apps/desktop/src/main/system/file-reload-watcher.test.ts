@@ -180,3 +180,25 @@ async function writeUntil(
 async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
+
+test("a directory that does not exist yet is created rather than thrown at", async () => {
+  // What a fresh instance looks like: nothing has written state, so the file's
+  // directory is absent. Starting here used to throw ENOENT out of an async
+  // caller, which reads as an unhandled rejection at launch.
+  const home = mkdtempSync(path.join(tmpdir(), "flareai-reload-"));
+  const target = path.join(home, "state", "registry.json");
+  const seen: number[] = [];
+  const {watcher, flush} = manualWatcher(target, () => seen.push(1));
+
+  assert.doesNotThrow(() => watcher.start());
+  try {
+    // And it watches for real: the file written afterwards is still noticed.
+    await writeUntil(() => {
+      flush();
+      return seen.length > 0;
+    }, () => writeFileSync(target, `{"at":${seen.length}}`));
+    assert.ok(seen.length > 0, "the file written after start was never seen");
+  } finally {
+    watcher.stop();
+  }
+});

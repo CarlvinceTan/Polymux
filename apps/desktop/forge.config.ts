@@ -151,6 +151,10 @@ const config: ForgeConfig = {
         );
       const {execFileSync} = await import('node:child_process');
       execFileSync(process.execPath, ['scripts/fetch-bridges.mjs'], {stdio: 'inherit'});
+      // The skill scripts' interpreter. The RunAsNode fuse below is off, so a
+      // packaged FlareAI cannot lend itself out as Node the way a dev run
+      // does — it ships a real one instead.
+      execFileSync(process.execPath, ['scripts/fetch-node.mjs'], {stdio: 'inherit'});
     },
   },
 };

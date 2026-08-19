@@ -14,14 +14,38 @@ if [[ ! "$extension_id" =~ ^[a-p]{32}$ ]]; then
 fi
 
 script_dir="${0:A:h}"
-host_source="$script_dir/native-host/flareai_tab_context_host.py"
+host_source="$script_dir/native-host/flareai_tab_context_host.mjs"
 manifest_template="$script_dir/native-host/com.flareai.tab_context.json"
 
+# Chrome launches the host with the GUI PATH (/usr/bin:/bin:...), which has no
+# `node` on it, so the manifest points at a wrapper with an absolute
+# interpreter baked in at install time. Preference order: the runtime a
+# packaged FlareAI ships, the checkout's fetched copy, then PATH node.
+node_bin=""
+for candidate in \
+  "/Applications/FlareAI.app/Contents/Resources/resources/node/node" \
+  "$script_dir/../../resources/node/node"; do
+  [[ -x "$candidate" ]] && { node_bin="${candidate:A}"; break; }
+done
+if [[ -z "$node_bin" ]]; then
+  node_bin="$(command -v node || true)"
+fi
+if [[ -z "$node_bin" ]]; then
+  print -u2 "No Node runtime found. Install FlareAI, run 'node scripts/fetch-node.mjs' in the checkout, or install Node."
+  exit 1
+fi
+
 host_dir="$HOME/Library/Application Support/flareai-tab-context"
-host_path="$host_dir/flareai_tab_context_host.py"
+host_script="$host_dir/flareai_tab_context_host.mjs"
+host_path="$host_dir/flareai_tab_context_host"
 mkdir -p "$host_dir"
-cp "$host_source" "$host_path"
-chmod +x "$host_path"
+cp "$host_source" "$host_script"
+cat > "$host_path" <<WRAPPER
+#!/bin/sh
+# Written by install.sh: Chrome's spawn environment has no PATH worth trusting.
+exec "$node_bin" "$host_script" "\$@"
+WRAPPER
+chmod +x "$host_path" "$host_script"
 
 installed=0
 for browser_dir in \

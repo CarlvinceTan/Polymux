@@ -10,6 +10,7 @@ import type {
   SaveEmailAccountRequest,
   StartRunRequest,
   SystemPermissionKind,
+  CommsMailProvider,
 } from "./types.js";
 
 /**
@@ -216,6 +217,31 @@ export const DRIVE_PROVIDERS: {
   },
 ];
 
+/** Coerces a renderer-supplied mail provider, which reaches a sign-in flow. */
+export function mailProvider(value: unknown): CommsMailProvider {
+  if (value !== "google" && value !== "microsoft")
+    throw new Error(`${String(value)} is not a mail provider FlareAI can sign in to`);
+  return value;
+}
+
+/**
+ * The known provider a typed-in server belongs to.
+ *
+ * "Other" collects hostnames and nothing else — no port, no encryption — so a
+ * provider whose ports are not the usual ones could not be set up through it
+ * at all. Matching the host is how that knowledge still reaches an account the
+ * user configured by hand.
+ */
+export function presetForHost(host: string): CommsEmailPresetOption | undefined {
+  const name = host.trim().toLowerCase();
+  if (!name) return undefined;
+  return COMMS_EMAIL_PRESETS.find(
+    (preset) =>
+      (preset.imapHost && preset.imapHost.toLowerCase() === name) ||
+      (preset.smtpHost && preset.smtpHost.toLowerCase() === name),
+  );
+}
+
 export function driveProvider(value: unknown): DriveProviderId {
   if (
     typeof value !== "string" ||
@@ -339,7 +365,7 @@ export function driveS3Config(value: unknown): DriveS3ConfigRequest {
 }
 
 /** Server settings the account form fills in once a provider is picked. */
-export const COMMS_EMAIL_PRESETS: {
+export interface CommsEmailPresetOption {
   value: CommsEmailPreset;
   label: string;
   imapHost: string;
@@ -350,7 +376,11 @@ export const COMMS_EMAIL_PRESETS: {
   smtpEncryption: "tls" | "start-tls" | "none";
   /** What to tell the user about credentials for this provider. */
   hint: string;
-}[] = [
+  /** Kept out of the picker, but still matched by host. */
+  hidden?: boolean;
+}
+
+export const COMMS_EMAIL_PRESETS: CommsEmailPresetOption[] = [
   {
     value: "gmail",
     label: "Gmail / Google Workspace",
@@ -376,6 +406,11 @@ export const COMMS_EMAIL_PRESETS: {
   {
     value: "icloud",
     label: "iCloud Mail",
+    // Hidden with the others: Apple offers no OAuth for third-party IMAP, so
+    // iCloud is an app password and two ordinary hostnames — which is what
+    // "Other" is. Its hint is the part still worth having, and that follows
+    // the host.
+    hidden: true,
     imapHost: "imap.mail.me.com",
     imapPort: 993,
     imapEncryption: "tls",
@@ -387,6 +422,11 @@ export const COMMS_EMAIL_PRESETS: {
   {
     value: "lark",
     label: "Lark / Feishu",
+    // Not offered in the picker: Lark is an ordinary IMAP host as far as the
+    // user is concerned, and a pill for it sat oddly beside Gmail and iCloud.
+    // The entry stays because its ports are the part nobody could guess, and
+    // `presetForHost` applies them when those servers are typed under "Other".
+    hidden: true,
     imapHost: "imap.larksuite.com",
     imapPort: 993,
     imapEncryption: "tls",
@@ -400,6 +440,10 @@ export const COMMS_EMAIL_PRESETS: {
   {
     value: "fastmail",
     label: "Fastmail",
+    // Hidden for the same reason as Lark: an app password and an IMAP host is
+    // all it is. Its SMTP port is the part worth keeping — 465, not the 587
+    // "Other" would otherwise assume.
+    hidden: true,
     imapHost: "imap.fastmail.com",
     imapPort: 993,
     imapEncryption: "tls",
@@ -424,7 +468,8 @@ export const COMMS_EMAIL_PRESETS: {
 export function validateSaveEmailAccount(value: unknown): SaveEmailAccountRequest {
   const input = record(value, "email account");
   const id = text(input.id, "id");
-  // The id becomes a TOML table key and a `himalaya -a <id>` argument, so keep
+  // The id keys the account in FlareAI's own file and names its keychain
+  // entries, so keep
   // it to something neither of those has to quote or escape.
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(id))
     throw new Error("Account name may only contain letters, numbers, dashes, and underscores");
@@ -461,10 +506,6 @@ export function validateSaveEmailAccount(value: unknown): SaveEmailAccountReques
       input.password === undefined || input.password === ""
         ? undefined
         : text(input.password, "password"),
-    tokenCommand:
-      input.tokenCommand === undefined || input.tokenCommand === ""
-        ? undefined
-        : text(input.tokenCommand, "tokenCommand"),
     isDefault:
       input.isDefault === undefined ? undefined : boolean(input.isDefault, "isDefault"),
   };

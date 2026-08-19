@@ -1,6 +1,8 @@
 <script module lang="ts">
   export type SummarySection = 'outputs' | 'references' | 'tasks';
-  export type OutputItem = {id: string; name: string};
+  /** `uri` is where the produced file can be read from, when the host has
+   * granted one. Absent for an output that is only named. */
+  export type OutputItem = {id: string; name: string; uri?: string};
   export type ReferenceItem = {id: string; title: string; kind?: 'web' | 'file' | 'other'; uri?: string};
   export type TaskItem = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'; runId?: string; prompt?: string};
 </script>

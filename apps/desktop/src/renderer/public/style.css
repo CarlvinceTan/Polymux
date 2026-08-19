@@ -379,6 +379,19 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 .flareai-dropdown-menu { padding: 4px; border-radius: 12px; background: var(--app-surface); box-shadow: 0 4px 12px rgba(0,0,0,.16); outline: 1px solid var(--neutral-200); animation: dropdown-in .12s ease-out; }
 .flareai-dropdown-item { width: 100%; min-height: 28px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 8px; padding: 7px 8px; background: transparent; color: var(--neutral-700); cursor: pointer; font-size: 11px; font-weight: 450; line-height: 1.3; text-align: left; }
 .flareai-dropdown-item:hover:not(:disabled), .flareai-dropdown-item:focus-visible { background: var(--neutral-50); color: var(--neutral-950); }
+
+/* A menu summoned by pointing at something: fixed to the viewport, because the
+   point it was asked for is a viewport point and the thing under it may sit in
+   a panel that scrolls. Held invisible for the one frame between mounting and
+   being measured, so it never appears at a corner and then jumps. */
+.open-menu { position: fixed; z-index: 200; min-width: 168px; max-width: 280px; }
+.open-menu:not(.placed) { opacity: 0; pointer-events: none; }
+.open-menu .flareai-dropdown-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* An application's own icon, drawn at the size of the glyphs beside it. */
+.open-menu-app-icon { flex: none; width: 14px; height: 14px; border-radius: 3px; object-fit: contain; }
+/* Catches the click that dismisses. Transparent on purpose: this is a menu,
+   not a modal, and dimming the app behind one line of choices would overstate it. */
+.open-menu-shade { position: fixed; z-index: 199; inset: 0; background: transparent; }
 .flareai-dropdown-item:disabled { color: var(--neutral-300); cursor: default; }
 .flareai-compact-menu { position: absolute; z-index: 60; left: 50%; bottom: calc(100% + 4px); width: 216px; transform: translateX(-50%); letter-spacing: normal; }
 .flareai-compact-menu.opens-below { top: calc(100% + 4px); bottom: auto; }
@@ -554,8 +567,11 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
 /* The label's em box carries descender space at the bottom, so its visual centre
    sits a hair above the box centre the flex row aligns on — the chevron cancels
    that so the two read as centred on one line. */
-.agent-activity-heading svg { transform: translateY(-1px); transition: transform .16s ease; }
-.agent-activity.expanded .agent-activity-heading svg { transform: translateY(-1px) rotate(180deg); }
+/* No lift: the chevron's ink is centred in its own box (`m8 10 4 4 4-4` spans
+   10-14 of a 24 viewBox), so a translate here moved it off the text's centre
+   rather than onto it — measured 1px high against a 13px line. */
+.agent-activity-heading svg { transition: transform .16s ease; }
+.agent-activity.expanded .agent-activity-heading svg { transform: rotate(180deg); }
 .activity-detail-toggle { border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-align: left; }
 .activity-steps { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 2px; padding: 0 0 0 13px; border-left: 1px solid var(--neutral-200); list-style: none; color: var(--neutral-700); font-size: 12.5px; line-height: 1.4; }
 .activity-steps li.active { color: var(--neutral-950); }
@@ -680,34 +696,42 @@ main.workspace-expanded .sticky-composer { pointer-events: none; }
 .composer-column-content { width: min(760px,calc(100% - 40px)); padding-top: 28px; background: var(--composer-fade); transition: width var(--drawer-motion-duration) var(--drawer-motion-ease); }
 main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var(--chat-drawer-offset) - var(--content-docked-column) - 40px)); }
 
-.queued-messages { width: 100%; margin-bottom: 8px; padding: 8px; border: 1px solid var(--neutral-200); border-radius: 16px; background: var(--app-translucent); box-shadow: 0 8px 26px rgba(0,0,0,.14); backdrop-filter: blur(14px); }
-.goal-bar { width: 100%; min-height: 42px; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 0 10px; border: 1px solid var(--neutral-200); border-radius: 14px; background: var(--app-translucent); color: var(--neutral-900); box-shadow: 0 8px 26px rgba(0,0,0,.14); backdrop-filter: blur(14px); }
+/* The goal bar and the queue stack are one design: the same translucent card,
+   the same slim row. The queue is only allowed more than one row. */
+.stacked-bar { width: 100%; margin-bottom: 8px; padding: 4px; border: 1px solid var(--neutral-200); border-radius: 12px; background: var(--app-translucent); box-shadow: 0 8px 26px rgba(0,0,0,.14); backdrop-filter: blur(14px); }
+.stacked-row { position: relative; height: 24px; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 6px; border-radius: 8px; color: var(--neutral-900); transition: background-color .14s ease, box-shadow .14s ease; }
+.stacked-row:hover, .stacked-row:focus-within { background: var(--neutral-50); }
+.goal-bar { color: var(--neutral-900); }
 .goal-bar.paused { color: var(--neutral-500); }
-.goal-state { width: 20px; height: 24px; display: grid; flex: none; place-items: center; color: var(--neutral-500); }
-.goal-copy { min-width: 0; display: flex; flex: 1; align-items: baseline; gap: 8px; overflow: hidden; white-space: nowrap; font-size: 13px; line-height: 1.35; }
+.goal-state { width: 16px; height: 20px; display: grid; flex: none; place-items: center; color: var(--neutral-500); }
+.goal-copy { min-width: 0; display: flex; flex: 1; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; font-size: 12px; line-height: 1.3; }
 .goal-copy strong { color: var(--neutral-950); font-weight: 580; }
 .goal-copy > span { min-width: 0; overflow: hidden; color: var(--neutral-500); font: inherit; text-overflow: ellipsis; }
 .goal-copy small { flex: none; color: var(--neutral-500); font: inherit; }
-.goal-bar > input { min-width: 0; height: 30px; flex: 1; border: 1px solid var(--neutral-300); border-radius: 8px; padding: 0 8px; outline: none; background: var(--input-surface); color: var(--neutral-900); font: inherit; font-size: 13px; }
+.goal-row > input { min-width: 0; height: 20px; flex: 1; border: 1px solid var(--neutral-300); border-radius: 6px; padding: 0 6px; outline: none; background: var(--input-surface); color: var(--neutral-900); font: inherit; font-size: 12px; }
+/* The row highlight is the hover feedback already; a control inside it only
+   darkens, so a second box never lights up inside the first. */
 .goal-actions { display: flex; flex: none; align-items: center; gap: 2px; }
-.goal-actions button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
-.goal-actions button:hover, .goal-actions button:focus-visible { outline: none; background: var(--neutral-100); color: var(--neutral-900); }
-.queued-message-scroll { max-height: 160px; overflow-y: auto; overscroll-behavior: contain; }
-.queued-message-row { position: relative; height: 40px; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: 12px; color: var(--neutral-900); transition: background-color .14s ease, box-shadow .14s ease; }
-.queued-message-row:hover, .queued-message-row:focus-within { background: var(--neutral-50); }
+.goal-actions button { width: 20px; height: 20px; display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; transition: color .12s ease; }
+.goal-actions button:hover, .goal-actions button:focus-visible { outline: none; background: transparent; color: var(--neutral-900); }
+.queued-message-scroll { max-height: 112px; overflow-y: auto; overscroll-behavior: contain; }
 .queued-message-row.drop-target { box-shadow: inset 0 2px var(--neutral-500); }
-.queue-drag-handle { position: absolute; z-index: 1; left: 8px; width: 18px; height: 28px; display: grid; place-items: center; border: 0; padding: 0; border-radius: 7px; background: var(--neutral-50); color: var(--neutral-400); opacity: 0; cursor: grab; transition: opacity .12s ease, color .12s ease, background-color .12s ease; }
-.queue-drag-handle:active { cursor: grabbing; }
-.queued-message-row:hover .queue-drag-handle, .queued-message-row:focus-within .queue-drag-handle { opacity: 1; }
-.queue-drag-handle:hover, .queue-drag-handle:focus-visible { outline: none; background: var(--neutral-100); color: var(--neutral-700); }
-.queue-state { width: 18px; height: 24px; display: grid; flex: none; place-items: center; color: var(--neutral-400); opacity: 1; transition: opacity .12s ease; }
-.queued-message-row:hover .queue-state, .queued-message-row:focus-within .queue-state { opacity: 0; }
-.queue-attachment { width: 30px; height: 30px; display: grid; flex: none; place-items: center; overflow: hidden; border: 1px solid var(--neutral-200); border-radius: 7px; background: var(--neutral-100); color: var(--neutral-600); }
-.queue-copy { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.35; }
+.queued-message-row { cursor: grab; }
+.queued-message-row:active { cursor: grabbing; }
+.queue-state { width: 16px; height: 20px; display: grid; flex: none; place-items: center; color: var(--neutral-400); }
+.queue-attachment { width: 20px; height: 20px; display: grid; flex: none; place-items: center; overflow: hidden; border: 1px solid var(--neutral-200); border-radius: 5px; background: var(--neutral-100); color: var(--neutral-600); }
+/* Matched by ink, not by box. The steer arrow sits ~3px inside its own button,
+   so an equal flex gap on both sides of the copy reads as a wider gap on the
+   right; the copy gives that 3px back so the space the eye sees before the
+   message and after it are the same. */
+.queue-copy { min-width: 0; flex: 1; margin-right: -3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 1.3; }
 .queue-actions { display: flex; flex: none; align-items: center; gap: 2px; color: var(--neutral-500); }
-.queue-actions button { height: 28px; min-width: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; padding: 0; background: transparent; color: inherit; cursor: pointer; }
-.queue-actions button:hover, .queue-actions button:focus-visible { outline: none; background: var(--neutral-100); color: var(--neutral-900); }
-.queue-actions .queue-steer { display: inline-flex; gap: 5px; padding: 0 8px; font-size: 12px; }
+.queue-actions button { height: 20px; min-width: 20px; display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; transition: color .12s ease; }
+.queue-actions button:hover, .queue-actions button:focus-visible { outline: none; background: transparent; color: var(--neutral-900); }
+/* Steering is the composer's own send, so it wears the composer's own glyph
+   and is a plain icon button like the two beside it. As a labelled button it
+   carried padding of its own, which made the space before it wider than the
+   space before the state icon at the other end of the row. */
 
 /* The rail owns the whole column between the title bar's divider and the
    bottom of the window, and centres its points inside it. Short conversations
@@ -760,9 +784,8 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .summary-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 5px; border: 0; border-radius: 10px; background: transparent; color: var(--neutral-900); text-align: left; font-size: 12.5px; cursor: pointer; } .summary-row:hover, .summary-row:focus-visible { outline: none; background: var(--neutral-200); } .summary-row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .summary-row.muted { color: var(--neutral-700); } .mini-file { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; color: var(--neutral-600); background: transparent; border: 0; }
 .browser-tab-icon { position: relative; flex: none; width: 20px; height: 20px; display: grid; place-items: center; overflow: hidden; border-radius: 5px; color: var(--neutral-700); background: var(--neutral-200); } .browser-summary-row .browser-tab-title { min-width: 0; flex: 1; overflow: hidden; color: var(--neutral-900); text-overflow: ellipsis; white-space: nowrap; } .browser-summary-row .browser-tab-host { min-width: 0; max-width: 44%; overflow: hidden; color: var(--neutral-600); text-overflow: ellipsis; white-space: nowrap; } .browser-summary-row.in-use .browser-tab-title, .browser-summary-row.in-use .browser-tab-host { color: var(--neutral-500); }
 .summary-view-all { width: 100%; display: flex; align-items: center; justify-content: space-between; margin-top: 2px; padding: 5px; border: 0; border-radius: 10px; background: transparent; color: var(--neutral-600); font-size: 11.5px; cursor: pointer; } .summary-view-all:hover { color: var(--neutral-900); background: var(--neutral-200); }
-.empty-row { margin: 5px 0 2px; color: var(--neutral-600); font-size: 11.5px; } .task-row { width: 100%; min-width: 0; display: flex; align-items: flex-start; gap: 9px; padding: 5px 3px; border: 0; border-radius: 10px; background: transparent; text-align: left; cursor: pointer; } .task-row:hover, .task-row:focus-visible { outline: none; background: var(--neutral-200); } .task-row .task-glyph { margin-top: calc((1lh - 15px) / 2); }
-.task-row strong, .task-row small { flex: 1 1 auto; min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .task-row strong { color: var(--neutral-900); font-size: 12px; font-weight: 520; } .task-row small { margin-top: 2px; color: var(--neutral-600); font-size: 10.5px; } /* Centre the dot on the title's first line rather than the row box, so it stays
-   aligned whether or not the task has a second line of detail. */
+.empty-row { margin: 5px 0 2px; color: var(--neutral-600); font-size: 11.5px; } .task-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 5px 3px; border: 0; border-radius: 10px; background: transparent; text-align: left; cursor: pointer; } .task-row:hover, .task-row:focus-visible { outline: none; background: var(--neutral-200); }
+.task-row strong, .task-row small { flex: 1 1 auto; min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .task-row strong { color: var(--neutral-900); font-size: 12px; font-weight: 520; } .task-row small { margin-top: 2px; color: var(--neutral-600); font-size: 10.5px; }
 /* The task marks. A flare still working throws sparks: every bar rides outward
    along its own track and off the end while the next enters behind it. Nothing
    travels inward — dash and gap sum to exactly one cycle of offset, so the loop
@@ -797,11 +820,6 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .reference-action-menu .flareai-dropdown-item > svg:last-child { margin-left: auto; }
 .reference-action-menu .flareai-dropdown-item.active { background: var(--neutral-100); color: var(--neutral-950); }
 .summary-attachment-picker { position: absolute; z-index: 91; width: 154px; }
-
-.artifact-draft { width: 100%; height: 100%; overflow: auto; background: var(--neutral-50); }
-.document-draft { padding: 36px; } .draft-page { width: min(720px,100%); min-height: calc(100% - 20px); margin: 0 auto; padding: 54px 62px; border: 1px solid var(--neutral-200); outline: 0; background: #fff; color: var(--neutral-900); font-size: 14px; line-height: 1.65; } .draft-page:empty::before { content: attr(data-placeholder); color: var(--neutral-400); }
-.presentation-draft { display: grid; place-items: center; padding: 36px; } .draft-slide { width: min(780px,100%); aspect-ratio: 16/9; display: flex; flex-direction: column; justify-content: center; padding: 9%; border: 1px solid var(--neutral-200); background: #fff; } .draft-slide-title, .draft-slide-body { outline: 0; text-align: center; } .draft-slide-title { color: var(--neutral-950); font-size: clamp(24px,4vw,42px); font-weight: 600; } .draft-slide-body { margin-top: 20px; color: var(--neutral-500); font-size: clamp(14px,2vw,21px); }
-.spreadsheet-draft { padding: 20px; } .spreadsheet-draft table { min-width: 720px; border-collapse: collapse; background: #fff; } .spreadsheet-draft th { width: 42px; height: 28px; background: var(--neutral-100); color: var(--neutral-600); font-size: 11px; font-weight: 550; } .spreadsheet-draft td, .spreadsheet-draft th { border: 1px solid var(--neutral-200); } .spreadsheet-draft td { width: 112px; height: 34px; } .spreadsheet-draft input { width: 100%; height: 100%; border: 0; padding: 5px 7px; outline: 0; background: transparent; font-size: 12px; } .spreadsheet-draft input:focus { box-shadow: inset 0 0 0 2px var(--neutral-700); }
 
 .workspace-drawer { grid-column: 3; position: relative; z-index: 40; top: 0; justify-self: end; width: var(--workspace-panel-width,var(--content-docked-column)); height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--app-bg); pointer-events: none; transform: translateX(100%); visibility: hidden; will-change: width,transform; transition: width var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s linear var(--drawer-motion-duration); }
 .workspace-drawer.open { pointer-events: auto; transform: translateX(0); visibility: visible; transition-delay: 0s; }
@@ -853,7 +871,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .tab-favicon img { width: 16px; height: 16px; border-radius: 3px; }
 .tab-favicon.controlled img, .tab-favicon.controlled svg:not(.tab-cursor-badge) { opacity: .3; }
 .tab-cursor-badge { position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; }
-.tab-main { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 8px; padding: 0 3px 0 10px; border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 14px; } .tab-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-main { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 8px; padding: 0 3px 0 10px; border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 14px; } .tab-main > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-close { flex: none; display: grid; place-items: center; padding: 7px 8px 7px 3px; border: 0; background: transparent; color: var(--neutral-500); opacity: 0; transform: scale(.9); pointer-events: none; cursor: pointer; transition: opacity .14s ease, transform .14s ease, color .14s ease; }
 .tab:hover .tab-close, .tab:focus-within .tab-close, .tab.active .tab-close { opacity: 1; transform: scale(1); pointer-events: auto; }
 .tab-close:hover, .tab-close:focus-visible { color: var(--neutral-900); }
@@ -1124,6 +1142,15 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .fb-row:hover { background: var(--neutral-100); }
 .fb-row.selected { background: var(--neutral-100); }
 .fb-row:focus-visible { outline: 2px solid var(--neutral-400); outline-offset: -2px; }
+/* Dragging: the rows on the move go quiet, and the folder about to take them
+   is the only thing lit. Inset, so the highlight never touches the edge. */
+.fb-row.dragging { opacity: .4; }
+.fb-row.drop-target { background: var(--neutral-200); outline: 1px solid var(--neutral-400); outline-offset: -2px; }
+.fb-crumb.drop-target { background: var(--neutral-200); color: var(--neutral-950); }
+/* Nothing under the pointer but the list itself: the folder on screen is the
+   destination, and the ring around the rows is all that needs saying. */
+.fb-rows.dropping { box-shadow: inset 0 0 0 2px var(--neutral-300); border-radius: 8px; }
+.fb-rows { transition: box-shadow .15s ease; }
 .fb-cell { min-width: 0; overflow: hidden; color: var(--neutral-500); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .fb-cell.name { display: flex; align-items: center; gap: 8px; }
 .fb-cell.size { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1395,10 +1422,6 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 
 /* Side chat: the conversation's own components at panel scale, with no title
    bar of its own — the tab already names it. */
-.side-chat-view { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--main-panel-background); }
-.side-chat-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px 8px; }
-.side-chat-messages .message { margin-bottom: 20px; font-size: 14px; }
-.side-chat-empty { margin: 0; color: var(--neutral-500); font-size: 12.5px; line-height: 1.5; }
 /* A delegated task's run, read-only: the side chat's layout without its
    composer, since there is nobody on the other end of this one. */
 .task-view { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--main-panel-background); }
@@ -1409,10 +1432,6 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .task-view-body .message { margin-bottom: 20px; font-size: 14px; }
 .task-view-empty { margin: auto; text-align: center; color: var(--neutral-500); font-size: 12.5px; line-height: 1.5; }
 .task-view:has(.task-view-empty) .task-view-body { display: flex; }
-.side-chat-composer { flex: none; padding: 4px 16px 16px; }
-.side-chat-composer .flareai-prompt { gap: 0; padding-top: 0; }
-.side-chat-input { width: 100%; max-height: calc(4 * 1.5em); min-height: 1.5em; resize: none; border: 0; padding: 0; outline: 0; background: transparent; color: var(--on-surface); font: inherit; font-size: .875rem; line-height: 1.5; }
-.side-chat-input::placeholder { color: var(--secondary); }
 
 /* The app's own dropdown in place of a native select: the platform's chevron
    sits tight against the edge and matches nothing else here. */
@@ -1695,12 +1714,22 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-row.unread .hub-view-row-top strong { font-weight: 640; }
 .hub-view-row.unread .hub-view-chat-preview { color: var(--neutral-700); }
 .hub-view-chat-unread { flex: none; min-width: 17px; height: 17px; display: grid; place-items: center; padding: 0 5px; border-radius: 9px; background: var(--neutral-900); color: var(--app-bg); font-size: 9.5px; font-weight: 600; }
-.hub-view-row-meta { display: flex; gap: 5px; color: var(--neutral-400); }
+.hub-view-row-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hub-view-row-preview { overflow: hidden; flex: 1; min-width: 0; color: var(--neutral-500); text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; }
+.hub-view-row-preview:empty { display: none; }
+.hub-view-row-chain { display: inline-flex; align-items: center; gap: 1px; color: var(--neutral-500); font-variant-numeric: tabular-nums; font-size: 10px; }
+.hub-view-row-chain :global(svg) { transform: rotate(-90deg); }
+.hub-view-row-meta { display: flex; flex: none; align-items: center; gap: 5px; color: var(--neutral-400); }
 .hub-view-row-meta:empty { display: none; }
 /* Unread is carried by weight and a colour shift rather than a dot, so the
    scan reads as a block of bold rather than a column of ornaments. */
 .hub-view-row.unread .hub-view-row-top strong { color: var(--neutral-950); font-weight: 640; }
 .hub-view-row.unread .hub-view-row-subject { color: var(--neutral-800); }
+/* The message's own files, above its words: one wrapping strip of the same
+   pills the composer shows, each a button that opens what it names. */
+.hub-view-mail-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px 0; }
+.hub-view-mail-file { padding: 0; border: 0; background: none; cursor: pointer; }
+.hub-view-mail-file:disabled { cursor: default; opacity: 0.6; }
 
 .hub-view-reader { position: relative; flex-direction: column; overflow: hidden; }
 /* Floats over the foot of the thread rather than sitting in the column, so

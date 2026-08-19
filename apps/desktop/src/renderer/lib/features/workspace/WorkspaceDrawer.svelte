@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type WorkspaceTabKind = 'document' | 'slides' | 'sheet' | 'photo' | 'video' | 'browser' | 'side-chat' | 'summary' | 'drive' | 'schedule' | 'hub' | 'task';
+  export type WorkspaceTabKind = 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'hub' | 'task';
   export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; section?: 'outputs' | 'references' | 'tasks'};
 
   /**
@@ -134,13 +134,12 @@
     return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
   }
 
-  /** Drive, schedule and the side chat are places rather than documents: there
-   * is only ever one of each, so they carry a fixed id and reopening one
+  /** The hub, the drive and the schedule are places rather than documents:
+   * there is only ever one of each, so they carry a fixed id and reopening one
    * surfaces the tab that already exists. */
   export const SINGLETON_TAB_IDS: Partial<Record<WorkspaceTabKind, string>> = {
     drive: 'workspace-drive',
     schedule: 'workspace-schedule',
-    'side-chat': 'workspace-side-chat',
     hub: 'workspace-hub',
   };
 </script>
@@ -159,15 +158,12 @@
   import {onThemeChange} from '../../shared/theme';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import {SPLIT_LAYOUT_MIN_WIDTH, clampPanelWidth, workspaceResizeBounds} from '../../shared/layout/layoutSizing';
-  import DocumentView from './DocumentView.svelte';
-  import SlideView from './SlideView.svelte';
-  import SheetView from './SheetView.svelte';
-  import PhotoView from './PhotoView.svelte';
-  import VideoView from './VideoView.svelte';
+  import MediaView from './MediaView.svelte';
   import BrowserView from './BrowserView.svelte';
-  import SideChatView from './SideChatView.svelte';
   import TaskView from './TaskView.svelte';
+  import TaskGlyph from '../../shared/components/TaskGlyph.svelte';
   import type {TaskTranscript} from './taskTranscript';
+  import type {TaskStatus} from './taskStatus';
   import HubView from './HubView.svelte';
   import SummaryView, {type SummaryViewData} from './SummaryView.svelte';
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
@@ -187,7 +183,7 @@
   export let taskTranscripts: Record<string, TaskTranscript> = {};
   export let onOpenLink: (url: string, title: string) => void = () => {};
   export let onOpenTask: (task: SummaryViewData['tasks'][number]) => void = () => {};
-  export let onOpenFilePath: (path: string) => void = () => {};
+  export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
   export let driveRoot: DriveEntry = {id: 'drive-root', name: translate('workspace.drive'), kind: 'folder', children: []};
   /** Storage backends the drive can be switched between. */
   export let driveSources: DriveSource[] = [];
@@ -206,6 +202,7 @@
   export let driveActions: {
     newFolder: (parent: DriveEntry, name: string) => void;
     upload: (parent: DriveEntry) => void;
+    dropFiles: (files: File[], destination: DriveEntry) => void;
     rename: (entry: DriveEntry, name: string) => void;
     move: (entries: DriveEntry[], destination: DriveEntry) => void;
     duplicate: (entries: DriveEntry[]) => void;
@@ -219,7 +216,7 @@
   export let onDismissScheduleError: () => void = () => {};
   export let onOpenScheduleRun: (item: ScheduleItem, run?: ScheduleRun) => void = () => {};
   export let onMarkScheduleRead: (item: ScheduleItem) => void = () => {};
-  export let onOpenDriveEntry: (entry: DriveEntry) => void = () => {};
+  export let onOpenDriveEntry: (entry: DriveEntry, point?: {x: number; y: number}) => void = () => {};
   export let onToggleSchedule: (item: ScheduleItem) => void = () => {};
   export let onSaveSchedule: (
     input: {title: string; prompt: string; frequency: ScheduleFrequency},
@@ -260,22 +257,25 @@
   const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {
     drive: 'workspace.drive',
     schedule: 'workspace.schedule',
-    'side-chat': 'workspace.chat',
     hub: 'workspace.hub',
   };
   $: tabTitle = (tab: WorkspaceTab): string => {
     const key = SINGLETON_TAB_IDS[tab.kind] === tab.id ? singletonTitles[tab.kind] : undefined;
-    return key ? $t(key) : tab.title;
+    if (key) return $t(key);
+    // A delegated run is named after what it was asked to do, which on its own
+    // reads like any other tab. Saying it is a task is what tells them apart.
+    if (tab.kind === 'task') return $t('view.taskTitle', {title: tab.title || $t('activity.delegatedTask')});
+    return tab.title;
   };
 
-  const tabIcons: Record<WorkspaceTabKind, 'document' | 'presentation' | 'spreadsheet' | 'image' | 'video' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'task'> = {
-    document: 'document',
-    slides: 'presentation',
-    sheet: 'spreadsheet',
-    photo: 'image',
-    video: 'video',
+  /** A task tab wears the task's own flare, working animation included, rather
+   * than one static mark shared by every delegated run. */
+  $: taskTabStatus = (tab: WorkspaceTab): TaskStatus =>
+    summaryData.tasks.find((task) => task.id === tab.id)?.status ?? 'active';
+
+  const tabIcons: Record<WorkspaceTabKind, 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'task'> = {
+    media: 'image',
     browser: 'globe',
-    'side-chat': 'chat',
     summary: 'summary',
     drive: 'drive',
     schedule: 'clock',
@@ -448,7 +448,11 @@
               </span>
             {:else}
               <span class="tab-icon">
-                <Icon name={tabIcons[tab.kind]} size={16}/>
+                {#if tab.kind === 'task'}
+                  <TaskGlyph id={tab.id} status={taskTabStatus(tab)} size={16}/>
+                {:else}
+                  <Icon name={tabIcons[tab.kind]} size={16}/>
+                {/if}
                 <!-- Results the user has not opened yet are worth seeing from
                      outside the view, so the tab carries the same dot the row
                      does. -->
@@ -525,11 +529,7 @@
           </div>
         {/if}
       </div>
-    {:else if activeTab.kind === 'document'}<DocumentView title={activeTab.title}/>
-    {:else if activeTab.kind === 'slides'}<SlideView title={activeTab.title}/>
-    {:else if activeTab.kind === 'sheet'}<SheetView title={activeTab.title}/>
-    {:else if activeTab.kind === 'photo'}<PhotoView title={activeTab.title}/>
-    {:else if activeTab.kind === 'video'}<VideoView title={activeTab.title}/>
+    {:else if activeTab.kind === 'media'}<MediaView title={activeTab.title} src={activeTab.url ?? ''}/>
     <!-- Keyed by tab: switching between two browser tabs must destroy the old
          BrowserView (which hides its native page) and mount the new one, not
          retarget one instance and leave the old page painted on screen. -->
@@ -537,7 +537,6 @@
          the new-tab menu hangs over it the page steps aside instead of
          covering the menu. -->
     {:else if activeTab.kind === 'browser'}{#key activeTab.id}<BrowserView tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || browserHidden || addOpen} onState={(patch) => onTabState(activeTab.id, patch)}/>{/key}
-    {:else if activeTab.kind === 'side-chat'}<SideChatView title={activeTab.title}/>
     {:else if activeTab.kind === 'task'}<TaskView
       title={activeTab.title}
       taskId={activeTab.id}
@@ -546,7 +545,7 @@
       {onOpenLink}
       {onOpenFilePath}
     />
-    {:else if activeTab.kind === 'hub'}<HubView/>
+    {:else if activeTab.kind === 'hub'}<HubView {onOpenFilePath}/>
     {:else if activeTab.kind === 'drive'}<DriveView
       title={activeTab.title}
       root={driveRoot}
@@ -561,6 +560,7 @@
       onOpenEntry={onOpenDriveEntry}
       onNewFolder={driveActions?.newFolder ?? null}
       onUpload={driveActions?.upload ?? null}
+      onDropFiles={driveActions?.dropFiles ?? null}
       onRename={driveActions?.rename ?? null}
       onMove={driveActions?.move ?? null}
       onDuplicate={driveActions?.duplicate ?? null}

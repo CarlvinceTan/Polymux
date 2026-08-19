@@ -1,6 +1,7 @@
 import type { InferenceService, ModelRef } from "@flareai/inference";
 import type { MemoryRecord } from "@flareai/storage";
 import type { MemoryManager } from "./manager.js";
+import { fillPrompt } from "../prompts/agent-prompts.js";
 
 export interface MemoryConsolidationSettings {
   enabled: boolean;
@@ -21,7 +22,7 @@ export const defaultMemoryConsolidationSettings: MemoryConsolidationSettings = {
   characterBudget: 46_000,
 };
 
-function consolidationPrompt(budget: number): string {
+function defaultConsolidationPrompt(budget: number): string {
   return `You are consolidating a user's durable memory vault into the summary loaded into every future conversation.
 
 You receive every memory, each tagged with its kind. Merge them into a compact briefing under these headings, omitting any heading with no content:
@@ -60,14 +61,25 @@ export class MemoryConsolidator {
   /** In-process lease; the desktop app runs a single main process. */
   #running = false;
 
+  readonly #prompt?: string;
+  /** `prompt` comes from `resources/prompts/consolidation.md`; it states
+   * the budget as `{budget}`, which is filled in here. */
   constructor(
     inference: InferenceService,
     memory: MemoryManager,
     settings: Partial<MemoryConsolidationSettings> = {},
+    prompt?: string,
   ) {
     this.#inference = inference;
     this.#memory = memory;
     this.#settings = { ...defaultMemoryConsolidationSettings, ...settings };
+    this.#prompt = prompt?.trim() || undefined;
+  }
+
+  #consolidationPrompt(budget: number): string {
+    return this.#prompt
+      ? fillPrompt(this.#prompt, { budget: budget.toLocaleString("en-US") })
+      : defaultConsolidationPrompt(budget);
   }
 
   /** Resolves true when a fresh summary was written. Never throws. */
@@ -115,7 +127,7 @@ export class MemoryConsolidator {
     let answer = "";
     for await (const event of this.#inference.stream({
       model,
-      systemPrompt: consolidationPrompt(this.#settings.characterBudget),
+      systemPrompt: this.#consolidationPrompt(this.#settings.characterBudget),
       messages: [{ role: "user", content: render(memories) }],
       signal,
     })) {

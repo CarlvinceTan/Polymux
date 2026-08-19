@@ -1,4 +1,5 @@
 import path from "node:path";
+import {flareaiHome} from "../system/paths.js";
 import {homedir} from "node:os";
 import {spawn} from "node:child_process";
 import {randomBytes} from "node:crypto";
@@ -9,6 +10,8 @@ import {
   shippedNetworkConfig,
   type CommandResult,
   type CommandRunner,
+  type MailConsentPrompt,
+  type MailOAuthProvider,
   type MatrixMessage,
   type MatrixRoom,
 } from "@flareai/hub";
@@ -126,6 +129,28 @@ export interface EmbeddedHub {
   configureNetwork?: (platform: string, values: Record<string, string>) => Promise<void>;
 }
 
+/**
+ * OAuth client registrations for mail sign-in, read from the environment the
+ * same way the drive providers' are. A provider with no id draws no button —
+ * an unregistered client can only fail, and offering it would be a worse
+ * answer than not offering it.
+ */
+function mailOAuthClients(): Partial<
+  Record<MailOAuthProvider, {clientId: string; clientSecret?: string}>
+> {
+  const clients: Partial<Record<MailOAuthProvider, {clientId: string; clientSecret?: string}>> = {};
+  for (const [provider, prefix] of [
+    ["google", "FLAREAI_GOOGLE_MAIL"],
+    ["microsoft", "FLAREAI_MICROSOFT_MAIL"],
+  ] as const) {
+    const clientId = process.env[`${prefix}_CLIENT_ID`]?.trim();
+    if (!clientId) continue;
+    const clientSecret = process.env[`${prefix}_CLIENT_SECRET`]?.trim();
+    clients[provider] = {clientId, ...(clientSecret ? {clientSecret} : {})};
+  }
+  return clients;
+}
+
 export interface CommunicationsOptions {
   credentials: CredentialStore;
   storage: PreferenceStore;
@@ -139,7 +164,10 @@ export interface CommunicationsOptions {
   home?: string;
   run?: CommandRunner;
   fetch?: typeof globalThis.fetch;
-  emailConfigPath?: string;
+  /** FlareAI's own account file; defaults to one under its home. */
+  emailStorePath?: string;
+  /** Opens a provider's sign-in page; absent where no window can be shown. */
+  mailConsent?: MailConsentPrompt;
 }
 
 interface HubPreference {
@@ -150,7 +178,7 @@ interface HubPreference {
 
 /**
  * Owns every messaging and email account the agent can reach: the local Matrix
- * hub and its bridge fleet, plus the mailboxes Himalaya is configured for.
+ * hub and its bridge fleet, plus the user's mailboxes.
  *
  * Linking happens here rather than in a bridge's management room, so a QR scan
  * or cookie sign-in is a step this service drives and the settings UI renders.
@@ -223,9 +251,19 @@ export class Communications {
       this.#directory = preference.directory ?? defaultHubDirectory(this.#home);
     }
     this.#email = new EmailAccounts({
-      configPath:
-        options.emailConfigPath ?? path.join(this.#home, ".config", "himalaya", "config.toml"),
+      // Through `flareaiHome`, never a literal join: a side instance keys its
+      // own `.flareai-<name>`, and joining the name here would have an
+      // isolated run reading and writing the user's real mailboxes.
+      storePath:
+        options.emailStorePath ??
+        path.join(flareaiHome(this.#home), "state", "email-accounts.json"),
+      downloadsDir: path.join(this.#home, "Downloads"),
+      // Accounts set up before FlareAI kept its own are adopted once, from
+      // where they were. Nothing writes there and the file is left whole.
+      importFrom: path.join(this.#home, ".config", "himalaya", "config.toml"),
       run: this.#run,
+      ...(options.mailConsent ? {consent: options.mailConsent} : {}),
+      oauthClients: mailOAuthClients(),
     });
     this.#hub = this.#createHub();
   }
@@ -436,7 +474,7 @@ export class Communications {
       },
       bridges,
       email: {
-        tooling: await this.#email.tooling(),
+        signInProviders: this.emailSignInProviders(),
         accounts: (await this.#email.list()).map((account) => {
           const tested = this.#emailStatus.get(account.id);
           return tested ? {...account, ...tested} : account;
@@ -778,6 +816,17 @@ export class Communications {
   async unreactChat(chatId: string, reactionId: string): Promise<void> {
     await this.#load();
     return this.#hub.redact(chatId, reactionId);
+  }
+
+  /** Which providers this build can sign a mailbox in to. */
+  emailSignInProviders(): MailOAuthProvider[] {
+    return this.#email.signInProviders();
+  }
+
+  /** Signs a mailbox in with its provider and reports the whole status back. */
+  async emailSignIn(provider: MailOAuthProvider): Promise<CommsStatusDto> {
+    await this.#email.signIn(provider);
+    return this.#publish();
   }
 
   async mailFolders(account?: string): Promise<MailFolderDto[]> {

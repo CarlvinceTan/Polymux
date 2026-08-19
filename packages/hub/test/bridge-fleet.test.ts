@@ -11,6 +11,7 @@ import {
   BRIDGE_FLEET,
   BridgeHost,
   messagesDatabaseAccess,
+  repairConfig,
   withNetwork,
 } from "../src/bridges.js";
 import {COMMS_PLATFORMS} from "@flareai/protocol";
@@ -1005,4 +1006,62 @@ test("ensure gives up on a bridge that dies instead of waiting out its budget", 
   await host.close();
 
   assert.ok(waited < 2_000, `waited ${waited}ms for a bridge that was never coming up`);
+});
+
+/**
+ * A config the binary wrote back with its own defaults. The two sub-maps carry
+ * the same key names, which is the trap: a repair that matches on the action
+ * names alone deletes the user's history the first time WhatsApp invalidates a
+ * session on its own.
+ */
+const CLEANUP_DEFAULTS = [
+  "bridge:",
+  "    permissions:",
+  '        "flare.local": user',
+  "    cleanup_on_logout:",
+  "        # Should cleanup on logout be enabled at all?",
+  "        enabled: false",
+  "        # Settings for manual logouts",
+  "        manual:",
+  "            private: nothing",
+  "            relayed: nothing",
+  "            shared_no_users: nothing",
+  "            shared_has_users: nothing",
+  "        bad_credentials:",
+  "            private: nothing",
+  "            relayed: nothing",
+  "            shared_no_users: nothing",
+  "            shared_has_users: nothing",
+  "encryption:",
+  "    allow: false",
+  "",
+].join("\n");
+
+const HOMESERVER = {serverName: "flare.local", baseUrl: "http://127.0.0.1:47664"};
+
+test("a manual logout is repaired to take its portals with it", () => {
+  const repaired = repairConfig(CLEANUP_DEFAULTS, HOMESERVER);
+  const manual = repaired.slice(
+    repaired.indexOf("        manual:"),
+    repaired.indexOf("        bad_credentials:"),
+  );
+  assert.match(repaired, /^ +enabled: true$/m);
+  assert.equal(manual.match(/: delete$/gm)?.length, 4);
+});
+
+test("credentials invalidated by the network delete nothing", () => {
+  const repaired = repairConfig(CLEANUP_DEFAULTS, HOMESERVER);
+  const bad = repaired.slice(repaired.indexOf("        bad_credentials:"), repaired.indexOf("encryption:"));
+  assert.equal(bad.match(/: nothing$/gm)?.length, 4);
+  assert.ok(!bad.includes("delete"));
+});
+
+test("a config already repaired is left byte for byte alone", () => {
+  const once = repairConfig(CLEANUP_DEFAULTS, HOMESERVER);
+  assert.equal(repairConfig(once, HOMESERVER), once);
+});
+
+test("a legacy config is not touched by the cleanup repair", () => {
+  const repaired = repairConfig(CLEANUP_DEFAULTS, {...HOMESERVER, legacy: true});
+  assert.ok(repaired.includes("enabled: false"));
 });

@@ -21,6 +21,8 @@ export function createCommunicationsTools(comms: Communications): AgentTool[] {
     createEmailListTool(comms),
     createEmailReadTool(comms),
     createEmailSendTool(comms),
+    createEmailFoldersTool(comms),
+    createEmailAttachmentsTool(comms),
   ];
 }
 
@@ -192,7 +194,8 @@ function createEmailAccountsTool(comms: Communications): AgentTool {
     async execute() {
       try {
         const status = await comms.status();
-        if (!status.email.tooling.installed) return failed(new Error(status.email.tooling.error ?? "Email is not configured."));
+        if (status.email.accounts.length === 0)
+          return failed(new Error("No email account is set up yet."));
         return ok(
           status.email.accounts.map((account) => ({
             account: account.id,
@@ -264,6 +267,72 @@ function createEmailReadTool(comms: Communications): AgentTool {
             folder: asString(input.folder),
           }),
         );
+      } catch (error) {
+        return failed(error);
+      }
+    },
+  };
+}
+
+/**
+ * What the mailbox actually contains. Without this a folder can only be
+ * guessed at, and the names are not guessable — Gmail's sent mail lives at
+ * "[Gmail]/Sent Mail" while another server calls it "Sent".
+ */
+function createEmailFoldersTool(comms: Communications): AgentTool {
+  return {
+    name: "email_folders",
+    description:
+      "List a mailbox's folders with their full IMAP paths and roles (inbox, sent, drafts, junk, trash, archive). Folder names differ by provider, so read them here rather than guessing, and pass the exact name to email_list.",
+    parameters: {
+      type: "object",
+      properties: {
+        account: {type: "string", description: "Account id from email_accounts; defaults to the default account"},
+      },
+      additionalProperties: false,
+    },
+    async execute(input) {
+      try {
+        return ok(await comms.mailFolders(asString(input.account)));
+      } catch (error) {
+        return failed(error);
+      }
+    },
+  };
+}
+
+/**
+ * Saving a message's files to disk. Reading a message reports what it carries
+ * without transferring any of it, so this is the one way the bytes arrive —
+ * and the only reason to ask for them is that something is about to be read.
+ */
+function createEmailAttachmentsTool(comms: Communications): AgentTool {
+  return {
+    name: "email_attachments",
+    description:
+      "Save an email's attachments to disk and return the paths they were written to. email_read names a message's attachments without downloading them; call this only when the files themselves are needed, then open them with the tools for their type.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: {type: "string", description: "Message id, relative to the folder it was listed from"},
+        account: {type: "string"},
+        folder: {type: "string", description: "Defaults to INBOX"},
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    async execute(input) {
+      try {
+        const paths = await comms.mailDownload(
+          requireString(input.id, "id"),
+          asString(input.account),
+          asString(input.folder),
+        );
+        // Only ever said when the message really carries none: a failed fetch
+        // now throws rather than arriving here as an empty list, so this
+        // sentence cannot reassure anyone about a file that would not download.
+        if (paths.length === 0) return ok({paths, note: "That message carries no attachments."});
+        return ok({paths});
       } catch (error) {
         return failed(error);
       }

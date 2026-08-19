@@ -21,12 +21,14 @@
     CommsLoginStepDto,
     CommsPlatform,
     CommsStatusDto,
+    CommsMailProvider,
     FlareAIApi,
     SaveEmailAccountRequest,
     SystemPermissionKind,
   } from '@flareai/protocol';
-  import {COMMS_EMAIL_PRESETS, permissionPrompts} from '@flareai/protocol';
+  import {COMMS_EMAIL_PRESETS, permissionPrompts, presetForHost} from '@flareai/protocol';
   import {readableError} from '../../shared/errors';
+  import {invalidateHubCache} from '../../shared/state/hubCache';
   import {scrollFade} from '../../shared/scrollFade';
   import {qrSvgPath} from '../../shared/qr';
   import {bridgeLogo, mailLogo} from '../../shared/options/platformBrands';
@@ -36,6 +38,53 @@
   import Menu from '../../shared/components/Menu.svelte';
 
   export let api: FlareAIApi;
+
+  /** Which providers this build can sign in to; empty draws no buttons. */
+  $: mailSignInProviders = status?.email.signInProviders ?? [];
+  $: mailPresetOptions = visibleMailPresets(mailSignInProviders).map((item) => ({
+    value: item.value,
+    label: item.label,
+  }));
+
+  /**
+   * The providers still worth picking by hand. One that is an app password and
+   * a hostname is what "Other" already is; Gmail and Outlook come out only
+   * once their sign-in is offered, so a build with no client registered still
+   * leaves a way into those mailboxes.
+   *
+   * A function rather than a reactive statement because the blank form is
+   * built during setup, before those have run.
+   */
+  function visibleMailPresets(providers: readonly CommsMailProvider[]) {
+    return COMMS_EMAIL_PRESETS.filter(
+      (item) =>
+        !item.hidden &&
+        !(item.value === 'gmail' && providers.includes('google')) &&
+        !(item.value === 'outlook' && providers.includes('microsoft')),
+    );
+  }
+
+  function mailProviderLabel(provider: CommsMailProvider): string {
+    return provider === 'google' ? 'Google' : 'Microsoft';
+  }
+
+  /**
+   * The provider's own page opens over FlareAI; everything after it — the
+   * address, the servers, the tokens — comes back from the sign-in, so there
+   * is nothing left to fill in and the form closes.
+   */
+  async function signInMailbox(provider: CommsMailProvider): Promise<void> {
+    busy = `email-signin:${provider}`;
+    try {
+      status = await api.comms.emailSignIn(provider);
+      editingEmail = false;
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
 
   type Section = {kind: 'bridge'; platform: CommsPlatform} | {kind: 'mail'};
 
@@ -126,7 +175,10 @@
   }
 
   function blankEmail(): SaveEmailAccountRequest {
-    const preset = COMMS_EMAIL_PRESETS[0];
+    // The first one the picker is actually showing: with Gmail signed in
+    // through its own button it is no longer the head of the list.
+    const preset =
+      visibleMailPresets(status?.email.signInProviders ?? [])[0] ?? COMMS_EMAIL_PRESETS[0];
     return {
       id: '',
       email: '',
@@ -157,7 +209,22 @@
     };
   }
 
-  $: presetHint = withLocale($locale, emailPresetHint(emailForm.preset));
+  /**
+   * What to tell the user about credentials here.
+   *
+   * A provider without its own pill is set up as "Other", so its hint has to
+   * follow the servers instead — otherwise the one thing that is not guessable
+   * about iCloud or Lark, that the account password will not work, goes
+   * unsaid.
+   */
+  $: presetHint = withLocale(
+    $locale,
+    emailPresetHint(
+      (emailForm.preset === 'custom'
+        ? presetForHost(emailForm.smtpHost)?.value ?? presetForHost(emailForm.imapHost)?.value
+        : undefined) ?? emailForm.preset,
+    ),
+  );
   $: bridges = status?.bridges ?? [];
   $: emailAccounts = status?.email.accounts ?? [];
   $: signedIn = status?.hub.status === 'signed-in';
@@ -209,16 +276,12 @@
       busy = '';
     }
   }
-  $: mailSummary = !status?.email.tooling.installed
-    ? $t('drive.stateUnavailable')
-    : emailAccounts.length === 0
+  $: mailSummary = emailAccounts.length === 0
       ? $t('hub.noMailboxes')
       : emailAccounts.length === 1
         ? emailAccounts[0].email
         : plural('hub.mailboxes', emailAccounts.length);
-  $: mailState = !status?.email.tooling.installed
-    ? 'unavailable'
-    : emailAccounts.some((account) => account.status === 'error')
+  $: mailState = emailAccounts.some((account) => account.status === 'error')
       ? 'error'
       : emailAccounts.length > 0
         ? 'connected'
@@ -503,6 +566,9 @@
     busy = `unlink:${bridge.platform}:${account.id}`;
     try {
       status = await api.comms.bridgeLogout(bridge.platform, account.id);
+      // The hub holds this account's chats and messages in memory; without
+      // this it keeps drawing them after the account is gone.
+      invalidateHubCache();
       error = '';
     } catch (cause) {
       error = readableError(cause);
@@ -663,17 +729,41 @@
             <h3>{emailOriginalId ? $t('hub.editMailbox', {name: emailOriginalId}) : $t('hub.addMailbox')}</h3>
             <p>{$t('hub.mailboxFormBlurb')}</p>
           </header>
+          <!-- Signing in answers the address and the servers at once, so it
+               stands above the form rather than beside a Provider field: for a
+               Google or Microsoft mailbox there is nothing below worth
+               filling in. Only offered where a client is registered. -->
+          {#if !emailOriginalId && mailSignInProviders.length}
+            <div class="comms-signin">
+              {#each mailSignInProviders as provider (provider)}
+                <button
+                  type="button"
+                  class="comms-signin-button"
+                  disabled={busy === `email-signin:${provider}`}
+                  onclick={() => void signInMailbox(provider)}
+                >
+                  <img src={mailLogo(provider === 'google' ? 'gmail' : 'outlook')} alt="" aria-hidden="true" />
+                  {busy === `email-signin:${provider}`
+                    ? $t('hub.signingIn')
+                    : $t('hub.signInWith', {provider: mailProviderLabel(provider)})}
+                </button>
+              {/each}
+              <p class="comms-signin-note">{$t('hub.signInOrManual')}</p>
+            </div>
+          {/if}
           <div class="comms-form">
-            <label>
+            {#if mailPresetOptions.length > 1}
+              <label>
               <span>{$t('hub.provider')}</span>
               <Menu
                 value={emailForm.preset}
                 label={$t('hub.provider')}
                 wide
-                options={COMMS_EMAIL_PRESETS.map((item) => ({value: item.value, label: item.label}))}
+                options={mailPresetOptions}
                 onChange={applyPreset}
               />
             </label>
+            {/if}
             {#if presetHint}<p class="comms-hint">{presetHint}</p>{/if}
             <label>
               <span>{$t('hub.accountName')}</span>
@@ -977,8 +1067,6 @@
                is an answer, and it is the wrong one to flash before we have it. -->
           {#if loading}
             <p class="comms-muted">{$t('hub.checkingAccounts')}</p>
-          {:else if status && !status.email.tooling.installed}
-            <p class="comms-hint warn">{status.email.tooling.error}</p>
           {:else}
             <ul class="comms-mailboxes">
               {#each emailAccounts as account (account.id)}
@@ -1111,6 +1199,15 @@
   .comms-hint.warn{color:#a04545}
   :global(:root[data-theme="dark"]) .comms-hint.warn{color:#e79c9c}
 
+  /* Above the form and the same width as it, because for a Google or
+     Microsoft mailbox there is nothing below worth filling in. */
+  .comms-signin{display:flex;max-width:440px;flex-direction:column;gap:7px;margin:0 0 14px}
+  .comms-signin-button{display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:none;color:var(--ink);font-family:inherit;font-size:12.5px;font-weight:560;cursor:pointer;transition:border-color .16s,opacity .16s}
+  .comms-signin-button img{width:16px;height:16px;border-radius:50%;background:#fff;object-fit:contain;padding:1px}
+  .comms-signin-button:hover:not(:disabled){border-color:var(--ink-soft)}
+  .comms-signin-button:disabled{opacity:.55;cursor:default}
+  .comms-signin-button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+  .comms-signin-note{margin:1px 0 0;color:var(--ink-faint);font-size:11.5px}
   .comms-form{display:flex;max-width:440px;flex-direction:column;gap:9px}
   .comms-form label{display:flex;flex-direction:column;gap:3px}
   .comms-form label>span{color:var(--neutral-600);font-size:10.5px;font-weight:530}

@@ -453,10 +453,14 @@
     // Warm the marketplace while the user is still browsing Settings so its
     // first reveal does not wait on the registry network request.
     void preloadMcpMarketplace();
-    return api.mcp.subscribe((update) => {
+    const stopMcp = api.mcp.subscribe((update) => {
       mcpServers = update.servers;
       if (update.error) error = `MCP configuration: ${update.error}`;
     });
+    // A skill the agent just wrote from a recording appears here on its own;
+    // the list is replaced rather than reloaded, so a selection survives it.
+    const stopSkills = api.skills.subscribe((value) => skills = value);
+    return () => { stopMcp(); stopSkills(); };
   });
 
   /** Collapsing is per agent and reassigns the set, since Svelte tracks the
@@ -533,7 +537,7 @@
   }
 
   /** Slugs are lowercase, so acronyms need restoring rather than title-casing —
-   * "gui-control" is GUI Control, not Gui Control. */
+   * "pdf" is PDF, not Pdf. */
   const SKILL_ACRONYMS = new Set(['pdf', 'gui', 'api', 'url', 'ai', 'mcp', 'cli', 'os']);
 
   function skillTitle(item: SkillDto): string {

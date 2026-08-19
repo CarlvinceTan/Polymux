@@ -1,6 +1,6 @@
 ---
 name: email-use
-description: Route proactive email discovery, reading, searching, drafting, replying, attachment handling, and sending through the right local email surface. Use for explicit email tasks and whenever email is a likely primary evidence source for research, reviews, memory or history reconstruction, prior decisions and promises, purchases, bookings and travel, job applications, account or admin work, supplier work, or recent correspondence, even when the user did not explicitly mention email. Prefer bounded read-only searches of relevant configured accounts through Himalaya CLI, then use Apple Mail on macOS or Outlook or webmail on Windows when Himalaya is unavailable or blocked. Never send, delete, move, archive, mark, label, or otherwise mutate mail without explicit user approval, and always show drafts before sending.
+description: Route proactive email discovery, reading, searching, drafting, replying, attachment handling, and sending through the right local email surface. Use for explicit email tasks and whenever email is a likely primary evidence source for research, reviews, memory or history reconstruction, prior decisions and promises, purchases, bookings and travel, job applications, account or admin work, supplier work, or recent correspondence, even when the user did not explicitly mention email. Prefer bounded read-only searches of relevant configured accounts through FlareAI's own email tools, then use Apple Mail on macOS or Outlook or webmail on Windows when an account is unconfigured or blocked. Never send, delete, move, archive, mark, label, or otherwise mutate mail without explicit user approval, and always show drafts before sending.
 author: FlareAI
 category: Communication
 ---
@@ -19,29 +19,35 @@ category: Communication
 
 ## Routing
 
-1. Prefer Himalaya CLI for any account that is configured and working.
-   - Check accounts with `himalaya account list`.
-   - Use the matching account with `-a <account>`.
-   - Load the `himalaya` skill before non-trivial Himalaya read/send/attachment work.
+1. Prefer FlareAI's own email tools for any account that is configured and
+   working. They hold an open connection to the mailbox, so a read costs a
+   single round trip; there is no CLI to drive and no reason to reach for a
+   shell.
+   - `email_accounts` lists the configured accounts and their ids.
+   - `email_list` lists a folder, newest first, and takes an IMAP search query.
+   - `email_read` reads one message in full and names its attachments.
+   - `email_attachments` saves those files to disk, and only when they are
+     needed — reading a message transfers no attachment.
+   - `email_send` sends, or saves to Drafts with `draft: true`.
 2. Use the platform mail fallback when:
-   - the account is not configured in Himalaya,
-   - Himalaya auth or IMAP/SMTP access is blocked,
+   - the account is not configured in FlareAI,
+   - its IMAP/SMTP access is blocked,
    - the user asks for the native mail app specifically,
    - exact rich signature rendering or embedded images are required,
    - the task involves university email.
    - On macOS, use Apple Mail.
    - On Windows, use Outlook when configured; otherwise use the account's browser webmail.
-3. Do not use browser webmail on macOS unless Himalaya and Apple Mail are both unsuitable or the user explicitly asks for it. On Windows, browser webmail is the normal fallback when Outlook is absent or unsuitable.
+3. Do not use browser webmail on macOS unless the configured account and Apple Mail are both unsuitable or the user explicitly asks for it. On Windows, browser webmail is the normal fallback when Outlook is absent or unsuitable.
 
 ## Known Account Preference
 
-- University email: use Apple Mail on macOS; use Outlook or browser webmail on Windows. Himalaya access may be blocked by the institution.
-- Other email accounts: try Himalaya first if listed by `himalaya account list`.
+- University email: use Apple Mail on macOS; use Outlook or browser webmail on Windows. Institutions often block direct IMAP/SMTP access.
+- Other email accounts: use the email tools first if the account is listed by `email_accounts`.
 
 ## Non-Interrupting App Fallbacks
 
-- Prefer Himalaya or a direct mail connector. For webmail, follow `browser-use` and use the in-app Browser by default.
-- Permission to use Apple Mail, Outlook, or webmail is not permission to foreground it. Before any local mail GUI initialization or control, load `gui-control` and complete its session preflight. Keep every native-mail fallback hidden or backgrounded unless user interaction is required. Use a verified non-activating launcher and exact-window control; a compiled launch route may use `gui-control`'s pre-armed, launch-only recovery boundary. After recovery, initialize a controller only through an independently verified non-activating route; any later takeover is a hard stop.
+- Prefer the email tools or a direct mail connector. For webmail, follow `browser-use` and use the in-app Browser by default.
+- Permission to use Apple Mail, Outlook, or webmail is not permission to foreground it. Before any local mail GUI initialization or control, load `window-use` and complete its session preflight. Keep every native-mail fallback hidden or backgrounded unless user interaction is required. Use a verified non-activating launcher and exact-window control; a compiled launch route may use `window-use`'s pre-armed, launch-only recovery boundary. After recovery, initialize a controller only through an independently verified non-activating route; any later takeover is a hard stop.
 - Do not click, type, hide, minimize, or switch windows in an app the user is actively using. If signature fidelity or another required step cannot be completed without visible control, prepare everything possible in the background and ask before surfacing the app.
 
 ## Sending Rules
@@ -64,8 +70,8 @@ category: Communication
 
 ## Signatures
 
-- Himalaya does not automatically apply native mail-app signatures.
-- Before sending through Himalaya, add the appropriate signature manually.
+- The email tools apply no signature of their own.
+- Before sending through them, add the appropriate signature to the body yourself.
 - Prefer a signature extracted from a prior sent message of that same account.
 - If exact signature formatting, logo images, or rich signature layout matters, prepare the message in Apple Mail, Outlook, or webmail instead.
 - Read a signature off the account's own sent mail or its mail app when one is
@@ -75,25 +81,25 @@ category: Communication
 
 ## Attachments
 
-- With Himalaya, inspect attachment availability from envelope/message metadata.
-- Download attachments with `himalaya attachment download <message-id> --dir <dir>`.
-- For PO PDFs or invoice PDFs, download to the workspace, then inspect with the PDF skill or bundled PDF tools.
+- `email_read` names what a message carries without transferring any of it, so
+  a mailbox can be surveyed without pulling megabytes of PDFs across.
+- Fetch the bytes with `email_attachments` only once a file actually has to be
+  opened. It returns the paths it wrote.
+- For PO PDFs or invoice PDFs, save them, then inspect with the PDF skill or bundled PDF tools.
 - Do not upload or forward attachments without user approval.
 
-## Common Himalaya Commands
+## Reading A Mailbox
 
-```bash
-himalaya account list
-himalaya folder list -a <account>
-himalaya envelope list -a <account> --folder '<folder>' --page-size 20 --output json
-himalaya message read -a <account> --folder '<folder>' <id>
-himalaya attachment download -a <account> --folder '<folder>' <id> --dir <dir>
-```
+A message id is only meaningful together with the folder it was listed from, so
+pass the same `account` and `folder` to `email_read` that `email_list` was given.
+Re-list after a folder change rather than reusing ids across folders.
 
-For sending, use a piped template only after the user approves the shown draft.
+Keep a search bounded: `email_list` takes an IMAP query — `from alice@example.com`,
+`subject "invoice"`, `since 1-Aug-2026` — which is answered by the server, so
+prefer one narrow query over listing a folder and reading through it.
 
 ## Platform Fallbacks
 
 - Use local app control only when needed.
-- For university email, start from Apple Mail on macOS or Outlook/webmail on Windows rather than retrying blocked Himalaya auth.
+- For university email, start from Apple Mail on macOS or Outlook/webmail on Windows rather than retrying an authentication the institution blocks.
 - Draft in the selected mail surface when signature fidelity matters, then stop before send and ask for confirmation.

@@ -9,6 +9,7 @@
     MailMessageDto as CachedMailDto,
   } from '@flareai/protocol';
   import {flareaiApi} from '../../api/flareai';
+  import {onHubCacheInvalidated} from '../../shared/state/hubCache';
 
   /** Which source the rail has selected: a platform, or a mailbox folder. */
   export type Source =
@@ -115,6 +116,27 @@
     })();
     return seeded;
   }
+
+  /**
+   * Drops everything the session holds about accounts, leaving where the user
+   * was alone. Armed for the life of the module rather than a mount, because
+   * the account is unlinked from Settings and the hub tab is usually not open
+   * at the time — a reset that only ran while mounted would miss exactly the
+   * case it exists for.
+   *
+   * `seeded` is cleared too: without that the next mount short-circuits and
+   * the disk snapshot — already emptied by the main process — is never read,
+   * which is harmless but leaves the flag lying about what has happened.
+   */
+  onHubCacheInvalidated(() => {
+    session.status = null;
+    session.chats = [];
+    session.messages.clear();
+    session.mailboxes.clear();
+    session.mail.clear();
+    session.activeChatId = null;
+    seeded = null;
+  });
 
   /**
    * Where the agent asked the hub to land, and the mounted hub's way of going
@@ -250,6 +272,14 @@
   import {activeLocale, t, translate} from '../../../i18n';
   import {applyOrder, loadRailOrder, moveBy, saveAccountOrder, saveSourceOrder} from './hubRailOrder';
   import {arrangeChats, hiddenChats, loadChatPrefs, toggleHidden, togglePinned} from './chatPrefs';
+  import FileAttachment from '../chat/FileAttachment.svelte';
+
+  /**
+   * Hands a saved file to the app's own open menu — the one the chat and the
+   * drive already use, so an attachment offers the same ways of opening as any
+   * other file, under the pill that was clicked.
+   */
+  export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
 
   type IconName = ComponentProps<typeof Icon>['name'];
 
@@ -326,6 +356,8 @@
   const CHAIN_HEAD = 4;
   let chainExpanded = false;
   let attachmentPaths: string[] = [];
+  /** Which pill is waiting on the download, so only that one shows it. */
+  let pendingAttachment: number | null = null;
 
   /**
    * Which rail groups are expanded. A source with more than one account is a
@@ -404,6 +436,14 @@
           ? envelope.hasAttachment
           : true,
   );
+
+  /** Conversation sizes for the rows on screen, redone as the folder changes. */
+  $: chainCounts = chainSizes(envelopes);
+
+  /** How many messages the row's conversation holds; 1 when it stands alone. */
+  function chainCount(envelope: MailEnvelopeDto): number {
+    return chainCounts.get(baseSubject(envelope.subject)) ?? 1;
+  }
 
   $: safeHtml = openMail?.html ? sanitiseMail(openMail.html) : '';
 
@@ -1082,29 +1122,61 @@
   const PREFETCH_CHATS = 8;
 
   /**
-   * The bodies at the top of the open folder. Reading one is the next thing
-   * that happens after a folder is listed, so the first few are fetched while
-   * the list is being looked at. Stops as soon as a message is opened: the
-   * click deserves the connection more than the guess does.
+   * The bodies around where the reader is, fetched before they are asked for.
+   * A read is one round trip on a connection the app already holds open, so
+   * this is no longer hiding a two-second stall — but a few hundred
+   * milliseconds is still the difference between a message that is there and
+   * one that arrives.
+   *
+   * The window follows the reader rather than sitting at the top of the
+   * folder: opening a message re-arms it around what was opened, because the
+   * next click is almost always a neighbour. What it must never do is race the
+   * click itself — a guess that delays the real read is worse than no guess —
+   * so it yields while a message fetch is in flight and resumes after.
    */
-  const PREFETCH_MAIL = 5;
+  const PREFETCH_MAIL = 12;
 
-  async function prefetchMailBodies(): Promise<void> {
-    if (!source || source.kind !== 'mail') return;
+  /**
+   * How many warms are in the air at once. They do not overlap on the wire —
+   * an account has one connection and IMAP carries one command at a time, so
+   * the backend queues them — but issuing several keeps that connection busy
+   * instead of idling between round trips. Bounded because a queue longer than
+   * the user's patience is work nobody is waiting for.
+   */
+  const PREFETCH_LANES = 3;
+
+  /** One prefetch walk at a time, whatever re-arms it. */
+  let prefetching = false;
+
+  async function prefetchMailBodies(anchor = 0): Promise<void> {
+    if (!source || source.kind !== 'mail' || prefetching) return;
     const mailbox = source;
-    for (const envelope of envelopes.slice(0, PREFETCH_MAIL)) {
-      if (openMail || openEnvelope) return;
-      if (source.kind !== 'mail' || source.folder !== mailbox.folder) return;
-      const key = mailKey(mailbox.account, mailbox.folder, envelope.id);
-      if (session.mail.has(key)) continue;
-      try {
-        session.mail.set(
-          key,
-          await api.comms.mailMessage(envelope.id, mailbox.account, mailbox.folder),
-        );
-      } catch {
-        // Guessed-at work; the click that needs it will report any trouble.
-      }
+    prefetching = true;
+    try {
+      // Ahead of the anchor first — the direction reading travels — then the
+      // one behind it, for a click that goes back up the list.
+      const queue = envelopes
+        .slice(Math.max(0, anchor - 1), anchor + PREFETCH_MAIL)
+        .filter((item) => !session.mail.has(mailKey(mailbox.account, mailbox.folder, item.id)));
+      const lanes = Array.from({length: PREFETCH_LANES}, async () => {
+        for (;;) {
+          const envelope = queue.shift();
+          if (!envelope) return;
+          const now = source;
+          if (!now || now.kind !== 'mail' || now.folder !== mailbox.folder) return;
+          try {
+            session.mail.set(
+              mailKey(mailbox.account, mailbox.folder, envelope.id),
+              await api.comms.mailMessage(envelope.id, mailbox.account, mailbox.folder),
+            );
+          } catch {
+            // Guessed-at work; the click that needs it will report any trouble.
+          }
+        }
+      });
+      await Promise.all(lanes);
+    } finally {
+      prefetching = false;
     }
   }
 
@@ -1430,6 +1502,31 @@
 
   /** A subject that answers or passes on another one. */
   const REPLY_PREFIX = /^\s*(re|fwd|fw)\s*:/i;
+
+  /**
+   * How many messages each conversation in this folder holds, keyed by the
+   * subject its members share. Counted off the rows already listed rather than
+   * asked of the server: the number is a hint on a row, and a round trip per
+   * row to draw it would cost more than the hint is worth.
+   *
+   * Same rule as the reading pane's chain — a run of identically titled
+   * notifications is not a conversation until something in it is a reply — so
+   * a row's count and the chain it opens agree.
+   */
+  function chainSizes(list: MailEnvelopeDto[]): Map<string, number> {
+    const groups = new Map<string, {count: number; replied: boolean}>();
+    for (const item of list) {
+      const base = baseSubject(item.subject);
+      if (!base) continue;
+      const found = groups.get(base) ?? {count: 0, replied: false};
+      found.count++;
+      found.replied ||= REPLY_PREFIX.test(item.subject) || item.answered;
+      groups.set(base, found);
+    }
+    return new Map(
+      [...groups].map(([base, found]) => [base, found.replied ? found.count : 1]),
+    );
+  }
 
   function baseSubject(subject: string): string {
     return subject.replace(/^\s*(re|fwd|fw)\s*:\s*/gi, '').trim().toLowerCase();
@@ -2010,7 +2107,8 @@
     const cached = session.mail.get(mailKey(source.account, source.folder, envelope.id));
     openMail = cached ?? null;
     attachmentPaths = [];
-    void loadThread(envelope);
+    thread = [];
+    chainExpanded = false;
     composing = false;
     busy = cached ? '' : `mail:${envelope.id}`;
     try {
@@ -2020,8 +2118,14 @@
       if (openEnvelope?.id !== envelope.id) return;
       openMail = message;
       // Opening a message is what marks it read, the same as any mail client.
+      // Reading the body deliberately does not do it — the fetch peeks, so
+      // that prefetching the next few messages cannot mark mail read the user
+      // never opened — which leaves the flag to the one place that knows a
+      // person actually looked. Not awaited: the row flips now, and the server
+      // catching up is not something the reader waits on.
       if (!envelope.seen) {
-        await api.comms.mailFlag([envelope.id], 'seen', true, source.account, source.folder).catch(() => {});
+        const {account, folder} = source;
+        void api.comms.mailFlag([envelope.id], 'seen', true, account, folder).catch(() => {});
         envelopes = envelopes.map((item) =>
           item.id === envelope.id ? {...item, seen: true} : item,
         );
@@ -2037,6 +2141,12 @@
       // clearing it would drop the newer message's skeleton.
       if (busy === `mail:${envelope.id}`) busy = '';
     }
+    // Both of these are another round trip apiece down the same connection, so
+    // they wait until the body the click asked for is on screen rather than
+    // queueing ahead of it.
+    if (openEnvelope?.id !== envelope.id) return;
+    void loadThread(envelope);
+    void prefetchMailBodies(Math.max(0, envelopes.findIndex((item) => item.id === envelope.id)));
   }
 
   async function moveMail(envelope: MailEnvelopeDto, role: 'junk' | 'trash' | 'archive'): Promise<void> {
@@ -2175,18 +2285,33 @@
     }
   }
 
-  /** Saves the open message's attachments and offers them to the OS. */
-  async function saveAttachments(): Promise<void> {
+  /**
+   * Opens one of the message's attachments.
+   *
+   * The files live on the server until something asks for them, so the first
+   * click saves the message's attachments — one command for all of them, which
+   * is what the server is asked for anyway — and every click after that opens
+   * from what is already on disk. The paths come back in the order the
+   * attachments were announced, which is the order they are shown in.
+   */
+  async function openAttachment(index: number, anchor: DOMRect): Promise<void> {
     if (!source || source.kind !== 'mail' || !openEnvelope) return;
-    busy = 'attachments';
-    try {
-      attachmentPaths = await api.comms.mailDownload(openEnvelope.id, source.account, source.folder);
-      error = '';
-    } catch (cause) {
-      error = readableError(cause);
-    } finally {
-      busy = '';
+    if (attachmentPaths.length === 0) {
+      busy = 'attachments';
+      pendingAttachment = index;
+      try {
+        attachmentPaths = await api.comms.mailDownload(openEnvelope.id, source.account, source.folder);
+        error = '';
+      } catch (cause) {
+        error = readableError(cause);
+        return;
+      } finally {
+        busy = '';
+        pendingAttachment = null;
+      }
     }
+    const path = attachmentPaths[index];
+    if (path) onOpenFilePath(path, anchor);
   }
 
   async function toggleFlag(envelope: MailEnvelopeDto): Promise<void> {
@@ -2762,10 +2887,23 @@
                 <em>{when(envelope.date)}</em>
               </span>
               <span class="hub-view-row-subject">{envelope.subject}</span>
-              <span class="hub-view-row-meta">
-                {#if envelope.flagged}<Icon name="flag" size={12} filled />{/if}
-                {#if envelope.hasAttachment}<Icon name="attach" size={12} />{/if}
-                {#if envelope.answered}<Icon name="back" size={12} />{/if}
+              <!-- The body's first line and the row's marks share one line: the
+                   marks are about the message, and a line of their own under a
+                   preview that is already one line makes every row a third
+                   taller for three glyphs. -->
+              <span class="hub-view-row-line">
+                <span class="hub-view-row-preview">{envelope.preview ?? ''}</span>
+                <span class="hub-view-row-meta">
+                  {#if envelope.flagged}<Icon name="flag" size={12} filled />{/if}
+                  {#if envelope.answered}<Icon name="back" size={12} />{/if}
+                  {#if envelope.hasAttachment}<Icon name="attach" size={12} />{/if}
+                  {#if chainCount(envelope) > 1}
+                    <span class="hub-view-row-chain" title={`${chainCount(envelope)} messages`}>
+                      {chainCount(envelope)}
+                      <Icon name="chevron" size={11} />
+                    </span>
+                  {/if}
+                </span>
               </span>
             </button>
           </li>
@@ -3160,6 +3298,29 @@
         </div>
       </header>
       {#if openMail}
+        {#if openMail.attachments.length > 0}
+          <!-- What came with the message, before the message: a strip of the
+               same pills the composer uses, so a file reads the same wherever
+               the app shows one. Clicking one hands it to the app's open menu,
+               which hangs under the pill that was clicked. -->
+          <div class="hub-view-mail-files">
+            {#each openMail.attachments as file, index (file.name)}
+              <button
+                type="button"
+                class="hub-view-mail-file"
+                disabled={busy === 'attachments'}
+                onclick={(event) => void openAttachment(index, event.currentTarget.getBoundingClientRect())}
+              >
+                <FileAttachment
+                  name={file.name}
+                  status={busy === 'attachments' && pendingAttachment === index ? 'uploading' : 'done'}
+                  progress={busy === 'attachments' && pendingAttachment === index ? 40 : 100}
+                  removable={false}
+                />
+              </button>
+            {/each}
+          </div>
+        {/if}
         {#if safeHtml}
           <!-- The sender's own markup, sanitised: scripts, frames, forms and
                stylesheets are stripped, and links are opened in the real
@@ -3171,28 +3332,6 @@
           </div>
         {:else}
           <div class="hub-view-body">{openMail.body}</div>
-        {/if}
-        {#if openMail.attachments.length > 0}
-          <div class="hub-view-attachments">
-            <span class="hub-view-attachments-head">
-              <Icon name="attach" size={12} />
-              {openMail.attachments.length} attachment{openMail.attachments.length === 1 ? '' : 's'}
-            </span>
-            {#each openMail.attachments as file (file.name)}
-              <span class="hub-view-file">{file.name}</span>
-            {/each}
-            {#if attachmentPaths.length === 0}
-              <button type="button" disabled={busy === 'attachments'} onclick={() => void saveAttachments()}>
-                <Icon name="download" size={12} /> {busy === 'attachments' ? $t('hub.saving') : $t('common.save')}
-              </button>
-            {:else}
-              {#each attachmentPaths as saved (saved)}
-                <button type="button" onclick={() => void api.comms.mailOpenFile(saved)}>
-                  <Icon name="file" size={12} /> Open {fileName(saved)}
-                </button>
-              {/each}
-            {/if}
-          </div>
         {/if}
         {#if thread.length > 1}
           <div class="hub-view-chain">

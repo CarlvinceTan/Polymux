@@ -68,9 +68,12 @@
   export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
   export let onFeedback: (id: string, feedback: MessageFeedback) => void = () => {};
   export let onOpenFile: (name: string) => void = () => {};
-  export let onOpenLink: (url: string, title: string) => void = () => {};
+  /** `anchor` is the link's own box in the viewport: what opens it is a choice,
+   * and the menu that asks belongs under the words that were clicked rather
+   * than wherever inside them the pointer landed. */
+  export let onOpenLink: (url: string, title: string, anchor?: DOMRect) => void = () => {};
   /** A file link inside the reply, distinct from onOpenFile's attachments. */
-  export let onOpenFilePath: (path: string) => void = () => {};
+  export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
 
   let editing = false;
   let draft = '';
@@ -193,12 +196,12 @@
       const filePath = anchor.dataset.filePath;
       if (!filePath) return;
       event.preventDefault();
-      onOpenFilePath(filePath);
+      onOpenFilePath(filePath, anchor.getBoundingClientRect());
       return;
     }
     if (!['http:', 'https:'].includes(url.protocol)) return;
     event.preventDefault();
-    onOpenLink(url.href, anchor.textContent?.trim() || url.hostname);
+    onOpenLink(url.href, anchor.textContent?.trim() || url.hostname, anchor.getBoundingClientRect());
   }
 
   function markdownInteractions(node: HTMLElement) {

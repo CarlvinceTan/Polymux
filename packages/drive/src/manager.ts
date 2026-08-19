@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 import {mkdirSync} from "node:fs";
-import {access, mkdir} from "node:fs/promises";
+import {access, mkdir, readdir, stat} from "node:fs/promises";
 import path from "node:path";
 import {homedir} from "node:os";
 import {locks} from "@flareai/core";
@@ -593,7 +593,8 @@ export class Drive {
   }
 
   /**
-   * Uploads files from this Mac, opening a picker when none are named.
+   * Uploads files and folders from this Mac, opening a picker when none are
+   * named.
    *
    * `expectVersions` asks for the write to be conditional: each file replaces
    * what is there only while it is still the version this drive last read at
@@ -608,38 +609,69 @@ export class Drive {
     paths?: string[],
     options?: {expectVersions?: boolean},
   ): Promise<DriveEntryDto[]> {
-    const adapter = this.#require(source);
     const chosen = paths?.length ? paths : await this.#pickers.files();
     const uploaded: DriveEntryDto[] = [];
     // Sequential on purpose: a dozen parallel uploads to one account is a good
     // way to be rate-limited, and the drive has no progress UI to justify it.
     for (const item of chosen)
-      uploaded.push(
-        // Per destination, and taken inside the loop rather than around it: an
-        // upload replaces what is at that name, so two runs writing the same
-        // one is a lost update, while two runs writing different names is just
-        // two deliverables and must stay parallel.
-        await locks.run(
-          pathKey(source, childPath(adapter, parentPath, path.basename(item))),
-          async () => {
-            const at = childPath(adapter, parentPath, path.basename(item));
-            const ifMatch =
-              options?.expectVersions && adapter.conditionalWrites
-                ? this.versionSeen(source, at)
-                : null;
-            const entry = await adapter.upload(parentPath, item, {ifMatch});
-            // The file just written is the new baseline, so a run that writes
-            // twice in a row does not fail its own second write. An adapter
-            // that reported no version leaves nothing remembered, which makes
-            // the next write unconditional rather than wrongly conditional.
-            if (entry.version)
-              this.#versions.set(pathKey(source, entry.path), entry.version);
-            else this.#versions.delete(pathKey(source, at));
-            return entry;
-          },
-        ),
-      );
+      uploaded.push(await this.#uploadItem(source, parentPath, item, options));
     return uploaded;
+  }
+
+  /**
+   * One dropped thing. A file is a single write; a folder is the folder made
+   * on the far side and then everything under it, because no provider takes a
+   * directory as an upload — dragging one in has to be spelled out as the
+   * tree it stands for.
+   */
+  async #uploadItem(
+    source: string,
+    parentPath: string,
+    item: string,
+    options?: {expectVersions?: boolean},
+  ): Promise<DriveEntryDto> {
+    const adapter = this.#require(source);
+    if ((await stat(item)).isDirectory()) {
+      const folder = await this.createFolder(
+        source,
+        parentPath,
+        path.basename(item),
+      );
+      // Into the folder that was actually made, not the name asked for: a
+      // taken name is given a suffix, and the children belong in the folder
+      // that exists.
+      for (const child of (await readdir(item)).sort())
+        await this.#uploadItem(
+          source,
+          folder.path,
+          path.join(item, child),
+          options,
+        );
+      return folder;
+    }
+    // Per destination, and taken here rather than around the whole drop: an
+    // upload replaces what is at that name, so two runs writing the same one
+    // is a lost update, while two runs writing different names is just two
+    // deliverables and must stay parallel.
+    return locks.run(
+      pathKey(source, childPath(adapter, parentPath, path.basename(item))),
+      async () => {
+        const at = childPath(adapter, parentPath, path.basename(item));
+        const ifMatch =
+          options?.expectVersions && adapter.conditionalWrites
+            ? this.versionSeen(source, at)
+            : null;
+        const entry = await adapter.upload(parentPath, item, {ifMatch});
+        // The file just written is the new baseline, so a run that writes
+        // twice in a row does not fail its own second write. An adapter
+        // that reported no version leaves nothing remembered, which makes
+        // the next write unconditional rather than wrongly conditional.
+        if (entry.version)
+          this.#versions.set(pathKey(source, entry.path), entry.version);
+        else this.#versions.delete(pathKey(source, at));
+        return entry;
+      },
+    );
   }
 
   /** Fetches an entry to an exact path, for callers that have somewhere of

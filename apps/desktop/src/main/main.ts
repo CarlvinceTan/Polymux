@@ -1,13 +1,18 @@
-import { app, BrowserWindow, ipcMain, nativeTheme } from "electron";
+import { app, BrowserWindow, ipcMain, nativeTheme, net, protocol } from "electron";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import started from "electron-squirrel-startup";
 import { channels } from "@flareai/protocol";
 import { DesktopBackend, modelFromEnvironment } from "./backend.js";
 import { BridgeHost, Homeserver, WeChatBridge, WECHAT_FALLBACK_DIRECTORIES, loadShippedCredentials } from "@flareai/hub";
-import { registerMediaScheme, serveMedia } from "./communications/media.js";
+import { serveMedia } from "./communications/media.js";
+import { PREVIEW_SCHEME, previewResponse } from "./workspace/preview.js";
+import { registerPrivilegedSchemes } from "./system/schemes.js";
+import { loadAgentPrompts } from "@flareai/agent";
 import { coreSkillNames, installOfficialSkills } from "./skills/official.js";
+import { exportNodeRuntime } from "./system/node-runtime.js";
 import {
   FLAREAI_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
@@ -105,6 +110,24 @@ app.commandLine.appendSwitch("force-renderer-accessibility");
 // still respecting Electron's documented variable when it is supplied.
 if (!process.env.GOOGLE_API_KEY && process.env.FLAREAI_GOOGLE_API_KEY)
   process.env.GOOGLE_API_KEY = process.env.FLAREAI_GOOGLE_API_KEY;
+
+// The interpreter the skill scripts run under (`"${FLAREAI_NODE:-node}"`):
+// the bundled runtime in a packaged app, the dev Electron in a checkout. Set
+// before anything spawns a shell so every agent subprocess inherits it. After
+// the devInstance block above on purpose — the dev wrapper is written into
+// this instance's own userData.
+if (
+  !exportNodeRuntime({
+    bundledNode: bundledResource("node", "node"),
+    checkoutMarker: path.join(app.getAppPath(), "resources", "skills"),
+    execPath: process.execPath,
+    wrapperDirectory: path.join(app.getPath("userData"), "bin"),
+  })
+)
+  console.warn(
+    "No bundled Node runtime and no checkout to borrow one from; " +
+      "skill scripts fall back to `node` from PATH.",
+  );
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 let backend: DesktopBackend | undefined;
@@ -320,8 +343,12 @@ function createWindow(): void {
       dataDirectory: app.getPath("userData"),
       officialSkillDirectories: [officialSkillDirectory()],
       coreSkills: coreSkillNames(bundledResource("skills", "core")),
+      // FlareAI's own prompts travel as files beside the skills — same bundle,
+      // neither tier, never mirrored into the user's skills directory.
+      agentPrompts: loadAgentPrompts(bundledResource("prompts")),
       axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
       axEventsSourcePath: bundledResource("native", "ax-events.swift"),
+      pillImageSourcePath: bundledResource("native", "pill-image.swift"),
       appPermissionsSourcePath: bundledResource("native", "app-permissions.swift"),
       remindersSourcePath: bundledResource("native", "reminders.swift"),
       hub: hub
@@ -502,14 +529,27 @@ async function withTimeout<T>(
 }
 
 // Before ready, which is the only moment a scheme can be made privileged —
-// without it `<audio>` and `<video>` cannot seek within a bridged voice note.
-registerMediaScheme();
+// without it `<audio>` and `<video>` cannot seek within a bridged voice note
+// or a previewed clip.
+registerPrivilegedSchemes();
 
 app.whenReady().then(async () => {
   if (quitting) return;
   // Bridged media is fetched by the main process, which holds the token the
   // renderer never sees. Read per request, so a later sign-in is picked up.
   serveMedia(() => backend?.mediaAuth ?? {homeserverUrl: "", token: null});
+  // A produced file is streamed to the page the same way, and for the same
+  // reason: an <img> cannot reach the disk, and a data: uri would hold a whole
+  // clip in memory. Range is forwarded or a <video> could play but not seek.
+  protocol.handle(PREVIEW_SCHEME, async (request) => {
+    if (!backend) return new Response("Not granted", {status: 404});
+    return previewResponse(
+      backend.previewGrants,
+      request,
+      (url, init) => net.fetch(url, init),
+      async (file) => (await stat(file)).size,
+    );
+  });
   // No runtime Dock icon override: `dock.setIcon` draws the raw bitmap with
   // none of the system's icon shaping, which is exactly the unmasked-square
   // artifact it used to cause. Development gets its icon from the rebranded

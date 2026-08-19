@@ -235,7 +235,9 @@ function createBrowserDemoApi(): FlareAIApi {
       {platform: 'wechat', name: 'WeChat', api: 'none', state: 'unavailable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'The WeChat relay on this Mac is running, but it is not connected to FlareAI’s own hub, so nothing it carries reaches here.'},
     ],
     email: {
-      tooling: {installed: true, version: 'himalaya v1.2.0', configPath: '~/.config/himalaya/config.toml', error: null},
+      // The demo shows the buttons: it stands in for a build with clients
+      // registered, which is what the Hub tab looks like once they are.
+      signInProviders: ['google', 'microsoft'],
       accounts: onboardingPreview
         ? []
         : [
@@ -503,6 +505,9 @@ function createBrowserDemoApi(): FlareAIApi {
       saveSnapshot: async (conversationId, snapshot) => {
         demoWorkspaceSnapshots.set(conversationId, structuredClone(snapshot));
       },
+      // The demo has no host to grant a file with, and a browser tab could not
+      // read one anyway: whatever it is handed is already loadable, or nothing.
+      preview: async (path) => path,
       // Nothing drives the agent in the demo, so nothing ever asks to be shown.
       // The demo has no agent to ask for a surface, so the reveal channel is
       // driven from the page instead: `window.flareaiDemoReveal(request)` fans
@@ -775,7 +780,8 @@ function createBrowserDemoApi(): FlareAIApi {
         return demoEnvelopes
           .filter((item) => item.folder === folder)
           .filter((item) => !needle || item.envelope.subject.toLowerCase().includes(needle) || item.envelope.from.address.toLowerCase().includes(needle))
-          .map((item) => item.envelope);
+          // The demo's bodies stand in for the peek the real listing does.
+          .map((item) => ({...item.envelope, preview: item.body.slice(0, 200)}));
       },
       mailMessage: async (id) => {
         const found = demoEnvelopes.find((item) => item.envelope.id === id);
@@ -825,6 +831,9 @@ function createBrowserDemoApi(): FlareAIApi {
         };
         return demoCommsStatus;
       },
+      // Nothing to sign in to in a browser: the demo answers with the status
+      // it already has, so the button is visible without pretending to work.
+      emailSignIn: async () => demoCommsStatus,
       emailTest: async (id) => {
         const account = demoCommsStatus.email.accounts.find((item) => item.id === id);
         if (!account) throw new Error(`No email account named ${id}`);
@@ -1010,6 +1019,7 @@ function createBrowserDemoApi(): FlareAIApi {
     skills: {
       list: async () => demoSkills,
       reload: async () => demoSkills,
+      subscribe: () => () => {},
       install: async (spec) => {
         const name = spec.trim().replace(/\/+$/, '').split('/').pop() ?? 'installed-skill';
         if (demoSkills.some((item) => item.name === name)) throw new Error(`A skill named ${name} already exists`);
@@ -1119,6 +1129,9 @@ function createBrowserDemoApi(): FlareAIApi {
       setVisible: async () => {},
       close: async () => {},
       openExternal: async (url) => { window.open(url, '_blank'); },
+      // A browser tab has no host to ask which application owns a link, so the
+      // menu falls back to naming one generically.
+      defaultApp: async () => null,
       openPath: async () => {},
       find: async () => {},
       stopFind: async () => {},
@@ -1444,6 +1457,9 @@ function createBrowserDemoApi(): FlareAIApi {
       };
       emit(runId, request.conversationId, 'tool.started', {toolCall: call});
       emit(runId, request.conversationId, 'tool.progress', {toolCallId: call.id, message: '', data: {childRunId}});
+      // Dispatch returns at once — the delegated run is only just starting, and
+      // the parent is free to keep working while it does.
+      emit(runId, request.conversationId, 'tool.completed', {toolCall: call, result: {content: JSON.stringify({task: 'task_1', status: 'running'})}});
       emit(childRunId, request.conversationId, 'run.started', {}, runId);
       emit(childRunId, request.conversationId, 'message.reasoning.delta', {delta: 'Weighing the two price sheets'}, runId);
       emit(childRunId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-subagent-read', name: 'read', arguments: {path: '/pricing.md'}}}, runId);
@@ -1452,7 +1468,6 @@ function createBrowserDemoApi(): FlareAIApi {
         emit(childRunId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-subagent-read', name: 'read', arguments: {path: '/pricing.md'}}, result: {content: 'Read 40 lines.'}}, runId);
         emit(childRunId, request.conversationId, 'message.text.delta', {delta: answer}, runId);
         emit(childRunId, request.conversationId, 'run.completed', {result: {lastAgentMessage: answer}}, runId);
-        emit(runId, request.conversationId, 'tool.completed', {toolCall: call, result: {content: answer}});
         const text = 'The subagent reports the second provider is cheaper.';
         emit(runId, request.conversationId, 'message.text.delta', {delta: text});
         items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [{type: 'text', text}], Date.now(), runId, {phase: 'final'}));

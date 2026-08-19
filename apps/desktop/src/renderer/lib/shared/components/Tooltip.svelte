@@ -45,9 +45,16 @@
     return Number.isFinite(ms) && ms > 0 ? ms : 0;
   }
 
-  function show(button: HTMLButtonElement): void {
+  /**
+   * `settled` says the pointer has demonstrably been still on this button
+   * already, so the pause the delay is there to wait for has happened.
+   */
+  function show(button: HTMLButtonElement, settled = false): void {
     // The startup cover is click-through, so the pointer reaches the app
-    // behind it; a pill raised then would float over the brand alone.
+    // behind it; a pill raised then would float over the brand alone. The
+    // pointer is still on the button when the cover lifts, though, and nothing
+    // else would bring the name back — so the wait is watched rather than the
+    // hover being dropped.
     if (document.documentElement.dataset.startup) return;
     const nextLabel = tooltipLabel(button);
     if (!nextLabel) return;
@@ -55,7 +62,7 @@
     target = button;
     wide = button.hasAttribute('data-tooltip-wide');
     visible = false;
-    const delay = delayFor(button);
+    const delay = settled ? 0 : delayFor(button);
     if (delay) {
       label = '';
       clearTimeout(pendingTimer);
@@ -135,6 +142,21 @@
       // pointer never left it, so nothing else would bring its name back.
       if (hovered && !target && tooltipLabel(hovered)) void show(hovered);
     });
+    // The cover's own lifetime, watched separately: it lives on the root, and
+    // its going is the moment a hover held through the opening becomes a
+    // tooltip. Same rule as a menu closing under the pointer.
+    const coverObserver = new MutationObserver(() => {
+      if (document.documentElement.dataset.startup) return;
+      coverObserver.disconnect();
+      // Held on the same control for the whole of the opening: the pause has
+      // already been made, and asking for it again would start it over.
+      if (hovered && !target && tooltipLabel(hovered)) void show(hovered, true);
+    });
+    if (document.documentElement.dataset.startup)
+      coverObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-startup'],
+      });
     targetObserver.observe(document.body, {
       childList: true,
       subtree: true,
@@ -153,6 +175,7 @@
     return () => {
       clearTimeout(pendingTimer);
       targetObserver.disconnect();
+      coverObserver.disconnect();
       document.removeEventListener('pointerover', pointerOver, true);
       document.removeEventListener('pointerout', pointerOut, true);
       document.removeEventListener('pointermove', pointerMove, true);

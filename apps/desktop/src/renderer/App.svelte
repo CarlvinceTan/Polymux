@@ -1,7 +1,7 @@
 <script lang="ts">
   import {onDestroy, onMount, type ComponentProps} from 'svelte';
   import {readableError} from './lib/shared/errors';
-  import type {ArtifactDto, BrowserExtensionDto, ConversationDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto, WorkspaceRevealDto} from '@flareai/protocol';
+  import type {ArtifactDto, BrowserExtensionDto, ConversationDto, DefaultAppDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto, WorkspaceRevealDto} from '@flareai/protocol';
   import TitleBar from './lib/features/chat/TitleBar.svelte';
   import ChatPane, {type ChatMessage} from './lib/features/chat/ChatPane.svelte';
   import TimelineRail, {TIMELINE_RAIL_MINIMUM} from './lib/features/chat/TimelineRail.svelte';
@@ -13,6 +13,7 @@
   import WorkspaceDrawer, {SINGLETON_TAB_IDS, type WorkspaceTab, type WorkspaceTabKind} from './lib/features/workspace/WorkspaceDrawer.svelte';
   import {seedHub, warmHub, revealInHub} from './lib/features/workspace/HubView.svelte';
   import {driveEntryKind, type DriveEntry} from './lib/features/workspace/DriveView.svelte';
+  import OpenMenu, {type OpenAnchor, type OpenChoice} from './lib/shared/components/OpenMenu.svelte';
   import {unreadScheduleCount, type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './lib/features/workspace/ScheduleView.svelte';
   import {recordVisit} from './lib/features/workspace/visitHistory';
   import Tooltip from './lib/shared/components/Tooltip.svelte';
@@ -220,6 +221,10 @@
   /** The subagent's run id back to the task row that started it — events arrive
    * knowing only the run. */
   let taskIdByRunId: Record<string, string> = {};
+  /** Each task row's fleet name, recorded from the `task` tool result's
+   * metadata. A continued dispatch addresses its worker by that name, which is
+   * how its row is found and resumed instead of a second row appearing. */
+  let taskRowByName: Record<string, Record<string, string>> = {};
   let workspaceTabs: WorkspaceTab[] = [];
   let activeTabId: string | null = null;
   /** Owned by the main process, which keeps the clock and the run history;
@@ -508,7 +513,7 @@
       }
       return;
     }
-    const kind: WorkspaceTabKind = request.surface === 'chat' ? 'side-chat' : request.surface;
+    const kind: WorkspaceTabKind = request.surface;
     if (request.surface === 'hub' && (request.mail || request.chat))
       revealInHub({mail: request.mail, chat: request.chat});
     if (request.surface === 'drive' && !quiet) {
@@ -794,7 +799,11 @@
       const text = contentText(completed.content);
       // Mid-run narration (tool calls follow) folds into the activity group so
       // only the run's final answer stays as the visible message body.
-      if (payload.phase === 'commentary' && text) {
+      //
+      // Judged on what the text actually says, not on whether there is any:
+      // a block carrying only a newline is truthy, and folding one into the
+      // trail drew a row with an icon, a disclosure chevron and no words.
+      if (payload.phase === 'commentary' && text.trim()) {
         updateLiveAssistant(conversationId, (message) => ({
           ...message,
           text: '',
@@ -840,19 +849,36 @@
         const arguments_ = asRecord(call.arguments);
         const description = typeof arguments_.description === 'string' ? arguments_.description.trim() : '';
         const prompt = typeof arguments_.prompt === 'string' ? arguments_.prompt.trim() : '';
-        updateConversationTasks(conversationId, (current) => [
-          ...current.filter((task) => task.id !== id),
-          {id, title: description || translate('activity.delegatedTask'), status: 'active', prompt},
-        ]);
+        // A continued dispatch resumes an existing fleet task: its row flips
+        // back to active rather than a second row appearing for the same task.
+        const continueFrom = typeof arguments_.continue === 'string' ? arguments_.continue.trim() : '';
+        const resumedId = continueFrom ? taskRowByName[conversationId]?.[continueFrom] : undefined;
+        if (resumedId) {
+          updateConversationTasks(conversationId, (current) => current.map((task) => task.id === resumedId
+            ? {...task, status: 'active', title: description || task.title, prompt: prompt || task.prompt}
+            : task));
+        } else {
+          updateConversationTasks(conversationId, (current) => [
+            ...current.filter((task) => task.id !== id),
+            {id, title: description || translate('activity.delegatedTask'), status: 'active', prompt},
+          ]);
+        }
       }
     }
     if (event.type === 'tool.progress') {
       const id = typeof payload.toolCallId === 'string' ? payload.toolCallId : '';
       const label = typeof payload.message === 'string' ? payload.message.trim() : '';
       // The task tool reports its subagent's run id and nothing else, which is
-      // what pairs a task row with the events its run is about to send.
-      const childRunId = typeof asRecord(payload.data).childRunId === 'string' ? String(asRecord(payload.data).childRunId) : '';
-      if (id && childRunId) linkTaskRun(conversationId, id, childRunId);
+      // what pairs a task row with the events its run is about to send. A
+      // continued dispatch also names the fleet task it resumes: the new run
+      // relinks to that task's existing row rather than this call's row.
+      const data = asRecord(payload.data);
+      const childRunId = typeof data.childRunId === 'string' ? String(data.childRunId) : '';
+      const continueFrom = typeof data.continueFrom === 'string' ? data.continueFrom : '';
+      if (id && childRunId) {
+        const rowId = continueFrom ? (taskRowByName[conversationId]?.[continueFrom] ?? id) : id;
+        linkTaskRun(conversationId, rowId, childRunId, Boolean(continueFrom && rowId !== id));
+      }
       // Each progress report becomes a sub-step of its tool's activity row;
       // starting a new step settles the one before it.
       if (id && label) updateLiveAssistant(conversationId, (message) => ({
@@ -872,15 +898,27 @@
       const id = typeof call.id === 'string' ? call.id : '';
       const detail = activityResultDetail(payload);
       const status = event.type === 'tool.failed' ? 'failed' as const : 'completed' as const;
+      // A successful `task` call has only *started* the work, so its row keeps
+      // working until the delegated run itself ends; anything else is done
+      // when its call is.
+      const dispatched = isSubagentTask(name) && status === 'completed' && !toolResultFailed(payload.result);
       updateLiveAssistant(conversationId, (message) => ({...message, activities: (message.activities ?? []).map((item) => item.id === id ? {
         ...item,
-        status,
+        status: dispatched ? item.status : status,
         result: detail || item.result,
         steps: item.steps?.map((step) => step.status === 'active' ? {...step, status} : step),
       } : item)}));
-      if (isSubagentTask(name)) {
-        const status = event.type === 'tool.failed' || toolResultFailed(payload.result) ? 'failed' : 'completed';
-        updateConversationTasks(conversationId, (current) => current.map((task) => task.id === id ? {...task, status} : task));
+      // Dispatch is not completion: the `task` call returns the moment the
+      // subagent starts, so the row follows the delegated *run* to its end
+      // (see applySubagentEvent) and only a failed dispatch settles it here.
+      if (isSubagentTask(name) && (event.type === 'tool.failed' || toolResultFailed(payload.result)))
+        updateConversationTasks(conversationId, (current) => current.map((task) => task.id === id ? {...task, status: 'failed'} : task));
+      // The `task` result names the fleet task it dispatched. The row keeps
+      // that name so a later continued dispatch can find and resume it.
+      if (isSubagentTask(name) && status === 'completed') {
+        const fleetName = asRecord(asRecord(payload.result).metadata).task;
+        if (typeof fleetName === 'string' && fleetName && id && !taskRowByName[conversationId]?.[fleetName])
+          taskRowByName = {...taskRowByName, [conversationId]: {...(taskRowByName[conversationId] ?? {}), [fleetName]: id}};
       }
       // Pages read and files written land in Summary as the run works, rather
       // than all at once when it settles.
@@ -972,12 +1010,18 @@
 
   /** Pairs a task row with the subagent run it started, and seeds that run's
    * transcript with the instruction it was sent — the orchestrator's half of
-   * the conversation, which the subagent's own events never carry. */
-  function linkTaskRun(conversationId: string, taskId: string, runId: string): void {
+   * the conversation, which the subagent's own events never carry. A resumed
+   * task keeps its transcript: the follow-up run writes into the same one, so
+   * the tab reads as the whole arc rather than two stitched halves. */
+  function linkTaskRun(conversationId: string, taskId: string, runId: string, resumed = false): void {
     taskIdByRunId = {...taskIdByRunId, [runId]: taskId};
     updateConversationTasks(conversationId, (current) => current.map((task) => task.id === taskId ? {...task, runId} : task));
     const prompt = (tasksByConversation[conversationId] ?? []).find((task) => task.id === taskId)?.prompt ?? '';
-    if (!taskTranscripts[taskId]) taskTranscripts = {...taskTranscripts, [taskId]: emptyTranscript(runId, prompt)};
+    const existing = taskTranscripts[taskId];
+    if (resumed && existing)
+      taskTranscripts = {...taskTranscripts, [taskId]: {...existing, runId, running: true, completedAt: undefined}};
+    else if (!existing)
+      taskTranscripts = {...taskTranscripts, [taskId]: emptyTranscript(runId, prompt)};
   }
 
   function applySubagentEvent(event: RunEventDto): void {
@@ -987,6 +1031,18 @@
     if (!taskId) return;
     const current = taskTranscripts[taskId] ?? emptyTranscript(event.runId);
     taskTranscripts = {...taskTranscripts, [taskId]: applyTaskEvent(current, event)};
+    // The delegated run's own ending is what finishes its row, since the tool
+    // call that started it returned long before.
+    if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled') {
+      const status = event.type === 'run.completed' ? 'completed' : 'failed';
+      const conversationId = event.conversationId;
+      if (!conversationId) return;
+      updateConversationTasks(conversationId, (tasks) => tasks.map((task) => task.id === taskId ? {...task, status} : task));
+      // The task row and the parent's activity row are the same delegation
+      // seen from two places, and the tool call id is what ties them: it names
+      // the row here and the task there.
+      updateLiveAssistant(conversationId, (message) => ({...message, activities: (message.activities ?? []).map((item) => item.id === taskId ? {...item, status} : item)}));
+    }
   }
 
   /** Opens a task's run as its own workspace tab. Read-only by construction:
@@ -1088,7 +1144,7 @@
   }
 
   /** Tab kinds a stored snapshot may re-create; anything else is stale data. */
-  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['document', 'slides', 'sheet', 'photo', 'video', 'browser', 'side-chat', 'summary', 'drive', 'schedule', 'hub']);
+  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['media', 'browser', 'summary', 'drive', 'schedule', 'hub']);
   /** True while a snapshot is being applied, so the auto-save sits out. */
   let workspaceRestoring = false;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1159,7 +1215,7 @@
     outputs = artifacts.map(({id, name}) => ({id, name}));
     references = storedReferences.map(({id, title, kind, uri}) => ({id, title, kind, uri}));
     const resourceTabs = artifacts.map(artifactTab);
-    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'side-chat' || tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'task'), ...resourceTabs];
+    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'task'), ...resourceTabs];
     if (activeTabId && !workspaceTabs.some((tab) => tab.id === activeTabId)) activeTabId = workspaceTabs[0]?.id ?? null;
   }
 
@@ -1184,9 +1240,9 @@
     if (closing?.kind === 'browser') void api.browser.close(id);
   }
 
-  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', schedule: 'workspace.schedule', 'side-chat': 'workspace.chat', hub: 'workspace.hub'};
+  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', schedule: 'workspace.schedule', hub: 'workspace.hub'};
 
-  function newTab(kind: WorkspaceTabKind = 'document'): void {
+  function newTab(kind: WorkspaceTabKind = 'media'): void {
     const singletonId = SINGLETON_TAB_IDS[kind];
     const named = singletonTitles[kind];
     if (singletonId) openTab({id: singletonId, title: translate(named ?? 'workspace.newTab'), kind});
@@ -1322,20 +1378,35 @@
    * first answer arrives is not fetched twice. */
   const driveFetching = new Set<string>();
 
+  /** The folder this drive tab has already asked for since it came to the
+   * front, so the read below happens once per arrival rather than on every
+   * render. Cleared when the tab is not the one on screen. */
+  let driveShowing = '';
+
   /**
-   * Opening the drive is what fetches it.
+   * Opening the drive is what fetches it, and *re*opening it fetches again.
    *
    * Only an explicit open request or a completed action used to load a folder,
    * so a drive tab restored with the session — or one simply switched back
    * to — painted an empty folder over files that were really there, and the
-   * only way to see them was to change something. Anything already fetched is
-   * left alone; this is the first read, not a refresh.
+   * only way to see them was to change something. Reading only when nothing
+   * was cached fixed the empty case and left a worse one: a folder seen once
+   * was never asked about again, so a file added while the app was open stayed
+   * invisible however many times you left and came back. A drive is somebody
+   * else's to change — the agent's, another app's, the Finder's — so arriving
+   * at one is a reason to ask. The cached listing stays on screen while the
+   * answer is on its way, so this costs nothing visible.
    */
-  $: if (
-    workspaceTabs.some((tab) => tab.id === activeTabId && tab.kind === 'drive')
-    && driveFolders[`${driveSourceId}:${driveRootPath}`] === undefined
-  )
-    void loadDriveFolder(driveRootPath);
+  $: {
+    const showing =
+      workspaceTabs.some((tab) => tab.id === activeTabId && tab.kind === 'drive')
+        ? `${driveSourceId}:${driveRootPath}`
+        : '';
+    if (showing !== driveShowing) {
+      driveShowing = showing;
+      if (showing) void loadDriveFolder(driveRootPath);
+    }
+  }
 
   /**
    * Fetches one folder from the active source. A folder already fetched is
@@ -1409,6 +1480,15 @@
       await api.drive.upload(source, driveFolderPath(parent));
       return driveFolderPath(parent);
     }),
+    // Dropped from the Finder. Only the main process can turn a dropped File
+    // into somewhere on disk, so the paths are resolved here and the upload
+    // is the same one the toolbar button runs.
+    dropFiles: (files: File[], destination: DriveEntry) => void runDriveAction(async (source) => {
+      const paths = await api.files.paths(files);
+      if (!paths.length) return null;
+      await api.drive.upload(source, driveFolderPath(destination), paths);
+      return driveFolderPath(destination);
+    }),
     rename: (entry: DriveEntry, name: string) => void runDriveAction(async (source) => {
       await api.drive.rename(source, entry.id, name);
       return driveParentPath(entry);
@@ -1467,25 +1547,25 @@
     return '';
   }
 
-  function openDriveEntry(entry: DriveEntry): void {
-    // A cloud file has no path on this Mac, so "open it" means its own page at
-    // the provider — the Drive or OneDrive link, which is also the only thing
-    // that can show a Workspace document at all.
-    if (entry.webUrl) {
-      void api.browser.openExternal(entry.webUrl);
-      return;
-    }
-    // Everything else the drive holds opens through the main process: a file
-    // on a volume is handed straight to the application that owns its type,
-    // and one with no page and no path — an S3 object — is fetched first and
-    // then opened, which is the nearest thing to opening it in place.
-    if (entry.provider) {
-      void api.drive.openEntry(driveSourceId, entry.id);
-      return;
-    }
-    // No provider at all: the conversation's own files, which open in the
-    // workspace rather than leaving the app.
-    openTab({id: entry.id, title: entry.name, kind: entry.kind === 'image' ? 'photo' : entry.kind === 'video' ? 'video' : entry.kind === 'spreadsheet' ? 'sheet' : entry.kind === 'presentation' ? 'slides' : 'document'});
+  /**
+   * Which drives hold their files on this Mac, so a path is a path.
+   *
+   * A cloud drive names a file that lives somewhere else: its id is the
+   * provider's id, not somewhere bytes can be read from, so opening one keeps
+   * the behaviour it already had — the provider's own page, which is also the
+   * only thing that can show a Workspace document at all.
+   */
+  const ON_DISK: ReadonlySet<string> = new Set(['local', 'network']);
+
+  /** Where a drive entry's bytes are on this Mac, if they are. `entry.id` is
+   * the file's own path on the drives that hold their files here. */
+  function driveEntryPath(entry: DriveEntry): string | undefined {
+    return entry.uri ?? (entry.provider && ON_DISK.has(entry.provider) ? entry.id : undefined);
+  }
+
+  /** The menu opens under the pointer, on the row that was opened. */
+  function openDriveEntry(entry: DriveEntry, point?: {x: number; y: number}): void {
+    void showOpenMenu({kind: 'drive', entry}, point ? {point} : {point: {x: 0, y: 0}});
   }
 
   /**
@@ -1572,18 +1652,232 @@
     void api.extension.dismiss().then((value) => extensionStatus = value).catch(() => {});
   }
 
-  function openLink(url: string): void {
-    void api.browser.openExternal(url);
+  /**
+   * Opening something is a choice, so it is asked rather than assumed.
+   *
+   * A link can go to the browser the user actually browses in or to the one
+   * inside this app; a file can often be shown here *and* opened by whatever
+   * owns its type; a file in a cloud drive may be reachable on the web, or may
+   * only be reachable by fetching it first. Picking one of those silently is
+   * right about half the time, and the half it is wrong about is the half that
+   * takes the user out of the app. So the ways of opening are listed, and the
+   * list only ever contains ways that actually work for that thing.
+   */
+  type OpenTarget =
+    | {kind: 'link'; url: string}
+    | {kind: 'file'; path: string}
+    | {kind: 'drive'; entry: DriveEntry};
+
+  let openMenu: {anchor: OpenAnchor; choices: OpenChoice[]; target: OpenTarget} | null = null;
+
+  /**
+   * The application this Mac opens web links with. Read once and kept, so the
+   * menu opens without waiting; null on a machine that cannot say, where the
+   * choice is named generically instead.
+   */
+  let defaultApp: DefaultAppDto | null = null;
+  let defaultAppAsked = false;
+  async function loadDefaultApp(): Promise<void> {
+    if (defaultAppAsked) return;
+    defaultAppAsked = true;
+    defaultApp = await api.browser.defaultApp().catch(() => null);
+  }
+
+  /** "Open in Helium" where the machine says so, "Open in browser" where it
+   * cannot: a menu that names nothing is worse than one that names a category. */
+  function externalChoice(): OpenChoice {
+    return {
+      value: 'external',
+      label: defaultApp ? translate('open.inApp', {app: defaultApp.name}) : translate('open.inBrowser'),
+      ...(defaultApp?.icon ? {image: defaultApp.icon} : {icon: 'external' as const}),
+    };
+  }
+
+  /**
+   * Which application owns a file, kept by extension.
+   *
+   * The answer is a property of the type rather than of the file, and the same
+   * type is opened over and over, so asking once keeps the second menu instant.
+   */
+  const fileApps = new Map<string, DefaultAppDto | null>();
+  async function appForFile(filePath: string): Promise<DefaultAppDto | null> {
+    const dot = filePath.lastIndexOf('.');
+    const kind = dot > 0 ? filePath.slice(dot).toLowerCase() : filePath;
+    if (!fileApps.has(kind))
+      fileApps.set(kind, await api.browser.defaultApp(filePath).catch(() => null));
+    return fileApps.get(kind) ?? null;
+  }
+
+  /** "Open in Preview", with Preview's icon — or the generic wording on a
+   * machine that cannot say which application owns the type. */
+  function systemChoice(owner: DefaultAppDto | null): OpenChoice {
+    return {
+      value: 'system',
+      label: owner ? translate('open.inApp', {app: owner.name}) : translate('open.inDefaultApp'),
+      ...(owner?.icon ? {image: owner.icon} : {icon: 'external' as const}),
+    };
+  }
+
+  /** In this app's own browser tab. */
+  const workspacePageChoice: OpenChoice = {value: 'workspace-page', label: translate('open.inWorkspace'), icon: 'globe'};
+
+  /**
+   * What the workspace can draw or play for itself. Deliberately narrower than
+   * the kinds the drive files things under: a `.mkv` is a video everywhere
+   * except in a <video>, and a `.heic` is an image everywhere except in a page.
+   */
+  const VIEWABLE_FILE = /\.(?:png|jpe?g|gif|webp|svg|bmp|avif|mp4|webm|m4v|mov|ogv)$/i;
+
+  /** What the browser can show. A PDF is here rather than with the documents
+   * because Chromium renders one and no other application is needed. */
+  const BROWSABLE_FILE = /\.(?:html?|xhtml|pdf)$/i;
+
+  /** What a file can be shown as here, or nothing when it can only be handed over. */
+  function workspaceChoiceFor(name: string): OpenChoice | null {
+    if (VIEWABLE_FILE.test(name))
+      return {
+        value: 'workspace-media',
+        label: translate('open.inWorkspace'),
+        icon: /\.(?:mp4|webm|m4v|mov|ogv)$/i.test(name) ? 'video' : 'image',
+      };
+    if (BROWSABLE_FILE.test(name)) return workspacePageChoice;
+    return null;
+  }
+
+  async function showOpenMenu(target: OpenTarget, anchor: OpenAnchor): Promise<void> {
+    await loadDefaultApp();
+    const choices = await openChoices(target);
+    // Nothing to choose between is not a menu. One way of opening it is just
+    // how it opens.
+    if (choices.length < 2) {
+      if (choices[0]) void runOpenChoice(target, choices[0].value);
+      return;
+    }
+    openMenu = {anchor, choices, target};
+  }
+
+  async function openChoices(target: OpenTarget): Promise<OpenChoice[]> {
+    if (target.kind === 'link') return [externalChoice(), workspacePageChoice];
+    if (target.kind === 'file') {
+      const here = workspaceChoiceFor(target.path);
+      return [...(here ? [here] : []), systemChoice(await appForFile(target.path))];
+    }
+    const {entry} = target;
+    const onDisk = driveEntryPath(entry);
+    if (onDisk) {
+      const here = workspaceChoiceFor(entry.name);
+      return [...(here ? [here] : []), systemChoice(await appForFile(onDisk))];
+    }
+    // A cloud file has no bytes on this Mac. Where the provider keeps a page
+    // for it, that page opens either place; where it does not — an S3 object —
+    // fetching it is the only thing "open" can mean.
+    if (entry.webUrl) return [externalChoice(), workspacePageChoice];
+    return [{value: 'download', label: translate('open.downloadAndOpen'), icon: 'download'}];
+  }
+
+  async function runOpenChoice(target: OpenTarget, value: string): Promise<void> {
+    const url = target.kind === 'link' ? target.url : target.kind === 'drive' ? target.entry.webUrl ?? '' : '';
+    if (value === 'external') {
+      void api.browser.openExternal(url);
+      return;
+    }
+    if (value === 'workspace-page' && target.kind !== 'file' && url) {
+      openTab({id: `page:${url}`, title: pageTitleFor(target), kind: 'browser', url});
+      return;
+    }
+    const path = target.kind === 'file' ? target.path
+      : target.kind === 'drive' ? driveEntryPath(target.entry) : undefined;
+    if (value === 'download') {
+      if (target.kind === 'drive') void api.drive.openEntry(driveSourceId, target.entry.id);
+      return;
+    }
+    if (!path) return;
+    if (value === 'system') {
+      // A link to a file that has since been moved or deleted rejects here.
+      // Logged rather than surfaced: a dead link is not worth interrupting the
+      // conversation for.
+      void api.browser.openPath(path).catch((reason: unknown) => console.warn('openPath', reason));
+      return;
+    }
+    const src = await previewSource(path);
+    // The grant is what makes the file readable by a view; without it the file
+    // is handed to the system rather than dropped, since opening it elsewhere
+    // beats not opening it.
+    if (!src) {
+      void api.browser.openPath(path).catch((reason: unknown) => console.warn('openPath', reason));
+      return;
+    }
+    const title = target.kind === 'drive' ? target.entry.name : fileName(path);
+    openTab(value === 'workspace-page'
+      ? {id: `page:${path}`, title, kind: 'browser', url: src}
+      : {id: `media:${path}`, title, kind: 'media', url: src});
+  }
+
+  function pageTitleFor(target: OpenTarget): string {
+    if (target.kind === 'drive') return target.entry.name;
+    if (target.kind === 'link') {
+      try {
+        return new URL(target.url).hostname;
+      } catch {
+        return target.url;
+      }
+    }
+    return fileName(target.path);
+  }
+
+  function chooseOpen(value: string): void {
+    const target = openMenu?.target;
+    openMenu = null;
+    if (target) void runOpenChoice(target, value);
+  }
+
+  function openLink(url: string, _title: string, rect?: DOMRect): void {
+    // Without a box to hang the menu under — a caller that is not a link in a
+    // message — the old behaviour stands: hand it straight to the browser.
+    if (!rect) {
+      void api.browser.openExternal(url);
+      return;
+    }
+    void showOpenMenu({kind: 'link', url}, {rect});
   }
 
   /** A file the agent wrote, opened in whatever application owns it. The main
    * process checks the path exists and is a regular file before the shell
    * sees it, so a stale or bogus link surfaces as an error rather than acting. */
-  function openFilePath(filePath: string): void {
-    // A link to a file that has since been moved or deleted rejects here.
-    // Logged rather than surfaced: the same as openLink above, and a dead link
-    // is not worth interrupting the conversation for.
-    void api.browser.openPath(filePath).catch((reason: unknown) => console.warn('openPath', reason));
+  /**
+   * Opens a file the way it deserves to be opened: a still or a clip in the
+   * workspace, anything else in its own application.
+   *
+   * A page cannot read the disk, so a viewable file is asked for by path and
+   * comes back as a url the host has granted — see `workspace.preview`. When
+   * that fails the file is handed to the system anyway rather than dropped:
+   * the user asked to open something, and opening it elsewhere beats nothing.
+   */
+  function openFilePath(filePath: string, rect?: DOMRect): void {
+    void showOpenMenu({kind: 'file', path: filePath}, rect ? {rect} : {point: {x: 0, y: 0}});
+  }
+
+  /**
+   * What a view should load for a source the host named. A source that already
+   * carries a scheme is loadable as it stands — a bridged `flareai-media://`
+   * attachment, say — and one that does not is a path on disk, which the page
+   * may only read once the host has granted it.
+   */
+  async function previewSource(source: string | undefined): Promise<string | undefined> {
+    if (!source) return undefined;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(source)) return source;
+    try {
+      return await api.workspace.preview(source);
+    } catch (reason: unknown) {
+      console.warn('preview', reason);
+      return undefined;
+    }
+  }
+
+  /** The last segment of a path, on either separator, for a tab's title. */
+  function fileName(filePath: string): string {
+    const parts = filePath.split(/[\\/]/);
+    return parts[parts.length - 1] || filePath;
   }
 
   /** The embedded browser reports its page as it settles, which is also where
@@ -1683,6 +1977,11 @@
             : undefined);
         return previous ? {
           ...mapped,
+          // A cancelled or paused turn can be stored with nothing in it, while
+          // the live row still holds everything the agent had written and done.
+          // Storage wins only where it has something to say — otherwise a stop
+          // would wipe the very work the user stopped to read.
+          text: mapped.text || previous.text,
           activities: previous.activities,
           startedAt: previous.startedAt,
           completedAt: previous.completedAt,
@@ -1729,7 +2028,7 @@
 
   function artifactTab(artifact: ArtifactDto): WorkspaceTab {
     const kinds: Record<ArtifactDto['kind'], WorkspaceTabKind> = {
-      document: 'document', slides: 'slides', sheet: 'sheet', photo: 'photo', video: 'video', other: 'document',
+      document: 'media', slides: 'media', sheet: 'media', photo: 'media', video: 'media', other: 'media',
     };
     return {id: artifact.id, title: artifact.name, kind: kinds[artifact.kind]};
   }
@@ -1846,7 +2145,7 @@
     onSearchChats={() => chatSearchOpen = true}
     onTogglePanel={togglePanel}
     onOpenSettings={() => openSettings()}
-    showExtensionPrompt={extensionStatus?.promptToInstall ?? false}
+    showExtensionPrompt={(extensionStatus?.promptToInstall ?? false) && mode !== 'workspace'}
     onInstallExtension={installExtension}
     onDismissExtension={dismissExtension}
   />
@@ -1926,8 +2225,9 @@
       {outputs}
       {references}
       {tasks}
-      onOpenOutput={(output) => openTab({id: output.id, title: output.name, kind: 'document'})}
-      onOpenReference={(reference) => openTab({id: reference.id, title: reference.title, kind: reference.kind === 'web' ? 'browser' : 'document', url: reference.uri})}
+      onOpenOutput={(output) => void previewSource(output.uri).then((url) =>
+        openTab({id: output.id, title: output.name, kind: 'media', url}))}
+      onOpenReference={(reference) => openTab({id: reference.id, title: reference.title, kind: reference.kind === 'web' ? 'browser' : 'media', url: reference.uri})}
       onOpenTask={openTask}
       onViewAll={viewSummary}
       onAttachReferences={attachReferences}
@@ -1956,7 +2256,7 @@
     onDismissDriveError={() => (driveError = '')}
     {driveActions}
     onSelectDriveSource={selectDriveSource}
-    onDriveNavigate={(entry) => void loadDriveFolder(entry.id)}
+    onDriveNavigate={(entry) => void loadDriveFolder(driveFolderPath(entry))}
     {scheduleItems}
     {scheduleError}
     unreadSchedules={unreadScheduleCount(scheduleItems)}
@@ -2008,4 +2308,16 @@
   {/if}
 
   <Tooltip/>
+
+  <!-- Last in the layout so it paints over everything; it is positioned to the
+       viewport rather than to any panel, because the point it was asked for is
+       a viewport point. -->
+  {#if openMenu}
+    <OpenMenu
+      anchor={openMenu.anchor}
+      choices={openMenu.choices}
+      onChoose={chooseOpen}
+      onClose={() => (openMenu = null)}
+    />
+  {/if}
 </main>

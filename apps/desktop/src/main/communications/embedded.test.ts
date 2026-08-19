@@ -129,7 +129,7 @@ test("zero-config connect and a full message round-trip on the embedded hub", as
       directory,
       provision: (localpart) => hs.createLocalUser(localpart),
     },
-    emailConfigPath: path.join(directory, "himalaya.toml"),
+    emailStorePath: path.join(directory, "email-accounts.json"),
     run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
   });
 
@@ -200,7 +200,7 @@ test("an explicit external address turns embedded mode off", async () => {
     storage: memoryPreferences(),
     onChange: () => {},
     embedded: {baseUrl: hs.baseUrl, directory, provision: (localpart) => hs.createLocalUser(localpart)},
-    emailConfigPath: path.join(directory, "himalaya.toml"),
+    emailStorePath: path.join(directory, "email-accounts.json"),
     run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
   });
   try {
@@ -228,7 +228,7 @@ test("a stored external address is the only thing that disables embedded mode", 
         throw new Error("external mode must never mint an embedded account");
       },
     },
-    emailConfigPath: path.join(directory, "himalaya.toml"),
+    emailStorePath: path.join(directory, "email-accounts.json"),
     run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
   });
   try {
@@ -269,7 +269,7 @@ test("a bridge that changes state on its own is pushed to open windows", async (
         {platform: "whatsapp", binary: "mautrix-whatsapp", installed: true, running: whatsappRunning},
       ],
     },
-    emailConfigPath: path.join(directory, "himalaya.toml"),
+    emailStorePath: path.join(directory, "email-accounts.json"),
     run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
   });
 
@@ -321,7 +321,7 @@ test("unlinking WeChat stops the relay and is remembered across status reads", a
         calls.push("stop");
       },
     },
-    emailConfigPath: path.join(directory, "himalaya.toml"),
+    emailStorePath: path.join(directory, "email-accounts.json"),
     run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
   });
 

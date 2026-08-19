@@ -1023,14 +1023,6 @@ export type CommsLoginStepDto =
       accountName: string | null;
     };
 
-/** Whether the local Himalaya CLI that carries email is usable. */
-export interface CommsEmailToolingDto {
-  installed: boolean;
-  version: string | null;
-  configPath: string;
-  error: string | null;
-}
-
 export interface CommsEmailEndpointDto {
   kind: "imap" | "maildir" | "notmuch" | "smtp" | "sendmail" | "none";
   host: string | null;
@@ -1041,7 +1033,7 @@ export interface CommsEmailEndpointDto {
 }
 
 export interface CommsEmailAccountDto {
-  /** Himalaya account key, unique within the config. */
+  /** Account key, unique across the user's mailboxes. */
   id: string;
   displayName: string | null;
   email: string;
@@ -1055,6 +1047,9 @@ export interface CommsEmailAccountDto {
 }
 
 /** Known provider whose server settings the UI can fill in for the user. */
+/** A mail provider FlareAI can sign in to on the user's behalf. */
+export type CommsMailProvider = "google" | "microsoft";
+
 export type CommsEmailPreset = "gmail" | "outlook" | "icloud" | "lark" | "fastmail" | "custom";
 
 export interface SaveEmailAccountRequest {
@@ -1077,12 +1072,6 @@ export interface SaveEmailAccountRequest {
    * OS-encrypted storage and never returned to the renderer.
    */
   password?: string;
-  /**
-   * Command that prints the mailbox credential, used instead of storing a
-   * password. Accounts using full OAuth2 keep their existing auth block rather
-   * than being rewritten through this field.
-   */
-  tokenCommand?: string;
   isDefault?: boolean;
 }
 
@@ -1113,6 +1102,11 @@ export interface MailEnvelopeDto {
   answered: boolean;
   draft: boolean;
   hasAttachment: boolean;
+  /**
+   * The first line or so of the message, for the list row to show under the
+   * subject. Empty when the body could not be peeked at cheaply.
+   */
+  preview?: string;
 }
 
 /** A file carried by a message, as announced by its MIME part. */
@@ -1150,7 +1144,7 @@ export interface MailListRequest {
   pageSize?: number;
   /** How the folder is ordered; date, newest first, when unset. */
   sort?: "date-desc" | "date-asc" | "subject" | "from";
-  /** Plain words to look for. Turned into Himalaya's query language by the
+  /** Plain words to look for. Turned into an IMAP search by the
    * main process, so callers never have to speak it. */
   query?: string;
 }
@@ -1294,8 +1288,13 @@ export interface CommsStatusDto {
   hub: CommsHubDto;
   bridges: CommsBridgeDto[];
   email: {
-    tooling: CommsEmailToolingDto;
     accounts: CommsEmailAccountDto[];
+    /**
+     * Providers this build can sign a mailbox in to. Empty where no OAuth
+     * client is registered, which is what keeps a button that could only fail
+     * off the screen.
+     */
+    signInProviders: CommsMailProvider[];
   };
 }
 
@@ -1358,7 +1357,7 @@ export interface WorkspaceRevealDto {
 }
 
 /** The workspace surfaces the agent can ask for by name. */
-export type WorkspaceSurface = "hub" | "drive" | "schedule" | "chat" | "summary";
+export type WorkspaceSurface = "hub" | "drive" | "schedule" | "summary";
 
 /**
  * What the workspace looked like for one conversation: which tabs were open,
@@ -1390,6 +1389,14 @@ export interface WorkspaceSnapshotDto {
  * disconnected, which is why it carries the `virtual` kind and stays out of
  * the settings list.
  */
+/** The application a protocol opens in: its name, and its icon as a data url
+ * because a renderer cannot read one off the disk. */
+export interface DefaultAppDto {
+  name: string;
+  /** `data:image/png;base64,...`, drawn at 32px so a 16px glyph stays sharp. */
+  icon: string | null;
+}
+
 export type DriveProviderId =
   | "all"
   | "local"
@@ -1707,6 +1714,13 @@ export interface FlareAIApi {
   workspace: {
     snapshot(conversationId: ConversationId): Promise<WorkspaceSnapshotDto | null>;
     saveSnapshot(conversationId: ConversationId, snapshot: WorkspaceSnapshotDto): Promise<void>;
+    /**
+     * Grants the page read access to one file on disk and answers with the url
+     * that serves it. The url carries a token, never the path, so a page can
+     * only ever load a file the host handed it — the same boundary the browser
+     * tool draws when it refuses a `file://` url.
+     */
+    preview(path: string): Promise<string>;
     /** What the agent asks to be shown; the drawer opens on it. */
     subscribeReveal(listener: (request: WorkspaceRevealDto) => void): () => void;
   };
@@ -1752,6 +1766,11 @@ export interface FlareAIApi {
   skills: {
     list(): Promise<SkillDto[]>;
     reload(): Promise<SkillDto[]>;
+    /**
+     * Fires when the skills directory changes under the tab's feet — most
+     * often because the agent just wrote a skill from a recording.
+     */
+    subscribe(listener: (skills: SkillDto[]) => void): () => void;
     setEnabled(name: string, enabled: boolean): Promise<SkillDto[]>;
     saveCustom(request: SaveCustomSkillRequest): Promise<SkillDto[]>;
     removeCustom(name: string): Promise<SkillDto[]>;
@@ -1809,7 +1828,7 @@ export interface FlareAIApi {
      * instead of a skeleton, and every fetch after it is a correction.
      */
     snapshot(): Promise<HubSnapshotDto>;
-    /** Re-probes the hub, every bridge, and the email tooling. */
+    /** Re-probes the hub, every bridge, and every mailbox. */
     refresh(): Promise<CommsStatusDto>;
     /**
      * Starts a bridge that is not running yet, because its platform has just
@@ -1921,6 +1940,12 @@ export interface FlareAIApi {
     emailRemove(id: string): Promise<CommsStatusDto>;
     /** Opens IMAP and SMTP connections to prove the account works. */
     emailTest(id: string): Promise<CommsEmailAccountDto>;
+    /**
+     * Signs a mailbox in with its provider. The address comes back from the
+     * provider, so nothing about the account is asked for first — and an
+     * address already set up is converted rather than duplicated.
+     */
+    emailSignIn(provider: CommsMailProvider): Promise<CommsStatusDto>;
     subscribe(listener: (status: CommsStatusDto) => void): () => void;
     /**
      * Fires as a message lands in a conversation, so the open thread updates
@@ -1964,6 +1989,16 @@ export interface FlareAIApi {
     setVisible(tabId: string, visible: boolean): Promise<void>;
     close(tabId: string): Promise<void>;
     openExternal(url: string): Promise<void>;
+    /**
+     * The application this Mac opens something with, named and drawn the way
+     * the user knows it. A menu offering to hand something over says which
+     * application it means — "Open in Helium", with Helium's own icon — rather
+     * than "open externally", which names nothing.
+     *
+     * With no `target` this is the browser web links go to. With a file path it
+     * is whatever owns that file's type: "Open in Preview" for a PDF.
+     */
+    defaultApp(target?: string): Promise<DefaultAppDto | null>;
     /**
      * Reveals a local file in its default application. Separate from
      * `openExternal` because the path comes from model-written markdown: the
@@ -2100,7 +2135,8 @@ export interface FlareAIApi {
     /** One folder's contents. `path` empty means the source's root. */
     list(source: string, path?: string): Promise<DriveEntryDto[]>;
     createFolder(source: string, parentPath: string, name: string): Promise<DriveEntryDto>;
-    /** Uploads files chosen on this Mac. Empty `paths` opens a picker. */
+    /** Uploads files and folders chosen on this Mac. Empty `paths` opens a
+     * picker; a folder is recreated with everything under it. */
     upload(source: string, parentPath: string, paths?: string[]): Promise<DriveEntryDto[]>;
     /** Fetches to the downloads folder and resolves to where it landed. */
     download(source: string, path: string): Promise<string>;

@@ -24,7 +24,7 @@ export const defaultCompactionSettings: CompactionSettings = {
 /** Ceiling for any single rendered block, so one large read cannot dominate. */
 const blockCharLimit = 8_000;
 
-const compactionPrompt = `You are compacting the earlier part of a conversation so another agent can continue it without the original transcript.
+const defaultCompactionPrompt = `You are compacting the earlier part of a conversation so another agent can continue it without the original transcript.
 
 Write a factual summary under these headings, omitting any heading with no content:
 
@@ -57,14 +57,19 @@ export class CompactionManager {
     string,
     { prefix: string; cut: number; summary: string }
   >();
+  readonly #prompt: string;
+  /** `prompt` comes from `resources/prompts/compaction.md` when the host
+   * ships it; the built-in wording is what a bare install runs on. */
   constructor(
     inference: InferenceService,
     storage: Storage,
     settings: Partial<CompactionSettings> = {},
+    prompt?: string,
   ) {
     this.#inference = inference;
     this.#storage = storage;
     this.#settings = { ...defaultCompactionSettings, ...settings };
+    this.#prompt = prompt?.trim() || defaultCompactionPrompt;
   }
 
   async transform(
@@ -190,7 +195,7 @@ export class CompactionManager {
     for await (const event of this.#inference.stream({
       model,
       reasoning,
-      systemPrompt: compactionPrompt,
+      systemPrompt: this.#prompt,
       messages: [{ role: "user", content: transcript(messages) }],
       signal,
     })) {

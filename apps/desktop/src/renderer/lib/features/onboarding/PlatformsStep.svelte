@@ -7,8 +7,9 @@
     FlareAIApi,
     SystemPermissionKind,
   } from '@flareai/protocol';
-  import {COMMS_EMAIL_PRESETS, permissionPrompts} from '@flareai/protocol';
+  import {COMMS_EMAIL_PRESETS, permissionPrompts, presetForHost} from '@flareai/protocol';
   import {readableError} from '../../shared/errors';
+  import {invalidateHubCache} from '../../shared/state/hubCache';
   import {qrSvgPath} from '../../shared/qr';
   import {bridgeLogo, mailLogo} from '../../shared/options/platformBrands';
   import {emailPresetHint, qrInstructions} from '../../../i18n/names';
@@ -258,8 +259,8 @@
    * that cannot be linked yet says so when it is opened.
    */
   const bridges = $derived(status?.bridges ?? []);
-  const mailTooling = $derived(status?.email.tooling ?? null);
   const mailAccounts = $derived(status?.email.accounts ?? []);
+  const mailSignInProviders = $derived(status?.email.signInProviders ?? []);
   /**
    * Short seat names. The preset labels carry their alternates ("Gmail /
    * Google Workspace", "iCloud Mail") which read as clutter next to a logo,
@@ -273,7 +274,23 @@
     fastmail: 'Fastmail',
     custom: 'Mail',
   };
-  const mailPresets = $derived(COMMS_EMAIL_PRESETS);
+  /**
+   * Only the ones worth choosing between.
+   *
+   * A provider that is an app password and a hostname is what "Other" already
+   * is, so a pill for it said nothing; its ports are still applied from the
+   * host that gets typed in. Gmail and Outlook drop out too — but only once
+   * their sign-in is actually on offer, because a build with no client
+   * registered would otherwise leave those mailboxes with no way in at all.
+   */
+  const mailPresets = $derived(
+    COMMS_EMAIL_PRESETS.filter(
+      (item) =>
+        !item.hidden &&
+        !(item.value === 'gmail' && mailSignInProviders.includes('google')) &&
+        !(item.value === 'outlook' && mailSignInProviders.includes('microsoft')),
+    ),
+  );
 
   const seats = $derived<Seat[]>([
     ...bridges.map((bridge) => ({
@@ -343,10 +360,17 @@
    * form, which is where it belongs — it only ever decided which server names
    * to prefill.
    */
+  // Starts on whatever the picker actually offers: with Gmail signed in
+  // through its own button, the first pill is no longer Gmail.
   let mailPreset = $state<string>(COMMS_EMAIL_PRESETS[0].value);
+  $effect(() => {
+    if (mailPresets.length && !mailPresets.some((item) => item.value === mailPreset))
+      mailPreset = mailPresets[0].value;
+  });
   const activePreset = $derived(
     COMMS_EMAIL_PRESETS.find((item) => item.value === mailPreset) ?? COMMS_EMAIL_PRESETS[0],
   );
+
 
   /** Linked accounts on the shown platform. Several is normal, not an edge. */
   const activeAccounts = $derived(activeBridge?.accounts ?? []);
@@ -784,6 +808,8 @@
     stepError = '';
     try {
       status = await api.comms.bridgeLogout(platform, accountId);
+      // See `HubTab.unlink`: the hub's copy outlives the account otherwise.
+      invalidateHubCache();
     } catch (cause) {
       stepError = readableError(cause);
     } finally {
@@ -1000,9 +1026,38 @@
 
   /** The custom seat is the only one whose servers the user has to supply. */
   const customMail = $derived(activePreset?.value === 'custom');
+
+  /**
+   * Whose hint to show. A provider set up as "Other" is recognised from the
+   * servers typed in, so the one thing that is not guessable about it — that
+   * the account password will not work — still gets said.
+   */
+  const mailHintPreset = $derived(
+    (customMail
+      ? (presetForHost(smtpHost)?.value ?? presetForHost(imapHost)?.value)
+      : undefined) ?? activePreset.value,
+  );
   const mailReady = $derived(
     Boolean(email.trim() && password && (!customMail || (imapHost.trim() && smtpHost.trim()))),
   );
+
+  /**
+   * Signs a mailbox in with its provider. Everything the form below asks for —
+   * the address, the servers — comes back from the sign-in, so there is
+   * nothing left to fill in and the panel returns to the list.
+   */
+  async function signInMailbox(provider: 'google' | 'microsoft'): Promise<void> {
+    busy = `mail-signin:${provider}`;
+    stepError = '';
+    try {
+      status = await api.comms.emailSignIn(provider);
+      adding = '';
+    } catch (cause) {
+      stepError = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
 
   async function saveMailbox(): Promise<void> {
     if (!activePreset || !mailReady) return;
@@ -1114,7 +1169,7 @@
       >
         <span class="pf-seat-mark">
           {#if item.logo}
-            <img src={item.logo} alt="" aria-hidden="true" />
+            <img src={item.logo} data-logo={item.platform ?? item.key} alt="" aria-hidden="true" />
           {:else}
             {item.initial}
           {/if}
@@ -1433,13 +1488,36 @@
           <p class="onb-note warn">{account.email}: {account.error}</p>
         {/each}
       {/if}
-      {#if mailTooling && !mailTooling.installed}
-        <p class="onb-note">{$t('platforms.mailNotInstalled')}</p>
-        <p class="onb-note warn">{mailTooling.error}</p>
-      {:else if activeMailboxes.length === 0 || adding === active.key}
+      {#if activeMailboxes.length === 0 || adding === active.key}
+      <!-- Signing in answers the address and the servers together, so it comes
+           before the picker below, which only prefills hostnames for a mailbox
+           set up by hand. Drawn only where a client is registered. -->
+      {#if mailSignInProviders.length}
+        <div class="pf-signin">
+          {#each mailSignInProviders as provider (provider)}
+            <button
+              type="button"
+              class="pf-signin-button"
+              disabled={busy === `mail-signin:${provider}`}
+              onclick={() => void signInMailbox(provider)}
+            >
+              {#if mailLogo(provider === 'google' ? 'gmail' : 'outlook')}
+                <img src={mailLogo(provider === 'google' ? 'gmail' : 'outlook')} alt="" aria-hidden="true" />
+              {/if}
+              {busy === `mail-signin:${provider}`
+                ? $t('hub.signingIn')
+                : $t('hub.signInWith', {provider: provider === 'google' ? 'Google' : 'Microsoft'})}
+            </button>
+          {/each}
+          <p class="onb-note">{$t('hub.signInOrManual')}</p>
+        </div>
+      {/if}
       <!-- The provider picker the seats used to be. It only decides which
            server names get prefilled, so it belongs beside the fields it
-           fills rather than out on the ring as five separate platforms. -->
+           fills rather than out on the ring as five separate platforms. It
+           goes entirely once there is nothing left to choose between: a picker
+           offering one option is a label pretending to be a choice. -->
+      {#if mailPresets.length > 1}
       <div class="pf-providers">
         {#each mailPresets as preset (preset.value)}
           <button
@@ -1459,7 +1537,8 @@
           </button>
         {/each}
       </div>
-      <p class="onb-note">{emailPresetHint(activePreset.value)}</p>
+      {/if}
+      <p class="onb-note">{emailPresetHint(mailHintPreset)}</p>
       <label class="onb-field pf-field">
         <span>{$t('hub.emailAddress')}</span>
         <input bind:value={email} type="email" spellcheck="false" placeholder="you@example.com" />
@@ -1533,7 +1612,7 @@
         {#each stackedSeats as item, position (item.key)}
           <span class="pf-stack-mark" style="--i:{position}">
             {#if item.logo}
-              <img src={item.logo} alt="" />
+              <img src={item.logo} data-logo={item.platform ?? item.key} alt="" />
             {:else}
               {item.initial}
             {/if}
@@ -1598,6 +1677,18 @@
      rolling, and a stagger on top of that reads as two animations arguing. */
   .pf-seat-mark{display:grid;place-items:center;width:100%;height:100%;border-radius:50%;border:1px solid rgb(from var(--hub-ink) r g b / .16);background:var(--hub-fill);color:var(--hub-ink-soft);font-size:14.5px;font-weight:650;transition:border-color .22s,color .22s}
   .pf-seat-mark img{width:50%;height:50%;object-fit:contain}
+  /* X and Matrix ship one pure-black mark each. The global rule in style.css
+     inverts them on a dark *app* theme, which is right for the stack (its disc
+     is `--hub-ink`) and exactly backwards here: the seat's disc is `--hub-fill`,
+     dark in light mode and light in dark mode. So invert on the seat by default
+     and undo the global inversion when the disc turns light. */
+  .pf-seat-mark img[data-logo="twitter"],.pf-seat-mark img[data-logo="matrix"]{filter:invert(1)}
+  :global(:root[data-theme="dark"]) .pf-seat-mark img[data-logo="twitter"],
+  :global(:root[data-theme="dark"]) .pf-seat-mark img[data-logo="matrix"]{filter:none}
+  @media (prefers-color-scheme:dark){
+    :global(:root:not([data-theme="light"])) .pf-seat-mark img[data-logo="twitter"],
+    :global(:root:not([data-theme="light"])) .pf-seat-mark img[data-logo="matrix"]{filter:none}
+  }
   .pf-seat-tick{display:none}
   /* Carried for screen readers only. Painted, it runs outward from the rim
      and straight across the copy on the left — and it is the one thing on
@@ -1700,6 +1791,14 @@
   .pf-provider:hover{border-color:var(--hub-ink);color:var(--hub-ink)}
   .pf-provider.on{border-color:var(--hub-ink);background:var(--hub-ink);color:var(--hub-fill)}
   .pf-provider:focus-visible{outline:2px solid var(--hub-ink);outline-offset:2px}
+  /* Full width and stacked, because signing in is the way in rather than one
+     option among the pills below it. */
+  .pf-signin{width:100%;display:flex;flex-direction:column;gap:7px;margin:0 0 4px}
+  .pf-signin-button{width:100%;display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid rgb(from var(--hub-ink) r g b / .22);border-radius:9px;padding:9px 12px;background:none;color:var(--hub-ink);font-family:inherit;font-size:12.5px;font-weight:560;cursor:pointer;transition:border-color .16s,background-color .16s,opacity .16s}
+  .pf-signin-button img{width:16px;height:16px;border-radius:50%;background:#fff;object-fit:contain;padding:1px}
+  .pf-signin-button:hover:not(:disabled){border-color:var(--hub-ink)}
+  .pf-signin-button:disabled{opacity:.55;cursor:default}
+  .pf-signin-button:focus-visible{outline:2px solid var(--hub-ink);outline-offset:2px}
   .pf-methods{width:100%;margin:2px 0 0;padding:0;list-style:none;display:flex;flex-direction:column}
   .pf-methods li + li{border-top:1px solid rgb(from var(--hub-ink) r g b / .14)}
   .pf-method{width:100%;display:flex;align-items:center;gap:12px;padding:11px 0;border:0;background:none;color:var(--hub-ink);font-family:inherit;text-align:left;cursor:pointer;transition:opacity .16s}
@@ -1721,6 +1820,10 @@
   .pf-field :global(input:focus){border-color:var(--hub-ink);outline:none}
   .pf-field :global(input::placeholder){color:rgb(from var(--hub-ink) r g b / .4)}
   .pf-pair{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%}
+  /* A grid track will not shrink below its content's own width unless it is
+     told it may, and an input is as wide as its placeholder — so without this
+     the two server fields push the panel out and the second one is cut off. */
+  .pf-pair > *{min-width:0}
 
   /* White ground regardless of theme: a dark-inverted symbol will not scan. */
   .pf-qr{width:168px;padding:10px;border-radius:12px;background:#fff}

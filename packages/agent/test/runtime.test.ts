@@ -910,11 +910,12 @@ test("the task tool reaches the model with its delegation guidance", async () =>
     assert.match(task.description, /## When to use/);
     assert.match(task.description, /run in parallel/);
     assert.match(task.description, /Do the work yourself only/);
-    // The same rule is stated in the system prompt, where a small model that
-    // skims tool descriptions still meets it.
+    // The policy itself is not in the system prompt: it is `agents/main.md`,
+    // loaded into the run, so a delegated run never carries the instructions
+    // for a job it cannot do.
     const system = inference.requests[0]?.systemPrompt ?? "";
-    assert.match(system, /## Delegation/);
-    assert.match(system, /call the `task` tool rather than doing the work yourself/);
+    assert.doesNotMatch(system, /## Delegation/);
+    assert.doesNotMatch(system, /## Keeping the user posted/);
     // Every parameter is documented: a bare schema left the model guessing
     // that the subagent cannot see the conversation.
     const properties = task.parameters.properties as Record<
@@ -978,7 +979,7 @@ test("task tool adds no internal concurrency cap", async () => {
     maximum = Math.max(maximum, active);
     await gate;
     active -= 1;
-    return { runId: crypto.randomUUID(), result: "ok", status: "completed" };
+    return { name: "task_1" };
   });
   const context = {
     runId: "run",
@@ -1180,8 +1181,10 @@ test("what is on screen belongs to the run the user is talking to", async () => 
 
     await agent.start({ conversationId: "conversation", text: "show me the hub" }).result;
     const own = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    // The run the user is talking to owns the view — and only the view. The
+    // draft is work, and a run that can delegate sends work out.
     assert.ok(own.includes("workspace_show"));
-    assert.ok(own.includes("hub_draft"));
+    assert.ok(!own.includes("hub_draft"));
 
     await agent.start({
       conversationId: "conversation",

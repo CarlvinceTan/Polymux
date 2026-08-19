@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' http: https: ws: wss:" />
+    <!-- `flareai-preview:` is named in img-src and media-src rather than made a
+         CSP-bypassing scheme: it serves whatever local file the host has granted,
+         so it earns the two contexts that display one and nothing else — script-src
+         stays closed to it. media-src has to be written out because it would
+         otherwise fall back to default-src, which no scheme but 'self' satisfies. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: flareai-preview:; media-src 'self' data: blob: flareai-media: flareai-preview:; font-src 'self'; connect-src 'self' http: https: ws: wss:" />
     <link rel="icon" type="image/svg+xml" href="/flareai.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="stylesheet" href="/style.css" />

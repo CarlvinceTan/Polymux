@@ -143,7 +143,7 @@
        rather than another panel toggle. It is a link with its own dismiss,
        not a toggle, so the two actions are separate controls. -->
   {#if showExtensionPrompt}
-    <span class="extension-chip">
+    <span class="extension-chip" transition:fade={iconFade}>
       <button
         type="button"
         class="extension-chip-install"

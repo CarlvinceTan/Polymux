@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Himalaya mountain mail">
-  <defs><linearGradient id="g" x1="7" y1="5" x2="57" y2="59"><stop stop-color="#22D3EE"/><stop offset="1" stop-color="#155E75"/></linearGradient></defs>
-  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#g)"/>
-  <path d="m9 47 15-24 7 10 8-17 16 31Z" fill="#fff" fill-opacity=".96" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
-  <path d="m19 31 5-8 7 10 8-17 7 14-7-4-5 8-4-5-5 7Z" fill="#CFFAFE"/>
-  <rect x="20" y="38" width="24" height="14" rx="3" fill="#164E63"/>
-  <path d="m22 41 10 7 10-7" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>

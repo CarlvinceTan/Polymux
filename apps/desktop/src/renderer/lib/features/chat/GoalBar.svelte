@@ -60,20 +60,22 @@
   }
 </script>
 
-<section class:paused={goal.status === 'paused'} class="goal-bar" aria-label={$t('goal.current')}>
-  <span class="goal-state" aria-hidden="true"><Icon name="goal" size={18}/></span>
-  {#if editing}
-    <input bind:this={input} bind:value={draft} aria-label={$t('goal.edit')} onkeydown={keydown} onblur={save}/>
-  {:else}
-    <span class="goal-copy">
-      <strong>{goal.status === 'paused' ? $t('goal.paused') : $t('goal.pursuing')}</strong>
-      <span>{goal.text}</span>
-      <small>· {elapsed}</small>
-    </span>
-  {/if}
-  <div class="goal-actions">
-    <button type="button" aria-label={$t('goal.edit')} onclick={startEdit}><Icon name="edit" size={16}/></button>
-    <button type="button" aria-label={goal.status === 'paused' ? $t('goal.resume') : $t('goal.pause')} onclick={onTogglePaused}><Icon name={goal.status === 'paused' ? 'play' : 'pause'} size={16}/></button>
-    <button type="button" aria-label={$t('goal.delete')} onclick={onDelete}><Icon name="trash" size={16}/></button>
+<section class:paused={goal.status === 'paused'} class="stacked-bar goal-bar" aria-label={$t('goal.current')}>
+  <div class="stacked-row goal-row">
+    <span class="goal-state" aria-hidden="true"><Icon name="goal" size={15}/></span>
+    {#if editing}
+      <input bind:this={input} bind:value={draft} aria-label={$t('goal.edit')} onkeydown={keydown} onblur={save}/>
+    {:else}
+      <span class="goal-copy">
+        <strong>{goal.status === 'paused' ? $t('goal.paused') : $t('goal.pursuing')}</strong>
+        <span>{goal.text}</span>
+        <small>· {elapsed}</small>
+      </span>
+    {/if}
+    <div class="goal-actions">
+      <button type="button" aria-label={$t('goal.edit')} data-tooltip-label={$t('common.edit')} onclick={startEdit}><Icon name="edit" size={14}/></button>
+      <button type="button" aria-label={goal.status === 'paused' ? $t('goal.resume') : $t('goal.pause')} onclick={onTogglePaused}><Icon name={goal.status === 'paused' ? 'play' : 'pause'} size={14}/></button>
+      <button type="button" aria-label={$t('goal.delete')} data-tooltip-label={$t('common.delete')} onclick={onDelete}><Icon name="trash" size={14}/></button>
+    </div>
   </div>
 </section>

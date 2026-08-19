@@ -12,8 +12,8 @@
   export let taskId = '';
   export let status: TaskStatus = 'active';
   export let transcript: TaskTranscript | null = null;
-  export let onOpenLink: (url: string, title: string) => void = () => {};
-  export let onOpenFilePath: (path: string) => void = () => {};
+  export let onOpenLink: (url: string, title: string, anchor?: DOMRect) => void = () => {};
+  export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
 
   $: running = status === 'active' || status === 'pending';
   $: activityVisible = Boolean(transcript?.activities.length || running);
@@ -25,7 +25,7 @@
 <section class="task-view" aria-label={title || $t('view.task')}>
   <header class="task-view-header">
     <TaskGlyph id={taskId} {status} size={17}/>
-    <strong>{title || $t('activity.delegatedTask')}</strong>
+    <strong>{$t('view.taskTitle', {title: title || $t('activity.delegatedTask')})}</strong>
     <span class="task-view-status">{taskStatusLabel(status)}</span>
   </header>
 

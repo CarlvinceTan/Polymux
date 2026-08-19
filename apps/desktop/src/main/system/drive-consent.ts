@@ -2,16 +2,22 @@ import {BrowserWindow, nativeTheme, type BrowserWindow as BrowserWindowType} fro
 import type {DriveConsentPrompt, DriveConsentWindow} from "@flareai/drive";
 
 /**
- * The Electron half of a drive sign-in.
+ * The Electron half of an OAuth sign-in, for a drive or a mailbox.
  *
- * `@flareai/drive` runs the whole OAuth flow — PKCE, the loopback listener, the
- * state check — and needs exactly one thing it cannot do under plain Node: put
- * the provider's own page on screen. That is all this does. The user types
- * their password into the provider's page and nothing about the code that comes
- * back is decided here.
+ * The packages run the whole flow — PKCE, the loopback listener, the state
+ * check — and need exactly one thing they cannot do under plain Node: put the
+ * provider's own page on screen. That is all this does. The user types their
+ * password into the provider's page and nothing about the code that comes back
+ * is decided here.
+ *
+ * One implementation serves both because the two prompts are the same shape.
+ * `kind` only keeps their throwaway sessions apart, so signing into a Google
+ * drive and a Gmail mailbox are separate acts rather than one silently
+ * answering for the other.
  */
 export function electronConsent(
   parent: () => BrowserWindowType | undefined,
+  kind: "drive" | "mail" = "drive",
 ): DriveConsentPrompt {
   return {
     async open({provider, title, url, onClosed}): Promise<DriveConsentWindow> {
@@ -44,7 +50,7 @@ export function electronConsent(
         webPreferences: {
           // A throwaway partition: consent runs in a clean session so it never
           // picks up, or disturbs, the user's workspace browser cookies.
-          partition: `flareai-drive-oauth-${provider}`,
+          partition: `flareai-${kind}-oauth-${provider}`,
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,

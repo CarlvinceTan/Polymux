@@ -49,12 +49,7 @@ export {
 export {
   EmailAccounts,
   EMAIL_KEYCHAIN_SERVICE,
-  attachmentPaths,
-  extractHtml,
   keychainService,
-  listAttachments,
-  renderBody,
-  searchQuery,
   type CommandResult,
   type CommandRunner,
   type EmailAccountsOptions,
@@ -65,3 +60,13 @@ export {
   type WeChatRelayStatus,
 } from "./wechat-relay.js";
 export {MEDIA_SCHEME, mediaUrl} from "./media-url.js";
+
+export {
+  MAIL_OAUTH_PROVIDERS,
+  MAIL_OAUTH_REDIRECT_PORT,
+  MAIL_OAUTH_REDIRECT_URI,
+  mailOAuthLabel,
+  type MailConsentPrompt,
+  type MailConsentWindow,
+  type MailOAuthProvider,
+} from "./email-oauth.js";

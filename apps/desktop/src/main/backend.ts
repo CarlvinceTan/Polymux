@@ -1,6 +1,8 @@
 import {existsSync, readFileSync} from "node:fs";
 import {copyFile, cp, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile} from "node:fs/promises";
 import type {Stats} from "node:fs";
+import {execFile} from "node:child_process";
+import {promisify} from "node:util";
 import {randomUUID} from "node:crypto";
 import {homedir, tmpdir} from "node:os";
 import path from "node:path";
@@ -9,6 +11,7 @@ import {
   MemoryManager,
   FlareAIAgent,
   SkillLoader,
+  type AgentPrompts,
   type SkillLoaderOptions,
 } from "@flareai/agent";
 import {ChronicleManager} from "@flareai/chronicle";
@@ -44,10 +47,12 @@ import type {
   SystemPermissionStatus,
   WorkspaceRevealDto,
   JsonValue,
+  DefaultAppDto,
 } from "@flareai/protocol";
 import {
   channels,
   commsPlatform,
+  mailProvider,
   driveProvider,
   driveS3Config,
   driveSource,
@@ -184,8 +189,15 @@ import {siteFaviconDataUrl} from "./browser/favicon.js";
 import {RotatingInference} from "./inference/rotating.js";
 import {AccessibilityChronicleFrames, ElectronChronicleSystem} from "./agent/chronicle.js";
 import {NativeInteractionEvents} from "./agent/interaction-events.js";
+import {RecordingCapture} from "./recording/capture.js";
+import {createRecordingTool} from "./recording/tools.js";
+import {RecordingMenubar} from "./recording/menubar.js";
+import {ComputerUseMenubar} from "./window-use/menubar.js";
+import {PillIcon} from "./window-use/pill-icon.js";
+import {WindowControlMonitor} from "./window-use/monitor.js";
 import {AxReader, type AxWindow} from "./system/ax-reader.js";
 import {FileReloadWatcher} from "./system/file-reload-watcher.js";
+import {DirectoryWatcher} from "./system/directory-watcher.js";
 import {flareaiPath} from "./system/paths.js";
 import {
   Notifier,
@@ -199,6 +211,7 @@ import {HubCache} from "./communications/cache.js";
 import {Drive, createDriveTools} from "@flareai/drive";
 import {electronConsent} from "./system/drive-consent.js";
 import {sessionScopedSnapshot} from "./workspace/snapshot.js";
+import {PreviewGrants} from "./workspace/preview.js";
 import type {Homeserver, MatrixRoom} from "@flareai/hub";
 /**
  * How recent a message has to be to be worth announcing. Anything older is
@@ -252,10 +265,19 @@ export interface DesktopBackendOptions {
    * folder is the whole of making it core.
    */
   coreSkills?: string[];
+  /**
+   * FlareAI's own prompts, read from `resources/prompts`. Not skills:
+   * they are never listed, never switchable, and never something the model
+   * chooses to open — `main.md` is loaded into every run that can delegate,
+   * and the rest belong to the judge, the compactor and the memory jobs.
+   */
+  agentPrompts?: AgentPrompts;
   codexConfigPath?: string;
   /** Path to the bundled native/ax-reader.swift accessibility helper. */
   axReaderSourcePath?: string;
   axEventsSourcePath?: string;
+  /** Path to native/pill-image.swift, which draws the Computer Use pill. */
+  pillImageSourcePath?: string;
   /** Path to the bundled native/app-permissions.swift privacy helper. */
   appPermissionsSourcePath?: string;
   /** Path to the bundled native/reminders.swift EventKit helper. */
@@ -291,6 +313,37 @@ export interface DesktopBackendOptions {
   };
 }
 
+/**
+ * Asks LaunchServices which application opens one file, and returns its
+ * display name with its icon as base64 PNG. Written as JXA because that is the
+ * only way to reach AppKit without a compiled helper; `argv[0]` is the file, so
+ * no path is ever spliced into the source.
+ */
+const FILE_OWNER_SCRIPT = `function run(argv) {
+  ObjC.import('AppKit');
+  const target = $.NSURL.fileURLWithPath(argv[0]);
+  const appUrl = $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL(target);
+  if (appUrl.isNil()) return 'null';
+  const appPath = ObjC.unwrap(appUrl.path);
+  const px = 32;
+  let icon = '';
+  const source = $.NSWorkspace.sharedWorkspace.iconForFile(appPath);
+  if (!source.isNil()) {
+    const drawn = $.NSImage.alloc.initWithSize($.NSMakeSize(px, px));
+    drawn.lockFocus;
+    source.drawInRectFromRectOperationFraction(
+      $.NSMakeRect(0, 0, px, px), $.NSZeroRect, $.NSCompositingOperationSourceOver, 1.0);
+    drawn.unlockFocus;
+    const rep = $.NSBitmapImageRep.alloc.initWithData(drawn.TIFFRepresentation);
+    icon = ObjC.unwrap(
+      rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $())
+        .base64EncodedStringWithOptions(0));
+  }
+  const name = ObjC.unwrap($.NSFileManager.defaultManager.displayNameAtPath(appPath))
+    .replace(/\\.app$/, '');
+  return JSON.stringify({name: name, icon: icon});
+}`;
+
 export class DesktopBackend {
   #window: BrowserWindow;
   readonly #ipcMain: IpcMain;
@@ -307,10 +360,14 @@ export class DesktopBackend {
   readonly #inference: InferenceService;
   readonly #skills: SkillLoader;
   readonly #coreSkills: ReadonlySet<string>;
+  readonly #agentPrompts: AgentPrompts;
   readonly #agentSkillOptions: SkillLoaderOptions;
   readonly #goals: GoalManager;
   readonly #memory: MemoryManager;
   readonly #chronicle: ChronicleManager;
+  readonly #recording: RecordingCapture;
+  readonly #computerUse: ComputerUseMenubar;
+  readonly #windowControl: WindowControlMonitor;
   readonly #firstRunPermissions: FirstRunPermissions;
   readonly #reminders: Reminders;
   /**
@@ -360,6 +417,7 @@ export class DesktopBackend {
   readonly #mcpConfigPath: string;
   readonly #customSkillDirectory: string;
   readonly #mcpConfigWatcher: FileReloadWatcher;
+  readonly #customSkillWatcher: DirectoryWatcher;
   readonly #codexMcpConfigPath: string;
   #mcpReloadPending = false;
   #mcpReloadInFlight?: Promise<McpServerDto[]>;
@@ -392,6 +450,7 @@ export class DesktopBackend {
     this.#ipcMain = options.ipcMain;
     this.#toolDirectory = options.toolDirectory;
     this.#coreSkills = new Set(options.coreSkills ?? []);
+    this.#agentPrompts = options.agentPrompts ?? {};
     this.#skills = new SkillLoader({
       official: options.officialSkillDirectories,
       personal: flareaiPath("skills"),
@@ -456,6 +515,55 @@ export class DesktopBackend {
         sourcePath: options.axEventsSourcePath ?? "",
         cacheDirectory: path.join(options.dataDirectory, "bin"),
       }),
+    });
+    // Record & Replay runs on its own tap and its own reads: a demonstration
+    // the user just asked for must not depend on the ambient history being
+    // switched on, or be narrowed by a capture policy written for it.
+    this.#recording = new RecordingCapture({
+      directory: path.join(options.dataDirectory, "recordings"),
+      // Recording is the one thing FlareAI does while the user is deliberately
+      // in another app, so its state and its controls belong in the menu bar
+      // rather than behind the window they just left.
+      indicator: new RecordingMenubar({
+        onStop: () => void this.#recording.stop("controls_stopped"),
+        onCancel: () => void this.#recording.stop("controls_cancelled"),
+      }),
+      createEvents: () =>
+        new NativeInteractionEvents({
+          sourcePath: options.axEventsSourcePath ?? "",
+          cacheDirectory: path.join(options.dataDirectory, "bin"),
+        }),
+      readWindow: async () => {
+        const snapshot = await this.#axReader.snapshot(process.pid);
+        if (!snapshot.trusted || snapshot.skipped || !snapshot.app) return null;
+        return {
+          app: snapshot.app,
+          ...(snapshot.bundleId ? {bundleId: snapshot.bundleId} : {}),
+          ...(snapshot.title ? {title: snapshot.title} : {}),
+          ...(snapshot.url ? {url: snapshot.url} : {}),
+          ...(snapshot.text ? {text: snapshot.text} : {}),
+        };
+      },
+    });
+    // window-use drives native windows from a skill, through bash — nothing
+    // here is called when it takes one. Its lease registry is the one honest
+    // signal, so the pill is driven from that rather than from a hook that
+    // does not exist.
+    this.#computerUse = new ComputerUseMenubar({
+      icon: new PillIcon({
+        sourcePath: options.pillImageSourcePath ?? "",
+        cacheDirectory: path.join(options.dataDirectory, "bin"),
+      }),
+      onStopAll: () => {
+        for (const run of this.#activeRuns.values())
+          run.control.cancel(new Error("Stopped from the Computer Use menu"));
+        this.#computerUse.hide();
+      },
+    });
+    this.#windowControl = new WindowControlMonitor({
+      registryPath: flareaiPath("state", "window-control-leases.json"),
+      windows: () => this.#windowSnapshot.windows,
+      onChange: (apps) => void this.#computerUse.update(apps),
     });
     this.#dictation = new WhisperDictation({
       modelDirectory: path.join(options.dataDirectory, "whisper"),
@@ -547,6 +655,21 @@ export class DesktopBackend {
       this.#mcpConfigPath,
       () => this.#requestMcpReload(),
     );
+    // A skill most often appears because the agent just wrote one from a
+    // recording, and the Skills tab should show it without the user reloading.
+    // The directory itself is watched, so an upload or an install lands too.
+    this.#customSkillWatcher = new DirectoryWatcher(
+      this.#customSkillDirectory,
+      () => {
+        if (this.#closing || this.#window.isDestroyed()) return;
+        try {
+          this.#window.webContents.send(channels.skillsChanged, this.#skillDtos());
+        } catch {
+          // A window mid-teardown is not worth failing a file watch over.
+        }
+      },
+      {debounceMs: 500},
+    );
     // A message landing anywhere in the hub is pushed straight to the window,
     // so a conversation on screen updates as it arrives.
     options.hub?.onActivity?.((activity) => {
@@ -611,6 +734,12 @@ export class DesktopBackend {
       // rather than as a window that can end up behind it.
       cookieLogin: (request) => runCookieLogin(request, this.#window),
       cancelCookieLogin,
+      // The same window seam the drive flow uses, on its own session so that
+      // signing into a Google drive and a Gmail mailbox stay separate acts.
+      mailConsent: electronConsent(
+        () => (this.#window.isDestroyed() ? undefined : this.#window),
+        "mail",
+      ),
     });
     this.#drive = new Drive({
       storage: {
@@ -724,6 +853,9 @@ export class DesktopBackend {
     // Asking for something to happen every morning is a chat request like any
     // other, so the agent needs a way to write one down.
     this.#registry.register(createScheduleTool(this.#scheduler));
+    // Showing the agent a workflow is a chat request too, so the recorder is
+    // always present rather than something the user has to switch on first.
+    this.#registry.register(createRecordingTool(this.#recording));
     // Messaging and email are app capabilities rather than an MCP server the
     // user has to register, so their tools are always present.
     for (const tool of createCommunicationsTools(this.#comms))
@@ -764,9 +896,88 @@ export class DesktopBackend {
    * guard need re-aiming.
    */
   /** Credentials for the bridged-media protocol handler. See `comms-media.ts`. */
+  /**
+   * Which application this Mac hands a web link to.
+   *
+   * Read rather than remembered: the answer is a LaunchServices lookup, and a
+   * user who changes their default browser expects the next menu to say so.
+   * The icon is redrawn at 32px so a 16px glyph is sharp on a retina screen,
+   * and arrives as a data url because a page cannot read one off the disk.
+   */
+  async #defaultApp(target?: string): Promise<DefaultAppDto | null> {
+    if (target) return this.#appForFile(target);
+    try {
+      const {app} = await import("electron");
+      const info = await app.getApplicationInfoForProtocol("http://");
+      if (!info?.name) return null;
+      const icon = info.icon?.isEmpty() ? null : info.icon;
+      return {
+        name: info.name,
+        icon: icon ? icon.resize({width: 32, height: 32}).toDataURL() : null,
+      };
+    } catch {
+      // A platform or a machine that cannot say. The menu falls back to naming
+      // the browser generically rather than to nothing at all.
+      return null;
+    }
+  }
+
+  /**
+   * Which application owns a *file*, which Electron has no answer for:
+   * `getApplicationInfoForProtocol` speaks only of protocols, and
+   * `getFileIcon` hands back the same generic application icon for every
+   * bundle, so neither can say "Preview" and draw Preview's icon.
+   *
+   * LaunchServices can, through AppKit, and `osascript` reaches AppKit without
+   * a helper to compile or ship. The icon is drawn into a bitmap at the size
+   * it will be shown rather than taken at its natural size, because an app
+   * icon's natural size is 1024px.
+   */
+  async #appForFile(filePath: string): Promise<DefaultAppDto | null> {
+    // Keyed by extension: what opens a `.pdf` is a property of the type, not
+    // of the file, and a menu opened twice should not ask macOS twice.
+    const key = path.extname(filePath).toLowerCase();
+    const cached = this.#fileApps.get(key);
+    if (cached !== undefined) return cached;
+    let answer: DefaultAppDto | null = null;
+    try {
+      const {stdout} = await promisify(execFile)(
+        "osascript",
+        ["-l", "JavaScript", "-e", FILE_OWNER_SCRIPT, filePath],
+        {timeout: 4000, maxBuffer: 1024 * 1024},
+      );
+      const parsed: unknown = JSON.parse(stdout.trim() || "null");
+      if (parsed && typeof parsed === "object" && "name" in parsed) {
+        const {name, icon} = parsed as {name?: unknown; icon?: unknown};
+        if (typeof name === "string" && name)
+          answer = {
+            name,
+            icon: typeof icon === "string" && icon ? `data:image/png;base64,${icon}` : null,
+          };
+      }
+    } catch {
+      // No answer is a fair answer: the menu names the choice generically.
+      answer = null;
+    }
+    // Only a type that resolved is remembered, so a transient failure — a
+    // timeout under load — is asked again rather than cached as "nothing".
+    if (answer) this.#fileApps.set(key, answer);
+    return answer;
+  }
+
+  readonly #fileApps = new Map<string, DefaultAppDto>();
+
   get mediaAuth(): {homeserverUrl: string; token: string | null} {
     return this.#comms.mediaAuth;
   }
+
+  /**
+   * The files the renderer may read. Held here rather than beside the protocol
+   * handler so that minting a grant is something only a handler can do — the
+   * page asks for a path it already knows about, and gets back a url that says
+   * nothing about where the file actually is.
+   */
+  readonly previewGrants = new PreviewGrants();
 
   attachWindow(window: BrowserWindow): void {
     this.#window = window;
@@ -1072,6 +1283,9 @@ export class DesktopBackend {
       return status;
     });
     this.#handle(channels.commsRefresh, () => this.#comms.refresh());
+    this.#handle(channels.commsEmailSignIn, (provider) =>
+      this.#comms.emailSignIn(mailProvider(provider)),
+    );
     this.#handle(channels.commsWake, (_event, value: unknown) =>
       this.#comms.wake(commsPlatform(value)),
     );
@@ -1126,9 +1340,21 @@ export class DesktopBackend {
     this.#handle(channels.commsBridgeSetup, (_event, platform: unknown, values: unknown) =>
       this.#comms.bridgeSetup(commsPlatform(platform), loginValues(values)),
     );
-    this.#handle(channels.commsBridgeLogout, (_event, platform: unknown, accountId: unknown) =>
-      this.#comms.bridgeLogout(commsPlatform(platform), required(accountId, "account id")),
-    );
+    // Unlinking an account is a sign-out of that account, so the copy goes
+    // with it for the same two reasons: its chats and message bodies must not
+    // survive it on disk, and leaving them there is what made the hub open on
+    // the *previous* WhatsApp account's conversations after linking a new one.
+    // The whole prefix, because `hub:chats` is one blob of every platform's
+    // chats and a cached page is keyed by room id alone — neither can be
+    // pruned down to one platform, and a cold paint is the entire cost.
+    this.#handle(channels.commsBridgeLogout, async (_event, platform: unknown, accountId: unknown) => {
+      const status = await this.#comms.bridgeLogout(
+        commsPlatform(platform),
+        required(accountId, "account id"),
+      );
+      this.#hubCache.clear();
+      return status;
+    });
     // The hub speaks Matrix — rooms and events. The renderer speaks chats and
     // messages, so the shapes are mapped here rather than leaking room ids
     // and mxc uris into the UI.
@@ -1505,6 +1731,17 @@ export class DesktopBackend {
         this.#inference.listModels().map((model) => ({provider: model.provider, id: model.id})),
       ),
     );
+    this.#handle(channels.workspacePreview, async (_event, target: unknown) => {
+      const resolved = required(target, "file path");
+      let stats: Stats;
+      try {
+        stats = await stat(resolved);
+      } catch {
+        throw new Error(`No such file: ${resolved}`);
+      }
+      if (!stats.isFile()) throw new Error(`Not a file: ${resolved}`);
+      return this.previewGrants.url(resolved);
+    });
     this.#handle(channels.browserOpen, (_event, tabId: string, url?: string) =>
       this.#embeddedBrowser.open(required(tabId, "tab id"), url),
     );
@@ -1528,6 +1765,9 @@ export class DesktopBackend {
     );
     this.#handle(channels.browserOpenExternal, (_event, url: string) =>
       import("electron").then(({shell}) => shell.openExternal(required(url, "url"))),
+    );
+    this.#handle(channels.browserDefaultApp, async (_event, target: unknown) =>
+      this.#defaultApp(typeof target === "string" && target ? target : undefined),
     );
     this.#handle(channels.browserOpenPath, async (_event, filePath: unknown) => {
       // The path arrives from a link in model-written markdown, so it is
@@ -1924,6 +2164,8 @@ export class DesktopBackend {
       },
     );
     this.#mcpConfigWatcher.start();
+    this.#customSkillWatcher.start();
+    this.#windowControl.start();
   }
 
   async reloadMcp(): Promise<McpServerDto[]> {
@@ -2051,7 +2293,13 @@ export class DesktopBackend {
     void this.#agentSurface.close();
     this.#embeddedBrowser.closeAll();
     this.#mcpConfigWatcher.stop();
+    this.#customSkillWatcher.stop();
+    this.#windowControl.stop();
+    this.#computerUse.hide();
     this.#chronicle.stop();
+    // A recording that outlived the app would keep a tap alive with nobody to
+    // end it, so an app quit ends it as an interruption rather than a stop.
+    this.#recording.stop("interrupted");
     this.#scheduler.stop();
     this.#dictation.close();
     const activeRuns = [...this.#activeRuns.values()];
@@ -2898,6 +3146,7 @@ export class DesktopBackend {
       judgeReasoning: this.#usableRole("judge")?.reasoning,
       compactionReasoning: this.#usableRole("compaction")?.reasoning,
       skills: this.#agentSkillOptions,
+      prompts: this.#agentPrompts,
       // The guard runs first so a built-in skill stays read-only even when the
       // user's own hooks would have allowed the call.
       hooks: combineHooks(

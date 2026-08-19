@@ -47,7 +47,12 @@ function contentText(content: unknown): string {
  * has no rule for returns the transcript unchanged, so a new event type shows
  * up as nothing rather than as a broken row.
  */
-export function applyTaskEvent(transcript: TaskTranscript, event: RunEventDto): TaskTranscript {
+export function applyTaskEvent(base: TaskTranscript, event: RunEventDto): TaskTranscript {
+  // A subagent's `run.started` is emitted before the tool call reports the run
+  // id, so the transcript is usually linked too late to have seen it — and a
+  // transcript with no start reads as "Working for 1s" forever. The first event
+  // that does arrive dates the run instead.
+  const transcript = base.startedAt ? base : {...base, startedAt: new Date(event.timestamp).toISOString()};
   const payload = asRecord(event.payload);
   const settle = (status: 'completed' | 'failed'): TaskTranscript => ({
     ...transcript,
@@ -90,8 +95,11 @@ export function applyTaskEvent(transcript: TaskTranscript, event: RunEventDto): 
       const text = contentText(asRecord(payload.message).content);
       if (!text) return transcript;
       // Narration mid-run folds into the trail; only the final answer is the
-      // task's result.
+      // task's result. Whitespace is not narration: a block carrying only a
+      // newline is truthy, and one folded into the trail is a row with an icon,
+      // a disclosure chevron and nothing to read.
       if (payload.phase === 'commentary') {
+        if (!text.trim()) return transcript;
         return {
           ...transcript,
           text: '',

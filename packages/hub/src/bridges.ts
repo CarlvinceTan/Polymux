@@ -651,7 +651,7 @@ export class BridgeHost {
         legacy: bridge.legacy,
       });
       if (repaired !== onDisk) {
-        this.#options.log?.(`[${bridge.name}] config was missing history or double puppeting; repaired`);
+        this.#options.log?.(`[${bridge.name}] config was missing history, logout cleanup or double puppeting; repaired`);
         await writeFile(configPath, repaired, "utf8");
       }
     }
@@ -849,6 +849,15 @@ export class BridgeHost {
       "bridge:",
       "    permissions:",
       `        "${homeserver.serverName}": user`,
+      // See `repairCleanupOnLogout`: without this a logged-out account's
+      // portals stay in the hub forever.
+      "    cleanup_on_logout:",
+      "        enabled: true",
+      "        manual:",
+      "            private: delete",
+      "            relayed: delete",
+      "            shared_no_users: delete",
+      "            shared_has_users: delete",
       // Without this a bridge creates its portals, syncs their members, and
       // brings across nothing that was said before it was linked: every
       // conversation opens empty until someone sends the next message. The
@@ -972,6 +981,60 @@ function withinBlock(source: string, block: string, rewrite: (line: string) => s
   return lines.join("\n");
 }
 
+/**
+ * Makes a logout the user asked for take its portals with it.
+ *
+ * The binaries default every cleanup action to `nothing`, so ending a session
+ * leaves every room that session created joined and named as before. The chat
+ * list still shows the old account's conversations, sending in one fails with
+ * "you're not logged in", and signing in with a different account files its
+ * portals *beside* the stale ones rather than replacing them — the second
+ * account looks like it never linked.
+ *
+ * Only `manual:`. `bad_credentials:` is the network invalidating a session,
+ * which is routinely transient, and deleting a year of history over a
+ * reconnect is not something the user can undo.
+ *
+ * Edits the lines already there rather than writing the block: the binary
+ * writes its own defaults over the whole config every time it reads one, so
+ * this runs against a file that always has the keys in it.
+ */
+function repairCleanupOnLogout(source: string): string {
+  const lines = source.split("\n");
+  const start = lines.findIndex((line) => /^[ \t]+cleanup_on_logout:[ \t]*$/.test(line));
+  if (start < 0) return source;
+  const depth = indentWidth(lines[start]);
+  let section: string | null = null;
+  let changed = false;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
+    // An entry at or above the block's own indentation is the next block.
+    if (indentWidth(line) <= depth) break;
+    const entry = /^[ \t]*([A-Za-z0-9_]+):[ \t]*(.*?)[ \t]*$/.exec(line);
+    if (!entry) continue;
+    const [, key, value] = entry;
+    // A key with nothing after it opens `manual:` or `bad_credentials:`, which
+    // carry the same action names as each other — hence the tracking.
+    if (value === "") {
+      section = key;
+      continue;
+    }
+    if (key === "enabled" && value === "false") {
+      lines[index] = line.replace(/false\b/, "true");
+      changed = true;
+    } else if (section === "manual" && value === "nothing") {
+      lines[index] = line.replace(/nothing\b/, "delete");
+      changed = true;
+    }
+  }
+  return changed ? lines.join("\n") : source;
+}
+
+function indentWidth(line: string): number {
+  return /^[ \t]*/.exec(line)?.[0].length ?? 0;
+}
+
 /** A `double_puppet:` block, however much of it the binary has filled in. */
 const DOUBLE_PUPPET_BLOCK = /^double_puppet:\n(?:[ \t][^\n]*\n|\n)*/m;
 
@@ -1015,6 +1078,7 @@ export function repairConfig(
   // the one bridge in that generation reseeds itself anyway when its layout is
   // wrong, and rewriting nested YAML by regex is how a config gets corrupted.
   if (legacy) return repaired;
+  repaired = repairCleanupOnLogout(repaired);
   const asToken = AS_TOKEN.exec(repaired)?.[1];
   if (!asToken) return repaired;
   const block = `${doublePuppet(serverName, baseUrl, asToken).join("\n")}\n`;

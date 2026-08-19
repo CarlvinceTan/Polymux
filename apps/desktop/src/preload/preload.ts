@@ -1,4 +1,4 @@
-import type { BrowserEventDto, ChatActivityDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, RunEventDto, ScheduleDto, WorkspaceRevealDto } from "@flareai/protocol";
+import type { BrowserEventDto, ChatActivityDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, RunEventDto, ScheduleDto, SkillDto, WorkspaceRevealDto } from "@flareai/protocol";
 import { channels } from "@flareai/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
@@ -89,6 +89,7 @@ const api: FlareAIApi = {
       ipcRenderer.invoke(channels.workspaceSnapshotGet, conversationId),
     saveSnapshot: (conversationId, snapshot) =>
       ipcRenderer.invoke(channels.workspaceSnapshotSave, conversationId, snapshot),
+    preview: (path) => ipcRenderer.invoke(channels.workspacePreview, path),
     subscribeReveal(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: WorkspaceRevealDto) =>
         listener(value);
@@ -202,6 +203,7 @@ const api: FlareAIApi = {
     emailSave: (request) => ipcRenderer.invoke(channels.commsEmailSave, request),
     emailRemove: (id) => ipcRenderer.invoke(channels.commsEmailRemove, id),
     emailTest: (id) => ipcRenderer.invoke(channels.commsEmailTest, id),
+    emailSignIn: (provider) => ipcRenderer.invoke(channels.commsEmailSignIn, provider),
     subscribe(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: CommsStatusDto) =>
         listener(value);
@@ -251,6 +253,11 @@ const api: FlareAIApi = {
   skills: {
     list: () => ipcRenderer.invoke(channels.skillsList),
     reload: () => ipcRenderer.invoke(channels.skillsReload),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, skills: SkillDto[]) => listener(skills);
+      ipcRenderer.on(channels.skillsChanged, receive);
+      return () => ipcRenderer.removeListener(channels.skillsChanged, receive);
+    },
     setEnabled: (name, enabled) => ipcRenderer.invoke(channels.skillsSetEnabled, name, enabled),
     saveCustom: (request) => ipcRenderer.invoke(channels.skillsSaveCustom, request),
     removeCustom: (name) => ipcRenderer.invoke(channels.skillsRemoveCustom, name),
@@ -297,6 +304,7 @@ const api: FlareAIApi = {
     setVisible: (tabId, visible) => ipcRenderer.invoke(channels.browserSetVisible, tabId, visible),
     close: (tabId) => ipcRenderer.invoke(channels.browserClose, tabId),
     openExternal: (url) => ipcRenderer.invoke(channels.browserOpenExternal, url),
+    defaultApp: (target) => ipcRenderer.invoke(channels.browserDefaultApp, target),
     openPath: (filePath) => ipcRenderer.invoke(channels.browserOpenPath, filePath),
     find: (tabId, text, forward) => ipcRenderer.invoke(channels.browserFind, tabId, text, forward),
     stopFind: (tabId) => ipcRenderer.invoke(channels.browserStopFind, tabId),

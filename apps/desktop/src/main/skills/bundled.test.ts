@@ -55,6 +55,16 @@ test("core membership is the core folder, so the Skills tab hides exactly those"
   const core = coreSkillNames(bundled("core"));
   assert.deepEqual(
     [...core].sort(),
-    ["browser-use", "email-use", "gui-control", "himalaya", "message-use"],
+    [
+      "browser-use",
+      "chronicle",
+      "email-use",
+      "message-use",
+      "orchestration",
+      "record-replay",
+      "skill-creator",
+      "skill-maintenance",
+      "window-use",
+    ],
   );
 });

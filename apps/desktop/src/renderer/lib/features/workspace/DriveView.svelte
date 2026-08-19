@@ -138,7 +138,9 @@
   export let error = '';
   export let onDismissError: () => void = () => {};
   /** Opening a file is the host's business — the drive only browses. */
-  export let onOpenEntry: (entry: DriveEntry) => void = () => {};
+  /** `point` is where the pointer was, in the viewport: opening a file offers
+   * a choice, and the menu that asks belongs under the pointer that asked. */
+  export let onOpenEntry: (entry: DriveEntry, point?: {x: number; y: number}) => void = () => {};
   /**
    * Every action stays in the toolbar and goes live as soon as a handler is
    * passed. Naming and confirming happen here rather than in the host: the
@@ -147,8 +149,14 @@
   export let onNewFolder: ((parent: DriveEntry, name: string) => void) | null = null;
   export let onUpload: ((parent: DriveEntry) => void) | null = null;
   export let onRename: ((entry: DriveEntry, name: string) => void) | null = null;
-  /** Moves the entries into `destination`, a folder of the same provider. */
+  /**
+   * Moves the entries into `destination`. The destination may belong to
+   * another provider: the drive underneath turns that into a transfer, so the
+   * list never has to refuse a drop for crossing accounts.
+   */
   export let onMove: ((entries: DriveEntry[], destination: DriveEntry) => void) | null = null;
+  /** Files and folders dragged in from the Finder, dropped on `destination`. */
+  export let onDropFiles: ((files: File[], destination: DriveEntry) => void) | null = null;
   export let onDuplicate: ((entries: DriveEntry[]) => void) | null = null;
   export let onDownload: ((entry: DriveEntry) => void) | null = null;
   export let onDelete: ((entries: DriveEntry[]) => void) | null = null;
@@ -497,7 +505,7 @@
     window.removeEventListener('pointercancel', endMarquee);
   });
 
-  function openEntry(entry: DriveEntry): void {
+  function openEntry(entry: DriveEntry, point?: {x: number; y: number}): void {
     if (entry.kind === 'folder') {
       trail = [...crumbs.slice(1).map((crumb) => crumb.id), entry.id];
       searchQuery = '';
@@ -508,7 +516,7 @@
     } else {
       selectedIds = new Set([entry.id]);
       primaryId = entry.id;
-      onOpenEntry(entry);
+      onOpenEntry(entry, point);
     }
   }
 
@@ -516,6 +524,11 @@
     trail = crumbs.slice(1, index + 1).map((crumb) => crumb.id);
     searchQuery = '';
     clearSelection();
+    // Going back is arriving too. Only descending used to ask the host for a
+    // folder, so a listing seen once was shown from memory forever after: a
+    // file added while the app was open never appeared, however many times you
+    // stepped out of the folder and back into it.
+    onNavigate(crumbs[index] ?? root);
   }
 
   /** One context measures every row; the font is read off the element so it
@@ -663,6 +676,118 @@
     clearSelection();
   }
 
+  /**
+   * Drag and drop. Two gestures share the list: rows dragged onto a folder
+   * move there, and files dragged in from the Finder are added to whichever
+   * folder they land on. Which one is happening is read off the drag itself,
+   * so a folder highlights the same way for both.
+   */
+  const DRIVE_DRAG_TYPE = 'application/x-flareai-drive';
+
+  /** Ids being dragged out of the list. Held here rather than read back from
+   * `dataTransfer`, which refuses to be read until the drop lands. */
+  let draggingIds = new Set<string>();
+  /** The folder — row or crumb — currently under the pointer. */
+  let dropTargetId: string | null = null;
+  /** `dragenter`/`dragleave` fire again for every child the pointer crosses,
+   * so the list's own highlight counts depth rather than trusting one leave. */
+  let externalDepth = 0;
+  $: externalDrag = externalDepth > 0;
+
+  function draggingFiles(event: DragEvent): boolean {
+    return Array.from(event.dataTransfer?.types ?? []).includes('Files');
+  }
+
+  function startRowDrag(event: DragEvent, entry: DriveEntry): void {
+    if (!onMove || renaming) {
+      event.preventDefault();
+      return;
+    }
+    // A row dragged from outside the selection becomes the selection: what
+    // moves is what is highlighted, and anything else moves rows the user
+    // cannot see the drag carrying.
+    if (!selectedIds.has(entry.id)) setSelection([entry.id]);
+    draggingIds = new Set(selectedIds);
+    if (!event.dataTransfer) return;
+    event.dataTransfer.effectAllowed = 'move';
+    // A marker, not a payload: the entries never leave this list.
+    event.dataTransfer.setData(DRIVE_DRAG_TYPE, [...draggingIds].join('\n'));
+  }
+
+  function endRowDrag(): void {
+    draggingIds = new Set();
+    dropTargetId = null;
+  }
+
+  /** Whether `folder` will take what is being dragged right now. */
+  function acceptsDrop(event: DragEvent, folder: DriveEntry): boolean {
+    if (folder.kind !== 'folder') return false;
+    // Into itself is not a move, and neither is into the folder the rows are
+    // already in — which is what the open folder's own crumb would be.
+    if (draggingIds.size)
+      return Boolean(onMove) && !draggingIds.has(folder.id) && folder.id !== current.id;
+    return Boolean(onDropFiles) && draggingFiles(event);
+  }
+
+  function overFolder(event: DragEvent, folder: DriveEntry): void {
+    if (!acceptsDrop(event, folder)) return;
+    // Stopped here so the list behind it does not also light up: the folder
+    // under the pointer is the destination, not the one it is sitting in.
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer)
+      event.dataTransfer.dropEffect = draggingIds.size ? 'move' : 'copy';
+    dropTargetId = folder.id;
+  }
+
+  function leaveFolder(folder: DriveEntry): void {
+    if (dropTargetId === folder.id) dropTargetId = null;
+  }
+
+  function dropOnFolder(event: DragEvent, folder: DriveEntry): void {
+    if (!acceptsDrop(event, folder)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dropTargetId = null;
+    externalDepth = 0;
+    if (draggingIds.size) {
+      const moving = items.filter((entry) => draggingIds.has(entry.id));
+      draggingIds = new Set();
+      if (moving.length) onMove?.(moving, folder);
+      clearSelection();
+      return;
+    }
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length) onDropFiles?.(files, folder);
+  }
+
+  /** Anywhere in the list that is not a folder means the folder on screen. */
+  function enterList(event: DragEvent): void {
+    if (!onDropFiles || !draggingFiles(event)) return;
+    externalDepth += 1;
+  }
+
+  function overList(event: DragEvent): void {
+    if (!onDropFiles || !draggingFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  }
+
+  function leaveList(event: DragEvent): void {
+    if (!onDropFiles || !draggingFiles(event)) return;
+    externalDepth = Math.max(0, externalDepth - 1);
+    if (!externalDepth) dropTargetId = null;
+  }
+
+  function dropOnList(event: DragEvent): void {
+    externalDepth = 0;
+    dropTargetId = null;
+    if (!onDropFiles || !draggingFiles(event)) return;
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length) onDropFiles(files, current);
+  }
+
   function confirmDelete(): void {
     confirmingDelete = false;
     onDelete?.(selection);
@@ -780,12 +905,19 @@
              say the same thing twice. -->
         {#if !(index === 0 && showSourceMenu)}
           {#if index > 0}<span class="fb-crumb-separator" aria-hidden="true">/</span>{/if}
+          <!-- A crumb takes a drop too, which is the way back up: dragging
+               onto the folder above is how something leaves the one it is in. -->
           <button
             type="button"
             class="fb-crumb"
             class:current={index === crumbs.length - 1}
+            class:drop-target={dropTargetId === crumb.id}
             aria-current={index === crumbs.length - 1 ? 'page' : undefined}
             onclick={() => openCrumb(index)}
+            ondragenter={(event) => overFolder(event, crumb)}
+            ondragover={(event) => overFolder(event, crumb)}
+            ondragleave={() => leaveFolder(crumb)}
+            ondrop={(event) => dropOnFolder(event, crumb)}
           >
             {#if index === 0}
               <span class="fb-home"><Icon name="home" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></span>
@@ -962,7 +1094,16 @@
     {/if}
   </div>
 
-  <div class="fb-list">
+  <!-- Dropped onto the list rather than onto a folder in it, files land in
+       the folder on screen. -->
+  <div
+    class="fb-list"
+    role="presentation"
+    ondragenter={enterList}
+    ondragover={overList}
+    ondragleave={leaveList}
+    ondrop={dropOnList}
+  >
     <div class="fb-head" role="row">
       {#each [{key: 'name', label: $t('drive.columnName')}, {key: 'size', label: $t('drive.columnSize')}, {key: 'kind', label: $t('drive.columnKind')}, {key: 'modified', label: $t('drive.columnModified')}] as column (column.key)}
         <span
@@ -982,6 +1123,7 @@
     <div
       bind:this={rowsEl}
       class="fb-rows"
+      class:dropping={externalDrag && !dropTargetId}
       role="presentation"
       onpointerdown={startMarquee}
       onclickcapture={swallowClickAfterDrag}
@@ -1015,12 +1157,21 @@
           class="fb-row"
           class:odd={index % 2 === 1}
           class:selected={selectedIds.has(entry.id)}
+          class:dragging={draggingIds.has(entry.id)}
+          class:drop-target={dropTargetId === entry.id}
+          draggable={Boolean(onMove) && renaming !== entry.id}
           data-drive-id={entry.id}
           aria-label={entry.kind === 'folder' ? $t('drive.openFolder', {name: entry.name}) : $t('drive.openEntry', {name: entry.name})}
           aria-pressed={selectedIds.has(entry.id)}
           use:overflowTooltip={entry.name}
           onclick={(event) => selectEntry(entry, event)}
-          ondblclick={() => openEntry(entry)}
+          ondblclick={(event) => openEntry(entry, {x: event.clientX, y: event.clientY})}
+          ondragstart={(event) => startRowDrag(event, entry)}
+          ondragend={endRowDrag}
+          ondragenter={(event) => overFolder(event, entry)}
+          ondragover={(event) => overFolder(event, entry)}
+          ondragleave={() => leaveFolder(entry)}
+          ondrop={(event) => dropOnFolder(event, entry)}
         >
           <span class="fb-cell name">
             <!-- A folder holding something draws filled, an empty one stays an

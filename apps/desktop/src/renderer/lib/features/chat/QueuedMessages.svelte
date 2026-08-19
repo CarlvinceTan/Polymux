@@ -40,34 +40,34 @@
   }
 </script>
 
-<section class="queued-messages" aria-label={$t('queue.title')} data-visible-limit="4">
+<section class="stacked-bar queued-messages" aria-label={$t('queue.title')} data-visible-limit="4">
   <div class="queued-message-scroll" role="list">
     {#each items as item (item.id)}
+      <!-- The row is the handle. A grip of its own bought nothing: it appeared
+           on hover, which is when the row is already under the pointer, and it
+           held a column open at rest that pushed the whole row in past the
+           inset every other row keeps. Dragging from anywhere on the row is
+           both the smaller target to explain and the larger one to hit. -->
       <div
         role="listitem"
         class:drop-target={dropId === item.id && draggedId !== item.id}
-        class="queued-message-row"
+        class="stacked-row queued-message-row"
+        draggable="true"
+        aria-label={$t('queue.reorder', {text: item.text})}
+        ondragstart={(event) => startDrag(event, item.id)}
+        ondragend={() => { draggedId = null; dropId = null; }}
         ondragover={(event) => dragOver(event, item.id)}
         ondrop={(event) => drop(event, item.id)}
       >
-        <button
-          class="queue-drag-handle"
-          type="button"
-          draggable="true"
-          aria-label={$t('queue.reorder', {text: item.text})}
-          data-tooltip="none"
-          ondragstart={(event) => startDrag(event, item.id)}
-          ondragend={() => { draggedId = null; dropId = null; }}
-        ><Icon name="grip" size={16}/></button>
-        <span class="queue-state" aria-hidden="true"><Icon name="steer" size={17}/></span>
+        <span class="queue-state" aria-hidden="true"><Icon name="steer" size={15}/></span>
         {#if item.files?.length}
-          <span class="queue-attachment" title={item.files[0].name}><Icon name={item.files[0].type.startsWith('image/') ? 'image' : 'file'} size={14}/></span>
+          <span class="queue-attachment" title={item.files[0].name}><Icon name={item.files[0].type.startsWith('image/') ? 'image' : 'file'} size={12}/></span>
         {/if}
         <span class="queue-copy">{item.text || $t('goal.reviewAttached')}</span>
         <div class="queue-actions">
-          <button class="queue-steer" type="button" onclick={() => onSteer(item.id)}><Icon name="steer" size={16}/><span>{$t('queue.steer')}</span></button>
-          <button type="button" aria-label={$t('queue.edit')} onclick={() => onEdit(item.id)}><Icon name="edit" size={16}/></button>
-          <button type="button" aria-label={$t('queue.delete')} onclick={() => onDelete(item.id)}><Icon name="trash" size={16}/></button>
+          <button class="queue-steer" type="button" aria-label={$t('queue.steer')} data-tooltip-label={$t('queue.steer')} onclick={() => onSteer(item.id)}><Icon name="send" size={14}/></button>
+          <button type="button" aria-label={$t('queue.edit')} data-tooltip-label={$t('common.edit')} onclick={() => onEdit(item.id)}><Icon name="edit" size={14}/></button>
+          <button type="button" aria-label={$t('queue.delete')} data-tooltip-label={$t('common.delete')} onclick={() => onDelete(item.id)}><Icon name="trash" size={14}/></button>
         </div>
       </div>
     {/each}

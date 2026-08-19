@@ -8,6 +8,12 @@ test-results
 # Bundled mautrix bridge binaries, fetched by scripts/fetch-bridges.mjs
 /resources/bridges/
 
+# Bundled Node runtime for skill scripts, fetched by scripts/fetch-node.mjs
+/resources/node/
+
+# Stray root copy of the built main process (real output is .vite/build/main.js)
+/main.js
+
 # Electron Forge build output
 /out/
 .DS_Store

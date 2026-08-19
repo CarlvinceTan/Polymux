@@ -103,6 +103,20 @@ export interface AgentRunRequest {
   maxTurns?: number;
   toolExecution?: ToolExecutionMode;
   transformContext?: ContextTransformer;
+  /**
+   * Asked once the model has stopped calling tools, before the run is allowed
+   * to end. Returning messages appends them and takes another turn instead of
+   * completing; returning nothing completes the run.
+   *
+   * It exists for work the run started and has not heard back from. A run that
+   * dispatched a subagent and then wrote its answer would otherwise hang up on
+   * its own team — the delegated run keeps going with nobody left to read it.
+   */
+  beforeComplete?: (input: {
+    runId: RunId;
+    turn: number;
+    signal: AbortSignal;
+  }) => Promise<InferenceMessage[]>;
   signal?: AbortSignal;
 }
 

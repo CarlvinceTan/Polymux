@@ -58,8 +58,8 @@
   export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
   export let onFeedback: (id: string, feedback: 'up' | 'down' | null) => void = () => {};
   /** A link in a message: the host decides which browser surface opens it. */
-  export let onOpenLink: (url: string, title: string) => void = () => {};
-  export let onOpenFilePath: (path: string) => void = () => {};
+  export let onOpenLink: (url: string, title: string, anchor?: DOMRect) => void = () => {};
+  export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
   export let onQueueHeight: (height: number) => void = () => {};
   export let onJumpAvailability: (show: boolean) => void = () => {};
   export let onSteerQueued: (id: string) => void = () => {};
@@ -91,6 +91,19 @@
 
   $: onQueueHeight((queued.length ? Math.min(queued.length, 4) * 40 + 24 : 0) + (goal ? 50 : 0));
   $: if (messages.length || running) void followLatest(messages.length, running);
+
+  /* Steering appends the user's message *after* the assistant that is still
+     writing, so "last message" stops meaning "the live turn" the moment a
+     steer lands — and an assistant with no text yet would read as Stopped.
+     The live turn is the last assistant message instead. */
+  $: liveIndex = lastAssistantIndex(messages);
+
+  function lastAssistantIndex(list: ChatMessage[]): number {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      if (list[index].role === 'assistant') return index;
+    }
+    return -1;
+  }
 
   async function followLatest(_count: number, _running: boolean): Promise<void> {
     await tick();
@@ -181,16 +194,16 @@
   {:else}
     <div class="message-list" aria-live="polite" style={composerReserve ? `--composer-reserve:${composerReserve}px` : ''}>
       {#each messages as message, index (message.id)}
-        {@const activityVisible = message.role === 'assistant' && Boolean(message.activities?.length || (running && index === messages.length - 1))}
+        {@const activityVisible = message.role === 'assistant' && Boolean(message.activities?.length || (running && index === liveIndex))}
         {#if activityVisible}
           <AgentActivity
             activities={message.activities ?? []}
             startedAt={message.startedAt}
             completedAt={message.completedAt}
-            streaming={running && index === messages.length - 1}
+            streaming={running && index === liveIndex}
           />
         {/if}
-        <Message {message} streaming={running && index === messages.length - 1} {activityVisible} {onEdit} {onFeedback} {onOpenLink} {onOpenFilePath}/>
+        <Message {message} streaming={running && index === liveIndex} {activityVisible} {onEdit} {onFeedback} {onOpenLink} {onOpenFilePath}/>
       {/each}
     </div>
 

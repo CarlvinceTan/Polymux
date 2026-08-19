@@ -22,7 +22,7 @@ export interface GoalJudgement {
  */
 const RESPONSE_LIMIT = 4_096;
 
-const systemPrompt = `You judge whether a standing goal has been met.
+const defaultJudgePrompt = `You judge whether a standing goal has been met.
 
 You receive the goal and the agent's most recent response. Reply with JSON only:
 {"verdict": "done" | "continue" | "wait", "reason": "<one sentence>"}
@@ -34,7 +34,15 @@ You receive the goal and the agent's most recent response. Reply with JSON only:
 Be conservative: choose "done" only on explicit confirmation or a clearly finished deliverable. A confident summary is not evidence on its own. Judge the goal only, never the response's style.`;
 
 export class GoalJudge {
-  constructor(readonly inference: InferenceService) {}
+  readonly #prompt: string;
+  /** `prompt` comes from `resources/prompts/judge.md` when the host
+   * ships it; the built-in wording is what a bare install runs on. */
+  constructor(
+    readonly inference: InferenceService,
+    prompt?: string,
+  ) {
+    this.#prompt = prompt?.trim() || defaultJudgePrompt;
+  }
 
   /**
    * Judgement failures resolve to `wait` rather than `continue`: an unreadable
@@ -58,7 +66,7 @@ export class GoalJudge {
     try {
       for await (const event of this.inference.stream({
         model,
-        systemPrompt,
+        systemPrompt: this.#prompt,
         messages: [
           {
             role: "user",

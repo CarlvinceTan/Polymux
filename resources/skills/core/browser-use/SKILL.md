@@ -12,7 +12,7 @@ This skill owns browser-surface routing, exact-tab ownership, tab-group
 organization, and browser-specific user handoffs.
 
 Before any call that may initialize, inspect, launch, reveal, focus, or control
-the external local browser, load and follow `$gui-control`. That skill owns
+the external local browser, load and follow `$window-use`. That skill owns
 app launch, focus protection, exact-window mechanics, controller safety, and
 attention preparation; do not duplicate those rules here.
 
@@ -37,7 +37,7 @@ attention preparation; do not duplicate those rules here.
   never assume a browser brand.
 - Mandatory ordered preflight for every first external-browser operation in a
   task: before any initialization, inspection, launch, or control, load and
-  apply `$gui-control`; determine the OS default without launching it;
+  apply `$window-use`; determine the OS default without launching it;
   validate a preverified non-activating control route; identify the exact
   window and tab; then lease the tab. Do not cold-launch, inspect, or foreground
   the external browser before completing these steps.
@@ -146,7 +146,7 @@ attention preparation; do not duplicate those rules here.
 
 1. For a substantial request plausibly related to browser research, first check
    the user's open tabs — prefer the `browser_tabs` tool when it is available,
-   otherwise run `python3 scripts/tab_context.py --query "<user request>"`;
+   otherwise run `"${FLAREAI_NODE:-node}" scripts/tab_context.mjs --query "<user request>"`;
    ignore a missing or older-than-90-seconds cache, treat matches only as
    discovery hints, and never let them replace an owning domain skill's
    evidence or safety rules. Then start in the in-app Browser.
@@ -172,9 +172,9 @@ attention preparation; do not duplicate those rules here.
    then `release`. It drives only the leased tab through the FlareAI extension
    (the in-page cursor shows the user what is happening), runs the tab in the
    background, and never raises the browser or switches focus — the
-   `$gui-control` boundaries still govern what may be done there.
+   `$window-use` boundaries still govern what may be done there.
 2. If external use is technically required or explicitly requested, complete
-   the mandatory ordered `$gui-control` preflight before any external
+   the mandatory ordered `$window-use` preflight before any external
    operation, then create or reuse a clearly named objective group. Return
    in-app after a temporary fallback; remain external for an explicitly
    external task.

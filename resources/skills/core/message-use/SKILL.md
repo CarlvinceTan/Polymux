@@ -13,7 +13,7 @@ Route personal message through the safest capable platform, retrieve only the co
 
 - Keep replies short, cohesive, and outcome-first. For an explanatory answer, use at most five short points and omit implementation details, caveats, metrics, deep-dive menus, and meta-commentary unless they are decision-critical or requested.
 - Matrix is the shared backend for WhatsApp, Telegram, Discord, Messenger, Instagram, LinkedIn, iMessage, and verified WeChat. Platform-specific skills remain authoritative where one exists. Load `email-use` for email, `apple-reminders` for reminders, and `chat-style` for final personal wording.
-- Before any discovery or call that may initialize, reveal, or control a local GUI app, load `gui-control` and follow its current route. This skill does not duplicate GUI mechanics.
+- Before any discovery or call that may initialize, reveal, or control a local GUI app, load `window-use` and follow its current route. This skill does not duplicate GUI mechanics.
 - Prefer capable direct APIs, connectors, and CLIs before browser, desktop, or phone control.
 - Never invent a recipient, address, chat ID, account, or delivery result. Observed context is not send authority.
 

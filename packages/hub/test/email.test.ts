@@ -8,8 +8,16 @@ import {
   EmailAccounts,
   type CommandResult,
   keychainService,
-  searchQuery,
 } from "../src/email.js";
+import {mimeMessage} from "../src/email-mime.js";
+import {searchCriteria} from "../src/mail-store.js";
+import {
+  startImapServer,
+  type FakeImapServer,
+  type FakeMailbox,
+  type FakeMessage,
+} from "./fixtures/imap-server.js";
+import {startSmtpServer, type FakeSmtpServer} from "./fixtures/smtp-server.js";
 
 interface Call {
   command: string;
@@ -31,624 +39,887 @@ function harness(options: {
 
 async function withConfig(
   source: string,
-  body: (accounts: EmailAccounts, configPath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
+  body: (accounts: EmailAccounts, storePath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
   results?: (call: Call) => CommandResult | undefined,
 ): Promise<void> {
   const directory = await mkdtemp(path.join(tmpdir(), "flareai-email-"));
-  const configPath = path.join(directory, "config.toml");
-  if (source) await writeFile(configPath, source, "utf8");
+  const storePath = path.join(directory, "email-accounts.json");
+  if (source) await writeFile(storePath, source, "utf8");
   const harnessed = harness({results});
   try {
-    await body(new EmailAccounts({configPath, run: harnessed.run}), configPath, harnessed);
+    await body(
+      new EmailAccounts({
+        storePath,
+        downloadsDir: path.join(directory, "Downloads"),
+        run: harnessed.run,
+      }),
+      storePath,
+      harnessed,
+    );
   } finally {
     await rm(directory, {recursive: true, force: true});
   }
 }
 
-const EXISTING = `[accounts.work]
-email = "me@work.com"
-display-name = "Me At Work"
-default = true
-folder.alias.sent = "[Gmail]/Sent Mail"
-backend.type = "imap"
-backend.host = "imap.gmail.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "me@work.com"
-backend.auth.type = "password"
-backend.auth.raw = "inline-secret"
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.gmail.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "me@work.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.raw = "inline-secret"
-`;
+/** An account file as FlareAI writes it, for tests that start from one. */
+const EXISTING = JSON.stringify(
+  {
+    version: 1,
+    accounts: [
+      {
+        id: "work",
+        email: "me@work.com",
+        displayName: "Me At Work",
+        isDefault: true,
+        imap: {host: "imap.gmail.com", port: 993, encryption: "tls", login: "me@work.com"},
+        smtp: {host: "smtp.gmail.com", port: 587, encryption: "start-tls", login: "me@work.com"},
+        auth: {kind: "password"},
+      },
+    ],
+  },
+  null,
+  2,
+);
+
+/** The same account, signing in with a token instead of a password. */
+const OAUTH = JSON.stringify({
+  version: 1,
+  accounts: [
+    {
+      id: "work",
+      email: "me@work.com",
+      imap: {host: "imap.gmail.com", port: 993, encryption: "tls", login: "me@work.com"},
+      smtp: {host: "smtp.gmail.com", port: 587, encryption: "start-tls", login: "me@work.com"},
+      auth: {
+        kind: "oauth2",
+        provider: "google",
+        clientId: "client-1",
+        hasClientSecret: true,
+        tokenUrl: "https://accounts.google.com",
+      },
+    },
+  ],
+});
+
+async function stored(file: string): Promise<{accounts: Record<string, unknown>[]}> {
+  return JSON.parse(await readFile(file, "utf8")) as {accounts: Record<string, unknown>[]};
+}
+
+const BASE = {
+  email: "new@example.com",
+  preset: "custom" as const,
+  imapHost: "imap.example.com",
+  imapPort: 993,
+  imapEncryption: "tls" as const,
+  smtpHost: "smtp.example.com",
+  smtpPort: 587,
+  smtpEncryption: "start-tls" as const,
+};
 
 test("reads accounts without exposing their secrets", async () => {
   await withConfig(EXISTING, async (accounts) => {
-    const list = await accounts.list();
-    assert.equal(list.length, 1);
-    const [account] = list;
+    const [account] = await accounts.list();
     assert.equal(account.id, "work");
     assert.equal(account.email, "me@work.com");
     assert.equal(account.displayName, "Me At Work");
     assert.equal(account.isDefault, true);
-    assert.equal(account.incoming.kind, "imap");
     assert.equal(account.incoming.host, "imap.gmail.com");
-    assert.equal(account.incoming.port, 993);
-    assert.equal(account.incoming.encryption, "tls");
     assert.equal(account.incoming.auth, "password");
-    assert.equal(account.outgoing.kind, "smtp");
     assert.equal(account.outgoing.port, 587);
     assert.equal(account.outgoing.encryption, "start-tls");
-    // A hand-written inline password is not one we hold.
+    // Nothing on the wire to the renderer carries the credential itself —
+    // only whether one is held.
     assert.equal(account.secretStored, false);
-    assert.equal(
-      JSON.stringify(account).includes("inline-secret"),
-      false,
-      "account DTOs must never carry the mailbox password",
-    );
+    assert.equal(JSON.stringify(account).includes("hunter2"), false);
   });
 });
 
 test("reports an oauth2 account's auth kind", async () => {
-  const source = `[accounts.oauth]
-email = "me@corp.com"
-backend.type = "imap"
-backend.host = "imap.corp.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "me@corp.com"
-backend.auth.type = "oauth2"
-backend.auth.method = "xoauth2"
-backend.auth.access-token.cmd = "print-token"
-`;
-  await withConfig(source, async (accounts) => {
+  await withConfig(OAUTH, async (accounts) => {
     const [account] = await accounts.list();
     assert.equal(account.incoming.auth, "oauth2");
+    assert.equal(account.outgoing.auth, "oauth2");
   });
 });
 
-test("writes a new account that reads its password from the keychain", async () => {
-  await withConfig("", async (accounts, configPath, harnessed) => {
-    await accounts.save({
-      id: "personal",
-      email: "me@example.com",
-      displayName: "Me",
-      preset: "gmail",
-      imapHost: "imap.gmail.com",
-      imapPort: 993,
-      imapEncryption: "tls",
-      smtpHost: "smtp.gmail.com",
-      smtpPort: 587,
-      smtpEncryption: "start-tls",
-      password: "app-password",
-      isDefault: true,
-    });
-
-    const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
-    const account = written.accounts.personal;
-    assert.equal(account.email, "me@example.com");
-    assert.equal(account["display-name"], "Me");
-    assert.equal(account.default, true);
-    assert.equal(account.backend.host, "imap.gmail.com");
-    assert.equal(account.backend.encryption.type, "tls");
-    assert.equal(account.message.send.backend.port, 587);
-    assert.match(account.backend.auth.cmd, /^security find-generic-password /);
-    assert.match(account.backend.auth.cmd, /FlareAI Email: personal/);
-    assert.equal(
-      (await readFile(configPath, "utf8")).includes("app-password"),
-      false,
-      "the password must never be written into the config file",
-    );
-
-    const keychainCall = harnessed.calls.find((call) => call.command === "security");
-    assert.ok(keychainCall, "expected the password to be stored in the keychain");
-    assert.deepEqual(keychainCall.args, ["-i"]);
-    assert.match(keychainCall.input ?? "", /^add-generic-password -U /);
-    assert.match(keychainCall.input ?? "", /"app-password"/);
-    assert.equal(
-      harnessed.calls.some((call) => call.args.includes("app-password")),
-      false,
-      "the password must never appear in a process argument",
-    );
+test("a new account's password goes to the keychain, never to the file", async () => {
+  await withConfig("", async (accounts, file, harnessed) => {
+    await accounts.save({...BASE, id: "personal", password: "hunter2", isDefault: true});
+    const written = await readFile(file, "utf8");
+    assert.equal(written.includes("hunter2"), false, "the file must never hold a secret");
+    const saved = (await stored(file)).accounts[0];
+    assert.equal(saved.id, "personal");
+    assert.deepEqual(saved.auth, {kind: "password"});
+    // The secret goes over stdin, so it never appears in the process table.
+    const call = harnessed.calls.find((item) => item.command === "security");
+    assert.ok(call, "the password has to reach the keychain");
+    assert.equal(call.args.join(" ").includes("hunter2"), false);
+    assert.match(call.input ?? "", /add-generic-password/);
+    assert.match(call.input ?? "", new RegExp(keychainService("personal")));
+    assert.match(call.input ?? "", /hunter2/);
   });
 });
 
 test("round-trips a saved account back through list()", async () => {
   await withConfig("", async (accounts) => {
-    await accounts.save({
-      id: "personal",
-      email: "me@example.com",
-      preset: "custom",
-      imapHost: "imap.example.com",
-      imapPort: 993,
-      imapEncryption: "tls",
-      smtpHost: "smtp.example.com",
-      smtpPort: 465,
-      smtpEncryption: "tls",
-      password: "secret",
-    });
+    await accounts.save({...BASE, id: "personal", displayName: "Personal", password: "x"});
     const [account] = await accounts.list();
     assert.equal(account.id, "personal");
-    assert.equal(account.secretStored, true);
-    assert.equal(account.incoming.auth, "command");
-    assert.equal(account.outgoing.port, 465);
+    assert.equal(account.displayName, "Personal");
+    assert.equal(account.incoming.host, "imap.example.com");
+    assert.equal(account.outgoing.host, "smtp.example.com");
   });
 });
 
-test("preserves hand-written keys the settings form does not own", async () => {
-  await withConfig(EXISTING, async (accounts, configPath) => {
+test("editing an OAuth2 account keeps the client it was registered with", async () => {
+  await withConfig(OAUTH, async (accounts, file) => {
+    // The settings form collects servers, not client ids — so saving one must
+    // not turn a working token account into an unusable password account.
     await accounts.save({
-      originalId: "work",
+      ...BASE,
       id: "work",
+      originalId: "work",
       email: "me@work.com",
-      preset: "gmail",
       imapHost: "imap.gmail.com",
-      imapPort: 993,
-      imapEncryption: "tls",
       smtpHost: "smtp.gmail.com",
-      smtpPort: 587,
-      smtpEncryption: "start-tls",
-      password: "new-password",
     });
-    const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
-    assert.equal(
-      written.accounts.work.folder.alias.sent,
-      "[Gmail]/Sent Mail",
-      "folder aliases set by hand must survive a re-save",
-    );
-    // The inline password was replaced by a keychain lookup.
-    assert.equal(written.accounts.work.backend.auth.raw, undefined);
-    assert.match(written.accounts.work.backend.auth.cmd, /find-generic-password/);
+    const saved = (await stored(file)).accounts[0];
+    assert.deepEqual(saved.auth, {
+      kind: "oauth2",
+      provider: "google",
+      clientId: "client-1",
+      hasClientSecret: true,
+      tokenUrl: "https://accounts.google.com",
+    });
   });
 });
 
-test("editing an OAuth2 account leaves its auth block intact", async () => {
-  const source = `[accounts.corp]
-email = "me@corp.com"
-backend.type = "imap"
-backend.host = "imap.corp.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "me@corp.com"
-backend.auth.type = "oauth2"
-backend.auth.method = "xoauth2"
-backend.auth.client-id = "client-123"
-backend.auth.auth-url = "https://accounts.example.com/authorize"
-backend.auth.token-url = "https://accounts.example.com/token"
-backend.auth.scope = "https://mail.example.com/"
-backend.auth.access-token.cmd = "print-token"
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.corp.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "me@corp.com"
-message.send.backend.auth.type = "oauth2"
-message.send.backend.auth.method = "xoauth2"
-message.send.backend.auth.client-id = "client-123"
-message.send.backend.auth.access-token.cmd = "print-token"
-`;
-  await withConfig(source, async (accounts, configPath) => {
-    // Changing only the port must not cost the account its credentials: the
-    // form never collects a client id, so rewriting auth would break it.
+test("giving an OAuth2 account a password makes it a password account", async () => {
+  await withConfig(OAUTH, async (accounts, file) => {
     await accounts.save({
-      originalId: "corp",
-      id: "corp",
-      email: "me@corp.com",
-      preset: "custom",
-      imapHost: "imap.corp.com",
-      imapPort: 993,
-      imapEncryption: "tls",
-      smtpHost: "smtp.corp.com",
-      smtpPort: 465,
-      smtpEncryption: "tls",
+      ...BASE,
+      id: "work",
+      originalId: "work",
+      email: "me@work.com",
+      password: "typed-by-hand",
     });
-    const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
-    assert.equal(written.accounts.corp.backend.auth.type, "oauth2");
-    assert.equal(written.accounts.corp.backend.auth["client-id"], "client-123");
-    assert.equal(written.accounts.corp.backend.auth["access-token"].cmd, "print-token");
-    assert.equal(written.accounts.corp.message.send.backend.auth.type, "oauth2");
-    // The server change the user actually asked for still landed.
-    assert.equal(written.accounts.corp.message.send.backend.port, 465);
+    assert.deepEqual((await stored(file)).accounts[0].auth, {kind: "password"});
   });
 });
 
-test("a credential command is written as Himalaya's password-plus-cmd pair", async () => {
-  await withConfig("", async (accounts, configPath, harnessed) => {
-    await accounts.save({
-      id: "cmd",
-      email: "me@example.com",
-      preset: "custom",
-      imapHost: "imap.example.com",
-      imapPort: 993,
-      imapEncryption: "tls",
-      smtpHost: "smtp.example.com",
-      smtpPort: 465,
-      smtpEncryption: "tls",
-      tokenCommand: "print-my-secret",
-    });
-    const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
-    // `oauth2` would require a client id and scope this form never collects.
-    assert.equal(written.accounts.cmd.backend.auth.type, "password");
-    assert.equal(written.accounts.cmd.backend.auth.cmd, "print-my-secret");
-    assert.equal(written.accounts.cmd.message.send.backend.auth.cmd, "print-my-secret");
-    assert.equal(
-      harnessed.calls.some((call) => call.command === "security"),
-      false,
-      "a credential command needs no keychain entry of its own",
-    );
-  });
-});
-
-test("re-saving a keychain account without a new password keeps its lookup", async () => {
-  await withConfig("", async (accounts, configPath) => {
-    const base = {
-      id: "keep",
-      email: "me@example.com",
-      preset: "custom" as const,
-      imapHost: "imap.example.com",
-      imapPort: 993,
-      imapEncryption: "tls" as const,
-      smtpHost: "smtp.example.com",
-      smtpPort: 587,
-      smtpEncryption: "start-tls" as const,
-    };
-    await accounts.save({...base, password: "secret"});
-    await accounts.save({...base, originalId: "keep", smtpPort: 465, smtpEncryption: "tls"});
-    const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
-    assert.match(written.accounts.keep.backend.auth.cmd, /FlareAI Email: keep/);
-    assert.equal(written.accounts.keep.message.send.backend.port, 465);
-  });
-});
-
-test("moves the keychain entry when an account is renamed", async () => {
+test("moves the keychain entries when an account is renamed", async () => {
   await withConfig(
-    "",
-    async (accounts, configPath, harnessed) => {
+    EXISTING,
+    async (accounts, file, harnessed) => {
       await accounts.save({
-        id: "old",
-        email: "me@example.com",
-        preset: "custom",
-        imapHost: "imap.example.com",
-        imapPort: 993,
-        imapEncryption: "tls",
-        smtpHost: "smtp.example.com",
-        smtpPort: 465,
-        smtpEncryption: "tls",
-        password: "secret",
+        ...BASE,
+        id: "office",
+        originalId: "work",
+        email: "me@work.com",
       });
-      harnessed.calls.length = 0;
-      await accounts.save({
-        originalId: "old",
-        id: "new",
-        email: "me@example.com",
-        preset: "custom",
-        imapHost: "imap.example.com",
-        imapPort: 993,
-        imapEncryption: "tls",
-        smtpHost: "smtp.example.com",
-        smtpPort: 465,
-        smtpEncryption: "tls",
-      });
-
-      const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
-      assert.equal(written.accounts.old, undefined);
-      assert.match(written.accounts.new.backend.auth.cmd, /FlareAI Email: new/);
-
+      const saved = await stored(file);
+      assert.deepEqual(saved.accounts.map((item) => item.id), ["office"]);
       const inputs = harnessed.calls.map((call) => call.input ?? "").join("\n");
-      assert.match(inputs, /find-generic-password -s "FlareAI Email: old"/);
-      assert.match(inputs, /add-generic-password -U -s "FlareAI Email: new"/);
-      assert.match(inputs, /delete-generic-password -s "FlareAI Email: old"/);
+      // Read from the old id, written under the new one, then dropped.
+      assert.match(inputs, new RegExp(`find-generic-password -s '${keychainService("work")}'`));
+      assert.match(inputs, new RegExp(`add-generic-password -U -s '${keychainService("office")}'`));
+      assert.match(inputs, new RegExp(`delete-generic-password -s '${keychainService("work")}'`));
     },
     (call) =>
-      call.input?.startsWith("find-generic-password")
-        ? {code: 0, stdout: "secret\n", stderr: ""}
+      (call.input ?? "").startsWith("find-generic-password")
+        ? {code: 0, stdout: "carried-over\n", stderr: ""}
         : undefined,
   );
 });
 
 test("keeps exactly one default account", async () => {
-  await withConfig(EXISTING, async (accounts, configPath) => {
-    await accounts.save({
-      id: "second",
-      email: "me@other.com",
-      preset: "custom",
-      imapHost: "imap.other.com",
-      imapPort: 993,
-      imapEncryption: "tls",
-      smtpHost: "smtp.other.com",
-      smtpPort: 587,
-      smtpEncryption: "start-tls",
-      isDefault: true,
-    });
-    const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
-    assert.equal(written.accounts.second.default, true);
-    assert.equal(written.accounts.work.default, undefined);
+  await withConfig(EXISTING, async (accounts, file) => {
+    await accounts.save({...BASE, id: "personal", isDefault: true, password: "x"});
+    const saved = await stored(file);
+    const defaults = saved.accounts.filter((item) => item.isDefault === true);
+    assert.deepEqual(defaults.map((item) => item.id), ["personal"]);
   });
 });
 
-test("removing an account drops its table and its keychain entry", async () => {
-  await withConfig(EXISTING, async (accounts, configPath, harnessed) => {
+test("removing an account drops it and every secret filed under it", async () => {
+  await withConfig(EXISTING, async (accounts, file, harnessed) => {
     await accounts.remove("work");
-    const written = parseToml(await readFile(configPath, "utf8")) as Record<string, any>;
-    assert.deepEqual(written.accounts, {});
-    assert.match(
-      harnessed.calls.map((call) => call.input ?? "").join("\n"),
-      new RegExp(`delete-generic-password -s "${keychainService("work")}"`),
-    );
+    assert.deepEqual((await stored(file)).accounts, []);
+    const inputs = harnessed.calls.map((call) => call.input ?? "").join("\n");
+    for (const kind of ["me@work.com", "me@work.com (access-token)", "me@work.com (refresh-token)"])
+      assert.match(
+        inputs,
+        new RegExp(`delete-generic-password -s '${keychainService("work")}' -a '${kind.replace(/[()]/g, (c) => `\\${c}`)}'`),
+      );
   });
 });
 
-/** Wraps a rendered body in the header block Himalaya prints before it. */
-function readResult(body: string): (call: Call) => CommandResult | undefined {
-  const rendered = [
-    "From: Instagram <no-reply@mail.instagram.com>",
-    "To: Carl <me@work.com>",
-    "Subject: Confirm your email",
-    "Date: Fri, 15 Aug 2026 10:00:00 +0000",
-    "",
-    body,
-  ].join("\n");
-  return (call) =>
-    call.args.includes("read") ? {code: 0, stdout: JSON.stringify(rendered), stderr: ""} : undefined;
+/**
+ * The outgoing message itself, built directly. Sending puts it on an SMTP
+ * connection and saving a draft appends it to a folder; what both carry is
+ * this, so it is tested as the document it is.
+ */
+const OUTGOING: {from: string; to: string[]; cc: string[]; bcc: string[]; subject: string; body: string} = {
+  from: "me@work.com",
+  to: ["dana@example.com"],
+  cc: [],
+  bcc: [],
+  subject: "Friday",
+  body: "Are we still on?",
+};
+
+test("writes an attachment into the message", async () => {
+  const file = path.join(await mkdtemp(path.join(tmpdir(), "flareai-mime-")), "note.txt");
+  await writeFile(file, "the quick brown fox", "utf8");
+  const raw = mimeMessage({
+    ...OUTGOING,
+    attachments: [
+      {name: "note.txt", mime: "text/plain", content: await readFile(file)},
+    ],
+  });
+  assert.match(raw, /Content-Type: multipart\/mixed/);
+  assert.match(raw, /Content-Disposition: attachment; filename="note.txt"/);
+  assert.match(raw, new RegExp(Buffer.from("the quick brown fox").toString("base64")));
+});
+
+test("threading headers travel with a reply", () => {
+  const raw = mimeMessage({
+    ...OUTGOING,
+    attachments: [],
+    inReplyTo: "<b@example.com>",
+    references: ["<a@example.com>", "<b@example.com>"],
+  });
+  assert.match(raw, /In-Reply-To: <b@example.com>/);
+  assert.match(raw, /References: <a@example.com> <b@example.com>/);
+});
+
+test("an important message says so in both spellings clients read", () => {
+  const raw = mimeMessage({...OUTGOING, attachments: [], importance: "high"});
+  assert.match(raw, /^Importance: high$/m);
+  assert.match(raw, /^X-Priority: 1 \(Highest\)$/m);
+});
+
+test("low priority is its own pair of headers", () => {
+  const raw = mimeMessage({...OUTGOING, attachments: [], importance: "low"});
+  assert.match(raw, /^Importance: low$/m);
+  assert.match(raw, /^X-Priority: 5 \(Lowest\)$/m);
+});
+
+test("an ordinary message claims no priority at all", () => {
+  const raw = mimeMessage({...OUTGOING, attachments: [], importance: "normal"});
+  assert.equal(/Importance:/.test(raw), false);
+  assert.equal(/X-Priority:/.test(raw), false);
+});
+
+test("a header cannot smuggle another header in", () => {
+  const raw = mimeMessage({
+    ...OUTGOING,
+    subject: "Friday\r\nBcc: sneak@example.com",
+    attachments: [],
+  });
+  assert.equal(/^Bcc:/m.test(raw), false, "a folded subject must not become a header");
+  assert.match(raw, /^Subject: Friday Bcc: sneak@example.com$/m);
+});
+
+/**
+ * The read paths run over a real IMAP conversation with a fake server, rather
+ * than against a stubbed client. What can go wrong here is wire-level — a
+ * section fetched by the wrong address, a BODYSTRUCTURE walked badly, a UID
+ * range built by hand — and none of that shows up against a fake that answers
+ * in JavaScript objects.
+ */
+
+const PLAIN_HEADERS = 'Content-Type: text/plain; charset="utf-8"\r\n\r\n';
+
+function envelopeLine(options: {subject: string; from: [string, string]; to?: [string, string]; messageId?: string}): string {
+  const address = ([name, mail]: [string, string]): string => {
+    const [box, host] = mail.split("@");
+    return `(("${name}" NIL "${box}" "${host}"))`;
+  };
+  const from = address(options.from);
+  const to = options.to ? address(options.to) : "NIL";
+  return `("Fri, 15 Aug 2026 10:00:00 +0000" "${options.subject}" ${from} ${from} ${from} ${to} NIL NIL NIL "${options.messageId ?? "<x@example.com>"}")`;
+}
+
+async function withMailbox(
+  mailboxes: FakeMailbox[],
+  body: (accounts: EmailAccounts, server: FakeImapServer, smtp: FakeSmtpServer) => Promise<void>,
+  options: {rejectLogin?: boolean; run?: ReturnType<typeof harness>["run"]} = {},
+): Promise<void> {
+  const server = await startImapServer({mailboxes, rejectLogin: options.rejectLogin});
+  const smtp = await startSmtpServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-imap-"));
+  const storePath = path.join(directory, "email-accounts.json");
+  await writeFile(
+    storePath,
+    JSON.stringify({
+      version: 1,
+      accounts: [
+        {
+          id: "work",
+          email: "me@work.com",
+          isDefault: true,
+          imap: {host: "127.0.0.1", port: server.port, encryption: "none", login: "me@work.com"},
+          smtp: {host: "127.0.0.1", port: smtp.port, encryption: "none", login: "me@work.com"},
+          auth: {kind: "password"},
+        },
+      ],
+    }),
+    "utf8",
+  );
+  const accounts = new EmailAccounts({
+    storePath,
+    downloadsDir: path.join(directory, "Downloads"),
+    // The password is the only secret these tests need, and it comes back the
+    // way `security` prints one.
+    run:
+      options.run ??
+      (async (command, _args, input) =>
+        command === "security" && (input ?? "").startsWith("find-generic-password")
+          ? {code: 0, stdout: "secret\n", stderr: ""}
+          : {code: 0, stdout: "", stderr: ""}),
+  });
+  try {
+    await body(accounts, server, smtp);
+  } finally {
+    await accounts.close();
+    await server.close();
+    await smtp.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+}
+
+/** A message whose only body is HTML, as most mail is. */
+function htmlOnly(uid: number, html: string): FakeMessage {
+  return {
+    uid,
+    flags: ["\\Seen"],
+    envelope: envelopeLine({subject: "Confirm your email", from: ["Instagram", "no-reply@mail.instagram.com"]}),
+    bodyStructure: `("TEXT" "HTML" ("CHARSET" "utf-8") NIL NIL "7BIT" ${html.length} 1)`,
+    parts: {"1": html, "1.MIME": PLAIN_HEADERS},
+  };
+}
+
+/** The ordinary shape: a plain part and an HTML part saying the same thing. */
+function alternative(uid: number, text: string, html: string): FakeMessage {
+  return {
+    uid,
+    flags: [],
+    envelope: envelopeLine({subject: "Q3 numbers", from: ["Priya", "priya@example.com"], to: ["Me", "me@work.com"]}),
+    bodyStructure:
+      `(("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" ${text.length} 1)` +
+      `("TEXT" "HTML" ("CHARSET" "utf-8") NIL NIL "7BIT" ${html.length} 1) "ALTERNATIVE")`,
+    parts: {"1": text, "2": html, "1.MIME": PLAIN_HEADERS, "2.MIME": PLAIN_HEADERS},
+  };
 }
 
 test("renders an HTML-only message as readable text", async () => {
-  const body = [
-    "<#part type=text/html>",
-    '<img height="33" src="https://static.example.com/logo.png" style="border:0;" />',
-    "<p>Hi carlvincetan,</p>",
-    "<p>You recently added carlvincetan@gmail.com to your Instagram profile.<br>Please confirm this email address. Your code:848323</p>",
-    "<p>This message was sent to carlvincetan&#064;gmail.com. &copy; Instagram</p>",
-    "<#/part>",
-  ].join("\n");
-  await withConfig(
-    EXISTING,
-    async (accounts) => {
-      const message = await accounts.message({id: "7", account: "work"});
-      assert.equal(message.subject, "Confirm your email");
-      assert.equal(message.from?.address, "no-reply@mail.instagram.com");
-      assert.equal(message.body.includes("<#part"), false, "MML markers must not reach the reader");
-      assert.equal(message.body.includes("<img"), false, "tags must not reach the reader");
-      assert.match(message.body, /^Hi carlvincetan,/);
-      assert.match(message.body, /profile\.\nPlease confirm/);
-      assert.match(message.body, /sent to carlvincetan@gmail\.com\. © Instagram/);
-    },
-    readResult(body),
-  );
+  const html = "<p>Hi carlvincetan,</p><p>Your code:848323</p><p>&copy; Instagram</p>";
+  await withMailbox([{path: "INBOX", messages: [htmlOnly(7, html)]}], async (accounts) => {
+    const message = await accounts.message({id: "7", account: "work", folder: "INBOX"});
+    assert.equal(message.subject, "Confirm your email");
+    assert.equal(message.from?.address, "no-reply@mail.instagram.com");
+    assert.equal(message.body.includes("<p"), false, "tags must not reach the reader");
+    assert.match(message.body, /^Hi carlvincetan,/);
+    assert.match(message.body, /Your code:848323/);
+  });
 });
 
 test("carries the sender's HTML alongside the text version", async () => {
-  const body =
-    "<#multipart type=alternative><#part type=text/plain>Plain words.<#/part>" +
-    '<#part type=text/html><p>HTML <b>words</b>.</p><#/part><#/multipart>';
-  await withConfig(
-    EXISTING,
+  await withMailbox(
+    [{path: "INBOX", messages: [alternative(7, "Plain words.", "<p>HTML <b>words</b>.</p>")]}],
     async (accounts) => {
-      const message = await accounts.message({id: "7", account: "work"});
+      const message = await accounts.message({id: "7", account: "work", folder: "INBOX"});
       // The markup goes over as written: sanitising is the reader's job, and
       // half-cleaning it here would only make the reader trust it wrongly.
       assert.equal(message.html, "<p>HTML <b>words</b>.</p>");
       assert.equal(message.body, "Plain words.", "the text fallback still stands");
     },
-    readResult(body),
   );
 });
 
 test("reports no HTML for a message that has none", async () => {
-  await withConfig(
-    EXISTING,
-    async (accounts) => {
-      const message = await accounts.message({id: "7", account: "work"});
-      assert.equal(message.html, null);
-    },
-    readResult("Just words."),
-  );
-});
-
-test("prefers the plain-text part of an alternative message", async () => {
-  const body =
-    "<#multipart type=alternative><#part type=text/plain>Plain words.<#/part>" +
-    "<#part type=text/html><p>HTML <b>words</b>.</p><#/part><#/multipart>";
-  await withConfig(
-    EXISTING,
-    async (accounts) => {
-      const message = await accounts.message({id: "7", account: "work"});
-      assert.equal(message.body, "Plain words.");
-    },
-    readResult(body),
-  );
+  const message: FakeMessage = {
+    uid: 7,
+    flags: [],
+    envelope: envelopeLine({subject: "Just words", from: ["Priya", "priya@example.com"]}),
+    bodyStructure: '("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 11 1)',
+    parts: {"1": "Just words.", "1.MIME": PLAIN_HEADERS},
+  };
+  await withMailbox([{path: "INBOX", messages: [message]}], async (accounts) => {
+    const read = await accounts.message({id: "7", account: "work", folder: "INBOX"});
+    assert.equal(read.html, null);
+    assert.equal(read.body, "Just words.");
+  });
 });
 
 test("leaves a plain-text body untouched, entities included", async () => {
   const body = "Columns  align:\n  a  1\n  b  2\n\nLiterally &#064; and <not a tag.";
-  await withConfig(
-    EXISTING,
-    async (accounts) => {
-      const message = await accounts.message({id: "7", account: "work"});
-      assert.equal(message.body, body, "plain text is already rendered; rewriting it can only lose");
-    },
-    readResult(body),
-  );
-});
-
-test("drops attachment stubs from the reading body", async () => {
-  const body =
-    "<#part type=text/plain>See attached.<#/part>\n" +
-    "<#part filename=report.pdf type=application/pdf><#/part>";
-  await withConfig(
-    EXISTING,
-    async (accounts) => {
-      const message = await accounts.message({id: "7", account: "work"});
-      assert.equal(message.body, "See attached.");
-    },
-    readResult(body),
-  );
-});
-
-test("turns typed words into a query Himalaya can parse", () => {
-  // A bare word is not a condition, so it has to become one — against the
-  // three fields someone means when they search a mailbox.
-  assert.equal(
-    searchQuery("invoice"),
-    'subject "invoice" or from "invoice" or body "invoice"',
-  );
-  // Anyone who does speak the language keeps it, which is also how the
-  // agent's own tool calls reach the backend.
-  assert.equal(searchQuery("from alice@example.com"), "from alice@example.com");
-  assert.equal(searchQuery("", "date-asc"), "order by date asc");
-  assert.equal(searchQuery("hi", "from"), 'subject "hi" or from "hi" or body "hi" order by from asc');
-  assert.equal(searchQuery(undefined), "");
-});
-
-test("lists the files a message announces", async () => {
-  const body =
-    "<#part type=text/plain>See attached.<#/part>\n" +
-    "<#part filename=report.pdf type=application/pdf><#/part>";
-  await withConfig(
-    EXISTING,
-    async (accounts) => {
-      const message = await accounts.message({id: "7", account: "work"});
-      assert.deepEqual(message.attachments, [{name: "report.pdf", mime: "application/pdf"}]);
-    },
-    readResult(body),
-  );
-});
-
-test("carries the ids a reply needs to thread", async () => {
-  const rendered = [
-    "From: Priya <priya@example.com>",
-    "To: Me <me@work.com>",
-    "Subject: Re: Q3",
-    "Date: Fri, 15 Aug 2026 10:00:00 +0000",
-    "Message-ID: <c@example.com>",
-    "References: <a@example.com> <b@example.com>",
-    "In-Reply-To: <b@example.com>",
-    "",
-    "Words.",
-  ].join("\n");
-  await withConfig(
-    EXISTING,
-    async (accounts, _configPath, harnessed) => {
-      const message = await accounts.message({id: "7", account: "work"});
-      assert.equal(message.messageId, "<c@example.com>");
-      // In-Reply-To repeats the last reference; the chain must not double it.
-      assert.deepEqual(message.references, ["<a@example.com>", "<b@example.com>"]);
-      const read = harnessed.calls.find((call) => call.args.includes("read"));
-      assert.ok(
-        read?.args.includes("Message-ID"),
-        "the headers have to be asked for, or Himalaya prints none of them",
-      );
-    },
-    (call) =>
-      call.args.includes("read") ? {code: 0, stdout: JSON.stringify(rendered), stderr: ""} : undefined,
-  );
-});
-
-test("writes an attachment into the message it sends", async () => {
-  await withConfig(EXISTING, async (accounts, configPath, harnessed) => {
-    const file = path.join(path.dirname(configPath), "note.txt");
-    await writeFile(file, "hello", "utf8");
-    await accounts.send({
-      account: "work",
-      from: "me@work.com",
-      to: ["you@example.com"],
-      cc: [],
-      bcc: [],
-      subject: "With a file",
-      body: "See attached.",
-      attachments: [file],
-      inReplyTo: "<b@example.com>",
-      references: ["<a@example.com>"],
-    });
-    const sent = harnessed.calls.find((call) => call.args.includes("send"))?.input ?? "";
-    assert.match(sent, /Content-Type: multipart\/mixed; boundary="/);
-    assert.match(sent, /Content-Disposition: attachment; filename="note.txt"/);
-    assert.match(sent, new RegExp(Buffer.from("hello").toString("base64")));
-    // Without both headers the reply starts a new thread for the recipient.
-    assert.match(sent, /In-Reply-To: <b@example.com>/);
-    assert.match(sent, /References: <a@example.com> <b@example.com>/);
+  const message: FakeMessage = {
+    uid: 7,
+    flags: [],
+    envelope: envelopeLine({subject: "Table", from: ["Priya", "priya@example.com"]}),
+    bodyStructure: `("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" ${body.length} 1)`,
+    parts: {"1": body, "1.MIME": PLAIN_HEADERS},
+  };
+  await withMailbox([{path: "INBOX", messages: [message]}], async (accounts) => {
+    const read = await accounts.message({id: "7", account: "work", folder: "INBOX"});
+    assert.equal(read.body, body);
   });
 });
 
-test("reports Himalaya as missing when the binary does not run", async () => {
-  await withConfig(
-    "",
-    async (accounts) => {
-      const tooling = await accounts.tooling();
-      assert.equal(tooling.installed, false);
-      assert.match(tooling.error ?? "", /not installed/);
+test("lists the files a message announces without downloading them", async () => {
+  const message: FakeMessage = {
+    uid: 7,
+    flags: [],
+    envelope: envelopeLine({subject: "Invoice", from: ["Accounts", "accounts@kinnov.com"]}),
+    bodyStructure:
+      '(("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 13 1)' +
+      '("APPLICATION" "PDF" ("NAME" "report.pdf") NIL NIL "BASE64" 90000 NIL ' +
+      '("ATTACHMENT" ("FILENAME" "report.pdf")) NIL NIL) "MIXED")',
+    parts: {"1": "See attached.", "1.MIME": PLAIN_HEADERS, "2": "%PDF-nope", "2.MIME": PLAIN_HEADERS},
+  };
+  await withMailbox([{path: "INBOX", messages: [message]}], async (accounts, server) => {
+    const read = await accounts.message({id: "7", account: "work", folder: "INBOX"});
+    assert.deepEqual(read.attachments, [{name: "report.pdf", mime: "application/pdf"}]);
+    assert.equal(read.body, "See attached.");
+    // The whole point of reading the structure first: the PDF is named in the
+    // reader without a byte of it crossing the wire.
+    const fetched = server.commands.filter((line) => /BODY\.PEEK\[2\]/.test(line));
+    assert.deepEqual(fetched, [], "an attachment must not be fetched to show the body");
+  });
+});
+
+test("carries the ids a reply needs to thread", async () => {
+  const message: FakeMessage = {
+    uid: 7,
+    flags: [],
+    envelope: envelopeLine({
+      subject: "Re: Q3",
+      from: ["Priya", "priya@example.com"],
+      to: ["Me", "me@work.com"],
+      messageId: "<c@example.com>",
+    }),
+    bodyStructure: '("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 6 1)',
+    parts: {
+      "1": "Words.",
+      "1.MIME": PLAIN_HEADERS,
+      HEADER: "References: <a@example.com> <b@example.com>\r\nIn-Reply-To: <b@example.com>\r\n\r\n",
     },
-    (call) => (call.command === "himalaya" ? {code: 127, stdout: "", stderr: "not found"} : undefined),
+  };
+  await withMailbox([{path: "INBOX", messages: [message]}], async (accounts) => {
+    const read = await accounts.message({id: "7", account: "work", folder: "INBOX"});
+    assert.equal(read.messageId, "<c@example.com>");
+    // In-Reply-To repeats the last reference; the chain must not double it.
+    assert.deepEqual(read.references, ["<a@example.com>", "<b@example.com>"]);
+  });
+});
+
+test("lists a folder newest first, and pages through the older ones", async () => {
+  const messages = Array.from({length: 5}, (_, index) => ({
+    ...alternative(index + 1, `Body ${index + 1}`, `<p>Body ${index + 1}</p>`),
+    envelope: envelopeLine({subject: `Message ${index + 1}`, from: ["Priya", "priya@example.com"]}),
+  }));
+  await withMailbox([{path: "INBOX", messages}], async (accounts) => {
+    const first = await accounts.envelopes({account: "work", folder: "INBOX", pageSize: 2});
+    assert.deepEqual(first.map((item) => item.id), ["5", "4"]);
+    const second = await accounts.envelopes({account: "work", folder: "INBOX", pageSize: 2, page: 2});
+    assert.deepEqual(second.map((item) => item.id), ["3", "2"]);
+  });
+});
+
+test("a folder with no search runs no SEARCH at all", async () => {
+  await withMailbox(
+    [{path: "INBOX", messages: [alternative(1, "a", "<p>a</p>")]}],
+    async (accounts, server) => {
+      await accounts.envelopes({account: "work", folder: "INBOX"});
+      assert.deepEqual(
+        server.commands.filter((line) => line.includes("SEARCH")),
+        [],
+        "the newest page is a window on the mailbox, not a question about it",
+      );
+    },
   );
 });
 
-test("surfaces the innermost cause when a connection test fails", async () => {
-  await withConfig(
-    EXISTING,
+test("a subject search asks the server, and only for what matched", async () => {
+  const wanted = {
+    ...alternative(2, "b", "<p>b</p>"),
+    envelope: envelopeLine({subject: "Tax Invoice 21762", from: ["Accounts", "accounts@kinnov.com"]}),
+    searchText: "tax invoice 21762",
+  };
+  const other = {
+    ...alternative(1, "a", "<p>a</p>"),
+    envelope: envelopeLine({subject: "Lunch", from: ["Priya", "priya@example.com"]}),
+    searchText: "lunch",
+  };
+  await withMailbox([{path: "INBOX", messages: [other, wanted]}], async (accounts, server) => {
+    const found = await accounts.envelopes({
+      account: "work",
+      folder: "INBOX",
+      query: 'subject "Tax Invoice 21762"',
+    });
+    assert.deepEqual(found.map((item) => item.id), ["2"]);
+    assert.ok(
+      server.commands.some((line) => /SEARCH.*SUBJECT/i.test(line)),
+      "a field query has to reach the server as a field search",
+    );
+  });
+});
+
+test("flags, moves and deletes reach the server by uid", async () => {
+  const inbox: FakeMailbox = {path: "INBOX", messages: [alternative(7, "a", "<p>a</p>")]};
+  const trash: FakeMailbox = {path: "Trash", specialUse: "\\Trash", messages: []};
+  await withMailbox([inbox, trash], async (accounts, server) => {
+    await accounts.flag({ids: ["7"], flag: "seen", on: true, account: "work", folder: "INBOX"});
+    assert.deepEqual(server.mailbox("INBOX")?.messages[0]?.flags, ["\\Seen"]);
+    await accounts.flag({ids: ["7"], flag: "seen", on: false, account: "work", folder: "INBOX"});
+    assert.deepEqual(server.mailbox("INBOX")?.messages[0]?.flags, []);
+    await accounts.move({ids: ["7"], target: "Trash", account: "work", folder: "INBOX"});
+    assert.equal(server.mailbox("INBOX")?.messages.length, 0);
+    assert.equal(server.mailbox("Trash")?.messages.length, 1);
+  });
+});
+
+test("folders are classified by the special-use flags the server reports", async () => {
+  await withMailbox(
+    [
+      {path: "INBOX", messages: []},
+      {path: "[Gmail]/Spam", specialUse: "\\Junk", messages: []},
+      {path: "[Gmail]/Sent Mail", specialUse: "\\Sent", messages: []},
+      {path: "Receipts", messages: []},
+    ],
+    async (accounts) => {
+      const folders = await accounts.folders("work");
+      // The inbox leads and the rest are alphabetical: the order the client
+      // library settles on, which the folder list shows as it comes.
+      assert.deepEqual(
+        folders.map((folder) => [folder.name, folder.role, folder.label]),
+        [
+          ["INBOX", "inbox", "Inbox"],
+          ["[Gmail]/Sent Mail", "sent", "Sent Mail"],
+          ["[Gmail]/Spam", "junk", "Spam"],
+          ["Receipts", "other", "Receipts"],
+        ],
+      );
+    },
+  );
+});
+
+test("one connection serves every message opened after it", async () => {
+  const messages = Array.from({length: 3}, (_, index) => alternative(index + 1, `b${index}`, `<p>b${index}</p>`));
+  await withMailbox([{path: "INBOX", messages}], async (accounts, server) => {
+    for (const message of messages)
+      await accounts.message({id: String(message.uid), account: "work", folder: "INBOX"});
+    // The whole reason for this module: the login is paid once, not per read.
+    assert.equal(
+      server.commands.filter((line) => line.startsWith("LOGIN")).length,
+      1,
+      "every message after the first must reuse the open connection",
+    );
+  });
+});
+
+test("a failed login is reported rather than cached as a broken account", async () => {
+  await withMailbox(
+    [{path: "INBOX", messages: []}],
     async (accounts) => {
       const tested = await accounts.test("work");
       assert.equal(tested.status, "error");
-      assert.equal(tested.error, "authentication failed");
+      assert.match(tested.error ?? "", /Invalid credentials/);
+      // A second attempt must reach the server again: caching the failure
+      // would leave the account broken until the app restarts.
+      const again = await accounts.test("work");
+      assert.equal(again.status, "error");
     },
-    (call) =>
-      call.args.includes("folder")
-        ? {
-            code: 1,
-            stdout: "",
-            stderr:
-              "Error: \n   0: [91mcannot build IMAP client[0m\n   1: [91mauthentication failed[0m\n\nNote: Run with --debug\n",
-          }
-        : undefined,
+    {rejectLogin: true},
   );
 });
 
 test("a passing connection test clears the error", async () => {
-  await withConfig(EXISTING, async (accounts) => {
+  await withMailbox([{path: "INBOX", messages: []}], async (accounts) => {
     const tested = await accounts.test("work");
     assert.equal(tested.status, "ok");
     assert.equal(tested.error, null);
   });
 });
 
-test("keeps the search query after every flag Himalaya expects first", async () => {
-  await withConfig(
-    EXISTING,
-    async (accounts, _configPath, harnessed) => {
-      await accounts.envelopes({folder: "INBOX", sort: "date-desc"});
-      const args = harnessed.calls[0]?.args ?? [];
-      assert.equal(args[args.length - 1], "order by date desc");
-      assert.ok(args.indexOf("--output") < args.length - 1);
-    },
-    (call) => (call.command === "himalaya" ? {code: 0, stdout: "[]", stderr: ""} : undefined),
-  );
+test("two reads at once queue down the one connection", async () => {
+  const messages = Array.from({length: 4}, (_, index) => alternative(index + 1, `b${index}`, `<p>b${index}</p>`));
+  await withMailbox([{path: "INBOX", messages}], async (accounts) => {
+    // IMAP carries one command at a time; without a queue the second of these
+    // interleaves with the first and the library rejects it.
+    const read = await Promise.all(
+      messages.map((message) =>
+        accounts.message({id: String(message.uid), account: "work", folder: "INBOX"}),
+      ),
+    );
+    assert.deepEqual(read.map((item) => item.id), ["1", "2", "3", "4"]);
+  });
 });
 
-test("reports the diagnostic when Himalaya fails but still exits zero", async () => {
-  await withConfig(
-    EXISTING,
-    async (accounts) => {
-      await assert.rejects(
-        accounts.envelopes({folder: "INBOX"}),
-        /cannot parse search emails query/,
-      );
-    },
-    (call) =>
-      call.command === "himalaya"
-        ? {
-            code: 0,
-            stdout: "",
-            stderr: "2026 WARN imap_codec\nError: cannot parse search emails query `x`\n   ╭─[query:1:11]\n───╯\n",
-          }
+/**
+ * Adopting the accounts of an earlier FlareAI, which kept them in a Himalaya
+ * config and drove its CLI. Nothing does now, but a user who set their
+ * mailboxes up then has them there and nowhere else.
+ */
+const LEGACY = [
+  "[accounts.work]",
+  'email = "me@work.com"',
+  'display-name = "Me At Work"',
+  "default = true",
+  'backend.type = "imap"',
+  'backend.host = "imap.gmail.com"',
+  "backend.port = 993",
+  'backend.encryption.type = "tls"',
+  'backend.login = "me@work.com"',
+  'backend.auth.type = "password"',
+  "backend.auth.cmd = \"print-the-password\"",
+  'message.send.backend.type = "smtp"',
+  'message.send.backend.host = "smtp.gmail.com"',
+  "message.send.backend.port = 587",
+  'message.send.backend.encryption.type = "start-tls"',
+  'message.send.backend.login = "me@work.com"',
+  "",
+  "[accounts.tokened]",
+  'email = "carl@kinnov.com"',
+  'backend.type = "imap"',
+  'backend.host = "imap.gmail.com"',
+  "backend.port = 993",
+  'backend.encryption.type = "tls"',
+  'backend.login = "carl@kinnov.com"',
+  'backend.auth.type = "oauth2"',
+  'backend.auth.client-id = "client-1"',
+  'backend.auth.client-secret = "shh"',
+  'backend.auth.token-url = "https://oauth2.googleapis.com/token"',
+  'backend.auth.access-token.cmd = "print-the-access-token"',
+  'backend.auth.refresh-token.cmd = "print-the-refresh-token"',
+  "",
+].join("\n");
+
+async function withLegacy(
+  body: (accounts: EmailAccounts, storePath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
+  options: {existing?: string} = {},
+): Promise<void> {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-adopt-"));
+  const storePath = path.join(directory, "email-accounts.json");
+  const legacy = path.join(directory, "himalaya.toml");
+  await writeFile(legacy, LEGACY, "utf8");
+  if (options.existing) await writeFile(storePath, options.existing, "utf8");
+  const harnessed = harness({
+    results: (call) =>
+      call.command === "/bin/sh"
+        ? {code: 0, stdout: `${call.args[1]}-value\n`, stderr: ""}
         : undefined,
+  });
+  const accounts = new EmailAccounts({
+    storePath,
+    downloadsDir: path.join(directory, "Downloads"),
+    importFrom: legacy,
+    run: harnessed.run,
+  });
+  try {
+    await body(accounts, storePath, harnessed);
+  } finally {
+    await accounts.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+}
+
+test("adopts the accounts of an earlier FlareAI, once", async () => {
+  await withLegacy(async (accounts, storePath) => {
+    const listed = await accounts.list();
+    assert.deepEqual(listed.map((item) => item.id).sort(), ["tokened", "work"]);
+    const work = listed.find((item) => item.id === "work");
+    assert.equal(work?.email, "me@work.com");
+    assert.equal(work?.displayName, "Me At Work");
+    assert.equal(work?.isDefault, true);
+    assert.equal(work?.incoming.host, "imap.gmail.com");
+    assert.equal(work?.outgoing.port, 587);
+    assert.equal(work?.outgoing.encryption, "start-tls");
+    assert.equal(listed.find((item) => item.id === "tokened")?.incoming.auth, "oauth2");
+    // Written as FlareAI's own from then on.
+    const saved = await stored(storePath);
+    assert.equal(saved.accounts.length, 2);
+  });
+});
+
+test("adoption carries the secrets across into FlareAI's own keychain entries", async () => {
+  await withLegacy(async (accounts, _storePath, harnessed) => {
+    await accounts.list();
+    const written = harnessed.calls
+      .filter((call) => (call.input ?? "").startsWith("add-generic-password"))
+      .map((call) => call.input ?? "");
+    // The old config named a command per secret; each was run once and its
+    // output filed under FlareAI's own service name.
+    assert.ok(
+      written.some((line) => line.includes(keychainService("work")) && line.includes("print-the-password-value")),
+      "the password should be carried over",
+    );
+    assert.ok(
+      written.some(
+        (line) =>
+          line.includes(keychainService("tokened")) &&
+          line.includes("(access-token)") &&
+          line.includes("print-the-access-token-value"),
+      ),
+      "the access token should be carried over",
+    );
+    assert.ok(
+      written.some(
+        (line) =>
+          line.includes("(refresh-token)") && line.includes("print-the-refresh-token-value"),
+      ),
+      "the refresh token is what lets the account renew at all",
+    );
+  });
+});
+
+test("adoption never runs where FlareAI already has accounts", async () => {
+  await withLegacy(
+    async (accounts, storePath) => {
+      const listed = await accounts.list();
+      assert.deepEqual(listed.map((item) => item.id), ["work"]);
+      const saved = await stored(storePath);
+      assert.equal(saved.accounts.length, 1, "the existing file must win");
+      assert.equal((saved.accounts[0] as {email: string}).email, "me@work.com");
+    },
+    {existing: EXISTING},
   );
 });
 
-test("an important message says so in both spellings clients read", async () => {
-  await withConfig(EXISTING, async (accounts, _configPath, harnessed) => {
+test("adoption leaves the file it read exactly as it found it", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-adopt-"));
+  const legacy = path.join(directory, "himalaya.toml");
+  await writeFile(legacy, LEGACY, "utf8");
+  const accounts = new EmailAccounts({
+    storePath: path.join(directory, "email-accounts.json"),
+    downloadsDir: path.join(directory, "Downloads"),
+    importFrom: legacy,
+    run: async () => ({code: 0, stdout: "", stderr: ""}),
+  });
+  await accounts.list();
+  await accounts.close();
+  assert.equal(await readFile(legacy, "utf8"), LEGACY, "the old file is not ours to change");
+  await rm(directory, {recursive: true, force: true});
+});
+
+
+/**
+ * Answers the two requests the OAuth library makes: the provider's discovery
+ * document, then the token exchange. Faking at this level keeps the real
+ * library in the path — the part worth testing is that a rotated refresh token
+ * is stored, and that a refusal reaches the user in the provider's own words.
+ */
+function fakeProvider(token: (body: string) => Response): typeof fetch {
+  return (async (input: URL | RequestInfo, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("/.well-known/openid-configuration"))
+      return new Response(
+        JSON.stringify({
+          issuer: "https://accounts.google.com",
+          authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+          token_endpoint: "https://oauth2.googleapis.com/token",
+          response_types_supported: ["code"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+        }),
+        {status: 200, headers: {"content-type": "application/json"}},
+      );
+    // The library may hand the body over as a string, as URLSearchParams, or
+    // inside a Request; the test cares about what was actually sent, so all
+    // three are read the same way.
+    const body =
+      typeof init?.body === "string"
+        ? init.body
+        : init?.body instanceof URLSearchParams
+          ? init.body.toString()
+          : input instanceof Request
+            ? await input.clone().text()
+            : init?.body
+              ? String(init.body)
+              : "";
+    return token(body);
+  }) as unknown as typeof fetch;
+}
+
+test("an expired token is renewed against the provider, and the new one stored", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-oauth-"));
+  const storePath = path.join(directory, "email-accounts.json");
+  await writeFile(storePath, OAUTH, "utf8");
+  const written: string[] = [];
+  let sent = "";
+  const accounts = new EmailAccounts({
+    storePath,
+    downloadsDir: path.join(directory, "Downloads"),
+    run: async (_command, _args, input) => {
+      const text = input ?? "";
+      if (text.startsWith("add-generic-password")) written.push(text);
+      // No access token is held; the refresh token and client secret are.
+      if (text.startsWith("find-generic-password") && text.includes("(refresh-token)"))
+        return {code: 0, stdout: "the-refresh-token\n", stderr: ""};
+      if (text.startsWith("find-generic-password") && text.includes("(client-secret)"))
+        return {code: 0, stdout: "shh\n", stderr: ""};
+      if (text.startsWith("find-generic-password")) return {code: 1, stdout: "", stderr: ""};
+      return {code: 0, stdout: "", stderr: ""};
+    },
+    fetch: fakeProvider((body) => {
+      sent = body;
+      return new Response(
+        JSON.stringify({
+          access_token: "fresh-access",
+          refresh_token: "rotated",
+          token_type: "Bearer",
+          expires_in: 3599,
+        }),
+        {status: 200, headers: {"content-type": "application/json"}},
+      );
+    }),
+  });
+  // Any operation needing the mailbox resolves the credential, which is what
+  // triggers the exchange. It fails to connect afterwards — there is no server
+  // — and that is not what is being tested.
+  await accounts.folders("work").catch((): undefined => undefined);
+  assert.match(sent, /grant_type=refresh_token/);
+  assert.match(sent, /refresh_token=the-refresh-token/);
+  // A rotated refresh token must be kept, or the account can never renew again.
+  assert.ok(written.some((line) => line.includes("(refresh-token)") && line.includes("rotated")));
+  assert.ok(written.some((line) => line.includes("(access-token)") && line.includes("fresh-access")));
+  await accounts.close();
+  await rm(directory, {recursive: true, force: true});
+});
+
+test("a refusal from the provider is reported in its own words", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-oauth-"));
+  const storePath = path.join(directory, "email-accounts.json");
+  await writeFile(storePath, OAUTH, "utf8");
+  const accounts = new EmailAccounts({
+    storePath,
+    downloadsDir: path.join(directory, "Downloads"),
+    run: async (_command, _args, input) =>
+      (input ?? "").includes("(refresh-token)")
+        ? {code: 0, stdout: "stale\n", stderr: ""}
+        : {code: 1, stdout: "", stderr: ""},
+    fetch: fakeProvider(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: "invalid_grant",
+            error_description: "Token has been expired or revoked.",
+          }),
+          {status: 400, headers: {"content-type": "application/json"}},
+        ),
+    ),
+  });
+  const tested = await accounts.test("work");
+  assert.equal(tested.status, "error");
+  assert.match(tested.error ?? "", /invalid_grant|expired or revoked/i);
+  await accounts.close();
+  await rm(directory, {recursive: true, force: true});
+});
+
+test("a draft is appended to the mailbox's own Drafts folder", async () => {
+  const drafts: FakeMailbox = {path: "[Gmail]/Drafts", specialUse: "\\Drafts", messages: []};
+  await withMailbox([{path: "INBOX", messages: []}, drafts], async (accounts, server) => {
     await accounts.send({
       account: "work",
       from: "me@work.com",
@@ -657,46 +928,396 @@ test("an important message says so in both spellings clients read", async () => 
       bcc: [],
       subject: "Friday",
       body: "Are we still on?",
-      importance: "high",
+      draft: true,
     });
-    const sent = harnessed.calls.at(-1)?.input ?? "";
-    assert.match(sent, /^Importance: high$/m);
-    assert.match(sent, /^X-Priority: 1 \(Highest\)$/m);
+    // Named from the server's own special-use flag, not guessed from "Drafts".
+    const appended = server.commands.find((line) => line.startsWith("APPEND"));
+    assert.ok(appended, "the draft should be appended over IMAP");
+    // Named from the server's own special-use flag rather than guessed.
+    assert.match(appended, /\[Gmail\]\/Drafts/);
+    assert.match(appended, /\\Draft/);
+    // And the message itself actually landed there, headers and all.
+    const saved = server.mailbox("[Gmail]/Drafts")?.messages ?? [];
+    assert.equal(saved.length, 1);
+    assert.deepEqual(saved[0]?.flags, ["\\Draft"]);
+    assert.match(saved[0]?.parts["1"] ?? "", /^Subject: Friday$/m);
+    assert.match(saved[0]?.parts["1"] ?? "", /^To: dana@example\.com$/m);
+    assert.match(saved[0]?.parts["1"] ?? "", /Are we still on\?/);
   });
 });
 
-test("low priority is its own pair of headers", async () => {
-  await withConfig(EXISTING, async (accounts, _configPath, harnessed) => {
+test("attachments are saved next to each other rather than over each other", async () => {
+  const message: FakeMessage = {
+    uid: 7,
+    flags: [],
+    envelope: envelopeLine({subject: "Invoices", from: ["Accounts", "accounts@kinnov.com"]}),
+    bodyStructure:
+      '(("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 13 1)' +
+      '("APPLICATION" "PDF" ("NAME" "report.pdf") NIL NIL "7BIT" 9 NIL ' +
+      '("ATTACHMENT" ("FILENAME" "report.pdf")) NIL NIL)' +
+      '("APPLICATION" "PDF" ("NAME" "report.pdf") NIL NIL "7BIT" 9 NIL ' +
+      '("ATTACHMENT" ("FILENAME" "report.pdf")) NIL NIL) "MIXED")',
+    parts: {
+      "1": "See attached.",
+      "1.MIME": PLAIN_HEADERS,
+      "2": "first-pdf",
+      "2.MIME": PLAIN_HEADERS,
+      "3": "second-pdf",
+      "3.MIME": PLAIN_HEADERS,
+    },
+  };
+  await withMailbox([{path: "INBOX", messages: [message]}], async (accounts) => {
+    const paths = await accounts.download({id: "7", account: "work", folder: "INBOX"});
+    assert.equal(paths.length, 2);
+    assert.match(paths[0], /report\.pdf$/);
+    assert.match(paths[1], /report \(1\)\.pdf$/, "two files of one name must both survive");
+    assert.equal(await readFile(paths[0], "utf8"), "first-pdf");
+    assert.equal(await readFile(paths[1], "utf8"), "second-pdf");
+  });
+});
+
+test("an attachment cannot write outside the downloads directory", async () => {
+  const message: FakeMessage = {
+    uid: 7,
+    flags: [],
+    envelope: envelopeLine({subject: "Nice try", from: ["Someone", "someone@example.com"]}),
+    bodyStructure:
+      '(("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 3 1)' +
+      '("APPLICATION" "OCTET-STREAM" ("NAME" "x") NIL NIL "7BIT" 3 NIL ' +
+      '("ATTACHMENT" ("FILENAME" "../../escaped.txt")) NIL NIL) "MIXED")',
+    parts: {"1": "hi", "1.MIME": PLAIN_HEADERS, "2": "no", "2.MIME": PLAIN_HEADERS},
+  };
+  await withMailbox([{path: "INBOX", messages: [message]}], async (accounts) => {
+    const [written] = await accounts.download({id: "7", account: "work", folder: "INBOX"});
+    assert.match(written, /Downloads\/escaped\.txt$/);
+    assert.equal(written.includes(".."), false, "a filename is not a path");
+  });
+});
+
+/**
+ * An account whose sign-in is held by something outside FlareAI. The old setup
+ * pointed at a token helper that refreshes on its own; FlareAI was never given
+ * a refresh token for it, so the only thing that can produce a working token
+ * is that same command.
+ */
+const HELPER = [
+  "[accounts.helped]",
+  'email = "carl@kinnov.com"',
+  'backend.type = "imap"',
+  'backend.host = "imap.gmail.com"',
+  "backend.port = 993",
+  'backend.encryption.type = "tls"',
+  'backend.login = "carl@kinnov.com"',
+  'backend.auth.type = "oauth2"',
+  'backend.auth.client-id = "client-1"',
+  'backend.auth.token-url = "https://oauth2.googleapis.com/token"',
+  'backend.auth.access-token.cmd = "print-a-fresh-token"',
+  "",
+  "[accounts.keyringed]",
+  'email = "carl@live.com"',
+  'backend.type = "imap"',
+  'backend.host = "outlook.office365.com"',
+  "backend.port = 993",
+  'backend.encryption.type = "tls"',
+  'backend.login = "carl@live.com"',
+  'backend.auth.type = "oauth2"',
+  'backend.auth.client-id = "client-2"',
+  'backend.auth.client-secret.raw = ""',
+  'backend.auth.token-url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"',
+  'backend.auth.access-token.cmd = "print-another-fresh-token"',
+  'backend.auth.refresh-token.keyring = "somewhere-else"',
+  "",
+].join("\n");
+
+async function withHelper(
+  body: (accounts: EmailAccounts, storePath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
+): Promise<void> {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-helper-"));
+  const storePath = path.join(directory, "email-accounts.json");
+  const legacy = path.join(directory, "himalaya.toml");
+  await writeFile(legacy, HELPER, "utf8");
+  let minted = 0;
+  const harnessed = harness({
+    results: (call) =>
+      call.command === "/bin/sh"
+        ? {code: 0, stdout: `token-${++minted}\n`, stderr: ""}
+        : undefined,
+  });
+  const accounts = new EmailAccounts({
+    storePath,
+    downloadsDir: path.join(directory, "Downloads"),
+    importFrom: legacy,
+    run: harnessed.run,
+  });
+  try {
+    await body(accounts, storePath, harnessed);
+  } finally {
+    await accounts.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+}
+
+test("an account renewed by a helper keeps the helper, not one reading of it", async () => {
+  await withHelper(async (accounts, storePath) => {
+    await accounts.list();
+    const saved = await stored(storePath);
+    const helped = saved.accounts.find((item) => item.id === "helped");
+    // Storing the command's output once would work until the token expired and
+    // then leave the mailbox dead with nothing able to renew it.
+    assert.deepEqual(helped?.auth, {kind: "command", cmd: "print-a-fresh-token"});
+  });
+});
+
+test("a refresh token FlareAI cannot read is not counted as one", async () => {
+  await withHelper(async (accounts, storePath) => {
+    await accounts.list();
+    const saved = await stored(storePath);
+    // `refresh-token.keyring` names an entry in another tool's keychain
+    // namespace. Treating it as a refresh token would produce an account that
+    // claims to be renewable and is not.
+    assert.deepEqual((saved.accounts.find((item) => item.id === "keyringed"))?.auth, {
+      kind: "command",
+      cmd: "print-another-fresh-token",
+    });
+  });
+});
+
+test("an empty client secret is not recorded as holding one", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-empty-"));
+  const legacy = path.join(directory, "himalaya.toml");
+  // Same account, but with a refresh token FlareAI can read, so it stays OAuth.
+  await writeFile(
+    legacy,
+    HELPER.replace(
+      'backend.auth.refresh-token.keyring = "somewhere-else"',
+      'backend.auth.refresh-token.raw = "a-real-refresh-token"',
+    ),
+    "utf8",
+  );
+  const storePath = path.join(directory, "email-accounts.json");
+  const accounts = new EmailAccounts({
+    storePath,
+    downloadsDir: path.join(directory, "Downloads"),
+    importFrom: legacy,
+    run: async () => ({code: 0, stdout: "", stderr: ""}),
+  });
+  await accounts.list();
+  const saved = await stored(storePath);
+  const auth = saved.accounts.find((item) => item.id === "keyringed")?.auth as Record<string, unknown>;
+  assert.equal(auth.kind, "oauth2");
+  // `client-secret.raw = ""` is a public client saying it has none. Claiming
+  // one makes the account file disagree with the keychain.
+  assert.equal("hasClientSecret" in auth, false);
+  await accounts.close();
+  await rm(directory, {recursive: true, force: true});
+});
+
+test("the helper is asked again rather than its answer being reused forever", async () => {
+  await withHelper(async (accounts, _storePath, harnessed) => {
+    await accounts.list();
+    // Two mailbox operations; the token is cached briefly, so the helper runs
+    // once — but nothing is ever written to the keychain for this account.
+    await accounts.folders("helped").catch((): undefined => undefined);
+    await accounts.folders("helped").catch((): undefined => undefined);
+    const helperRuns = harnessed.calls.filter(
+      (call) => call.command === "/bin/sh" && call.args[1] === "print-a-fresh-token",
+    );
+    assert.ok(helperRuns.length >= 1, "the helper has to be asked for a token");
+    const filed = harnessed.calls.filter((call) =>
+      (call.input ?? "").startsWith("add-generic-password") && (call.input ?? "").includes("helped"),
+    );
+    assert.deepEqual(filed, [], "a token that expires must not be filed as a stored secret");
+  });
+});
+
+test("deleting the last mailbox does not bring them all back", async () => {
+  await withHelper(async (accounts, storePath) => {
+    assert.equal((await accounts.list()).length, 2);
+    await accounts.remove("helped");
+    await accounts.remove("keyringed");
+    assert.deepEqual(await accounts.list(), []);
+    // A second run must not re-adopt: the accounts were removed on purpose,
+    // and an empty store is a decision rather than a fresh install.
+    const again = new EmailAccounts({
+      storePath,
+      downloadsDir: path.join(path.dirname(storePath), "Downloads"),
+      importFrom: path.join(path.dirname(storePath), "himalaya.toml"),
+      run: async () => ({code: 0, stdout: "", stderr: ""}),
+    });
+    assert.deepEqual(await again.list(), [], "removal has to stick");
+    await again.close();
+  });
+});
+
+test("a query understands dates and flags, not just fields", () => {
+  // IMAP refuses the words a person types; `since` has to arrive as a Date.
+  const since = searchCriteria('from alice@example.com since 1-Aug-2026') as Record<string, unknown>;
+  assert.equal(since.from, "alice@example.com");
+  assert.ok(since.since instanceof Date, "a date bound must survive as a date");
+  assert.equal((since.since as Date).getUTCFullYear(), 2026);
+  assert.deepEqual(searchCriteria("flag unread"), {unseen: true});
+  assert.deepEqual(searchCriteria("flag starred"), {flagged: true});
+  // A term the server cannot use is dropped rather than sent as nonsense.
+  assert.deepEqual(searchCriteria("since not-a-date"), {
+    or: [{subject: "since not-a-date"}, {from: "since not-a-date"}, {body: "since not-a-date"}],
+  });
+});
+
+test("`or` inside a quoted phrase is part of the phrase", () => {
+  // Read off the raw string, this became a disjunction of unrelated terms.
+  assert.deepEqual(searchCriteria('subject "cats or dogs" from alice'), {
+    subject: "cats or dogs",
+    from: "alice",
+  });
+  assert.deepEqual(searchCriteria("subject invoice or from alice"), {
+    or: [{subject: "invoice"}, {from: "alice"}],
+  });
+});
+
+test("two terms on one field are both kept", () => {
+  // Merged into one object, the second silently replaced the first.
+  assert.deepEqual(searchCriteria("from alice from bob"), {
+    from: "alice",
+    and: [{from: "bob"}],
+  });
+});
+
+test("a sent message does not carry its Bcc, a draft does", () => {
+  const options = {...OUTGOING, bcc: ["quiet@example.com"], attachments: [] as never[]};
+  // The envelope carries blind recipients; a Bcc header in the body is
+  // delivered to everyone, which is the one thing blind copying prevents.
+  assert.equal(/^Bcc:/m.test(mimeMessage(options)), false);
+  // A draft is the opposite: the header is the only record of the choice, and
+  // coming back to the draft must not have lost it.
+  assert.match(mimeMessage({...options, retainBcc: true}), /^Bcc: quiet@example\.com$/m);
+});
+
+test("every outgoing message carries a Message-ID of our own", () => {
+  const raw = mimeMessage({...OUTGOING, attachments: []});
+  assert.match(raw, /^Message-ID: <[^@]+@work\.com>$/m);
+});
+
+test("a Sent copy is filed when the provider files none", async () => {
+  const sent: FakeMailbox = {path: "[Gmail]/Sent Mail", specialUse: "\\Sent", messages: []};
+  await withMailbox([{path: "INBOX", messages: []}, sent], async (accounts, server, smtp) => {
     await accounts.send({
       account: "work",
       from: "me@work.com",
       to: ["dana@example.com"],
       cc: [],
-      bcc: [],
-      subject: "Whenever",
-      body: "No rush.",
-      importance: "low",
+      bcc: ["quiet@example.com"],
+      subject: "Friday",
+      body: "Are we still on?",
     });
-    const sent = harnessed.calls.at(-1)?.input ?? "";
-    assert.match(sent, /^Importance: low$/m);
-    assert.match(sent, /^X-Priority: 5 \(Lowest\)$/m);
+    // Delivered, and the blind recipient is in the envelope where it belongs.
+    assert.equal(smtp.messages.length, 1);
+    assert.deepEqual(smtp.recipients, ["dana@example.com", "quiet@example.com"]);
+    assert.equal(/^Bcc:/m.test(smtp.messages[0]), false, "a Bcc header would reach everyone");
+    // Sent is asked before anything is written to it — that question is what
+    // stops a duplicate on a provider that files its own copy.
+    assert.ok(server.commands.some((line) => /SEARCH HEADER MESSAGE-ID/i.test(line)));
+    assert.equal(server.mailbox("[Gmail]/Sent Mail")?.messages.length, 1);
   });
 });
 
-test("an ordinary message claims no priority at all", async () => {
-  await withConfig(EXISTING, async (accounts, _configPath, harnessed) => {
-    await accounts.send({
+test("a provider that files its own copy is not given a second", async () => {
+  const sent: FakeMailbox = {path: "[Gmail]/Sent Mail", specialUse: "\\Sent", messages: []};
+  await withMailbox([{path: "INBOX", messages: []}, sent], async (accounts, server, smtp) => {
+    // Stand in for Gmail: the moment the message is accepted for delivery, a
+    // copy appears in Sent carrying the same Message-ID.
+    const box = server.mailbox("[Gmail]/Sent Mail");
+    const original = smtp.messages;
+    const watch = setInterval(() => {
+      const raw = original[0];
+      if (!raw || box?.messages.length) return;
+      box?.messages.push({
+        uid: 1,
+        flags: ["\\Seen"],
+        envelope: envelopeLine({subject: "Friday", from: ["Me", "me@work.com"]}),
+        bodyStructure: '("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 5 1)',
+        parts: {"1": raw},
+        searchText: raw.toLowerCase(),
+      });
+    }, 10);
+    try {
+      await accounts.send({
+        account: "work",
+        from: "me@work.com",
+        to: ["dana@example.com"],
+        cc: [],
+        bcc: [],
+        subject: "Friday",
+        body: "Are we still on?",
+      });
+    } finally {
+      clearInterval(watch);
+    }
+    assert.equal(box?.messages.length, 1, "the provider's own copy must not be doubled");
+    assert.equal(
+      server.commands.some((line) => line.startsWith("APPEND")),
+      false,
+      "nothing should be appended once the copy is found",
+    );
+  });
+});
+
+test("what the first send discovered is not asked again", async () => {
+  const sent: FakeMailbox = {path: "[Gmail]/Sent Mail", specialUse: "\\Sent", messages: []};
+  await withMailbox([{path: "INBOX", messages: []}, sent], async (accounts, server) => {
+    const message = {
       account: "work",
       from: "me@work.com",
       to: ["dana@example.com"],
-      cc: [],
-      bcc: [],
-      subject: "Notes",
-      body: "Attached.",
-      importance: "normal",
+      cc: [] as string[],
+      bcc: [] as string[],
+      subject: "Friday",
+      body: "Are we still on?",
+    };
+    await accounts.send(message);
+    const afterFirst = server.commands.filter((line) => /SEARCH HEADER MESSAGE-ID/i.test(line)).length;
+    assert.ok(afterFirst > 0, "the first send has to find out");
+    await accounts.send(message);
+    const afterSecond = server.commands.filter((line) => /SEARCH HEADER MESSAGE-ID/i.test(line)).length;
+    // Whether a provider files its own copy belongs to the account, not the
+    // message, so the second send acts on the answer rather than re-asking.
+    assert.equal(afterSecond, afterFirst, "the question should be asked once");
+    assert.equal(server.mailbox("[Gmail]/Sent Mail")?.messages.length, 2);
+  });
+});
+
+test("a provider set up as Other keeps the ports only it needs", async () => {
+  await withConfig("", async (accounts, file) => {
+    // "Other" collects hostnames and nothing else, and its generic SMTP
+    // default is 587/STARTTLS — which Lark's listener does not complete. The
+    // host is what says otherwise.
+    await accounts.save({
+      ...BASE,
+      id: "team",
+      email: "team@lightrig.co",
+      preset: "custom",
+      imapHost: "imap.larksuite.com",
+      smtpHost: "smtp.larksuite.com",
+      password: "x",
     });
-    const sent = harnessed.calls.at(-1)?.input ?? "";
-    assert.doesNotMatch(sent, /Importance:/);
-    assert.doesNotMatch(sent, /X-Priority:/);
+    const saved = (await stored(file)).accounts[0] as {smtp: {port: number; encryption: string}};
+    assert.equal(saved.smtp.port, 465);
+    assert.equal(saved.smtp.encryption, "tls");
+  });
+});
+
+test("an unknown host keeps the settings it was given", async () => {
+  await withConfig("", async (accounts, file) => {
+    await accounts.save({
+      ...BASE,
+      id: "other",
+      email: "me@example.com",
+      preset: "custom",
+      imapHost: "imap.example.com",
+      smtpHost: "smtp.example.com",
+      password: "x",
+    });
+    const saved = (await stored(file)).accounts[0] as {smtp: {port: number; encryption: string}};
+    assert.equal(saved.smtp.port, 587);
+    assert.equal(saved.smtp.encryption, "start-tls");
   });
 });

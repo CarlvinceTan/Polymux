@@ -128,6 +128,32 @@ test("uploads the files the picker returns, into the folder in view", async () =
   }
 });
 
+test("a dropped folder arrives as the tree it stands for", async () => {
+  const {base, root, drive, cleanup} = await fixture();
+  try {
+    // No provider takes a directory as an upload, so dragging one in has to
+    // become a folder plus everything under it — nested included.
+    const source = path.join(base, "Trip");
+    await mkdir(path.join(source, "photos"), {recursive: true});
+    await writeFile(path.join(source, "plan.md"), "day one");
+    await writeFile(path.join(source, "photos", "beach.txt"), "sand");
+
+    const uploaded = await drive.upload("local", "", [source]);
+    // One row for the drop, which is the folder the user sees appear.
+    assert.equal(uploaded.length, 1);
+    assert.equal(uploaded[0].kind, "folder");
+    assert.equal(uploaded[0].name, "Trip");
+
+    assert.deepEqual((await readdir(path.join(root, "Trip"))).sort(), ["photos", "plan.md"]);
+    assert.equal(
+      await readFile(path.join(root, "Trip", "photos", "beach.txt"), "utf8"),
+      "sand",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("uploads nothing when the picker is cancelled", async () => {
   const {drive, cleanup} = await fixture();
   try {
