@@ -63,9 +63,8 @@ def recorder_state(root: Path) -> tuple[dict, list[str]]:
         # What the user allowed Chronicle to see. Reported rather than judged:
         # an excluded app is a choice, and the point of surfacing it is that a
         # gap in the evidence has an explanation other than "it did not happen".
-        state["capture_policy"] = value.get("capturePolicy", "all")
-        state["listed_apps"] = value.get("apps", [])
-        state["listed_sites"] = value.get("sites", [])
+        state["excluded_apps"] = value.get("excludeApps", [])
+        state["excluded_sites"] = value.get("excludeSites", [])
         state["records_private_browsing"] = value.get("recordPrivateBrowsing", True)
         state["interaction_events"] = value.get("interactionEvents", True)
     except (OSError, ValueError):
@@ -115,8 +114,8 @@ def main() -> int:
         warnings.append("Interaction events are switched off; only window text is recorded")
     elif not events["available"]:
         warnings.append("No Chronicle interaction events are available")
-    if recorder.get("capture_policy", "all") != "all":
-        warnings.append("A capture policy is limiting which apps and sites are recorded")
+    if recorder.get("excluded_apps") or recorder.get("excluded_sites"):
+        warnings.append("Some apps or sites are excluded from capture")
     if recorder.get("records_private_browsing") is False:
         warnings.append("Private browsing windows are excluded from capture")
 

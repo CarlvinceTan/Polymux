@@ -112,9 +112,8 @@ function recorderState(root) {
     // What the user allowed Chronicle to see. Reported rather than judged:
     // an excluded app is a choice, and the point of surfacing it is that a
     // gap in the evidence has an explanation other than "it did not happen".
-    state.capture_policy = value.capturePolicy ?? "all";
-    state.listed_apps = value.apps ?? [];
-    state.listed_sites = value.sites ?? [];
+    state.excluded_apps = value.excludeApps ?? [];
+    state.excluded_sites = value.excludeSites ?? [];
     state.records_private_browsing = value.recordPrivateBrowsing ?? true;
     state.interaction_events = value.interactionEvents ?? true;
   } catch {
@@ -159,8 +158,8 @@ else if (!timeline.fresh) warnings.push("Chronicle timeline is stale");
 if (recorder.interaction_events === false) {
   warnings.push("Interaction events are switched off; only window text is recorded");
 } else if (!events.available) warnings.push("No Chronicle interaction events are available");
-if ((recorder.capture_policy ?? "all") !== "all") {
-  warnings.push("A capture policy is limiting which apps and sites are recorded");
+if ((recorder.excluded_apps ?? []).length || (recorder.excluded_sites ?? []).length) {
+  warnings.push("Some apps or sites are excluded from capture");
 }
 if (recorder.records_private_browsing === false) {
   warnings.push("Private browsing windows are excluded from capture");

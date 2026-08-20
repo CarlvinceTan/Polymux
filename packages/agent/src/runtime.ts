@@ -442,7 +442,14 @@ export class FlareAIAgent {
       );
     const runner = new AgentRunner({
       inference: this.#options.inference,
-      eventSink: { append: (event) => this.#persistEvent(event) },
+      // A top-level run's assistant messages are written as they complete, so
+      // the conversation already holds them whether the run ends, is stopped,
+      // is steered, or the app dies mid-turn. A subagent's are context for its
+      // parent alone and are never stored.
+      eventSink: {
+        append: (event) =>
+          this.#persistEvent(event, subagentRun ? null : input.conversationId),
+      },
       hooks: this.#options.hooks,
     });
     // The coordinator's own instructions, loaded rather than built in.
@@ -520,13 +527,9 @@ export class FlareAIAgent {
         return fleet.takePost();
       },
     }, control);
-    // The runner appends new messages onto the context it was started with, so
-    // the run's additions begin at this index — not at the stored row count,
-    // which drifts whenever toInferenceMessage or selectContext drops rows.
-    const initialContextLength = messages.length;
     const settled = active.result
       .then(async (result) => {
-        this.#finish(input, result, initialContextLength);
+        this.#finish(input, result);
         await this.#driveGoal(input, result);
       })
       .catch((error: unknown) => {
@@ -672,38 +675,34 @@ export class FlareAIAgent {
     }
   }
 
-  #persistEvent(event: AgentRunEvent): void {
+  #persistEvent(event: AgentRunEvent, conversationId: string | null): void {
     this.#options.storage.appendRunEvent(event.runId, event.type, json(event));
+    // Persist at the moment the message completes, not when the run settles:
+    // work the agent has already done is the user's, and stopping to read it
+    // must not be what erases it. Only an edited-and-resent user message takes
+    // a turn back.
+    if (!conversationId || event.type !== "message.completed") return;
+    this.#options.storage.appendMessage({
+      id: crypto.randomUUID(),
+      conversationId,
+      runId: event.runId,
+      role: "assistant",
+      content: json(event.message.content),
+      // Mirrors the run's phases: a client nests commentary inside the run's
+      // activity group and reads the last message carrying text as the answer.
+      metadata: { phase: event.phase },
+    });
   }
-  #finish(
-    input: StartFlareAIRunInput,
-    result: AgentRunResult,
-    initialMessages: number,
-  ): void {
+  #finish(input: StartFlareAIRunInput, result: AgentRunResult): void {
     this.#options.storage.updateRun(result.runId, {
       status: result.status,
       error: result.error ? json(result.error) : null,
       usage: json(result.usage),
     });
+    // The run's assistant messages are already stored — `#persistEvent` writes
+    // each one as it completes. All that is left here is the bookkeeping a
+    // finished turn earns, which a stopped or failed one does not.
     if (input.parentRunId || result.status !== "completed") return;
-    const additions = result.context.messages
-      .slice(initialMessages)
-      .filter((message) => message.role === "assistant");
-    additions.forEach((message, index) =>
-      this.#options.storage.appendMessage({
-        id: crypto.randomUUID(),
-        conversationId: input.conversationId,
-        runId: result.runId,
-        role: "assistant",
-        content: json(message.content),
-        // Mirrors the run's message.completed phases: only the run's last
-        // assistant message is the answer; earlier ones are mid-run narration
-        // that a client nests inside the run's activity group.
-        metadata: {
-          phase: index === additions.length - 1 ? "final" : "commentary",
-        },
-      }),
-    );
     // Watermark-gated background work: it runs alongside the goal loop rather
     // than before it, so it never delays the turn, but it is tracked so
     // shutdown and tests can wait for it. maybeConsolidate absorbs failures.

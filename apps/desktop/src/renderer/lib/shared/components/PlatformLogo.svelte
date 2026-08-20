@@ -1,3 +1,13 @@
+<script module lang="ts">
+  /** Every platform that has a mark here. Exported because callers outside the
+   * hub — the agent activity trail among them — name a platform of their own
+   * and need the same list to be sure it can be drawn. */
+  export type Platform =
+    | 'whatsapp' | 'telegram' | 'signal' | 'discord' | 'slack' | 'messenger' | 'instagram'
+    | 'linkedin' | 'googlechat' | 'gmessages' | 'twitter' | 'bluesky' | 'gvoice'
+    | 'zulip' | 'imessage' | 'wechat' | 'matrix' | 'mail';
+</script>
+
 <script lang="ts">
   import type {SimpleIcon} from 'simple-icons';
   import {
@@ -16,11 +26,6 @@
     siWhatsapp,
     siZulip,
   } from 'simple-icons';
-
-  type Platform =
-    | 'whatsapp' | 'telegram' | 'signal' | 'discord' | 'slack' | 'messenger' | 'instagram'
-    | 'linkedin' | 'googlechat' | 'gmessages' | 'twitter' | 'bluesky' | 'gvoice'
-    | 'zulip' | 'imessage' | 'wechat' | 'matrix' | 'mail';
 
   interface Props {
     platform: Platform;

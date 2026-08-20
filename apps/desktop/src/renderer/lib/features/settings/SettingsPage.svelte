@@ -66,6 +66,8 @@
   export let onGeneralChange: (settings: GeneralSettingsDto) => void = () => {};
 
   type IconName = ComponentProps<Icon>['name'];
+  /** Which of Chronicle's two source panels a control belongs to. */
+  type ChronicleList = 'apps' | 'sites';
   type Mode = 'general' | 'hub' | 'drive' | 'browser' | 'plugins' | 'mcp' | 'skills' | 'model' | 'provider' | 'memory';
   /** The tab to open on. Empty means the page opens where it always has;
    * the composer's Plugins button is what names one, so pressing it lands on
@@ -114,7 +116,15 @@
   }
   let updatingMemory = false;
   let updatingChronicle = false;
-  let chronicleSource = '';
+  /* Per-panel view state: what is being typed, whether the add field and the
+     filter field are open, and whether the rows are shown alphabetically. None
+     of it is stored — the saved lists keep the order things were added in. */
+  /* Only the websites panel types its entries; an app comes from the picker. */
+  let pickingApp = false;
+  let chronicleDraft = '';
+  let chronicleAdding = false;
+  let chronicleFiltering = {apps: false, sites: false};
+  let chronicleQuery = {apps: '', sites: ''};
   let forgetting = '';
   let updatingTheme = false;
   let updatingSpeechMode = false;
@@ -772,6 +782,7 @@
     loading = !settingsSnapshot.loaded;
     try {
       [mcpServers, skills, plugins, models, providers, memory, chronicle, general, extensionStatus] = await Promise.all([api.mcp.list(), api.skills.list(), api.plugins.list(), api.models.list(), api.providers.list(), api.memory.status(), api.chronicle.status(), api.general.get(), api.extension.status()]);
+      void loadSourceIcons(chronicle);
       currency = general.currency ?? defaultCurrency(general.location);
       settingsSnapshot.loaded = true;
       error = '';
@@ -817,7 +828,7 @@
       onGeneralChange(general);
       if (!enabled)
         void Promise.all([api.memory.status(), api.chronicle.status()])
-          .then(([nextMemory, nextChronicle]) => { memory = nextMemory; chronicle = nextChronicle; })
+          .then(([nextMemory, nextChronicle]) => { memory = nextMemory; chronicle = nextChronicle; void loadSourceIcons(chronicle); })
           .catch(() => {});
       error = '';
     } catch (reason) {
@@ -971,26 +982,20 @@
     updatingChronicle = true;
     try {
       chronicle = await api.chronicle.setEnabled(enabled);
+      void loadSourceIcons(chronicle);
       error = '';
     } catch (reason) {
       error = readableError(reason);
     } finally {
       updatingChronicle = false;
     }
-  }
-
-  /* An entry is a site when it reads like a hostname — a dot, no spaces, no
-     slash. Everything else is an app, matched on its name or bundle id. One
-     field rather than two: the user is naming a source, and which list it
-     belongs in is ours to work out, not theirs to remember. */
-  function isSite(value: string): boolean {
-    return /^[^\s/]+\.[^\s/]+$/.test(value) && !value.endsWith('.app');
   }
 
   async function updateChronicle(patch: Parameters<typeof api.chronicle.update>[0]): Promise<void> {
     updatingChronicle = true;
     try {
       chronicle = await api.chronicle.update(patch);
+      void loadSourceIcons(chronicle);
       error = '';
     } catch (reason) {
       error = readableError(reason);
@@ -999,23 +1004,106 @@
     }
   }
 
-  async function addChronicleSource(): Promise<void> {
-    const value = chronicleSource.trim();
-    if (!value || !chronicle) return;
-    const key = isSite(value) ? 'sites' : 'apps';
-    const existing = chronicle[key];
-    if (existing.some((item) => item.toLowerCase() === value.toLowerCase())) {
-      chronicleSource = '';
-      return;
-    }
-    chronicleSource = '';
-    await updateChronicle({[key]: [...existing, value]});
+  /* What one panel shows, searched down. Taken as arguments rather than read
+     from the outer scope, so the statements below re-run when the lists or the
+     search text change — a call whose inputs are invisible to the template
+     would leave a removed row on screen. */
+  function chronicleSources(sources: string[], query: string): string[] {
+    const needle = query.trim().toLowerCase();
+    return needle ? sources.filter((item) => item.toLowerCase().includes(needle)) : sources;
   }
 
-  async function removeChronicleSource(value: string): Promise<void> {
+  /* An application's own icon and a site's favicon, fetched once each and kept
+     by the name the row shows. Both arrive as `data:` urls — the renderer's CSP
+     blocks a remote icon url outright. Asked for when a status arrives rather
+     than from a reactive statement, so the fetch is tied to the data changing
+     and not to which parts of it the markup happens to read. */
+  let sourceIcons: Record<string, string | null> = {};
+  const iconsAsked = new Set<string>();
+
+  async function loadSourceIcons(status: ChronicleStatusDto | null): Promise<void> {
+    if (!status) return;
+    const wanted: Array<[ChronicleList, string]> = [
+      ...status.excludeApps.map((name) => ['apps', name] as [ChronicleList, string]),
+      ...status.excludeSites.map((host) => ['sites', host] as [ChronicleList, string]),
+    ];
+    for (const [list, source] of wanted) {
+      if (iconsAsked.has(source)) continue;
+      iconsAsked.add(source);
+      try {
+        const icon =
+          list === 'apps'
+            ? await api.chronicle.appIcon(source)
+            : await api.browser.favicon(`https://${source}`);
+        if (icon) sourceIcons = {...sourceIcons, [source]: icon};
+      } catch (reason) {
+        // A missing icon is not worth an error banner — the row keeps its
+        // glyph — but a broken channel should not be silent either.
+        console.warn(`Could not load the icon for ${source}`, reason);
+      }
+    }
+  }
+
+  $: shownApps = chronicleSources(chronicle?.excludeApps ?? [], chronicleQuery.apps);
+  $: shownSites = chronicleSources(chronicle?.excludeSites ?? [], chronicleQuery.sites);
+  $: appRows = shownApps.map((name) => ({name, icon: sourceIcons[name] ?? null}));
+  $: siteRows = shownSites.map((host) => ({name: host, icon: sourceIcons[host] ?? null}));
+
+  /* A pasted address is stored as its host, since that is what Chronicle
+     matches on: "https://www.bank.example/transfer" saved verbatim would sit
+     in the list looking right and never match anything. */
+  function hostOf(value: string): string {
+    try {
+      const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`);
+      return url.hostname.toLowerCase().replace(/^www\./, '');
+    } catch {
+      return value;
+    }
+  }
+
+  async function excludeSource(list: ChronicleList, value: string): Promise<void> {
+    const trimmed = value.trim();
+    const source = list === 'sites' ? hostOf(trimmed) : trimmed;
+    if (!source || !chronicle) return;
+    const key = list === 'apps' ? 'excludeApps' : 'excludeSites';
+    const existing = chronicle[key];
+    if (existing.some((item) => item.toLowerCase() === source.toLowerCase())) return;
+    await updateChronicle({[key]: [...existing, source]});
+  }
+
+  async function addChronicleSource(list: ChronicleList): Promise<void> {
+    const value = chronicleDraft;
+    chronicleDraft = '';
+    await excludeSource(list, value);
+  }
+
+  /* Removed by value rather than by index, so a sorted or filtered view drops
+     the row the user actually clicked. */
+  async function removeChronicleSource(list: ChronicleList, value: string): Promise<void> {
     if (!chronicle) return;
-    const key = isSite(value) ? 'sites' : 'apps';
+    const key = list === 'apps' ? 'excludeApps' : 'excludeSites';
     await updateChronicle({[key]: chronicle[key].filter((item) => item !== value)});
+  }
+
+  /* A website is typed straight into the list; an app is picked in the
+     system's own picker, opened at the applications folder — its name has to
+     match what the system calls it, and guessing the spelling is the one way
+     to add a row that silently never matches. */
+  async function pickAppSource(): Promise<void> {
+    pickingApp = true;
+    try {
+      const chosen = await api.chronicle.pickApp();
+      if (chosen) await excludeSource('apps', chosen);
+      error = '';
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      pickingApp = false;
+    }
+  }
+
+  function focusInput(node: HTMLInputElement): void {
+    node.focus();
   }
 
   /* `hours` of null clears everything Chronicle still holds. The window ends
@@ -1244,6 +1332,7 @@
         return;
       }
       chronicle = await api.chronicle.setEnabled(true);
+      void loadSourceIcons(chronicle);
       error = '';
     } catch (reason) {
       error = readableError(reason);
@@ -2347,6 +2436,52 @@
      already showing that value, so its slide only ever means a user click. -->
 {#snippet pendingToggle()}<span class="chronicle-toggle pending" aria-hidden="true"><span></span></span>{/snippet}
 
+<!-- One column per kind of source: apps on the left, websites on the right,
+     each with its own field so nothing has to be guessed from the text. -->
+{#snippet sourceColumn(list: ChronicleList, title: string, rows: Array<{name: string; icon: string | null}>)}
+  <div class="chronicle-source-column">
+    <header>
+      <h5>{title}</h5>
+      <span class="chronicle-source-tools">
+        <button type="button" class:active={list === 'apps' ? pickingApp : chronicleAdding} aria-label={$t('settings.chronicleAddSource')} data-tooltip-label={$t('settings.chronicleAddSource')} disabled={!memory?.enabled || updatingChronicle || pickingApp} onclick={() => { if (list === 'apps') void pickAppSource(); else chronicleAdding = !chronicleAdding; }}><Icon name="plus" size={14}/></button>
+        <button type="button" class:active={chronicleFiltering[list]} aria-label={$t('settings.chronicleSearch')} data-tooltip-label={$t('settings.chronicleSearch')} onclick={() => { chronicleFiltering[list] = !chronicleFiltering[list]; if (!chronicleFiltering[list]) chronicleQuery[list] = ''; }}><Icon name="search" size={14}/></button>
+      </span>
+    </header>
+    <div class="chronicle-source-box">
+      {#if chronicleFiltering[list]}
+        <div class="chronicle-source-field">
+          <Icon name="search" size={13}/>
+          <input use:focusInput value={chronicleQuery[list]} placeholder={$t('settings.chronicleSearch')} aria-label={$t('settings.chronicleSearch')} oninput={(event) => (chronicleQuery[list] = event.currentTarget.value)} onkeydown={(event) => { if (event.key === 'Escape') { chronicleQuery[list] = ''; chronicleFiltering[list] = false; } }}/>
+        </div>
+      {/if}
+      <!-- The websites panel adds its row in place: a URL is pasted, so the
+           row it lands in is the whole of the interaction. -->
+      {#if list === 'sites' && chronicleAdding}
+        <form class="chronicle-source-field" onsubmit={(event) => { event.preventDefault(); void addChronicleSource('sites'); chronicleAdding = false; }}>
+          <Icon name="globe" size={13}/>
+          <input use:focusInput value={chronicleDraft} placeholder={$t('settings.chronicleSitePlaceholder')} aria-label={$t('settings.chronicleAddSource')} disabled={!memory?.enabled || updatingChronicle} oninput={(event) => (chronicleDraft = event.currentTarget.value)} onblur={() => { void addChronicleSource('sites'); chronicleAdding = false; }} onkeydown={(event) => { if (event.key === 'Escape') { chronicleDraft = ''; chronicleAdding = false; } }}/>
+        </form>
+      {/if}
+      <ul class="chronicle-source-list" use:scrollFade={rows.length}>
+        {#each rows as row (row.name)}
+          {@const source = row.name}
+          <li>
+            <!-- The mark replaces the glyph in the same slot rather than
+                 nesting inside it, so a row with no icon still reads as a row. -->
+            {#if row.icon}
+              <img class="chronicle-source-icon" src={row.icon} alt="" draggable="false"/>
+            {:else}
+              <Icon name={list === 'apps' ? 'apps' : 'globe'} size={15}/>
+            {/if}
+            <span>{source}</span>
+            <button type="button" aria-label={$t('settings.chronicleRemoveSource', {name: source})} disabled={updatingChronicle} onclick={() => void removeChronicleSource(list, source)}><Icon name="close" size={12}/></button>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  </div>
+{/snippet}
+
 <!-- A page, not a sheet: it takes the whole window, so the title bar's own drag
      strip is gone and this one stands in for it. -->
 <div class="options-page" class:settling={!settled} role="region" aria-label={$t('settings.title')}>
@@ -2535,7 +2670,7 @@
         </section>
       </div>
     {:else if mode === 'memory'}
-      <div class="memory-options" role="tabpanel">
+      <div class="memory-options" role="tabpanel" use:scrollFade>
         <header class="options-detail-header">
           <span class="options-title-group"><h3>{$t('settings.tabMemory')}</h3></span>
         </header>
@@ -2553,7 +2688,7 @@
           </section>
         {/if}
         <div class="memory-divider"></div>
-        <div class="chronicle-group" class:disabled={!memory?.enabled} use:scrollFade>
+        <div class="chronicle-group" class:disabled={!memory?.enabled}>
           <section class="chronicle-section">
             <header>
               <span><h4>{$t('settings.chronicle')}</h4>{#if !chronicle?.running}<small>{$t('settings.chronicleOff')}</small>{/if}</span>
@@ -2571,30 +2706,12 @@
           <section class="chronicle-section chronicle-sources">
             <header>
               <span><h4>{$t('settings.chroniclePermissions')}</h4></span>
-              <select aria-label={$t('settings.chroniclePermissions')} disabled={!memory?.enabled || !chronicle || updatingChronicle} value={chronicle?.capturePolicy ?? 'all'} onchange={(event) => void updateChronicle({capturePolicy: event.currentTarget.value as 'all' | 'except' | 'only'})}>
-                <option value="all">{$t('settings.chroniclePolicyAll')}</option>
-                <option value="except">{$t('settings.chroniclePolicyExcept')}</option>
-                <option value="only">{$t('settings.chroniclePolicyOnly')}</option>
-              </select>
             </header>
             <p>{$t('settings.chroniclePermissionsBody')}</p>
-            {#if chronicle && chronicle.capturePolicy !== 'all'}
-              {@const sources = [...chronicle.apps, ...chronicle.sites]}
-              <ul class="chronicle-source-list">
-                {#each sources as source (source)}
-                  <li>
-                    <span>{source}</span>
-                    <button type="button" aria-label={$t('settings.chronicleRemoveSource', {name: source})} data-tooltip-label={$t('settings.chronicleRemoveSource', {name: source})} disabled={updatingChronicle} onclick={() => void removeChronicleSource(source)}><Icon name="close" size={12}/></button>
-                  </li>
-                {:else}
-                  <li class="chronicle-source-empty">{$t('settings.chronicleNoSources')}</li>
-                {/each}
-              </ul>
-              <form class="chronicle-source-add" onsubmit={(event) => { event.preventDefault(); void addChronicleSource(); }}>
-                <input bind:value={chronicleSource} placeholder={$t('settings.chronicleAddSource')} disabled={!memory?.enabled || updatingChronicle}/>
-                <button type="submit" disabled={!memory?.enabled || updatingChronicle || !chronicleSource.trim()}>{$t('settings.chronicleAdd')}</button>
-              </form>
-            {/if}
+            <div class="chronicle-source-columns">
+              {@render sourceColumn('apps', $t('settings.chronicleApps'), appRows)}
+              {@render sourceColumn('sites', $t('settings.chronicleSites'), siteRows)}
+            </div>
           </section>
           <section class="chronicle-section">
             <header>
@@ -3177,6 +3294,7 @@
     </div>
     {/if}
   </div>
+
 </div>
 
 <style>
@@ -3235,7 +3353,7 @@
   .update-refresh:disabled{cursor:default;opacity:.55}
   .update-refresh.spinning :global(svg){animation:update-spin 1s linear infinite}
   @keyframes update-spin{to{transform:rotate(360deg)}}
-  .memory-options{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 20px calc(var(--options-content-edge) + var(--options-tab-inline))}.memory-options>.options-detail-header{flex:none;align-items:flex-start}.memory-options>.options-path{flex:none;margin-top:auto;padding-top:12px}.local-memory-section{margin-top:18px}.memory-divider{height:1px;flex:none;margin:14px 0;background:var(--neutral-200)}.chronicle-group{min-height:0;flex:1;overflow-y:auto;transition:opacity .15s ease}.chronicle-group>.chronicle-section+.chronicle-section{margin-top:16px}.chronicle-sources header select{height:26px;flex:none;border:1px solid var(--neutral-200);border-radius:8px;padding:0 8px;background:var(--app-surface);color:var(--neutral-900);cursor:pointer;font-family:inherit;font-size:11px}.chronicle-sources header select:disabled{cursor:default;opacity:.5}.chronicle-source-list{display:flex;flex-direction:column;max-width:610px;margin:4px 0 0;padding:0;list-style:none}.chronicle-source-list li{display:flex;align-items:center;justify-content:space-between;gap:10px;height:28px;border-radius:7px;padding:0 4px 0 8px;color:var(--neutral-700);font-size:11px}.chronicle-source-list li>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chronicle-source-list li:hover{background:var(--neutral-100)}.chronicle-source-list li>button{display:flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none;border:0;padding:0;background:none;color:var(--neutral-400);cursor:pointer;opacity:0;transition:color .12s ease,opacity .12s ease}.chronicle-source-list li:hover>button,.chronicle-source-list li>button:focus-visible{opacity:1}.chronicle-source-list li>button:hover{color:var(--neutral-900)}.chronicle-source-empty{color:var(--neutral-400)}.chronicle-source-empty:hover{background:none}.chronicle-source-add{display:flex;align-items:center;gap:8px;max-width:610px;margin-top:8px}.chronicle-source-add input{height:28px;min-width:0;flex:1;border:1px solid var(--neutral-200);border-radius:8px;padding:0 9px;background:var(--app-surface);color:var(--neutral-900);font-family:inherit;font-size:11px}.chronicle-source-add input:focus-visible{outline:0;border-color:var(--neutral-400)}.chronicle-forget{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.chronicle-source-add button,.chronicle-forget button{height:28px;flex:none;border:1px solid var(--neutral-200);border-radius:8px;padding:0 11px;background:var(--app-surface);color:var(--neutral-900);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.chronicle-source-add button:hover,.chronicle-forget button:hover,.chronicle-source-add button:focus-visible,.chronicle-forget button:focus-visible{outline:0;background:var(--neutral-100)}.chronicle-source-add button:disabled,.chronicle-forget button:disabled{cursor:default;opacity:.5}.chronicle-group.disabled{opacity:.42}.chronicle-section>header{display:flex;align-items:center;justify-content:space-between;gap:16px}.chronicle-section>header>span{display:flex;min-width:0;flex-direction:column;gap:2px}.chronicle-section h4{margin:0;color:var(--neutral-900);font-size:12.5px;font-weight:570}.chronicle-section small{color:var(--neutral-400);font-size:10.5px}.chronicle-section>p{max-width:610px;margin:6px 0;color:var(--neutral-600);font-size:11px;line-height:1.45}.chronicle-inline-stats{display:flex;flex-wrap:wrap;gap:12px;color:var(--neutral-400);font-size:10px}.chronicle-toggle{width:36px;height:20px;flex:none;border:0;border-radius:999px;padding:2px;background:var(--neutral-300);cursor:pointer;transition:background .15s ease}.chronicle-toggle span{width:16px;height:16px;display:block;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .15s ease,background .15s ease}.chronicle-toggle.pending{display:block;cursor:default;opacity:.5}.chronicle-toggle.enabled{background:var(--neutral-900)}.chronicle-toggle.enabled span{transform:translateX(16px)}:global(:root[data-theme="dark"]) .chronicle-toggle{background:#484848}:global(:root[data-theme="dark"]) .chronicle-toggle span{background:#d8d8d8}:global(:root[data-theme="dark"]) .chronicle-toggle.enabled{background:#e7e7e7}:global(:root[data-theme="dark"]) .chronicle-toggle.enabled span{background:#242424}.chronicle-toggle:disabled{cursor:default;opacity:.5}.chronicle-error{display:flex;align-items:center;gap:12px;margin-top:10px;padding:9px 11px;border-radius:9px;background:#fff5f5;color:#8f3e3e}.chronicle-error>span{min-width:0;flex:1}.chronicle-error h4,.chronicle-error p,.chronicle-error small{margin:0}.chronicle-error h4{font-size:11px}.chronicle-error p{margin-top:3px;font-size:11px}.chronicle-error small{display:block;margin-top:3px;opacity:.75;font-size:10px}.chronicle-error button{height:28px;flex:none;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:8px;padding:0 10px;background:var(--app-surface);color:inherit;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.chronicle-error button:hover,.chronicle-error button:focus-visible{outline:0;background:var(--neutral-100)}.chronicle-error button:disabled{cursor:default;opacity:.55}:global(:root[data-theme="dark"]) .chronicle-error{background:#321f1f;color:#eea7a7}:global(:root[data-theme="dark"]) .chronicle-error button{border-color:#704242;background:#442727;color:#f0b0b0}:global(:root[data-theme="dark"]) .chronicle-error button:hover,:global(:root[data-theme="dark"]) .chronicle-error button:focus-visible{background:#553030;color:#ffd0d0}
+  .memory-options{flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:2px var(--options-detail-edge) 20px calc(var(--options-content-edge) + var(--options-tab-inline))}.memory-options>*{flex:none}.memory-options>.options-detail-header{flex:none;align-items:flex-start}.memory-options>.options-path{flex:none;margin-top:auto;padding-top:12px}.local-memory-section{margin-top:18px}.memory-divider{height:1px;flex:none;margin:14px 0;background:var(--neutral-200)}.chronicle-group{transition:opacity .15s ease}.chronicle-group>.chronicle-section+.chronicle-section{margin-top:16px}.chronicle-source-columns{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:610px;margin-top:10px}.chronicle-source-column{min-width:0;display:flex;flex-direction:column;gap:6px}.chronicle-source-column>header{display:flex;align-items:center;justify-content:space-between;gap:10px}.chronicle-source-column h5{min-width:0;margin:0;overflow:hidden;color:var(--neutral-900);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:570}.chronicle-source-tools{display:flex;align-items:center;gap:4px}.chronicle-source-tools button{display:flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none;border:0;padding:0;background:none;color:var(--neutral-400);cursor:pointer;transition:color .12s ease}.chronicle-source-tools button:hover,.chronicle-source-tools button:focus-visible{outline:0;color:var(--neutral-900)}.chronicle-source-tools button.active{color:var(--neutral-900)}.chronicle-source-tools button:disabled{cursor:default;opacity:.5}.chronicle-source-box{min-width:0;display:flex;flex-direction:column;height:150px;overflow:hidden;border:1px solid var(--neutral-200);border-radius:10px;padding:5px}.chronicle-source-list{min-height:0;flex:1;display:flex;flex-direction:column;overflow-y:auto;margin:0;padding:0;list-style:none}.chronicle-source-list li{display:flex;align-items:center;gap:8px;height:28px;border-radius:7px;padding:0 4px 0 8px;color:var(--neutral-700);font-size:11px}.chronicle-source-list li>span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chronicle-source-list li>:global(svg){flex:none;color:var(--neutral-400)}.chronicle-source-icon{width:15px;height:15px;flex:none;border-radius:3px;object-fit:contain}.chronicle-source-list li:hover{background:var(--neutral-100)}.chronicle-source-list li>button{display:flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none;border:0;padding:0;background:none;color:var(--neutral-400);cursor:pointer;opacity:0;transition:color .12s ease,opacity .12s ease}.chronicle-source-list li:hover>button,.chronicle-source-list li>button:focus-visible{opacity:1}.chronicle-source-list li>button:hover{color:var(--neutral-900)}.chronicle-source-field{display:flex;align-items:center;gap:7px;height:28px;flex:none;border-radius:7px;padding:0 8px;color:var(--neutral-400)}.chronicle-source-field:focus-within{color:var(--neutral-900)}.chronicle-source-field input{height:100%;min-width:0;flex:1;border:0;padding:0;background:none;color:var(--neutral-900);font-family:inherit;font-size:11px}.chronicle-source-field input::placeholder{color:var(--neutral-400)}.chronicle-source-field input:focus-visible{outline:0}.chronicle-source-field input:disabled{cursor:default;opacity:.5}.chronicle-forget{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.chronicle-forget button{height:28px;flex:none;border:1px solid var(--neutral-200);border-radius:8px;padding:0 11px;background:var(--app-surface);color:var(--neutral-900);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.chronicle-forget button:hover,.chronicle-forget button:focus-visible{outline:0;background:var(--neutral-100)}.chronicle-forget button:disabled{cursor:default;opacity:.5}.chronicle-group.disabled{opacity:.42}.chronicle-section>header{display:flex;align-items:center;justify-content:space-between;gap:16px}.chronicle-section>header>span{display:flex;min-width:0;flex-direction:column;gap:2px}.chronicle-section h4{margin:0;color:var(--neutral-900);font-size:12.5px;font-weight:570}.chronicle-section small{color:var(--neutral-400);font-size:10.5px}.chronicle-section>p{max-width:610px;margin:6px 0;color:var(--neutral-600);font-size:11px;line-height:1.45}.chronicle-inline-stats{display:flex;flex-wrap:wrap;gap:12px;color:var(--neutral-400);font-size:10px}.chronicle-toggle{width:36px;height:20px;flex:none;border:0;border-radius:999px;padding:2px;background:var(--neutral-300);cursor:pointer;transition:background .15s ease}.chronicle-toggle span{width:16px;height:16px;display:block;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .15s ease,background .15s ease}.chronicle-toggle.pending{display:block;cursor:default;opacity:.5}.chronicle-toggle.enabled{background:var(--neutral-900)}.chronicle-toggle.enabled span{transform:translateX(16px)}:global(:root[data-theme="dark"]) .chronicle-toggle{background:#484848}:global(:root[data-theme="dark"]) .chronicle-toggle span{background:#d8d8d8}:global(:root[data-theme="dark"]) .chronicle-toggle.enabled{background:#e7e7e7}:global(:root[data-theme="dark"]) .chronicle-toggle.enabled span{background:#242424}.chronicle-toggle:disabled{cursor:default;opacity:.5}.chronicle-error{display:flex;align-items:center;gap:12px;margin-top:10px;padding:9px 11px;border-radius:9px;background:#fff5f5;color:#8f3e3e}.chronicle-error>span{min-width:0;flex:1}.chronicle-error h4,.chronicle-error p,.chronicle-error small{margin:0}.chronicle-error h4{font-size:11px}.chronicle-error p{margin-top:3px;font-size:11px}.chronicle-error small{display:block;margin-top:3px;opacity:.75;font-size:10px}.chronicle-error button{height:28px;flex:none;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:8px;padding:0 10px;background:var(--app-surface);color:inherit;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.chronicle-error button:hover,.chronicle-error button:focus-visible{outline:0;background:var(--neutral-100)}.chronicle-error button:disabled{cursor:default;opacity:.55}:global(:root[data-theme="dark"]) .chronicle-error{background:#321f1f;color:#eea7a7}:global(:root[data-theme="dark"]) .chronicle-error button{border-color:#704242;background:#442727;color:#f0b0b0}:global(:root[data-theme="dark"]) .chronicle-error button:hover,:global(:root[data-theme="dark"]) .chronicle-error button:focus-visible{background:#553030;color:#ffd0d0}
   .options-body{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}.options-body:after{content:'';position:absolute;top:6px;bottom:12px;left:220px;width:1px;background:var(--neutral-200)}
   .options-rail{min-height:0;display:flex;flex-direction:column;gap:6px;padding:0 var(--options-divider-gap) 12px var(--options-content-edge)}.options-search{display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border:1px solid var(--neutral-200);border-radius:9px;background:var(--input-surface);color:var(--neutral-500)}.options-search:focus-within{border-color:var(--neutral-400);background:var(--prompt-surface-active)}.options-search input{-webkit-appearance:none;appearance:none;min-width:0;flex:1;border:0;padding:0;background:transparent;color:var(--neutral-950);outline:none;font-size:12.5px}.options-search input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
   .options-rail-list{flex:1;min-height:0;overflow-y:auto;margin:0;padding:6px 0;list-style:none}.options-rail-list.empty-state{display:flex;align-items:center;justify-content:center;-webkit-mask-image:none;mask-image:none}.options-rail-list li{display:flex}.options-rail-list .rail-empty{justify-content:center;padding:0 8px}.options-rail-row{width:100%;display:flex;align-items:center;gap:10px;margin:2px 0;padding:5px 9px;border:0;border-radius:10px;background:transparent;text-align:left;cursor:pointer}.options-rail-row:hover,.options-rail-row:focus-visible{outline:0;background:var(--neutral-100)}.options-rail-row.selected{background:var(--neutral-200)}

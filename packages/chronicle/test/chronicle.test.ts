@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
   ChronicleManager,
+  ChronicleStore,
   type ChronicleFrame,
   type ChronicleSettings,
   type ChronicleSystemState,
@@ -169,18 +170,33 @@ test("records every app and site until the user narrows it", async () => {
     return (await manager.captureOnce()).map((entry) => entry.app);
   };
 
-  assert.equal(policyManager([]).settings().capturePolicy, "all");
+  // Empty lists record everywhere, which is what a fresh install has.
+  assert.deepEqual(policyManager([]).settings().excludeApps, []);
   assert.deepEqual(await captured(), ["Mail", "Safari"]);
-  // A listed site matches its subdomains, so one entry covers the whole bank.
-  assert.deepEqual(
-    await captured({ capturePolicy: "except", sites: ["bank.example"] }),
-    ["Mail"],
-  );
-  // "only" is the inverse reading of the same list, so switching modes keeps it.
-  assert.deepEqual(
-    await captured({ capturePolicy: "only", apps: ["com.apple.mail"] }),
-    ["Mail"],
-  );
+  // An excluded site matches its subdomains, so one entry covers the whole bank.
+  assert.deepEqual(await captured({ excludeSites: ["bank.example"] }), ["Mail"]);
+  // An app is excluded by name or by bundle id, whichever the user named.
+  assert.deepEqual(await captured({ excludeApps: ["com.apple.Safari"] }), ["Mail"]);
+});
+
+test("settings written under the old capture policy carry over", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "flareai-chronicle-"));
+  const settings = path.join(directory, "settings.json");
+  const read = (value: Record<string, unknown>): ChronicleSettings => {
+    writeFileSync(settings, JSON.stringify({ enabled: true, ...value }), "utf8");
+    return new ChronicleStore(directory).readSettings();
+  };
+
+  // "except" was already the exclusion list, so it carries over as it stood...
+  const excepted = read({ capturePolicy: "except", apps: ["Mail"], sites: ["bank.example"] });
+  assert.deepEqual(excepted.excludeApps, ["Mail"]);
+  assert.deepEqual(excepted.excludeSites, ["bank.example"]);
+  // ...while under "all" and "only" nothing was being excluded, so those lists
+  // stay out rather than starting to block sources the user never named.
+  const everywhere = read({ capturePolicy: "all", apps: ["Mail"], sites: ["bank.example"] });
+  assert.deepEqual(everywhere.excludeApps, []);
+  const only = read({ capturePolicy: "only", apps: ["Mail"] });
+  assert.deepEqual(only.excludeApps, []);
 });
 
 test("private browsing is recorded until the switch says otherwise", async () => {
@@ -223,7 +239,7 @@ test("interaction events are searchable and obey the same policy", () => {
   assert.match(readFileSync(manager.store.timelinePath, "utf8"), /pressed cmd\+s in Xcode/);
 
   // A blocked site's events are dropped at the door, like its frames.
-  manager.update({ capturePolicy: "except", sites: ["bank.example"] });
+  manager.update({ excludeSites: ["bank.example"] });
   manager.record({
     at: "2026-08-13T12:00:02.000Z",
     kind: "click",

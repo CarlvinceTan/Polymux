@@ -129,6 +129,8 @@ const api: FlareAIApi = {
       ipcRenderer.invoke(channels.chronicleSetEnabled, enabled),
     entries: (options) =>
       ipcRenderer.invoke(channels.chronicleEntries, options),
+    pickApp: () => ipcRenderer.invoke(channels.chroniclePickApp),
+    appIcon: (name: string) => ipcRenderer.invoke(channels.chronicleAppIcon, name),
   },
   mcp: {
     list: () => ipcRenderer.invoke(channels.mcpList),

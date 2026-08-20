@@ -43,6 +43,8 @@ export const channels = {
   chronicleUpdate: "flareai:chronicle:update",
   chronicleForget: "flareai:chronicle:forget",
   chronicleEntries: "flareai:chronicle:entries",
+  chroniclePickApp: "flareai:chronicle:pick-app",
+  chronicleAppIcon: "flareai:chronicle:app-icon",
   mcpList: "flareai:mcp:list",
   mcpReload: "flareai:mcp:reload",
   mcpSetEnabled: "flareai:mcp:set-enabled",

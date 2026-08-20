@@ -10,7 +10,6 @@ import {
 } from "node:fs";
 import path from "node:path";
 import type {
-  CapturePolicy,
   ChronicleEntry,
   ChronicleFrame,
   ChronicleSearchHit,
@@ -28,9 +27,8 @@ export const defaultChronicleSettings: ChronicleSettings = {
   minimumChange: 0.035,
   retentionHours: 24,
   maximumBytes: 768 * 1024 * 1024,
-  capturePolicy: "all",
-  apps: [],
-  sites: [],
+  excludeApps: [],
+  excludeSites: [],
   recordPrivateBrowsing: true,
   interactionEvents: true,
   distillAfterHours: 6,
@@ -328,9 +326,8 @@ export class ChronicleStore {
       storedFrames: entries.length,
       storedBytes: entries.reduce((total, entry) => total + entry.bytes, 0),
       storedEvents: this.events({ limit: Number.MAX_SAFE_INTEGER }).length,
-      capturePolicy: settings.capturePolicy,
-      apps: settings.apps,
-      sites: settings.sites,
+      excludeApps: settings.excludeApps,
+      excludeSites: settings.excludeSites,
       recordPrivateBrowsing: settings.recordPrivateBrowsing,
       interactionEvents: settings.interactionEvents,
       distilledThrough: this.state().distilledThrough,
@@ -439,9 +436,7 @@ function validateSettings(value: Partial<ChronicleSettings>): ChronicleSettings 
     minimumChange: bounded(value.minimumChange, 0.005, 1, 0.035),
     retentionHours: bounded(value.retentionHours, 1, 720, 24),
     maximumBytes: bounded(value.maximumBytes, 32 * 1024 * 1024, 20 * 1024 ** 3, 768 * 1024 * 1024),
-    capturePolicy: policy(value.capturePolicy),
-    apps: list(value.apps),
-    sites: list(value.sites),
+    ...migrateLists(value),
     // Unset means record: a history that quietly skipped things by default
     // would be read as complete when it was not.
     recordPrivateBrowsing: value.recordPrivateBrowsing !== false,
@@ -450,8 +445,27 @@ function validateSettings(value: Partial<ChronicleSettings>): ChronicleSettings 
   };
 }
 
-function policy(value: unknown): CapturePolicy {
-  return value === "except" || value === "only" ? value : "all";
+/**
+ * The exclusions used to be one pair of lists read through an
+ * "all" | "except" | "only" policy. A settings file written before that went
+ * away is carried over by the mode it was in: "except" was already the
+ * exclusion list, while under "all" and "only" nothing was being excluded, so
+ * those lists stay out rather than starting to block sources the user never
+ * asked to skip. Re-reading an already-migrated file is a no-op, since the new
+ * keys are read first.
+ */
+function migrateLists(
+  value: Partial<ChronicleSettings>,
+): Pick<ChronicleSettings, "excludeApps" | "excludeSites"> {
+  const migrated = {
+    excludeApps: list(value.excludeApps),
+    excludeSites: list(value.excludeSites),
+  };
+  const old = value as Record<string, unknown>;
+  if (old.capturePolicy !== "except") return migrated;
+  if (migrated.excludeApps.length === 0) migrated.excludeApps = list(old.apps);
+  if (migrated.excludeSites.length === 0) migrated.excludeSites = list(old.sites);
+  return migrated;
 }
 
 function list(value: unknown): string[] {

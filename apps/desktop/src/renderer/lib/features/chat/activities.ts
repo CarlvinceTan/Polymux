@@ -1,4 +1,5 @@
 import type {AgentActivityItem, AgentActivityKind} from './AgentActivity.svelte';
+import {platformForChat} from '../../shared/state/chatPlatforms';
 import {translate, type MessageKey} from '../../../i18n';
 
 export function upsertActivity(activities: AgentActivityItem[] = [], activity: AgentActivityItem): AgentActivityItem[] {
@@ -38,10 +39,16 @@ export function collapseActivities(activities: AgentActivityItem[] = []): AgentA
 export function activityPresentation(
   name: string,
   input: Record<string, unknown> = {},
-): {kind: AgentActivityKind; label: string; icon?: AgentActivityItem['icon']} {
+): {kind: AgentActivityKind; label: string; icon?: AgentActivityItem['icon']; logo?: AgentActivityItem['logo']} {
   const normalized = name.toLowerCase();
   const path = typeof input.path === 'string' ? input.path : '';
   const uri = typeof input.uri === 'string' ? input.uri : '';
+
+  // The hub's own tools are named before anything generic can claim them:
+  // `message_search` is a search and `email_read` a read, but what the user
+  // needs to see is which of their accounts the agent just reached into.
+  const hub = hubActivity(normalized, input);
+  if (hub) return hub;
 
   if (normalized.includes('read') && /(?:^|\/)skill\.md$/i.test(path)) {
     return skillActivity(path.split('/').at(-2) ?? '');
@@ -97,6 +104,50 @@ export function activityPresentation(
 }
 
 /**
+ * A row for one of the hub's messaging or email tools: the platform's own logo
+ * where the call names a conversation the hub knows, and wording that says what
+ * was done to the account rather than what the tool was called.
+ */
+function hubActivity(
+  normalized: string,
+  input: Record<string, unknown>,
+): {kind: AgentActivityKind; label: string; logo?: AgentActivityItem['logo']} | undefined {
+  if (normalized.startsWith('message_')) {
+    const chatId = typeof input.chat_id === 'string' ? input.chat_id : '';
+    const named = typeof input.platform === 'string' ? input.platform : '';
+    // A call that names one conversation borrows its platform; a call that
+    // spans every linked account has none to borrow and keeps the generic
+    // glyph rather than picking a logo that would misreport the reach.
+    const logo = platformForChat(chatId) ?? (named ? platformForChat(`platform:${named}`) ?? knownPlatform(named) : undefined);
+    const label = normalized === 'message_send' ? translate('activity.sendingMessage')
+      : normalized === 'message_read' ? translate('activity.readingMessages')
+      : normalized === 'message_search' ? translate('activity.searchingMessages')
+      : translate('activity.checkingMessages');
+    return {kind: 'messaging', label, ...(logo ? {logo} : {})};
+  }
+  if (normalized.startsWith('email_')) {
+    const label = normalized === 'email_send' ? translate('activity.sendingEmail')
+      : normalized === 'email_attachments' ? translate('activity.readingAttachments')
+      : normalized === 'email_accounts' || normalized === 'email_folders' ? translate('activity.checkingMailboxes')
+      : translate('activity.readingEmails');
+    return {kind: 'mail', label, logo: 'mail'};
+  }
+  return undefined;
+}
+
+/** A platform named by the call itself, kept only when it is one the app can
+ * draw a mark for. */
+function knownPlatform(value: string): AgentActivityItem['logo'] | undefined {
+  return platformForChat(value) ?? PLATFORM_LOGOS.has(value) ? value as AgentActivityItem['logo'] : undefined;
+}
+
+const PLATFORM_LOGOS = new Set([
+  'whatsapp', 'telegram', 'signal', 'discord', 'slack', 'messenger', 'instagram',
+  'linkedin', 'googlechat', 'gmessages', 'twitter', 'bluesky', 'gvoice',
+  'zulip', 'imessage', 'wechat', 'matrix', 'mail',
+]);
+
+/**
  * A skill's row. Some folder names read awkwardly in the trail, so those carry
  * a display name of their own — and, where the skill has a glyph that says more
  * than its kind's generic one, the glyph travels with the row rather than being
@@ -136,6 +187,8 @@ const condensedLabels: Record<AgentActivityKind, MessageKey> = {
   tool: 'activity.summary.tool',
   resource: 'activity.summary.resource',
   editing: 'activity.summary.editing',
+  messaging: 'activity.summary.messaging',
+  mail: 'activity.summary.mail',
   plugin: 'activity.summary.tool',
   commentary: 'activity.summary.commentary',
 };

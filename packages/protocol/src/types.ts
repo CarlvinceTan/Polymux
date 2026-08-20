@@ -55,7 +55,6 @@ export interface MemoryStatusDto {
   consolidationRetryAfter: string | null;
   pendingMemories: number;
 }
-export type ChronicleCapturePolicy = "all" | "except" | "only";
 export interface ChronicleStatusDto {
   enabled: boolean;
   running: boolean;
@@ -65,18 +64,16 @@ export interface ChronicleStatusDto {
   storedFrames: number;
   storedBytes: number;
   storedEvents: number;
-  /** "all" records everywhere; "except" and "only" read the lists below. */
-  capturePolicy: ChronicleCapturePolicy;
-  apps: string[];
-  sites: string[];
+  /** Apps and sites Chronicle leaves alone; everything else is recorded. */
+  excludeApps: string[];
+  excludeSites: string[];
   recordPrivateBrowsing: boolean;
   interactionEvents: boolean;
   distilledThrough: string | null;
 }
 export interface ChronicleSettingsPatchDto {
-  capturePolicy?: ChronicleCapturePolicy;
-  apps?: string[];
-  sites?: string[];
+  excludeApps?: string[];
+  excludeSites?: string[];
   recordPrivateBrowsing?: boolean;
   interactionEvents?: boolean;
 }
@@ -1745,6 +1742,12 @@ export interface FlareAIApi {
       until?: string;
       limit?: number;
     }): Promise<ChronicleEntryDto[]>;
+    /** Opens the system file picker at the applications folder. Returns the
+     * chosen application's name, or null when the picker was dismissed. */
+    pickApp(): Promise<string | null>;
+    /** An installed application's own icon as a `data:` url, or null when the
+     * application cannot be found under that name. */
+    appIcon(name: string): Promise<string | null>;
   };
   mcp: {
     list(): Promise<McpServerDto[]>;

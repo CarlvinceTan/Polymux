@@ -13,16 +13,12 @@ export interface ChronicleSettings {
   retentionHours: number;
   maximumBytes: number;
   /**
-   * Which apps and sites may be captured at all. "all" is the default and
-   * records everywhere; "except" records everywhere but the listed sources;
-   * "only" records nothing else. The lists are shared by both modes so
-   * switching between them never loses what the user typed.
+   * What Chronicle leaves alone; everything not named here is captured. Apps
+   * are bundle identifiers or app names, matched case-insensitively; sites
+   * are hostnames, matched on the host itself or any subdomain of it.
    */
-  capturePolicy: CapturePolicy;
-  /** Bundle identifiers or app names, matched case-insensitively. */
-  apps: string[];
-  /** Hostnames, matched on the host itself or any subdomain of it. */
-  sites: string[];
+  excludeApps: string[];
+  excludeSites: string[];
   /**
    * Whether a browser window the host reports as private counts as ordinary
    * screen. Default true — recording everything is the honest default for a
@@ -38,8 +34,6 @@ export interface ChronicleSettings {
    */
   distillAfterHours: number;
 }
-
-export type CapturePolicy = "all" | "except" | "only";
 
 export interface ChronicleFrame {
   sourceId: string;
@@ -127,9 +121,8 @@ export interface ChronicleStatus {
   storedFrames: number;
   storedBytes: number;
   storedEvents: number;
-  capturePolicy: CapturePolicy;
-  apps: string[];
-  sites: string[];
+  excludeApps: string[];
+  excludeSites: string[];
   recordPrivateBrowsing: boolean;
   interactionEvents: boolean;
   distilledThrough: string | null;

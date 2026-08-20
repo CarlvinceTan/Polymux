@@ -314,20 +314,13 @@ export interface DesktopBackendOptions {
 }
 
 /**
- * Asks LaunchServices which application opens one file, and returns its
- * display name with its icon as base64 PNG. Written as JXA because that is the
- * only way to reach AppKit without a compiled helper; `argv[0]` is the file, so
- * no path is ever spliced into the source.
+ * The drawing both icon scripts share: an AppKit image in `source` becomes a
+ * base64 PNG in `icon`. Drawn into a 32px bitmap rather than taken at the
+ * icon's own 1024px natural size, because that is what a retina row would
+ * resample down to anyway.
  */
-const FILE_OWNER_SCRIPT = `function run(argv) {
-  ObjC.import('AppKit');
-  const target = $.NSURL.fileURLWithPath(argv[0]);
-  const appUrl = $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL(target);
-  if (appUrl.isNil()) return 'null';
-  const appPath = ObjC.unwrap(appUrl.path);
-  const px = 32;
+const JXA_ICON_TO_PNG = `  const px = 32;
   let icon = '';
-  const source = $.NSWorkspace.sharedWorkspace.iconForFile(appPath);
   if (!source.isNil()) {
     const drawn = $.NSImage.alloc.initWithSize($.NSMakeSize(px, px));
     drawn.lockFocus;
@@ -339,9 +332,39 @@ const FILE_OWNER_SCRIPT = `function run(argv) {
       rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $())
         .base64EncodedStringWithOptions(0));
   }
+`;
+
+/**
+ * Asks LaunchServices which application opens one file, and returns its
+ * display name with its icon as base64 PNG. Written as JXA because that is the
+ * only way to reach AppKit without a compiled helper; `argv[0]` is the file, so
+ * no path is ever spliced into the source.
+ */
+const FILE_OWNER_SCRIPT = `function run(argv) {
+  ObjC.import('AppKit');
+  const target = $.NSURL.fileURLWithPath(argv[0]);
+  const appUrl = $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL(target);
+  if (appUrl.isNil()) return 'null';
+  const appPath = ObjC.unwrap(appUrl.path);
+  const source = $.NSWorkspace.sharedWorkspace.iconForFile(appPath);
+${JXA_ICON_TO_PNG}
   const name = ObjC.unwrap($.NSFileManager.defaultManager.displayNameAtPath(appPath))
     .replace(/\\.app$/, '');
   return JSON.stringify({name: name, icon: icon});
+}`;
+
+/**
+ * The icon of an application by the path of its bundle, as base64 PNG — or an
+ * empty string once the app is gone and only its row remains. The same JXA
+ * route rather than Electron's getFileIcon, which answers with one generic
+ * application icon for every bundle; a column of fallbacks reads as data
+ * rather than as "nothing".
+ */
+const APP_ICON_SCRIPT = `function run(argv) {
+  ObjC.import('AppKit');
+  const source = $.NSWorkspace.sharedWorkspace.iconForFile(argv[0]);
+${JXA_ICON_TO_PNG}
+  return icon;
 }`;
 
 export class DesktopBackend {
@@ -1223,6 +1246,40 @@ export class DesktopBackend {
     this.#handle(channels.chronicleEntries, (_event, value?: unknown) => {
       const options = chronicleQuery(value);
       return this.#chronicle.store.entries(options);
+    });
+    // Parented like the other pickers, so it opens as a sheet over the app.
+    this.#handle(channels.chroniclePickApp, async () => {
+      const {dialog} = await import("electron");
+      const result = await dialog.showOpenDialog(this.#window, {
+        title: "Choose an application",
+        defaultPath: "/Applications",
+        properties: ["openFile"],
+        filters: [{name: "Applications", extensions: ["app"]}],
+      });
+      const chosen = result.canceled ? null : (result.filePaths[0] ?? null);
+      return chosen ? path.basename(chosen).replace(/\.app$/i, "") : null;
+    });
+    // The app's own icon, by the name the list holds. A row for an app that
+    // has since been removed simply gets no icon back and keeps its glyph.
+    this.#handle(channels.chronicleAppIcon, async (_event, value: unknown) => {
+      const name = required(value, "application name");
+      if (process.platform !== "darwin" || name.includes("/")) return null;
+      const bundle = await applicationBundle(name);
+      if (!bundle) return null;
+      try {
+        // Through LaunchServices, the route the open-with menu takes: an app
+        // path in, its own icon out.
+        const {stdout} = await promisify(execFile)(
+          "osascript",
+          ["-l", "JavaScript", "-e", APP_ICON_SCRIPT, bundle],
+          {timeout: 4000, maxBuffer: 1024 * 1024},
+        );
+        const icon = stdout.trim();
+        return icon ? `data:image/png;base64,${icon}` : null;
+      } catch (error) {
+        console.warn(`Could not read the icon for ${name}`, error);
+        return null;
+      }
     });
     this.#handle(channels.mcpList, () =>
       this.#mcpDtos(this.#mcp.snapshots()),
@@ -3528,6 +3585,43 @@ export class DesktopBackend {
           .captureSubmission(message)
           .catch((error: unknown) => console.warn("Could not save the submitted login", error));
     });
+  }
+}
+
+/**
+ * Where an application named in Chronicle's exclusions actually lives.
+ *
+ * The usual folders first, since that is where almost everything is, and
+ * Spotlight after — an app run from a disk image, a developer build, or
+ * anywhere else the user pointed the picker at is still theirs to exclude, and
+ * a row with no icon reads as a failure rather than as a location.
+ */
+async function applicationBundle(name: string): Promise<string | null> {
+  const roots = [
+    "/Applications",
+    "/Applications/Utilities",
+    "/System/Applications",
+    "/System/Applications/Utilities",
+    path.join(homedir(), "Applications"),
+  ];
+  const direct = roots
+    .map((root) => path.join(root, `${name}.app`))
+    .find((candidate) => existsSync(candidate));
+  if (direct) return direct;
+  try {
+    const {stdout} = await promisify(execFile)("mdfind", [
+      "-name",
+      `${name}.app`,
+      "-onlyin",
+      "/",
+    ]);
+    const match = stdout
+      .split("\n")
+      .find((line) => line.endsWith(`/${name}.app`) && existsSync(line));
+    return match ?? null;
+  } catch {
+    // Spotlight can be off or indexing; the glyph stands in.
+    return null;
   }
 }
 

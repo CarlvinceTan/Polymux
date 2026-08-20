@@ -1,4 +1,6 @@
 <script module lang="ts">
+  import type {Platform} from '../../shared/components/PlatformLogo.svelte';
+
   export type AgentActivityKind =
     | 'thinking'
     | 'compacting'
@@ -11,6 +13,8 @@
     | 'tool'
     | 'resource'
     | 'editing'
+    | 'messaging'
+    | 'mail'
     | 'plugin'
     | 'commentary';
   export type AgentActivityStatus = 'pending' | 'active' | 'completed' | 'failed';
@@ -32,6 +36,10 @@
      * when the row is built, because the label it used to be inferred from is
      * translated and so is no longer a stable key. */
     icon?: 'globe';
+    /** A platform's own mark, drawn in place of the kind's glyph. Set when the
+     * row is for one of the hub's accounts, so a WhatsApp read reads as
+     * WhatsApp rather than as a generic tool. */
+    logo?: Platform;
     target?: string;
     result?: string;
     steps?: AgentActivityStep[];
@@ -44,6 +52,7 @@
   import {cubicOut} from 'svelte/easing';
   import {activityDuration, collapseActivities, formatElapsedSeconds, nextDurationTickDelay} from './activities';
   import Icon from '../../shared/components/Icon.svelte';
+  import PlatformLogo from '../../shared/components/PlatformLogo.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import {t} from '../../../i18n';
 
@@ -149,7 +158,7 @@
     return text.split('\n').find((line) => line.trim().length > 0)?.trim() ?? text.trim();
   }
 
-  const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat' | 'archive'> = {
+  const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat' | 'archive' | 'mail'> = {
     thinking: 'brain',
     compacting: 'compact',
     reading: 'book-open',
@@ -161,6 +170,8 @@
     tool: 'wrench',
     resource: 'link',
     editing: 'edit',
+    messaging: 'chat',
+    mail: 'mail',
     plugin: 'wrench',
     commentary: 'chat',
   };
@@ -184,7 +195,11 @@
           in:fly|local={{y: solo ? 9 : 0, duration: solo ? IN_MS : 0, delay: solo ? OUT_MS : 0, easing: cubicOut}}
           out:fade|local={{duration: solo ? OUT_MS : 0, easing: cubicOut}}
           use:glint={activity.label} class:active={activity.status === 'active'} class:live={streaming && activity.status === 'active'} class:failed={activity.status === 'failed'} class:commentary={activity.kind === 'commentary'}>
-          <Icon name={activity.icon ?? activityIcons[activity.kind]} size={17}/>
+          {#if activity.logo}
+            <PlatformLogo platform={activity.logo} size={17}/>
+          {:else}
+            <Icon name={activity.icon ?? activityIcons[activity.kind]} size={17}/>
+          {/if}
           {#if expanded && activity.kind === 'commentary'}
             <!-- A commentary row carries the model's own prose, which runs to
                  paragraphs. Opening the trail should not dump all of it: the row

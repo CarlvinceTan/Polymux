@@ -164,6 +164,69 @@ test("persists assistant messages tagged with their run phase", async () => {
   }
 });
 
+test("a stopped run keeps the work it had already done", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([
+      {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Reading the file first." },
+            { type: "toolCall", id: "call-1", name: "probe", arguments: {} },
+          ],
+          usage,
+          stopReason: "toolUse",
+        },
+      },
+    ]);
+    const tools = new ToolRegistry();
+    let stop = (): void => {};
+    tools.register({
+      name: "probe",
+      description: "Probe",
+      parameters: { type: "object" },
+      async execute() {
+        stop();
+        return { content: "ok" };
+      },
+    });
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools,
+      model,
+      compaction: { enabled: false },
+    });
+
+    const run = agent.start({
+      conversationId: "conversation",
+      text: "read the file",
+      includeSubagents: false,
+    });
+    stop = () => run.control.cancel();
+    const result = await run.result;
+
+    assert.equal(result.status, "cancelled");
+    const assistants = storage
+      .listMessages("conversation")
+      .filter((message) => message.role === "assistant");
+    assert.equal(assistants.length, 1);
+    assert.deepEqual(assistants[0]?.metadata, { phase: "commentary" });
+    assert.deepEqual(assistants[0]?.content, [
+      { type: "text", text: "Reading the file first." },
+      { type: "toolCall", id: "call-1", name: "probe", arguments: {} },
+    ]);
+  } finally {
+    storage.close();
+  }
+});
+
 test("creates a durable goal only from structured run metadata", async () => {
   const storage = new SqliteStorage(":memory:");
   try {

@@ -279,9 +279,8 @@ export function chronicleQuery(value: unknown): {
 }
 
 export function chroniclePatch(value: unknown): {
-  capturePolicy?: "all" | "except" | "only";
-  apps?: string[];
-  sites?: string[];
+  excludeApps?: string[];
+  excludeSites?: string[];
   recordPrivateBrowsing?: boolean;
   interactionEvents?: boolean;
 } {
@@ -289,18 +288,12 @@ export function chroniclePatch(value: unknown): {
     throw new Error("Chronicle settings must be an object");
   const record = value as Record<string, unknown>;
   const patch: {
-    capturePolicy?: "all" | "except" | "only";
-    apps?: string[];
-    sites?: string[];
+    excludeApps?: string[];
+    excludeSites?: string[];
     recordPrivateBrowsing?: boolean;
     interactionEvents?: boolean;
   } = {};
-  if (record.capturePolicy !== undefined) {
-    if (record.capturePolicy !== "all" && record.capturePolicy !== "except" && record.capturePolicy !== "only")
-      throw new Error("capturePolicy must be all, except or only");
-    patch.capturePolicy = record.capturePolicy;
-  }
-  for (const key of ["apps", "sites"] as const) {
+  for (const key of ["excludeApps", "excludeSites"] as const) {
     const raw = record[key];
     if (raw === undefined) continue;
     if (!Array.isArray(raw) || raw.some((item) => typeof item !== "string"))

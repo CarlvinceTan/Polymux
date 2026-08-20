@@ -308,11 +308,10 @@ function createBrowserDemoApi(): FlareAIApi {
   let demoChronicleEnabled = true;
   let demoChronicleSettings: Pick<
     ChronicleStatusDto,
-    'capturePolicy' | 'apps' | 'sites' | 'recordPrivateBrowsing' | 'interactionEvents'
+    'excludeApps' | 'excludeSites' | 'recordPrivateBrowsing' | 'interactionEvents'
   > = {
-    capturePolicy: 'all',
-    apps: [],
-    sites: [],
+    excludeApps: [],
+    excludeSites: [],
     recordPrivateBrowsing: true,
     interactionEvents: true,
   };
@@ -639,6 +638,8 @@ function createBrowserDemoApi(): FlareAIApi {
       },
       forget: async () => demoChronicleStatus(),
       entries: async () => [],
+      pickApp: async () => null,
+      appIcon: async () => null,
     },
     comms: {
       status: async () => demoCommsStatus,

@@ -10,6 +10,7 @@
   } from '@flareai/protocol';
   import {flareaiApi} from '../../api/flareai';
   import {onHubCacheInvalidated} from '../../shared/state/hubCache';
+  import {rememberChatPlatforms} from '../../shared/state/chatPlatforms';
 
   /** Which source the rail has selected: a platform, or a mailbox folder. */
   export type Source =
@@ -93,6 +94,7 @@
         const snapshot = await flareaiApi().comms.snapshot();
         session.status ??= snapshot.status;
         if (!session.chats.length) session.chats = snapshot.chats;
+        rememberChatPlatforms(session.chats);
         for (const mailbox of snapshot.mailboxes) {
           const key = `${mailbox.account}|${mailbox.folder}`;
           if (session.mailboxes.has(key)) continue;
@@ -192,6 +194,7 @@
         const status = await api.comms.status();
         session.status = status;
         session.chats = await api.comms.chats().catch(() => session.chats);
+        rememberChatPlatforms(session.chats);
         for (const account of status.email.accounts) {
           try {
             const folders = await api.comms.mailFolders(account.id);
@@ -1074,6 +1077,7 @@
       status = await api.comms.status();
       session.status = status;
       chats = await api.comms.chats().catch(() => session.chats);
+      rememberChatPlatforms(chats);
       session.chats = chats;
       if (source) {
         // Already looking at something, restored above: bring it up to date
@@ -1461,6 +1465,7 @@
   async function refreshChats(): Promise<void> {
     try {
       chats = await api.comms.chats();
+      rememberChatPlatforms(chats);
       session.chats = chats;
     } catch {
       // Quiet, for the same reason as the other polls.

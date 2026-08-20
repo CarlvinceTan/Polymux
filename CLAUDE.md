@@ -53,3 +53,8 @@ components, styling, layout, colours, motion — and follow it.
 
 **Never update `DESIGN.md` unless explicitly told to.** If a change conflicts with
 it, say so and ask rather than editing the document to match the code.
+
+## Git
+
+**Never run `git stash`.** It moves the user's uncommitted work somewhere they
+aren't looking. If changes are in the way, work around them or ask.

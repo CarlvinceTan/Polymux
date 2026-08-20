@@ -98,9 +98,8 @@ export class ChronicleManager {
   }): boolean {
     const settings = this.settings();
     if (source.privateBrowsing && !settings.recordPrivateBrowsing) return false;
-    if (settings.capturePolicy === "all") return true;
-    const listed = matchesList(source, settings);
-    return settings.capturePolicy === "only" ? listed : !listed;
+    // Everything is captured until it is excluded by name.
+    return !matchesList(source, settings.excludeApps, settings.excludeSites);
   }
 
   /** Records one interaction event, subject to the same policy as a frame. */
@@ -291,23 +290,24 @@ export function frameSignature(bitmap: Uint8Array): Uint8Array {
 }
 
 /**
- * A source matches the list when its bundle id or app name matches an entry,
- * or when its URL's host is an entry or a subdomain of one. One list covers
- * both apps and sites because the same window can be either: a browser is an
+ * A source matches when its bundle id or app name matches an app entry, or
+ * when its URL's host is a site entry or a subdomain of one. Apps and sites
+ * are weighed together because the same window can be either: a browser is an
  * app the user may want blocked wholesale, and a site inside it is not.
  */
 function matchesList(
   source: { app?: string; bundleId?: string; url?: string },
-  settings: ChronicleSettings,
+  appList: string[],
+  siteList: string[],
 ): boolean {
-  const apps = settings.apps.map((item) => item.toLowerCase());
+  const apps = appList.map((item) => item.toLowerCase());
   const identity = [source.bundleId, source.app]
     .filter((value): value is string => Boolean(value))
     .map((value) => value.toLowerCase());
   if (identity.some((value) => apps.includes(value))) return true;
   const host = hostOf(source.url);
   if (!host) return false;
-  return settings.sites.some((site) => {
+  return siteList.some((site) => {
     const candidate = site.toLowerCase().replace(/^\.+|\.+$/g, "");
     return candidate === host || host.endsWith(`.${candidate}`);
   });

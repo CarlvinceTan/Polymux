@@ -38,6 +38,7 @@
     resolvePanelWidths,
   } from './lib/shared/layout/layoutSizing';
   import {activityPresentation, upsertActivity} from './lib/features/chat/activities';
+  import {platformForChat, primeChatPlatforms} from './lib/shared/state/chatPlatforms';
   import {applyTaskEvent, emptyTranscript, type TaskTranscript} from './lib/features/workspace/taskTranscript';
   import type {AgentActivityItem} from './lib/features/chat/AgentActivity.svelte';
 
@@ -870,6 +871,19 @@
           {id, ...presentation, status: 'active'},
         ),
       }));
+      // A messaging row wants its platform's logo, which only the hub's chat
+      // list knows. When the run reaches a conversation before the hub has
+      // ever been opened, the list is fetched now and the row picks its logo
+      // up as soon as the answer lands.
+      const chatId = typeof asRecord(call.arguments).chat_id === 'string' ? String(asRecord(call.arguments).chat_id) : '';
+      if (name.startsWith('message_') && chatId && !presentation.logo) void primeChatPlatforms().then(() => {
+        const logo = platformForChat(chatId);
+        if (!logo) return;
+        updateLiveAssistant(conversationId, (message) => ({
+          ...message,
+          activities: (message.activities ?? []).map((item) => item.id === id ? {...item, logo} : item),
+        }));
+      });
       if (isSubagentTask(name)) {
         const arguments_ = asRecord(call.arguments);
         const description = typeof arguments_.description === 'string' ? arguments_.description.trim() : '';
@@ -1013,7 +1027,7 @@
    * message's metadata so a reloaded chat still shows "Worked for Ns" and the
    * expanded activity list exactly as it looked during the run. */
   async function persistActivities(stored: MessageDto[], current: ChatMessage[]): Promise<void> {
-    const settled = stored.filter((message) => message.role === 'assistant' && message.runId);
+    const settled = visibleAssistantRows(stored).filter((message) => message.role === 'assistant' && message.runId);
     for (const storedMessage of settled) {
       const live = current.find((item) => item.role === 'assistant' && item.runId === storedMessage.runId);
       if (!live || !live.activities?.length) continue;
@@ -1983,12 +1997,29 @@
     };
   }
 
+  /** One assistant bubble per run: the last message that says something. A
+   * stopped run's final stored message is often tool calls with no prose, and
+   * hiding the paragraph before it would read as if the agent had gone quiet —
+   * so the rows that carry text win, and a run with none falls back to its last
+   * row so the activity group still has somewhere to hang. */
+  function visibleAssistantRows(stored: MessageDto[]): MessageDto[] {
+    const spokenRuns = new Set(stored.flatMap((message) =>
+      message.role === 'assistant' && message.runId && contentText(message.content).trim() ? [message.runId] : [],
+    ));
+    return stored.filter((message, index, messages) => {
+      if (message.role !== 'assistant' || !message.runId) return true;
+      const spoken = spokenRuns.has(message.runId);
+      if (spoken && !contentText(message.content).trim()) return false;
+      return !messages.slice(index + 1).some((later) =>
+        later.role === 'assistant'
+        && later.runId === message.runId
+        && (!spoken || contentText(later.content).trim() !== ''),
+      );
+    });
+  }
+
   function mergeMessages(stored: MessageDto[], current: ChatMessage[]): ChatMessage[] {
-    const visibleStored = stored.filter((message, index, messages) =>
-      message.role !== 'assistant'
-      || !message.runId
-      || !messages.slice(index + 1).some((later) => later.role === 'assistant' && later.runId === message.runId),
-    );
+    const visibleStored = visibleAssistantRows(stored);
     const mapped = visibleStored
       .filter((message) => message.role === 'user' || message.role === 'assistant')
       // The goal loop writes its own continuation prompts as user messages so
