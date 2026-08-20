@@ -104,6 +104,7 @@
    * settles. Stepping the width in whole pixels keeps the edge on the pixel
    * grid, so the divider stays a hairline the whole way across.
    */
+  const DRAWER_MOTION_MS = 440;
   const WORKSPACE_MOTION_MS = 440;
   let workspaceMotionWidth: number | null = null;
   let workspaceMotionFrame = 0;
@@ -288,6 +289,21 @@
     : mode === 'workspace' ? `${workspaceWidth}px` : '0px';
   // The search entry point lives with the drawer, so closing the drawer closes it.
   $: if (!chatDrawerOpen) chatSearchOpen = false;
+
+  // Panes sized off the drawer's own animated width must not transition their
+  // width on top of it for the length of the slide — see .chat-drawer-sliding.
+  let chatDrawerSliding = false;
+  let chatDrawerSlideTimer: ReturnType<typeof setTimeout> | undefined;
+  let chatDrawerSlideState: boolean | null = null;
+  $: if (typeof window !== 'undefined' && chatDrawerSlideState !== chatDrawerOpen) {
+    const first = chatDrawerSlideState === null;
+    chatDrawerSlideState = chatDrawerOpen;
+    if (!first) {
+      chatDrawerSliding = true;
+      if (chatDrawerSlideTimer) clearTimeout(chatDrawerSlideTimer);
+      chatDrawerSlideTimer = setTimeout(() => { chatDrawerSliding = false; }, DRAWER_MOTION_MS);
+    }
+  }
   $: dockedChatDrawerWidth = viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH && chatDrawerOpen ? chatDrawerWidth : 0;
   $: dockedRightWidth = viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH
     ? mode === 'summary' ? SUMMARY_RESERVED_COLUMN : mode === 'workspace' ? workspaceWidth : 0
@@ -608,7 +624,16 @@
     }
     if (existingRun) {
       const steered: ChatMessage = {id: crypto.randomUUID(), role: 'user', text, files: files.map((file) => file.name), sentAt, asGoal};
-      updateConversation(conversationId, (chat) => ({...chat, messages: [...chat.messages, steered]}));
+      // The live turn keeps writing into the message it started, which sits
+      // above this one — so it moves to the foot of the transcript instead.
+      // What the agent says next is a reply to the steer, and reading it above
+      // the words it answers is the wrong order.
+      const liveId = liveAssistantByConversation[conversationId];
+      updateConversation(conversationId, (chat) => {
+        const live = chat.messages.find((message) => message.id === liveId);
+        const rest = live ? chat.messages.filter((message) => message.id !== liveId) : chat.messages;
+        return {...chat, messages: live ? [...rest, steered, live] : [...rest, steered]};
+      });
       if (asGoal) await setGoal(conversationId, text || files[0]?.name || translate('goal.reviewAttached'));
       await api.runs.steer(existingRun, text, steered.id);
       return;
@@ -1997,9 +2022,11 @@
       !representedIds.has(message.id)
       && !(message.runId && representedRuns.has(message.runId)),
     );
-    return [...mapped, ...live].sort((a, b) =>
-      (a.sentAt ?? a.startedAt ?? '').localeCompare(b.sentAt ?? b.startedAt ?? ''),
-    );
+    // A live assistant row has no stored time yet — it is whatever the agent is
+    // writing right now, so it sorts to the foot. Falling back to when its run
+    // started put it above any message steered into that same run.
+    const order = (message: ChatMessage) => message.sentAt ?? '\uffff';
+    return [...mapped, ...live].sort((a, b) => order(a).localeCompare(order(b)));
   }
 
   function fromMessage(message: MessageDto): ChatMessage {
@@ -2124,6 +2151,7 @@
   class:chat-drawer-resizing={chatDrawerResizing}
   class:window-resizing={windowResizing}
   class:chat-drawer-open={chatDrawerOpen}
+  class:chat-drawer-sliding={chatDrawerSliding}
   class:has-queue={queueHeight > 0}
   style={`--chat-drawer-column: ${chatDrawerOpen ? chatDrawerWidth : 0}px; --chat-drawer-offset: ${chatDrawerOpen ? chatDrawerWidth : 0}px; --content-right-column: ${contentRightColumn}; --content-composer-column: ${composerColumn}; --content-docked-column: ${workspaceWidth}px; --workspace-panel-width: ${workspacePanelWidth}; --workspace-expanded-tab-left: ${chatDrawerOpen ? "8px" : "calc(var(--chrome-inset) + 8px + var(--titlebar-control-size) + var(--titlebar-control-lead))"}; --chat-drawer-panel-width: ${chatDrawerWidth}px; --queue-height: ${queueHeight}px; --timeline-left: ${timelineLeft}px`}
 >
