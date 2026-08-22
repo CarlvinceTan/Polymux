@@ -2,7 +2,7 @@ import type {
   ArtifactDto,
   ChatDto,
   ChatMessageDto,
-  ChronicleStatusDto,
+  ComputerHistoryStatusDto,
   CommsEmailAccountDto,
   CommsStatusDto,
   DiscoveredMcpGroupDto,
@@ -81,6 +81,8 @@ function createBrowserDemoApi(): FlareAIApi {
   const listeners = new Set<(event: RunEventDto) => void>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const runConversations = new Map<string, string>();
+  let demoProfiles = [{id: 'default', name: 'Default Profile', isDefault: true}];
+  let demoActiveProfile = 'default';
   let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string; reasoning?: ReasoningEffort}>> = {};
   const demoRoles = (): ModelRolesDto => {
     const assignment = (ref?: {provider: string; id: string; reasoning?: ReasoningEffort}): ModelRoleAssignmentDto | null => {
@@ -305,9 +307,9 @@ function createBrowserDemoApi(): FlareAIApi {
   ];
   const demoWorkspaceSnapshots = new Map<string, WorkspaceSnapshotDto>();
   let demoDictationPass = 0;
-  let demoChronicleEnabled = true;
-  let demoChronicleSettings: Pick<
-    ChronicleStatusDto,
+  let demoComputerHistoryEnabled = true;
+  let demoComputerHistorySettings: Pick<
+    ComputerHistoryStatusDto,
     'excludeApps' | 'excludeSites' | 'recordPrivateBrowsing' | 'interactionEvents'
   > = {
     excludeApps: [],
@@ -315,11 +317,11 @@ function createBrowserDemoApi(): FlareAIApi {
     recordPrivateBrowsing: true,
     interactionEvents: true,
   };
-  const demoChronicleStatus = (): ChronicleStatusDto => ({
-    ...demoChronicleSettings,
-    enabled: demoChronicleEnabled,
-    running: demoChronicleEnabled,
-    directory: '/demo/chronicle',
+  const demoComputerHistoryStatus = (): ComputerHistoryStatusDto => ({
+    ...demoComputerHistorySettings,
+    enabled: demoComputerHistoryEnabled,
+    running: demoComputerHistoryEnabled,
+    directory: '/demo/computer-history',
     lastCapturedAt: null,
     lastError: null,
     storedFrames: 0,
@@ -342,6 +344,7 @@ function createBrowserDemoApi(): FlareAIApi {
     dictationAutoStopSeconds: 6,
     timeEnabled: true,
     locationEnabled: true,
+    hubIncognitoMode: false,
     reasoningLevel: 'medium',
     // The demo is a returning user; the Playwright suite drives the main UI,
     // not first-run setup. Flip to false to preview setup in the browser.
@@ -350,6 +353,7 @@ function createBrowserDemoApi(): FlareAIApi {
     appPermissionsEnabled: true,
     notificationsEnabled: true,
     notifications: {'schedule-completed': true, 'schedule-failed': true, 'agent-completed': true, 'agent-attention': true, 'message-received': true},
+    pinnedViews: [],
     location: null,
   };
 
@@ -377,6 +381,16 @@ function createBrowserDemoApi(): FlareAIApi {
   });
 
   const api: FlareAIApi = {
+    profiles: {
+      list: async () => ({activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}),
+      create: async (name) => { demoProfiles.push({id: crypto.randomUUID(), name: name.trim() || 'New profile', isDefault: false}); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
+      select: async (id) => { demoActiveProfile = id; return {activeId: id, profiles: structuredClone(demoProfiles)}; },
+      rename: async (id, name) => { demoProfiles = demoProfiles.map(profile => profile.id === id ? {...profile, name} : profile); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
+      setDefault: async (id) => { demoProfiles = demoProfiles.map(profile => ({...profile, isDefault: profile.id === id})); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
+      duplicate: async (id) => { const source = demoProfiles.find(profile => profile.id === id)!; demoProfiles.push({id: crypto.randomUUID(), name: `${source.name} copy`, isDefault: false}); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
+      remove: async (id) => { demoProfiles = demoProfiles.filter(profile => profile.id !== id); if (demoActiveProfile === id) demoActiveProfile = 'default'; return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
+      subscribe: () => () => {},
+    },
     extension: {
       status: async () => demoExtensionStatus(),
       dismiss: async () => {
@@ -414,7 +428,7 @@ function createBrowserDemoApi(): FlareAIApi {
     },
     // A browser tab has no traffic lights to move out of, so the state never
     // changes and the subscription has nothing to tear down.
-    window: {subscribeFullscreen: () => () => {}},
+    window: {openWorkspaceView: async () => {}, subscribeFullscreen: () => () => {}},
     permissions: {
       ensureFirstRun: async () => ({firstRun: false, microphone: 'granted', screenRecording: 'granted'}),
       // The onboarding preview starts from a genuine first run, so the states
@@ -498,6 +512,14 @@ function createBrowserDemoApi(): FlareAIApi {
       },
       events: async () => [],
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    },
+    manager: {
+      snapshot: async () => ({enabled: false, jobs: []}),
+      enqueue: async () => { throw new Error('Manager scheduler is unavailable in the demo'); },
+      cancel: async () => { throw new Error('Manager scheduler is unavailable in the demo'); },
+      reprioritize: async () => { throw new Error('Manager scheduler is unavailable in the demo'); },
+      reorder: async () => { throw new Error('Manager scheduler is unavailable in the demo'); },
+      subscribe: () => () => {},
     },
     workspace: {
       snapshot: async (conversationId) => demoWorkspaceSnapshots.get(conversationId) ?? null,
@@ -586,6 +608,46 @@ function createBrowserDemoApi(): FlareAIApi {
         },
       };
     })(),
+    tasks: (() => {
+      let cards: import('@flareai/protocol').TaskCardDto[] = [
+        {id: crypto.randomUUID(), chatId: 'demo', title: 'Research competitor features', status: 'todo', reviewed: false, order: 0, createdAt: Date.now(), updatedAt: Date.now()},
+        {id: crypto.randomUUID(), chatId: 'demo', title: 'Draft marketing copy', status: 'in_progress', owner: 'agent-1', reviewed: false, order: 0, createdAt: Date.now(), updatedAt: Date.now()},
+        {id: crypto.randomUUID(), chatId: 'demo', title: 'Update landing page', status: 'done', reviewed: false, order: 0, createdAt: Date.now(), updatedAt: Date.now()},
+        {id: crypto.randomUUID(), chatId: 'demo', title: 'Fix login bug', status: 'done', reviewed: true, order: 1, createdAt: Date.now(), updatedAt: Date.now()},
+      ];
+      const listeners = new Set<(items: typeof cards) => void>();
+      const publish = () => { for (const l of listeners) l(cards); };
+      return {
+        list: async (chatId: string) => cards.filter((card) => card.chatId === chatId),
+        create: async (input: import('@flareai/protocol').TaskCardInput) => {
+          const card: import('@flareai/protocol').TaskCardDto = {
+            id: crypto.randomUUID(), chatId: input.chatId, title: input.title, detail: input.detail,
+            status: 'todo', reviewed: false, order: cards.length,
+            createdAt: Date.now(), updatedAt: Date.now(),
+          };
+          cards = [...cards, card]; publish(); return card;
+        },
+        update: async (id: string, patch: import('@flareai/protocol').TaskCardPatch) => {
+          cards = cards.map((c) => c.id === id ? {...c, ...patch, updatedAt: Date.now()} : c);
+          publish();
+          const found = cards.find((c) => c.id === id);
+          if (!found) throw new Error(`Card not found: ${id}`);
+          return found;
+        },
+        remove: async (id: string) => { cards = cards.filter((c) => c.id !== id); publish(); },
+        markRead: async (id: string) => {
+          cards = cards.map((c) => c.id === id ? {...c, reviewed: true, updatedAt: Date.now()} : c);
+          publish();
+          const found = cards.find((c) => c.id === id);
+          if (!found) throw new Error(`Card not found: ${id}`);
+          return found;
+        },
+        subscribe(listener: (items: typeof cards) => void) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      };
+    })(),
     files: {paths: async (files) => files.map((file) => file.name)},
     resources: {
       artifacts: async (conversationId) => demoArtifacts(conversationId),
@@ -625,18 +687,24 @@ function createBrowserDemoApi(): FlareAIApi {
         demoMemoryEnabled = enabled;
         return {...await api.memory.status(), enabled};
       },
+      entries: async () => [
+        {id: 'memory-demo-1', scope: 'user', kind: 'preference', content: 'Prefers concise, cohesive explanations with room to ask deeper questions.', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()},
+        {id: 'memory-demo-2', scope: 'user', kind: 'project', content: 'FlareAI is a context-aware desktop assistant with manager-style delegation.', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()},
+      ],
     },
-    chronicle: {
-      status: async () => demoChronicleStatus(),
+    computerHistory: {
+      status: async () => demoComputerHistoryStatus(),
       setEnabled: async (enabled) => {
-        demoChronicleEnabled = enabled;
-        return demoChronicleStatus();
+        demoComputerHistoryEnabled = enabled;
+        return demoComputerHistoryStatus();
       },
       update: async (patch) => {
-        demoChronicleSettings = {...demoChronicleSettings, ...patch};
-        return demoChronicleStatus();
+        demoComputerHistorySettings = {...demoComputerHistorySettings, ...patch};
+        return demoComputerHistoryStatus();
       },
-      forget: async () => demoChronicleStatus(),
+      forget: async () => demoComputerHistoryStatus(),
+      removeEntry: async () => demoComputerHistoryStatus(),
+      revealEntry: async () => {},
       entries: async () => [],
       pickApp: async () => null,
       appIcon: async () => null,
@@ -738,7 +806,9 @@ function createBrowserDemoApi(): FlareAIApi {
       },
       chats: async () => demoChats,
       chatMarkRead: async (chatId) => {
+        if (demoGeneral.hubIncognitoMode) return false;
         demoChats = demoChats.map((chat) => (chat.id === chatId ? {...chat, unread: 0} : chat));
+        return true;
       },
       chatMessages: async (chatId) => ({
         // Newest first, the way the real hub answers — the thread is drawn in
@@ -913,7 +983,7 @@ function createBrowserDemoApi(): FlareAIApi {
             name: 'Network',
             accountLabel: label || target.split('/').pop() || target,
             state: 'connected',
-            usage: {used: 2_100_000_000_000, total: 8_000_000_000_000},
+            usage: {used: 2_100_000_000_000, total: 8_000_000_000_000, appUsed: 84_000_000},
             root: target,
             error: null,
           },
@@ -1108,12 +1178,14 @@ function createBrowserDemoApi(): FlareAIApi {
           return demoRoles();
         }
         demoRoleOverrides = {...demoRoleOverrides, [role]: {provider, id, reasoning}};
+        if (role === 'speech') demoGeneral = {...demoGeneral, speechModeEnabled: true};
         return demoRoles();
       },
       clearRole: async (role) => {
         if (role === 'main') throw new Error('The main model cannot be cleared');
         const {[role]: _removed, ...rest} = demoRoleOverrides;
         demoRoleOverrides = rest;
+        if (role === 'speech') demoGeneral = {...demoGeneral, speechModeEnabled: false};
         return demoRoles();
       },
     },
@@ -1335,6 +1407,24 @@ function createBrowserDemoApi(): FlareAIApi {
         demoKeys.set(provider, keys);
         return providerWithKeys(item);
       },
+      connectOAuth: async (provider) => {
+        const item = demoProviders.find((candidate) => candidate.id === provider);
+        if (!item) throw new Error(`Unknown provider: ${provider}`);
+        item.configured = true;
+        item.storedCredential = true;
+        item.source = 'OAuth';
+        return providerWithKeys(item);
+      },
+      cancelOAuth: async () => {},
+      disconnectOAuth: async (provider) => {
+        const item = demoProviders.find((candidate) => candidate.id === provider);
+        if (!item) throw new Error(`Unknown provider: ${provider}`);
+        item.configured = false;
+        item.storedCredential = false;
+        item.source = null;
+        return providerWithKeys(item);
+      },
+      subscribeOAuth: () => () => {},
       createCustom: async (request) => {
         const id = request.name.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || crypto.randomUUID();
         if (demoProviders.some((provider) => provider.id === id)) throw new Error(`Provider already exists: ${request.name}`);
@@ -1453,14 +1543,14 @@ function createBrowserDemoApi(): FlareAIApi {
       const childRunId = 'demo-subagent-run';
       const call = {
         id: 'demo-task-1',
-        name: 'task',
+        name: 'subagent',
         arguments: {description: 'Compare the two providers', prompt: 'Compare the two providers and report which is cheaper.'},
       };
       emit(runId, request.conversationId, 'tool.started', {toolCall: call});
       emit(runId, request.conversationId, 'tool.progress', {toolCallId: call.id, message: '', data: {childRunId}});
       // Dispatch returns at once — the delegated run is only just starting, and
       // the parent is free to keep working while it does.
-      emit(runId, request.conversationId, 'tool.completed', {toolCall: call, result: {content: JSON.stringify({task: 'task_1', status: 'running'})}});
+      emit(runId, request.conversationId, 'tool.completed', {toolCall: call, result: {content: JSON.stringify({subagent: 'subagent_1', status: 'running'}), metadata: {subagent: 'subagent_1', status: 'running'}}});
       emit(childRunId, request.conversationId, 'run.started', {}, runId);
       emit(childRunId, request.conversationId, 'message.reasoning.delta', {delta: 'Weighing the two price sheets'}, runId);
       emit(childRunId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-subagent-read', name: 'read', arguments: {path: '/pricing.md'}}}, runId);
@@ -1637,11 +1727,11 @@ function goal(conversationId: string, objective: string): GoalDto {
 const demoDriveStatus: DriveStatusDto = {
   saveOrder: ['google-drive', 'dropbox', 'onedrive', 's3', 'local'],
   providers: [
-    {id: 'local', name: 'This Mac', kind: 'local', state: 'connected', accounts: [{id: 'local', name: 'FlareAI', email: null}], usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/FlareAI', error: null},
+    {id: 'local', name: 'Local', kind: 'local', state: 'connected', accounts: [{id: 'local', name: 'FlareAI', email: null}], usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: 52_000_000_000}, root: '/demo/FlareAI', error: null},
     // A share that is not mounted right now, which is the state worth seeing:
     // it stays listed so it can be reconnected or forgotten.
     {id: 'network', name: 'Network', kind: 'network', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
-    {id: 'google-drive', name: 'Google Drive', kind: 'oauth', state: 'connected', accounts: [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}], usage: {used: 6_200_000_000, total: 15_000_000_000}, root: 'FlareAI', error: null},
+    {id: 'google-drive', name: 'Google Drive', kind: 'oauth', state: 'connected', accounts: [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}], usage: {used: 6_200_000_000, total: 15_000_000_000, appUsed: 1_200_000_000}, root: 'FlareAI', error: null},
     {id: 'dropbox', name: 'Dropbox', kind: 'oauth', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
     {id: 'onedrive', name: 'OneDrive', kind: 'oauth', state: 'unconfigured', accounts: [], usage: null, root: null, error: 'This build has no OneDrive client credentials.'},
     {id: 's3', name: 'S3 storage', kind: 's3', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
@@ -1651,10 +1741,10 @@ const demoDriveStatus: DriveStatusDto = {
   sources: [
     // The virtual drive the manager now puts at the head of the list: every
     // connected place at once, which is what the workspace opens into.
-    {id: 'all#all', provider: 'all', accountId: 'all', name: 'All storage', accountLabel: null, state: 'connected', usage: {used: 418_200_000_000, total: 1_009_000_000_000}, root: '', error: null},
-    {id: 'local#outputs', provider: 'local', accountId: 'outputs', name: 'This Mac', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/Documents/FlareAI', error: null},
-    {id: 'local#home', provider: 'local', accountId: 'home', name: 'This Mac', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000}, root: '/demo/home', error: null},
-    {id: 'google-drive#default', provider: 'google-drive', accountId: 'default', name: 'Google Drive', accountLabel: 'demo@example.com', state: 'connected', usage: {used: 6_200_000_000, total: 15_000_000_000}, root: 'FlareAI', error: null},
+    {id: 'all#all', provider: 'all', accountId: 'all', name: 'All storage', accountLabel: null, state: 'connected', usage: {used: 418_200_000_000, total: 1_009_000_000_000, appUsed: 53_200_000_000}, root: '', error: null},
+    {id: 'local#outputs', provider: 'local', accountId: 'outputs', name: 'Local', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: 52_000_000_000}, root: '/demo/Documents/FlareAI', error: null},
+    {id: 'local#home', provider: 'local', accountId: 'home', name: 'Local', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: null}, root: '/demo/home', error: null},
+    {id: 'google-drive#default', provider: 'google-drive', accountId: 'default', name: 'Google Drive', accountLabel: 'demo@example.com', state: 'connected', usage: {used: 6_200_000_000, total: 15_000_000_000, appUsed: 1_200_000_000}, root: 'FlareAI', error: null},
   ],
 };
 
@@ -1665,7 +1755,7 @@ function demoDriveConnect(provider: DriveProviderId, connected: boolean): DriveS
           ...entry,
           state: connected ? 'connected' : 'logged-out',
           accounts: connected ? [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}] : [],
-          usage: connected ? {used: 1_200_000_000, total: 10_000_000_000} : null,
+          usage: connected ? {used: 1_200_000_000, total: 10_000_000_000, appUsed: 18_000_000} : null,
         }
       : entry);
   return demoDriveStatus;

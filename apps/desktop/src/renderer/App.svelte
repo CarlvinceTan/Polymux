@@ -1,7 +1,7 @@
 <script lang="ts">
   import {onDestroy, onMount, type ComponentProps} from 'svelte';
   import {readableError} from './lib/shared/errors';
-  import type {ArtifactDto, BrowserExtensionDto, ConversationDto, DefaultAppDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto, WorkspaceRevealDto} from '@flareai/protocol';
+  import type {AppUpdateDto, ArtifactDto, BrowserExtensionDto, ConversationDto, DefaultAppDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, ManagerJobDto, ManagerSnapshotDto, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto, WorkspaceRevealDto} from '@flareai/protocol';
   import TitleBar from './lib/features/chat/TitleBar.svelte';
   import ChatPane, {type ChatMessage} from './lib/features/chat/ChatPane.svelte';
   import TimelineRail, {TIMELINE_RAIL_MINIMUM} from './lib/features/chat/TimelineRail.svelte';
@@ -15,6 +15,7 @@
   import {driveEntryKind, type DriveEntry} from './lib/features/workspace/DriveView.svelte';
   import OpenMenu, {type OpenAnchor, type OpenChoice} from './lib/shared/components/OpenMenu.svelte';
   import {unreadScheduleCount, type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './lib/features/workspace/ScheduleView.svelte';
+  import {unreadTasksCount, type TaskCard} from './lib/features/workspace/TasksView.svelte';
   import {recordVisit} from './lib/features/workspace/visitHistory';
   import Tooltip from './lib/shared/components/Tooltip.svelte';
   import SettingsPage from './lib/features/settings/SettingsPage.svelte';
@@ -37,7 +38,9 @@
     SUMMARY_RESERVED_COLUMN,
     resolvePanelWidths,
   } from './lib/shared/layout/layoutSizing';
-  import {activityPresentation, upsertActivity} from './lib/features/chat/activities';
+  import {activityPresentation, runThinkingActivity, toolResultFailed, upsertActivity, visibleCommentaryLabel} from './lib/features/chat/activities';
+  import {inferQueuePriority, shouldSteerLiveTurn} from './lib/features/chat/queuePolicy';
+  import {addConversationRun as withConversationRun, bindPendingRun, latestConversationRun, removeConversationRun as withoutConversationRun} from './lib/features/chat/runAttribution';
   import {platformForChat, primeChatPlatforms} from './lib/shared/state/chatPlatforms';
   import {applyTaskEvent, emptyTranscript, type TaskTranscript} from './lib/features/workspace/taskTranscript';
   import type {AgentActivityItem} from './lib/features/chat/AgentActivity.svelte';
@@ -45,28 +48,43 @@
   type Conversation = ChatEntry & {messages: ChatMessage[]; goal?: ActiveGoal};
   /** `id` is the parent's tool call id, which is what a task tab is keyed by;
    * `runId` is the subagent's own run, and only arrives once it has started. */
-  type SummaryTask = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'; runId?: string; prompt?: string};
+  type SummaryTask = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'; parentRunId?: string; callId?: string; runId?: string; prompt?: string};
   type QueuedSend = {id: string; text: string; files: File[]; asGoal: boolean};
 
   const api = flareaiApi();
+  const requestedWorkspaceView = (() => {
+    const value = new URLSearchParams(window.location.search).get('workspaceView');
+    return value === 'drive' || value === 'schedule' || value === 'hub' || value === 'tasks' ? value : null;
+  })();
   let conversations: Conversation[] = [];
   let activeId = '';
   let openingId = '';
   let draftConversation: Conversation = emptyDraft();
-  let runByConversation: Record<string, string> = {};
+  /** Every top-level run remains independently addressable. A conversation can
+   * have several manager-owned runs at once; array order is start order and the
+   * latest run is the only implicit target for an explicit Steer action. */
+  let runsByConversation: Record<string, string[]> = {};
   /** Which reasoning block each run's thinking row last appended, so a new
    * block starts a fresh paragraph instead of continuing the previous one.
    * Plain bookkeeping, never rendered, so it stays out of reactive state. */
   const reasoningBlock: Record<string, string> = {};
-  let liveAssistantByConversation: Record<string, string> = {};
+  /** Top-level run id to its own live assistant row. Never key this by
+   * conversation: interleaved deltas must not overwrite a sibling run. */
+  let liveAssistantByRun: Record<string, string> = {};
   /** Messages typed while a run was going. They wait their turn instead of
    * interrupting: only ⌘/Ctrl+Enter (or the Steer action on a queued row)
    * reaches a running agent straight away. */
   let queuedByConversation: Record<string, QueuedSend[]> = {};
+  let managerEnabled = false;
+  let managerJobs: ManagerJobDto[] = [];
+  let managerReady: Promise<void> = Promise.resolve();
+  let update: AppUpdateDto | null = null;
 
   // Panel state. Summary and Workspace are mutually exclusive, and Workspace
   // only borrows Summary's space: closing it hands the space back.
-  let panelState: PanelState = initialPanelState;
+  let panelState: PanelState = requestedWorkspaceView
+    ? {mode: 'workspace', summaryReturns: false}
+    : initialPanelState;
   let summaryDismissed = false;
 
   let chatDrawerOpen = false;
@@ -77,7 +95,7 @@
   let chatDrawerResizing = false;
   let workspaceWidth = 420;
   let workspaceResizing = false;
-  let workspaceExpanded = false;
+  let workspaceExpanded = requestedWorkspaceView !== null;
   let viewportWidth = typeof window === 'undefined' ? 1280 : window.innerWidth;
 
   // Dragging the window edge reclamps both drawer widths on every frame. The
@@ -182,6 +200,7 @@
   // Main marks the first window of a process as the cold start; a window
   // reopened while the app kept running gets `coldStart=0` and no splash.
   const coldStart = new URLSearchParams(window.location.search).get('coldStart') !== '0';
+  const requestedConversationId = new URLSearchParams(window.location.search).get('conversationId');
   let startupVisible = coldStart && startupSplash !== null;
   if (!startupVisible) startupSplash?.remove();
   // The cover is click-through and the app under it is only held at opacity 0,
@@ -205,6 +224,7 @@
   let speechModeEnabled = true;
   /** Off by default, matching the stored setting: basic mode until asked for. */
   let advancedMode = false;
+  let pinnedViews: Array<'drive' | 'schedule' | 'hub' | 'tasks'> = [];
   let dictationAutoStopSeconds: number | null = 6;
   let reasoningLevel: ReasoningEffort = 'medium';
   let windowActive = true;
@@ -227,23 +247,39 @@
    * metadata. A continued dispatch addresses its worker by that name, which is
    * how its row is found and resumed instead of a second row appearing. */
   let taskRowByName: Record<string, Record<string, string>> = {};
-  let workspaceTabs: WorkspaceTab[] = [];
-  let activeTabId: string | null = null;
+  let workspaceTabs: WorkspaceTab[] = requestedWorkspaceView
+    ? [{
+        id: SINGLETON_TAB_IDS[requestedWorkspaceView]!,
+        title: translate(`workspace.${requestedWorkspaceView}`),
+        kind: requestedWorkspaceView,
+      }]
+    : [];
+  let activeTabId: string | null = workspaceTabs[0]?.id ?? null;
   /** Owned by the main process, which keeps the clock and the run history;
    * this is a mirror kept current by `schedules.subscribe`. */
   let scheduleItems: ScheduleItem[] = [];
   let scheduleError = '';
+  let taskItems: TaskCard[] = [];
+  let tasksError = '';
 
 
   $: mode = panelState.mode;
   $: active = activeId ? conversations.find((chat) => chat.id === activeId) ?? draftConversation : draftConversation;
   $: tasks = tasksByConversation[active.id] ?? [];
-  $: running = Boolean(runByConversation[active.id]);
-  $: queued = (queuedByConversation[active.id] ?? []).map((item) => ({
-    id: item.id,
-    text: item.text,
-    files: item.files.map((file) => ({name: file.name, type: file.type})),
-  }));
+  $: running = Boolean(runsByConversation[active.id]?.length);
+  $: queued = managerEnabled
+    ? managerJobs
+      .filter((job) => job.chatId === active.id && job.status === 'queued')
+      .map((job) => ({
+        id: job.id,
+        text: job.text,
+        files: job.attachments.map((path) => ({name: fileName(path), type: ''})),
+      }))
+    : (queuedByConversation[active.id] ?? []).map((item) => ({
+      id: item.id,
+      text: item.text,
+      files: item.files.map((file) => ({name: file.name, type: file.type})),
+    }));
   $: chatEntries = conversations.map(({id, title, updatedAt}) => ({id, title, updatedAt}));
   $: timeline = buildTimeline(active.messages);
 
@@ -324,6 +360,8 @@
     unsubscribeBrowser?.();
     unsubscribeFullscreen?.();
     unsubscribeReveal?.();
+    unsubscribeManager?.();
+    if (agentInspectionListener) window.removeEventListener('flareai:agent-inspect-settings', agentInspectionListener);
     cancelAnimationFrame(chromeShiftFrame);
     cancelAnimationFrame(workspaceMotionFrame);
     clearTimeout(resourceRefreshTimer);
@@ -332,15 +370,26 @@
     stopLanguageSync?.();
   });
 
+  onMount(() => {
+    void api.general.checkForUpdates().then((value) => update = value).catch(() => {});
+  });
+
   let unsubscribeEvents: (() => void) | undefined;
   let unsubscribeBrowser: (() => void) | undefined;
   let unsubscribeFullscreen: (() => void) | undefined;
   let unsubscribeReveal: (() => void) | undefined;
+  let unsubscribeManager: (() => void) | undefined;
+  let agentInspectionListener: ((event: Event) => void) | undefined;
   let chromeShiftFrame = 0;
   let stopThemeSync: (() => void) | undefined;
   let stopLanguageSync: (() => void) | undefined;
 
   onMount(() => {
+    agentInspectionListener = (event: Event) => {
+      const detail = (event as CustomEvent<{mode?: string}>).detail;
+      if (detail?.mode === 'memory') openSettings('computer-history');
+    };
+    window.addEventListener('flareai:agent-inspect-settings', agentInspectionListener);
     if (startupVisible) {
       // The cover waits for the mark's sequence to finish, which theme-boot
       // announces — it starts when the window reaches the screen, so waiting
@@ -366,6 +415,7 @@
       applyLanguage(settings.language);
       speechModeEnabled = settings.speechModeEnabled;
       advancedMode = settings.advancedMode;
+      pinnedViews = settings.pinnedViews;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       reasoningLevel = settings.reasoningLevel;
       onboardingOpen = onboardingPreview || !settings.onboardingCompleted;
@@ -387,6 +437,8 @@
     setTimeout(() => void warmHub(), 2_500);
     windowActive = document.hasFocus();
     unsubscribeEvents = api.runs.subscribe(handleRunEvent);
+    unsubscribeManager = api.manager.subscribe(applyManagerSnapshot);
+    managerReady = api.manager.snapshot().then(applyManagerSnapshot).catch(() => {});
     // A tab the agent opened for itself becomes a real workspace tab, so its
     // browsing happens in the open rather than in a view nobody can see.
     unsubscribeBrowser = api.browser.subscribe((event) => {
@@ -451,8 +503,12 @@
       };
       chromeShiftFrame = requestAnimationFrame(step);
     });
-    void Promise.all([settingsLoad, loadChats()]).finally(() => {
+    void Promise.all([settingsLoad, loadChats()]).then(async () => {
+      if (requestedConversationId && conversations.some((chat) => chat.id === requestedConversationId))
+        await openChat(requestedConversationId);
+    }).finally(() => {
       startupReady = true;
+      document.documentElement.dataset.appReady = 'true';
       finishStartupWhenReady();
     });
   });
@@ -562,6 +618,8 @@
     activeId = id;
     openingId = id;
     workspaceExpanded = false;
+    taskItems = [];
+    if (id) void applyTasks(Promise.resolve(), id);
   }
 
   function newChat(): void {
@@ -616,11 +674,29 @@
       await rename(title);
     }
 
-    const existingRun = runByConversation[conversationId];
+    const existingRun = latestRun(conversationId);
+    if (existingRun) await managerReady;
+    const steerCurrent = shouldSteerLiveTurn({
+      runId: existingRun,
+      immediate,
+      hasActiveDelegation: (tasksByConversation[conversationId] ?? []).some((task) => task.status === 'active'),
+    });
     // A run that has not reported its id yet cannot be steered, so those wait
     // in the queue too even when the send asked to go now.
-    if (existingRun && !(immediate && !existingRun.startsWith('pending:'))) {
-      enqueue(conversationId, {id: crypto.randomUUID(), text, files, asGoal});
+    if (existingRun && !steerCurrent) {
+      if (managerEnabled) {
+        const attachmentPaths = files.length ? await api.files.paths(files) : [];
+        await api.manager.enqueue({
+          id: crypto.randomUUID(),
+          chatId: conversationId,
+          text,
+          attachments: attachmentPaths,
+          asGoal,
+          priority: inferQueuePriority(text),
+        });
+      } else {
+        enqueue(conversationId, {id: crypto.randomUUID(), text, files, asGoal});
+      }
       return;
     }
     if (existingRun) {
@@ -629,7 +705,7 @@
       // above this one — so it moves to the foot of the transcript instead.
       // What the agent says next is a reply to the steer, and reading it above
       // the words it answers is the wrong order.
-      const liveId = liveAssistantByConversation[conversationId];
+      const liveId = liveAssistantByRun[existingRun];
       updateConversation(conversationId, (chat) => {
         const live = chat.messages.find((message) => message.id === liveId);
         const rest = live ? chat.messages.filter((message) => message.id !== liveId) : chat.messages;
@@ -650,8 +726,9 @@
       goal: asGoal ? {id: crypto.randomUUID(), text: text || files[0]?.name || translate('goal.reviewAttached'), startedAt: sentAt, status: 'active'} : chat.goal,
       messages: [...chat.messages, userMessage, {id: assistantId, role: 'assistant', text: '', startedAt: sentAt, activities: [{id: crypto.randomUUID(), kind: 'thinking', status: 'active', label: translate('activity.thinking')}]}],
     }));
-    liveAssistantByConversation = {...liveAssistantByConversation, [conversationId]: assistantId};
-    runByConversation = {...runByConversation, [conversationId]: `pending:${assistantId}`};
+    const pendingRunId = `pending:${assistantId}`;
+    liveAssistantByRun = {...liveAssistantByRun, [pendingRunId]: assistantId};
+    addConversationRun(conversationId, pendingRunId);
     setConversationTasks(conversationId, []);
     taskTranscripts = {};
     taskIdByRunId = {};
@@ -659,21 +736,26 @@
     try {
       const attachmentPaths = files.length ? await api.files.paths(files) : [];
       const {runId} = await api.runs.start({conversationId, text, messageId: userId, attachments: attachmentPaths, asGoal, reasoning: reasoningLevel, speechMode: voiceOpen});
-      runByConversation = {...runByConversation, [conversationId]: runId};
-      updateLiveAssistant(conversationId, (message) => ({...message, runId}));
+      bindRun(conversationId, pendingRunId, runId);
+      updateLiveAssistant(conversationId, runId, (message) => ({...message, runId}));
       if (asGoal) await refreshGoal(conversationId);
       await loadChats();
     } catch (error) {
-      failRun(conversationId, readableError(error));
+      failRun(conversationId, pendingRunId, readableError(error));
     }
   }
 
   async function stop(): Promise<void> {
-    const runId = runByConversation[active.id];
+    const runIds = runsByConversation[active.id] ?? [];
     // Stopping means stopping: nothing queued behind this run should start on
     // its own once the cancel lands.
-    setQueued(active.id, []);
-    if (runId && !runId.startsWith('pending:')) await api.runs.cancel(runId);
+    if (managerEnabled) {
+      const queuedJobs = managerJobs.filter((job) => job.chatId === active.id && job.status === 'queued');
+      await Promise.all(queuedJobs.map((job) => api.manager.cancel(job.id)));
+    } else {
+      setQueued(active.id, []);
+    }
+    await Promise.all(runIds.filter((runId) => !runId.startsWith('pending:')).map((runId) => api.runs.cancel(runId)));
   }
 
   function setQueued(conversationId: string, items: QueuedSend[]): void {
@@ -700,7 +782,8 @@
    * conversation drains, because a run always starts against the active chat;
    * the rest wait until they are reopened. */
   async function drainQueue(conversationId: string): Promise<void> {
-    if (activeId !== conversationId || runByConversation[conversationId]) return;
+    if (managerEnabled) return;
+    if (activeId !== conversationId || runsByConversation[conversationId]?.length) return;
     const items = queuedByConversation[conversationId] ?? [];
     if (!items.length) return;
     setQueued(conversationId, items.slice(1));
@@ -708,16 +791,36 @@
   }
 
   async function steerQueued(id: string): Promise<void> {
+    if (managerEnabled) {
+      const item = managerJobs.find((job) => job.id === id && job.status === 'queued');
+      if (!item) return;
+      await api.manager.cancel(id);
+      await send(item.text, [], item.asGoal, true);
+      return;
+    }
     const item = takeQueued(active.id, id);
     if (item) await send(item.text, item.files, item.asGoal, true);
   }
 
-  function editQueued(id: string): void {
+  async function editQueued(id: string): Promise<void> {
+    if (managerEnabled) {
+      const item = managerJobs.find((job) => job.id === id && job.status === 'queued');
+      if (!item) return;
+      await api.manager.cancel(id);
+      composerInsertion = {id: item.id, text: item.text};
+      return;
+    }
     const item = takeQueued(active.id, id);
     if (item) composerInsertion = {id: item.id, text: item.text};
   }
 
   function reorderQueued(sourceId: string, targetId: string): void {
+    if (managerEnabled) {
+      void api.manager.reorder(sourceId, targetId).catch((error) => {
+        console.error('Could not reorder queued work:', readableError(error));
+      });
+      return;
+    }
     const items = queuedByConversation[active.id] ?? [];
     const from = items.findIndex((item) => item.id === sourceId);
     const to = items.findIndex((item) => item.id === targetId);
@@ -725,6 +828,80 @@
     const next = [...items];
     next.splice(to, 0, ...next.splice(from, 1));
     setQueued(active.id, next);
+  }
+
+  async function removeQueued(id: string): Promise<void> {
+    if (managerEnabled) {
+      await api.manager.cancel(id);
+      return;
+    }
+    takeQueued(active.id, id);
+  }
+
+  function applyManagerSnapshot(snapshot: ManagerSnapshotDto): void {
+    managerEnabled = snapshot.enabled;
+    managerJobs = snapshot.jobs;
+    if (!snapshot.enabled) return;
+    for (const job of snapshot.jobs)
+      if (job.status === 'running' && job.runId) ensureManagedLive(job);
+  }
+
+  function ensureManagedLive(job: ManagerJobDto): void {
+    if (!job.runId) return;
+    const chat = conversations.find((candidate) => candidate.id === job.chatId);
+    if (!chat) {
+      void loadChats().then(() => ensureManagedLive(job));
+      return;
+    }
+    const existingLiveId = liveAssistantByRun[job.runId];
+    const existingLive = chat.messages.find((message) => message.id === existingLiveId);
+    if (existingLive?.runId === job.runId) return;
+    const startedAt = job.startedAt ?? new Date().toISOString();
+    const assistantId = `manager:${job.id}`;
+    const assistant: ChatMessage = {
+      id: assistantId,
+      role: 'assistant',
+      text: '',
+      runId: job.runId,
+      startedAt,
+      activities: [{id: crypto.randomUUID(), kind: 'thinking', status: 'active', label: translate('activity.thinking')}],
+    };
+    liveAssistantByRun = {...liveAssistantByRun, [job.runId]: assistantId};
+    addConversationRun(job.chatId, job.runId);
+    updateConversation(job.chatId, (conversation) => ({
+      ...conversation,
+      updatedAt: Date.parse(startedAt),
+      messages: [...conversation.messages, assistant],
+    }));
+    void loadConversation(job.chatId);
+  }
+
+  /** A run event can outrun the manager snapshot which assigns that run to its
+   * durable job. Give the run an attributable row immediately so its first
+   * deltas are not lost; the later snapshot recognizes the same run key. */
+  function ensureEventLive(conversationId: string, runId: string, timestamp: number): void {
+    if (liveAssistantByRun[runId]) return;
+    const chat = conversations.find((candidate) => candidate.id === conversationId);
+    if (!chat) {
+      void loadChats().then(() => ensureEventLive(conversationId, runId, timestamp));
+      return;
+    }
+    const startedAt = new Date(timestamp).toISOString();
+    const assistantId = `run:${runId}`;
+    liveAssistantByRun = {...liveAssistantByRun, [runId]: assistantId};
+    addConversationRun(conversationId, runId);
+    updateConversation(conversationId, (conversation) => ({
+      ...conversation,
+      updatedAt: Date.parse(startedAt),
+      messages: [...conversation.messages, {
+        id: assistantId,
+        role: 'assistant',
+        text: '',
+        runId,
+        startedAt,
+        activities: [{id: crypto.randomUUID(), kind: 'thinking', status: 'active', label: translate('activity.thinking')}],
+      }],
+    }));
   }
 
   async function rename(title: string): Promise<void> {
@@ -784,14 +961,29 @@
       return;
     }
     const payload = asRecord(event.payload);
-    if (event.type === 'run.started') runByConversation = {...runByConversation, [conversationId]: event.runId};
+    if (event.type === 'run.started') {
+      const managed = managerJobs.find((job) => job.runId === event.runId && job.status === 'running');
+      if (managed) ensureManagedLive(managed);
+      else if (!liveAssistantByRun[event.runId]) {
+        const pending = (runsByConversation[conversationId] ?? []).find((runId) => runId.startsWith('pending:'));
+        if (pending) bindRun(conversationId, pending, event.runId);
+      }
+      ensureEventLive(conversationId, event.runId, event.timestamp);
+      addConversationRun(conversationId, event.runId);
+    }
     if (event.type === 'message.text.delta') {
       const delta = typeof payload.delta === 'string' ? payload.delta : '';
-      updateLiveAssistant(conversationId, (message) => ({
+      updateLiveAssistant(conversationId, event.runId, (message) => ({
         ...message,
         text: message.text + delta,
         activities: (message.activities ?? []).map((item) => item.kind === 'thinking' && item.status === 'active' ? {...item, status: 'completed'} : item),
       }));
+    }
+    if (event.type === 'message.final_rejected') {
+      // Streaming makes a draft visible before the runtime can validate it.
+      // Once rejected, quarantine that prose immediately so a repair turn or
+      // max-turn failure cannot leave internal scratch as the apparent answer.
+      updateLiveAssistant(conversationId, event.runId, (message) => ({...message, text: ''}));
     }
     if (event.type === 'message.reasoning.delta') {
       const id = `${event.runId}:thinking`;
@@ -802,15 +994,15 @@
       const block = `${typeof payload.turn === 'number' ? payload.turn : 0}:${typeof payload.index === 'number' ? payload.index : 0}`;
       const separator = reasoningBlock[id] !== undefined && reasoningBlock[id] !== block ? '\n\n' : '';
       reasoningBlock[id] = block;
-      updateLiveAssistant(conversationId, (message) => {
-        const existing = (message.activities ?? []).find((item) => item.id === id);
+      updateLiveAssistant(conversationId, event.runId, (message) => {
+        const existing = runThinkingActivity(message.activities ?? [], event.runId);
         return {
           ...message,
           activities: upsertActivity(
             message.activities ?? [],
             {
               ...existing,
-              id,
+              id: existing?.id ?? id,
               kind: 'thinking',
               status: 'active',
               label: translate('activity.thinking'),
@@ -823,28 +1015,29 @@
     if (event.type === 'message.completed') {
       const completed = asRecord(payload.message);
       const text = contentText(completed.content);
+      const commentaryLabel = visibleCommentaryLabel(text);
       // Mid-run narration (tool calls follow) folds into the activity group so
       // only the run's final answer stays as the visible message body.
       //
       // Judged on what the text actually says, not on whether there is any:
       // a block carrying only a newline is truthy, and folding one into the
       // trail drew a row with an icon, a disclosure chevron and no words.
-      if (payload.phase === 'commentary' && text.trim()) {
-        updateLiveAssistant(conversationId, (message) => ({
+      if (payload.phase === 'commentary') {
+        updateLiveAssistant(conversationId, event.runId, (message) => ({
           ...message,
           text: '',
-          activities: [
+          activities: commentaryLabel ? [
             ...(message.activities ?? []),
-            {id: `${event.runId}:commentary:${event.sequence}`, kind: 'commentary', status: 'completed', label: text},
-          ],
+            {id: `${event.runId}:commentary:${event.sequence}`, kind: 'commentary', status: 'completed', label: commentaryLabel},
+          ] : message.activities,
         }));
       } else if (text) {
-        updateLiveAssistant(conversationId, (message) => ({...message, text}));
+        updateLiveAssistant(conversationId, event.runId, (message) => ({...message, text}));
       }
     }
     if (event.type === 'context.compacting') {
       const id = `${event.runId}:compaction`;
-      updateLiveAssistant(conversationId, (message) => ({
+      updateLiveAssistant(conversationId, event.runId, (message) => ({
         ...message,
         activities: upsertActivity(
           (message.activities ?? []).filter((item) => item.status !== 'active' || (item.kind !== 'thinking' && item.kind !== 'compacting')),
@@ -854,7 +1047,7 @@
     }
     if (event.type === 'context.compacted') {
       const id = `${event.runId}:compaction`;
-      updateLiveAssistant(conversationId, (message) => ({
+      updateLiveAssistant(conversationId, event.runId, (message) => ({
         ...message,
         activities: (message.activities ?? []).map((item) => item.id === id ? {...item, status: 'completed'} : item),
       }));
@@ -864,7 +1057,7 @@
       const name = typeof call.name === 'string' ? call.name : 'tool';
       const id = typeof call.id === 'string' ? call.id : crypto.randomUUID();
       const presentation = activityPresentation(name, asRecord(call.arguments));
-      updateLiveAssistant(conversationId, (message) => ({
+      updateLiveAssistant(conversationId, event.runId, (message) => ({
         ...message,
         activities: upsertActivity(
           (message.activities ?? []).filter((item) => item.status !== 'active' || (item.kind !== 'thinking' && item.kind !== 'compacting')),
@@ -879,7 +1072,7 @@
       if (name.startsWith('message_') && chatId && !presentation.logo) void primeChatPlatforms().then(() => {
         const logo = platformForChat(chatId);
         if (!logo) return;
-        updateLiveAssistant(conversationId, (message) => ({
+        updateLiveAssistant(conversationId, event.runId, (message) => ({
           ...message,
           activities: (message.activities ?? []).map((item) => item.id === id ? {...item, logo} : item),
         }));
@@ -891,15 +1084,17 @@
         // A continued dispatch resumes an existing fleet task: its row flips
         // back to active rather than a second row appearing for the same task.
         const continueFrom = typeof arguments_.continue === 'string' ? arguments_.continue.trim() : '';
-        const resumedId = continueFrom ? taskRowByName[conversationId]?.[continueFrom] : undefined;
+        const taskScope = `${conversationId}:${event.runId}`;
+        const resumedId = continueFrom ? taskRowByName[taskScope]?.[continueFrom] : undefined;
+        const taskId = `${event.runId}:${id}`;
         if (resumedId) {
           updateConversationTasks(conversationId, (current) => current.map((task) => task.id === resumedId
             ? {...task, status: 'active', title: description || task.title, prompt: prompt || task.prompt}
             : task));
         } else {
           updateConversationTasks(conversationId, (current) => [
-            ...current.filter((task) => task.id !== id),
-            {id, title: description || translate('activity.delegatedTask'), status: 'active', prompt},
+            ...current.filter((task) => task.id !== taskId),
+            {id: taskId, callId: id, title: description || translate('activity.delegatedTask'), status: 'active', parentRunId: event.runId, prompt},
           ]);
         }
       }
@@ -915,12 +1110,13 @@
       const childRunId = typeof data.childRunId === 'string' ? String(data.childRunId) : '';
       const continueFrom = typeof data.continueFrom === 'string' ? data.continueFrom : '';
       if (id && childRunId) {
-        const rowId = continueFrom ? (taskRowByName[conversationId]?.[continueFrom] ?? id) : id;
+        const taskScope = `${conversationId}:${event.runId}`;
+        const rowId = continueFrom ? (taskRowByName[taskScope]?.[continueFrom] ?? `${event.runId}:${id}`) : `${event.runId}:${id}`;
         linkTaskRun(conversationId, rowId, childRunId, Boolean(continueFrom && rowId !== id));
       }
       // Each progress report becomes a sub-step of its tool's activity row;
       // starting a new step settles the one before it.
-      if (id && label) updateLiveAssistant(conversationId, (message) => ({
+      if (id && label) updateLiveAssistant(conversationId, event.runId, (message) => ({
         ...message,
         activities: (message.activities ?? []).map((item) => item.id === id ? {
           ...item,
@@ -936,12 +1132,14 @@
       const name = typeof call.name === 'string' ? call.name : 'tool';
       const id = typeof call.id === 'string' ? call.id : '';
       const detail = activityResultDetail(payload);
-      const status = event.type === 'tool.failed' ? 'failed' as const : 'completed' as const;
+      const status = event.type === 'tool.failed' || toolResultFailed(payload.result)
+        ? 'failed' as const
+        : 'completed' as const;
       // A successful `task` call has only *started* the work, so its row keeps
       // working until the delegated run itself ends; anything else is done
       // when its call is.
       const dispatched = isSubagentTask(name) && status === 'completed' && !toolResultFailed(payload.result);
-      updateLiveAssistant(conversationId, (message) => ({...message, activities: (message.activities ?? []).map((item) => item.id === id ? {
+      updateLiveAssistant(conversationId, event.runId, (message) => ({...message, activities: (message.activities ?? []).map((item) => item.id === id ? {
         ...item,
         status: dispatched ? item.status : status,
         result: detail || item.result,
@@ -951,13 +1149,14 @@
       // subagent starts, so the row follows the delegated *run* to its end
       // (see applySubagentEvent) and only a failed dispatch settles it here.
       if (isSubagentTask(name) && (event.type === 'tool.failed' || toolResultFailed(payload.result)))
-        updateConversationTasks(conversationId, (current) => current.map((task) => task.id === id ? {...task, status: 'failed'} : task));
+        updateConversationTasks(conversationId, (current) => current.map((task) => task.id === `${event.runId}:${id}` ? {...task, status: 'failed'} : task));
       // The `task` result names the fleet task it dispatched. The row keeps
       // that name so a later continued dispatch can find and resume it.
       if (isSubagentTask(name) && status === 'completed') {
-        const fleetName = asRecord(asRecord(payload.result).metadata).task;
-        if (typeof fleetName === 'string' && fleetName && id && !taskRowByName[conversationId]?.[fleetName])
-          taskRowByName = {...taskRowByName, [conversationId]: {...(taskRowByName[conversationId] ?? {}), [fleetName]: id}};
+        const fleetName = asRecord(asRecord(payload.result).metadata).subagent;
+        const taskScope = `${conversationId}:${event.runId}`;
+        if (typeof fleetName === 'string' && fleetName && id && !taskRowByName[taskScope]?.[fleetName])
+          taskRowByName = {...taskRowByName, [taskScope]: {...(taskRowByName[taskScope] ?? {}), [fleetName]: `${event.runId}:${id}`}};
       }
       // Pages read and files written land in Summary as the run works, rather
       // than all at once when it settles.
@@ -971,7 +1170,7 @@
       // (a seeded "Thinking" row at most) so no "Worked for Ns" group renders.
       const noWork = event.type === 'run.completed' && result.hadWorkActivity === false;
       const lastAgentMessage = typeof result.lastAgentMessage === 'string' ? result.lastAgentMessage : '';
-      updateLiveAssistant(conversationId, (message) => ({
+      updateLiveAssistant(conversationId, event.runId, (message) => ({
         ...message,
         text: failure && !message.text ? failure : message.text || lastAgentMessage,
         sentAt: completedAt,
@@ -980,12 +1179,12 @@
           ? []
           : (message.activities ?? []).map((item) => ({...item, status: item.status === 'active' ? (event.type === 'run.failed' ? 'failed' : 'completed') : item.status})),
       }));
-      updateConversationTasks(conversationId, (current) => current.map((task) => task.status === 'active'
+      updateConversationTasks(conversationId, (current) => current.map((task) => task.parentRunId === event.runId && task.status === 'active'
         ? {...task, status: event.type === 'run.completed' ? 'completed' : 'failed'}
         : task));
-      const next = {...runByConversation}; delete next[conversationId]; runByConversation = next;
+      removeConversationRun(conversationId, event.runId);
     }
-    if (event.type === 'run.settled') void settleConversation(conversationId);
+    if (event.type === 'run.settled') void settleConversation(conversationId, event.runId);
   }
 
   let resourceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1010,12 +1209,15 @@
     }
   }
 
-  async function settleConversation(conversationId: string): Promise<void> {
+  async function settleConversation(conversationId: string, settledRunId: string): Promise<void> {
     const stored = await api.conversations.messages(conversationId);
     const current = conversations.find((chat) => chat.id === conversationId)?.messages ?? [];
     updateConversation(conversationId, (chat) => ({...chat, messages: mergeMessages(stored, current)}));
     await persistActivities(stored, current);
-    const next = {...liveAssistantByConversation}; delete next[conversationId]; liveAssistantByConversation = next;
+    const nextLive = {...liveAssistantByRun};
+    delete nextLive[settledRunId];
+    liveAssistantByRun = nextLive;
+    removeConversationRun(conversationId, settledRunId);
     await Promise.all([refreshGoal(conversationId), loadChats()]);
     clearTimeout(resourceRefreshTimer);
     await refreshResources(conversationId);
@@ -1055,7 +1257,7 @@
   function linkTaskRun(conversationId: string, taskId: string, runId: string, resumed = false): void {
     taskIdByRunId = {...taskIdByRunId, [runId]: taskId};
     updateConversationTasks(conversationId, (current) => current.map((task) => task.id === taskId ? {...task, runId} : task));
-    const prompt = (tasksByConversation[conversationId] ?? []).find((task) => task.id === taskId)?.prompt ?? '';
+    const prompt = (tasksByConversation[conversationId] ?? []).find((task) => task.id === taskId && task.parentRunId)?.prompt ?? '';
     const existing = taskTranscripts[taskId];
     if (resumed && existing)
       taskTranscripts = {...taskTranscripts, [taskId]: {...existing, runId, running: true, completedAt: undefined}};
@@ -1080,7 +1282,10 @@
       // The task row and the parent's activity row are the same delegation
       // seen from two places, and the tool call id is what ties them: it names
       // the row here and the task there.
-      updateLiveAssistant(conversationId, (message) => ({...message, activities: (message.activities ?? []).map((item) => item.id === taskId ? {...item, status} : item)}));
+      const parentRunId = event.parentRunId ?? (tasksByConversation[conversationId] ?? []).find((task) => task.id === taskId)?.parentRunId;
+      const callId = (tasksByConversation[conversationId] ?? []).find((task) => task.id === taskId)?.callId;
+      if (parentRunId && callId)
+        updateLiveAssistant(conversationId, parentRunId, (message) => ({...message, activities: (message.activities ?? []).map((item) => item.id === callId ? {...item, status} : item)}));
     }
   }
 
@@ -1092,7 +1297,7 @@
       taskTranscripts = {...taskTranscripts, [task.id]: emptyTranscript(task.runId, task.prompt ?? '')};
       void replayTask(task.id, task.runId);
     }
-    openTab({id: task.id, title: task.title, kind: 'task'});
+    openTab({id: task.id, title: task.title, kind: 'subagent'});
   }
 
   /** Rebuilds a transcript from the run's stored events, for a task whose run
@@ -1116,17 +1321,36 @@
     setConversationTasks(conversationId, mutator(tasksByConversation[conversationId] ?? []));
   }
 
-  function updateLiveAssistant(conversationId: string, mutator: (message: ChatMessage) => ChatMessage): void {
-    const id = liveAssistantByConversation[conversationId];
+  function latestRun(conversationId: string): string | undefined {
+    return latestConversationRun(runsByConversation, conversationId);
+  }
+
+  function addConversationRun(conversationId: string, runId: string): void {
+    runsByConversation = withConversationRun(runsByConversation, conversationId, runId);
+  }
+
+  function removeConversationRun(conversationId: string, runId: string): void {
+    runsByConversation = withoutConversationRun(runsByConversation, conversationId, runId);
+  }
+
+  function bindRun(conversationId: string, pendingRunId: string, runId: string): void {
+    const bound = bindPendingRun(runsByConversation, liveAssistantByRun, conversationId, pendingRunId, runId);
+    runsByConversation = bound.runs;
+    liveAssistantByRun = bound.assistants;
+  }
+
+  function updateLiveAssistant(conversationId: string, runId: string, mutator: (message: ChatMessage) => ChatMessage): void {
+    const id = liveAssistantByRun[runId];
     if (!id) return;
     updateConversation(conversationId, (chat) => ({...chat, messages: chat.messages.map((message) => message.id === id ? mutator(message) : message)}));
   }
 
-  function failRun(conversationId: string, reason: string): void {
+  function failRun(conversationId: string, runId: string, reason: string): void {
     const completedAt = new Date().toISOString();
     const detail = cleanIpcError(reason);
-    updateLiveAssistant(conversationId, (message) => ({...message, text: translate('run.startFailed', {detail}), sentAt: completedAt, completedAt, activities: [{id: crypto.randomUUID(), kind: 'thinking', status: 'failed', label: translate('activity.startFailed')}]}));
-    const next = {...runByConversation}; delete next[conversationId]; runByConversation = next;
+    updateLiveAssistant(conversationId, runId, (message) => ({...message, text: translate('run.startFailed', {detail}), sentAt: completedAt, completedAt, activities: [{id: crypto.randomUUID(), kind: 'thinking', status: 'failed', label: translate('activity.startFailed')}]}));
+    removeConversationRun(conversationId, runId);
+    const next = {...liveAssistantByRun}; delete next[runId]; liveAssistantByRun = next;
   }
 
   function cleanIpcError(message: string): string {
@@ -1183,7 +1407,7 @@
   }
 
   /** Tab kinds a stored snapshot may re-create; anything else is stale data. */
-  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['media', 'browser', 'summary', 'drive', 'schedule', 'hub']);
+  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['media', 'browser', 'summary', 'drive', 'schedule', 'hub', 'subagents', 'tasks']);
   /** True while a snapshot is being applied, so the auto-save sits out. */
   let workspaceRestoring = false;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1254,7 +1478,7 @@
     outputs = artifacts.map(({id, name}) => ({id, name}));
     references = storedReferences.map(({id, title, kind, uri}) => ({id, title, kind, uri}));
     const resourceTabs = artifacts.map(artifactTab);
-    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'task'), ...resourceTabs];
+    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'subagent' || tab.kind === 'subagents' || tab.kind === 'tasks'), ...resourceTabs];
     if (activeTabId && !workspaceTabs.some((tab) => tab.id === activeTabId)) activeTabId = workspaceTabs[0]?.id ?? null;
   }
 
@@ -1269,7 +1493,7 @@
    * dismissing it: the panel is a place, and closing what is inside it is not
    * the same gesture as putting it away.
    */
-  function closeTab(id: string): void {
+  function closeTab(id: string, releaseSingleton = true): void {
     const index = workspaceTabs.findIndex((tab) => tab.id === id);
     const closing = workspaceTabs[index];
     workspaceTabs = workspaceTabs.filter((tab) => tab.id !== id);
@@ -1277,13 +1501,102 @@
     // The embedded browser's native view outlives the Svelte component, so the
     // tab closing is what actually tears it down.
     if (closing?.kind === 'browser') void api.browser.close(id);
+    if (releaseSingleton && closing && isSharedWorkspaceSingleton(closing.kind))
+      workspaceSingletonChannel?.postMessage({type: 'closed', kind: closing.kind, owner: workspaceWindowOwner});
   }
 
-  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', schedule: 'workspace.schedule', hub: 'workspace.hub'};
+  function reorderWorkspaceTabs(ids: string[]): void {
+    const byId = new Map(workspaceTabs.map((tab) => [tab.id, tab]));
+    const reordered = ids.map((id) => byId.get(id)).filter((tab): tab is WorkspaceTab => Boolean(tab));
+    if (reordered.length === workspaceTabs.length) workspaceTabs = reordered;
+  }
+
+  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', schedule: 'workspace.schedule', hub: 'workspace.hub', subagents: 'workspace.subagents', tasks: 'workspace.tasks'};
+  type SharedWorkspaceSingleton = 'drive' | 'schedule' | 'hub' | 'tasks';
+  type WorkspaceSingletonMessage =
+    | {type: 'query'; owner: string}
+    | {type: 'opened' | 'closed'; kind: SharedWorkspaceSingleton; owner: string};
+  const workspaceWindowOwner = crypto.randomUUID();
+  let remoteSingletonOwners: Partial<Record<SharedWorkspaceSingleton, string>> = {};
+  const workspaceSingletonChannel = typeof BroadcastChannel === 'undefined'
+    ? null
+    : new BroadcastChannel('flareai-workspace-singletons');
+
+  function isSharedWorkspaceSingleton(kind: WorkspaceTabKind): kind is SharedWorkspaceSingleton {
+    return kind === 'drive' || kind === 'schedule' || kind === 'hub' || kind === 'tasks';
+  }
+
+  function localWorkspaceSingletons(): SharedWorkspaceSingleton[] {
+    return workspaceTabs.map((tab) => tab.kind).filter(isSharedWorkspaceSingleton);
+  }
+
+  function claimWorkspaceSingleton(kind: WorkspaceTabKind): void {
+    if (!isSharedWorkspaceSingleton(kind)) return;
+    const {[kind]: _removed, ...remaining} = remoteSingletonOwners;
+    remoteSingletonOwners = remaining;
+    workspaceSingletonChannel?.postMessage({type: 'opened', kind, owner: workspaceWindowOwner});
+  }
+
+  function releaseLocalWorkspaceSingletons(): void {
+    if (!workspaceSingletonChannel) return;
+    for (const kind of localWorkspaceSingletons())
+      workspaceSingletonChannel.postMessage({type: 'closed', kind, owner: workspaceWindowOwner});
+  }
+
+  onMount(() => {
+    if (!workspaceSingletonChannel) return;
+    workspaceSingletonChannel.onmessage = (event: MessageEvent<WorkspaceSingletonMessage>) => {
+      const message = event.data;
+      if (!message || message.owner === workspaceWindowOwner) return;
+      if (message.type === 'query') {
+        for (const kind of localWorkspaceSingletons())
+          workspaceSingletonChannel.postMessage({type: 'opened', kind, owner: workspaceWindowOwner});
+        return;
+      }
+      if (message.type === 'opened') {
+        remoteSingletonOwners = {...remoteSingletonOwners, [message.kind]: message.owner};
+        closeTab(SINGLETON_TAB_IDS[message.kind]!, false);
+      } else if (remoteSingletonOwners[message.kind] === message.owner) {
+        const {[message.kind]: _removed, ...remaining} = remoteSingletonOwners;
+        remoteSingletonOwners = remaining;
+      }
+    };
+    workspaceSingletonChannel.postMessage({type: 'query', owner: workspaceWindowOwner});
+    for (const kind of localWorkspaceSingletons()) claimWorkspaceSingleton(kind);
+    window.addEventListener('pagehide', releaseLocalWorkspaceSingletons);
+    return () => {
+      window.removeEventListener('pagehide', releaseLocalWorkspaceSingletons);
+      releaseLocalWorkspaceSingletons();
+      workspaceSingletonChannel.close();
+    };
+  });
+
+  function reorderPinnedViews(views: Array<'drive' | 'schedule' | 'hub' | 'tasks'>): void {
+    pinnedViews = views;
+    void api.general.update({pinnedViews: views}).catch(() => {});
+  }
+
+  function togglePinView(kind: 'drive' | 'schedule' | 'hub' | 'tasks'): void {
+    const next = pinnedViews.includes(kind)
+      ? pinnedViews.filter((v) => v !== kind)
+      : [...pinnedViews, kind];
+    pinnedViews = next;
+    void api.general.update({pinnedViews: next}).catch(() => {});
+  }
+
+  function openSeparateWorkspaceView(
+    kind: 'drive' | 'schedule' | 'hub' | 'tasks',
+    placement?: {x: number; y: number; width?: number; height?: number},
+  ): void {
+    const tabId = SINGLETON_TAB_IDS[kind];
+    if (tabId) closeTab(tabId);
+    void api.window.openWorkspaceView(kind, activeId || undefined, placement);
+  }
 
   function newTab(kind: WorkspaceTabKind = 'media'): void {
     const singletonId = SINGLETON_TAB_IDS[kind];
     const named = singletonTitles[kind];
+    claimWorkspaceSingleton(kind);
     if (singletonId) openTab({id: singletonId, title: translate(named ?? 'workspace.newTab'), kind});
     else openTab({id: crypto.randomUUID(), title: translate('workspace.newTab'), kind});
   }
@@ -1298,8 +1611,9 @@
    * they differ in where they are rooted. */
   const OUTPUTS_SOURCE = 'local#outputs';
   const HOME_SOURCE = 'local#home';
+  const ALL_SOURCE = 'all#all';
   let driveStatus: DriveStatusDto | null = null;
-  let driveSourceId = OUTPUTS_SOURCE;
+  let driveSourceId = ALL_SOURCE;
   let driveLoading = false;
   let driveError = '';
   /** Folders already fetched, keyed `<source>:<path>`. Cleared when the source
@@ -1312,6 +1626,13 @@
     void applySchedule(Promise.resolve());
     return api.schedules.subscribe((items) => {
       scheduleItems = items;
+    });
+  });
+
+  onMount(() => {
+    void applyTasks(Promise.resolve());
+    return api.tasks.subscribe((items) => {
+      taskItems = items.filter((item) => item.chatId === activeId);
     });
   });
 
@@ -1514,30 +1835,49 @@
       await api.drive.createFolder(source, driveFolderPath(parent), name);
       return driveFolderPath(parent);
     }),
-    upload: (parent: DriveEntry) => void runDriveAction(async (source) => {
-      // No paths means the main process opens a file picker.
-      await api.drive.upload(source, driveFolderPath(parent));
+    upload: (files: File[], parent: DriveEntry, onProgress?: (fraction: number) => void) => runDriveAction(async (source) => {
+      const paths = await api.files.paths(files);
+      if (!paths.length) return null;
+      await api.drive.upload(source, driveFolderPath(parent), paths, onProgress);
       return driveFolderPath(parent);
     }),
     // Dropped from the Finder. Only the main process can turn a dropped File
     // into somewhere on disk, so the paths are resolved here and the upload
     // is the same one the toolbar button runs.
-    dropFiles: (files: File[], destination: DriveEntry) => void runDriveAction(async (source) => {
+    dropFiles: (files: File[], destination: DriveEntry, onProgress?: (fraction: number) => void) => runDriveAction(async (source) => {
       const paths = await api.files.paths(files);
       if (!paths.length) return null;
-      await api.drive.upload(source, driveFolderPath(destination), paths);
+      await api.drive.upload(source, driveFolderPath(destination), paths, onProgress);
       return driveFolderPath(destination);
     }),
     rename: (entry: DriveEntry, name: string) => void runDriveAction(async (source) => {
       await api.drive.rename(source, entry.id, name);
       return driveParentPath(entry);
     }),
-    move: (entries: DriveEntry[], destination: DriveEntry) => void runDriveAction(async (source) => {
+    move: (entries: DriveEntry[], destination: DriveEntry, onProgress?: (fraction: number) => void) => runDriveAction(async (source) => {
       const from = driveParentPath(entries[0]);
-      await api.drive.move(source, entries.map((entry) => entry.id), driveFolderPath(destination));
-      // Both ends of the move changed, and the destination is only worth
-      // re-reading if it has ever been opened.
-      await loadDriveFolder(driveFolderPath(destination));
+      const destinationPath = driveFolderPath(destination);
+      const destinationSource = driveSources.find((candidate) =>
+        destinationPath === candidate.id || destinationPath.startsWith(`${candidate.id}/`),
+      )?.id ?? source;
+      const crossesSources = destinationSource !== source;
+      const actionSource = source === ALL_SOURCE || crossesSources ? ALL_SOURCE : source;
+      const paths = actionSource === ALL_SOURCE && source !== ALL_SOURCE
+        ? entries.map((entry) => `${source}/${entry.id}`)
+        : entries.map((entry) => entry.id);
+      const qualifiedDestination = actionSource === ALL_SOURCE && destinationSource === source
+        ? `${source}/${destinationPath}`
+        : destinationPath;
+      await api.drive.move(actionSource, paths, qualifiedDestination, onProgress);
+      // A cross-provider move still belongs in the one virtual view. Return to
+      // and refresh that combined root so the row changes provider instead of
+      // disappearing from whichever individual source happened to be open.
+      if (crossesSources) {
+        driveSourceId = ALL_SOURCE;
+        await loadDriveFolder('');
+        return null;
+      }
+      await loadDriveFolder(destinationPath);
       return from;
     }),
     duplicate: (entries: DriveEntry[]) => void runDriveAction(async (source) => {
@@ -1655,6 +1995,36 @@
    * the agent still works — it has a tool for exactly this — but it is no
    * longer the only way to make one.
    */
+  async function applyTasks(action: Promise<unknown>, conversationId = activeId): Promise<void> {
+    try {
+      await action;
+      taskItems = conversationId ? await api.tasks.list(conversationId) : [];
+    } catch (error) {
+      tasksError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function createTaskCard(title: string, detail?: string): void {
+    if (!activeId) return;
+    void applyTasks(api.tasks.create({chatId: activeId, title, detail}), activeId);
+  }
+
+  function updateTaskCard(id: string, patch: Partial<TaskCard>): void {
+    void applyTasks(api.tasks.update(id, patch));
+  }
+
+  function deleteTaskCard(id: string): void {
+    void applyTasks(api.tasks.remove(id));
+  }
+
+  function markTasksRead(id: string): void {
+    void applyTasks(api.tasks.markRead(id));
+  }
+
+  function recycleTaskCard(id: string): void {
+    void applyTasks(api.tasks.update(id, {status: 'todo', owner: undefined, reviewed: false}));
+  }
+
   function openVisit(url: string, title: string): void {
     openTab({id: crypto.randomUUID(), title, kind: 'browser', url});
   }
@@ -2143,7 +2513,7 @@
   }
 
   function isSubagentTask(name: string): boolean {
-    return name.toLowerCase() === 'task';
+    return name.toLowerCase() === 'subagent';
   }
 
   /** A short excerpt of a tool's output for the row's expandable detail —
@@ -2151,12 +2521,6 @@
   function activityResultDetail(payload: Record<string, JsonValue>): string {
     const text = contentText(asRecord(payload.result).content ?? asRecord(payload.error).message).trim();
     return text.length > 280 ? `${text.slice(0, 280)}…` : text;
-  }
-
-  function toolResultFailed(value: JsonValue | undefined): boolean {
-    const result = asRecord(value);
-    const metadata = asRecord(result.metadata);
-    return result.isError === true || metadata.status === 'failed';
   }
 
 </script>
@@ -2191,11 +2555,12 @@
     <i></i><i></i><i></i>
   </div>
 
-  <TitleBar
+  {#if requestedWorkspaceView === null}<TitleBar
     title={active.title || $t('chat.untitled')}
     showTitle={active.messages.length > 0}
     showSummary={mode === 'summary' || active.messages.length > 0}
     hideNewChat={workspaceExpanded}
+    showChatToggle={requestedWorkspaceView === null}
     {chatDrawerOpen}
     {mode}
     onRename={rename}
@@ -2204,10 +2569,16 @@
     onSearchChats={() => chatSearchOpen = true}
     onTogglePanel={togglePanel}
     onOpenSettings={() => openSettings()}
+    {pinnedViews}
+    onOpenView={(kind) => newTab(kind)}
+    onOpenViewInNewWindow={openSeparateWorkspaceView}
+    onReorderPinnedViews={reorderPinnedViews}
     showExtensionPrompt={(extensionStatus?.promptToInstall ?? false) && mode !== 'workspace'}
     onInstallExtension={installExtension}
     onDismissExtension={dismissExtension}
-  />
+    showUpdatePrompt={(update?.status === 'ready') && mode !== 'workspace'}
+    onInstallUpdate={() => { void api.general.installUpdate(); }}
+  />{/if}
 
   <ChatDrawer
     chats={chatEntries}
@@ -2252,7 +2623,7 @@
     onDeleteGoal={deleteGoal}
     onQueueHeight={(value) => queueHeight = value}
     onSteerQueued={(id) => void steerQueued(id)}
-    onRemoveQueued={(id) => void takeQueued(active.id, id)}
+    onRemoveQueued={removeQueued}
     onEditQueued={editQueued}
     onReorderQueued={reorderQueued}
     insertion={composerInsertion}
@@ -2290,14 +2661,17 @@
       onOpenTask={openTask}
       onViewAll={viewSummary}
       onAttachReferences={attachReferences}
+      onOpenSubagents={() => newTab('subagents')}
     />
   {/if}
 
   <WorkspaceDrawer
     tabs={workspaceTabs}
+    unavailableKinds={Object.keys(remoteSingletonOwners) as SharedWorkspaceSingleton[]}
     {activeTabId}
     open={mode === 'workspace'}
     expanded={workspaceExpanded}
+    standalone={requestedWorkspaceView !== null}
     resizing={workspaceResizing}
     motion={workspaceMotionWidth !== null}
     reservedWidth={chatDrawerOpen ? MIN_CHAT_DRAWER_WIDTH : 0}
@@ -2320,6 +2694,15 @@
     {scheduleError}
     unreadSchedules={unreadScheduleCount(scheduleItems)}
     onDismissScheduleError={() => (scheduleError = '')}
+    {taskItems}
+    {tasksError}
+    unreadTasks={unreadTasksCount(taskItems)}
+    onDismissTasksError={() => (tasksError = '')}
+    onCreateTaskCard={createTaskCard}
+    onUpdateTaskCard={updateTaskCard}
+    onDeleteTaskCard={deleteTaskCard}
+    onMarkTasksRead={markTasksRead}
+    onRecycleTaskCard={recycleTaskCard}
     onOpenScheduleRun={openScheduleRun}
     onMarkScheduleRead={markScheduleRead}
     onOpenDriveEntry={openDriveEntry}
@@ -2330,20 +2713,29 @@
     onSelect={(id) => activeTabId = id}
     onClose={closeTab}
     onNew={newTab}
-    onToggleExpand={() => workspaceExpanded = !workspaceExpanded}
+    onReorderTabs={reorderWorkspaceTabs}
+    onToggleExpand={() => { if (!requestedWorkspaceView) workspaceExpanded = !workspaceExpanded; }}
     onResize={(value) => { panelPriority = 'workspace'; workspaceWidth = value; }}
     onResizeState={(value) => workspaceResizing = value}
     browserObscured={settingsOpen || (voiceOpen && !voiceInChat)}
     onOpenUrl={openVisit}
     onTabState={updateTabState}
+    {pinnedViews}
+    onTogglePin={togglePinView}
+    onOpenSeparateWindow={(kind, placement) => {
+      if (kind === 'drive' || kind === 'schedule' || kind === 'hub' || kind === 'tasks')
+        openSeparateWorkspaceView(kind, placement);
+    }}
   />
 
   {#if settingsOpen}<SettingsPage
     initialMode={settingsMode}
+    currentPinnedViews={pinnedViews}
     onClose={() => { settingsOpen = false; settingsMode = ''; refreshExtensionStatus(); }}
     onGeneralChange={(settings) => {
       speechModeEnabled = settings.speechModeEnabled;
       advancedMode = settings.advancedMode;
+      pinnedViews = settings.pinnedViews;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       if (!speechModeEnabled) closeVoice();
     }}

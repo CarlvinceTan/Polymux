@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -18,6 +18,7 @@ import {
   MemoryManager,
   FlareAIAgent,
 } from "../src/index.js";
+import {recordGoalProgress} from "../src/goals/progress-receipts.js";
 
 const model = { provider: "test", id: "model" };
 const modelInfo: InferenceModel = {
@@ -75,6 +76,188 @@ function testMemory(): MemoryManager {
   });
 }
 
+function writeTestSkill(root: string, name: string, description: string, body: string): void {
+  const directory = path.join(root, name);
+  mkdirSync(directory, {recursive: true});
+  writeFileSync(path.join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`);
+}
+
+test("experimental runtime repairs visible deliberation before persistence", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "conversation", title: "Chat"});
+    const inference = new FakeInference();
+    inference.responses.push(
+      [answer("**Compiling verified events**\n\n**Refining recommendations**\nHere are the events.")],
+      [answer("Here are the verified events.")],
+    );
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      orchestrationExperiment: true,
+      compaction: {enabled: false},
+    });
+    const result = await agent.start({
+      conversationId: "conversation",
+      text: "Find the latest events from NUSync that I might be interested in",
+    }).result;
+    assert.equal(result.lastAgentMessage, "Here are the verified events.");
+    assert.equal(inference.requests.length, 2);
+    const persisted = storage.listMessages("conversation").filter((message) => message.role === "assistant");
+    assert.equal(persisted.length, 1);
+    assert.doesNotMatch(JSON.stringify(persisted[0]?.content), /Compiling|Refining/);
+  } finally { storage.close(); }
+});
+
+test("experimental runtime rejects an incidental exchange recommendation before persistence", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "conversation", title: "Chat"});
+    const rejected = [
+      "Here are the strongest current matches:",
+      "",
+      "1. **Friday Hacks #297 — Evaluating AI Agents**",
+      "   - Strong fit with your agent-evaluation work and software-engineering goals.",
+      "",
+      "2. **NUS–UM Exchange Programme**",
+      "   - Directly relevant to your University of Melbourne",
+      "     exchange plans.",
+    ].join("\n");
+    const inference = new FakeInference();
+    inference.responses.push([answer(rejected)], [answer("Friday Hacks #297 is the one strong match for your agent-evaluation work.")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: {enabled: false},
+      orchestrationExperiment: true,
+    });
+    const active = agent.start({
+      conversationId: "conversation",
+      text: "Find the latest events from NUSync that I might be interested in",
+    });
+    const events = [];
+    for await (const event of active.events) events.push(event);
+    const result = await active.result;
+    assert.equal(result.lastAgentMessage, "Friday Hacks #297 is the one strong match for your agent-evaluation work.");
+    assert.equal(events.filter((event) => event.type === "message.final_rejected").length, 1);
+    const persisted = storage.listMessages("conversation").filter((message) => message.role === "assistant");
+    assert.equal(persisted.length, 1);
+    assert.doesNotMatch(JSON.stringify(persisted[0]?.content), /NUS–UM Exchange Programme/);
+  } finally { storage.close(); }
+});
+
+test("an unambiguous official workflow is preloaded without a skill-read round trip", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "conversation", title: "Chat"});
+    const official = mkdtempSync(path.join(tmpdir(), "flareai-official-skill-"));
+    writeTestSkill(official, "browser-use", "Browse and research live websites.", "VERIFY-FIRST-PARTY-EVIDENCE");
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      skills: {official: [official]},
+      compaction: {enabled: false},
+      orchestrationExperiment: true,
+      preloadSingleOfficialSkill: true,
+    });
+    await agent.start({conversationId: "conversation", text: "Find the latest events online"}).result;
+    const prompt = inference.requests[0]?.systemPrompt ?? "";
+    assert.match(prompt, /<active_skill name="browser-use"/);
+    assert.match(prompt, /VERIFY-FIRST-PARTY-EVIDENCE/);
+    assert.match(prompt, /do not call read for its SKILL\.md again/i);
+    assert.doesNotMatch(prompt, /<available_skills>/);
+  } finally { storage.close(); }
+});
+
+test("official skill preloading remains inert without its independent experiment flag", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "conversation", title: "Chat"});
+    const official = mkdtempSync(path.join(tmpdir(), "flareai-inert-official-skill-"));
+    writeTestSkill(official, "browser-use", "Browse and research live websites.", "SHOULD-NOT-BE-INLINED");
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")]);
+    const agent = new FlareAIAgent({
+      inference, storage, memory: testMemory(), tools: new ToolRegistry(), model,
+      skills: {official: [official]}, compaction: {enabled: false}, orchestrationExperiment: true,
+    });
+    await agent.start({conversationId: "conversation", text: "Find the latest events online"}).result;
+    const prompt = inference.requests[0]?.systemPrompt ?? "";
+    assert.doesNotMatch(prompt, /<active_skill/);
+    assert.doesNotMatch(prompt, /SHOULD-NOT-BE-INLINED/);
+    assert.match(prompt, /<available_skills>/);
+  } finally { storage.close(); }
+});
+
+test("multiple or personal matching skills remain catalogue entries instead of gaining system priority", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "conversation", title: "Chat"});
+    const official = mkdtempSync(path.join(tmpdir(), "flareai-official-skills-"));
+    const personal = mkdtempSync(path.join(tmpdir(), "flareai-personal-skills-"));
+    writeTestSkill(official, "browser-use", "Browse live websites.", "OFFICIAL-BROWSER");
+    writeTestSkill(official, "chat-style", "Draft chat replies.", "OFFICIAL-CHAT");
+    writeTestSkill(personal, "career-advice", "Career planning and interview coaching.", "PERSONAL-INSTRUCTIONS");
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")], [answer("done")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      skills: {official: [official], personal},
+      compaction: {enabled: false},
+      orchestrationExperiment: true,
+      preloadSingleOfficialSkill: true,
+    });
+    await agent.start({conversationId: "conversation", text: "Find events online and reply to Dad"}).result;
+    assert.doesNotMatch(inference.requests[0]?.systemPrompt ?? "", /<active_skill/);
+    assert.match(inference.requests[0]?.systemPrompt ?? "", /<available_skills>/);
+
+    await agent.start({conversationId: "conversation", text: "Help with career planning and interview coaching"}).result;
+    const personalPrompt = inference.requests[1]?.systemPrompt ?? "";
+    assert.doesNotMatch(personalPrompt, /<active_skill/);
+    assert.match(personalPrompt, /career-advice/);
+    assert.doesNotMatch(personalPrompt, /PERSONAL-INSTRUCTIONS/);
+  } finally { storage.close(); }
+});
+
+test("one official workflow can preload while matching personal skills stay in the catalogue", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "conversation", title: "Chat"});
+    const official = mkdtempSync(path.join(tmpdir(), "flareai-official-mixed-skills-"));
+    const personal = mkdtempSync(path.join(tmpdir(), "flareai-personal-mixed-skills-"));
+    writeTestSkill(official, "browser-use", "Browse live websites and find places.", "OFFICIAL-BROWSER");
+    writeTestSkill(personal, "local-preferences", "Online place search matching personal preferences.", "PERSONAL-PLACES");
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")]);
+    const agent = new FlareAIAgent({
+      inference, storage, memory: testMemory(), tools: new ToolRegistry(), model,
+      skills: {official: [official], personal}, compaction: {enabled: false},
+      orchestrationExperiment: true, preloadSingleOfficialSkill: true,
+    });
+    await agent.start({conversationId: "conversation", text: "Find a place nearby online"}).result;
+    const prompt = inference.requests[0]?.systemPrompt ?? "";
+    assert.match(prompt, /<active_skill name="browser-use"/);
+    assert.match(prompt, /OFFICIAL-BROWSER/);
+    assert.match(prompt, /<name>local-preferences<\/name>/);
+    assert.doesNotMatch(prompt, /PERSONAL-PLACES/);
+  } finally { storage.close(); }
+});
+
 test("treats slash-prefixed text as an ordinary chat message", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
@@ -101,6 +284,41 @@ test("treats slash-prefixed text as an ordinary chat message", async () => {
       "/goal this is just text",
     );
     assert.equal(storage.getGoal("conversation"), null);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a recovered durable job reuses its stored user prompt", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    storage.appendMessage({
+      id: "durable-prompt",
+      conversationId: "conversation",
+      role: "user",
+      content: "Continue the interrupted work",
+    });
+    const inference = new FakeInference();
+    inference.responses.push([answer("recovered")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Continue the interrupted work",
+      userMessageId: "durable-prompt",
+      reuseUserMessage: true,
+      includeSubagents: false,
+    }).result;
+
+    assert.equal(storage.listMessages("conversation").filter((message) => message.role === "user").length, 1);
   } finally {
     storage.close();
   }
@@ -159,6 +377,43 @@ test("persists assistant messages tagged with their run phase", async () => {
     assert.equal(assistants.length, 2);
     assert.deepEqual(assistants[0]?.metadata, { phase: "commentary" });
     assert.deepEqual(assistants[1]?.metadata, { phase: "final" });
+  } finally {
+    storage.close();
+  }
+});
+
+test("persists replay checkpoints instead of every streamed text fragment", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([
+      { type: "textDelta", index: 0, delta: "Hel" },
+      { type: "textDelta", index: 0, delta: "lo" },
+      { type: "reasoningDelta", index: 0, delta: "checking" },
+      answer("Hello"),
+    ]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+    });
+
+    const run = agent.start({
+      conversationId: "conversation",
+      text: "hello",
+      includeSubagents: false,
+    });
+    const result = await run.result;
+
+    const types = storage.listRunEvents(result.runId).map((event) => event.type);
+    assert.equal(types.includes("message.text.delta"), false);
+    assert.equal(types.includes("message.tool_call.delta"), false);
+    assert.equal(types.includes("message.reasoning.delta"), true);
+    assert.equal(types.includes("message.completed"), true);
   } finally {
     storage.close();
   }
@@ -249,6 +504,12 @@ test("creates a durable goal only from structured run metadata", async () => {
       asGoal: true,
       includeSubagents: false,
     }).result;
+    assert.ok(
+      inference.requests.every((request) =>
+        !request.tools?.some((tool) => tool.name === "create_goal"),
+      ),
+      "the model cannot create a durable goal; only structured user input can",
+    );
     await agent.settleGoalWork();
 
     assert.equal(
@@ -300,6 +561,85 @@ test("subagent context modes isolate prior conversation messages", async () => {
     assert.deepEqual(inference.requests[0]?.messages, [
       { role: "user", content: "bounded child task" },
     ]);
+  } finally {
+    storage.close();
+  }
+});
+
+test("scheduler-owned top-level runs use a frozen history prefix plus their own prompt", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const visible = storage.appendMessage({
+      id: "visible",
+      conversationId: "conversation",
+      role: "user",
+      content: "context available when queued",
+    });
+    storage.appendMessage({
+      id: "sibling",
+      conversationId: "conversation",
+      role: "user",
+      content: "later sibling job must stay private",
+    });
+    const inference = new FakeInference();
+    inference.responses.push([answer("isolated result")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "current isolated job prompt",
+      includeSubagents: false,
+      contextThroughSequence: visible.sequence,
+      executionScopeId: "job-a",
+      replyToMessageId: "job-a-user-row",
+    }).result;
+
+    assert.deepEqual(inference.requests[0]?.messages, [
+      { role: "user", content: "context available when queued" },
+      { role: "user", content: "current isolated job prompt" },
+    ]);
+  } finally {
+    storage.close();
+  }
+});
+
+test("scheduler execution scopes do not inherit transient direct-route state", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("events")], [answer("choice")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+      orchestrationExperiment: true,
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Find events on NUSync",
+      executionScopeId: "job-a",
+    }).result;
+    await agent.start({
+      conversationId: "conversation",
+      text: "Which one should I pick?",
+      executionScopeId: "job-b",
+    }).result;
+
+    assert.ok(!(inference.requests[0]?.tools ?? []).some((tool) => tool.name === "subagent"));
+    assert.ok((inference.requests[1]?.tools ?? []).some((tool) => tool.name === "subagent"));
   } finally {
     storage.close();
   }
@@ -965,7 +1305,7 @@ test("the task tool reaches the model with its delegation guidance", async () =>
     }).result;
 
     const task = inference.requests[0]?.tools?.find(
-      (item) => item.name === "task",
+      (item) => item.name === "subagent",
     );
     assert.ok(task, "the task tool must be offered on a top-level run");
     // The description carries the delegation policy, so a model that never
@@ -991,6 +1331,323 @@ test("the task tool reaches the model with its delegation guidance", async () =>
         `${key} must describe itself to the model`,
       );
     assert.match(properties.prompt.description ?? "", /standalone/);
+    assert.equal(
+      properties.tool_groups,
+      undefined,
+      "the baseline task schema must stay unchanged",
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("experimental task schema offers explicit lossless capability routing", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+      orchestrationExperiment: true,
+    });
+
+    await agent.start({ conversationId: "conversation", text: "Research it" }).result;
+    const task = inference.requests[0]?.tools?.find((item) => item.name === "subagent");
+    const properties = task?.parameters.properties as Record<
+      string,
+      { description?: string; enum?: string[]; items?: { enum?: string[] } }
+    >;
+    assert.ok(properties.tool_groups);
+    assert.ok(properties.tool_groups.items?.enum?.includes("browser"));
+    assert.ok(properties.tool_groups.items?.enum?.includes("all"));
+    assert.match(properties.tool_groups.description ?? "", /Required minimum capabilities/);
+    assert.match(properties.tool_groups.description ?? "", /\["all"\] explicitly/);
+    assert.ok(properties.coordination);
+    assert.deepEqual(properties.coordination.enum, ["independent", "dependent"]);
+    assert.ok(Array.isArray(task?.parameters.required) && task.parameters.required.includes("coordination"));
+    assert.ok(Array.isArray(task?.parameters.required) && task.parameters.required.includes("tool_groups"));
+    assert.ok(properties.depends_on);
+    assert.equal(properties.ledger, undefined);
+    assert.ok(properties.skill_names);
+    assert.match(properties.skill_names.description ?? "", /Exact names/);
+    assert.match(properties.skill_names.description ?? "", /complete catalogue/);
+    const toolNames = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(toolNames.includes("cancel_subagents"));
+    assert.ok(!toolNames.some((name) => name.startsWith("ledger_")));
+    assert.match(task?.description ?? "", /Combining parallel findings/);
+    assert.doesNotMatch(task?.description ?? "", /ledger|shared_pool/i);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a routed experimental worker receives only its declared evidence boundary", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    storage.createRun({
+      id: "parent",
+      conversationId: "conversation",
+      status: "running",
+    });
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")], [answer("memory done")], [answer("fallback done")]);
+    const browserTool = {
+      name: "browser_read",
+      description: "Read a web target",
+      parameters: { type: "object", properties: {} },
+      async execute() { return { content: "ok" }; },
+    };
+    const unrelatedTool = {
+      ...browserTool,
+      name: "email_read",
+      description: "Read email",
+    };
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry([browserTool, unrelatedTool]),
+      model,
+      compaction: { enabled: false },
+      orchestrationExperiment: true,
+      environment: {
+        promptContext: () => ({
+          locationEnabled: false,
+          windows: [{ app: "Notion", title: "Private plan", frontmost: true }],
+        }),
+      },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Read the supplied public URL",
+      parentRunId: "parent",
+      includeSubagents: false,
+      contextMode: "none",
+      toolGroups: ["browser"],
+      skillNames: ["unknown-name-falls-back-losslessly"],
+    }).result;
+
+    const request = inference.requests[0]!;
+    const names = request.tools?.map((item) => item.name) ?? [];
+    assert.ok(names.includes("browser_read"));
+    assert.ok(!names.includes("email_read"));
+    assert.ok(!names.includes("recall"));
+    assert.ok(!names.includes("search_history"));
+    assert.ok(!names.includes("get_goal"));
+    assert.doesNotMatch(request.systemPrompt ?? "", /Private plan/);
+    assert.doesNotMatch(request.systemPrompt ?? "", /## Current environment/);
+    assert.doesNotMatch(request.systemPrompt ?? "", /## Memory/);
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Resolve the missing personal context",
+      parentRunId: "parent",
+      includeSubagents: false,
+      contextMode: "none",
+      toolGroups: ["memory", "history"],
+    }).result;
+    const memoryWorker = inference.requests[1]!;
+    const memoryNames = memoryWorker.tools?.map((item) => item.name) ?? [];
+    assert.ok(memoryNames.includes("recall"));
+    assert.ok(memoryNames.includes("search_history"));
+    assert.ok(memoryNames.includes("read_conversation"));
+    assert.ok(!memoryNames.includes("browser_read"));
+    assert.ok(!memoryNames.includes("email_read"));
+    assert.match(memoryWorker.systemPrompt ?? "", /## Memory/);
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Ambiguous work with no declared route",
+      parentRunId: "parent",
+      includeSubagents: false,
+      contextMode: "none",
+    }).result;
+    const fallback = inference.requests[2]!;
+    const fallbackNames = fallback.tools?.map((item) => item.name) ?? [];
+    assert.ok(fallbackNames.includes("browser_read"));
+    assert.ok(fallbackNames.includes("email_read"));
+    assert.ok(fallbackNames.includes("recall"));
+    assert.ok(fallbackNames.includes("search_history"));
+    assert.ok(fallbackNames.includes("get_goal"));
+    assert.match(fallback.systemPrompt ?? "", /## Memory/);
+    assert.doesNotMatch(fallback.systemPrompt ?? "", /Private plan/);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a single-source experimental research worker is forced to synthesize after four evidence turns", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "conversation", title: "Chat"});
+    storage.createRun({id: "parent", conversationId: "conversation", status: "running"});
+    const inference = new FakeInference();
+    for (let index = 0; index < 4; index += 1) {
+      inference.responses.push([{
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [{
+            type: "toolCall",
+            id: `call-${index}`,
+            name: "browser_read",
+            arguments: {url: `https://example.com/${index}`},
+          }],
+          usage,
+          stopReason: "toolUse",
+        },
+      }]);
+    }
+    inference.responses.push([answer("Bounded synthesis")]);
+    let reads = 0;
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry([{
+        name: "browser_read",
+        description: "Read a public source",
+        parameters: {type: "object", properties: {url: {type: "string"}}},
+        async execute() { reads += 1; return {content: "evidence"}; },
+      }]),
+      model,
+      maxTurns: 4,
+      compaction: {enabled: false},
+      orchestrationExperiment: true,
+    });
+
+    const result = await agent.start({
+      conversationId: "conversation",
+      text: "Research official current sources and report what you verify",
+      parentRunId: "parent",
+      includeSubagents: false,
+      contextMode: "none",
+      toolGroups: ["browser-research"],
+    }).result;
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.turns, 5);
+    assert.equal(result.lastAgentMessage, "Bounded synthesis");
+    assert.equal(reads, 4);
+    assert.ok(inference.requests.slice(0, 4).every((request) =>
+      request.tools.some((tool) => tool.name === "browser_read"),
+    ));
+    assert.deepEqual(inference.requests[4]?.tools, []);
+    assert.match(
+      String((inference.requests[4]?.messages.at(-1) as {content?: string})?.content),
+      /bounded evidence phase is complete/i,
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("an exact current-page explanation stays on the main agent with read-only browser evidence", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")]);
+    const stub = {
+      description: "browser evidence",
+      parameters: { type: "object", properties: {} },
+      async execute() { return { content: "ok" }; },
+    };
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry([
+        { ...stub, name: "browser_tabs" },
+        { ...stub, name: "browser_current_read" },
+        { ...stub, name: "browser_read" },
+        { ...stub, name: "browser_snapshot_many" },
+        { ...stub, name: "browser" },
+        { ...stub, name: "browser_control" },
+        { ...stub, name: "email_read" },
+      ]),
+      model,
+      compaction: { enabled: false },
+      orchestrationExperiment: true,
+      environment: {
+        promptContext: () => ({
+          locationEnabled: false,
+          windows: [{ app: "Google Chrome", title: "Current policy", frontmost: true }],
+        }),
+      },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Can you explain what this is and whether it matters for me?",
+    }).result;
+
+    const request = inference.requests[0]!;
+    const names = request.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(names.includes("browser_current_read"));
+    assert.ok(!names.includes("browser_tabs"));
+    assert.ok(!names.includes("browser_read"));
+    assert.ok(!names.includes("browser_snapshot_many"));
+    assert.ok(names.includes("recall"));
+    assert.ok(names.includes("search_history"));
+    assert.ok(!names.includes("subagent"));
+    assert.ok(!names.includes("browser"));
+    assert.ok(!names.includes("browser_control"));
+    assert.ok(!names.includes("email_read"));
+    assert.match(request.systemPrompt ?? "", /Current policy/);
+    assert.doesNotMatch(request.systemPrompt ?? "", /## ComputerHistory/);
+  } finally {
+    storage.close();
+  }
+});
+
+test("the same deictic wording retains orchestration when the current surface is not a browser", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")]);
+    const stub = {
+      name: "browser_current_read",
+      description: "read current page",
+      mainAgentOnly: true,
+      parameters: { type: "object", properties: {} },
+      async execute() { return { content: "ok" }; },
+    };
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry([stub]),
+      model,
+      compaction: { enabled: false },
+      orchestrationExperiment: true,
+      environment: {
+        promptContext: () => ({
+          locationEnabled: false,
+          windows: [{ app: "Zed", title: "TypeScript error", frontmost: true }],
+        }),
+      },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Can you explain what this is and whether it matters for me?",
+    }).result;
+    const names = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(names.includes("subagent"));
+    assert.ok(names.includes("browser_current_read"), "the coordinator retains main-only current-state inspection");
+    assert.ok(!names.includes("recall"), "orchestrated roots delegate missing memory retrieval");
+    assert.ok(!names.includes("search_history"), "orchestrated roots delegate missing history retrieval");
   } finally {
     storage.close();
   }
@@ -1019,7 +1676,7 @@ test("a subagent is neither given the task tool nor told to delegate", async () 
 
     const request = inference.requests[0];
     assert.ok(
-      !request?.tools?.some((item) => item.name === "task"),
+      !request?.tools?.some((item) => item.name === "subagent"),
       "a subagent must not be able to delegate further",
     );
     // Telling a model to call a tool it does not have is an instruction it can
@@ -1042,7 +1699,7 @@ test("task tool adds no internal concurrency cap", async () => {
     maximum = Math.max(maximum, active);
     await gate;
     active -= 1;
-    return { name: "task_1" };
+    return { name: "subagent_1" };
   });
   const context = {
     runId: "run",
@@ -1103,6 +1760,62 @@ test("goal loop keeps running until the judge calls the objective done", async (
       String(continuation?.content),
       /No findings reported yet/,
     );
+  } finally {
+    storage.close();
+  }
+});
+
+test("goal continuation receives progress receipts while an ordinary turn does not", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "conversation", title: "Chat"});
+    storage.createGoal({
+      id: "goal",
+      conversationId: "conversation",
+      objective: "Prepare for exchange",
+      status: "paused",
+    });
+    recordGoalProgress(
+      storage,
+      "goal",
+      "Check application status",
+      "The current page requires the user's login.",
+      [],
+      "2026-08-22T04:00:00.000Z",
+    );
+    const inference = new FakeInference();
+    inference.responses.push([answer("continued")], [answer("ordinary")]);
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      orchestrationExperiment: true,
+      compaction: {enabled: false},
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Continue the exchange preparation",
+      goalContinuation: true,
+      includeSubagents: false,
+    }).result;
+    await agent.start({
+      conversationId: "conversation",
+      text: "What is two plus two?",
+      includeSubagents: false,
+    }).result;
+
+    const continuationText = inference.requests[0].messages
+      .map((message) => typeof message.content === "string" ? message.content : "")
+      .join("\n");
+    const ordinaryText = inference.requests[1].messages
+      .map((message) => typeof message.content === "string" ? message.content : "")
+      .join("\n");
+    assert.match(continuationText, /<goal_progress>/);
+    assert.match(continuationText, /requires the user's login/);
+    assert.doesNotMatch(ordinaryText, /<goal_progress>/);
   } finally {
     storage.close();
   }

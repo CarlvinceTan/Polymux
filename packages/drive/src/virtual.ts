@@ -2,7 +2,7 @@ import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import type {DriveEntryDto, DriveProviderId} from "@flareai/protocol";
-import type {DriveAdapter, DriveProbe} from "./types.js";
+import type {DriveAdapter, DriveProbe, DriveWriteOptions} from "./types.js";
 
 /**
  * One place a file can be, from the virtual drive's point of view.
@@ -62,7 +62,11 @@ export class VirtualDrive implements DriveAdapter {
     return {
       state: "connected",
       accounts: [],
-      usage: {used: sum((probe) => probe.usage?.used ?? null), total: sum((probe) => probe.usage?.total ?? null)},
+      usage: {
+        used: sum((probe) => probe.usage?.used ?? null),
+        total: sum((probe) => probe.usage?.total ?? null),
+        appUsed: sum((probe) => probe.usage?.appUsed ?? null),
+      },
       root: null,
       error: null,
     };
@@ -149,7 +153,7 @@ export class VirtualDrive implements DriveAdapter {
    * the bytes come through this Mac and the original is only dropped once the
    * copy has arrived.
    */
-  async move(target: string, destinationFolder: string): Promise<DriveEntryDto> {
+  async move(target: string, destinationFolder: string, options?: DriveWriteOptions): Promise<DriveEntryDto> {
     const from = this.#resolve(target);
     const to = this.#resolve(destinationFolder);
     if (from.source.id === to.source.id)
@@ -158,15 +162,49 @@ export class VirtualDrive implements DriveAdapter {
         await from.source.adapter.move(from.inner, to.inner),
       );
 
-    const named = await this.describe(target);
+    return this.#lift(
+      to.source,
+      await this.#transfer(from.source, from.inner, to.source, to.inner, options),
+    );
+  }
+
+  /** Copies one tree across providers and removes the source only after the
+   * complete destination subtree exists. */
+  async #transfer(
+    from: VirtualSource,
+    fromPath: string,
+    to: VirtualSource,
+    toFolder: string,
+    options?: DriveWriteOptions,
+  ): Promise<DriveEntryDto> {
+    const described = await from.adapter.describe?.(fromPath);
+    const named = described ?? {
+      id: fromPath,
+      name: path.basename(fromPath) || fromPath,
+      kind: "file" as const,
+      size: null,
+      modifiedAt: null,
+      provider: from.provider,
+      path: fromPath,
+      mimeType: null,
+    };
+    if (named.kind === "folder") {
+      const created = await to.adapter.createFolder(toFolder, named.name);
+      const children = await from.adapter.list(fromPath);
+      for (const child of children)
+        await this.#transfer(from, child.path, to, created.path, options);
+      await from.adapter.remove(fromPath);
+      return created;
+    }
+
     const scratch = await mkdtemp(path.join(tmpdir(), "flareai-drive-move-"));
     try {
       const staged = path.join(scratch, named.name || "file");
-      await from.source.adapter.download(from.inner, staged);
-      const uploaded = await to.source.adapter.upload(to.inner, staged);
+      await from.adapter.download(fromPath, staged);
+      const uploaded = await to.adapter.upload(toFolder, staged, options);
       // Only now: a delete before the upload lands is how a move loses a file.
-      await from.source.adapter.remove(from.inner);
-      return this.#lift(to.source, uploaded);
+      await from.adapter.remove(fromPath);
+      return uploaded;
     } finally {
       await rm(scratch, {recursive: true, force: true});
     }

@@ -37,14 +37,20 @@ export function createHistoryTools(
           limit: typeof input.limit === "number" ? input.limit : undefined,
         });
         return result(
-          hits.map((hit) => ({
+          hits
+            // A delegated run shares the parent's conversation id. Its task
+            // prompt is intentionally standalone, so returning the active
+            // conversation here leaks the coordinator's provisional thoughts
+            // back as if they were historical evidence.
+            .filter((hit) => hit.conversationId !== conversationId)
+            .map((hit) => ({
             conversationId: hit.conversationId,
             conversation: hit.conversationTitle,
             role: hit.role,
             sequence: hit.sequence,
             at: hit.createdAt,
             text: snippet(hit.text),
-          })),
+            })),
         );
       },
     },

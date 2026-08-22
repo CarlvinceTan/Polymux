@@ -47,7 +47,7 @@ export const LOCAL_RUNTIMES: ReadonlyArray<{
   { id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434/v1" },
   { id: "lm-studio", name: "LM Studio", baseUrl: "http://localhost:1234/v1" },
   { id: "vllm", name: "vLLM", baseUrl: "http://localhost:8000/v1" },
-  { id: "llama-cpp", name: "llama.cpp", baseUrl: "http://localhost:8080/v1" },
+  { id: "llama-cpp", name: "Llama.cpp", baseUrl: "http://localhost:8080/v1" },
 ];
 
 /** The interface languages offered in Settings → General. Every entry here has
@@ -178,7 +178,7 @@ export const DRIVE_PROVIDERS: {
   },
   {
     value: "local",
-    label: "This Mac",
+    label: "Local",
     kind: "local",
     description: "A folder on this computer. Always available, never synced.",
   },

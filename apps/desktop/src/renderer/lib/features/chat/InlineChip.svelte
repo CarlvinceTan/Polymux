@@ -42,6 +42,7 @@
   let isEmpty = value.length === 0 && chips.length === 0;
   let expanded = false;
   let mounted = false;
+  let accessibilityObserver: MutationObserver | undefined;
 
   function escapeSelector(text: string): string {
     return globalThis.CSS?.escape ? globalThis.CSS.escape(text) : text.replace(/["\\]/g, '\\$&');
@@ -356,6 +357,15 @@
     if (value) editor.appendChild(document.createTextNode(value));
     lastEmittedText = value;
     mounted = true;
+    // macOS Accessibility writes directly into a contenteditable without
+    // dispatching the browser's `input` event. Observe those DOM changes so
+    // assistive tools update the same composer state as typing does.
+    accessibilityObserver = new MutationObserver(input);
+    accessibilityObserver.observe(editor, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
     reconcileChips();
     syncEmpty();
     updateExpanded();
@@ -364,6 +374,7 @@
   afterUpdate(reconcileChips);
 
   onDestroy(() => {
+    accessibilityObserver?.disconnect();
     for (const component of chipComponents.values()) void unmount(component);
     chipComponents.clear();
   });

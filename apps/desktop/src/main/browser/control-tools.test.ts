@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type { SurfaceCommand, SurfaceCommandResult } from "../agent/surface.js";
 import type { AgentSurfaceServer } from "../agent/surface.js";
+import type { ControlSession } from "./embedded.js";
+import type { InAppBrowser } from "./embedded-tools.js";
 import { createBrowserControlTools } from "./control-tools.js";
 
 /**
@@ -14,6 +19,7 @@ function fakeSurface(
   surface: AgentSurfaceServer;
   commands: Array<{ leaseId: string; command: Omit<SurfaceCommand, "id">; timeoutMs?: number }>;
   released: string[];
+  leasedTabs: Array<{ tabId?: number; url: string; title: string }>;
 } {
   const commands: Array<{
     leaseId: string;
@@ -21,9 +27,13 @@ function fakeSurface(
     timeoutMs?: number;
   }> = [];
   const released: string[] = [];
+  const leasedTabs: Array<{ tabId?: number; url: string; title: string }> = [];
   let next = 0;
   const surface = {
-    createLease: () => ({ id: `lease-${(next += 1)}` }),
+    createLease: (tab: { tabId?: number; url: string; title: string }) => {
+      leasedTabs.push(tab);
+      return { id: `lease-${(next += 1)}` };
+    },
     releaseLease: (id: string) => {
       released.push(id);
       return true;
@@ -37,7 +47,7 @@ function fakeSurface(
       return result;
     },
   } as unknown as AgentSurfaceServer;
-  return { surface, commands, released };
+  return { surface, commands, released, leasedTabs };
 }
 
 function controlTool(surface: AgentSurfaceServer) {
@@ -49,6 +59,125 @@ function controlTool(surface: AgentSurfaceServer) {
 }
 
 const context = {} as Parameters<ReturnType<typeof controlTool>["execute"]>[1];
+
+async function currentReadFixture(payload: object, result?: SurfaceCommandResult) {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-current-tab-"));
+  const snapshotPath = path.join(directory, "tabs.json");
+  await writeFile(snapshotPath, JSON.stringify(payload));
+  const fake = fakeSurface(result);
+  const tool = createBrowserControlTools(fake.surface, {
+    snapshotPath,
+    now: () => Date.parse("2026-08-21T12:00:00.000Z"),
+    currentRead: true,
+  }).find((candidate) => candidate.name === "browser_current_read");
+  assert.ok(tool);
+  return { ...fake, tool };
+}
+
+function visibleEmbeddedBrowser(titles: string[]): InAppBrowser {
+  const tabs = titles.map((title, index) => ({
+    tabId: `embedded-${index}`,
+    url: `https://embedded.example/${index}`,
+    title,
+  }));
+  const session: ControlSession = {
+    send: async (method) => method === "Accessibility.getFullAXTree"
+      ? { nodes: [{ nodeId: "1", ignored: false, role: { value: "document" }, name: { value: "live embedded state" } }] }
+      : {},
+    refs: new Map(),
+    observers: { dialog: null },
+    cursor: null,
+    paced: () => 0,
+    moveCursor: async () => {},
+  };
+  return {
+    tabs: () => tabs,
+    visibleTabs: () => tabs,
+    openAgentTab: async () => { throw new Error("must not open"); },
+    reveal: () => {},
+    navigate: () => {},
+    settle: async (tabId) => tabs.find((tab) => tab.tabId === tabId)!,
+    pageInfo: (tabId) => tabs.find((tab) => tab.tabId === tabId)!,
+    session: async () => session,
+    close: () => {},
+  };
+}
+
+test("current read binds the exact active tab in the focused window and only snapshots", async () => {
+  const fixture = await currentReadFixture({
+    captured_at: "2026-08-21T11:59:30.000Z",
+    focused_window_id: 2,
+    tabs: [
+      { id: 10, window_id: 1, active: true, url: "https://wrong.example", title: "Wrong" },
+      { id: 20, window_id: 2, active: true, url: "https://right.example/app", title: "Signed in" },
+    ],
+  }, { ok: true, pageUrl: "https://right.example/app", pageTitle: "Signed in", content: "private live state" });
+
+  const result = await fixture.tool.execute({ expectedTitle: "Signed in" }, context);
+  assert.deepEqual(fixture.leasedTabs, [{ tabId: 20, url: "https://right.example/app", title: "Signed in" }]);
+  assert.equal(fixture.commands.length, 1);
+  assert.equal(fixture.commands[0]?.command.kind, "snapshot");
+  assert.deepEqual(fixture.released, ["lease-1"]);
+  assert.match(result.content as string, /private live state/);
+});
+
+test("current read fails closed for stale, legacy, and ambiguous focus snapshots", async () => {
+  const cases = [
+    { captured_at: "2026-08-21T11:50:00.000Z", focused_window_id: 1, tabs: [] },
+    { captured_at: "2026-08-21T11:59:30.000Z", tabs: [{ id: 1, window_id: 1, active: true, url: "https://example.com" }] },
+    { captured_at: "2026-08-21T11:59:30.000Z", focused_window_id: 1, tabs: [
+      { id: 1, window_id: 1, active: true, url: "https://a.example" },
+      { id: 2, window_id: 1, active: true, url: "https://b.example" },
+    ] },
+  ];
+  for (const payload of cases) {
+    const fixture = await currentReadFixture(payload);
+    const result = await fixture.tool.execute({ expectedTitle: "Expected" }, context);
+    assert.equal(result.isError, true);
+    assert.equal(fixture.commands.length, 0);
+    assert.equal(fixture.leasedTabs.length, 0);
+  }
+});
+
+test("current read refuses a focused browser tab that is not the current window", async () => {
+  const fixture = await currentReadFixture({
+    captured_at: "2026-08-21T11:59:30.000Z",
+    focused_window_id: 2,
+    tabs: [{ id: 20, window_id: 2, active: true, url: "https://mail.example", title: "Old browser" }],
+  });
+  const result = await fixture.tool.execute({ expectedTitle: "Current document" }, context);
+  assert.equal(result.isError, true);
+  assert.equal(fixture.commands.length, 0);
+  assert.equal(fixture.leasedTabs.length, 0);
+});
+
+test("current read uses the visible FlareAI page without consulting external browser state", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-current-embedded-"));
+  const snapshotPath = path.join(directory, "missing.json");
+  const fake = fakeSurface();
+  const tool = createBrowserControlTools(fake.surface, {
+    currentRead: true,
+    snapshotPath,
+    embeddedBrowser: visibleEmbeddedBrowser(["Visible app"]),
+  }).find((candidate) => candidate.name === "browser_current_read");
+  assert.ok(tool);
+  const result = await tool.execute({ expectedTitle: "Visible app" }, context);
+  assert.match(result.content as string, /live embedded state/);
+  assert.equal(fake.commands.length, 0);
+  assert.equal(fake.leasedTabs.length, 0);
+});
+
+test("current read refuses duplicate visible FlareAI pages instead of falling through", async () => {
+  const fake = fakeSurface();
+  const tool = createBrowserControlTools(fake.surface, {
+    currentRead: true,
+    embeddedBrowser: visibleEmbeddedBrowser(["Same", "Same"]),
+  }).find((candidate) => candidate.name === "browser_current_read");
+  assert.ok(tool);
+  const result = await tool.execute({ expectedTitle: "Same" }, context);
+  assert.equal(result.isError, true);
+  assert.equal(fake.commands.length, 0);
+});
 
 test("focus probes the tab before handing back a lease", async () => {
   const { surface, commands } = fakeSurface({
@@ -157,6 +286,23 @@ test("text names the element for click but is the content for type", async () =>
   );
   assert.equal(commands[1].command.text, "hello", "type enters the text");
   assert.equal(commands[1].command.ref, "e2");
+});
+
+test("fill accepts value as a content alias instead of silently clearing the field", async () => {
+  const { surface, commands } = fakeSurface();
+  await controlTool(surface).execute(
+    { action: "fill", leaseId: "L", ref: "e2", value: "Alex Example" },
+    context,
+  );
+  assert.equal(commands[0].command.text, "Alex Example");
+  assert.equal(commands[0].command.ref, "e2");
+
+  const missing = await controlTool(surface).execute(
+    {action: "fill", leaseId: "L", ref: "e2"},
+    context,
+  );
+  assert.equal(missing.isError, true);
+  assert.match(missing.content as string, /requires text or value/);
 });
 
 test("targeting actions demand a target, except click at a point", async () => {

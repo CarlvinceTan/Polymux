@@ -140,7 +140,7 @@ export async function requestSystemPermission(
     await openSystemPermissionSettings(permission);
   } else if (systemPermissionStatus(permission) !== "granted") {
     // macOS registers Screen Recording access when an application first tries
-    // to enumerate a display. The tiny thumbnail avoids doing real Chronicle
+    // to enumerate a display. The tiny thumbnail avoids doing real ComputerHistory
     // work while still ensuring FlareAI appears in Privacy & Security.
     try {
       await desktopCapturer.getSources({

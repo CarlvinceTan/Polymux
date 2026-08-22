@@ -1,20 +1,23 @@
-import {readFile, stat} from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto} from "@flareai/protocol";
+import type { DriveEntryDto } from "@flareai/protocol";
+import { contentRange, SIMPLE_UPLOAD_LIMIT, uploadInChunks } from "./chunks.js";
+import { downloadToFile } from "./download.js";
 import {
-  contentRange,
-  SIMPLE_UPLOAD_LIMIT,
-  uploadInChunks,
-} from "./chunks.js";
-import {downloadToFile} from "./download.js";
-import {jsonRequest, request, type RequestOptions} from "./http.js";
-import {OAuthClient, oauthAppFromEnv} from "./oauth.js";
+  DriveRequestError,
+  jsonRequest,
+  request,
+  type RequestOptions,
+} from "./http.js";
+import { OAuthClient, oauthAppFromEnv } from "./oauth.js";
 import {
   copyName,
+  DriveConflictError,
   type DriveAdapter,
   type DriveConsentPrompt,
   type DriveProbe,
   type DriveSecretStore,
+  type DriveWriteOptions,
 } from "./types.js";
 
 const API = "https://www.googleapis.com/drive/v3";
@@ -81,18 +84,27 @@ export class GoogleDrive implements DriveAdapter {
         error: "This build has no Google Drive client credentials.",
       };
     if (!(await this.#oauth.connected()))
-      return {state: "logged-out", accounts: [], usage: null, root: null, error: null};
+      return {
+        state: "logged-out",
+        accounts: [],
+        usage: null,
+        root: null,
+        error: null,
+      };
     try {
       const about = await this.#get<{
-        user?: {emailAddress?: string; displayName?: string};
-        storageQuota?: {usage?: string; limit?: string};
+        user?: { emailAddress?: string; displayName?: string };
+        storageQuota?: { usage?: string; limit?: string };
       }>("/about?fields=user,storageQuota");
       return {
         state: "connected",
         accounts: [
           {
             id: about.user?.emailAddress ?? "google-drive",
-            name: about.user?.displayName ?? about.user?.emailAddress ?? "Google Drive",
+            name:
+              about.user?.displayName ??
+              about.user?.emailAddress ??
+              "Google Drive",
             email: about.user?.emailAddress ?? null,
           },
         ],
@@ -101,6 +113,7 @@ export class GoogleDrive implements DriveAdapter {
           // Unlimited accounts report no limit at all, which is a real answer
           // rather than a missing one.
           total: numeric(about.storageQuota?.limit),
+          appUsed: null,
         },
         root: ROOT_FOLDER_NAME,
         error: null,
@@ -159,20 +172,80 @@ export class GoogleDrive implements DriveAdapter {
       `/files?fields=${FILE_FIELDS}`,
       {
         method: "POST",
-        body: JSON.stringify({name, mimeType: FOLDER_MIME, parents: [parent]}),
+        body: JSON.stringify({
+          name,
+          mimeType: FOLDER_MIME,
+          parents: [parent],
+        }),
       },
       "Creating the folder",
     );
     return this.#entry(file);
   }
 
-  async upload(parentPath: string, localPath: string): Promise<DriveEntryDto> {
+  readonly conditionalWrites = true;
+
+  childPath(parentPath: string, name: string): string {
+    return `${parentPath}/${name}`;
+  }
+
+  async existingChild(
+    parentPath: string,
+    name: string,
+  ): Promise<string | null> {
+    const parent = parentPath || (await this.#root());
+    return (await this.#named(parent, name))?.id ?? null;
+  }
+
+  async version(target: string): Promise<string | null> {
+    try {
+      const response = await request(
+        `${API}/files/${target}?fields=id`,
+        {
+          headers: {
+            authorization: `Bearer ${await this.#oauth.accessToken()}`,
+          },
+        },
+        "Reading the file version",
+        this.#retry(),
+      );
+      await response.body?.cancel();
+      return response.headers.get("etag");
+    } catch {
+      return null;
+    }
+  }
+
+  async upload(
+    parentPath: string,
+    localPath: string,
+    options?: DriveWriteOptions,
+  ): Promise<DriveEntryDto> {
     const parent = parentPath || (await this.#root());
     const name = path.basename(localPath);
-    const metadata = {name, parents: [parent]};
+    const existing = await this.#named(parent, name);
+    if (options?.ifMatch && !existing)
+      throw new DriveConflictError({
+        path: `${parentPath}/${name}`,
+        expected: options.ifMatch,
+        found: null,
+      });
+    const metadata = existing ? { name } : { name, parents: [parent] };
     const size = (await stat(localPath)).size;
     if (size > SIMPLE_UPLOAD_LIMIT)
-      return this.#uploadResumable(localPath, metadata, size);
+      return this.#withConflict(
+        `${parentPath}/${name}`,
+        options?.ifMatch,
+        existing?.id,
+        () =>
+          this.#uploadResumable(
+            localPath,
+            metadata,
+            size,
+            existing?.id,
+            options,
+          ),
+      );
 
     const bytes = await readFile(localPath);
     // A multipart upload sends the metadata and the bytes in one request,
@@ -187,20 +260,29 @@ export class GoogleDrive implements DriveAdapter {
       bytes,
       Buffer.from(`\r\n--${boundary}--\r\n`),
     ]);
-    const response = await request(
-      `${UPLOAD_API}/files?uploadType=multipart&fields=${FILE_FIELDS}`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${await this.#oauth.accessToken()}`,
-          "content-type": `multipart/related; boundary=${boundary}`,
-        },
-        body: new Uint8Array(body),
-      },
-      "The upload",
-      this.#retry(),
+    const response = await this.#withConflict(
+      `${parentPath}/${name}`,
+      options?.ifMatch,
+      existing?.id,
+      async () =>
+        request(
+          `${UPLOAD_API}/files${existing ? `/${existing.id}` : ""}?uploadType=multipart&fields=${FILE_FIELDS}`,
+          {
+            method: existing ? "PATCH" : "POST",
+            headers: {
+              authorization: `Bearer ${await this.#oauth.accessToken()}`,
+              "content-type": `multipart/related; boundary=${boundary}`,
+              ...(options?.ifMatch ? { "if-match": options.ifMatch } : {}),
+            },
+            body: new Uint8Array(body),
+          },
+          "The upload",
+          this.#retry(),
+        ),
     );
-    return this.#entry((await response.json()) as GoogleFile);
+    const file = this.#entry((await response.json()) as GoogleFile);
+    options?.onProgress?.(size, size);
+    return { ...file, version: response.headers.get("etag") };
   }
 
   /**
@@ -215,15 +297,18 @@ export class GoogleDrive implements DriveAdapter {
     localPath: string,
     metadata: Record<string, unknown>,
     size: number,
+    existingId?: string,
+    options?: DriveWriteOptions,
   ): Promise<DriveEntryDto> {
     const opened = await request(
-      `${UPLOAD_API}/files?uploadType=resumable&fields=${FILE_FIELDS}`,
+      `${UPLOAD_API}/files${existingId ? `/${existingId}` : ""}?uploadType=resumable&fields=${FILE_FIELDS}`,
       {
-        method: "POST",
+        method: existingId ? "PATCH" : "POST",
         headers: {
           authorization: `Bearer ${await this.#oauth.accessToken()}`,
           "content-type": "application/json; charset=UTF-8",
           "x-upload-content-length": String(size),
+          ...(options?.ifMatch ? { "if-match": options.ifMatch } : {}),
         },
         body: JSON.stringify(metadata),
       },
@@ -246,12 +331,51 @@ export class GoogleDrive implements DriveAdapter {
         },
         "The upload",
         // 308 is how Drive says "still going" — an answer, not a failure.
-        {...this.#retry(), accept: [308]},
+        { ...this.#retry(), accept: [308] },
       );
       if (response.status !== 308)
-        return {done: this.#entry((await response.json()) as GoogleFile)};
-      return {resumeAt: committedOffset(response) ?? chunk.end};
-    });
+        return {
+          done: {
+            ...this.#entry((await response.json()) as GoogleFile),
+            version: response.headers.get("etag"),
+          },
+        };
+      return { resumeAt: committedOffset(response) ?? chunk.end };
+    }, "The upload", options?.onProgress);
+  }
+
+  async #named(parent: string, name: string): Promise<GoogleFile | null> {
+    const escaped = name.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const query = encodeURIComponent(
+      `name = '${escaped}' and '${parent}' in parents and trashed = false`,
+    );
+    const found = await this.#get<{ files?: GoogleFile[] }>(
+      `/files?q=${query}&fields=files(${FILE_FIELDS})&pageSize=1`,
+    );
+    return found.files?.[0] ?? null;
+  }
+
+  async #withConflict<T>(
+    target: string,
+    expected: string | null | undefined,
+    existingId: string | undefined,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await work();
+    } catch (cause) {
+      if (
+        expected &&
+        cause instanceof DriveRequestError &&
+        (cause.status === 409 || cause.status === 412)
+      )
+        throw new DriveConflictError({
+          path: target,
+          expected,
+          found: existingId ? await this.version(existingId) : null,
+        });
+      throw cause;
+    }
   }
 
   async describe(target: string): Promise<DriveEntryDto> {
@@ -297,7 +421,7 @@ export class GoogleDrive implements DriveAdapter {
       expect: {
         size: numeric(about.size),
         hash: about.md5Checksum
-          ? {algorithm: "md5", expected: about.md5Checksum}
+          ? { algorithm: "md5", expected: about.md5Checksum }
           : null,
       },
       open: async (offset) =>
@@ -306,7 +430,7 @@ export class GoogleDrive implements DriveAdapter {
           {
             headers: {
               authorization: `Bearer ${await this.#oauth.accessToken()}`,
-              ...(offset > 0 ? {range: `bytes=${offset}-`} : {}),
+              ...(offset > 0 ? { range: `bytes=${offset}-` } : {}),
             },
           },
           "The download",
@@ -318,7 +442,7 @@ export class GoogleDrive implements DriveAdapter {
   async remove(target: string): Promise<void> {
     await this.#json<void>(
       `/files/${target}`,
-      {method: "DELETE"},
+      { method: "DELETE" },
       "Deleting the file",
     );
   }
@@ -326,17 +450,20 @@ export class GoogleDrive implements DriveAdapter {
   async rename(target: string, name: string): Promise<DriveEntryDto> {
     const file = await this.#json<GoogleFile>(
       `/files/${target}?fields=${FILE_FIELDS}`,
-      {method: "PATCH", body: JSON.stringify({name})},
+      { method: "PATCH", body: JSON.stringify({ name }) },
       "Renaming the file",
     );
     return this.#entry(file);
   }
 
-  async move(target: string, destinationFolder: string): Promise<DriveEntryDto> {
+  async move(
+    target: string,
+    destinationFolder: string,
+  ): Promise<DriveEntryDto> {
     const parent = destinationFolder || (await this.#root());
     // Drive files can sit in several folders at once, so a move is stated as
     // the parents to add and the ones to drop rather than as a new location.
-    const current = await this.#get<{parents?: string[]}>(
+    const current = await this.#get<{ parents?: string[] }>(
       `/files/${target}?fields=parents`,
     );
     const removing = (current.parents ?? []).join(",");
@@ -344,7 +471,7 @@ export class GoogleDrive implements DriveAdapter {
       `/files/${target}?addParents=${parent}${
         removing ? `&removeParents=${removing}` : ""
       }&fields=${FILE_FIELDS}`,
-      {method: "PATCH", body: JSON.stringify({})},
+      { method: "PATCH", body: JSON.stringify({}) },
       "Moving the file",
     );
     return this.#entry(file);
@@ -358,7 +485,10 @@ export class GoogleDrive implements DriveAdapter {
       throw new Error("Google Drive cannot duplicate a folder.");
     const file = await this.#json<GoogleFile>(
       `/files/${target}/copy?fields=${FILE_FIELDS}`,
-      {method: "POST", body: JSON.stringify({name: copyName(original.name)})},
+      {
+        method: "POST",
+        body: JSON.stringify({ name: copyName(original.name) }),
+      },
       "Duplicating the file",
     );
     return this.#entry(file);
@@ -377,7 +507,7 @@ export class GoogleDrive implements DriveAdapter {
     const query = encodeURIComponent(
       `name = '${ROOT_FOLDER_NAME}' and mimeType = '${FOLDER_MIME}' and 'root' in parents and trashed = false`,
     );
-    const found = await this.#get<{files?: GoogleFile[]}>(
+    const found = await this.#get<{ files?: GoogleFile[] }>(
       `/files?q=${query}&fields=files(id)&pageSize=1`,
     );
     const existing = found.files?.[0]?.id;
@@ -438,7 +568,7 @@ export class GoogleDrive implements DriveAdapter {
   }
 
   async #get<T>(suffix: string): Promise<T> {
-    return this.#json<T>(suffix, {method: "GET"}, "The Google Drive request");
+    return this.#json<T>(suffix, { method: "GET" }, "The Google Drive request");
   }
 
   async #json<T>(suffix: string, init: RequestInit, label: string): Promise<T> {
@@ -467,7 +597,7 @@ export class GoogleDrive implements DriveAdapter {
  * Form, a Site — has no sensible file form and is left to fail with Drive's
  * own message rather than being silently turned into something else.
  */
-const EXPORTS: Record<string, {mimeType: string; extension: string}> = {
+const EXPORTS: Record<string, { mimeType: string; extension: string }> = {
   "application/vnd.google-apps.document": {
     mimeType:
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -495,7 +625,7 @@ const EXPORTS: Record<string, {mimeType: string; extension: string}> = {
 
 function exportFormat(
   mimeType: string | undefined,
-): {mimeType: string; extension: string} | null {
+): { mimeType: string; extension: string } | null {
   return mimeType ? (EXPORTS[mimeType] ?? null) : null;
 }
 
@@ -515,7 +645,7 @@ const RETRYABLE_REASONS = new Set([
 function driveReason(body: string): string | null {
   try {
     const parsed = JSON.parse(body) as {
-      error?: {errors?: {reason?: string}[]; status?: string};
+      error?: { errors?: { reason?: string }[]; status?: string };
     };
     return parsed.error?.errors?.[0]?.reason ?? null;
   } catch {

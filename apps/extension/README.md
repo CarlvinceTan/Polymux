@@ -38,7 +38,7 @@ elsewhere.
 
 ## Commands
 
-Every command lives in [`@flareai/browser-use`](../../packages/browser-use),
+Every command lives in [`@flareai/browser`](../../packages/browser),
 shared with the FlareAI in-app Browser, so both browsers answer the same set:
 `snapshot` (accessibility tree with `[ref=eN]` handles), `read`, `screenshot`,
 `get`, `console`, `network`, `eval`, `click`, `dblclick`, `hover`, `drag`,
@@ -47,7 +47,7 @@ shared with the FlareAI in-app Browser, so both browsers answer the same set:
 `dialog`, `wait`, `back`/`forward`/`reload`. This extension adds the tab-level
 ones — `tabs`, `tabNew`, `tabClose` — and the lease lifecycle.
 
-`shared/` is a **symlink** to `packages/browser-use/src`, which is how
+`shared/` is a **symlink** to `packages/browser/src`, which is how
 Chrome reaches the package without a build step in front of the extension. If
 you copy this directory somewhere else, copy it with the symlink followed.
 

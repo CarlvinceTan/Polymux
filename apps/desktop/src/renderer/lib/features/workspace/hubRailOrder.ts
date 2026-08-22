@@ -78,11 +78,9 @@ export function saveAccountOrder(order: RailOrder, group: string, ids: string[])
 export function applyOrder<T>(items: T[], key: (item: T) => string, order: string[]): T[] {
   const rank = new Map(order.map((id, index) => [id, index] as const));
   return items
-    .map((item, index) => ({item, index}))
+    .map((item, index) => ({item, index, rank: rank.get(key(item)) ?? Number.POSITIVE_INFINITY}))
     .sort((a, b) => {
-      const left = rank.get(key(a.item)) ?? Number.POSITIVE_INFINITY;
-      const right = rank.get(key(b.item)) ?? Number.POSITIVE_INFINITY;
-      return left === right ? a.index - b.index : left - right;
+      return a.rank === b.rank ? a.index - b.index : a.rank - b.rank;
     })
     .map((entry) => entry.item);
 }

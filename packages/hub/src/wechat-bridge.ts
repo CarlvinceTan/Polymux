@@ -108,6 +108,22 @@ const PROBE_TIMEOUT_MS = 1_500;
 const RECONNECT_MS = [1_000, 2_000, 5_000, 15_000, 30_000];
 /** Remote ids are remembered this long, so a replayed stream is not re-posted. */
 const SEEN_TTL_MS = 30 * 24 * 3_600 * 1_000;
+/**
+ * How long after the event stream connects its redelivery is still told apart
+ * from live traffic. An accepted message needs no such window — the relay's
+ * id for it is remembered for a month — but an unaccepted one has none, and
+ * two of them may share every field this bridge sees: WeChat timestamps only
+ * whole seconds and reports a message once WeChat accepts it. There, a repeat
+ * of fields just after a connect is the replay, not a pair of messages.
+ */
+const REPLAY_GUARD_MS = 30_000;
+/**
+ * State changes that force a write on their own, ahead of the debounce. A hard
+ * kill loses only what sits between two writes, and that is re-delivered at
+ * the next connect — so this bounds a crash to a handful of duplicate
+ * candidates rather than the whole burst.
+ */
+const SAVE_EVERY_CHANGES = 16;
 
 /** How long a chat's own-message list is trusted before it is read again. */
 const SELF_SENT_TTL_MS = 15_000;
@@ -289,6 +305,11 @@ interface BridgeState {
   roomToChat: Record<string, string>;
   joinedVirtual: Record<string, Record<string, boolean>>;
   seenRemote: Record<string, number>;
+  /**
+   * Fields of messages the relay never got an id for, so a replay that hands
+   * one back — at a connect or during an import — is still recognised as one.
+   */
+  seenFields?: Record<string, number>;
   seenTransactions: Record<string, number>;
   /**
    * Messages this bridge sent outward, waiting to be recognised when WeChat
@@ -352,6 +373,7 @@ function emptyState(): BridgeState {
     roomToChat: {},
     joinedVirtual: {},
     seenRemote: {},
+    seenFields: {},
     seenTransactions: {},
     outboundEchoes: [],
     avatarUris: {},
@@ -397,6 +419,12 @@ export class WeChatBridge {
   #relayProcess: ChildProcess | null = null;
   /** Whose portal rooms these are. Known only once FlareAI has its account. */
   #owner = "";
+  /** When the event stream last answered, so its replay is told from live. */
+  #streamConnectAt = 0;
+  /** True while the import re-pulls history, which replays by fields too. */
+  #importing = false;
+  /** Changes since the last flush, so a burst does not sit out a crash alone. */
+  #unsaved = 0;
   #saving: NodeJS.Timeout | null = null;
 
   constructor(options: WeChatBridgeOptions) {
@@ -671,36 +699,43 @@ export class WeChatBridge {
 
   async #backfill(): Promise<void> {
     const chats = await this.#chatList();
-    for (const chat of chats) {
-      const chatId = String(chat.username ?? chat.chatId ?? "");
-      if (!chatId) continue;
-      const count = Math.max(0, Number(chat.unread_count ?? chat.unreadCount ?? 0));
-      // Unread decides how much to pull, not whether to pull: a read chat
-      // still gets a page so it has a room, a name, and a last line.
-      const history = await this.#relay<RelayMessage[] | {rows?: RelayMessage[]}>(
-        `/chat/${encodeURIComponent(chatId)}/history?limit=${Math.min(50, Math.max(count, BACKFILL_MIN))}`,
-      ).catch((): RelayMessage[] => []);
-      const messages = (Array.isArray(history) ? history : (history.rows ?? [])).sort(
-        (a, b) => Number(a.timestamp) - Number(b.timestamp),
-      );
-      const face = avatarUrlOf(chat);
-      for (const item of messages)
-        await this.#ingest({
-          ...item,
-          display_name: chat.display_name,
-          // The chat list knows the conversation's picture even when a single
-          // message does not carry one.
-          ...(face && !avatarUrlOf(item) ? {avatar: face} : {}),
-        }).catch((error: unknown) =>
-          this.#log(`[wechat] import failed: ${message(error)}`),
+    // History is replay, whatever its shape: an import that reruns — every
+    // start does — must not post a second copy of what the last one carried.
+    this.#importing = true;
+    try {
+      for (const chat of chats) {
+        const chatId = String(chat.username ?? chat.chatId ?? "");
+        if (!chatId) continue;
+        const count = Math.max(0, Number(chat.unread_count ?? chat.unreadCount ?? 0));
+        // Unread decides how much to pull, not whether to pull: a read chat
+        // still gets a page so it has a room, a name, and a last line.
+        const history = await this.#relay<RelayMessage[] | {rows?: RelayMessage[]}>(
+          `/chat/${encodeURIComponent(chatId)}/history?limit=${Math.min(50, Math.max(count, BACKFILL_MIN))}`,
+        ).catch((): RelayMessage[] => []);
+        const messages = (Array.isArray(history) ? history : (history.rows ?? [])).sort(
+          (a, b) => Number(a.timestamp) - Number(b.timestamp),
         );
-      // Straight after the import, while this chat's tail is exactly what was
-      // just written: history imported for a chat with nothing unread is
-      // history the user has already read, and without this every one of those
-      // messages arrives in the app as new.
-      await this.#applyReadState(chatId, count).catch((error: unknown) =>
-        this.#log(`[wechat] read state failed: ${message(error)}`),
-      );
+        const face = avatarUrlOf(chat);
+        for (const item of messages)
+          await this.#ingest({
+            ...item,
+            display_name: chat.display_name,
+            // The chat list knows the conversation's picture even when a single
+            // message does not carry one.
+            ...(face && !avatarUrlOf(item) ? {avatar: face} : {}),
+          }).catch((error: unknown) =>
+            this.#log(`[wechat] import failed: ${message(error)}`),
+          );
+        // Straight after the import, while this chat's tail is exactly what was
+        // just written: history imported for a chat with nothing unread is
+        // history the user has already read, and without this every one of those
+        // messages arrives in the app as new.
+        await this.#applyReadState(chatId, count).catch((error: unknown) =>
+          this.#log(`[wechat] read state failed: ${message(error)}`),
+        );
+      }
+    } finally {
+      this.#importing = false;
     }
   }
 
@@ -773,6 +808,7 @@ export class WeChatBridge {
         });
         if (!response.ok || !response.body) throw new Error(`stream returned ${response.status}`);
         attempt = 0;
+        this.#streamConnectAt = Date.now();
         for await (const payload of serverSentEvents(response.body))
           await this.#ingest(JSON.parse(payload) as RelayMessage).catch((error: unknown) =>
             this.#log(`[wechat] inbound event failed: ${message(error)}`),
@@ -792,8 +828,23 @@ export class WeChatBridge {
     const item = normalise(raw);
     const chatId = String(item.chatId ?? "");
     if (!chatId) return;
-    const remoteId = stableId(item);
+    // An accepted message is identified by the relay's id, remembered for a
+    // month. An unaccepted one has none — and its fields can carry no
+    // substitute, because two distinct ones may share every field this bridge
+    // sees: whole-second timestamps, and nothing arrives until WeChat accepts
+    // the second. So its id is per arrival, and its repeats are recognised by
+    // the fields, where a replay actually happens: at a connect, or in an
+    // import. A live stream gets every message it is handed.
+    const fields = item.messageId ? null : fieldIdentity(item);
+    const remoteId =
+      fields === null
+        ? String(item.messageId)
+        : `${fields}-${randomBytes(8).toString("base64url")}`;
     if (this.#state.seenRemote[remoteId]) return;
+    if (fields !== null && this.#state.seenFields?.[fields] !== undefined) {
+      const inReplay = this.#importing || Date.now() - this.#streamConnectAt < REPLAY_GUARD_MS;
+      if (inReplay) return;
+    }
 
     // Whether the account sent this, from anywhere — this app, the phone, or
     // WeChat on the desk. The relay only marks its own sends and system
@@ -812,8 +863,7 @@ export class WeChatBridge {
       );
       if (index >= 0) {
         this.#state.outboundEchoes.splice(index, 1);
-        this.#state.seenRemote[remoteId] = Date.now();
-        this.#save();
+        this.#carried(remoteId, fields);
         return;
       }
     }
@@ -858,11 +908,21 @@ export class WeChatBridge {
         sentAt: sentAt || Date.now(),
       });
     if (posted?.event_id) this.#rememberEvent(chatId, posted.event_id);
-    this.#state.seenRemote[remoteId] = Date.now();
     this.#state.lastRemoteTimestamp = Math.max(
       this.#state.lastRemoteTimestamp,
       Number(item.timestamp) || 0,
     );
+    this.#carried(remoteId, fields);
+  }
+
+  /**
+   * A message is carried: never to be posted again. Unaccepted ones are also
+   * filed by what they are made of, which is the only handle a replay of
+   * them will carry.
+   */
+  #carried(remoteId: string, fields: string | null): void {
+    this.#state.seenRemote[remoteId] = Date.now();
+    if (fields !== null) (this.#state.seenFields ??= {})[fields] = Date.now();
     this.#save();
   }
 
@@ -1530,20 +1590,34 @@ export class WeChatBridge {
     if (stored) this.#state = {...emptyState(), ...stored};
   }
 
-  /** Debounced, because a busy stream would otherwise write on every event. */
+  /**
+   * Debounced, because a busy stream would otherwise write on every event.
+   * A hard kill between flushes loses whatever has not been written yet — and
+   * the relay hands it back at the next connect — so a burst also writes on
+   * its own, keeping what one crash can cost to a handful of messages rather
+   * than everything since the last quiet moment.
+   */
   #save(): void {
-    if (this.#saving) return;
-    this.#saving = setTimeout(() => {
-      this.#saving = null;
+    if (!this.#saving)
+      this.#saving = setTimeout(() => {
+        this.#saving = null;
+        void this.#flush();
+      }, 250);
+    if (++this.#unsaved >= SAVE_EVERY_CHANGES) {
+      this.#unsaved = 0;
       void this.#flush();
-    }, 250);
+    }
   }
 
   async #flush(): Promise<void> {
     const now = Date.now();
+    this.#unsaved = 0;
     // Both maps grow forever otherwise; neither is worth keeping past its use.
     this.#state.seenRemote = Object.fromEntries(
       Object.entries(this.#state.seenRemote).filter(([, at]) => now - at < SEEN_TTL_MS),
+    );
+    this.#state.seenFields = Object.fromEntries(
+      Object.entries(this.#state.seenFields ?? {}).filter(([, at]) => now - at < SEEN_TTL_MS),
     );
     this.#state.seenTransactions = Object.fromEntries(
       Object.entries(this.#state.seenTransactions).filter(([, at]) => now - at < 24 * 3_600_000),
@@ -1616,20 +1690,24 @@ function bodyOf(item: RelayMessage): string {
   // a wall of XML, which is not. So markup is labelled, and text is kept.
   if (KIND_LABELS[kind]) return KIND_LABELS[kind];
   const body = String(item.body ?? "").trim();
-  if (body.startsWith("<") && /^<(msg|sysmsg|appmsg)/i.test(body))
+  // WeChat wraps its non-text kinds in tags that all end in `msg` — `msg`,
+  // `sysmsg`, `appmsg`, `voipmsg`, … — so the tag family, not a list of
+  // kinds, is what says "this is markup, label it".
+  if (body.startsWith("<") && /^<[a-z0-9_]*msg\b/i.test(body))
     return `[${kind || "Unsupported WeChat message"}]`;
   if (body) return body;
-  if (item.hasMedia) return `[${item.mediaType || "Media"}]`;
+  if (item.hasMedia) return KIND_LABELS[item.mediaType ?? ""] ?? `[${item.mediaType || "Media"}]`;
   return `[${kind || "Unsupported WeChat message"}]`;
 }
 
 /**
- * An id for a message that survives a reconnect. The relay only assigns one
- * for messages WeChat has accepted, so anything else is identified by what it
- * is made of.
+ * What an unaccepted message is made of, so a replay that hands it back can be
+ * told from the live stream. It is not an id: two distinct messages may share
+ * all of it — WeChat timestamps only whole seconds, and does not report a
+ * message until WeChat accepts it — which is why repeats are recognised only
+ * where a replay actually happens.
  */
-function stableId(item: RelayMessage): string {
-  if (item.messageId) return String(item.messageId);
+function fieldIdentity(item: RelayMessage): string {
   return createHash("sha256")
     .update(JSON.stringify([item.chatId, item.senderId, item.timestamp, item.body, item.mediaType]))
     .digest("hex");

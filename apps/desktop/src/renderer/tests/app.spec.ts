@@ -165,7 +165,7 @@ test.describe('welcome view', () => {
     expect(modalBounds!.width).toBe(viewport!.width);
     await expect(modal).toHaveCSS('border-style', 'none');
     await expect(page.getByRole('menu')).toHaveCount(0);
-    await expect(modal.getByRole('tab')).toHaveText(['General', 'Hub', 'Drive', 'Browser', 'Plugins', 'MCP', 'Skills', 'Models', 'Provider', 'Memory']);
+    await expect(modal.getByRole('tab')).toHaveText(['Profile', 'General', 'Hub', 'Drive', 'Browser', 'Plugins', 'MCP', 'Skills', 'Models', 'Provider', 'Computer History']);
     const tabMetrics = await modal.getByRole('tab').first().evaluate((node) => {
       const style = getComputedStyle(node);
       return {fontSize: style.fontSize, height: style.height, radius: style.borderRadius, icons: node.querySelectorAll('svg').length};
@@ -173,6 +173,10 @@ test.describe('welcome view', () => {
     expect(tabMetrics).toEqual({fontSize: '13px', height: '32px', radius: '9px', icons: 1});
     const timeAccess = modal.getByRole('switch', {name: 'Enable time access'});
     const locationAccess = modal.getByRole('switch', {name: 'Enable location access'});
+    // Reading semantic text and capturing pixels are separate macOS grants,
+    // but General presents them as the one screen-reading capability they form.
+    await expect(modal.getByRole('switch', {name: 'Screen reading'})).toHaveCount(1);
+    await expect(modal.getByRole('switch', {name: 'Screen recording'})).toHaveCount(0);
     const theme = modal.getByRole('radiogroup', {name: 'Theme'});
     await expect(modal.getByText(Intl.DateTimeFormat().resolvedOptions().timeZone, {exact: true})).toBeVisible();
     await expect(modal.getByText(/refreshed|updated/i)).toHaveCount(0);
@@ -556,7 +560,7 @@ test.describe('welcome view', () => {
     // The local runtimes sit in the same list as the hosted providers, and
     // count as not configured until one is connected.
     await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
-      .toHaveText(['Anthropic', 'OpenRouter', 'llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
+      .toHaveText(['Anthropic', 'OpenRouter', 'Llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
     await expect(modal.getByRole('heading', {name: 'Anthropic'})).toBeVisible();
     await modal.getByRole('button', {name: 'Filter providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'All providers'}).click();
@@ -567,19 +571,19 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('menuitemradio', {name: 'Most models'})).toBeVisible();
     await modal.getByRole('menuitemradio', {name: 'Recommended'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
-      .toHaveText(['Anthropic', 'OpenAI', 'OpenRouter', 'llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
+      .toHaveText(['Anthropic', 'OpenAI', 'OpenRouter', 'Llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
     await modal.getByRole('button', {name: 'Sort providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Provider A–Z'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
-      .toHaveText(['Anthropic', 'llama.cpp', 'LM Studio', 'Ollama', 'OpenAI', 'OpenRouter', 'vLLM']);
+      .toHaveText(['Anthropic', 'Llama.cpp', 'LM Studio', 'Ollama', 'OpenAI', 'OpenRouter', 'vLLM']);
     await modal.getByRole('button', {name: 'Sort providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Fewest models'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
-      .toHaveText(['llama.cpp', 'LM Studio', 'Ollama', 'vLLM', 'OpenRouter', 'Anthropic', 'OpenAI']);
+      .toHaveText(['Llama.cpp', 'LM Studio', 'Ollama', 'vLLM', 'OpenRouter', 'Anthropic', 'OpenAI']);
     await modal.getByRole('button', {name: 'Sort providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Default'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
-      .toHaveText(['OpenAI', 'Anthropic', 'OpenRouter', 'llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
+      .toHaveText(['OpenAI', 'Anthropic', 'OpenRouter', 'Llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
     await modal.getByRole('button', {name: /Anthropic.*2 models/}).click();
     const apiKey = modal.getByLabel('API key');
     await expect(apiKey).toHaveAttribute('placeholder', 'Enter API key');
@@ -604,6 +608,7 @@ test.describe('welcome view', () => {
     await modal.getByRole('button', {name: 'Add key'}).click();
     await expect(modal.locator('.credential-key-row')).toHaveCount(2);
     await expect(modal.locator('.credential-key-row small')).toHaveText(['Ready', 'Ready']);
+    await expect(modal.locator('.credential-key-row .credential-key-state')).toHaveCount(0);
     await expect(modal.locator('.credential-keys')).not.toContainText('Standby');
     const removeKey = modal.getByRole('button', {name: /Remove sk-t/});
     await expect(removeKey).toHaveAttribute('data-tooltip-label', 'Remove');
@@ -655,25 +660,29 @@ test.describe('welcome view', () => {
     await modal.getByRole('button', {name: /Set Studio Chat as the main model/}).click();
     await expect(modal.locator('.role-options .general-setting-row').first()).toContainText('Studio Chat');
 
-    await modal.getByRole('tab', {name: 'Memory'}).click();
+    await expect(modal.getByRole('switch', {name: 'Enable Memory'})).toBeVisible();
+    const memoryToggle = modal.getByRole('switch', {name: 'Enable Memory'});
+    await expect(memoryToggle).toHaveAttribute('aria-checked', 'true');
+    await modal.getByRole('tab', {name: 'Computer History'}).click();
     await expect(modal.locator('.memory-options .option-mark')).toHaveCount(0);
     await expect(modal.locator('.memory-options .options-detail-header .options-badge')).toHaveCount(0);
     const memoryMetrics = modal.getByLabel('Memory storage');
     await expect(memoryMetrics.getByText('2 memories', {exact: true})).toBeVisible();
     await expect(memoryMetrics.getByText('17.8 KB', {exact: true})).toBeVisible();
     await expect(memoryMetrics.getByText('Latest:', {exact: false})).toBeVisible();
-    await expect(modal.getByText('/demo/memories', {exact: true})).toBeVisible();
-    const memoryToggle = modal.getByRole('switch', {name: 'Enable Memory'});
-    const chronicleToggle = modal.getByRole('switch', {name: 'Enable Chronicle'});
-    await expect(memoryToggle).toHaveAttribute('aria-checked', 'true');
+    const computerHistoryMetrics = modal.getByLabel('Computer history storage');
+    await expect(computerHistoryMetrics.getByText('0 captures', {exact: true})).toBeVisible();
+    await expect(computerHistoryMetrics.getByText('0 B', {exact: true})).toBeVisible();
+    await expect(computerHistoryMetrics.getByText('Latest:', {exact: false})).toBeVisible();
+    await expect(computerHistoryMetrics.getByText('Distilled:', {exact: false})).toBeVisible();
+    await expect(computerHistoryMetrics.getByText('0 interactions', {exact: true})).toBeVisible();
+    await expect(modal.getByText('/demo/computer-history', {exact: true})).toBeVisible();
+    const computerHistoryToggle = modal.getByRole('switch', {name: 'Enable ComputerHistory'});
+    await modal.getByRole('tab', {name: 'General'}).click();
     await memoryToggle.click();
     await expect(memoryToggle).toHaveAttribute('aria-checked', 'false');
-    await expect(modal.getByText('Memory is off', {exact: true})).toHaveCount(0);
-    await expect(chronicleToggle).toBeDisabled();
-    await expect(modal.locator('.chronicle-group')).toHaveClass(/disabled/);
-    await memoryToggle.click();
-    await expect(memoryToggle).toHaveAttribute('aria-checked', 'true');
-    await expect(chronicleToggle).toBeEnabled();
+    await modal.getByRole('tab', {name: 'Computer History'}).click();
+    await expect(computerHistoryToggle).toBeEnabled();
     const memoryLayout = await modal.locator('.memory-options').evaluate((node) => {
       return {
         scrollHeight: node.scrollHeight,
@@ -694,15 +703,29 @@ test.describe('welcome view', () => {
     });
     expect(sharedLeftEdge).toBe(0);
     await expect(modal.getByText('Durable memories are added or removed only when you explicitly ask.')).toBeVisible();
-    await expect(chronicleToggle).toHaveAttribute('aria-checked', 'true');
+    await expect(computerHistoryToggle).toHaveAttribute('aria-checked', 'true');
     await expect(modal.getByText('adaptive sampling', {exact: false})).toBeVisible();
-    await expect(modal.getByRole('radiogroup', {name: 'Chronicle capture mode'})).toHaveCount(0);
-    await chronicleToggle.click();
-    await expect(chronicleToggle).toHaveAttribute('aria-checked', 'false');
+    await expect(modal.getByRole('radiogroup', {name: 'ComputerHistory capture mode'})).toHaveCount(0);
+    await computerHistoryToggle.click();
+    await expect(computerHistoryToggle).toHaveAttribute('aria-checked', 'false');
     await expect(modal.getByText('Recent screen context is off', {exact: true})).toBeVisible();
 
     await page.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
+  });
+
+  test('creates a profile from the profile menu', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.locator('.profile-trigger').click();
+    await settings.getByRole('button', {name: 'New profile'}).click();
+    const name = settings.getByRole('textbox', {name: 'Profile name'});
+    await expect(name).toBeFocused();
+    await name.fill('Work');
+    await settings.getByRole('button', {name: 'Create'}).click();
+    await expect(settings.locator('.profile-trigger')).toHaveText('Work');
+    await expect(settings.getByRole('menu', {name: 'Profiles'})).toHaveCount(0);
   });
 
   test('a local runtime sits with the other providers and needs only connecting', async ({page}) => {
@@ -2183,6 +2206,90 @@ test.describe('chat drawer', () => {
 });
 
 test.describe('workspace drawer', () => {
+  test('separate workspace opens directly with only its tabs and new-tab control', async ({page}) => {
+    await page.goto('/?workspaceView=drive&coldStart=0');
+
+    const drawer = workspaceDrawer(page);
+    await expect(drawer).toHaveClass(/open/);
+    await expect(drawer).toHaveClass(/expanded/);
+    await expect(drawer.locator('.fb')).toBeVisible();
+    const leftSpacing = await drawer.locator('.tab').first().evaluate((tab) => {
+      const chromeInset = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--chrome-inset'));
+      return tab.getBoundingClientRect().left - chromeInset;
+    });
+    expect(leftSpacing).toBe(8);
+    await expect(page.getByRole('button', {name: 'Toggle Chats'})).toHaveCount(0);
+    await expect(page.getByRole('button', {name: 'Settings'})).toHaveCount(0);
+    await expect(page.getByRole('button', {name: 'Toggle Workspace'})).toHaveCount(0);
+    const newTab = drawer.getByRole('button', {name: 'New Tab'});
+    await expect(newTab).toBeVisible();
+    await newTab.click();
+    const menu = drawer.getByRole('menu');
+    await expect(menu).toBeVisible();
+    const [buttonBox, menuBox] = await Promise.all([newTab.boundingBox(), menu.boundingBox()]);
+    expect(Math.abs((buttonBox!.x + buttonBox!.width) - (menuBox!.x + menuBox!.width))).toBeLessThan(1);
+    expect(menuBox!.x).toBeGreaterThanOrEqual(0);
+  });
+
+  test('releases global tab availability when its separate window closes', async ({page, context}) => {
+    await page.goto('/?workspaceView=drive&coldStart=0');
+    await expect(workspaceDrawer(page).locator('.fb')).toBeVisible();
+    const hubWindow = await context.newPage();
+    await hubWindow.goto('/?workspaceView=hub&coldStart=0');
+    await expect(workspaceDrawer(hubWindow).locator('.hub-view')).toBeVisible();
+    const tasksWindow = await context.newPage();
+    await tasksWindow.goto('/?workspaceView=tasks&coldStart=0');
+    await expect(workspaceDrawer(tasksWindow).locator('.tasks-view')).toBeVisible();
+
+    const main = await context.newPage();
+    await main.goto('/?coldStart=0');
+    await main.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(main);
+    await drawer.getByRole('button', {name: 'Browser'}).click();
+    await drawer.getByLabel('New tab', {exact: true}).click();
+    await expect(drawer.getByRole('menuitem', {name: 'Drive'})).toHaveCount(0);
+    await expect(drawer.getByRole('menuitem', {name: 'Hub'})).toHaveCount(0);
+    await expect(drawer.getByRole('menuitem', {name: 'Tasks'})).toHaveCount(0);
+
+    await page.close();
+    await expect(drawer.getByRole('menuitem', {name: 'Drive'})).toBeVisible();
+    await expect(drawer.getByRole('menuitem', {name: 'Hub'})).toHaveCount(0);
+    await expect(drawer.getByRole('menuitem', {name: 'Tasks'})).toHaveCount(0);
+
+    await hubWindow.close();
+    await expect(drawer.getByRole('menuitem', {name: 'Hub'})).toBeVisible();
+    await expect(drawer.getByRole('menuitem', {name: 'Tasks'})).toHaveCount(0);
+
+    await tasksWindow.close();
+    await expect(drawer.getByRole('menuitem', {name: 'Tasks'})).toBeVisible();
+  });
+
+  test('reorders workspace tabs by dragging them across the strip', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Drive'}).click();
+    await drawer.getByRole('button', {name: 'New Tab'}).click();
+    await drawer.getByRole('menuitem', {name: 'Hub'}).click();
+
+    const tabs = drawer.locator('.tab');
+    await expect(tabs.locator('.tab-main')).toHaveText(['Drive', 'Hub']);
+    await tabs.first().dragTo(tabs.last());
+    await expect(tabs.locator('.tab-main')).toHaveText(['Hub', 'Drive']);
+  });
+
+  test('pulling a singleton tab outside the window detaches it', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Drive'}).click();
+    const tab = drawer.locator('.tab').first();
+
+    await tab.dispatchEvent('dragstart');
+    await tab.dispatchEvent('dragend', {screenX: -10, screenY: -10});
+    await expect(drawer.locator('.tab')).toHaveCount(0);
+  });
+
   test('shows typed tabs, switches, expands and closes them', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
@@ -2938,6 +3045,28 @@ test.describe('hub view', () => {
     await expect(page.locator('.hub-view')).toBeVisible();
   };
 
+  test('Hub incognito mode keeps a conversation unread when it is opened', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    const incognito = settings.getByRole('switch', {name: 'Enable Hub incognito mode'});
+    await expect(incognito).toHaveAttribute('aria-checked', 'false');
+    await incognito.click();
+    await expect(incognito).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Escape');
+
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await page.locator('.workspace-launcher-row', {hasText: 'Hub'}).click();
+    const view = page.locator('.hub-view');
+    const chat = view.locator('.hub-view-row', {hasText: 'Jules Tan'});
+    const unread = chat.locator('.hub-view-chat-unread');
+    await expect(unread).toBeVisible();
+    await chat.click();
+    // The list is behind the reader while the chat is open, but its unread
+    // badge stays in the DOM rather than being cleared as a normal read does.
+    await expect(unread).toHaveText('2');
+  });
+
   test('a drafted message is written into that chat’s box, not sent', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
@@ -3648,7 +3777,7 @@ test.describe('browser settings', () => {
 
     // Five sections, in the order the rail lists them.
     const rail = modal.locator('.browser-rail button');
-    await expect(rail).toHaveText(['Passwords', 'Downloads', 'History', 'Site permissions', 'Browsing data', 'Import']);
+    await expect(rail).toHaveText(['Passwords', 'Downloads', 'History', 'Site permissions', 'Cookies and data', 'Import']);
     // Icons in one strip are all one size, and the same size the settings nav
     // beside it uses — the section rail is a rail, not a smaller cousin.
     const sizes = await rail.locator('svg').evaluateAll((nodes) =>
@@ -3886,7 +4015,7 @@ test.describe('notification settings', () => {
 
   test('the master switch greys the rows below it and stops them answering', async ({page}) => {
     const modal = await openNotifications(page);
-    const group = modal.locator('.chronicle-group').filter({hasText: 'Scheduled task finished'});
+    const group = modal.locator('.computerHistory-group').filter({hasText: 'Scheduled task finished'});
     const first = modal.getByRole('switch', {name: 'Scheduled task finished', exact: true});
     await expect(group).not.toHaveClass(/disabled/);
     await expect(first).toBeEnabled();

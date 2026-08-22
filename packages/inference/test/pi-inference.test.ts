@@ -124,6 +124,8 @@ test("round-trips FlareAI context without exposing its types to the provider", a
       assert.equal(context.tools?.[0]?.name, "search");
       assert.equal(options?.temperature, 0.2);
       assert.equal(options?.maxTokens, 2048);
+      assert.equal(options?.timeoutMs, 9_876);
+      assert.equal(options?.websocketConnectTimeoutMs, 9_876);
       return fauxAssistantMessage("continued");
     },
   ]);
@@ -161,6 +163,7 @@ test("round-trips FlareAI context without exposing its types to the provider", a
     ],
     temperature: 0.2,
     maxOutputTokens: 2048,
+    timeoutMs: 9_876,
   };
 
   const events = await collect(inference.stream(request));
@@ -202,6 +205,26 @@ test("returns typed errors for unknown models and provider failures", async () =
   if (final?.type === "error") {
     assert.equal(final.error.code, "rate_limit");
     assert.equal(final.error.retryable, true);
+  }
+});
+
+test("does not retry a provider quota that resets in days", async () => {
+  const {faux, inference} = fixture();
+  faux.setResponses([
+    fauxAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Weekly usage limit reached. Resets in 3 days. To continue now, enable usage from your available balance.",
+    }),
+  ]);
+  const events = await collect(inference.stream({
+    model: {provider: "test-provider", id: "test-model"},
+    messages: [],
+  }));
+  const final = events.at(-1);
+  assert.equal(final?.type, "error");
+  if (final?.type === "error") {
+    assert.equal(final.error.code, "rate_limit");
+    assert.equal(final.error.retryable, false);
   }
 });
 

@@ -68,6 +68,37 @@ test("the agent can find an earlier decision and read around it", async () => {
   }
 });
 
+test("history search excludes the active conversation", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({ id: "active", title: "Active work" });
+  storage.createConversation({ id: "earlier", title: "Earlier work" });
+  storage.appendMessage({
+    id: "active-message",
+    conversationId: "active",
+    role: "assistant",
+    content: "Provisional NUS readiness reasoning",
+  });
+  storage.appendMessage({
+    id: "earlier-message",
+    conversationId: "earlier",
+    role: "user",
+    content: "Confirmed NUS readiness commitment",
+  });
+
+  try {
+    const hits = payload(
+      await call(createHistoryTools(storage, "active"), "search_history", {
+        query: "NUS readiness",
+      }),
+    ) as Array<{ conversationId: string; text: string }>;
+
+    assert.deepEqual(hits.map((hit) => hit.conversationId), ["earlier"]);
+    assert.match(hits[0]?.text ?? "", /Confirmed/);
+  } finally {
+    storage.close();
+  }
+});
+
 test("searching refuses an empty query and reading refuses an unknown id", async () => {
   const storage = history();
   try {

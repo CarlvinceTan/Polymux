@@ -1182,6 +1182,32 @@ test("two terms on one field are both kept", () => {
   });
 });
 
+test("a grouped field disjunction stays bounded by its date and other fields", () => {
+  const criteria = searchCriteria(
+    "since 1-Jan-2025 subject (assessment OR interview OR offer OR rejection)",
+  ) as Record<string, unknown>;
+  assert.ok(criteria.since instanceof Date);
+  assert.deepEqual(criteria.or, [
+    {subject: "assessment"},
+    {subject: "interview"},
+    {subject: "offer"},
+    {subject: "rejection"},
+  ]);
+  assert.deepEqual(searchCriteria("from (nus.edu.sg OR mom.gov.sg OR ica.gov.sg)"), {
+    or: [{from: "nus.edu.sg"}, {from: "mom.gov.sg"}, {from: "ica.gov.sg"}],
+  });
+  const natural = searchCriteria(
+    "since 21-Aug-2026 (NUS OR National University of Singapore)",
+  ) as Record<string, unknown>;
+  assert.ok(natural.since instanceof Date);
+  assert.deepEqual(natural.or, [
+    {subject: "NUS"}, {from: "NUS"}, {body: "NUS"},
+    {subject: "National University of Singapore"},
+    {from: "National University of Singapore"},
+    {body: "National University of Singapore"},
+  ]);
+});
+
 test("a sent message does not carry its Bcc, a draft does", () => {
   const options = {...OUTGOING, bcc: ["quiet@example.com"], attachments: [] as never[]};
   // The envelope carries blind recipients; a Bcc header in the body is

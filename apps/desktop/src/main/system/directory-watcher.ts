@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, watch, type FSWatcher } from "node:fs";
 import path from "node:path";
+import { DebouncedCallback } from "./debounced-callback.js";
 
 export interface DirectoryWatcherOptions {
   debounceMs?: number;
@@ -17,19 +18,16 @@ export interface DirectoryWatcherOptions {
  */
 export class DirectoryWatcher {
   readonly #directory: string;
-  readonly #onChange: () => void;
-  readonly #debounceMs: number;
-  readonly #schedule: NonNullable<DirectoryWatcherOptions["schedule"]>;
-  readonly #cancelSchedule: NonNullable<DirectoryWatcherOptions["cancelSchedule"]>;
+  readonly #onChange: DebouncedCallback;
   #watcher?: FSWatcher;
-  #timer?: ReturnType<typeof setTimeout>;
 
   constructor(directory: string, onChange: () => void, options: DirectoryWatcherOptions = {}) {
     this.#directory = path.resolve(directory);
-    this.#onChange = onChange;
-    this.#debounceMs = options.debounceMs ?? 500;
-    this.#schedule = options.schedule ?? ((callback, delay) => setTimeout(callback, delay));
-    this.#cancelSchedule = options.cancelSchedule ?? clearTimeout;
+    this.#onChange = new DebouncedCallback(onChange, {
+      delayMs: options.debounceMs ?? 500,
+      schedule: options.schedule,
+      cancelSchedule: options.cancelSchedule,
+    });
   }
 
   start(): void {
@@ -44,7 +42,7 @@ export class DirectoryWatcher {
       }
     }
     try {
-      this.#watcher = watch(this.#directory, { recursive: true }, () => this.#debounce());
+      this.#watcher = watch(this.#directory, { recursive: true }, () => this.#onChange.trigger());
     } catch {
       // A platform without recursive watch loses live refresh, nothing more:
       // the tab still lists correctly whenever it asks.
@@ -52,17 +50,8 @@ export class DirectoryWatcher {
   }
 
   stop(): void {
-    if (this.#timer) this.#cancelSchedule(this.#timer);
-    this.#timer = undefined;
+    this.#onChange.cancel();
     this.#watcher?.close();
     this.#watcher = undefined;
-  }
-
-  #debounce(): void {
-    if (this.#timer) this.#cancelSchedule(this.#timer);
-    this.#timer = this.#schedule(() => {
-      this.#timer = undefined;
-      this.#onChange();
-    }, this.#debounceMs);
   }
 }

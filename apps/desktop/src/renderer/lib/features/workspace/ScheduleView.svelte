@@ -276,6 +276,12 @@
   export let onDismissError: () => void = () => {};
   export let onDeleteItem: (item: ScheduleItem) => void = () => {};
   export let onRunItem: (item: ScheduleItem) => void = () => {};
+  /** Lets the unified task board reuse this full-fidelity editor without
+   * exposing a second Schedule page. */
+  export let composeOnMount = false;
+  export let composerItem: ScheduleItem | undefined = undefined;
+  export let composerSeed: {title: string; prompt: string} | undefined = undefined;
+  export let onComposerClose: () => void = () => {};
 
   let query = '';
   /** The search starts as its icon, the way Drive's does, so the heading and
@@ -295,10 +301,19 @@
    * hoped for: the frequency rows below are the same ones the quick cadence
    * editor uses, with the title and the prompt above them.
    */
-  let composing: {id: string | null; title: string; prompt: string} | null = null;
+  let composing: {id: string | null; title: string; prompt: string} | null = composeOnMount
+    ? {
+        id: composerItem?.id ?? null,
+        title: composerItem?.title ?? composerSeed?.title ?? '',
+        prompt: composerItem?.prompt ?? composerSeed?.prompt ?? '',
+      }
+    : null;
   let menuId: string | null = null;
   let menuTop = 0;
-  let draft: ScheduleFrequency | null = null;
+  const DEFAULT_FREQUENCY: ScheduleFrequency = {kind: 'daily', interval: 1, time: '09:00'};
+  let draft: ScheduleFrequency | null = composeOnMount
+    ? structuredClone(composerItem?.frequency ?? DEFAULT_FREQUENCY)
+    : null;
   /** Custom exposes the unit and interval rows; the presets imply both. */
   let repeatMode: 'once' | 'daily' | 'weekly' | 'monthly' | 'yearly' | 'custom' = 'daily';
 
@@ -470,8 +485,6 @@
     draft = next;
   }
 
-  const DEFAULT_FREQUENCY: ScheduleFrequency = {kind: 'daily', interval: 1, time: '09:00'};
-
   /** Whether the cadence is being written as cron rather than picked. */
   $: advancedCadence = draft?.kind === 'cron';
   $: cronProblem = draft?.kind === 'cron' ? cronError(draft.expression) : null;
@@ -561,6 +574,7 @@
   function closeComposer(): void {
     composing = null;
     draft = null;
+    onComposerClose();
   }
 
   function saveComposer(): void {

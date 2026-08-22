@@ -1,5 +1,5 @@
 import type { AgentTool } from "@flareai/core";
-import { digestRecording, readRecording, type RecordingSession } from "@flareai/chronicle";
+import { digestRecording, readRecording, type RecordingSession } from "@flareai/computer-history";
 import type { RecordingCapture } from "./capture.js";
 
 /**

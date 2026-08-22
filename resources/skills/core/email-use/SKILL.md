@@ -47,7 +47,7 @@ category: Communication
 ## Non-Interrupting App Fallbacks
 
 - Prefer the email tools or a direct mail connector. For webmail, follow `browser-use` and use the in-app Browser by default.
-- Permission to use Apple Mail, Outlook, or webmail is not permission to foreground it. Before any local mail GUI initialization or control, load `window-use` and complete its session preflight. Keep every native-mail fallback hidden or backgrounded unless user interaction is required. Use a verified non-activating launcher and exact-window control; a compiled launch route may use `window-use`'s pre-armed, launch-only recovery boundary. After recovery, initialize a controller only through an independently verified non-activating route; any later takeover is a hard stop.
+- Permission to use Apple Mail, Outlook, or webmail is not permission to foreground it. Before any local mail GUI initialization or control, load `computer-use` and complete its session preflight. Keep every native-mail fallback hidden or backgrounded unless user interaction is required. Use a verified non-activating launcher and exact-window control; a compiled launch route may use `computer-use`'s pre-armed, launch-only recovery boundary. After recovery, initialize a controller only through an independently verified non-activating route; any later takeover is a hard stop.
 - Do not click, type, hide, minimize, or switch windows in an app the user is actively using. If signature fidelity or another required step cannot be completed without visible control, prepare everything possible in the background and ask before surfacing the app.
 
 ## Sending Rules

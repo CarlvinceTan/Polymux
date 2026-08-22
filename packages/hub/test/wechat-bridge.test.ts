@@ -21,8 +21,12 @@ interface Relay {
   sent: Array<{chatId?: string; message?: string}>;
   /** What `/chats` answers, and the history each chat hands back on import. */
   catalogue: {chats: unknown[]; history: Record<string, unknown[]>};
+  /** How many times the bridge has opened the stream, reconnects included. */
+  connections: number;
   /** Pushes one message down the stream, as a new WeChat message would arrive. */
   emit: (message: Record<string, unknown>) => void;
+  /** Ends the stream as a network blip would, so the bridge reconnects. */
+  dropStream: () => void;
   /** Resolves once the bridge has actually subscribed to the stream. */
   connected: () => Promise<void>;
 }
@@ -30,6 +34,7 @@ interface Relay {
 async function stubRelay(): Promise<Relay> {
   const sent: Relay["sent"] = [];
   const catalogue: Relay["catalogue"] = {chats: [], history: {}};
+  let connections = 0;
   let stream: ServerResponse | null = null;
   const server = createServer((request, response) => {
     const reply = (body: unknown): void => {
@@ -54,6 +59,7 @@ async function stubRelay(): Promise<Relay> {
     if (history) return reply(catalogue.history[decodeURIComponent(history[1])] ?? []);
     if (url.startsWith("/messages/stream")) {
       response.writeHead(200, {"Content-Type": "text/event-stream"});
+      connections += 1;
       stream = response;
       return;
     }
@@ -77,7 +83,14 @@ async function stubRelay(): Promise<Relay> {
     url: `http://127.0.0.1:${port}`,
     sent,
     catalogue,
+    get connections() {
+      return connections;
+    },
     emit: (message) => stream?.write(`data: ${JSON.stringify(message)}\n\n`),
+    dropStream: () => {
+      stream?.end();
+      stream = null;
+    },
     // Emitting before the bridge has subscribed writes into nothing, so every
     // test waits for the subscription rather than for a guessed delay.
     connected: async () => {
@@ -680,4 +693,37 @@ test("setup names the missing piece, starting with WeChat itself", () => {
     assert.doesNotMatch(hint ?? "", /relay|wechat-use|wechatd|daemon|loopback|port/i);
   // Both present is not a setup problem, so there is nothing to say.
   assert.equal(setupHint({wechat: true, relay: true}), null);
+});
+
+test("a reconnected stream does not re-post what the first one already carried", async () => {
+  await withBridge(async ({hub, relay}) => {
+    // WeChat has not accepted this message yet, so it comes down without an id
+    // and will come back down without one: a replay is indistinguishable from
+    // a second delivery unless the bridge remembers it by what it is made of.
+    const at = Math.floor(Date.now() / 1000);
+    const message = {
+      chatId: "wxid_friend",
+      chatName: "A Friend",
+      senderId: "wxid_friend",
+      senderName: "A Friend",
+      body: "no id yet",
+      timestamp: at,
+    };
+    relay.emit(message);
+    const thread = await threadWhen(
+      hub,
+      ({messages}) => messages.length === 1,
+      "the message to arrive",
+    );
+    // The stream dies and the bridge reconnects. The relay's tail is what it
+    // has not got an acknowledgement for, which still includes this one, so it
+    // re-delivers exactly this message on the new connection.
+    relay.dropStream();
+    await until(() => relay.connections === 2, "the stream to reconnect");
+    relay.emit(message);
+    // Give the replay a moment to do what a broken bridge would do: post twice.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const {messages} = await hub.messages(thread.room.roomId, 20);
+    assert.equal(messages.length, 1);
+  });
 });

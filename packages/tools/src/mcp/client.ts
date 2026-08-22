@@ -10,6 +10,16 @@ import type { AgentTool, AgentToolResult } from "../types.js";
 import type { JsonValue } from "@flareai/inference";
 import type { McpServerConfig } from "./config.js";
 
+export function exposedMcpToolName(serverId: string, toolName: string): string {
+  const safe = (value: string): string =>
+    [...value].map((character) =>
+      /^[a-zA-Z0-9_-]$/.test(character)
+        ? character
+        : `_${character.codePointAt(0)!.toString(16)}_`,
+    ).join("");
+  return `${safe(serverId)}__${safe(toolName)}`;
+}
+
 export interface McpConnectionSnapshot {
   id: string;
   status: "disconnected" | "connecting" | "connected" | "error";
@@ -126,7 +136,12 @@ export class McpConnection {
   #adapt(
     tool: Awaited<ReturnType<Client["listTools"]>>["tools"][number],
   ): AgentTool {
-    const exposedName = `${this.config.id}.${tool.name}`;
+    // OpenAI-compatible providers accept only letters, digits, underscores
+    // and hyphens in tool names. MCP permits a wider vocabulary, and the old
+    // `server.tool` prefix made every delegated run invalid before inference
+    // even started. Hex-escape unsupported characters so names remain stable
+    // and collision-free while the original MCP name is still used below.
+    const exposedName = exposedMcpToolName(this.config.id, tool.name);
     // `execute` is invoked with the tool object as `this`, so the connection's
     // private client must be captured here rather than read off `this`.
     const client = this.#client;

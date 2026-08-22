@@ -1,8 +1,22 @@
-import type { BrowserEventDto, ChatActivityDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, RunEventDto, ScheduleDto, SkillDto, WorkspaceRevealDto } from "@flareai/protocol";
+import type { BrowserEventDto, ChatActivityDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, ProviderOAuthEventDto, RunEventDto, ScheduleDto, SkillDto, WorkspaceRevealDto } from "@flareai/protocol";
 import { channels } from "@flareai/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api: FlareAIApi = {
+  profiles: {
+    list: () => ipcRenderer.invoke(channels.profilesList),
+    create: (name) => ipcRenderer.invoke(channels.profilesCreate, name),
+    select: (id) => ipcRenderer.invoke(channels.profilesSelect, id),
+    rename: (id, name) => ipcRenderer.invoke(channels.profilesRename, id, name),
+    setDefault: (id) => ipcRenderer.invoke(channels.profilesSetDefault, id),
+    duplicate: (id) => ipcRenderer.invoke(channels.profilesDuplicate, id),
+    remove: (id) => ipcRenderer.invoke(channels.profilesRemove, id),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: Parameters<typeof listener>[0]) => listener(value);
+      ipcRenderer.on(channels.profilesChanged, receive);
+      return () => ipcRenderer.removeListener(channels.profilesChanged, receive);
+    },
+  },
   extension: {
     status: () => ipcRenderer.invoke(channels.extensionStatus),
     dismiss: () => ipcRenderer.invoke(channels.extensionDismiss),
@@ -18,6 +32,8 @@ const api: FlareAIApi = {
     testNotification: () => ipcRenderer.invoke(channels.generalTestNotification),
   },
   window: {
+    openWorkspaceView: (kind, conversationId, placement) =>
+      ipcRenderer.invoke(channels.windowOpenWorkspaceView, kind, conversationId, placement),
     subscribeFullscreen(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: boolean) =>
         listener(value);
@@ -65,6 +81,18 @@ const api: FlareAIApi = {
       return () => ipcRenderer.removeListener(channels.runEvent, receive);
     },
   },
+  manager: {
+    snapshot: () => ipcRenderer.invoke(channels.managerSnapshot),
+    enqueue: (request) => ipcRenderer.invoke(channels.managerEnqueue, request),
+    cancel: (id) => ipcRenderer.invoke(channels.managerCancel, id),
+    reprioritize: (id, priority) => ipcRenderer.invoke(channels.managerReprioritize, id, priority),
+    reorder: (id, targetId) => ipcRenderer.invoke(channels.managerReorder, id, targetId),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@flareai/protocol").ManagerSnapshotDto) => listener(value);
+      ipcRenderer.on(channels.managerChanged, receive);
+      return () => ipcRenderer.removeListener(channels.managerChanged, receive);
+    },
+  },
   schedules: {
     list: () => ipcRenderer.invoke(channels.schedulesList),
     create: (input) => ipcRenderer.invoke(channels.schedulesCreate, input),
@@ -77,6 +105,19 @@ const api: FlareAIApi = {
         listener(items);
       ipcRenderer.on(channels.schedulesChanged, receive);
       return () => ipcRenderer.removeListener(channels.schedulesChanged, receive);
+    },
+  },
+  tasks: {
+    list: (chatId) => ipcRenderer.invoke(channels.tasksList, chatId),
+    create: (input) => ipcRenderer.invoke(channels.tasksCreate, input),
+    update: (id, patch) => ipcRenderer.invoke(channels.tasksUpdate, id, patch),
+    remove: (id) => ipcRenderer.invoke(channels.tasksRemove, id),
+    markRead: (id) => ipcRenderer.invoke(channels.tasksMarkRead, id),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, items: import("@flareai/protocol").TaskCardDto[]) =>
+        listener(items);
+      ipcRenderer.on(channels.tasksChanged, receive);
+      return () => ipcRenderer.removeListener(channels.tasksChanged, receive);
     },
   },
   goals: {
@@ -119,18 +160,21 @@ const api: FlareAIApi = {
   memory: {
     status: () => ipcRenderer.invoke(channels.memoryStatus),
     setEnabled: (enabled) => ipcRenderer.invoke(channels.memorySetEnabled, enabled),
+    entries: () => ipcRenderer.invoke(channels.memoryEntries),
   },
-  chronicle: {
-    status: () => ipcRenderer.invoke(channels.chronicleStatus),
-    update: (patch: unknown) => ipcRenderer.invoke(channels.chronicleUpdate, patch),
+  computerHistory: {
+    status: () => ipcRenderer.invoke(channels.computerHistoryStatus),
+    update: (patch: unknown) => ipcRenderer.invoke(channels.computerHistoryUpdate, patch),
     forget: (since: string, until: string) =>
-      ipcRenderer.invoke(channels.chronicleForget, since, until),
+      ipcRenderer.invoke(channels.computerHistoryForget, since, until),
+    removeEntry: (id: string) => ipcRenderer.invoke(channels.computerHistoryRemoveEntry, id),
+    revealEntry: (id: string) => ipcRenderer.invoke(channels.computerHistoryRevealEntry, id),
     setEnabled: (enabled) =>
-      ipcRenderer.invoke(channels.chronicleSetEnabled, enabled),
+      ipcRenderer.invoke(channels.computerHistorySetEnabled, enabled),
     entries: (options) =>
-      ipcRenderer.invoke(channels.chronicleEntries, options),
-    pickApp: () => ipcRenderer.invoke(channels.chroniclePickApp),
-    appIcon: (name: string) => ipcRenderer.invoke(channels.chronicleAppIcon, name),
+      ipcRenderer.invoke(channels.computerHistoryEntries, options),
+    pickApp: () => ipcRenderer.invoke(channels.computerHistoryPickApp),
+    appIcon: (name: string) => ipcRenderer.invoke(channels.computerHistoryAppIcon, name),
   },
   mcp: {
     list: () => ipcRenderer.invoke(channels.mcpList),
@@ -235,15 +279,29 @@ const api: FlareAIApi = {
     list: (source, path) => ipcRenderer.invoke(channels.driveList, source, path),
     createFolder: (source, parentPath, name) =>
       ipcRenderer.invoke(channels.driveCreateFolder, source, parentPath, name),
-    upload: (source, parentPath, paths) =>
-      ipcRenderer.invoke(channels.driveUpload, source, parentPath, paths),
+    upload: (source, parentPath, paths, onProgress) => {
+      const operationId = crypto.randomUUID();
+      const receive = (_event: Electron.IpcRendererEvent, id: string, completed: number, total: number) => {
+        if (id === operationId && total > 0) onProgress?.(Math.min(1, completed / total));
+      };
+      ipcRenderer.on(channels.driveProgress, receive);
+      return ipcRenderer.invoke(channels.driveUpload, source, parentPath, paths, operationId)
+        .finally(() => ipcRenderer.removeListener(channels.driveProgress, receive));
+    },
     download: (source, path) =>
       ipcRenderer.invoke(channels.driveDownload, source, path),
     remove: (source, paths) => ipcRenderer.invoke(channels.driveRemove, source, paths),
     rename: (source, path, name) =>
       ipcRenderer.invoke(channels.driveRename, source, path, name),
-    move: (source, paths, destinationFolder) =>
-      ipcRenderer.invoke(channels.driveMove, source, paths, destinationFolder),
+    move: (source, paths, destinationFolder, onProgress) => {
+      const operationId = crypto.randomUUID();
+      const receive = (_event: Electron.IpcRendererEvent, id: string, completed: number, total: number) => {
+        if (id === operationId && total > 0) onProgress?.(Math.min(1, completed / total));
+      };
+      ipcRenderer.on(channels.driveProgress, receive);
+      return ipcRenderer.invoke(channels.driveMove, source, paths, destinationFolder, operationId)
+        .finally(() => ipcRenderer.removeListener(channels.driveProgress, receive));
+    },
     copy: (source, paths) => ipcRenderer.invoke(channels.driveCopy, source, paths),
     subscribe(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: DriveStatusDto) =>
@@ -356,6 +414,18 @@ const api: FlareAIApi = {
       ipcRenderer.invoke(channels.providersSaveApiKey, provider, apiKey),
     removeApiKey: (provider, keyId) =>
       ipcRenderer.invoke(channels.providersRemoveApiKey, provider, keyId),
+    connectOAuth: (provider) =>
+      ipcRenderer.invoke(channels.providersConnectOAuth, provider),
+    cancelOAuth: (provider) =>
+      ipcRenderer.invoke(channels.providersCancelOAuth, provider),
+    disconnectOAuth: (provider) =>
+      ipcRenderer.invoke(channels.providersDisconnectOAuth, provider),
+    subscribeOAuth(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: ProviderOAuthEventDto) =>
+        listener(value);
+      ipcRenderer.on(channels.providersOAuthEvent, receive);
+      return () => ipcRenderer.removeListener(channels.providersOAuthEvent, receive);
+    },
     createCustom: (request) =>
       ipcRenderer.invoke(channels.providersCreateCustom, request),
     updateCustom: (request) =>

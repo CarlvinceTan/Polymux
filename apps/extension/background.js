@@ -50,14 +50,19 @@ function scheduleSnapshot() {
 
 async function sendSnapshot() {
   let tabs;
+  let focusedWindow;
   try {
-    tabs = await chrome.tabs.query({});
+    [tabs, focusedWindow] = await Promise.all([
+      chrome.tabs.query({}),
+      chrome.windows.getLastFocused(),
+    ]);
   } catch {
     return;
   }
   const payload = {
     captured_at: new Date().toISOString(),
     browser: "chrome",
+    focused_window_id: focusedWindow?.id ?? null,
     tabs: tabs
       .filter((tab) => tab.url && !tab.url.startsWith("chrome://"))
       .map((tab) => ({
@@ -128,6 +133,10 @@ function normalizedUrl(value) {
  */
 async function findTab(tab) {
   const tabs = await chrome.tabs.query({});
+  if (Number.isInteger(tab.tabId)) {
+    const exact = tabs.find((candidate) => candidate.id === tab.tabId);
+    return exact?.url && !exact.url.startsWith("chrome://") ? exact : null;
+  }
   const wantedUrl = normalizedUrl(tab.url || "");
   const wantedTitle = String(tab.title || "").trim().toLowerCase();
   const candidates = tabs.filter((candidate) => {

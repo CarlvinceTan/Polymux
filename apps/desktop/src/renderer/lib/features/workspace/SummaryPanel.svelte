@@ -21,6 +21,7 @@
   export let onOpenTask: (task: TaskItem) => void = () => {};
   export let onViewAll: (section: SummarySection) => void = () => {};
   export let onAttachReferences: (files: File[]) => void = () => {};
+  export let onOpenSubagents: () => void = () => {};
 
   /** Four rows per section; anything beyond that is behind View all. */
   const previewLimit = 4;
@@ -101,7 +102,10 @@
   </section>
 
   <section>
-    <header><h2>{$t('summary.tasks')}</h2></header>
+    <header>
+      <h2>{$t('summary.tasks')}</h2>
+      <button type="button" aria-label={$t('workspace.subagents')} data-tooltip-align="end" onclick={onOpenSubagents}><Icon name="send" size={18}/></button>
+    </header>
     {#if tasks.length}
       {#each tasks.slice(0, previewLimit) as task (task.id)}
         <!-- A task row opens its own workspace tab, where the subagent's run

@@ -17,7 +17,7 @@
   export let api: FlareAIApi;
 
   let status: DriveStatusDto | null = null;
-  let selected: DriveProviderId = 'local';
+  let selected: DriveProviderId | 'configuration' = 'local';
   let loading = true;
   let error = '';
   let busy = '';
@@ -253,6 +253,10 @@
       size: rounded.toLocaleString(activeLocale(), {minimumFractionDigits: digits, maximumFractionDigits: digits}),
     });
   }
+
+  function usageWidth(bytes: number, total: number): number {
+    return total > 0 ? Math.min(100, Math.max(0, (bytes / total) * 100)) : 0;
+  }
 </script>
 
 <div class="drive" role="tabpanel">
@@ -295,13 +299,64 @@
             </button>
           </li>
         {/each}
+        <li class="drive-configuration-item">
+          <button
+            type="button"
+            class:active={selected === 'configuration'}
+            onclick={() => {
+              selected = 'configuration';
+              editingS3 = false;
+            }}
+          >
+            <span><strong>{$t('drive.whereNewFilesGo')}</strong></span>
+          </button>
+        </li>
       </ul>
 
-      <!-- The right column: what the selected provider says, and beneath
-           it the one setting that is about all of them at once. -->
+      <!-- The right column shows either one provider or the shared save
+           priority selected from the rail's anchored configuration row. -->
       <div class="drive-column">
         <div class="drive-detail" use:scrollFade={selected}>
-        {#if editingS3}
+        {#if selected === 'configuration'}
+          <header class="drive-detail-header">
+            <h3>{$t('drive.whereNewFilesGo')}</h3>
+            <p>{$t('drive.saveOrderHint')}</p>
+          </header>
+          {#if writable.length === 0}
+            <p class="drive-muted">{$t('drive.nothingConnected')}</p>
+          {:else}
+            <ol class="drive-order">
+              {#each writable as provider, index (provider.id)}
+                <li>
+                  <span class="drive-rank" class:primary={index === 0}>{index + 1}</span>
+                  <span class="drive-order-name">
+                    <strong>{providerName(provider)}</strong>
+                    {#if index === 0}<em>{$t('drive.primary')}</em>{/if}
+                  </span>
+                  <span class="drive-order-actions">
+                    <button
+                      type="button"
+                      class="up"
+                      aria-label={$t('drive.moveUp', {provider: providerName(provider)})}
+                      disabled={index === 0 || busy === 'order'}
+                      onclick={() => void move(provider.id, -1)}
+                    >
+                      <Icon name="chevron" size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={$t('drive.moveDown', {provider: providerName(provider)})}
+                      disabled={index === writable.length - 1 || busy === 'order'}
+                      onclick={() => void move(provider.id, 1)}
+                    >
+                      <Icon name="chevron" size={12} />
+                    </button>
+                  </span>
+                </li>
+              {/each}
+            </ol>
+          {/if}
+        {:else if editingS3}
           <header class="drive-detail-header">
             <h3>{$t('drive.s3')}</h3>
             <p>{$t('drive.s3Blurb')}</p>
@@ -511,11 +566,24 @@
             <section class="drive-block">
               <h4>{$t('drive.space')}</h4>
               {#if active.usage.total !== null && active.usage.used !== null}
-                <div class="drive-meter" role="img" aria-label={$t('drive.usedOf', {used: formatBytes(active.usage.used), total: formatBytes(active.usage.total)})}>
-                  <span style={`width:${Math.min(100, (active.usage.used / active.usage.total) * 100)}%`}></span>
+                <div class="drive-meter" role="img" aria-label={`${$t('drive.usedOf', {used: formatBytes(active.usage.used), total: formatBytes(active.usage.total)})}${active.usage.appUsed !== null ? `; FlareAI ${formatBytes(active.usage.appUsed)}` : ''}`}>
+                  <span
+                    class="drive-meter-others"
+                    style={`width:${usageWidth(Math.max(0, active.usage.used - (active.usage.appUsed ?? 0)), active.usage.total)}%`}
+                  ></span>
+                  {#if active.usage.appUsed !== null}
+                    <span
+                      class="drive-meter-app"
+                      style={`width:${usageWidth(Math.min(active.usage.used, active.usage.appUsed), active.usage.total)}%`}
+                    ></span>
+                  {/if}
                 </div>
-                <p class="drive-hint">
-                  {$t('drive.usedOf', {used: formatBytes(active.usage.used), total: formatBytes(active.usage.total)})}
+                <p class="drive-hint drive-usage-line">
+                  <span>{$t('drive.usedOf', {used: formatBytes(active.usage.used), total: formatBytes(active.usage.total)})}</span>
+                  {#if active.usage.appUsed !== null}
+                    <span class="drive-usage-separator">·</span>
+                    <span class="drive-app-used">FlareAI {formatBytes(active.usage.appUsed)}</span>
+                  {/if}
                 </p>
               {:else if active.usage.used !== null}
                 <!-- An account with no cap reports usage but no limit, which is
@@ -527,61 +595,21 @@
         {/if}
 
         </div>
-          {#if !editingS3}
-            <section class="drive-block">
-              <h4>{$t('drive.whereNewFilesGo')}</h4>
-              <p class="drive-hint">{$t('drive.saveOrderHint')}</p>
-              {#if writable.length === 0}
-                <p class="drive-muted">{$t('drive.nothingConnected')}</p>
-              {:else}
-                <ol class="drive-order">
-                  {#each writable as provider, index (provider.id)}
-                    <li>
-                      <span class="drive-rank" class:primary={index === 0}>{index + 1}</span>
-                      <span class="drive-order-name">
-                        <strong>{providerName(provider)}</strong>
-                        {#if index === 0}<em>{$t('drive.primary')}</em>{/if}
-                      </span>
-                      <span class="drive-order-actions">
-                        <button
-                          type="button"
-                          class="up"
-                          aria-label={$t('drive.moveUp', {provider: providerName(provider)})}
-                          disabled={index === 0 || busy === 'order'}
-                          onclick={() => void move(provider.id, -1)}
-                        >
-                          <Icon name="chevron" size={12} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={$t('drive.moveDown', {provider: providerName(provider)})}
-                          disabled={index === writable.length - 1 || busy === 'order'}
-                          onclick={() => void move(provider.id, 1)}
-                        >
-                          <Icon name="chevron" size={12} />
-                        </button>
-                      </span>
-                    </li>
-                  {/each}
-                </ol>
-              {/if}
-            </section>
-          {/if}
       </div>
     </div>
   {/if}
 </div>
 
 <style>
-  .drive{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 16px calc(var(--options-content-edge) + var(--options-tab-inline))}
+  .drive{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 16px var(--options-content-edge)}
   .drive-muted{color:var(--neutral-400);font-size:11px}
   .drive-error{display:flex;align-items:center;gap:12px;margin-bottom:10px;padding:9px 11px;border-radius:9px;background:#fff5f5;color:#8f3e3e;font-size:11px}
   .drive-error>span{min-width:0;flex:1}
   .drive-error button{height:26px;flex:none;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:7px;padding:0 9px;background:var(--app-surface);color:inherit;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
   :global(:root[data-theme="dark"]) .drive-error{background:#321f1f;color:#eea7a7}
 
-  .drive-body{min-width:0;min-height:0;flex:1;display:grid;grid-template-columns:186px minmax(0,1fr);gap:var(--options-divider-gap)}
-  .drive-rail{min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px 12px;overflow-y:auto;list-style:none;border-right:1px solid var(--neutral-200)}
+  .drive-body{min-width:0;min-height:0;flex:1;display:grid;grid-template-columns:calc(186px + var(--options-tab-inline)) minmax(0,1fr);gap:var(--options-divider-gap)}
+  .drive-rail{min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px var(--options-divider-gap) 6px 0;overflow-y:auto;list-style:none;border-right:1px solid var(--neutral-200)}
   .drive-rail>li{margin:0}
   .drive-rail button{width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:10px;padding:5px 9px;background:transparent;color:var(--neutral-700);cursor:pointer;font-family:inherit;text-align:left}
   .drive-rail button:hover{background:var(--neutral-100)}
@@ -589,10 +617,11 @@
   .drive-rail button>span{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
   .drive-rail strong{overflow:hidden;color:var(--neutral-900);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:540}
   .drive-rail small{overflow:hidden;color:var(--neutral-400);text-overflow:ellipsis;white-space:nowrap;font-size:9.5px}
+  .drive-rail .drive-configuration-item{margin-top:auto;padding-top:8px;transform:translateY(6px)}
+  .drive-rail .drive-configuration-item::before{display:block;height:1px;margin:0 0 8px;background:var(--neutral-200);content:"";transform:translateY(-2.75px)}
+  .drive-configuration-item button{min-height:31px}
 
-    /* The right column. What the selected provider says scrolls; where new
-     files go is about every provider at once, so it sits under that rather
-     than being repeated in each tab. */
+  /* The right column scrolls independently of the provider rail. */
   .drive-column{min-width:0;min-height:0;display:flex;flex-direction:column}
   .drive-detail{min-width:0;min-height:0;flex:1;overflow-y:auto;padding-right:2px}
   .drive-column>:global(.drive-block){flex:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--neutral-200)}
@@ -645,19 +674,25 @@
   .drive-actions button.primary:hover{opacity:.88}
   .drive-actions button:disabled{cursor:default;opacity:.5}
 
-  .drive-meter{height:6px;overflow:hidden;border-radius:3px;background:var(--neutral-200)}
-  .drive-meter>span{display:block;height:100%;border-radius:3px;background:var(--neutral-800)}
+  .drive-meter{height:6px;display:flex;overflow:hidden;border-radius:3px;background:var(--neutral-200)}
+  .drive-meter>span{height:100%;display:block;flex:none}
+  .drive-meter-others{background:var(--neutral-800)}
+  .drive-meter-app{background:var(--flare-blue,#2384cb)}
+  .drive-usage-line{display:flex;align-items:baseline;gap:5px}
+  .drive-app-used{color:var(--flare-blue,#2384cb)}
+  .drive-usage-separator{color:var(--neutral-500)}
 
-  .drive-order{margin:8px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
-  .drive-order li{display:flex;align-items:center;gap:10px;padding:8px 11px;border:1px solid var(--neutral-200);border-radius:9px}
-  .drive-rank{width:19px;height:19px;flex:none;display:grid;place-items:center;border-radius:50%;background:var(--neutral-100);color:var(--neutral-600);font-size:9.5px;font-weight:600;font-variant-numeric:tabular-nums}
-  .drive-rank.primary{background:var(--neutral-950);color:var(--app-bg)}
+  .drive-order{margin:8px 0 0;padding:0;list-style:none}
+  .drive-order li{min-height:40px;display:flex;align-items:center;gap:10px;padding:0 4px;border-bottom:1px solid var(--neutral-200)}
+  .drive-order li:first-child{border-top:1px solid var(--neutral-200)}
+  .drive-rank{width:19px;flex:none;color:var(--neutral-400);font-size:9.5px;font-weight:600;text-align:center;font-variant-numeric:tabular-nums}
+  .drive-rank.primary{color:var(--neutral-900)}
   .drive-order-name{min-width:0;flex:1;display:flex;align-items:center;gap:7px}
   .drive-order-name strong{overflow:hidden;color:var(--neutral-900);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:545}
-  .drive-order-name em{flex:none;padding:1px 6px;border-radius:5px;background:var(--neutral-100);color:var(--neutral-600);font-size:9.5px;font-style:normal;font-weight:550}
+  .drive-order-name em{flex:none;color:var(--neutral-500);font-size:9.5px;font-style:normal;font-weight:550}
   .drive-order-actions{flex:none;display:flex;gap:2px}
-  .drive-order-actions button{width:24px;height:24px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:var(--neutral-500);cursor:pointer}
-  .drive-order-actions button:hover:not(:disabled){background:var(--neutral-100);color:var(--neutral-950)}
+  .drive-order-actions button{width:24px;height:24px;display:grid;place-items:center;border:0;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}
+  .drive-order-actions button:hover:not(:disabled),.drive-order-actions button:focus-visible{outline:0;color:var(--neutral-950)}
   .drive-order-actions button:disabled{cursor:default;opacity:.3}
   /* The chevron points down, so one glyph serves both directions rather than
      shipping a second icon that is the same shape upside down. */

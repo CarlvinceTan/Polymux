@@ -142,11 +142,94 @@ test("surfaces a credential failure as an actionable account state", async () =>
   );
 });
 
+test("treats a WhatsApp device removed on the phone as unlinked", async () => {
+  await withHub(
+    {
+      [`GET ${WA}/whoami`]: {
+        body: {
+          login_flows: [{id: "qr", name: "QR", description: "Scan a QR code"}],
+          logins: [
+            {
+              id: "61400000000",
+              name: "+61400000000",
+              state: {
+                state_event: "BAD_CREDENTIALS",
+                error: "wa-not-logged-in",
+                message: "You're not logged into WhatsApp. Relogin to continue using the bridge.",
+              },
+            },
+          ],
+        },
+      },
+    },
+    async (hub) => {
+      const bridge = await hub.bridge("whatsapp", "WhatsApp", "whatsapp");
+      assert.equal(bridge.state, "logged-out");
+      assert.deepEqual(bridge.accounts, []);
+      assert.equal(bridge.flows[0]?.id, "qr");
+      assert.equal(
+        bridge.error,
+        "You're not logged into WhatsApp. Relogin to continue using the bridge.",
+      );
+    },
+  );
+});
+
 test("treats an empty login list as not linked", async () => {
   await withHub({[`GET ${WA}/whoami`]: {body: {logins: []}}}, async (hub) => {
     const bridge = await hub.bridge("whatsapp", "WhatsApp", "whatsapp");
     assert.equal(bridge.state, "logged-out");
   });
+});
+
+test("maps every Bridge v2 login state conservatively", async () => {
+  const stateCases: ReadonlyArray<readonly [string | null, string, string]> = [
+    ["CONNECTED", "connected", "connected"],
+    ["RUNNING", "connected", "connected"],
+    ["CONNECTING", "connecting", "connecting"],
+    ["BACKFILLING", "connecting", "connecting"],
+    ["STARTING", "connecting", "connecting"],
+    ["TRANSIENT_DISCONNECT", "connecting", "connecting"],
+    ["BAD_CREDENTIALS", "bad-credentials", "error"],
+    ["UNKNOWN_ERROR", "error", "error"],
+    ["BRIDGE_UNREACHABLE", "error", "error"],
+    ["A_FUTURE_STATE", "unknown", "unknown"],
+    [null, "unknown", "unknown"],
+  ];
+
+  for (const [event, accountState, bridgeState] of stateCases) {
+    await withHub(
+      {
+        [`GET ${WA}/whoami`]: {
+          body: {
+            logins: [{id: "account-1", state: event ? {state_event: event} : {}}],
+          },
+        },
+      },
+      async (hub) => {
+        const bridge = await hub.bridge("whatsapp", "WhatsApp", "whatsapp");
+        assert.equal(bridge.accounts[0]?.state, accountState, event ?? "missing event");
+        assert.equal(bridge.state, bridgeState, event ?? "missing event");
+      },
+    );
+  }
+});
+
+test("logged-out and unconfigured Bridge v2 logins are no longer linked accounts", async () => {
+  for (const event of ["LOGGED_OUT", "UNCONFIGURED"] as const) {
+    await withHub(
+      {
+        [`GET ${WA}/whoami`]: {
+          body: {logins: [{id: "stale-account", state: {state_event: event}}]},
+        },
+      },
+      async (hub) => {
+        const bridge = await hub.bridge("whatsapp", "WhatsApp", "whatsapp");
+        assert.equal(bridge.state, "logged-out", event);
+        assert.deepEqual(bridge.accounts, [], event);
+      },
+    );
+  }
 });
 
 test("every bridge's rooms are filed under the platform its tab uses", async () => {

@@ -1,5 +1,5 @@
 import { protocol } from "electron";
-import { MEDIA_SCHEME } from "../communications/media.js";
+import { MEDIA_SCHEME } from "../hub/media.js";
 import { PREVIEW_PRIVILEGES, PREVIEW_SCHEME } from "../workspace/preview.js";
 
 /**

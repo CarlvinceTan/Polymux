@@ -48,11 +48,10 @@ and the owning platform skills remain authoritative.
 
 - Discover the currently capable route instead of assuming a bridge, browser,
   desktop app, phone, operating system, or signed-in account is available.
-- Load `browser-use` or `window-use` for the selected
+- Load `browser-use` or `computer-use` for the selected
   fallback and let that skill own its mechanics. Message still owns the
   exact recipient, account, payload, and send authorization.
 - Keep one route for an ordered send. If a route fails, determine what already
   landed before proposing another route.
 - When no capable route exists, provide the approved draft or precise blocker;
   never claim that an unverified send succeeded.
-

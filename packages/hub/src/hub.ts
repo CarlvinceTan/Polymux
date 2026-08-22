@@ -712,7 +712,14 @@ export class MatrixHub {
     if (whoami instanceof Error)
       return {...base, state: "unreachable", error: whoami.message};
 
-    const accounts = (whoami.logins ?? []).map(toAccount);
+    const logins = whoami.logins ?? [];
+    // WhatsApp keeps a user_login row after the phone removes this linked
+    // device. whoami then still lists the old number, but its state says there
+    // is no usable device. Treating that row as an account makes the Hub claim
+    // it is merely broken and offer Unlink; in reality it is already unlinked
+    // and the useful action is Connect.
+    const unlinked = logins.filter(isUnlinkedLogin);
+    const accounts = logins.filter((login) => !isUnlinkedLogin(login)).map(toAccount);
     // whoami already carries the flows, so no second round-trip is needed.
     return {
       ...base,
@@ -720,7 +727,10 @@ export class MatrixHub {
       accounts,
       flows: (whoami.login_flows ?? []).map(toFlow),
       managementRoomHint: whoami.management_room || null,
-      error: accounts.find((account) => account.error)?.error ?? null,
+      error:
+        accounts.find((account) => account.error)?.error ??
+        unlinked.find((login) => login.state?.message)?.state?.message ??
+        null,
     };
   }
 
@@ -1390,6 +1400,13 @@ function toAccount(login: RawLogin): CommsBridgeAccountDto {
   };
 }
 
+/** A remote unlink can leave bridge metadata behind after its device is gone. */
+function isUnlinkedLogin(login: RawLogin): boolean {
+  const event = login.state?.state_event ?? login.state_event ?? null;
+  const error = login.state?.error?.toLowerCase() ?? "";
+  return event === "LOGGED_OUT" || event === "UNCONFIGURED" || error === "wa-not-logged-in";
+}
+
 /**
  * Bridge state events are richer than a settings row needs; collapse them to
  * the outcomes the UI draws differently. A logged-out or credential failure is
@@ -1406,10 +1423,14 @@ function accountState(event: string | null): CommsBridgeAccountDto["state"] {
     case "TRANSIENT_DISCONNECT":
       return "connecting";
     case "BAD_CREDENTIALS":
-    case "LOGGED_OUT":
       return "bad-credentials";
+    case "UNKNOWN_ERROR":
+    case "BRIDGE_UNREACHABLE":
+      return "error";
     default:
-      return event ? "unknown" : "connected";
+      // Absence of evidence is not evidence of a live connection. Old and
+      // future bridge builds both reach this path, so fail closed as unknown.
+      return "unknown";
   }
 }
 
@@ -1417,7 +1438,8 @@ function bridgeState(accounts: CommsBridgeAccountDto[]): CommsBridgeDto["state"]
   if (accounts.length === 0) return "logged-out";
   if (accounts.some((account) => account.state === "connected")) return "connected";
   if (accounts.some((account) => account.state === "connecting")) return "connecting";
-  if (accounts.some((account) => account.state === "bad-credentials")) return "error";
+  if (accounts.some((account) => account.state === "bad-credentials" || account.state === "error"))
+    return "error";
   return "unknown";
 }
 

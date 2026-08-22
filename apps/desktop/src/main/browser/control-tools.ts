@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { handlers } from "@flareai/browser";
 import type { AgentTool } from "@flareai/core";
 import type { AgentSurfaceServer } from "../agent/surface.js";
 import {
@@ -9,6 +10,7 @@ import {
   validate,
 } from "./commands.js";
 import { tabSnapshotPath } from "./extension.js";
+import type { InAppBrowser } from "./embedded-tools.js";
 
 /**
  * Agent tools backed by the FlareAI browser extension: `browser_tabs` reads the
@@ -21,13 +23,163 @@ const TABS_PATH = tabSnapshotPath();
 
 export function createBrowserControlTools(
   surface: AgentSurfaceServer,
+  options: {
+    snapshotPath?: string;
+    now?: () => number;
+    currentRead?: boolean;
+    embeddedBrowser?: InAppBrowser;
+  } = {},
 ): AgentTool[] {
-  return [createTabsTool(), createControlTool(surface)];
+  const snapshotPath = options.snapshotPath ?? TABS_PATH;
+  return [
+    createTabsTool(snapshotPath),
+    ...(options.currentRead
+      ? [createCurrentTabReadTool(
+          surface,
+          snapshotPath,
+          options.now ?? Date.now,
+          options.embeddedBrowser,
+        )]
+      : []),
+    createControlTool(surface),
+  ];
 }
 
-function createTabsTool(): AgentTool {
+const CURRENT_SNAPSHOT_MAX_AGE_MS = 90_000;
+
+/** Read the exact active tab in the browser's focused window without exposing
+ * any action schema. This preserves signed-in and transient page state while
+ * making mutation impossible through this tool. */
+function createCurrentTabReadTool(
+  surface: AgentSurfaceServer,
+  snapshotPath: string,
+  now: () => number,
+  embeddedBrowser?: InAppBrowser,
+): AgentTool {
+  return {
+    name: "browser_current_read",
+    mainAgentOnly: true,
+    description:
+      "Read the exact current page, whether it is visible in FlareAI's browser or active in the focused external browser window. Pass its exact title from Current environment. This is read-only, preserves signed-in/transient page state, and fails closed when current state is stale or ambiguous.",
+    parameters: {
+      type: "object",
+      properties: {
+        expectedTitle: { type: "string" },
+        maxChars: { type: "number" },
+      },
+      required: ["expectedTitle"],
+      additionalProperties: false,
+    },
+    async execute(input) {
+      const expectedTitle = typeof input.expectedTitle === "string" ? input.expectedTitle.trim() : "";
+      if (!expectedTitle)
+        return { content: "expectedTitle must identify the exact current page.", isError: true };
+
+      const visibleMatches = (embeddedBrowser?.visibleTabs?.() ?? []).filter(
+        (tab) => tab.title.trim() === expectedTitle,
+      );
+      if (visibleMatches.length > 1)
+        return {
+          content: "More than one visible FlareAI browser page has that title. Do not guess which one the user means.",
+          isError: true,
+        };
+      if (visibleMatches.length === 1) {
+        const tab = visibleMatches[0]!;
+        try {
+          const session = await embeddedBrowser!.session(tab.tabId);
+          const outcome = await handlers.snapshot(session, buildCommand("snapshot", {
+            action: "snapshot",
+            maxChars: Math.min(Math.max(Number(input.maxChars) || 20_000, 1_000), 40_000),
+            compact: true,
+            urls: true,
+          }));
+          const page = await embeddedBrowser!.settle(tab.tabId);
+          return {
+            content: JSON.stringify({
+              pageUrl: page.url,
+              pageTitle: page.title,
+              content: outcome.content ?? "",
+            }),
+          };
+        } catch (error) {
+          return { content: error instanceof Error ? error.message : String(error), isError: true };
+        }
+      }
+
+      let payload: {
+        captured_at?: string;
+        focused_window_id?: number | null;
+        tabs?: Array<{ id?: number; window_id?: number; title?: string; url?: string; active?: boolean }>;
+      };
+      try {
+        payload = JSON.parse(await readFile(snapshotPath, "utf8"));
+      } catch {
+        return { content: "No current browser tab snapshot is available.", isError: true };
+      }
+      const capturedAt = Date.parse(payload.captured_at ?? "");
+      if (!Number.isFinite(capturedAt) || now() - capturedAt > CURRENT_SNAPSHOT_MAX_AGE_MS)
+        return {
+          content: "The browser focus snapshot is stale. Refresh current state instead of guessing which tab is active.",
+          isError: true,
+        };
+      if (!Number.isInteger(payload.focused_window_id))
+        return {
+          content: "The browser snapshot cannot identify the focused window. Do not guess from active tabs in other windows.",
+          isError: true,
+        };
+      const matches = (payload.tabs ?? []).filter(
+        (tab) => tab.active && tab.window_id === payload.focused_window_id,
+      );
+      if (matches.length !== 1 || !Number.isInteger(matches[0]?.id) || !matches[0]?.url)
+        return {
+          content: "The exact current tab is unavailable or ambiguous. Do not read a different tab.",
+          isError: true,
+        };
+      const tab = matches[0]!;
+      if ((tab.title ?? "").trim() !== expectedTitle)
+        return {
+          content: "The focused browser tab does not match the current window title. Do not read a different app or stale browser window.",
+          isError: true,
+        };
+      const lease = surface.createLease({
+        tabId: tab.id,
+        url: tab.url!,
+        title: tab.title ?? "",
+      });
+      try {
+        const result = await surface.runCommand(
+          lease.id,
+          {
+            kind: "snapshot",
+            maxChars: Math.min(Math.max(Number(input.maxChars) || 20_000, 1_000), 40_000),
+            compact: true,
+            urls: true,
+          },
+          20_000,
+        );
+        if (!result.ok)
+          return { content: result.error ?? "Could not read the current tab", isError: true };
+        return {
+          content: JSON.stringify({
+            pageUrl: result.pageUrl ?? tab.url,
+            pageTitle: result.pageTitle ?? tab.title ?? "",
+            content: result.content ?? "",
+          }),
+        };
+      } finally {
+        surface.releaseLease(lease.id);
+      }
+    },
+  };
+}
+
+function createTabsTool(snapshotPath: string): AgentTool {
   return {
     name: "browser_tabs",
+    // This inspects the user's own browser session. Delegated workers own the
+    // in-app tabs they research in; only the conversational agent may decide
+    // that existing user state is needed or prepare an external handoff.
+    mainAgentOnly: true,
     description:
       "List the tabs currently open in the user's browser (title, url, active state), as streamed by the FlareAI browser extension. Returns a staleness age; treat an old snapshot as history, not current state.",
     parameters: {
@@ -38,7 +190,7 @@ function createTabsTool(): AgentTool {
     async execute() {
       let raw: string;
       try {
-        raw = await readFile(TABS_PATH, "utf8");
+        raw = await readFile(snapshotPath, "utf8");
       } catch {
         return {
           content:
@@ -99,6 +251,7 @@ const DESCRIPTION = [
 function createControlTool(surface: AgentSurfaceServer): AgentTool {
   return {
     name: "browser_control",
+    mainAgentOnly: true,
     description: DESCRIPTION,
     executionMode: "sequential",
     parameters: {
@@ -201,4 +354,3 @@ function createControlTool(surface: AgentSurfaceServer): AgentTool {
     },
   };
 }
-

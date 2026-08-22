@@ -655,6 +655,41 @@ test("one hung bridge does not hold up another's transactions", async () => {
   }
 });
 
+test("closing aborts a bridge transaction that never answers", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hs-"));
+  const bridge = await startScriptedBridge();
+  const hs = new Homeserver({serverName: SERVER, dataDirectory: directory});
+  await hs.start();
+  hs.registerAppservice({
+    id: "whatsapp",
+    asToken: "as-token-whatsapp",
+    hsToken: "hs-token-whatsapp",
+    url: bridge.base,
+    senderLocalpart: "whatsappbot",
+    userNamespaces: [WHATSAPP_NAMESPACE],
+  });
+  const user = hs.createLocalUser("flareai");
+  try {
+    const roomId = await portal(hs, "as-token-whatsapp", user);
+    await sendMessage(hs, user.accessToken, roomId, {msgtype: "m.text", body: "held open"});
+    await until(() => deliveredBodies(bridge.attempts).includes("held open"), "the push to start");
+    bridge.control.stall = true;
+    await sendMessage(hs, user.accessToken, roomId, {msgtype: "m.text", body: "never answered"});
+    await until(
+      () => deliveredBodies(bridge.attempts).includes("never answered"),
+      "the stalled push to start",
+    );
+
+    const started = Date.now();
+    await hs.close();
+    assert.ok(Date.now() - started < 1_000, "shutdown should abort the in-flight push");
+  } finally {
+    bridge.release();
+    await bridge.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test("a burst of sends reaches the bridge exactly once each, in the order they were sent", async () => {
   // Exactly once plus global ordering across batch boundaries is what a
   // bridge's own dedup relies on; a duplicate at a batch seam is the same

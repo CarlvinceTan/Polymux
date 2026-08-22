@@ -1,4 +1,5 @@
 import {mkdir, readFile, rename, writeFile} from "node:fs/promises";
+import {homedir} from "node:os";
 import path from "node:path";
 import type {Credential, CredentialInfo, CredentialStore} from "@earendil-works/pi-ai";
 
@@ -20,6 +21,90 @@ interface CredentialFile {
  */
 export const SECURE_STORAGE_UNAVAILABLE =
   "Secure credential storage is unavailable. Restart FlareAI and click \"Always Allow\" when macOS asks for keychain access.";
+
+const OPENCODE_PROVIDERS = new Set(["opencode", "opencode-go"]);
+
+/**
+ * OpenCode already owns a credential file for its providers. Treat it as a
+ * read-only runtime source so a background or development build can use the
+ * user's existing OpenCode Go login without copying the secret into another
+ * plaintext file or depending on Electron's current Keychain identity.
+ */
+export class OpenCodeCredentialFallback implements CredentialStore {
+  readonly #primary: CredentialStore;
+  readonly #filePath: string;
+
+  constructor(
+    primary: CredentialStore,
+    filePath = path.join(homedir(), ".local", "share", "opencode", "auth.json"),
+  ) {
+    this.#primary = primary;
+    this.#filePath = filePath;
+  }
+
+  async read(providerId: string): Promise<Credential | undefined> {
+    try {
+      const credential = await this.#primary.read(providerId);
+      if (credential) return credential;
+    } catch (cause) {
+      if (!OPENCODE_PROVIDERS.has(providerId) || !isSecureStorageUnavailable(cause)) throw cause;
+    }
+    return OPENCODE_PROVIDERS.has(providerId) ? this.#external(providerId) : undefined;
+  }
+
+  async list(): Promise<readonly CredentialInfo[]> {
+    let primary: readonly CredentialInfo[] = [];
+    try {
+      primary = await this.#primary.list();
+    } catch (cause) {
+      if (!isSecureStorageUnavailable(cause)) throw cause;
+    }
+    const merged = new Map(primary.map((item) => [item.providerId, item]));
+    for (const providerId of OPENCODE_PROVIDERS) {
+      const credential = await this.#external(providerId);
+      if (credential && !merged.has(providerId)) merged.set(providerId, {providerId, type: credential.type});
+    }
+    return [...merged.values()];
+  }
+
+  modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
+    return this.#primary.modify(providerId, fn);
+  }
+
+  delete(providerId: string): Promise<void> {
+    return this.#primary.delete(providerId);
+  }
+
+  async #external(providerId: string): Promise<Credential | undefined> {
+    const source = await readFile(this.#filePath, "utf8").catch((cause: NodeJS.ErrnoException): undefined => {
+      if (cause.code === "ENOENT") return undefined;
+      throw cause;
+    });
+    if (!source) return undefined;
+    try {
+      const value = JSON.parse(source) as Record<string, unknown>;
+      const entry = value[providerId];
+      if (!entry || typeof entry !== "object") return undefined;
+      const record = entry as Record<string, unknown>;
+      if (record.type === "api" && typeof record.key === "string" && record.key)
+        return {type: "api_key", key: record.key};
+      if (
+        record.type === "oauth" &&
+        typeof record.access === "string" &&
+        typeof record.refresh === "string" &&
+        typeof record.expires === "number"
+      ) return {type: "oauth", access: record.access, refresh: record.refresh, expires: record.expires};
+    } catch {
+      // OpenCode owns this file. A partial write or newer schema should make
+      // the fallback unavailable, never damage or replace its state.
+    }
+    return undefined;
+  }
+}
+
+function isSecureStorageUnavailable(cause: unknown): boolean {
+  return cause instanceof Error && cause.message === SECURE_STORAGE_UNAVAILABLE;
+}
 
 /** Preserves an unreadable secrets file for inspection while clearing the
  * path for a fresh store. */

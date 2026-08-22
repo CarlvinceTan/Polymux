@@ -15,6 +15,19 @@ Protect existing preferences by testing an isolated candidate against the approv
 Keep user-facing explanations concise and high-level unless the user asks for
 implementation detail.
 
+For a read-only inventory, stale-name, or dependency review, resolve the
+absolute directory containing this `SKILL.md`, then run exactly
+`python3 <that-absolute-directory>/scripts/audit_dependencies.py` as the first
+and only tool call. Never run the relative path from the task workspace. Do not
+issue parallel reads or shell calls. It
+inspects only the current FlareAI home’s personal and official skill roots,
+summarises the maintenance gate and stale candidates, and returns explicit
+dependency evidence. Use its result before any targeted follow-up reads; do not
+re-enumerate those roots or rerun `doctor`, `scan`, `verify-guard`, or `list`.
+If it succeeds, the target-independent audit is complete and no further tool is
+needed. If it fails, report that exact failure instead of switching profiles.
+This audit never authorises a skill edit, promotion, cleanup, or deletion.
+
 The maintenance interface retains the existing sealed runner, baselines, and
 audit history, and records every approved deployment in isolated local Git
 history. It also owns upstream-update detection for customized bundled skills;
@@ -58,8 +71,8 @@ confirmation.
 2. Check the gate:
 
    ```bash
-   "${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs doctor
-   "${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs scan
+   python3 scripts/skill_maintenance.py doctor
+   python3 scripts/skill_maintenance.py scan
    ```
 
    `doctor` verifies that the maintenance gate, required files, sealed state,
@@ -70,16 +83,16 @@ confirmation.
 3. Stage the change:
 
    ```bash
-   "${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs stage <skill-name>
-   "${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs stage-new flareai <new-skill-name>
-   "${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs stage-delete <skill-name>
+   python3 scripts/skill_maintenance.py stage <skill-name>
+   python3 scripts/skill_maintenance.py stage-new flareai <new-skill-name>
+   python3 scripts/skill_maintenance.py stage-delete <skill-name>
    ```
 
 4. Edit only the returned candidate path. Do not change the contracts, runner, drift-scan configuration, approved snapshots, or baseline to make a candidate pass.
 5. Check the gate, structure, and applicable approved-versus-proposed behavior suite:
 
    ```bash
-   "${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs check <candidate-id>
+   python3 scripts/skill_maintenance.py check <candidate-id>
    ```
 
    `check` never stages or promotes anything. Structural validation runs first
@@ -92,7 +105,7 @@ confirmation.
    For a strictly mechanical rename, use the deterministic rename gate instead:
 
    ```bash
-   "${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs check-rename <candidate-id> \
+   python3 scripts/skill_maintenance.py check-rename <candidate-id> \
      --source-skill flareai:old-name \
      --replacement-skill flareai:new-name \
      --replace old-name=new-name
@@ -114,7 +127,7 @@ confirmation.
 6. Inspect the complete decision. Promote only a passing, current report:
 
    ```bash
-   "${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs promote <candidate-id>
+   python3 scripts/skill_maintenance.py promote <candidate-id>
    ```
 
 ## Rename and cleanup migrations
@@ -181,6 +194,11 @@ skill references have been cleaned or as a substitute for `stage-delete`.
 
 Ask for clarification only when the deletion target is ambiguous, the request is conditional, live drift exists, structural validation fails, or the report shows a problem beyond the expected absence of the deleted skill.
 
+If the runner or a declared skill root is missing, report that exact coverage
+gap and stop the affected check. Never search the home directory, unrelated
+projects, or another agent's live profile to locate a substitute runner or
+infer which skills are installed.
+
 ## Failure and intentional change
 
 - Treat a failed contract as a regression. Refine the candidate or discard it; do not weaken the contract inside the same change.
@@ -215,6 +233,6 @@ When validation needs a real fresh FlareAI task outside the sealed probe runner:
   referenced source task unless the user separately asks.
 
 If real GUI work is ever required outside an isolated probe, load and follow
-`window-use`; this skill does not duplicate or override that policy.
+`computer-use`; this skill does not duplicate or override that policy.
 
 Read [references/protocol.md](references/protocol.md) when repairing the gate, interpreting artifacts, or handling a deliberate behavior change.

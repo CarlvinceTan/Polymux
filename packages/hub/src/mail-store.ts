@@ -712,6 +712,45 @@ export function searchCriteria(query: string | undefined): Record<string, unknow
   // match, and IMAP SEARCH has nowhere to put it.
   const text = (query ?? "").replace(/\border by [a-z]+(\s+(asc|desc))?/gi, "").trim();
   if (!text) return null;
+  const grouped: Record<string, unknown>[] = [];
+  let outsideGroups = text.replace(
+    /\b(from|to|cc|bcc|subject|body)\s*\(([^()]*)\)/gi,
+    (_match, field: string, alternatives: string) => {
+      const terms = alternatives
+        .split(/\s+or\s+/i)
+        .map((value) => value.trim().replace(/^"|"$/g, ""))
+        .filter(Boolean)
+        .map((value) => readTerm(field.toLowerCase(), {value, quoted: true}))
+        .filter((term): term is Record<string, unknown> => Boolean(term));
+      if (terms.length) grouped.push(terms.length === 1 ? terms[0]! : {or: terms});
+      return " ";
+    },
+  );
+  // A natural grouped topic disjunction has no repeated field prefix, e.g.
+  // `since 21-Aug-2026 (NUS OR National University of Singapore)`. Keep the
+  // date outside the group as an AND bound and match each alternative across
+  // the same subject/sender/body fields as ordinary free text. Treating the
+  // bare `OR` as global used to pull in every message after the date.
+  outsideGroups = outsideGroups.replace(/\(([^()]*)\)/g, (_match, alternatives: string) => {
+    const terms = alternatives
+      .split(/\s+or\s+/i)
+      .map((value) => value.trim().replace(/^"|"$/g, ""))
+      .filter(Boolean)
+      .flatMap((value) => [
+        {subject: value},
+        {from: value},
+        {body: value},
+      ]);
+    if (terms.length) grouped.push({or: terms});
+    return " ";
+  }).trim();
+  if (grouped.length) {
+    const outside = outsideGroups ? searchCriteria(outsideGroups) : null;
+    if (!outside) return grouped.length === 1 ? grouped[0]! : {and: grouped};
+    return grouped.length === 1 && !("or" in outside)
+      ? {...outside, ...grouped[0]}
+      : {and: [outside, ...grouped]};
+  }
   const tokens = tokenise(text);
   const terms: Record<string, unknown>[] = [];
   // `or` is only a joiner when it stands as a bare word. Read off the raw

@@ -31,6 +31,17 @@ const nodeBuiltins = [
 ];
 
 export default defineConfig({
+  resolve: {
+    // Rolldown's Node platform externalises bare package specifiers even when
+    // they are absent from the explicit external list. Resolve this tiny
+    // pure-JS startup shim to its file so it is actually included in app.asar.
+    alias: {
+      'electron-squirrel-startup': path.join(
+        appRoot,
+        '../../node_modules/electron-squirrel-startup/index.js',
+      ),
+    },
+  },
   /**
    * Application credentials FlareAI ships on the user's behalf, baked in here
    * rather than committed. Unset in a normal checkout, which is the point: a
@@ -44,7 +55,10 @@ export default defineConfig({
   build: {
     rolldownOptions: {
       platform: 'node',
-      external: ['electron', 'electron-squirrel-startup', ...nodeBuiltins],
+      // Squirrel's startup shim is pure JavaScript and must be bundled. Forge
+      // ships no production node_modules beside app.asar, so externalising it
+      // makes every packaged main process fail before creating a window.
+      external: ['electron', ...nodeBuiltins],
     },
     lib: {
       entry: path.join(appRoot, 'src/main/main.ts'),

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { ChronicleManager } from "@flareai/chronicle";
+import { ComputerHistoryManager } from "@flareai/computer-history";
 import type {
   InferenceEvent,
   InferenceModel,
@@ -11,7 +11,7 @@ import type {
   InferenceService,
   ModelRef,
 } from "@flareai/inference";
-import { ChronicleDistiller, MemoryManager } from "../src/index.js";
+import { ComputerHistoryDistiller, MemoryManager } from "../src/index.js";
 
 const model: ModelRef = { provider: "test", id: "model" };
 const modelInfo: InferenceModel = {
@@ -64,11 +64,11 @@ function answer(text: string): InferenceEvent {
 const signal = new AbortController().signal;
 const now = new Date("2026-08-13T18:00:00.000Z");
 
-/** A chronicle holding `count` frames captured well before the cutoff. */
-async function chronicle(count: number): Promise<ChronicleManager> {
+/** A computerHistory holding `count` frames captured well before the cutoff. */
+async function computerHistory(count: number): Promise<ComputerHistoryManager> {
   let index = 0;
   let at = new Date("2026-08-13T09:00:00.000Z");
-  const manager = new ChronicleManager({
+  const manager = new ComputerHistoryManager({
     directory: mkdtempSync(path.join(tmpdir(), "flareai-distill-")),
     frames: {
       capture: async () => [
@@ -108,9 +108,9 @@ function vault(): MemoryManager {
 }
 
 test("a quiet window is not worth a model call", async () => {
-  const manager = await chronicle(3);
+  const manager = await computerHistory(3);
   const inference = new FakeInference();
-  const distiller = new ChronicleDistiller(
+  const distiller = new ComputerHistoryDistiller(
     inference,
     vault(),
     manager,
@@ -124,13 +124,13 @@ test("a quiet window is not worth a model call", async () => {
 });
 
 test("frames older than the window become durable memories once", async () => {
-  const manager = await chronicle(10);
+  const manager = await computerHistory(10);
   const memory = vault();
   const inference = new FakeInference();
   inference.responses.push([
     answer("- Works on FlareAI in Zed, currently on the drive retry policy.\n- Short line"),
   ]);
-  const distiller = new ChronicleDistiller(inference, memory, manager, {}, () => now);
+  const distiller = new ComputerHistoryDistiller(inference, memory, manager, {}, () => now);
 
   assert.equal(await distiller.maybeDistill(model, signal), 1);
   const memories = memory.userMemories();
@@ -147,11 +147,11 @@ test("frames older than the window become durable memories once", async () => {
 });
 
 test("a window with nothing worth keeping still moves the watermark", async () => {
-  const manager = await chronicle(10);
+  const manager = await computerHistory(10);
   const memory = vault();
   const inference = new FakeInference();
   inference.responses.push([answer("NOTHING")]);
-  const distiller = new ChronicleDistiller(inference, memory, manager, {}, () => now);
+  const distiller = new ComputerHistoryDistiller(inference, memory, manager, {}, () => now);
 
   assert.equal(await distiller.maybeDistill(model, signal), 0);
   assert.equal(memory.userMemories().length, 0);
@@ -159,9 +159,9 @@ test("a window with nothing worth keeping still moves the watermark", async () =
 });
 
 test("recent frames are left alone until they are old enough", async () => {
-  const manager = await chronicle(10);
+  const manager = await computerHistory(10);
   const inference = new FakeInference();
-  const distiller = new ChronicleDistiller(
+  const distiller = new ComputerHistoryDistiller(
     inference,
     vault(),
     manager,

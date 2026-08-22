@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import {mkdtemp, rm, writeFile} from "node:fs/promises";
-import {tmpdir} from "node:os";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {CHUNK_BYTES, fileChunks, SIMPLE_UPLOAD_LIMIT} from "../src/chunks.js";
-import {DropboxDrive} from "../src/dropbox.js";
-import {GoogleDrive} from "../src/google-drive.js";
-import {OneDrive} from "../src/onedrive.js";
-import type {DriveConsentPrompt, DriveSecretStore} from "../src/types.js";
+import { CHUNK_BYTES, fileChunks, SIMPLE_UPLOAD_LIMIT } from "../src/chunks.js";
+import { DropboxDrive } from "../src/dropbox.js";
+import { GoogleDrive } from "../src/google-drive.js";
+import { OneDrive } from "../src/onedrive.js";
+import type { DriveConsentPrompt, DriveSecretStore } from "../src/types.js";
 
 /**
  * The session uploads, against a fake of each provider's protocol.
@@ -24,15 +24,27 @@ const secrets = (): DriveSecretStore => {
   const store = new Map<string, string>([
     [
       "drive:google-drive:default",
-      JSON.stringify({accessToken: "token", refreshToken: "r", expiresAt: null}),
+      JSON.stringify({
+        accessToken: "token",
+        refreshToken: "r",
+        expiresAt: null,
+      }),
     ],
     [
       "drive:dropbox:default",
-      JSON.stringify({accessToken: "token", refreshToken: "r", expiresAt: null}),
+      JSON.stringify({
+        accessToken: "token",
+        refreshToken: "r",
+        expiresAt: null,
+      }),
     ],
     [
       "drive:onedrive:default",
-      JSON.stringify({accessToken: "token", refreshToken: "r", expiresAt: null}),
+      JSON.stringify({
+        accessToken: "token",
+        refreshToken: "r",
+        expiresAt: null,
+      }),
     ],
   ]);
   return {
@@ -64,13 +76,21 @@ function withClientId<T>(run: () => T): T {
   }
 }
 
-async function bigFile(): Promise<{file: string; size: number; clean: () => Promise<void>}> {
+async function bigFile(): Promise<{
+  file: string;
+  size: number;
+  clean: () => Promise<void>;
+}> {
   const base = await mkdtemp(path.join(tmpdir(), "flareai-upload-"));
   const file = path.join(base, "recording.mov");
   // Two chunks and a bit: enough to exercise a resume in the middle.
   const size = CHUNK_BYTES * 2 + 1024;
   await writeFile(file, Buffer.alloc(size, 7));
-  return {file, size, clean: () => rm(base, {recursive: true, force: true})};
+  return {
+    file,
+    size,
+    clean: () => rm(base, { recursive: true, force: true }),
+  };
 }
 
 /** Swaps global fetch for the duration of one test. */
@@ -103,7 +123,7 @@ test("a file is read one chunk at a time, in order and whole", async () => {
     assert.deepEqual(seen, ["abcd", "efgh", "ij"]);
     assert.equal(total, 10);
   } finally {
-    await rm(base, {recursive: true, force: true});
+    await rm(base, { recursive: true, force: true });
   }
 });
 
@@ -123,7 +143,7 @@ test("a chunk stream can be told to seek backwards, and re-reads from there", as
     assert.equal(resumed.value.start, 2);
     await chunks.return(undefined);
   } finally {
-    await rm(base, {recursive: true, force: true});
+    await rm(base, { recursive: true, force: true });
   }
 });
 
@@ -137,25 +157,29 @@ test("an empty file still goes through the simple path", async () => {
     assert.deepEqual(chunks, []);
     assert.ok(0 <= SIMPLE_UPLOAD_LIMIT);
   } finally {
-    await rm(base, {recursive: true, force: true});
+    await rm(base, { recursive: true, force: true });
   }
 });
 
 test("Google Drive uploads a large file in chunks and resumes where 308 says", async () => {
-  const {file, size, clean} = await bigFile();
+  const { file, size, clean } = await bigFile();
   const ranges: string[] = [];
   let held = 0;
   let refused = false;
 
   await withFetch(
     async (url, init) => {
+      if (url.includes("/drive/v3/files?q="))
+        return new Response(JSON.stringify({ files: [] }));
       if (url.includes("uploadType=resumable"))
         return new Response("{}", {
           status: 200,
-          headers: {location: "https://upload.test/session/1"},
+          headers: { location: "https://upload.test/session/1" },
         });
       if (url.startsWith("https://upload.test/session/")) {
-        const range = (init.headers as Record<string, string>)["content-range"]!;
+        const range = (init.headers as Record<string, string>)[
+          "content-range"
+        ]!;
         ranges.push(range);
         const [, start, end] = /bytes (\d+)-(\d+)\//.exec(range)!;
         // The second chunk is accepted only in part, which is the case the
@@ -165,17 +189,20 @@ test("Google Drive uploads a large file in chunks and resumes where 308 says", a
           held = Number(start) + 1024;
           return new Response("", {
             status: 308,
-            headers: {range: `bytes=0-${held - 1}`},
+            headers: { range: `bytes=0-${held - 1}` },
           });
         }
         held = Number(end) + 1;
         if (held >= size)
-          return new Response(JSON.stringify({id: "f1", name: "recording.mov"}), {
-            status: 200,
-          });
+          return new Response(
+            JSON.stringify({ id: "f1", name: "recording.mov" }),
+            {
+              status: 200,
+            },
+          );
         return new Response("", {
           status: 308,
-          headers: {range: `bytes=0-${held - 1}`},
+          headers: { range: `bytes=0-${held - 1}` },
         });
       }
       throw new Error(`unexpected call: ${url}`);
@@ -199,26 +226,26 @@ test("Google Drive uploads a large file in chunks and resumes where 308 says", a
 });
 
 test("Dropbox follows its own offset when an append lands in the wrong place", async () => {
-  const {file, size, clean} = await bigFile();
+  const { file, size, clean } = await bigFile();
   const offsets: number[] = [];
   let corrected = false;
 
   await withFetch(
     async (url, init) => {
       if (url.endsWith("/upload_session/start"))
-        return new Response(JSON.stringify({session_id: "s1"}));
+        return new Response(JSON.stringify({ session_id: "s1" }));
       const arg = JSON.parse(
         (init.headers as Record<string, string>)["dropbox-api-arg"]!,
-      ) as {cursor?: {offset: number}};
+      ) as { cursor?: { offset: number } };
       if (url.endsWith("/upload_session/append_v2")) {
         offsets.push(arg.cursor!.offset);
         if (!corrected && arg.cursor!.offset === CHUNK_BYTES) {
           corrected = true;
           return new Response(
             JSON.stringify({
-              error: {".tag": "incorrect_offset", correct_offset: 4096},
+              error: { ".tag": "incorrect_offset", correct_offset: 4096 },
             }),
-            {status: 409},
+            { status: 409 },
           );
         }
         return new Response("{}");
@@ -226,7 +253,11 @@ test("Dropbox follows its own offset when an append lands in the wrong place", a
       if (url.endsWith("/upload_session/finish")) {
         offsets.push(arg.cursor!.offset);
         return new Response(
-          JSON.stringify({name: "recording.mov", size, path_lower: "/recording.mov"}),
+          JSON.stringify({
+            name: "recording.mov",
+            size,
+            path_lower: "/recording.mov",
+          }),
         );
       }
       throw new Error(`unexpected call: ${url}`);
@@ -246,34 +277,38 @@ test("Dropbox follows its own offset when an append lands in the wrong place", a
 });
 
 test("OneDrive follows nextExpectedRanges", async () => {
-  const {file, size, clean} = await bigFile();
+  const { file, size, clean } = await bigFile();
   const starts: number[] = [];
 
   await withFetch(
     async (url, init) => {
       if (url.endsWith("createUploadSession"))
         return new Response(
-          JSON.stringify({uploadUrl: "https://upload.test/graph/1"}),
+          JSON.stringify({ uploadUrl: "https://upload.test/graph/1" }),
         );
       if (url.startsWith("https://upload.test/graph/")) {
-        const range = (init.headers as Record<string, string>)["content-range"]!;
+        const range = (init.headers as Record<string, string>)[
+          "content-range"
+        ]!;
         const [, start, end] = /bytes (\d+)-(\d+)\//.exec(range)!;
         starts.push(Number(start));
         if (Number(end) + 1 >= size)
           return new Response(
-            JSON.stringify({id: "g1", name: "recording.mov", size}),
-            {status: 201},
+            JSON.stringify({ id: "g1", name: "recording.mov", size }),
+            { status: 201 },
           );
         // Graph reports the next range it wants, which is what we follow.
         return new Response(
-          JSON.stringify({nextExpectedRanges: [`${Number(end) + 1}-`]}),
-          {status: 202},
+          JSON.stringify({ nextExpectedRanges: [`${Number(end) + 1}-`] }),
+          { status: 202 },
         );
       }
       throw new Error(`unexpected call: ${url}`);
     },
     async () => {
-      const drive = withClientId(() => new OneDrive(secrets(), consent, "default"));
+      const drive = withClientId(
+        () => new OneDrive(secrets(), consent, "default"),
+      );
       const entry = await drive.upload("root-id", file);
       assert.equal(entry.id, "g1");
     },
@@ -285,9 +320,9 @@ test("OneDrive follows nextExpectedRanges", async () => {
 
 test("Google Drive lists every page of a folder, not just the first", async () => {
   const pages = [
-    {files: [{id: "a", name: "a.txt"}], nextPageToken: "p2"},
-    {files: [{id: "b", name: "b.txt"}], nextPageToken: "p3"},
-    {files: [{id: "c", name: "c.txt"}]},
+    { files: [{ id: "a", name: "a.txt" }], nextPageToken: "p2" },
+    { files: [{ id: "b", name: "b.txt" }], nextPageToken: "p3" },
+    { files: [{ id: "c", name: "c.txt" }] },
   ];
   let call = 0;
 

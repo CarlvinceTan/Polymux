@@ -1,4 +1,4 @@
-import {existsSync, readFileSync} from "node:fs";
+import {existsSync, mkdirSync, readFileSync} from "node:fs";
 import {copyFile, cp, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile} from "node:fs/promises";
 import type {Stats} from "node:fs";
 import {execFile} from "node:child_process";
@@ -14,7 +14,7 @@ import {
   type AgentPrompts,
   type SkillLoaderOptions,
 } from "@flareai/agent";
-import {ChronicleManager} from "@flareai/chronicle";
+import {ComputerHistoryManager} from "@flareai/computer-history";
 import type {ActiveAgentRun} from "@flareai/core";
 import type {InferenceModel, InferenceService, ModelRef} from "@flareai/inference";
 import {PiInference} from "@flareai/inference/pi";
@@ -48,7 +48,10 @@ import type {
   WorkspaceRevealDto,
   JsonValue,
   DefaultAppDto,
+  EnqueueManagerJobRequest,
+  ManagerSnapshotDto,
 } from "@flareai/protocol";
+import {createAppleMailSearcher} from "./hub/apple-mail.js";
 import {
   channels,
   commsPlatform,
@@ -64,6 +67,7 @@ import {
 } from "@flareai/protocol";
 import {SqliteStorage} from "@flareai/storage/sqlite";
 import type {StoredMessage} from "@flareai/storage";
+import {ProfileManager} from "./profiles.js";
 import {
   createNativeTools,
   importMcpServers,
@@ -72,6 +76,7 @@ import {
 } from "@flareai/tools";
 import {builtinModels} from "@earendil-works/pi-ai/providers/all";
 import {createProvider, type Model, type MutableModels} from "@earendil-works/pi-ai";
+import {registerBunOAuthFlows} from "@earendil-works/pi-ai/bun-oauth";
 import {openAICompletionsApi} from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
   app,
@@ -85,7 +90,15 @@ import {
   type IpcMain,
   type IpcMainInvokeEvent,
 } from "electron";
+
 import {assistantText, eventDto, storedEventDto} from "./backend/dto.js";
+import {ChatPool, type JobPriority} from "./agent/chat-pool.js";
+import {
+  shouldBoundGoalContinuation,
+  shouldResumePausedGoal,
+  shouldUseGoalProgressContext,
+} from "./agent/goal-intent.js";
+import {managerClaimContextThroughSequence, managerContextThroughSequence, managerJobRequiresExclusiveRun, managerRunCapacity} from "./agent/manager-scheduler.js";
 import {
   WORKSPACE_BOOT_ID,
   audioBuffer,
@@ -93,9 +106,9 @@ import {
   browserImportRequest,
   browserPermission,
   browserSettingsPatch,
-  chroniclePatch,
-  chronicleQuery,
-  chronicleRange,
+  computerHistoryPatch,
+  computerHistoryQuery,
+  computerHistoryRange,
   clearDataOptions,
   customMcpRequest,
   customSkillRequest,
@@ -109,6 +122,8 @@ import {
   permissionDecision,
   positiveRate,
   required,
+  taskCardInput,
+  taskCardPatch,
   scheduleInput,
   schedulePatch,
   sendMailRequest,
@@ -132,6 +147,7 @@ import {
   customProviderRequest,
   discoverModels,
   discoverModelsRequest,
+  MODEL_ROLES,
   modelFromEnvironment,
   modelPreference,
   modelRole,
@@ -147,7 +163,8 @@ import {
   mimetypeOf,
   skillInstructions,
 } from "./backend/host.js";
-import {EncryptedCredentialStore} from "./system/credential-store.js";
+import {speechModeAfterRoleChange} from "./backend/speech-mode.js";
+import {EncryptedCredentialStore, OpenCodeCredentialFallback} from "./system/credential-store.js";
 import {
   appVersion,
   checkForUpdates,
@@ -157,15 +174,24 @@ import {
 } from "./system/updater.js";
 import {HookEngine} from "./agent/hooks.js";
 import {officialSkillsHome} from "./skills/official.js";
-import {EXTENSION_INSTALL_URL, readExtensionStatus} from "./browser/extension.js";
+import {EXTENSION_INSTALL_URL, readExtensionStatus, readExternalPromptSnapshot} from "./browser/extension.js";
 import {ProtectedSkillGuard, combineHooks} from "./skills/protected.js";
 import {AgentSurfaceServer} from "./agent/surface.js";
 import {AgentSurfaceAdapter} from "./agent/surface-adapter.js";
+import {createFlareAIUiInspectionTool} from "./agent/ui-inspection.js";
+import {createCurrentLocationResolutionTool, reverseGeocodeCurrentLocation} from "./agent/location-resolution.js";
+import {refreshLocationForPrompt} from "./agent/prompt-location-refresh.js";
 import {createBrowserControlTools} from "./browser/control-tools.js";
-import {createInAppBrowserTool} from "./browser/embedded-tools.js";
+import {
+  createInAppBrowserBatchTool,
+  createInAppBrowserReadTool,
+  createInAppBrowserTool,
+  type InAppBrowserResearchTool,
+} from "./browser/embedded-tools.js";
 import {createHubDraftTool, createWorkspaceTool} from "./workspace/tools.js";
 import {RunResourceRecorder} from "./agent/run-resources.js";
 import {EncryptedApiKeyPool} from "./inference/api-key-pool.js";
+import {openAICodexInteraction, providerOAuthError, ProviderOAuthSessions} from "./inference/provider-oauth.js";
 import {WhisperDictation} from "./system/dictation.js";
 import {discoverAgentSkills, resolveDiscoveredSkill} from "./skills/discovery.js";
 import {installSkillPackage, searchSkillRegistry} from "./skills/registry.js";
@@ -187,14 +213,16 @@ import {importFromFile} from "./browser/import/files.js";
 import type {ImportedData} from "./browser/import/types.js";
 import {siteFaviconDataUrl} from "./browser/favicon.js";
 import {RotatingInference} from "./inference/rotating.js";
-import {AccessibilityChronicleFrames, ElectronChronicleSystem} from "./agent/chronicle.js";
+import {AccessibilityComputerHistoryFrames, ElectronComputerHistorySystem} from "./agent/computer-history.js";
 import {NativeInteractionEvents} from "./agent/interaction-events.js";
+import {compactPromptWindows, needsFreshDesktopContext} from "./agent/environment-context.js";
+import {createPerRunCallLimit} from "./agent/tool-budget.js";
 import {RecordingCapture} from "./recording/capture.js";
 import {createRecordingTool} from "./recording/tools.js";
 import {RecordingMenubar} from "./recording/menubar.js";
-import {ComputerUseMenubar} from "./window-use/menubar.js";
-import {PillIcon} from "./window-use/pill-icon.js";
-import {WindowControlMonitor} from "./window-use/monitor.js";
+import {ComputerUseMenubar} from "./computer-use/menubar.js";
+import {PillIcon} from "./computer-use/pill-icon.js";
+import {WindowControlMonitor} from "./computer-use/monitor.js";
 import {AxReader, type AxWindow} from "./system/ax-reader.js";
 import {FileReloadWatcher} from "./system/file-reload-watcher.js";
 import {DirectoryWatcher} from "./system/directory-watcher.js";
@@ -206,8 +234,10 @@ import {
 } from "./system/notifications.js";
 import {Scheduler} from "./scheduler/index.js";
 import {createScheduleTool} from "./scheduler/tools.js";
-import {Communications} from "./communications/index.js";
-import {HubCache} from "./communications/cache.js";
+import {TaskBoard} from "./tasks/index.js";
+import {createTasksTool} from "./tasks/tools.js";
+import {Communications} from "./hub/index.js";
+import {HubCache} from "./hub/cache.js";
 import {Drive, createDriveTools} from "@flareai/drive";
 import {electronConsent} from "./system/drive-consent.js";
 import {sessionScopedSnapshot} from "./workspace/snapshot.js";
@@ -217,7 +247,14 @@ import type {Homeserver, MatrixRoom} from "@flareai/hub";
  * How recent a message has to be to be worth announcing. Anything older is
  * history a bridge is catching up on rather than something just said.
  */
+// pi-ai normally loads OAuth flows through runtime-relative imports. Electron
+// packages the bundled main process without those source-relative files, so
+// register the static loaders that pi-ai provides for standalone bundles.
+registerBunOAuthFlows();
+
 const MESSAGE_NOTIFICATION_MAX_AGE_MS = 60_000;
+/** Remote unlinking happens outside FlareAI, so it needs a quiet current-state check. */
+const COMMS_STATUS_INTERVAL_MS = 30_000;
 
 /** The part of BridgeHost the backend needs: what is installed, and what is held back. */
 interface BridgeInventory {
@@ -234,11 +271,12 @@ interface BridgeInventory {
   retryBlocked: () => Promise<void>;
   ensure: (platform: string) => Promise<void>;
 }
-import {cancelCookieLogin, runCookieLogin} from "./communications/cookie-login.js";
-import {createCommunicationsTools} from "./communications/tools.js";
+import {cancelCookieLogin, runCookieLogin} from "./hub/cookie-login.js";
+import {createCommunicationsTools} from "./hub/tools.js";
 import {parse as parseToml} from "smol-toml";
 import {FirstRunPermissions} from "./system/first-run-permissions.js";
 import {AppPermissions} from "./system/app-permissions.js";
+import {ContactLookup} from "./hub/contacts.js";
 import {Reminders} from "./reminders/index.js";
 import {createRemindersTools} from "./reminders/tools.js";
 import {
@@ -272,6 +310,14 @@ export interface DesktopBackendOptions {
    * and the rest belong to the judge, the compactor and the memory jobs.
    */
   agentPrompts?: AgentPrompts;
+  /** Opt-in benchmark strategy. Never enabled by stored user state. */
+  orchestrationExperiment?: boolean;
+  /** Background automation must never invoke Notification Center or surface a
+   * delayed OS prompt above the user's foreground app. */
+  suppressSystemNotifications?: boolean;
+  /** Isolated background automation must not initialize Squirrel or its macOS
+   * background UI. Ordinary packaged sessions still check automatically. */
+  suppressAutomaticUpdateChecks?: boolean;
   codexConfigPath?: string;
   /** Path to the bundled native/ax-reader.swift accessibility helper. */
   axReaderSourcePath?: string;
@@ -280,8 +326,14 @@ export interface DesktopBackendOptions {
   pillImageSourcePath?: string;
   /** Path to the bundled native/app-permissions.swift privacy helper. */
   appPermissionsSourcePath?: string;
+  /** Path to the bundled native/contacts.swift bounded lookup helper. */
+  contactsSourcePath?: string;
   /** Path to the bundled native/reminders.swift EventKit helper. */
   remindersSourcePath?: string;
+  /** Rebuilds profile-bound services while keeping the app window alive. */
+  reloadForProfileChange?: () => void;
+  /** Selects the designated default only for a fresh app launch. */
+  selectDefaultProfile?: boolean;
   /**
    * The app-scoped message hub. It outlives this backend: closing a window
    * closes the backend, but the hub and its bridges run until the app quits.
@@ -369,8 +421,13 @@ ${JXA_ICON_TO_PNG}
 
 export class DesktopBackend {
   #window: BrowserWindow;
+  /** Every FlareAI renderer allowed to use the preload API. Detached
+   * workspace windows are trusted without becoming the embedded-browser
+   * owner represented by `#window`. */
+  readonly #trustedWindows = new Map<number, BrowserWindow>();
   readonly #ipcMain: IpcMain;
   readonly #storage: SqliteStorage;
+  readonly #profiles: ProfileManager;
   #agent?: FlareAIAgent;
   #model?: ModelRef;
   /** Per-role model overrides, each with the reasoning level it was assigned
@@ -378,16 +435,19 @@ export class DesktopBackend {
   #roleOverrides: Partial<Record<ModelRole, RoleSelection>> = {};
   readonly #models: MutableModels;
   readonly #customProviders = new Map<string, CustomProviderConfig>();
+  readonly #providerOAuth = new ProviderOAuthSessions();
   readonly #credentials: EncryptedCredentialStore;
   readonly #apiKeys: EncryptedApiKeyPool;
   readonly #inference: InferenceService;
   readonly #skills: SkillLoader;
   readonly #coreSkills: ReadonlySet<string>;
   readonly #agentPrompts: AgentPrompts;
+  readonly #orchestrationExperiment: boolean;
+  readonly #suppressAutomaticUpdateChecks: boolean;
   readonly #agentSkillOptions: SkillLoaderOptions;
   readonly #goals: GoalManager;
   readonly #memory: MemoryManager;
-  readonly #chronicle: ChronicleManager;
+  readonly #computerHistory: ComputerHistoryManager;
   readonly #recording: RecordingCapture;
   readonly #computerUse: ComputerUseMenubar;
   readonly #windowControl: WindowControlMonitor;
@@ -403,14 +463,18 @@ export class DesktopBackend {
   readonly #dictation: WhisperDictation;
   readonly #mcp = new McpManager();
   readonly #registry: ToolRegistry;
+  readonly #browserResearchTool?: InAppBrowserResearchTool;
   readonly #hooks = new HookEngine();
   readonly #agentSurface = new AgentSurfaceServer();
   readonly #runResources: RunResourceRecorder;
+  readonly #managerJobs: ChatPool;
+  readonly #drainingManagerConversations = new Set<string>();
   readonly #notifier: Notifier;
   /** Runs a schedule started, so the schedule's own notification is not
    * doubled by the one every finished run would otherwise get. */
   readonly #scheduledRunIds = new Set<string>();
   readonly #scheduler: Scheduler;
+  readonly #tasks: TaskBoard;
   readonly #surfaceMenubar = new AgentSurfaceAdapter({
     onStop: () => {
       // "Stop Using <App>" from the Computer Use pill: end browser control
@@ -448,15 +512,18 @@ export class DesktopBackend {
   readonly #modelCatalog: ModelCatalog;
   readonly #embeddedBrowser: EmbeddedBrowser;
   readonly #axReader: AxReader;
-  /** Last window listing, and when it was taken. See #openWindows(). */
+  /** Last trusted window listing, retained as a fallback if a refresh fails. */
   #windowSnapshot: {at: number; windows: AxWindow[]} = {at: 0, windows: []};
   #windowRefresh?: Promise<void>;
+  #locationRefresh?: Promise<void>;
   readonly #sitePermissions: SitePermissions;
   readonly #downloads: Downloads;
   readonly #loginVault: EncryptedLoginVault;
   readonly #autofill: Autofill;
   readonly #browsingData: BrowsingData;
   readonly #comms: Communications;
+  #commsStatusTimer?: NodeJS.Timeout;
+  #commsStatusRefresh?: Promise<void>;
   /** The hub's first screen, kept across quitting. */
   readonly #hubCache: HubCache;
   /** The last folder list read per account, so an envelope page can be cached
@@ -467,38 +534,60 @@ export class DesktopBackend {
   /** Pins every run's tools to one folder, overriding the default output
    * folder. Set by tests and by hosts that embed the backend. */
   readonly #toolDirectory: string | undefined;
+  readonly #reloadForProfileChange?: () => void;
 
   constructor(options: DesktopBackendOptions) {
     this.#window = options.window;
+    this.#trustedWindows.set(options.window.webContents.id, options.window);
     this.#ipcMain = options.ipcMain;
     this.#toolDirectory = options.toolDirectory;
+    this.#reloadForProfileChange = options.reloadForProfileChange;
     this.#coreSkills = new Set(options.coreSkills ?? []);
     this.#agentPrompts = options.agentPrompts ?? {};
+    this.#orchestrationExperiment = options.orchestrationExperiment === true;
+    this.#suppressAutomaticUpdateChecks = options.suppressAutomaticUpdateChecks === true;
+    this.#storage = new SqliteStorage(path.join(options.dataDirectory, "flareai.sqlite"));
+    this.#profiles = new ProfileManager(
+      this.#storage,
+      options.dataDirectory,
+      flareaiPath(),
+      flareaiPath("profiles"),
+    );
+    if (options.selectDefaultProfile) this.#profiles.selectDefault();
+    const activeProfile = this.#profiles.snapshot().activeId;
+    const profileDirectory = this.#profiles.directory(activeProfile);
+    mkdirSync(profileDirectory, {recursive: true});
+    const personalSkills = path.join(profileDirectory, "skills");
     this.#skills = new SkillLoader({
       official: options.officialSkillDirectories,
-      personal: flareaiPath("skills"),
+      personal: personalSkills,
     });
     this.#agentSkillOptions = {
       official: options.officialSkillDirectories,
-      personal: flareaiPath("skills"),
+      personal: personalSkills,
       // Core integrations have no Skills-list toggle, so nothing may switch
       // them off — including a stale preference from before they were core.
       isEnabled: (skill) =>
         this.#coreSkills.has(skill.name) || this.#integrationEnabled("skill-enabled", skill.name),
     };
-    this.#storage = new SqliteStorage(
-      path.join(options.dataDirectory, "flareai.sqlite"),
-    );
+    this.#managerJobs = new ChatPool(this.#storage);
     this.#credentials = new EncryptedCredentialStore(
-      path.join(options.dataDirectory, "credentials.json"),
+      path.join(profileDirectory, "credentials.json"),
       safeStorage,
     );
     this.#apiKeys = new EncryptedApiKeyPool(
-      path.join(options.dataDirectory, "api-keys.json"),
+      path.join(profileDirectory, "api-keys.json"),
       safeStorage,
     );
-    this.#models = builtinModels({credentials: this.#credentials});
-    for (const config of customProviderPreference(this.#storage.getPreference("custom-providers")?.value))
+    this.#models = builtinModels({
+      // The default profile retains the convenient read-only OpenCode login
+      // bridge. Named profiles are strict isolation boundaries and may only
+      // see credentials saved inside their own profile directory.
+      credentials: activeProfile === "default"
+        ? new OpenCodeCredentialFallback(this.#credentials)
+        : this.#credentials,
+    });
+    for (const config of customProviderPreference(this.#profilePreference("custom-providers")?.value))
       this.#registerCustomProvider(config);
     this.#inference = new RotatingInference(
       new PiInference(this.#models),
@@ -530,10 +619,10 @@ export class DesktopBackend {
       cacheDirectory: path.join(options.dataDirectory, "bin"),
       access: {ensure: () => this.#requireAppPermission("reminders")},
     });
-    this.#chronicle = new ChronicleManager({
-      directory: path.join(options.dataDirectory, "chronicle"),
-      frames: new AccessibilityChronicleFrames(this.#axReader),
-      system: new ElectronChronicleSystem(),
+    this.#computerHistory = new ComputerHistoryManager({
+      directory: path.join(options.dataDirectory, "computer-history"),
+      frames: new AccessibilityComputerHistoryFrames(this.#axReader),
+      system: new ElectronComputerHistorySystem(),
       interactions: new NativeInteractionEvents({
         sourcePath: options.axEventsSourcePath ?? "",
         cacheDirectory: path.join(options.dataDirectory, "bin"),
@@ -568,7 +657,7 @@ export class DesktopBackend {
         };
       },
     });
-    // window-use drives native windows from a skill, through bash — nothing
+    // Computer Use drives native windows from a skill, through bash — nothing
     // here is called when it takes one. Its lease registry is the one honest
     // signal, so the pill is driven from that rather than from a hook that
     // does not exist.
@@ -594,7 +683,7 @@ export class DesktopBackend {
     this.#firstRunPermissions = new FirstRunPermissions({
       store: this.#storage,
       status: systemPermissionStatus,
-      onReady: () => this.#chronicle.start(),
+      onReady: () => this.#computerHistory.start(),
     });
     this.#modelCatalog = new ModelCatalog({cacheDir: options.dataDirectory});
     this.#downloads = new Downloads({
@@ -670,9 +759,9 @@ export class DesktopBackend {
     // FlareAI's own configuration lives in ~/.flareai next to its skills, not
     // buried in the platform's application-support directory: it is a file the
     // user is meant to be able to open, and a skill or script may be asked to.
-    this.#mcpConfigPath = flareaiPath("mcp.json");
+    this.#mcpConfigPath = path.join(profileDirectory, "mcp.json");
     adoptLegacyMcpConfig(path.join(options.dataDirectory, "mcp.json"), this.#mcpConfigPath);
-    this.#customSkillDirectory = flareaiPath("skills");
+    this.#customSkillDirectory = path.join(profileDirectory, "skills");
     this.#codexMcpConfigPath = options.codexConfigPath ?? path.join(homedir(), ".codex", "config.toml");
     this.#mcpConfigWatcher = new FileReloadWatcher(
       this.#mcpConfigPath,
@@ -718,8 +807,16 @@ export class DesktopBackend {
       });
     });
     this.#hubCache = new HubCache(this.#storage);
+    const contacts = options.contactsSourcePath
+      ? new ContactLookup({
+          sourcePath: options.contactsSourcePath,
+          cacheDirectory: path.join(options.dataDirectory, "bin"),
+        })
+      : undefined;
     this.#comms = new Communications({
       credentials: this.#credentials,
+      appleMailSearch: createAppleMailSearcher(),
+      contactLookup: contacts ? (alias) => contacts.find(alias) : undefined,
       // App-scoped and possibly absent; the backend only points comms at it.
       embedded: options.hub
         ? {
@@ -820,7 +917,10 @@ export class DesktopBackend {
     this.#notifier = new Notifier({
       preferences: () => {
         const general = this.#generalSettings();
-        return {enabled: general.notificationsEnabled, kinds: general.notifications};
+        return {
+          enabled: !options.suppressSystemNotifications && general.notificationsEnabled,
+          kinds: general.notifications,
+        };
       },
       present: (request) => this.#presentNotification(request),
       supported: () => Notification.isSupported(),
@@ -856,16 +956,41 @@ export class DesktopBackend {
       if (!this.#closing && !this.#window.isDestroyed())
         this.#window.webContents.send(channels.schedulesChanged, items);
     });
+    this.#tasks = new TaskBoard(this.#managerJobs);
+    this.#tasks.subscribe((items) => {
+      if (!this.#closing && !this.#window.isDestroyed())
+        this.#window.webContents.send(channels.tasksChanged, items);
+    });
     this.#registry = new ToolRegistry(
       createNativeTools({ cwd: (context) => this.#runDirectory(context.runId) }),
     );
     for (const tool of createRemindersTools(this.#reminders))
       this.#registry.register(tool);
-    for (const tool of createBrowserControlTools(this.#agentSurface))
+    for (const tool of createBrowserControlTools(this.#agentSurface, {
+      currentRead: this.#orchestrationExperiment,
+      embeddedBrowser: this.#embeddedBrowser,
+    }))
       this.#registry.register(tool);
     // The in-app Browser is the default surface for web work, so the agent
     // drives it directly rather than through the user's external browser.
-    this.#registry.register(createInAppBrowserTool(this.#embeddedBrowser));
+    const inAppBrowserTool = createInAppBrowserTool(this.#embeddedBrowser);
+    if (this.#orchestrationExperiment) {
+      const boundResearch = createPerRunCallLimit(
+        6,
+        "The bounded public-research budget is complete. Do not open, read, snapshot, or interact with more research pages; synthesize from the current first-party evidence and state any remaining uncertainty.",
+      );
+      const workflowActions = new Set([
+        "tabs", "show", "close", "get", "fill", "type", "select", "check",
+        "uncheck", "upload", "dialog", "wait",
+      ]);
+      this.#registry.register(boundResearch(
+        inAppBrowserTool,
+        (input) => !workflowActions.has(String((input as {action?: unknown})?.action ?? "")),
+      ));
+      this.#registry.register(boundResearch(createInAppBrowserBatchTool(this.#embeddedBrowser)));
+      this.#browserResearchTool = createInAppBrowserReadTool(this.#embeddedBrowser);
+      this.#registry.register(boundResearch(this.#browserResearchTool));
+    } else this.#registry.register(inAppBrowserTool);
     // The work the agent does lands in places the user cannot see while it
     // happens, so it needs a way to answer "show me" by opening one.
     // Both halves of the workspace surface run off the same revealer: one
@@ -873,15 +998,65 @@ export class DesktopBackend {
     // from delegated runs.
     this.#registry.register(createWorkspaceTool(this.#workspaceRevealer()));
     this.#registry.register(createHubDraftTool(this.#workspaceRevealer()));
+    if (this.#orchestrationExperiment)
+      this.#registry.register(createFlareAIUiInspectionTool({
+        openSettings: async (mode) => {
+          await this.#window.webContents.executeJavaScript(
+            `window.dispatchEvent(new CustomEvent("flareai:agent-inspect-settings", {detail: {mode: ${JSON.stringify(mode)}}}))`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 350));
+        },
+        snapshot: async () => {
+          const semantic = await this.#window.webContents.executeJavaScript(`(() => {
+            const visible = (element) => {
+              const style = getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+            };
+            const images = [...document.images].filter(visible).map((image) => ({
+              alt: image.alt || image.getAttribute("aria-label") || "",
+              source: image.currentSrc || image.src || "",
+              loaded: image.complete && image.naturalWidth > 0,
+              width: image.naturalWidth,
+              height: image.naturalHeight,
+            }));
+            return {text: document.body.innerText.slice(0, 12000), images};
+          })()`);
+          const image = await this.#window.webContents.capturePage();
+          return {
+            image: {data: image.toPNG().toString("base64"), mimeType: "image/png" as const},
+            text: String(semantic?.text ?? ""),
+            images: Array.isArray(semantic?.images) ? semantic.images : [],
+          };
+        },
+      }));
+    if (this.#orchestrationExperiment)
+      this.#registry.register(createCurrentLocationResolutionTool({
+        current: () => {
+          const settings = this.#generalSettings();
+          return {
+            enabled: settings.locationEnabled,
+            location: settings.locationEnabled ? settings.location : null,
+          };
+        },
+        resolve: reverseGeocodeCurrentLocation,
+      }));
     // Asking for something to happen every morning is a chat request like any
     // other, so the agent needs a way to write one down.
     this.#registry.register(createScheduleTool(this.#scheduler));
+    this.#registry.register(createTasksTool(
+      this.#tasks,
+      (runId) => this.#storage.getRun(runId)?.conversationId ?? null,
+    ));
     // Showing the agent a workflow is a chat request too, so the recorder is
     // always present rather than something the user has to switch on first.
     this.#registry.register(createRecordingTool(this.#recording));
     // Messaging and email are app capabilities rather than an MCP server the
     // user has to register, so their tools are always present.
-    for (const tool of createCommunicationsTools(this.#comms))
+    for (const tool of createCommunicationsTools(this.#comms, {
+      searchAllEmail: this.#orchestrationExperiment,
+      searchAllEmailTimeoutMs: this.#orchestrationExperiment ? 3_500 : undefined,
+    }))
       this.#registry.register(tool);
     // Same reasoning as messaging: the drives the user connected in Settings
     // are an app capability, so the agent can act on all of them without an
@@ -890,8 +1065,8 @@ export class DesktopBackend {
       this.#registry.register(tool);
     // Loopback only; a failed bind (port in use) degrades to no browser control.
     void this.#agentSurface.start().catch(() => {});
-    // Prime the window listing so the first turn of the session has one.
-    this.#openWindows();
+    // Prime the window listing; each turn still awaits a fresh snapshot.
+    void this.#refreshOpenWindows();
     // Mirror active browser-use leases into the user's Agent Surface
     // menu-bar pill (the ChatGPT-desktop-style Computer Use capsule), when
     // that presentation layer is installed.
@@ -905,8 +1080,14 @@ export class DesktopBackend {
           sessionId: "flareai-browser",
         });
     };
-    this.#roleOverrides = modelRolesPreference(this.#storage.getPreference("model-roles")?.value);
-    const storedModel = modelPreference(this.#storage.getPreference("model")?.value);
+    this.#roleOverrides = modelRolesPreference(this.#profilePreference("model-roles")?.value);
+    if (options.model && process.env.FLAREAI_MODEL_ALL_ROLES === "1") {
+      const reasoning = reasoningEffort(process.env.FLAREAI_REASONING, "low") ?? "low";
+      for (const role of MODEL_ROLES) {
+        if (role !== "main") this.#roleOverrides[role] = {...options.model, reasoning};
+      }
+    }
+    const storedModel = modelPreference(this.#profilePreference("model")?.value);
     if (options.model) this.#selectModel(options.model, false);
     else if (storedModel && this.#inference.getModel(storedModel))
       this.#selectModel(storedModel, false);
@@ -994,6 +1175,10 @@ export class DesktopBackend {
     return this.#comms.mediaAuth;
   }
 
+  profileSnapshot() {
+    return this.#profiles.snapshot();
+  }
+
   /**
    * The files the renderer may read. Held here rather than beside the protocol
    * handler so that minting a grant is something only a handler can do — the
@@ -1004,11 +1189,19 @@ export class DesktopBackend {
 
   attachWindow(window: BrowserWindow): void {
     this.#window = window;
+    this.trustWindow(window);
     this.#embeddedBrowser.attachWindow(window);
-    // The handlers hang off the session, which outlives any one window, but
-    // they close over which webContents is the app's own — so they are
-    // reinstalled for each window rather than once at construction.
+  }
+
+  /** Grants a secondary FlareAI window access to the app IPC surface without
+   * moving browser views or changing which window agent reveals target. */
+  trustWindow(window: BrowserWindow): void {
+    this.#trustedWindows.set(window.webContents.id, window);
     this.#sitePermissions.install(window.webContents.session, window.webContents);
+  }
+
+  untrustWindow(window: BrowserWindow | number): void {
+    this.#trustedWindows.delete(typeof window === "number" ? window : window.webContents.id);
   }
 
   /** Rescues the embedded browser's pages before their window is destroyed. */
@@ -1021,13 +1214,49 @@ export class DesktopBackend {
     // permission handlers from here; every later window installs from there.
     this.#sitePermissions.install(this.#window.webContents.session, this.#window.webContents);
     this.#registerAutofill();
-    if (this.#firstRunPermissions.completed()) this.#chronicle.start();
+    if (this.#firstRunPermissions.completed()) this.#computerHistory.start();
     this.#scheduler.start();
+    this.#handle(channels.profilesList, () => this.#profiles.snapshot());
+    this.#handle(channels.profilesCreate, (_event, name: unknown) =>
+      this.#profiles.create(required(name, "profile name")));
+    this.#handle(channels.profilesRename, (_event, id: unknown, name: unknown) =>
+      this.#profiles.rename(required(id, "profile id"), required(name, "profile name")));
+    this.#handle(channels.profilesSetDefault, (_event, id: unknown) =>
+      this.#profiles.setDefault(required(id, "profile id")));
+    this.#handle(channels.profilesDuplicate, (_event, id: unknown) =>
+      this.#profiles.duplicate(required(id, "profile id")));
+    this.#handle(channels.profilesRemove, async (_event, id: unknown) => {
+      const before = this.#profiles.snapshot().activeId;
+      const result = await this.#profiles.remove(required(id, "profile id"));
+      if (result.activeId !== before) setTimeout(() => this.#reloadForProfileChange?.(), 0);
+      return result;
+    });
+    this.#handle(channels.profilesSelect, (_event, id: unknown) => {
+      const before = this.#profiles.snapshot().activeId;
+      const result = this.#profiles.select(required(id, "profile id"));
+      if (result.activeId !== before) setTimeout(() => this.#reloadForProfileChange?.(), 0);
+      return result;
+    });
+    // WhatsApp and similar platforms can be unlinked from the phone. Their
+    // bridge process stays alive, so process supervision cannot notice that
+    // account-state change. Poll the small provisioning status surface and let
+    // Communications emit only when its fingerprint actually changes.
+    this.#commsStatusTimer = setInterval(() => {
+      if (this.#closing || this.#commsStatusRefresh) return;
+      this.#commsStatusRefresh = this.#comms
+        .status()
+        .then((status) => this.#hubCache.putStatus(status))
+        .catch((): undefined => undefined)
+        .finally(() => {
+          this.#commsStatusRefresh = undefined;
+        });
+    }, COMMS_STATUS_INTERVAL_MS);
+    this.#commsStatusTimer.unref();
     // Nothing is asked for here. A permission dialog at launch is one nobody
     // pressed anything to get, and it arrives before there is even a window to
     // explain it — so the grant is asked for where the user is: in onboarding,
     // from the button on its row in Settings, or at the moment something
-    // actually needs it. Chronicle without the grant captures nothing and says
+    // actually needs it. ComputerHistory without the grant captures nothing and says
     // so on its own row, which is the honest state rather than a surprise.
     applyThemeSource(this.#generalSettings().theme);
     // Basic mode owns no memory switches, so it holds them all on.
@@ -1041,22 +1270,7 @@ export class DesktopBackend {
       // memory switched off with nowhere to switch it back on.
       if (!next.advancedMode && previous.advancedMode !== next.advancedMode)
         this.#enableAllMemory();
-      this.#storage.setPreference("general-access", {
-        theme: next.theme,
-        language: next.language,
-        currency: next.currency,
-        advancedMode: next.advancedMode,
-        speechModeEnabled: next.speechModeEnabled,
-        dictationAutoStopSeconds: next.dictationAutoStopSeconds,
-        timeEnabled: next.timeEnabled,
-        locationEnabled: next.locationEnabled,
-        reasoningLevel: next.reasoningLevel,
-        onboardingCompleted: next.onboardingCompleted,
-        permissions: next.permissions,
-        notificationsEnabled: next.notificationsEnabled,
-        notifications: next.notifications,
-        location: next.location,
-      });
+      this.#storeGeneralSettings(next);
       return next;
     });
     // Deliberately past every switch, including the focus check: this is sent
@@ -1076,7 +1290,7 @@ export class DesktopBackend {
     this.#handle(channels.generalVersion, () => appVersion());
     this.#handle(channels.generalCheckUpdates, () => checkForUpdates());
     this.#handle(channels.generalInstallUpdate, () => installUpdate());
-    startUpdateChecks();
+    if (!this.#suppressAutomaticUpdateChecks) startUpdateChecks();
     this.#handle(channels.permissionsStatus, (_event, value: unknown) =>
       permissionStatus(systemPermission(value)),
     );
@@ -1114,10 +1328,27 @@ export class DesktopBackend {
           title: required(title, "title"),
         }),
     );
-    this.#handle(channels.conversationsRemove, (_event, id: string) => {
+    this.#handle(channels.conversationsRemove, async (_event, id: string) => {
       const conversationId = required(id, "conversation id");
+      // A run can still be appending durable events after the renderer asks to
+      // delete its conversation. Cancelling and settling every run in that
+      // conversation first keeps those writes from racing the FK cascade.
+      // Repeat once children have settled because a parent may have registered
+      // a delegated run immediately before observing cancellation.
+      while (true) {
+        const active = [...this.#activeRuns.entries()]
+          .filter(([runId]) => this.#storage.getRun(runId)?.conversationId === conversationId)
+          .map(([, run]) => run);
+        if (!active.length) break;
+        for (const run of active)
+          run.control.cancel(new Error("Conversation deleted"));
+        await Promise.allSettled(active.map((run) => run.result));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       this.#runResources.forget(conversationId);
-      return this.#storage.deleteConversation(conversationId);
+      const removed = this.#storage.deleteConversation(conversationId);
+      if (this.#managerJobs.removeChat(conversationId)) this.#publishManagerJobs();
+      return removed;
     });
     this.#handle(channels.messagesList, (_event, id: string) =>
       this.#storage
@@ -1173,6 +1404,10 @@ export class DesktopBackend {
       // Resolve the live run before persisting: a run that settled between the
       // click and this handler must not leave an orphaned user message behind.
       const active = this.#requireRun(id);
+      active.control.steer({
+        role: "user",
+        content: value,
+      });
       this.#storage.appendMessage({
         id: messageId ? required(messageId, "message id") : crypto.randomUUID(),
         conversationId: run.conversationId,
@@ -1180,10 +1415,45 @@ export class DesktopBackend {
         role: "user",
         content: value,
       });
-      active.control.steer({
-        role: "user",
-        content: value,
+    });
+    this.#handle(channels.managerSnapshot, () => this.#managerSnapshot());
+    this.#handle(channels.managerEnqueue, (_event, value: unknown) => {
+      this.#requireManagerExperiment();
+      const request = managerJobRequest(value);
+      const visible = this.#storage.listMessages(request.chatId).at(-1)?.sequence ?? 0;
+      const contextThroughSequence = managerContextThroughSequence({
+        jobs: this.#managerJobs.list(request.chatId),
+        chatId: request.chatId,
+        job: request,
+        latestSequence: visible,
       });
+      const job = this.#managerJobs.enqueue({...request, contextThroughSequence});
+      this.#publishManagerJobs();
+      void this.#drainManagerConversation(job.chatId);
+      return job;
+    });
+    this.#handle(channels.managerCancel, (_event, id: string) => {
+      this.#requireManagerExperiment();
+      const job = this.#managerJobs.cancel(required(id, "manager job id"));
+      if (job.runId) this.#activeRuns.get(job.runId)?.control.cancel(new Error(`Manager job ${job.id} cancelled`));
+      this.#publishManagerJobs();
+      void this.#drainManagerConversation(job.chatId);
+      return job;
+    });
+    this.#handle(channels.managerReprioritize, (_event, id: string, priority: JobPriority) => {
+      this.#requireManagerExperiment();
+      const job = this.#managerJobs.reprioritize(required(id, "manager job id"), managerPriority(priority));
+      this.#publishManagerJobs();
+      return job;
+    });
+    this.#handle(channels.managerReorder, (_event, id: string, targetId: string) => {
+      this.#requireManagerExperiment();
+      const jobs = this.#managerJobs.reorder(
+        required(id, "manager job id"),
+        required(targetId, "target manager job id"),
+      );
+      this.#publishManagerJobs();
+      return jobs;
     });
     this.#handle(
       channels.runEventsList,
@@ -1220,35 +1490,67 @@ export class DesktopBackend {
     this.#handle(channels.schedulesMarkRead, (_event, id: string) =>
       this.#scheduler.markRead(required(id, "schedule id")),
     );
+    this.#handle(channels.tasksList, (_event, chatId: string) =>
+      this.#tasks.list(required(chatId, "chat id")),
+    );
+    this.#handle(channels.tasksCreate, (_event, value: unknown) =>
+      this.#tasks.create(taskCardInput(value)),
+    );
+    this.#handle(channels.tasksUpdate, (_event, id: string, value: unknown) =>
+      this.#tasks.update(required(id, "card id"), taskCardPatch(value)),
+    );
+    this.#handle(channels.tasksRemove, (_event, id: string) => {
+      this.#tasks.remove(required(id, "card id"));
+    });
+    this.#handle(channels.tasksMarkRead, (_event, id: string) =>
+      this.#tasks.markRead(required(id, "card id")),
+    );
     this.#handle(channels.memoryStatus, () => this.#memory.status());
+    this.#handle(channels.memoryEntries, () => this.#memory.list().map((entry) => ({
+      id: entry.id,
+      scope: entry.scope,
+      kind: entry.kind,
+      content: entry.content,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+    })));
     this.#handle(channels.memorySetEnabled, (_event, enabled: boolean) => {
       if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
       return this.#memory.setEnabled(enabled);
     });
-    this.#handle(channels.chronicleStatus, () => this.#chronicle.status());
-    this.#handle(channels.chronicleSetEnabled, async (_event, enabled: boolean) => {
+    this.#handle(channels.computerHistoryStatus, () => this.#computerHistory.status());
+    this.#handle(channels.computerHistorySetEnabled, async (_event, enabled: boolean) => {
       if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
       if (enabled) await requestSystemPermission("accessibility");
-      const status = this.#chronicle.setEnabled(enabled);
+      const status = this.#computerHistory.setEnabled(enabled);
       if (enabled) {
-        await this.#chronicle.captureOnce();
-        return this.#chronicle.status();
+        await this.#computerHistory.captureOnce();
+        return this.#computerHistory.status();
       }
       return status;
     });
-    this.#handle(channels.chronicleUpdate, (_event, value: unknown) =>
-      this.#chronicle.update(chroniclePatch(value)),
+    this.#handle(channels.computerHistoryUpdate, (_event, value: unknown) =>
+      this.#computerHistory.update(computerHistoryPatch(value)),
     );
-    this.#handle(channels.chronicleForget, (_event, since: unknown, until: unknown) => {
-      const range = chronicleRange(since, until);
-      return this.#chronicle.forget(range.since, range.until);
+    this.#handle(channels.computerHistoryForget, (_event, since: unknown, until: unknown) => {
+      const range = computerHistoryRange(since, until);
+      return this.#computerHistory.forget(range.since, range.until);
     });
-    this.#handle(channels.chronicleEntries, (_event, value?: unknown) => {
-      const options = chronicleQuery(value);
-      return this.#chronicle.store.entries(options);
+    this.#handle(channels.computerHistoryRemoveEntry, (_event, value: unknown) =>
+      this.#computerHistory.removeEntry(required(value, "history entry id")),
+    );
+    this.#handle(channels.computerHistoryRevealEntry, (_event, value: unknown) => {
+      const id = required(value, "history entry id");
+      const entry = this.#computerHistory.store.entries({limit: Number.MAX_SAFE_INTEGER}).find((candidate) => candidate.id === id);
+      if (!entry || !existsSync(entry.path)) throw new Error("History entry is no longer available");
+      shell.showItemInFolder(entry.path);
+    });
+    this.#handle(channels.computerHistoryEntries, (_event, value?: unknown) => {
+      const options = computerHistoryQuery(value);
+      return this.#computerHistory.store.entries(options);
     });
     // Parented like the other pickers, so it opens as a sheet over the app.
-    this.#handle(channels.chroniclePickApp, async () => {
+    this.#handle(channels.computerHistoryPickApp, async () => {
       const {dialog} = await import("electron");
       const result = await dialog.showOpenDialog(this.#window, {
         title: "Choose an application",
@@ -1261,7 +1563,7 @@ export class DesktopBackend {
     });
     // The app's own icon, by the name the list holds. A row for an app that
     // has since been removed simply gets no icon back and keeps its glyph.
-    this.#handle(channels.chronicleAppIcon, async (_event, value: unknown) => {
+    this.#handle(channels.computerHistoryAppIcon, async (_event, value: unknown) => {
       const name = required(value, "application name");
       if (process.platform !== "darwin" || name.includes("/")) return null;
       const bundle = await applicationBundle(name);
@@ -1470,9 +1772,11 @@ export class DesktopBackend {
         return page;
       },
     );
-    this.#handle(channels.commsChatMarkRead, (_event, chatId: unknown, messageId: unknown) =>
-      this.#comms.markChatRead(required(chatId, "chat id"), required(messageId, "message id")),
-    );
+    this.#handle(channels.commsChatMarkRead, async (_event, chatId: unknown, messageId: unknown) => {
+      if (this.#generalSettings().hubIncognitoMode) return false;
+      await this.#comms.markChatRead(required(chatId, "chat id"), required(messageId, "message id"));
+      return true;
+    });
     // The hub answers a send with the event id it minted. The renderer shows
     // the sent message immediately rather than re-reading the room, so it is
     // handed the whole message — an id alone lands in the thread as a blank.
@@ -2085,13 +2389,18 @@ export class DesktopBackend {
     );
     this.#handle(
       channels.driveUpload,
-      (_event, source: unknown, parentPath: unknown, paths: unknown) =>
+      (event, source: unknown, parentPath: unknown, paths: unknown, operationId: unknown) =>
         this.#drive.upload(
           driveSource(source),
           typeof parentPath === "string" ? parentPath : "",
           Array.isArray(paths)
             ? paths.filter((entry): entry is string => typeof entry === "string")
             : undefined,
+          {
+            onProgress: typeof operationId === "string"
+              ? (completed, total) => event.sender.send(channels.driveProgress, operationId, completed, total)
+              : undefined,
+          },
         ),
     );
     this.#handle(channels.driveDownload, (_event, source: unknown, target: unknown) =>
@@ -2116,13 +2425,16 @@ export class DesktopBackend {
     );
     this.#handle(
       channels.driveMove,
-      (_event, source: unknown, paths: unknown, destination: unknown) =>
+      (event, source: unknown, paths: unknown, destination: unknown, operationId: unknown) =>
         this.#drive.move(
           driveSource(source),
           Array.isArray(paths)
             ? paths.filter((entry): entry is string => typeof entry === "string")
             : [],
           typeof destination === "string" ? destination : "",
+          typeof operationId === "string"
+            ? (completed, total) => event.sender.send(channels.driveProgress, operationId, completed, total)
+            : undefined,
         ),
     );
     this.#handle(channels.driveCopy, (_event, source: unknown, paths: unknown) =>
@@ -2154,6 +2466,62 @@ export class DesktopBackend {
       const id = required(providerId, "provider");
       if (!this.#models.getProvider(id)) throw new Error(`Unknown provider: ${id}`);
       await this.#apiKeys.remove(id, required(keyId, "API key id"));
+      return this.#providerDto(id);
+    });
+    this.#handle(channels.providersConnectOAuth, async (event, providerId: string) => {
+      const id = required(providerId, "provider");
+      const provider = this.#models.getProvider(id);
+      if (!provider) throw new Error(`Unknown provider: ${id}`);
+      if (!provider.auth.oauth) throw new Error(`${provider.name} does not support account login`);
+      if (id !== "openai-codex")
+        throw new Error("Only OpenAI Codex account login is available in Settings");
+      const controller = this.#providerOAuth.begin(id);
+      const cancel = () => controller.abort();
+      event.sender.once("destroyed", cancel);
+      try {
+        try {
+          await this.#models.login(id, "oauth", openAICodexInteraction(
+            id,
+            controller.signal,
+            (value) => {
+              if (!event.sender.isDestroyed())
+                event.sender.send(channels.providersOAuthEvent, value);
+            },
+          ));
+        } catch (reason) {
+          throw providerOAuthError(reason);
+        }
+      } finally {
+        event.sender.removeListener("destroyed", cancel);
+        this.#providerOAuth.finish(id, controller);
+      }
+      const updated = await this.#providerDto(id);
+      const preferred = this.#inference.listModels(id).find((model) => model.id === "gpt-5.6-luna")
+        ?? this.#inference.listModels(id)[0];
+      if (preferred) {
+        const ref = {provider: preferred.provider, id: preferred.id, reasoning: "low" as const};
+        this.#selectModel(ref);
+        this.#roleOverrides = {...this.#roleOverrides, task: ref};
+        this.#persistRoles();
+        this.#setReasoningLevel("low");
+      }
+      return updated;
+    });
+    this.#handle(channels.providersCancelOAuth, (_event, providerId: string) => {
+      const id = required(providerId, "provider");
+      this.#providerOAuth.cancel(id);
+    });
+    this.#handle(channels.providersDisconnectOAuth, async (_event, providerId: string) => {
+      const id = required(providerId, "provider");
+      const provider = this.#models.getProvider(id);
+      if (!provider) throw new Error(`Unknown provider: ${id}`);
+      if (!provider.auth.oauth) throw new Error(`${provider.name} does not support account login`);
+      this.#providerOAuth.cancel(id);
+      await this.#models.logout(id);
+      this.#roleOverrides = Object.fromEntries(
+        Object.entries(this.#roleOverrides).filter(([, ref]) => ref?.provider !== id),
+      );
+      this.#persistRoles();
       return this.#providerDto(id);
     });
     this.#handle(channels.providersCreateCustom, async (_event, value: unknown) => {
@@ -2223,6 +2591,11 @@ export class DesktopBackend {
     this.#mcpConfigWatcher.start();
     this.#customSkillWatcher.start();
     this.#windowControl.start();
+    if (this.#orchestrationExperiment) queueMicrotask(() => {
+      for (const conversationId of new Set(
+        this.#managerJobs.list().filter((job) => job.status === "queued").map((job) => job.chatId),
+      )) void this.#drainManagerConversation(conversationId);
+    });
   }
 
   async reloadMcp(): Promise<McpServerDto[]> {
@@ -2343,8 +2716,9 @@ export class DesktopBackend {
     this.#storage.setPreference("mcp-codex-migrated", true);
   }
 
-  async close(): Promise<void> {
+  async close(reason = "FlareAI is closing"): Promise<void> {
     this.#closing = true;
+    if (this.#commsStatusTimer) clearInterval(this.#commsStatusTimer);
     stopUpdateChecks();
     this.#surfaceMenubar.close();
     void this.#agentSurface.close();
@@ -2353,7 +2727,7 @@ export class DesktopBackend {
     this.#customSkillWatcher.stop();
     this.#windowControl.stop();
     this.#computerUse.hide();
-    this.#chronicle.stop();
+    this.#computerHistory.stop();
     // A recording that outlived the app would keep a tap alive with nobody to
     // end it, so an app quit ends it as an interruption rather than a stop.
     this.#recording.stop("interrupted");
@@ -2361,7 +2735,7 @@ export class DesktopBackend {
     this.#dictation.close();
     const activeRuns = [...this.#activeRuns.values()];
     for (const run of activeRuns)
-      run.control.cancel(new Error("FlareAI is closing"));
+      run.control.cancel(new Error(reason));
     for (const channel of this.#registeredChannels)
       this.#ipcMain.removeHandler(channel);
     await Promise.allSettled([
@@ -2441,25 +2815,126 @@ export class DesktopBackend {
   }
 
   async #startRun(
-    request: ReturnType<typeof validateStartRun>,
+    request: ReturnType<typeof validateStartRun> & {
+      reuseUserMessage?: boolean;
+      contextThroughSequence?: number;
+      executionScopeId?: string;
+      replyToMessageId?: string;
+    },
+    preparedRunId?: string,
   ): Promise<{ runId: string }> {
     this.#preemptGoalContinuation(request.conversationId);
-    await this.#prepareMcpForRun();
+    // Only deictic/current-screen requests pay for a synchronous AX refresh.
+    // Other turns use the latest trusted snapshot and refresh it in parallel
+    // for later, avoiding desktop inspection on the inference critical path.
+    const desktopContext = this.#orchestrationExperiment && needsFreshDesktopContext(request.text)
+      ? this.#refreshOpenWindows()
+      : (void this.#refreshOpenWindows(), Promise.resolve());
+    const locationContext = this.#orchestrationExperiment
+      ? this.#refreshPromptLocation(request.text)
+      : Promise.resolve();
+    await Promise.all([this.#prepareMcpForRun(), desktopContext, locationContext]);
     const agent = await this.#ensureConfiguredAgent();
-    const runId = crypto.randomUUID();
+    const pausedGoal = this.#storage.getGoal(request.conversationId);
+    const maxTaskDispatches =
+      pausedGoal && (pausedGoal.status === "active" || pausedGoal.status === "paused") &&
+      shouldBoundGoalContinuation(request.text, pausedGoal.objective)
+        ? 2
+        : undefined;
+    if (
+      pausedGoal?.status === "paused" &&
+      shouldResumePausedGoal(request.text, pausedGoal.objective)
+    ) this.#storage.updateGoal(request.conversationId, {status: "active"});
+    const runId = preparedRunId ?? crypto.randomUUID();
     const active = agent.start({
       conversationId: request.conversationId,
       text: request.text,
       userMessageId: request.messageId,
+      reuseUserMessage: request.reuseUserMessage,
       attachments: request.attachments,
       asGoal: request.asGoal,
       reasoning: request.reasoning,
       speechMode: request.speechMode,
       runId,
+      contextThroughSequence: request.contextThroughSequence,
+      executionScopeId: request.executionScopeId,
+      replyToMessageId: request.replyToMessageId,
+      maxTaskDispatches,
+      goalProgressContext: Boolean(
+        pausedGoal && (pausedGoal.status === "active" || pausedGoal.status === "paused") &&
+        shouldUseGoalProgressContext(request.text, pausedGoal.objective),
+      ),
     });
     this.#activeRuns.set(runId, active);
     void this.#forwardEvents(runId, active);
     return { runId };
+  }
+
+  #activeTopLevelRuns(): Array<{runId: string; conversationId: string}> {
+    const result: Array<{runId: string; conversationId: string}> = [];
+    for (const runId of this.#activeRuns.keys()) {
+      const run = this.#storage.getRun(runId);
+      if (!run || run.parentRunId) continue;
+      result.push({runId, conversationId: run.conversationId});
+    }
+    return result;
+  }
+
+  async #drainManagerConversation(conversationId: string): Promise<void> {
+    if (!this.#orchestrationExperiment || this.#closing || this.#drainingManagerConversations.has(conversationId)) return;
+    this.#drainingManagerConversations.add(conversationId);
+    try {
+      while (!this.#closing) {
+        const jobs = this.#managerJobs.list();
+        const capacity = managerRunCapacity({
+          jobs,
+          activeTopLevelRuns: this.#activeTopLevelRuns(),
+          chatId: conversationId,
+        });
+        if (capacity <= 0) return;
+        const next = this.#managerJobs.nextReady(conversationId);
+        if (!next) return;
+        const conversationOccupied = jobs.some((job) =>
+          job.chatId === conversationId && job.status === "running")
+          || this.#activeTopLevelRuns().some((run) => run.conversationId === conversationId);
+        if (managerJobRequiresExclusiveRun(next) && conversationOccupied) return;
+        const runId = crypto.randomUUID();
+        const dependencyBoundary = managerClaimContextThroughSequence(
+          next,
+          this.#storage.listMessages(conversationId).at(-1)?.sequence ?? 0,
+        );
+        const claimed = this.#managerJobs.claimNext(runId, conversationId, {
+          contextThroughSequence: dependencyBoundary,
+        });
+        if (!claimed || claimed.id !== next.id) return;
+        this.#publishManagerJobs();
+        try {
+          await this.#startRun({
+            conversationId: claimed.chatId,
+            text: claimed.text,
+            messageId: claimed.messageId,
+            reuseUserMessage: Boolean(this.#storage.getMessage(claimed.messageId)),
+            attachments: claimed.attachments,
+            asGoal: claimed.asGoal,
+            contextThroughSequence: claimed.contextThroughSequence ?? 0,
+            executionScopeId: claimed.executionScopeId,
+            replyToMessageId: claimed.replyToMessageId,
+          }, runId);
+        } catch (error) {
+          this.#managerJobs.fail(claimed.id, error instanceof Error ? error.message : String(error));
+          this.#publishManagerJobs();
+          continue;
+        }
+      }
+    } finally {
+      this.#drainingManagerConversations.delete(conversationId);
+    }
+  }
+
+  #drainManagerQueues(): void {
+    for (const conversationId of new Set(
+      this.#managerJobs.list().filter((job) => job.status === "queued").map((job) => job.chatId),
+    )) void this.#drainManagerConversation(conversationId);
   }
 
   /**
@@ -2604,8 +3079,23 @@ export class DesktopBackend {
       // The agent already publishes a durable run.failed event. Settling below
       // still lets the renderer replace optimistic state with stored messages.
     } finally {
+      this.#browserResearchTool?.cleanupRun(runId);
       this.#activeRuns.delete(runId);
-      const goalConversation = this.#storage.getRun(runId)?.conversationId;
+      const settledRun = this.#storage.getRun(runId);
+      const goalConversation = settledRun?.conversationId;
+      const managerJob = this.#managerJobs.forRun(runId);
+      if (managerJob?.status === "running") {
+        if (settledRun?.status === "completed") this.#managerJobs.complete(managerJob.id);
+        else if (settledRun?.status === "cancelled") this.#managerJobs.cancel(managerJob.id);
+        else this.#managerJobs.fail(
+          managerJob.id,
+          settledRun?.error && typeof settledRun.error === "object" && !Array.isArray(settledRun.error)
+            && typeof settledRun.error.message === "string"
+            ? settledRun.error.message
+            : "Run interrupted",
+        );
+        this.#publishManagerJobs();
+      }
       if (
         goalConversation &&
         this.#goalContinuations.get(goalConversation) === runId
@@ -2627,6 +3117,7 @@ export class DesktopBackend {
           payload: {runId, conversationId},
         } satisfies RunEventDto);
       }
+      this.#drainManagerQueues();
     }
   }
 
@@ -2796,7 +3287,7 @@ export class DesktopBackend {
   }
 
   #integrationEnabled(key: "skill-enabled" | "mcp-enabled" | "plugin-enabled", id: string, fallback = true): boolean {
-    const value = this.#storage.getPreference(key)?.value;
+    const value = this.#profilePreference(key)?.value;
     if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
     const stored = (value as Record<string, unknown>)[id];
     return typeof stored === "boolean" ? stored : fallback;
@@ -2804,11 +3295,19 @@ export class DesktopBackend {
 
   #setIntegrationEnabled(key: "skill-enabled" | "mcp-enabled" | "plugin-enabled", id: string, enabled: unknown): void {
     if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
-    const value = this.#storage.getPreference(key)?.value;
+    const value = this.#profilePreference(key)?.value;
     const current = value && typeof value === "object" && !Array.isArray(value)
       ? value as Record<string, boolean>
       : {};
-    this.#storage.setPreference(key, {...current, [id]: enabled});
+    this.#setProfilePreference(key, {...current, [id]: enabled});
+  }
+
+  #profilePreference(key: string) {
+    return this.#profiles.preference(key);
+  }
+
+  #setProfilePreference(key: string, value: JsonValue): void {
+    this.#profiles.setPreference(key, value);
   }
 
   /**
@@ -2848,11 +3347,11 @@ export class DesktopBackend {
       if (!(id in servers)) throw new Error(`MCP server is not removable: ${id}`);
       delete servers[id];
     });
-    const cached = this.#storage.getPreference("mcp-capabilities")?.value;
+    const cached = this.#profilePreference("mcp-capabilities")?.value;
     if (cached && typeof cached === "object" && !Array.isArray(cached)) {
       const next = {...cached};
       delete next[id];
-      this.#storage.setPreference("mcp-capabilities", next);
+      this.#setProfilePreference("mcp-capabilities", next);
     }
   }
 
@@ -2903,11 +3402,11 @@ export class DesktopBackend {
     const destination = path.resolve(root, name);
     if (path.dirname(destination) !== root) throw new Error(`Invalid skill name: ${name}`);
     await rm(destination, {recursive: true, force: false});
-    const stored = this.#storage.getPreference("skill-enabled")?.value;
+    const stored = this.#profilePreference("skill-enabled")?.value;
     if (stored && typeof stored === "object" && !Array.isArray(stored)) {
       const next = {...stored};
       delete next[name];
-      this.#storage.setPreference("skill-enabled", next);
+      this.#setProfilePreference("skill-enabled", next);
     }
   }
 
@@ -3033,9 +3532,29 @@ export class DesktopBackend {
     return settings;
   }
 
+  #storeGeneralSettings(settings: GeneralSettingsDto): void {
+    this.#storage.setPreference("general-access", {
+      theme: settings.theme,
+      language: settings.language,
+      currency: settings.currency,
+      advancedMode: settings.advancedMode,
+      speechModeEnabled: settings.speechModeEnabled,
+      dictationAutoStopSeconds: settings.dictationAutoStopSeconds,
+      timeEnabled: settings.timeEnabled,
+      locationEnabled: settings.locationEnabled,
+      hubIncognitoMode: settings.hubIncognitoMode,
+      reasoningLevel: settings.reasoningLevel,
+      onboardingCompleted: settings.onboardingCompleted,
+      permissions: settings.permissions,
+      notificationsEnabled: settings.notificationsEnabled,
+      notifications: settings.notifications,
+      location: settings.location,
+    });
+  }
+
   /**
    * What is open on the machine, for the ambient context block. Titles only,
-   * and only while accessibility is granted — the same permission Chronicle
+   * and only while accessibility is granted — the same permission ComputerHistory
    * reads through. Cached briefly so a burst of runs costs one listing, and a
    * failure answers with the last reading rather than failing the turn.
    */
@@ -3108,12 +3627,9 @@ export class DesktopBackend {
     };
   }
 
-  #openWindows(): AxWindow[] {
+  async #refreshOpenWindows(): Promise<AxWindow[]> {
     if (!this.#permissionAvailable("accessibility")) return [];
-    // The prompt is built synchronously, so the listing is prefetched rather
-    // than awaited: an ageing snapshot starts a refresh for the next turn and
-    // this one answers with what is already in hand.
-    if (!this.#windowRefresh && Date.now() - this.#windowSnapshot.at > 3_000) {
+    if (!this.#windowRefresh) {
       this.#windowRefresh = this.#axReader
         .windows(process.pid)
         .then((result) => {
@@ -3124,17 +3640,82 @@ export class DesktopBackend {
           this.#windowRefresh = undefined;
         });
     }
+    await this.#windowRefresh;
     return this.#windowSnapshot.windows;
+  }
+
+  async #refreshPromptLocation(prompt: string): Promise<void> {
+    // A second top-level run may arrive while another prompt is refreshing.
+    // Let that exact attempt settle, then re-evaluate this prompt against the
+    // resulting state; never silently inherit the first prompt's eligibility.
+    if (this.#locationRefresh) await this.#locationRefresh;
+    if (!this.#locationRefresh) {
+      this.#locationRefresh = refreshLocationForPrompt(prompt, {
+        current: () => {
+          const settings = this.#generalSettings();
+          return {enabled: settings.locationEnabled, location: settings.location};
+        },
+        permission: async () => {
+          const state = await this.#window.webContents.executeJavaScript(`(async () => {
+            if (!navigator.permissions) return "unsupported";
+            try {
+              const result = await navigator.permissions.query({name: "geolocation"});
+              return ["granted", "denied", "prompt"].includes(result.state) ? result.state : "unsupported";
+            } catch { return "unsupported"; }
+          })()`);
+          return state === "granted" || state === "denied" || state === "prompt"
+            ? state
+            : "unsupported";
+        },
+        position: async (signal) => {
+          const value = await this.#window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+            if (!navigator.geolocation) { reject(new Error("unavailable")); return; }
+            navigator.geolocation.getCurrentPosition(
+              position => resolve({
+                latitude: position.coords.latitude,
+                longitude: position.coords.longitude,
+                accuracy: position.coords.accuracy,
+                updatedAt: new Date(position.timestamp).toISOString(),
+              }),
+              error => reject(new Error(error && error.message ? error.message : "location unavailable")),
+              {enableHighAccuracy: true, maximumAge: 0, timeout: 4000},
+            );
+          })`);
+          if (signal.aborted) throw signal.reason;
+          return value;
+        },
+        persist: (location) => {
+          const current = this.#generalSettings();
+          if (!current.locationEnabled) return;
+          this.#storeGeneralSettings(generalSettingsUpdate({location}, current));
+        },
+      }).then(() => {}).finally(() => {
+        this.#locationRefresh = undefined;
+      });
+    }
+    await this.#locationRefresh;
   }
 
   #environmentPromptContext() {
     const settings = this.#generalSettings();
     const now = new Date();
+    const capturedForTurn = now.toISOString();
+    const externalBrowser = this.#orchestrationExperiment
+      ? readExternalPromptSnapshot(now.getTime(), undefined, 100)
+      : undefined;
     const offsetMinutes = -now.getTimezoneOffset();
     const offsetSign = offsetMinutes >= 0 ? "+" : "-";
     const offsetHours = String(Math.floor(Math.abs(offsetMinutes) / 60)).padStart(2, "0");
     const offsetRemainder = String(Math.abs(offsetMinutes) % 60).padStart(2, "0");
+    const windows = this.#windowSnapshot.windows
+      .map(({app, title, frontmost}) => ({app, title, frontmost}))
+      .sort((left, right) => Number(right.frontmost) - Number(left.frontmost));
     return {
+      windowsCapturedAt: this.#windowSnapshot.at
+        ? new Date(this.#windowSnapshot.at).toISOString()
+        : undefined,
+      browserTabsCapturedAt: this.#orchestrationExperiment ? capturedForTurn : undefined,
+      externalBrowserCapturedAt: externalBrowser?.capturedAt,
       time: settings.timeEnabled
         ? {
             local: new Intl.DateTimeFormat(undefined, {
@@ -3143,30 +3724,38 @@ export class DesktopBackend {
             }).format(now),
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             utcOffset: `${offsetSign}${offsetHours}:${offsetRemainder}`,
+            instant: now.toISOString(),
           }
         : undefined,
       locationEnabled: settings.locationEnabled,
+      locationResolverAvailable: this.#orchestrationExperiment,
       location:
         settings.locationEnabled && settings.location
           ? settings.location
           : undefined,
-      browserTabs: this.#embeddedBrowser.tabs(),
+      browserTabs: this.#orchestrationExperiment
+        ? this.#embeddedBrowser.promptTabs(12)
+        : this.#embeddedBrowser.tabs(),
+      externalBrowserTabs: this.#orchestrationExperiment
+        // Read a wider bounded inventory here; prompt selection first filters
+        // by the user's request and only then keeps twenty. Capping before
+        // relevance would hide a useful inactive tab in a busy browser.
+        ? externalBrowser?.tabs
+        : undefined,
       // Frontmost first: the window the user is actually in is the one an
       // ambiguous "this" most often means.
-      windows: this.#openWindows()
-        .map(({app, title, frontmost}) => ({app, title, frontmost}))
-        .sort((left, right) => Number(right.frontmost) - Number(left.frontmost)),
+      windows: this.#orchestrationExperiment ? compactPromptWindows(windows, 20) : windows,
     };
   }
 
   /** Switch every memory surface on, for the mode that offers no way to. */
   #enableAllMemory(): void {
     if (!this.#memory.status().enabled) this.#memory.setEnabled(true);
-    if (this.#chronicle.settings().enabled) return;
+    if (this.#computerHistory.settings().enabled) return;
     // Switched on, never asked for: this runs at launch in basic mode, and a
     // dialog raised from here is one the user did nothing to invite.
-    this.#chronicle.setEnabled(true);
-    void this.#chronicle.captureOnce().catch(() => {});
+    this.#computerHistory.setEnabled(true);
+    void this.#computerHistory.captureOnce().catch(() => {});
   }
 
   #selectModel(ref: ModelRef, persist = true): ModelDto {
@@ -3175,7 +3764,7 @@ export class DesktopBackend {
     this.#model = ref;
     this.#buildAgent(ref);
     if (persist)
-      this.#storage.setPreference("model", {
+      this.#setProfilePreference("model", {
         provider: ref.provider,
         id: ref.id,
       });
@@ -3187,7 +3776,7 @@ export class DesktopBackend {
       inference: this.#inference,
       storage: this.#storage,
       memory: this.#memory,
-      chronicle: this.#chronicle,
+      computerHistory: this.#computerHistory,
       drive: { promptContext: () => this.#drive.promptContext() },
       environment: { promptContext: () => this.#environmentPromptContext() },
       tools: this.#registry,
@@ -3204,6 +3793,9 @@ export class DesktopBackend {
       compactionReasoning: this.#usableRole("compaction")?.reasoning,
       skills: this.#agentSkillOptions,
       prompts: this.#agentPrompts,
+      orchestrationExperiment: this.#orchestrationExperiment,
+      preloadSingleOfficialSkill:
+        this.#orchestrationExperiment && process.env.FLAREAI_PRELOAD_OFFICIAL_SKILL_EXPERIMENT === "1",
       // The guard runs first so a built-in skill stays read-only even when the
       // user's own hooks would have allowed the call.
       hooks: combineHooks(
@@ -3267,6 +3859,7 @@ export class DesktopBackend {
       throw new Error(`Unknown model: ${ref.provider}/${ref.id}`);
     this.#roleOverrides = { ...this.#roleOverrides, [role]: ref };
     this.#persistRoles();
+    this.#setSpeechModeForRoleChange(role, true);
     return this.#modelRoles();
   }
 
@@ -3277,11 +3870,12 @@ export class DesktopBackend {
     const {[role]: _removed, ...rest} = this.#roleOverrides;
     this.#roleOverrides = rest;
     this.#persistRoles();
+    this.#setSpeechModeForRoleChange(role, false);
     return this.#modelRoles();
   }
 
   #persistRoles(): void {
-    this.#storage.setPreference(
+    this.#setProfilePreference(
       "model-roles",
       Object.fromEntries(
         Object.entries(this.#roleOverrides).map(([role, ref]) => [
@@ -3314,6 +3908,19 @@ export class DesktopBackend {
       onboardingCompleted: settings.onboardingCompleted,
       location: settings.location,
     });
+  }
+
+  /** Model assignment provides the automatic default; the ordinary settings
+   * switch remains free to override it until the speech role changes again. */
+  #setSpeechModeForRoleChange(role: ModelRole, assigned: boolean): void {
+    const settings = this.#generalSettings();
+    const speechModeEnabled = speechModeAfterRoleChange(
+      role,
+      assigned,
+      settings.speechModeEnabled,
+    );
+    if (speechModeEnabled !== settings.speechModeEnabled)
+      this.#storeGeneralSettings({...settings, speechModeEnabled});
   }
 
   #modelDto(model: InferenceModel): ModelDto {
@@ -3373,7 +3980,7 @@ export class DesktopBackend {
   }
 
   #persistCustomProviders(): void {
-    this.#storage.setPreference("custom-providers", [...this.#customProviders.values()].map((provider) => ({
+    this.#setProfilePreference("custom-providers", [...this.#customProviders.values()].map((provider) => ({
       id: provider.id,
       name: provider.name,
       baseUrl: provider.baseUrl,
@@ -3491,6 +4098,23 @@ export class DesktopBackend {
     };
   }
 
+  #managerSnapshot(): ManagerSnapshotDto {
+    return {
+      enabled: this.#orchestrationExperiment,
+      jobs: this.#orchestrationExperiment ? this.#managerJobs.list() : [],
+    };
+  }
+
+  #requireManagerExperiment(): void {
+    if (!this.#orchestrationExperiment)
+      throw new Error("The manager scheduler is available only in the orchestration experiment");
+  }
+
+  #publishManagerJobs(): void {
+    if (this.#closing || this.#window.isDestroyed()) return;
+    this.#window.webContents.send(channels.managerChanged, this.#managerSnapshot());
+  }
+
   #requireAgent(): FlareAIAgent {
     if (!this.#agent)
       throw new Error(
@@ -3531,12 +4155,12 @@ export class DesktopBackend {
 
   #mcpCapabilities(snapshot: ReturnType<McpManager["snapshots"]>[number]): Pick<McpServerDto, "toolNames" | "resourceUris" | "promptNames"> {
     const current = {toolNames: snapshot.toolNames, resourceUris: snapshot.resourceUris, promptNames: snapshot.promptNames};
-    const value = this.#storage.getPreference("mcp-capabilities")?.value;
+    const value = this.#profilePreference("mcp-capabilities")?.value;
     const cache = value && typeof value === "object" && !Array.isArray(value) ? value : {};
     if (snapshot.status === "connected") {
       const previous = cache[snapshot.id];
       if (JSON.stringify(previous) !== JSON.stringify(current))
-        this.#storage.setPreference("mcp-capabilities", {...cache, [snapshot.id]: current});
+        this.#setProfilePreference("mcp-capabilities", {...cache, [snapshot.id]: current});
       return current;
     }
     const saved = cache[snapshot.id];
@@ -3555,10 +4179,8 @@ export class DesktopBackend {
   ): void {
     this.#registeredChannels.push(channel);
     this.#ipcMain.handle(channel, (event, ...args) => {
-      if (
-        event.sender.id !== this.#window.webContents.id ||
-        event.senderFrame !== this.#window.webContents.mainFrame
-      )
+      const trustedWindow = this.#trustedWindows.get(event.sender.id);
+      if (!trustedWindow || event.senderFrame !== trustedWindow.webContents.mainFrame)
         throw new Error("Rejected IPC from an untrusted frame");
       return listener(event, ...(args as T));
     });
@@ -3588,8 +4210,29 @@ export class DesktopBackend {
   }
 }
 
+function managerJobRequest(value: unknown): EnqueueManagerJobRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Manager job request must be an object");
+  const input = value as Record<string, unknown>;
+  const priority = input.priority === undefined ? undefined : managerPriority(input.priority);
+  return {
+    ...(typeof input.id === "string" ? {id: required(input.id, "manager job id")} : {}),
+    chatId: required(input.chatId, "chat id"),
+    text: typeof input.text === "string" ? input.text : "",
+    attachments: optionalStringArray(input.attachments, "attachments"),
+    asGoal: input.asGoal === true,
+    ...(priority ? {priority} : {}),
+    dependencyIds: optionalStringArray(input.dependencyIds, "dependency ids"),
+  };
+}
+
+function managerPriority(value: unknown): JobPriority {
+  if (value === "background" || value === "normal" || value === "urgent" || value === "attention") return value;
+  throw new Error(`Unknown manager priority: ${String(value)}`);
+}
+
 /**
- * Where an application named in Chronicle's exclusions actually lives.
+ * Where an application named in ComputerHistory's exclusions actually lives.
  *
  * The usual folders first, since that is where almost everything is, and
  * Spotlight after — an app run from a disk image, a developer build, or

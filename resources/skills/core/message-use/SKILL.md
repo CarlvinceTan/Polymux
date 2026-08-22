@@ -13,7 +13,7 @@ Route personal message through the safest capable platform, retrieve only the co
 
 - Keep replies short, cohesive, and outcome-first. For an explanatory answer, use at most five short points and omit implementation details, caveats, metrics, deep-dive menus, and meta-commentary unless they are decision-critical or requested.
 - Matrix is the shared backend for WhatsApp, Telegram, Discord, Messenger, Instagram, LinkedIn, iMessage, and verified WeChat. Platform-specific skills remain authoritative where one exists. Load `email-use` for email, `apple-reminders` for reminders, and `chat-style` for final personal wording.
-- Before any discovery or call that may initialize, reveal, or control a local GUI app, load `window-use` and follow its current route. This skill does not duplicate GUI mechanics.
+- Before any discovery or call that may initialize, reveal, or control a local GUI app, load `computer-use` and follow its current route. This skill does not duplicate GUI mechanics.
 - Prefer capable direct APIs, connectors, and CLIs before browser, desktop, or phone control.
 - Never invent a recipient, address, chat ID, account, or delivery result. Observed context is not send authority.
 
@@ -37,8 +37,9 @@ Never retry an ambiguous send until delivery evidence has been checked.
 
 ## Platform routing
 
-- **Matrix-backed messaging:** for WhatsApp, Telegram, Discord, Messenger, Instagram, LinkedIn, iMessage, and WeChat, use the Matrix tools directly. For one known conversation, resolve it with `message_chats`, then read it with `message_read`; for a topic or person, use `message_search`. Account authentication alone is not proof of a usable room or live bridge.
+- **Matrix-backed messaging:** for WhatsApp, Telegram, Discord, Messenger, Instagram, LinkedIn, iMessage, and WeChat, use the Matrix tools directly. Resolve a person or personal alias with `message_chats`, which can safely match Contacts after an exact room-name miss, then read the single resolved chat with `message_read`; use `message_search` for a topic or words inside messages. Never choose among ambiguous identity candidates. Account authentication alone is not proof of a usable room or live bridge. Treat each tool's `coverage` as the current source of truth: cached rooms or messages from a platform with `live: false` are historical only and must not be presented as current or exhaustive.
 - **All new or unread messages:** use one global `message_unread` call rather than scanning platforms or rooms separately. Continue its pagination when the user asks for all, group results by platform and conversation, and do not mark anything read.
+- **Learning an alias:** when the user explicitly says or confirms that an alias refers to one exact resolved chat, record that mapping with `message_link_alias`. Never infer a family relationship, learn from an unconfirmed candidate, or select among ambiguous chats. The saved mapping may be used on later turns even if a bridge recreates the room under a new id.
 - **Matrix unavailable or unsupported:** when Matrix lacks the exact room, account state, media feature, or required capability, immediately report the platform, account, missing capability, and observed blocker. Do not attempt a browser, desktop, phone, or platform-specific fallback unless the user explicitly asks for that alternate route.
 - **Email:** load `email-use` and let it choose the account and route.
 - **WeChat:** use the verified Matrix route for reading, searching, unread retrieval, and text sending. For an unsupported feature, report the limitation and wait for an explicit fallback request.

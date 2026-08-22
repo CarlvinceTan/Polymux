@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { RecordingEndReason, RecordingSession } from "@flareai/chronicle";
-import { ChronicleRecorder, elapsedLabel } from "@flareai/chronicle";
+import type { RecordingEndReason, RecordingSession } from "@flareai/computer-history";
+import { ComputerHistoryRecorder, elapsedLabel } from "@flareai/computer-history";
 import type { RecordingCapture } from "./capture.js";
 import { createRecordingTool } from "./tools.js";
 
@@ -16,7 +16,7 @@ function harness() {
   const root = mkdtempSync(path.join(tmpdir(), "flareai-record-tool-"));
   // The real 30-minute limit timer would hold the test process open long
   // after the assertions finish, so the schedule is a stub here.
-  const recorder = new ChronicleRecorder({
+  const recorder = new ComputerHistoryRecorder({
     directory: root,
     schedule: () => 0 as unknown as ReturnType<typeof setTimeout>,
     cancelSchedule: () => {},
@@ -36,7 +36,7 @@ function harness() {
   return { recorder, call, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-function demonstrate(recorder: ChronicleRecorder): RecordingSession {
+function demonstrate(recorder: ComputerHistoryRecorder): RecordingSession {
   const session = recorder.start({ label: "Book parking" });
   recorder.window({ app: "Safari", title: "Parking", url: "https://parking.example" });
   recorder.record({ at: "2026-08-18T10:00:01.000Z", kind: "click", app: "Safari", target: "Book" });

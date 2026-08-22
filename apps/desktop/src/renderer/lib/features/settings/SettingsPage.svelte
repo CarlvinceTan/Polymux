@@ -1,7 +1,7 @@
 <script module lang="ts">
   import type {
     BrowserExtensionDto as CachedExtensionDto,
-    ChronicleStatusDto as CachedChronicleDto,
+    ComputerHistoryStatusDto as CachedComputerHistoryDto,
     GeneralSettingsDto as CachedGeneralDto,
     McpServerDto as CachedMcpDto,
     MemoryStatusDto as CachedMemoryDto,
@@ -28,7 +28,7 @@
     models: CachedModelDto[];
     providers: CachedProviderDto[];
     memory: CachedMemoryDto | null;
-    chronicle: CachedChronicleDto | null;
+    computerHistory: CachedComputerHistoryDto | null;
     general: CachedGeneralDto | null;
     extensionStatus: CachedExtensionDto | null;
   } = {
@@ -39,23 +39,25 @@
     models: [],
     providers: [],
     memory: null,
-    chronicle: null,
+    computerHistory: null,
     general: null,
     extensionStatus: null,
   };
 </script>
 
 <script lang="ts">
+  import {flip} from 'svelte/animate';
   import {onDestroy, onMount, tick, type ComponentProps} from 'svelte';
   import {readableError} from '../../shared/errors';
   import {scrollFade} from '../../shared/scrollFade';
-  import type {AppUpdateDto, AppVersionDto, BrowserExtensionDto, ChronicleStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProviderDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, AppPermissionKind} from '@flareai/protocol';
+  import type {AppUpdateDto, AppVersionDto, BrowserExtensionDto, ComputerHistoryEntryDto, ComputerHistoryStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryEntryDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProfileDto, ProfilesDto, ProviderDto, ProviderOAuthEventDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, AppPermissionKind} from '@flareai/protocol';
   import {SUPPORTED_LANGUAGES} from '@flareai/protocol';
   import {flareaiApi} from '../../api/flareai';
   import {applyTheme, type ThemeMode} from '../../shared/theme';
   import {activeLocale, applyLanguage, plural, t, translate, type MessageKey} from '../../../i18n';
-  import {modelCompanyId, providerName} from '../../shared/options/providerBrands';
+  import {companyId, modelCompanyId, providerName} from '../../shared/options/providerBrands';
   import Icon from '../../shared/components/Icon.svelte';
+  import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH, SETTINGS_ICON_SIZE, SETTINGS_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import Menu from '../../shared/components/Menu.svelte';
   import ProviderLogo from '../../shared/components/ProviderLogo.svelte';
   import HubTab from './HubTab.svelte';
@@ -64,11 +66,22 @@
 
   export let onClose: () => void;
   export let onGeneralChange: (settings: GeneralSettingsDto) => void = () => {};
+  export let currentPinnedViews: GeneralSettingsDto['pinnedViews'] = [];
 
   type IconName = ComponentProps<Icon>['name'];
-  /** Which of Chronicle's two source panels a control belongs to. */
-  type ChronicleList = 'apps' | 'sites';
-  type Mode = 'general' | 'hub' | 'drive' | 'browser' | 'plugins' | 'mcp' | 'skills' | 'model' | 'provider' | 'memory';
+  type ProviderGroup = {
+    id: string;
+    name: string;
+    logoDataUrl?: string;
+    providers: ProviderDto[];
+    configured: boolean;
+    storedCredential: boolean;
+    modelCount: number;
+    custom: boolean;
+  };
+  /** Which of ComputerHistory's two source panels a control belongs to. */
+  type ComputerHistoryList = 'apps' | 'sites';
+  type Mode = 'general' | 'profile' | 'hub' | 'drive' | 'browser' | 'plugins' | 'mcp' | 'skills' | 'model' | 'provider' | 'computer-history';
   /** The tab to open on. Empty means the page opens where it always has;
    * the composer's Plugins button is what names one, so pressing it lands on
    * Plugins rather than on General with a tab still to find. */
@@ -95,6 +108,14 @@
   }
 
   let mode: Mode = initialMode || 'general';
+  let profiles: ProfilesDto = {activeId: 'default', profiles: [{id: 'default', name: 'Default Profile', isDefault: true}]};
+  let profileMenuOpen = false;
+  let profileCreateOpen = false;
+  let profileCreateName = 'New profile';
+  let profileCreateInput: HTMLInputElement;
+  let switchingToDefault = false;
+  $: activeProfile = profiles.profiles.find(profile => profile.id === profiles.activeId);
+  $: defaultProfile = profiles.profiles.find(profile => profile.isDefault) ?? profiles.profiles[0];
   let settled = false;
   let search = '';
   /** The rail's filter over the tab list, kept apart from `search`, which is
@@ -106,32 +127,53 @@
   let plugins: PluginDto[] = settingsSnapshot.plugins;
   let models: ModelDto[] = settingsSnapshot.models;
   let providers: ProviderDto[] = settingsSnapshot.providers;
-  let chronicle: ChronicleStatusDto | null = settingsSnapshot.chronicle;
+  let computerHistory: ComputerHistoryStatusDto | null = settingsSnapshot.computerHistory;
+  let computerHistoryEntries: ComputerHistoryEntryDto[] = [];
+  let memoryEntries: MemoryEntryDto[] = [];
+  let memoryBrowserMode: 'history' | 'memory' = 'history';
+  const latestHistoryMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  let historyMonth = new Date(latestHistoryMonth);
+  let historyYearPickerOpen = false;
+  let selectedHistoryDay = localDateKey(new Date());
+  $: historyEntriesByDay = computerHistoryEntries.reduce((groups, entry) => { const key = localDateKey(new Date(entry.capturedAt)); (groups[key] ??= []).push(entry); return groups; }, {} as Record<string, ComputerHistoryEntryDto[]>);
+  $: memoryEntriesByDay = memoryEntries.reduce((groups, entry) => { const key = localDateKey(new Date(entry.updatedAt)); (groups[key] ??= []).push(entry); return groups; }, {} as Record<string, MemoryEntryDto[]>);
+  $: historyCalendarDays = calendarDays(historyMonth, historyEntriesByDay, memoryEntriesByDay);
+  $: historyMonthText = historyMonthLabel(historyMonth);
+  $: historyCalendarYears = calendarYears(latestHistoryMonth.getFullYear(), historyEntriesByDay, memoryEntriesByDay);
+  $: canMoveHistoryForward = historyMonth < latestHistoryMonth;
+  $: canMoveHistoryYearForward = historyMonth.getFullYear() < latestHistoryMonth.getFullYear();
+  $: selectedHistoryEntries = historyEntriesByDay[selectedHistoryDay] ?? [];
+  $: selectedMemoryEntries = memoryEntriesByDay[selectedHistoryDay] ?? [];
   let memory: MemoryStatusDto | null = settingsSnapshot.memory;
-  let general: GeneralSettingsDto | null = settingsSnapshot.general;
+  let general: GeneralSettingsDto | null = settingsSnapshot.general
+    ? {...settingsSnapshot.general, pinnedViews: currentPinnedViews}
+    : null;
   let extensionStatus: BrowserExtensionDto | null = settingsSnapshot.extensionStatus;
 
   function openExtensionInstall(): void {
     void api.extension.openInstall().catch(() => {});
   }
   let updatingMemory = false;
-  let updatingChronicle = false;
+  let updatingComputerHistory = false;
+  let computerHistoryExclusionsExpanded = false;
   /* Per-panel view state: what is being typed, whether the add field and the
      filter field are open, and whether the rows are shown alphabetically. None
      of it is stored — the saved lists keep the order things were added in. */
   /* Only the websites panel types its entries; an app comes from the picker. */
   let pickingApp = false;
-  let chronicleDraft = '';
-  let chronicleAdding = false;
-  let chronicleFiltering = {apps: false, sites: false};
-  let chronicleQuery = {apps: '', sites: ''};
+  let computerHistoryDraft = '';
+  let computerHistoryAdding = false;
+  let computerHistoryFiltering = {apps: false, sites: false};
+  let computerHistoryQuery = {apps: '', sites: ''};
   let forgetting = '';
+  let deletingHistoryEntry = '';
   let updatingTheme = false;
   let updatingSpeechMode = false;
   let updatingAdvancedMode = false;
   let updatingAutoStop = false;
   let updatingTime = false;
   let updatingLocation = false;
+  let updatingHubIncognitoMode = false;
   let permissionStatuses: Partial<Record<SystemPermissionKind, SystemPermissionStatus>> = {};
   let updatingPermission: SystemPermissionKind | '' = '';
   let askingPermission: SystemPermissionKind | '' = '';
@@ -149,8 +191,11 @@
   let selectedPlugin = '';
   let selectedModelProvider = '';
   let selectedCredentialProvider = '';
-  let credentialKey = '';
+  let credentialKeys: Record<string, string> = {};
   let savingCredential = false;
+  let oauthConnecting = '';
+  let oauthDevice: Extract<ProviderOAuthEventDto, {type: 'device_code'}> | null = null;
+  let oauthProgress = '';
   let addingCustomProvider = false;
   let editingCustomProviderId = '';
   let customProviderName = '';
@@ -179,7 +224,7 @@
     models,
     providers,
     memory,
-    chronicle,
+    computerHistory,
     general,
     extensionStatus,
   });
@@ -222,6 +267,7 @@
   let skillAddMenuOpen = false;
   let mcpAddMenuOpen = false;
   let pluginAddMenuOpen = false;
+  let clearHistoryMenuOpen = false;
   let browsingMcpRegistry = false;
   /** The plugin marketplace, which the storefront tool opens over the detail
    * column the way the MCP registry does. */
@@ -314,6 +360,7 @@
   $: skillSortOptions = [{value: 'recommended', label: $t('hub.sortRecommended')}, {value: 'updated-desc', label: $t('settings.lastEdited')}, {value: 'name-asc', label: $t('settings.sortSkillAsc')}, {value: 'name-desc', label: $t('settings.sortSkillDesc')}];
   $: MODE_HEADERS = {
     general: {title: $t('settings.tabGeneral'), description: $t('settings.generalBlurb')},
+    profile: {title: 'Profile', description: 'Manage the active configuration profile.'},
     hub: {title: $t('workspace.hub'), description: $t('settings.hubBlurb')},
     drive: {title: $t('workspace.drive'), description: $t('settings.driveBlurb')},
     browser: {title: $t('settings.tabBrowser'), description: $t('settings.browserBlurb')},
@@ -324,7 +371,7 @@
     // roles are a setting, the directory is a choice.
     model: {title: $t('settings.tabModels'), description: browsingRole ? $t('settings.modelsBlurb') : $t('settings.rolesBlurb')},
     provider: {title: $t('settings.tabProviders'), description: $t('settings.providersBlurb')},
-    memory: {title: $t('settings.tabMemory'), description: $t('settings.memoryBlurb')},
+    'computer-history': {title: $t('settings.tabMemory'), description: $t('settings.memoryBlurb')},
   } as Record<Mode, {title: string; description: string}>;
   const recommendedModelCompanies = ['openai', 'anthropic', 'google', 'xai', 'meta', 'deepseek', 'mistral', 'qwen', 'moonshotai', 'minimax', 'cohere', 'perplexity', 'ai21'];
   const currencies: Currency[] = ['USD', 'AUD', 'EUR', 'GBP', 'SGD', 'JPY'];
@@ -386,7 +433,10 @@
   $: skill = skills.find((item) => item.name === selectedSkill);
   $: plugin = plugins.find((item) => item.id === selectedPlugin);
   $: modelCompany = modelCompanies.find((item) => item.id === selectedModelProvider);
-  $: credentialProvider = providers.find((item) => item.id === selectedCredentialProvider);
+  $: credentialProviderGroup = visibleProviders.find((item) => item.id === selectedCredentialProvider);
+  $: credentialProviders = credentialProviderGroup?.providers ?? [];
+  $: credentialProvider = credentialProviders[0];
+  $: openAIAccountProvider = providers.find((item) => item.id === 'openai-codex');
   // Follows the selection, including the automatic one made when the rail is
   // first filled. Typing in the field does not disturb it.
   $: runtimeUrl = credentialProvider?.baseUrl ?? '';
@@ -407,15 +457,19 @@
   /** Basic mode until the setting says otherwise, including while it loads —
    * a tab that appears and then vanishes is worse than one that arrives. */
   $: advanced = general?.advancedMode ?? false;
-  /* Basic mode drops the Model, Memory, MCP and Skills tabs; a page left parked
+  $: visibleProfiles = advanced ? profiles.profiles : defaultProfile ? [defaultProfile] : [];
+  $: if (general && !advanced && defaultProfile && profiles.activeId !== defaultProfile.id && !switchingToDefault)
+    void selectDefaultForBasicMode(defaultProfile.id);
+  /* Basic mode drops the Profile, Model, Memory, MCP and Skills tabs; a page left parked
      on one that no longer exists would read as Settings having gone blank.
      Plugins is the surface that stays: what MCP and Skills configure piecemeal,
      a plugin brings as one thing, and that is the whole of the simple view. */
-  $: if (!advanced && (mode === 'model' || mode === 'memory' || mode === 'mcp' || mode === 'skills'))
+  $: if (!advanced && (mode === 'profile' || mode === 'model' || mode === 'computer-history' || mode === 'mcp' || mode === 'skills'))
     mode = 'plugins';
   /* One icon per tab, all from the shared set at one size, so the rail reads as
      a single strip rather than eight separately chosen marks. */
   $: navTabs = [
+    ...(advanced ? [{id: 'profile' as Mode, icon: 'user' as IconName, label: 'Profile'}] : []),
     {id: 'general' as Mode, icon: 'settings' as IconName, label: $t('settings.tabGeneral')},
     {id: 'hub' as Mode, icon: 'chat' as IconName, label: $t('workspace.hub')},
     {id: 'drive' as Mode, icon: 'drive' as IconName, label: $t('workspace.drive')},
@@ -427,7 +481,7 @@
     ...(advanced ? [{id: 'skills' as Mode, icon: 'sparkles' as IconName, label: $t('settings.tabSkills')}] : []),
     ...(advanced ? [{id: 'model' as Mode, icon: 'bot' as IconName, label: $t('settings.tabModels')}] : []),
     {id: 'provider' as Mode, icon: 'bolt' as IconName, label: $t('settings.tabProvider')},
-    ...(advanced ? [{id: 'memory' as Mode, icon: 'brain' as IconName, label: $t('settings.tabMemory')}] : []),
+    ...(advanced ? [{id: 'computer-history' as Mode, icon: 'clock' as IconName, label: $t('settings.tabMemory')}] : []),
   ];
   /* The rail's own search narrows the tab list. It never hides the tab you are
      on: a filter that emptied the page out from under you would read as the
@@ -458,6 +512,12 @@
   });
 
   onMount(() => {
+    void api.profiles.list().then(value => profiles = value).catch(() => {});
+    const stopProfiles = api.profiles.subscribe((value) => {
+      profiles = value;
+      profileMenuOpen = false;
+      void loadAll();
+    });
     void loadAll();
     void loadCurrencyRates();
     // Warm the marketplace while the user is still browsing Settings so its
@@ -470,9 +530,81 @@
     // A skill the agent just wrote from a recording appears here on its own;
     // the list is replaced rather than reloaded, so a selection survives it.
     const stopSkills = api.skills.subscribe((value) => skills = value);
-    return () => { stopMcp(); stopSkills(); };
+    const stopOAuth = api.providers.subscribeOAuth((event) => {
+      if (event.providerId !== (selectedCredentialProvider === 'openai' ? 'openai-codex' : selectedCredentialProvider)) return;
+      if (event.type === 'device_code') oauthDevice = event;
+      else oauthProgress = event.message;
+    });
+    return () => {
+      if (oauthConnecting) void api.providers.cancelOAuth(oauthConnecting);
+      stopMcp();
+      stopSkills();
+      stopOAuth();
+      stopProfiles();
+    };
   });
 
+  async function beginCreateProfile(): Promise<void> {
+    profileCreateName = 'New profile';
+    profileCreateOpen = true;
+    await tick();
+    profileCreateInput?.select();
+  }
+  async function createProfile(): Promise<void> {
+    const name = profileCreateName.trim() || 'New profile';
+    if (profileNameExists(name)) {
+      error = 'A profile with this name already exists.';
+      profileCreateInput?.select();
+      return;
+    }
+    try {
+      const existingIds = new Set(profiles.profiles.map(profile => profile.id));
+      const created = await api.profiles.create(name);
+      const newProfile = created.profiles.find(profile => !existingIds.has(profile.id));
+      profiles = newProfile ? await api.profiles.select(newProfile.id) : created;
+      profileCreateOpen = false;
+      profileMenuOpen = false;
+      error = '';
+    } catch (reason) {
+      error = readableError(reason);
+    }
+  }
+  async function selectProfile(id: string): Promise<void> {
+    if (id === profiles.activeId) { profileMenuOpen = false; return; }
+    profiles = await api.profiles.select(id);
+    profileMenuOpen = false;
+  }
+  async function selectDefaultForBasicMode(id: string): Promise<void> {
+    switchingToDefault = true;
+    try {
+      profiles = await api.profiles.select(id);
+    } finally {
+      switchingToDefault = false;
+    }
+  }
+  async function renameProfile(profile: ProfileDto): Promise<void> {
+    const name = window.prompt('Rename profile', profile.name);
+    if (name === null) return;
+    if (profileNameExists(name, profile.id)) {
+      window.alert('A profile with this name already exists.');
+      return;
+    }
+    profiles = await api.profiles.rename(profile.id, name);
+  }
+  function profileNameExists(name: string, excludedId = ''): boolean {
+    const candidate = name.trim() || 'New profile';
+    return profiles.profiles.some(profile => profile.id !== excludedId && profile.name.localeCompare(candidate, undefined, {sensitivity: 'accent'}) === 0);
+  }
+  async function duplicateProfile(profile: ProfileDto): Promise<void> {
+    profiles = await api.profiles.duplicate(profile.id);
+  }
+  async function setDefaultProfile(profile: ProfileDto): Promise<void> {
+    profiles = await api.profiles.setDefault(profile.id);
+  }
+  async function removeProfile(profile: ProfileDto): Promise<void> {
+    if (!window.confirm(`Delete “${profile.name}”? This removes its model, provider, MCP and skill configuration.`)) return;
+    profiles = await api.profiles.remove(profile.id);
+  }
   /** Collapsing is per agent and reassigns the set, since Svelte tracks the
    * binding rather than the mutation. */
   function toggleGroup(id: string): void {
@@ -740,24 +872,54 @@
     return rank < 0 ? recommendedModelCompanies.length : rank;
   }
 
-  function selectProviders(items: ProviderDto[], searchFilter: string, stateFilter: string, sort: string): ProviderDto[] {
-    const visible = items
+  /** The registry keeps ChatGPT OAuth as an inference transport, but Settings
+   * presents it as an authentication option within the single OpenAI provider. */
+  function providerGroupId(provider: ProviderDto): string {
+    return provider.custom ? provider.id : companyId(provider.id);
+  }
+
+  function providerGroupName(provider: ProviderDto): string {
+    return provider.custom ? provider.name : providerName(providerGroupId(provider));
+  }
+
+  function credentialProviderRank(provider: ProviderGroup): number {
+    return provider.id === 'openai' ? 0 : 1;
+  }
+
+  function selectProviders(items: ProviderDto[], searchFilter: string, stateFilter: string, sort: string): ProviderGroup[] {
+    const candidates = items
       // A hosted provider with nothing to offer is noise in the rail. Local
       // runtimes stay: they list no models until they are set up, which is the
       // point of showing them.
       .filter((item) => item.localRuntime || item.modelCount > 0)
-      .filter((item) => matches(`${item.name} ${item.id} ${item.source ?? ''}`, searchFilter))
-      .filter((item) => stateFilter === 'all'
-        || stateFilter === 'configured' && item.configured
-        || stateFilter === 'unconfigured' && !item.configured);
+      .filter((item) => item.id !== 'openai-codex');
+    const grouped = new Map<string, ProviderDto[]>();
+    for (const provider of candidates) {
+      const id = providerGroupId(provider);
+      grouped.set(id, [...(grouped.get(id) ?? []), provider]);
+    }
+    const visible = [...grouped].map(([id, companyProviders]): ProviderGroup => ({
+      id,
+      name: providerGroupName(companyProviders[0]!),
+      logoDataUrl: companyProviders.find((provider) => provider.logoDataUrl)?.logoDataUrl,
+      providers: companyProviders.sort((a, b) => a.name.localeCompare(b.name)),
+      configured: companyProviders.some((provider) => provider.configured),
+      storedCredential: companyProviders.some((provider) => provider.storedCredential),
+      modelCount: companyProviders.reduce((total, provider) => total + provider.modelCount, 0),
+      custom: companyProviders.every((provider) => provider.custom),
+    }))
+      .filter((group) => matches(`${group.name} ${group.providers.map((provider) => `${provider.name} ${provider.id} ${provider.source ?? ''}`).join(' ')}`, searchFilter))
+      .filter((group) => stateFilter === 'all'
+        || stateFilter === 'configured' && group.configured
+        || stateFilter === 'unconfigured' && !group.configured);
     if (sort === 'default') {
-      const recommended = (providers: ProviderDto[]) => providers.sort((a, b) => b.modelCount - a.modelCount || a.name.localeCompare(b.name));
+      const recommended = (providers: ProviderGroup[]) => providers.sort((a, b) => credentialProviderRank(a) - credentialProviderRank(b) || b.modelCount - a.modelCount || a.name.localeCompare(b.name));
       return [
         ...recommended(visible.filter((provider) => provider.configured)),
         ...recommended(visible.filter((provider) => !provider.configured)),
       ];
     }
-    return visible.sort((a, b) => sort === 'recommended' ? b.modelCount - a.modelCount || a.name.localeCompare(b.name)
+    return visible.sort((a, b) => sort === 'recommended' ? credentialProviderRank(a) - credentialProviderRank(b) || b.modelCount - a.modelCount || a.name.localeCompare(b.name)
         : sort === 'name-desc' ? b.name.localeCompare(a.name)
         : sort === 'models-desc' ? b.modelCount - a.modelCount || a.name.localeCompare(b.name)
         : sort === 'models-asc' ? a.modelCount - b.modelCount || a.name.localeCompare(b.name)
@@ -781,8 +943,10 @@
   async function loadAll(): Promise<void> {
     loading = !settingsSnapshot.loaded;
     try {
-      [mcpServers, skills, plugins, models, providers, memory, chronicle, general, extensionStatus] = await Promise.all([api.mcp.list(), api.skills.list(), api.plugins.list(), api.models.list(), api.providers.list(), api.memory.status(), api.chronicle.status(), api.general.get(), api.extension.status()]);
-      void loadSourceIcons(chronicle);
+      [mcpServers, skills, plugins, models, providers, memory, computerHistory, general, extensionStatus] = await Promise.all([api.mcp.list(), api.skills.list(), api.plugins.list(), api.models.list(), api.providers.list(), api.memory.status(), api.computerHistory.status(), api.general.get(), api.extension.status()]);
+      general = {...general, pinnedViews: currentPinnedViews};
+      [computerHistoryEntries, memoryEntries] = await Promise.all([api.computerHistory.entries({limit: 120}), api.memory.entries()]);
+      void loadSourceIcons(computerHistory);
       currency = general.currency ?? defaultCurrency(general.location);
       settingsSnapshot.loaded = true;
       error = '';
@@ -827,14 +991,84 @@
       general = await api.general.update({advancedMode: enabled});
       onGeneralChange(general);
       if (!enabled)
-        void Promise.all([api.memory.status(), api.chronicle.status()])
-          .then(([nextMemory, nextChronicle]) => { memory = nextMemory; chronicle = nextChronicle; void loadSourceIcons(chronicle); })
+        void Promise.all([api.memory.status(), api.computerHistory.status()])
+          .then(([nextMemory, nextComputerHistory]) => { memory = nextMemory; computerHistory = nextComputerHistory; void loadSourceIcons(computerHistory); })
           .catch(() => {});
       error = '';
     } catch (reason) {
       error = readableError(reason);
     } finally {
       updatingAdvancedMode = false;
+    }
+  }
+
+  let updatingPinnedViews = false;
+  let pinnedViewsExpanded = false;
+  let pinnedViewMockIcons: HTMLDivElement;
+  let pinnedViewDragKind: 'drive' | 'schedule' | 'hub' | 'tasks' | null = null;
+  let pinnedViewPointerId: number | null = null;
+  let pinnedViewDragStartOrder: Array<'drive' | 'schedule' | 'hub' | 'tasks'> | null = null;
+  async function togglePinnedView(kind: 'drive' | 'schedule' | 'hub' | 'tasks'): Promise<void> {
+    if (!general) return;
+    updatingPinnedViews = true;
+    try {
+      const current = general.pinnedViews;
+      const next = current.includes(kind)
+        ? current.filter((v) => v !== kind)
+        : [...current, kind];
+      general = await api.general.update({pinnedViews: next});
+      onGeneralChange(general);
+      error = '';
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      updatingPinnedViews = false;
+    }
+  }
+
+  function startPinnedViewDrag(event: PointerEvent, view: 'drive' | 'schedule' | 'hub' | 'tasks'): void {
+    if (!general || event.button !== 0) return;
+    event.preventDefault();
+    pinnedViewDragKind = view;
+    pinnedViewPointerId = event.pointerId;
+    pinnedViewDragStartOrder = [...general.pinnedViews];
+    (event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+  }
+
+  function previewPinnedViewDrop(event: PointerEvent): void {
+    if (!general || pinnedViewDragKind === null || event.pointerId !== pinnedViewPointerId) return;
+    event.preventDefault();
+    const otherIcons = [...pinnedViewMockIcons.querySelectorAll<HTMLElement>('[data-pinned-view]')]
+      .filter((icon) => icon.dataset.pinnedView !== pinnedViewDragKind);
+    const firstIconToTheRight = otherIcons.findIndex((icon) => {
+      const bounds = icon.getBoundingClientRect();
+      return event.clientX < bounds.left + bounds.width / 2;
+    });
+    const insertionIndex = firstIconToTheRight < 0 ? otherIcons.length : firstIconToTheRight;
+    const next = general.pinnedViews.filter((view) => view !== pinnedViewDragKind);
+    next.splice(insertionIndex, 0, pinnedViewDragKind);
+    if (next.every((view, index) => view === general!.pinnedViews[index])) return;
+    general = {...general, pinnedViews: next};
+  }
+
+  async function finishPinnedViewDrag(): Promise<void> {
+    const previous = pinnedViewDragStartOrder;
+    const current = general;
+    const next = current?.pinnedViews;
+    pinnedViewDragKind = null;
+    pinnedViewPointerId = null;
+    pinnedViewDragStartOrder = null;
+    if (!general || !previous || !next || previous.every((view, index) => view === next[index])) return;
+    updatingPinnedViews = true;
+    try {
+      general = await api.general.update({pinnedViews: next});
+      onGeneralChange(general);
+      error = '';
+    } catch (reason) {
+      general = {...current, pinnedViews: previous};
+      error = readableError(reason);
+    } finally {
+      updatingPinnedViews = false;
     }
   }
 
@@ -931,6 +1165,19 @@
     if (enabled && general?.locationEnabled) void refreshLocation();
   }
 
+  async function setHubIncognitoMode(enabled: boolean): Promise<void> {
+    updatingHubIncognitoMode = true;
+    try {
+      general = await api.general.update({hubIncognitoMode: enabled});
+      onGeneralChange(general);
+      error = '';
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      updatingHubIncognitoMode = false;
+    }
+  }
+
   /** The platform service gets a short first try; Electron's Chromium rarely
    * has a working provider (it wants a Google API key or a CoreLocation
    * grant), so a network-based city-level lookup is the reliable path. */
@@ -978,29 +1225,29 @@
     }
   }
 
-  async function setChronicleEnabled(enabled: boolean): Promise<void> {
-    updatingChronicle = true;
+  async function setComputerHistoryEnabled(enabled: boolean): Promise<void> {
+    updatingComputerHistory = true;
     try {
-      chronicle = await api.chronicle.setEnabled(enabled);
-      void loadSourceIcons(chronicle);
+      computerHistory = await api.computerHistory.setEnabled(enabled);
+      void loadSourceIcons(computerHistory);
       error = '';
     } catch (reason) {
       error = readableError(reason);
     } finally {
-      updatingChronicle = false;
+      updatingComputerHistory = false;
     }
   }
 
-  async function updateChronicle(patch: Parameters<typeof api.chronicle.update>[0]): Promise<void> {
-    updatingChronicle = true;
+  async function updateComputerHistory(patch: Parameters<typeof api.computerHistory.update>[0]): Promise<void> {
+    updatingComputerHistory = true;
     try {
-      chronicle = await api.chronicle.update(patch);
-      void loadSourceIcons(chronicle);
+      computerHistory = await api.computerHistory.update(patch);
+      void loadSourceIcons(computerHistory);
       error = '';
     } catch (reason) {
       error = readableError(reason);
     } finally {
-      updatingChronicle = false;
+      updatingComputerHistory = false;
     }
   }
 
@@ -1008,7 +1255,7 @@
      from the outer scope, so the statements below re-run when the lists or the
      search text change — a call whose inputs are invisible to the template
      would leave a removed row on screen. */
-  function chronicleSources(sources: string[], query: string): string[] {
+  function computerHistorySources(sources: string[], query: string): string[] {
     const needle = query.trim().toLowerCase();
     return needle ? sources.filter((item) => item.toLowerCase().includes(needle)) : sources;
   }
@@ -1021,11 +1268,12 @@
   let sourceIcons: Record<string, string | null> = {};
   const iconsAsked = new Set<string>();
 
-  async function loadSourceIcons(status: ChronicleStatusDto | null): Promise<void> {
+  async function loadSourceIcons(status: ComputerHistoryStatusDto | null): Promise<void> {
     if (!status) return;
-    const wanted: Array<[ChronicleList, string]> = [
-      ...status.excludeApps.map((name) => ['apps', name] as [ChronicleList, string]),
-      ...status.excludeSites.map((host) => ['sites', host] as [ChronicleList, string]),
+    const wanted: Array<[ComputerHistoryList, string]> = [
+      ...status.excludeApps.map((name) => ['apps', name] as [ComputerHistoryList, string]),
+      ...status.excludeSites.map((host) => ['sites', host] as [ComputerHistoryList, string]),
+      ...computerHistoryEntries.map((entry) => ['apps', historyEntryApp(entry)] as [ComputerHistoryList, string]),
     ];
     for (const [list, source] of wanted) {
       if (iconsAsked.has(source)) continue;
@@ -1033,7 +1281,7 @@
       try {
         const icon =
           list === 'apps'
-            ? await api.chronicle.appIcon(source)
+            ? await api.computerHistory.appIcon(source)
             : await api.browser.favicon(`https://${source}`);
         if (icon) sourceIcons = {...sourceIcons, [source]: icon};
       } catch (reason) {
@@ -1044,12 +1292,12 @@
     }
   }
 
-  $: shownApps = chronicleSources(chronicle?.excludeApps ?? [], chronicleQuery.apps);
-  $: shownSites = chronicleSources(chronicle?.excludeSites ?? [], chronicleQuery.sites);
+  $: shownApps = computerHistorySources(computerHistory?.excludeApps ?? [], computerHistoryQuery.apps);
+  $: shownSites = computerHistorySources(computerHistory?.excludeSites ?? [], computerHistoryQuery.sites);
   $: appRows = shownApps.map((name) => ({name, icon: sourceIcons[name] ?? null}));
   $: siteRows = shownSites.map((host) => ({name: host, icon: sourceIcons[host] ?? null}));
 
-  /* A pasted address is stored as its host, since that is what Chronicle
+  /* A pasted address is stored as its host, since that is what ComputerHistory
      matches on: "https://www.bank.example/transfer" saved verbatim would sit
      in the list looking right and never match anything. */
   function hostOf(value: string): string {
@@ -1061,28 +1309,28 @@
     }
   }
 
-  async function excludeSource(list: ChronicleList, value: string): Promise<void> {
+  async function excludeSource(list: ComputerHistoryList, value: string): Promise<void> {
     const trimmed = value.trim();
     const source = list === 'sites' ? hostOf(trimmed) : trimmed;
-    if (!source || !chronicle) return;
+    if (!source || !computerHistory) return;
     const key = list === 'apps' ? 'excludeApps' : 'excludeSites';
-    const existing = chronicle[key];
+    const existing = computerHistory[key];
     if (existing.some((item) => item.toLowerCase() === source.toLowerCase())) return;
-    await updateChronicle({[key]: [...existing, source]});
+    await updateComputerHistory({[key]: [...existing, source]});
   }
 
-  async function addChronicleSource(list: ChronicleList): Promise<void> {
-    const value = chronicleDraft;
-    chronicleDraft = '';
+  async function addComputerHistorySource(list: ComputerHistoryList): Promise<void> {
+    const value = computerHistoryDraft;
+    computerHistoryDraft = '';
     await excludeSource(list, value);
   }
 
   /* Removed by value rather than by index, so a sorted or filtered view drops
      the row the user actually clicked. */
-  async function removeChronicleSource(list: ChronicleList, value: string): Promise<void> {
-    if (!chronicle) return;
+  async function removeComputerHistorySource(list: ComputerHistoryList, value: string): Promise<void> {
+    if (!computerHistory) return;
     const key = list === 'apps' ? 'excludeApps' : 'excludeSites';
-    await updateChronicle({[key]: chronicle[key].filter((item) => item !== value)});
+    await updateComputerHistory({[key]: computerHistory[key].filter((item) => item !== value)});
   }
 
   /* A website is typed straight into the list; an app is picked in the
@@ -1092,7 +1340,7 @@
   async function pickAppSource(): Promise<void> {
     pickingApp = true;
     try {
-      const chosen = await api.chronicle.pickApp();
+      const chosen = await api.computerHistory.pickApp();
       if (chosen) await excludeSource('apps', chosen);
       error = '';
     } catch (reason) {
@@ -1106,15 +1354,19 @@
     node.focus();
   }
 
-  /* `hours` of null clears everything Chronicle still holds. The window ends
+  /* `hours` of null clears everything ComputerHistory still holds. The window ends
      now rather than at the newest capture, so an event written between the
      click and the call is inside it too. */
-  async function forgetChronicle(hours: number | null): Promise<void> {
+  async function forgetComputerHistory(hours: number | null): Promise<void> {
     forgetting = hours === null ? 'all' : String(hours);
     try {
       const until = new Date();
       const since = hours === null ? new Date(0) : new Date(until.getTime() - hours * 3_600_000);
-      chronicle = await api.chronicle.forget(since.toISOString(), until.toISOString());
+      computerHistory = await api.computerHistory.forget(since.toISOString(), until.toISOString());
+      computerHistoryEntries = computerHistoryEntries.filter((entry) => {
+        const captured = new Date(entry.capturedAt).getTime();
+        return captured < since.getTime() || captured > until.getTime();
+      });
       error = '';
     } catch (reason) {
       error = readableError(reason);
@@ -1123,10 +1375,50 @@
     }
   }
 
+  async function revealComputerHistoryEntry(entry: ComputerHistoryEntryDto): Promise<void> {
+    try {
+      await api.computerHistory.revealEntry(entry.id);
+      error = '';
+    } catch (reason) {
+      error = readableError(reason);
+    }
+  }
+
+  async function removeComputerHistoryEntry(entry: ComputerHistoryEntryDto): Promise<void> {
+    deletingHistoryEntry = entry.id;
+    try {
+      computerHistory = await api.computerHistory.removeEntry(entry.id);
+      computerHistoryEntries = computerHistoryEntries.filter((candidate) => candidate.id !== entry.id);
+      error = '';
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      deletingHistoryEntry = '';
+    }
+  }
+
+  function historyEntryApp(entry: ComputerHistoryEntryDto): string {
+    return entry.app?.trim() || entry.sourceName;
+  }
+
+  function historyEntryDetail(entry: ComputerHistoryEntryDto): string {
+    const activity = entry.reason === 'initial'
+      ? 'Started tracking this activity'
+      : entry.reason === 'change'
+        ? `${Math.round(entry.change * 100)}% of the window changed`
+        : 'Activity continued';
+    let location = entry.sourceName !== historyEntryApp(entry) ? entry.sourceName : '';
+    if (entry.url) {
+      try { location = new URL(entry.url).hostname; } catch { location = entry.url; }
+    }
+    return [location, activity, `${entry.width}×${entry.height}`, formatBytes(entry.bytes)].filter(Boolean).join(' · ');
+  }
+
   async function setMemoryEnabled(enabled: boolean): Promise<void> {
     updatingMemory = true;
     try {
       memory = await api.memory.setEnabled(enabled);
+      if (enabled) memoryEntries = await api.memory.entries();
       error = '';
     } catch (reason) {
       error = readableError(reason);
@@ -1150,36 +1442,33 @@
    * The four macOS grants, in the order they matter: what the app asks for
    * first, then what it only needs for one surface.
    */
-  const PERMISSION_ROWS: Array<{kind: SystemPermissionKind; icon: ComponentProps<typeof Icon>['name']; title: MessageKey; reason: MessageKey}> = [
-    {kind: 'microphone', icon: 'mic', title: 'permission.microphone', reason: 'permission.microphoneReason'},
-    {kind: 'accessibility', icon: 'eye', title: 'permission.screenReading', reason: 'permission.screenReadingReason'},
-    {kind: 'screen-recording', icon: 'screen-record', title: 'permission.screenRecording', reason: 'permission.screenRecordingReason'},
-    {kind: 'full-disk-access', icon: 'folder', title: 'permission.fullDisk', reason: 'permission.fullDiskReason'},
+  const PERMISSION_ROWS: Array<{id: string; kinds: SystemPermissionKind[]; icon: ComponentProps<typeof Icon>['name']; title: MessageKey; reason: MessageKey}> = [
+    {id: 'microphone', kinds: ['microphone'], icon: 'mic', title: 'permission.microphone', reason: 'permission.microphoneReason'},
+    // Accessibility supplies the semantic window text and Screen Recording
+    // supplies pixels when that text is insufficient. They are one user-facing
+    // capability even though macOS grants them independently.
+    {id: 'screen-reading', kinds: ['accessibility', 'screen-recording'], icon: 'eye', title: 'permission.screenReading', reason: 'permission.screenReadingReason'},
+    {id: 'full-disk-access', kinds: ['full-disk-access'], icon: 'folder', title: 'permission.fullDisk', reason: 'permission.fullDiskReason'},
   ];
 
   /**
    * The grants a skill asks for, rather than ones FlareAI has of its own. A
    * row appears because something installed declared it in its SKILL.md, which
    * is why the list is filtered by what the skills actually say instead of
-   * showing five switches for apps the user may never have asked FlareAI to
+   * showing switches for apps the user may never have asked FlareAI to
    * touch.
    */
   const APP_PERMISSION_ROWS: Array<{kind: AppPermissionKind; icon: ComponentProps<typeof Icon>['name']; title: MessageKey; reason: MessageKey}> = [
-    {kind: 'reminders', icon: 'task', title: 'permission.reminders', reason: 'permission.remindersReason'},
     {kind: 'calendars', icon: 'calendar', title: 'permission.calendars', reason: 'permission.calendarsReason'},
     {kind: 'contacts', icon: 'users', title: 'permission.contacts', reason: 'permission.contactsReason'},
     {kind: 'photos', icon: 'image', title: 'permission.photos', reason: 'permission.photosReason'},
     {kind: 'automation', icon: 'workflow', title: 'permission.automation', reason: 'permission.automationReason'},
   ];
 
-  function appPermissionRows(list: SkillDto[]): typeof APP_PERMISSION_ROWS {
-    const declared = new Set(list.flatMap((skill) => skill.permissions));
-    return APP_PERMISSION_ROWS.filter((row) => declared.has(row.kind));
-  }
-
   async function refreshPermissionStatuses(): Promise<void> {
     const entries = await Promise.all(
-      [...PERMISSION_ROWS, ...APP_PERMISSION_ROWS].map(async (row) => [row.kind, await api.permissions.status(row.kind).catch(() => null)] as const),
+      [...PERMISSION_ROWS.flatMap((row) => row.kinds), ...APP_PERMISSION_ROWS.map((row) => row.kind)]
+        .map(async (kind) => [kind, await api.permissions.status(kind).catch(() => null)] as const),
     );
     permissionStatuses = Object.fromEntries(entries.filter(([, status]) => status)) as typeof permissionStatuses;
   }
@@ -1213,7 +1502,10 @@
   async function setAppPermissionsEnabled(next: boolean): Promise<void> {
     updatingAppPermissions = true;
     try {
-      general = await api.general.update({appPermissionsEnabled: next});
+      general = await api.general.update({
+        appPermissionsEnabled: next,
+        ...(next ? {permissions: Object.fromEntries(APP_PERMISSION_ROWS.map((row) => [row.kind, true]))} : {}),
+      });
       error = '';
       // Turning it on is the moment to catch up on anything that was never
       // decided while it was off, so nothing is left for a run to trip over.
@@ -1235,6 +1527,14 @@
   async function requestAllPermissions(): Promise<void> {
     askingAllPermissions = true;
     try {
+      // This is one aggregate control now. Clear any old per-app switch state
+      // before asking so every app grant declared by an active skill joins the
+      // same sequential OS prompt flow.
+      general = await api.general.update({
+        appPermissionsEnabled: true,
+        permissions: Object.fromEntries(APP_PERMISSION_ROWS.map((row) => [row.kind, true])),
+      });
+      onGeneralChange(general);
       const withheld = await api.permissions.requestAll();
       error = '';
       // macOS raises each dialog once, so a grant it has already refused has
@@ -1250,12 +1550,22 @@
     }
   }
 
-  /** The switch is the app's own use of the capability. The grant stays where
-   * it is, so switching back on costs no second trip to System Settings. */
-  async function setPermissionEnabled(kind: SystemPermissionKind, next: boolean): Promise<void> {
-    updatingPermission = kind;
+  function permissionRowEnabled(kinds: SystemPermissionKind[]): boolean {
+    return Boolean(general && kinds.every((kind) => general!.permissions[kind]));
+  }
+
+  function permissionRowGranted(kinds: SystemPermissionKind[]): boolean {
+    return kinds.every((kind) => permissionStatuses[kind] === 'granted');
+  }
+
+  async function requestPermissionRow(kinds: SystemPermissionKind[]): Promise<void> {
+    for (const kind of kinds) await requestPermission(kind);
+  }
+
+  async function setPermissionRowEnabled(kinds: SystemPermissionKind[], next: boolean): Promise<void> {
+    updatingPermission = kinds[0]!;
     try {
-      general = await api.general.update({permissions: {[kind]: next}});
+      general = await api.general.update({permissions: Object.fromEntries(kinds.map((kind) => [kind, next]))});
       error = '';
     } catch (reason) {
       error = readableError(reason);
@@ -1312,18 +1622,8 @@
     }
   }
 
-  function permissionStatusText(kind: SystemPermissionKind, reason: MessageKey): string {
-    if (general && !general.permissions[kind]) return $t('permission.switchedOff');
-    // The row's own switch reads as on while the master one is off, so say
-    // which of the two is actually holding the capability back.
-    if (general && !general.appPermissionsEnabled && APP_PERMISSION_ROWS.some((row) => row.kind === kind))
-      return $t('permission.switchedOff');
-    if (permissionStatuses[kind] === 'granted') return $t('permission.allowed');
-    return $t(reason);
-  }
-
-  async function retryChronicle(): Promise<void> {
-    updatingChronicle = true;
+  async function retryComputerHistory(): Promise<void> {
+    updatingComputerHistory = true;
     const permissionKind = 'accessibility';
     try {
       const permission = await api.permissions.request(permissionKind);
@@ -1331,13 +1631,13 @@
         await api.permissions.openSettings(permissionKind);
         return;
       }
-      chronicle = await api.chronicle.setEnabled(true);
-      void loadSourceIcons(chronicle);
+      computerHistory = await api.computerHistory.setEnabled(true);
+      void loadSourceIcons(computerHistory);
       error = '';
     } catch (reason) {
       error = readableError(reason);
     } finally {
-      updatingChronicle = false;
+      updatingComputerHistory = false;
     }
   }
 
@@ -1346,6 +1646,65 @@
     if (value < 1024 ** 2) return translate('drive.unitKilobytes', {size: decimal(value / 1024)});
     if (value < 1024 ** 3) return translate('drive.unitMegabytes', {size: decimal(value / 1024 ** 2)});
     return translate('drive.unitGigabytes', {size: decimal(value / 1024 ** 3)});
+  }
+
+  function historyTime(value: string): string {
+    return new Intl.DateTimeFormat(undefined, {hour: 'numeric', minute: '2-digit'}).format(new Date(value));
+  }
+
+  function localDateKey(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+
+  function calendarDays(month: Date, history: Record<string, ComputerHistoryEntryDto[]>, memories: Record<string, MemoryEntryDto[]>): Array<{key: string; day: number; current: boolean; historyCount: number; memoryCount: number}> {
+    const first = new Date(month.getFullYear(), month.getMonth(), 1);
+    const start = new Date(month.getFullYear(), month.getMonth(), 1 - first.getDay());
+    return Array.from({length: 42}, (_, index) => {
+      const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index);
+      const key = localDateKey(date);
+      return {key, day: date.getDate(), current: date.getMonth() === month.getMonth(), historyCount: history[key]?.length ?? 0, memoryCount: memories[key]?.length ?? 0};
+    });
+  }
+
+  function moveHistoryMonth(offset: number): void {
+    const nextMonth = new Date(historyMonth.getFullYear(), historyMonth.getMonth() + offset, 1);
+    historyMonth = nextMonth > latestHistoryMonth ? new Date(latestHistoryMonth) : nextMonth;
+  }
+
+  function moveHistoryYear(offset: number): void {
+    const nextYear = new Date(historyMonth.getFullYear() + offset, historyMonth.getMonth(), 1);
+    historyMonth = nextYear > latestHistoryMonth ? new Date(latestHistoryMonth) : nextYear;
+  }
+
+  function calendarYears(latestYear: number, history: Record<string, ComputerHistoryEntryDto[]>, memories: Record<string, MemoryEntryDto[]>): Array<{year: number; historyCount: number; memoryCount: number}> {
+    return Array.from({length: 100}, (_, index) => {
+      const year = latestYear - index;
+      const prefix = `${year}-`;
+      const historyCount = Object.entries(history).reduce((total, [key, entries]) => total + (key.startsWith(prefix) ? entries.length : 0), 0);
+      const memoryCount = Object.entries(memories).reduce((total, [key, entries]) => total + (key.startsWith(prefix) ? entries.length : 0), 0);
+      return {year, historyCount, memoryCount};
+    });
+  }
+
+  function selectHistoryYear(year: number): void {
+    const selectedMonth = new Date(year, historyMonth.getMonth(), 1);
+    historyMonth = selectedMonth > latestHistoryMonth ? new Date(latestHistoryMonth) : selectedMonth;
+    historyYearPickerOpen = false;
+  }
+
+  function selectHistoryDay(key: string): void {
+    selectedHistoryDay = key;
+    const [year, month] = key.split('-').map(Number);
+    if (year && month) historyMonth = new Date(year, month - 1, 1);
+  }
+
+  function historyMonthLabel(month: Date): string {
+    return new Intl.DateTimeFormat(undefined, {month: 'long', year: 'numeric'}).format(month);
+  }
+
+  function selectedHistoryDayLabel(): string {
+    const [year, month, day] = selectedHistoryDay.split('-').map(Number);
+    return new Intl.DateTimeFormat(undefined, {weekday: 'long', month: 'long', day: 'numeric'}).format(new Date(year, month - 1, day));
   }
 
   function decimal(value: number): string {
@@ -2155,6 +2514,27 @@
         models = await api.models.list();
         selectedModelProvider = modelCompanyId(item);
       }
+      if (role === 'speech') {
+        general = await api.general.get();
+        onGeneralChange(general);
+      }
+      error = '';
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      assigningRole = '';
+    }
+  }
+
+  async function clearModelRole(role: ModelRole): Promise<void> {
+    if (role === 'main') return;
+    assigningRole = `${role}:clear`;
+    try {
+      modelRoles = await api.models.clearRole(role);
+      if (role === 'speech') {
+        general = await api.general.get();
+        onGeneralChange(general);
+      }
       error = '';
     } catch (reason) {
       error = readableError(reason);
@@ -2182,11 +2562,14 @@
   }
 
   function chooseCredentialProvider(id: string): void {
+    if (oauthConnecting && oauthConnecting !== id) void cancelProviderAccount();
     addingCustomProvider = false;
     editingCustomProviderId = '';
     selectedCredentialProvider = id;
-    credentialKey = '';
-    runtimeUrl = providers.find((item) => item.id === id)?.baseUrl ?? '';
+    credentialKeys = {};
+    oauthDevice = null;
+    oauthProgress = '';
+    runtimeUrl = providers.find((item) => providerGroupId(item) === id)?.baseUrl ?? '';
     error = '';
   }
 
@@ -2319,14 +2702,15 @@
     }
   }
 
-  async function saveCredential(): Promise<void> {
-    if (!credentialProvider || !credentialKey.trim()) return;
+  async function saveCredential(provider: ProviderDto): Promise<void> {
+    const credentialKey = credentialKeys[provider.id]?.trim() ?? '';
+    if (!credentialKey) return;
     savingCredential = true;
     try {
-      const updated = await api.providers.saveApiKey(credentialProvider.id, credentialKey);
+      const updated = await api.providers.saveApiKey(provider.id, credentialKey);
       providers = providers.map((item) => item.id === updated.id ? updated : item);
       models = await api.models.list();
-      credentialKey = '';
+      credentialKeys = {...credentialKeys, [provider.id]: ''};
       error = '';
     } catch (reason) {
       error = readableError(reason);
@@ -2335,18 +2719,64 @@
     }
   }
 
-  async function removeCredential(keyId: string): Promise<void> {
-    if (!credentialProvider) return;
+  async function removeCredential(provider: ProviderDto, keyId: string): Promise<void> {
     savingCredential = true;
     try {
-      const updated = await api.providers.removeApiKey(credentialProvider.id, keyId);
+      const updated = await api.providers.removeApiKey(provider.id, keyId);
       providers = providers.map((item) => item.id === updated.id ? updated : item);
-      credentialKey = '';
+      credentialKeys = {...credentialKeys, [provider.id]: ''};
       error = '';
     } catch (reason) {
       error = readableError(reason);
     } finally {
       savingCredential = false;
+    }
+  }
+
+  async function connectProviderAccount(): Promise<void> {
+    if (credentialProvider?.id !== 'openai' || !openAIAccountProvider || oauthConnecting) return;
+    const providerId = openAIAccountProvider.id;
+    oauthConnecting = providerId;
+    oauthDevice = null;
+    oauthProgress = '';
+    error = '';
+    try {
+      const updated = await api.providers.connectOAuth(providerId);
+      providers = providers.map((item) => item.id === updated.id ? updated : item);
+      models = await api.models.list();
+    } catch (reason) {
+      if (oauthConnecting === providerId) error = readableError(reason);
+    } finally {
+      if (oauthConnecting === providerId) {
+        oauthConnecting = '';
+        oauthDevice = null;
+        oauthProgress = '';
+      }
+    }
+  }
+
+  async function cancelProviderAccount(): Promise<void> {
+    const providerId = oauthConnecting;
+    if (!providerId) return;
+    oauthConnecting = '';
+    oauthDevice = null;
+    oauthProgress = '';
+    await api.providers.cancelOAuth(providerId).catch(() => {});
+  }
+
+  async function disconnectProviderAccount(): Promise<void> {
+    if (credentialProvider?.id !== 'openai' || !openAIAccountProvider?.supportsOAuth || oauthConnecting) return;
+    const providerId = openAIAccountProvider.id;
+    oauthConnecting = providerId;
+    error = '';
+    try {
+      const updated = await api.providers.disconnectOAuth(providerId);
+      providers = providers.map((item) => item.id === updated.id ? updated : item);
+      models = await api.models.list();
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      oauthConnecting = '';
     }
   }
 
@@ -2380,6 +2810,8 @@
   /** Runs on pointerdown, not click: a rail menu should be gone the moment the
    * press lands outside it, not once the button is released. */
   function dismissRailMenu(event: Event): void {
+    const insideProfileSwitcher = event.target instanceof Element && !!event.target.closest('.profile-switcher');
+    if (!insideProfileSwitcher) profileMenuOpen = false;
     if (pressKeepsRailMenu(event.target)) return;
     openRailMenu = null;
     skillAddMenuOpen = false;
@@ -2400,6 +2832,12 @@
 
   function keydown(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
+    if (profileMenuOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      profileMenuOpen = false;
+      return;
+    }
     if (openRailMenu) {
       event.preventDefault();
       event.stopPropagation();
@@ -2434,47 +2872,47 @@
 
 <!-- Stands in until a toggle's value has loaded. The real control then mounts
      already showing that value, so its slide only ever means a user click. -->
-{#snippet pendingToggle()}<span class="chronicle-toggle pending" aria-hidden="true"><span></span></span>{/snippet}
+{#snippet pendingToggle()}<span class="computerHistory-toggle pending" aria-hidden="true"><span></span></span>{/snippet}
 
 <!-- One column per kind of source: apps on the left, websites on the right,
      each with its own field so nothing has to be guessed from the text. -->
-{#snippet sourceColumn(list: ChronicleList, title: string, rows: Array<{name: string; icon: string | null}>)}
-  <div class="chronicle-source-column">
+{#snippet sourceColumn(list: ComputerHistoryList, title: string, rows: Array<{name: string; icon: string | null}>)}
+  <div class="computerHistory-source-column">
     <header>
       <h5>{title}</h5>
-      <span class="chronicle-source-tools">
-        <button type="button" class:active={list === 'apps' ? pickingApp : chronicleAdding} aria-label={$t('settings.chronicleAddSource')} data-tooltip-label={$t('settings.chronicleAddSource')} disabled={!memory?.enabled || updatingChronicle || pickingApp} onclick={() => { if (list === 'apps') void pickAppSource(); else chronicleAdding = !chronicleAdding; }}><Icon name="plus" size={14}/></button>
-        <button type="button" class:active={chronicleFiltering[list]} aria-label={$t('settings.chronicleSearch')} data-tooltip-label={$t('settings.chronicleSearch')} onclick={() => { chronicleFiltering[list] = !chronicleFiltering[list]; if (!chronicleFiltering[list]) chronicleQuery[list] = ''; }}><Icon name="search" size={14}/></button>
+      <span class="computerHistory-source-tools">
+        <button type="button" class:active={list === 'apps' ? pickingApp : computerHistoryAdding} aria-label={$t('settings.computerHistoryAddSource')} data-tooltip-label={$t('settings.computerHistoryAddSource')} disabled={!computerHistory?.enabled || updatingComputerHistory || pickingApp} onclick={() => { if (list === 'apps') void pickAppSource(); else computerHistoryAdding = !computerHistoryAdding; }}><Icon name="plus" size={14}/></button>
+        <button type="button" class:active={computerHistoryFiltering[list]} aria-label={$t('settings.computerHistorySearch')} data-tooltip-label={$t('settings.computerHistorySearch')} onclick={() => { computerHistoryFiltering[list] = !computerHistoryFiltering[list]; if (!computerHistoryFiltering[list]) computerHistoryQuery[list] = ''; }}><Icon name="search" size={14}/></button>
       </span>
     </header>
-    <div class="chronicle-source-box">
-      {#if chronicleFiltering[list]}
-        <div class="chronicle-source-field">
+    <div class="computerHistory-source-box">
+      {#if computerHistoryFiltering[list]}
+        <div class="computerHistory-source-field">
           <Icon name="search" size={13}/>
-          <input use:focusInput value={chronicleQuery[list]} placeholder={$t('settings.chronicleSearch')} aria-label={$t('settings.chronicleSearch')} oninput={(event) => (chronicleQuery[list] = event.currentTarget.value)} onkeydown={(event) => { if (event.key === 'Escape') { chronicleQuery[list] = ''; chronicleFiltering[list] = false; } }}/>
+          <input use:focusInput value={computerHistoryQuery[list]} placeholder={$t('settings.computerHistorySearch')} aria-label={$t('settings.computerHistorySearch')} oninput={(event) => (computerHistoryQuery[list] = event.currentTarget.value)} onkeydown={(event) => { if (event.key === 'Escape') { computerHistoryQuery[list] = ''; computerHistoryFiltering[list] = false; } }}/>
         </div>
       {/if}
       <!-- The websites panel adds its row in place: a URL is pasted, so the
            row it lands in is the whole of the interaction. -->
-      {#if list === 'sites' && chronicleAdding}
-        <form class="chronicle-source-field" onsubmit={(event) => { event.preventDefault(); void addChronicleSource('sites'); chronicleAdding = false; }}>
+      {#if list === 'sites' && computerHistoryAdding}
+        <form class="computerHistory-source-field" onsubmit={(event) => { event.preventDefault(); void addComputerHistorySource('sites'); computerHistoryAdding = false; }}>
           <Icon name="globe" size={13}/>
-          <input use:focusInput value={chronicleDraft} placeholder={$t('settings.chronicleSitePlaceholder')} aria-label={$t('settings.chronicleAddSource')} disabled={!memory?.enabled || updatingChronicle} oninput={(event) => (chronicleDraft = event.currentTarget.value)} onblur={() => { void addChronicleSource('sites'); chronicleAdding = false; }} onkeydown={(event) => { if (event.key === 'Escape') { chronicleDraft = ''; chronicleAdding = false; } }}/>
+          <input use:focusInput value={computerHistoryDraft} placeholder={$t('settings.computerHistorySitePlaceholder')} aria-label={$t('settings.computerHistoryAddSource')} disabled={!computerHistory?.enabled || updatingComputerHistory} oninput={(event) => (computerHistoryDraft = event.currentTarget.value)} onblur={() => { void addComputerHistorySource('sites'); computerHistoryAdding = false; }} onkeydown={(event) => { if (event.key === 'Escape') { computerHistoryDraft = ''; computerHistoryAdding = false; } }}/>
         </form>
       {/if}
-      <ul class="chronicle-source-list" use:scrollFade={rows.length}>
+      <ul class="computerHistory-source-list" use:scrollFade={rows.length}>
         {#each rows as row (row.name)}
           {@const source = row.name}
           <li>
             <!-- The mark replaces the glyph in the same slot rather than
                  nesting inside it, so a row with no icon still reads as a row. -->
             {#if row.icon}
-              <img class="chronicle-source-icon" src={row.icon} alt="" draggable="false"/>
+              <img class="computerHistory-source-icon" src={row.icon} alt="" draggable="false"/>
             {:else}
               <Icon name={list === 'apps' ? 'apps' : 'globe'} size={15}/>
             {/if}
             <span>{source}</span>
-            <button type="button" aria-label={$t('settings.chronicleRemoveSource', {name: source})} disabled={updatingChronicle} onclick={() => void removeChronicleSource(list, source)}><Icon name="close" size={12}/></button>
+            <button type="button" aria-label={$t('settings.computerHistoryRemoveSource', {name: source})} disabled={updatingComputerHistory} onclick={() => void removeComputerHistorySource(list, source)}><Icon name="close" size={12}/></button>
           </li>
         {/each}
       </ul>
@@ -2508,9 +2946,41 @@
       {/each}
     </div>
 
+    <div class="profile-switcher">
+      {#if advanced && profileMenuOpen}
+        <div class="profile-menu" role="menu" aria-label="Profiles">
+          <div class="profile-list">
+            {#each visibleProfiles as profile (profile.id)}
+              <div class="profile-row" class:active={profile.id === profiles.activeId}>
+                <button type="button" class="profile-select" role="menuitemradio" aria-checked={profile.id === profiles.activeId} onclick={() => void selectProfile(profile.id)}>
+                  <span>{profile.name}</span>
+                  {#if profile.id === profiles.activeId}<Icon name="check" size={13}/>{/if}
+                </button>
+              </div>
+            {/each}
+          </div>
+          {#if profileCreateOpen}
+            <form class="profile-create" onsubmit={(event) => {event.preventDefault(); void createProfile();}}>
+              <input bind:this={profileCreateInput} bind:value={profileCreateName} aria-label="Profile name" onkeydown={(event) => {if (event.key === 'Escape') profileCreateOpen = false;}}/>
+              <button type="submit">Create</button>
+            </form>
+          {:else}
+            <button type="button" class="profile-new" onclick={() => void beginCreateProfile()}><Icon name="plus" size={14}/><span>New profile</span></button>
+          {/if}
+        </div>
+      {/if}
+      {#if advanced}
+        <button type="button" class="profile-trigger" aria-expanded={profileMenuOpen} onclick={() => profileMenuOpen = !profileMenuOpen}>
+          <span>{activeProfile?.name ?? defaultProfile?.name ?? 'Default Profile'}</span>
+        </button>
+      {:else}
+        <div class="profile-trigger basic"><span>{defaultProfile?.name ?? 'Default Profile'}</span></div>
+      {/if}
+    </div>
+
   </nav>
 
-  <div class="options-page-content">
+  <div class="options-page-content" class:whole-page-scroll={mode === 'general' || mode === 'computer-history'} use:scrollFade={mode}>
     <header class="options-header">
       <h2>{modeHeader.title}</h2>
       <p>{modeHeader.description}</p>
@@ -2518,14 +2988,49 @@
 
     {#if error}<p class="options-error" role="alert">{error}</p>{/if}
 
-    {#if mode === 'hub'}
+    {#if mode === 'profile'}
+      <div class="general-options profile-options" role="tabpanel">
+        {#if activeProfile}
+          <section class="general-group">
+            <h3>Profile</h3>
+            <section class="general-setting-row profile-identity-row">
+              <span class="general-setting-copy"><h4>{activeProfile.name}</h4><small>Active profile</small></span>
+              <button type="button" class="profile-text-action" onclick={() => void renameProfile(activeProfile)}>Rename</button>
+            </section>
+          </section>
+          <section class="general-group">
+            <h3>Profile actions</h3>
+            <section class="general-setting-row">
+              <span class="general-setting-copy"><h4>Default Profile</h4><small>Used whenever advanced mode is off.</small></span>
+              {#if activeProfile.isDefault}
+                <span class="profile-default-status">Set</span>
+              {:else}
+                <button type="button" class="profile-text-action" onclick={() => void setDefaultProfile(activeProfile)}>Set</button>
+              {/if}
+            </section>
+            <section class="general-setting-row">
+              <span class="option-mark large"><Icon name="copy" size={18}/></span>
+              <span class="general-setting-copy"><h4>Duplicate profile</h4><small>Creates a separate copy of this profile’s configuration.</small></span>
+              <button type="button" class="profile-text-action" onclick={() => void duplicateProfile(activeProfile)}>Duplicate</button>
+            </section>
+            {#if !activeProfile.isDefault && activeProfile.id !== 'default'}
+              <section class="general-setting-row">
+                <span class="option-mark large"><Icon name="trash" size={18}/></span>
+                <span class="general-setting-copy"><h4>Delete profile</h4><small>Permanently removes this profile’s configuration.</small></span>
+                <button type="button" class="profile-text-action danger" onclick={() => void removeProfile(activeProfile)}>Delete</button>
+              </section>
+            {/if}
+          </section>
+        {/if}
+      </div>
+    {:else if mode === 'hub'}
       <HubTab {api} />
     {:else if mode === 'drive'}
       <DriveTab {api} />
     {:else if mode === 'browser'}
       <BrowserTab {api} />
     {:else if mode === 'general'}
-      <div class="general-options" role="tabpanel" use:scrollFade>
+      <div class="general-options" role="tabpanel">
         <section class="general-group">
           <h3>{$t('settings.groupAppearance')}</h3>
           <section class="general-setting-row">
@@ -2538,7 +3043,7 @@
             </div>
           </section>
           <section class="general-setting-row">
-            <span class="option-mark large"><Icon name="book-open" size={18}/></span>
+            <span class="option-mark large"><Icon name="languages" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.language')}</h4><small>{$t('settings.languageHint')}</small></span>
             <div class="setting-menu language" class:busy={updatingLanguage || !general}>
               <Menu options={languageOptions} value={general?.language ?? 'system'} label={$t('settings.language')} wide onChange={(value) => void setLanguage(value)}/>
@@ -2547,7 +3052,62 @@
           <section class="general-setting-row">
             <span class="option-mark large"><Icon name="wrench" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.advancedMode')}</h4><small>{$t('settings.advancedModeHint')}</small></span>
-            {#if general}<button type="button" class:enabled={general.advancedMode} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableAdvancedMode')} aria-checked={general.advancedMode} disabled={updatingAdvancedMode} onclick={() => void setAdvancedMode(!general!.advancedMode)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+            {#if general}<button type="button" class:enabled={general.advancedMode} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableAdvancedMode')} aria-checked={general.advancedMode} disabled={updatingAdvancedMode} onclick={() => void setAdvancedMode(!general!.advancedMode)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+          </section>
+          <button type="button" class="general-setting-row pinned-views-row" class:expanded={pinnedViewsExpanded} aria-expanded={pinnedViewsExpanded} onclick={() => pinnedViewsExpanded = !pinnedViewsExpanded}>
+            <span class="option-mark large"><Icon name="pin" size={18}/></span>
+            <span class="general-setting-copy pinned-views-toggle">
+              <h4>{$t('settings.pinnedViews')}</h4><small>{$t('settings.pinnedViewsHint')}</small>
+            </span>
+            <span class="pinned-views-control">
+              <span class="pinned-views-configure">Configure</span>
+              <span class="pinned-views-chevron" class:open={pinnedViewsExpanded}><Icon name="chevron" size={14}/></span>
+            </span>
+          </button>
+          {#if pinnedViewsExpanded}
+            <div class="pinned-views-config">
+              <div class="pinned-views-options">
+                {#each [{kind: 'drive', icon: 'drive', label: 'workspace.drive'}, {kind: 'schedule', icon: 'clock', label: 'workspace.schedule'}, {kind: 'hub', icon: 'chat', label: 'workspace.hub'}, {kind: 'tasks', icon: 'tasks', label: 'workspace.tasks'}] as row (row.kind)}
+                  <button type="button" class="pinned-view-option" class:checked={general?.pinnedViews.includes(row.kind)} disabled={updatingPinnedViews || !general} onclick={() => void togglePinnedView(row.kind)}>
+                    <span class="pinned-view-check">{#if general?.pinnedViews.includes(row.kind)}<Icon name="check" size={12}/>{/if}</span>
+                    <Icon name={row.icon} size={16}/>
+                    <span>{$t(row.label)}</span>
+                  </button>
+                {/each}
+              </div>
+              <div class="pinned-views-preview">
+                <div class="top-bar-mock" aria-label={$t('settings.pinnedViewsHint')}>
+                  <div class="top-bar-mock-icons" bind:this={pinnedViewMockIcons}>
+                    {#each general?.pinnedViews ?? [] as view (view)}
+                      <button
+                        type="button"
+                        class="title-bar-icon-button top-bar-mock-button"
+                        class:dragging={pinnedViewDragKind === view}
+                        data-pinned-view={view}
+                        disabled={updatingPinnedViews}
+                        aria-label={$t(view === 'drive' ? 'workspace.drive' : view === 'schedule' ? 'workspace.schedule' : view === 'hub' ? 'workspace.hub' : 'workspace.tasks')}
+                        onpointerdown={(event) => startPinnedViewDrag(event, view)}
+                        onpointermove={previewPinnedViewDrop}
+                        onpointerup={() => void finishPinnedViewDrag()}
+                        onpointercancel={() => void finishPinnedViewDrag()}
+                        animate:flip={{duration: 140}}
+                      ><Icon name={view === 'drive' ? 'drive' : view === 'schedule' ? 'clock' : view === 'hub' ? 'chat' : 'tasks'} size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
+                    {/each}
+                    <span class="title-bar-icon-button top-bar-mock-fixed" aria-hidden="true"><Icon name="settings" size={SETTINGS_ICON_SIZE} strokeWidth={SETTINGS_ICON_STROKE_WIDTH}/></span>
+                    <span class="title-bar-icon-button top-bar-mock-fixed" aria-hidden="true"><Icon name="panel" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></span>
+                  </div>
+                </div>
+                <small>{$t('settings.reorderPinnedViews')}</small>
+              </div>
+            </div>
+          {/if}
+        </section>
+        <section class="general-group">
+          <h3>{$t('settings.groupHub')}</h3>
+          <section class="general-setting-row">
+            <span class="option-mark large"><Icon name="incognito" size={18}/></span>
+            <span class="general-setting-copy"><h4>{$t('settings.hubIncognitoMode')}</h4><small>{$t('settings.hubIncognitoModeHint')}</small></span>
+            {#if general}<button type="button" class:enabled={general.hubIncognitoMode} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableHubIncognitoMode')} aria-checked={general.hubIncognitoMode} disabled={updatingHubIncognitoMode} onclick={() => void setHubIncognitoMode(!general!.hubIncognitoMode)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
         </section>
         <section class="general-group">
@@ -2555,7 +3115,7 @@
           <section class="general-setting-row">
             <span class="option-mark large"><Icon name="waveform" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.speechMode')}</h4><small>{$t('settings.speechModeHint')}</small></span>
-            {#if general}<button type="button" class:enabled={general.speechModeEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableSpeechMode')} aria-checked={general.speechModeEnabled} disabled={updatingSpeechMode} onclick={() => void setSpeechModeEnabled(!general!.speechModeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+            {#if general}<button type="button" class:enabled={general.speechModeEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableSpeechMode')} aria-checked={general.speechModeEnabled} disabled={updatingSpeechMode} onclick={() => void setSpeechModeEnabled(!general!.speechModeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
           <section class="general-setting-row">
             <span class="option-mark large"><Icon name="mic-off" size={18}/></span>
@@ -2576,7 +3136,7 @@
           <section class="general-setting-row">
             <span class="option-mark large"><Icon name="clock" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.time')}</h4><small>{general?.timeEnabled ? Intl.DateTimeFormat().resolvedOptions().timeZone : $t('settings.notShared')}</small></span>
-            {#if general}<button type="button" class:enabled={general.timeEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableTime')} aria-checked={general.timeEnabled} disabled={updatingTime} onclick={() => void setTimeEnabled(!general!.timeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+            {#if general}<button type="button" class:enabled={general.timeEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableTime')} aria-checked={general.timeEnabled} disabled={updatingTime} onclick={() => void setTimeEnabled(!general!.timeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
           <section class="general-setting-row">
             <span class="option-mark large"><Icon name="globe" size={18}/></span>
@@ -2584,41 +3144,24 @@
             {#if general?.locationEnabled && !locating && (locationError || !general.location)}
               <button type="button" class="permission-retry" onclick={() => void refreshLocation(true)}>{$t('common.tryAgain')}</button>
             {/if}
-            {#if general}<button type="button" class:enabled={general.locationEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableLocation')} aria-checked={general.locationEnabled} disabled={updatingLocation} onclick={() => void setLocationEnabled(!general!.locationEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+            {#if general}<button type="button" class:enabled={general.locationEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableLocation')} aria-checked={general.locationEnabled} disabled={updatingLocation} onclick={() => void setLocationEnabled(!general!.locationEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
-          {#each PERMISSION_ROWS as row (row.kind)}
+          {#each PERMISSION_ROWS as row (row.id)}
             <section class="general-setting-row">
               <span class="option-mark large"><Icon name={row.icon} size={18}/></span>
-              <span class="general-setting-copy"><h4>{$t(row.title)}</h4><small>{permissionStatusText(row.kind, row.reason)}</small></span>
-              {#if general?.permissions[row.kind] && permissionStatuses[row.kind] !== 'granted'}
-                <button type="button" class="permission-retry" disabled={askingPermission === row.kind} onclick={() => void requestPermission(row.kind)}>{$t('permission.allow')}</button>
+              <span class="general-setting-copy"><h4>{$t(row.title)}</h4><small>{permissionRowEnabled(row.kinds) ? (permissionRowGranted(row.kinds) ? $t('permission.allowed') : $t(row.reason)) : $t('permission.switchedOff')}</small></span>
+              {#if permissionRowEnabled(row.kinds) && !permissionRowGranted(row.kinds)}
+                <button type="button" class="permission-retry" disabled={row.kinds.includes(askingPermission as SystemPermissionKind)} onclick={() => void requestPermissionRow(row.kinds)}>{$t('permission.allow')}</button>
               {/if}
-              {#if general}<button type="button" class:enabled={general.permissions[row.kind]} class="chronicle-toggle" role="switch" aria-label={$t(row.title)} aria-checked={general.permissions[row.kind]} disabled={updatingPermission === row.kind} onclick={() => void setPermissionEnabled(row.kind, !general!.permissions[row.kind])}><span></span></button>{:else}{@render pendingToggle()}{/if}
+              {#if general}<button type="button" class:enabled={permissionRowEnabled(row.kinds)} class="computerHistory-toggle" role="switch" aria-label={$t(row.title)} aria-checked={permissionRowEnabled(row.kinds)} disabled={row.kinds.includes(updatingPermission as SystemPermissionKind)} onclick={() => void setPermissionRowEnabled(row.kinds, !permissionRowEnabled(row.kinds))}><span></span></button>{:else}{@render pendingToggle()}{/if}
             </section>
           {/each}
           <section class="general-setting-row">
             <span class="option-mark large"><Icon name="apps" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.appPermissions')}</h4><small>{$t('settings.appPermissionsHint')}</small></span>
             <button type="button" class="permission-retry" disabled={askingAllPermissions} onclick={() => void requestAllPermissions()}>{$t('permission.askAgain')}</button>
-            {#if general}<button type="button" class:enabled={general.appPermissionsEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableAppPermissions')} aria-checked={general.appPermissionsEnabled} disabled={updatingAppPermissions} onclick={() => void setAppPermissionsEnabled(!general!.appPermissionsEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+            {#if general}<button type="button" class:enabled={general.appPermissionsEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableAppPermissions')} aria-checked={general.appPermissionsEnabled} disabled={updatingAppPermissions} onclick={() => void setAppPermissionsEnabled(!general!.appPermissionsEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
-          <!-- Same arrangement as the notification rows: the master switch
-               above owns these, and with it off they grey out rather than
-               disappearing, so the choice they will come back to stays
-               visible. A row is here only because an installed skill asked
-               for it. -->
-          <div class="chronicle-group" class:disabled={general ? !general.appPermissionsEnabled : false}>
-            {#each appPermissionRows(skills) as row (row.kind)}
-              <section class="general-setting-row">
-                <span class="option-mark large"><Icon name={row.icon} size={18}/></span>
-                <span class="general-setting-copy"><h4>{$t(row.title)}</h4><small>{permissionStatusText(row.kind, row.reason)}</small></span>
-                {#if general?.appPermissionsEnabled && general.permissions[row.kind] && permissionStatuses[row.kind] !== 'granted'}
-                  <button type="button" class="permission-retry" disabled={askingPermission === row.kind} onclick={() => void requestPermission(row.kind)}>{$t('permission.allow')}</button>
-                {/if}
-                {#if general}<button type="button" class:enabled={general.permissions[row.kind]} class="chronicle-toggle" role="switch" aria-label={$t(row.title)} aria-checked={general.permissions[row.kind]} disabled={updatingPermission === row.kind} onclick={() => void setPermissionEnabled(row.kind, !general!.permissions[row.kind])}><span></span></button>{:else}{@render pendingToggle()}{/if}
-              </section>
-            {/each}
-          </div>
         </section>
         <section class="general-group">
           <h3>{$t('settings.groupNotifications')}</h3>
@@ -2628,16 +3171,16 @@
             {#if general?.notificationsEnabled}
               <button type="button" class="permission-retry" onclick={() => void sendTestNotification()}>{$t('settings.notificationTest')}</button>
             {/if}
-            {#if general}<button type="button" class:enabled={general.notificationsEnabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableNotifications')} aria-checked={general.notificationsEnabled} disabled={updatingNotifications === 'all'} onclick={() => void setNotificationsEnabled(!general!.notificationsEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+            {#if general}<button type="button" class:enabled={general.notificationsEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableNotifications')} aria-checked={general.notificationsEnabled} disabled={updatingNotifications === 'all'} onclick={() => void setNotificationsEnabled(!general!.notificationsEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
           <!-- The master switch above owns these: with it off they are greyed
                and inert, but keep showing the choice they will come back to. -->
-          <div class="chronicle-group" class:disabled={general ? !general.notificationsEnabled : false}>
+          <div class="computerHistory-group" class:disabled={general ? !general.notificationsEnabled : false}>
             {#each NOTIFICATION_ROWS as row (row.kind)}
               <section class="general-setting-row">
                 <span class="option-mark large"><Icon name={row.icon} size={18}/></span>
                 <span class="general-setting-copy"><h4>{$t(row.title)}</h4><small>{$t(row.hint)}</small></span>
-                {#if general}<button type="button" class:enabled={general.notifications[row.kind]} class="chronicle-toggle" role="switch" aria-label={$t(row.title)} aria-checked={general.notifications[row.kind]} disabled={!general.notificationsEnabled || updatingNotifications === row.kind} onclick={() => void setNotificationKind(row.kind, !general!.notifications[row.kind])}><span></span></button>{:else}{@render pendingToggle()}{/if}
+                {#if general}<button type="button" class:enabled={general.notifications[row.kind]} class="computerHistory-toggle" role="switch" aria-label={$t(row.title)} aria-checked={general.notifications[row.kind]} disabled={!general.notificationsEnabled || updatingNotifications === row.kind} onclick={() => void setNotificationKind(row.kind, !general!.notifications[row.kind])}><span></span></button>{:else}{@render pendingToggle()}{/if}
               </section>
             {/each}
           </div>
@@ -2669,75 +3212,96 @@
           </section>
         </section>
       </div>
-    {:else if mode === 'memory'}
-      <div class="memory-options" role="tabpanel" use:scrollFade>
-        <header class="options-detail-header">
-          <span class="options-title-group"><h3>{$t('settings.tabMemory')}</h3></span>
-        </header>
-        <section class="chronicle-section local-memory-section">
-          <header>
-            <span><h4>{$t('settings.localMemory')}</h4></span>
-            {#if memory}<button type="button" class:enabled={memory.enabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableMemory')} aria-checked={memory.enabled} disabled={updatingMemory} onclick={() => void setMemoryEnabled(!memory!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
-          </header>
-          <p>{$t('settings.memoryBody')}</p>
-          <div class="chronicle-inline-stats" aria-label={$t('settings.memoryStorage')}><span>{plural('settings.memoriesCount', memory?.memories ?? 0)}</span><span>{formatBytes(memory?.storedBytes ?? 0)}</span><span>{$t('settings.memoryLatest', {time: formatMemoryTime(memory?.latestMemoryAt)})}</span><span>{$t('settings.memoryConsolidated', {time: formatMemoryTime(memory?.consolidatedAt)})}</span>{#if (memory?.pendingMemories ?? 0) > 0}<span>{$t('settings.memoryPending', {count: memory?.pendingMemories ?? 0})}</span>{/if}</div>
+    {:else if mode === 'computer-history'}
+      <div class="memory-options" role="tabpanel">
+        <section class="memory-setting-row memory-primary-row">
+          <span class="option-mark large"><Icon name="brain" size={18}/></span>
+          <span class="general-setting-copy"><h4>Local memory</h4><small>{$t('settings.memoryBody')}</small><span class="computerHistory-inline-stats" aria-label={$t('settings.memoryStorage')}><span>{plural('settings.memoriesCount', memory?.memories ?? 0)}</span><span>{formatBytes(memory?.storedBytes ?? 0)}</span><span>{$t('settings.memoryLatest', {time: formatMemoryTime(memory?.latestMemoryAt)})}</span><span>{$t('settings.memoryConsolidated', {time: formatMemoryTime(memory?.consolidatedAt)})}</span>{#if (memory?.pendingMemories ?? 0) > 0}<span>{$t('settings.memoryPending', {count: memory?.pendingMemories ?? 0})}</span>{/if}</span></span>
+          {#if memory}<button type="button" class:enabled={memory.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableMemory')} aria-checked={memory.enabled} disabled={updatingMemory} onclick={() => void setMemoryEnabled(!memory!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
         </section>
-        {#if memory?.consolidationError}
-          <section class="chronicle-error">
-            <span><h4>{$t('settings.consolidationFailed')}</h4><p>{memory.consolidationError}</p><small>{$t('settings.consolidationFallback')}{#if memory.consolidationRetryAfter}{$t('settings.consolidationRetryAt', {time: formatMemoryTime(memory.consolidationRetryAfter)})}{:else}{$t('settings.consolidationRetryNext')}{/if}</small></span>
-          </section>
-        {/if}
-        <div class="memory-divider"></div>
-        <div class="chronicle-group" class:disabled={!memory?.enabled}>
-          <section class="chronicle-section">
-            <header>
-              <span><h4>{$t('settings.chronicle')}</h4>{#if !chronicle?.running}<small>{$t('settings.chronicleOff')}</small>{/if}</span>
-              {#if chronicle}<button type="button" class:enabled={chronicle.enabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableChronicle')} aria-checked={chronicle.enabled} disabled={!memory?.enabled || updatingChronicle} onclick={() => void setChronicleEnabled(!chronicle!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
-            </header>
-            <p>{$t('settings.chronicleBody')}</p>
-            <div class="chronicle-inline-stats"><span>{$t('settings.chronicleCaptures', {count: chronicle?.storedFrames ?? 0})}</span><span>{$t('settings.chronicleEvents', {count: chronicle?.storedEvents ?? 0})}</span><span>{formatBytes(chronicle?.storedBytes ?? 0)}</span><span>{$t('settings.chronicleLatest', {time: formatMemoryTime(chronicle?.lastCapturedAt)})}</span><span>{$t('settings.chronicleDistilled', {time: formatMemoryTime(chronicle?.distilledThrough)})}</span></div>
-          </section>
-          {#if chronicle?.lastError}
-            <section class="chronicle-error">
-              <span><h4>{$t('settings.captureUnavailable')}</h4><p>{chronicle.lastError}</p><small>{$t('settings.captureHint')}</small></span>
-              <button type="button" disabled={!memory?.enabled || updatingChronicle} onclick={() => void retryChronicle()}>{updatingChronicle ? $t('settings.trying') : $t('common.tryAgain')}</button>
-            </section>
+        <section class="memory-setting-row memory-primary-row">
+          <span class="option-mark large"><Icon name="computer" size={18}/></span>
+          <span class="general-setting-copy"><h4>Computer history</h4><small>{$t('settings.computerHistoryBody')}</small><span class="computerHistory-inline-stats" aria-label="Computer history storage"><span>{$t('settings.computerHistoryCaptures', {count: computerHistory?.storedFrames ?? 0})}</span><span>{formatBytes(computerHistory?.storedBytes ?? 0)}</span><span>{$t('settings.computerHistoryLatest', {time: formatMemoryTime(computerHistory?.lastCapturedAt)})}</span><span>{$t('settings.computerHistoryDistilled', {time: formatMemoryTime(computerHistory?.distilledThrough)})}</span><span>{$t('settings.computerHistoryEvents', {count: computerHistory?.storedEvents ?? 0})}</span></span></span>
+          {#if computerHistory}<button type="button" class:enabled={computerHistory.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableComputerHistory')} aria-checked={computerHistory.enabled} disabled={updatingComputerHistory} onclick={() => void setComputerHistoryEnabled(!computerHistory!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
+        </section>
+        {#if memory?.consolidationError}<section class="computerHistory-error"><span><h4>{$t('settings.consolidationFailed')}</h4><p>{memory.consolidationError}</p><small>{$t('settings.consolidationFallback')}{#if memory.consolidationRetryAfter}{$t('settings.consolidationRetryAt', {time: formatMemoryTime(memory.consolidationRetryAfter)})}{:else}{$t('settings.consolidationRetryNext')}{/if}</small></span></section>{/if}
+        <section class="history-settings-group">
+          <button type="button" class="memory-setting-row history-settings-row pinned-views-row" class:expanded={computerHistoryExclusionsExpanded} aria-expanded={computerHistoryExclusionsExpanded} aria-controls="computer-history-exclusions" onclick={() => computerHistoryExclusionsExpanded = !computerHistoryExclusionsExpanded}>
+            <span class="option-mark large"><Icon name="prohibited" size={18}/></span>
+            <span class="general-setting-copy"><h4>Computer history exclusions</h4><small>{$t('settings.computerHistoryPermissionsBody')}</small></span>
+            <span class="pinned-views-control"><span class="pinned-views-configure">Configure</span><span class="pinned-views-chevron" class:open={computerHistoryExclusionsExpanded}><Icon name="chevron" size={14}/></span></span>
+          </button>
+          {#if computerHistoryExclusionsExpanded}
+            <div id="computer-history-exclusions" class="computerHistory-source-columns computer-history-exclusions-config">
+              {@render sourceColumn('apps', $t('settings.computerHistoryApps'), appRows)}
+              {@render sourceColumn('sites', $t('settings.computerHistorySites'), siteRows)}
+            </div>
           {/if}
-          <section class="chronicle-section chronicle-sources">
-            <header>
-              <span><h4>{$t('settings.chroniclePermissions')}</h4></span>
-            </header>
-            <p>{$t('settings.chroniclePermissionsBody')}</p>
-            <div class="chronicle-source-columns">
-              {@render sourceColumn('apps', $t('settings.chronicleApps'), appRows)}
-              {@render sourceColumn('sites', $t('settings.chronicleSites'), siteRows)}
-            </div>
+          <section class="memory-setting-row history-settings-row">
+            <span class="option-mark large"><Icon name="incognito" size={18}/></span>
+            <span class="general-setting-copy"><h4>{$t('settings.computerHistoryPrivateBrowsing')}</h4><small>{$t('settings.computerHistoryPrivateBrowsingBody')}</small></span>
+            {#if computerHistory}<button type="button" class:enabled={computerHistory.recordPrivateBrowsing} class="computerHistory-toggle" role="switch" aria-label={$t('settings.computerHistoryPrivateBrowsing')} aria-checked={computerHistory.recordPrivateBrowsing} disabled={!computerHistory.enabled || updatingComputerHistory} onclick={() => void updateComputerHistory({recordPrivateBrowsing: !computerHistory!.recordPrivateBrowsing})}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
-          <section class="chronicle-section">
-            <header>
-              <span><h4>{$t('settings.chroniclePrivateBrowsing')}</h4></span>
-              {#if chronicle}<button type="button" class:enabled={chronicle.recordPrivateBrowsing} class="chronicle-toggle" role="switch" aria-label={$t('settings.chroniclePrivateBrowsing')} aria-checked={chronicle.recordPrivateBrowsing} disabled={!memory?.enabled || updatingChronicle} onclick={() => void updateChronicle({recordPrivateBrowsing: !chronicle!.recordPrivateBrowsing})}><span></span></button>{:else}{@render pendingToggle()}{/if}
-            </header>
-            <p>{$t('settings.chroniclePrivateBrowsingBody')}</p>
+          <section class="memory-setting-row history-settings-row">
+            <span class="option-mark large"><Icon name="cursor" size={18}/></span>
+            <span class="general-setting-copy"><h4>{$t('settings.computerHistoryInteractions')}</h4><small>{$t('settings.computerHistoryInteractionsBody')}</small></span>
+            {#if computerHistory}<button type="button" class:enabled={computerHistory.interactionEvents} class="computerHistory-toggle" role="switch" aria-label={$t('settings.computerHistoryInteractions')} aria-checked={computerHistory.interactionEvents} disabled={!computerHistory.enabled || updatingComputerHistory} onclick={() => void updateComputerHistory({interactionEvents: !computerHistory!.interactionEvents})}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
-          <section class="chronicle-section">
-            <header>
-              <span><h4>{$t('settings.chronicleInteractions')}</h4></span>
-              {#if chronicle}<button type="button" class:enabled={chronicle.interactionEvents} class="chronicle-toggle" role="switch" aria-label={$t('settings.chronicleInteractions')} aria-checked={chronicle.interactionEvents} disabled={!memory?.enabled || updatingChronicle} onclick={() => void updateChronicle({interactionEvents: !chronicle!.interactionEvents})}><span></span></button>{:else}{@render pendingToggle()}{/if}
+        </section>
+        <div class="history-section-heading">
+          <h3>History</h3>
+          <span class="history-heading-actions">
+            <span class="history-view-switch" role="tablist" aria-label="Memory view"><button type="button" role="tab" class:active={memoryBrowserMode === 'history'} aria-selected={memoryBrowserMode === 'history'} onclick={() => memoryBrowserMode = 'history'}><i class="history-key-dot history" aria-hidden="true"></i>History</button><button type="button" role="tab" class:active={memoryBrowserMode === 'memory'} aria-selected={memoryBrowserMode === 'memory'} onclick={() => memoryBrowserMode = 'memory'}><i class="history-key-dot memory" aria-hidden="true"></i>Memory</button></span>
+            <span class="history-clear-menu"><button type="button" class="history-outline history-clear-trigger" disabled={!computerHistory || Boolean(forgetting)} aria-haspopup="menu" aria-expanded={clearHistoryMenuOpen} onclick={() => clearHistoryMenuOpen = !clearHistoryMenuOpen}><span>Clear history</span><span class:open={clearHistoryMenuOpen} class="history-clear-chevron"><Icon name="chevron" size={12}/></span></button>{#if clearHistoryMenuOpen}<span class="flareai-dropdown-menu history-clear-options" role="menu" aria-label={$t('settings.computerHistoryForget')}><button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { clearHistoryMenuOpen = false; void forgetComputerHistory(1); }}><span>{$t('settings.computerHistoryForgetHour')}</span></button><button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { clearHistoryMenuOpen = false; void forgetComputerHistory(24); }}><span>{$t('settings.computerHistoryForgetDay')}</span></button><button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { clearHistoryMenuOpen = false; void forgetComputerHistory(null); }}><span>{$t('settings.computerHistoryForgetAll')}</span></button></span>{/if}</span>
+          </span>
+        </div>
+        <div class="history-browser">
+          <section class="history-calendar" aria-label={historyMonthText}>
+            <header class="history-calendar-nav">
+              <button type="button" class="history-double-chevron" aria-label="Previous year" onclick={() => moveHistoryYear(-1)}><Icon name="back" size={12}/><Icon name="back" size={12}/></button>
+              <button type="button" aria-label="Previous month" onclick={() => moveHistoryMonth(-1)}><Icon name="back" size={14}/></button>
+              <button type="button" class="history-calendar-label" aria-expanded={historyYearPickerOpen} onclick={() => historyYearPickerOpen = !historyYearPickerOpen}>{historyMonthText}</button>
+              <button type="button" aria-label="Next month" disabled={!canMoveHistoryForward} onclick={() => moveHistoryMonth(1)}><Icon name="forward" size={14}/></button>
+              <button type="button" class="history-double-chevron" aria-label="Next year" disabled={!canMoveHistoryYearForward} onclick={() => moveHistoryYear(1)}><Icon name="forward" size={12}/><Icon name="forward" size={12}/></button>
             </header>
-            <p>{$t('settings.chronicleInteractionsBody')}</p>
+            {#if historyYearPickerOpen}
+              <div class="history-year-grid" aria-label="Select year">
+                {#each historyCalendarYears as year (year.year)}
+                  <button type="button" class:selected={year.year === historyMonth.getFullYear()} aria-label={`${year.year}, ${year.historyCount} history events, ${year.memoryCount} memories`} onclick={() => selectHistoryYear(year.year)}><span>{year.year}</span><span class="history-calendar-indicators" aria-hidden="true">{#if year.historyCount}<i class="history-indicator"></i>{/if}{#if year.memoryCount}<i class="memory-indicator"></i>{/if}</span></button>
+                {/each}
+              </div>
+            {:else}
+              <div class="history-weekdays" aria-hidden="true">{#each ['S', 'M', 'T', 'W', 'T', 'F', 'S'] as weekday, index (`${weekday}-${index}`)}<span>{weekday}</span>{/each}</div>
+              <div class="history-calendar-grid">
+                {#each historyCalendarDays as date (date.key)}
+                  <button type="button" class:outside={!date.current} class:selected={date.key === selectedHistoryDay} class:populated={date.historyCount > 0 || date.memoryCount > 0} disabled={!date.historyCount && !date.memoryCount} aria-label={`${date.key}, ${date.historyCount} history events, ${date.memoryCount} memories`} onclick={() => selectHistoryDay(date.key)}><span>{date.day}</span><span class="history-calendar-indicators" aria-hidden="true">{#if date.historyCount}<i class="history-indicator"></i>{/if}{#if date.memoryCount}<i class="memory-indicator"></i>{/if}</span></button>
+                {/each}
+              </div>
+            {/if}
           </section>
-          <section class="chronicle-section">
-            <header><span><h4>{$t('settings.chronicleForget')}</h4></span></header>
-            <p>{$t('settings.chronicleForgetBody')}</p>
-            <div class="chronicle-forget">
-              <button type="button" disabled={!memory?.enabled || Boolean(forgetting)} onclick={() => void forgetChronicle(1)}>{forgetting === '1' ? $t('settings.trying') : $t('settings.chronicleForgetHour')}</button>
-              <button type="button" disabled={!memory?.enabled || Boolean(forgetting)} onclick={() => void forgetChronicle(24)}>{forgetting === '24' ? $t('settings.trying') : $t('settings.chronicleForgetDay')}</button>
-              <button type="button" disabled={!memory?.enabled || Boolean(forgetting)} onclick={() => void forgetChronicle(null)}>{forgetting === 'all' ? $t('settings.trying') : $t('settings.chronicleForgetAll')}</button>
-            </div>
+          <section class="history-timeline" use:scrollFade={`${selectedHistoryDay}:${memoryBrowserMode}`}>
+            <h4>{selectedHistoryDayLabel()}</h4>
+            {#if memoryBrowserMode === 'history'}
+              {#each selectedHistoryEntries as entry, entryIndex (entry.id)}
+                <article class="history-entry" class:last={entryIndex === selectedHistoryEntries.length - 1}>
+                  <time>{historyTime(entry.capturedAt)}</time><span class="history-dot"></span><div class="history-entry-card"><header><span class="history-entry-app">{#if sourceIcons[historyEntryApp(entry)]}<img src={sourceIcons[historyEntryApp(entry)] ?? ''} alt=""/>{:else}<Icon name="apps" size={15}/>{/if}<strong title={historyEntryApp(entry)}>{historyEntryApp(entry)}</strong></span><span class="history-entry-actions"><button type="button" aria-label={`Show ${historyEntryApp(entry)} capture in folder`} data-tooltip-label="Show in folder" onclick={() => void revealComputerHistoryEntry(entry)}><Icon name="folder" size={14}/></button><button type="button" class="destructive" aria-label={`Delete ${historyEntryApp(entry)} capture`} data-tooltip-label="Delete capture" disabled={deletingHistoryEntry === entry.id} onclick={() => void removeComputerHistoryEntry(entry)}><Icon name="trash" size={14}/></button></span></header><p>{historyEntryDetail(entry)}</p></div>
+                </article>
+              {:else}<p class="history-empty">No computer history captured for this day.</p>{/each}
+            {:else}
+              <div class="memory-snippets">
+                {#each selectedMemoryEntries as entry (entry.id)}
+                  <article class="memory-snippet"><span><strong>{entry.kind}</strong><time>{historyTime(entry.updatedAt)}</time></span><p>{entry.content}</p></article>
+                {:else}<p class="history-empty">No memories stored for this day.</p>{/each}
+              </div>
+            {/if}
           </section>
         </div>
-        {#if memory}<p class="options-path">{memory.directory}</p>{/if}
+        {#if computerHistory?.lastError}
+          <section class="computerHistory-error">
+            <span><h4>{$t('settings.captureUnavailable')}</h4><p>{computerHistory.lastError}</p><small>{$t('settings.captureHint')}</small></span>
+            <button type="button" disabled={!computerHistory.enabled || updatingComputerHistory} onclick={() => void retryComputerHistory()}>{updatingComputerHistory ? $t('settings.trying') : $t('common.tryAgain')}</button>
+          </section>
+        {/if}
       </div>
     {:else if mode === 'model' && !browsingRole}
       <!-- The tab answers what each job runs before it offers a catalogue: the
@@ -2752,7 +3316,7 @@
             <span class="role-controls"><span>{$t('composer.reasoning')}</span><span>{$t('settings.columnModel')}</span></span>
           </div>
           {#each MODEL_ROLES as role (role.value)}
-            {@const assignment = roleEffective(role, modelRoles)}
+            {@const assignment = roleAssignment(role.value, modelRoles)}
             {@const efforts = modelEfforts(roleModel(role, modelRoles, models) ?? ({} as ModelDto))}
             {@const settable = !!assignment && efforts.length > 1}
             <section class="general-setting-row">
@@ -2764,12 +3328,17 @@
                 <div class="setting-menu role-effort-menu" class:busy={assigningRole !== ''}>
                   <Menu options={settable ? roleEffortOptions(efforts) : [{value: 'off', label: $t('reasoning.none')}]} value={settable ? assignment?.reasoning ?? 'off' : 'off'} label={$t('composer.reasoningFor', {model: assignment?.name ?? role.label})} onChange={(value) => { if (settable) void setRoleEffort(role, value); }}/>
                 </div>
-                <button type="button" class="role-model" aria-label={$t('settings.roleSet', {model: assignment?.name ?? role.label, job: role.job})} disabled={assigningRole !== ''} onclick={() => browseForRole(role.value)}>
-                  <!-- The provider's own mark, as the composer's model picker
-                       carries it: the company is read before the name is. -->
-                  {#if assignment}<span class="role-model-mark"><ProviderLogo provider={assignment.provider} size={14}/></span>{/if}
-                  <span>{assignment?.name ?? $t('settings.setModel')}</span>
-                </button>
+                <span class="role-model-field">
+                  <button type="button" class="role-model" aria-label={$t('settings.roleSet', {model: assignment?.name ?? role.label, job: role.job})} disabled={assigningRole !== ''} onclick={() => browseForRole(role.value)}>
+                    <!-- The provider's own mark, as the composer's model picker
+                         carries it: the company is read before the name is. -->
+                    {#if assignment}<span class="role-model-mark"><ProviderLogo provider={assignment.provider} size={14}/></span>{/if}
+                    <span>{assignment?.name ?? $t('settings.setModel')}</span>
+                  </button>
+                  {#if assignment && role.value !== 'main'}
+                    <button type="button" class="role-model-clear" aria-label={$t('settings.clear')} disabled={assigningRole !== ''} onclick={() => void clearModelRole(role.value)}><Icon name="close" size={13} strokeWidth={1.7}/></button>
+                  {/if}
+                </span>
               </span>
             </section>
           {/each}
@@ -2814,7 +3383,7 @@
             {#each visibleProviders as item (item.id)}
               <li><button type="button" class:selected={!addingCustomProvider && item.id === selectedCredentialProvider} class:has-check={!item.custom && item.configured} class="options-rail-row provider-row" onclick={() => chooseCredentialProvider(item.id)}>
                 <span class="provider-mark"><ProviderLogo provider={item.id} logoDataUrl={item.logoDataUrl} size={18}/></span>
-                <span class="options-rail-copy"><span class="options-name"><strong>{item.name}</strong>{#if item.custom && !item.localRuntime}<i>{$t('settings.custom')}</i>{/if}</span><small>{plural('settings.modelCount', item.modelCount)}</small></span>
+                <span class="options-rail-copy"><span class="options-name"><strong>{item.name}</strong>{#if item.custom && !item.providers[0]?.localRuntime}<i>{$t('settings.custom')}</i>{/if}</span><small>{plural('settings.modelCount', item.modelCount)}</small></span>
                 {#if !item.custom && item.configured}<span class="configured-check" aria-label={$t('settings.configured')}><Icon name="check" size={13}/></span>{/if}
               </button></li>
             {:else}<li class="options-empty rail-empty">{loading ? $t('settings.loadingProviders') : $t('settings.noProvidersFound')}</li>{/each}
@@ -2942,7 +3511,7 @@
             <span class="options-title-group"><h3>{plugin.name}</h3>{#if plugin.version}<span class="options-badge"><span>{plugin.version}</span></span>{/if}</span>
             <div class="skill-detail-actions">
               <button type="button" class="provider-edit destructive" aria-label={$t('settings.removePlugin')} disabled={integrationSaving} onclick={() => void removePlugin(plugin)}><Icon name="trash" size={14}/></button>
-              <button type="button" class:enabled={plugin.enabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enablePlugin')} aria-checked={plugin.enabled} disabled={integrationSaving} onclick={() => void setPluginEnabled(plugin)}><span></span></button>
+              <button type="button" class:enabled={plugin.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enablePlugin')} aria-checked={plugin.enabled} disabled={integrationSaving} onclick={() => void setPluginEnabled(plugin)}><span></span></button>
             </div>
           </header>
           <section class="options-detail-block"><h4>{$t('settings.description')}</h4><p class="skill-description">{plugin.description || $t('settings.noDescription')}</p></section>
@@ -3127,7 +3696,7 @@
           <header class="options-detail-header">
             <span class="options-title-group"><h3>{mcp.name}</h3></span>
             {#if mcp.editable}<button type="button" class="provider-edit" aria-label={$t('settings.editMcpServer')} onclick={() => editMcp(mcp)}><Icon name="edit" size={14}/></button><button type="button" class="provider-edit destructive" aria-label={$t('settings.deleteMcpServer')} disabled={integrationSaving} onclick={() => void removeMcp(mcp)}><Icon name="trash" size={14}/></button>{/if}
-            <button type="button" class:enabled={mcp.enabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableMcpServer')} aria-checked={mcp.enabled} disabled={mcpUpdatingIds.has(mcp.id)} onclick={() => void setMcpEnabled(mcp)}><span></span></button>
+            <button type="button" class:enabled={mcp.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableMcpServer')} aria-checked={mcp.enabled} disabled={mcpUpdatingIds.has(mcp.id)} onclick={() => void setMcpEnabled(mcp)}><span></span></button>
           </header>
           <section class="options-detail-block"><h4>{$t('settings.description')}</h4><p>{mcp.description ?? $t('settings.noDescription')}</p></section>
           <section class="options-detail-block">
@@ -3148,7 +3717,7 @@
             <span class="options-title-group"><h3>{skillTitle(skill)}</h3>{#if skill.source === 'official'}<span class="options-badge official-badge"><Icon name="verified" size={11} strokeWidth={1.8}/><span>{$t('settings.official')}</span></span>{/if}</span>
             <div class="skill-detail-actions">
               {#if skill.editable}<button type="button" class="provider-edit" aria-label={$t('settings.editSkill')} onclick={() => editSkill(skill)}><Icon name="edit" size={14}/></button><button type="button" class="provider-edit destructive" aria-label={$t('settings.deleteSkill')} disabled={integrationSaving} onclick={() => void removeSkill(skill)}><Icon name="trash" size={14}/></button>{/if}
-              <button type="button" class:enabled={skill.enabled} class="chronicle-toggle" role="switch" aria-label={$t('settings.enableSkill')} aria-checked={skill.enabled} disabled={integrationSaving} onclick={() => void setSkillEnabled(skill)}><span></span></button>
+              <button type="button" class:enabled={skill.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableSkill')} aria-checked={skill.enabled} disabled={integrationSaving} onclick={() => void setSkillEnabled(skill)}><span></span></button>
             </div>
           </header>
           <section class="options-detail-block"><h4>{$t('settings.description')}</h4><p class="skill-description">{skill.description}</p></section>
@@ -3239,10 +3808,10 @@
               <button type="submit" class="credential-primary" disabled={savingCredential}>{savingCredential ? $t('hub.saving') : editingCustomProviderId ? $t('settings.saveChanges') : $t('settings.addProvider')}</button>
             </div>
           </form>
-        {:else if mode === 'provider' && credentialProvider}
+        {:else if mode === 'provider' && credentialProviderGroup && credentialProvider}
           <header class="options-detail-header provider-detail-header">
-            <span class="provider-mark large"><ProviderLogo provider={credentialProvider.id} logoDataUrl={credentialProvider.logoDataUrl} size={22}/></span>
-            <span class="options-title-group"><h3>{credentialProvider.name}</h3><span class:good={credentialProvider.configured} class="options-badge">{credentialProvider.configured ? $t('settings.configured') : credentialProvider.storedCredential ? $t('settings.saved') : $t('settings.notConfigured')}</span></span>
+            <span class="provider-mark large"><ProviderLogo provider={credentialProviderGroup.id} logoDataUrl={credentialProviderGroup.logoDataUrl} size={22}/></span>
+            <span class="options-title-group"><h3>{credentialProviderGroup.name}</h3><span class:good={credentialProviderGroup.configured} class="options-badge">{credentialProviderGroup.configured ? $t('settings.configured') : credentialProviderGroup.storedCredential ? $t('settings.saved') : $t('settings.notConfigured')}</span></span>
             {#if credentialProvider.custom && !credentialProvider.localRuntime}<button type="button" class="provider-edit" aria-label={$t('settings.editProvider', {provider: credentialProvider.name})} onclick={() => editCustomProvider(credentialProvider)}><Icon name="edit" size={14}/></button>{/if}
           </header>
           {#if credentialProvider.localRuntime}
@@ -3261,31 +3830,59 @@
               </form>
             </section>
           {:else}
+          {#if credentialProviderGroup.id === 'openai' && openAIAccountProvider}
+            <section class="credential-panel account-panel">
+              <div class="credential-copy">
+                <h4>ChatGPT Plus/Pro</h4>
+                <p>Connect your ChatGPT subscription to use supported OpenAI models.</p>
+              </div>
+              {#if openAIAccountProvider.source === 'OAuth'}
+                <div class="account-actions">
+                  <span class="account-state"><span class="credential-key-state active"></span>Connected</span>
+                  <button type="button" class="account-secondary" disabled={oauthConnecting === openAIAccountProvider.id} onclick={() => void disconnectProviderAccount()}>Disconnect</button>
+                </div>
+              {:else if oauthDevice}
+                <div class="oauth-device">
+                  <span class="field-label">Enter this code</span>
+                  <code>{oauthDevice.userCode}</code>
+                  <button type="button" class="credential-primary" onclick={() => void api.browser.openExternal(oauthDevice!.verificationUri)}>Continue in browser</button>
+                  <button type="button" class="account-secondary" onclick={() => void cancelProviderAccount()}>Cancel</button>
+                  {#if oauthProgress}<small>{oauthProgress}</small>{/if}
+                </div>
+              {:else}
+                <button type="button" class="credential-primary account-connect" disabled={oauthConnecting === openAIAccountProvider.id} onclick={() => void connectProviderAccount()}>{oauthConnecting === openAIAccountProvider.id ? 'Waiting for sign in…' : 'Connect'}</button>
+                {#if oauthConnecting === openAIAccountProvider.id}<button type="button" class="account-secondary account-cancel" onclick={() => void cancelProviderAccount()}>Cancel</button>{/if}
+              {/if}
+            </section>
+          {/if}
+          {#each credentialProviders as provider (provider.id)}
+          {#if provider.apiKeyLabel || provider.id !== 'openai-codex'}
           <section class="credential-panel">
             <div class="credential-copy">
-              <h4>API key</h4>
-              <p>{credentialProvider.apiKeyLabel ?? $t('settings.configureCredentials', {provider: credentialProvider.name})} {$t('settings.credentialsBlurb')}</p>
+              <h4>{credentialProviders.length > 1 ? provider.name : 'API key'}</h4>
+              <p>{provider.apiKeyLabel ?? $t('settings.configureCredentials', {provider: provider.name})} {$t('settings.credentialsBlurb')}</p>
             </div>
-            {#if credentialProvider.apiKeyLabel}
-              <form class="credential-form" onsubmit={(event) => {event.preventDefault(); void saveCredential();}}>
+            {#if provider.apiKeyLabel}
+              <form class="credential-form" onsubmit={(event) => {event.preventDefault(); void saveCredential(provider);}}>
                 <div class="credential-input-row">
-                  <input id="provider-api-key" bind:value={credentialKey} aria-label={$t('settings.apiKey')} type="password" autocomplete="off" spellcheck="false" placeholder={$t('settings.enterApiKey')}/>
-                  <button type="submit" class="credential-primary" disabled={savingCredential || !credentialKey.trim()}>{savingCredential ? $t('hub.saving') : $t('settings.addKey')}</button>
+                  <input id={`provider-api-key-${provider.id}`} bind:value={credentialKeys[provider.id]} aria-label={`${provider.name} ${$t('settings.apiKey')}`} type="password" autocomplete="off" spellcheck="false" placeholder={$t('settings.enterApiKey')}/>
+                  <button type="submit" class="credential-primary" disabled={savingCredential || !credentialKeys[provider.id]?.trim()}>{savingCredential ? $t('hub.saving') : $t('settings.addKey')}</button>
                 </div>
               </form>
             {:else}
               <p class="credential-unavailable">{$t('settings.noApiKeySupport')}</p>
             {/if}
             <div class="credential-keys">
-              {#each credentialProvider.apiKeys as key (key.id)}
+              {#each provider.apiKeys as key (key.id)}
                 <div class="credential-key-row">
-                  <span class="credential-key-state" class:active={key.status === 'ready'} class:invalid={key.status === 'invalid'} class:limited={key.status === 'rate_limited'}></span>
-                  <span><strong>{key.label}</strong><small class="state-text" data-state={key.status}>{key.status === 'invalid' ? $t('settings.keyInvalid') : key.status === 'rate_limited' ? $t('settings.keyRateLimited') : $t('settings.keyReady')}</small></span>
-                  <button type="button" aria-label={$t('settings.removeKey', {label: key.label})} data-tooltip-label={$t('hub.remove')} disabled={savingCredential} onclick={() => void removeCredential(key.id)}><Icon name="trash" size={14}/></button>
+                  <span class="credential-key-copy"><strong>{key.label}</strong><small class="state-text" data-state={key.status}>{key.status === 'invalid' ? $t('settings.keyInvalid') : key.status === 'rate_limited' ? $t('settings.keyRateLimited') : $t('settings.keyReady')}</small></span>
+                  <button type="button" aria-label={$t('settings.removeKey', {label: key.label})} data-tooltip-label={$t('hub.remove')} disabled={savingCredential} onclick={() => void removeCredential(provider, key.id)}><Icon name="trash" size={14}/></button>
                 </div>
               {/each}
             </div>
           </section>
+          {/if}
+          {/each}
           {/if}
         {:else}
           <p class="options-empty detail">{$t('settings.selectItem')}</p>
@@ -3319,6 +3916,37 @@
   .options-nav-item span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .options-nav-item:hover,.options-nav-item:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
   .options-nav-item.active{background:var(--neutral-200);color:var(--neutral-950);font-weight:540}
+  .profile-switcher{position:relative;flex:none;padding-top:10px;border-top:1px solid var(--neutral-200)}
+  .profile-trigger{width:100%;height:34px;display:flex;align-items:center;justify-content:flex-start;border:0;border-radius:9px;padding:0 8px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:12px;text-align:left}
+  .profile-trigger:hover,.profile-trigger:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
+  .profile-trigger.basic{cursor:default}
+  .profile-trigger.basic:hover{background:transparent;color:var(--neutral-700)}
+  .profile-trigger>span:first-child{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .profile-menu{position:absolute;z-index:20;right:0;bottom:42px;left:0;max-height:248px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--neutral-200);border-radius:11px;padding:5px;background:var(--app-surface);box-shadow:0 10px 30px rgba(0,0,0,.14);animation:options-page-in .12s ease-out}
+  .profile-new{position:relative;width:100%;height:32px;display:flex;flex:none;align-items:center;gap:8px;margin-top:4px;border:0;border-radius:8px;padding:0 7px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11.5px;text-align:left}
+  .profile-new::before{position:absolute;top:-4px;right:5px;left:5px;height:1px;background:var(--neutral-200);content:'';pointer-events:none}
+  .profile-new:hover,.profile-new:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
+  .profile-create{position:relative;height:36px;display:flex;flex:none;align-items:center;gap:5px;margin-top:4px;padding:4px 2px 0}
+  .profile-create::before{position:absolute;top:0;right:5px;left:5px;height:1px;background:var(--neutral-200);content:'';pointer-events:none}
+  .profile-create input{min-width:0;height:27px;flex:1;box-sizing:border-box;border:1px solid var(--neutral-300);border-radius:7px;padding:0 7px;outline:0;background:var(--input-surface);color:var(--neutral-950);font:inherit;font-size:11px}
+  .profile-create input:focus{border-color:var(--neutral-500)}
+  .profile-create button{height:27px;flex:none;border:1px solid var(--neutral-200);border-radius:7px;padding:0 8px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font:inherit;font-size:10.5px;font-weight:550}
+  .profile-create button:hover,.profile-create button:focus-visible{outline:0;border-color:var(--neutral-300);color:var(--neutral-950)}
+  .profile-list{min-height:0;display:flex;flex-direction:column;gap:2px;overflow-y:auto;padding-bottom:4px;scrollbar-width:none}
+  .profile-list::-webkit-scrollbar{display:none}
+  .profile-row{position:relative;display:flex;align-items:center;border-radius:8px}
+  .profile-row:hover,.profile-row:focus-within{background:var(--neutral-100)}
+  .profile-row.active:hover,.profile-row.active:focus-within{background:var(--neutral-200)}
+  .profile-row.active{background:var(--neutral-100)}
+  .profile-select{min-width:0;height:32px;display:flex;flex:1;align-items:center;gap:7px;border:0;padding:0 3px 0 6px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11.5px;text-align:left}
+  .profile-select>span:first-child{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .profile-select>:global(svg){flex:none;margin-left:auto}
+  .profile-options{padding-top:2px}
+  .profile-text-action,.profile-default-status{height:28px;display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--app-surface);font:inherit;font-size:11px;font-weight:550}
+  .profile-text-action{color:var(--neutral-700);cursor:pointer}
+  .profile-default-status{color:var(--neutral-400)}
+  .profile-text-action:hover,.profile-text-action:focus-visible{outline:0;border-color:var(--neutral-300);color:var(--neutral-950)}
+  .profile-text-action.danger{color:var(--danger-600,#c74848)}
   .options-page-content{position:relative;z-index:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;-webkit-app-region:no-drag}
   /* A plain cross-fade: the page arrives over the app in place, and a fade that
      also scaled would read as a second, contradictory movement. */
@@ -3340,7 +3968,7 @@
   .general-group>.general-setting-row:last-child{border-bottom:0}
   /* The notification kinds sit in a group of their own so the master switch
      can grey them, which puts the section's last row one level down. */
-  .general-group>.chronicle-group:last-child>.general-setting-row:last-child{border-bottom:0}
+  .general-group>.computerHistory-group:last-child>.general-setting-row:last-child{border-bottom:0}
   .permission-retry:disabled{cursor:default;opacity:.55}
   /* The row keeps the app mark rather than a generic puzzle piece, so the
      extension reads as part of FlareAI in both places it is offered. */
@@ -3353,7 +3981,7 @@
   .update-refresh:disabled{cursor:default;opacity:.55}
   .update-refresh.spinning :global(svg){animation:update-spin 1s linear infinite}
   @keyframes update-spin{to{transform:rotate(360deg)}}
-  .memory-options{flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:2px var(--options-detail-edge) 20px calc(var(--options-content-edge) + var(--options-tab-inline))}.memory-options>*{flex:none}.memory-options>.options-detail-header{flex:none;align-items:flex-start}.memory-options>.options-path{flex:none;margin-top:auto;padding-top:12px}.local-memory-section{margin-top:18px}.memory-divider{height:1px;flex:none;margin:14px 0;background:var(--neutral-200)}.chronicle-group{transition:opacity .15s ease}.chronicle-group>.chronicle-section+.chronicle-section{margin-top:16px}.chronicle-source-columns{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:610px;margin-top:10px}.chronicle-source-column{min-width:0;display:flex;flex-direction:column;gap:6px}.chronicle-source-column>header{display:flex;align-items:center;justify-content:space-between;gap:10px}.chronicle-source-column h5{min-width:0;margin:0;overflow:hidden;color:var(--neutral-900);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:570}.chronicle-source-tools{display:flex;align-items:center;gap:4px}.chronicle-source-tools button{display:flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none;border:0;padding:0;background:none;color:var(--neutral-400);cursor:pointer;transition:color .12s ease}.chronicle-source-tools button:hover,.chronicle-source-tools button:focus-visible{outline:0;color:var(--neutral-900)}.chronicle-source-tools button.active{color:var(--neutral-900)}.chronicle-source-tools button:disabled{cursor:default;opacity:.5}.chronicle-source-box{min-width:0;display:flex;flex-direction:column;height:150px;overflow:hidden;border:1px solid var(--neutral-200);border-radius:10px;padding:5px}.chronicle-source-list{min-height:0;flex:1;display:flex;flex-direction:column;overflow-y:auto;margin:0;padding:0;list-style:none}.chronicle-source-list li{display:flex;align-items:center;gap:8px;height:28px;border-radius:7px;padding:0 4px 0 8px;color:var(--neutral-700);font-size:11px}.chronicle-source-list li>span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chronicle-source-list li>:global(svg){flex:none;color:var(--neutral-400)}.chronicle-source-icon{width:15px;height:15px;flex:none;border-radius:3px;object-fit:contain}.chronicle-source-list li:hover{background:var(--neutral-100)}.chronicle-source-list li>button{display:flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none;border:0;padding:0;background:none;color:var(--neutral-400);cursor:pointer;opacity:0;transition:color .12s ease,opacity .12s ease}.chronicle-source-list li:hover>button,.chronicle-source-list li>button:focus-visible{opacity:1}.chronicle-source-list li>button:hover{color:var(--neutral-900)}.chronicle-source-field{display:flex;align-items:center;gap:7px;height:28px;flex:none;border-radius:7px;padding:0 8px;color:var(--neutral-400)}.chronicle-source-field:focus-within{color:var(--neutral-900)}.chronicle-source-field input{height:100%;min-width:0;flex:1;border:0;padding:0;background:none;color:var(--neutral-900);font-family:inherit;font-size:11px}.chronicle-source-field input::placeholder{color:var(--neutral-400)}.chronicle-source-field input:focus-visible{outline:0}.chronicle-source-field input:disabled{cursor:default;opacity:.5}.chronicle-forget{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.chronicle-forget button{height:28px;flex:none;border:1px solid var(--neutral-200);border-radius:8px;padding:0 11px;background:var(--app-surface);color:var(--neutral-900);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.chronicle-forget button:hover,.chronicle-forget button:focus-visible{outline:0;background:var(--neutral-100)}.chronicle-forget button:disabled{cursor:default;opacity:.5}.chronicle-group.disabled{opacity:.42}.chronicle-section>header{display:flex;align-items:center;justify-content:space-between;gap:16px}.chronicle-section>header>span{display:flex;min-width:0;flex-direction:column;gap:2px}.chronicle-section h4{margin:0;color:var(--neutral-900);font-size:12.5px;font-weight:570}.chronicle-section small{color:var(--neutral-400);font-size:10.5px}.chronicle-section>p{max-width:610px;margin:6px 0;color:var(--neutral-600);font-size:11px;line-height:1.45}.chronicle-inline-stats{display:flex;flex-wrap:wrap;gap:12px;color:var(--neutral-400);font-size:10px}.chronicle-toggle{width:36px;height:20px;flex:none;border:0;border-radius:999px;padding:2px;background:var(--neutral-300);cursor:pointer;transition:background .15s ease}.chronicle-toggle span{width:16px;height:16px;display:block;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .15s ease,background .15s ease}.chronicle-toggle.pending{display:block;cursor:default;opacity:.5}.chronicle-toggle.enabled{background:var(--neutral-900)}.chronicle-toggle.enabled span{transform:translateX(16px)}:global(:root[data-theme="dark"]) .chronicle-toggle{background:#484848}:global(:root[data-theme="dark"]) .chronicle-toggle span{background:#d8d8d8}:global(:root[data-theme="dark"]) .chronicle-toggle.enabled{background:#e7e7e7}:global(:root[data-theme="dark"]) .chronicle-toggle.enabled span{background:#242424}.chronicle-toggle:disabled{cursor:default;opacity:.5}.chronicle-error{display:flex;align-items:center;gap:12px;margin-top:10px;padding:9px 11px;border-radius:9px;background:#fff5f5;color:#8f3e3e}.chronicle-error>span{min-width:0;flex:1}.chronicle-error h4,.chronicle-error p,.chronicle-error small{margin:0}.chronicle-error h4{font-size:11px}.chronicle-error p{margin-top:3px;font-size:11px}.chronicle-error small{display:block;margin-top:3px;opacity:.75;font-size:10px}.chronicle-error button{height:28px;flex:none;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:8px;padding:0 10px;background:var(--app-surface);color:inherit;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.chronicle-error button:hover,.chronicle-error button:focus-visible{outline:0;background:var(--neutral-100)}.chronicle-error button:disabled{cursor:default;opacity:.55}:global(:root[data-theme="dark"]) .chronicle-error{background:#321f1f;color:#eea7a7}:global(:root[data-theme="dark"]) .chronicle-error button{border-color:#704242;background:#442727;color:#f0b0b0}:global(:root[data-theme="dark"]) .chronicle-error button:hover,:global(:root[data-theme="dark"]) .chronicle-error button:focus-visible{background:#553030;color:#ffd0d0}
+  .memory-options{flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:2px var(--options-detail-edge) 20px calc(var(--options-content-edge) + var(--options-tab-inline))}.memory-options>*{flex:none}.computerHistory-source-columns{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:610px;margin-top:10px}.computerHistory-source-column{min-width:0;display:flex;flex-direction:column;gap:6px}.computerHistory-source-column>header{display:flex;align-items:center;justify-content:space-between;gap:10px}.computerHistory-source-column h5{min-width:0;margin:0;overflow:hidden;color:var(--neutral-900);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:570}.computerHistory-source-tools{display:flex;align-items:center;gap:4px}.computerHistory-source-tools button{display:flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none;border:0;padding:0;background:none;color:var(--neutral-400);cursor:pointer;transition:color .12s ease}.computerHistory-source-tools button:hover,.computerHistory-source-tools button:focus-visible{outline:0;color:var(--neutral-900)}.computerHistory-source-tools button.active{color:var(--neutral-900)}.computerHistory-source-tools button:disabled{cursor:default;opacity:.5}.computerHistory-source-box{min-width:0;display:flex;flex-direction:column;height:150px;overflow:hidden;border:1px solid var(--neutral-200);border-radius:10px;padding:5px}.computerHistory-source-list{min-height:0;flex:1;display:flex;flex-direction:column;overflow-y:auto;margin:0;padding:0;list-style:none}.computerHistory-source-list li{display:flex;align-items:center;gap:8px;height:28px;border-radius:7px;padding:0 4px 0 8px;color:var(--neutral-700);font-size:11px}.computerHistory-source-list li>span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.computerHistory-source-list li>:global(svg){flex:none;color:var(--neutral-400)}.computerHistory-source-icon{width:15px;height:15px;flex:none;border-radius:3px;object-fit:contain}.computerHistory-source-list li:hover{background:var(--neutral-100)}.computerHistory-source-list li>button{display:flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none;border:0;padding:0;background:none;color:var(--neutral-400);cursor:pointer;opacity:0;transition:color .12s ease,opacity .12s ease}.computerHistory-source-list li:hover>button,.computerHistory-source-list li>button:focus-visible{opacity:1}.computerHistory-source-list li>button:hover{color:var(--neutral-900)}.computerHistory-source-field{display:flex;align-items:center;gap:7px;height:28px;flex:none;border-radius:7px;padding:0 8px;color:var(--neutral-400)}.computerHistory-source-field:focus-within{color:var(--neutral-900)}.computerHistory-source-field input{height:100%;min-width:0;flex:1;border:0;padding:0;background:none;color:var(--neutral-900);font-family:inherit;font-size:11px}.computerHistory-source-field input::placeholder{color:var(--neutral-400)}.computerHistory-source-field input:focus-visible{outline:0}.computerHistory-source-field input:disabled{cursor:default;opacity:.5}.computerHistory-group.disabled{opacity:.42}.computerHistory-inline-stats{display:flex;flex-wrap:wrap;gap:12px;color:var(--neutral-400);font-size:10px}.computerHistory-toggle{width:36px;height:20px;flex:none;border:0;border-radius:999px;padding:2px;background:var(--neutral-300);cursor:pointer;transition:background .15s ease}.computerHistory-toggle span{width:16px;height:16px;display:block;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .15s ease,background .15s ease}.computerHistory-toggle.pending{display:block;cursor:default;opacity:.5}.computerHistory-toggle.enabled{background:var(--neutral-900)}.computerHistory-toggle.enabled span{transform:translateX(16px)}:global(:root[data-theme="dark"]) .computerHistory-toggle{background:#484848}:global(:root[data-theme="dark"]) .computerHistory-toggle span{background:#d8d8d8}:global(:root[data-theme="dark"]) .computerHistory-toggle.enabled{background:#e7e7e7}:global(:root[data-theme="dark"]) .computerHistory-toggle.enabled span{background:#242424}.computerHistory-toggle:disabled{cursor:default;opacity:.5}.computerHistory-error{display:flex;align-items:center;gap:12px;margin-top:10px;padding:9px 11px;border-radius:9px;background:#fff5f5;color:#8f3e3e}.computerHistory-error>span{min-width:0;flex:1}.computerHistory-error h4,.computerHistory-error p,.computerHistory-error small{margin:0}.computerHistory-error h4{font-size:11px}.computerHistory-error p{margin-top:3px;font-size:11px}.computerHistory-error small{display:block;margin-top:3px;opacity:.75;font-size:10px}.computerHistory-error button{height:28px;flex:none;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:8px;padding:0 10px;background:var(--app-surface);color:inherit;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.computerHistory-error button:hover,.computerHistory-error button:focus-visible{outline:0;background:var(--neutral-100)}.computerHistory-error button:disabled{cursor:default;opacity:.55}:global(:root[data-theme="dark"]) .computerHistory-error{background:#321f1f;color:#eea7a7}:global(:root[data-theme="dark"]) .computerHistory-error button{border-color:#704242;background:#442727;color:#f0b0b0}:global(:root[data-theme="dark"]) .computerHistory-error button:hover,:global(:root[data-theme="dark"]) .computerHistory-error button:focus-visible{background:#553030;color:#ffd0d0}
   .options-body{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}.options-body:after{content:'';position:absolute;top:6px;bottom:12px;left:220px;width:1px;background:var(--neutral-200)}
   .options-rail{min-height:0;display:flex;flex-direction:column;gap:6px;padding:0 var(--options-divider-gap) 12px var(--options-content-edge)}.options-search{display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border:1px solid var(--neutral-200);border-radius:9px;background:var(--input-surface);color:var(--neutral-500)}.options-search:focus-within{border-color:var(--neutral-400);background:var(--prompt-surface-active)}.options-search input{-webkit-appearance:none;appearance:none;min-width:0;flex:1;border:0;padding:0;background:transparent;color:var(--neutral-950);outline:none;font-size:12.5px}.options-search input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
   .options-rail-list{flex:1;min-height:0;overflow-y:auto;margin:0;padding:6px 0;list-style:none}.options-rail-list.empty-state{display:flex;align-items:center;justify-content:center;-webkit-mask-image:none;mask-image:none}.options-rail-list li{display:flex}.options-rail-list .rail-empty{justify-content:center;padding:0 8px}.options-rail-row{width:100%;display:flex;align-items:center;gap:10px;margin:2px 0;padding:5px 9px;border:0;border-radius:10px;background:transparent;text-align:left;cursor:pointer}.options-rail-row:hover,.options-rail-row:focus-visible{outline:0;background:var(--neutral-100)}.options-rail-row.selected{background:var(--neutral-200)}
@@ -3370,7 +3998,7 @@
   .skill-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 18px;margin:8px 0 0;max-width:460px}.skill-meta div{min-width:0;display:flex;flex-direction:column;gap:2px}.skill-meta dt{color:var(--neutral-400);font-size:10.5px;font-weight:550;letter-spacing:.02em}.skill-meta dd{margin:0;overflow:hidden;color:var(--neutral-700);text-overflow:ellipsis;white-space:nowrap;font-size:12px}.options-rail-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.options-rail-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:530}.options-rail-copy small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;text-transform:capitalize}.options-name{display:flex;align-items:center;gap:5px}.options-name strong{min-width:0;flex:1}.options-name i{padding:1px 5px;border-radius:5px;background:#fff;color:var(--neutral-600);font-size:9px;font-style:normal}
   .provider-mark{width:26px;height:26px;display:grid;flex:none;place-items:center;border:1px solid var(--neutral-200);border-radius:8px;background:#fff}.provider-mark.large{width:34px;height:34px;border-radius:10px}.provider-row.selected .provider-mark{border-color:rgba(0,0,0,.08)}.provider-row.has-check{position:relative}.provider-row.has-check .options-rail-copy{-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px));mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px))}.configured-check{position:absolute;top:0;right:15px;bottom:0;width:18px;display:grid;place-items:center;color:var(--neutral-600)}
   .options-rail-tools{position:relative;flex:none;display:flex;align-items:center;justify-content:flex-start;gap:2px;margin-top:2px}.rail-tool-wrap{position:relative}.rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}.rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}.rail-tool-menu .flareai-dropdown-item>span{min-width:0;flex:1}.rail-tool-text{width:auto;padding:0 9px;font-family:inherit;font-size:11px;font-weight:540}
-  .options-detail{min-height:0;overflow-y:auto;padding:0 18px 20px var(--options-divider-gap)}.options-detail-header{display:flex;align-items:center;gap:11px}.options-detail-header>.chronicle-toggle{margin-right:8px}.options-title-group{min-width:0;flex:1;display:flex;align-items:center;gap:8px}.options-title-group h3{min-width:0;margin:0;overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:570}.options-badge{flex:none;padding:2px 8px;border-radius:7px;background:var(--neutral-200);color:var(--neutral-600);font-size:10.5px;font-weight:540;text-transform:capitalize}.options-badge.good{background:#e8f5ec;color:#347049}.official-badge{display:inline-flex;align-items:center;gap:4px;padding:0;background:transparent;transform:translateY(1px)}.official-badge :global(svg){flex:none}
+  .options-detail{min-height:0;overflow-y:auto;padding:0 18px 20px var(--options-divider-gap)}.options-detail-header{display:flex;align-items:center;gap:11px}.options-detail-header>.computerHistory-toggle{margin-right:8px}.options-title-group{min-width:0;flex:1;display:flex;align-items:center;gap:8px}.options-title-group h3{min-width:0;margin:0;overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:570}.options-badge{flex:none;padding:2px 8px;border-radius:7px;background:var(--neutral-200);color:var(--neutral-600);font-size:10.5px;font-weight:540;text-transform:capitalize}.options-badge.good{background:#e8f5ec;color:#347049}.official-badge{display:inline-flex;align-items:center;gap:4px;padding:0;background:transparent;transform:translateY(1px)}.official-badge :global(svg){flex:none}
   .options-detail.mcp-detail{display:flex;flex-direction:column;overflow:hidden}.mcp-detail>.options-detail-header,.mcp-detail>.options-detail-block{flex:none}.mcp-detail>.options-resources{min-height:0;flex:1}.mcp-detail>.options-resources>section{min-height:0;display:flex;flex-direction:column}.mcp-detail>.options-resources ul{min-height:0;max-height:none;flex:1;overflow-y:auto}
   /* The conflict mark sits on the name's line, like the official stamp, and
      is the one warm colour in the rail so it reads as a caution without a box
@@ -3385,9 +4013,9 @@
   :global(:root[data-theme="dark"]) .plugin-conflicts li,:global(:root[data-theme="dark"]) .plugin-warning{color:#e79c9c}
   .options-detail.plugin-detail{display:flex;flex-direction:column;overflow:hidden}.plugin-detail>.options-path{flex:none;margin-top:auto;padding-top:12px}
   .options-detail.skill-detail{display:flex;flex-direction:column;overflow:hidden}.skill-detail>.options-path{flex:none;margin-top:auto;padding-top:12px}.skill-description{display:-webkit-box;overflow:hidden;line-clamp:4;-webkit-box-orient:vertical;-webkit-line-clamp:4}
-  .skill-detail>.options-detail-header{position:relative;min-height:20px}.skill-detail>.options-detail-header>.options-title-group{min-height:20px;align-self:flex-start;padding-right:112px}.skill-detail-actions{position:absolute;top:-4px;right:0;height:28px;display:flex;align-items:center;gap:11px}.skill-detail-actions>.provider-edit+.provider-edit,.skill-detail-actions>.provider-edit+.chronicle-toggle{margin-left:-5px}.skill-detail-actions>.chronicle-toggle{margin-right:8px}
+  .skill-detail>.options-detail-header{position:relative;min-height:20px}.skill-detail>.options-detail-header>.options-title-group{min-height:20px;align-self:flex-start;padding-right:112px}.skill-detail-actions{position:absolute;top:-4px;right:0;height:28px;display:flex;align-items:center;gap:11px}.skill-detail-actions>.provider-edit+.provider-edit,.skill-detail-actions>.provider-edit+.computerHistory-toggle{margin-left:-5px}.skill-detail-actions>.computerHistory-toggle{margin-right:8px}
   .mcp-detail>.options-detail-header h3{font-size:16px;font-weight:570}
-  .options-detail-block{margin:19px 0 10px}.options-detail-block h4,.options-resources h4{margin:0;color:var(--neutral-800);font-size:11.5px;font-weight:570;letter-spacing:.02em}.options-detail-block p{margin:5px 0 0;color:var(--neutral-600);font-size:12.5px;line-height:1.55;white-space:pre-wrap}.options-resources{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:18px}.options-resources header{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}.options-resources header span{padding:1px 7px;border-radius:999px;background:var(--neutral-100);color:var(--neutral-600);font-size:10.5px}.options-resources ul{max-height:196px;overflow:auto;margin:0;padding:0;list-style:none}.options-resources li{display:flex;align-items:center;gap:7px;min-height:28px;overflow:hidden;color:var(--neutral-700);text-overflow:ellipsis;white-space:nowrap;font-size:12px}.options-resources li.muted{color:var(--neutral-400)}
+  .options-detail-block{margin:19px 0 10px}.options-detail-block h4,.options-resources h4{margin:0;color:var(--neutral-800);font-size:11.5px;font-weight:570;letter-spacing:.02em}.options-detail-block p{margin:5px 0 0;color:var(--neutral-600);font-size:12.5px;line-height:1.55;white-space:pre-wrap}.options-resources{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:18px}.options-resources header{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}.options-resources header span{padding:1px 7px;border-radius:999px;background:var(--neutral-100);color:var(--neutral-600);font-size:10.5px}.options-resources ul{max-height:196px;overflow:auto;margin:0;padding:0;list-style:none}.options-resources li{display:flex;align-items:center;gap:7px;min-height:28px;overflow:hidden;color:var(--neutral-700);text-overflow:ellipsis;white-space:nowrap;font-size:12px}.options-resources li :global(svg){flex:none}.options-resources li.muted{color:var(--neutral-400)}
   .options-path{margin:24px 0 0;overflow-wrap:anywhere;color:var(--neutral-400);font-size:10.5px}.options-empty{width:100%;padding:24px 8px;color:var(--neutral-400);text-align:center;font-size:12px}.options-empty.detail{display:grid;min-height:100%;place-items:center;margin:0}
   .provider-detail-header{padding-bottom:12px}.model-detail-header .model-count{transform:translateY(-2px)}.model-count{margin-left:auto;color:var(--neutral-500);font-size:11px;font-weight:450;white-space:nowrap}.pricing-toolbar{display:flex;align-items:flex-start;gap:12px;margin:-7px 0 10px}.pricing-note{min-width:0;flex:1;margin:0;padding-top:6px;color:var(--neutral-500);font-size:11px}/* Lifted against the note's first line: the trigger is much taller than the
      11px text, so flex-start alignment leaves it sitting visibly low. */
@@ -3399,8 +4027,8 @@
   .provider-edit{width:28px;height:28px;display:grid;flex:none;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.provider-edit:hover,.provider-edit:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-900)}
   .search-clear{appearance:none;width:13px;height:20px;display:grid;flex:none;place-items:center;border:0;padding:0;background:transparent;box-shadow:none;color:var(--neutral-400);cursor:pointer}.search-clear:hover,.search-clear:focus-visible{outline:0;background:transparent;box-shadow:none;color:var(--neutral-800)}
   .provider-edit.destructive:hover,.provider-edit.destructive:focus-visible{color:#a44343}.provider-edit:disabled{cursor:default;opacity:.45}
-  .options-detail-header>.provider-edit+.provider-edit,.options-detail-header>.provider-edit+.chronicle-toggle{margin-left:-5px}
-  .credential-panel{max-width:500px;padding:5px 2px}.credential-copy h4{margin:0;color:var(--neutral-900);font-size:13px;font-weight:570}.credential-copy p{max-width:470px;margin:6px 0 0;color:var(--neutral-500);font-size:12px;line-height:1.55}.credential-form{margin-top:10px}.credential-input-row{display:flex;gap:7px}.credential-input-row input{height:32px;min-width:0;flex:1;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--input-surface);color:var(--neutral-950);outline:none;font-family:inherit;font-size:11.5px}.credential-input-row input:focus{border-color:var(--neutral-400);background:var(--prompt-surface-active)}.credential-primary{height:32px;border:0;border-radius:8px;padding:0 12px;background:var(--neutral-900);color:var(--on-primary);cursor:pointer;font-family:inherit;font-size:11.5px;font-weight:540}.credential-primary:hover{filter:brightness(.92)}.credential-primary:disabled{cursor:default;opacity:.4}.credential-unavailable{margin:22px 0 0;padding:10px;border-radius:9px;background:var(--neutral-100);color:var(--neutral-500);font-size:12px}
+  .options-detail-header>.provider-edit+.provider-edit,.options-detail-header>.provider-edit+.computerHistory-toggle{margin-left:-5px}
+  .credential-panel{max-width:500px;padding:5px 2px}.credential-panel+.credential-panel{margin-top:24px}.credential-copy h4{margin:0;color:var(--neutral-900);font-size:13px;font-weight:570}.credential-copy p{max-width:470px;margin:6px 0 0;color:var(--neutral-500);font-size:12px;line-height:1.55}.credential-form{margin-top:10px}.credential-input-row{display:flex;gap:7px}.credential-input-row input{height:32px;min-width:0;flex:1;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--input-surface);color:var(--neutral-950);outline:none;font-family:inherit;font-size:11.5px}.credential-input-row input:focus{border-color:var(--neutral-400);background:var(--prompt-surface-active)}.credential-primary{height:32px;border:0;border-radius:8px;padding:0 12px;background:var(--neutral-900);color:var(--on-primary);cursor:pointer;font-family:inherit;font-size:11.5px;font-weight:540}.credential-primary:hover{filter:brightness(.92)}.credential-primary:disabled{cursor:default;opacity:.4}.credential-unavailable{margin:22px 0 0;padding:10px;border-radius:9px;background:var(--neutral-100);color:var(--neutral-500);font-size:12px}.account-connect{margin-top:10px}.account-cancel{margin-left:8px}.account-actions{display:flex;align-items:center;justify-content:space-between;margin-top:12px}.account-state{display:flex;align-items:center;gap:7px;color:var(--neutral-700);font-size:12px}.account-secondary{height:30px;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11.5px}.account-secondary:disabled{cursor:default;opacity:.4}.oauth-device{display:flex;align-items:flex-start;gap:9px;flex-direction:column;margin-top:12px}.oauth-device code{border:1px solid var(--neutral-200);border-radius:8px;padding:8px 12px;background:var(--neutral-100);color:var(--neutral-900);font-size:17px;font-weight:650;letter-spacing:.12em}.oauth-device small{color:var(--neutral-500);font-size:11.5px}
   .custom-provider-form{max-width:440px;padding:2px}.custom-provider-form>p{margin:0 0 16px;color:var(--neutral-500);font-size:11.5px;line-height:1.5}.custom-provider-form>label{display:flex;flex-direction:column;gap:5px;margin:0 0 11px;color:var(--neutral-700);font-size:11px;font-weight:540}.custom-provider-form label>small{color:var(--neutral-400);font-size:10px;font-weight:400}.custom-provider-form input,.custom-provider-form textarea{width:100%;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--input-surface);color:var(--neutral-950);outline:none;font-family:inherit;font-size:11.5px}.custom-provider-form input{height:32px}.custom-provider-form textarea{min-height:88px;padding-block:8px;resize:vertical;line-height:1.45}.custom-provider-form input:focus,.custom-provider-form textarea:focus{border-color:var(--neutral-400);background:var(--prompt-surface-active)}.custom-provider-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:15px}.custom-provider-actions>button{height:32px;border:0;border-radius:8px;padding:0 12px;background:var(--neutral-100);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:11.5px}.custom-provider-actions>button:hover{background:var(--neutral-200)}.custom-provider-actions>.credential-primary{background:var(--neutral-900);color:var(--on-primary)}.custom-provider-actions>.credential-primary:hover{filter:brightness(.92)}
   .custom-integration-form{max-width:440px;padding-top:16px}.custom-integration-form>label{display:flex;flex-direction:column;gap:5px;margin-bottom:10px;color:var(--neutral-700);font-size:11px;font-weight:540}.custom-integration-form input,.custom-integration-form select,.custom-integration-form textarea{width:100%;border:1px solid var(--neutral-200);border-radius:8px;background:var(--input-surface);color:var(--neutral-950);outline:none;font:inherit;font-size:11.5px}.custom-integration-form input,.custom-integration-form select{height:32px;padding:0 10px}.custom-integration-form textarea{min-height:58px;padding:8px 10px;resize:vertical;line-height:1.4}.custom-integration-form textarea.instructions{min-height:150px}.custom-integration-form input:focus,.custom-integration-form select:focus,.custom-integration-form textarea:focus{border-color:var(--neutral-400)}.custom-integration-form input:disabled{color:var(--neutral-400);background:var(--neutral-100)}
   .custom-integration-form.skill-form{width:100%;max-width:none}
@@ -3411,13 +4039,106 @@
   .detect-models{height:22px;border:1px solid var(--neutral-200);border-radius:7px;padding:0 8px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10px;font-weight:540}.detect-models:hover,.detect-models:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.detect-models:disabled{cursor:default;opacity:.5}
   .custom-provider-logo{display:block;flex:none;cursor:pointer}.custom-provider-logo>input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.custom-provider-logo-preview{position:relative;overflow:hidden;transition:background-color .14s ease}.custom-provider-logo:hover .custom-provider-logo-preview,.custom-provider-logo:focus-within .custom-provider-logo-preview{background:var(--neutral-300)}.custom-provider-logo-preview img{width:100%;height:100%;display:block;object-fit:cover}
   .skill-add-menu{min-width:142px}.skill-folder-input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-  .credential-keys{margin-top:12px}.credential-key-row{min-height:42px;display:flex;align-items:center;gap:9px;padding:0 6px;border-bottom:1px solid var(--neutral-100)}.credential-key-state{width:7px;height:7px;flex:none;border-radius:50%;background:var(--neutral-300)}.credential-key-state.active{background:#4da46a}.credential-key-state.invalid{background:#c65a5a}.credential-key-state.limited{background:#c8973c}.credential-key-row>span:nth-child(2){min-width:0;flex:1;display:flex;flex-direction:column}.credential-key-row strong{color:var(--neutral-800);font-size:11.5px;font-weight:520}.credential-key-row small{color:var(--neutral-400);font-size:10px}.credential-key-row button{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:var(--neutral-400);cursor:pointer}.credential-key-row button:hover{background:var(--neutral-100);color:#a44343}.credential-unavailable{margin:22px 0 0;padding:10px;border-radius:9px;background:var(--neutral-100);color:var(--neutral-500);font-size:12px}
+  .credential-keys{margin-top:12px}.credential-key-row{min-height:42px;display:flex;align-items:center;gap:9px;padding:0 6px;border-bottom:1px solid var(--neutral-100)}.credential-key-state{width:7px;height:7px;flex:none;border-radius:50%;background:var(--neutral-300)}.credential-key-state.active{background:#4da46a}.credential-key-copy{min-width:0;flex:1;display:flex;flex-direction:column}.credential-key-row strong{color:var(--neutral-800);font-size:11.5px;font-weight:520}.credential-key-row small{color:var(--neutral-400);font-size:10px}.credential-key-row button{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:var(--neutral-400);cursor:pointer}.credential-key-row button:hover{background:var(--neutral-100);color:#a44343}.credential-unavailable{margin:22px 0 0;padding:10px;border-radius:9px;background:var(--neutral-100);color:var(--neutral-500);font-size:12px}
   .model-table tr.model-row{cursor:pointer}
   /* The roles view: each job on one row, with what it runs and how hard it
      thinks sitting on the text's own centre line. */
-  .role-controls{flex:none;display:flex;align-items:center;gap:8px}.role-effort-menu :global(.select-menu-trigger){width:104px}.role-model{height:28px;width:216px;display:flex;align-items:center;justify-content:flex-start;gap:8px;overflow:hidden;border:1px solid var(--neutral-200);border-radius:8px;padding:0 11px;text-align:left;white-space:nowrap;text-overflow:ellipsis;background:var(--app-surface);color:var(--neutral-800);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.role-model:hover:not(:disabled),.role-model:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.role-model:disabled{cursor:default;opacity:.55}/* The composer's model picker tile (`.model-menu-mark`), same size: lobehub's
+  .role-controls{flex:none;display:flex;align-items:center;gap:8px}.role-effort-menu :global(.select-menu-trigger){width:104px}.role-model-field{position:relative;width:216px;height:28px;display:block}.role-model{height:28px;width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;overflow:hidden;border:1px solid var(--neutral-200);border-radius:8px;padding:0 11px;text-align:left;white-space:nowrap;text-overflow:ellipsis;background:var(--app-surface);color:var(--neutral-800);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.role-model-field:has(.role-model-clear) .role-model{padding-right:32px}.role-model:hover:not(:disabled),.role-model:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.role-model:disabled{cursor:default;opacity:.55}.role-model-clear{position:absolute;top:0;right:5px;width:23px;height:28px;display:grid;place-items:center;border:0;padding:0;background:transparent;color:var(--neutral-400);cursor:pointer;opacity:0;transition:color .14s ease,opacity .14s ease}.role-model-field:hover .role-model-clear,.role-model-clear:focus-visible{opacity:1}.role-model-clear:hover,.role-model-clear:focus-visible{outline:0;color:var(--neutral-950)}.role-model-clear:disabled{cursor:default}/* The composer's model picker tile (`.model-menu-mark`), same size: lobehub's
      monochrome marks draw with their own black, so a bare logo is black on
      near-black in the dark theme. The light tile is what makes it read. */
   .role-model-mark{width:20px;height:20px;display:grid;flex:none;place-items:center;border:1px solid var(--neutral-200);border-radius:6px;background:#fff}.role-model>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.role-columns{height:30px;display:flex;align-items:center;gap:11px;border-bottom:1px solid var(--neutral-200);color:var(--neutral-500);font-size:10.5px;font-weight:540}.role-columns>span:first-child{min-width:0;flex:1}.role-columns .role-controls>span{padding-left:11px;text-align:left}.role-columns .role-controls>span:first-child{width:104px}.role-columns .role-controls>span:last-child{width:216px}
   @media(max-width:900px){.options-page{grid-template-columns:198px minmax(0,1fr)}.options-header{padding-bottom:14px}.options-body{grid-template-columns:210px minmax(0,1fr)}.options-body:after{left:210px}.options-resources{grid-template-columns:1fr}}
+  .pinned-views-row{width:100%;border-width:0 0 1px;padding:0;background:none;color:inherit;text-align:left;cursor:pointer;font-family:inherit}
+  .pinned-views-control{height:28px;display:flex;flex:none;align-items:center;gap:4px;margin-left:auto}
+  .pinned-views-chevron{display:grid;place-items:center;color:var(--neutral-400);transition:transform .15s ease}
+  .pinned-views-configure{flex:none;color:var(--neutral-500);font-size:10.5px;font-weight:550;line-height:14px}
+  .pinned-views-chevron.open{transform:rotate(90deg)}
+  .pinned-views-config{display:grid;grid-template-columns:minmax(150px,1fr) minmax(210px,.9fr);gap:28px;padding:8px 10px 12px 42px}.pinned-views-options{display:flex;flex-direction:column;gap:2px}
+  .pinned-view-option{all:unset;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:450;color:var(--neutral-700);transition:background .12s}
+  .pinned-view-option:hover{background:var(--neutral-100)}
+  .pinned-view-option:disabled{opacity:.5;cursor:default}
+  .pinned-view-check{width:16px;height:16px;display:grid;place-items:center;border:1.5px solid var(--neutral-300);border-radius:4px;background:transparent;transition:background .12s,border-color .12s}
+  .pinned-view-option.checked .pinned-view-check{background:var(--neutral-900);border-color:var(--neutral-900);color:#fff}
+  .pinned-views-preview{min-width:0;display:flex;flex-direction:column;align-items:flex-end;gap:5px}.pinned-views-preview>small{width:100%;color:var(--neutral-400);text-align:right;font-size:9.5px}.top-bar-mock{width:100%;height:70px;display:flex;align-items:flex-start;justify-content:flex-end;border-top:1px solid var(--neutral-250,var(--neutral-200));border-right:1px solid var(--neutral-250,var(--neutral-200));border-radius:0 10px 0 0;padding:var(--titlebar-control-top) 8px 0;background:color-mix(in srgb,var(--app-surface) 94%,var(--neutral-100))}.top-bar-mock-icons{min-height:var(--titlebar-control-size);display:flex;align-items:center;justify-content:flex-end;gap:var(--main-control-gap)}.top-bar-mock-button{flex:none;cursor:grab;touch-action:none;user-select:none}.top-bar-mock-button:active{cursor:grabbing}.top-bar-mock-button.dragging{opacity:.35}
+  @media(max-width:760px){.pinned-views-config{grid-template-columns:1fr;gap:14px}.pinned-views-preview{align-items:stretch}.pinned-views-preview>small{text-align:left}}
+  .history-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px}.history-outline{border:1px solid var(--neutral-200);border-radius:8px;padding:6px 10px;background:transparent;color:var(--neutral-800);font:inherit;font-size:10.5px;white-space:nowrap}.history-section-heading h3{margin:0;font-size:13px;font-weight:570}.history-clear-menu{position:relative}.history-clear-trigger{display:flex;align-items:center;gap:6px}.history-clear-chevron{display:grid;place-items:center;color:var(--neutral-500);transition:transform .15s ease}.history-clear-chevron.open{transform:rotate(180deg)}.history-clear-options{position:absolute;z-index:6;top:calc(100% + 6px);right:0;width:142px}.history-clear-options .flareai-dropdown-item>span{min-width:0;flex:1}.history-browser{min-height:430px;display:grid;grid-template-columns:minmax(250px,320px) minmax(0,1fr);gap:28px}.history-calendar{align-self:start;border:1px solid var(--neutral-200);border-radius:12px;padding:12px;background:var(--app-surface)}.history-calendar>header{height:28px;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.history-calendar>header button{width:24px;height:24px;display:grid;place-items:center;border:0;padding:0;background:none;color:var(--neutral-500);cursor:pointer}.history-calendar>header button:hover,.history-calendar>header button:focus-visible{outline:0;color:var(--neutral-950)}.history-weekdays,.history-calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}.history-weekdays span{height:22px;display:grid;place-items:center;color:var(--neutral-400);font-size:9px;font-weight:570}.history-calendar-grid button{position:relative;aspect-ratio:1;min-width:0;display:grid;place-items:center;border:0;border-radius:7px;padding:0;background:none;color:var(--neutral-400);font:inherit;font-size:10.5px}.history-calendar-grid button:not(:disabled){color:var(--neutral-800);cursor:pointer}.history-calendar-grid button:not(:disabled):hover,.history-calendar-grid button:not(:disabled):focus-visible{outline:0;background:var(--neutral-100)}.history-calendar-grid button.selected{background:var(--neutral-900);color:var(--on-primary)}.history-calendar-grid button.outside{opacity:.32}.history-calendar-grid button i{position:absolute;bottom:4px;width:3px;height:3px;border-radius:50%;background:currentColor}.history-calendar-grid button.selected i{background:var(--on-primary)}.history-timeline{min-width:0;border:0;border-radius:0;padding:4px 0 18px}.history-timeline>h4{margin:0 0 16px;font-size:12.5px;font-weight:550}.history-entry{display:grid;grid-template-columns:58px 14px minmax(0,1fr);gap:9px;min-height:84px}.history-entry time{padding-top:0;color:var(--neutral-500);font-size:10.5px;line-height:17px;text-align:right}.history-entry>div{min-width:0;border-left:0;padding:0 0 18px 3px}.history-entry>div strong{display:block;overflow:hidden;font-size:12.5px;font-weight:570;line-height:17px;text-overflow:ellipsis;white-space:nowrap}.history-entry>div p{margin:5px 0 0;font-size:10.5px;line-height:1.5}.history-dot{position:relative;align-self:stretch;width:14px;height:auto;margin:0;background:none;box-shadow:none}.history-dot::after{position:absolute;top:8px;bottom:-8px;left:50%;width:1px;background:var(--neutral-200);content:"";transform:translateX(-50%)}.history-dot::before{position:absolute;z-index:1;top:4px;left:50%;width:9px;height:9px;border-radius:50%;background:var(--neutral-400);content:"";transform:translateX(-50%)}.history-entry.last .history-dot::after{display:none}.history-empty{margin:28px 0;text-align:center;color:var(--neutral-500);font-size:12px}
+  @media (max-width:760px){.history-section-heading{align-items:flex-start}.history-section-heading>span{flex-wrap:wrap;justify-content:flex-end}.history-browser{grid-template-columns:1fr}.history-calendar{max-width:340px}}
+  .history-browser{height:335px;min-height:0}
+  .history-calendar{height:100%;box-sizing:border-box}
+  .history-timeline{height:100%;min-height:0;overflow-y:auto;padding-right:8px;scrollbar-width:none}
+  .history-timeline::-webkit-scrollbar{display:none}
+  @media (max-width:760px){.history-browser{height:auto}.history-calendar,.history-timeline{height:335px}}
+  .options-page-content.whole-page-scroll{overflow-y:auto;scrollbar-width:none}
+  .options-page-content.whole-page-scroll::-webkit-scrollbar{display:none}
+  .options-page-content.whole-page-scroll>.general-options,
+  .options-page-content.whole-page-scroll>.memory-options{min-height:auto;flex:none;overflow:visible}
+  .pinned-views-preview{align-items:center;justify-content:center;gap:8px}
+  .pinned-views-preview>small{text-align:center}
+  .top-bar-mock{height:82px;box-shadow:8px -8px 18px -10px rgba(0,0,0,.2)}
+  .top-bar-mock-icons{width:auto}
+  .top-bar-mock-fixed{flex:none}
+  @media(max-width:760px){.pinned-views-preview{align-items:stretch}.pinned-views-preview>small{text-align:center}}
+  .memory-setting-row{min-height:62px;display:flex;flex:none;align-items:center;gap:11px;border-bottom:1px solid var(--neutral-200);padding:9px 0}
+  .memory-setting-row .general-setting-copy small{overflow:visible;text-overflow:clip;white-space:normal;line-height:1.35}
+  .history-settings-group{margin:0 0 20px}
+  .history-settings-row{width:100%;box-sizing:border-box}
+  .history-settings-row.pinned-views-row{padding:9px 0}
+  .computer-history-exclusions-config{padding:8px 10px 12px 45px}
+  .computer-history-exclusions-config{max-width:none;margin-top:0}
+  .computer-history-exclusions-config .computerHistory-source-box{height:112px}
+  @media(max-width:760px){.computer-history-exclusions-config{grid-template-columns:1fr;padding-left:42px}}
+  .history-view-switch{width:max-content;height:30px;box-sizing:border-box;display:flex;flex:none;gap:2px;margin:0;padding:2px;border-radius:9px;background:var(--neutral-100)}
+  .history-view-switch button{height:26px;display:flex;align-items:center;gap:5px;border:0;border-radius:7px;padding:0 11px;background:none;color:var(--neutral-500);cursor:pointer;font:inherit;font-size:10.5px}
+  .history-view-switch button:hover,.history-view-switch button:focus-visible{outline:0;color:var(--neutral-900)}
+  .history-view-switch button.active{background:var(--app-surface);color:var(--neutral-950);box-shadow:0 1px 3px rgba(0,0,0,.09)}
+  .history-key-dot{width:6px;height:6px;box-sizing:border-box;flex:none;border-radius:50%}
+  .history-key-dot.history{background:#8b5cf6}
+  .history-key-dot.memory{background:#38bdf8}
+  .history-section-heading>.history-heading-actions{display:flex;flex-wrap:nowrap;align-items:center;justify-content:flex-end;gap:8px}
+  .history-clear-trigger{height:30px;box-sizing:border-box}
+  .history-heading-actions>.history-view-switch,.history-heading-actions>.history-clear-menu{flex:none}
+  .history-section-heading{min-height:30px;align-items:center}
+  .history-section-heading h3{color:var(--neutral-950);font-size:15px;line-height:18px}
+  .history-calendar-indicators{position:absolute;right:0;bottom:4px;left:0;display:flex;align-items:center;justify-content:center;gap:4px}
+  .history-weekdays,.history-calendar-grid{column-gap:2px}
+  .history-calendar-grid{row-gap:2px}
+  .history-calendar-grid button .history-calendar-indicators i{position:static;width:6px;height:6px;box-sizing:border-box;flex:none;border-radius:50%}
+  .history-calendar-grid button .history-calendar-indicators .history-indicator,
+  .history-calendar-grid button.selected .history-calendar-indicators .history-indicator{background:#8b5cf6}
+  .history-calendar-grid button .history-calendar-indicators .memory-indicator,
+  .history-calendar-grid button.selected .history-calendar-indicators .memory-indicator{background:#38bdf8}
+  .history-calendar>header.history-calendar-nav{display:grid;grid-template-columns:24px 24px minmax(0,1fr) 24px 24px;align-items:center;gap:2px}
+  .history-calendar-nav .history-calendar-label{width:auto;min-width:0;padding:0 4px;color:var(--neutral-900);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:570}
+  .history-calendar-nav .history-double-chevron{display:flex;align-items:center;justify-content:center}
+  .history-calendar-nav .history-double-chevron :global(svg)+:global(svg){margin-left:-7px}
+  .history-calendar-nav button:disabled{opacity:.28;cursor:default}
+  .history-year-grid{height:calc(100% - 35px);box-sizing:border-box;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:50px;gap:5px;overflow-y:auto;padding:3px;overscroll-behavior:contain}
+  .history-year-grid button{position:relative;min-width:0;border:0;border-radius:8px;padding:0;background:none;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11px}
+  .history-year-grid button:hover,.history-year-grid button:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
+  .history-year-grid button.selected{background:var(--neutral-900);color:var(--on-primary)}
+  .history-year-grid button .history-calendar-indicators{bottom:7px}
+  .history-year-grid button .history-calendar-indicators i{width:6px;height:6px;border-radius:50%}
+  .history-year-grid button .history-indicator{background:#8b5cf6}
+  .history-year-grid button .memory-indicator{background:#38bdf8}
+  .memory-snippets{display:flex;flex-direction:column;gap:8px}
+  .memory-snippet{border:1px solid var(--neutral-200);border-radius:9px;padding:9px 11px;background:var(--app-surface)}
+  .memory-snippet>span{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .memory-snippet strong{min-width:0;overflow:hidden;color:var(--neutral-700);text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:570;text-transform:capitalize}
+  .memory-snippet time{flex:none;color:var(--neutral-400);font-size:9.5px}
+  .memory-snippet p{display:-webkit-box;overflow:hidden;margin:5px 0 0;color:var(--neutral-700);font-size:10.5px;line-height:1.45;line-clamp:3;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+  .history-timeline>h4{color:var(--neutral-950)}
+  .history-entry>div strong{color:var(--neutral-900)}
+  .history-entry>div p{color:var(--neutral-600)}
+  .memory-snippet strong{color:var(--neutral-800)}
+  .memory-snippet time{color:var(--neutral-500)}
+  .history-entry-card>header{min-height:18px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .history-entry-app{min-width:0;display:flex;align-items:center;gap:7px}
+  .history-entry-app img{width:16px;height:16px;flex:none;border-radius:4px;object-fit:contain}
+  .history-entry-app>:global(svg){flex:none;color:var(--neutral-500)}
+  .history-entry-actions{display:flex;flex:none;align-items:center;gap:3px;opacity:0;transition:opacity .12s ease}
+  .history-entry-card:hover .history-entry-actions,.history-entry-actions:focus-within{opacity:1}
+  .history-entry-actions button{width:22px;height:22px;display:grid;place-items:center;border:0;padding:0;background:none;color:var(--neutral-400);cursor:pointer}
+  .history-entry-actions button:hover,.history-entry-actions button:focus-visible{outline:0;color:var(--neutral-900)}
+  .history-entry-actions button.destructive:hover,.history-entry-actions button.destructive:focus-visible{color:#b34b4b}
+  .history-entry-actions button:disabled{cursor:default;opacity:.45}
 </style>

@@ -1,6 +1,6 @@
 import type {RunEventDto} from '@flareai/protocol';
 import type {AgentActivityItem} from '../chat/AgentActivity.svelte';
-import {activityPresentation, upsertActivity} from '../chat/activities';
+import {activityPresentation, toolResultFailed, upsertActivity} from '../chat/activities';
 import {translate} from '../../../i18n';
 
 /**
@@ -91,6 +91,9 @@ export function applyTaskEvent(base: TaskTranscript, event: RunEventDto): TaskTr
       };
     }
 
+    case 'message.final_rejected':
+      return {...transcript, text: ''};
+
     case 'message.completed': {
       const text = contentText(asRecord(payload.message).content);
       if (!text) return transcript;
@@ -143,7 +146,9 @@ export function applyTaskEvent(base: TaskTranscript, event: RunEventDto): TaskTr
     case 'tool.failed': {
       const call = asRecord(payload.toolCall);
       const id = typeof call.id === 'string' ? call.id : '';
-      const status = event.type === 'tool.failed' ? 'failed' as const : 'completed' as const;
+      const status = event.type === 'tool.failed' || toolResultFailed(payload.result)
+        ? 'failed' as const
+        : 'completed' as const;
       return {
         ...transcript,
         activities: transcript.activities.map((item) => item.id === id ? {

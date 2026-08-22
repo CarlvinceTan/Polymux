@@ -129,6 +129,32 @@ export function schedulePatch(value: unknown): SchedulePatch {
   };
 }
 
+export function taskCardInput(value: unknown): import("@flareai/protocol").TaskCardInput {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Tasks card must be an object");
+  const input = value as Record<string, unknown>;
+  return {
+    chatId: required(input.chatId, "chat id"),
+    title: required(input.title, "title"),
+    ...(typeof input.detail === "string" ? {detail: input.detail} : {}),
+  };
+}
+
+export function taskCardPatch(value: unknown): import("@flareai/protocol").TaskCardPatch {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Tasks card patch must be an object");
+  const input = value as Record<string, unknown>;
+  const status = input.status === "todo" || input.status === "in_progress" || input.status === "done" ? input.status : undefined;
+  return {
+    ...(typeof input.title === "string" ? {title: input.title} : {}),
+    ...(typeof input.detail === "string" ? {detail: input.detail} : {}),
+    ...(status ? {status} : {}),
+    ...(typeof input.owner === "string" ? {owner: input.owner} : {}),
+    ...(typeof input.reviewed === "boolean" ? {reviewed: input.reviewed} : {}),
+    ...(typeof input.order === "number" ? {order: input.order} : {}),
+  };
+}
+
 export function sendMailRequest(value: unknown): SendMailRequest {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Mail request must be an object");
@@ -253,14 +279,14 @@ export function number(value: unknown): number {
   return Number(value);
 }
 
-export function chronicleQuery(value: unknown): {
+export function computerHistoryQuery(value: unknown): {
   since?: Date;
   until?: Date;
   limit?: number;
 } {
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Chronicle query must be an object");
+    throw new Error("ComputerHistory query must be an object");
   const record = value as Record<string, unknown>;
   const result: { since?: Date; until?: Date; limit?: number } = {};
   for (const key of ["since", "until"] as const) {
@@ -278,14 +304,14 @@ export function chronicleQuery(value: unknown): {
   return result;
 }
 
-export function chroniclePatch(value: unknown): {
+export function computerHistoryPatch(value: unknown): {
   excludeApps?: string[];
   excludeSites?: string[];
   recordPrivateBrowsing?: boolean;
   interactionEvents?: boolean;
 } {
   if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Chronicle settings must be an object");
+    throw new Error("ComputerHistory settings must be an object");
   const record = value as Record<string, unknown>;
   const patch: {
     excludeApps?: string[];
@@ -309,8 +335,8 @@ export function chroniclePatch(value: unknown): {
   return patch;
 }
 
-/** A closed time range the user asked Chronicle to forget. */
-export function chronicleRange(since: unknown, until: unknown): {since: Date; until: Date} {
+/** A closed time range the user asked ComputerHistory to forget. */
+export function computerHistoryRange(since: unknown, until: unknown): {since: Date; until: Date} {
   const parse = (value: unknown, name: string) => {
     if (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
       throw new Error(`${name} must be an ISO timestamp`);

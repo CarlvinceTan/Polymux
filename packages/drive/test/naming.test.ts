@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import {mkdir, mkdtemp, readdir, rm, writeFile} from "node:fs/promises";
-import {tmpdir} from "node:os";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {GoogleDrive} from "../src/google-drive.js";
-import {Drive} from "../src/manager.js";
-import type {DriveConsentPrompt, DriveSecretStore} from "../src/types.js";
-import type {JsonValue} from "@flareai/protocol";
+import { GoogleDrive } from "../src/google-drive.js";
+import { Drive } from "../src/manager.js";
+import type { DriveConsentPrompt, DriveSecretStore } from "../src/types.js";
+import type { JsonValue } from "@flareai/protocol";
 
 /**
  * What a file is called once it reaches this Mac, and what a Google Doc even
@@ -21,7 +21,7 @@ const secrets = (): DriveSecretStore => {
   const store = new Map([
     [
       "drive:google-drive:default",
-      JSON.stringify({accessToken: "t", refreshToken: "r", expiresAt: null}),
+      JSON.stringify({ accessToken: "t", refreshToken: "r", expiresAt: null }),
     ],
   ]);
   return {
@@ -39,7 +39,7 @@ const consent: DriveConsentPrompt = {
 
 function withClientId<T>(run: () => T): T {
   const before = process.env;
-  process.env = {...before, FLAREAI_GOOGLE_DRIVE_CLIENT_ID: "id"};
+  process.env = { ...before, FLAREAI_GOOGLE_DRIVE_CLIENT_ID: "id" };
   try {
     return run();
   } finally {
@@ -64,13 +64,13 @@ async function withFetch(
 /** A drive whose downloads land in `downloads`, over a real local root. */
 function driveOver(root: string, downloads: string): Drive {
   const preferences = new Map<string, JsonValue>([
-    ["drive", {localRoot: root} as unknown as JsonValue],
+    ["drive", { localRoot: root } as unknown as JsonValue],
   ]);
   return new Drive({
     storage: {
       getPreference: (key) => {
         const value = preferences.get(key);
-        return value === undefined ? undefined : {value};
+        return value === undefined ? undefined : { value };
       },
       setPreference: (key, value) => void preferences.set(key, value),
     },
@@ -93,8 +93,8 @@ test("downloading the same file twice keeps both copies", async () => {
   try {
     const root = path.join(base, "root");
     const downloads = path.join(base, "downloads");
-    await mkdir(root, {recursive: true});
-    await mkdir(downloads, {recursive: true});
+    await mkdir(root, { recursive: true });
+    await mkdir(downloads, { recursive: true });
     await writeFile(path.join(root, "report.pdf"), "one");
 
     const drive = driveOver(root, downloads);
@@ -105,12 +105,12 @@ test("downloading the same file twice keeps both copies", async () => {
     // Silently overwriting the first copy is not what a download looks like it
     // does, and the suffix goes before the extension so both still open.
     assert.equal(path.basename(second), "report (2).pdf");
-    assert.deepEqual(
-      (await readdir(downloads)).sort(),
-      ["report (2).pdf", "report.pdf"],
-    );
+    assert.deepEqual((await readdir(downloads)).sort(), [
+      "report (2).pdf",
+      "report.pdf",
+    ]);
   } finally {
-    await rm(base, {recursive: true, force: true});
+    await rm(base, { recursive: true, force: true });
   }
 });
 
@@ -123,7 +123,9 @@ test("a Google Doc downloads as its exported form, with the right extension", as
         asked.push(url);
         if (url.includes("fields=size,md5Checksum,mimeType"))
           return new Response(
-            JSON.stringify({mimeType: "application/vnd.google-apps.spreadsheet"}),
+            JSON.stringify({
+              mimeType: "application/vnd.google-apps.spreadsheet",
+            }),
           );
         if (url.includes("/export?mimeType="))
           return new Response(new Uint8Array(Buffer.from("xlsx bytes")));
@@ -152,7 +154,7 @@ test("a Google Doc downloads as its exported form, with the right extension", as
     // And it never asks for the bytes directly, which Drive refuses for a Doc.
     assert.ok(!asked.some((url) => url.includes("alt=media")));
   } finally {
-    await rm(base, {recursive: true, force: true});
+    await rm(base, { recursive: true, force: true });
   }
 });
 
@@ -167,7 +169,7 @@ test("a Workspace document lists under the name it will have on disk", async () 
               name: "Team notes",
               mimeType: "application/vnd.google-apps.document",
             },
-            {id: "1Pdf", name: "Scan.pdf", mimeType: "application/pdf"},
+            { id: "1Pdf", name: "Scan.pdf", mimeType: "application/pdf" },
           ],
         }),
       ),
@@ -190,14 +192,14 @@ test("two uploads starting together create one FlareAI folder, not two", async (
   await withFetch(
     async (url, init) => {
       if (init.method === "POST" && url.includes("uploadType=multipart"))
-        return new Response(JSON.stringify({id: "f", name: "a.txt"}));
+        return new Response(JSON.stringify({ id: "f", name: "a.txt" }));
       if (init.method === "POST") {
         creates += 1;
-        return new Response(JSON.stringify({id: "root-1"}));
+        return new Response(JSON.stringify({ id: "root-1" }));
       }
       searches += 1;
       // The folder does not exist yet, which is what makes the race possible.
-      return new Response(JSON.stringify({files: []}));
+      return new Response(JSON.stringify({ files: [] }));
     },
     async () => {
       const base = await mkdtemp(path.join(tmpdir(), "flareai-root-"));
@@ -211,10 +213,14 @@ test("two uploads starting together create one FlareAI folder, not two", async (
         // shared, each found nothing and each created a folder.
         await Promise.all([drive.upload("", file), drive.upload("", file)]);
       } finally {
-        await rm(base, {recursive: true, force: true});
+        await rm(base, { recursive: true, force: true });
       }
     },
   );
-  assert.equal(searches, 1, "the root is looked for once");
+  assert.equal(
+    searches,
+    3,
+    "the root once and both destination names are looked up",
+  );
   assert.equal(creates, 1, "and created once");
 });

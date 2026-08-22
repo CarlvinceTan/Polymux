@@ -59,7 +59,7 @@ const names: Record<string, string> = {
   baidu: 'Baidu', tencent: 'Tencent', stepfun: 'StepFun', upstage: 'Upstage', inflection: 'Inflection',
   liquid: 'Liquid AI', bytedance: 'ByteDance', skywork: 'Skywork', tii: 'TII', internlm: 'InternLM',
   rwkv: 'RWKV', dolphin: 'Cognitive Computations', openbmb: 'OpenBMB',
-  ollama: 'Ollama', lmstudio: 'LM Studio', vllm: 'vLLM', 'llama-cpp': 'llama.cpp',
+  ollama: 'Ollama', lmstudio: 'LM Studio', vllm: 'vLLM', 'llama-cpp': 'Llama.cpp',
 };
 
 const authorAliases: Record<string, string> = {

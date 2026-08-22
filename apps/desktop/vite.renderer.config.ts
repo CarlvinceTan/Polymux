@@ -51,6 +51,19 @@ export default defineConfig({
   build: {
     outDir: path.join(projectRoot, '.vite/renderer/main_window'),
     emptyOutDir: true,
+    // The only chunk above Vite's default 500k warning is the already-lazy
+    // Three.js voice renderer (~531k); keep warnings meaningful for regressions.
+    chunkSizeWarningLimit: 550,
+    // Keep the initial renderer cacheable in smaller pieces. Most workspace
+    // surfaces are statically reachable from App, so dynamic-import splitting
+    // alone otherwise leaves a multi-megabyte entry chunk.
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [{name: 'renderer', tags: ['$initial'], maxSize: 450_000}],
+        },
+      },
+    },
     // Provider logos are globbed wholesale so any model maker resolves to its
     // real mark, but almost none are used in a given session. Inlining them as
     // data URIs put every one in the entry chunk and quadrupled it (416kB ->

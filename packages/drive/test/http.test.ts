@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {DriveRequestError, request} from "../src/http.js";
+import { DriveRequestError, jsonRequest, request } from "../src/http.js";
 
 /**
  * The retry policy, which is the part of the drive that only shows itself on a
@@ -13,22 +13,22 @@ import {DriveRequestError, request} from "../src/http.js";
 /** A transport that answers from a script and records what it was asked. */
 function transport(script: (Response | Error)[]): {
   fetch: typeof globalThis.fetch;
-  calls: {url: string; signal: boolean}[];
+  calls: { url: string; signal: boolean }[];
 } {
-  const calls: {url: string; signal: boolean}[] = [];
+  const calls: { url: string; signal: boolean }[] = [];
   let index = 0;
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({url: String(input), signal: Boolean(init?.signal)});
+    calls.push({ url: String(input), signal: Boolean(init?.signal) });
     const answer = script[Math.min(index, script.length - 1)];
     index += 1;
     if (answer instanceof Error) throw answer;
     return answer;
   }) as typeof globalThis.fetch;
-  return {fetch, calls};
+  return { fetch, calls };
 }
 
 /** A clock that records the waits instead of serving them. */
-function clock(): {sleep: (ms: number) => Promise<void>; waits: number[]} {
+function clock(): { sleep: (ms: number) => Promise<void>; waits: number[] } {
   const waits: number[] = [];
   return {
     sleep: async (ms) => {
@@ -38,13 +38,13 @@ function clock(): {sleep: (ms: number) => Promise<void>; waits: number[]} {
   };
 }
 
-const ok = (): Response => new Response("{}", {status: 200});
+const ok = (): Response => new Response("{}", { status: 200 });
 const status = (code: number, body = "", headers?: HeadersInit): Response =>
-  new Response(body, {status: code, headers});
+  new Response(body, { status: code, headers });
 
 test("a request that works is sent once", async () => {
-  const {fetch, calls} = transport([ok()]);
-  const {waits} = clock();
+  const { fetch, calls } = transport([ok()]);
+  const { waits } = clock();
   const response = await request("https://example.test/", {}, "The call", {
     fetch,
     sleep: async () => {},
@@ -55,8 +55,8 @@ test("a request that works is sent once", async () => {
 });
 
 test("a rate limit is retried, and the body is still readable afterwards", async () => {
-  const {fetch, calls} = transport([status(429), ok()]);
-  const {sleep, waits} = clock();
+  const { fetch, calls } = transport([status(429), ok()]);
+  const { sleep, waits } = clock();
   const response = await request("https://example.test/", {}, "The call", {
     fetch,
     sleep,
@@ -71,7 +71,7 @@ test("a rate limit is retried, and the body is still readable afterwards", async
 
 test("a server error is retried and a client error is not", async () => {
   for (const code of [500, 502, 503, 504, 408]) {
-    const {fetch, calls} = transport([status(code), ok()]);
+    const { fetch, calls } = transport([status(code), ok()]);
     await request("https://example.test/", {}, "The call", {
       fetch,
       sleep: async () => {},
@@ -79,7 +79,7 @@ test("a server error is retried and a client error is not", async () => {
     assert.equal(calls.length, 2, `${code} should be retried`);
   }
   for (const code of [400, 401, 403, 404, 409]) {
-    const {fetch, calls} = transport([status(code), ok()]);
+    const { fetch, calls } = transport([status(code), ok()]);
     await assert.rejects(
       request("https://example.test/", {}, "The call", {
         fetch,
@@ -93,8 +93,8 @@ test("a server error is retried and a client error is not", async () => {
 });
 
 test("backoff grows with each attempt and is jittered", async () => {
-  const {fetch, calls} = transport([status(503)]);
-  const {sleep, waits} = clock();
+  const { fetch, calls } = transport([status(503)]);
+  const { sleep, waits } = clock();
   await assert.rejects(
     request("https://example.test/", {}, "The call", {
       fetch,
@@ -110,25 +110,27 @@ test("backoff grows with each attempt and is jittered", async () => {
 });
 
 test("a stated Retry-After is honoured instead of the backoff", async () => {
-  const {fetch} = transport([status(429, "", {"retry-after": "7"}), ok()]);
-  const {sleep, waits} = clock();
-  await request("https://example.test/", {}, "The call", {fetch, sleep});
+  const { fetch } = transport([status(429, "", { "retry-after": "7" }), ok()]);
+  const { sleep, waits } = clock();
+  await request("https://example.test/", {}, "The call", { fetch, sleep });
   assert.deepEqual(waits, [7000]);
 });
 
 test("Retry-After as an HTTP date is honoured too", async () => {
   const when = new Date(Date.now() + 4000).toUTCString();
-  const {fetch} = transport([status(503, "", {"retry-after": when}), ok()]);
-  const {sleep, waits} = clock();
-  await request("https://example.test/", {}, "The call", {fetch, sleep});
+  const { fetch } = transport([status(503, "", { "retry-after": when }), ok()]);
+  const { sleep, waits } = clock();
+  await request("https://example.test/", {}, "The call", { fetch, sleep });
   assert.ok(waits[0]! > 2000 && waits[0]! <= 4000, `waited ${waits[0]}`);
 });
 
 test("a wait longer than the cap fails rather than sleeping on it", async () => {
-  const {fetch, calls} = transport([status(429, "", {"retry-after": "3600"})]);
-  const {sleep, waits} = clock();
+  const { fetch, calls } = transport([
+    status(429, "", { "retry-after": "3600" }),
+  ]);
+  const { sleep, waits } = clock();
   await assert.rejects(
-    request("https://example.test/", {}, "The call", {fetch, sleep}),
+    request("https://example.test/", {}, "The call", { fetch, sleep }),
   );
   // An hour is not a retry, it is a hang; the user gets the failure now.
   assert.equal(calls.length, 1);
@@ -137,9 +139,9 @@ test("a wait longer than the cap fails rather than sleeping on it", async () => 
 
 test("a provider hook can make a 4xx retryable", async () => {
   const body = JSON.stringify({
-    error: {errors: [{reason: "userRateLimitExceeded"}]},
+    error: { errors: [{ reason: "userRateLimitExceeded" }] },
   });
-  const {fetch, calls} = transport([status(403, body), ok()]);
+  const { fetch, calls } = transport([status(403, body), ok()]);
   await request("https://example.test/", {}, "The call", {
     fetch,
     sleep: async () => {},
@@ -150,20 +152,23 @@ test("a provider hook can make a 4xx retryable", async () => {
 });
 
 test("a provider hook can state the wait from the body", async () => {
-  const body = JSON.stringify({error: {retry_after: 3}});
-  const {fetch} = transport([status(429, body), ok()]);
-  const {sleep, waits} = clock();
+  const body = JSON.stringify({ error: { retry_after: 3 } });
+  const { fetch } = transport([status(429, body), ok()]);
+  const { sleep, waits } = clock();
   await request("https://example.test/", {}, "The call", {
     fetch,
     sleep,
     retryAfter: (code, seen) =>
-      code === 429 ? (JSON.parse(seen) as {error: {retry_after: number}}).error.retry_after : null,
+      code === 429
+        ? (JSON.parse(seen) as { error: { retry_after: number } }).error
+            .retry_after
+        : null,
   });
   assert.deepEqual(waits, [3000]);
 });
 
 test("a dropped connection is retried", async () => {
-  const {fetch, calls} = transport([new TypeError("fetch failed"), ok()]);
+  const { fetch, calls } = transport([new TypeError("fetch failed"), ok()]);
   await request("https://example.test/", {}, "The call", {
     fetch,
     sleep: async () => {},
@@ -172,7 +177,7 @@ test("a dropped connection is retried", async () => {
 });
 
 test("an accepted status is returned rather than thrown, unread", async () => {
-  const {fetch} = transport([status(308, "", {range: "bytes=0-99"})]);
+  const { fetch } = transport([status(308, "", { range: "bytes=0-99" })]);
   const response = await request("https://example.test/", {}, "The call", {
     fetch,
     sleep: async () => {},
@@ -183,8 +188,8 @@ test("an accepted status is returned rather than thrown, unread", async () => {
 });
 
 test("the failure carries the provider's own sentence", async () => {
-  const body = JSON.stringify({error: {message: "File not found: 4bc."}});
-  const {fetch} = transport([status(404, body)]);
+  const body = JSON.stringify({ error: { message: "File not found: 4bc." } });
+  const { fetch } = transport([status(404, body)]);
   await assert.rejects(
     request("https://example.test/", {}, "The download", {
       fetch,
@@ -198,7 +203,7 @@ test("the failure carries the provider's own sentence", async () => {
 });
 
 test("every attempt carries a signal, so nothing can hang forever", async () => {
-  const {fetch, calls} = transport([status(500), ok()]);
+  const { fetch, calls } = transport([status(500), ok()]);
   await request("https://example.test/", {}, "The call", {
     fetch,
     sleep: async () => {},
@@ -228,7 +233,7 @@ test("a slow request is abandoned once the timeout passes", async () => {
 
 test("a caller's abort is not retried", async () => {
   const controller = new AbortController();
-  const {fetch, calls} = transport([new Error("aborted")]);
+  const { fetch, calls } = transport([new Error("aborted")]);
   controller.abort(new Error("the user closed the drive"));
   await assert.rejects(
     request("https://example.test/", {}, "The call", {
@@ -238,4 +243,24 @@ test("a caller's abort is not retried", async () => {
     }),
   );
   assert.equal(calls.length, 1);
+});
+
+test("a JSON body that stalls after its headers is bounded", async () => {
+  const fetch = (async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("{"));
+        },
+      }),
+      { status: 200 },
+    )) as typeof globalThis.fetch;
+  await assert.rejects(
+    jsonRequest("https://example.test/", {}, "The listing", {
+      fetch,
+      attempts: 1,
+      bodyTimeoutMs: 5,
+    }),
+    /response timed out/,
+  );
 });

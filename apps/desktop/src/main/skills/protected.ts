@@ -60,12 +60,80 @@ export function isInsideProtectedSkills(candidate: string, root: string): boolea
 const READ_ONLY_COMMAND =
   /^\s*(?:cat|less|head|tail|ls|find|grep|rg|wc|file|stat|diff|md5|shasum|sha256sum)\b/;
 
+const SCRIPT_INTERPRETERS = new Map([
+  ["sh", new Set([".sh"])],
+  ["bash", new Set([".sh"])],
+  ["zsh", new Set([".sh"])],
+  ["python3", new Set([".py"])],
+  ["node", new Set([".js", ".mjs"])],
+  ["swift", new Set([".swift"])],
+]);
+
+function shellWords(input: string): string[] | null {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
+  for (const character of input.trim()) {
+    if (escaping) {
+      word += character;
+      escaping = false;
+    } else if (character === "\\" && quote !== "'") escaping = true;
+    else if (quote) {
+      if (character === quote) quote = null;
+      else word += character;
+    } else if (character === "'" || character === '"') quote = character;
+    else if (/\s/.test(character)) {
+      if (word) words.push(word), (word = "");
+    } else word += character;
+  }
+  if (escaping || quote) return null;
+  if (word) words.push(word);
+  return words;
+}
+
+/**
+ * Bundled skills are trusted app code and their documented scripts are meant
+ * to run from the mirror. Accept one simple interpreter invocation, optionally
+ * after one `cd` into that skill. Shell composition remains denied so this
+ * cannot become a route for redirects, substitutions, or appended mutations.
+ */
+function isBundledScriptInvocation(command: string, root: string): boolean {
+  if (/[\r\n;|<>`]/.test(command) || command.includes("$(")) return false;
+  const words = shellWords(command);
+  if (!words?.length) return false;
+
+  let cwd: string | undefined;
+  let invocation = words;
+  if (words[0] === "cd") {
+    if (words.length < 5 || words[2] !== "&&") return false;
+    cwd = path.resolve(words[1]);
+    if (!isInsideProtectedSkills(cwd, root)) return false;
+    invocation = words.slice(3);
+  } else if (words.includes("&&")) return false;
+
+  const interpreterName = path.basename(invocation[0]);
+  const extensions = SCRIPT_INTERPRETERS.get(interpreterName);
+  if (!extensions || invocation.length < 2) return false;
+  const script = path.resolve(cwd ?? process.cwd(), invocation[1]);
+  if (!isInsideProtectedSkills(script, root)) return false;
+  const relative = path.relative(path.resolve(root), script);
+  return (
+    relative.split(path.sep).includes("scripts") &&
+    extensions.has(path.extname(script))
+  );
+}
+
 export function blocksShellCommand(command: string, root: string): boolean {
   const mentions =
     command.includes(path.resolve(root)) ||
     command.includes(tilde(root)) ||
     command.includes(tilde(root).replace("~", "$HOME"));
-  return mentions && !READ_ONLY_COMMAND.test(command);
+  return (
+    mentions &&
+    !READ_ONLY_COMMAND.test(command) &&
+    !isBundledScriptInvocation(command, root)
+  );
 }
 
 export class ProtectedSkillGuard implements ToolHooks {

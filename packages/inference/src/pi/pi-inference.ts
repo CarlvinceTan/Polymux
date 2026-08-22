@@ -31,6 +31,11 @@ function classifyError(
     return { code: "provider_error", retryable: false };
   if (/auth|api key|unauthorized|forbidden|401|403/.test(lower))
     return { code: "auth", retryable: false };
+  // A provider reset measured in days or requiring paid-balance opt-in is not
+  // a transient burst limit. Retrying the same request seconds later only
+  // makes the app look stuck and can multiply title/main-agent retries.
+  if (/weekly usage limit|daily usage limit|resets? in \d+\s*(?:day|hour)|enable usage from your available balance/.test(lower))
+    return { code: "rate_limit", retryable: false };
   if (/rate.?limit|429|too many requests|quota.?exceed|insufficient_quota|usage limit/.test(lower))
     return { code: "rate_limit", retryable: true };
   if (/context|token limit|too long|maximum.*token/.test(lower))
@@ -97,6 +102,10 @@ export class PiInference implements InferenceService {
         cacheRetention: request.cacheRetention,
         sessionId: request.sessionId,
         timeoutMs: request.timeoutMs,
+        // Codex's WebSocket transport has a separate connection phase. Without
+        // this, a dead handshake can wait forever before the ordinary request
+        // timeout begins, leaving the agent and provider probe hung.
+        websocketConnectTimeoutMs: request.timeoutMs,
         maxRetries: request.maxRetries,
         signal: request.signal,
       });

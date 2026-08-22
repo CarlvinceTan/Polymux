@@ -35,6 +35,9 @@ export interface AgentToolResult {
 
 export interface AgentToolContext {
   runId: RunId;
+  /** Stable logical work scope. A continued delegated task keeps this value so
+   * bounded tool budgets cannot be reset merely by receiving a new run id. */
+  budgetScope?: string;
   turn: number;
   callId: string;
   signal: AbortSignal;
@@ -92,6 +95,8 @@ export type ContextTransformer = (
 
 export interface AgentRunRequest {
   runId: RunId;
+  /** Stable scope inherited by tool calls for continuation-aware budgets. */
+  budgetScope?: string;
   model: ModelRef;
   context: AgentContext;
   tools?: AgentTool[];
@@ -101,8 +106,21 @@ export interface AgentRunRequest {
   temperature?: number;
   maxOutputTokens?: number;
   maxTurns?: number;
+  /** Host-enforced evidence phase for bounded research workers. After this
+   * many tool-bearing turns, every tool schema is removed and an additional
+   * tool-free synthesis turn is guaranteed. */
+  toolTurnBudget?: {maximum: number; synthesisPrompt: string};
   toolExecution?: ToolExecutionMode;
   transformContext?: ContextTransformer;
+  /** Review a tool-free answer before it becomes the accepted final message.
+   * Returning messages asks for one or more corrective turns; the host owns
+   * the bound so a bad reviewer can never loop the run indefinitely. */
+  reviewFinal?: (input: {
+    runId: RunId;
+    turn: number;
+    signal: AbortSignal;
+    text: string;
+  }) => Promise<InferenceMessage[]>;
   /**
    * Asked once the model has stopped calling tools, before the run is allowed
    * to end. Returning messages appends them and takes another turn instead of
@@ -116,6 +134,9 @@ export interface AgentRunRequest {
     runId: RunId;
     turn: number;
     signal: AbortSignal;
+    /** Latest user-visible answer candidate, for host quality gates that may
+     * require one corrective turn before completion. */
+    lastAgentMessage: string;
   }) => Promise<InferenceMessage[]>;
   signal?: AbortSignal;
 }
@@ -160,7 +181,44 @@ export type AgentRunEvent = BaseRunEvent &
   (
     | { type: "run.started"; model: ModelRef }
     | { type: "run.state"; status: RunStatus }
-    | { type: "turn.started"; turn: number; context: AgentContext }
+    | {
+        type: "turn.started";
+        turn: number;
+        context: AgentContext;
+        /** Byte counts of exactly what this inference turn was offered. The
+         * values make context-routing performance auditable without copying
+         * tool schemas into the event log. */
+        footprint: {
+          systemPromptBytes: number;
+          messageBytes: number;
+          toolSchemaBytes: number;
+          toolCount: number;
+          toolNames: string[];
+          /** Markdown H2 section names offered to the model. Contents stay out
+           * of footprint telemetry so personal context is not duplicated. */
+          systemSections: string[];
+          /** Names only of skills already embedded in the system prompt. */
+          activeSkillNames: string[];
+          /** Count only; personal skill names and descriptions stay in the prompt. */
+          availableSkillCount: number;
+          /** Counts only; titles, URLs, and window names remain exclusively in
+           * the inference prompt and are not duplicated into telemetry. */
+          ambientContextCounts: {
+            memoryBlocks: number;
+            memoryCandidateBlocks: number;
+            flareBrowserTabs: number;
+            externalBrowserTabs: number;
+            openWindows: number;
+          };
+          /** Capture timestamps only; source contents stay in the prompt. */
+          ambientContextCapturedAt: {
+            windows?: string;
+            flareBrowser?: string;
+            externalBrowser?: string;
+          };
+          totalBytes: number;
+        };
+      }
     | { type: "model.started"; turn: number; model: InferenceModel }
     | { type: "context.compacting"; turn: number }
     | { type: "context.compacted"; turn: number }
@@ -185,6 +243,12 @@ export type AgentRunEvent = BaseRunEvent &
          * turn produced no tool calls, so this text is the run's answer unless
          * late steering starts another turn. Mirrors codex's MessagePhase. */
         phase: "commentary" | "final";
+      }
+    | {
+        /** A host quality gate rejected a tool-free draft before persistence. */
+        type: "message.final_rejected";
+        turn: number;
+        repairMessageCount: number;
       }
     | { type: "tool.started"; turn: number; toolCall: ToolCallBlock }
     | {

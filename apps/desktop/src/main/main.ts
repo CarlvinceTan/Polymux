@@ -1,13 +1,19 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, net, protocol } from "electron";
+import { app, BrowserWindow, ipcMain, nativeTheme, net, protocol, screen } from "electron";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import {homeserverPortFor} from "./system/instance-port.js";
+import {configuredRemoteDebuggingPort, requestsBackgroundLaunch} from "./system/launch-mode.js";
 import { fileURLToPath } from "node:url";
 import started from "electron-squirrel-startup";
 import { channels } from "@flareai/protocol";
-import { DesktopBackend, modelFromEnvironment } from "./backend.js";
+import { DesktopBackend, modelFromEnvironment, type DesktopBackendOptions } from "./backend.js";
+import {builtinModels} from "@earendil-works/pi-ai/providers/all";
+import {PiInference} from "@flareai/inference/pi";
+import {EncryptedCredentialStore, OpenCodeCredentialFallback} from "./system/credential-store.js";
+import {safeStorage} from "electron";
 import { BridgeHost, Homeserver, WeChatBridge, WECHAT_FALLBACK_DIRECTORIES, loadShippedCredentials } from "@flareai/hub";
-import { serveMedia } from "./communications/media.js";
+import { serveMedia } from "./hub/media.js";
 import { PREVIEW_SCHEME, previewResponse } from "./workspace/preview.js";
 import { registerPrivilegedSchemes } from "./system/schemes.js";
 import { loadAgentPrompts } from "@flareai/agent";
@@ -51,18 +57,56 @@ const devInstance = process.env.FLAREAI_DEV_INSTANCE?.trim();
 if (devInstance) {
   app.setPath("userData", `${app.getPath("userData")}-${devInstance}`);
 }
+const backgroundLaunch = requestsBackgroundLaunch({
+  platform: process.platform,
+  argv: process.argv,
+  hasSwitch: (name) => app.commandLine.hasSwitch(name),
+  environment: process.env,
+});
+const providerProbe = process.argv.includes("--flareai-provider-probe");
+if (process.platform === "darwin") {
+  if (providerProbe) app.setActivationPolicy("prohibited");
+  // Apply this before app readiness. `open -g` asks Launch Services not to
+  // activate us, but a regular Electron application can still become active
+  // during cold start before its BrowserWindow exists. Accessory applications
+  // retain a real, accessibility-visible window without being eligible to
+  // displace the user's foreground application.
+  else if (backgroundLaunch) app.setActivationPolicy("accessory");
+}
+const environmentDebuggingPort = configuredRemoteDebuggingPort(
+  process.env.FLAREAI_REMOTE_DEBUGGING_PORT,
+);
+if (environmentDebuggingPort !== null && !app.commandLine.hasSwitch("remote-debugging-port"))
+  app.commandLine.appendSwitch("remote-debugging-port", String(environmentDebuggingPort));
+const orchestrationExperiment =
+  process.env.FLAREAI_ORCHESTRATION_EXPERIMENT === "1" ||
+  app.commandLine.hasSwitch("orchestration-experiment") ||
+  process.argv.includes("--orchestration-experiment");
+if (devInstance)
+  console.log("FlareAI launch mode", {
+    orchestrationExperiment,
+    experimentEnvironment: process.env.FLAREAI_ORCHESTRATION_EXPERIMENT === "1",
+    experimentElectronSwitch: app.commandLine.hasSwitch("orchestration-experiment"),
+    experimentArgument: process.argv.includes("--orchestration-experiment"),
+    preloadOfficialSkillExperiment:
+      process.env.FLAREAI_PRELOAD_OFFICIAL_SKILL_EXPERIMENT === "1",
+  });
+// The unsigned benchmark bundle must not open the ordinary encrypted
+// credential files with a different Keychain identity. Its SQLite/session
+// state is disposable, while skills and MCP configuration deliberately remain
+// in the ordinary ~/.flareai home.
+if (backgroundLaunch && !devInstance)
+  app.setPath("userData", `${app.getPath("userData")}-background-benchmark`);
 
 /**
- * The port the embedded homeserver listens on: 47664 for the ordinary run, and
- * a deterministic offset from it for a named side instance. Deterministic
+ * The port the embedded homeserver listens on: 47664 for the ordinary run,
+ * 47865 for the packaged background benchmark, and a deterministic offset for
+ * a named side instance. Deterministic
  * rather than "any free port" because the bridge configs on disk name the
  * homeserver by URL, so the same instance has to come back on the same port.
  */
 function homeserverPort(): number {
-  if (!devInstance) return 47_664;
-  let hash = 0;
-  for (const character of devInstance) hash = (hash * 31 + character.charCodeAt(0)) % 200;
-  return 47_665 + hash;
+  return homeserverPortFor(devInstance, backgroundLaunch);
 }
 
 // The credential store, API-key pool, and SQLite database all live in one
@@ -70,7 +114,10 @@ function homeserverPort(): number {
 // instance (say, a forgotten `npm start`) writes its stale cache back over
 // the other's changes — observed losing a freshly saved API key. Hand the
 // session to the instance that already owns the directory instead.
-if (!app.requestSingleInstanceLock()) {
+// The provider probe reads only the encrypted credential and exits. It must be
+// able to run alongside the user's signed app: acquiring its single-instance
+// lock would instead hand off to that UI process and silently skip the probe.
+if (!providerProbe && !app.requestSingleInstanceLock()) {
   // Say so. This instance dies before it ever builds a window, so without a
   // line here `npm start` looks hung: the dev server stays up, the terminal
   // goes quiet, and the only FlareAI on screen is the older instance still
@@ -135,22 +182,125 @@ let backend: DesktopBackend | undefined;
 // window on an already-running app (macOS Dock activate) has nothing to cover,
 // so the renderer is told which kind of launch it is.
 let coldStartConsumed = false;
+let startupShellWindow: BrowserWindow | undefined;
 
-function createWindow(): void {
+/** Paints the real startup animation before app-scoped services are ready.
+ * The document deliberately does not mount Svelte or call IPC; it simply
+ * settles on the animation's end pose and stays there until the real window
+ * has rendered its first complete frame. */
+function createStartupShellWindow(): BrowserWindow {
   const window = new BrowserWindow({
     title: "FlareAI",
     width: 1000,
     height: 618,
+    minWidth: 973,
+    minHeight: 672,
+    show: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff",
+    titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
+    trafficLightPosition:
+      process.platform === "darwin" ? FLAREAI_TRAFFIC_LIGHT_POSITION : undefined,
+    webPreferences: {
+      preload: path.join(currentDirectory, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  const reveal = (): void => {
+    if (window.isDestroyed() || window.isVisible()) return;
+    if (backgroundLaunch) {
+      window.setOpacity(0);
+      window.setIgnoreMouseEvents(true);
+      window.showInactive();
+    } else if (devInstance) window.showInactive();
+    else window.show();
+    void window.webContents.executeJavaScript(
+      'document.documentElement.dataset.splash = "playing"',
+      true,
+    ).catch(() => {});
+  };
+  const deadline = setTimeout(reveal, 4000);
+  window.once("ready-to-show", () => {
+    clearTimeout(deadline);
+    reveal();
+  });
+  window.once("closed", () => clearTimeout(deadline));
+  loadStartupShell(window);
+  return window;
+}
+
+function loadStartupShell(window: BrowserWindow): void {
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+    url.searchParams.set("splashOnly", "1");
+    void window.loadURL(url.toString()).catch((error: unknown) =>
+      console.error(`[startup-shell] loadURL rejected: ${String(error)}`));
+  } else {
+    void window.loadFile(
+      path.join(currentDirectory, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
+      {query: {splashOnly: "1"}},
+    ).catch((error: unknown) =>
+      console.error(`[startup-shell] loadFile rejected: ${String(error)}`));
+  }
+}
+
+type SeparateWorkspaceView = "drive" | "schedule" | "hub" | "tasks";
+type WorkspaceWindowPlacement = {x: number; y: number; width?: number; height?: number};
+
+const DETACHED_WINDOW_WIDTH = 1000;
+const DETACHED_WINDOW_HEIGHT = 672;
+
+function detachedWindowBounds(
+  placement?: WorkspaceWindowPlacement,
+): WorkspaceWindowPlacement | undefined {
+  if (!placement) return undefined;
+  const point = {x: Math.round(placement.x), y: Math.round(placement.y)};
+  const {workArea} = screen.getDisplayNearestPoint(point);
+  const width = Math.min(
+    Math.max(Math.round(placement.width ?? DETACHED_WINDOW_WIDTH), 360),
+    workArea.width,
+  );
+  const height = Math.min(
+    Math.max(Math.round(placement.height ?? DETACHED_WINDOW_HEIGHT), 320),
+    workArea.height,
+  );
+  return {
+    x: Math.min(
+      Math.max(point.x, workArea.x),
+      workArea.x + Math.max(0, workArea.width - width),
+    ),
+    y: Math.min(
+      Math.max(point.y, workArea.y),
+      workArea.y + Math.max(0, workArea.height - height),
+    ),
+    width,
+    height,
+  };
+}
+
+function createWindow(
+  workspaceView?: SeparateWorkspaceView,
+  conversationId?: string,
+  placement?: WorkspaceWindowPlacement,
+): BrowserWindow {
+  const bounds = detachedWindowBounds(placement);
+  const window = new BrowserWindow({
+    title: "FlareAI",
+    width: bounds?.width ?? DETACHED_WINDOW_WIDTH,
+    height: bounds?.height ?? 618,
+    x: bounds?.x,
+    y: bounds?.y,
     // The floor where the split layout still reads: history at its 180px
     // minimum, the conversation at its 432px measure and the workspace at its
     // 360px minimum, which is SPLIT_LAYOUT_MIN_WIDTH in the renderer's
     // layoutSizing — keep the two in step.
-    minWidth: 973,
+    minWidth: workspaceView ? 360 : 973,
     // The welcome composer sits on the window's centre line, so its menus open
     // downward into the lower half. 672px leaves the tallest of them (the model
     // menu, five rows) 28px clear of the bottom edge, and pairs with the width
     // at a 1.45 ratio rather than a letterbox.
-    minHeight: 672,
+    minHeight: workspaceView ? 320 : 672,
     // The window only appears once the renderer has its first frame — the
     // startup splash — so there is never a blank window in either theme: the
     // window opens already showing the loading screen. `ready-to-show` below
@@ -174,6 +324,7 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
 
@@ -181,14 +332,63 @@ function createWindow(): void {
   // showing it. The deadline covers a renderer that never reaches its first
   // paint (a broken dev bundle, a hung load): a visible broken window can be
   // diagnosed, an invisible one just looks like the app refused to start.
-  const reveal = (): void => {
+  let appReadyPoll: NodeJS.Timeout | undefined;
+  let appReadyChecking = false;
+  const reveal = (readyChecked = false): void => {
     if (window.isDestroyed() || window.isVisible()) return;
+    if (!readyChecked && startupShellWindow && !startupShellWindow.isDestroyed()) {
+      if (appReadyChecking) return;
+      appReadyChecking = true;
+      // The real app being ready is only one half of the handoff. The startup
+      // shell may still be drawing its mark, so keep it on screen until its
+      // complete sequence has reached the settled end pose as well.
+      void Promise.all([
+        window.webContents.executeJavaScript(
+          'document.documentElement.dataset.appReady === "true"',
+          true,
+        ) as Promise<boolean>,
+        startupShellWindow.webContents.executeJavaScript(
+          'document.documentElement.dataset.splash === "done"',
+          true,
+        ) as Promise<boolean>,
+      ]).then(([appReady, splashDone]) => {
+        appReadyChecking = false;
+        if (appReady && splashDone) reveal(true);
+        else appReadyPoll = setTimeout(reveal, 50);
+      }).catch(() => {
+        appReadyChecking = false;
+        appReadyPoll = setTimeout(reveal, 50);
+      });
+      return;
+    }
     // A side instance is an agent's test run, opened beside the window the user
-    // is working in. It appears without taking focus, so a check on a change
-    // never pulls the user out of what they were typing; `npm start` — the
-    // user's own run, including onboarding — shows and focuses as normal.
-    if (devInstance) window.showInactive();
+    // is working in. A packaged app launched with macOS' background/hidden
+    // launch flag has the same contract: honour that launch request instead of
+    // undoing it with BrowserWindow.show(), which activates the app even when
+    // `open -g -j` correctly started it in the background. Ordinary launches,
+    // including onboarding, still show and focus as normal.
+    if (backgroundLaunch) {
+      // A hidden (`open -j`) Electron application cannot reliably paint or
+      // expose its renderer through Accessibility. The background launcher
+      // therefore uses `open -g` and this explicit switch: Launch Services
+      // keeps the app nonfrontmost while Electron reveals the window inactive.
+      window.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+        skipTransformProcessType: true,
+      });
+      // Keep the automation surface present for AX even when the foreground
+      // app owns a fullscreen Space, without painting over or intercepting the
+      // user's work there.
+      window.setOpacity(0);
+      window.setIgnoreMouseEvents(true);
+      window.showInactive();
+    } else if (devInstance)
+      window.showInactive();
     else window.show();
+    if (startupShellWindow && !startupShellWindow.isDestroyed()) {
+      startupShellWindow.close();
+      startupShellWindow = undefined;
+    }
     // Only now is the splash on screen. A hidden Electron window still reports
     // its document as visible, so the renderer cannot tell this moment for
     // itself, and a slide started before it is a slide spent behind a window
@@ -202,7 +402,10 @@ function createWindow(): void {
     clearTimeout(showDeadline);
     reveal();
   });
-  window.once("closed", () => clearTimeout(showDeadline));
+  window.once("closed", () => {
+    clearTimeout(showDeadline);
+    clearTimeout(appReadyPoll);
+  });
 
   // A load that never lands is the other way to get a blank window, and unlike
   // a crashed renderer it leaves no trace at all: `render-process-gone` never
@@ -237,7 +440,7 @@ function createWindow(): void {
       retryTimer = setTimeout(() => {
         if (window.isDestroyed()) return;
         console.error(`[renderer] retrying the load (${retriesLeft} attempts left)`);
-        loadRenderer(window);
+        loadRenderer(window, workspaceView, conversationId);
       }, 1000);
     },
   );
@@ -331,25 +534,55 @@ function createWindow(): void {
 
   // `close` fires while the window is still alive; this is the last moment
   // the embedded browser can lift its pages out before they die with it.
-  window.on("close", () => backend?.detachWindow());
+  // A detached workspace window shares the app backend, but it must not steal
+  // ownership of the embedded-browser surface from the main conversation
+  // window or detach that surface when the detached window closes.
+  const ownsBackendWindow = !backend || !workspaceView;
+  if (ownsBackendWindow) window.on("close", () => backend?.detachWindow());
+  else {
+    // `closed` runs after Electron has destroyed the BrowserWindow. Reading
+    // window.webContents there throws during a multi-window Cmd+Q, turning an
+    // ordinary quit into an uncaught main-process failure. Capture the stable
+    // id while the window is alive and remove that trust record by value.
+    const trustedWebContentsId = window.webContents.id;
+    window.on("closed", () => backend?.untrustWindow(trustedWebContentsId));
+  }
 
   // The backend is app-scoped: created for the first window, reattached to
   // every later one, and closed only by quitting. Closing the window leaves
   // agent runs, MCP connections, storage, and messaging all running.
   if (backend) {
-    backend.attachWindow(window);
+    if (ownsBackendWindow) backend.attachWindow(window);
+    else backend.trustWindow(window);
   } else {
-    backend = new DesktopBackend({
+    backend = createDesktopBackend(window, true, true);
+  }
+
+  loadRenderer(window, workspaceView, conversationId);
+  return window;
+}
+
+function desktopBackendOptions(window: BrowserWindow): Omit<DesktopBackendOptions, "reloadForProfileChange"> {
+  return {
       dataDirectory: app.getPath("userData"),
       officialSkillDirectories: [officialSkillDirectory()],
       coreSkills: coreSkillNames(bundledResource("skills", "core")),
       // FlareAI's own prompts travel as files beside the skills — same bundle,
       // neither tier, never mirrored into the user's skills directory.
-      agentPrompts: loadAgentPrompts(bundledResource("prompts")),
+      agentPrompts: loadAgentPrompts(
+        bundledResource("prompts"),
+        orchestrationExperiment
+          ? bundledResource("prompts", "experiments", "orchestration")
+          : undefined,
+      ),
+      orchestrationExperiment,
+      suppressSystemNotifications: backgroundLaunch,
+      suppressAutomaticUpdateChecks: backgroundLaunch,
       axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
       axEventsSourcePath: bundledResource("native", "ax-events.swift"),
       pillImageSourcePath: bundledResource("native", "pill-image.swift"),
       appPermissionsSourcePath: bundledResource("native", "app-permissions.swift"),
+      contactsSourcePath: bundledResource("native", "contacts.swift"),
       remindersSourcePath: bundledResource("native", "reminders.swift"),
       hub: hub
         ? {
@@ -366,15 +599,70 @@ function createWindow(): void {
       window,
       ipcMain,
       model: modelFromEnvironment(),
-    });
-    backend.register();
-    void backend
-      .reloadMcp()
-      .catch((error) => console.error("Could not load MCP configuration", error));
-  }
-
-  loadRenderer(window);
+  };
 }
+
+function createDesktopBackend(window: BrowserWindow, loadMcp = true, selectDefaultProfile = false): DesktopBackend {
+  let instance!: DesktopBackend;
+  instance = new DesktopBackend({
+    ...desktopBackendOptions(window),
+    selectDefaultProfile,
+    reloadForProfileChange: () => void replaceDesktopBackend(instance, window),
+  });
+  instance.register();
+  if (loadMcp)
+    void instance.reloadMcp().catch((error) => console.error("Could not load MCP configuration", error));
+  return instance;
+}
+
+async function replaceDesktopBackend(previous: DesktopBackend, window: BrowserWindow): Promise<void> {
+  if (backend !== previous || quitting || window.isDestroyed()) return;
+  await previous.close("Configuration profile changed");
+  if (backend !== previous || quitting || window.isDestroyed()) return;
+  const next = createDesktopBackend(window, false);
+  backend = next;
+  for (const candidate of BrowserWindow.getAllWindows()) {
+    if (candidate !== window && !candidate.isDestroyed()) next.trustWindow(candidate);
+  }
+  await next.reloadMcp().catch((error) => console.error("Could not load MCP configuration", error));
+  if (!window.isDestroyed()) window.webContents.send(channels.profilesChanged, next.profileSnapshot());
+}
+
+ipcMain.handle(channels.windowOpenWorkspaceView, (
+  event,
+  value: unknown,
+  conversationId: unknown,
+  placement: unknown,
+) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || event.senderFrame !== event.sender.mainFrame)
+    throw new Error("Rejected IPC from an untrusted frame");
+  if (value !== "drive" && value !== "schedule" && value !== "hub" && value !== "tasks")
+    throw new Error("Unknown workspace view");
+  if (conversationId !== undefined && typeof conversationId !== "string")
+    throw new Error("Invalid conversation id");
+  if (placement !== undefined && (
+    typeof placement !== "object" || placement === null
+    || typeof (placement as WorkspaceWindowPlacement).x !== "number"
+    || !Number.isFinite((placement as WorkspaceWindowPlacement).x)
+    || typeof (placement as WorkspaceWindowPlacement).y !== "number"
+    || !Number.isFinite((placement as WorkspaceWindowPlacement).y)
+    || ((placement as WorkspaceWindowPlacement).width !== undefined
+      && (typeof (placement as WorkspaceWindowPlacement).width !== "number"
+        || !Number.isFinite((placement as WorkspaceWindowPlacement).width)
+        || (placement as WorkspaceWindowPlacement).width! <= 0))
+    || ((placement as WorkspaceWindowPlacement).height !== undefined
+      && (typeof (placement as WorkspaceWindowPlacement).height !== "number"
+        || !Number.isFinite((placement as WorkspaceWindowPlacement).height)
+        || (placement as WorkspaceWindowPlacement).height! <= 0))
+  )) throw new Error("Invalid workspace window placement");
+  const validPlacement = placement as WorkspaceWindowPlacement | undefined;
+  createWindow(
+    value,
+    typeof conversationId === "string" ? conversationId : undefined,
+    validPlacement,
+  );
+});
 
 /**
  * Points a window at the renderer. Separate from `createWindow` because the
@@ -382,13 +670,15 @@ function createWindow(): void {
  * and a retry that quietly loaded something else would be worse than the blank
  * window it is trying to replace.
  */
-function loadRenderer(window: BrowserWindow): void {
+function loadRenderer(window: BrowserWindow, workspaceView?: SeparateWorkspaceView, conversationId?: string): void {
   const coldStart = !coldStartConsumed;
   coldStartConsumed = true;
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
     url.searchParams.set("coldStart", coldStart ? "1" : "0");
+    if (workspaceView) url.searchParams.set("workspaceView", workspaceView);
+    if (conversationId) url.searchParams.set("conversationId", conversationId);
     // `npm run onboarding` reopens first-run setup over this machine's
     // real profile without recording that it ran. Only the dev-server branch
     // reads it, so a packaged build has no way to reach it.
@@ -406,7 +696,11 @@ function loadRenderer(window: BrowserWindow): void {
           currentDirectory,
           `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
         ),
-        { query: { coldStart: coldStart ? "1" : "0" } },
+        { query: {
+          coldStart: coldStart ? "1" : "0",
+          ...(workspaceView ? {workspaceView} : {}),
+          ...(conversationId ? {conversationId} : {}),
+        } },
       )
       .catch((error: unknown) => {
         console.error(`[renderer] loadFile rejected: ${String(error)}`);
@@ -533,8 +827,78 @@ async function withTimeout<T>(
 // or a previewed clip.
 registerPrivilegedSchemes();
 
+async function runProviderProbe(): Promise<number> {
+  const provider = "openai-codex";
+  const model = "gpt-5.6-luna";
+  const started = Date.now();
+  const credentials = new OpenCodeCredentialFallback(new EncryptedCredentialStore(
+    path.join(app.getPath("userData"), "credentials.json"),
+    safeStorage,
+  ));
+  const inference = new PiInference(builtinModels({credentials}));
+  let answer = "";
+  let failure: {code: string; retryable: boolean} | null = null;
+  for await (const event of inference.stream({
+    model: {provider, id: model},
+    messages: [{role: "user", content: [{type: "text", text: "Reply exactly READY."}]}],
+    reasoning: "low",
+    maxOutputTokens: 16,
+    timeoutMs: 20_000,
+    maxRetries: 0,
+  })) {
+    if (event.type === "textDelta") answer += event.delta;
+    // textEnd contains the complete block, not another delta.
+    if (event.type === "textEnd") answer = event.text;
+    if (event.type === "error") failure = {code: event.error.code, retryable: event.error.retryable};
+  }
+  const status = answer.trim() === "READY" ? "ready" : failure?.code ?? "probe_failed";
+  process.stdout.write(`${JSON.stringify({
+    version: 1,
+    capturedAt: new Date().toISOString(),
+    model: `${provider}/${model}`,
+    reasoning: "low",
+    latencyMs: Date.now() - started,
+    status,
+    retryable: failure?.retryable ?? false,
+  }, null, 2)}\n`);
+  return status === "ready" ? 0 : 3;
+}
+
+function writeProviderProbeFailure(status: string): void {
+  process.stdout.write(`${JSON.stringify({
+    version: 1,
+    capturedAt: new Date().toISOString(),
+    model: "openai-codex/gpt-5.6-luna",
+    reasoning: "low",
+    latencyMs: 0,
+    status,
+    retryable: false,
+  }, null, 2)}\n`);
+}
+
 app.whenReady().then(async () => {
   if (quitting) return;
+  if (providerProbe) {
+    const code = await runProviderProbe().catch((error) => {
+      // The outer preflight deliberately discards stderr, but the signed route
+      // should still give it a structured, secret-free reason to stop.
+      void error;
+      writeProviderProbeFailure("credential_unavailable");
+      return 3;
+    });
+    app.exit(code);
+    return;
+  }
+  // FlareAI is designed to be controllable through exact-window accessibility
+  // whether its window was launched normally or in the background. Electron
+  // otherwise waits for an assistive client to attach and can leave a running
+  // normal window with no semantic tree after a fullscreen/Space transition.
+  app.setAccessibilitySupportEnabled(true);
+  startupShellWindow = createStartupShellWindow();
+  // The shell owns the only cold-start animation. The real renderer mounts
+  // invisibly behind it and replaces it only after `ready-to-show`, avoiding a
+  // restarted animation or a blank handoff.
+  coldStartConsumed = true;
   // Bridged media is fetched by the main process, which holds the token the
   // renderer never sees. Read per request, so a later sign-in is picked up.
   serveMedia(() => backend?.mediaAuth ?? {homeserverUrl: "", token: null});
@@ -590,8 +954,11 @@ app.on("will-quit", (event) => {
   backend = undefined;
   const closingHub = hub;
   hub = undefined;
+  const closingWeChat = wechat;
+  wechat = undefined;
   void Promise.allSettled([
     closingBackend?.close(),
+    closingWeChat?.close(),
     closingHub?.bridges.close(),
     closingHub?.homeserver.close(),
   ]).finally(() => app.exit(0));

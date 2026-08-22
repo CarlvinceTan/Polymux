@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { InteractionEvent, InteractionEventSource } from "@flareai/chronicle";
+import type { InteractionEvent, InteractionEventSource } from "@flareai/computer-history";
 import { SwiftHelper } from "../system/swift-helper.js";
 
 export interface InteractionEventsOptions {

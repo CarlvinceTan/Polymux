@@ -1,7 +1,7 @@
-import {createHash, randomBytes} from "node:crypto";
-import {createServer, type Server} from "node:http";
-import type {DriveProviderId} from "@flareai/protocol";
-import {driveProviderLabel} from "@flareai/protocol";
+import { createHash, randomBytes } from "node:crypto";
+import { createServer, type Server } from "node:http";
+import type { DriveProviderId } from "@flareai/protocol";
+import { driveProviderLabel } from "@flareai/protocol";
 import type {
   DriveConsentPrompt,
   DriveConsentWindow,
@@ -51,6 +51,17 @@ interface StoredTokens {
   /** Epoch milliseconds, or null when the provider issues no expiry. */
   expiresAt: number | null;
   scope: string | null;
+}
+
+class OAuthTokenError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | null,
+    message: string,
+  ) {
+    super(message);
+    this.name = "OAuthTokenError";
+  }
 }
 
 /**
@@ -125,9 +136,7 @@ export class OAuthClient {
   async authorize(): Promise<void> {
     const app = this.#require();
     const verifier = base64Url(randomBytes(32));
-    const challenge = base64Url(
-      createHash("sha256").update(verifier).digest(),
-    );
+    const challenge = base64Url(createHash("sha256").update(verifier).digest());
     const state = base64Url(randomBytes(16));
 
     const url = new URL(app.authorizeUrl);
@@ -199,12 +208,15 @@ export class OAuthClient {
         refresh_token: refreshToken,
       });
     } catch (cause) {
-      // The refresh token has been revoked or rotated out from under us. The
-      // stored copy can never work again, so drop it: the provider reports
-      // itself as logged out and the user is offered a fresh connect.
-      await this.clear();
+      // Only an explicit invalid_grant proves the refresh token can never work
+      // again. Network failures and provider 5xx responses leave it intact so
+      // a temporary outage does not sign the user out.
+      if (cause instanceof OAuthTokenError && cause.code === "invalid_grant")
+        await this.clear();
       throw new Error(
-        `The ${driveProviderLabel(this.#provider)} connection was rejected. Connect it again. (${cause instanceof Error ? cause.message : String(cause)})`,
+        cause instanceof OAuthTokenError && cause.code === "invalid_grant"
+          ? `The ${driveProviderLabel(this.#provider)} connection was rejected. Connect it again. (${cause.message})`
+          : `The ${driveProviderLabel(this.#provider)} connection could not be refreshed. The saved connection was kept. (${cause instanceof Error ? cause.message : String(cause)})`,
       );
     }
     // Providers that rotate refresh tokens send a new one; those that do not
@@ -219,18 +231,29 @@ export class OAuthClient {
 
   async #exchange(params: Record<string, string>): Promise<StoredTokens> {
     const app = this.#require();
-    const body = new URLSearchParams({...params, client_id: app.clientId});
+    const body = new URLSearchParams({ ...params, client_id: app.clientId });
     if (app.clientSecret) body.set("client_secret", app.clientSecret);
     const response = await fetch(app.tokenUrl, {
       method: "POST",
-      headers: {"content-type": "application/x-www-form-urlencoded"},
+      headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
+      signal: AbortSignal.timeout(60_000),
     });
     const text = await response.text();
-    if (!response.ok)
-      throw new Error(
+    if (!response.ok) {
+      let code: string | null = null;
+      try {
+        const payload = JSON.parse(text) as { error?: string };
+        code = typeof payload.error === "string" ? payload.error : null;
+      } catch {
+        // The status and truncated body remain enough to diagnose the failure.
+      }
+      throw new OAuthTokenError(
+        response.status,
+        code,
         `Token request failed (${response.status}): ${text.slice(0, 300)}`,
       );
+    }
     const payload = JSON.parse(text) as {
       access_token?: string;
       refresh_token?: string;
@@ -300,7 +323,7 @@ export class OAuthClient {
           const code = incoming.searchParams.get("code");
           const state = incoming.searchParams.get("state");
           const failure = incoming.searchParams.get("error");
-          response.writeHead(200, {"content-type": "text/html"});
+          response.writeHead(200, { "content-type": "text/html" });
           response.end(
             `<!doctype html><meta charset="utf-8"><title>FlareAI</title><body style="font:15px -apple-system,sans-serif;display:grid;place-items:center;height:100vh;margin:0"><p>${
               code && state === expectedState
@@ -313,7 +336,9 @@ export class OAuthClient {
           if (failure) finish(new Error(`The provider refused: ${failure}`));
           else if (!code) finish(new Error("The provider returned no code."));
           else if (state !== expectedState)
-            finish(new Error("The sign-in response did not match the request."));
+            finish(
+              new Error("The sign-in response did not match the request."),
+            );
           else finish(null, code);
         });
 
@@ -343,9 +368,7 @@ export class OAuthClient {
               if (done) opened.close();
             })
             .catch((cause: unknown) =>
-              finish(
-                cause instanceof Error ? cause : new Error(String(cause)),
-              ),
+              finish(cause instanceof Error ? cause : new Error(String(cause))),
             );
         });
       });

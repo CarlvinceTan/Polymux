@@ -39,11 +39,13 @@ await homeserver.start();
 const started = await bridges.startAll();
 console.log(`homeserver up at ${homeserver.baseUrl}; ${started.length} bridges spawned\n`);
 
-/** Telegram will not finish starting without an api pair; give it a dummy one
+/** Telegram will not finish starting without an api pair; give it a synthetic one
  * so the smoke test exercises its startup path too. It never dials out —
  * whoami is answered before any Telegram connection is attempted. */
-if (started.some((bridge) => bridge.name === "telegram"))
-  await bridges.configureNetwork("telegram", {api_id: "17349", api_hash: "344583e45741c457fe1862106095a5eb"});
+if (started.some((bridge) => bridge.name === "telegram")) {
+  const apiHash = ["flareai", "smoke", "test", "only"].join("-");
+  await bridges.configureNetwork("telegram", {api_id: "1", api_hash: apiHash});
+}
 
 const deadline = Date.now() + 45_000;
 const results = new Map<string, string>();

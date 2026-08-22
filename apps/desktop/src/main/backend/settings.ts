@@ -54,11 +54,14 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
     theme: "light",
     language: "system",
     currency: null,
-    speechModeEnabled: true,
+    // Speech mode has nothing to run until a speech model is assigned. Model
+    // assignment turns this on; clearing that assignment turns it off again.
+    speechModeEnabled: false,
     dictationAutoStopSeconds: 6,
     timeEnabled: true,
     locationEnabled: true,
-    reasoningLevel: "medium",
+    hubIncognitoMode: false,
+    reasoningLevel: reasoningEffort(process.env.FLAREAI_REASONING, "medium") ?? "medium",
     advancedMode: false,
     onboardingCompleted: false,
     // Every capability is on by default: the OS grant is the real gate, and
@@ -73,6 +76,7 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
     // grant is the real gate, and a skill installed to do a job should be able
     // to ask for what that job needs.
     appPermissionsEnabled: true,
+    pinnedViews: [],
     location: null,
   };
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -106,6 +110,10 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
       typeof record.locationEnabled === "boolean"
         ? record.locationEnabled
         : defaults.locationEnabled,
+    hubIncognitoMode:
+      typeof record.hubIncognitoMode === "boolean"
+        ? record.hubIncognitoMode
+        : defaults.hubIncognitoMode,
     onboardingCompleted:
       typeof record.onboardingCompleted === "boolean"
         ? record.onboardingCompleted
@@ -127,6 +135,7 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
       typeof record.appPermissionsEnabled === "boolean"
         ? record.appPermissionsEnabled
         : defaults.appPermissionsEnabled,
+    pinnedViews: pinnedViewsPreference(record.pinnedViews),
     location: locationPreference(record.location),
   };
 }
@@ -185,10 +194,17 @@ export function generalSettingsUpdate(
   )
     throw new Error("locationEnabled must be a boolean");
   if (
+    record.hubIncognitoMode !== undefined &&
+    typeof record.hubIncognitoMode !== "boolean"
+  )
+    throw new Error("hubIncognitoMode must be a boolean");
+  if (
     record.reasoningLevel !== undefined &&
     !reasoningEffort(record.reasoningLevel, null)
   )
     throw new Error("reasoningLevel must be a supported reasoning effort");
+  if (record.pinnedViews !== undefined && !validPinnedViews(record.pinnedViews))
+    throw new Error("pinnedViews must be an array of drive, schedule, hub, or tasks");
   const locationEnabled =
     typeof record.locationEnabled === "boolean"
       ? record.locationEnabled
@@ -249,11 +265,19 @@ export function generalSettingsUpdate(
         ? record.timeEnabled
         : current.timeEnabled,
     locationEnabled,
+    hubIncognitoMode:
+      typeof record.hubIncognitoMode === "boolean"
+        ? record.hubIncognitoMode
+        : current.hubIncognitoMode,
     location: locationEnabled ? location : null,
     reasoningLevel:
       record.reasoningLevel === undefined
         ? current.reasoningLevel
         : (reasoningEffort(record.reasoningLevel, current.reasoningLevel) as ReasoningEffort),
+    pinnedViews:
+      Array.isArray(record.pinnedViews)
+        ? validPinnedViews(record.pinnedViews) as GeneralSettingsDto['pinnedViews']
+        : current.pinnedViews,
   };
 }
 
@@ -331,6 +355,28 @@ export function requiredLocation(value: unknown): NonNullable<GeneralSettingsDto
   if (typeof record.updatedAt !== "string" || !Number.isFinite(Date.parse(record.updatedAt)))
     throw new Error("location updatedAt is invalid");
   return { latitude, longitude, accuracy, updatedAt: record.updatedAt };
+}
+
+const PINNABLE_VIEWS = new Set(['drive', 'schedule', 'hub', 'tasks']);
+
+function validPinnedViews(value: unknown): string[] | false {
+  if (!Array.isArray(value)) return false;
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || !PINNABLE_VIEWS.has(item) || seen.has(item)) return false;
+    seen.add(item);
+    result.push(item);
+  }
+  return result;
+}
+
+function pinnedViewsPreference(value: unknown): GeneralSettingsDto['pinnedViews'] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is 'drive' | 'schedule' | 'hub' | 'tasks' =>
+      typeof item === 'string' && PINNABLE_VIEWS.has(item),
+  ).filter((item, i, arr) => arr.indexOf(item) === i);
 }
 
 /**

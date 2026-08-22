@@ -1293,14 +1293,14 @@
              and each has to be identifiable and removable by itself. -->
         <ul class="pf-accounts">
           {#each activeAccounts as account (account.id)}
-            <li class:warn={account.state === 'bad-credentials'}>
+            <li class:warn={account.state === 'bad-credentials' || account.state === 'error'}>
               <span class="pf-account-name">{account.name || account.id}</span>
               <span class="pf-account-state">
                 {account.state === 'connected'
                   ? $t('drive.stateConnected')
                   : account.state === 'connecting'
                     ? $t('hub.connecting')
-                    : account.state === 'bad-credentials'
+                    : account.state === 'bad-credentials' || account.state === 'error'
                       ? $t('platforms.needsSignIn')
                       : $t('hub.unknown')}
               </span>

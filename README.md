@@ -6,7 +6,7 @@ capabilities include **Hub**, a central communication layer supporting around 17
 platforms, including email; **Drive**, a virtual filesystem backed by local and
 popular cloud storage; **Schedule**, for creating cron jobs; **Browser**, with both
 external and in-app browsing; **Workspace**, a tabbed interface for accessing every
-core feature; and a fast, grep-based **Memory** system, complemented by **Chronicle**
+core feature; and a fast, grep-based **Memory** system, complemented by **ComputerHistory**
 for understanding your computer-use history.
 
 The Main Agent uses a **Ledger** to delegate work to parallel Task Agents, either

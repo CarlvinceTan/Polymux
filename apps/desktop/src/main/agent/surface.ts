@@ -24,6 +24,8 @@ import { randomUUID } from "node:crypto";
  */
 
 export interface SurfaceTab {
+  /** Stable browser-extension tab identity when the caller already resolved it. */
+  tabId?: number;
   url: string;
   title: string;
   faviconUrl?: string;

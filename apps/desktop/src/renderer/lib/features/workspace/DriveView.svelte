@@ -106,6 +106,7 @@
   import {onDestroy, tick} from 'svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import Menu from '../../shared/components/Menu.svelte';
+  import OpenMenu, {type OpenAnchor, type OpenChoice} from '../../shared/components/OpenMenu.svelte';
   import DriveProviderLogo from '../../shared/components/DriveProviderLogo.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import {t} from '../../../i18n';
@@ -147,16 +148,16 @@
    * drive is where the row is, and Electron has no `prompt` to fall back on.
    */
   export let onNewFolder: ((parent: DriveEntry, name: string) => void) | null = null;
-  export let onUpload: ((parent: DriveEntry) => void) | null = null;
+  export let onUpload: ((files: File[], parent: DriveEntry, onProgress?: (fraction: number) => void) => Promise<void>) | null = null;
   export let onRename: ((entry: DriveEntry, name: string) => void) | null = null;
   /**
    * Moves the entries into `destination`. The destination may belong to
    * another provider: the drive underneath turns that into a transfer, so the
    * list never has to refuse a drop for crossing accounts.
    */
-  export let onMove: ((entries: DriveEntry[], destination: DriveEntry) => void) | null = null;
+  export let onMove: ((entries: DriveEntry[], destination: DriveEntry, onProgress?: (fraction: number) => void) => void | Promise<void>) | null = null;
   /** Files and folders dragged in from the Finder, dropped on `destination`. */
-  export let onDropFiles: ((files: File[], destination: DriveEntry) => void) | null = null;
+  export let onDropFiles: ((files: File[], destination: DriveEntry, onProgress?: (fraction: number) => void) => Promise<void>) | null = null;
   export let onDuplicate: ((entries: DriveEntry[]) => void) | null = null;
   export let onDownload: ((entry: DriveEntry) => void) | null = null;
   export let onDelete: ((entries: DriveEntry[]) => void) | null = null;
@@ -183,6 +184,8 @@
   let confirmingDelete = false;
   let moveOpen = false;
   let moveWrapper: HTMLDivElement;
+  let moveQuery = '';
+  let moveConfirmDestination: DriveEntry | null = null;
   let infoEntry: DriveEntry | null = null;
   let sortKey: DriveSortKey = 'name';
   let sortAscending = true;
@@ -190,6 +193,19 @@
    * aim at, and the anchor a shift-click ranges from. */
   let selectedIds = new Set<string>();
   let primaryId: string | null = null;
+  let uploadInput: HTMLInputElement;
+  let pendingUploads: Array<DriveEntry & {uploadId: string; progress: number}> = [];
+  let pendingTransfers: Record<string, number> = {};
+  let rowMenuAnchor: OpenAnchor | null = null;
+
+  $: rowMenuChoices = [
+    ...(!isMultiSelection && onRename ? [{value: 'rename', label: $t('common.rename'), icon: 'edit' as const}] : []),
+    ...(onMove ? [{value: 'move', label: $t('drive.move'), icon: 'folder-move' as const}] : []),
+    ...(onDuplicate ? [{value: 'duplicate', label: $t('drive.duplicate'), icon: 'copy' as const}] : []),
+    ...(!isMultiSelection && primary?.kind !== 'folder' && onDownload ? [{value: 'download', label: $t('drive.download'), icon: 'download' as const}] : []),
+    ...(!isMultiSelection ? [{value: 'info', label: $t('drive.info'), icon: 'info' as const}] : []),
+    ...(onDelete ? [{value: 'delete', label: $t('common.delete'), icon: 'trash' as const}] : []),
+  ] satisfies OpenChoice[];
 
   // Marquee. Coordinates are kept relative to the scroll container so the box
   // stays put against the rows if the list scrolls mid-drag.
@@ -333,9 +349,10 @@
   }
 
   /**
-   * Plain click selects, and clicking the lone selected row again clears it.
-   * ⌘/Ctrl extends the set one row at a time, Shift takes the run between the
-   * anchor and the row — the same grammar the old browser used.
+   * Plain click selects and stays selected on repeated clicks. ⌘/Ctrl extends
+   * the set one row at a time, Shift takes the run between the anchor and the
+   * row. Whitespace, Escape, and the toolbar's explicit deselect action are the
+   * ways back to the no-selection toolbar.
    */
   function selectEntry(entry: DriveEntry, event: MouseEvent): void {
     if (event.shiftKey && primaryId) {
@@ -353,10 +370,6 @@
       else next.add(entry.id);
       selectedIds = next;
       primaryId = next.has(entry.id) ? entry.id : [...next][0] ?? null;
-      return;
-    }
-    if (selectedIds.size === 1 && selectedIds.has(entry.id)) {
-      clearSelection();
       return;
     }
     selectedIds = new Set([entry.id]);
@@ -392,6 +405,23 @@
     searchQuery = '';
   }
 
+  function openRowMenu(event: MouseEvent, entry: DriveEntry): void {
+    event.preventDefault();
+    if (!selectedIds.has(entry.id)) setSelection([entry.id]);
+    rowMenuAnchor = {point: {x: event.clientX, y: event.clientY}};
+  }
+
+  function chooseRowMenu(action: string): void {
+    rowMenuAnchor = null;
+    const entry = primary;
+    if (action === 'rename' && entry) void startNaming(entry.id, entry.name);
+    else if (action === 'move') moveOpen = true;
+    else if (action === 'duplicate') onDuplicate?.(selection);
+    else if (action === 'download' && entry) onDownload?.(entry);
+    else if (action === 'info' && entry) infoEntry = entry;
+    else if (action === 'delete') confirmingDelete = true;
+  }
+
   $: marqueeBox = marquee
     ? {
         left: Math.min(marquee.startX, marquee.curX),
@@ -417,6 +447,10 @@
     const target = event.target as HTMLElement | null;
     if (!target || !rowsEl?.contains(target)) return;
     if (target.closest('button, input, textarea, [contenteditable="true"]')) return;
+    // Marquee setup prevents the pointer event's default focus change. Commit
+    // first so clicking empty list space still accepts the inline name and
+    // returns the row to its ordinary, non-editing state.
+    if (renaming) commitName();
 
     const point = containerPoint(event.clientX, event.clientY);
     marquee = {startX: point.x, startY: point.y, curX: point.x, curY: point.y};
@@ -646,8 +680,8 @@
 
   /**
    * Takes whatever is in the field. Blur is the commit, so clicking away
-   * saves rather than silently discarding what was typed — but an unchanged
-   * or empty name is simply a cancel.
+   * saves rather than silently discarding what was typed. The prefilled folder
+   * name is valid as-is; only an empty name cancels.
    */
   function commitName(): void {
     const target = renaming;
@@ -669,11 +703,66 @@
     ...(crumbs.length > 1 ? [crumbs[crumbs.length - 2]] : []),
     ...items.filter((entry) => entry.kind === 'folder' && !selectedIds.has(entry.id)),
   ];
+  $: filteredMoveTargets = moveTargets.filter((entry) =>
+    entry.name.toLowerCase().includes(moveQuery.trim().toLowerCase()));
+  $: moveProviderTargets = sources.filter((source) => source.provider && source.provider !== 'all' && source.id !== 'local#home');
+  $: currentMoveSourceId = primary?.id.includes('/')
+    ? primary.id.slice(0, primary.id.indexOf('/'))
+    : activeSourceId;
+
+  async function transferEntries(entries: DriveEntry[], destination: DriveEntry): Promise<void> {
+    if (!onMove || entries.length === 0) return;
+    const ids = entries.map((entry) => entry.id);
+    pendingTransfers = {...pendingTransfers, ...Object.fromEntries(ids.map((id) => [id, 0]))};
+    clearSelection();
+    try {
+      await onMove(entries, destination, (fraction) => {
+        pendingTransfers = {...pendingTransfers, ...Object.fromEntries(ids.map((id) => [id, fraction]))};
+      });
+    } finally {
+      const remaining = {...pendingTransfers};
+      for (const id of ids) delete remaining[id];
+      pendingTransfers = remaining;
+    }
+  }
 
   function moveTo(destination: DriveEntry): void {
     moveOpen = false;
-    onMove?.(selection, destination);
-    clearSelection();
+    moveQuery = '';
+    void transferEntries([...selection], destination);
+  }
+
+  function destinationSourceId(destination: DriveEntry): string {
+    if (destination.id.includes('/')) return destination.id.slice(0, destination.id.indexOf('/'));
+    if (sources.some((source) => source.id === destination.id)) return destination.id;
+    return activeSourceId;
+  }
+
+  function requestMove(destination: DriveEntry): void {
+    moveOpen = false;
+    moveQuery = '';
+    if (destinationSourceId(destination) !== currentMoveSourceId) {
+      moveConfirmDestination = destination;
+      return;
+    }
+    moveTo(destination);
+  }
+
+  function chooseMoveProvider(source: DriveSource): void {
+    if (source.id === currentMoveSourceId) return;
+    requestMove({
+      id: source.id,
+      name: source.provider === 'local' ? providerLabel('local') : source.name,
+      kind: 'folder',
+      provider: source.provider,
+    });
+  }
+
+  function confirmProviderMove(): void {
+    const destination = moveConfirmDestination;
+    if (!destination) return;
+    moveConfirmDestination = null;
+    moveTo(destination);
   }
 
   /**
@@ -753,12 +842,11 @@
     if (draggingIds.size) {
       const moving = items.filter((entry) => draggingIds.has(entry.id));
       draggingIds = new Set();
-      if (moving.length) onMove?.(moving, folder);
-      clearSelection();
+      if (moving.length) void transferEntries(moving, folder);
       return;
     }
     const files = Array.from(event.dataTransfer?.files ?? []);
-    if (files.length) onDropFiles?.(files, folder);
+    if (files.length) void uploadFiles(files, folder, onDropFiles);
   }
 
   /** Anywhere in the list that is not a folder means the folder on screen. */
@@ -785,7 +873,46 @@
     if (!onDropFiles || !draggingFiles(event)) return;
     event.preventDefault();
     const files = Array.from(event.dataTransfer?.files ?? []);
-    if (files.length) onDropFiles(files, current);
+    if (files.length) void uploadFiles(files, current, onDropFiles);
+  }
+
+  async function chooseUploads(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    // Selecting the same file twice must still fire change the second time.
+    input.value = '';
+    if (files.length) await uploadFiles(files, current, onUpload);
+  }
+
+  async function uploadFiles(
+    files: File[],
+    destination: DriveEntry,
+    upload: ((files: File[], destination: DriveEntry, onProgress?: (fraction: number) => void) => Promise<void>) | null,
+  ): Promise<void> {
+    if (!upload) return;
+    const visible = destination.id === current.id;
+    const placeholders = visible
+      ? files.map((file) => ({
+          id: `upload:${crypto.randomUUID()}`,
+          uploadId: crypto.randomUUID(),
+          name: file.name,
+          kind: driveEntryKind(file.name),
+          size: file.size,
+          progress: 0,
+        } satisfies DriveEntry & {uploadId: string; progress: number}))
+      : [];
+    if (placeholders.length) pendingUploads = [...pendingUploads, ...placeholders];
+    try {
+      await upload(files, destination, (fraction) => {
+        const ids = new Set<string>(placeholders.map((entry) => entry.uploadId));
+        pendingUploads = pendingUploads.map((entry) => ids.has(entry.uploadId) ? {...entry, progress: fraction} : entry);
+      });
+    } finally {
+      if (placeholders.length) {
+        const finished = new Set<string>(placeholders.map((entry) => entry.uploadId));
+        pendingUploads = pendingUploads.filter((entry) => !finished.has(entry.uploadId));
+      }
+    }
   }
 
   function confirmDelete(): void {
@@ -814,6 +941,7 @@
       // The storage switch is a Menu, which takes its own Escape before this
       // ever runs, so there is nothing to close for it here.
       if (renaming) cancelNaming();
+      else if (moveConfirmDestination) moveConfirmDestination = null;
       else if (moveOpen) moveOpen = false;
       else if (confirmingDelete) confirmingDelete = false;
       else if (infoEntry) infoEntry = null;
@@ -969,15 +1097,20 @@
               data-tooltip-label={$t('drive.move')}
               aria-haspopup="menu"
               aria-expanded={moveOpen}
-              disabled={!onMove || moveTargets.length === 0}
-              onclick={() => (moveOpen = !moveOpen)}
+              disabled={!onMove || (moveTargets.length === 0 && moveProviderTargets.length < 2)}
+              onclick={() => { moveOpen = !moveOpen; if (!moveOpen) moveQuery = ''; }}
             >
               <Icon name="folder-move" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
             </button>
             {#if moveOpen}
-              <div class="fb-filter-menu" role="menu">
-                {#each moveTargets as target, index (target.id)}
-                  <button type="button" class="fb-filter-item" role="menuitem" onclick={() => moveTo(target)}>
+              <div class="flareai-dropdown-menu fb-move-menu" role="menu">
+                <label class="fb-move-search">
+                  <Icon name="search" size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
+                  <input bind:value={moveQuery} type="search" placeholder={$t('drive.searchPlaceholder')} aria-label={$t('drive.searchFiles')}/>
+                </label>
+                <div class="fb-move-folders">
+                {#each filteredMoveTargets as target, index (target.id)}
+                  <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => requestMove(target)}>
                     <span class="fb-move-name">
                       <Icon name="folder" size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
                       <!-- The first entry is the way back up when there is one,
@@ -986,6 +1119,21 @@
                     </span>
                   </button>
                 {/each}
+                {#if filteredMoveTargets.length === 0}
+                  <span class="fb-move-empty">{$t('drive.noMatches')}</span>
+                {/if}
+                </div>
+                <div class="fb-move-providers" role="group" aria-label={$t('drive.storage')}>
+                  {#each moveProviderTargets as source (source.id)}
+                    <button type="button" class="flareai-dropdown-item" role="menuitemradio" aria-checked={source.id === currentMoveSourceId} onclick={() => chooseMoveProvider(source)}>
+                      <span class="fb-move-name">
+                        {#if source.provider}<DriveProviderLogo provider={source.provider} size={13} plain/>{/if}
+                        <span>{source.provider === 'local' ? providerLabel('local') : source.name}</span>
+                      </span>
+                      {#if source.id === currentMoveSourceId}<Icon name="check" size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>{/if}
+                    </button>
+                  {/each}
+                </div>
               </div>
             {/if}
           </div>
@@ -1030,8 +1178,16 @@
         aria-label={$t('drive.upload')}
         data-tooltip-label={$t('drive.upload')}
         disabled={!onUpload}
-        onclick={() => onUpload?.(current)}
+        onclick={() => uploadInput?.click()}
       ><Icon name="upload" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
+      <input
+        bind:this={uploadInput}
+        class="fb-upload-input"
+        type="file"
+        multiple
+        tabindex="-1"
+        onchange={(event) => void chooseUploads(event)}
+      />
 
       <div bind:this={filterWrapper} class="fb-filter">
         <button
@@ -1149,6 +1305,18 @@
           <span class="fb-cell modified">—</span>
         </div>
       {/if}
+      {#each pendingUploads as entry (entry.uploadId)}
+        <div class="fb-row uploading" role="status" aria-label={`${$t('drive.upload')}: ${entry.name}`}>
+          <span class="fb-cell name">
+            <span class="fb-icon"><Icon name={entryIcons[entry.kind]} size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></span>
+            <span class="fb-name">{entry.name}</span>
+            <span class="fb-progress-ring" style:--progress={`${entry.progress * 360}deg`} aria-hidden="true"></span>
+          </span>
+          <span class="fb-cell size">{entry.size === undefined ? '—' : formatDriveSize(entry.size)}</span>
+          <span class="fb-cell kind">{driveKindLabel(entry.kind)}</span>
+          <span class="fb-cell modified">{$t('drive.upload')}…</span>
+        </div>
+      {/each}
       {#each items as entry, index (entry.id)}
         <!-- A real button so the shared tooltip, which only tracks buttons,
              can pick the row up when its name is clipped. -->
@@ -1158,13 +1326,15 @@
           class:odd={index % 2 === 1}
           class:selected={selectedIds.has(entry.id)}
           class:dragging={draggingIds.has(entry.id)}
+          class:transferring={pendingTransfers[entry.id] !== undefined}
           class:drop-target={dropTargetId === entry.id}
-          draggable={Boolean(onMove) && renaming !== entry.id}
+          draggable={Boolean(onMove) && renaming !== entry.id && pendingTransfers[entry.id] === undefined}
           data-drive-id={entry.id}
           aria-label={entry.kind === 'folder' ? $t('drive.openFolder', {name: entry.name}) : $t('drive.openEntry', {name: entry.name})}
           aria-pressed={selectedIds.has(entry.id)}
           use:overflowTooltip={entry.name}
           onclick={(event) => selectEntry(entry, event)}
+          oncontextmenu={(event) => openRowMenu(event, entry)}
           ondblclick={(event) => openEntry(entry, {x: event.clientX, y: event.clientY})}
           ondragstart={(event) => startRowDrag(event, entry)}
           ondragend={endRowDrag}
@@ -1193,29 +1363,23 @@
               />
             {:else}
               <span class="fb-name">{entry.name}</span>
-              {#if entry.provider && entry.provider !== 'local'}
-                <!-- The badge trails the name as the last token of it, so it
-                     reads as part of the filename rather than as a column. The
-                     local disk gets none: an unmarked file is already on this
-                     Mac, which is the assumption worth not spending a mark on. -->
-                <!-- A plain `title`: the shared tooltip only reads buttons, and
-                     this badge is part of the row's label rather than a control. -->
-                <!-- Where it is, not whose it is: one mark for the network
-                     and one for the cloud, because the row only has to say
-                     that the file is not on this Mac. Which provider it is
-                     the name beside it answers, on hover. -->
-                <span class="fb-provider-badge">
-                  <Icon
-                    name={entry.provider === 'network' ? 'globe' : 'cloud'}
-                    size={12}
-                    strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}
-                  />
+              {#if pendingTransfers[entry.id] !== undefined || (entry.provider && entry.provider !== 'local')}
+                <span class="fb-file-status">
+                {#if pendingTransfers[entry.id] !== undefined}
+                  <!-- Progress replaces provenance while bytes are moving: two
+                       marks here would describe two states at once. -->
+                  <span class="fb-progress-ring" style:--progress={`${pendingTransfers[entry.id] * 360}deg`} aria-hidden="true"></span>
+                {:else if entry.provider && entry.provider !== 'local'}
+                  <span class="fb-provider-badge">
+                    <Icon
+                      name={entry.provider === 'network' ? 'globe' : 'cloud'}
+                      size={12}
+                      strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}
+                    />
+                  </span>
+                  <span class="fb-provider-name">{providerLabel(entry.provider)}</span>
+                {/if}
                 </span>
-                <!-- The mark says a file is not on this Mac; the name says
-                     where it is instead. It appears on hover so the column
-                     stays quiet at rest, and is lighter than the filename so
-                     it reads as provenance rather than as part of the name. -->
-                <span class="fb-provider-name">{providerLabel(entry.provider)}</span>
               {/if}
             {/if}
           </span>
@@ -1233,6 +1397,31 @@
       {/if}
     </div>
   </div>
+
+  <OpenMenu
+    choices={rowMenuChoices}
+    anchor={rowMenuAnchor}
+    compact
+    onChoose={chooseRowMenu}
+    onClose={() => (rowMenuAnchor = null)}
+  />
+
+  {#if moveConfirmDestination}
+    <div class="fb-transfer-backdrop" role="presentation" onclick={(event) => { if (event.currentTarget === event.target) moveConfirmDestination = null; }}>
+      <div class="fb-transfer-dialog" role="dialog" aria-modal="true" aria-labelledby="drive-transfer-title">
+        <h3 id="drive-transfer-title">{$t('drive.move')}</h3>
+        <p>Move {selection.length > 1 ? `${selection.length} items` : primary?.name} to {moveConfirmDestination.name}?</p>
+        <div class="fb-transfer-destination">
+          {#if moveConfirmDestination.provider}<DriveProviderLogo provider={moveConfirmDestination.provider} size={16} plain/>{/if}
+          <span>{moveConfirmDestination.name}</span>
+        </div>
+        <footer>
+          <button type="button" class="fb-confirm-cancel" onclick={() => (moveConfirmDestination = null)}>{$t('common.cancel')}</button>
+          <button type="button" class="fb-transfer-confirm" onclick={confirmProviderMove}>{$t('drive.move')}</button>
+        </footer>
+      </div>
+    </div>
+  {/if}
 
   <!-- Everything here is already on the row; the panel is a place to read it
        in full, so it needs nothing from the host to open. -->

@@ -88,6 +88,7 @@ test("bash returns output and failure state without an approval layer", async ()
     assert.equal(failure.isError, true);
     assert.deepEqual(failure.metadata, {
       exitCode: 7,
+      timedOut: false,
       truncated: false,
       logPath: null,
     });

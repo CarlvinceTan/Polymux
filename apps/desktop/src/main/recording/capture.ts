@@ -1,5 +1,5 @@
-import type { InteractionEvent, InteractionEventSource, RecordingWindow } from "@flareai/chronicle";
-import { ChronicleRecorder, type RecordingEndReason, type RecordingSession } from "@flareai/chronicle";
+import type { InteractionEvent, InteractionEventSource, RecordingWindow } from "@flareai/computer-history";
+import { ComputerHistoryRecorder, type RecordingEndReason, type RecordingSession } from "@flareai/computer-history";
 
 /**
  * How often the frontmost window is re-read while a recording runs. A click
@@ -13,7 +13,7 @@ const WINDOW_SAMPLE_MS = 1_200;
 export interface RecordingCaptureOptions {
   directory: string;
   /**
-   * A fresh event source per recording. Chronicle owns its own; a recording
+   * A fresh event source per recording. ComputerHistory owns its own; a recording
    * must run whether or not the ambient history is switched on, so it never
    * borrows that one.
    */
@@ -33,7 +33,7 @@ export interface RecordingCaptureOptions {
  * recording *means* is decided later, by the agent reading the file.
  */
 export class RecordingCapture {
-  readonly recorder: ChronicleRecorder;
+  readonly recorder: ComputerHistoryRecorder;
   readonly #createEvents: RecordingCaptureOptions["createEvents"];
   readonly #readWindow: RecordingCaptureOptions["readWindow"];
   readonly #indicator?: RecordingCaptureOptions["indicator"];
@@ -42,7 +42,7 @@ export class RecordingCapture {
   #sampling = false;
 
   constructor(options: RecordingCaptureOptions) {
-    this.recorder = new ChronicleRecorder({
+    this.recorder = new ComputerHistoryRecorder({
       directory: options.directory,
       // Every ending routes through here, including the 30-minute cap, which
       // fires inside the recorder and would otherwise leave the tap running.

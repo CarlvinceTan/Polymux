@@ -36,6 +36,7 @@ import vercel from '@lobehub/icons-static-svg/icons/vercel.svg?url';
 import xai from '@lobehub/icons-static-svg/icons/xai.svg?url';
 import xiaomi from '@lobehub/icons-static-svg/icons/xiaomimimo.svg?url';
 import zai from '@lobehub/icons-static-svg/icons/zai.svg?url';
+import llamaCpp from '../../../assets/providers/llama-cpp.svg?url';
 
 // Labs that reach us through an `author/model` namespace rather than as a
 // configured provider. Without these they'd render as initials.
@@ -62,7 +63,7 @@ const logos: Record<string, string> = {
   'amazon-bedrock': bedrock, azure, cerebras, cloudflare, cohere, deepseek,
   fireworks, 'github-copilot': githubCopilot, google, groq, huggingface, ibm,
   meta, minimax, mistral, moonshotai: moonshot, nvidia, opencode, openai,
-  openrouter, qwen, together, vercel, xai, xiaomi, zai,
+  openrouter, qwen, together, vercel, xai, xiaomi, zai, 'llama-cpp': llamaCpp,
   baidu, bytedance, dolphin, inflection, internlm, liquid, microsoft,
   nousresearch, perplexity, rwkv, skywork, stepfun, tencent, tii, upstage, yi,
 };

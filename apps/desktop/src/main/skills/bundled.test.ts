@@ -57,14 +57,13 @@ test("core membership is the core folder, so the Skills tab hides exactly those"
     [...core].sort(),
     [
       "browser-use",
-      "chronicle",
+      "computer-history",
+      "computer-use",
       "email-use",
       "message-use",
-      "orchestration",
-      "record-replay",
       "skill-creator",
       "skill-maintenance",
-      "window-use",
+      "skill-record",
     ],
   );
 });

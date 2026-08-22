@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type WorkspaceTabKind = 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'hub' | 'task';
+  export type WorkspaceTabKind = 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'hub' | 'subagent' | 'subagents' | 'tasks';
   export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; section?: 'outputs' | 'references' | 'tasks'};
 
   /**
@@ -141,6 +141,8 @@
     drive: 'workspace-drive',
     schedule: 'workspace-schedule',
     hub: 'workspace-hub',
+    subagents: 'workspace-subagents',
+    tasks: 'workspace-tasks',
   };
 </script>
 
@@ -160,7 +162,8 @@
   import {SPLIT_LAYOUT_MIN_WIDTH, clampPanelWidth, workspaceResizeBounds} from '../../shared/layout/layoutSizing';
   import MediaView from './MediaView.svelte';
   import BrowserView from './BrowserView.svelte';
-  import TaskView from './TaskView.svelte';
+  import SubagentView from './SubagentView.svelte';
+  import SubagentsView from './SubagentsView.svelte';
   import TaskGlyph from '../../shared/components/TaskGlyph.svelte';
   import type {TaskTranscript} from './taskTranscript';
   import type {TaskStatus} from './taskStatus';
@@ -168,12 +171,15 @@
   import SummaryView, {type SummaryViewData} from './SummaryView.svelte';
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
   import ScheduleView, {type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './ScheduleView.svelte';
+  import TasksView, {type TaskCard} from './TasksView.svelte';
   import {t, translate, type MessageKey} from '../../../i18n';
 
   export let tabs: WorkspaceTab[] = [];
+  export let unavailableKinds: WorkspaceTabKind[] = [];
   export let activeTabId: string | null = null;
   export let open = false;
   export let expanded = false;
+  export let standalone = false;
   export let resizing = false;
   /** True while App drives the expand/minimise width frame by frame. */
   export let motion = false;
@@ -224,9 +230,19 @@
   ) => void = () => {};
   export let onDeleteSchedule: (item: ScheduleItem) => void = () => {};
   export let onRunSchedule: (item: ScheduleItem) => void = () => {};
+  export let taskItems: TaskCard[] = [];
+  export let tasksError = '';
+  export let unreadTasks = 0;
+  export let onDismissTasksError: () => void = () => {};
+  export let onCreateTaskCard: (title: string, detail?: string) => void = () => {};
+  export let onUpdateTaskCard: (id: string, patch: Partial<TaskCard>) => void = () => {};
+  export let onDeleteTaskCard: (id: string) => void = () => {};
+  export let onMarkTasksRead: (id: string) => void = () => {};
+  export let onRecycleTaskCard: (id: string) => void = () => {};
   export let onSelect: (id: string) => void = () => {};
   export let onClose: (id: string) => void = () => {};
   export let onNew: (kind: WorkspaceTabKind) => void = () => {};
+  export let onReorderTabs: (ids: string[]) => void = () => {};
   /** Opens a previously visited page in a browser tab. */
   export let onOpenUrl: (url: string, title: string) => void = () => {};
   export let onToggleExpand: () => void = () => {};
@@ -236,10 +252,86 @@
    * native view must hide under it. */
   export let browserObscured = false;
   export let onTabState: (id: string, patch: {title?: string; url?: string; favicon?: string | null}) => void = () => {};
+  export let pinnedViews: Array<'drive' | 'schedule' | 'hub' | 'tasks'> = [];
+  export let onTogglePin: (kind: 'drive' | 'schedule' | 'hub' | 'tasks') => void = () => {};
+  export let onOpenSeparateWindow: (
+    kind: WorkspaceTabKind,
+    placement?: {x: number; y: number; width?: number; height?: number},
+  ) => void = () => {};
 
   let panel: HTMLElement;
   let newTabWrapper: HTMLDivElement;
   let addOpen = false;
+
+  let contextMenu: {x: number; y: number; tab: WorkspaceTab} | null = null;
+  let draggedTabId: string | null = null;
+  let dragOverTabId: string | null = null;
+  let dragDropped = false;
+
+  function dragTabStart(event: DragEvent, tab: WorkspaceTab): void {
+    draggedTabId = tab.id;
+    dragOverTabId = null;
+    dragDropped = false;
+    if (!event.dataTransfer) return;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', tab.id);
+  }
+
+  function dragTabOver(event: DragEvent, tab: WorkspaceTab): void {
+    if (!draggedTabId || draggedTabId === tab.id) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    dragOverTabId = tab.id;
+  }
+
+  function dropTab(event: DragEvent, target: WorkspaceTab): void {
+    event.preventDefault();
+    const sourceIndex = tabs.findIndex((tab) => tab.id === draggedTabId);
+    const targetIndex = tabs.findIndex((tab) => tab.id === target.id);
+    if (sourceIndex >= 0 && targetIndex >= 0 && sourceIndex !== targetIndex) {
+      const reordered = [...tabs];
+      const [moved] = reordered.splice(sourceIndex, 1);
+      reordered.splice(targetIndex, 0, moved);
+      onReorderTabs(reordered.map((tab) => tab.id));
+    }
+    dragDropped = true;
+    dragOverTabId = null;
+  }
+
+  function dragTabEnd(event: DragEvent, tab: WorkspaceTab): void {
+    const outsideWindow = event.screenX < window.screenX
+      || event.screenX > window.screenX + window.outerWidth
+      || event.screenY < window.screenY
+      || event.screenY > window.screenY + window.outerHeight;
+    if (!dragDropped && outsideWindow)
+      onOpenSeparateWindow(tab.kind, {x: event.screenX - 160, y: event.screenY - 20});
+    draggedTabId = null;
+    dragOverTabId = null;
+    dragDropped = false;
+  }
+
+  function openContextMenu(event: MouseEvent, tab: WorkspaceTab): void {
+    event.preventDefault();
+    contextMenu = {x: event.clientX, y: event.clientY, tab};
+  }
+
+  function closeContextMenu(): void {
+    contextMenu = null;
+  }
+
+  function openTabInSeparateWindow(tab: WorkspaceTab): void {
+    const bounds = panel.getBoundingClientRect();
+    closeContextMenu();
+    onOpenSeparateWindow(tab.kind, {
+      x: window.screenX + bounds.left + 24,
+      y: window.screenY + bounds.top + 24,
+      width: Math.round(bounds.width),
+      height: Math.round(bounds.height),
+    });
+  }
+
+  $: isSingletonKind = (kind: WorkspaceTabKind): kind is 'drive' | 'schedule' | 'hub' | 'tasks' =>
+    kind === 'drive' || kind === 'schedule' || kind === 'hub' || kind === 'tasks';
 
   $: activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   /** A task tab is named by its row in Summary and takes its status from it, so
@@ -247,7 +339,7 @@
   $: activeTask = summaryData.tasks.find((task) => task.id === activeTab?.id);
   /** The one-of-a-kind views drop out of the menus once they are open: there is
    * nothing left to create, only a tab to click. */
-  $: openKinds = new Set(tabs.map((tab) => tab.kind));
+  $: openKinds = new Set([...tabs.map((tab) => tab.kind), ...unavailableKinds]);
   /** The pages the launcher offers to pick up again. */
   $: historySuggestions = $visitHistory.slice(0, HISTORY_SUGGESTION_LIMIT);
 
@@ -258,13 +350,15 @@
     drive: 'workspace.drive',
     schedule: 'workspace.schedule',
     hub: 'workspace.hub',
+    subagents: 'workspace.subagents',
+    tasks: 'workspace.tasks',
   };
   $: tabTitle = (tab: WorkspaceTab): string => {
     const key = SINGLETON_TAB_IDS[tab.kind] === tab.id ? singletonTitles[tab.kind] : undefined;
     if (key) return $t(key);
     // A delegated run is named after what it was asked to do, which on its own
     // reads like any other tab. Saying it is a task is what tells them apart.
-    if (tab.kind === 'task') return $t('view.taskTitle', {title: tab.title || $t('activity.delegatedTask')});
+    if (tab.kind === 'subagent') return $t('view.taskTitle', {title: tab.title || $t('activity.delegatedTask')});
     return tab.title;
   };
 
@@ -273,14 +367,16 @@
   $: taskTabStatus = (tab: WorkspaceTab): TaskStatus =>
     summaryData.tasks.find((task) => task.id === tab.id)?.status ?? 'active';
 
-  const tabIcons: Record<WorkspaceTabKind, 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'task'> = {
+  const tabIcons: Record<WorkspaceTabKind, 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'send' | 'task' | 'tasks'> = {
     media: 'image',
     browser: 'globe',
     summary: 'summary',
     drive: 'drive',
     schedule: 'clock',
     hub: 'chat',
-    task: 'task',
+    subagent: 'task',
+    subagents: 'send',
+    tasks: 'tasks',
   };
 
   /** Hides the embedded page only once the closing slide has finished. While
@@ -392,9 +488,10 @@
 
   function dismissMenus(event: MouseEvent | KeyboardEvent): void {
     if (event instanceof KeyboardEvent) {
-      if (event.key === 'Escape') addOpen = false;
+      if (event.key === 'Escape') { addOpen = false; contextMenu = null; }
       return;
     }
+    contextMenu = null;
     if (newTabWrapper?.contains(event.target as Node)) return;
     addOpen = false;
   }
@@ -427,6 +524,7 @@
   bind:this={panel}
   class:open
   class:expanded
+  class:standalone
   class:resizing
   class:motion
   class="workspace-drawer"
@@ -436,8 +534,21 @@
 >
   <div class="tab-strip">
     <div class="tabs" use:scrollFadeX={`${tabs.length}:${activeTab?.id ?? ''}`}>
-      {#each tabs as tab (tab.id)}
-        <div class:active={tab.id === activeTab?.id} class="tab">
+      {#each tabs as tab, index (tab.id)}
+        {#if index > 0}<span class="tab-divider" aria-hidden="true"></span>{/if}
+        <div
+          class:active={tab.id === activeTab?.id}
+          class:dragging={draggedTabId === tab.id}
+          class:drag-over={dragOverTabId === tab.id}
+          class="tab"
+          draggable="true"
+          role="group"
+          ondragstart={(event) => dragTabStart(event, tab)}
+          ondragover={(event) => dragTabOver(event, tab)}
+          ondrop={(event) => dropTab(event, tab)}
+          ondragend={(event) => dragTabEnd(event, tab)}
+          oncontextmenu={(e) => { if (!standalone) openContextMenu(e, tab); }}
+        >
           <button type="button" class="tab-main" onclick={() => onSelect(tab.id)}>
             {#if tab.kind === 'browser'}
               <span class="tab-favicon" class:controlled={isLeased($leasedUrls, tab.url)}>
@@ -448,7 +559,7 @@
               </span>
             {:else}
               <span class="tab-icon">
-                {#if tab.kind === 'task'}
+                {#if tab.kind === 'subagent'}
                   <TaskGlyph id={tab.id} status={taskTabStatus(tab)} size={16}/>
                 {:else}
                   <Icon name={tabIcons[tab.kind]} size={16}/>
@@ -459,16 +570,19 @@
                 {#if tab.kind === 'schedule' && unreadSchedules > 0}
                   <span class="tab-unread" aria-label={$t('schedule.unread')}></span>
                 {/if}
+                {#if tab.kind === 'tasks' && unreadTasks > 0}
+                  <span class="tab-unread" aria-label={$t('tasks.unread')}></span>
+                {/if}
               </span>
             {/if}
             <span>{tabTitle(tab)}</span></button>
-          <button type="button" class="tab-close" aria-label={$t('workspace.closeTab', {title: tabTitle(tab)})} data-tooltip="none" onclick={() => onClose(tab.id)}><Icon name="close" size={14}/></button>
+          {#if !standalone}<button type="button" class="tab-close" aria-label={$t('workspace.closeTab', {title: tabTitle(tab)})} data-tooltip="none" onclick={() => onClose(tab.id)}><Icon name="close" size={14}/></button>{/if}
         </div>
       {/each}
     </div>
     <!-- With nothing open the launcher below already offers these, so the
          header would only repeat them. -->
-    {#if tabs.length}
+    {#if tabs.length || standalone}
       <div bind:this={newTabWrapper} class="new-tab-wrap">
         <button type="button" class="title-bar-icon-button workspace-header-action" aria-label={$t('workspace.newTab')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={addOpen} onclick={() => addOpen = !addOpen}><Icon name="plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
         {#if addOpen}
@@ -479,17 +593,17 @@
             {#if !openKinds.has('drive')}
               <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('drive'); }}><Icon name="drive" size={14}/><span>{$t('workspace.drive')}</span></button>
             {/if}
-            {#if !openKinds.has('schedule')}
-              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('schedule'); }}><Icon name="clock" size={14}/><span>{$t('workspace.schedule')}</span></button>
-            {/if}
             {#if !openKinds.has('hub')}
               <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('hub'); }}><Icon name="chat" size={14}/><span>{$t('workspace.hub')}</span></button>
+            {/if}
+            {#if !openKinds.has('tasks')}
+              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('tasks'); }}><Icon name="tasks" size={14}/><span>{$t('workspace.tasks')}</span></button>
             {/if}
           </div>
         {/if}
       </div>
     {/if}
-    <button
+    {#if !standalone}<button
       type="button"
       class="title-bar-icon-button workspace-header-action expand-workspace-action"
       class:active={expanded}
@@ -498,7 +612,7 @@
       data-tooltip-align="end"
       aria-pressed={expanded}
       onclick={onToggleExpand}
-    ><Icon name={expanded ? 'collapse' : 'expand'} size={14} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
+    ><Icon name={expanded ? 'collapse' : 'expand'} size={14} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>{/if}
   </div>
 
   <div class="workspace-content">
@@ -510,10 +624,10 @@
           {#if !openKinds.has('drive')}
             <button type="button" class="workspace-launcher-row" onclick={() => onNew('drive')}><Icon name="drive" size={16}/><span>{$t('workspace.drive')}</span></button>
           {/if}
-          {#if !openKinds.has('schedule')}
-            <button type="button" class="workspace-launcher-row" onclick={() => onNew('schedule')}><Icon name="clock" size={16}/><span>{$t('workspace.schedule')}</span></button>
-          {/if}
           <button type="button" class="workspace-launcher-row" onclick={() => onNew('hub')}><Icon name="chat" size={16}/><span>{$t('workspace.hub')}</span></button>
+          {#if !openKinds.has('tasks')}
+            <button type="button" class="workspace-launcher-row" onclick={() => onNew('tasks')}><Icon name="tasks" size={16}/><span>{$t('workspace.tasks')}</span></button>
+          {/if}
         </div>
         {#if historySuggestions.length}
           <p class="workspace-launcher-heading">{$t('workspace.recent')}</p>
@@ -537,7 +651,7 @@
          the new-tab menu hangs over it the page steps aside instead of
          covering the menu. -->
     {:else if activeTab.kind === 'browser'}{#key activeTab.id}<BrowserView tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || browserHidden || addOpen} onState={(patch) => onTabState(activeTab.id, patch)}/>{/key}
-    {:else if activeTab.kind === 'task'}<TaskView
+    {:else if activeTab.kind === 'subagent'}<SubagentView
       title={activeTab.title}
       taskId={activeTab.id}
       status={activeTask?.status ?? 'active'}
@@ -545,6 +659,7 @@
       {onOpenLink}
       {onOpenFilePath}
     />
+    {:else if activeTab.kind === 'subagents'}<SubagentsView subagents={summaryData.tasks} onOpenSubagent={onOpenTask}/>
     {:else if activeTab.kind === 'hub'}<HubView {onOpenFilePath}/>
     {:else if activeTab.kind === 'drive'}<DriveView
       title={activeTab.title}
@@ -567,8 +682,23 @@
       onDownload={driveActions?.download ?? null}
       onDelete={driveActions?.remove ?? null}
     />
-    {:else if activeTab.kind === 'schedule'}<ScheduleView title={activeTab.title} items={scheduleItems} error={scheduleError} onDismissError={onDismissScheduleError} onOpenItem={onOpenScheduleRun} onMarkRead={onMarkScheduleRead} onToggleItem={onToggleSchedule} onSave={onSaveSchedule} onDeleteItem={onDeleteSchedule} onRunItem={onRunSchedule}/>
+    {:else if activeTab.kind === 'schedule' || activeTab.kind === 'tasks'}<TasksView items={taskItems} error={tasksError} onDismissError={onDismissTasksError} onCreateCard={onCreateTaskCard} onUpdateCard={onUpdateTaskCard} onDeleteCard={onDeleteTaskCard} onMarkRead={onMarkTasksRead} onRecycleCard={onRecycleTaskCard} schedules={scheduleItems} scheduleError={scheduleError} onDismissScheduleError={onDismissScheduleError} onOpenScheduleRun={onOpenScheduleRun} onMarkScheduleRead={onMarkScheduleRead} onToggleSchedule={onToggleSchedule} onSaveSchedule={onSaveSchedule} onDeleteSchedule={onDeleteSchedule} onRunSchedule={onRunSchedule}/>
     {:else}<SummaryView section={activeTab.section ?? 'outputs'} data={summaryData} {onOpenTask}/>
     {/if}
   </div>
 </aside>
+
+{#if contextMenu}
+  <div class="flareai-dropdown-menu tab-context-menu" role="menu" style="position: fixed; left: {contextMenu.x}px; top: {contextMenu.y}px; z-index: 200;">
+    {#if isSingletonKind(contextMenu.tab.kind)}
+      <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { const kind = contextMenu?.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks'; closeContextMenu(); onTogglePin(kind); }}>
+        <Icon name={pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks') ? 'pin-off' : 'pin'} size={14}/>
+        <span>{pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks') ? $t('titlebar.unpinView') : $t('titlebar.pinView')}</span>
+      </button>
+      <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { if (contextMenu) openTabInSeparateWindow(contextMenu.tab); }}>
+        <Icon name="send" size={14}/>
+        <span>{$t('titlebar.openSeparateWindow')}</span>
+      </button>
+    {/if}
+  </div>
+{/if}

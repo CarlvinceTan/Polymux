@@ -81,7 +81,7 @@ export class NetworkDrive implements DriveAdapter {
         accounts: [account],
         // The server's free space, which is what decides whether a file can be
         // written — the local disk's has nothing to do with it.
-        usage: {used: total - info.bfree * info.bsize, total},
+        usage: {used: total - info.bfree * info.bsize, total, appUsed: null},
         root: this.#root,
         error: null,
       };

@@ -2,6 +2,16 @@ import type {AgentActivityItem, AgentActivityKind} from './AgentActivity.svelte'
 import {platformForChat} from '../../shared/state/chatPlatforms';
 import {translate, type MessageKey} from '../../../i18n';
 
+const INTERNAL_COMMENTARY_HEADING = /^(?:#{1,6}\s+|\*\*)?(?:searching|identifying|considering|planning|curating|reviewing|checking|thinking|clarifying|analysing|analyzing|filtering|listing|selecting|verifying|refining|summarising|summarizing|assessing|confirming|compiling|highlighting)\b[^\n]*(?:\*\*)?\s*$/i;
+
+/** Provider scratch headings are useful neither as prose nor as activity rows;
+ * the concrete tool lifecycle immediately below them already tells the user
+ * what FlareAI actually did. Keep genuine status narration unchanged. */
+export function visibleCommentaryLabel(text: string): string | null {
+  const trimmed = text.trim();
+  return trimmed && !INTERNAL_COMMENTARY_HEADING.test(trimmed) ? trimmed : null;
+}
+
 export function upsertActivity(activities: AgentActivityItem[] = [], activity: AgentActivityItem): AgentActivityItem[] {
   const index = activities.findIndex((item) => item.id === activity.id);
   if (index < 0) return [...activities, activity];
@@ -12,7 +22,29 @@ export function collapseActivities(activities: AgentActivityItem[] = []): AgentA
   const collapsed: AgentActivityItem[] = [];
   for (const activity of activities) {
     const last = collapsed.at(-1);
-    if (last && last.kind === activity.kind && last.label === activity.label) {
+    if (last && isBrowserActivity(last) && isBrowserActivity(activity)) {
+      // A browse is one piece of work, however many snapshots, reads and
+      // navigations it needed. Keep those operations as disclosure steps so
+      // the default trail stays readable, while a failed detour remains red
+      // and inspectable instead of being hidden by the group.
+      const steps = [...browserSteps(last), ...browserSteps(activity)];
+      collapsed[collapsed.length - 1] = {
+        ...last,
+        id: last.id,
+        target: undefined,
+        result: activity.result ?? last.result,
+        status: aggregateStatus(last.status, activity.status),
+        steps,
+      };
+      continue;
+    }
+    if (
+      last
+      && last.kind === activity.kind
+      && last.label === activity.label
+      && last.target === activity.target
+      && last.status === activity.status
+    ) {
       // Merged rows keep every reported step, so repeated calls to the same
       // tool read as one group with its combined sub-step trail.
       const steps = [...(last.steps ?? []), ...(activity.steps ?? [])];
@@ -29,6 +61,40 @@ export function collapseActivities(activities: AgentActivityItem[] = []): AgentA
   return collapsed;
 }
 
+function isBrowserActivity(activity: AgentActivityItem): boolean {
+  return activity.kind === 'searching' && activity.icon === 'globe';
+}
+
+function browserSteps(activity: AgentActivityItem): NonNullable<AgentActivityItem['steps']> {
+  if (activity.steps?.length) return activity.steps;
+  return [{
+    id: `${activity.id}:operation`,
+    label: activity.target ?? activity.label,
+    status: activity.status,
+  }];
+}
+
+function aggregateStatus(
+  left: AgentActivityItem['status'],
+  right: AgentActivityItem['status'],
+): AgentActivityItem['status'] {
+  if (left === 'failed' || right === 'failed') return 'failed';
+  if (left === 'active' || right === 'active') return 'active';
+  if (left === 'pending' || right === 'pending') return 'pending';
+  return 'completed';
+}
+
+/** One thinking row belongs to the whole run. The optimistic row exists before
+ * the backend has assigned a run id, so later reasoning must reuse it by kind
+ * rather than append a second run-addressed row. */
+export function runThinkingActivity(
+  activities: AgentActivityItem[],
+  runId: string,
+): AgentActivityItem | undefined {
+  return activities.find((item) => item.id === `${runId}:thinking`)
+    ?? activities.find((item) => item.kind === 'thinking');
+}
+
 /**
  * What a tool call is called in the activity trail, in the language the app is
  * in when the call happens. Labels are written into the message's stored
@@ -39,7 +105,7 @@ export function collapseActivities(activities: AgentActivityItem[] = []): AgentA
 export function activityPresentation(
   name: string,
   input: Record<string, unknown> = {},
-): {kind: AgentActivityKind; label: string; icon?: AgentActivityItem['icon']; logo?: AgentActivityItem['logo']} {
+): Pick<AgentActivityItem, 'kind' | 'label' | 'icon' | 'logo' | 'target'> {
   const normalized = name.toLowerCase();
   const path = typeof input.path === 'string' ? input.path : '';
   const uri = typeof input.uri === 'string' ? input.uri : '';
@@ -49,6 +115,19 @@ export function activityPresentation(
   // needs to see is which of their accounts the agent just reached into.
   const hub = hubActivity(normalized, input);
   if (hub) return hub;
+
+  // Both browser surfaces used to render as a run of indistinguishable
+  // "Browser" rows. Keep the familiar globe, but name the operation or host
+  // beside it so the trail reveals detours such as an unnecessary external-tab
+  // check instead of making every browse look like the same successful step.
+  if (normalized === 'browser' || normalized === 'browser_tabs' || normalized === 'browser_control') {
+    return {
+      kind: 'searching',
+      label: translate('activity.using', {name: 'Browser'}),
+      icon: 'globe',
+      target: browserTarget(input, normalized),
+    };
+  }
 
   if (normalized.includes('read') && /(?:^|\/)skill\.md$/i.test(path)) {
     return skillActivity(path.split('/').at(-2) ?? '');
@@ -101,6 +180,35 @@ export function activityPresentation(
     return {kind: 'tool', label: translate('activity.using', {name: humanize(name.split('.')[0]!)})};
   }
   return {kind: 'tool', label: humanize(name)};
+}
+
+function browserTarget(input: Record<string, unknown>, name: string): string | undefined {
+  const url = typeof input.url === 'string' ? input.url.trim() : '';
+  if (url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+      return url.length > 72 ? `${url.slice(0, 71)}…` : url;
+    }
+  }
+  if (name === 'browser_tabs') return 'Tabs';
+  const action = typeof input.action === 'string' ? input.action.trim() : '';
+  return action ? humanize(action) : undefined;
+}
+
+/** Some tools complete normally at the transport layer while returning a
+ * domain-level error. Their activity row must still be red: this is exactly
+ * how a missing browser extension reports failure. */
+export function toolResultFailed(value: unknown): boolean {
+  const result = record(value);
+  const metadata = record(result.metadata);
+  return result.isError === true || metadata.status === 'failed';
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 /**

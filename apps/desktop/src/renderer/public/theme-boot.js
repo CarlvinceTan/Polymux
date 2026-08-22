@@ -101,6 +101,6 @@
   setTimeout(function () {
     var mount = document.getElementById('app');
     var splash = document.getElementById('startup-splash');
-    if (splash && mount && !mount.hasChildNodes()) splash.remove();
+    if (splash && mount && !mount.hasChildNodes() && !new URLSearchParams(location.search).has('splashOnly')) splash.remove();
   }, 12000);
 })();

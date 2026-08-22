@@ -14,13 +14,18 @@ import type {
 } from "@flareai/inference";
 import { SqliteStorage } from "@flareai/storage/sqlite";
 import { ToolRegistry } from "@flareai/tools";
+import { AgentRunControl } from "@flareai/core";
 import {
   AGENT_PROMPT_NAMES,
+  createWaitAllTasksTool,
   fillPrompt,
   loadAgentPrompts,
   MemoryManager,
   FlareAIAgent,
 } from "../src/index.js";
+import {readGoalProgress, recordGoalProgress} from "../src/goals/progress-receipts.js";
+import { freshRetainedEntries, selectRetainedForPrompt, SubagentFleet } from "../src/subagents/fleet.js";
+import {createCancelTasksTool, createTaskTool} from "../src/subagents/task-tool.js";
 
 const model = { provider: "test", id: "model" };
 const modelInfo: InferenceModel = {
@@ -144,7 +149,11 @@ class ScriptedInference implements InferenceService {
   }
 }
 
-function testAgent(inference: InferenceService, storage: SqliteStorage) {
+function testAgent(
+  inference: InferenceService,
+  storage: SqliteStorage,
+  options: { orchestrationExperiment?: boolean } = {},
+) {
   return new FlareAIAgent({
     inference,
     storage,
@@ -153,6 +162,7 @@ function testAgent(inference: InferenceService, storage: SqliteStorage) {
     }),
     tools: new ToolRegistry(),
     model,
+    orchestrationExperiment: options.orchestrationExperiment,
     compaction: { enabled: false },
   });
 }
@@ -169,6 +179,53 @@ function parentRun(storage: SqliteStorage): void {
     status: "running",
   });
 }
+
+test("retained workers are visible to natural follow-ups but absent from unrelated work", () => {
+  const retained: import("../src/subagents/fleet.js").RetainedSubagentEntry[] = [{
+    name: "subagent_1",
+    description: "Inspect NUS climbing event",
+    runId: "child",
+    status: "completed",
+    result: "Friday evening; bring climbing shoes",
+    retained: [{role: "assistant", content: [{type: "text", text: "details"}]}],
+    retainedAt: 100,
+  }];
+  assert.deepEqual(selectRetainedForPrompt([...retained], "Which one would you pick, and what should I bring?"), retained);
+  assert.deepEqual(selectRetainedForPrompt([...retained], "Check whether my Singapore visa rules changed"), []);
+  assert.deepEqual(selectRetainedForPrompt([...retained], "Tell me more about the climbing event"), retained);
+});
+
+test("weak singular follow-ups inject only the newest relevant retained worker", () => {
+  const older = {
+    name: "subagent_1", description: "Inspect NUS event", runId: "one",
+    status: "completed" as const, result: "Friday climbing", retained: [{role: "assistant" as const, content: [{type: "text" as const, text: "event"}]}],
+    retainedAt: 100,
+  };
+  const newer = {
+    name: "subagent_2", description: "Inspect exchange form", runId: "two",
+    status: "completed" as const, result: "Missing signature", retained: [{role: "assistant" as const, content: [{type: "text" as const, text: "form"}]}],
+    retainedAt: 200,
+  };
+  assert.deepEqual(selectRetainedForPrompt([older, newer], "Fix it"), [newer]);
+  assert.deepEqual(selectRetainedForPrompt([older, newer], "Fix the event issue"), [older]);
+  assert.deepEqual(selectRetainedForPrompt([older, newer], "What should I do next?"), [newer, older]);
+});
+
+test("cross-turn retention expires after thirty minutes and keeps only four recent workers", () => {
+  const now = 2_000_000;
+  const entries = Array.from({length: 6}, (_, index) => ({
+    name: `subagent_${index + 1}`,
+    description: `Worker ${index + 1}`,
+    runId: `run-${index + 1}`,
+    status: "completed" as const,
+    retained: [{role: "assistant" as const, content: [{type: "text" as const, text: "details"}]}],
+    retainedAt: index === 0 ? now - 30 * 60_000 - 1 : now - index,
+  }));
+  assert.deepEqual(
+    freshRetainedEntries(entries, now).map((entry) => entry.name),
+    ["subagent_2", "subagent_3", "subagent_4", "subagent_5"],
+  );
+});
 
 test("dispatching a task hands the turn straight back", async () => {
   const storage = new SqliteStorage(":memory:");
@@ -191,7 +248,7 @@ test("dispatching a task hands the turn straight back", async () => {
         (text) => text.includes("Do the research") && !text.includes("task("),
         () => {
           dispatchedAt += 1;
-          return call("call-1", "task", {
+          return call("call-1", "subagent", {
             description: "Research",
             prompt: "child work",
           });
@@ -226,6 +283,101 @@ test("dispatching a task hands the turn straight back", async () => {
   }
 });
 
+test("a user-created structured goal records its completed worker", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    conversation(storage);
+    const inference = new ScriptedInference();
+    inference
+      .on((text) => text.includes("receipt child work"), () => answer("Verified the application status."))
+      .on(
+        (text) => text.includes("Begin durable goal") && !text.includes("task(…)"),
+        () => call("dispatch", "subagent", {
+          description: "Check application status",
+          prompt: "receipt child work",
+          coordination: "independent",
+          tool_groups: ["all"],
+        }),
+      )
+      .on(
+        (text) => text.includes("Begin durable goal") && !reported(text),
+        () => call("wait", "wait_subagent", {timeout_ms: 5_000}),
+      )
+      .on((text) => text.includes("Begin durable goal"), () => answer("Recorded the verified status."))
+      .on(() => true, () => answer('{"verdict":"wait","reason":"User input is needed."}'));
+    const agent = testAgent(inference, storage, {orchestrationExperiment: true});
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Begin durable goal",
+      asGoal: true,
+    }).result;
+    await agent.settleGoalWork();
+
+    const goal = storage.getGoal("conversation");
+    assert.ok(goal);
+    const receipts = readGoalProgress(storage, goal.id);
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].description, "Check application status");
+    assert.match(receipts[0].result, /Verified the application status/);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a goal worker receives prior progress receipts even when its dispatch is concise", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    conversation(storage);
+    storage.createGoal({
+      id: "goal",
+      conversationId: "conversation",
+      objective: "Track application readiness",
+    });
+    recordGoalProgress(
+      storage,
+      "goal",
+      "Check inbox",
+      "No approval email was found.",
+      [],
+      "2026-08-22T04:00:00.000Z",
+    );
+    const inference = new ScriptedInference();
+    inference
+      .on((text) => text.includes("follow-up child"), () => answer("Checked a distinct source."))
+      .on(
+        (text) => text.includes("Advance the goal") && !text.includes("task(…)"),
+        () => call("dispatch", "subagent", {
+          description: "Check the next source",
+          prompt: "follow-up child",
+          coordination: "independent",
+          tool_groups: ["all"],
+        }),
+      )
+      .on(
+        (text) => text.includes("Advance the goal") && !reported(text),
+        () => call("wait", "wait_subagent", {timeout_ms: 5_000}),
+      )
+      .on((text) => text.includes("Advance the goal"), () => answer("Advanced."))
+      .on(() => true, () => answer('{"verdict":"wait","reason":"Enough for now."}'));
+    const agent = testAgent(inference, storage, {orchestrationExperiment: true});
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Advance the goal",
+      goalProgressContext: true,
+    }).result;
+    await agent.settleGoalWork();
+
+    const worker = inference.requests.find((request) => transcript(request).includes("follow-up child"));
+    assert.ok(worker);
+    assert.match(transcript(worker), /<goal_progress>/);
+    assert.match(transcript(worker), /No approval email was found/);
+  } finally {
+    storage.close();
+  }
+});
+
 test("a finished task reaches the parent as a notification it can read", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
@@ -236,7 +388,7 @@ test("a finished task reaches the parent as a notification it can read", async (
       .on(
         (text) => text.includes("Do the research") && !text.includes("task("),
         () =>
-          call("call-1", "task", {
+          call("call-1", "subagent", {
             description: "Research",
             prompt: "child work",
           }),
@@ -253,7 +405,7 @@ test("a finished task reaches the parent as a notification it can read", async (
 
     const last = transcript(inference.requests.at(-1)!);
     assert.match(last, /<subagent_notification>/);
-    assert.match(last, /"task":"task_1"/);
+    assert.match(last, /"subagent":"subagent_1"/);
     assert.match(last, /"status":"completed"/);
     assert.match(last, /42 events found/);
   } finally {
@@ -261,7 +413,7 @@ test("a finished task reaches the parent as a notification it can read", async (
   }
 });
 
-test("wait_task says which task moved, never what it said", async () => {
+test("wait_subagent says which task moved, never what it said", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
     conversation(storage);
@@ -278,16 +430,16 @@ test("wait_task says which task moved, never what it said", async () => {
       .on(
         (text) => text.includes("Do the research") && !text.includes("task("),
         () =>
-          call("call-1", "task", {
+          call("call-1", "subagent", {
             description: "Research",
             prompt: "child work",
           }),
       )
       .on(
-        (text) => text.includes("task(") && !text.includes("wait_task("),
+        (text) => text.includes("task(") && !text.includes("wait_subagent("),
         () => {
           releaseChild();
-          return call("call-2", "wait_task", { timeout_ms: 5_000 });
+          return call("call-2", "wait_subagent", { timeout_ms: 5_000 });
         },
       )
       .on(() => true, () => answer("done"));
@@ -300,19 +452,237 @@ test("wait_task says which task moved, never what it said", async () => {
     // The turn that follows the wait carries its result. It names the task and
     // stays silent about the answer, which arrives beside it as post.
     const afterWait = inference.requests.find((request) =>
-      toolResult(request, "wait_task").includes('"updated"'),
+      toolResult(request, "wait_subagent").includes('"updated"'),
     );
     assert.ok(afterWait, "the wait's result must reach the model");
-    const waitResult = toolResult(afterWait, "wait_task");
-    assert.match(waitResult, /"updated":\["task_1"\]/);
+    const waitResult = toolResult(afterWait, "wait_subagent");
+    assert.match(waitResult, /"updated":\["subagent_1"\]/);
     assert.ok(
       !waitResult.includes("the secret finding"),
-      "wait_task must not repeat the result the notification already carries",
+      "wait_subagent must not repeat the result the notification already carries",
     );
     assert.match(transcript(afterWait), /the secret finding/);
   } finally {
     storage.close();
   }
+});
+
+test("experimental fan-out waits for every task without an extra polling inference", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    conversation(storage);
+    const calls = multiCall();
+    const inference = new ScriptedInference();
+    inference
+      .on((text) => text.includes("first child"), () => answer("first result"))
+      .on((text) => text.includes("second child"), () => answer("second result"))
+      .on(
+        (text) => text.includes("Compare both") && !text.includes("task(…)"),
+        () =>
+          calls.many([
+            { name: "subagent", args: { description: "First", prompt: "first child" } },
+            { name: "subagent", args: { description: "Second", prompt: "second child" } },
+            { name: "wait_all_subagents", args: { timeout_ms: 5_000 } },
+          ]),
+      )
+      .on(
+        (text) => text.includes("first result") && text.includes("second result"),
+        () => answer("First and second combined"),
+      );
+
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: new MemoryManager({
+        directory: mkdtempSync(path.join(tmpdir(), "flareai-fan-in-test-")),
+      }),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+      orchestrationExperiment: true,
+    });
+    const result = await agent.start({
+      conversationId: "conversation",
+      text: "Compare both",
+    }).result;
+
+    assert.equal(result.lastAgentMessage, "First and second combined");
+    const parentRequests = inference.requests.filter((request) =>
+      transcript(request).includes("Compare both"),
+    );
+    assert.equal(parentRequests.length, 2, "dispatch/barrier then synthesis only");
+    const synthesis = parentRequests[1]!;
+    assert.match(transcript(synthesis), /first result/);
+    assert.match(transcript(synthesis), /second result/);
+    assert.match(toolResult(synthesis, "wait_all_subagents"), /"running":\[\]/);
+    assert.ok(
+      !toolResult(synthesis, "wait_all_subagents").includes("first result"),
+      "the barrier must not duplicate task contents",
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("the fan-in barrier covers ordinary long workers without explicit polling", async () => {
+  let running = true;
+  let receivedTimeout = 0;
+  const fleet = {
+    outstanding: () => running ? [{ name: "subagent_1" }] : [],
+    roster: () => [{ name: "subagent_1", status: running ? "running" : "completed" }],
+    waitForNews: async (timeout: number) => {
+      receivedTimeout = timeout;
+      running = false;
+      return { updated: ["subagent_1"], timedOut: false };
+    },
+  };
+  const tool = createWaitAllTasksTool(fleet as never);
+  const result = await tool.execute({}, {
+    runId: "run",
+    turn: 1,
+    callId: "wait",
+    signal: new AbortController().signal,
+    emitProgress: async (): Promise<void> => {},
+  });
+  assert.ok(receivedTimeout >= 119_000 && receivedTimeout <= 120_000);
+  assert.match(result.content as string, /"running":\[\]/);
+});
+
+test("a bounded goal continuation cannot open a second delegation wave", async () => {
+  const started: string[] = [];
+  const tool = createTaskTool(async (request) => {
+    started.push(request.description);
+    return {name: `subagent_${started.length}`};
+  }, {maxDispatches: 2});
+  const context = {
+    runId: "goal-run",
+    turn: 1,
+    callId: "dispatch",
+    signal: new AbortController().signal,
+    emitProgress: async (): Promise<void> => {},
+  };
+  const dispatch = (description: string) => tool.execute({description, prompt: description}, context);
+  await Promise.all([dispatch("first"), dispatch("second")]);
+  const refused = await dispatch("second wave");
+  assert.deepEqual(started, ["first", "second"]);
+  assert.match(String(refused.content), /already dispatched 2 tasks/i);
+  assert.match(JSON.stringify(refused.metadata), /goal_continuation_batch_complete/);
+
+  const unlimited: string[] = [];
+  const ordinary = createTaskTool(async (request) => {
+    unlimited.push(request.description);
+    return {name: `subagent_${unlimited.length}`};
+  });
+  await Promise.all([
+    ordinary.execute({description: "one", prompt: "one"}, context),
+    ordinary.execute({description: "two", prompt: "two"}, context),
+    ordinary.execute({description: "three", prompt: "three"}, context),
+  ]);
+  assert.equal(unlimited.length, 3, "ordinary multi-task work remains uncapped");
+});
+
+test("user steering wakes the fan-in barrier without consuming the message", async () => {
+  const fleet = new SubagentFleet();
+  const control = new AgentRunControl();
+  fleet.attach(control);
+  fleet.spawn("held worker", "child-run");
+  const tool = createWaitAllTasksTool(fleet);
+  const started = Date.now();
+  const pending = tool.execute({ timeout_ms: 120_000 }, {
+    runId: "run",
+    turn: 1,
+    callId: "wait",
+    signal: control.signal,
+    emitProgress: async () => undefined,
+  });
+  control.steer({ role: "user", content: "Change direction" });
+  const result = await pending;
+  assert.ok(Date.now() - started < 1_000, "steering should not wait for the worker");
+  assert.match(result.content as string, /"steered":true/);
+  assert.match(result.content as string, /"running":\["subagent_1"\]/);
+  assert.deepEqual(control.drainSteering(), [
+    { role: "user", content: "Change direction" },
+  ]);
+});
+
+test("user steering also wakes the premature-completion backstop", async () => {
+  const fleet = new SubagentFleet();
+  const control = new AgentRunControl();
+  fleet.attach(control);
+  fleet.spawn("held worker", "child-run");
+  const pending = fleet.settleOutstandingOrSteered(control.signal);
+  control.steer({ role: "user", content: "Do this instead" });
+  await Promise.race([
+    pending,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("backstop did not yield")), 1_000)),
+  ]);
+  assert.deepEqual(fleet.takePost(), [
+    { role: "user", content: "Do this instead" },
+  ]);
+  assert.deepEqual(fleet.outstanding().map((entry) => entry.name), ["subagent_1"]);
+});
+
+test("the experimental cancellation tool stops only exact obsolete workers", async () => {
+  const fleet = new SubagentFleet();
+  const control = new AgentRunControl();
+  fleet.attach(control);
+  fleet.spawn("obsolete", "child-1");
+  fleet.spawn("still useful", "child-2");
+  let cancelOne = 0;
+  let cancelTwo = 0;
+  const never = new Promise<{status: string; text: string}>(() => {});
+  fleet.track("subagent_1", never, () => { cancelOne += 1; });
+  fleet.track("subagent_2", never, () => { cancelTwo += 1; });
+  const tool = createCancelTasksTool(fleet);
+  const refused = await tool.execute({tasks: ["subagent_1"]}, {
+    runId: "run", turn: 1, callId: "premature-cancel",
+    signal: new AbortController().signal,
+    emitProgress: async () => undefined,
+  });
+  assert.equal((refused.metadata as {cancellationRefused?: boolean}).cancellationRefused, true);
+  assert.equal(cancelOne, 0);
+  control.steer({role: "user", content: "Also summarise the latest file"});
+  const additive = await tool.execute({tasks: ["subagent_1"]}, {
+    runId: "run", turn: 1, callId: "additive-steering",
+    signal: new AbortController().signal,
+    emitProgress: async () => undefined,
+  });
+  assert.equal((additive.metadata as {cancellationRefused?: boolean}).cancellationRefused, true);
+  assert.equal(cancelOne, 0);
+  control.steer({role: "user", content: "Drop that task"});
+  const result = await tool.execute({tasks: ["subagent_1", "subagent_missing", "subagent_1"]}, {
+    runId: "run", turn: 1, callId: "cancel",
+    signal: new AbortController().signal,
+    emitProgress: async () => undefined,
+  });
+  assert.deepEqual(JSON.parse(result.content as string), {
+    cancelled: ["subagent_1"],
+    unavailable: ["subagent_missing"],
+  });
+  assert.equal(cancelOne, 1);
+  assert.equal(cancelTwo, 0);
+  const reused = await tool.execute({tasks: ["subagent_2"]}, {
+    runId: "run", turn: 1, callId: "reused-steering",
+    signal: new AbortController().signal,
+    emitProgress: async () => undefined,
+  });
+  assert.equal((reused.metadata as {cancellationRefused?: boolean}).cancellationRefused, true);
+  assert.equal(cancelTwo, 0);
+});
+
+test("completion coverage identifies only delegated outcomes omitted from the answer", () => {
+  const fleet = new SubagentFleet();
+  fleet.spawn("NUS study spot", "study-run");
+  fleet.spawn("Exchange form requirements", "exchange-run");
+  fleet.spawn("Latest file summary", "file-run");
+  fleet.settle("subagent_1", "completed", "Central Library is open.");
+  fleet.settle("subagent_2", "completed", "No pending form step found.");
+  fleet.settle("subagent_3", "completed", "No exact file path found.");
+  assert.deepEqual(
+    fleet.missingOutcomes("The NUS study spot is Central Library. Latest file: unavailable.")
+      .map((entry) => entry.description),
+    ["Exchange form requirements"],
+  );
 });
 
 test("a failed task is reported as failed rather than lost", async () => {
@@ -327,7 +697,7 @@ test("a failed task is reported as failed rather than lost", async () => {
       .on(
         (text) => text.includes("Do the research") && !text.includes("task("),
         () =>
-          call("call-1", "task", {
+          call("call-1", "subagent", {
             description: "Research",
             prompt: "child work",
           }),
@@ -387,300 +757,6 @@ function notifications(text: string): Array<Record<string, unknown>> {
   ].map((match) => JSON.parse(match[1]!));
 }
 
-/** The state of a scripted pull worker's claim loop, read off its own
- * transcript: what it has claimed but not yet updated, and whether the pool
- * has anything left for it. */
-function claimedState(request: InferenceRequest): {
-  pending: string[];
-  lastRemaining: number;
-  lastClaimedCount: number;
-  hasClaimed: boolean;
-} {
-  const updated = new Set<string>();
-  const claimed: string[] = [];
-  let lastRemaining = 0;
-  let lastClaimedCount = 0;
-  let hasClaimed = false;
-  for (const message of request.messages) {
-    if (message.role === "toolResult" && message.toolName === "ledger_claim") {
-      const parsed = JSON.parse(rendered(message));
-      hasClaimed = true;
-      lastRemaining = parsed.remaining;
-      lastClaimedCount = parsed.claimed.length;
-      for (const item of parsed.claimed) claimed.push(item.key);
-    }
-    if (message.role === "assistant" && Array.isArray(message.content))
-      for (const block of message.content)
-        if (block.type === "toolCall" && block.name === "ledger_update")
-          updated.add(String(block.arguments.key));
-  }
-  return {
-    pending: claimed.filter((key) => !updated.has(key)),
-    lastRemaining,
-    lastClaimedCount,
-    hasClaimed,
-  };
-}
-
-test("a ledger pipeline analyses each found event exactly once", async () => {
-  const storage = new SqliteStorage(":memory:");
-  try {
-    conversation(storage);
-    const calls = multiCall();
-    const inference = new ScriptedInference();
-    // The pull loop every analysis worker runs: update what is claimed but
-    // unfinished, claim more while the pool has any, stop when it is empty.
-    const analysisReply = (request: InferenceRequest): InferenceEvent => {
-      const state = claimedState(request);
-      if (state.pending.length)
-        return calls.one("ledger_update", {
-          key: state.pending[0]!,
-          status: "analyzed",
-          summary: `analysis of ${state.pending[0]}`,
-        });
-      if (!state.hasClaimed || (state.lastClaimedCount > 0 && state.lastRemaining > 0))
-        return calls.one("ledger_claim", { kind: "event", limit: 2 });
-      return answer("analysis finished");
-    };
-
-    inference
-      // The orchestrator: discover, search in parallel, analyse in parallel,
-      // then read the whole pool back. Between phases it waits for news.
-      .on(
-        (text) => text.includes("Run the pipeline") && !text.includes("task("),
-        () =>
-          calls.many([
-            {
-              name: "task",
-              args: {
-                description: "Discover categories",
-                prompt: "discovery instructions",
-                ledger: true,
-              },
-            },
-          ]),
-      )
-      .on(
-        (text) => text.includes("discovery complete") && !text.includes('"task":"task_2"'),
-        () =>
-          calls.many([
-            { name: "task", args: { description: "Search A", prompt: "search A instructions", ledger: true } },
-            { name: "task", args: { description: "Search B", prompt: "search B instructions", ledger: true } },
-          ]),
-      )
-      .on(
-        (text) => occurrences(text, "search finished") >= 2 && !text.includes('"task":"task_4"'),
-        () =>
-          calls.many([
-            { name: "task", args: { description: "Analyse A", prompt: "analysis A instructions", ledger: true } },
-            { name: "task", args: { description: "Analyse B", prompt: "analysis B instructions", ledger: true } },
-          ]),
-      )
-      .on(
-        (text) => occurrences(text, "analysis finished") >= 2 && !text.includes("ledger_list("),
-        () => calls.one("ledger_list", { kind: "event", status: "analyzed", limit: 100 }),
-      )
-      .on(
-        (text) => text.includes("Run the pipeline") && text.includes("ledger_list("),
-        () => answer("pipeline done"),
-      )
-      // Discovery posts the category pages.
-      .on(
-        (text) => text.includes("discovery instructions") && occurrences(text, "ledger_post(") === 0,
-        () => calls.one("ledger_post", { key: "cat-social", kind: "category", title: "Social" }),
-      )
-      .on(
-        (text) => text.includes("discovery instructions") && occurrences(text, "ledger_post(") === 1,
-        () => calls.one("ledger_post", { key: "cat-sports", kind: "category", title: "Sports" }),
-      )
-      .on(
-        (text) => text.includes("discovery instructions"),
-        () => answer("discovery complete"),
-      )
-      // The search workers post events; one event is found by both.
-      .on(
-        (text) => text.includes("search A instructions") && occurrences(text, "ledger_post(") === 0,
-        () => calls.one("ledger_post", { key: "https://nusync/e1", kind: "event", title: "Welcome Night", category: "Social", date: "Friday" }),
-      )
-      .on(
-        (text) => text.includes("search A instructions") && occurrences(text, "ledger_post(") === 1,
-        () => calls.one("ledger_post", { key: "https://nusync/e2", kind: "event", title: "Quiz Night", category: "Social" }),
-      )
-      .on(
-        (text) => text.includes("search A instructions") && occurrences(text, "ledger_post(") === 2,
-        () => calls.one("ledger_post", { key: "https://nusync/e3", kind: "event", title: "Sports Taster", category: "Sports" }),
-      )
-      .on(
-        (text) => text.includes("search A instructions"),
-        () => answer("search finished"),
-      )
-      .on(
-        (text) => text.includes("search B instructions") && occurrences(text, "ledger_post(") === 0,
-        () => calls.one("ledger_post", { key: "https://nusync/e3", kind: "event", title: "Sports Taster", category: "Sports" }),
-      )
-      .on(
-        (text) => text.includes("search B instructions") && occurrences(text, "ledger_post(") === 1,
-        () => calls.one("ledger_post", { key: "https://nusync/e4", kind: "event", title: "5K Run", category: "Sports" }),
-      )
-      .on(
-        (text) => text.includes("search B instructions") && occurrences(text, "ledger_post(") === 2,
-        () => calls.one("ledger_post", { key: "https://nusync/e5", kind: "event", title: "Climbing Social", category: "Sports" }),
-      )
-      .on(
-        (text) => text.includes("search B instructions"),
-        () => answer("search finished"),
-      )
-      .on(
-        (text) => text.includes("analysis A instructions") || text.includes("analysis B instructions"),
-        () => analysisReply(inference.requests.at(-1)!),
-      )
-      .on(() => true, () => calls.one("wait_task", { timeout_ms: 5_000 }));
-
-    const result = await testAgent(inference, storage).start({
-      conversationId: "conversation",
-      text: "Run the pipeline",
-    }).result;
-
-    assert.equal(result.status, "completed");
-    assert.equal(result.lastAgentMessage, "pipeline done");
-
-    const finalText = transcript(inference.requests.at(-1)!);
-    // The pool drained, and every event came back analysed exactly once —
-    // the overlapping find never became two analyses.
-    for (const key of ["e1", "e2", "e3", "e4", "e5"].map((id) => `https://nusync/${id}`))
-      assert.ok(finalText.includes(`"key":"${key}"`), `${key} must be analysed and listed`);
-    assert.equal(occurrences(finalText, '"status":"analyzed"'), 5);
-    assert.equal(
-      occurrences(finalText, '"key":"https://nusync/e3"'),
-      1,
-      "the shared event dedups to one row",
-    );
-
-    const updates = new Map<string, string>();
-    const claims = new Map<string, string[]>();
-    for (const request of inference.requests)
-      for (const message of request.messages) {
-        if (message.role === "assistant" && Array.isArray(message.content))
-          for (const block of message.content)
-            if (block.type === "toolCall" && block.name === "ledger_update")
-              updates.set(block.id, String(block.arguments.key));
-        if (message.role === "toolResult" && message.toolName === "ledger_claim")
-          claims.set(
-            message.toolCallId,
-            JSON.parse(rendered(message)).claimed.map((item: { key: string }) => item.key),
-          );
-      }
-    assert.deepEqual(
-      [...updates.values()].sort(),
-      ["e1", "e2", "e3", "e4", "e5"].map((id) => `https://nusync/${id}`).sort(),
-      "each event is analysed exactly once",
-    );
-    const allClaimed = [...claims.values()].flat();
-    assert.equal(
-      new Set(allClaimed).size,
-      allClaimed.length,
-      "parallel claim batches must be disjoint",
-    );
-
-    // The re-found event merged instead of duplicating — and the worker saw it.
-    const postResults = inference.requests
-      .flatMap((request) => request.messages)
-      .filter((message) => message.role === "toolResult" && message.toolName === "ledger_post")
-      .map((message) => rendered(message));
-    assert.ok(
-      postResults.some((text) => text.includes('"created":false')),
-      "the overlapping post must report created: false",
-    );
-
-    // Every ledger-using task settled with a compact, pointer-carrying
-    // notification rather than a data dump.
-    const notes = notifications(finalText);
-    assert.equal(notes.length, 5);
-    for (const note of notes)
-      assert.ok(note.ledger, "a ledger-using task reports its counts, not its data");
-    assert.ok(
-      notes.some((note) => (note.ledger as { pool: number }).pool === 7),
-      "the last settlement sees the whole pool",
-    );
-    assert.ok(
-      notes.some((note) => (note.ledger as { wrote: { resolved: number } }).wrote.resolved > 0),
-      "an analysis task is reported by what it resolved, not by the whole board",
-    );
-    assert.ok(finalText.includes("[Full data in the shared ledger"));
-
-    // Tools follow the role: the orchestrator reads, the workers write.
-    const parentTools = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
-    assert.ok(parentTools.includes("ledger_list") && parentTools.includes("ledger_stats"));
-    assert.ok(!parentTools.includes("ledger_post"), "the orchestrator does not write findings");
-    const worker = inference.requests.find((request) =>
-      transcript(request).includes("analysis A instructions"),
-    );
-    const workerTools = worker?.tools?.map((tool) => tool.name) ?? [];
-    for (const name of ["ledger_post", "ledger_claim", "ledger_update", "ledger_list"])
-      assert.ok(workerTools.includes(name), `the worker needs ${name}`);
-    assert.ok(!workerTools.includes("ledger_stats"), "stats are the orchestrator's");
-    assert.ok(!workerTools.includes("task"), "subagents cannot delegate further");
-  } finally {
-    storage.close();
-  }
-});
-
-test("a ledger-using task's notification is compact and points at the ledger", async () => {
-  const storage = new SqliteStorage(":memory:");
-  try {
-    conversation(storage);
-    const calls = multiCall();
-    const longAnswer = `verdict: ${"the event is relevant and here is why. ".repeat(40)}`;
-    const inference = new ScriptedInference();
-    inference
-      .on(
-        (text) => text.includes("ledger child instructions") && !text.includes("ledger_post("),
-        () => calls.one("ledger_post", { key: "https://nusync/e1", kind: "event", title: "Welcome Night", category: "Social" }),
-      )
-      .on(
-        (text) => text.includes("ledger child instructions"),
-        () => answer(longAnswer),
-      )
-      .on(
-        (text) => text.includes("plain child instructions"),
-        () => answer(longAnswer),
-      )
-      .on(
-        (text) => text.includes("Coordinate") && !text.includes("task("),
-        () =>
-          calls.many([
-            { name: "task", args: { description: "Ledger child", prompt: "ledger child instructions", ledger: true } },
-            { name: "task", args: { description: "Plain child", prompt: "plain child instructions" } },
-          ]),
-      )
-      .on(() => true, () => answer("wrapped up"));
-
-    await testAgent(inference, storage).start({
-      conversationId: "conversation",
-      text: "Coordinate the work",
-    }).result;
-
-    const last = transcript(inference.requests.at(-1)!);
-    const byName = new Map(notifications(last).map((note) => [String(note.task), note]));
-    const ledgerNote = byName.get("task_1")!;
-    assert.ok(ledgerNote.ledger, "the ledger task's notification carries its counts");
-    // Its own writes, not the whole board — the board is the parent's to read
-    // with ledger_stats, and repeating it per task would say it once each.
-    assert.deepEqual(ledgerNote.ledger, {
-      wrote: { posted: 1, claimed: 0, resolved: 0 },
-      pool: 1,
-    });
-    const ledgerResult = String(ledgerNote.result);
-    assert.ok(ledgerResult.length < longAnswer.length, "the closing message is capped");
-    assert.ok(ledgerResult.includes("[Full data in the shared ledger"));
-    const plainNote = byName.get("task_2")!;
-    assert.equal(plainNote.ledger, undefined, "a non-ledger task notifies exactly as before");
-    assert.equal(String(plainNote.result), longAnswer, "and its message is not capped");
-  } finally {
-    storage.close();
-  }
-});
-
 test("a continued task resumes with its retained context under the same name", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
@@ -708,8 +784,8 @@ test("a continued task resumes with its retained context under the same name", a
         (text) => text.includes("Coordinate") && !text.includes("task("),
         () =>
           calls.many([
-            { name: "task", args: { description: "Worker", prompt: "remember the codeword zebra", retain: true } },
-            { name: "task", args: { description: "Plain", prompt: "plain work" } },
+            { name: "subagent", args: { description: "Worker", prompt: "remember the codeword zebra", retain: true } },
+            { name: "subagent", args: { description: "Plain", prompt: "plain work" } },
           ]),
       )
       .on(
@@ -719,8 +795,8 @@ test("a continued task resumes with its retained context under the same name", a
           !text.includes('"resumed"'),
         () =>
           calls.many([
-            { name: "task", args: { description: "Worker follow-up", prompt: "what was the codeword?", continue: "task_1" } },
-            { name: "task", args: { description: "Plain follow-up", prompt: "follow up on plain", continue: "task_2" } },
+            { name: "subagent", args: { description: "Worker follow-up", prompt: "what was the codeword?", continue: "subagent_1" } },
+            { name: "subagent", args: { description: "Plain follow-up", prompt: "follow up on plain", continue: "subagent_2" } },
           ]),
       )
       .on(() => true, () => answer("wrapped up"));
@@ -731,19 +807,19 @@ test("a continued task resumes with its retained context under the same name", a
     }).result;
     assert.equal(result.status, "completed");
 
-    // The continued dispatch kept task_1's identity; continuing a task that
+    // The continued dispatch kept subagent_1's identity; continuing a task that
     // was never retained fell back to a fresh task with a fresh name.
     const taskCalls = new Map<string, { task: string; resumed?: string }>();
     for (const request of inference.requests)
       for (const message of request.messages)
-        if (message.role === "toolResult" && message.toolName === "task")
+        if (message.role === "toolResult" && message.toolName === "subagent")
           taskCalls.set(message.toolCallId, JSON.parse(rendered(message)));
     const dispatched = [...taskCalls.values()];
     assert.deepEqual(
       dispatched.map((entry) => entry.task),
-      ["task_1", "task_2", "task_1", "task_3"],
+      ["subagent_1", "subagent_2", "subagent_1", "subagent_3"],
     );
-    assert.equal(dispatched[2]!.resumed, "task_1");
+    assert.equal(dispatched[2]!.resumed, "subagent_1");
 
     // The continued run is seeded with everything the first run gathered:
     // its instruction and answer sit ahead of the new instruction.
@@ -763,24 +839,64 @@ test("a continued task resumes with its retained context under the same name", a
     )!;
     assert.ok(!transcript(fresh).includes("plain done"), "no retained context, no seed");
 
-    // Ledger participation stays opt-in per dispatch.
-    const continuedTools = continued.tools?.map((tool) => tool.name) ?? [];
-    assert.ok(
-      !continuedTools.some((name) => name.startsWith("ledger_")),
-      "a dispatch without ledger: true gets no ledger tools",
-    );
-    const parentTools = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
-    assert.ok(
-      parentTools.includes("ledger_list") && parentTools.includes("ledger_stats"),
-      "the delegating run keeps its reads either way",
-    );
-
-    // The same task settling twice posts a notification each time, and no
-    // ledger block sneaks into a run that never touched the ledger.
+    // The same task settling twice posts a notification each time.
     const notes = notifications(transcript(inference.requests.at(-1)!));
-    assert.equal(notes.filter((note) => note.task === "task_1").length, 2);
-    assert.deepEqual([...new Set(notes.map((note) => note.task))].sort(), ["task_1", "task_2", "task_3"]);
-    assert.ok(notes.every((note) => !("ledger" in note)));
+    assert.equal(notes.filter((note) => note.task === "subagent_1").length, 2);
+    assert.deepEqual([...new Set(notes.map((note) => note.task))].sort(), ["subagent_1", "subagent_2", "subagent_3"]);
+  } finally {
+    storage.close();
+  }
+});
+
+test("an experimental follow-up can resume retained worker context from the prior user turn", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    conversation(storage);
+    const inference = new ScriptedInference();
+    const currentUser = (request: InferenceRequest) =>
+      [...request.messages].reverse().find((message) =>
+        message.role === "user" && !rendered(message).startsWith("<agent_prompt"),
+      );
+    inference
+      .on((text) => text.includes("inspect the event page"), () => answer("The organiser says to bring climbing shoes."))
+      .on((text) => text.includes("check what to bring") && text.includes("climbing shoes"), () => answer("Bring climbing shoes; that comes from the retained event page context."))
+      .on((_text, request) => rendered(currentUser(request)!).includes("Find the event") && !reported(transcript(request)), () =>
+        call("first-task", "subagent", {
+          description: "Inspect climbing event",
+          prompt: "inspect the event page",
+          coordination: "independent",
+          retain: true,
+          tool_groups: ["browser"],
+          skill_names: ["browser-use"],
+        }))
+      .on((_text, request) => rendered(currentUser(request)!).includes("Find the event") && reported(transcript(request)), () => answer("I found the event."))
+      .on((text, request) =>
+        rendered(currentUser(request)!).includes("What do I need to bring?") &&
+        text.includes("<retained_tasks>") && !text.includes('"resumed"'),
+      () => call("followup-task", "subagent", {
+        description: "Check event requirements",
+        prompt: "check what to bring",
+        coordination: "independent",
+        continue: "subagent_1",
+        tool_groups: ["browser"],
+        skill_names: ["browser-use"],
+      }))
+      .on((_text, request) => rendered(currentUser(request)!).includes("What do I need to bring?") && reported(transcript(request)), () => answer("Bring climbing shoes."));
+
+    const agent = testAgent(inference, storage, { orchestrationExperiment: true });
+    await agent.start({conversationId: "conversation", text: "Find the event"}).result;
+    await agent.settleGoalWork();
+    await agent.start({conversationId: "conversation", text: "What do I need to bring?"}).result;
+
+    const followupWorker = inference.requests.find((request) =>
+      transcript(request).includes("check what to bring"),
+    )!;
+    assert.ok(transcript(followupWorker).includes("climbing shoes"));
+    const followupParent = inference.requests.find((request) =>
+      rendered(currentUser(request)!).includes("What do I need to bring?") &&
+      request.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent"),
+    )!;
+    assert.match(toolResult(followupParent, "subagent"), /"resumed":"subagent_1"/);
   } finally {
     storage.close();
   }
@@ -825,10 +941,14 @@ test("a run that can delegate keeps the screen and gives away the work", async (
     // It can dispatch, wait, take stock, and put things on screen. It cannot
     // browse: holding the work tool is what made it do the work itself.
     assert.deepEqual(
-      ["task", "wait_task", "check_tasks", "workspace_show"].filter((name) =>
+      ["subagent", "wait_subagent", "check_subagents", "workspace_show"].filter((name) =>
         coordinator.includes(name),
       ),
-      ["task", "wait_task", "check_tasks", "workspace_show"],
+      ["subagent", "wait_subagent", "check_subagents", "workspace_show"],
+    );
+    assert.ok(
+      !coordinator.includes("wait_all_subagents"),
+      "the baseline tool surface must stay unchanged",
     );
     assert.ok(!coordinator.includes("browser"), "the coordinator must not browse");
 
@@ -841,9 +961,217 @@ test("a run that can delegate keeps the screen and gives away the work", async (
     const worker = inference.requests[1]?.tools?.map((tool) => tool.name) ?? [];
     assert.ok(worker.includes("browser"), "the run doing the work needs the tool");
     assert.ok(!worker.includes("workspace_show"));
-    assert.ok(!worker.includes("task"), "subagents cannot delegate further");
+    assert.ok(!worker.includes("subagent"), "subagents cannot delegate further");
   } finally {
     storage.close();
+  }
+});
+
+test("the experiment gives simple single-domain actions a direct tool fast path", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    conversation(storage);
+    const inference = new ScriptedInference();
+    inference.on(() => true, () => answer("done"));
+    const tools = new ToolRegistry();
+    tools.register({
+      name: "reminders_list",
+      description: "List reminders",
+      parameters: { type: "object", properties: {} },
+      async execute() { return { content: "[]" }; },
+    });
+    tools.register({
+      name: "browser_read",
+      description: "Read a browser page",
+      parameters: { type: "object", properties: {} },
+      async execute() { return { content: "page" }; },
+    });
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: new MemoryManager({
+        directory: mkdtempSync(path.join(tmpdir(), "flareai-fast-path-test-")),
+      }),
+      tools,
+      model,
+      computerHistory: {
+        promptContext: () => ({
+          directory: "/computer-history",
+          instructionsPath: "/computerHistory/README.md",
+          enabled: true,
+        }),
+      },
+      drive: {
+        promptContext: () => ({
+          defaultSource: "local",
+          order: ["local"],
+          connected: [],
+          reach: [],
+        }),
+      },
+      compaction: { enabled: false },
+      orchestrationExperiment: true,
+      prompts: {direct: "DIRECT FAST-PATH POLICY"},
+    });
+
+    await agent.start({ conversationId: "conversation", text: "List my reminders" }).result;
+    const direct = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(direct.includes("reminders_list"));
+    assert.ok(!direct.includes("browser_read"), "irrelevant host schemas stay out");
+    assert.ok(direct.includes("recall"), "personal context remains available");
+    assert.ok(direct.includes("search_history"), "conversation evidence remains available");
+    assert.ok(!direct.includes("get_goal"), "unrelated goal controls stay out");
+    assert.ok(!direct.includes("subagent"));
+    assert.match(transcript(inference.requests[0]!), /<agent_prompt name="direct">[\s\S]*DIRECT FAST-PATH POLICY/);
+    assert.doesNotMatch(transcript(inference.requests[0]!), /<agent_prompt name="main">/);
+    assert.doesNotMatch(inference.requests[0]?.systemPrompt ?? "", /## ComputerHistory|## Where work is saved/);
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Research and compare my reminder systems",
+    }).result;
+    const orchestrated = inference.requests[1]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(orchestrated.includes("subagent"));
+    assert.ok(!orchestrated.includes("reminders_list"));
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "List my reminders",
+      includeSubagents: false,
+    }).result;
+    const unbounded = inference.requests[2]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(unbounded.includes("browser_read"));
+    assert.ok(
+      JSON.stringify(inference.requests[0]?.tools).length <
+      JSON.stringify(inference.requests[2]?.tools).length,
+      "direct routing must reduce the offered tool schema",
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("single-site discovery and its immediate follow-up keep browser work on the main agent", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    conversation(storage);
+    const inference = new ScriptedInference();
+    inference.on(() => true, () => answer("done"));
+    const tools = new ToolRegistry();
+    for (const name of ["browser", "browser_read", "browser_snapshot_many", "browser_tabs", "browser_control", "email_read"]) {
+      tools.register({
+        name,
+        description: name,
+        parameters: { type: "object", properties: {} },
+        async execute() { return { content: "ok" }; },
+      });
+    }
+    const agent = new FlareAIAgent({
+      inference,
+      storage,
+      memory: new MemoryManager({
+        directory: mkdtempSync(path.join(tmpdir(), "flareai-discovery-fast-path-test-")),
+      }),
+      tools,
+      model,
+      compaction: { enabled: false },
+      orchestrationExperiment: true,
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Find the latest events from NUSync that I might be interested in",
+    }).result;
+    const discovery = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(discovery.includes("browser_read"));
+    assert.ok(discovery.includes("browser_snapshot_many"));
+    assert.ok(!discovery.includes("browser_tabs"));
+    assert.ok(!discovery.includes("browser_control"));
+    assert.ok(discovery.includes("recall"));
+    assert.ok(!discovery.includes("email_read"));
+    assert.ok(!discovery.includes("subagent"));
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Which one would you pick for me if I can only go on Friday evening, and what would I need to bring?",
+    }).result;
+    const followUp = inference.requests[1]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(followUp.includes("browser_read"));
+    assert.ok(!followUp.includes("subagent"));
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Compare NUSync with Eventbrite and check my messages",
+    }).result;
+    const multiSource = inference.requests[2]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(multiSource.includes("subagent"));
+    assert.ok(!multiSource.includes("browser_read"));
+  } finally {
+    storage.close();
+  }
+});
+
+test("the direct action fast path removes the dispatch and relay inferences", async () => {
+  const makeAgent = (storage: SqliteStorage, inference: ScriptedInference) => {
+    const tools = new ToolRegistry();
+    tools.register({
+      name: "reminders_list",
+      description: "List reminders",
+      parameters: { type: "object", properties: {} },
+      async execute() { return { content: "Buy milk" }; },
+    });
+    return new FlareAIAgent({
+      inference,
+      storage,
+      memory: new MemoryManager({
+        directory: mkdtempSync(path.join(tmpdir(), "flareai-fast-turns-test-")),
+      }),
+      tools,
+      model,
+      compaction: { enabled: false },
+      orchestrationExperiment: true,
+    });
+  };
+  const rules = (inference: ScriptedInference) => {
+    const calls = multiCall();
+    return inference
+    .on((text, request) => !text.includes("task(…)") && Boolean(request.tools?.some((tool) => tool.name === "subagent")), () =>
+      calls.many([
+        { name: "subagent", args: { description: "List reminders", prompt: "List my reminders" } },
+        { name: "wait_all_subagents", args: { timeout_ms: 5_000 } },
+      ]))
+    .on((text, request) => !text.includes("Buy milk") && Boolean(request.tools?.some((tool) => tool.name === "reminders_list")), () =>
+      call("list", "reminders_list", {}))
+    .on((text) => text.includes("Buy milk"), () => answer("Buy milk"))
+    .on((text) => reported(text), () => answer("Buy milk"));
+  };
+
+  const directStorage = new SqliteStorage(":memory:");
+  const delegatedStorage = new SqliteStorage(":memory:");
+  try {
+    conversation(directStorage);
+    conversation(delegatedStorage);
+    const directInference = rules(new ScriptedInference());
+    await makeAgent(directStorage, directInference).start({
+      conversationId: "conversation",
+      text: "List my reminders",
+    }).result;
+    assert.equal(directInference.requests.length, 2, "tool call then final answer");
+
+    const delegatedInference = rules(new ScriptedInference());
+    await makeAgent(delegatedStorage, delegatedInference).start({
+      conversationId: "conversation",
+      text: "List my reminders",
+      includeSubagents: true,
+    }).result;
+    assert.equal(
+      delegatedInference.requests.length,
+      4,
+      "dispatch, worker tool, worker result, coordinator relay",
+    );
+  } finally {
+    directStorage.close();
+    delegatedStorage.close();
   }
 });
 
@@ -898,7 +1226,7 @@ test("each run is given the brief for the job it is doing", async () => {
     // The worker gets its own brief, never the coordinator's: it has no one to
     // delegate to and no one to ask.
     const worker = transcript(inference.requests[1]!);
-    assert.match(worker, /<agent_prompt name="task">/);
+    assert.match(worker, /<agent_prompt name="subagent">/);
     assert.match(worker, /Your closing message is the deliverable\./);
     assert.doesNotMatch(worker, /Delegate the work, not the relationship\./);
     assert.doesNotMatch(coordinator, /Your closing message is the deliverable\./);
@@ -931,7 +1259,12 @@ test("the shipped agent prompts are the ones the internal agents run on", async 
   for (const name of AGENT_PROMPT_NAMES)
     assert.ok(prompts[name], `resources/prompts/${name}.md must exist`);
   assert.match(prompts.base ?? "", /You are Flare/);
+  assert.match(prompts.direct ?? "", /bounded request/i);
   assert.match(prompts.main ?? "", /delegate/i);
+  assert.match(
+    prompts.main ?? "",
+    /resumes an unfinished multi-step goal[\s\S]*at most two independent tasks[\s\S]*Do not[\s\S]*second wave[\s\S]*keep the unfinished goal active/i,
+  );
   // How to reply to the user belongs to the agent that talks to them: a
   // delegated run writes for the coordinator, and is told so in its own brief.
   assert.match(prompts.main ?? "", /## How you reply/);
@@ -943,4 +1276,89 @@ test("the shipped agent prompts are the ones the internal agents run on", async 
   assert.match(prompts.distillation ?? "", /\{limit\}/);
   assert.equal(fillPrompt("under {budget} characters", { budget: "46,000" }), "under 46,000 characters");
   assert.equal(fillPrompt("keep {unknown}", {}), "keep {unknown}");
+
+  const experiment = loadAgentPrompts(
+    directory,
+    path.join(directory, "experiments", "orchestration"),
+  );
+  assert.doesNotMatch(prompts.main ?? "", /Experimental context routing/);
+  assert.match(experiment.main ?? "", /Experimental context routing/);
+  assert.match(experiment.direct ?? "", /at most one general web search/i);
+  assert.match(experiment.direct ?? "", /verified candidate set[\s\S]*Do not reopen every candidate[\s\S]*choose first[\s\S]*at most that chosen item/i);
+  assert.match(experiment.direct ?? "", /contextual communication follow-up[\s\S]*Do not call[\s\S]*discovery again[\s\S]*no reply-shaped candidate[\s\S]*create nothing/i);
+  assert.match(experiment.direct ?? "", /Officially required[\s\S]*Optional suggestions/i);
+  assert.match(experiment.direct ?? "", /`Upcoming` means its[\s\S]*start is still in the future[\s\S]*registration deadline[\s\S]*closed/i);
+  assert.match(experiment.direct ?? "", /continue what I was doing before I switched[\s\S]*read_previous_screen_work[\s\S]*do not load skills/i);
+  assert.match(experiment.direct ?? "", /exact next command[\s\S]*run that command directly/i);
+  assert.match(experiment.direct ?? "", /Final answer gate[\s\S]*Remove internal deliberation[\s\S]*rank future actionable options before every ongoing item/i);
+  assert.match(experiment.main ?? "", /dispatch two tasks at\s+once/i);
+  assert.match(experiment.main ?? "", /relative mail windows[\s\S]*exact local ISO cutoff[\s\S]*90 calendar days[\s\S]*never substitute today's date[\s\S]*email-triage[\s\S]*skill_names: \[\]/i);
+  assert.match(experiment.main ?? "", /get me ready for\s+tomorrow/i);
+  assert.match(experiment.main ?? "", /current open\/live state[\s\S]*personal commitments[\s\S]*recent\s+communications/i);
+  assert.match(experiment.main ?? "", /no relevant page\/window[\s\S]*dispatch no current-state worker/i);
+  assert.match(experiment.main ?? "", /external-window URL[\s\S]*browser-research[\s\S]*never route an `http\(s\)` URL to the file `read` tool/i);
+  assert.match(experiment.main ?? "", /readiness brief[\s\S]*exactly one worker combining[\s\S]*`email-triage` and `messages-read`[\s\S]*together in its first turn/i);
+  assert.match(experiment.main ?? "", /membership\/recruitment[\s\S]*independent unless the source explicitly links them[\s\S]*must not become advice to miss or delay/i);
+  assert.match(experiment.main ?? "", /memory summary directly[\s\S]*never dispatch a worker solely/i);
+  assert.match(experiment.main ?? "", /communication triage request[\s\S]*one tightly bounded communication[\s\S]*both email and chat read routes[\s\S]*together in its first turn/i);
+  assert.match(experiment.main ?? "", /communication triage request[\s\S]*exact local ISO date[\s\S]*email-triage[\s\S]*messages-read/i);
+  assert.match(experiment.main ?? "", /draft replies to the ones[\s\S]*Do not delegate or repeat[\s\S]*preserve the no-send boundary/i);
+  assert.match(experiment.main ?? "", /ComputerHistory is a\s+fallback only/i);
+  assert.match(experiment.main ?? "", /continue or finish what they were doing[\s\S]*exactly one sequential worker/i);
+  assert.match(experiment.main ?? "", /resolve the immediately previous workflow with ComputerHistory first[\s\S]*continue authorises ordinary reversible work/i);
+  assert.match(experiment.main ?? "", /latest file I was editing[\s\S]*exactly one[\s\S]*computerHistory[\s\S]*do not give it[\s\S]*Drive[\s\S]*return that source as unavailable/i);
+  assert.match(experiment.main ?? "", /Pass `skill_names: \[\]` when the native[\s\S]*name a skill only when its workflow/i);
+  assert.match(experiment.main ?? "", /most detailed[\s\S]*memory[\s\S]*application protocol[\s\S]*current\s+client/i);
+  assert.match(experiment.main ?? "", /learning request[\s\S]*lecture material[\s\S]*one bounded context worker[\s\S]*organising framework/i);
+  assert.match(experiment.main ?? "", /unnamed target[\s\S]*independent of the target[\s\S]*dependency review[\s\S]*exact\s+resolved absolute path/i);
+  assert.match(experiment.main ?? "", /Do not draft, send, move,\s+create/i);
+  assert.match(experiment.main ?? "", /Do not repeat the\s+initial discovery search/i);
+  assert.match(experiment.main ?? "", /separate items the official source explicitly requires[\s\S]*Never invent customary food/i);
+  assert.match(experiment.main ?? "", /Officially required:[\s\S]*Optional suggestions/i);
+  assert.match(experiment.main ?? "", /one named website[\s\S]*at most one general web\s+search/i);
+  assert.match(experiment.main ?? "", /exact direct\s+first-party detail URL/i);
+  assert.match(experiment.main ?? "", /`Upcoming` means it has not started[\s\S]*ongoing[\s\S]*passed signup or application deadline[\s\S]*closed/i);
+  assert.match(experiment.main ?? "", /venue and place recommendations[\s\S]*exact address[\s\S]*requested-day opening hours[\s\S]*Never\s+infer a campus/i);
+  assert.match(experiment.main ?? "", /one independent discovery worker per[\s\S]*source family/i);
+  assert.match(experiment.main ?? "", /merge candidates by canonical URL or verified identity/i);
+  assert.match(experiment.main ?? "", /short shortlist[\s\S]*at most three[\s\S]*stop once that quota is filled/i);
+  assert.match(experiment.main ?? "", /Cancel only the exact now-obsolete workers[\s\S]*cancel_subagents/i);
+  assert.match(experiment.main ?? "", /cancel_subagents[\s\S]*wait_all_subagents[\s\S]*same response/i);
+  assert.match(experiment.main ?? "", /wait_all_subagents/);
+  assert.match(experiment.task ?? "", /Experimental tool efficiency/);
+  assert.match(experiment.task ?? "", /multi-purpose[\s\S]*intended current client[\s\S]*remembered services as candidates/i);
+  assert.match(experiment.task ?? "", /unnamed target[\s\S]*target-independent audit work[\s\S]*dependency edges[\s\S]*Never recursively search the home directory[\s\S]*deterministic read-only audit[\s\S]*first and only tool call[\s\S]*resolved absolute `SKILL\.md` directory/i);
+  assert.match(experiment.task ?? "", /context-discovery task[\s\S]*read_previous_screen_work[\s\S]*at most one distinctive[\s\S]*subject-level framework/i);
+  assert.match(experiment.task ?? "", /contributes candidates to a larger comparison[\s\S]*canonical[\s\S]*coordinator owns cross-worker deduplication/i);
+  assert.match(experiment.task ?? "", /one broad discovery query[\s\S]*hard six-call budget[\s\S]*never submit a seventh/i);
+  assert.match(experiment.task ?? "", /scoped shortcut consumes[\s\S]*Never issue a\s+second `site:` query[\s\S]*do not\s+reopen/i);
+  assert.match(experiment.task ?? "", /source-coverage gap only when it is material[\s\S]*email account timeout does not make a live\s+messaging platform unavailable/i);
+  assert.match(experiment.main ?? "", /Relay worker findings at their exact evidential strength[\s\S]*Never add an app's\s+purpose[\s\S]*preserve[\s\S]*uncertainty/i);
+  assert.match(experiment.main ?? "", /Every assistant text block is visible[\s\S]*Never expose internal\s+deliberation[\s\S]*call it directly/i);
+  assert.match(experiment.task ?? "", /verified candidates[\s\S]*unresolved leads/i);
+  assert.match(experiment.task ?? "", /at most six combined[\s\S]*one discovery read[\s\S]*up to three/i);
+  assert.match(experiment.task ?? "", /current place or venue recommendation[\s\S]*exact first-party detail page[\s\S]*Do not infer location/i);
+  assert.match(experiment.task ?? "", /hard acceptance constraints[\s\S]*not a[\s\S]*recommendation merely because[\s\S]*caveat/i);
+  assert.match(experiment.main ?? "", /Do not resume a completed research worker merely to reset its tool budget/i);
+  assert.match(experiment.task ?? "", /`Upcoming` starts in the future[\s\S]*exclude[\s\S]*ended[\s\S]*passed registration deadline[\s\S]*closed/i);
+  assert.match(experiment.task ?? "", /read_previous_screen_work[\s\S]*Do not load ComputerHistory reference files[\s\S]*Resolve[\s\S]*before using any action tool/i);
+  assert.match(experiment.task ?? "", /previous\.frame[\s\S]*already resolved[\s\S]*do not call `read_screen_history`/i);
+  assert.match(experiment.task ?? "", /never preserve the clock digits while changing their timezone offset/i);
+  assert.match(experiment.task ?? "", /latest file the user was editing[\s\S]*read_previous_screen_work[\s\S]*do not use[\s\S]*`bash`[\s\S]*`drive_list`/i);
+  assert.match(experiment.task ?? "", /query bounded to today[\s\S]*since YYYY-MM-DD[\s\S]*undated or vague/i);
+  assert.match(experiment.task ?? "", /email_search_all[\s\S]*complete bounded discovery attempt[\s\S]*do not enumerate folders/i);
+  assert.match(experiment.task ?? "", /named person or personal alias in chat[\s\S]*`message_chats`[\s\S]*ambiguous[\s\S]*organisation or words[\s\S]*`message_search`[\s\S]*at\s+most two targeted refinements/i);
+  assert.match(experiment.main ?? "", /dynamic index page is not evidence[\s\S]*NUSync event detail or RSVP pages[\s\S]*verify up to\s+three official results/i);
+  assert.match(experiment.main ?? "", /direct question about one named person or personal alias[\s\S]*`message_chats`[\s\S]*coverage is disconnected or unavailable[\s\S]*never phrase the miss as proof/i);
+  assert.match(experiment.task ?? "", /tomorrow-readiness commitment recovery[\s\S]*at most one `recall`, two[\s\S]*`search_history`/i);
+  assert.match(experiment.task ?? "", /independent deadlines and actions[\s\S]*does not invalidate a separately stated club[\s\S]*signup deadline/i);
+  assert.match(experiment.task ?? "", /location-only query does not cover job status[\s\S]*assessment, interview, application, offer, and rejection/i);
+  assert.match(experiment.task ?? "", /do not call `email_search_all`\s+again/i);
+  assert.match(experiment.task ?? "", /switch immediately to `browser`/);
+  assert.match(experiment.task ?? "", /follow its exact ref in that same tab/);
+  assert.match(experiment.task ?? "", /semantic control whose label names a requested missing field/);
+  assert.match(experiment.task ?? "", /before reporting the field\s+as unavailable/);
+  assert.match(experiment.task ?? "", /announced future change/i);
+  assert.match(experiment.task ?? "", /Close each one.*changed/s);
+  assert.match(experiment.task ?? "", /geographic login\/security alert[\s\S]*not a travel[\s\S]*Exclude it/i);
 });

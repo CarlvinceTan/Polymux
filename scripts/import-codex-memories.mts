@@ -10,8 +10,8 @@
  * - memory_summary.md itself, so the imported context reaches the prompt on
  *   the very first turn instead of waiting for a consolidation run
  *
- * Chronicle rollout summaries are deliberately left behind: they describe
- * Codex sessions, and FlareAI keeps its own chronicle.
+ * ComputerHistory rollout summaries are deliberately left behind: they describe
+ * Codex sessions, and FlareAI keeps its own computerHistory.
  *
  * Usage: npm run memories -- [sourceVault] [targetVault]
  */

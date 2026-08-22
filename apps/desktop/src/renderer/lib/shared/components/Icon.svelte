@@ -1,19 +1,21 @@
 <script lang="ts">
+  import languagesIcon from '../../../assets/icons/languages.png';
+
   export let name:
-    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'waveform' | 'stop'
+    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'computer' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'waveform' | 'stop' | 'cursor'
     | 'attach' | 'options' | 'verified' | 'globe' | 'file' | 'task' | 'back'
     | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down' | 'arrow-up'
     | 'bolt' | 'document-text' | 'paper-airplane' | 'history' | 'archive' | 'drive' | 'new-chat'
-    | 'copy' | 'check' | 'edit' | 'thumb-up' | 'thumb-down' | 'search' | 'terminal' | 'wrench' | 'book-open'
+    | 'copy' | 'check' | 'edit' | 'thumb-up' | 'thumb-down' | 'search' | 'terminal' | 'wrench' | 'book-open' | 'languages'
     | 'brain' | 'compact' | 'compress' | 'sparkles' | 'bot'
     | 'connections' | 'mcp' | 'link' | 'puzzle' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
     | 'document' | 'presentation' | 'folder' | 'pdf' | 'spreadsheet' | 'image' | 'audio' | 'video' | 'code'
-    | 'calendar' | 'clock' | 'sun' | 'sun-moon' | 'goal' | 'users' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
+    | 'calendar' | 'clock' | 'sun' | 'sun-moon' | 'goal' | 'user' | 'users' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
     | 'folder-plus' | 'upload' | 'home' | 'folder-move' | 'info'
     | 'mail' | 'inbox' | 'spam' | 'storefront' | 'settings' | 'cloud'
     | 'reply' | 'reply-all' | 'mail-forward' | 'flag'
-    | 'key' | 'shield' | 'eye' | 'eye-off' | 'external' | 'import'
-    | 'pin' | 'pin-off' | 'bell';
+    | 'key' | 'shield' | 'prohibited' | 'eye' | 'eye-off' | 'incognito' | 'external' | 'import' | 'cookie'
+    | 'pin' | 'pin-off' | 'bell' | 'tasks';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -43,10 +45,11 @@
     <!-- The record mark: a ring with its dot, at the same weight as the other
          permission icons. -->
     <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.6" fill="currentColor" stroke="none"/>
+  {:else if name === 'computer'}
+    <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M12 17v4M8 21h8"/>
   {:else if name === 'apps'}
-    <!-- Four app tiles: the grants below are per-app, so the mark reads as
-         apps rather than as another kind of protection. -->
-    <rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>
+    <!-- One application window for the aggregate app-access permission. -->
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 8.5h17"/><circle cx="6.5" cy="6.5" r=".7" fill="currentColor" stroke="none"/><circle cx="9" cy="6.5" r=".7" fill="currentColor" stroke="none"/>
   {:else if name === 'plus'}
     <path d="M12 5v14M5 12h14"/>
   {:else if name === 'close'}
@@ -69,10 +72,19 @@
     <path d="M6 10a6 6 0 0 1 12 0c0 3.2.7 5 1.5 6h-15C5.3 15 6 13.2 6 10M10 19.5a2.2 2.2 0 0 0 4 0"/>
   {:else if name === 'chat'}
     <path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/>
+  {:else if name === 'incognito'}
+    <!-- Chrome's familiar private-browsing silhouette: brimmed hat above
+         round glasses, kept open so it stays legible at settings-row size. -->
+    <path d="M6.5 10 8.2 4.5h7.6l1.7 5.5M4 10h16"/>
+    <circle cx="8" cy="15.5" r="3"/><circle cx="16" cy="15.5" r="3"/><path d="M11 15.5h2M5 14.5l-2-1M19 14.5l2-1"/>
   {:else if name === 'waveform'}
     <path d="M4 9.8v4.4M7.2 6.4v11.2M10.4 8.7v6.6M13.6 4.8v14.4M16.8 7.3v9.4M20 10.1v3.8" stroke-width="2.5"/>
   {:else if name === 'stop'}
     <rect x="5.5" y="5.5" width="13" height="13" rx="3" fill="currentColor" stroke="none"/>
+  {:else if name === 'cursor'}
+    <!-- The same pointer silhouette used by Browser Use and Computer Use's
+         controlled-tab badge, scaled from its native 16px geometry. -->
+    <path d="M3.04536 4.45259C2.7582 3.60299 3.60299 2.7582 4.45259 3.04536L14.1828 6.33403C15.1637 6.66558 15.0872 8.08006 14.0715 8.39045L10.2994 9.54319C9.93919 9.65327 9.65327 9.93919 9.54319 10.2994L8.39046 14.0715C8.08007 15.0872 6.66558 15.1637 6.33404 14.1828L3.04536 4.45259Z" transform="scale(1.5)" fill="currentColor" stroke="none"/>
   {:else if name === 'attach'}
     <path d="m20.5 11.5-8.2 8.2a6 6 0 0 1-8.5-8.5l8.5-8.5a4 4 0 0 1 5.7 5.7l-8.5 8.5a2 2 0 0 1-2.9-2.8l7.8-7.8"/>
   {:else if name === 'options'}
@@ -86,6 +98,11 @@
     <path d="M7.4 19.5A4.9 4.9 0 0 1 6.9 9.75 6.1 6.1 0 0 1 18.4 10.4 4.55 4.55 0 0 1 17.6 19.5z"/>
   {:else if name === 'globe'}
     <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>
+  {:else if name === 'cookie'}
+    <path d="M12 3a9 9 0 1 0 9 9 4 4 0 0 1-5-5 4 4 0 0 1-4-4Z"/>
+    <circle cx="8.5" cy="10" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="12" cy="15.5" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="7.5" cy="16" r="1" fill="currentColor" stroke="none"/>
   {:else if name === 'file'}
     <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M15 2v5h5"/>
   {:else if name === 'task'}
@@ -168,6 +185,13 @@
     <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"/>
   {:else if name === 'book-open'}
     <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+  {:else if name === 'languages'}
+    <!-- Use the supplied artwork as an alpha mask so its exact silhouette
+         still inherits the same colour as every other shared icon. -->
+    <mask id="languages-icon-mask" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+      <image href={languagesIcon} width="24" height="24" preserveAspectRatio="xMidYMid meet"/>
+    </mask>
+    <rect width="24" height="24" fill="currentColor" stroke="none" mask="url(#languages-icon-mask)"/>
   {:else if name === 'brain'}
     <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>
     <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>
@@ -265,6 +289,8 @@
     <path d="M16.28 5.37a4.39 4.39 0 0 0 6.63 6.63 6.63 6.63 0 1 1-6.63-6.63"/>
   {:else if name === 'goal'}
     <path d="M20.9 10.5a9 9 0 1 1-7.4-7.4"/><path d="M16.4 11.1a4.5 4.5 0 1 1-3.6-3.6"/><circle cx="12" cy="12" r="1.4"/><path d="m12 12 5-5"/><path d="M17 7V3.5L20.5 7H17Z" fill="currentColor"/>
+  {:else if name === 'user'}
+    <circle cx="12" cy="8" r="3.5"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>
   {:else if name === 'users'}
     <circle cx="9" cy="8" r="3"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0M15 5.5a3 3 0 0 1 0 5.8M16 15a5 5 0 0 1 4.5 5"/>
   {:else if name === 'briefcase'}
@@ -297,6 +323,8 @@
     <circle cx="8" cy="15" r="3.5"/><path d="m10.6 12.4 7.4-7.4M15.5 7.5l2 2M18 5l2 2"/>
   {:else if name === 'shield'}
     <path d="M12 3.5 5.5 6v5.6c0 3.9 2.7 6.9 6.5 8.4 3.8-1.5 6.5-4.5 6.5-8.4V6z"/>
+  {:else if name === 'prohibited'}
+    <circle cx="12" cy="12" r="8.5"/><path d="m6 18 12-12"/>
   {:else if name === 'eye'}
     <path d="M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>
   {:else if name === 'eye-off'}
@@ -325,5 +353,7 @@
   {:else if name === 'external'}
     <!-- The arrow leaving a frame, matching the 'link' pair beside it. -->
     <path d="M14 4.5h5.5V10M19.5 4.5 11 13"/><path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5"/>
+  {:else if name === 'tasks'}
+    <rect x="4" y="3" width="16" height="18" rx="2.5"/><rect x="7.5" y="1.5" width="9" height="3" rx="1.5"/><path d="m9.5 11.5 2 2 3.5-4"/>
   {/if}
 </svg>

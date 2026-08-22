@@ -339,7 +339,7 @@
     {id: 'downloads', icon: 'download', label: $t('browser.groupDownloads')},
     {id: 'history', icon: 'history', label: $t('browser.groupHistory')},
     {id: 'permissions', icon: 'shield', label: $t('browser.groupPermissions')},
-    {id: 'data', icon: 'globe', label: $t('browser.groupData')},
+    {id: 'data', icon: 'cookie', label: $t('browser.groupData')},
     {id: 'import', icon: 'import', label: $t('browser.groupImport')},
   ] satisfies {id: Section; icon: IconName; label: string}[];
   $: if (section === 'data' && !sitesLoaded) void loadSites();
@@ -370,7 +370,7 @@
       {/each}
     </ul>
 
-    <div class="browser-detail" use:scrollFade={section}>
+    <div class="browser-detail" class:history-detail={section === 'history'} use:scrollFade={section}>
       {#if section === 'passwords'}
         <section class="browser-block first">
           <div class="browser-row">
@@ -567,7 +567,7 @@
           {/if}
         </section>
       {:else if section === 'history'}
-        <section class="browser-block">
+        <section class="browser-block first browser-history-block">
           <header class="browser-history-head">
             <h4>{$t('browser.groupHistory')}</h4>
             <input
@@ -1004,9 +1004,12 @@
   .browser-history-head h4{margin:0}
   .browser-search{width:190px;height:26px;flex:none;border:1px solid var(--neutral-200);border-radius:8px;padding:0 9px;background:var(--neutral-50);color:var(--neutral-950);outline:0;font-family:inherit;font-size:11px}
   .browser-search:focus{border-color:var(--neutral-400);background:var(--app-surface)}
-  /* The same fixed window the discovery list uses: a history is thousands of
-     rows, and the clear control below it has to stay reachable. */
-  .browser-history-list{max-height:330px;overflow-y:auto}
+  /* History owns the available detail height. Its controls stay in place while
+     the results grow and shrink with the Settings window. */
+  .browser-detail.history-detail{display:flex;flex-direction:column;overflow:hidden}
+  .browser-history-block{min-height:0;flex:1;display:flex;flex-direction:column;margin-bottom:0}
+  .browser-history-block>.browser-empty{min-height:0;flex:1}
+  .browser-history-list{min-height:0;flex:1;overflow-y:auto}
   .browser-source{margin-top:10px}
   .browser-source:first-child{margin-top:0}
   .browser-source h5{margin:0 0 5px;color:var(--neutral-800);font-size:11px;font-weight:560}

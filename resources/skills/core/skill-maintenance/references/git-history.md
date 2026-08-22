@@ -29,11 +29,11 @@ through ordinary Git history as well as the original snapshot store.
 ## Commands
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs history init
-"${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs history status
-"${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs history log --limit 20
-"${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs history worktree [commit]
-"${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs history push
+python3 scripts/skill_maintenance.py history init
+python3 scripts/skill_maintenance.py history status
+python3 scripts/skill_maintenance.py history log --limit 20
+python3 scripts/skill_maintenance.py history worktree [commit]
+python3 scripts/skill_maintenance.py history push
 ```
 
 `history worktree` creates a detached inspection checkout outside the live

@@ -152,7 +152,13 @@ export class EncryptedApiKeyPool {
       throw error;
     });
     if (!encoded) return {version: 1, providers: {}};
-    if (!this.#cipher.isEncryptionAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE);
+    if (!this.#cipher.isEncryptionAvailable()) {
+      // The pool may belong to a normally launched/signed build. Keep it
+      // untouched and let another configured credential source (for example
+      // OpenCode's own auth file) serve this process.
+      this.#locked = true;
+      return {version: 1, providers: {}};
+    }
     let plaintext: string;
     try {
       plaintext = this.#cipher.decryptString(Buffer.from(encoded, "base64"));

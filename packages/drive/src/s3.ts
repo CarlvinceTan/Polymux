@@ -197,6 +197,7 @@ export class S3Drive implements DriveAdapter {
             conditional,
           ),
     );
+    options?.onProgress?.(size, size);
     return {
       id: key,
       name,

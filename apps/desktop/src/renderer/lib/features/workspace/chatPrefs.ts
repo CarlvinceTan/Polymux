@@ -1,3 +1,5 @@
+import {applyOrder} from './hubRailOrder';
+
 /**
  * What the chat list has been told about individual conversations: which are
  * pinned to the top, and which have been hidden from it.
@@ -82,19 +84,18 @@ export function arrangeChats<T>(
   prefs: ChatPrefs,
   open: string | null = null,
 ): T[] {
-  const rank = new Map(prefs.pinned.map((id, index) => [id, index] as const));
-  return chats
-    .filter((chat) => !prefs.hidden.includes(key(chat)) || key(chat) === open)
-    .map((chat, index) => ({chat, index}))
-    .sort((a, b) => {
-      const left = rank.get(key(a.chat)) ?? Number.POSITIVE_INFINITY;
-      const right = rank.get(key(b.chat)) ?? Number.POSITIVE_INFINITY;
-      return left === right ? a.index - b.index : left - right;
-    })
-    .map((entry) => entry.chat);
+  const hidden = new Set(prefs.hidden);
+  const visible = chats
+    .map((chat) => ({chat, id: key(chat)}))
+    .filter(({id}) => !hidden.has(id) || id === open);
+  return applyOrder(visible, ({id}) => id, prefs.pinned).map(({chat}) => chat);
 }
 
 /** What the hidden row holds: everything hidden that is not currently open. */
 export function hiddenChats<T>(chats: T[], key: (chat: T) => string, prefs: ChatPrefs, open: string | null = null): T[] {
-  return chats.filter((chat) => prefs.hidden.includes(key(chat)) && key(chat) !== open);
+  const hidden = new Set(prefs.hidden);
+  return chats.filter((chat) => {
+    const id = key(chat);
+    return hidden.has(id) && id !== open;
+  });
 }

@@ -374,27 +374,26 @@ test("a bridge is asked for the history its network still has, not the last page
   assert.match(repaired, /^encryption:\n\s+allow: false/m);
 });
 
-test("WhatsApp is asked for its whole history at link time, not the recent slice", async () => {
+test("WhatsApp is not asked to export its whole history on every bridge login", async () => {
   const {host, root} = await hostWith(["mautrix-whatsapp"], {
     spawn: (() => fakeChild()) as unknown as typeof spawnFn,
   });
   const configPath = path.join(root, "bridges", "whatsapp", "config.yaml");
   await seedRegistration(root, "whatsapp");
-  // What the binary writes into `network:` when it upgrades a config in place.
-  // WhatsApp only ever hands its history over once, in the push that follows
-  // linking a device, so this default is a busy group that arrives empty and
-  // stays that way — no later backfill can ask for what was not sent.
+  // This is the aggressive config written by older FlareAI versions. Because
+  // the request is made when the bridge logs in, it can repeatedly make the
+  // phone announce that another device is syncing after desktop restarts.
   await writeFile(
     configPath,
     [
       "network:",
       "    history_sync:",
       "        # Should the bridge request a full sync from the phone?",
-      "        request_full_sync: false",
+      "        request_full_sync: true",
       "        full_sync_config:",
-      "            days_limit: null",
-      "            size_mb_limit: null",
-      "            storage_quota_mb: null",
+      "            days_limit: 3650",
+      "            size_mb_limit: 5000",
+      "            storage_quota_mb: 5000",
       "backfill:",
       "    enabled: true",
       "",
@@ -405,12 +404,10 @@ test("WhatsApp is asked for its whole history at link time, not the recent slice
   await host.ensure("whatsapp");
 
   const repaired = await readFile(configPath, "utf8");
-  assert.match(repaired, /^\s+request_full_sync: true/m);
-  // The three limits only apply as a set; any one left unset drops WhatsApp
-  // back to its own much smaller defaults.
-  assert.match(repaired, /^\s+days_limit: 3650/m);
-  assert.match(repaired, /^\s+size_mb_limit: 5000/m);
-  assert.match(repaired, /^\s+storage_quota_mb: 5000/m);
+  assert.match(repaired, /^\s+request_full_sync: false/m);
+  assert.match(repaired, /^\s+days_limit: null/m);
+  assert.match(repaired, /^\s+size_mb_limit: null/m);
+  assert.match(repaired, /^\s+storage_quota_mb: null/m);
 });
 
 test("configuring a shared binary keeps its network mode", async () => {
@@ -753,7 +750,18 @@ test(
     assert.equal(
       await messagesDatabaseAccess({home}),
       null,
-      "a database this process can open is not a reason to hold the bridge back",
+      "a database both this process and its child can open does not hold the bridge back",
+    );
+
+    const childDenied = await messagesDatabaseAccess({
+      home,
+      childProbe: async () => false,
+    });
+    assert.match(childDenied?.reason ?? "", /child processes launched by it cannot read/);
+    assert.equal(
+      childDenied?.permission,
+      "full-disk-access",
+      "the bridge stays parked when the app grant does not reach its child process",
     );
   },
 );

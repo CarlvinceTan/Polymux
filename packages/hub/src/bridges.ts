@@ -148,8 +148,10 @@ export interface BridgeBlock {
  */
 export async function messagesDatabaseAccess({
   home,
+  childProbe = childCanRead,
 }: {
   home: string;
+  childProbe?: (database: string) => Promise<boolean>;
 }): Promise<BridgeBlock | null> {
   if (process.platform !== "darwin") return null;
   const database = path.join(home, "Library", "Messages", "chat.db");
@@ -158,7 +160,19 @@ export async function messagesDatabaseAccess({
   const handle = await open(database, "r").catch((error: NodeJS.ErrnoException) => error);
   if (!(handle instanceof Error)) {
     await handle.close().catch((): undefined => undefined);
-    return null;
+    // The bridge is a separate executable. TCC normally attributes a child to
+    // the app that launched it, but proving only the Electron main process can
+    // read this file would turn a stale or mismatched grant into a crash loop.
+    // Exercise the same parent -> child boundary before allowing the bridge to
+    // start. `head` reads at most one byte and never copies message contents
+    // back into FlareAI.
+    if (await childProbe(database)) return null;
+    return {
+      reason:
+        "FlareAI has Full Disk Access, but child processes launched by it cannot read your Messages database. Restart FlareAI after granting access.",
+      permission: "full-disk-access",
+      retryable: true,
+    };
   }
   // No grant creates a database that was never made, so this one is deliberately
   // offered without a permission: a button here would promise a fix it has not got.
@@ -173,6 +187,20 @@ export async function messagesDatabaseAccess({
     permission: "full-disk-access",
     retryable: true,
   };
+}
+
+function childCanRead(database: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn("/usr/bin/head", ["-c", "1", database], {stdio: "ignore"});
+    let settled = false;
+    const finish = (readable: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolve(readable);
+    };
+    child.once("error", () => finish(false));
+    child.once("exit", (code) => finish(code === 0));
+  });
 }
 
 /**
@@ -934,29 +962,21 @@ function repairBackfill(source: string): string {
 }
 
 /**
- * Asks WhatsApp for the whole history when the account is linked, rather than
- * the slice it volunteers.
+ * Keeps WhatsApp history sync incremental.
  *
- * This is the other half of a group chat that opens empty, and the half no
- * backfill setting can reach: WhatsApp hands its history over once, in the push
- * that follows linking a device, and unasked it sends a few recent
- * conversations. That is why the direct chats here arrived with a handful of
- * messages each and the busy groups arrived with none — there is nothing left
- * on the network for a later backfill to ask for.
- *
- * Read at link time, so it changes nothing for an account already linked; that
- * one has to be linked again. These keys exist only in mautrix-whatsapp's
- * config, which is why this only ever edits lines that are already there.
+ * `request_full_sync` is sent to the phone when the bridge logs in. FlareAI
+ * used to force it on with a ten-year, five-gigabyte budget. A desktop restart
+ * could therefore make the phone announce another linked-device sync. Normal
+ * incremental sync and the backfill queue are enough after pairing, and do not
+ * repeatedly ask the phone to export its archive.
  */
 function repairHistorySync(source: string): string {
   return withinBlock(source, "network", (line) =>
     line
-      .replace(/^([ \t]+request_full_sync:[ \t]*)false\b/, "$1true")
-      // The three limits of a full sync only apply as a set — leave any of them
-      // unset and WhatsApp falls back to its own much smaller defaults.
-      .replace(/^([ \t]+days_limit:[ \t]*)null\b/, "$13650")
-      .replace(/^([ \t]+size_mb_limit:[ \t]*)null\b/, "$15000")
-      .replace(/^([ \t]+storage_quota_mb:[ \t]*)null\b/, "$15000"),
+      .replace(/^([ \t]+request_full_sync:[ \t]*)true\b/, "$1false")
+      .replace(/^([ \t]+days_limit:[ \t]*)\d+\b/, "$1null")
+      .replace(/^([ \t]+size_mb_limit:[ \t]*)\d+\b/, "$1null")
+      .replace(/^([ \t]+storage_quota_mb:[ \t]*)\d+\b/, "$1null"),
   );
 }
 
@@ -1063,8 +1083,8 @@ function doublePuppet(serverName: string, baseUrl: string, asToken: string): str
 }
 
 /**
- * Brings a config seeded by an earlier FlareAI up to the current seed: history
- * limits and the backfill queue, then double puppeting. Returns the source
+ * Brings a config seeded by an earlier FlareAI up to the current seed: safe
+ * incremental history, the backfill queue, then double puppeting. Returns the source
  * unchanged when there is nothing to do, which is the steady state.
  */
 export function repairConfig(

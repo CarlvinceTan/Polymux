@@ -1,5 +1,4 @@
 import type { AgentTool } from "@flareai/core";
-import type { JsonObject } from "@flareai/inference";
 import type { Goal, GoalStatus, Storage } from "@flareai/storage";
 
 export type GoalCommand =
@@ -49,51 +48,26 @@ export class GoalManager {
         execute: async () => result(this.get(conversationId)),
       },
       {
-        name: "create_goal",
-        description:
-          "Create a durable goal only when the user explicitly requests one. Fails while an unfinished goal exists.",
-        parameters: {
-          type: "object",
-          properties: { objective: { type: "string" } },
-          required: ["objective"],
-          additionalProperties: false,
-        },
-        execute: async (input) =>
-          result(
-            this.storage.createGoal({
-              id: crypto.randomUUID(),
-              conversationId,
-              objective: requiredString(input, "objective"),
-            }),
-          ),
-      },
-      {
         name: "update_goal",
         description:
-          "Revise the current goal's objective, or pause it when the user asks. Completion is not yours to declare: a judge reads your closing message after every turn and sets the final status, so state plainly in your reply when the goal is finished and what verifies it, or what is blocking you.",
+          "Pause or resume the user's existing goal only when the user asks. You cannot create, replace, revise, complete, or block a goal; the user owns its objective and the host judge owns terminal status.",
         parameters: {
           type: "object",
           properties: {
             status: {
               type: "string",
-              enum: ["active", "paused", "completed", "blocked"],
+              enum: ["active", "paused"],
             },
-            objective: { type: "string" },
           },
+          required: ["status"],
           additionalProperties: false,
         },
         execute: async (input) => {
           const status = input.status as GoalStatus | undefined;
-          if (
-            status &&
-            !["active", "paused", "completed", "blocked"].includes(status)
-          )
+          if (status !== "active" && status !== "paused")
             throw new Error("Invalid goal status");
-          const objective =
-            typeof input.objective === "string" ? input.objective : undefined;
           const goal = this.storage.updateGoal(conversationId, {
             status,
-            objective,
           });
           if (!goal) throw new Error("No goal exists for this conversation");
           return result(goal);
@@ -101,11 +75,4 @@ export class GoalManager {
       },
     ];
   }
-}
-
-function requiredString(input: JsonObject, key: string): string {
-  const value = input[key];
-  if (typeof value !== "string" || !value.trim())
-    throw new Error(`${key} must be a non-empty string`);
-  return value.trim();
 }

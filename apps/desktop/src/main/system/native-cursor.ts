@@ -1,5 +1,5 @@
-import cursorMotionSource from "@flareai/browser-use/src/cursor-motion.js?raw";
-import cursorOverlaySource from "@flareai/browser-use/src/cursor-overlay.js?raw";
+import cursorMotionSource from "@flareai/browser/src/cursor-motion.js?raw";
+import cursorOverlaySource from "@flareai/browser/src/cursor-overlay.js?raw";
 import { BrowserWindow } from "electron";
 
 /**

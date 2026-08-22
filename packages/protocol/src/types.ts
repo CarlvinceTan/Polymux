@@ -55,7 +55,15 @@ export interface MemoryStatusDto {
   consolidationRetryAfter: string | null;
   pendingMemories: number;
 }
-export interface ChronicleStatusDto {
+export interface MemoryEntryDto {
+  id: string;
+  scope: "user" | "conversation";
+  kind: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface ComputerHistoryStatusDto {
   enabled: boolean;
   running: boolean;
   directory: string;
@@ -64,20 +72,20 @@ export interface ChronicleStatusDto {
   storedFrames: number;
   storedBytes: number;
   storedEvents: number;
-  /** Apps and sites Chronicle leaves alone; everything else is recorded. */
+  /** Apps and sites ComputerHistory leaves alone; everything else is recorded. */
   excludeApps: string[];
   excludeSites: string[];
   recordPrivateBrowsing: boolean;
   interactionEvents: boolean;
   distilledThrough: string | null;
 }
-export interface ChronicleSettingsPatchDto {
+export interface ComputerHistorySettingsPatchDto {
   excludeApps?: string[];
   excludeSites?: string[];
   recordPrivateBrowsing?: boolean;
   interactionEvents?: boolean;
 }
-export interface ChronicleEntryDto {
+export interface ComputerHistoryEntryDto {
   id: string;
   capturedAt: string;
   sourceId: string;
@@ -89,6 +97,10 @@ export interface ChronicleEntryDto {
   change: number;
   reason: "change" | "heartbeat" | "initial";
   bytes: number;
+  kind?: "image" | "text";
+  app?: string;
+  bundleId?: string;
+  url?: string;
 }
 export interface GeneralSettingsDto {
   theme: "light" | "dark" | "system";
@@ -103,6 +115,9 @@ export interface GeneralSettingsDto {
   dictationAutoStopSeconds: number | null;
   timeEnabled: boolean;
   locationEnabled: boolean;
+  /** Read Hub conversations without sending read receipts or clearing their
+   * unread state. */
+  hubIncognitoMode: boolean;
   reasoningLevel: ReasoningEffort;
   /**
    * Whether the full settings surface is on offer. Off by default: basic mode
@@ -136,6 +151,8 @@ export interface GeneralSettingsDto {
    * so switching it on again costs no second trip through System Settings.
    */
   appPermissionsEnabled: boolean;
+  /** Workspace views pinned to the title bar, in display order. */
+  pinnedViews: Array<'drive' | 'schedule' | 'hub' | 'tasks'>;
   location: {
     latitude: number;
     longitude: number;
@@ -151,6 +168,7 @@ export interface GeneralSettingsUpdate {
   dictationAutoStopSeconds?: GeneralSettingsDto["dictationAutoStopSeconds"];
   timeEnabled?: boolean;
   locationEnabled?: boolean;
+  hubIncognitoMode?: boolean;
   reasoningLevel?: ReasoningEffort;
   advancedMode?: boolean;
   onboardingCompleted?: boolean;
@@ -158,8 +176,11 @@ export interface GeneralSettingsUpdate {
   notificationsEnabled?: boolean;
   notifications?: Partial<Record<NotificationKind, boolean>>;
   appPermissionsEnabled?: boolean;
+  pinnedViews?: GeneralSettingsDto['pinnedViews'];
   location?: GeneralSettingsDto["location"];
 }
+export interface ProfileDto { id: string; name: string; isDefault: boolean; }
+export interface ProfilesDto { activeId: string; profiles: ProfileDto[]; }
 /**
  * An event worth interrupting the user for. Each one is a row in Settings and
  * a key in the map above, so adding a kind here is all it takes for the row
@@ -555,6 +576,19 @@ export interface ProviderDto {
     status: "ready" | "rate_limited" | "invalid";
   }>;
 }
+export type ProviderOAuthEventDto =
+  | {
+      providerId: string;
+      type: "device_code";
+      userCode: string;
+      verificationUri: string;
+      expiresInSeconds?: number;
+    }
+  | {
+      providerId: string;
+      type: "progress";
+      message: string;
+    };
 export interface CreateCustomProviderRequest {
   name: string;
   baseUrl: string;
@@ -644,6 +678,44 @@ export interface StartRunRequest {
 }
 export interface StartRunResponse {
   runId: RunId;
+}
+export type ManagerJobPriorityDto = "background" | "normal" | "urgent" | "attention";
+export type ManagerJobStatusDto = "queued" | "running" | "completed" | "cancelled" | "failed" | "blocked";
+export interface ManagerJobDto {
+  id: string;
+  messageId: string;
+  chatId: ConversationId;
+  text: string;
+  attachments: string[];
+  asGoal: boolean;
+  priority: ManagerJobPriorityDto;
+  dependencyIds: string[];
+  /** Inclusive durable-history boundary frozen when this job was accepted. */
+  contextThroughSequence: number | null;
+  /** Stable namespace for run-local routing and retained task state. */
+  executionScopeId: string;
+  /** User transcript row which owns this job's assistant result. */
+  replyToMessageId: string;
+  status: ManagerJobStatusDto;
+  runId: RunId | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+}
+export interface EnqueueManagerJobRequest {
+  id?: string;
+  chatId: ConversationId;
+  text: string;
+  attachments?: string[];
+  asGoal?: boolean;
+  priority?: ManagerJobPriorityDto;
+  dependencyIds?: string[];
+}
+export interface ManagerSnapshotDto {
+  enabled: boolean;
+  jobs: ManagerJobDto[];
 }
 export interface GoalCommandRequest {
   conversationId: ConversationId;
@@ -910,7 +982,7 @@ export interface CommsBridgeAccountDto {
   id: string;
   /** Remote-side label: a phone number, handle, or display name. */
   name: string;
-  state: "connected" | "connecting" | "bad-credentials" | "unknown";
+  state: "connected" | "connecting" | "bad-credentials" | "error" | "unknown";
   error: string | null;
 }
 
@@ -1432,6 +1504,8 @@ export interface DriveAccountDto {
 export interface DriveUsageDto {
   used: number | null;
   total: number | null;
+  /** Bytes stored inside the root FlareAI owns on this provider. */
+  appUsed: number | null;
 }
 
 export interface DriveProviderDto {
@@ -1611,7 +1685,51 @@ export interface SchedulePatch {
   status?: "active" | "paused";
 }
 
+export type TaskCardStatus = "todo" | "in_progress" | "done";
+
+export interface TaskCardDto {
+  id: string;
+  /** Chat whose context and agents own this task. */
+  chatId: string;
+  title: string;
+  detail?: string;
+  status: TaskCardStatus;
+  /** The agent run currently owning this card, if in progress. */
+  owner?: string;
+  /** Whether a completed card has been reviewed by the user. */
+  reviewed: boolean;
+  /** Position within its column, for user reordering. */
+  order: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TaskCardInput {
+  chatId: string;
+  title: string;
+  detail?: string;
+}
+
+export interface TaskCardPatch {
+  title?: string;
+  detail?: string;
+  status?: TaskCardStatus;
+  owner?: string;
+  reviewed?: boolean;
+  order?: number;
+}
+
 export interface FlareAIApi {
+  profiles: {
+    list(): Promise<ProfilesDto>;
+    create(name: string): Promise<ProfilesDto>;
+    select(id: string): Promise<ProfilesDto>;
+    rename(id: string, name: string): Promise<ProfilesDto>;
+    setDefault(id: string): Promise<ProfilesDto>;
+    duplicate(id: string): Promise<ProfilesDto>;
+    remove(id: string): Promise<ProfilesDto>;
+    subscribe(listener: (profiles: ProfilesDto) => void): () => void;
+  };
   extension: {
     /** Whether the browser extension is installed, and whether to prompt. */
     status(): Promise<BrowserExtensionDto>;
@@ -1642,6 +1760,12 @@ export interface FlareAIApi {
     locate(): Promise<NonNullable<GeneralSettingsDto["location"]>>;
   };
   window: {
+    /** Opens a built-in workspace view in its own app window. */
+    openWorkspaceView(
+      kind: "drive" | "schedule" | "hub" | "tasks",
+      conversationId?: string,
+      placement?: {x: number; y: number; width?: number; height?: number},
+    ): Promise<void>;
     /**
      * Full-screen state of the app window, pushed on every change and once on
      * subscribe. The renderer only reserves room for the macOS traffic lights
@@ -1704,6 +1828,14 @@ export interface FlareAIApi {
     events(runId: RunId, afterSequence?: number): Promise<RunEventDto[]>;
     subscribe(listener: (event: RunEventDto) => void): () => void;
   };
+  manager: {
+    snapshot(): Promise<ManagerSnapshotDto>;
+    enqueue(request: EnqueueManagerJobRequest): Promise<ManagerJobDto>;
+    cancel(id: string): Promise<ManagerJobDto>;
+    reprioritize(id: string, priority: ManagerJobPriorityDto): Promise<ManagerJobDto>;
+    reorder(id: string, targetId: string): Promise<ManagerJobDto[]>;
+    subscribe(listener: (snapshot: ManagerSnapshotDto) => void): () => void;
+  };
   goals: {
     execute(request: GoalCommandRequest): Promise<GoalDto | null>;
     get(conversationId: ConversationId): Promise<GoalDto | null>;
@@ -1730,18 +1862,23 @@ export interface FlareAIApi {
   memory: {
     status(): Promise<MemoryStatusDto>;
     setEnabled(enabled: boolean): Promise<MemoryStatusDto>;
+    entries(): Promise<MemoryEntryDto[]>;
   };
-  chronicle: {
-    status(): Promise<ChronicleStatusDto>;
-    setEnabled(enabled: boolean): Promise<ChronicleStatusDto>;
-    update(patch: ChronicleSettingsPatchDto): Promise<ChronicleStatusDto>;
+  computerHistory: {
+    status(): Promise<ComputerHistoryStatusDto>;
+    setEnabled(enabled: boolean): Promise<ComputerHistoryStatusDto>;
+    update(patch: ComputerHistorySettingsPatchDto): Promise<ComputerHistoryStatusDto>;
     /** Deletes every frame and event captured in the window. */
-    forget(since: string, until: string): Promise<ChronicleStatusDto>;
+    forget(since: string, until: string): Promise<ComputerHistoryStatusDto>;
+    /** Deletes one stored frame without touching neighbouring captures. */
+    removeEntry(id: string): Promise<ComputerHistoryStatusDto>;
+    /** Reveals one stored frame in the operating system's file browser. */
+    revealEntry(id: string): Promise<void>;
     entries(options?: {
       since?: string;
       until?: string;
       limit?: number;
-    }): Promise<ChronicleEntryDto[]>;
+    }): Promise<ComputerHistoryEntryDto[]>;
     /** Opens the system file picker at the applications folder. Returns the
      * chosen application's name, or null when the picker was dismissed. */
     pickApp(): Promise<string | null>;
@@ -1912,7 +2049,8 @@ export interface FlareAIApi {
     /** Takes a reaction back, given the id `chatReact` returned. */
     chatUnreact(chatId: string, reactionId: string): Promise<void>;
     /** Marks a chat read up to `messageId`, clearing its unread count. */
-    chatMarkRead(chatId: string, messageId: string): Promise<void>;
+    /** Returns false when Hub incognito mode deliberately suppresses it. */
+    chatMarkRead(chatId: string, messageId: string): Promise<boolean>;
     mailFolders(account?: string): Promise<MailFolderDto[]>;
     mailEnvelopes(request: MailListRequest): Promise<MailEnvelopeDto[]>;
     mailMessage(id: string, account?: string, folder?: string): Promise<MailMessageDto>;
@@ -2140,13 +2278,13 @@ export interface FlareAIApi {
     createFolder(source: string, parentPath: string, name: string): Promise<DriveEntryDto>;
     /** Uploads files and folders chosen on this Mac. Empty `paths` opens a
      * picker; a folder is recreated with everything under it. */
-    upload(source: string, parentPath: string, paths?: string[]): Promise<DriveEntryDto[]>;
+    upload(source: string, parentPath: string, paths?: string[], onProgress?: (fraction: number) => void): Promise<DriveEntryDto[]>;
     /** Fetches to the downloads folder and resolves to where it landed. */
     download(source: string, path: string): Promise<string>;
     remove(source: string, paths: string[]): Promise<void>;
     rename(source: string, path: string, name: string): Promise<DriveEntryDto>;
     /** Moves entries into another folder of the same source. */
-    move(source: string, paths: string[], destinationFolder: string): Promise<DriveEntryDto[]>;
+    move(source: string, paths: string[], destinationFolder: string, onProgress?: (fraction: number) => void): Promise<DriveEntryDto[]>;
     /** Duplicates entries alongside themselves. */
     copy(source: string, paths: string[]): Promise<DriveEntryDto[]>;
     subscribe(listener: (status: DriveStatusDto) => void): () => void;
@@ -2166,10 +2304,22 @@ export interface FlareAIApi {
     markRead(id: string): Promise<ScheduleDto>;
     subscribe(listener: (items: ScheduleDto[]) => void): () => void;
   };
+  tasks: {
+    list(chatId: string): Promise<TaskCardDto[]>;
+    create(input: TaskCardInput): Promise<TaskCardDto>;
+    update(id: string, patch: TaskCardPatch): Promise<TaskCardDto>;
+    remove(id: string): Promise<void>;
+    markRead(id: string): Promise<TaskCardDto>;
+    subscribe(listener: (items: TaskCardDto[]) => void): () => void;
+  };
   providers: {
     list(): Promise<ProviderDto[]>;
     saveApiKey(provider: string, apiKey: string): Promise<ProviderDto>;
     removeApiKey(provider: string, keyId: string): Promise<ProviderDto>;
+    connectOAuth(provider: string): Promise<ProviderDto>;
+    cancelOAuth(provider: string): Promise<void>;
+    disconnectOAuth(provider: string): Promise<ProviderDto>;
+    subscribeOAuth(listener: (event: ProviderOAuthEventDto) => void): () => void;
     createCustom(request: CreateCustomProviderRequest): Promise<ProviderDto>;
     updateCustom(request: UpdateCustomProviderRequest): Promise<ProviderDto>;
     discoverModels(

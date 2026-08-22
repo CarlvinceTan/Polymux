@@ -97,6 +97,7 @@ export async function uploadInChunks<T>(
   localPath: string,
   send: (chunk: Chunk) => Promise<{done: T} | {resumeAt: number}>,
   what = "The upload",
+  onProgress?: (completed: number, total: number) => void,
 ): Promise<T> {
   const chunks = fileChunks(localPath);
   let resumeAt: number | undefined;
@@ -105,8 +106,12 @@ export async function uploadInChunks<T>(
       const next = await chunks.next(resumeAt);
       if (next.done || !next.value) break;
       const outcome = await send(next.value);
-      if ("done" in outcome) return outcome.done;
+      if ("done" in outcome) {
+        onProgress?.(next.value.total, next.value.total);
+        return outcome.done;
+      }
       resumeAt = outcome.resumeAt;
+      onProgress?.(Math.min(resumeAt, next.value.total), next.value.total);
     }
   } finally {
     // The generator is suspended mid-file on every path that returns early;

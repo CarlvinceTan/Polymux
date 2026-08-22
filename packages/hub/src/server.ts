@@ -111,6 +111,8 @@ export class Homeserver {
    * later time.
    */
   readonly #outboundArmed = new Set<string>();
+  /** Cancels bridge requests immediately when the homeserver is closing. */
+  readonly #closing = new AbortController();
   #port = 0;
   #closed = false;
 
@@ -186,8 +188,16 @@ export class Homeserver {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#closing.abort();
     for (const wake of this.#pushWakers.values()) wake();
-    await new Promise<void>((resolve) => this.#server.close(() => resolve()));
+    await new Promise<void>((resolve) => {
+      this.#server.close(() => resolve());
+      // Undici keeps client connections pooled after their request finishes,
+      // and a request whose response has not been drained still counts as
+      // active. Neither carries useful work once shutdown begins; leaving them
+      // open makes Server.close wait out Node's keep-alive grace period.
+      this.#server.closeAllConnections();
+    });
     await Promise.allSettled(this.#pushers.values());
     this.#store.close();
   }
@@ -1524,13 +1534,17 @@ export class Homeserver {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({events: events.map(clientEvent)}),
-            signal: AbortSignal.timeout(30_000),
+            signal: AbortSignal.any([this.#closing.signal, AbortSignal.timeout(30_000)]),
           },
         );
         if (result.ok) return true;
       } catch {
         // Bridge is down or restarting; fall through to the wait below.
       }
+      // In particular, do not enter the retry backoff after close() aborted
+      // the request above. Shutdown should not wait for a retry that can no
+      // longer be attempted.
+      if (this.#closed) return false;
       if (delay === null) return false;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }

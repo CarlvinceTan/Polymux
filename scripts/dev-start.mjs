@@ -21,6 +21,7 @@ import {existsSync, rmSync} from 'node:fs';
 import {homedir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {backgroundInstanceArguments} from './dev-start-arguments.mjs';
 
 /** Lines matching any of these are system noise, not application output. */
 const NOISE = [
@@ -75,10 +76,12 @@ loadEnvFile();
 const forwarded = [];
 let instance = process.env.FLAREAI_DEV_INSTANCE?.trim() || '';
 let ephemeral = false;
+let visibleInstance = false;
 for (const argument of process.argv.slice(2)) {
   const match = /^--isolated(?:=(.+))?$/.exec(argument);
   if (match) instance = match[1]?.trim() || instance || 'side';
   else if (argument === '--new') ephemeral = true;
+  else if (argument === '--visible') visibleInstance = true;
   else forwarded.push(argument);
 }
 if (ephemeral) {
@@ -86,6 +89,7 @@ if (ephemeral) {
   instance = freeInstanceName();
 }
 if (instance) process.env.FLAREAI_DEV_INSTANCE = instance;
+const launchArguments = backgroundInstanceArguments(forwarded, instance, visibleInstance);
 
 function fail(message) {
   console.error(message);
@@ -508,7 +512,7 @@ if (ephemeral) {
   await retirePreviousDevApp();
 }
 
-const child = spawn(forge, ['start', ...forwarded], {
+const child = spawn(forge, ['start', ...launchArguments], {
   cwd: projectRoot,
   stdio: ['inherit', 'inherit', 'pipe'],
 });

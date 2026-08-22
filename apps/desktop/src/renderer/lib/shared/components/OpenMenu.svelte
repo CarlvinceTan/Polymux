@@ -38,12 +38,20 @@
   export let anchor: OpenAnchor | null = null;
   export let onChoose: (value: string) => void = () => {};
   export let onClose: () => void = () => {};
+  export let compact = false;
 
   let menu: HTMLDivElement | null = null;
   let left = 0;
   let top = 0;
   /** Held back until measured: a menu painted at 0,0 and then moved is a jump. */
   let placed = false;
+
+  /** Kept at body level so viewport coordinates stay viewport coordinates and
+   * a transformed or overflow-clipped drawer cannot hide the menu. */
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {destroy: () => node.remove()};
+  }
 
   /**
    * Placement, once the menu has a size.
@@ -104,15 +112,18 @@
   <!-- Dismissed by anything outside it, including a scroll: the menu is about
        one thing on the page, and once that thing has moved it is about nothing. -->
   <div
+    use:portal
     class="open-menu-shade"
     role="presentation"
     onpointerdown={() => onClose()}
     onwheel={() => onClose()}
   ></div>
   <div
+    use:portal
     bind:this={menu}
     use:mounted
     class="flareai-dropdown-menu open-menu"
+    class:compact
     class:placed
     style="left: {left}px; top: {top}px"
     role="menu"

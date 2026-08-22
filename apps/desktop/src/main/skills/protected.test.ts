@@ -14,7 +14,7 @@ const call = (name: string, args: Record<string, unknown>) =>
   ({ id: "1", name, arguments: args }) as never;
 
 test("recognises paths inside the protected mirror", () => {
-  assert.equal(isInsideProtectedSkills(`${ROOT}/window-use/SKILL.md`, ROOT), true);
+  assert.equal(isInsideProtectedSkills(`${ROOT}/computer-use/SKILL.md`, ROOT), true);
   assert.equal(isInsideProtectedSkills(ROOT, ROOT), true);
   assert.equal(isInsideProtectedSkills(`${ROOT}/../skills/mine/SKILL.md`, ROOT), false);
   // A sibling that merely shares the prefix is not inside it.
@@ -26,7 +26,7 @@ test("blocks writes and edits aimed at a built-in skill", async () => {
   const guard = new ProtectedSkillGuard(ROOT);
   for (const tool of ["write", "edit"]) {
     const decision = await guard.beforeTool(
-      call(tool, { path: `${ROOT}/window-use/SKILL.md` }),
+      call(tool, { path: `${ROOT}/computer-use/SKILL.md` }),
     );
     assert.equal(decision.allow, false);
     assert.match(decision.message ?? "", /read-only/);
@@ -44,24 +44,48 @@ test("allows writes to the user's own skills", async () => {
 test("allows reading a built-in skill", async () => {
   const guard = new ProtectedSkillGuard(ROOT);
   const decision = await guard.beforeTool(
-    call("read", { path: `${ROOT}/window-use/SKILL.md` }),
+    call("read", { path: `${ROOT}/computer-use/SKILL.md` }),
   );
   assert.equal(decision.allow, true);
 });
 
 test("blocks mutating shell commands that touch the mirror", () => {
-  assert.equal(blocksShellCommand(`rm -rf ${ROOT}/window-use`, ROOT), true);
+  assert.equal(blocksShellCommand(`rm -rf ${ROOT}/computer-use`, ROOT), true);
   assert.equal(blocksShellCommand(`echo x > ${ROOT}/a/SKILL.md`, ROOT), true);
   assert.equal(blocksShellCommand("rm -rf ~/.flareai/official-skills/a", ROOT), true);
   // Reads stay allowed: the skills' own scripts and references live there.
-  assert.equal(blocksShellCommand(`cat ${ROOT}/window-use/SKILL.md`, ROOT), false);
+  assert.equal(blocksShellCommand(`cat ${ROOT}/computer-use/SKILL.md`, ROOT), false);
   assert.equal(blocksShellCommand("rm -rf /home/u/.flareai/skills/mine", ROOT), false);
+});
+
+test("allows trusted bundled scripts without allowing shell composition", () => {
+  const script = `${ROOT}/skill-maintenance/scripts/audit_dependencies.py`;
+  assert.equal(blocksShellCommand(`python3 ${script}`, ROOT), false);
+  assert.equal(blocksShellCommand(`python3 '${script}'`, ROOT), false);
+  assert.equal(blocksShellCommand(`/usr/bin/python3 "${script}"`, ROOT), false);
+  assert.equal(
+    blocksShellCommand(
+      `cd ${ROOT}/computer-use && zsh scripts/prepare-background-app.sh --app Helium --check-only`,
+      ROOT,
+    ),
+    false,
+  );
+
+  assert.equal(blocksShellCommand(`python3 ${script} > /tmp/audit.json`, ROOT), true);
+  assert.equal(blocksShellCommand(`python3 ${script}; rm -rf ${ROOT}`, ROOT), true);
+  assert.equal(blocksShellCommand(`python3 ${script} | tee /tmp/audit.json`, ROOT), true);
+  assert.equal(blocksShellCommand(`cd ${ROOT}/computer-use && rm -rf scripts`, ROOT), true);
+  assert.equal(blocksShellCommand(`cd ${ROOT}/computer-use && python3 -c 'print(1)'`, ROOT), true);
+  assert.equal(
+    blocksShellCommand(`python3 ${ROOT}/other/scripts/audit_dependencies.py`, ROOT),
+    false,
+  );
 });
 
 test("shell guard reaches the bash tool", async () => {
   const guard = new ProtectedSkillGuard(ROOT);
   const decision = await guard.beforeTool(
-    call("bash", { command: `rm -rf ${ROOT}/window-use` }),
+    call("bash", { command: `rm -rf ${ROOT}/computer-use` }),
   );
   assert.equal(decision.allow, false);
 });

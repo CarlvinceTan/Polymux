@@ -1,10 +1,9 @@
-import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
-import {tmpdir} from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import type {AgentTool} from "@flareai/core";
-import {DRIVE_ALL_ACCOUNT, driveSourceId} from "@flareai/protocol";
-import type {Drive} from "./manager.js";
-import {DriveConflictError} from "./types.js";
+import type { AgentTool } from "@flareai/core";
+import type { Drive } from "./manager.js";
+import { DriveConflictError } from "./types.js";
 
 /**
  * Agent tools for the storage the user has connected in Settings → Drive.
@@ -52,11 +51,11 @@ async function readName(
   );
 }
 
-function ok(value: unknown): {content: string} {
-  return {content: JSON.stringify(value, null, 2)};
+function ok(value: unknown): { content: string } {
+  return { content: JSON.stringify(value, null, 2) };
 }
 
-function failed(error: unknown): {content: string; isError: true} {
+function failed(error: unknown): { content: string; isError: true } {
   return {
     content: error instanceof Error ? error.message : String(error),
     isError: true,
@@ -76,7 +75,9 @@ function paths(input: Record<string, unknown>, key: string): string[] {
   const value = input[key];
   if (typeof value === "string" && value) return [value];
   if (Array.isArray(value)) {
-    const list = value.filter((entry): entry is string => typeof entry === "string");
+    const list = value.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
     if (list.length) return list;
   }
   throw new Error(`drive.${key} must be a path or a list of paths`);
@@ -105,7 +106,7 @@ function createSourcesTool(drive: Drive): AgentTool {
     name: "drive_sources",
     description:
       "List the storage the user has connected: their output folder, this Mac, and every signed-in cloud drive account. Returns the source ids every other drive_* tool takes. Call this first when the user names a drive rather than a path, or when you need to know what a source actually reaches — the cloud accounts are scoped to FlareAI's own folder, so files the user saved there themselves are not visible.",
-    parameters: {type: "object", properties: {}, additionalProperties: false},
+    parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       try {
         const status = await drive.status();
@@ -135,7 +136,7 @@ function createListTool(drive: Drive): AgentTool {
       "List one folder's contents in a connected storage source. Pass the path of a folder from a previous listing to descend into it; omit it for the source's root.",
     parameters: {
       type: "object",
-      properties: {source: SOURCE_PARAM, path: PATH_PARAM},
+      properties: { source: SOURCE_PARAM, path: PATH_PARAM },
       required: ["source"],
       additionalProperties: false,
     },
@@ -168,7 +169,7 @@ function createReadTool(drive: Drive): AgentTool {
       "Read a text file out of a connected storage source. The file is fetched to a temporary location and its contents returned; binary files are refused rather than returned as noise.",
     parameters: {
       type: "object",
-      properties: {source: SOURCE_PARAM, path: PATH_PARAM},
+      properties: { source: SOURCE_PARAM, path: PATH_PARAM },
       required: ["source", "path"],
       additionalProperties: false,
     },
@@ -197,11 +198,11 @@ function createReadTool(drive: Drive): AgentTool {
           throw new Error(
             `${target} looks like a binary file, so there is no text to read.`,
           );
-        return {content: buffer.toString("utf8")};
+        return { content: buffer.toString("utf8") };
       } catch (error) {
         return failed(error);
       } finally {
-        if (scratch) await rm(scratch, {recursive: true, force: true});
+        if (scratch) await rm(scratch, { recursive: true, force: true });
       }
     },
   };
@@ -220,8 +221,11 @@ function createWriteTool(drive: Drive): AgentTool {
           type: "string",
           description: "The destination folder's path. Empty means the root.",
         },
-        name: {type: "string", description: "The file's name, with extension."},
-        content: {type: "string"},
+        name: {
+          type: "string",
+          description: "The file's name, with extension.",
+        },
+        content: { type: "string" },
       },
       required: ["name", "content"],
       additionalProperties: false,
@@ -235,7 +239,7 @@ function createWriteTool(drive: Drive): AgentTool {
         const source =
           typeof input.source === "string" && input.source.trim()
             ? text(input, "source")
-            : driveSourceId("all", DRIVE_ALL_ACCOUNT);
+            : await drive.preferredSource();
         const name = text(input, "name");
         // A name carrying a path would write outside the folder the caller
         // named, which is not what a file name means.
@@ -278,7 +282,7 @@ function createWriteTool(drive: Drive): AgentTool {
         }
         return failed(error);
       } finally {
-        if (scratch) await rm(scratch, {recursive: true, force: true});
+        if (scratch) await rm(scratch, { recursive: true, force: true });
       }
     },
   };
@@ -287,8 +291,7 @@ function createWriteTool(drive: Drive): AgentTool {
 function createFolderTool(drive: Drive): AgentTool {
   return {
     name: "drive_create_folder",
-    description:
-      "Create a folder inside a connected storage source.",
+    description: "Create a folder inside a connected storage source.",
     parameters: {
       type: "object",
       properties: {
@@ -297,7 +300,7 @@ function createFolderTool(drive: Drive): AgentTool {
           type: "string",
           description: "The parent folder's path. Empty means the root.",
         },
-        name: {type: "string"},
+        name: { type: "string" },
       },
       required: ["source", "name"],
       additionalProperties: false,
@@ -309,7 +312,7 @@ function createFolderTool(drive: Drive): AgentTool {
           typeof input.parent === "string" ? input.parent : "",
           text(input, "name"),
         );
-        return ok({created: entry.path});
+        return ok({ created: entry.path });
       } catch (error) {
         return failed(error);
       }
@@ -327,7 +330,10 @@ function createMoveTool(drive: Drive): AgentTool {
       properties: {
         source: SOURCE_PARAM,
         paths: {
-          oneOf: [{type: "string"}, {type: "array", items: {type: "string"}}],
+          oneOf: [
+            { type: "string" },
+            { type: "array", items: { type: "string" } },
+          ],
           description: "The entries to move.",
         },
         destination: {
@@ -345,7 +351,7 @@ function createMoveTool(drive: Drive): AgentTool {
           paths(input, "paths"),
           typeof input.destination === "string" ? input.destination : "",
         );
-        return ok({moved: moved.map((entry) => entry.path)});
+        return ok({ moved: moved.map((entry) => entry.path) });
       } catch (error) {
         return failed(error);
       }
@@ -363,7 +369,10 @@ function createDeleteTool(drive: Drive): AgentTool {
       properties: {
         source: SOURCE_PARAM,
         paths: {
-          oneOf: [{type: "string"}, {type: "array", items: {type: "string"}}],
+          oneOf: [
+            { type: "string" },
+            { type: "array", items: { type: "string" } },
+          ],
           description: "The entries to delete.",
         },
       },
@@ -374,7 +383,7 @@ function createDeleteTool(drive: Drive): AgentTool {
       try {
         const targets = paths(input, "paths");
         await drive.remove(text(input, "source"), targets);
-        return ok({deleted: targets});
+        return ok({ deleted: targets });
       } catch (error) {
         return failed(error);
       }

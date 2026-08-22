@@ -4,7 +4,7 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {Drive, createDriveTools} from "../src/index.js";
-import {DRIVE_LOCAL_HOME, type JsonValue} from "@flareai/protocol";
+import {DRIVE_LOCAL_HOME, type DriveStatusDto, type JsonValue} from "@flareai/protocol";
 import type {AgentToolContext} from "@flareai/core";
 
 /** The call context a tool is handed by the runtime. Nothing in the drive tools
@@ -34,6 +34,7 @@ async function fixture() {
   const preferences = new Map<string, JsonValue>([
     ["drive", {localRoot: root} as unknown as JsonValue],
   ]);
+  const changes: DriveStatusDto[] = [];
   const drive = new Drive({
     storage: {
       getPreference: (key) => {
@@ -57,8 +58,9 @@ async function fixture() {
         throw new Error("These tests never reach a consent window.");
       },
     },
+    onChange: (status) => void changes.push(status),
   });
-  return {base, root, drive, picked, cleanup: () => rm(base, {recursive: true, force: true})};
+  return {base, root, drive, picked, changes, cleanup: () => rm(base, {recursive: true, force: true})};
 }
 
 test("creates a folder that then shows up in the listing", async () => {
@@ -105,7 +107,7 @@ test("steps a taken folder name aside rather than failing on it", async () => {
 });
 
 test("uploads the files the picker returns, into the folder in view", async () => {
-  const {base, root, drive, picked, cleanup} = await fixture();
+  const {base, root, drive, picked, changes, cleanup} = await fixture();
   try {
     const source = path.join(base, "notes.md");
     await writeFile(source, "hello");
@@ -117,6 +119,11 @@ test("uploads the files the picker returns, into the folder in view", async () =
     assert.equal(uploaded.length, 1);
     assert.equal(uploaded[0].name, "notes.md");
     assert.equal(uploaded[0].size, 5);
+    assert.equal(
+      changes.at(-1)?.providers.find((provider) => provider.id === "local")?.usage?.appUsed,
+      5,
+      "an upload publishes the refreshed FlareAI usage",
+    );
 
     assert.deepEqual(
       (await drive.list("local", folder.path)).map((entry) => entry.name),
@@ -199,6 +206,26 @@ test("offers the output folder and this Mac as separate sources", async () => {
     // one is confined to the output folder, the other reaches the home folder.
     assert.equal(local[0].root, root);
     assert.notEqual(local[1].root, root);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("reports files below the FlareAI root as app storage", async () => {
+  const {root, drive, cleanup} = await fixture();
+  try {
+    await mkdir(path.join(root, "nested"), {recursive: true});
+    await writeFile(path.join(root, "one.txt"), "hello");
+    await writeFile(path.join(root, "nested", "two.txt"), "world!");
+
+    const status = await drive.refresh();
+    const local = status.providers.find((provider) => provider.id === "local");
+    assert.equal(local?.usage?.appUsed, 11);
+    assert.equal(
+      status.sources.find((source) => source.id === "local#home")?.usage?.appUsed,
+      null,
+      "the unrestricted home source is not scanned",
+    );
   } finally {
     await cleanup();
   }
@@ -414,7 +441,7 @@ test("the prompt context names the default destination and the cloud boundary", 
     const context = drive.promptContext();
     assert.equal(context.defaultSource, "all#all");
     // The order is what the user set in Settings, not this package's opinion.
-    assert.equal(context.order[0], "This Mac");
+    assert.equal(context.order[0], "Local");
     assert.ok(context.connected.some((entry) => entry.includes("network#")));
     assert.ok(context.reach.some((entry) => entry.includes("mounted")));
   } finally {

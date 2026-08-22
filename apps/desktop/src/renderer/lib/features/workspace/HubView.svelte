@@ -1560,8 +1560,9 @@
       // The page arrives newest first, so the read marker is the head of it.
       const newest = chatMessages[0];
       if (newest && (chat.unread ?? 0) > 0) {
-        await api.comms.chatMarkRead(chat.id, newest.id).catch(() => {});
-        chats = chats.map((item) => (item.id === chat.id ? {...item, unread: 0} : item));
+        const marked = await api.comms.chatMarkRead(chat.id, newest.id).catch(() => false);
+        if (marked)
+          chats = chats.map((item) => (item.id === chat.id ? {...item, unread: 0} : item));
       }
     } catch (cause) {
       // A cached conversation stays on screen: it is what the room said a
@@ -2526,28 +2527,6 @@
     return displayTime(value, {compact: true});
   }
 
-  /**
-   * When a message was sent, as the reader states it.
-   *
-   * A message carries its date as the RFC 5322 line its sender wrote —
-   * "Fri, 7 Aug 2026 02:24:42 +0000" — which is the sender's clock, in their
-   * offset, in English. Printing it verbatim asks the reader to do the
-   * arithmetic. This is the same instant on this machine's clock, in this
-   * machine's zone and the interface's language, on the 12-hour clock the rest
-   * of the view uses. An unparseable date is left exactly as it came.
-   */
-  function stamp(value: string): string {
-    return displayTime(value);
-  }
-
-  /**
-   * The stamp on a chat row. Same shape as a mail row's, but tolerant of the
-   * null a room that has never carried a message comes back with.
-   */
-  function chatTime(value: string | null | undefined): string {
-    return value ? when(value) : '';
-  }
-
   /** The clock part of every stamp in a thread: 12-hour, as asked for. */
   function clockTime(parsed: Date): string {
     return parsed.toLocaleTimeString(activeLocale(), {
@@ -2561,16 +2540,6 @@
   function messageTime(value: string): string {
     const parsed = mailDate(value);
     return parsed ? clockTime(parsed) : value;
-  }
-
-  /**
-   * The centred stamp over a run of messages, saying when the run began. It
-   * says as much as it has to and no more, widening a step at a time as the
-   * message recedes: the clock alone today, then Yesterday, then the weekday
-   * while it is still this week, then the date, then the year as well.
-   */
-  function dividerStamp(value: string): string {
-    return displayTime(value);
   }
 
   function startOfDay(value: Date): Date {
@@ -3166,7 +3135,7 @@
             openMail?.from?.address ??
             (openEnvelope ? sender(openEnvelope) : $t('hub.unknownSender'))}
           {#if openMail?.date ?? openEnvelope?.date}
-            <em>· {stamp(openMail?.date ?? openEnvelope?.date ?? '')}</em>
+            <em>· {displayTime(openMail?.date ?? openEnvelope?.date ?? '')}</em>
           {/if}
         </p>
         {#if openMail && (openMail.to.length > 0 || openMail.cc.length > 0 || openMail.bcc.length > 0)}
@@ -3499,7 +3468,7 @@
           <!-- After the bubble in the DOM, which `column-reverse` paints above
                it: the stamp introduces the run that starts here. -->
           {#if startsRun(index)}
-            <p class="hub-view-stamp">{dividerStamp(message.sentAt)}</p>
+            <p class="hub-view-stamp">{displayTime(message.sentAt)}</p>
           {/if}
         {:else}
           {#if busy.startsWith('chat:')}
@@ -3742,7 +3711,7 @@
           <Icon name="pin" size={11} />
         {/if}
         {#if chat.lastActivity}
-          <time datetime={chat.lastActivity}>{chatTime(chat.lastActivity)}</time>
+          <time datetime={chat.lastActivity}>{chat.lastActivity ? when(chat.lastActivity) : ''}</time>
         {/if}
       </span>
     </span>

@@ -54,7 +54,7 @@ export class LocalDrive implements DriveAdapter {
         accounts: [{id: "local", name: path.basename(this.#root), email: null}],
         // The volume's free space, not this folder's — a folder has no quota,
         // and what the user needs to know is whether the disk can take more.
-        usage: {used: total - info.bfree * info.bsize, total},
+        usage: {used: total - info.bfree * info.bsize, total, appUsed: null},
         root: this.#root,
         error: null,
       };
@@ -170,6 +170,7 @@ export class LocalDrive implements DriveAdapter {
     }
     await copyFile(localPath, full);
     const info = await stat(full);
+    options?.onProgress?.(info.size, info.size);
     return {
       id: full,
       name,

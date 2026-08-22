@@ -1,26 +1,24 @@
-import {readFile, stat} from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto} from "@flareai/protocol";
-import {
-  contentRange,
-  SIMPLE_UPLOAD_LIMIT,
-  uploadInChunks,
-} from "./chunks.js";
-import {downloadToFile} from "./download.js";
-import {jsonRequest, request} from "./http.js";
-import {OAuthClient, oauthAppFromEnv} from "./oauth.js";
+import type { DriveEntryDto } from "@flareai/protocol";
+import { contentRange, SIMPLE_UPLOAD_LIMIT, uploadInChunks } from "./chunks.js";
+import { downloadToFile } from "./download.js";
+import { DriveRequestError, jsonRequest, request } from "./http.js";
+import { OAuthClient, oauthAppFromEnv } from "./oauth.js";
 import {
   copyName,
+  DriveConflictError,
   type DriveAdapter,
   type DriveConsentPrompt,
   type DriveProbe,
   type DriveSecretStore,
+  type DriveWriteOptions,
 } from "./types.js";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 // `webUrl` is Graph's own page for the item, which is where "open where it
 // lives" goes for a file that has no path on this Mac.
-const ITEM_FIELDS = "id,name,size,lastModifiedDateTime,folder,file,webUrl";
+const ITEM_FIELDS = "id,name,size,lastModifiedDateTime,folder,file,webUrl,eTag";
 
 /**
  * OneDrive, through Microsoft Graph.
@@ -66,7 +64,13 @@ export class OneDrive implements DriveAdapter {
         error: "This build has no OneDrive client credentials.",
       };
     if (!(await this.#oauth.connected()))
-      return {state: "logged-out", accounts: [], usage: null, root: null, error: null};
+      return {
+        state: "logged-out",
+        accounts: [],
+        usage: null,
+        root: null,
+        error: null,
+      };
     try {
       const [me, drive] = await Promise.all([
         this.#get<{
@@ -75,7 +79,7 @@ export class OneDrive implements DriveAdapter {
           userPrincipalName?: string;
           mail?: string;
         }>("/me"),
-        this.#get<{quota?: {used?: number; total?: number}}>("/me/drive"),
+        this.#get<{ quota?: { used?: number; total?: number } }>("/me/drive"),
       ]);
       const email = me.mail ?? me.userPrincipalName ?? null;
       return {
@@ -90,6 +94,7 @@ export class OneDrive implements DriveAdapter {
         usage: {
           used: drive.quota?.used ?? null,
           total: drive.quota?.total ?? null,
+          appUsed: null,
         },
         root: "Apps/FlareAI",
         error: null,
@@ -131,7 +136,7 @@ export class OneDrive implements DriveAdapter {
     while (url) {
       const page: GraphPage = await this.#json<GraphPage>(
         url,
-        {method: "GET"},
+        { method: "GET" },
         "The OneDrive request",
       );
       entries.push(...(page.value ?? []).map((item) => this.#entry(item)));
@@ -157,29 +162,83 @@ export class OneDrive implements DriveAdapter {
     return this.#entry(item);
   }
 
-  async upload(parentPath: string, localPath: string): Promise<DriveEntryDto> {
+  readonly conditionalWrites = true;
+
+  childPath(parentPath: string, name: string): string {
+    return `${parentPath}/${name}`;
+  }
+
+  async existingChild(
+    parentPath: string,
+    name: string,
+  ): Promise<string | null> {
+    const parent = await this.#item(parentPath);
+    try {
+      return (
+        await this.#get<GraphItem>(
+          `/me/drive/items/${parent}:/${encodeURIComponent(name)}?$select=id`,
+        )
+      ).id;
+    } catch {
+      return null;
+    }
+  }
+
+  async version(target: string): Promise<string | null> {
+    try {
+      return (
+        (await this.#get<GraphItem>(`/me/drive/items/${target}?$select=eTag`))
+          .eTag ?? null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  async upload(
+    parentPath: string,
+    localPath: string,
+    options?: DriveWriteOptions,
+  ): Promise<DriveEntryDto> {
     const name = path.basename(localPath);
     const parent = await this.#item(parentPath);
     const size = (await stat(localPath)).size;
-    if (size > SIMPLE_UPLOAD_LIMIT)
-      return this.#uploadSession(localPath, parent, name);
+    try {
+      if (size > SIMPLE_UPLOAD_LIMIT)
+        return await this.#uploadSession(localPath, parent, name, options);
 
-    const bytes = await readFile(localPath);
-    const response = await request(
-      `${GRAPH}/me/drive/items/${parent}:/${encodeURIComponent(
-        name,
-      )}:/content?@microsoft.graph.conflictBehavior=rename`,
-      {
-        method: "PUT",
-        headers: {
-          authorization: `Bearer ${await this.#oauth.accessToken()}`,
-          "content-type": "application/octet-stream",
+      const bytes = await readFile(localPath);
+      const response = await request(
+        `${GRAPH}/me/drive/items/${parent}:/${encodeURIComponent(
+          name,
+        )}:/content?@microsoft.graph.conflictBehavior=replace`,
+        {
+          method: "PUT",
+          headers: {
+            authorization: `Bearer ${await this.#oauth.accessToken()}`,
+            "content-type": "application/octet-stream",
+            ...(options?.ifMatch ? { "if-match": options.ifMatch } : {}),
+          },
+          body: new Uint8Array(bytes),
         },
-        body: new Uint8Array(bytes),
-      },
-      "The upload",
-    );
-    return this.#entry((await response.json()) as GraphItem);
+        "The upload",
+      );
+      const uploaded = this.#entry((await response.json()) as GraphItem);
+      options?.onProgress?.(size, size);
+      return uploaded;
+    } catch (cause) {
+      if (
+        options?.ifMatch &&
+        cause instanceof DriveRequestError &&
+        (cause.status === 409 || cause.status === 412)
+      )
+        throw new DriveConflictError({
+          path: `${parentPath}/${name}`,
+          expected: options.ifMatch,
+          found: await this.#findVersion(parent, name),
+        });
+      throw cause;
+    }
   }
 
   /**
@@ -194,21 +253,24 @@ export class OneDrive implements DriveAdapter {
     localPath: string,
     parent: string,
     name: string,
+    options?: DriveWriteOptions,
   ): Promise<DriveEntryDto> {
-    const opened = await this.#json<{uploadUrl?: string}>(
+    const opened = await this.#json<{ uploadUrl?: string }>(
       `${GRAPH}/me/drive/items/${parent}:/${encodeURIComponent(
         name,
       )}:/createUploadSession`,
       {
         method: "POST",
+        headers: options?.ifMatch ? { "if-match": options.ifMatch } : undefined,
         body: JSON.stringify({
-          item: {"@microsoft.graph.conflictBehavior": "rename"},
+          item: {
+            "@microsoft.graph.conflictBehavior": "replace",
+          },
         }),
       },
       "Starting the upload",
     );
-    if (!opened.uploadUrl)
-      throw new Error("OneDrive did not open an upload.");
+    if (!opened.uploadUrl) throw new Error("OneDrive did not open an upload.");
 
     const uploadUrl = opened.uploadUrl;
     return uploadInChunks(localPath, async (chunk) => {
@@ -227,9 +289,20 @@ export class OneDrive implements DriveAdapter {
       const body = (await response.json().catch(() => ({}))) as GraphItem & {
         nextExpectedRanges?: string[];
       };
-      if (body.id) return {done: this.#entry(body)};
-      return {resumeAt: expectedOffset(body.nextExpectedRanges) ?? chunk.end};
-    });
+      if (body.id) return { done: this.#entry(body) };
+      return { resumeAt: expectedOffset(body.nextExpectedRanges) ?? chunk.end };
+    }, "The upload", options?.onProgress);
+  }
+
+  async #findVersion(parent: string, name: string): Promise<string | null> {
+    try {
+      const item = await this.#get<GraphItem>(
+        `/me/drive/items/${parent}:/${encodeURIComponent(name)}?$select=eTag`,
+      );
+      return item.eTag ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async download(target: string, destination: string): Promise<void> {
@@ -238,13 +311,13 @@ export class OneDrive implements DriveAdapter {
     // instead, is a Microsoft-specific algorithm and is left unverified rather
     // than reimplemented.
     const item = await this.#get<
-      GraphItem & {file?: {hashes?: {sha256Hash?: string}}}
+      GraphItem & { file?: { hashes?: { sha256Hash?: string } } }
     >(`/me/drive/items/${target}?$select=size,file`);
     const expected = item.file?.hashes?.sha256Hash;
     await downloadToFile(destination, {
       expect: {
         size: item.size ?? null,
-        hash: expected ? {algorithm: "sha256", expected} : null,
+        hash: expected ? { algorithm: "sha256", expected } : null,
       },
       open: async (offset) =>
         request(
@@ -252,7 +325,7 @@ export class OneDrive implements DriveAdapter {
           {
             headers: {
               authorization: `Bearer ${await this.#oauth.accessToken()}`,
-              ...(offset > 0 ? {range: `bytes=${offset}-`} : {}),
+              ...(offset > 0 ? { range: `bytes=${offset}-` } : {}),
             },
           },
           "The download",
@@ -263,7 +336,7 @@ export class OneDrive implements DriveAdapter {
   async remove(target: string): Promise<void> {
     await this.#json<void>(
       `${GRAPH}/me/drive/items/${target}`,
-      {method: "DELETE"},
+      { method: "DELETE" },
       "Deleting the file",
     );
   }
@@ -271,19 +344,22 @@ export class OneDrive implements DriveAdapter {
   async rename(target: string, name: string): Promise<DriveEntryDto> {
     const item = await this.#json<GraphItem>(
       `${GRAPH}/me/drive/items/${target}`,
-      {method: "PATCH", body: JSON.stringify({name})},
+      { method: "PATCH", body: JSON.stringify({ name }) },
       "Renaming the file",
     );
     return this.#entry(item);
   }
 
-  async move(target: string, destinationFolder: string): Promise<DriveEntryDto> {
+  async move(
+    target: string,
+    destinationFolder: string,
+  ): Promise<DriveEntryDto> {
     const item = await this.#json<GraphItem>(
       `${GRAPH}/me/drive/items/${target}`,
       {
         method: "PATCH",
         body: JSON.stringify({
-          parentReference: {id: await this.#item(destinationFolder)},
+          parentReference: { id: await this.#item(destinationFolder) },
         }),
       },
       "Moving the file",
@@ -297,9 +373,9 @@ export class OneDrive implements DriveAdapter {
    * before it does would hand back an id nothing can open yet.
    */
   async copy(target: string): Promise<DriveEntryDto> {
-    const original = await this.#get<GraphItem & {parentReference?: {id?: string}}>(
-      `/me/drive/items/${target}?$select=${ITEM_FIELDS},parentReference`,
-    );
+    const original = await this.#get<
+      GraphItem & { parentReference?: { id?: string } }
+    >(`/me/drive/items/${target}?$select=${ITEM_FIELDS},parentReference`);
     const response = await request(
       `${GRAPH}/me/drive/items/${target}/copy`,
       {
@@ -311,7 +387,7 @@ export class OneDrive implements DriveAdapter {
         body: JSON.stringify({
           name: copyName(original.name),
           ...(original.parentReference?.id
-            ? {parentReference: {id: original.parentReference.id}}
+            ? { parentReference: { id: original.parentReference.id } }
             : {}),
         }),
       },
@@ -324,7 +400,7 @@ export class OneDrive implements DriveAdapter {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       // The monitor URL is pre-authenticated and rejects an Authorization
       // header, so this one request deliberately goes out bare.
-      type CopyStatus = {status?: string; resourceId?: string};
+      type CopyStatus = { status?: string; resourceId?: string };
       const status: CopyStatus = await fetch(monitor).then(
         (result) => result.json() as Promise<CopyStatus>,
         (): CopyStatus => ({}),
@@ -365,13 +441,14 @@ export class OneDrive implements DriveAdapter {
       path: item.id,
       mimeType: item.file?.mimeType ?? null,
       webUrl: item.webUrl ?? null,
+      version: item.eTag ?? null,
     };
   }
 
   async #get<T>(suffix: string): Promise<T> {
     return this.#json<T>(
       `${GRAPH}${suffix}`,
-      {method: "GET"},
+      { method: "GET" },
       "The OneDrive request",
     );
   }
@@ -405,8 +482,9 @@ interface GraphItem {
   name: string;
   size?: number;
   lastModifiedDateTime?: string;
-  folder?: {childCount?: number};
-  file?: {mimeType?: string};
+  folder?: { childCount?: number };
+  file?: { mimeType?: string };
+  eTag?: string;
 }
 
 interface GraphPage {

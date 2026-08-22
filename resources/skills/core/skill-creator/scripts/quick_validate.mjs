@@ -196,7 +196,7 @@ function validateSkill(skillPath) {
     return [false, `Invalid YAML in frontmatter: ${error.message}`];
   }
 
-  const allowedProperties = ["allowed-tools", "description", "license", "metadata", "name"];
+  const allowedProperties = ["allowed-tools", "author", "category", "description", "license", "metadata", "name"];
   const unexpectedKeys = Object.keys(frontmatter).filter((k) => !allowedProperties.includes(k));
   if (unexpectedKeys.length) {
     const allowed = allowedProperties.join(", ");

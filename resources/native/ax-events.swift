@@ -1,7 +1,7 @@
-// Chronicle's interaction stream.
+// ComputerHistory's interaction stream.
 //
 // A frame says what was on screen; this says what the user did to it. The
-// helper runs for as long as Chronicle does and prints one JSON object per
+// helper runs for as long as ComputerHistory does and prints one JSON object per
 // line to stdout: app switches, clicks, keyboard chords, typing bursts and
 // scrolls, each stamped with the app, window title and page URL it happened
 // in.
@@ -29,7 +29,7 @@ let skipPid: pid_t = {
   return value
 }()
 
-// Chronicle's own cadence is seconds; a stream faster than this is noise that
+// ComputerHistory's own cadence is seconds; a stream faster than this is noise that
 // costs disk and tells the reader nothing new.
 let maximumEventsPerSecond = 12
 let typingIdleFlush = 1.2

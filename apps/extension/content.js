@@ -179,7 +179,7 @@
   }
 
   // The overlay itself is shared with the in-app Browser
-  // (@flareai/browser-use/src/cursor-overlay.js, loaded just before this
+  // (@flareai/browser/src/cursor-overlay.js, loaded just before this
   // file), so the agent's pointer looks and moves identically in both.
   const overlay = () => globalThis.FlareAICursorOverlay;
 

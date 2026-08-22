@@ -7,7 +7,6 @@ import type {
   JsonValue,
 } from "@flareai/protocol";
 
-
 /**
  * What a provider reports about itself when the drive probes it. The manager
  * turns this into the DTO by adding the catalogue's name and kind, so an
@@ -94,6 +93,11 @@ export interface DriveAdapter {
    */
   childPath?(parentPath: string, name: string): string;
 
+  /** Resolves an existing child to its opaque provider path. Needed by
+   * id-addressed providers so a version remembered from a read can be matched
+   * to a later write expressed as parent plus filename. */
+  existingChild?(parentPath: string, name: string): Promise<string | null>;
+
   /**
    * The current version of one entry, or null when the provider states none.
    * Read before a write to establish what is being replaced, and cheap by
@@ -107,7 +111,7 @@ export interface DriveAdapter {
   /** Moves an entry into another folder of the same provider. Moving between
    * providers is the drive's job, not an adapter's — it has to go through this
    * Mac to get there. */
-  move(path: string, destinationFolder: string): Promise<DriveEntryDto>;
+  move(path: string, destinationFolder: string, options?: DriveWriteOptions): Promise<DriveEntryDto>;
   /** Copies an entry alongside itself, named so the two can be told apart. */
   copy(path: string): Promise<DriveEntryDto>;
 }
@@ -116,6 +120,8 @@ export interface DriveAdapter {
 export interface DriveWriteOptions {
   /** Only replace the entry if this is still its version. */
   ifMatch?: string | null;
+  /** Bytes the provider has acknowledged, against the file's total bytes. */
+  onProgress?: (completed: number, total: number) => void;
 }
 
 /**
@@ -161,7 +167,7 @@ export function copyName(name: string): string {
 
 /** The slice of app storage the drive keeps its settings in. */
 export interface DrivePreferenceStore {
-  getPreference(key: string): {value: unknown} | undefined | null;
+  getPreference(key: string): { value: unknown } | undefined | null;
   setPreference(key: string, value: JsonValue): void;
 }
 

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, watch, type FSWatcher } from "node:fs";
 import path from "node:path";
+import { DebouncedCallback } from "./debounced-callback.js";
 
 export interface FileReloadWatcherOptions {
   debounceMs?: number;
@@ -10,12 +11,8 @@ export interface FileReloadWatcherOptions {
 /** Watches the containing directory so atomic file replacements are observed. */
 export class FileReloadWatcher {
   readonly #filePath: string;
-  readonly #onChange: () => void;
-  readonly #debounceMs: number;
-  readonly #schedule: NonNullable<FileReloadWatcherOptions["schedule"]>;
-  readonly #cancelSchedule: NonNullable<FileReloadWatcherOptions["cancelSchedule"]>;
+  readonly #onChange: DebouncedCallback;
   #watcher?: FSWatcher;
-  #timer?: ReturnType<typeof setTimeout>;
 
   constructor(
     filePath: string,
@@ -23,10 +20,11 @@ export class FileReloadWatcher {
     options: FileReloadWatcherOptions = {},
   ) {
     this.#filePath = path.resolve(filePath);
-    this.#onChange = onChange;
-    this.#debounceMs = options.debounceMs ?? 250;
-    this.#schedule = options.schedule ?? ((callback, delay) => setTimeout(callback, delay));
-    this.#cancelSchedule = options.cancelSchedule ?? clearTimeout;
+    this.#onChange = new DebouncedCallback(onChange, {
+      delayMs: options.debounceMs ?? 250,
+      schedule: options.schedule,
+      cancelSchedule: options.cancelSchedule,
+    });
   }
 
   start(): void {
@@ -50,7 +48,7 @@ export class FileReloadWatcher {
       this.#watcher = watch(directory, (event, changed) => {
         if (changed !== null && changed.toString() !== filename) return;
         if (event !== "change" && event !== "rename") return;
-        this.#debounce();
+        this.#onChange.trigger();
       });
     } catch {
       // Losing live reload is a degradation, not a failure: the file is still
@@ -61,15 +59,6 @@ export class FileReloadWatcher {
   stop(): void {
     this.#watcher?.close();
     this.#watcher = undefined;
-    if (this.#timer) this.#cancelSchedule(this.#timer);
-    this.#timer = undefined;
-  }
-
-  #debounce(): void {
-    if (this.#timer) this.#cancelSchedule(this.#timer);
-    this.#timer = this.#schedule(() => {
-      this.#timer = undefined;
-      this.#onChange();
-    }, this.#debounceMs);
+    this.#onChange.cancel();
   }
 }

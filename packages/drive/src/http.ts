@@ -42,6 +42,8 @@ export interface RequestOptions {
   /** Total attempts, including the first. */
   attempts?: number;
   timeoutMs?: number;
+  /** Deadline for small response bodies such as JSON error envelopes. */
+  bodyTimeoutMs?: number;
   /**
    * Statuses outside 2xx that are an answer rather than a failure, returned
    * with the body unread. A resumable upload needs 308 this way: it is how
@@ -95,7 +97,7 @@ export async function request(
 
     try {
       const response = await withTimeout(
-        (signal) => send(url, {...init, signal}),
+        (signal) => send(url, { ...init, signal }),
         timeoutMs,
         options.signal,
       );
@@ -121,7 +123,9 @@ export async function request(
       // which is the case retrying exists for.
       if (options.signal?.aborted) throw cause;
       failure =
-        cause instanceof Error ? cause : new Error(`${label} failed: ${String(cause)}`);
+        cause instanceof Error
+          ? cause
+          : new Error(`${label} failed: ${String(cause)}`);
       if (last) break;
     }
 
@@ -146,8 +150,33 @@ export async function jsonRequest<T>(
   const response = await request(url, init, label, options);
   // A 204 has no body to parse, which several delete endpoints return.
   if (response.status === 204) return undefined as T;
-  const text = await response.text();
+  const text = await responseText(
+    response,
+    options?.bodyTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+    label,
+  );
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+async function responseText(
+  response: Response,
+  timeoutMs: number,
+  label: string,
+): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      response.text(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          void response.body?.cancel().catch(() => {});
+          reject(new Error(`${label} response timed out.`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function requestError(
@@ -170,7 +199,7 @@ async function withTimeout(
   const controller = new AbortController();
   const abort = (): void => controller.abort(outer?.reason);
   if (outer?.aborted) abort();
-  outer?.addEventListener("abort", abort, {once: true});
+  outer?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(
     () => controller.abort(new Error("The request timed out.")),
     timeoutMs,
@@ -213,13 +242,15 @@ function describe(body: string): string {
   const fallback = body.slice(0, 300);
   try {
     const parsed = JSON.parse(body) as {
-      error?: {message?: string} | string;
+      error?: { message?: string } | string;
       error_description?: string;
       error_summary?: string;
       message?: string;
     };
     return (
-      (typeof parsed.error === "object" ? parsed.error?.message : parsed.error) ??
+      (typeof parsed.error === "object"
+        ? parsed.error?.message
+        : parsed.error) ??
       parsed.error_description ??
       parsed.error_summary ??
       parsed.message ??

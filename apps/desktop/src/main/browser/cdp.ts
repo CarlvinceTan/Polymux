@@ -1,7 +1,7 @@
 import type { WebContents } from "electron";
 
 /**
- * A @flareai/browser-use transport for a WebContentsView in the in-app
+ * A @flareai/browser transport for a WebContentsView in the in-app
  * Browser.
  *
  * Electron exposes the same Chrome DevTools Protocol the extension reaches

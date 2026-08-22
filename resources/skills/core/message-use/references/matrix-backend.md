@@ -49,7 +49,7 @@ joined — treat one as a finding to report, not something to accept manually.
 
 Prefer each platform's own login route in Settings → Hub. Use a user-attention
 handoff only when a secret, 2FA, QR approval, CAPTCHA or other genuinely
-user-only step remains, and load `window-use` before anything that may
+user-only step remains, and load `computer-use` before anything that may
 initialize or reveal a local GUI app.
 
 After linking or repair, verify both the remote connected state and a real

@@ -3,7 +3,7 @@ import {mkdtemp, readdir, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {EncryptedCredentialStore, type SecretCipher} from "./credential-store.js";
+import {EncryptedCredentialStore, OpenCodeCredentialFallback, type SecretCipher} from "./credential-store.js";
 import {EncryptedApiKeyPool} from "../inference/api-key-pool.js";
 
 const cipher: SecretCipher = {
@@ -54,6 +54,29 @@ test("refuses to persist a secret when OS encryption is unavailable", async () =
       unavailable.modify("openai", async () => ({type: "api_key", key: "secret"})),
       /Secure credential storage is unavailable/,
     );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test("uses OpenCode Go's existing credential when Electron secure storage is unavailable", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-opencode-fallback-"));
+  const authFile = path.join(directory, "auth.json");
+  try {
+    await writeFile(authFile, JSON.stringify({"opencode-go": {type: "api", key: "sk-external-opencode-key"}}));
+    const unavailable = new EncryptedCredentialStore(path.join(directory, "credentials.json"), {
+      ...cipher,
+      isEncryptionAvailable: () => false,
+    });
+    await writeFile(
+      path.join(directory, "credentials.json"),
+      JSON.stringify({version: 1, credentials: {"opencode-go": "encrypted-elsewhere"}}),
+    );
+    const store = new OpenCodeCredentialFallback(unavailable, authFile);
+
+    assert.deepEqual(await store.read("opencode-go"), {type: "api_key", key: "sk-external-opencode-key"});
+    assert.deepEqual(await store.list(), [{providerId: "opencode-go", type: "api_key"}]);
+    assert.equal(await store.read("anthropic"), undefined);
   } finally {
     await rm(directory, {recursive: true, force: true});
   }
@@ -130,6 +153,21 @@ test("keys this process cannot decrypt are left alone, not moved or overwritten"
       (await new EncryptedApiKeyPool(file, cipher).candidates("openai")).map((item) => item.key),
       ["sk-the-users-real-key"],
     );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test("an unavailable OS cipher leaves the key pool untouched and readable as empty", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "flareai-key-pool-unavailable-"));
+  const file = path.join(directory, "api-keys.json");
+  try {
+    await writeFile(file, "encrypted-by-the-normal-app", "utf8");
+    const pool = new EncryptedApiKeyPool(file, {...cipher, isEncryptionAvailable: () => false});
+    assert.deepEqual(await pool.list("opencode-go"), []);
+    assert.deepEqual(await pool.candidates("opencode-go"), []);
+    await assert.rejects(pool.add("opencode-go", "sk-a-complete-external-key"), /Secure credential storage is unavailable/);
+    assert.equal(await readFile(file, "utf8"), "encrypted-by-the-normal-app");
   } finally {
     await rm(directory, {recursive: true, force: true});
   }

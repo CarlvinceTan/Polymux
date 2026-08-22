@@ -156,6 +156,8 @@ export function validate(action: string, input: JsonObject): string | null {
   if (["press", "keydown", "keyup"].includes(action) && !has("key"))
     return `${action} requires key`;
   if (action === "select" && !has("value")) return "select requires value";
+  if (["type", "fill"].includes(action) && !Object.hasOwn(input, "text") && !Object.hasOwn(input, "value"))
+    return `${action} requires text or value`;
   if (action === "upload" && !Array.isArray(input.files))
     return "upload requires files (absolute paths on this machine)";
   if (
@@ -214,6 +216,7 @@ export function buildCommand(
   const targetWithText = { ...target, locatorText: string("text") };
   const pace = input.pace === "fast" ? ("fast" as const) : undefined;
   const base = { kind: action as SurfaceCommand["kind"], ...(pace ? { pace } : {}) };
+  const maxChars = number("maxChars");
 
   switch (action) {
     case "navigate":
@@ -221,6 +224,7 @@ export function buildCommand(
     case "snapshot":
       return {
         ...base,
+        ...(maxChars !== undefined ? {maxChars} : {}),
         interactive: boolean("interactive"),
         compact: boolean("compact"),
         urls: boolean("urls"),
@@ -274,7 +278,11 @@ export function buildCommand(
     case "type":
     case "fill":
       // Here `text` is what to enter, so it is not part of the target.
-      return { ...base, ...target, text: string("text") ?? "", submit: boolean("submit") };
+      // `value` is the natural spelling many models use for a form field and
+      // is already part of this tool's schema for select. Treat it as a safe
+      // content alias when `text` is absent instead of silently clearing the
+      // field and reporting success.
+      return { ...base, ...target, text: string("text") ?? string("value") ?? "", submit: boolean("submit") };
     case "press":
     case "keydown":
     case "keyup":

@@ -140,6 +140,10 @@ export class AgentRunner {
     const startedAt = this.#clock();
     let hadWorkActivity = false;
     let lastAgentMessage = "";
+    let emptyFinalRepairIssued = false;
+    let allowRepairTurn = false;
+    let remainingRepairTurns = 3;
+    let toolTurns = 0;
     const maxTurns =
       typeof request.maxTurns === "number" &&
       Number.isFinite(request.maxTurns) &&
@@ -147,6 +151,7 @@ export class AgentRunner {
         ? request.maxTurns
         : Infinity;
     const tools = request.tools ?? [];
+    const inferenceTools = tools.map(toInferenceTool);
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
     const emit = async (event: AgentRunEventInput): Promise<void> => {
@@ -171,8 +176,10 @@ export class AgentRunner {
       await emit({ type: "run.started", model: request.model });
       await setStatus("running");
 
-      while (turns < maxTurns) {
+      while (turns < maxTurns || (allowRepairTurn && remainingRepairTurns > 0)) {
         throwIfAborted(signal);
+        if (turns >= maxTurns) remainingRepairTurns -= 1;
+        allowRepairTurn = false;
         turns += 1;
 
         const steered = control.drainSteering();
@@ -182,6 +189,9 @@ export class AgentRunner {
         }
 
         let compacting = false;
+        const synthesisOnly = Boolean(
+          request.toolTurnBudget && toolTurns >= request.toolTurnBudget.maximum,
+        );
         const effective = request.transformContext
           ? cloneContext(
               await request.transformContext({
@@ -199,8 +209,19 @@ export class AgentRunner {
               }),
             )
           : cloneContext(context);
+        if (synthesisOnly)
+          effective.messages.push({
+            role: "user",
+            content: request.toolTurnBudget!.synthesisPrompt,
+          });
+        const activeInferenceTools = synthesisOnly ? [] : inferenceTools;
         if (compacting) await emit({type: 'context.compacted', turn: turns});
-        await emit({ type: "turn.started", turn: turns, context: effective });
+        await emit({
+          type: "turn.started",
+          turn: turns,
+          context: effective,
+          footprint: promptFootprint(effective, activeInferenceTools),
+        });
 
         let finalMessage:
           Extract<InferenceEvent, { type: "done" }>["message"] | undefined;
@@ -215,7 +236,7 @@ export class AgentRunner {
             model: request.model,
             systemPrompt: effective.systemPrompt,
             messages: effective.messages,
-            tools: tools.map(toInferenceTool),
+            tools: activeInferenceTools,
             reasoning: request.reasoning,
             temperature: request.temperature,
             maxOutputTokens: request.maxOutputTokens,
@@ -290,22 +311,73 @@ export class AgentRunner {
           );
 
         usage = addUsage(usage, finalMessage.usage);
-        context.messages.push(finalMessage);
         const calls = finalMessage.content.filter(
           (block): block is ToolCallBlock => block.type === "toolCall",
         );
         const text = finalMessage.content
           .flatMap((block) => (block.type === "text" ? [block.text] : []))
           .join("\n");
+        if (!calls.length && !text.trim()) {
+          if (emptyFinalRepairIssued)
+            throw coreError(
+              "inference",
+              "Inference ended twice without a user-facing final answer",
+              true,
+            );
+          emptyFinalRepairIssued = true;
+          await emit({
+            type: "message.final_rejected",
+            turn: turns,
+            repairMessageCount: 1,
+          });
+          context.messages.push(finalMessage, {
+            role: "user",
+            content: "Return a concise, self-contained user-facing final answer from the evidence already gathered. Do not call tools or expose internal reasoning.",
+          });
+          allowRepairTurn = true;
+          continue;
+        }
+        if (!calls.length && request.reviewFinal) {
+          const repair = await request.reviewFinal({
+            runId: request.runId,
+            turn: turns,
+            signal,
+            text,
+          });
+          if (repair.length) {
+            await emit({
+              type: "message.final_rejected",
+              turn: turns,
+              repairMessageCount: repair.length,
+            });
+            context.messages.push(finalMessage, ...repair);
+            allowRepairTurn = true;
+            continue;
+          }
+        }
+        context.messages.push(finalMessage);
         if (text) lastAgentMessage = text;
-        await emit({
-          type: "message.completed",
-          turn: turns,
-          message: finalMessage,
-          phase: calls.length ? "commentary" : "final",
-        });
 
         if (calls.length) {
+          if (synthesisOnly) {
+            await emit({
+              type: "message.final_rejected",
+              turn: turns,
+              repairMessageCount: 1,
+            });
+            context.messages.push({
+              role: "user",
+              content: "Tool use is no longer available for this bounded task. Return the requested final answer from the evidence already gathered, stating any unresolved uncertainty.",
+            });
+            allowRepairTurn = true;
+            continue;
+          }
+          await emit({
+            type: "message.completed",
+            turn: turns,
+            message: finalMessage,
+            phase: "commentary",
+          });
           hadWorkActivity = true;
           await setStatus("executing_tools");
           const results = await this.#executeTools(
@@ -313,22 +385,30 @@ export class AgentRunner {
             byName,
             request.toolExecution ?? "sequential",
             request.runId,
+            request.budgetScope,
             turns,
             signal,
             emit,
             request.subagentRun === true,
           );
           context.messages.push(...results);
+          toolTurns += 1;
+          if (
+            request.toolTurnBudget &&
+            toolTurns >= request.toolTurnBudget.maximum
+          ) allowRepairTurn = true;
           await setStatus("running");
           continue;
         }
 
         const lateSteering = control.drainSteering();
         if (lateSteering.length) {
+          await emit({type: "message.final_rejected", turn: turns, repairMessageCount: lateSteering.length});
           for (const message of lateSteering) {
             context.messages.push(message);
             await emit({ type: "steer.accepted", message });
           }
+          allowRepairTurn = true;
           continue;
         }
 
@@ -340,13 +420,26 @@ export class AgentRunner {
             runId: request.runId,
             turn: turns,
             signal,
+            lastAgentMessage,
           });
           if (outstanding.length) {
+            await emit({type: "message.final_rejected", turn: turns, repairMessageCount: outstanding.length});
             context.messages.push(...outstanding);
+            allowRepairTurn = true;
             continue;
           }
         }
 
+        // `beforeComplete` may yield while the user speaks. Seal and completion
+        // are one synchronous boundary: accepted steering always gets a turn,
+        // and anything later is rejected before the host persists it.
+        if (!control.sealSteeringIfEmpty()) {
+          await emit({type: "message.final_rejected", turn: turns, repairMessageCount: 1});
+          allowRepairTurn = true;
+          continue;
+        }
+
+        await emit({type: "message.completed", turn: turns, message: finalMessage, phase: "final"});
         await setStatus("completed");
         const result: AgentRunResult = {
           runId: request.runId,
@@ -396,6 +489,7 @@ export class AgentRunner {
     tools: Map<string, AgentTool>,
     defaultMode: ToolExecutionMode,
     runId: string,
+    budgetScope: string | undefined,
     turn: number,
     signal: AbortSignal,
     emit: (event: AgentRunEventInput) => Promise<void>,
@@ -449,6 +543,7 @@ export class AgentRunner {
         }
         const result = await tool.execute(call.arguments, {
           runId,
+          budgetScope,
           turn,
           callId: call.id,
           signal,
@@ -496,6 +591,75 @@ export class AgentRunner {
     for (const call of calls) results.push(await execute(call));
     return results;
   }
+}
+
+function promptFootprint(
+  context: AgentContext,
+  tools: InferenceTool[],
+): {
+  systemPromptBytes: number;
+  messageBytes: number;
+  toolSchemaBytes: number;
+  toolCount: number;
+  toolNames: string[];
+  systemSections: string[];
+  activeSkillNames: string[];
+  availableSkillCount: number;
+  ambientContextCounts: {
+    memoryBlocks: number;
+    memoryCandidateBlocks: number;
+    flareBrowserTabs: number;
+    externalBrowserTabs: number;
+    openWindows: number;
+  };
+  /** Source timestamps only; no private titles, URLs, or window names. */
+  ambientContextCapturedAt: {
+    windows?: string;
+    flareBrowser?: string;
+    externalBrowser?: string;
+  };
+  totalBytes: number;
+} {
+  const bytes = (value: string): number => new TextEncoder().encode(value).byteLength;
+  const systemPromptBytes = bytes(context.systemPrompt ?? "");
+  const messageBytes = bytes(JSON.stringify(context.messages));
+  const toolSchemaBytes = bytes(JSON.stringify(tools));
+  const systemPrompt = context.systemPrompt ?? "";
+  const itemCount = (heading: string): number => {
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const section = systemPrompt.match(new RegExp(`^### ${escaped}\\n([\\s\\S]*?)(?=^#{2,3} |(?![\\s\\S]))`, "m"))?.[1] ?? "";
+    return [...section.matchAll(/^- /gm)].length;
+  };
+  const captured = (pattern: RegExp): string | undefined =>
+    systemPrompt.match(pattern)?.[1];
+  return {
+    systemPromptBytes,
+    messageBytes,
+    toolSchemaBytes,
+    toolCount: tools.length,
+    toolNames: tools.map((tool) => tool.name),
+    systemSections: [...systemPrompt.matchAll(/^## ([^\n]+)$/gm)]
+      .map((match) => match[1]!.trim()),
+    activeSkillNames: [...systemPrompt.matchAll(/<active_skill\s+name="([^"]+)"/g)]
+      .map((match) => match[1]!),
+    availableSkillCount: (() => {
+      const catalogue = systemPrompt.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1] ?? "";
+      return [...catalogue.matchAll(/<skill>/g)].length;
+    })(),
+    ambientContextCounts: {
+      memoryBlocks: Number(systemPrompt.match(/Selected durable context: (\d+) blocks\./)?.[1] ?? 0),
+      memoryCandidateBlocks: Number(systemPrompt.match(/Durable context candidates: (\d+) blocks\./)?.[1] ?? 0),
+      flareBrowserTabs: itemCount("Open in the FlareAI browser"),
+      externalBrowserTabs: itemCount("Open in the connected external browser"),
+      openWindows: itemCount("Open windows"),
+    },
+    ambientContextCapturedAt: {
+      windows: captured(/^Desktop window snapshot captured: (.+)$/m),
+      flareBrowser: captured(/^### Open in the FlareAI browser\nCaptured: (.+)$/m),
+      externalBrowser: captured(/^### Open in the connected external browser\nCaptured: (.+)$/m),
+    },
+    totalBytes: systemPromptBytes + messageBytes + toolSchemaBytes,
+  };
 }
 
 function toInferenceTool(tool: AgentTool): InferenceTool {

@@ -1,4 +1,4 @@
-// Chronicle's accessibility capture helper.
+// ComputerHistory's accessibility capture helper.
 //
 // Prints one JSON object describing the frontmost application's focused
 // window: app name, bundle id, window title, and the visible text collected

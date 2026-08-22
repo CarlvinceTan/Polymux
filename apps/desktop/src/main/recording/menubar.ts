@@ -1,5 +1,5 @@
 import { Menu, Tray, nativeImage } from "electron";
-import { elapsedLabel, type RecordingSession } from "@flareai/chronicle";
+import { elapsedLabel, type RecordingSession } from "@flareai/computer-history";
 
 /**
  * The menu-bar presence of a running recording.

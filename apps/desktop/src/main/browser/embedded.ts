@@ -6,11 +6,12 @@ import {
   createSession,
   startSession,
   stopSession,
-} from "@flareai/browser-use";
+} from "@flareai/browser";
 import { nativeTheme, WebContentsView, type BrowserWindow, type WebContents } from "electron";
 import { electronTransport, type CdpTransport } from "./cdp.js";
 import { PageCursor } from "./cursor.js";
 import { availablePath, type Downloads } from "./downloads.js";
+import {selectPromptTabs} from "./tab-context.js";
 import { clearFaviconCache, tabFaviconDataUrl } from "./favicon.js";
 
 /**
@@ -202,6 +203,17 @@ export class EmbeddedBrowser {
         url: view.webContents.getURL(),
         title: view.webContents.getTitle(),
       }));
+  }
+
+  /** Bounded state for an always-present model prompt. `tabs()` remains the
+   * complete inventory used by explicit browser inspection. */
+  promptTabs(maximum = 12): Array<{tabId: string; url: string; title: string}> {
+    return selectPromptTabs(this.tabs(), this.#onScreen, maximum);
+  }
+
+  /** Exact live pages currently painted in the workspace. */
+  visibleTabs(): Array<{tabId: string; url: string; title: string}> {
+    return this.tabs().filter((tab) => this.#onScreen.has(tab.tabId));
   }
 
   /**
@@ -451,7 +463,7 @@ export class EmbeddedBrowser {
 }
 
 /**
- * A @flareai/browser-use session. The package is plain JavaScript so the
+ * A @flareai/browser session. The package is plain JavaScript so the
  * browser extension can load it without a build step, so its shape is named
  * here rather than imported.
  */

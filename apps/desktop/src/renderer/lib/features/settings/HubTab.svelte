@@ -98,6 +98,7 @@
   let loading = !hubSnapshot.status;
   let error = '';
   let busy = '';
+  let emailHealthChecking = false;
 
   // Bridge linking
   let step: CommsLoginStepDto | null = null;
@@ -123,11 +124,31 @@
   let emailPassword = '';
 
   onMount(() => {
-    void load();
-    return api.comms.subscribe((next) => {
+    const unsubscribe = api.comms.subscribe((next) => {
       status = next;
     });
+    void load().then(() => checkEmailConnections());
+    const healthTimer = window.setInterval(() => void checkEmailConnections(), 60_000);
+    return () => {
+      window.clearInterval(healthTimer);
+      unsubscribe();
+    };
   });
+
+  /** Keep mailbox state current without making connection testing a user task. */
+  async function checkEmailConnections(): Promise<void> {
+    if (emailHealthChecking || !status?.email.accounts.length) return;
+    emailHealthChecking = true;
+    try {
+      const results = await Promise.allSettled(status.email.accounts.map((account) => api.comms.emailTest(account.id)));
+      if (status) {
+        const byId = new Map(results.flatMap((result) => result.status === 'fulfilled' ? [[result.value.id, result.value] as const] : []));
+        status = {...status, email: {...status.email, accounts: status.email.accounts.map((account) => byId.get(account.id) ?? account)}};
+      }
+    } finally {
+      emailHealthChecking = false;
+    }
+  }
 
   async function load(): Promise<void> {
     // Only an empty pane waits — a reopened tab already has rows on screen and
@@ -237,10 +258,10 @@
   $: setupReady = Boolean(
     activeBridge?.setup?.fields.every((field) => (setupValues[field.id] ?? '').trim() !== ''),
   );
-  // Opening a platform is the signal that it is wanted, so its bridge starts
-  // now. Without this a bridge parked as `dormant` reports no login methods and
-  // the pane has nothing to offer — the whole platform reads as unconnectable.
-  $: void wakeSelected(selected);
+  // Warm every installed bridge as soon as the Hub status arrives. Login
+  // methods belong to the running bridge, so waiting until a row is selected
+  // makes quick navigation flash an avoidable intermediate state.
+  $: void warmDormantBridges(status);
   // Typed credentials belong to the platform they were typed under, not to
   // whichever one the rail lands on next.
   $: if (activeBridge?.platform !== setupPlatform) {
@@ -250,6 +271,17 @@
 
   /** Platforms already asked for this session; a bridge starts once. */
   const wokenPlatforms = new Set<CommsPlatform>();
+
+  async function warmDormantBridges(snapshot: CommsStatusDto | null): Promise<void> {
+    const platforms = (snapshot?.bridges ?? [])
+      .filter((bridge) => bridge.state === 'dormant' && !wokenPlatforms.has(bridge.platform))
+      .map((bridge) => bridge.platform);
+    if (platforms.length === 0) return;
+    for (const platform of platforms) wokenPlatforms.add(platform);
+    await Promise.allSettled(platforms.map((platform) => api.comms.wake(platform)));
+    const next = await api.comms.status().catch((): null => null);
+    if (next) status = next;
+  }
 
   async function wakeSelected(section: Section | null): Promise<void> {
     if (section?.kind !== 'bridge') return;
@@ -637,27 +669,6 @@
     }
   }
 
-  async function testEmail(account: CommsEmailAccountDto): Promise<void> {
-    busy = `email-test:${account.id}`;
-    try {
-      const tested = await api.comms.emailTest(account.id);
-      if (status)
-        status = {
-          ...status,
-          email: {
-            ...status.email,
-            accounts: status.email.accounts.map((item) =>
-              item.id === tested.id ? tested : item,
-            ),
-          },
-        };
-    } catch (cause) {
-      error = readableError(cause);
-    } finally {
-      busy = '';
-    }
-  }
-
   $: qr =
     step?.type === 'display_and_wait' && step.display === 'qr' && step.data
       ? qrSvgPath(step.data)
@@ -831,8 +842,6 @@
                   : $t('hub.linkedOne', {name: activeBridge.accounts[0]?.name ?? ''})}
               {:else if activeBridge.state === 'unavailable'}
                 {activeBridge.error}
-              {:else if activeBridge.state === 'dormant'}
-                {$t('hub.dormant')}
               {:else if activeBridge.state === 'unreachable'}
                 {$t('hub.unreachable')}
               {:else}
@@ -1039,11 +1048,9 @@
               {/if}
               {#if stepError}<p class="comms-hint warn">{stepError}</p>{/if}
             </section>
-            {:else if activeBridge.state === 'dormant'}
-            <!-- Opening the platform already asked for its bridge, so this is
-                 the gap before its login methods arrive, not a dead end. -->
-            <p class="comms-muted">{$t('platforms.startingPlatform', {platform: activeBridge.name})}</p>
-            {:else if activeBridge.state !== 'unavailable' && activeBridge.accounts.length === 0}
+            {:else if activeBridge.state !== 'unavailable' &&
+            activeBridge.state !== 'dormant' &&
+            activeBridge.accounts.length === 0}
             <p class="comms-muted">
               {$t('hub.noLinkMethod')}
               {#if activeBridge.managementRoomHint}
@@ -1077,7 +1084,7 @@
                       {#if account.isDefault}<em>{$t('hub.default')}</em>{/if}
                     </span>
                     <span class="comms-status" data-state={account.status}>
-                      {account.status === 'ok' ? $t('hub.reachable') : account.status === 'error' ? $t('task.failed') : $t('hub.notTested')}
+                      {account.status === 'ok' ? $t('hub.reachable') : account.status === 'error' ? $t('drive.stateDisconnected') : $t('hub.testing')}
                     </span>
                   </div>
                   <p class="comms-mailbox-servers">
@@ -1088,19 +1095,7 @@
                     <span>{account.incoming.auth === 'oauth2' ? 'OAuth' : account.incoming.auth === 'command' ? $t('hub.keychain') : account.incoming.auth}</span>
                   </p>
                   {#if account.error}<p class="comms-hint warn">{account.error}</p>{/if}
-                  {#if !account.secretStored}
-                    <p class="comms-hint">
-                      {$t('hub.externalPassword')}
-                    </p>
-                  {/if}
                   <div class="comms-mailbox-actions">
-                    <button
-                      type="button"
-                      disabled={busy === `email-test:${account.id}`}
-                      onclick={() => void testEmail(account)}
-                    >
-                      {busy === `email-test:${account.id}` ? $t('hub.testing') : $t('hub.test')}
-                    </button>
                     <button type="button" onclick={() => editEmail(account)}>{$t('common.edit')}</button>
                     <button
                       type="button"
@@ -1126,18 +1121,18 @@
 </div>
 
 <style>
-  .comms{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 16px calc(var(--options-content-edge) + var(--options-tab-inline))}
+  .comms{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 16px var(--options-content-edge)}
   .comms-muted{color:var(--neutral-400);font-size:11px}
   .comms-error{display:flex;align-items:center;gap:12px;margin-bottom:10px;padding:9px 11px;border-radius:9px;background:#fff5f5;color:#8f3e3e;font-size:11px}
   .comms-error>span{min-width:0;flex:1}
   .comms-error button{height:26px;flex:none;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:7px;padding:0 9px;background:var(--app-surface);color:inherit;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
   :global(:root[data-theme="dark"]) .comms-error{background:#321f1f;color:#eea7a7}
 
-  .comms-body{min-height:0;flex:1;display:grid;grid-template-columns:186px 1fr;gap:var(--options-divider-gap)}
+  .comms-body{min-height:0;flex:1;display:grid;grid-template-columns:calc(186px + var(--options-tab-inline)) 1fr;gap:var(--options-divider-gap)}
   /* Flex gap rather than row margins: block margins collapse to half the
      intended spacing, and the MCP and Skills rails read as 4px of clear air
      between adjacent highlights. */
-  .comms-rail-column{min-height:0;display:flex;flex-direction:column;gap:6px;padding-right:4px;border-right:1px solid var(--neutral-200)}
+  .comms-rail-column{min-height:0;display:flex;flex-direction:column;gap:6px;padding-right:var(--options-divider-gap);border-right:1px solid var(--neutral-200)}
   /* Same fade as the MCP/Skills rails: the mask only opens at an edge the list
      is actually scrolled away from, so a short list keeps crisp ends. */
   .comms-rail{min-height:0;flex:1;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px 0;overflow-y:auto;list-style:none}
@@ -1227,8 +1222,9 @@
   .comms-actions button.primary:hover{opacity:.88}
   .comms-actions button:disabled{cursor:default;opacity:.5}
 
-  .comms-flows{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
-  .comms-flows li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px;border:1px solid var(--neutral-200);border-radius:9px}
+  .comms-flows{margin:0;padding:0;list-style:none}
+  .comms-flows li{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 4px}
+  .comms-flows li+li::before{position:absolute;top:0;right:4px;left:4px;height:1px;background:var(--neutral-200);content:""}
   .comms-flows span{min-width:0;display:flex;flex-direction:column;gap:2px}
   .comms-flows strong{color:var(--neutral-900);font-size:11.5px;font-weight:545}
   .comms-flows small{color:var(--neutral-500);font-size:10px}
@@ -1243,8 +1239,9 @@
   .comms-code{padding:9px 12px;border-radius:9px;background:var(--neutral-100);color:var(--neutral-950);font-size:19px;font-weight:600;letter-spacing:.16em;font-variant-numeric:tabular-nums}
 
 
-  .comms-mailboxes{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
-  .comms-mailboxes>li{padding:11px 12px;border:1px solid var(--neutral-200);border-radius:11px}
+  .comms-mailboxes{margin:0;padding:0;list-style:none}
+  .comms-mailboxes>li{position:relative;padding:12px 4px}
+  .comms-mailboxes>li+li::before{position:absolute;top:0;right:4px;left:4px;height:1px;background:var(--neutral-200);content:""}
   .comms-mailbox-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
   .comms-mailbox-name{min-width:0;display:flex;align-items:center;gap:7px}
   .comms-mailbox-name strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:555}
@@ -1260,7 +1257,8 @@
   .comms-mailbox-empty button{height:27px;flex:none;border:1px solid var(--neutral-200);border-radius:7px;padding:0 11px;background:var(--app-surface);color:var(--neutral-800);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
   .comms-mailbox-empty button:hover{background:var(--neutral-100)}
 
-  .comms-status{font-size:11px;font-weight:540}
+  .comms-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:540}
+  .comms-status::before{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor;content:""}
   .comms-status[data-state="ok"]{color:#3f9c5a}
   .comms-status[data-state="error"]{color:#a04545}
   .comms-status[data-state="unknown"]{color:var(--neutral-500)}

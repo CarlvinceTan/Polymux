@@ -13,8 +13,8 @@ skill or editing surface.
 ## Detection
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs system check --json
-"${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs system status --json
+python3 scripts/skill_maintenance.py system check --json
+python3 scripts/skill_maintenance.py system status --json
 ```
 
 Detection copies the bundled skills from the installed FlareAI app bundle into an
@@ -36,7 +36,7 @@ while adopting compatible upstream improvements.
 Write `resolution.json` with `resolved_paths`, `summary`, and `validation`.
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs system stage-review --skill <name> --json
+python3 scripts/skill_maintenance.py system stage-review --skill <name> --json
 ```
 
 Staging refuses changed live state, altered upstream snapshots, unresolved
@@ -61,7 +61,7 @@ If promotion succeeds but finalization fails, the live deployment and approved
 Git history remain authoritative. Rerun:
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/skill_maintenance.mjs system finalize-candidate <candidate-id> --json
+python3 scripts/skill_maintenance.py system finalize-candidate <candidate-id> --json
 ```
 
 Never repair state by copying a review directly into a live skill.

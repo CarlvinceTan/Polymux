@@ -1,21 +1,23 @@
-import {readFile, stat} from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto} from "@flareai/protocol";
-import {SIMPLE_UPLOAD_LIMIT, uploadInChunks} from "./chunks.js";
-import {downloadToFile} from "./download.js";
+import type { DriveEntryDto } from "@flareai/protocol";
+import { SIMPLE_UPLOAD_LIMIT, uploadInChunks } from "./chunks.js";
+import { downloadToFile } from "./download.js";
 import {
   DriveRequestError,
   jsonRequest,
   request,
   type RequestOptions,
 } from "./http.js";
-import {OAuthClient, oauthAppFromEnv} from "./oauth.js";
+import { OAuthClient, oauthAppFromEnv } from "./oauth.js";
 import {
   copyName,
+  DriveConflictError,
   type DriveAdapter,
   type DriveConsentPrompt,
   type DriveProbe,
   type DriveSecretStore,
+  type DriveWriteOptions,
 } from "./types.js";
 
 const RPC = "https://api.dropboxapi.com/2";
@@ -50,7 +52,7 @@ export class DropboxDrive implements DriveAdapter {
         ],
         // Dropbox issues short-lived tokens and only sends a refresh token when
         // the flow asks for offline access explicitly.
-        extraAuthParams: {token_access_type: "offline"},
+        extraAuthParams: { token_access_type: "offline" },
       }),
       secrets,
       consent,
@@ -68,17 +70,23 @@ export class DropboxDrive implements DriveAdapter {
         error: "This build has no Dropbox client credentials.",
       };
     if (!(await this.#oauth.connected()))
-      return {state: "logged-out", accounts: [], usage: null, root: null, error: null};
+      return {
+        state: "logged-out",
+        accounts: [],
+        usage: null,
+        root: null,
+        error: null,
+      };
     try {
       const [account, space] = await Promise.all([
         this.#rpc<{
           email?: string;
-          name?: {display_name?: string};
+          name?: { display_name?: string };
           account_id?: string;
         }>("/users/get_current_account", undefined),
         this.#rpc<{
           used?: number;
-          allocation?: {allocated?: number};
+          allocation?: { allocated?: number };
         }>("/users/get_space_usage", undefined),
       ]);
       return {
@@ -93,6 +101,7 @@ export class DropboxDrive implements DriveAdapter {
         usage: {
           used: space.used ?? null,
           total: space.allocation?.allocated ?? null,
+          appUsed: null,
         },
         root: "Apps/FlareAI",
         error: null,
@@ -144,41 +153,85 @@ export class DropboxDrive implements DriveAdapter {
   }
 
   async createFolder(parentPath: string, name: string): Promise<DriveEntryDto> {
-    const created = await this.#rpc<{metadata: DropboxEntry}>(
+    const created = await this.#rpc<{ metadata: DropboxEntry }>(
       "/files/create_folder_v2",
-      {path: join(parentPath, name), autorename: false},
+      { path: join(parentPath, name), autorename: false },
     );
-    return this.#entry({...created.metadata, [".tag"]: "folder"});
+    return this.#entry({ ...created.metadata, [".tag"]: "folder" });
   }
 
-  async upload(parentPath: string, localPath: string): Promise<DriveEntryDto> {
-    const name = path.basename(localPath);
-    const commit = {path: join(parentPath, name), mode: "add", autorename: true};
-    const size = (await stat(localPath)).size;
-    if (size > SIMPLE_UPLOAD_LIMIT)
-      return this.#uploadSession(localPath, commit);
+  readonly conditionalWrites = true;
 
-    const bytes = await readFile(localPath);
-    const response = await request(
-      `${CONTENT}/files/upload`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${await this.#oauth.accessToken()}`,
-          "content-type": "application/octet-stream",
-          // Dropbox takes content-endpoint arguments in a header, because the
-          // body is the file itself.
-          "dropbox-api-arg": JSON.stringify(commit),
+  childPath(parentPath: string, name: string): string {
+    return join(parentPath, name);
+  }
+
+  async version(target: string): Promise<string | null> {
+    try {
+      const entry = await this.#rpc<DropboxEntry>("/files/get_metadata", {
+        path: normalize(target),
+      });
+      return entry.rev ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async upload(
+    parentPath: string,
+    localPath: string,
+    options?: DriveWriteOptions,
+  ): Promise<DriveEntryDto> {
+    const name = path.basename(localPath);
+    const target = join(parentPath, name);
+    const commit = {
+      path: target,
+      mode: options?.ifMatch
+        ? { ".tag": "update", update: options.ifMatch }
+        : "overwrite",
+      autorename: false,
+    };
+    const size = (await stat(localPath)).size;
+    try {
+      if (size > SIMPLE_UPLOAD_LIMIT)
+        return await this.#uploadSession(localPath, commit, options);
+
+      const bytes = await readFile(localPath);
+      const response = await request(
+        `${CONTENT}/files/upload`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${await this.#oauth.accessToken()}`,
+            "content-type": "application/octet-stream",
+            // Dropbox takes content-endpoint arguments in a header, because the
+            // body is the file itself.
+            "dropbox-api-arg": JSON.stringify(commit),
+          },
+          body: new Uint8Array(bytes),
         },
-        body: new Uint8Array(bytes),
-      },
-      "The upload",
-      this.#retry(),
-    );
-    return this.#entry({
-      ...((await response.json()) as DropboxEntry),
-      [".tag"]: "file",
-    });
+        "The upload",
+        this.#retry(),
+      );
+      const uploaded = this.#entry({
+        ...((await response.json()) as DropboxEntry),
+        [".tag"]: "file",
+      });
+      options?.onProgress?.(size, size);
+      return uploaded;
+    } catch (cause) {
+      if (
+        options?.ifMatch &&
+        cause instanceof DriveRequestError &&
+        cause.status === 409
+      )
+        throw new DriveConflictError({
+          path: target,
+          expected: options.ifMatch,
+          found: await this.version(target),
+        });
+      throw cause;
+    }
   }
 
   /**
@@ -192,23 +245,24 @@ export class DropboxDrive implements DriveAdapter {
   async #uploadSession(
     localPath: string,
     commit: Record<string, unknown>,
+    options?: DriveWriteOptions,
   ): Promise<DriveEntryDto> {
-    const started = await this.#content<{session_id: string}>(
+    const started = await this.#content<{ session_id: string }>(
       "/files/upload_session/start",
-      {close: false},
+      { close: false },
       Buffer.alloc(0),
       "Starting the upload",
     );
     const session = started.session_id;
 
     return uploadInChunks(localPath, async (chunk) => {
-      const cursor = {session_id: session, offset: chunk.start};
+      const cursor = { session_id: session, offset: chunk.start };
       if (chunk.last)
         return {
           done: this.#entry({
             ...(await this.#content<DropboxEntry>(
               "/files/upload_session/finish",
-              {cursor, commit},
+              { cursor, commit },
               chunk.bytes,
               "Finishing the upload",
             )),
@@ -218,17 +272,17 @@ export class DropboxDrive implements DriveAdapter {
       try {
         await this.#content<unknown>(
           "/files/upload_session/append_v2",
-          {cursor, close: false},
+          { cursor, close: false },
           chunk.bytes,
           "The upload",
         );
-        return {resumeAt: chunk.end};
+        return { resumeAt: chunk.end };
       } catch (cause) {
         const expected = incorrectOffset(cause);
         if (expected === null) throw cause;
-        return {resumeAt: expected};
+        return { resumeAt: expected };
       }
-    });
+    }, "The upload", options?.onProgress);
   }
 
   async download(target: string, destination: string): Promise<void> {
@@ -246,7 +300,7 @@ export class DropboxDrive implements DriveAdapter {
           return {
             size: typeof meta.size === "number" ? meta.size : null,
             hash: meta.content_hash
-              ? {algorithm: "dropbox", expected: meta.content_hash}
+              ? { algorithm: "dropbox", expected: meta.content_hash }
               : null,
           };
         } catch {
@@ -260,8 +314,8 @@ export class DropboxDrive implements DriveAdapter {
             method: "POST",
             headers: {
               authorization: `Bearer ${await this.#oauth.accessToken()}`,
-              "dropbox-api-arg": JSON.stringify({path: normalize(target)}),
-              ...(offset > 0 ? {range: `bytes=${offset}-`} : {}),
+              "dropbox-api-arg": JSON.stringify({ path: normalize(target) }),
+              ...(offset > 0 ? { range: `bytes=${offset}-` } : {}),
             },
           },
           "The download",
@@ -271,38 +325,50 @@ export class DropboxDrive implements DriveAdapter {
   }
 
   async remove(target: string): Promise<void> {
-    await this.#rpc<unknown>("/files/delete_v2", {path: normalize(target)});
+    await this.#rpc<unknown>("/files/delete_v2", { path: normalize(target) });
   }
 
   async rename(target: string, name: string): Promise<DriveEntryDto> {
     const from = normalize(target);
     const parent = from.slice(0, from.lastIndexOf("/"));
-    const moved = await this.#rpc<{metadata: DropboxEntry}>("/files/move_v2", {
-      from_path: from,
-      to_path: join(parent, name),
-      autorename: false,
-    });
+    const moved = await this.#rpc<{ metadata: DropboxEntry }>(
+      "/files/move_v2",
+      {
+        from_path: from,
+        to_path: join(parent, name),
+        autorename: false,
+      },
+    );
     return this.#entry(moved.metadata);
   }
 
-  async move(target: string, destinationFolder: string): Promise<DriveEntryDto> {
+  async move(
+    target: string,
+    destinationFolder: string,
+  ): Promise<DriveEntryDto> {
     const from = normalize(target);
-    const moved = await this.#rpc<{metadata: DropboxEntry}>("/files/move_v2", {
-      from_path: from,
-      to_path: join(destinationFolder, from.slice(from.lastIndexOf("/") + 1)),
-      autorename: true,
-    });
+    const moved = await this.#rpc<{ metadata: DropboxEntry }>(
+      "/files/move_v2",
+      {
+        from_path: from,
+        to_path: join(destinationFolder, from.slice(from.lastIndexOf("/") + 1)),
+        autorename: true,
+      },
+    );
     return this.#entry(moved.metadata);
   }
 
   async copy(target: string): Promise<DriveEntryDto> {
     const from = normalize(target);
     const parent = from.slice(0, from.lastIndexOf("/"));
-    const copied = await this.#rpc<{metadata: DropboxEntry}>("/files/copy_v2", {
-      from_path: from,
-      to_path: join(parent, copyName(from.slice(from.lastIndexOf("/") + 1))),
-      autorename: true,
-    });
+    const copied = await this.#rpc<{ metadata: DropboxEntry }>(
+      "/files/copy_v2",
+      {
+        from_path: from,
+        to_path: join(parent, copyName(from.slice(from.lastIndexOf("/") + 1))),
+        autorename: true,
+      },
+    );
     return this.#entry(copied.metadata);
   }
 
@@ -322,7 +388,10 @@ export class DropboxDrive implements DriveAdapter {
       // that *creates* one, which is not something opening a file should do.
       // Its web app addresses files by path under /home, so that is built here
       // rather than asking the API to publish anything.
-      webUrl: location ? `https://www.dropbox.com/home${encodeURI(location)}` : null,
+      webUrl: location
+        ? `https://www.dropbox.com/home${encodeURI(location)}`
+        : null,
+      version: entry.rev ?? null,
     };
   }
 
@@ -337,7 +406,7 @@ export class DropboxDrive implements DriveAdapter {
         method: "POST",
         headers: {
           authorization: `Bearer ${await this.#oauth.accessToken()}`,
-          ...(body ? {"content-type": "application/json"} : {}),
+          ...(body ? { "content-type": "application/json" } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
       },
@@ -379,13 +448,15 @@ export class DropboxDrive implements DriveAdapter {
    * backoff would guess when the provider has already said.
    */
   #retry(): RequestOptions {
-    return {retryAfter: (status, body) => (status === 429 ? retryAfter(body) : null)};
+    return {
+      retryAfter: (status, body) => (status === 429 ? retryAfter(body) : null),
+    };
   }
 }
 
 function retryAfter(body: string): number | null {
   try {
-    const parsed = JSON.parse(body) as {error?: {retry_after?: number}};
+    const parsed = JSON.parse(body) as { error?: { retry_after?: number } };
     const seconds = parsed.error?.retry_after;
     return typeof seconds === "number" ? seconds : null;
   } catch {
@@ -396,13 +467,14 @@ function retryAfter(body: string): number | null {
 /** The offset Dropbox says the session is really at, when an append lands in
  * the wrong place. Anything else is a failure that resuming cannot fix. */
 function incorrectOffset(cause: unknown): number | null {
-  if (!(cause instanceof DriveRequestError) || cause.status !== 409) return null;
+  if (!(cause instanceof DriveRequestError) || cause.status !== 409)
+    return null;
   try {
     const parsed = JSON.parse(cause.body) as {
       error?: {
         ".tag"?: string;
         correct_offset?: number;
-        incorrect_offset?: {correct_offset?: number};
+        incorrect_offset?: { correct_offset?: number };
       };
     };
     const offset =
@@ -423,6 +495,7 @@ interface DropboxEntry {
   size?: number;
   server_modified?: string;
   client_modified?: string;
+  rev?: string;
 }
 
 interface DropboxPage {

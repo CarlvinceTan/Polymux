@@ -134,6 +134,27 @@ test("moving between providers carries the bytes and drops the original", async 
   }
 });
 
+test("moving a folder between providers carries its complete tree", async () => {
+  const {drive, left, right, clean} = await twoProviders();
+  try {
+    await mkdir(path.join(left, "Project", "assets"), {recursive: true});
+    await writeFile(path.join(left, "Project", "readme.md"), "hello");
+    await writeFile(path.join(left, "Project", "assets", "logo.txt"), "mark");
+    const folder = (await drive.list("")).find((entry) => entry.name === "Project");
+    assert.ok(folder);
+
+    const moved = await drive.move(folder.path, "dropbox#b");
+    assert.equal(moved.provider, "dropbox");
+    assert.equal(
+      (await readFile(path.join(right, "Project", "assets", "logo.txt"))).toString(),
+      "mark",
+    );
+    await assert.rejects(readFile(path.join(left, "Project", "readme.md")));
+  } finally {
+    await clean();
+  }
+});
+
 test("a provider that fails does not empty the whole drive", async () => {
   const base = await mkdtemp(path.join(tmpdir(), "flareai-virtual-"));
   try {
@@ -178,7 +199,7 @@ test("usage is what the connected providers add up to", async () => {
         probe: async (): Promise<DriveProbe> => ({
           state: "connected",
           accounts: [],
-          usage: {used: 100, total: 1000},
+          usage: {used: 100, total: 1000, appUsed: 10},
           root: null,
           error: null,
         }),
@@ -193,7 +214,7 @@ test("usage is what the connected providers add up to", async () => {
           accounts: [],
           // A provider with no quota to report is skipped rather than counted
           // as an empty one.
-          usage: {used: 50, total: null},
+          usage: {used: 50, total: null, appUsed: 5},
           root: null,
           error: null,
         }),
@@ -202,7 +223,7 @@ test("usage is what the connected providers add up to", async () => {
   ];
   const probe = await new VirtualDrive(() => sources, async () => "a#1").probe();
   assert.equal(probe.state, "connected");
-  assert.deepEqual(probe.usage, {used: 150, total: 1000});
+  assert.deepEqual(probe.usage, {used: 150, total: 1000, appUsed: 15});
 });
 
 test("a folder belongs to one provider, and so does everything inside it", async () => {

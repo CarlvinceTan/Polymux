@@ -208,7 +208,6 @@
                         type="button"
                         aria-label={$t('chats.openChat', {title: chat.title})}
                         aria-current={chat.id === activeId ? 'page' : undefined}
-                        title={chat.title}
                         onclick={() => onOpen(chat.id)}
                         ondblclick={(event) => { event.preventDefault(); event.stopPropagation(); void startRename(chat); }}
                       >

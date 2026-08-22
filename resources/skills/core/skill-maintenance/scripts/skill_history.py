@@ -20,7 +20,7 @@ import uuid
 DEFAULT_REPO = Path.home() / ".flareai" / "skill-history.git"
 DEFAULT_WORKTREES = Path.home() / ".flareai" / "skill-maintenance" / "git-worktrees"
 DEFAULT_FLAREAI_ROOT = Path.home() / ".flareai" / "skills"
-DEFAULT_AGENTS_ROOT = Path("/Users/carlvincetan/.agents/skills")
+DEFAULT_AGENTS_ROOT = Path.home() / ".agents" / "skills"
 DEFAULT_REGRESSION_ROOT = Path.home() / ".flareai" / "skill-maintenance"
 GIT = shutil.which("git") or "/usr/bin/git"
 IGNORED_NAMES = {".git", ".DS_Store", "__pycache__", ".esphome"}

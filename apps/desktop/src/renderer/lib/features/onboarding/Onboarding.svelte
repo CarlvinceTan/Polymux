@@ -1,6 +1,7 @@
 <script lang="ts">
   import {onMount, setContext} from 'svelte';
   import type {FlareAIApi} from '@flareai/protocol';
+  import ImportStep from './ImportStep.svelte';
   import ModelStep from './ModelStep.svelte';
   import PermissionsStep from './PermissionsStep.svelte';
   import PlatformsStep from './PlatformsStep.svelte';
@@ -27,7 +28,7 @@
 
   const {api, onFinish, revealed = true, preview = false}: Props = $props();
 
-  const STEPS = ['welcome', 'platforms', 'model', 'permissions', 'ready'] as const;
+  const STEPS = ['welcome', 'platforms', 'model', 'import', 'permissions', 'ready'] as const;
   type Step = (typeof STEPS)[number];
 
   let index = $state(0);
@@ -321,6 +322,7 @@
     welcome: 'onboarding.stepWelcome',
     platforms: 'onboarding.stepAccounts',
     model: 'onboarding.stepModel',
+    import: 'onboarding.stepImport',
     permissions: 'onboarding.stepPermissions',
     ready: 'onboarding.stepSummary',
   };
@@ -489,6 +491,8 @@
               <MindOrb active={step === 'model'} />
             </div>
           </div>
+        {:else if name === 'import'}
+          <ImportStep {api} {preview} onDone={next} />
         {:else if name === 'permissions'}
           <!-- Three circles arranged around one centred statement, each
                holding a permission. Granting one fills it with ink. The step

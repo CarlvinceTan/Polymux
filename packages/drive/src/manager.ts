@@ -1,9 +1,9 @@
-import {randomUUID} from "node:crypto";
-import {mkdirSync} from "node:fs";
-import {access, mkdir, readdir, stat} from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { access, mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import {homedir} from "node:os";
-import {locks} from "@flareai/core";
+import { homedir } from "node:os";
+import { locks } from "@flareai/core";
 import type {
   DriveEntryDto,
   DriveProviderDto,
@@ -23,14 +23,14 @@ import {
   driveSourceId,
   parseDriveSourceId,
 } from "@flareai/protocol";
-import {DropboxDrive} from "./dropbox.js";
-import {GoogleDrive} from "./google-drive.js";
-import {LocalDrive} from "./local.js";
-import {NetworkDrive} from "./network.js";
-import {OneDrive} from "./onedrive.js";
-import {LEGACY_ACCOUNT_ID} from "./oauth.js";
-import {S3Drive, type S3Settings} from "./s3.js";
-import {VirtualDrive} from "./virtual.js";
+import { DropboxDrive } from "./dropbox.js";
+import { GoogleDrive } from "./google-drive.js";
+import { LocalDrive } from "./local.js";
+import { NetworkDrive } from "./network.js";
+import { OneDrive } from "./onedrive.js";
+import { LEGACY_ACCOUNT_ID } from "./oauth.js";
+import { S3Drive, type S3Settings } from "./s3.js";
+import { VirtualDrive } from "./virtual.js";
 
 /**
  * What the agent's system prompt is told about the drive. Structural on
@@ -43,7 +43,7 @@ export interface DriveContext {
   connected: string[];
   reach: string[];
 }
-import {uniqueName} from "./types.js";
+import { uniqueName } from "./types.js";
 import type {
   DriveAdapter,
   DriveConsentPrompt,
@@ -184,7 +184,7 @@ export class Drive {
       adapter: DriveAdapter,
     ): void => {
       const id = driveSourceId(provider, accountId);
-      sources.set(id, {id, provider, accountId, adapter});
+      sources.set(id, { id, provider, accountId, adapter });
     };
 
     // The virtual drive reads the table it is being put into, so it is built
@@ -203,14 +203,17 @@ export class Drive {
             // into one — so listing home here buried it: every folder in the
             // user's home directory arrived alongside, and a folder just
             // created sorted away among them.
-            .filter((source) => source.id !== driveSourceId("local", DRIVE_LOCAL_HOME))
+            .filter(
+              (source) =>
+                source.id !== driveSourceId("local", DRIVE_LOCAL_HOME),
+            )
             // The home source is the whole of `~`, kept so the agent can reach
             // files that were never FlareAI's. The virtual drive is the other
             // thing entirely — FlareAI's own folder in each place, gathered
             // into one — so listing home here buried it: every folder in the
             // user's home directory arrived alongside, and a folder just
             // created sorted away among them.
-            .map(({id, provider, adapter}) => ({id, provider, adapter})),
+            .map(({ id, provider, adapter }) => ({ id, provider, adapter })),
         () => this.preferredSource(),
       ),
     );
@@ -313,7 +316,7 @@ export class Drive {
       path: sharePath,
       label: label || path.basename(sharePath) || sharePath,
     });
-    this.#save({shares: shares as unknown as JsonValue});
+    this.#save({ shares: shares as unknown as JsonValue });
     this.#build();
     return this.refresh();
   }
@@ -321,13 +324,13 @@ export class Drive {
   /** Forgets a share. The files are untouched — only FlareAI stops listing it. */
   async removeShare(id: string): Promise<DriveStatusDto> {
     const shares = this.#shares().filter((share) => share.id !== id);
-    this.#save({shares: shares as unknown as JsonValue});
+    this.#save({ shares: shares as unknown as JsonValue });
     this.#build();
     return this.refresh();
   }
 
   #setAccounts(accounts: Partial<Record<DriveProviderId, string[]>>): void {
-    this.#save({accounts: accounts as unknown as JsonValue});
+    this.#save({ accounts: accounts as unknown as JsonValue });
     this.#build();
   }
 
@@ -340,19 +343,31 @@ export class Drive {
    * that is slow to answer must not hold up the ones that are not. */
   async refresh(): Promise<DriveStatusDto> {
     const probed = await Promise.all(
-      [...this.#sources.values()].map(async (source) => ({
-        source,
-        probe: await probeSafely(source.adapter),
-      })),
+      [...this.#sources.values()].map(async (source) => {
+        const probe = await probeSafely(source.adapter);
+        // The home source is intentionally unrestricted. Walking it would be
+        // slow and would not describe space used by FlareAI anyway.
+        if (
+          probe.state === "connected" &&
+          probe.usage &&
+          !(source.provider === "local" && source.accountId === DRIVE_LOCAL_HOME)
+        ) {
+          probe.usage.appUsed = await appStorageUsed(source.adapter);
+        }
+        return { source, probe };
+      }),
     );
 
     // How many accounts each provider actually has signed in right now, which
     // is what decides whether naming one is information or noise.
     const perProvider = new Map<DriveProviderId, number>();
-    for (const {source} of probed)
-      perProvider.set(source.provider, (perProvider.get(source.provider) ?? 0) + 1);
+    for (const { source } of probed)
+      perProvider.set(
+        source.provider,
+        (perProvider.get(source.provider) ?? 0) + 1,
+      );
 
-    const sources: DriveSourceDto[] = probed.map(({source, probe}) => {
+    const sources: DriveSourceDto[] = probed.map(({ source, probe }) => {
       const catalogue = DRIVE_PROVIDERS.find(
         (entry) => entry.value === source.provider,
       );
@@ -366,7 +381,8 @@ export class Drive {
         // "Google Drive" is the whole truth and the address is noise —
         // the same reason "This Mac – local" would be.
         accountLabel:
-          source.provider === "local" || (perProvider.get(source.provider) ?? 0) < 2
+          source.provider === "local" ||
+          (perProvider.get(source.provider) ?? 0) < 2
             ? null
             : (probe.accounts[0]?.email ?? probe.accounts[0]?.name ?? null),
         state: probe.state,
@@ -379,18 +395,23 @@ export class Drive {
     // The settings tab still thinks in providers: one row per backend, showing
     // every account signed in to it.
     const providers: DriveProviderDto[] = DRIVE_CONNECTABLE.map((entry) => {
-      const mine = probed.filter(({source}) => source.provider === entry.value);
-      const connected = mine.find(({probe}) => probe.state === "connected");
+      const mine = probed.filter(
+        ({ source }) => source.provider === entry.value,
+      );
+      const connected = mine.find(({ probe }) => probe.state === "connected");
       const lead = connected ?? mine[0];
       return {
         id: entry.value,
         name: entry.label,
         kind: entry.kind,
         state: lead?.probe.state ?? "unavailable",
-        accounts: mine.flatMap(({source, probe}) =>
+        accounts: mine.flatMap(({ source, probe }) =>
           // Re-keyed to the drive's own account id: the provider's idea of an
           // account id is not what disconnect takes.
-          probe.accounts.map((account) => ({...account, id: source.accountId})),
+          probe.accounts.map((account) => ({
+            ...account,
+            id: source.accountId,
+          })),
         ),
         usage: lead?.probe.usage ?? null,
         root: lead?.probe.root ?? null,
@@ -413,8 +434,7 @@ export class Drive {
    * credential the flow writes. A cancelled sign-in leaves nothing behind.
    */
   async connect(provider: DriveProviderId): Promise<DriveStatusDto> {
-    if (provider === "local")
-      throw new Error("This Mac is always connected.");
+    if (provider === "local") throw new Error("Local storage is always connected.");
     // The virtual drive is a view of the others; there is nothing to sign in to.
     if (provider === "all")
       throw new Error("All storage is a view of what you have connected.");
@@ -424,19 +444,19 @@ export class Drive {
     // The seeded legacy account is a slot, not a connection. Reusing it when it
     // holds no credential keeps a first sign-in on the old id, which is what
     // lets an upgraded build recognise it later.
-    const reusable = existing.length === 1 && existing[0] === LEGACY_ACCOUNT_ID
-      ? await this.#isLoggedOut(driveSourceId(provider, LEGACY_ACCOUNT_ID))
-      : false;
+    const reusable =
+      existing.length === 1 && existing[0] === LEGACY_ACCOUNT_ID
+        ? await this.#isLoggedOut(driveSourceId(provider, LEGACY_ACCOUNT_ID))
+        : false;
     const accountId = reusable ? LEGACY_ACCOUNT_ID : randomUUID();
 
     if (!reusable) {
-      this.#setAccounts({...accounts, [provider]: [...existing, accountId]});
+      this.#setAccounts({ ...accounts, [provider]: [...existing, accountId] });
     }
 
     const source = this.#sources.get(driveSourceId(provider, accountId));
     if (!source?.adapter.connect) {
-      if (!reusable)
-        this.#setAccounts({...accounts, [provider]: existing});
+      if (!reusable) this.#setAccounts({ ...accounts, [provider]: existing });
       throw new Error(`${provider} has nothing to connect to.`);
     }
 
@@ -445,7 +465,7 @@ export class Drive {
     } catch (cause) {
       // A cancelled or failed consent must not leave a dead account in the
       // switcher.
-      if (!reusable) this.#setAccounts({...accounts, [provider]: existing});
+      if (!reusable) this.#setAccounts({ ...accounts, [provider]: existing });
       throw cause;
     }
     return this.refresh();
@@ -472,7 +492,7 @@ export class Drive {
       if (source?.adapter.disconnect) await source.adapter.disconnect();
     }
 
-    if (provider === "s3") this.#save({s3: null});
+    if (provider === "s3") this.#save({ s3: null });
     else
       this.#setAccounts({
         ...accounts,
@@ -485,7 +505,7 @@ export class Drive {
 
   async setSaveOrder(order: DriveProviderId[]): Promise<DriveStatusDto> {
     this.#saveOrder = driveSaveOrder(order);
-    this.#save({saveOrder: this.#saveOrder});
+    this.#save({ saveOrder: this.#saveOrder });
     return this.refresh();
   }
 
@@ -500,7 +520,7 @@ export class Drive {
     if (!chosen) return this.status();
     this.#outputRoot = chosen;
     this.#outputs.setRoot(chosen);
-    this.#save({localRoot: chosen});
+    this.#save({ localRoot: chosen });
     return this.refresh();
   }
 
@@ -518,7 +538,7 @@ export class Drive {
    * agent puts them in a structure that suits the work when there is one.
    */
   async outputFolder(): Promise<string> {
-    await mkdir(this.#outputRoot, {recursive: true});
+    await mkdir(this.#outputRoot, { recursive: true });
     return this.#outputRoot;
   }
 
@@ -530,14 +550,14 @@ export class Drive {
    * moment left to wait in.
    */
   outputFolderSync(): string {
-    mkdirSync(this.#outputRoot, {recursive: true});
+    mkdirSync(this.#outputRoot, { recursive: true });
     return this.#outputRoot;
   }
 
   async saveS3(config: DriveS3ConfigRequest): Promise<DriveStatusDto> {
     await this.#s3.configure(config);
     const settings = this.#s3.settings();
-    this.#save({s3: settings ? (settings as unknown as JsonValue) : null});
+    this.#save({ s3: settings ? (settings as unknown as JsonValue) : null });
     return this.refresh();
   }
 
@@ -578,18 +598,21 @@ export class Drive {
     // Held across the listing *and* the create, because those two steps are
     // what decide the name: two runs asking for "Untitled folder" at the same
     // moment would otherwise both see no sibling and both create it.
-    return locks.run(pathKey(source, childPath(adapter, parentPath, name)), async () => {
-      const siblings = await adapter
-        .list(parentPath)
-        .catch((): DriveEntryDto[] => []);
-      return adapter.createFolder(
-        parentPath,
-        uniqueName(
-          name,
-          siblings.map((entry) => entry.name),
-        ),
-      );
-    });
+    return locks.run(
+      pathKey(source, childPath(adapter, parentPath, name)),
+      async () => {
+        const siblings = await adapter
+          .list(parentPath)
+          .catch((): DriveEntryDto[] => []);
+        return adapter.createFolder(
+          parentPath,
+          uniqueName(
+            name,
+            siblings.map((entry) => entry.name),
+          ),
+        );
+      },
+    );
   }
 
   /**
@@ -607,7 +630,7 @@ export class Drive {
     source: string,
     parentPath: string,
     paths?: string[],
-    options?: {expectVersions?: boolean},
+    options?: { expectVersions?: boolean; onProgress?: (completed: number, total: number) => void },
   ): Promise<DriveEntryDto[]> {
     const chosen = paths?.length ? paths : await this.#pickers.files();
     const uploaded: DriveEntryDto[] = [];
@@ -615,6 +638,10 @@ export class Drive {
     // way to be rate-limited, and the drive has no progress UI to justify it.
     for (const item of chosen)
       uploaded.push(await this.#uploadItem(source, parentPath, item, options));
+    // Uploading changes both the folder listing and FlareAI's share of the
+    // provider quota. Re-probe before resolving so settings subscribers never
+    // keep showing the pre-upload byte count after the new file is visible.
+    if (uploaded.length) await this.refresh();
     return uploaded;
   }
 
@@ -628,7 +655,7 @@ export class Drive {
     source: string,
     parentPath: string,
     item: string,
-    options?: {expectVersions?: boolean},
+    options?: { expectVersions?: boolean; onProgress?: (completed: number, total: number) => void },
   ): Promise<DriveEntryDto> {
     const adapter = this.#require(source);
     if ((await stat(item)).isDirectory()) {
@@ -657,11 +684,23 @@ export class Drive {
       pathKey(source, childPath(adapter, parentPath, path.basename(item))),
       async () => {
         const at = childPath(adapter, parentPath, path.basename(item));
-        const ifMatch =
+        let ifMatch =
           options?.expectVersions && adapter.conditionalWrites
             ? this.versionSeen(source, at)
             : null;
-        const entry = await adapter.upload(parentPath, item, {ifMatch});
+        if (
+          options?.expectVersions &&
+          adapter.conditionalWrites &&
+          !ifMatch &&
+          adapter.existingChild
+        ) {
+          const existing = await adapter.existingChild(
+            parentPath,
+            path.basename(item),
+          );
+          if (existing) ifMatch = this.versionSeen(source, existing);
+        }
+        const entry = await adapter.upload(parentPath, item, { ifMatch, onProgress: options?.onProgress });
         // The file just written is the new baseline, so a run that writes
         // twice in a row does not fail its own second write. An adapter
         // that reported no version leaves nothing remembered, which makes
@@ -746,15 +785,17 @@ export class Drive {
     source: string,
     paths: string[],
     destinationFolder: string,
+    onProgress?: (completed: number, total: number) => void,
   ): Promise<DriveEntryDto[]> {
     const adapter = this.#require(source);
     const moved: DriveEntryDto[] = [];
     for (const target of paths)
       moved.push(
         await locks.run(pathKey(source, target), () =>
-          adapter.move(target, destinationFolder),
+          adapter.move(target, destinationFolder, {onProgress}),
         ),
       );
+    if (moved.length) await this.refresh();
     return moved;
   }
 
@@ -777,12 +818,14 @@ export class Drive {
       (source) => source.provider !== "all" && source.state === "connected",
     );
     const label = (provider: DriveProviderId): string =>
-      DRIVE_PROVIDERS.find((entry) => entry.value === provider)?.label ?? provider;
+      DRIVE_PROVIDERS.find((entry) => entry.value === provider)?.label ??
+      provider;
     return {
       defaultSource: driveSourceId("all", DRIVE_ALL_ACCOUNT),
       order: this.#saveOrder.map(label),
-      connected: sources.map((source) =>
-        `${source.accountLabel ? `${source.name} – ${source.accountLabel}` : source.name} (${source.id})`,
+      connected: sources.map(
+        (source) =>
+          `${source.accountLabel ? `${source.name} – ${source.accountLabel}` : source.name} (${source.id})`,
       ),
       // The boundary is the reason a "look in my Drive" request can fail with
       // everything connected: the cloud providers are scoped to FlareAI's own
@@ -823,12 +866,11 @@ export class Drive {
     const direct = this.#sources.get(source);
     if (direct) return direct.adapter;
 
-    const {provider} = parseDriveSourceId(source);
+    const { provider } = parseDriveSourceId(source);
     const first = [...this.#sources.values()].find(
       (entry) => entry.provider === provider,
     );
-    if (!first)
-      throw new Error(`${source} is not a known storage location.`);
+    if (!first) throw new Error(`${source} is not a known storage location.`);
     return first.adapter;
   }
 
@@ -861,7 +903,7 @@ function reachOf(provider: DriveProviderId): string {
     case "onedrive":
       return "the cloud drives hold only FlareAI's own folder — files the user put there themselves are outside it";
     case "local":
-      return "This Mac reaches the output folder and the whole home directory";
+      return "Local storage reaches the output folder and the whole home directory";
     case "network":
       return "a network share reaches whatever it has mounted";
     case "s3":
@@ -915,15 +957,32 @@ async function freePath(folder: string, name: string): Promise<string> {
 /** An adapter's probe is meant to absorb its own failures; one that throws
  * anyway must still not take the whole drive down. */
 async function probeSafely(adapter: DriveAdapter): Promise<DriveProbe> {
-  return adapter.probe().catch(
-    (cause: unknown): DriveProbe => ({
-      state: "error",
-      accounts: [],
-      usage: null,
-      root: null,
-      error: cause instanceof Error ? cause.message : String(cause),
-    }),
-  );
+  return adapter.probe().catch((cause: unknown): DriveProbe => ({
+    state: "error",
+    accounts: [],
+    usage: null,
+    root: null,
+    error: cause instanceof Error ? cause.message : String(cause),
+  }));
+}
+
+/** Totals the files below an adapter's bounded root. A provider can still show
+ * account quota when this secondary measurement fails. */
+async function appStorageUsed(adapter: DriveAdapter): Promise<number | null> {
+  try {
+    let used = 0;
+    const folders = [""];
+    while (folders.length) {
+      const entries = await adapter.list(folders.pop()!);
+      for (const entry of entries) {
+        if (entry.kind === "folder") folders.push(entry.path);
+        else if (entry.size !== null) used += entry.size;
+      }
+    }
+    return used;
+  } catch {
+    return null;
+  }
 }
 
 /** Reads back a stored S3 connection, ignoring one written by a build whose

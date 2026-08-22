@@ -6,6 +6,7 @@ import {MakerRpm} from '@electron-forge/maker-rpm';
 import {VitePlugin} from '@electron-forge/plugin-vite';
 import {FusesPlugin} from '@electron-forge/plugin-fuses';
 import {FuseV1Options, FuseVersion} from '@electron/fuses';
+import {execFileSync} from 'node:child_process';
 import {PERMISSION_USAGE_DESCRIPTIONS} from './src/main/system/permission-usage.js';
 
 // Forge runs from the repo root (package.json's `config.forge` points here),
@@ -14,7 +15,9 @@ import {PERMISSION_USAGE_DESCRIPTIONS} from './src/main/system/permission-usage.
 const app = 'apps/desktop';
 const icon = process.platform === 'win32'
   ? `${app}/assets/appicon.ico`
-  : `${app}/assets/appicon.icns`;
+  : process.platform === 'darwin'
+    ? `${app}/assets/appicon.icns`
+    : `${app}/assets/appicon.png`;
 
 /**
  * Signing is switched on by the environment, not by editing this file. Without
@@ -35,14 +38,36 @@ const icon = process.platform === 'win32'
  * grants stable on the machine that built it, and notarising costs a round
  * trip to Apple that a local build does not need.
  */
-const signingIdentity = process.env.APPLE_SIGNING_IDENTITY;
+/** A stable local development signature is enough for Keychain-backed
+ * safeStorage and persistent macOS permissions. Prefer an explicitly supplied
+ * release identity, then use an installed Apple Development/FlareAI Dev
+ * identity for local packages. CI machines without either remain ad-hoc. */
+function localSigningIdentity(): string | undefined {
+  if (process.platform !== 'darwin') return undefined;
+  try {
+    const listing = execFileSync('security', ['find-identity', '-p', 'codesigning', '-v'], {encoding: 'utf8'});
+    return listing.match(/^\s*\d+\)\s+[0-9A-F]{40}\s+"((?:FlareAI Dev|Apple Development)[^"]*)"/m)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+const releaseSigningIdentity = process.env.APPLE_SIGNING_IDENTITY;
+const signingIdentity = releaseSigningIdentity ?? localSigningIdentity();
 const notarising = Boolean(
-  signingIdentity && process.env.APPLE_ID && process.env.APPLE_ID_PASSWORD && process.env.APPLE_TEAM_ID,
+  releaseSigningIdentity && process.env.APPLE_ID && process.env.APPLE_ID_PASSWORD && process.env.APPLE_TEAM_ID,
 );
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    // Local benchmark builds can carry a distinct numeric bundle build without
+    // changing the product version. The window-control registry keys launch
+    // evidence to this value, so a repaired binary never inherits either trust
+    // or quarantine from the binary it replaced.
+    ...(process.env.FLAREAI_BUILD_VERSION
+      ? {buildVersion: process.env.FLAREAI_BUILD_VERSION}
+      : {}),
     // Everything shipped beside the code: skills, the native helpers, and the
     // mautrix binaries under `resources/bridges`. Those binaries are not in git
     // (half a gigabyte of build output); run `npm run bridges` before
