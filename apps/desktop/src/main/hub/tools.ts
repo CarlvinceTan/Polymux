@@ -1,5 +1,5 @@
-import type {AgentTool} from "@flareai/core";
-import {COMMS_PLATFORMS} from "@flareai/protocol";
+import type {AgentTool} from "@polymux/core";
+import {COMMS_PLATFORMS} from "@polymux/protocol";
 import type {Communications} from "./index.js";
 
 /**
@@ -229,7 +229,7 @@ function createLinkAliasTool(comms: Communications): AgentTool {
   return {
     name: "message_link_alias",
     description:
-      "Remember that a personal alias refers to one exact conversation. Call this only when the user explicitly states or confirms the mapping in their request; never infer a family relationship or choose an ambiguous candidate. This changes only FlareAI's local identity memory and sends nothing.",
+      "Remember that a personal alias refers to one exact conversation. Call this only when the user explicitly states or confirms the mapping in their request; never infer a family relationship or choose an ambiguous candidate. This changes only Polymux's local identity memory and sends nothing.",
     parameters: {
       type: "object",
       properties: {

@@ -1,5 +1,5 @@
-import {selectEnvironmentForPrompt} from "@flareai/agent";
-import type {GeneralSettingsDto} from "@flareai/protocol";
+import {selectEnvironmentForPrompt} from "@polymux/agent";
+import type {GeneralSettingsDto} from "@polymux/protocol";
 
 type Location = NonNullable<GeneralSettingsDto["location"]>;
 

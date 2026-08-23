@@ -120,7 +120,7 @@ const FIND_SOURCE = `(kind, query, wantName, exact, implicitRoles) => {
   // Drop an ancestor that only matched through a descendant already matched.
   found = found.filter((el) => !found.some((other) => other !== el && el.contains(other)));
 
-  window.__flareaiLocatorMatches = found;
+  window.__polymuxLocatorMatches = found;
   return {
     count: found.length,
     describe: found.slice(0, 5).map((el) => {
@@ -196,7 +196,7 @@ export async function findByLocator(send, locator) {
 
   const selectedIndex = locator.index ?? 0;
   const handle = await send("Runtime.evaluate", {
-    expression: `window.__flareaiLocatorMatches[${selectedIndex}]`,
+    expression: `window.__polymuxLocatorMatches[${selectedIndex}]`,
   });
   const objectId = handle.result?.objectId;
   if (!objectId) throw new TargetError(`${described} resolved to no element`);

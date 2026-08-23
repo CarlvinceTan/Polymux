@@ -5,9 +5,9 @@
 <script lang="ts">
   import {onDestroy, onMount, tick} from 'svelte';
   import Icon from '../../shared/components/Icon.svelte';
-  import {flareaiApi} from '../../api/flareai';
+  import {polymuxApi} from '../../api/polymux';
   import {t, type MessageKey} from '../../../i18n';
-  import type {BrowserPermissionDto, BrowserPermissionPromptDto} from '@flareai/protocol';
+  import type {BrowserPermissionDto, BrowserPermissionPromptDto} from '@polymux/protocol';
 
   export let tabId = '';
   export let title = '';
@@ -17,7 +17,7 @@
   export let obscured = false;
   export let onState: (patch: {title?: string; url?: string; favicon?: string | null}) => void = () => {};
 
-  const api = flareaiApi();
+  const api = polymuxApi();
 
   const PERMISSION_LABELS: Record<BrowserPermissionDto, MessageKey> = {
     geolocation: 'browser.permissionGeolocation',
@@ -318,12 +318,12 @@
     <div bind:this={moreWrapper} class="workspace-more-wrap">
       <button type="button" aria-label={$t('browser.more')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={moreOpen} onclick={() => { downloadsOpen = false; moreOpen = !moreOpen; }}><Icon name="more" size={16}/></button>
       {#if moreOpen}
-        <div class="flareai-dropdown-menu workspace-more-menu" role="menu">
-          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={openFind}><span>{$t('browser.findInPage')}</span></button>
-          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => { moreOpen = false; void api.browser.print(tabId); }}><span>{$t('browser.print')}</span></button>
-          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => void takeScreenshot()}><span>{$t('browser.screenshot')}</span></button>
+        <div class="polymux-dropdown-menu workspace-more-menu" role="menu">
+          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={openFind}><span>{$t('browser.findInPage')}</span></button>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => { moreOpen = false; void api.browser.print(tabId); }}><span>{$t('browser.print')}</span></button>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => void takeScreenshot()}><span>{$t('browser.screenshot')}</span></button>
           <div class="workspace-menu-divider"></div>
-          <button type="button" class="flareai-dropdown-item" role="menuitem" disabled={!currentUrl && !url} onclick={() => { moreOpen = false; void api.browser.openExternal(currentUrl || url || ''); }}><span>{$t('browser.openExternal')}</span></button>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!currentUrl && !url} onclick={() => { moreOpen = false; void api.browser.openExternal(currentUrl || url || ''); }}><span>{$t('browser.openExternal')}</span></button>
         </div>
       {/if}
     </div>

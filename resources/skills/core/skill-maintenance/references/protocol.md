@@ -8,7 +8,7 @@
 - Approved deployments are also committed to a local bare Git repository through temporary detached worktrees outside both live roots. Git history improves inspection and deletion recovery but never substitutes for behavioral validation.
 - Promotion refuses to proceed when Git history does not match the current approved live deployment. Git checkout, pull, merge, reset, and restore operations are forbidden against live roots.
 - The installed baseline is sealed. `baseline --force` is setup-only and cannot bless later drift after sealing.
-- FlareAI runs tool lifecycle hooks from `~/.flareai/hooks.json`. Configure the bundled guard (`scripts/live_skill_guard.mjs`) as a `pre-tool` hook to block direct writes to live skills; the drift scan (`doctor` + `scan`) still quarantines any drift the hook did not prevent. Hook failures are handled as unhealthy-gate warnings, not as evidence that a change passed.
+- Polymux runs tool lifecycle hooks from `~/.polymux/hooks.json`. Configure the bundled guard (`scripts/live_skill_guard.mjs`) as a `pre-tool` hook to block direct writes to live skills; the drift scan (`doctor` + `scan`) still quarantines any drift the hook did not prevent. Hook failures are handled as unhealthy-gate warnings, not as evidence that a change passed.
 
 ## Report meaning
 

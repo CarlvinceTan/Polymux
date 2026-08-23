@@ -6,8 +6,8 @@ import type {
   AppPermissionKind,
   SystemPermissionKind,
   SystemPermissionStatus,
-} from "@flareai/protocol";
-import { isAppPermissionKind } from "@flareai/protocol";
+} from "@polymux/protocol";
+import { isAppPermissionKind } from "@polymux/protocol";
 import type { AppPermissions } from "./app-permissions.js";
 
 /** Where each grant lives in System Settings. */
@@ -125,7 +125,7 @@ export async function requestSystemPermission(
   if (permission === "microphone") {
     await systemPreferences.askForMediaAccess("microphone");
   } else if (permission === "accessibility") {
-    // Prompting registers FlareAI in Privacy & Security → Accessibility and
+    // Prompting registers Polymux in Privacy & Security → Accessibility and
     // shows the system dialog pointing there; there is no async grant flow.
     systemPreferences.isTrustedAccessibilityClient(true);
   } else if (permission === "full-disk-access") {
@@ -135,13 +135,13 @@ export async function requestSystemPermission(
     // The probe runs first, and that ordering is the point: macOS lists an
     // application under Full Disk Access once it has been *refused* a file the
     // grant covers, so a pane opened before the refusal is a pane with no
-    // FlareAI row in it — which is exactly the dead end this looked like.
+    // Polymux row in it — which is exactly the dead end this looked like.
     fullDiskAccessStatus();
     await openSystemPermissionSettings(permission);
   } else if (systemPermissionStatus(permission) !== "granted") {
     // macOS registers Screen Recording access when an application first tries
     // to enumerate a display. The tiny thumbnail avoids doing real ComputerHistory
-    // work while still ensuring FlareAI appears in Privacy & Security.
+    // work while still ensuring Polymux appears in Privacy & Security.
     try {
       await desktopCapturer.getSources({
         types: ["screen"],

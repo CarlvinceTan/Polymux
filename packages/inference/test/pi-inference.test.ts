@@ -76,7 +76,7 @@ test("normalizes text, reasoning, tool-call and final-message events", async () 
   const events = await collect(
     inference.stream({
       model: { provider: "test-provider", id: "test-model" },
-      systemPrompt: "You are FlareAI.",
+      systemPrompt: "You are Polymux.",
       messages: [{ role: "user", content: "Inspect it" }],
       tools: [
         {
@@ -114,7 +114,7 @@ test("normalizes text, reasoning, tool-call and final-message events", async () 
   }
 });
 
-test("round-trips FlareAI context without exposing its types to the provider", async () => {
+test("round-trips Polymux context without exposing its types to the provider", async () => {
   const { faux, inference } = fixture();
   faux.setResponses([
     (context, options) => {
@@ -146,7 +146,7 @@ test("round-trips FlareAI context without exposing its types to the provider", a
             type: "toolCall",
             id: "call-1",
             name: "search",
-            arguments: { query: "FlareAI" },
+            arguments: { query: "Polymux" },
           },
         ],
       },

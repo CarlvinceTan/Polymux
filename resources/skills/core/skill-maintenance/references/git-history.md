@@ -1,7 +1,7 @@
 # Protected Git history
 
 Approved personal skills are mirrored into a local bare Git repository at
-`~/.flareai/skill-history.git`. Git never checks out, merges, resets, or pulls in
+`~/.polymux/skill-history.git`. Git never checks out, merges, resets, or pulls in
 either live skill root.
 
 ## Lifecycle
@@ -10,7 +10,7 @@ either live skill root.
    `main` exactly matches the approved live skills.
 2. The sealed maintenance runner validates and activates the candidate.
 3. A temporary detached worktree under
-   `~/.flareai/skill-maintenance/git-worktrees/` copies the new live deployment,
+   `~/.polymux/skill-maintenance/git-worktrees/` copies the new live deployment,
    commits it, and atomically advances `main`.
 4. The temporary recording worktree is removed. Existing content-addressed
    snapshots and behavioral reports remain the safety and rollback layer.
@@ -44,7 +44,7 @@ Never copy or check out history directly over live skills.
 ## Tracked scope
 
 History records non-hidden skill directories containing `SKILL.md` from both
-`~/.flareai/skills` and `~/.agents/skills`. It excludes Git metadata, Python
+`~/.polymux/skills` and `~/.agents/skills`. It excludes Git metadata, Python
 caches, `.DS_Store`, and ESPHome build output. Credentials must remain in their
 approved secret stores and must never be added to a skill merely because the
 history repository is local.

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {SqliteStorage} from "@flareai/storage";
+import {SqliteStorage} from "@polymux/storage";
 import {HubCache} from "./cache.js";
-import type {ChatDto, CommsStatusDto, MailEnvelopeDto, MailFolderDto, MailMessageDto} from "@flareai/protocol";
+import type {ChatDto, CommsStatusDto, MailEnvelopeDto, MailFolderDto, MailMessageDto} from "@polymux/protocol";
 
 function fixture() {
   const storage = new SqliteStorage(":memory:");

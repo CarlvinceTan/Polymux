@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Read-only health report for FlareAI's built-in ComputerHistory on macOS.
+ * Read-only health report for Polymux's built-in ComputerHistory on macOS.
  *
- * FlareAI records ComputerHistory inside the app itself: accessibility text frames are
+ * Polymux records ComputerHistory inside the app itself: accessibility text frames are
  * saved as Markdown under the ComputerHistory directory, indexed per day, and
  * summarised into timeline.md. There is no separate recorder process to check;
  * health is the recorder setting plus evidence freshness on disk.
@@ -117,16 +117,16 @@ function recorderState(root) {
     state.records_private_browsing = value.recordPrivateBrowsing ?? true;
     state.interaction_events = value.interactionEvents ?? true;
   } catch {
-    // Missing settings mean FlareAI is using its defaults; not an error.
+    // Missing settings mean Polymux is using its defaults; not an error.
     state.enabled = null;
   }
-  if (state.enabled === false) errors.push("ComputerHistory is disabled in FlareAI settings");
+  if (state.enabled === false) errors.push("ComputerHistory is disabled in Polymux settings");
   return [state, errors];
 }
 
 function parseArgs(argv) {
   const out = {
-    computerHistoryRoot: path.join(homedir(), "Library/Application Support/FlareAI/computer-history"),
+    computerHistoryRoot: path.join(homedir(), "Library/Application Support/Polymux/computer-history"),
     frameFresh: 120.0, eventFresh: 600.0, timelineFresh: 1200.0,
   };
   for (let i = 0; i < argv.length; i += 1) {

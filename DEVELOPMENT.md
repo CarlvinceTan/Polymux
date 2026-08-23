@@ -4,7 +4,7 @@
 
 ```sh
 npm install
-FLAREAI_MODEL=openai/gpt-5.6-luna npm run isolate
+POLYMUX_MODEL=openai/gpt-5.6-luna npm run isolate
 npm start                 # ordinary user profile
 npm run new:start         # temporary empty profile
 npm run new:onboarding    # temporary profile in onboarding mode
@@ -19,7 +19,7 @@ npm run make
 
 ## Bridge binaries
 
-Messaging runs through mautrix bridges that FlareAI supervises itself — no Docker, no
+Messaging runs through mautrix bridges that Polymux supervises itself — no Docker, no
 Synapse. The binaries are not in git; fetch them before packaging:
 
 ```sh
@@ -36,7 +36,7 @@ There are a few exceptions:
   <https://my.telegram.org/apps>, which first-run setup stores in its configuration.
 - **iMessage** requires Full Disk Access so its bridge can read
   `~/Library/Messages/chat.db`.
-- **WeChat** uses a custom bridge created for FlareAI.
+- **WeChat** uses a custom bridge created for Polymux.
 
 To prove the fleet end to end after fetching, `npx tsx scripts/smoke-bridges.mts`
 starts the embedded homeserver and every bridge, then checks each one answers its
@@ -46,7 +46,7 @@ provisioning API — the same route the app drives logins through.
 
 Drive supports local storage, Google Drive, Dropbox, OneDrive, and S3-compatible
 buckets. Connect providers and choose their priority in **Settings → Drive**;
-FlareAI saves files to the first available provider. Cloud credentials are scoped to
+Polymux saves files to the first available provider. Cloud credentials are scoped to
 app folders where supported and stored in the OS-encrypted credential store.
 
 OAuth providers require client IDs in a local, git-ignored `.env` file:
@@ -55,16 +55,16 @@ OAuth providers require client IDs in a local, git-ignored `.env` file:
 cp .env.example .env
 ```
 
-`FLAREAI_MODEL` uses `provider/model` format. Credentials are resolved by `pi-ai`;
+`POLYMUX_MODEL` uses `provider/model` format. Credentials are resolved by `pi-ai`;
 environment credentials are suitable for development until the settings UI and
 operating-system credential store are added.
 
 ## Skills and MCP
 
-Skills are discovered from `~/.flareai/skills`, `~/.agents/skills`, bundled locations,
+Skills are discovered from `~/.polymux/skills`, `~/.agents/skills`, bundled locations,
 and explicitly configured locations. MCP servers use the conventional JSON
-`mcpServers` shape in `~/.flareai/mcp.json`, with stdio and Streamable HTTP transports
-supported. FlareAI watches this file for changes and reloads MCP connections
+`mcpServers` shape in `~/.polymux/mcp.json`, with stdio and Streamable HTTP transports
+supported. Polymux watches this file for changes and reloads MCP connections
 automatically; changes made during an agent run are applied after it settles and are
 available to the next prompt in the same chat.
 

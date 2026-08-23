@@ -5,12 +5,12 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type {Credential, CredentialStore} from "@earendil-works/pi-ai";
-import type {CommsBridgeDto} from "@flareai/protocol";
+import type {CommsBridgeDto} from "@polymux/protocol";
 import {bridgeStatusFingerprint, Communications} from "./index.js";
-import {Homeserver} from "@flareai/hub";
+import {Homeserver} from "@polymux/hub";
 
 /**
- * The tier-3 loop, end to end: FlareAI's comms service running against the
+ * The tier-3 loop, end to end: Polymux's comms service running against the
  * in-process homeserver, with a fake mautrix bridge on the far side. No
  * Synapse, no Docker, no account for the user to create.
  */
@@ -33,14 +33,14 @@ function memoryCredentials(initial: Record<string, Credential> = {}): Credential
 }
 
 test("a stale disposable embedded token is replaced on the first read", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-stale-embedded-"));
-  const hs = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-stale-embedded-"));
+  const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
   await hs.start();
   const credentials = memoryCredentials({
     "matrix-hub": {
       type: "api_key",
       key: "stale-token",
-      env: {MATRIX_USER_ID: "@flareai-stale:flareai.local"},
+      env: {MATRIX_USER_ID: "@polymux-stale:polymux.local"},
     },
   });
   const comms = new Communications({
@@ -63,7 +63,7 @@ test("a stale disposable embedded token is replaced on the first read", async ()
     assert.notEqual(replacement?.type === "api_key" ? replacement.key : null, "stale-token");
     assert.match(
       replacement?.type === "api_key" ? String(replacement.env?.MATRIX_USER_ID) : "",
-      /^@flareai-[0-9a-f]{8}:flareai\.local$/,
+      /^@polymux-[0-9a-f]{8}:polymux\.local$/,
     );
   } finally {
     await hs.close();
@@ -105,17 +105,17 @@ async function startFakeBridge(): Promise<{
 }
 
 test("a message landing is announced as it happens, not when next asked for", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-activity-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-activity-"));
   const seen: Array<{roomId: string; sender: string; senderName: string | null; type: string; ts: number}> =
     [];
   const hs = new Homeserver({
-    serverName: "flareai.local",
+    serverName: "polymux.local",
     dataDirectory: directory,
     onActivity: (activity) => seen.push(activity),
   });
   await hs.start();
   try {
-    const user = hs.createLocalUser("flareai");
+    const user = hs.createLocalUser("polymux");
     const created = await fetch(`${hs.baseUrl}/_matrix/client/v3/createRoom`, {
       method: "POST",
       headers: {Authorization: `Bearer ${user.accessToken}`, "Content-Type": "application/json"},
@@ -146,9 +146,9 @@ test("a message landing is announced as it happens, not when next asked for", as
 });
 
 test("zero-config connect and a full message round-trip on the embedded hub", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-embedded-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-embedded-"));
   const bridge = await startFakeBridge();
-  const hs = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
+  const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
   await hs.start();
   const asToken = "as-embedded";
   hs.registerAppservice({
@@ -157,7 +157,7 @@ test("zero-config connect and a full message round-trip on the embedded hub", as
     hsToken: "hs-embedded",
     url: bridge.base,
     senderLocalpart: "whatsappbot",
-    userNamespaces: ["@whatsapp_.*:flareai\\.local"],
+    userNamespaces: ["@whatsapp_.*:polymux\\.local"],
   });
 
   const comms = new Communications({
@@ -177,19 +177,19 @@ test("zero-config connect and a full message round-trip on the embedded hub", as
     // No setup call at all: the first status() arrives already signed in.
     const connected = await comms.status();
     assert.equal(connected.hub.status, "signed-in");
-    assert.match(connected.hub.userId ?? "", /^@flareai-[0-9a-f]{8}:flareai\.local$/);
+    assert.match(connected.hub.userId ?? "", /^@polymux-[0-9a-f]{8}:polymux\.local$/);
     assert.equal(connected.hub.baseUrl, hs.baseUrl);
 
     // A bridge creates a portal and speaks; the user sees it with no daemon.
     const userId = connected.hub.userId!;
-    const created = await fetch(`${hs.baseUrl}/_matrix/client/v3/createRoom?user_id=${encodeURIComponent("@whatsapp_1:flareai.local")}`, {
+    const created = await fetch(`${hs.baseUrl}/_matrix/client/v3/createRoom?user_id=${encodeURIComponent("@whatsapp_1:polymux.local")}`, {
       method: "POST",
       headers: {Authorization: `Bearer ${asToken}`, "Content-Type": "application/json"},
       body: JSON.stringify({name: "Jules Tan (WA)", invite: [userId]}),
     });
     const {room_id} = (await created.json()) as {room_id: string};
     await fetch(
-      `${hs.baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(room_id)}/send/m.room.message/t1?user_id=${encodeURIComponent("@whatsapp_1:flareai.local")}`,
+      `${hs.baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(room_id)}/send/m.room.message/t1?user_id=${encodeURIComponent("@whatsapp_1:polymux.local")}`,
       {
         method: "PUT",
         headers: {Authorization: `Bearer ${asToken}`, "Content-Type": "application/json"},
@@ -232,8 +232,8 @@ test("zero-config connect and a full message round-trip on the embedded hub", as
 });
 
 test("an explicit external address turns embedded mode off", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-embedded-"));
-  const hs = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-embedded-"));
+  const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
   await hs.start();
   const comms = new Communications({
     credentials: memoryCredentials(),
@@ -259,7 +259,7 @@ test("an explicit external address turns embedded mode off", async () => {
 });
 
 test("a stored external address is the only thing that disables embedded mode", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-embedded-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-embedded-"));
   const storage = memoryPreferences();
   storage.setPreference("comms-hub", {baseUrl: "http://127.0.0.1:18080"});
   const comms = new Communications({
@@ -292,8 +292,8 @@ test("a stored external address is the only thing that disables embedded mode", 
  * without this a window already open keeps the fleet it happened to load with.
  */
 test("a bridge that changes state on its own is pushed to open windows", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-embedded-"));
-  const hs = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-embedded-"));
+  const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
   await hs.start();
   const pushes: string[] = [];
   let whatsappRunning = false;
@@ -363,8 +363,8 @@ test("connected account replacement is a Hub-visible bridge change", () => {
  * otherwise start the relay again a moment later.
  */
 test("unlinking WeChat stops the relay and is remembered across status reads", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-wechat-"));
-  const hs = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-"));
+  const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
   await hs.start();
   const calls: string[] = [];
   const comms = new Communications({

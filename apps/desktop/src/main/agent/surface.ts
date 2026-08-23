@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from "node:crypto";
 
 /**
- * Loopback agent-surface feed and command channel for the FlareAI browser
+ * Loopback agent-surface feed and command channel for the Polymux browser
  * extension.
  *
  * Speaks the same protocol as the Hermes/Agent Surface extension so the
@@ -173,7 +173,7 @@ export interface SurfaceLease {
 
 const LEASE_TTL_MS = 120_000;
 // 47652 is the Agent Surface presentation service and 47653 its
-// browser-host CDP port; FlareAI takes the next port up.
+// browser-host CDP port; Polymux takes the next port up.
 const DEFAULT_PORT = 47_654;
 const MAX_WAIT_MS = 25_000;
 // Sized for a full-page base64 screenshot, which is the largest thing the
@@ -199,7 +199,7 @@ export class AgentSurfaceServer {
   constructor(options: { port?: number; clock?: () => number } = {}) {
     this.#port =
       options.port ??
-      Number(process.env.FLAREAI_AGENT_SURFACE_PORT || DEFAULT_PORT);
+      Number(process.env.POLYMUX_AGENT_SURFACE_PORT || DEFAULT_PORT);
     this.#clock = options.clock ?? Date.now;
   }
 
@@ -294,7 +294,7 @@ export class AgentSurfaceServer {
         resolve({
           ok: false,
           error:
-            "The browser extension did not respond. Is the FlareAI extension installed and the tab open?",
+            "The browser extension did not respond. Is the Polymux extension installed and the tab open?",
         });
       }, timeoutMs);
       this.#pendingCommands.set(full.id, { resolve, timer });

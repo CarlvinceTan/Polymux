@@ -1,5 +1,5 @@
-import cursorMotionSource from "@flareai/browser/src/cursor-motion.js?raw";
-import cursorOverlaySource from "@flareai/browser/src/cursor-overlay.js?raw";
+import cursorMotionSource from "@polymux/browser/src/cursor-motion.js?raw";
+import cursorOverlaySource from "@polymux/browser/src/cursor-overlay.js?raw";
 import { BrowserWindow } from "electron";
 
 /**
@@ -87,7 +87,7 @@ export class NativeCursor {
     };
     try {
       await window.webContents.executeJavaScript(
-        `FlareAICursorOverlay.moveTo({x: ${local.x}, y: ${local.y}})`,
+        `PolymuxCursorOverlay.moveTo({x: ${local.x}, y: ${local.y}})`,
         true,
       );
     } catch {
@@ -116,7 +116,7 @@ function overlayDocument(): string {
 <style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}</style>
 <script>${cursorMotionSource}</script>
 <script>${cursorOverlaySource}</script>
-<script>FlareAICursorOverlay.show()</script>`;
+<script>PolymuxCursorOverlay.show()</script>`;
 }
 
 function roundFrame(frame: ScreenFrame): ScreenFrame {

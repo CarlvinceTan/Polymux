@@ -2,13 +2,13 @@ import { Menu, Tray, nativeImage } from "electron";
 import type { PillApp, PillIcon } from "./pill-icon.js";
 
 /**
- * FlareAI's Computer Use pill — the menu-bar presence of the agent driving a
+ * Polymux's Computer Use pill — the menu-bar presence of the agent driving a
  * native window.
  *
  * Built in, not delegated. `AgentSurfaceAdapter` publishes browser leases to a
  * separately installed app and is a no-op without it, which is fine for an
  * optional extra and wrong for the one signal that says the agent is moving
- * things on the user's screen. Everyone who installs FlareAI gets this.
+ * things on the user's screen. Everyone who installs Polymux gets this.
  *
  * It is a *separate* status item from the recording indicator on purpose: the
  * two say opposite things — here the agent drives and the user watches, there
@@ -73,7 +73,7 @@ export class ComputerUseMenubar {
 
     this.#shown = apps.map((app) => app.name).join(", ");
     try {
-      this.#tray.setToolTip(`FlareAI is using ${this.#shown}`);
+      this.#tray.setToolTip(`Polymux is using ${this.#shown}`);
       this.#tray.setContextMenu(
         Menu.buildFromTemplate([
           {label: apps.length === 1 ? "Window in use" : "Windows in use", enabled: false},

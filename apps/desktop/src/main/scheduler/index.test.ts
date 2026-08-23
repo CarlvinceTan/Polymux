@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { JsonValue, ScheduleDto } from "@flareai/protocol";
+import type { JsonValue, ScheduleDto } from "@polymux/protocol";
 import { nextRunAfter } from "./time.js";
 import { Scheduler, type SchedulePreferences } from "./index.js";
 

@@ -11,7 +11,7 @@ const NOW = Date.parse("2026-08-18T10:00:00.000Z");
 const seconds = (ms: number) => ms / 1000;
 
 function registry(leases: Record<string, unknown>): string {
-  const root = mkdtempSync(path.join(tmpdir(), "flareai-leases-"));
+  const root = mkdtempSync(path.join(tmpdir(), "polymux-leases-"));
   const file = path.join(root, "window-control-leases.json");
   writeFileSync(file, JSON.stringify({ version: 1, leases }));
   return file;
@@ -22,7 +22,7 @@ const lease = (appId: string, expiresAtMs: number, extra: Record<string, unknown
   window_id: "win-1",
   scope: "window",
   owner: "run-1",
-  controller: "flareai",
+  controller: "polymux",
   acquired_at: seconds(NOW),
   expires_at: seconds(expiresAtMs),
   token_hash: "abc",
@@ -47,7 +47,7 @@ test("the token hash never leaves the registry", () => {
 
 test("a missing or malformed registry reads as nothing being driven", () => {
   assert.deepEqual(readWindowControlLeases("/nowhere/leases.json", NOW), []);
-  const root = mkdtempSync(path.join(tmpdir(), "flareai-leases-"));
+  const root = mkdtempSync(path.join(tmpdir(), "polymux-leases-"));
   const torn = path.join(root, "leases.json");
   writeFileSync(torn, '{"version":1,"leases":{"a":');
   assert.deepEqual(readWindowControlLeases(torn, NOW), []);

@@ -1,4 +1,4 @@
-import type { AgentTool } from "@flareai/core";
+import type { AgentTool } from "@polymux/core";
 import type { Skill } from "../skills/types.js";
 
 export const TASK_TOOL_GROUPS = [

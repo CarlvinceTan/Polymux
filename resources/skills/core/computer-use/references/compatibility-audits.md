@@ -12,7 +12,7 @@ Before testing, query `scripts/runtime-route-observations.mjs lookup` with the
 exact app path and requested capability.
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/runtime-route-observations.mjs lookup \
+"${POLYMUX_NODE:-node}" scripts/runtime-route-observations.mjs lookup \
   --app-path /absolute/App.app --capability press
 ```
 
@@ -31,7 +31,7 @@ does not authorize a different action and does not replace current exact-window,
 lease, focus, or result verification.
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/runtime-route-observations.mjs record \
+"${POLYMUX_NODE:-node}" scripts/runtime-route-observations.mjs record \
   --app-path /absolute/App.app --capability press \
   --route exact-window-capture+accessibility \
   --prepared-state background --result success

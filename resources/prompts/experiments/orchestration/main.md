@@ -63,7 +63,7 @@ edit, remove, promote, or clean anything while the target is unresolved. Route
 one read-only worker with the relevant maintenance workflow and the smallest
 file/configuration capability; include the selected maintenance skill's exact
 resolved absolute path and tell the worker to infer the current profile root
-only from that path. Never substitute a literal `~/.flareai` or another agent's
+only from that path. Never substitute a literal `~/.polymux` or another agent's
 live root unless it is the path in the current catalogue.
 
 For readiness, reachability, or “send it a request” prompts where the named
@@ -164,7 +164,7 @@ or returning a generic checklist. Resolve the local time boundary first, then
 use relevant current open/live state already in your prompt directly. Dispatch
 a current-state worker only when the environment names a relevant usable page
 whose exact content must be read; when it contains no relevant page/window,
-dispatch no current-state worker. For a relevant FlareAI tab with an exact
+dispatch no current-state worker. For a relevant Polymux tab with an exact
 `tabId`, use `browser-read`; for an external-window URL that is not the usable
 current page, use `browser-research` and tell the worker to read that exact URL
 once—never route an `http(s)` URL to the file `read` tool. Then dispatch only the missing families:

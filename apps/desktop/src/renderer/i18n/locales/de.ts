@@ -37,7 +37,7 @@ const messages: Catalog = {
   'summary.tasks': 'Aufgaben',
 
   // Drive
-  'drive.outputs': 'FlareAI-Ordner',
+  'drive.outputs': 'Polymux-Ordner',
 
   // Schedule
   'schedule.composerSeed': 'Plane das für mich: ',
@@ -51,7 +51,7 @@ const messages: Catalog = {
   'titlebar.panels': 'Bereiche',
   'titlebar.settings': 'Einstellungen',
   'extension.title': 'Browser-Erweiterung',
-  'extension.hint': 'FlareAI kann die Tabs in deinem Browser sehen und steuern',
+  'extension.hint': 'Polymux kann die Tabs in deinem Browser sehen und steuern',
   'extension.install': 'Erweiterung installieren',
   'extension.installed': 'Installiert',
   'extension.dismiss': 'Ausblenden',
@@ -261,8 +261,8 @@ const messages: Catalog = {
   'view.taskEmpty': 'Diese Aufgabe hat noch nicht begonnen.',
 
   'summary.viewAll': 'Alle anzeigen',
-  'summary.outputsEmpty': 'Von FlareAI erstellte Dateien erscheinen hier.',
-  'summary.referencesEmpty': 'Von FlareAI genutzte Quellen erscheinen hier.',
+  'summary.outputsEmpty': 'Von Polymux erstellte Dateien erscheinen hier.',
+  'summary.referencesEmpty': 'Von Polymux genutzte Quellen erscheinen hier.',
   'summary.tasksEmpty': 'Delegierte Arbeit erscheint hier.',
   'summary.addReference': 'Quelle hinzufügen',
   'summary.chooseFiles': 'Dateien wählen',
@@ -596,9 +596,9 @@ const messages: Catalog = {
   'drive.stateError': 'Benötigt Aufmerksamkeit',
   'drive.about.local': 'Ein Ordner auf diesem Computer. Immer verfügbar, nie synchronisiert.',
   'drive.about.network': 'Ein freigegebener Ordner im Netzwerk. Erreichbar, solange er eingebunden ist.',
-  'drive.about.googleDrive': 'Von FlareAI erstellte Dateien liegen in einem eigenen Drive-Ordner.',
-  'drive.about.dropbox': 'Auf den FlareAI-App-Ordner beschränkt, nicht auf Ihr ganzes Dropbox.',
-  'drive.about.onedrive': 'Privates oder geschäftliches Konto, in einem eigenen FlareAI-Ordner.',
+  'drive.about.googleDrive': 'Von Polymux erstellte Dateien liegen in einem eigenen Drive-Ordner.',
+  'drive.about.dropbox': 'Auf den Polymux-App-Ordner beschränkt, nicht auf Ihr ganzes Dropbox.',
+  'drive.about.onedrive': 'Privates oder geschäftliches Konto, in einem eigenen Polymux-Ordner.',
   'drive.about.s3': 'Jeder S3-kompatible Bucket — AWS, R2, Backblaze oder MinIO.',
   'drive.s3Blurb':
     'Funktioniert mit jedem S3-kompatiblen Dienst. Der geheime Schlüssel wandert in Ihren Schlüsselbund; der Rest wird als gewöhnliche Einstellung gesichert.',
@@ -611,11 +611,11 @@ const messages: Catalog = {
   'drive.secretAccessKey': 'Geheimer Zugriffsschlüssel',
   'drive.secretPlaceholder': 'Leer lassen, um den gesicherten Schlüssel zu behalten',
   'drive.prefix': 'Präfix',
-  'drive.prefixPlaceholder': 'Optional — beschränkt FlareAI auf einen Ordner',
+  'drive.prefixPlaceholder': 'Optional — beschränkt Polymux auf einen Ordner',
   'drive.pathStyle': 'Pfadbasierte Adressierung verwenden',
   'drive.saveBucket': 'Bucket sichern',
   'drive.addBucket': 'Bucket hinzufügen',
-  'drive.addBucketHint': 'Fügen Sie einen Bucket hinzu, und FlareAI liest und schreibt darin.',
+  'drive.addBucketHint': 'Fügen Sie einen Bucket hinzu, und Polymux liest und schreibt darin.',
   'drive.editSettings': 'Einstellungen bearbeiten',
   'drive.recheck': 'Speicher erneut prüfen',
   'drive.recheckShort': 'Prüfen',
@@ -626,7 +626,7 @@ const messages: Catalog = {
   'drive.unconfiguredHint':
     'Diese Version wurde ohne {provider}-Zugangsdaten gebaut und kann sich daher nicht verbinden. Die nötigen Umgebungsvariablen stehen in',
   'drive.signInHint':
-    'Die Anmeldung öffnet die Seite von {provider} selbst. FlareAI sieht nur das zurückgegebene Token, und nur für den eigenen Ordner.',
+    'Die Anmeldung öffnet die Seite von {provider} selbst. Polymux sieht nur das zurückgegebene Token, und nur für den eigenen Ordner.',
   'drive.waitingForSignIn': 'Warten auf die Anmeldung…',
   'drive.connectProvider': '{provider} verbinden',
   'drive.folder': 'Ordner',
@@ -634,7 +634,7 @@ const messages: Catalog = {
   'drive.storageLocationHint':
     'Jeder Chat erhält hier einen eigenen Ordner, in dem der Agent speichert, was er erstellt.',
   'drive.addAccount': 'Weiteres Konto hinzufügen',
-  'drive.localFolderHint': 'Alles, was FlareAI auf diesem Mac sichert, landet hier.',
+  'drive.localFolderHint': 'Alles, was Polymux auf diesem Mac sichert, landet hier.',
   'drive.space': 'Speicherplatz',
   'drive.available': 'Verfügbar',
   'drive.availableOf': '{available} von {total} verfügbar',
@@ -642,7 +642,7 @@ const messages: Catalog = {
   'drive.usedNoQuota': '{used} belegt — für dieses Konto gibt es kein Kontingent.',
   'drive.whereNewFilesGo': 'Drive-Konfiguration',
   'drive.saveOrderHint':
-    'FlareAI sichert auf dem ersten erreichbaren dieser Ziele — das oberste ist also das normalerweise genutzte.',
+    'Polymux sichert auf dem ersten erreichbaren dieser Ziele — das oberste ist also das normalerweise genutzte.',
   'drive.nothingConnected': 'Noch ist nichts verbunden.',
   'drive.primary': 'Primär',
   'drive.moveUp': '{provider} nach oben',
@@ -675,7 +675,7 @@ const messages: Catalog = {
   'hub.signInWith': 'Mit {provider} anmelden',
   'hub.signInOrManual': 'Oder richten Sie die Server unten von Hand ein.',
   'hub.mailboxFormBlurb':
-    'FlareAI sichert das Passwort in Ihrem Schlüsselbund und schreibt nur einen Verweis in die Konfiguration von FlareAI.',
+    'Polymux sichert das Passwort in Ihrem Schlüsselbund und schreibt nur einen Verweis in die Konfiguration von Polymux.',
   'hub.provider': 'Anbieter',
   'hub.accountName': 'Kontoname',
   'hub.emailAddress': 'E-Mail-Adresse',
@@ -689,13 +689,13 @@ const messages: Catalog = {
   'hub.port': 'Port',
   'hub.sendByDefault': 'Standardmäßig von diesem Postfach senden',
   'hub.saveMailbox': 'Postfach sichern',
-  'hub.linkedMany': '{count} Konten sind verknüpft. FlareAI kann auf allen lesen und senden.',
-  'hub.linkedOne': 'Verknüpft als {name}. FlareAI kann hier lesen und senden.',
+  'hub.linkedMany': '{count} Konten sind verknüpft. Polymux kann auf allen lesen und senden.',
+  'hub.linkedOne': 'Verknüpft als {name}. Polymux kann hier lesen und senden.',
   'hub.dormant': 'Läuft noch nicht — nichts ist damit verknüpft. Das Öffnen startet es.',
   'hub.unreachable':
     'Der Nachrichten-Hub antwortet nicht, daher lässt sich diese Plattform nicht prüfen.',
   'hub.linkPrompt':
-    'Verknüpfen Sie Ihr {platform}-Konto, damit FlareAI Nachrichten lesen und senden kann.',
+    'Verknüpfen Sie Ihr {platform}-Konto, damit Polymux Nachrichten lesen und senden kann.',
   'hub.waiting': 'Warten…',
   'hub.allowAccess': 'Zugriff erlauben',
   'hub.openSettings': 'Einstellungen öffnen',
@@ -716,14 +716,14 @@ const messages: Catalog = {
   'hub.showQr': 'QR anzeigen',
   'hub.start': 'Starten',
   'hub.setupFirst':
-    'FlareAI muss sich erst selbst einrichten, bevor es ein Konto verknüpfen kann.',
+    'Polymux muss sich erst selbst einrichten, bevor es ein Konto verknüpfen kann.',
   'hub.settingUp': 'Wird eingerichtet…',
   'hub.setUpMessaging': 'Messaging einrichten',
   'hub.notRunning': 'Der Nachrichten-Hub läuft auf diesem Mac nicht.',
   'hub.noLinkMethod': 'Diese Bridge bot keinen Weg an, von hier aus ein Konto zu verknüpfen.',
   'hub.useManagementRoom': 'Verwenden Sie stattdessen ihren Verwaltungsraum.',
   'hub.mailBlurb':
-    'FlareAI liest und sendet E-Mails über diese Postfächer. Passwörter liegen in Ihrem Schlüsselbund, nie in einer Konfigurationsdatei.',
+    'Polymux liest und sendet E-Mails über diese Postfächer. Passwörter liegen in Ihrem Schlüsselbund, nie in einer Konfigurationsdatei.',
   'hub.default': 'Standard',
   'hub.reachable': 'Erreichbar',
   'hub.notTested': 'Nicht geprüft',
@@ -731,7 +731,7 @@ const messages: Catalog = {
   'hub.noSmtpServer': 'Kein SMTP-Server',
   'hub.keychain': 'Schlüsselbund',
   'hub.externalPassword':
-    'Außerhalb von FlareAI eingerichtet, daher liegt das Passwort nicht im Schlüsselbundeintrag von FlareAI. Wenn Sie es hier bearbeiten, wird es verschoben.',
+    'Außerhalb von Polymux eingerichtet, daher liegt das Passwort nicht im Schlüsselbundeintrag von Polymux. Wenn Sie es hier bearbeiten, wird es verschoben.',
   'hub.testing': 'Wird geprüft…',
   'hub.test': 'Prüfen',
   'hub.remove': 'Entfernen',
@@ -752,7 +752,7 @@ const messages: Catalog = {
   'common.continue': 'Weiter',
 
   // Onboarding
-  'onboarding.title': 'FlareAI einrichten',
+  'onboarding.title': 'Polymux einrichten',
   'onboarding.skipSetup': 'Setup überspringen',
   'onboarding.back': 'Zurück',
   'onboarding.start': 'Loslegen',
@@ -763,7 +763,7 @@ const messages: Catalog = {
   'onboarding.stepModel': 'Modell',
   'onboarding.stepImport': 'Import',
   'onboarding.importTitle': 'Nimm deine Werkzeuge mit.',
-  'onboarding.importLede': 'FlareAI hat Skills, Server und Browserdaten von anderen Agenten auf diesem Rechner gefunden. Importiere sie, um dort weiterzumachen, wo du aufgehört hast.',
+  'onboarding.importLede': 'Polymux hat Skills, Server und Browserdaten von anderen Agenten auf diesem Rechner gefunden. Importiere sie, um dort weiterzumachen, wo du aufgehört hast.',
   'onboarding.importNone': 'Nichts von anderen Agenten gefunden.',
   'onboarding.importButton': 'Alles importieren',
   'onboarding.importSkipButton': 'Überspringen',
@@ -777,11 +777,11 @@ const messages: Catalog = {
   'onboarding.goToStep': 'Zu {step} springen',
 
   // Onboarding → Permissions
-  'permission.title': 'Geben Sie FlareAI nur das, was Sie ihm geben möchten.',
+  'permission.title': 'Geben Sie Polymux nur das, was Sie ihm geben möchten.',
   'permission.lede':
-    'Lassen Sie FlareAI für Sie handeln, Ihre Arbeit automatisieren und Ihren Tag in Bewegung halten.',
+    'Lassen Sie Polymux für Sie handeln, Ihre Arbeit automatisieren und Ihren Tag in Bewegung halten.',
   'permission.microphone': 'Mikrofon',
-  'permission.microphoneReason': 'Mit FlareAI sprechen und diktieren statt tippen.',
+  'permission.microphoneReason': 'Mit Polymux sprechen und diktieren statt tippen.',
   'permission.screenReading': 'Bildschirm lesen',
   'permission.screenReadingReason': 'Auf das reagieren, was auf Ihrem Bildschirm ist.',
   'permission.fullDisk': 'Vollständiger Festplattenzugriff',
@@ -803,25 +803,25 @@ const messages: Catalog = {
   'permission.automation': 'Apps steuern',
   'permission.automationReason': 'Andere Apps auf deinem Mac steuern.',
   'permission.deniedNote':
-    'macOS fragt nur einmal. Um eine abgelehnte Berechtigung zu ändern, schalten Sie sie in den Systemeinstellungen ein und starten Sie FlareAI neu.',
+    'macOS fragt nur einmal. Um eine abgelehnte Berechtigung zu ändern, schalten Sie sie in den Systemeinstellungen ein und starten Sie Polymux neu.',
 
   // Onboarding → Model
-  'model.title': 'Wählen Sie, mit wem FlareAI denkt.',
+  'model.title': 'Wählen Sie, mit wem Polymux denkt.',
   'model.lede':
-    'Richten Sie einen ein, um loszulegen. FlareAI arbeitet mit {count} Anbietern, und Sie können mehrere Konten eines Anbieters verbinden.',
+    'Richten Sie einen ein, um loszulegen. Polymux arbeitet mit {count} Anbietern, und Sie können mehrere Konten eines Anbieters verbinden.',
   'model.provider': 'Modellanbieter',
   'model.apiKey': 'API-Schlüssel',
   'model.signIn': 'Anmelden',
   'model.setup': 'Einrichtung',
   'model.onThisMac': 'Auf diesem Mac',
-  'model.localRuntimeNote': '{provider} läuft auf diesem Mac. FlareAI liest die geladenen Modelle — ohne Schlüssel.',
+  'model.localRuntimeNote': '{provider} läuft auf diesem Mac. Polymux liest die geladenen Modelle — ohne Schlüssel.',
   'model.searchProviders': 'Anbieter suchen',
   'model.noProviderMatches': 'Kein Anbieter passt zu dieser Suche.',
   'model.keyAlreadySaved': 'Für {provider} ist auf diesem Mac bereits ein Schlüssel gesichert.',
   'model.useProvider': '{provider} verwenden',
   'model.pasteKey': 'Fügen Sie Ihren Schlüssel ein',
   'model.oauthOnly':
-    '{provider} meldet sich mit Ihrem Konto an. FlareAI öffnet das unter Einstellungen → Anbieter.',
+    '{provider} meldet sich mit Ihrem Konto an. Polymux öffnet das unter Einstellungen → Anbieter.',
   'model.connect': 'Verbinden',
   'model.set': 'Festlegen',
   'model.modelTitle': 'Jetzt das Modell wählen.',
@@ -836,9 +836,9 @@ const messages: Catalog = {
   'platforms.eyebrow': 'Der Hub',
   'platforms.title': 'Ein Ort für alles, worüber Sie sprechen.',
   'platforms.lede':
-    'Chat, Direktnachrichten und E-Mail alle an einem Ort auf diesem Mac, damit FlareAI aus jeder Nachricht Kontext zieht, Ihre Antworten entwirft und sie in Bewegung hält.',
+    'Chat, Direktnachrichten und E-Mail alle an einem Ort auf diesem Mac, damit Polymux aus jeder Nachricht Kontext zieht, Ihre Antworten entwirft und sie in Bewegung hält.',
   'platforms.hubNotRunning':
-    'Der Hub läuft noch nicht. FlareAI legt sich dort ein eigenes Konto an, Sie müssen also nichts auswählen.',
+    'Der Hub läuft noch nicht. Polymux legt sich dort ein eigenes Konto an, Sie müssen also nichts auswählen.',
   'platforms.hubUnavailable':
     'Der Hub ist auf diesem Mac noch nicht verfügbar, seine Plattformen sind daher nicht erreichbar.',
   'platforms.startHub': 'Hub starten',
@@ -858,12 +858,12 @@ const messages: Catalog = {
   'platforms.viaLocalApp':
     'Diese kommt über die {platform}-App auf diesem Mac herein und ist damit schon dabei. Nichts zu verknüpfen.',
   'platforms.viaHubNotStarted':
-    'Diese kommt über den Hub herein, der noch nicht gestartet ist. FlareAI legt sich dort ein eigenes Konto an.',
+    'Diese kommt über den Hub herein, der noch nicht gestartet ist. Polymux legt sich dort ein eigenes Konto an.',
   'platforms.viaHubUnavailable':
     'Diese kommt über den Hub herein, der auf diesem Mac nicht verfügbar ist.',
-  'platforms.needsDesktopApp': 'Hierfür muss die {platform}-App auf diesem Mac installiert und angemeldet sein — FlareAI liest sie von dort, es gibt also keine separate Anmeldung.',
+  'platforms.needsDesktopApp': 'Hierfür muss die {platform}-App auf diesem Mac installiert und angemeldet sein — Polymux liest sie von dort, es gibt also keine separate Anmeldung.',
   'platforms.viaRelay':
-    'Dies erreicht FlareAI über die App auf diesem Mac statt über eine Anmeldung, es gibt hier also nichts einzurichten.',
+    'Dies erreicht Polymux über die App auf diesem Mac statt über eine Anmeldung, es gibt hier also nichts einzurichten.',
   'platforms.bridgeUnreachable':
     'Der Hub läuft, aber diese Plattform antwortet noch nicht. Ihre Bridge startet vielleicht noch oder ist auf diesem Mac nicht installiert.',
   'platforms.signInBlurb': 'Melden Sie sich an, und Ihre Unterhaltungen treffen hier ein.',
@@ -901,7 +901,7 @@ const messages: Catalog = {
   'settings.groupAbout': 'Über',
   'settings.groupNotifications': 'Mitteilungen',
   'settings.notifications': 'Systemmitteilungen',
-  'settings.notificationsHint': 'FlareAI außerhalb der App benachrichtigen lassen',
+  'settings.notificationsHint': 'Polymux außerhalb der App benachrichtigen lassen',
   'settings.enableNotifications': 'Systemmitteilungen aktivieren',
   'settings.notificationTest': 'Test senden',
   'settings.notificationsUnsupported': 'Ihr System zeigt keine Mitteilungen an',
@@ -928,15 +928,15 @@ const messages: Catalog = {
   'settings.tabProvider': 'Anbieter',
   'settings.tabProviders': 'Anbieter',
   'settings.tabMemory': 'Gedächtnis',
-  'settings.generalBlurb': 'Verwalten Sie Einstellungen und Zugriffe von FlareAI.',
+  'settings.generalBlurb': 'Verwalten Sie Einstellungen und Zugriffe von Polymux.',
   'settings.hubBlurb': 'Verbinden Sie Messaging-Plattformen und E-Mail-Konten.',
   'settings.driveBlurb':
     'Verbinden Sie Speicheranbieter und wählen Sie, wohin Dateien gehen.',
   'settings.mcpBlurb': 'Verwalten Sie Model-Context-Protocol-Server.',
-  'settings.skillsBlurb': 'Verwalten Sie die für FlareAI verfügbaren Fähigkeiten.',
+  'settings.skillsBlurb': 'Verwalten Sie die für Polymux verfügbaren Fähigkeiten.',
   'settings.modelsBlurb': 'Klicken Sie auf ein Modell, um ihm eine Rolle zuzuweisen.',
   'settings.providersBlurb': 'Verwalten Sie Modellanbieter und API-Schlüssel.',
-  'settings.memoryBlurb': 'Prüfen und verwalten Sie das Gedächtnis von FlareAI.',
+  'settings.memoryBlurb': 'Prüfen und verwalten Sie das Gedächtnis von Polymux.',
   'settings.browserBlurb': 'Passwörter, Downloads, Website-Berechtigungen und Browserdaten.',
 
   // Settings → Browser
@@ -1013,7 +1013,7 @@ const messages: Catalog = {
   'browser.importFile': 'Aus einer Datei importieren',
   'browser.importFileHint': 'Eine Passwort-CSV oder eine cookies.txt, die Sie selbst exportiert haben',
   'browser.importKeychainNote': 'macOS fragt nach Zugriff auf den Schlüsselbund — bei einer unsignierten Entwicklungsversion jedes Mal.',
-  'browser.importFullDiskNote': 'Safari braucht vollen Festplattenzugriff in den Systemeinstellungen und danach einen Neustart von FlareAI.',
+  'browser.importFullDiskNote': 'Safari braucht vollen Festplattenzugriff in den Systemeinstellungen und danach einen Neustart von Polymux.',
   'browser.importPasswordsUnavailable': 'Passwörter lassen sich nur aus einer Datei importieren, die Sie selbst exportieren.',
   'browser.clear': 'Löschen',
   'browser.forgetPage': 'Diese Seite vergessen',
@@ -1031,12 +1031,12 @@ const messages: Catalog = {
 
   // Settings → General
   'settings.theme': 'Erscheinungsbild',
-  'settings.themeHint': 'Wählen Sie, wie FlareAI aussieht',
+  'settings.themeHint': 'Wählen Sie, wie Polymux aussieht',
   'settings.themeLight': 'Hell',
   'settings.themeDark': 'Dunkel',
   'settings.themeSystem': 'System',
   'settings.language': 'Sprache',
-  'settings.languageHint': 'Die Sprache der Oberfläche von FlareAI',
+  'settings.languageHint': 'Die Sprache der Oberfläche von Polymux',
   'settings.advancedMode': 'Erweiterter Modus',
   'settings.advancedModeHint': 'Alle Einstellungen anzeigen, einschließlich Modellauswahl, Modelle und Speicher',
   'settings.hubIncognitoMode': 'Hub-Inkognitomodus',
@@ -1077,7 +1077,7 @@ const messages: Catalog = {
   'settings.localMemory': 'Lokales Gedächtnis',
   'settings.enableMemory': 'Gedächtnis aktivieren',
   'settings.memoryBody':
-    'Die kompakte Gedächtniszusammenfassung wird automatisch mitgegeben. FlareAI durchsucht das vollständige Register und frühere Unterhaltungen nur, wenn früherer Kontext wirklich helfen kann. Dauerhafte Erinnerungen werden nur hinzugefügt oder entfernt, wenn Sie ausdrücklich darum bitten.',
+    'Die kompakte Gedächtniszusammenfassung wird automatisch mitgegeben. Polymux durchsucht das vollständige Register und frühere Unterhaltungen nur, wenn früherer Kontext wirklich helfen kann. Dauerhafte Erinnerungen werden nur hinzugefügt oder entfernt, wenn Sie ausdrücklich darum bitten.',
   'settings.memoryStorage': 'Gedächtnisspeicher',
   'settings.memoriesCount.one': '{count} Erinnerung',
   'settings.memoriesCount.few': '{count} Erinnerungen',
@@ -1097,7 +1097,7 @@ const messages: Catalog = {
     'Privater, lokaler Verlauf dessen, woran Sie gearbeitet haben, mit adaptiver Abtastung und rollierender Aufbewahrung über 24 Stunden. Er pausiert automatisch, solange Ihr Mac gesperrt, untätig oder thermisch gedrosselt ist.',
   'settings.captureUnavailable': 'Aufzeichnung nicht verfügbar',
   'settings.captureHint':
-    'Möglicherweise müssen Sie FlareAI in den macOS-Systemeinstellungen die Bedienungshilfen erlauben.',
+    'Möglicherweise müssen Sie Polymux in den macOS-Systemeinstellungen die Bedienungshilfen erlauben.',
   'settings.computerHistoryCaptures': '{count} Aufnahmen',
   'settings.computerHistoryEvents': '{count} Interaktionen',
   'settings.computerHistoryLatest': 'Zuletzt: {time}',
@@ -1146,7 +1146,7 @@ const messages: Catalog = {
   'settings.custom': 'Eigen',
   'settings.active': 'Aktiv',
   'settings.inactive': 'Inaktiv',
-  'settings.bundled': 'Mit FlareAI geliefert',
+  'settings.bundled': 'Mit Polymux geliefert',
   'settings.configuredFolder': 'Konfigurierter Ordner',
   'settings.sortCompanyAsc': 'Unternehmen A–Z',
   'settings.sortCompanyDesc': 'Unternehmen Z–A',
@@ -1178,9 +1178,9 @@ const messages: Catalog = {
   'settings.roleMain': 'Haupt',
   'settings.roleMainJob': 'Hauptmodell',
   'settings.roleMainHint': 'Antwortet im Chat',
-  'settings.roleTask': 'Aufgaben',
-  'settings.roleTaskJob': 'Aufgabenmodell',
-  'settings.roleTaskHint': 'Führt Subagenten-Aufgaben aus',
+  'settings.roleSubagent': 'Subagent',
+  'settings.roleSubagentJob': 'Subagentenmodell',
+  'settings.roleSubagentHint': 'Führt Subagenten-Aufgaben aus',
   'settings.roleJudge': 'Prüfer',
   'settings.roleJudgeJob': 'Prüfmodell',
   'settings.roleJudgeHint': 'Entscheidet, ob ein Ziel erreicht ist',
@@ -1297,7 +1297,7 @@ const messages: Catalog = {
   'settings.deleteSkill': 'Fähigkeit löschen',
   'settings.enableSkill': 'Fähigkeit aktivieren',
   'settings.skillNamePlaceholder': 'meine-faehigkeit',
-  'settings.skillDescriptionPlaceholder': 'Wann FlareAI diese Fähigkeit nutzen soll',
+  'settings.skillDescriptionPlaceholder': 'Wann Polymux diese Fähigkeit nutzen soll',
   'settings.instructions': 'Anweisungen',
   'settings.instructionsPlaceholder': 'Anweisungen der Fähigkeit',
   'settings.noDescription': 'Keine Beschreibung angegeben.',
@@ -1320,7 +1320,7 @@ const messages: Catalog = {
   'settings.customProviderImage': 'Bild des eigenen Anbieters',
   'settings.openAiCompatible': 'OpenAI-kompatibel',
   'settings.localRuntime': 'Lokale Runtime',
-  'settings.localRuntimeBlurb': '{provider} läuft auf diesem Mac. FlareAI liest die Modelle direkt vom Server — ohne API-Schlüssel.',
+  'settings.localRuntimeBlurb': '{provider} läuft auf diesem Mac. Polymux liest die Modelle direkt vom Server — ohne API-Schlüssel.',
   'settings.connectRuntime': 'Verbinden',
   'settings.detectModels': 'Modelle erkennen',
   'settings.detectingModels': 'Erkennung läuft…',
@@ -1351,12 +1351,12 @@ const messages: Catalog = {
   'settings.saved': 'Gesichert',
   'settings.editProvider': '{provider} bearbeiten',
   'settings.credentialsBlurb':
-    'Das Betriebssystem verschlüsselt gesicherte Schlüssel, und sie werden nie wieder angezeigt. Hinterlegen Sie mehrere, und FlareAI wechselt automatisch durch sie, sobald einer gedrosselt oder abgelehnt wird.',
+    'Das Betriebssystem verschlüsselt gesicherte Schlüssel, und sie werden nie wieder angezeigt. Hinterlegen Sie mehrere, und Polymux wechselt automatisch durch sie, sobald einer gedrosselt oder abgelehnt wird.',
   'settings.configureCredentials': 'Richten Sie die Zugangsdaten für {provider} ein.',
   'settings.apiKey': 'API-Schlüssel',
   'settings.enterApiKey': 'API-Schlüssel eingeben',
   'settings.addKey': 'Schlüssel hinzufügen',
-  'settings.noApiKeySupport': 'Dieser Anbieter nimmt über FlareAI keinen API-Schlüssel entgegen.',
+  'settings.noApiKeySupport': 'Dieser Anbieter nimmt über Polymux keinen API-Schlüssel entgegen.',
   'settings.keyInvalid': 'Ungültig',
   'settings.keyRateLimited': 'Gedrosselt',
   'settings.keyReady': 'Bereit',
@@ -1409,7 +1409,7 @@ const messages: Catalog = {
   'settings.pluginConflictsHint': 'Das Plugin behält seine eigene Kopie; nichts von dir wurde ersetzt.',
   'settings.pluginNoSkills': 'Keine Skills',
   'settings.pluginNoMcp': 'Keine MCP-Server',
-  'settings.pluginUnsupported': 'Bringt außerdem {parts} mit, die FlareAI noch nicht liest.',
+  'settings.pluginUnsupported': 'Bringt außerdem {parts} mit, die Polymux noch nicht liest.',
   'settings.pluginCommands.one': '{count} Befehl',
   'settings.pluginCommands.other': '{count} Befehle',
   'settings.pluginAgents.one': '{count} Agent',

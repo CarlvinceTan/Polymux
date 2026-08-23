@@ -36,7 +36,7 @@ function encryptChromium(plaintext: string, key: Buffer, domainHash?: Buffer): B
 }
 
 function tempDir(): string {
-  return mkdtempSync(path.join(tmpdir(), "flareai-chromium-test-"));
+  return mkdtempSync(path.join(tmpdir(), "polymux-chromium-test-"));
 }
 
 test("deriveKey matches Chromium's fixed macOS parameters", () => {

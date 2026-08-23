@@ -1,4 +1,4 @@
-import type {RunEventDto} from '@flareai/protocol';
+import type {RunEventDto} from '@polymux/protocol';
 import type {AgentActivityItem} from '../chat/AgentActivity.svelte';
 import {activityPresentation, toolResultFailed, upsertActivity} from '../chat/activities';
 import {translate} from '../../../i18n';

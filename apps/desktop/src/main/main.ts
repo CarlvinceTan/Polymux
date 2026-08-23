@@ -6,21 +6,21 @@ import {homeserverPortFor} from "./system/instance-port.js";
 import {configuredRemoteDebuggingPort, requestsBackgroundLaunch} from "./system/launch-mode.js";
 import { fileURLToPath } from "node:url";
 import started from "electron-squirrel-startup";
-import { channels } from "@flareai/protocol";
+import { channels } from "@polymux/protocol";
 import { DesktopBackend, modelFromEnvironment, type DesktopBackendOptions } from "./backend.js";
 import {builtinModels} from "@earendil-works/pi-ai/providers/all";
-import {PiInference} from "@flareai/inference/pi";
+import {PiInference} from "@polymux/inference/pi";
 import {EncryptedCredentialStore, OpenCodeCredentialFallback} from "./system/credential-store.js";
 import {safeStorage} from "electron";
-import { BridgeHost, Homeserver, WeChatBridge, WECHAT_FALLBACK_DIRECTORIES, loadShippedCredentials } from "@flareai/hub";
+import { BridgeHost, Homeserver, WeChatBridge, WECHAT_FALLBACK_DIRECTORIES, loadShippedCredentials } from "@polymux/hub";
 import { serveMedia } from "./hub/media.js";
 import { PREVIEW_SCHEME, previewResponse } from "./workspace/preview.js";
 import { registerPrivilegedSchemes } from "./system/schemes.js";
-import { loadAgentPrompts } from "@flareai/agent";
+import { loadAgentPrompts } from "@polymux/agent";
 import { coreSkillNames, installOfficialSkills } from "./skills/official.js";
 import { exportNodeRuntime } from "./system/node-runtime.js";
 import {
-  FLAREAI_TRAFFIC_LIGHT_POSITION,
+  POLYMUX_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
 } from "./system/window-buttons.js";
 
@@ -47,13 +47,13 @@ if (started) {
   app.quit();
 }
 
-// A side instance: `npm start -- --isolated` (or any FLAREAI_DEV_INSTANCE
-// value) runs a second FlareAI that shares nothing with the one already open.
+// A side instance: `npm start -- --isolated` (or any POLYMUX_DEV_INSTANCE
+// value) runs a second Polymux that shares nothing with the one already open.
 // Everything that makes two runs collide is keyed off the name — the userData
 // directory, and with it Electron's single-instance lock, plus the hub's
 // homeserver port — so an agent can start the app to check a change without
 // evicting the session the user is sitting in front of.
-const devInstance = process.env.FLAREAI_DEV_INSTANCE?.trim();
+const devInstance = process.env.POLYMUX_DEV_INSTANCE?.trim();
 if (devInstance) {
   app.setPath("userData", `${app.getPath("userData")}-${devInstance}`);
 }
@@ -63,7 +63,7 @@ const backgroundLaunch = requestsBackgroundLaunch({
   hasSwitch: (name) => app.commandLine.hasSwitch(name),
   environment: process.env,
 });
-const providerProbe = process.argv.includes("--flareai-provider-probe");
+const providerProbe = process.argv.includes("--polymux-provider-probe");
 if (process.platform === "darwin") {
   if (providerProbe) app.setActivationPolicy("prohibited");
   // Apply this before app readiness. `open -g` asks Launch Services not to
@@ -74,27 +74,27 @@ if (process.platform === "darwin") {
   else if (backgroundLaunch) app.setActivationPolicy("accessory");
 }
 const environmentDebuggingPort = configuredRemoteDebuggingPort(
-  process.env.FLAREAI_REMOTE_DEBUGGING_PORT,
+  process.env.POLYMUX_REMOTE_DEBUGGING_PORT,
 );
 if (environmentDebuggingPort !== null && !app.commandLine.hasSwitch("remote-debugging-port"))
   app.commandLine.appendSwitch("remote-debugging-port", String(environmentDebuggingPort));
 const orchestrationExperiment =
-  process.env.FLAREAI_ORCHESTRATION_EXPERIMENT === "1" ||
+  process.env.POLYMUX_ORCHESTRATION_EXPERIMENT === "1" ||
   app.commandLine.hasSwitch("orchestration-experiment") ||
   process.argv.includes("--orchestration-experiment");
 if (devInstance)
-  console.log("FlareAI launch mode", {
+  console.log("Polymux launch mode", {
     orchestrationExperiment,
-    experimentEnvironment: process.env.FLAREAI_ORCHESTRATION_EXPERIMENT === "1",
+    experimentEnvironment: process.env.POLYMUX_ORCHESTRATION_EXPERIMENT === "1",
     experimentElectronSwitch: app.commandLine.hasSwitch("orchestration-experiment"),
     experimentArgument: process.argv.includes("--orchestration-experiment"),
     preloadOfficialSkillExperiment:
-      process.env.FLAREAI_PRELOAD_OFFICIAL_SKILL_EXPERIMENT === "1",
+      process.env.POLYMUX_PRELOAD_OFFICIAL_SKILL_EXPERIMENT === "1",
   });
 // The unsigned benchmark bundle must not open the ordinary encrypted
 // credential files with a different Keychain identity. Its SQLite/session
 // state is disposable, while skills and MCP configuration deliberately remain
-// in the ordinary ~/.flareai home.
+// in the ordinary ~/.polymux home.
 if (backgroundLaunch && !devInstance)
   app.setPath("userData", `${app.getPath("userData")}-background-benchmark`);
 
@@ -120,10 +120,10 @@ function homeserverPort(): number {
 if (!providerProbe && !app.requestSingleInstanceLock()) {
   // Say so. This instance dies before it ever builds a window, so without a
   // line here `npm start` looks hung: the dev server stays up, the terminal
-  // goes quiet, and the only FlareAI on screen is the older instance still
+  // goes quiet, and the only Polymux on screen is the older instance still
   // running its older bundle.
   console.error(
-    "FlareAI is already running, so this instance is handing the session over " +
+    "Polymux is already running, so this instance is handing the session over " +
       "and exiting. Quit the running one (Cmd+Q) before starting again.",
   );
   quitting = true;
@@ -146,26 +146,26 @@ if (!providerProbe && !app.requestSingleInstanceLock()) {
 
 // Development runs execute inside Electron.app, whose bundle name would
 // otherwise appear as "Electron" in the macOS Dock tooltip.
-app.setName("FlareAI");
-process.title = "FlareAI";
+app.setName("Polymux");
+process.title = "Polymux";
 // Electron does not always build Chromium's accessibility tree until assistive
 // technology requests it. Keep the renderer tree available so macOS can expose
-// FlareAI's labelled chat controls to VoiceOver and exact-window automation.
+// Polymux's labelled chat controls to VoiceOver and exact-window automation.
 app.commandLine.appendSwitch("force-renderer-accessibility");
 // Electron's geolocation provider reads GOOGLE_API_KEY before any renderer is
-// created. Keep a FlareAI-specific variable available for packaged launches while
+// created. Keep a Polymux-specific variable available for packaged launches while
 // still respecting Electron's documented variable when it is supplied.
-if (!process.env.GOOGLE_API_KEY && process.env.FLAREAI_GOOGLE_API_KEY)
-  process.env.GOOGLE_API_KEY = process.env.FLAREAI_GOOGLE_API_KEY;
+if (!process.env.GOOGLE_API_KEY && process.env.POLYMUX_GOOGLE_API_KEY)
+  process.env.GOOGLE_API_KEY = process.env.POLYMUX_GOOGLE_API_KEY;
 
-// The interpreter the skill scripts run under (`"${FLAREAI_NODE:-node}"`):
+// The interpreter the skill scripts run under (`"${POLYMUX_NODE:-node}"`):
 // the bundled runtime in a packaged app, the dev Electron in a checkout. Set
 // before anything spawns a shell so every agent subprocess inherits it. After
 // the devInstance block above on purpose — the dev wrapper is written into
 // this instance's own userData.
 if (
   !exportNodeRuntime({
-    bundledNode: bundledResource("node", "node"),
+    bundledNode: bundledResource("node", process.platform === "win32" ? "node.exe" : "node"),
     checkoutMarker: path.join(app.getAppPath(), "resources", "skills"),
     execPath: process.execPath,
     wrapperDirectory: path.join(app.getPath("userData"), "bin"),
@@ -190,7 +190,7 @@ let startupShellWindow: BrowserWindow | undefined;
  * has rendered its first complete frame. */
 function createStartupShellWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    title: "FlareAI",
+    title: "Polymux",
     width: 1000,
     height: 618,
     minWidth: 973,
@@ -199,7 +199,7 @@ function createStartupShellWindow(): BrowserWindow {
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff",
     titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
     trafficLightPosition:
-      process.platform === "darwin" ? FLAREAI_TRAFFIC_LIGHT_POSITION : undefined,
+      process.platform === "darwin" ? POLYMUX_TRAFFIC_LIGHT_POSITION : undefined,
     webPreferences: {
       preload: path.join(currentDirectory, "preload.js"),
       contextIsolation: true,
@@ -286,7 +286,7 @@ function createWindow(
 ): BrowserWindow {
   const bounds = detachedWindowBounds(placement);
   const window = new BrowserWindow({
-    title: "FlareAI",
+    title: "Polymux",
     width: bounds?.width ?? DETACHED_WINDOW_WIDTH,
     height: bounds?.height ?? 618,
     x: bounds?.x,
@@ -318,7 +318,7 @@ function createWindow(
     // render at y=12; these measured positions share the same visual line.
     titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
     trafficLightPosition:
-      process.platform === "darwin" ? FLAREAI_TRAFFIC_LIGHT_POSITION : undefined,
+      process.platform === "darwin" ? POLYMUX_TRAFFIC_LIGHT_POSITION : undefined,
     webPreferences: {
       preload: path.join(currentDirectory, "preload.js"),
       contextIsolation: true,
@@ -432,7 +432,7 @@ function createWindow(
       if (retriesLeft <= 0) {
         console.error(
           "[renderer] giving up on the load; the window will stay blank. " +
-            "Check that the dev server is up and quit any other running FlareAI.",
+            "Check that the dev server is up and quit any other running Polymux.",
         );
         return;
       }
@@ -567,7 +567,7 @@ function desktopBackendOptions(window: BrowserWindow): Omit<DesktopBackendOption
       dataDirectory: app.getPath("userData"),
       officialSkillDirectories: [officialSkillDirectory()],
       coreSkills: coreSkillNames(bundledResource("skills", "core")),
-      // FlareAI's own prompts travel as files beside the skills — same bundle,
+      // Polymux's own prompts travel as files beside the skills — same bundle,
       // neither tier, never mirrored into the user's skills directory.
       agentPrompts: loadAgentPrompts(
         bundledResource("prompts"),
@@ -682,7 +682,7 @@ function loadRenderer(window: BrowserWindow, workspaceView?: SeparateWorkspaceVi
     // `npm run onboarding` reopens first-run setup over this machine's
     // real profile without recording that it ran. Only the dev-server branch
     // reads it, so a packaged build has no way to reach it.
-    if (process.env.FLAREAI_ONBOARDING === "1")
+    if (process.env.POLYMUX_ONBOARDING === "1")
       url.searchParams.set("onboarding", "1");
     void window.loadURL(url.toString()).catch((error: unknown) => {
       // `did-fail-load` covers the retry; this only keeps the rejection from
@@ -742,14 +742,14 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   await withTimeout(
     loadShippedCredentials({
       directory: app.getPath("userData"),
-      host: process.env.FLAREAI_UPDATE_HOST ?? "https://updates.flarehq.co",
+      host: process.env.POLYMUX_UPDATE_FEED_URL ?? "https://polymux.com/api/releases",
       log: (message) => console.warn(`[credentials] ${message}`),
     }),
     8_000,
     "shipped credentials",
   ).catch((): undefined => undefined);
   const homeserver = new Homeserver({
-    serverName: "flareai.local",
+    serverName: "polymux.local",
     dataDirectory: directory,
     port: homeserverPort(),
     onActivity: (activity) => onHubActivity?.(activity),
@@ -772,7 +772,7 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   });
   // No binary to supervise for WeChat, and no account to log into: it is a
   // relay against the desktop app. Started on demand rather than here, because
-  // portal rooms belong to FlareAI's Matrix user and that does not exist yet.
+  // portal rooms belong to Polymux's Matrix user and that does not exist yet.
   wechat = new WeChatBridge({
     homeserver,
     directory: path.join(directory, "bridges"),
@@ -889,7 +889,7 @@ app.whenReady().then(async () => {
     app.exit(code);
     return;
   }
-  // FlareAI is designed to be controllable through exact-window accessibility
+  // Polymux is designed to be controllable through exact-window accessibility
   // whether its window was launched normally or in the background. Electron
   // otherwise waits for an assistive client to attach and can leave a running
   // normal window with no semantic tree after a fullscreen/Space transition.
@@ -967,12 +967,12 @@ app.on("will-quit", (event) => {
 /**
  * `app.isPackaged` cannot pick this path: it merely checks that the executable
  * is not named "electron", and the development bundle is deliberately renamed
- * to "FlareAI" for the Dock (scripts/dev-app-name.mjs), which makes a dev run
+ * to "Polymux" for the Dock (scripts/dev-app-name.mjs), which makes a dev run
  * look packaged and pointed skill loading at the bundle's empty Resources.
  * Probing for the directory that actually exists is launch-mode-proof.
  *
  * The bundle is only the source: skills are loaded from the mirror under
- * `~/.flareai`, so every skill the app runs lives in the user's own directory.
+ * `~/.polymux`, so every skill the app runs lives in the user's own directory.
  */
 function officialSkillDirectory(): string {
   return installOfficialSkills([

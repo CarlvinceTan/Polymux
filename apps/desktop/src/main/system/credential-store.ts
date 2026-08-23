@@ -20,7 +20,7 @@ interface CredentialFile {
  * and Chromium remembers the denial for the rest of the process.
  */
 export const SECURE_STORAGE_UNAVAILABLE =
-  "Secure credential storage is unavailable. Restart FlareAI and click \"Always Allow\" when macOS asks for keychain access.";
+  "Secure credential storage is unavailable. Restart Polymux and click \"Always Allow\" when macOS asks for keychain access.";
 
 const OPENCODE_PROVIDERS = new Set(["opencode", "opencode-go"]);
 

@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type { DriveEntryDto } from "@flareai/protocol";
+import type { DriveEntryDto } from "@polymux/protocol";
 import { SIMPLE_UPLOAD_LIMIT, uploadInChunks } from "./chunks.js";
 import { downloadToFile } from "./download.js";
 import {
@@ -27,7 +27,7 @@ const CONTENT = "https://content.dropboxapi.com/2";
  * Dropbox, scoped to the app folder.
  *
  * The app-folder permission means every path here is already relative to a
- * private `Apps/FlareAI` directory — Dropbox itself enforces that the rest of the
+ * private `Apps/Polymux` directory — Dropbox itself enforces that the rest of the
  * user's account is out of reach, so there is no root folder to find or guard.
  */
 export class DropboxDrive implements DriveAdapter {
@@ -103,7 +103,7 @@ export class DropboxDrive implements DriveAdapter {
           total: space.allocation?.allocated ?? null,
           appUsed: null,
         },
-        root: "Apps/FlareAI",
+        root: "Apps/Polymux",
         error: null,
       };
     } catch (cause) {

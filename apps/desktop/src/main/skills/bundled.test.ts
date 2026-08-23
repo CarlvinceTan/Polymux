@@ -3,7 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { SkillLoader } from "@flareai/agent";
+import { SkillLoader } from "@polymux/agent";
 import { coreSkillNames } from "./official.js";
 
 const TIERS = ["core", "official"] as const;
@@ -17,8 +17,8 @@ const bundled = (tier: string): string =>
  * otherwise: it simply stops appearing.
  */
 function loadMirror() {
-  const home = mkdtempSync(path.join(tmpdir(), "flareai-bundled-"));
-  const mirror = path.join(home, ".flareai", "official-skills");
+  const home = mkdtempSync(path.join(tmpdir(), "polymux-bundled-"));
+  const mirror = path.join(home, ".polymux", "official-skills");
   mkdirSync(mirror, { recursive: true });
   for (const tier of TIERS) cpSync(bundled(tier), mirror, { recursive: true });
   const loaded = new SkillLoader({ home, official: [mirror] }).load();

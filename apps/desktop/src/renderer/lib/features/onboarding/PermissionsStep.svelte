@@ -1,12 +1,12 @@
 <script lang="ts">
-  import type {FlareAIApi, SystemPermissionKind, SystemPermissionStatus} from '@flareai/protocol';
-  import {permissionPrompts} from '@flareai/protocol';
+  import type {PolymuxApi, SystemPermissionKind, SystemPermissionStatus} from '@polymux/protocol';
+  import {permissionPrompts} from '@polymux/protocol';
   import Icon from '../../shared/components/Icon.svelte';
   import BackAction from './BackAction.svelte';
   import {t, type MessageKey} from '../../../i18n';
 
   interface Props {
-    api: FlareAIApi;
+    api: PolymuxApi;
     onDone: (granted: string[]) => void;
   }
 
@@ -68,7 +68,7 @@
     // A grant given in System Settings comes back with nothing to announce it,
     // so returning to the window is the moment to look again. The check is a
     // real read rather than a stored answer, so it also stays honest about a
-    // grant that will not apply until FlareAI is relaunched.
+    // grant that will not apply until Polymux is relaunched.
     const recheck = (): void => void refresh();
     window.addEventListener('focus', recheck);
     return () => window.removeEventListener('focus', recheck);

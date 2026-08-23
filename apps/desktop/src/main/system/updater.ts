@@ -1,14 +1,10 @@
 import { app, autoUpdater } from "electron";
-import type { AppUpdateDto, AppVersionDto } from "@flareai/protocol";
+import type { AppUpdateDto, AppVersionDto } from "@polymux/protocol";
 
-/**
- * Updates are served as static files from Cloudflare R2 behind
- * updates.flarehq.co. Nothing dynamic runs there: macOS reads a small JSON
- * document describing the newest build, Windows reads the RELEASES index that
- * MakerSquirrel already produces. `scripts/publish-updates.mjs` writes both.
- */
-const FEED_HOST = process.env.FLAREAI_UPDATE_HOST ?? "https://updates.flarehq.co";
-const CHANNEL = "stable";
+/** The website resolves the latest signed GitHub Release into Squirrel.Mac's
+ * tiny JSON feed. Keeping the feed on the product domain makes the update route
+ * stable while release assets remain visible and downloadable on GitHub. */
+const FEED_URL = process.env.POLYMUX_UPDATE_FEED_URL ?? "https://polymux.com/api/releases";
 
 // Squirrel polls rather than being pushed to, so the interval is the worst-case
 // delay before a machine notices a release. Ten minutes matches what
@@ -53,14 +49,15 @@ function canSelfUpdate(): boolean {
   if (!app.isPackaged) return false;
   // deb/rpm are updated through the user's package manager; Squirrel has no
   // Linux backend to point at.
-  return process.platform === "darwin" || process.platform === "win32";
+  // The product-domain endpoint currently emits Squirrel.Mac JSON. Pointing a
+  // Windows Squirrel client at that JSON is not a degraded update path; it is
+  // a permanently failing one. Windows installers are published in GitHub
+  // Releases and remain manual until the site exposes a signed RELEASES feed.
+  return process.platform === "darwin";
 }
 
 function feedUrl(): string {
-  const base = `${FEED_HOST}/${CHANNEL}/${process.platform}/${process.arch}`;
-  // Squirrel.Windows walks a directory listing for RELEASES and the .nupkg
-  // beside it; Squirrel.Mac wants the JSON document itself.
-  return process.platform === "darwin" ? `${base}/RELEASES.json` : base;
+  return FEED_URL;
 }
 
 /** Installed build identity, shown in the General settings tab. */
@@ -81,7 +78,9 @@ export function startUpdateChecks(): void {
     settle({
       status: "unsupported",
       message: app.isPackaged
-        ? "This platform updates through its package manager."
+        ? process.platform === "linux"
+          ? "This platform updates through its package manager."
+          : "Automatic updates are not available on this platform yet. Download the latest installer from GitHub Releases."
         : "Development builds do not update.",
     });
     return;

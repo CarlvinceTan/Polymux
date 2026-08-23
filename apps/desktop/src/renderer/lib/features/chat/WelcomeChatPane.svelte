@@ -1,6 +1,6 @@
 <script lang="ts">
   import PromptInput from './PromptInput.svelte';
-  import type {ReasoningEffort} from '@flareai/protocol';
+  import type {ReasoningEffort} from '@polymux/protocol';
   import {t} from '../../../i18n';
 
   /** Empty means the catalog's own wording, which follows the language. */
@@ -31,7 +31,7 @@
     let frame = 0;
     const measure = () => {
       frame = 0;
-      const prompt = node.querySelector<HTMLElement>('.flareai-prompt');
+      const prompt = node.querySelector<HTMLElement>('.polymux-prompt');
       if (!prompt) return;
       node.style.setProperty('--welcome-offset', '0px');
       const promptRect = prompt.getBoundingClientRect();
@@ -69,7 +69,7 @@
     <!-- Document-relative, not root-relative: the packaged app is loaded over
          file://, where a leading slash resolves against the filesystem root
          rather than the bundle and the mark silently fails to load. -->
-    <img class="brand-mark" src="flareai.svg" alt="FlareAI"/>
+    <img class="brand-mark" src="polymux.svg" alt="Polymux"/>
     <h1>{greeting || $t('welcome.greeting')}</h1>
     <p>{subtitle || $t('welcome.subtitle')}</p>
   </div>

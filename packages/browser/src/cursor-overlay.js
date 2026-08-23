@@ -2,7 +2,7 @@
 //
 // A classic script (not a module): the browser extension loads it as a content
 // script, and the in-app Browser injects the same source into every document.
-// It defines `globalThis.FlareAICursorOverlay` on top of FlareAICursorMotion,
+// It defines `globalThis.PolymuxCursorOverlay` on top of PolymuxCursorMotion,
 // which must be loaded first.
 //
 // The contract is one call — `moveTo(point)` resolves when the cursor has
@@ -34,21 +34,21 @@
   function ensure() {
     if (renderer) return renderer;
     overlayHost = document.createElement("div");
-    overlayHost.id = "flareai-agent-overlay-root";
-    overlayHost.dataset.flareaiOverlayRoot = "";
+    overlayHost.id = "polymux-agent-overlay-root";
+    overlayHost.dataset.polymuxOverlayRoot = "";
     // A closed shadow root with `all: initial` so no page stylesheet can
     // restyle the cursor, and nothing the page queries can find it.
     const shadow = overlayHost.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
     style.textContent =
-      ".flareai-overlay{all:initial;z-index:2147483646;pointer-events:none;position:fixed;inset:0}@media print{.flareai-overlay{display:none}}";
+      ".polymux-overlay{all:initial;z-index:2147483646;pointer-events:none;position:fixed;inset:0}@media print{.polymux-overlay{display:none}}";
     const root = document.createElement("div");
-    root.className = "flareai-overlay";
+    root.className = "polymux-overlay";
     root.setAttribute("aria-hidden", "true");
     shadow.append(style, root);
     (document.documentElement ?? document).appendChild(overlayHost);
 
-    renderer = globalThis.FlareAICursorMotion.createRenderer(root, {
+    renderer = globalThis.PolymuxCursorMotion.createRenderer(root, {
       glowColor: "#339cff",
       onArrived(moveSequence) {
         const settle = arrivals.get(moveSequence);
@@ -76,7 +76,7 @@
           moveSequence,
         },
         isVisible: true,
-        turnKey: "flareai",
+        turnKey: "polymux",
         viewportSize: viewportSize(),
       });
     });
@@ -146,7 +146,7 @@
     renderer.setState({
       cursor: { ...lastPoint, visible: true, animateMovement: false, moveSequence: sequence },
       isVisible: true,
-      turnKey: "flareai",
+      turnKey: "polymux",
       viewportSize: viewportSize(),
     });
   }
@@ -154,5 +154,5 @@
   window.addEventListener("resize", rerender);
   window.visualViewport?.addEventListener("resize", rerender);
 
-  globalThis.FlareAICursorOverlay = { ensure, moveTo, show, hide, rerender };
+  globalThis.PolymuxCursorOverlay = { ensure, moveTo, show, hide, rerender };
 })();

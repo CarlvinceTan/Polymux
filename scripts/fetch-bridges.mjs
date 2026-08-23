@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Downloads the mautrix bridge binaries that ship inside FlareAI.
+ * Downloads the mautrix bridge binaries that ship inside Polymux.
  *
  * Bridges are bundled rather than fetched at runtime: setup has to work on a
  * machine that is not online yet, and an app that downloads and then executes
@@ -19,7 +19,7 @@
  */
 
 import {createHash} from "node:crypto";
-import {mkdir, readFile, writeFile, chmod, stat} from "node:fs/promises";
+import {mkdir, readFile, writeFile, chmod, stat, rm} from "node:fs/promises";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
 
@@ -28,8 +28,8 @@ const outputDirectory = path.join(root, "resources", "bridges");
 
 /**
  * Pinned releases from GitHub. `binary` is the name BridgeHost looks for; the
- * asset is that name plus `-darwin-arm64`, and its checksum comes from the
- * sha256sums.txt in the same release.
+ * asset name depends on the target. Mautrix's unsuffixed `amd64`/`arm64`
+ * artifacts are Linux binaries; macOS artifacts are `darwin-arm64`.
  */
 const FLEET = [
   {binary: "mautrix-whatsapp", repo: "whatsapp", tag: "v0.2607.0"},
@@ -83,6 +83,20 @@ const CI_FLEET = [
   },
 ];
 
+// The Google Chat megabridge CI also publishes a native Linux amd64 artifact
+// from the same pinned commit. It is a separate job, so its checksum is pinned
+// independently from the macOS build above.
+const LINUX_CI_FLEET = [
+  {
+    binary: "mautrix-googlechat",
+    project: "googlechat",
+    commit: "c58955059800e4510414ff02253f0b96403701c2",
+    job: "build amd64",
+    extras: [],
+    sha256: "ceea7f0cd79dca09bf372bad436d38bf7a8906545abf80d12cfa2b912362d589",
+  },
+];
+
 /**
  * macOS builds are arm64 only, and not by choice: every mautrix release
  * publishes `<binary>-darwin-arm64` and nothing else for macOS. The `amd64`
@@ -94,8 +108,9 @@ const CI_FLEET = [
  * which also means shipping binaries nobody has published a checksum for.
  * That is a deliberate decision, not a flag, so this refuses instead.
  */
-const requestedArch = process.argv.find((flag) => flag.startsWith("--arch="))?.slice(7);
-if (requestedArch && requestedArch !== "arm64") {
+const requestedPlatform = process.argv.find((flag) => flag.startsWith("--platform="))?.slice(11) ?? process.platform;
+const requestedArch = process.argv.find((flag) => flag.startsWith("--arch="))?.slice(7) ?? process.arch;
+if (requestedPlatform === "darwin" && requestedArch !== "arm64") {
   console.error(
     [
       `No macOS ${requestedArch} bridge binaries exist upstream — every mautrix release`,
@@ -105,11 +120,17 @@ if (requestedArch && requestedArch !== "arm64") {
   );
   process.exit(1);
 }
+if (requestedPlatform === "linux" && !["x64", "arm64", "arm"].includes(requestedArch))
+  throw new Error(`No pinned Linux bridge fleet for ${requestedArch}`);
+if (!["darwin", "linux", "win32"].includes(requestedPlatform))
+  throw new Error(`Unsupported bridge target ${requestedPlatform}-${requestedArch}`);
 
 const dryRun = process.argv.includes("--dry-run");
 const force = process.argv.includes("--force");
 const trustNew = process.argv.includes("--trust-new");
-const asset = (entry) => `${entry.binary}-darwin-arm64`;
+const linuxArch = {x64: "amd64", arm64: "arm64", arm: "arm"}[requestedArch];
+const asset = (entry) =>
+  `${entry.binary}-${requestedPlatform === "darwin" ? "darwin-arm64" : linuxArch}`;
 const url = (entry, file) =>
   `https://github.com/mautrix/${entry.repo}/releases/download/${entry.tag}/${file}`;
 
@@ -202,10 +223,29 @@ async function fetchFromCi(entry) {
 
 async function main() {
   await mkdir(outputDirectory, {recursive: true});
+  // This directory is cached between builds. Keep verified files for repeated
+  // builds of the same target, but clear every managed binary when the target
+  // changes so a Windows or Linux package can never inherit macOS code.
+  const targetId = `${requestedPlatform}-${requestedArch}`;
+  const targetStamp = path.join(outputDirectory, ".platform");
+  const previousTarget = (await readFile(targetStamp, "utf8").catch(() => "")).trim();
+  if (previousTarget !== targetId) {
+    for (const entry of [...FLEET, ...CI_FLEET, ...LINUX_CI_FLEET]) {
+      await rm(path.join(outputDirectory, entry.binary), {force: true});
+      for (const extra of entry.extras ?? [])
+        await rm(path.join(outputDirectory, extra), {force: true});
+    }
+  }
   let total = 0;
   let failed = 0;
 
-  for (const entry of FLEET) {
+  // Upstream publishes the main Go fleet for Linux and Apple silicon. It does
+  // not publish Windows executables. A Windows build remains useful (models,
+  // browser, files, drive and built-in tools), and the Hub accurately reports
+  // these optional bridge binaries as unavailable rather than trying to run a
+  // foreign executable.
+  const releaseFleet = requestedPlatform === "win32" ? [] : FLEET;
+  for (const entry of releaseFleet) {
     process.stdout.write(`${entry.binary.padEnd(20)} ${entry.tag.padEnd(12)} `);
     try {
       const result = await fetchOne(entry);
@@ -223,7 +263,14 @@ async function main() {
     }
   }
 
-  for (const entry of CI_FLEET) {
+  // iMessage remains macOS-only. Google Chat has independently pinned CI
+  // outputs for macOS arm64 and Linux amd64.
+  const ciFleet = requestedPlatform === "darwin"
+    ? CI_FLEET
+    : requestedPlatform === "linux" && requestedArch === "x64"
+      ? LINUX_CI_FLEET
+      : [];
+  for (const entry of ciFleet) {
     process.stdout.write(`${entry.binary.padEnd(20)} ${entry.commit.slice(0, 8).padEnd(12)} `);
     try {
       const result = await fetchFromCi(entry);
@@ -238,13 +285,20 @@ async function main() {
     }
   }
 
-  const count = FLEET.length + CI_FLEET.length;
+  const count = releaseFleet.length + ciFleet.length;
   console.log(`\n${count - failed}/${count} bridges, ${megabytes(total)} total.`);
-  console.log(
-    "\nmacOS builds are arm64 only: upstream publishes darwin-arm64 and nothing\n" +
-      "else, so an Intel Mac would get iMessage (universal) and nothing else.",
-  );
+  if (requestedPlatform === "darwin")
+    console.log("\nmacOS builds are arm64 only: upstream publishes darwin-arm64 and nothing else.");
+  else if (requestedPlatform === "linux")
+    console.log(
+      requestedArch === "x64"
+        ? "\nLinux includes 13 native bridges; only iMessage is unavailable."
+        : "\nLinux includes the 12 release bridges; Google Chat has no pinned artifact for this architecture and iMessage is unavailable.",
+    );
+  else
+    console.log("\nWindows includes no messaging bridges because upstream publishes no Windows binaries.");
   if (failed > 0) process.exitCode = 1;
+  else if (!dryRun) await writeFile(targetStamp, `${targetId}\n`);
 }
 
 await main();

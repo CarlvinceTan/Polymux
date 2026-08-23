@@ -1,4 +1,4 @@
-import type { BrowserImportResultDto, SavedLoginDto } from "@flareai/protocol";
+import type { BrowserImportResultDto, SavedLoginDto } from "@polymux/protocol";
 import type { CookiesSetDetails } from "electron";
 import type {
   ImportedCookie,

@@ -4,7 +4,7 @@ import type {
   BrowserPermissionPromptDto,
   PermissionDecisionDto,
   SitePermissionDto,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 import type { Session, WebContents } from "electron";
 
 /**

@@ -14,9 +14,9 @@ import sys
 import tempfile
 
 
-SUITE = Path.home() / ".flareai" / "skill-maintenance"
+SUITE = Path.home() / ".polymux" / "skill-maintenance"
 POLICY = SUITE / "policy.json"
-HOOKS = Path.home() / ".flareai" / "hooks.json"
+HOOKS = Path.home() / ".polymux" / "hooks.json"
 BACKUPS = SUITE / "migration-backups"
 
 

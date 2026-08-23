@@ -122,7 +122,7 @@
     use:portal
     bind:this={menu}
     use:mounted
-    class="flareai-dropdown-menu open-menu"
+    class="polymux-dropdown-menu open-menu"
     class:compact
     class:placed
     style="left: {left}px; top: {top}px"
@@ -132,7 +132,7 @@
     {#each choices as choice (choice.value)}
       <button
         type="button"
-        class="flareai-dropdown-item"
+        class="polymux-dropdown-item"
         role="menuitem"
         onclick={() => onChoose(choice.value)}
       >

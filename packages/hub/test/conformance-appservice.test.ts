@@ -26,11 +26,11 @@ import {
  * wrong network, to the wrong person, or the same conversation sent twice.
  */
 
-const SERVER = "flareai.test";
+const SERVER = "polymux.test";
 const GHOST = `@whatsapp_1:${SERVER}`;
 const SECOND_GHOST = `@whatsapp_2:${SERVER}`;
 const ZULIP_GHOST = `@zulip_1:${SERVER}`;
-const WHATSAPP_NAMESPACE = "@whatsapp_.*:flareai\\.test";
+const WHATSAPP_NAMESPACE = "@whatsapp_.*:polymux\\.test";
 
 // --- helpers ---
 
@@ -87,7 +87,7 @@ async function addBridge(
     hsToken: `hs-token-${id}`,
     url: bridge.base,
     senderLocalpart: `${id}bot`,
-    userNamespaces: [`@${prefix}_.*:flareai\\.test`],
+    userNamespaces: [`@${prefix}_.*:polymux\\.test`],
   });
   return {bridge, asToken};
 }
@@ -187,7 +187,7 @@ interface ScriptedHarness {
 
 /** The shared harness's shape, with the scripted listener in place of the bridge. */
 async function startScriptedHarness(): Promise<ScriptedHarness> {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hs-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-hs-"));
   const bridge = await startScriptedBridge();
   const hs = new Homeserver({serverName: SERVER, dataDirectory: directory});
   await hs.start();
@@ -204,7 +204,7 @@ async function startScriptedHarness(): Promise<ScriptedHarness> {
     hs,
     bridge,
     asToken,
-    user: hs.createLocalUser("flareai"),
+    user: hs.createLocalUser("polymux"),
     cleanup: async () => {
       // Released first: `close` awaits every pusher, and a pusher parked on a
       // held response would hold the whole suite there with it.
@@ -342,7 +342,7 @@ test("a bridge may write as the account it bridges for, but only one that exists
 
     const foreign = await call(hs, "GET", "/_matrix/client/v3/account/whoami", {
       token: asToken,
-      query: {user_id: "@flareai:elsewhere.test"},
+      query: {user_id: "@polymux:elsewhere.test"},
     });
     assert.equal(foreign.status, 401, "a human on another domain is not ours to write as");
   } finally {
@@ -563,7 +563,7 @@ test("a transaction retried after a failure carries the same id and the same eve
 test("nothing new is pushed while a transaction is unacknowledged", async () => {
   // One transaction in flight per appservice, with everything produced
   // meanwhile coalescing into the next batch, is the model the pusher and the
-  // flareai-{streamOrder} id both presume. A second concurrent loop would
+  // polymux-{streamOrder} id both presume. A second concurrent loop would
   // duplicate or skip deliveries.
   const {hs, bridge, asToken, user, cleanup} = await startScriptedHarness();
   try {
@@ -597,10 +597,10 @@ test("nothing new is pushed while a transaction is unacknowledged", async () => 
 });
 
 test("one hung bridge does not hold up another's transactions", async () => {
-  // FlareAI runs several bridges against one loopback homeserver. A shared push
+  // Polymux runs several bridges against one loopback homeserver. A shared push
   // loop would let one hung bridge stall every other bridge's messages, which
   // reaches the user as "Zulip is broken".
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hs-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-hs-"));
   const hung = await startScriptedBridge();
   const healthy = await startScriptedBridge();
   const hs = new Homeserver({serverName: SERVER, dataDirectory: directory});
@@ -619,9 +619,9 @@ test("one hung bridge does not hold up another's transactions", async () => {
     hsToken: "hs-token-zulip",
     url: healthy.base,
     senderLocalpart: "zulipbot",
-    userNamespaces: ["@zulip_.*:flareai\\.test"],
+    userNamespaces: ["@zulip_.*:polymux\\.test"],
   });
-  const user = hs.createLocalUser("flareai");
+  const user = hs.createLocalUser("polymux");
   try {
     const whatsappRoom = await portal(hs, "as-token-whatsapp", user);
     const zulipRoom = await portal(hs, "as-token-zulip", user, ZULIP_GHOST);
@@ -656,7 +656,7 @@ test("one hung bridge does not hold up another's transactions", async () => {
 });
 
 test("closing aborts a bridge transaction that never answers", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hs-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-hs-"));
   const bridge = await startScriptedBridge();
   const hs = new Homeserver({serverName: SERVER, dataDirectory: directory});
   await hs.start();
@@ -668,7 +668,7 @@ test("closing aborts a bridge transaction that never answers", async () => {
     senderLocalpart: "whatsappbot",
     userNamespaces: [WHATSAPP_NAMESPACE],
   });
-  const user = hs.createLocalUser("flareai");
+  const user = hs.createLocalUser("polymux");
   try {
     const roomId = await portal(hs, "as-token-whatsapp", user);
     await sendMessage(hs, user.accessToken, roomId, {msgtype: "m.text", body: "held open"});
@@ -790,7 +790,7 @@ test("a bridge that cannot be reached is reported as a failed connection", async
       hsToken: "hs-token-absent",
       url: `http://127.0.0.1:${deadPort}`,
       senderLocalpart: "absentbot",
-      userNamespaces: [`@absent_.*:flareai\\.test`],
+      userNamespaces: [`@absent_.*:polymux\\.test`],
     });
     const pinged = await call(hs, "POST", "/_matrix/client/v1/appservice/absent/ping", {
       token: "as-token-absent",
@@ -817,7 +817,7 @@ test("a receive-only bridge with no listener is told its url is unset", async ()
       hsToken: "hs-token-doublepuppet",
       url: "",
       senderLocalpart: "doublepuppetbot",
-      userNamespaces: [`@doublepuppet_.*:flareai\\.test`],
+      userNamespaces: [`@doublepuppet_.*:polymux\\.test`],
     });
     const pinged = await call(hs, "POST", "/_matrix/client/v1/appservice/doublepuppet/ping", {
       token: "as-token-doublepuppet",
@@ -887,7 +887,7 @@ test("invitations left unanswered while the app was down are answered at startup
   // The startup sweep is the only recovery for portals invited before the hop
   // covered every path, or while the app was not running: /sync reports only
   // joined rooms, so an unanswered invite is a conversation that is nowhere.
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hs-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-hs-"));
   const bridge = await startFakeBridge();
   const registration = {
     id: "whatsapp",
@@ -900,7 +900,7 @@ test("invitations left unanswered while the app was down are answered at startup
   const first = new Homeserver({serverName: SERVER, dataDirectory: directory, autoJoin: false});
   await first.start();
   first.registerAppservice(registration);
-  const user = first.createLocalUser("flareai");
+  const user = first.createLocalUser("polymux");
   const stranger = first.createLocalUser("stranger");
   let portalRoom = "";
   let strangerRoom = "";

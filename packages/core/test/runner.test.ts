@@ -7,7 +7,7 @@ import type {
   InferenceRequest,
   InferenceService,
   ModelRef,
-} from "@flareai/inference";
+} from "@polymux/inference";
 import {
   AgentRunControl,
   AgentRunner,
@@ -97,7 +97,7 @@ test("runs inference, streams ordered events, and returns final context", async 
         "Selected durable context: 3 blocks.",
         "Durable context candidates: 8 blocks.",
         "Desktop window snapshot captured: 2026-08-21T02:00:00.000Z",
-        "### Open in the FlareAI browser",
+        "### Open in the Polymux browser",
         "Captured: 2026-08-21T02:00:01.000Z",
         "- One",
         "### Open in the connected external browser",

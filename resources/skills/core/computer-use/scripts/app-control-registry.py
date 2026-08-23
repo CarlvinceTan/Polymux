@@ -16,13 +16,13 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parent.parent
 
 
-def flareai_home() -> Path:
-    """FlareAI's home, honouring a side instance the way the app itself does."""
-    instance = (os.environ.get("FLAREAI_DEV_INSTANCE") or "").strip()
-    return Path.home() / (f".flareai-{instance}" if instance else ".flareai")
+def polymux_home() -> Path:
+    """Polymux's home, honouring a side instance the way the app itself does."""
+    instance = (os.environ.get("POLYMUX_DEV_INSTANCE") or "").strip()
+    return Path.home() / (f".polymux-{instance}" if instance else ".polymux")
 
 
-STATE_DIR = flareai_home() / "state" / "window-control"
+STATE_DIR = polymux_home() / "state" / "window-control"
 
 # The registry belongs to this installation, not to the app. Every route in it
 # pins an exact macOS build and app bundle identity verified on *this* machine,
@@ -44,20 +44,20 @@ ROUTE_KINDS = (
 # bundle identity so first use and later compiled lookups cannot silently fall
 # back to an unflagged route.
 REQUIRED_APP_LAUNCH_ARGS = {
-    # The fixed loopback DevTools port belongs only to FlareAI's disposable
+    # The fixed loopback DevTools port belongs only to Polymux's disposable
     # background-benchmark profile. It exposes the preload API for run
     # submission and telemetry without making visual checks depend on focus or
     # the current macOS Space. The benchmark helper permits only one owner of
     # its separate homeserver/profile at a time and callers stop it afterward.
-    "com.flarehq.flareai": ["--flareai-background", "--remote-debugging-port=9334"],
+    "com.flarehq.polymux": ["--polymux-background", "--remote-debugging-port=9334"],
 }
 
-# FlareAI's background benchmark owns a separate userData directory and
+# Polymux's background benchmark owns a separate userData directory and
 # single-instance lock. Launch Services otherwise hands `open -a` to the
 # already-running ordinary session, so the required background arguments never
 # reach a new process. `-n` is part of this app-owned route, not a generic
 # default for arbitrary Electron applications.
-NEW_INSTANCE_BUNDLE_IDS = {"com.flarehq.flareai"}
+NEW_INSTANCE_BUNDLE_IDS = {"com.flarehq.polymux"}
 
 
 def required_app_launch_args(bundle_id: str) -> list[str]:
@@ -67,7 +67,7 @@ def required_app_launch_args(bundle_id: str) -> list[str]:
 def background_open_args(path: Path, bundle_id: str) -> list[str]:
     args = ["-g"]
     if bundle_id in NEW_INSTANCE_BUNDLE_IDS:
-        # FlareAI exposes its renderer/AX backend itself while keeping the
+        # Polymux exposes its renderer/AX backend itself while keeping the
         # window transparent, nonfrontmost and click-through. Launch Services'
         # `-j` hidden mode prevents that renderer from becoming ready.
         args.append("-n")
@@ -166,7 +166,7 @@ def app_identity(path: Path) -> dict[str, str]:
 
 def resolve_app_path(app: str, bundle_id: str | None) -> Path | None:
     """
-    The bundle for an app FlareAI has never controlled here. Spotlight answers
+    The bundle for an app Polymux has never controlled here. Spotlight answers
     by bundle id, which is the identity a route is pinned to; the name-based
     guesses are only a fallback for a caller that has no id yet.
     """

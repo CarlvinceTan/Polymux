@@ -47,7 +47,7 @@ test("assembles preferences, memory, skill summaries, and active goal without pr
         description: "Handle PDFs",
         filePath: "/skills/pdf/SKILL.md",
         baseDir: "/skills/pdf",
-        source: "flareai",
+        source: "polymux",
         disableModelInvocation: false,
       },
     ],
@@ -272,7 +272,7 @@ test("tells the run where a deliverable goes, in the user's own save order", () 
       defaultSource: "all#all",
       order: ["This Mac", "Google Drive", "Dropbox"],
       connected: ["This Mac (local#outputs)", "Google Drive – me@example.com (google-drive#1)"],
-      reach: ["the cloud drives hold only FlareAI's own folder"],
+      reach: ["the cloud drives hold only Polymux's own folder"],
     },
   });
   assert.match(prompt, /## Where work is saved/);
@@ -282,7 +282,7 @@ test("tells the run where a deliverable goes, in the user's own save order", () 
   // And the two rules that keep the default from becoming a nuisance.
   assert.match(prompt, /Scratch files, intermediate data and code/);
   assert.match(prompt, /An explicit destination always beats the default/);
-  assert.match(prompt, /only FlareAI's own folder/);
+  assert.match(prompt, /only Polymux's own folder/);
 });
 
 test("says nothing about saving when the host has no drive", () => {

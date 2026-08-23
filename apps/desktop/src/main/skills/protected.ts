@@ -4,13 +4,13 @@ import type {
   ToolCallBlock,
   ToolHookDecision,
   ToolHooks,
-} from "@flareai/core";
+} from "@polymux/core";
 
 /**
  * Bundled skills — `resources/skills/core` and `resources/skills/official`
  * alike — ship with the app and are mirrored, app-owned, into
- * `~/.flareai/official-skills`. The Skills tab already refuses to edit them
- * (`editable` is true only for `~/.flareai/skills`), but the mirror is an
+ * `~/.polymux/official-skills`. The Skills tab already refuses to edit them
+ * (`editable` is true only for `~/.polymux/skills`), but the mirror is an
  * ordinary writable directory, so the agent's own file tools could still
  * rewrite a built-in skill's instructions. An update would silently revert the
  * edit at the next digest check, which makes the damage confusing rather than
@@ -25,9 +25,9 @@ import type {
 const PATH_ARGUMENTS: Record<string, string> = { write: "path", edit: "path" };
 
 /**
- * The tilde spelling of a path under FlareAI's home, derived from the mirror
+ * The tilde spelling of a path under Polymux's home, derived from the mirror
  * root rather than written out. A side instance keeps its configuration in
- * `~/.flareai-<name>` (see system/paths.ts), and both the message the agent is
+ * `~/.polymux-<name>` (see system/paths.ts), and both the message the agent is
  * shown and the shell command it might type have to name the directory that
  * run actually uses.
  */

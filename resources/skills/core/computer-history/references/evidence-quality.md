@@ -30,7 +30,7 @@ response or help locate another source.
   and may add ComputerHistory context automatically. Do not rewrite its generated
   resources from this skill.
 - When the user explicitly requests a manual durable memory update, write one
-  small timestamped note under `~/Library/Application Support/FlareAI/memories/extensions/ad_hoc/notes/`.
+  small timestamped note under `~/Library/Application Support/Polymux/memories/extensions/ad_hoc/notes/`.
   Never edit generated `MEMORY.md` or ComputerHistory resources directly, and confirm
   it as remembered only after the note write succeeds. If writing is
   unavailable, say the current environment cannot perform the update; do not

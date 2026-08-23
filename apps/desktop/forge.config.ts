@@ -1,18 +1,21 @@
 import type {ForgeConfig} from '@electron-forge/shared-types';
 import {MakerSquirrel} from '@electron-forge/maker-squirrel';
 import {MakerZIP} from '@electron-forge/maker-zip';
+import {MakerDMG} from '@electron-forge/maker-dmg';
 import {MakerDeb} from '@electron-forge/maker-deb';
 import {MakerRpm} from '@electron-forge/maker-rpm';
 import {VitePlugin} from '@electron-forge/plugin-vite';
 import {FusesPlugin} from '@electron-forge/plugin-fuses';
 import {FuseV1Options, FuseVersion} from '@electron/fuses';
 import {execFileSync} from 'node:child_process';
+import {readFileSync} from 'node:fs';
 import {PERMISSION_USAGE_DESCRIPTIONS} from './src/main/system/permission-usage.js';
 
 // Forge runs from the repo root (package.json's `config.forge` points here),
 // so every path in this file is written relative to that root rather than to
 // this file's own directory.
 const app = 'apps/desktop';
+const version = JSON.parse(readFileSync('package.json', 'utf8')).version as string;
 const icon = process.platform === 'win32'
   ? `${app}/assets/appicon.ico`
   : process.platform === 'darwin'
@@ -40,13 +43,13 @@ const icon = process.platform === 'win32'
  */
 /** A stable local development signature is enough for Keychain-backed
  * safeStorage and persistent macOS permissions. Prefer an explicitly supplied
- * release identity, then use an installed Apple Development/FlareAI Dev
+ * release identity, then use an installed Apple Development/Polymux Dev
  * identity for local packages. CI machines without either remain ad-hoc. */
 function localSigningIdentity(): string | undefined {
   if (process.platform !== 'darwin') return undefined;
   try {
     const listing = execFileSync('security', ['find-identity', '-p', 'codesigning', '-v'], {encoding: 'utf8'});
-    return listing.match(/^\s*\d+\)\s+[0-9A-F]{40}\s+"((?:FlareAI Dev|Apple Development)[^"]*)"/m)?.[1];
+    return listing.match(/^\s*\d+\)\s+[0-9A-F]{40}\s+"((?:Polymux Dev|Apple Development)[^"]*)"/m)?.[1];
   } catch {
     return undefined;
   }
@@ -65,8 +68,8 @@ const config: ForgeConfig = {
     // changing the product version. The window-control registry keys launch
     // evidence to this value, so a repaired binary never inherits either trust
     // or quarantine from the binary it replaced.
-    ...(process.env.FLAREAI_BUILD_VERSION
-      ? {buildVersion: process.env.FLAREAI_BUILD_VERSION}
+    ...(process.env.POLYMUX_BUILD_VERSION
+      ? {buildVersion: process.env.POLYMUX_BUILD_VERSION}
       : {}),
     // Everything shipped beside the code: skills, the native helpers, and the
     // mautrix binaries under `resources/bridges`. Those binaries are not in git
@@ -74,18 +77,21 @@ const config: ForgeConfig = {
     // packaging, which the prepackage hook does.
     extraResource: ['resources'],
     extendInfo: {
-      NSLocationUsageDescription: 'FlareAI uses your location only when Location access is enabled in General settings.',
-      NSLocationWhenInUseUsageDescription: 'FlareAI uses your location only when Location access is enabled in General settings.',
-      NSMicrophoneUsageDescription: 'FlareAI uses the microphone only when you start voice input or speech mode.',
-      NSSpeechRecognitionUsageDescription: 'FlareAI converts speech to text only when you start voice dictation.',
+      NSLocationUsageDescription: 'Polymux uses your location only when Location access is enabled in General settings.',
+      NSLocationWhenInUseUsageDescription: 'Polymux uses your location only when Location access is enabled in General settings.',
+      NSMicrophoneUsageDescription: 'Polymux uses the microphone only when you start voice input or speech mode.',
+      NSSpeechRecognitionUsageDescription: 'Polymux converts speech to text only when you start voice dictation.',
       // Reminders, Calendars, Contacts, Photos and controlling other apps. The
       // same record is linked into the native permission helper, which is what
       // actually raises these prompts: macOS kills a process that touches a
       // privacy class it has no description for, so the two must not drift.
       ...PERMISSION_USAGE_DESCRIPTIONS,
     },
-    appBundleId: 'com.flarehq.flareai',
-    executableName: 'FlareAI',
+    appBundleId: 'com.flarehq.polymux',
+    // electron-installer-debian and electron-installer-redhat derive their
+    // payload binary from package.json.name. Keep that internal Linux filename
+    // aligned; productName still presents the app as Polymux everywhere.
+    executableName: process.platform === 'linux' ? 'polymux-desktop' : 'Polymux',
     icon,
     ...(signingIdentity
       ? {
@@ -114,8 +120,11 @@ const config: ForgeConfig = {
   },
   rebuildConfig: {},
   makers: [
-    new MakerSquirrel({}),
+    // The downloaded file carries its version; after installation the app
+    // itself remains the clean `Polymux.exe` configured above.
+    new MakerSquirrel({setupExe: `Polymux-${version}-Setup.exe`}),
     new MakerZIP({}, ['darwin']),
+    new MakerDMG({format: 'ULFO'}, ['darwin']),
     new MakerRpm({}),
     new MakerDeb({}),
   ],
@@ -170,14 +179,18 @@ const config: ForgeConfig = {
       // publishes no darwin-amd64 bridge binaries at all.
       if (platform === 'darwin' && arch !== 'arm64')
         throw new Error(
-          `FlareAI cannot be packaged for macOS ${arch}: the bridge fleet is published ` +
+          `Polymux cannot be packaged for macOS ${arch}: the bridge fleet is published ` +
             'for darwin-arm64 only, so this build would ship without messaging. ' +
             'See AGENTS.md, Packaging and signing.',
         );
       const {execFileSync} = await import('node:child_process');
-      execFileSync(process.execPath, ['scripts/fetch-bridges.mjs'], {stdio: 'inherit'});
+      execFileSync(
+        process.execPath,
+        ['scripts/fetch-bridges.mjs', `--platform=${platform}`, `--arch=${arch}`],
+        {stdio: 'inherit'},
+      );
       // The skill scripts' interpreter. The RunAsNode fuse below is off, so a
-      // packaged FlareAI cannot lend itself out as Node the way a dev run
+      // packaged Polymux cannot lend itself out as Node the way a dev run
       // does — it ships a real one instead.
       execFileSync(process.execPath, ['scripts/fetch-node.mjs'], {stdio: 'inherit'});
     },

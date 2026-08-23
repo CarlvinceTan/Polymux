@@ -1,5 +1,5 @@
 {
-  "name": "@flareai/hub",
+  "name": "@polymux/hub",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@flareai/protocol": "0.1.0",
+    "@polymux/protocol": "0.1.0",
     "imapflow": "^1.7.1",
     "nodemailer": "^9.0.5",
     "openid-client": "^6.8.6",

@@ -16,7 +16,7 @@ import {
 } from "./firefox.js";
 
 function scratch(): string {
-  return mkdtempSync(path.join(tmpdir(), "flareai-firefox-test-"));
+  return mkdtempSync(path.join(tmpdir(), "polymux-firefox-test-"));
 }
 
 test("profiles.ini yields each profile, relative or absolute", () => {

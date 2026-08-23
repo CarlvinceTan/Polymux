@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "FlareAI Agent Surface",
+  "name": "Polymux Agent Surface",
   "version": "2.0.0",
-  "description": "Gives the FlareAI desktop agent tab context and lets it control leased tabs, with Codex-style badges and the ChatGPT-style cursor.",
+  "description": "Gives the Polymux desktop agent tab context and lets it control leased tabs, with Codex-style badges and the ChatGPT-style cursor.",
   "permissions": [
     "tabs",
     "nativeMessaging",

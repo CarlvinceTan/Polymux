@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Skill } from "@flareai/agent";
-import type { AppPermissionKind, GeneralSettingsDto, SystemPermissionStatus } from "@flareai/protocol";
+import type { Skill } from "@polymux/agent";
+import type { AppPermissionKind, GeneralSettingsDto, SystemPermissionStatus } from "@polymux/protocol";
 import { DEFAULT_PERMISSION_SWITCHES } from "../backend/permission-settings.js";
 import { declaredPermissions, permissionsToRequest } from "./permissions.js";
 

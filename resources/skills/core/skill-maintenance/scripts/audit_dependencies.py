@@ -12,7 +12,7 @@ import subprocess
 
 
 NAME = re.compile(r"^name:\s*['\"]?([^'\"\s]+)", re.MULTILINE)
-ROOT_REFERENCE = re.compile(r"(?:~/|/Users/[^/]+/)(?:\.codex|\.agents|\.flareai[^/]*)/skills")
+ROOT_REFERENCE = re.compile(r"(?:~/|/Users/[^/]+/)(?:\.codex|\.agents|\.polymux[^/]*)/skills")
 
 
 def skill_records(root: Path) -> list[dict[str, object]]:

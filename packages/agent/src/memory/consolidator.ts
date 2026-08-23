@@ -1,5 +1,5 @@
-import type { InferenceService, ModelRef } from "@flareai/inference";
-import type { MemoryRecord } from "@flareai/storage";
+import type { InferenceService, ModelRef } from "@polymux/inference";
+import type { MemoryRecord } from "@polymux/storage";
 import type { MemoryManager } from "./manager.js";
 import { fillPrompt } from "../prompts/agent-prompts.js";
 

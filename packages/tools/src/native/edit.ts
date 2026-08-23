@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { JsonObject } from "@flareai/inference";
+import type { JsonObject } from "@polymux/inference";
 import type { AgentTool, ToolEnvironment } from "../types.js";
 import { stringInput, workingDirectory } from "../types.js";
 import { withFileMutation } from "../mutation-queue.js";

@@ -13,7 +13,7 @@ const skill = (name: string, description: string): Skill => ({
 });
 const personalSkill = (name: string, description: string): Skill => ({
   ...skill(name, description),
-  source: "flareai",
+  source: "polymux",
 });
 
 const skills = [

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { createNativeTools, ToolRegistry } from "../src/index.js";
 
 async function fixture() {
-  const cwd = await mkdtemp(join(tmpdir(), "flareai-tools-"));
+  const cwd = await mkdtemp(join(tmpdir(), "polymux-tools-"));
   const registry = new ToolRegistry(createNativeTools({ cwd }));
   const context = {
     runId: "run",
@@ -80,7 +80,10 @@ test("bash returns output and failure state without an approval layer", async ()
   try {
     const success = await item.registry
       .get("bash")!
-      .execute({ command: "printf hello" }, item.context);
+      .execute(
+        { command: process.platform === "win32" ? "Write-Output hello" : "printf hello" },
+        item.context,
+      );
     assert.match(String(success.content), /hello/);
     const failure = await item.registry
       .get("bash")!

@@ -1,5 +1,5 @@
-import type { AgentTool } from "@flareai/core";
-import type { TaskCardDto, TaskCardInput, TaskCardPatch } from "@flareai/protocol";
+import type { AgentTool } from "@polymux/core";
+import type { TaskCardDto, TaskCardInput, TaskCardPatch } from "@polymux/protocol";
 
 export interface TaskBook {
   list(chatId?: string): TaskCardDto[];

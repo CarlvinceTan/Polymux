@@ -629,7 +629,7 @@ export function derInt(node: DerNode): number {
  * no business outliving the read.
  */
 export function withSqliteCopy<T>(file: string, read: (db: DatabaseSync) => T): T {
-  const dir = mkdtempSync(path.join(tmpdir(), "flareai-ff-import-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "polymux-ff-import-"));
   const copy = path.join(dir, path.basename(file));
   try {
     copyFileSync(file, copy);

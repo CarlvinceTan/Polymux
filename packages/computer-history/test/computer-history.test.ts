@@ -37,7 +37,7 @@ test("stores only meaningful changes plus bounded heartbeats", async () => {
   let now = new Date("2026-08-13T12:00:00.000Z");
   let next = frame([10, 20, 30]);
   const manager = new ComputerHistoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-computer-history-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-computer-history-")),
     frames: { capture: async () => [next] },
     system: { current: () => active },
     clock: () => now,
@@ -58,7 +58,7 @@ test("does not capture while locked, idle, or thermally constrained", async () =
   let system: ComputerHistorySystemState = { ...active, locked: true };
   let captures = 0;
   const manager = new ComputerHistoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-computer-history-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-computer-history-")),
     frames: { capture: async () => { captures++; return [frame([1])]; } },
     system: { current: () => system },
   });
@@ -72,7 +72,7 @@ test("does not capture while locked, idle, or thermally constrained", async () =
 });
 
 test("starts enabled and persists an explicit opt-out", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-computer-history-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-computer-history-"));
   const manager = new ComputerHistoryManager({
     directory,
     frames: { capture: async () => [] },
@@ -88,7 +88,7 @@ test("starts enabled and persists an explicit opt-out", () => {
 
 test("stores accessibility text snapshots as markdown with their own kind", async () => {
   const manager = new ComputerHistoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-computer-history-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-computer-history-")),
     frames: {
       capture: async () => [{
         sourceId: "ax-com.apple.finder",
@@ -146,7 +146,7 @@ function windowFrame(
 
 function policyManager(frames: ComputerHistoryFrame[]): ComputerHistoryManager {
   return new ComputerHistoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-computer-history-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-computer-history-")),
     frames: { capture: async () => frames },
     system: { current: () => active },
   });
@@ -234,7 +234,7 @@ test("forgetting a range takes both streams and nothing outside it", async () =>
   let now = new Date("2026-08-13T12:00:00.000Z");
   let next = windowFrame({ sourceId: "notes", app: "Notes" });
   const manager = new ComputerHistoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-computer-history-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-computer-history-")),
     frames: { capture: async () => [next] },
     system: { current: () => active },
     clock: () => now,
@@ -261,7 +261,7 @@ test("removing one frame leaves neighbouring captures intact", async () => {
   let now = new Date("2026-08-13T12:00:00.000Z");
   let next = windowFrame({sourceId: "notes", app: "Notes"});
   const manager = new ComputerHistoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-computer-history-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-computer-history-")),
     frames: {capture: async () => [next]},
     system: {current: () => active},
     clock: () => now,

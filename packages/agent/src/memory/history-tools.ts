@@ -1,5 +1,5 @@
-import type { AgentTool } from "@flareai/core";
-import type { Storage } from "@flareai/storage";
+import type { AgentTool } from "@polymux/core";
+import type { Storage } from "@polymux/storage";
 
 /** Bound on how much of one message a hit carries back. */
 const snippetLimit = 600;

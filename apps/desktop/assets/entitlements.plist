@@ -3,7 +3,7 @@
 <!--
   Entitlements for the hardened runtime, which notarisation requires.
 
-  Each one is here because FlareAI stops working without it, not because it is
+  Each one is here because Polymux stops working without it, not because it is
   conventional: an entitlement is a permission the app is asking for, and the
   list should read as the shortest honest answer to "why does it need that".
 -->
@@ -28,7 +28,7 @@
   <true/>
 
   <!--
-    The bridge fleet is a set of separate executables FlareAI spawns as child
+    The bridge fleet is a set of separate executables Polymux spawns as child
     processes. They are signed with the same identity during packaging, but a
     hardened parent still needs this to launch them.
   -->

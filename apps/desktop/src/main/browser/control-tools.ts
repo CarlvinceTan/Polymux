@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { handlers } from "@flareai/browser";
-import type { AgentTool } from "@flareai/core";
+import { handlers } from "@polymux/browser";
+import type { AgentTool } from "@polymux/core";
 import type { AgentSurfaceServer } from "../agent/surface.js";
 import {
   buildCommand,
@@ -13,7 +13,7 @@ import { tabSnapshotPath } from "./extension.js";
 import type { InAppBrowser } from "./embedded-tools.js";
 
 /**
- * Agent tools backed by the FlareAI browser extension: `browser_tabs` reads the
+ * Agent tools backed by the Polymux browser extension: `browser_tabs` reads the
  * tab snapshot the extension streams to disk, and `browser_control` drives a
  * leased tab through the agent-surface command channel (with the ChatGPT-style
  * cursor presented in-page while it works).
@@ -60,7 +60,7 @@ function createCurrentTabReadTool(
     name: "browser_current_read",
     mainAgentOnly: true,
     description:
-      "Read the exact current page, whether it is visible in FlareAI's browser or active in the focused external browser window. Pass its exact title from Current environment. This is read-only, preserves signed-in/transient page state, and fails closed when current state is stale or ambiguous.",
+      "Read the exact current page, whether it is visible in Polymux's browser or active in the focused external browser window. Pass its exact title from Current environment. This is read-only, preserves signed-in/transient page state, and fails closed when current state is stale or ambiguous.",
     parameters: {
       type: "object",
       properties: {
@@ -80,7 +80,7 @@ function createCurrentTabReadTool(
       );
       if (visibleMatches.length > 1)
         return {
-          content: "More than one visible FlareAI browser page has that title. Do not guess which one the user means.",
+          content: "More than one visible Polymux browser page has that title. Do not guess which one the user means.",
           isError: true,
         };
       if (visibleMatches.length === 1) {
@@ -181,7 +181,7 @@ function createTabsTool(snapshotPath: string): AgentTool {
     // that existing user state is needed or prepare an external handoff.
     mainAgentOnly: true,
     description:
-      "List the tabs currently open in the user's browser (title, url, active state), as streamed by the FlareAI browser extension. Returns a staleness age; treat an old snapshot as history, not current state.",
+      "List the tabs currently open in the user's browser (title, url, active state), as streamed by the Polymux browser extension. Returns a staleness age; treat an old snapshot as history, not current state.",
     parameters: {
       type: "object",
       properties: {},
@@ -194,7 +194,7 @@ function createTabsTool(snapshotPath: string): AgentTool {
       } catch {
         return {
           content:
-            "No tab snapshot is available. The FlareAI browser extension is not installed or has not reported yet.",
+            "No tab snapshot is available. The Polymux browser extension is not installed or has not reported yet.",
           isError: true,
         };
       }
@@ -240,7 +240,7 @@ const UNBOUND_ACTIONS = new Set(["tabs", "tabNew", "tabClose"]);
 const SLOW_ACTIONS = new Set(["navigate", "wait", "back", "forward", "reload", "type"]);
 
 const DESCRIPTION = [
-  "Control a tab in the user's own browser through the FlareAI extension.",
+  "Control a tab in the user's own browser through the Polymux extension.",
   "Start with 'focus' (bind a lease to the tab matching url and/or title — use browser_tabs first); it returns a leaseId every later action needs. End with 'release'. 'navigate' loads a url in the leased tab.",
   describeActions(),
   "Browser-level: 'tabs' lists tabs, 'tabNew' opens one in the background, 'tabClose' closes one by tabId. These take no leaseId.",

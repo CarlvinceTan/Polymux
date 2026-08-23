@@ -1,7 +1,7 @@
 ---
 name: chat-style
 description: Draft, rewrite, and review short chat or message replies in the user's personal text style. Use when composing replies for WeChat, WhatsApp, email-like chats, marketplace/support chats, friend messages, or any communication where the agent should match the user's own phrasing, bubble length, casualness, language mix, and prior corrections. Also use when recording user edits to improve future chat drafts.
-author: FlareAI
+author: Polymux
 category: Communication
 ---
 
@@ -47,13 +47,13 @@ Use this skill to make chat replies sound like the user, not like an assistant. 
 Record draft/final pairs whenever the user edits a proposed chat reply. Use the helper script:
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/record_chat_edit.mjs record-original --text "draft" --person "name-or-id" --platform "wechat" --message-type "reply"
-"${FLAREAI_NODE:-node}" scripts/record_chat_edit.mjs record-final --match "<hash>" --text "user final version"
-"${FLAREAI_NODE:-node}" scripts/record_chat_edit.mjs pending
-"${FLAREAI_NODE:-node}" scripts/record_chat_edit.mjs stats
+"${POLYMUX_NODE:-node}" scripts/record_chat_edit.mjs record-original --text "draft" --person "name-or-id" --platform "wechat" --message-type "reply"
+"${POLYMUX_NODE:-node}" scripts/record_chat_edit.mjs record-final --match "<hash>" --text "user final version"
+"${POLYMUX_NODE:-node}" scripts/record_chat_edit.mjs pending
+"${POLYMUX_NODE:-node}" scripts/record_chat_edit.mjs stats
 ```
 
-Store examples in `~/.flareai/state/chat-style/edits/` by default. These logs are evidence for the main agent to read and summarize into skill rules later; they do not require another AI process.
+Store examples in `~/.polymux/state/chat-style/edits/` by default. These logs are evidence for the main agent to read and summarize into skill rules later; they do not require another AI process.
 
 When reviewing edits:
 

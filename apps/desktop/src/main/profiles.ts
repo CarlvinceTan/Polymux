@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 import {cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync} from "node:fs";
 import {cp, mkdir, rm} from "node:fs/promises";
 import path from "node:path";
-import type {JsonValue, Storage} from "@flareai/storage";
+import type {JsonValue, Storage} from "@polymux/storage";
 
 export interface ProfileRecord { id: string; name: string; isDefault: boolean; }
 export interface ProfilesSnapshot { activeId: string; profiles: ProfileRecord[]; }
@@ -177,7 +177,7 @@ export class ProfileManager {
   }
 
   /**
-   * Older builds split profile state between Electron userData and ~/.flareai.
+   * Older builds split profile state between Electron userData and ~/.polymux.
    * Copy the default into its own directory and move named profile directories
    * once, preserving the old default files as a recoverable fallback.
    */

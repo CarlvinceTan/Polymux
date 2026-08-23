@@ -27,7 +27,7 @@ import type {
   SavedLoginDto,
   SitePermissionDto,
   MessageDto,
-  FlareAIApi,
+  PolymuxApi,
   ModelDto,
   ModelMetadataDto,
   ModelRole,
@@ -43,21 +43,21 @@ import type {
   PluginMarketplaceDto,
   SkillDto,
   StartRunRequest,
-} from '@flareai/protocol';
-import {LOCAL_RUNTIMES, parseDriveSourceId} from '@flareai/protocol';
+} from '@polymux/protocol';
+import {LOCAL_RUNTIMES, parseDriveSourceId} from '@polymux/protocol';
 
-let browserApi: FlareAIApi | undefined;
+let browserApi: PolymuxApi | undefined;
 
-export function flareaiApi(): FlareAIApi {
-  if (typeof window !== 'undefined' && window.flareai) return window.flareai;
-  if (import.meta.env.DEV || import.meta.env.VITE_FLAREAI_BROWSER_DEMO === 'true')
+export function polymuxApi(): PolymuxApi {
+  if (typeof window !== 'undefined' && window.polymux) return window.polymux;
+  if (import.meta.env.DEV || import.meta.env.VITE_POLYMUX_BROWSER_DEMO === 'true')
     return browserApi ??= createBrowserDemoApi();
-  throw new Error('The FlareAI desktop bridge is unavailable. Open this build through the desktop app.');
+  throw new Error('The Polymux desktop bridge is unavailable. Open this build through the desktop app.');
 }
 
 /** A development-only adapter keeps browser-based component tests useful. The
- * packaged desktop never selects it because preload supplies `window.flareai`. */
-function createBrowserDemoApi(): FlareAIApi {
+ * packaged desktop never selects it because preload supplies `window.polymux`. */
+function createBrowserDemoApi(): PolymuxApi {
   /**
    * `?onboarding` puts the demo into a genuine first-run state — nothing
    * configured, nothing granted — so first-run setup can be previewed and
@@ -96,7 +96,7 @@ function createBrowserDemoApi(): FlareAIApi {
     // reads it from, so the two can never disagree.
     return {
       main: assignment(main && {provider: main.provider, id: main.id, reasoning: demoGeneral.reasoningLevel}),
-      task: assignment(demoRoleOverrides.task),
+      subagent: assignment(demoRoleOverrides.subagent),
       judge: assignment(demoRoleOverrides.judge),
       compaction: assignment(demoRoleOverrides.compaction),
       speech: assignment(demoRoleOverrides.speech),
@@ -134,12 +134,12 @@ function createBrowserDemoApi(): FlareAIApi {
     })),
   ];
   const demoSkills: SkillDto[] = [
-    {name: 'documents', description: 'Create and edit document files.', source: 'flareai', filePath: '~/.flareai/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], permissions: [], enabled: true, editable: true, instructions: 'Create and edit document files.', updatedAt: '2026-07-02T09:30:00.000Z'},
-    {name: 'personal-research', description: 'Personal research workflow.', source: 'flareai', filePath: '~/.flareai/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], permissions: [], enabled: true, editable: true, instructions: 'Personal research workflow.', updatedAt: '2026-05-18T14:00:00.000Z'},
-    {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], permissions: [], enabled: true, editable: false, displayName: 'PDF', author: 'FlareAI', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
+    {name: 'documents', description: 'Create and edit document files.', source: 'polymux', filePath: '~/.polymux/skills/documents/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write'], permissions: [], enabled: true, editable: true, instructions: 'Create and edit document files.', updatedAt: '2026-07-02T09:30:00.000Z'},
+    {name: 'personal-research', description: 'Personal research workflow.', source: 'polymux', filePath: '~/.polymux/skills/personal-research/SKILL.md', disableModelInvocation: false, allowedTools: ['read'], permissions: [], enabled: true, editable: true, instructions: 'Personal research workflow.', updatedAt: '2026-05-18T14:00:00.000Z'},
+    {name: 'pdf', description: 'Read, create, and edit PDF files.', source: 'official', filePath: '/skills/official/pdf/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], permissions: [], enabled: true, editable: false, displayName: 'PDF', author: 'Polymux', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
     // No core integration here: browser/GUI control and the Hub's email and
     // messaging skills are first-class surfaces and never list as add-ons.
-    {name: 'spreadsheets', description: 'Create, analyze, and edit spreadsheets.', source: 'official', filePath: '/skills/official/spreadsheets/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], permissions: [], enabled: true, editable: false, displayName: 'Spreadsheets', author: 'FlareAI', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
+    {name: 'spreadsheets', description: 'Create, analyze, and edit spreadsheets.', source: 'official', filePath: '/skills/official/spreadsheets/SKILL.md', disableModelInvocation: false, allowedTools: ['read', 'write', 'bash'], permissions: [], enabled: true, editable: false, displayName: 'Spreadsheets', author: 'Polymux', category: 'Documents', updatedAt: '2026-08-01T08:00:00.000Z'},
   ];
   const demoPlugins: PluginDto[] = [
     {
@@ -150,7 +150,7 @@ function createBrowserDemoApi(): FlareAIApi {
       author: 'Anthropic',
       marketplace: 'claude-code',
       marketplaceName: 'claude-code-plugins',
-      directory: '~/.flareai/plugins/claude-code/code-review',
+      directory: '~/.polymux/plugins/claude-code/code-review',
       enabled: true,
       contributions: {skills: ['review-diff'], mcpServers: [], commands: 1, agents: 3, hooks: 0},
       conflicts: [],
@@ -163,7 +163,7 @@ function createBrowserDemoApi(): FlareAIApi {
       author: 'Anthropic',
       marketplace: 'claude-code',
       marketplaceName: 'claude-code-plugins',
-      directory: '~/.flareai/plugins/claude-code/pdf-tools',
+      directory: '~/.polymux/plugins/claude-code/pdf-tools',
       enabled: false,
       contributions: {skills: ['pdf'], mcpServers: ['pdf-server'], commands: 0, agents: 0, hooks: 2},
       // A name the demo's own skills already carry, so the warning has
@@ -201,7 +201,7 @@ function createBrowserDemoApi(): FlareAIApi {
     ]},
   ];
   const demoMcpServers: McpServerDto[] = [
-    {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', source: 'flareai', editable: true, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_files'], resourceUris: ['filesystem://documents'], promptNames: [], command: 'node', args: ['server.mjs']},
+    {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', source: 'polymux', editable: true, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_files'], resourceUris: ['filesystem://documents'], promptNames: [], command: 'node', args: ['server.mjs']},
     {id: 'github', name: 'GitHub', description: 'Read repositories, issues, and pull requests.', source: 'official', editable: false, enabled: true, transport: 'stdio', status: 'connected', toolNames: ['list_issues', 'get_pull_request'], resourceUris: [], promptNames: [], command: 'node', args: ['github.mjs']},
   ];
   const demoCommsStatus: CommsStatusDto = {
@@ -233,8 +233,8 @@ function createBrowserDemoApi(): FlareAIApi {
       {platform: 'imessage', name: 'iMessage', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'local', name: 'This Mac', description: 'Read the Messages database on this Mac'}], setup: null, managementRoomHint: null, error: null},
       // No bridge to log in to: a relay against the WeChat app on this Mac,
       // reporting whichever account that app is already signed in as — and
-      // only once it is delivering into FlareAI's own hub.
-      {platform: 'wechat', name: 'WeChat', api: 'none', state: 'unavailable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'The WeChat relay on this Mac is running, but it is not connected to FlareAI’s own hub, so nothing it carries reaches here.'},
+      // only once it is delivering into Polymux's own hub.
+      {platform: 'wechat', name: 'WeChat', api: 'none', state: 'unavailable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'The WeChat relay on this Mac is running, but it is not connected to Polymux’s own hub, so nothing it carries reaches here.'},
     ],
     email: {
       // The demo shows the buttons: it stands in for a build with clients
@@ -268,7 +268,7 @@ function createBrowserDemoApi(): FlareAIApi {
   };
   // Newest first with unread counts, the way the hub now returns them.
   const demoRevealListeners = new Set<(request: WorkspaceRevealDto) => void>();
-  (window as unknown as {flareaiDemoReveal?: (request: WorkspaceRevealDto) => void}).flareaiDemoReveal =
+  (window as unknown as {polymuxDemoReveal?: (request: WorkspaceRevealDto) => void}).polymuxDemoReveal =
     (request) => demoRevealListeners.forEach((listener) => listener(request));
   let demoChats: ChatDto[] = [
     {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp', unread: 2, lastActivity: new Date(now - 3_500_000).toISOString(), preview: 'Yes — 2pm works.', group: false, avatarUrl: null},
@@ -380,7 +380,7 @@ function createBrowserDemoApi(): FlareAIApi {
     promptToInstall: demoExtensionMissing && !demoExtensionDismissed,
   });
 
-  const api: FlareAIApi = {
+  const api: PolymuxApi = {
     profiles: {
       list: async () => ({activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}),
       create: async (name) => { demoProfiles.push({id: crypto.randomUUID(), name: name.trim() || 'New profile', isDefault: false}); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
@@ -531,7 +531,7 @@ function createBrowserDemoApi(): FlareAIApi {
       preview: async (path) => path,
       // Nothing drives the agent in the demo, so nothing ever asks to be shown.
       // The demo has no agent to ask for a surface, so the reveal channel is
-      // driven from the page instead: `window.flareaiDemoReveal(request)` fans
+      // driven from the page instead: `window.polymuxDemoReveal(request)` fans
       // out to whoever subscribed, which is how the workspace's reveal and
       // draft-prefill behaviour is reachable in the browser build.
       subscribeReveal: (listener) => {
@@ -609,7 +609,7 @@ function createBrowserDemoApi(): FlareAIApi {
       };
     })(),
     tasks: (() => {
-      let cards: import('@flareai/protocol').TaskCardDto[] = [
+      let cards: import('@polymux/protocol').TaskCardDto[] = [
         {id: crypto.randomUUID(), chatId: 'demo', title: 'Research competitor features', status: 'todo', reviewed: false, order: 0, createdAt: Date.now(), updatedAt: Date.now()},
         {id: crypto.randomUUID(), chatId: 'demo', title: 'Draft marketing copy', status: 'in_progress', owner: 'agent-1', reviewed: false, order: 0, createdAt: Date.now(), updatedAt: Date.now()},
         {id: crypto.randomUUID(), chatId: 'demo', title: 'Update landing page', status: 'done', reviewed: false, order: 0, createdAt: Date.now(), updatedAt: Date.now()},
@@ -619,15 +619,15 @@ function createBrowserDemoApi(): FlareAIApi {
       const publish = () => { for (const l of listeners) l(cards); };
       return {
         list: async (chatId: string) => cards.filter((card) => card.chatId === chatId),
-        create: async (input: import('@flareai/protocol').TaskCardInput) => {
-          const card: import('@flareai/protocol').TaskCardDto = {
+        create: async (input: import('@polymux/protocol').TaskCardInput) => {
+          const card: import('@polymux/protocol').TaskCardDto = {
             id: crypto.randomUUID(), chatId: input.chatId, title: input.title, detail: input.detail,
             status: 'todo', reviewed: false, order: cards.length,
             createdAt: Date.now(), updatedAt: Date.now(),
           };
           cards = [...cards, card]; publish(); return card;
         },
-        update: async (id: string, patch: import('@flareai/protocol').TaskCardPatch) => {
+        update: async (id: string, patch: import('@polymux/protocol').TaskCardPatch) => {
           cards = cards.map((c) => c.id === id ? {...c, ...patch, updatedAt: Date.now()} : c);
           publish();
           const found = cards.find((c) => c.id === id);
@@ -689,7 +689,7 @@ function createBrowserDemoApi(): FlareAIApi {
       },
       entries: async () => [
         {id: 'memory-demo-1', scope: 'user', kind: 'preference', content: 'Prefers concise, cohesive explanations with room to ask deeper questions.', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()},
-        {id: 'memory-demo-2', scope: 'user', kind: 'project', content: 'FlareAI is a context-aware desktop assistant with manager-style delegation.', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()},
+        {id: 'memory-demo-2', scope: 'user', kind: 'project', content: 'Polymux is a context-aware desktop assistant with manager-style delegation.', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()},
       ],
     },
     computerHistory: {
@@ -723,7 +723,7 @@ function createBrowserDemoApi(): FlareAIApi {
         return demoCommsStatus;
       },
       connect: async () => {
-        demoCommsStatus.hub = {...demoCommsStatus.hub, status: 'signed-in', userId: '@flareai-demo:localhost', canAutoConnect: false};
+        demoCommsStatus.hub = {...demoCommsStatus.hub, status: 'signed-in', userId: '@polymux-demo:localhost', canAutoConnect: false};
         return demoCommsStatus;
       },
       signIn: async (userId) => {
@@ -924,7 +924,7 @@ function createBrowserDemoApi(): FlareAIApi {
       },
       saveCustom: async (request) => {
         const item = demoMcpServers.find((candidate) => candidate.id === request.id);
-        const next: McpServerDto = {...request, source: 'flareai', editable: true, enabled: item?.enabled ?? true, status: item?.status ?? 'disconnected', toolNames: item?.toolNames ?? [], resourceUris: [], promptNames: []};
+        const next: McpServerDto = {...request, source: 'polymux', editable: true, enabled: item?.enabled ?? true, status: item?.status ?? 'disconnected', toolNames: item?.toolNames ?? [], resourceUris: [], promptNames: []};
         if (item) Object.assign(item, next); else demoMcpServers.push(next);
         return demoMcpServers;
       },
@@ -944,7 +944,7 @@ function createBrowserDemoApi(): FlareAIApi {
       adopt: async (groupId, serverId) => {
         const entry = demoDiscoveredMcp.find((group) => group.id === groupId)?.servers.find((item) => item.id === serverId);
         if (!entry) throw new Error(`That MCP server is no longer in ${groupId}`);
-        demoMcpServers.push({id: entry.id, name: entry.name, description: entry.description, source: 'flareai', editable: true, enabled: true, transport: entry.transport, status: 'connected', toolNames: [], resourceUris: [], promptNames: [], ...(entry.transport === 'stdio' ? {command: entry.target} : {url: entry.target})});
+        demoMcpServers.push({id: entry.id, name: entry.name, description: entry.description, source: 'polymux', editable: true, enabled: true, transport: entry.transport, status: 'connected', toolNames: [], resourceUris: [], promptNames: [], ...(entry.transport === 'stdio' ? {command: entry.target} : {url: entry.target})});
         return demoMcpServers;
       },
       // One page, and no second one: the demo directory is two rows long, so
@@ -998,7 +998,7 @@ function createBrowserDemoApi(): FlareAIApi {
       },
       setLocalRoot: async (path) => {
         const local = demoDriveStatus.providers.find((entry) => entry.id === 'local');
-        if (local) local.root = path ?? '/demo/FlareAI';
+        if (local) local.root = path ?? '/demo/Polymux';
         return demoDriveStatus;
       },
       saveS3: async (config) => {
@@ -1094,7 +1094,7 @@ function createBrowserDemoApi(): FlareAIApi {
       install: async (spec) => {
         const name = spec.trim().replace(/\/+$/, '').split('/').pop() ?? 'installed-skill';
         if (demoSkills.some((item) => item.name === name)) throw new Error(`A skill named ${name} already exists`);
-        demoSkills.push({name, description: `Installed from ${spec.trim()}.`, source: 'flareai', filePath: `~/.flareai/skills/${name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], permissions: [], enabled: true, editable: true, instructions: `Installed from ${spec.trim()}.`, updatedAt: '2026-08-14T03:00:00.000Z'});
+        demoSkills.push({name, description: `Installed from ${spec.trim()}.`, source: 'polymux', filePath: `~/.polymux/skills/${name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], permissions: [], enabled: true, editable: true, instructions: `Installed from ${spec.trim()}.`, updatedAt: '2026-08-14T03:00:00.000Z'});
         return demoSkills;
       },
       searchRegistry: async (query, limit = 15) => {
@@ -1126,9 +1126,9 @@ function createBrowserDemoApi(): FlareAIApi {
       })),
       adopt: async (path) => {
         const entry = demoDiscoveredSkills.flatMap((group) => group.skills).find((item) => item.path === path);
-        if (!entry) throw new Error('That skill is not in a directory FlareAI scans');
+        if (!entry) throw new Error('That skill is not in a directory Polymux scans');
         if (demoSkills.some((item) => item.name === entry.name)) throw new Error(`A skill named ${entry.name} already exists`);
-        demoSkills.push({name: entry.name, description: entry.description, source: 'flareai', filePath: `~/.flareai/skills/${entry.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], permissions: [], enabled: true, editable: true, instructions: entry.description, updatedAt: '2026-08-16T09:00:00.000Z'});
+        demoSkills.push({name: entry.name, description: entry.description, source: 'polymux', filePath: `~/.polymux/skills/${entry.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], permissions: [], enabled: true, editable: true, instructions: entry.description, updatedAt: '2026-08-16T09:00:00.000Z'});
         return demoSkills;
       },
       setEnabled: async (name, enabled) => {
@@ -1138,7 +1138,7 @@ function createBrowserDemoApi(): FlareAIApi {
       },
       saveCustom: async (request) => {
         const index = demoSkills.findIndex((candidate) => candidate.name === (request.originalName ?? request.name));
-        const next: SkillDto = {name: request.name, description: request.description, instructions: request.instructions, source: 'flareai', filePath: `~/.flareai/skills/${request.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], permissions: [], enabled: index >= 0 ? demoSkills[index]!.enabled : true, editable: true};
+        const next: SkillDto = {name: request.name, description: request.description, instructions: request.instructions, source: 'polymux', filePath: `~/.polymux/skills/${request.name}/SKILL.md`, disableModelInvocation: false, allowedTools: [], permissions: [], enabled: index >= 0 ? demoSkills[index]!.enabled : true, editable: true};
         if (index >= 0) demoSkills.splice(index, 1, next); else demoSkills.push(next);
         return demoSkills;
       },
@@ -1236,7 +1236,7 @@ function createBrowserDemoApi(): FlareAIApi {
         if (patch.askWhereToSave !== undefined) demoBrowserSettings.askWhereToSave = patch.askWhereToSave;
         if (patch.autofillEnabled !== undefined) demoBrowserSettings.autofillEnabled = patch.autofillEnabled;
         // null asks the main process for a picker, which the demo stands in for.
-        if (patch.downloadDirectory === null) demoBrowserSettings.downloadDirectory = '/demo/Documents/FlareAI';
+        if (patch.downloadDirectory === null) demoBrowserSettings.downloadDirectory = '/demo/Documents/Polymux';
         else if (patch.downloadDirectory !== undefined) demoBrowserSettings.downloadDirectory = patch.downloadDirectory;
         return {...demoBrowserSettings};
       },
@@ -1355,7 +1355,7 @@ function createBrowserDemoApi(): FlareAIApi {
           author: entry.author,
           marketplace: 'claude-code',
           marketplaceName: 'claude-code-plugins',
-          directory: `~/.flareai/plugins/claude-code/${entry.name}`,
+          directory: `~/.polymux/plugins/claude-code/${entry.name}`,
           enabled: true,
           contributions: {skills: [], mcpServers: [], commands: 1, agents: 0, hooks: 0},
           conflicts: [],
@@ -1577,7 +1577,7 @@ function createBrowserDemoApi(): FlareAIApi {
       emit(runId, request.conversationId, 'tool.progress', {toolCallId: 'demo-skill-read-3', message: 'Reading workflow steps'});
     }
     timers.set(runId, setTimeout(() => {
-      const text = 'This is the assembled FlareAI chat surface. Connect the send handler to your agent backend when it is ready.';
+      const text = 'This is the assembled Polymux chat surface. Connect the send handler to your agent backend when it is ready.';
       if (isActivityDemo) {
         const args = {path: '/skills/browser-use/SKILL.md'};
         emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}, result: {content: 'Read 96 lines covering the browser-use skill workflow.'}});
@@ -1727,11 +1727,11 @@ function goal(conversationId: string, objective: string): GoalDto {
 const demoDriveStatus: DriveStatusDto = {
   saveOrder: ['google-drive', 'dropbox', 'onedrive', 's3', 'local'],
   providers: [
-    {id: 'local', name: 'Local', kind: 'local', state: 'connected', accounts: [{id: 'local', name: 'FlareAI', email: null}], usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: 52_000_000_000}, root: '/demo/FlareAI', error: null},
+    {id: 'local', name: 'Local', kind: 'local', state: 'connected', accounts: [{id: 'local', name: 'Polymux', email: null}], usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: 52_000_000_000}, root: '/demo/Polymux', error: null},
     // A share that is not mounted right now, which is the state worth seeing:
     // it stays listed so it can be reconnected or forgotten.
     {id: 'network', name: 'Network', kind: 'network', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
-    {id: 'google-drive', name: 'Google Drive', kind: 'oauth', state: 'connected', accounts: [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}], usage: {used: 6_200_000_000, total: 15_000_000_000, appUsed: 1_200_000_000}, root: 'FlareAI', error: null},
+    {id: 'google-drive', name: 'Google Drive', kind: 'oauth', state: 'connected', accounts: [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}], usage: {used: 6_200_000_000, total: 15_000_000_000, appUsed: 1_200_000_000}, root: 'Polymux', error: null},
     {id: 'dropbox', name: 'Dropbox', kind: 'oauth', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
     {id: 'onedrive', name: 'OneDrive', kind: 'oauth', state: 'unconfigured', accounts: [], usage: null, root: null, error: 'This build has no OneDrive client credentials.'},
     {id: 's3', name: 'S3 storage', kind: 's3', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
@@ -1742,9 +1742,9 @@ const demoDriveStatus: DriveStatusDto = {
     // The virtual drive the manager now puts at the head of the list: every
     // connected place at once, which is what the workspace opens into.
     {id: 'all#all', provider: 'all', accountId: 'all', name: 'All storage', accountLabel: null, state: 'connected', usage: {used: 418_200_000_000, total: 1_009_000_000_000, appUsed: 53_200_000_000}, root: '', error: null},
-    {id: 'local#outputs', provider: 'local', accountId: 'outputs', name: 'Local', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: 52_000_000_000}, root: '/demo/Documents/FlareAI', error: null},
+    {id: 'local#outputs', provider: 'local', accountId: 'outputs', name: 'Local', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: 52_000_000_000}, root: '/demo/Documents/Polymux', error: null},
     {id: 'local#home', provider: 'local', accountId: 'home', name: 'Local', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: null}, root: '/demo/home', error: null},
-    {id: 'google-drive#default', provider: 'google-drive', accountId: 'default', name: 'Google Drive', accountLabel: 'demo@example.com', state: 'connected', usage: {used: 6_200_000_000, total: 15_000_000_000, appUsed: 1_200_000_000}, root: 'FlareAI', error: null},
+    {id: 'google-drive#default', provider: 'google-drive', accountId: 'default', name: 'Google Drive', accountLabel: 'demo@example.com', state: 'connected', usage: {used: 6_200_000_000, total: 15_000_000_000, appUsed: 1_200_000_000}, root: 'Polymux', error: null},
   ],
 };
 
@@ -1825,7 +1825,7 @@ function demoBrowserDownloadState(
 }
 
 function demoReferences(conversationId: string): ReferenceDto[] {
-  return [{id: 'flareai-site', conversationId, runId: null, kind: 'web', title: 'flarehq.co', uri: 'https://flarehq.co', createdAt: new Date().toISOString(), metadata: {}}];
+  return [{id: 'polymux-site', conversationId, runId: null, kind: 'web', title: 'flarehq.co', uri: 'https://flarehq.co', createdAt: new Date().toISOString(), metadata: {}}];
 }
 
 /**
@@ -1887,7 +1887,7 @@ const demoBrowserSources: BrowserSourceDto[] = [
     family: 'safari',
     // The real Safari source reports exactly this when the app has no Full
     // Disk Access, so the demo shows the state the user is most likely to hit.
-    profiles: [{id: 'safari', name: 'Safari', path: '/demo/Safari', readable: false, reason: 'FlareAI needs Full Disk Access to read Safari’s cookies.'}],
+    profiles: [{id: 'safari', name: 'Safari', path: '/demo/Safari', readable: false, reason: 'Polymux needs Full Disk Access to read Safari’s cookies.'}],
     fileImportOnly: true,
   },
 ];

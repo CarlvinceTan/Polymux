@@ -1,8 +1,8 @@
 /**
- * Copies a Codex Desktop memory vault into FlareAI's own vault.
+ * Copies a Codex Desktop memory vault into Polymux's own vault.
  *
  * Read-only against the source: the Codex vault at ~/.codex/memories keeps
- * working exactly as it did. Only FlareAI's vault is written.
+ * working exactly as it did. Only Polymux's vault is written.
  *
  * What comes across:
  * - every ad-hoc note, as one memory each, keeping its original date
@@ -11,7 +11,7 @@
  *   the very first turn instead of waiting for a consolidation run
  *
  * ComputerHistory rollout summaries are deliberately left behind: they describe
- * Codex sessions, and FlareAI keeps its own computerHistory.
+ * Codex sessions, and Polymux keeps its own computerHistory.
  *
  * Usage: npm run memories -- [sourceVault] [targetVault]
  */
@@ -21,7 +21,7 @@ import path from "node:path";
 import { MemoryManager } from "../packages/agent/src/memory/manager.js";
 
 const source = path.resolve(process.argv[2] ?? path.join(os.homedir(), ".codex", "memories"));
-const target = path.resolve(process.argv[3] ?? path.join(os.homedir(), ".flareai", "memories"));
+const target = path.resolve(process.argv[3] ?? path.join(os.homedir(), ".polymux", "memories"));
 
 if (!existsSync(source)) {
   console.error(`No Codex memory vault at ${source}`);
@@ -61,7 +61,7 @@ for (const candidate of candidates) {
   else skipped += 1;
 }
 
-// Codex's summary is richer than the mechanical dump FlareAI builds from notes,
+// Codex's summary is richer than the mechanical dump Polymux builds from notes,
 // so it wins. The watermark stops rebuildIndexes() from overwriting it and stops
 // every imported memory from being re-appended as "not yet consolidated".
 if (summaryText.trim()) {

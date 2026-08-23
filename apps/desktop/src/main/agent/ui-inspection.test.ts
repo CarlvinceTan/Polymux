@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {createFlareAIUiInspectionTool} from "./ui-inspection.js";
+import {createPolymuxUiInspectionTool} from "./ui-inspection.js";
 
 test("UI inspection prefers schema guidance without requiring provider constrained sampling", () => {
-  const tool = createFlareAIUiInspectionTool({
+  const tool = createPolymuxUiInspectionTool({
     openSettings: async () => {},
     snapshot: async () => ({
       image: {data: "", mimeType: "image/png"},
@@ -21,7 +21,7 @@ const context = {
 
 test("inspects the rendered Memory view without a general navigation surface", async () => {
   const opened: string[] = [];
-  const tool = createFlareAIUiInspectionTool({
+  const tool = createPolymuxUiInspectionTool({
     async openSettings(mode) { opened.push(mode); },
     async snapshot() {
       return {
@@ -38,7 +38,7 @@ test("inspects the rendered Memory view without a general navigation surface", a
 });
 
 test("refuses any UI view outside the bounded contract", async () => {
-  const tool = createFlareAIUiInspectionTool({
+  const tool = createPolymuxUiInspectionTool({
     async openSettings() { throw new Error("must not run"); },
     async snapshot() { throw new Error("must not run"); },
   });

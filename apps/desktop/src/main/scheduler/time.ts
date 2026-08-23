@@ -1,4 +1,4 @@
-import { nextCronRun, zonedEpoch, zonedParts, type ScheduleFrequencyDto, type ScheduleWeekday } from "@flareai/protocol";
+import { nextCronRun, zonedEpoch, zonedParts, type ScheduleFrequencyDto, type ScheduleWeekday } from "@polymux/protocol";
 
 /**
  * When a cadence next comes round. Kept apart from the scheduler itself

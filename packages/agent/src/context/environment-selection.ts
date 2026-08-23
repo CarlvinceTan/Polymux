@@ -12,7 +12,7 @@ export function currentPageFastPathAvailable(
   if (frontmost && EXTENSION_BROWSER_APP.test(frontmost.app)) return true;
   return Boolean(
     frontmost &&
-    /\bflareai\b/i.test(frontmost.app) &&
+    /\bpolymux\b/i.test(frontmost.app) &&
     environment?.browserTabs?.length,
   );
 }

@@ -1,5 +1,5 @@
-import type {JsonValue} from "@flareai/storage";
-import type {TaskCardDto, TaskCardInput, TaskCardPatch, TaskCardStatus} from "@flareai/protocol";
+import type {JsonValue} from "@polymux/storage";
+import type {TaskCardDto, TaskCardInput, TaskCardPatch, TaskCardStatus} from "@polymux/protocol";
 
 export type JobPriority = "background" | "normal" | "urgent" | "attention";
 export type JobStatus = "queued" | "running" | "completed" | "cancelled" | "failed" | "blocked";

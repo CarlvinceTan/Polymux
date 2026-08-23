@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {Communications, matchContactChats, resolveChatAliasFromRooms} from "./index.js";
-import type {EmailAccounts} from "@flareai/hub";
+import type {EmailAccounts} from "@polymux/hub";
 import {createCommunicationsTools} from "./tools.js";
 
 function toolResult(value: {content?: unknown}): unknown {
@@ -262,7 +262,7 @@ test("all-inbox search deduplicates, caps, compacts, and isolates account failur
     credentials: {} as never,
     storage: {getPreference: () => undefined, setPreference: () => {}},
     onChange: () => {},
-    home: "/tmp/flareai-email-search-test",
+    home: "/tmp/polymux-email-search-test",
     email,
   });
 
@@ -315,7 +315,7 @@ test("all-inbox search bounds a stalled mailbox without hiding healthy results",
     credentials: {} as never,
     storage: {getPreference: () => undefined, setPreference: () => {}},
     onChange: () => {},
-    home: "/tmp/flareai-email-timeout-test",
+    home: "/tmp/polymux-email-timeout-test",
     email,
   });
 
@@ -346,7 +346,7 @@ test("all-inbox search merges Apple Mail coverage without another agent call", a
     credentials: {} as never,
     storage: {getPreference: () => undefined, setPreference: () => {}},
     onChange: () => {},
-    home: "/tmp/flareai-apple-mail-search-test",
+    home: "/tmp/polymux-apple-mail-search-test",
     email,
     appleMailSearch: async ({queries, maxResults}) => {
       fallbacks += 1;

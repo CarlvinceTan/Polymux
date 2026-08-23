@@ -1,5 +1,5 @@
-import type { ModelRef, ReasoningEffort } from "@flareai/inference";
-import type { Goal } from "@flareai/storage";
+import type { ModelRef, ReasoningEffort } from "@polymux/inference";
+import type { Goal } from "@polymux/storage";
 import type { GoalJudge, GoalJudgement } from "./judge.js";
 import type { GoalManager } from "./manager.js";
 

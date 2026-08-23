@@ -3,8 +3,8 @@ import type {
   ComputerHistoryFrameSource,
   ComputerHistorySystemState,
   ComputerHistorySystemStateSource,
-} from "@flareai/computer-history";
-import { textSignature } from "@flareai/computer-history";
+} from "@polymux/computer-history";
+import { textSignature } from "@polymux/computer-history";
 import { powerMonitor } from "electron";
 import type { AxReader } from "../system/ax-reader.js";
 
@@ -25,7 +25,7 @@ export class AccessibilityComputerHistoryFrames implements ComputerHistoryFrameS
     const snapshot = await this.#reader.snapshot(process.pid);
     if (!snapshot.trusted)
       throw new Error(
-        "Accessibility access is off. Allow FlareAI under Privacy & Security → Accessibility in System Settings.",
+        "Accessibility access is off. Allow Polymux under Privacy & Security → Accessibility in System Settings.",
       );
     if (snapshot.skipped || !snapshot.app) return [];
     const text = snapshot.text?.trim() ?? "";

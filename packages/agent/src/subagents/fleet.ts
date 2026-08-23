@@ -1,5 +1,5 @@
-import type { AgentRunControl } from "@flareai/core";
-import type { InferenceMessage } from "@flareai/inference";
+import type { AgentRunControl } from "@polymux/core";
+import type { InferenceMessage } from "@polymux/inference";
 
 /**
  * What a delegated run is doing, as the run that dispatched it sees it.

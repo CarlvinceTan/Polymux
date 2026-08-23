@@ -1,5 +1,5 @@
-import type { AgentTool, AgentToolContext } from "@flareai/core";
-import type { JsonObject } from "@flareai/inference";
+import type { AgentTool, AgentToolContext } from "@polymux/core";
+import type { JsonObject } from "@polymux/inference";
 import type { SubagentFleet } from "./fleet.js";
 import {
   TASK_TOOL_GROUPS,
@@ -85,7 +85,7 @@ export function createTaskTool(
   return {
     name: "subagent",
     description: [
-      "Dispatch a bounded piece of work to an independent FlareAI subagent. Returns as soon as the subagent starts — it does not wait for the answer.",
+      "Dispatch a bounded piece of work to an independent Polymux subagent. Returns as soon as the subagent starts — it does not wait for the answer.",
       "",
       "## When to use",
       "Use this whenever the user asks for work to be done rather than explained: research, diagnosis, drafting, building, multi-step execution. Call it instead of doing the work yourself. Send one call per independent piece of work in the same turn and they run in parallel.",

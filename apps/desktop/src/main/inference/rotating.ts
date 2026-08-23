@@ -1,4 +1,4 @@
-import type {InferenceEvent, InferenceModel, InferenceRequest, InferenceService, ModelRef} from "@flareai/inference";
+import type {InferenceEvent, InferenceModel, InferenceRequest, InferenceService, ModelRef} from "@polymux/inference";
 
 export interface InferenceKeyPool {
   candidates(providerId: string): Promise<Array<{id: string; key: string}>>;

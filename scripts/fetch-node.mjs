@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Downloads the Node.js runtime that ships inside FlareAI.
+ * Downloads the Node.js runtime that ships inside Polymux.
  *
- * Skill scripts are plain `.mjs` files run with `"${FLAREAI_NODE:-node}"`. In
+ * Skill scripts are plain `.mjs` files run with `"${POLYMUX_NODE:-node}"`. In
  * development that interpreter is Electron itself via ELECTRON_RUN_AS_NODE,
  * but the packaged app burns that fuse off (forge.config.ts, RunAsNode:
  * false) — deliberately, so nothing can borrow the signed binary as an
- * arbitrary Node with FlareAI's TCC grants. The packaged app therefore ships
+ * arbitrary Node with Polymux's TCC grants. The packaged app therefore ships
  * its own `node`, and cannot fall back to whatever Python or Node a user's
  * machine happens to have.
  *
@@ -34,11 +34,13 @@ const NODE_VERSION = "24.18.1";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputDirectory = path.join(root, "resources", "node");
-const binaryPath = path.join(outputDirectory, "node");
+const binaryName = process.platform === "win32" ? "node.exe" : "node";
+const binaryPath = path.join(outputDirectory, binaryName);
 const versionStamp = path.join(outputDirectory, "VERSION");
 
 function target() {
   if (process.platform === "darwin" && process.arch === "arm64") return "darwin-arm64";
+  if (process.platform === "win32" && process.arch === "x64") return "win-x64";
   if (process.platform === "linux" && process.arch === "x64") return "linux-x64";
   if (process.platform === "linux" && process.arch === "arm64") return "linux-arm64";
   throw new Error(`No pinned Node runtime for ${process.platform}-${process.arch}`);
@@ -64,7 +66,8 @@ async function main() {
   }
 
   const platform = target();
-  const archive = `node-v${NODE_VERSION}-${platform}.tar.gz`;
+  const windows = platform.startsWith("win-");
+  const archive = `node-v${NODE_VERSION}-${platform}.${windows ? "zip" : "tar.gz"}`;
   const base = `https://nodejs.org/dist/v${NODE_VERSION}`;
 
   console.log(`fetching ${archive}`);
@@ -81,19 +84,21 @@ async function main() {
     throw new Error(`${archive}: sha256 mismatch\n  expected ${expected}\n  actual   ${actual}`);
 
   // Only bin/node ships; the tarball's headers, docs and npm do not.
-  const staging = await mkdtemp(path.join(tmpdir(), "flareai-node-"));
+  const staging = await mkdtemp(path.join(tmpdir(), "polymux-node-"));
   try {
     const archivePath = path.join(staging, archive);
     await writeFile(archivePath, bytes);
     execFileSync("tar", [
-      "-xzf", archivePath,
+      windows ? "-xf" : "-xzf", archivePath,
       "-C", staging,
-      "--strip-components", "2",
-      `node-v${NODE_VERSION}-${platform}/bin/node`,
+      "--strip-components", windows ? "1" : "2",
+      windows
+        ? `node-v${NODE_VERSION}-${platform}/node.exe`
+        : `node-v${NODE_VERSION}-${platform}/bin/node`,
     ]);
     await mkdir(outputDirectory, {recursive: true});
     await rm(binaryPath, {force: true});
-    await rename(path.join(staging, "node"), binaryPath);
+    await rename(path.join(staging, binaryName), binaryPath);
     await chmod(binaryPath, 0o755);
     await writeFile(versionStamp, `${NODE_VERSION}\n`);
   } finally {

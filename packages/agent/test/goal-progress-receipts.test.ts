@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import type {InferenceMessage} from "@flareai/inference";
-import {SqliteStorage} from "@flareai/storage/sqlite";
+import type {InferenceMessage} from "@polymux/inference";
+import {SqliteStorage} from "@polymux/storage/sqlite";
 import {
   goalProgressPrompt,
   readGoalProgress,

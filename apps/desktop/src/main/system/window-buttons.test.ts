@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  FLAREAI_TRAFFIC_LIGHT_POSITION,
+  POLYMUX_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
   type MacWindowButtons,
 } from "./window-buttons.js";
 
 class ResettingMacWindow implements MacWindowButtons {
   visible = true;
-  position: {x: number; y: number} = {...FLAREAI_TRAFFIC_LIGHT_POSITION};
+  position: {x: number; y: number} = {...POLYMUX_TRAFFIC_LIGHT_POSITION};
   calls: string[] = [];
 
   setWindowButtonVisibility(visible: boolean): void {
@@ -25,7 +25,7 @@ class ResettingMacWindow implements MacWindowButtons {
   }
 }
 
-test("keeps native traffic lights at the FlareAI position across focus cycles", () => {
+test("keeps native traffic lights at the Polymux position across focus cycles", () => {
   const window = new ResettingMacWindow();
 
   syncMacWindowButtons(window, false);
@@ -34,10 +34,10 @@ test("keeps native traffic lights at the FlareAI position across focus cycles", 
 
   syncMacWindowButtons(window, true);
   assert.equal(window.visible, true);
-  assert.deepEqual(window.position, FLAREAI_TRAFFIC_LIGHT_POSITION);
+  assert.deepEqual(window.position, POLYMUX_TRAFFIC_LIGHT_POSITION);
   assert.deepEqual(window.calls.slice(-2), ["visible:true", "position:19,19"]);
 
   syncMacWindowButtons(window, false);
   syncMacWindowButtons(window, true);
-  assert.deepEqual(window.position, FLAREAI_TRAFFIC_LIGHT_POSITION);
+  assert.deepEqual(window.position, POLYMUX_TRAFFIC_LIGHT_POSITION);
 });

@@ -1,4 +1,4 @@
-import type {SystemPermissionKind, SystemPermissionStatus} from "@flareai/protocol";
+import type {SystemPermissionKind, SystemPermissionStatus} from "@polymux/protocol";
 
 export interface PermissionPreferenceStore {
   getPreference(key: string): {value: unknown} | null;

@@ -6,7 +6,7 @@ const INTERNAL_COMMENTARY_HEADING = /^(?:#{1,6}\s+|\*\*)?(?:searching|identifyin
 
 /** Provider scratch headings are useful neither as prose nor as activity rows;
  * the concrete tool lifecycle immediately below them already tells the user
- * what FlareAI actually did. Keep genuine status narration unchanged. */
+ * what Polymux actually did. Keep genuine status narration unchanged. */
 export function visibleCommentaryLabel(text: string): string | null {
   const trimmed = text.trim();
   return trimmed && !INTERNAL_COMMENTARY_HEADING.test(trimmed) ? trimmed : null;

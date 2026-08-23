@@ -1,7 +1,7 @@
 ---
 name: email-use
-description: Route proactive email discovery, reading, searching, drafting, replying, attachment handling, and sending through the right local email surface. Use for explicit email tasks and whenever email is a likely primary evidence source for research, reviews, memory or history reconstruction, prior decisions and promises, purchases, bookings and travel, job applications, account or admin work, supplier work, or recent correspondence, even when the user did not explicitly mention email. Prefer bounded read-only searches of relevant configured accounts through FlareAI's own email tools, then use Apple Mail on macOS or Outlook or webmail on Windows when an account is unconfigured or blocked. Never send, delete, move, archive, mark, label, or otherwise mutate mail without explicit user approval, and always show drafts before sending.
-author: FlareAI
+description: Route proactive email discovery, reading, searching, drafting, replying, attachment handling, and sending through the right local email surface. Use for explicit email tasks and whenever email is a likely primary evidence source for research, reviews, memory or history reconstruction, prior decisions and promises, purchases, bookings and travel, job applications, account or admin work, supplier work, or recent correspondence, even when the user did not explicitly mention email. Prefer bounded read-only searches of relevant configured accounts through Polymux's own email tools, then use Apple Mail on macOS or Outlook or webmail on Windows when an account is unconfigured or blocked. Never send, delete, move, archive, mark, label, or otherwise mutate mail without explicit user approval, and always show drafts before sending.
+author: Polymux
 category: Communication
 ---
 
@@ -19,7 +19,7 @@ category: Communication
 
 ## Routing
 
-1. Prefer FlareAI's own email tools for any account that is configured and
+1. Prefer Polymux's own email tools for any account that is configured and
    working. They hold an open connection to the mailbox, so a read costs a
    single round trip; there is no CLI to drive and no reason to reach for a
    shell.
@@ -30,7 +30,7 @@ category: Communication
      needed — reading a message transfers no attachment.
    - `email_send` sends, or saves to Drafts with `draft: true`.
 2. Use the platform mail fallback when:
-   - the account is not configured in FlareAI,
+   - the account is not configured in Polymux,
    - its IMAP/SMTP access is blocked,
    - the user asks for the native mail app specifically,
    - exact rich signature rendering or embedded images are required,

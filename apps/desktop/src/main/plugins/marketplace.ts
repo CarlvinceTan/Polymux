@@ -11,7 +11,7 @@ const run = promisify(execFile);
 /**
  * A marketplace is a git repository with `.claude-plugin/marketplace.json` at
  * its root — there is no central index to query, which is why one is *added*
- * by repository rather than searched for. FlareAI ships with Anthropic's own
+ * by repository rather than searched for. Polymux ships with Anthropic's own
  * added already, so the tab is not empty on first open.
  */
 export const BUILTIN_MARKETPLACE_SOURCE = "anthropics/claude-code";

@@ -240,9 +240,9 @@
   {#if menuId}
     {@const menuChat = chats.find((chat) => chat.id === menuId)}
     {#if menuChat}
-      <div class="flareai-dropdown-menu chat-drawer-row-menu" role="menu" style:top={`${menuTop}px`}>
-        <button class="flareai-dropdown-item" role="menuitem" onclick={() => startRename(menuChat)}><Icon name="edit" size={14}/><span>{$t('common.rename')}</span></button>
-        <button class="flareai-dropdown-item destructive" role="menuitem" onclick={() => deleteChat(menuChat.id)}><Icon name="trash" size={14}/><span>{$t('common.delete')}</span></button>
+      <div class="polymux-dropdown-menu chat-drawer-row-menu" role="menu" style:top={`${menuTop}px`}>
+        <button class="polymux-dropdown-item" role="menuitem" onclick={() => startRename(menuChat)}><Icon name="edit" size={14}/><span>{$t('common.rename')}</span></button>
+        <button class="polymux-dropdown-item destructive" role="menuitem" onclick={() => deleteChat(menuChat.id)}><Icon name="trash" size={14}/><span>{$t('common.delete')}</span></button>
       </div>
     {/if}
   {/if}

@@ -1,9 +1,9 @@
 ---
 name: skill-creator
-description: Create or improve skill structure, instructions, resources, trigger descriptions, and meaningful FlareAI-facing metadata. Use when authoring a new skill, restructuring an existing skill, designing reusable scripts, references, assets, display names, prompts, or icons, or refining when a skill should activate. For personal-skill staging, behavioral validation, approval, history, upstream merges, and promotion, use skill-maintenance.
+description: Create or improve skill structure, instructions, resources, trigger descriptions, and meaningful Polymux-facing metadata. Use when authoring a new skill, restructuring an existing skill, designing reusable scripts, references, assets, display names, prompts, or icons, or refining when a skill should activate. For personal-skill staging, behavioral validation, approval, history, upstream merges, and promotion, use skill-maintenance.
 metadata:
   short-description: Create or improve a skill
-author: FlareAI
+author: Polymux
 category: Skills
 ---
 
@@ -33,7 +33,7 @@ Every skill requires `SKILL.md`. Add only the resources it uses:
 - `scripts/` for deterministic or repeatedly reused operations;
 - `references/` for detailed or variant-specific material loaded on demand;
 - `assets/` for templates, icons, fonts, and files used in outputs;
-- `flare.yaml` for the display name shown in FlareAI.
+- `flare.yaml` for the display name shown in Polymux.
 
 Keep the core workflow and routing in `SKILL.md`. Move schemas, provider
 details, long examples, and conditional variants into directly linked
@@ -48,7 +48,7 @@ reference files that the workflow never consumes.
    - Read an existing skill and every required resource before restructuring it.
 2. **Plan**
    - Decide what belongs in `SKILL.md`, `scripts/`, `references/`, and `assets/`.
-   - Plan a distinct, understandable FlareAI display name, short description,
+   - Plan a distinct, understandable Polymux display name, short description,
      default prompt, and purpose-relevant icon treatment.
    - Preserve stable behavior and interfaces unless the user requests a change.
 3. **Initialize or stage**

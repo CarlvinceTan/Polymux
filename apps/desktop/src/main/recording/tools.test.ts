@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { RecordingEndReason, RecordingSession } from "@flareai/computer-history";
-import { ComputerHistoryRecorder, elapsedLabel } from "@flareai/computer-history";
+import type { RecordingEndReason, RecordingSession } from "@polymux/computer-history";
+import { ComputerHistoryRecorder, elapsedLabel } from "@polymux/computer-history";
 import type { RecordingCapture } from "./capture.js";
 import { createRecordingTool } from "./tools.js";
 
@@ -13,7 +13,7 @@ import { createRecordingTool } from "./tools.js";
  * tool actually reasons about is on disk.
  */
 function harness() {
-  const root = mkdtempSync(path.join(tmpdir(), "flareai-record-tool-"));
+  const root = mkdtempSync(path.join(tmpdir(), "polymux-record-tool-"));
   // The real 30-minute limit timer would hold the test process open long
   // after the assertions finish, so the schedule is a stub here.
   const recorder = new ComputerHistoryRecorder({

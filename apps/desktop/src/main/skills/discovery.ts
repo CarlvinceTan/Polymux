@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { SkillLoader } from "@flareai/agent";
-import type { DiscoveredSkillGroupDto } from "@flareai/protocol";
-import { flareaiDirectoryName } from "../system/paths.js";
+import { SkillLoader } from "@polymux/agent";
+import type { DiscoveredSkillGroupDto } from "@polymux/protocol";
+import { polymuxDirectoryName } from "../system/paths.js";
 
 /**
  * The agents whose names we know how to write, in the order their groups are
@@ -12,12 +12,12 @@ import { flareaiDirectoryName } from "../system/paths.js";
  * installed tomorrow needs no change here — and only its heading is guessed
  * from the directory name.
  *
- * `sourced` marks a directory FlareAI already loads from, so its skills are
+ * `sourced` marks a directory Polymux already loads from, so its skills are
  * reported as present rather than offered for copying: the point is to show
  * where every skill on the machine lives, not only the missing ones.
  */
 const KNOWN_AGENTS: {ids: string[]; label: string; sourced?: boolean}[] = [
-  // The ones a FlareAI user is most likely to also be running, first.
+  // The ones a Polymux user is most likely to also be running, first.
   {ids: ["claude"], label: "Claude"},
   {ids: ["codex"], label: "Codex"},
   {ids: ["hermes"], label: "Hermes"},
@@ -65,7 +65,7 @@ const KNOWN_AGENTS: {ids: string[]; label: string; sourced?: boolean}[] = [
   {ids: ["windsurf"], label: "Windsurf"},
   {ids: ["zed"], label: "Zed"},
   // The cross-agent standard directory `npx skills` installs into, which
-  // FlareAI already sources. Last: it is not one agent's library.
+  // Polymux already sources. Last: it is not one agent's library.
   {ids: ["agents"], label: "Shared skills", sourced: true},
 ];
 
@@ -73,12 +73,12 @@ const KNOWN_AGENTS: {ids: string[]; label: string; sourced?: boolean}[] = [
 const SKILL_FOLDERS = ["skills", "skill"];
 
 /**
- * FlareAI's own directories. Its personal skills are already the Skills list,
+ * Polymux's own directories. Its personal skills are already the Skills list,
  * and its mirror of the bundled set is not something to adopt from. A side
- * instance excludes the user's `~/.flareai` as well as its own: that is the
- * other FlareAI run, not another agent.
+ * instance excludes the user's `~/.polymux` as well as its own: that is the
+ * other Polymux run, not another agent.
  */
-const SELF = new Set([".flareai", flareaiDirectoryName()]);
+const SELF = new Set([".polymux", polymuxDirectoryName()]);
 
 /**
  * Reads every agent skill directory on this machine: `~/.<agent>/skills` and
@@ -86,7 +86,7 @@ const SELF = new Set([".flareai", flareaiDirectoryName()]);
  * layout keep theirs. Directories with nothing in them are dropped rather
  * than listed empty — a run of empty headings buries the real finds.
  *
- * `installed` is the set of skill names FlareAI already loads, which decides
+ * `installed` is the set of skill names Polymux already loads, which decides
  * whether a find is offered or reported as one it already has.
  */
 export function discoverAgentSkills(
@@ -97,7 +97,7 @@ export function discoverAgentSkills(
   for (const candidate of agentDirectories(home)) {
     const known = KNOWN_AGENTS.find((agent) => agent.ids.includes(candidate.id));
     // Parsed by the loader itself, so a folder counts as a skill here exactly
-    // when FlareAI would treat it as one — no second frontmatter reader that
+    // when Polymux would treat it as one — no second frontmatter reader that
     // can drift from the first.
     const skills = new SkillLoader({configured: [candidate.directory]}).load().skills.map((skill) => ({
       name: skill.name,
@@ -141,7 +141,7 @@ export function resolveDiscoveredSkill(displayed: string, home = homedir()): str
   );
   const roots = agentDirectories(home).map((candidate) => path.resolve(candidate.directory));
   if (!roots.some((root) => absolute.startsWith(`${root}${path.sep}`)))
-    throw new Error("That skill is not in a directory FlareAI scans");
+    throw new Error("That skill is not in a directory Polymux scans");
   return absolute;
 }
 

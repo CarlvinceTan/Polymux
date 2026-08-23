@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type {ScheduleDto, ScheduleFrequencyDto, ScheduleRunDto, ScheduleStatusDto, ScheduleWeekday} from '@flareai/protocol';
+  import type {ScheduleDto, ScheduleFrequencyDto, ScheduleRunDto, ScheduleStatusDto, ScheduleWeekday} from '@polymux/protocol';
   import {activeLocale, plural, translate, type MessageKey} from '../../../i18n';
   import MESSAGE_KEYS from '../../../i18n/locales/en';
 
@@ -55,7 +55,7 @@
 
   /**
    * Dates and times are formatted in the interface language, not the host's
-   * regional setting: someone reading FlareAI in Japanese expects Japanese
+   * regional setting: someone reading Polymux in Japanese expects Japanese
    * month names here, whatever their machine is set to.
    */
   export function formatScheduleTime(epochMs: number): string {
@@ -247,7 +247,7 @@
   import Icon from '../../shared/components/Icon.svelte';
   import Menu from '../../shared/components/Menu.svelte';
   import {locale, t, withLocale} from '../../../i18n';
-  import {cronError, nextCronRun} from '@flareai/protocol';
+  import {cronError, nextCronRun} from '@polymux/protocol';
 
   const UNIT_NOUNS = {
     cron: 'schedule.days',
@@ -911,13 +911,13 @@
   {#if menuId}
     {@const menuItem = items.find((entry) => entry.id === menuId)}
     {#if menuItem}
-      <div class="flareai-dropdown-menu schedule-row-menu" role="menu" style:top={`${menuTop}px`}>
-        <button class="flareai-dropdown-item" role="menuitem" onclick={() => act(menuItem, onRunItem)}><Icon name="play" size={14}/><span>{$t('schedule.runNow')}</span></button>
-        <button class="flareai-dropdown-item" role="menuitem" onclick={() => openComposer(menuItem)}><Icon name="edit" size={14}/><span>{$t('common.edit')}</span></button>
-        <button class="flareai-dropdown-item" role="menuitem" onclick={() => act(menuItem, onToggleItem)}>
+      <div class="polymux-dropdown-menu schedule-row-menu" role="menu" style:top={`${menuTop}px`}>
+        <button class="polymux-dropdown-item" role="menuitem" onclick={() => act(menuItem, onRunItem)}><Icon name="play" size={14}/><span>{$t('schedule.runNow')}</span></button>
+        <button class="polymux-dropdown-item" role="menuitem" onclick={() => openComposer(menuItem)}><Icon name="edit" size={14}/><span>{$t('common.edit')}</span></button>
+        <button class="polymux-dropdown-item" role="menuitem" onclick={() => act(menuItem, onToggleItem)}>
           <Icon name={menuItem.status === 'paused' ? 'play' : 'pause'} size={14}/><span>{menuItem.status === 'paused' ? $t('common.resume') : $t('common.pause')}</span>
         </button>
-        <button class="flareai-dropdown-item destructive" role="menuitem" onclick={() => act(menuItem, onDeleteItem)}><Icon name="trash" size={14}/><span>{$t('common.delete')}</span></button>
+        <button class="polymux-dropdown-item destructive" role="menuitem" onclick={() => act(menuItem, onDeleteItem)}><Icon name="trash" size={14}/><span>{$t('common.delete')}</span></button>
       </div>
     {/if}
   {/if}

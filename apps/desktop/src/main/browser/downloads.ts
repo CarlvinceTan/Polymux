@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import type { BrowserDownloadDto } from "@flareai/protocol";
+import type { BrowserDownloadDto } from "@polymux/protocol";
 import type { DownloadItem, Session } from "electron";
 
 /**

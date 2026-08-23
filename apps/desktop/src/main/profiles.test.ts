@@ -3,12 +3,12 @@ import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {SqliteStorage} from "@flareai/storage/sqlite";
+import {SqliteStorage} from "@polymux/storage/sqlite";
 import {ProfileManager} from "./profiles.js";
 
 test("profiles begin with a selected default and keep configuration isolated", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-profiles-"));
-  const storage = new SqliteStorage(path.join(directory, "flareai.sqlite"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-profiles-"));
+  const storage = new SqliteStorage(path.join(directory, "polymux.sqlite"));
   try {
     const profiles = new ProfileManager(storage, directory);
     assert.deepEqual(profiles.snapshot(), {
@@ -37,8 +37,8 @@ test("profiles begin with a selected default and keep configuration isolated", a
 });
 
 test("duplicate copies scoped preferences and delete cannot remove default", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-profiles-"));
-  const storage = new SqliteStorage(path.join(directory, "flareai.sqlite"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-profiles-"));
+  const storage = new SqliteStorage(path.join(directory, "polymux.sqlite"));
   try {
     const profiles = new ProfileManager(storage, directory);
     storage.setPreference("skill-enabled", {documents: false});

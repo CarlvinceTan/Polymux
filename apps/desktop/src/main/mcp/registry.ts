@@ -1,9 +1,9 @@
-import type {McpRegistryEntryDto, McpRegistryPageDto} from "@flareai/protocol";
+import type {McpRegistryEntryDto, McpRegistryPageDto} from "@polymux/protocol";
 
 const REGISTRY_URL = "https://registry.modelcontextprotocol.io/v0/servers";
 
 /** Searches the official MCP Registry and returns the latest remote-capable
- * servers. Package-only entries are omitted because FlareAI cannot install them
+ * servers. Package-only entries are omitted because Polymux cannot install them
  * without first resolving their runtime and environment requirements.
  *
  * One page, with the registry's own cursor for the next: the list is long

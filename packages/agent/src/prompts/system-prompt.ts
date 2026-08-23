@@ -1,4 +1,4 @@
-import type { Goal, MemoryRecord, Preference } from "@flareai/storage";
+import type { Goal, MemoryRecord, Preference } from "@polymux/storage";
 import type { Skill } from "../skills/types.js";
 
 export interface SystemPromptInput {
@@ -19,7 +19,7 @@ export interface SystemPromptInput {
   environment?: {
     /** When the desktop-window portion was last verified. */
     windowsCapturedAt?: string;
-    /** When FlareAI read its own tab registry for this turn. */
+    /** When Polymux read its own tab registry for this turn. */
     browserTabsCapturedAt?: string;
     /** When the external-browser extension captured its fresh snapshot. */
     externalBrowserCapturedAt?: string;
@@ -32,7 +32,7 @@ export interface SystemPromptInput {
       accuracy: number;
       updatedAt: string;
     };
-    /** Tabs open in FlareAI's own browser, newest last. */
+    /** Tabs open in Polymux's own browser, newest last. */
     browserTabs?: Array<{ tabId: string; url: string; title: string }>;
     /** Fresh tabs reported by the connected external-browser extension. */
     externalBrowserTabs?: Array<{
@@ -194,7 +194,7 @@ export function buildSystemPrompt(input: SystemPromptInput = {}): string {
             ? "Location access is enabled, but no location fix is currently available. Do not guess the user's location."
             : undefined,
         input.environment.browserTabs?.length
-          ? `### Open in the FlareAI browser\n${input.environment.browserTabsCapturedAt ? `Captured: ${input.environment.browserTabsCapturedAt}\n` : ""}${input.environment.browserTabs
+          ? `### Open in the Polymux browser\n${input.environment.browserTabsCapturedAt ? `Captured: ${input.environment.browserTabsCapturedAt}\n` : ""}${input.environment.browserTabs
               .map((tab) => `- ${tab.title || "Untitled"} — ${tab.url} (tabId ${tab.tabId})`)
               .join("\n")}`
           : undefined,

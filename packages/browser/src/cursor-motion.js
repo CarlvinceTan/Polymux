@@ -1151,7 +1151,7 @@
     };
   }
 
-  globalThis.FlareAICursorMotion = Object.freeze({
+  globalThis.PolymuxCursorMotion = Object.freeze({
     ASSET_DATA_URL,
     PATH,
     SPRINGS,

@@ -30,7 +30,7 @@ if (missing.length > 0) {
 }
 
 const bucket = process.env.R2_BUCKET;
-const publicHost = process.env.FLAREAI_UPDATE_HOST ?? "https://updates.flarehq.co";
+const publicHost = process.env.POLYMUX_UPDATE_HOST ?? "https://updates.flarehq.co";
 
 const s3 = new S3Client({
   region: "auto",
@@ -89,7 +89,7 @@ for (const arch of ["arm64", "x64"]) {
   const feed = {
     url: `${publicHost}/${zipKey}`,
     name: version,
-    notes: process.env.FLAREAI_RELEASE_NOTES ?? "",
+    notes: process.env.POLYMUX_RELEASE_NOTES ?? "",
     pub_date: new Date().toISOString(),
   };
   await s3.send(new PutObjectCommand({
@@ -130,11 +130,11 @@ for (const arch of ["x64", "arm64"]) {
 // rather than waiting for a release to reach them. Written only when the
 // values are in the environment, so a publish without them leaves whatever is
 // already there alone rather than blanking it.
-if (process.env.FLAREAI_TELEGRAM_API_ID && process.env.FLAREAI_TELEGRAM_API_HASH) {
+if (process.env.POLYMUX_TELEGRAM_API_ID && process.env.POLYMUX_TELEGRAM_API_HASH) {
   const credentials = {
     telegram: {
-      api_id: process.env.FLAREAI_TELEGRAM_API_ID,
-      api_hash: process.env.FLAREAI_TELEGRAM_API_HASH,
+      api_id: process.env.POLYMUX_TELEGRAM_API_ID,
+      api_hash: process.env.POLYMUX_TELEGRAM_API_HASH,
     },
   };
   await s3.send(new PutObjectCommand({

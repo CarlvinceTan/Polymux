@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type {RunEventDto} from '@flareai/protocol';
+import type {RunEventDto} from '@polymux/protocol';
 import {applyTaskEvent, emptyTranscript} from './taskTranscript';
 
 function event(type: RunEventDto['type'], payload: unknown, sequence: number): RunEventDto {

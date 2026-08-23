@@ -1,5 +1,5 @@
 import { protocol, net } from "electron";
-import { MEDIA_SCHEME, mediaUrl } from "@flareai/hub";
+import { MEDIA_SCHEME, mediaUrl } from "@polymux/hub";
 
 export { MEDIA_SCHEME, mediaUrl };
 
@@ -8,7 +8,7 @@ export { MEDIA_SCHEME, mediaUrl };
  * can load: the bytes live behind the homeserver's authenticated media
  * endpoint, and an `<img src>` cannot send an Authorization header.
  *
- * So the renderer is handed `flareai-media://<server>/<mediaId>` instead, and
+ * So the renderer is handed `polymux-media://<server>/<mediaId>` instead, and
  * this handler does the authenticated fetch on its behalf. Streaming it rather
  * than inlining base64 matters for voice notes and video, where a data: uri
  * would mean holding the whole file in the page.

@@ -1,7 +1,7 @@
 ---
 name: skill-record
 description: Watch the user demonstrate a workflow on their Mac and turn it into a reusable skill they can see in Settings → Skills. Use when they ask you to learn from what they are about to do, watch them do something, record a workflow, or build a skill from a demonstration — and when they come back and say they are done.
-author: FlareAI
+author: Polymux
 category: System
 ---
 
@@ -43,12 +43,12 @@ Nothing. You are not in this step.
 Call `stop`. It returns a digest, and the digest is what you summarise from —
 not the raw file, and not everything that happened.
 
-**Do not get distracted by the edges.** The user was in FlareAI when they
+**Do not get distracted by the edges.** The user was in Polymux when they
 started and came back to it when they finished, and the middle has hunting,
 backtracking and a wrong tab or two. Three things already handle this, and you
 should trust them rather than narrating around them:
 
-- FlareAI's own window is never captured at all.
+- Polymux's own window is never captured at all.
 - `stop` trims everything before the first real action and after the last, and
   reports how much it dropped as `trimmedLead` / `trimmedTail`.
 - `apps` is where the work happened; `passedThrough` is where they merely went.
@@ -80,7 +80,7 @@ personal, medical, legal or HR detail. Describe the step and use a placeholder.
 ## 4 — When they say yes
 
 Now write it. Follow `skill-creator` for structure and validation, and save to
-`~/.flareai/skills` — that is the editable tree, and a skill landing there
+`~/.polymux/skills` — that is the editable tree, and a skill landing there
 appears in **Settings → Skills** on its own, switchable and editable. Say that
 once, at the end, so they know where it went.
 

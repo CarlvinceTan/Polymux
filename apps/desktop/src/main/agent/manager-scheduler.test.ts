@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {JsonValue} from "@flareai/storage";
+import type {JsonValue} from "@polymux/storage";
 import {ChatPool} from "./chat-pool.js";
 import {
   MANAGER_CHAT_RUN_LIMIT,

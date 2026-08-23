@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { BrowserSourceDto } from "@flareai/protocol";
+import type { BrowserSourceDto } from "@polymux/protocol";
 import {
   CHROMIUM_BROWSERS,
   chromiumProfiles,

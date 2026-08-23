@@ -19,7 +19,7 @@ import { contextBridge, ipcRenderer } from "electron";
  *    dropped as soon as it is written into the field.
  */
 
-const CHANNEL = "flareai:autofill";
+const CHANNEL = "polymux:autofill";
 
 interface FormFields {
   username: HTMLInputElement | null;
@@ -162,4 +162,4 @@ observer.observe(document.documentElement, { childList: true, subtree: true });
 // Nothing is exposed to the page: this bridge exists so the module counts as a
 // preload rather than being tree-shaken to nothing, and so page scripts cannot
 // reach ipcRenderer.
-contextBridge.exposeInMainWorld("__flareaiAutofill", { present: true });
+contextBridge.exposeInMainWorld("__polymuxAutofill", { present: true });

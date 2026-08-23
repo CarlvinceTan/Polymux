@@ -1,4 +1,4 @@
-import type {AgentTool} from "@flareai/core";
+import type {AgentTool} from "@polymux/core";
 
 export interface RendererInspectionSnapshot {
   image: {data: string; mimeType: "image/png"};
@@ -11,13 +11,13 @@ export interface RendererInspector {
   snapshot(): Promise<RendererInspectionSnapshot>;
 }
 
-/** Renderer-scoped visual evidence for FlareAI's own UI. It never shows,
+/** Renderer-scoped visual evidence for Polymux's own UI. It never shows,
  * focuses, raises, or synthesizes input into the window. */
-export function createFlareAIUiInspectionTool(inspector: RendererInspector): AgentTool {
+export function createPolymuxUiInspectionTool(inspector: RendererInspector): AgentTool {
   return {
-    name: "flareai_ui_inspect",
+    name: "polymux_ui_inspect",
     description:
-      "Inspect FlareAI's actual rendered UI without showing or focusing its window. Use for claims about what a FlareAI settings screen visibly renders, rather than inferring from backend or source code. The only supported view is Memory settings. This navigates the renderer read-only and returns both a PNG and semantic image-load evidence; it does not change settings.",
+      "Inspect Polymux's actual rendered UI without showing or focusing its window. Use for claims about what a Polymux settings screen visibly renders, rather than inferring from backend or source code. The only supported view is Memory settings. This navigates the renderer read-only and returns both a PNG and semantic image-load evidence; it does not change settings.",
     parameters: {
       type: "object",
       properties: {view: {type: "string", enum: ["memory"]}},
@@ -28,7 +28,7 @@ export function createFlareAIUiInspectionTool(inspector: RendererInspector): Age
     // that validate tool schemas but cannot guarantee constrained sampling.
     strict: "prefer",
     async execute(input) {
-      if (input.view !== "memory") return {content: "Unsupported FlareAI UI view.", isError: true};
+      if (input.view !== "memory") return {content: "Unsupported Polymux UI view.", isError: true};
       await inspector.openSettings("memory");
       const snapshot = await inspector.snapshot();
       return {

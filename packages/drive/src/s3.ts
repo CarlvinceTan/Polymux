@@ -1,7 +1,7 @@
 import {createHash, createHmac} from "node:crypto";
 import {readFile, stat} from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto, DriveS3ConfigRequest} from "@flareai/protocol";
+import type {DriveEntryDto, DriveS3ConfigRequest} from "@polymux/protocol";
 import {fileChunks, SIMPLE_UPLOAD_LIMIT} from "./chunks.js";
 import {downloadToFile, etagAsMd5} from "./download.js";
 import {DriveRequestError, request} from "./http.js";

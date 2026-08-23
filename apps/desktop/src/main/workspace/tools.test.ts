@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { JsonObject } from "@flareai/inference";
-import type { WorkspaceRevealDto } from "@flareai/protocol";
+import type { JsonObject } from "@polymux/inference";
+import type { WorkspaceRevealDto } from "@polymux/protocol";
 import { createHubDraftTool, createWorkspaceTool, revealRequest } from "./tools.js";
 
 function shown(input: JsonObject): Promise<WorkspaceRevealDto | null> {

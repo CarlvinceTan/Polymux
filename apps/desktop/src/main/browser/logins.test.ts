@@ -22,7 +22,7 @@ function cipher(key = "one", available = true): SecretCipher {
 }
 
 function vaultPath(): { file: string; directory: string } {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-logins-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-logins-"));
   return { file: path.join(directory, "logins.json"), directory };
 }
 

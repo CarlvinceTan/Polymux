@@ -14,7 +14,7 @@ import {
 import { createBrowserControlTools } from "./control-tools.js";
 
 function snapshot(ageMs: number): string {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-ext-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-ext-"));
   const file = path.join(directory, "tabs.json");
   writeFileSync(file, "{}");
   const seconds = (Date.now() - ageMs) / 1000;
@@ -44,7 +44,7 @@ test("a snapshot older than the window counts as gone", () => {
 });
 
 test("prompt context reads only fresh valid external tabs and stays bounded", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-prompt-tabs-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-prompt-tabs-"));
   const file = path.join(directory, "tabs.json");
   const now = Date.now();
   writeFileSync(file, JSON.stringify({
@@ -84,7 +84,7 @@ test("prompt context reads only fresh valid external tabs and stays bounded", ()
 test("the snapshot path is the one browser_tabs reads", () => {
   assert.equal(
     tabSnapshotPath("/home/u"),
-    "/home/u/Library/Application Support/flareai-tab-context/tabs.json",
+    "/home/u/Library/Application Support/polymux-tab-context/tabs.json",
   );
 });
 

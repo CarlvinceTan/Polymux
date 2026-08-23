@@ -21,7 +21,7 @@ async function twoProviders(): Promise<{
   right: string;
   clean: () => Promise<void>;
 }> {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-virtual-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-virtual-"));
   const left = path.join(base, "left");
   const right = path.join(base, "right");
   await mkdir(left, {recursive: true});
@@ -81,7 +81,7 @@ test("two providers holding the same name give two rows, not one", async () => {
 test("a new file goes where the save order says", async () => {
   const {drive, left, right, clean} = await twoProviders();
   try {
-    const base = await mkdtemp(path.join(tmpdir(), "flareai-src-"));
+    const base = await mkdtemp(path.join(tmpdir(), "polymux-src-"));
     const file = path.join(base, "report.txt");
     await writeFile(file, "hello");
     const uploaded = await drive.upload("", file);
@@ -99,7 +99,7 @@ test("a path round-trips: listing a folder reaches the source that holds it", as
   const {drive, right, clean} = await twoProviders();
   try {
     const folder = await drive.createFolder("", "Reports");
-    const base = await mkdtemp(path.join(tmpdir(), "flareai-src-"));
+    const base = await mkdtemp(path.join(tmpdir(), "polymux-src-"));
     const file = path.join(base, "q3.txt");
     await writeFile(file, "figures");
     await drive.upload(folder.path, file);
@@ -156,7 +156,7 @@ test("moving a folder between providers carries its complete tree", async () => 
 });
 
 test("a provider that fails does not empty the whole drive", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-virtual-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-virtual-"));
   try {
     const working = path.join(base, "working");
     await mkdir(working, {recursive: true});
@@ -291,7 +291,7 @@ test("nesting is kept as it is, however deep", async () => {
 });
 
 test("a file's own page survives being lifted into the virtual drive", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-weburl-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-weburl-"));
   try {
     // A stand-in for a cloud adapter: the only thing that matters here is that
     // whatever it puts on `webUrl` reaches the row unchanged, because that is

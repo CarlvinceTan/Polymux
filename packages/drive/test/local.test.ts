@@ -17,7 +17,7 @@ test("names a copy so it keeps opening in the same application", () => {
 });
 
 async function fixture(): Promise<{root: string; drive: LocalDrive; cleanup: () => Promise<void>}> {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-drive-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-drive-"));
   const root = path.join(base, "drive");
   await mkdir(root, {recursive: true});
   return {

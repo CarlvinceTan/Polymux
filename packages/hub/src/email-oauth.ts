@@ -41,7 +41,7 @@ export interface MailConsentWindow {
 }
 
 /**
- * The one thing the host owns. FlareAI never sees the password — only the code
+ * The one thing the host owns. Polymux never sees the password — only the code
  * the provider hands back — and every decision about whether that code can be
  * trusted stays on this side, so no host can weaken the flow by implementing
  * the prompt differently.
@@ -246,10 +246,10 @@ async function awaitRedirect(
         const matched = incoming.searchParams.get("state") === expectedState;
         response.writeHead(200, {"content-type": "text/html"});
         response.end(
-          `<!doctype html><meta charset="utf-8"><title>FlareAI</title><body style="font:15px -apple-system,sans-serif;display:grid;place-items:center;height:100vh;margin:0"><p>${
+          `<!doctype html><meta charset="utf-8"><title>Polymux</title><body style="font:15px -apple-system,sans-serif;display:grid;place-items:center;height:100vh;margin:0"><p>${
             !failure && matched
               ? "Signed in. You can close this window."
-              : "Sign-in failed. Return to FlareAI and try again."
+              : "Sign-in failed. Return to Polymux and try again."
           }</p></body>`,
         );
         if (failure) finish(new Error(`${mailOAuthLabel(provider)} refused: ${failure}`));

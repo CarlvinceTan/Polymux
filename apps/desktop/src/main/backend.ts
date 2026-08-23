@@ -9,15 +9,15 @@ import path from "node:path";
 import {
   GoalManager,
   MemoryManager,
-  FlareAIAgent,
+  PolymuxAgent,
   SkillLoader,
   type AgentPrompts,
   type SkillLoaderOptions,
-} from "@flareai/agent";
-import {ComputerHistoryManager} from "@flareai/computer-history";
-import type {ActiveAgentRun} from "@flareai/core";
-import type {InferenceModel, InferenceService, ModelRef} from "@flareai/inference";
-import {PiInference} from "@flareai/inference/pi";
+} from "@polymux/agent";
+import {ComputerHistoryManager} from "@polymux/computer-history";
+import type {ActiveAgentRun} from "@polymux/core";
+import type {InferenceModel, InferenceService, ModelRef} from "@polymux/inference";
+import {PiInference} from "@polymux/inference/pi";
 import type {
   ChatDto,
   MailFolderDto,
@@ -50,7 +50,7 @@ import type {
   DefaultAppDto,
   EnqueueManagerJobRequest,
   ManagerSnapshotDto,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 import {createAppleMailSearcher} from "./hub/apple-mail.js";
 import {
   channels,
@@ -64,16 +64,16 @@ import {
   validateGoalCommand,
   validateSaveEmailAccount,
   validateStartRun,
-} from "@flareai/protocol";
-import {SqliteStorage} from "@flareai/storage/sqlite";
-import type {StoredMessage} from "@flareai/storage";
+} from "@polymux/protocol";
+import {SqliteStorage} from "@polymux/storage/sqlite";
+import type {StoredMessage} from "@polymux/storage";
 import {ProfileManager} from "./profiles.js";
 import {
   createNativeTools,
   importMcpServers,
   McpManager,
   ToolRegistry,
-} from "@flareai/tools";
+} from "@polymux/tools";
 import {builtinModels} from "@earendil-works/pi-ai/providers/all";
 import {createProvider, type Model, type MutableModels} from "@earendil-works/pi-ai";
 import {registerBunOAuthFlows} from "@earendil-works/pi-ai/bun-oauth";
@@ -164,6 +164,7 @@ import {
   skillInstructions,
 } from "./backend/host.js";
 import {speechModeAfterRoleChange} from "./backend/speech-mode.js";
+import {autoRolePicks} from "./backend/role-advisor.js";
 import {EncryptedCredentialStore, OpenCodeCredentialFallback} from "./system/credential-store.js";
 import {
   appVersion,
@@ -178,7 +179,7 @@ import {EXTENSION_INSTALL_URL, readExtensionStatus, readExternalPromptSnapshot} 
 import {ProtectedSkillGuard, combineHooks} from "./skills/protected.js";
 import {AgentSurfaceServer} from "./agent/surface.js";
 import {AgentSurfaceAdapter} from "./agent/surface-adapter.js";
-import {createFlareAIUiInspectionTool} from "./agent/ui-inspection.js";
+import {createPolymuxUiInspectionTool} from "./agent/ui-inspection.js";
 import {createCurrentLocationResolutionTool, reverseGeocodeCurrentLocation} from "./agent/location-resolution.js";
 import {refreshLocationForPrompt} from "./agent/prompt-location-refresh.js";
 import {createBrowserControlTools} from "./browser/control-tools.js";
@@ -226,7 +227,7 @@ import {WindowControlMonitor} from "./computer-use/monitor.js";
 import {AxReader, type AxWindow} from "./system/ax-reader.js";
 import {FileReloadWatcher} from "./system/file-reload-watcher.js";
 import {DirectoryWatcher} from "./system/directory-watcher.js";
-import {flareaiPath} from "./system/paths.js";
+import {polymuxPath} from "./system/paths.js";
 import {
   Notifier,
   notificationBody,
@@ -238,11 +239,11 @@ import {TaskBoard} from "./tasks/index.js";
 import {createTasksTool} from "./tasks/tools.js";
 import {Communications} from "./hub/index.js";
 import {HubCache} from "./hub/cache.js";
-import {Drive, createDriveTools} from "@flareai/drive";
+import {Drive, createDriveTools} from "@polymux/drive";
 import {electronConsent} from "./system/drive-consent.js";
 import {sessionScopedSnapshot} from "./workspace/snapshot.js";
 import {PreviewGrants} from "./workspace/preview.js";
-import type {Homeserver, MatrixRoom} from "@flareai/hub";
+import type {Homeserver, MatrixRoom} from "@polymux/hub";
 /**
  * How recent a message has to be to be worth announcing. Anything older is
  * history a bridge is catching up on rather than something just said.
@@ -253,7 +254,7 @@ import type {Homeserver, MatrixRoom} from "@flareai/hub";
 registerBunOAuthFlows();
 
 const MESSAGE_NOTIFICATION_MAX_AGE_MS = 60_000;
-/** Remote unlinking happens outside FlareAI, so it needs a quiet current-state check. */
+/** Remote unlinking happens outside Polymux, so it needs a quiet current-state check. */
 const COMMS_STATUS_INTERVAL_MS = 30_000;
 
 /** The part of BridgeHost the backend needs: what is installed, and what is held back. */
@@ -304,7 +305,7 @@ export interface DesktopBackendOptions {
    */
   coreSkills?: string[];
   /**
-   * FlareAI's own prompts, read from `resources/prompts`. Not skills:
+   * Polymux's own prompts, read from `resources/prompts`. Not skills:
    * they are never listed, never switchable, and never something the model
    * chooses to open — `main.md` is loaded into every run that can delegate,
    * and the rest belong to the judge, the compactor and the memory jobs.
@@ -344,7 +345,7 @@ export interface DesktopBackendOptions {
     homeserver: Homeserver;
     directory: string;
     bridges?: BridgeInventory;
-    /** Brings the in-process WeChat bridge up for FlareAI's own account. */
+    /** Brings the in-process WeChat bridge up for Polymux's own account. */
     startWeChat?: (owner: string) => Promise<boolean>;
     /** Takes it back down again, when WeChat is unlinked from the Hub tab. */
     stopWeChat?: () => Promise<void>;
@@ -421,14 +422,14 @@ ${JXA_ICON_TO_PNG}
 
 export class DesktopBackend {
   #window: BrowserWindow;
-  /** Every FlareAI renderer allowed to use the preload API. Detached
+  /** Every Polymux renderer allowed to use the preload API. Detached
    * workspace windows are trusted without becoming the embedded-browser
    * owner represented by `#window`. */
   readonly #trustedWindows = new Map<number, BrowserWindow>();
   readonly #ipcMain: IpcMain;
   readonly #storage: SqliteStorage;
   readonly #profiles: ProfileManager;
-  #agent?: FlareAIAgent;
+  #agent?: PolymuxAgent;
   #model?: ModelRef;
   /** Per-role model overrides, each with the reasoning level it was assigned
    * at. An absent role follows the main model. */
@@ -546,12 +547,12 @@ export class DesktopBackend {
     this.#agentPrompts = options.agentPrompts ?? {};
     this.#orchestrationExperiment = options.orchestrationExperiment === true;
     this.#suppressAutomaticUpdateChecks = options.suppressAutomaticUpdateChecks === true;
-    this.#storage = new SqliteStorage(path.join(options.dataDirectory, "flareai.sqlite"));
+    this.#storage = new SqliteStorage(path.join(options.dataDirectory, "polymux.sqlite"));
     this.#profiles = new ProfileManager(
       this.#storage,
       options.dataDirectory,
-      flareaiPath(),
-      flareaiPath("profiles"),
+      polymuxPath(),
+      polymuxPath("profiles"),
     );
     if (options.selectDefaultProfile) this.#profiles.selectDefault();
     const activeProfile = this.#profiles.snapshot().activeId;
@@ -598,7 +599,7 @@ export class DesktopBackend {
       // Outside the Electron data directory on purpose: the vault is plain
       // Markdown meant to be opened, searched, and edited by hand, and it is
       // the same layout Codex keeps at ~/.codex/memories.
-      directory: flareaiPath("memories"),
+      directory: polymuxPath("memories"),
       legacyStorage: this.#storage,
     });
     this.#axReader = new AxReader({
@@ -633,7 +634,7 @@ export class DesktopBackend {
     // switched on, or be narrowed by a capture policy written for it.
     this.#recording = new RecordingCapture({
       directory: path.join(options.dataDirectory, "recordings"),
-      // Recording is the one thing FlareAI does while the user is deliberately
+      // Recording is the one thing Polymux does while the user is deliberately
       // in another app, so its state and its controls belong in the menu bar
       // rather than behind the window they just left.
       indicator: new RecordingMenubar({
@@ -673,7 +674,7 @@ export class DesktopBackend {
       },
     });
     this.#windowControl = new WindowControlMonitor({
-      registryPath: flareaiPath("state", "window-control-leases.json"),
+      registryPath: polymuxPath("state", "window-control-leases.json"),
       windows: () => this.#windowSnapshot.windows,
       onChange: (apps) => void this.#computerUse.update(apps),
     });
@@ -749,14 +750,14 @@ export class DesktopBackend {
         // to a user who has looked away.
         this.#notifier.notify({
           kind: "agent-attention",
-          title: "FlareAI needs your answer",
+          title: "Polymux needs your answer",
           body: notificationBody(
             `${prompt.origin || "A page"} is asking for ${prompt.permission}.`,
           ),
         });
       },
     });
-    // FlareAI's own configuration lives in ~/.flareai next to its skills, not
+    // Polymux's own configuration lives in ~/.polymux next to its skills, not
     // buried in the platform's application-support directory: it is a file the
     // user is meant to be able to open, and a skill or script may be asked to.
     this.#mcpConfigPath = path.join(profileDirectory, "mcp.json");
@@ -850,7 +851,7 @@ export class DesktopBackend {
         if (!this.#closing && !this.#window.isDestroyed())
           this.#window.webContents.send(channels.commsChanged, status);
       },
-      // Parented, so the network's sign-in page opens as a sheet over FlareAI
+      // Parented, so the network's sign-in page opens as a sheet over Polymux
       // rather than as a window that can end up behind it.
       cookieLogin: (request) => runCookieLogin(request, this.#window),
       cancelCookieLogin,
@@ -999,10 +1000,10 @@ export class DesktopBackend {
     this.#registry.register(createWorkspaceTool(this.#workspaceRevealer()));
     this.#registry.register(createHubDraftTool(this.#workspaceRevealer()));
     if (this.#orchestrationExperiment)
-      this.#registry.register(createFlareAIUiInspectionTool({
+      this.#registry.register(createPolymuxUiInspectionTool({
         openSettings: async (mode) => {
           await this.#window.webContents.executeJavaScript(
-            `window.dispatchEvent(new CustomEvent("flareai:agent-inspect-settings", {detail: {mode: ${JSON.stringify(mode)}}}))`,
+            `window.dispatchEvent(new CustomEvent("polymux:agent-inspect-settings", {detail: {mode: ${JSON.stringify(mode)}}}))`,
           );
           await new Promise((resolve) => setTimeout(resolve, 350));
         },
@@ -1071,18 +1072,18 @@ export class DesktopBackend {
     // menu-bar pill (the ChatGPT-desktop-style Computer Use capsule), when
     // that presentation layer is installed.
     this.#agentSurface.onLeasesChanged = (leases) => {
-      if (leases.length === 0) void this.#surfaceMenubar.release("flareai-browser");
+      if (leases.length === 0) void this.#surfaceMenubar.release("polymux-browser");
       else
-        void this.#surfaceMenubar.acquireWindow("flareai-browser", {
+        void this.#surfaceMenubar.acquireWindow("polymux-browser", {
           appName: browserAppName(),
           bundleId: browserBundleId(),
           windowTitle: leases[0].tab.title || leases[0].tab.url,
-          sessionId: "flareai-browser",
+          sessionId: "polymux-browser",
         });
     };
     this.#roleOverrides = modelRolesPreference(this.#profilePreference("model-roles")?.value);
-    if (options.model && process.env.FLAREAI_MODEL_ALL_ROLES === "1") {
-      const reasoning = reasoningEffort(process.env.FLAREAI_REASONING, "low") ?? "low";
+    if (options.model && process.env.POLYMUX_MODEL_ALL_ROLES === "1") {
+      const reasoning = reasoningEffort(process.env.POLYMUX_REASONING, "low") ?? "low";
       for (const role of MODEL_ROLES) {
         if (role !== "main") this.#roleOverrides[role] = {...options.model, reasoning};
       }
@@ -1091,6 +1092,10 @@ export class DesktopBackend {
     if (options.model) this.#selectModel(options.model, false);
     else if (storedModel && this.#inference.getModel(storedModel))
       this.#selectModel(storedModel, false);
+    // Providers may have changed while the app was closed; selection above
+    // already built the agent with the effective roles, so this only settles
+    // the speech-mode consequence of the current automatic picks.
+    this.#reconcileAutoRoles(false);
   }
 
   /**
@@ -1193,7 +1198,7 @@ export class DesktopBackend {
     this.#embeddedBrowser.attachWindow(window);
   }
 
-  /** Grants a secondary FlareAI window access to the app IPC surface without
+  /** Grants a secondary Polymux window access to the app IPC surface without
    * moving browser views or changing which window agent reveals target. */
   trustWindow(window: BrowserWindow): void {
     this.#trustedWindows.set(window.webContents.id, window);
@@ -1271,7 +1276,12 @@ export class DesktopBackend {
       if (!next.advancedMode && previous.advancedMode !== next.advancedMode)
         this.#enableAllMemory();
       this.#storeGeneralSettings(next);
-      return next;
+      // Flipping advanced mode changes which layer answers for the roles, so
+      // the automatic consequences are re-derived under the new flag — which
+      // can itself store a speech-mode change, so the settings are re-read
+      // rather than answered from the pre-reconcile snapshot.
+      if (previous.advancedMode !== next.advancedMode) this.#reconcileAutoRoles();
+      return this.#generalSettings();
     });
     // Deliberately past every switch, including the focus check: this is sent
     // from Settings, where the window is certainly in front, and its whole job
@@ -1281,7 +1291,7 @@ export class DesktopBackend {
       if (!Notification.isSupported()) return "unsupported" as const;
       this.#presentNotification({
         kind: "agent-completed",
-        title: "FlareAI",
+        title: "Polymux",
         body: "System notifications are working.",
       });
       return "posted" as const;
@@ -2460,12 +2470,14 @@ export class DesktopBackend {
         const model = this.#inference.listModels(id)[0];
         if (model) this.#selectModel({provider: model.provider, id: model.id});
       }
+      this.#reconcileAutoRoles();
       return updated;
     });
     this.#handle(channels.providersRemoveApiKey, async (_event, providerId: string, keyId: string) => {
       const id = required(providerId, "provider");
       if (!this.#models.getProvider(id)) throw new Error(`Unknown provider: ${id}`);
       await this.#apiKeys.remove(id, required(keyId, "API key id"));
+      this.#reconcileAutoRoles();
       return this.#providerDto(id);
     });
     this.#handle(channels.providersConnectOAuth, async (event, providerId: string) => {
@@ -2501,10 +2513,9 @@ export class DesktopBackend {
       if (preferred) {
         const ref = {provider: preferred.provider, id: preferred.id, reasoning: "low" as const};
         this.#selectModel(ref);
-        this.#roleOverrides = {...this.#roleOverrides, task: ref};
-        this.#persistRoles();
         this.#setReasoningLevel("low");
       }
+      this.#reconcileAutoRoles();
       return updated;
     });
     this.#handle(channels.providersCancelOAuth, (_event, providerId: string) => {
@@ -2522,6 +2533,7 @@ export class DesktopBackend {
         Object.entries(this.#roleOverrides).filter(([, ref]) => ref?.provider !== id),
       );
       this.#persistRoles();
+      this.#reconcileAutoRoles(false);
       return this.#providerDto(id);
     });
     this.#handle(channels.providersCreateCustom, async (_event, value: unknown) => {
@@ -2537,6 +2549,7 @@ export class DesktopBackend {
       this.#registerCustomProvider(config);
       this.#persistCustomProviders();
       if (request.apiKey) await this.#apiKeys.add(id, request.apiKey);
+      this.#reconcileAutoRoles();
       return this.#providerDto(id);
     });
     this.#handle(channels.providersUpdateCustom, async (_event, value: unknown) => {
@@ -2555,6 +2568,7 @@ export class DesktopBackend {
         const current = config.models.some((model) => model.id === this.#model!.id);
         this.#selectModel({provider: request.id, id: current ? this.#model.id : config.models[0]!.id}, !current);
       }
+      this.#reconcileAutoRoles();
       return this.#providerDto(request.id);
     });
     this.#handle(channels.providersDiscoverModels, (_event, value: unknown) =>
@@ -2619,12 +2633,12 @@ export class DesktopBackend {
         throw error;
       },
     );
-    // ~/.flareai/mcp.json is the one place servers are read from, which is what
+    // ~/.polymux/mcp.json is the one place servers are read from, which is what
     // makes every one of them editable and removable in Settings. Another
     // agent's servers arrive through Auto discovery, as copies.
     const configs = importMcpServers(JSON.parse(source)).map((config) => ({
       ...config,
-      metadata: {...config.metadata, source: "flareai"},
+      metadata: {...config.metadata, source: "polymux"},
       enabled: this.#integrationEnabled("mcp-enabled", config.id, config.enabled !== false),
     }));
     const plugins = await this.#pluginMcpConfigs();
@@ -2690,7 +2704,7 @@ export class DesktopBackend {
   }
 
   /**
-   * FlareAI used to run Codex's servers straight out of ~/.codex/config.toml,
+   * Polymux used to run Codex's servers straight out of ~/.codex/config.toml,
    * which left them unremovable here. They are copied across once so nothing
    * a user already had disappears; after that the copy is theirs, and deleting
    * it stays deleted rather than being re-imported on the next reload.
@@ -2707,7 +2721,7 @@ export class DesktopBackend {
     if (codexConfigs.length)
       await this.#writeMcpConfig((servers) => {
         for (const config of codexConfigs) {
-          // A FlareAI entry of the same id wins: it was the deliberate local
+          // A Polymux entry of the same id wins: it was the deliberate local
           // override of Codex's, and stays that way.
           if (config.id in servers) continue;
           servers[config.id] = {...config.metadata, name: config.name ?? config.id};
@@ -2716,7 +2730,7 @@ export class DesktopBackend {
     this.#storage.setPreference("mcp-codex-migrated", true);
   }
 
-  async close(reason = "FlareAI is closing"): Promise<void> {
+  async close(reason = "Polymux is closing"): Promise<void> {
     this.#closing = true;
     if (this.#commsStatusTimer) clearInterval(this.#commsStatusTimer);
     stopUpdateChecks();
@@ -2761,7 +2775,7 @@ export class DesktopBackend {
     active: ActiveAgentRun,
   ): void {
     if (this.#closing) {
-      active.control.cancel(new Error("FlareAI is closing"));
+      active.control.cancel(new Error("Polymux is closing"));
       return;
     }
     this.#goalContinuations.set(conversationId, runId);
@@ -3006,7 +3020,7 @@ export class DesktopBackend {
     const conversation = run.conversationId
       ? this.#storage.getConversation(run.conversationId)
       : null;
-    const title = conversation?.title?.trim() || "FlareAI";
+    const title = conversation?.title?.trim() || "Polymux";
     if (run.status === "failed") {
       this.#notifier.notify({
         kind: "agent-completed",
@@ -3219,7 +3233,7 @@ export class DesktopBackend {
       // "not-determined" is the only status worth revisiting: a granted one is
       // done, and a refused one cannot be changed from here. Nothing is
       // remembered across a restart, so a grant reset outside the app is
-      // noticed the next time FlareAI runs.
+      // noticed the next time Polymux runs.
       if (status !== "not-determined") this.#permissionsSettled.add(kind);
     }
     const {kinds} = permissionsToRequest(
@@ -3255,8 +3269,8 @@ export class DesktopBackend {
       allowedTools: skill.allowedTools ?? [],
       permissions: declaredPermissions(skill),
       enabled: this.#integrationEnabled("skill-enabled", skill.name),
-      editable: skill.source === "flareai",
-      instructions: skill.source === "flareai" ? skillInstructions(readFileSync(skill.filePath, "utf8")) : undefined,
+      editable: skill.source === "polymux",
+      instructions: skill.source === "polymux" ? skillInstructions(readFileSync(skill.filePath, "utf8")) : undefined,
       displayName: skill.displayName,
       author: skill.author,
       category: skill.category,
@@ -3268,7 +3282,7 @@ export class DesktopBackend {
    * The installed plugins, each told what of its own the user already has
    * standalone. The comparison is made here rather than in the registry
    * because this is where both lists exist: the Skills tab's own skills, and
-   * the servers configured in ~/.flareai/mcp.json.
+   * the servers configured in ~/.polymux/mcp.json.
    */
   #pluginDtos(): PluginDto[] {
     const skills = new Map(
@@ -3277,7 +3291,7 @@ export class DesktopBackend {
     const mcpServers = new Map(
       [...this.#mcpConfigs.values()]
         .filter((config) => !this.#pluginMcpIds.has(config.id))
-        .map((config) => [config.id, "flareai"] as const),
+        .map((config) => [config.id, "polymux"] as const),
     );
     return this.#plugins.list({
       skills,
@@ -3311,7 +3325,7 @@ export class DesktopBackend {
   }
 
   /**
-   * Every server FlareAI runs is written here, so one editor covers adding a
+   * Every server Polymux runs is written here, so one editor covers adding a
    * custom server, adopting a discovered one and removing either. The file is
    * replaced by rename, so a crash mid-write leaves the previous list intact.
    */
@@ -3379,7 +3393,7 @@ export class DesktopBackend {
     const clash = this.#skills
       .load()
       .skills.find((candidate) => candidate.name === request.name);
-    if (clash && clash.source !== "flareai")
+    if (clash && clash.source !== "polymux")
       throw new Error(
         `${request.name} is a built-in skill and cannot be replaced. Save your version under a different name.`,
       );
@@ -3397,7 +3411,7 @@ export class DesktopBackend {
 
   async #removeCustomSkill(name: string): Promise<void> {
     const skill = this.#skills.load().skills.find((candidate) => candidate.name === name);
-    if (!skill || skill.source !== "flareai") throw new Error(`Skill is not removable: ${name}`);
+    if (!skill || skill.source !== "polymux") throw new Error(`Skill is not removable: ${name}`);
     const root = path.resolve(this.#customSkillDirectory);
     const destination = path.resolve(root, name);
     if (path.dirname(destination) !== root) throw new Error(`Invalid skill name: ${name}`);
@@ -3411,9 +3425,9 @@ export class DesktopBackend {
   }
 
   /**
-   * Copies a skill another agent already has into ~/.flareai/skills. A copy,
+   * Copies a skill another agent already has into ~/.polymux/skills. A copy,
    * not a link or a second sourced directory: the other agent stays free to
-   * change or remove its own copy, and the user can edit FlareAI's in place.
+   * change or remove its own copy, and the user can edit Polymux's in place.
    */
   async #adoptSkill(displayed: string): Promise<string> {
     const source = resolveDiscoveredSkill(displayed);
@@ -3473,7 +3487,7 @@ export class DesktopBackend {
       throw new Error("Choose one plugin folder with a .claude-plugin/plugin.json inside it");
     const rootName = manifests[0]!.relativePath.split("/")[0]!;
     const selected = files.filter((file) => file.relativePath.startsWith(`${rootName}/`));
-    const staging = await mkdtemp(path.join(tmpdir(), "flareai-plugin-upload-"));
+    const staging = await mkdtemp(path.join(tmpdir(), "polymux-plugin-upload-"));
     try {
       for (const file of selected) {
         const relative = file.relativePath.slice(rootName.length + 1);
@@ -3584,7 +3598,7 @@ export class DesktopBackend {
     if ((await requestSystemPermission(kind)) === "granted") return null;
     // macOS raises its dialog once. Past that the only thing that changes the
     // answer is the pane, so say where rather than asking again next turn.
-    return `FlareAI has not been given access to ${kind}. Allow it in System Settings → Privacy & Security.`;
+    return `Polymux has not been given access to ${kind}. Allow it in System Settings → Privacy & Security.`;
   }
 
   #permissionAvailable(kind: SystemPermissionKind): boolean {
@@ -3772,7 +3786,7 @@ export class DesktopBackend {
   }
 
   #buildAgent(ref: ModelRef): void {
-    this.#agent = new FlareAIAgent({
+    this.#agent = new PolymuxAgent({
       inference: this.#inference,
       storage: this.#storage,
       memory: this.#memory,
@@ -3783,19 +3797,19 @@ export class DesktopBackend {
       model: ref,
       // Both fall back to the main model inside the agent when undefined, so
       // an override that no longer resolves simply stops applying.
-      taskModel: this.#usableRole("task"),
-      judgeModel: this.#usableRole("judge"),
-      compactionModel: this.#usableRole("compaction"),
+      subagentModel: this.#effectiveRole("subagent"),
+      judgeModel: this.#effectiveRole("judge"),
+      compactionModel: this.#effectiveRole("compaction"),
       // The level chosen with a role's model applies wherever that model runs;
       // undefined leaves the run on the level it was started at.
-      taskReasoning: this.#usableRole("task")?.reasoning,
-      judgeReasoning: this.#usableRole("judge")?.reasoning,
-      compactionReasoning: this.#usableRole("compaction")?.reasoning,
+      subagentReasoning: this.#effectiveRole("subagent")?.reasoning,
+      judgeReasoning: this.#effectiveRole("judge")?.reasoning,
+      compactionReasoning: this.#effectiveRole("compaction")?.reasoning,
       skills: this.#agentSkillOptions,
       prompts: this.#agentPrompts,
       orchestrationExperiment: this.#orchestrationExperiment,
       preloadSingleOfficialSkill:
-        this.#orchestrationExperiment && process.env.FLAREAI_PRELOAD_OFFICIAL_SKILL_EXPERIMENT === "1",
+        this.#orchestrationExperiment && process.env.POLYMUX_PRELOAD_OFFICIAL_SKILL_EXPERIMENT === "1",
       // The guard runs first so a built-in skill stays read-only even when the
       // user's own hooks would have allowed the call.
       hooks: combineHooks(
@@ -3812,6 +3826,34 @@ export class DesktopBackend {
   #usableRole(role: ModelRole): RoleSelection | undefined {
     const ref = this.#roleOverrides[role];
     return ref && this.#inference.getModel(ref) ? ref : undefined;
+  }
+
+  /** What a role actually runs with: the stored override, or — while basic
+   * mode hides the roles UI — the automatic pick for the available models.
+   * The picks are computed, never persisted, so they track provider changes
+   * on their own and step aside the moment advanced mode returns control. */
+  #effectiveRole(role: ModelRole): RoleSelection | undefined {
+    const override = this.#usableRole(role);
+    if (override || role === "main") return override;
+    if (this.#generalSettings().advancedMode) return undefined;
+    return autoRolePicks(this.#inference.listModels(), this.#model)[role];
+  }
+
+  /** Re-derives what follows from the automatic picks after anything that can
+   * change them: provider changes, the main model, or the advanced-mode flag.
+   * Speech mode flips only when the effective speech assignment transitions,
+   * so a user who switched it off stays off until the assignment changes. */
+  #reconcileAutoRoles(rebuild = true): void {
+    const assigned = Boolean(this.#effectiveRole("speech"));
+    const marker = this.#profilePreference("speech-role-assigned")?.value === true;
+    if (assigned !== marker) {
+      this.#setProfilePreference("speech-role-assigned", assigned);
+      this.#setSpeechModeForRoleChange("speech", assigned);
+    }
+    // The agent snapshots its role models when built, so a change in the
+    // picks only reaches runs through a rebuild. Callers that already rebuilt
+    // (role persistence does) skip the second one.
+    if (rebuild && this.#model) this.#buildAgent(this.#model);
   }
 
   #modelRoles(): ModelRolesDto {
@@ -3837,12 +3879,12 @@ export class DesktopBackend {
           ? {...this.#model, reasoning: this.#generalSettings().reasoningLevel}
           : undefined,
       ),
-      task: assignment(this.#usableRole("task")),
-      judge: assignment(this.#usableRole("judge")),
-      compaction: assignment(this.#usableRole("compaction")),
-      speech: assignment(this.#usableRole("speech")),
-      image: assignment(this.#usableRole("image")),
-      video: assignment(this.#usableRole("video")),
+      subagent: assignment(this.#effectiveRole("subagent")),
+      judge: assignment(this.#effectiveRole("judge")),
+      compaction: assignment(this.#effectiveRole("compaction")),
+      speech: assignment(this.#effectiveRole("speech")),
+      image: assignment(this.#effectiveRole("image")),
+      video: assignment(this.#effectiveRole("video")),
     };
   }
 
@@ -3859,7 +3901,10 @@ export class DesktopBackend {
       throw new Error(`Unknown model: ${ref.provider}/${ref.id}`);
     this.#roleOverrides = { ...this.#roleOverrides, [role]: ref };
     this.#persistRoles();
+    // A deliberate assignment always turns speech mode on; the transition
+    // logic in the reconcile then only aligns its marker.
     this.#setSpeechModeForRoleChange(role, true);
+    this.#reconcileAutoRoles(false);
     return this.#modelRoles();
   }
 
@@ -3870,7 +3915,10 @@ export class DesktopBackend {
     const {[role]: _removed, ...rest} = this.#roleOverrides;
     this.#roleOverrides = rest;
     this.#persistRoles();
+    // Deliberately clearing speech switches speech mode off even when an
+    // automatic pick still stands; the reconcile only aligns its marker.
     this.#setSpeechModeForRoleChange(role, false);
+    this.#reconcileAutoRoles(false);
     return this.#modelRoles();
   }
 
@@ -3969,7 +4017,7 @@ export class DesktopBackend {
       auth: {apiKey: {
         name: `${config.name} API key`,
         resolve: async ({credential}) => ({
-          auth: {apiKey: credential?.key ?? "flareai-local"},
+          auth: {apiKey: credential?.key ?? "polymux-local"},
           source: credential?.key ? "Saved API key" : "Custom endpoint",
         }),
       }},
@@ -4030,6 +4078,7 @@ export class DesktopBackend {
       models: models.map((model) => ({id: model.id, name: model.name ?? model.id})),
     });
     this.#persistCustomProviders();
+    this.#reconcileAutoRoles();
     return this.#providerDto(runtime.id);
   }
 
@@ -4071,7 +4120,7 @@ export class DesktopBackend {
   /** Keep a stale model preference from making chat unusable after credentials
    * are removed or changed. The user's selection wins while it is usable;
    * otherwise the first configured provider becomes the active model. */
-  async #ensureConfiguredAgent(): Promise<FlareAIAgent> {
+  async #ensureConfiguredAgent(): Promise<PolymuxAgent> {
     if (this.#model) {
       const current = await this.#providerDto(this.#model.provider);
       if (current.configured) return this.#requireAgent();
@@ -4115,10 +4164,10 @@ export class DesktopBackend {
     this.#window.webContents.send(channels.managerChanged, this.#managerSnapshot());
   }
 
-  #requireAgent(): FlareAIAgent {
+  #requireAgent(): PolymuxAgent {
     if (!this.#agent)
       throw new Error(
-        "No inference model is configured. Set FLAREAI_MODEL to provider/model.",
+        "No inference model is configured. Set POLYMUX_MODEL to provider/model.",
       );
     return this.#agent;
   }
@@ -4141,8 +4190,8 @@ export class DesktopBackend {
         ? "codex"
         : config?.metadata?.source === "official"
           ? "official"
-          : "flareai",
-      editable: config?.metadata?.source === "flareai",
+          : "polymux",
+      editable: config?.metadata?.source === "polymux",
       enabled: this.#integrationEnabled("mcp-enabled", snapshot.id, config?.enabled !== false),
       transport: config?.transport ?? "stdio",
       ...(config?.transport === "stdio"

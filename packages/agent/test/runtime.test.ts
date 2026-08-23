@@ -9,14 +9,14 @@ import type {
   InferenceRequest,
   InferenceService,
   ModelRef,
-} from "@flareai/inference";
-import { SqliteStorage } from "@flareai/storage/sqlite";
-import { ToolRegistry } from "@flareai/tools";
+} from "@polymux/inference";
+import { SqliteStorage } from "@polymux/storage/sqlite";
+import { ToolRegistry } from "@polymux/tools";
 import {
   CompactionManager,
   createTaskTool,
   MemoryManager,
-  FlareAIAgent,
+  PolymuxAgent,
 } from "../src/index.js";
 import {recordGoalProgress} from "../src/goals/progress-receipts.js";
 
@@ -72,7 +72,7 @@ function answer(text: string): InferenceEvent {
 
 function testMemory(): MemoryManager {
   return new MemoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-memory-test-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-memory-test-")),
   });
 }
 
@@ -91,7 +91,7 @@ test("experimental runtime repairs visible deliberation before persistence", asy
       [answer("**Compiling verified events**\n\n**Refining recommendations**\nHere are the events.")],
       [answer("Here are the verified events.")],
     );
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -128,7 +128,7 @@ test("experimental runtime rejects an incidental exchange recommendation before 
     ].join("\n");
     const inference = new FakeInference();
     inference.responses.push([answer(rejected)], [answer("Friday Hacks #297 is the one strong match for your agent-evaluation work.")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -156,11 +156,11 @@ test("an unambiguous official workflow is preloaded without a skill-read round t
   const storage = new SqliteStorage(":memory:");
   try {
     storage.createConversation({id: "conversation", title: "Chat"});
-    const official = mkdtempSync(path.join(tmpdir(), "flareai-official-skill-"));
+    const official = mkdtempSync(path.join(tmpdir(), "polymux-official-skill-"));
     writeTestSkill(official, "browser-use", "Browse and research live websites.", "VERIFY-FIRST-PARTY-EVIDENCE");
     const inference = new FakeInference();
     inference.responses.push([answer("done")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -184,11 +184,11 @@ test("official skill preloading remains inert without its independent experiment
   const storage = new SqliteStorage(":memory:");
   try {
     storage.createConversation({id: "conversation", title: "Chat"});
-    const official = mkdtempSync(path.join(tmpdir(), "flareai-inert-official-skill-"));
+    const official = mkdtempSync(path.join(tmpdir(), "polymux-inert-official-skill-"));
     writeTestSkill(official, "browser-use", "Browse and research live websites.", "SHOULD-NOT-BE-INLINED");
     const inference = new FakeInference();
     inference.responses.push([answer("done")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference, storage, memory: testMemory(), tools: new ToolRegistry(), model,
       skills: {official: [official]}, compaction: {enabled: false}, orchestrationExperiment: true,
     });
@@ -204,14 +204,14 @@ test("multiple or personal matching skills remain catalogue entries instead of g
   const storage = new SqliteStorage(":memory:");
   try {
     storage.createConversation({id: "conversation", title: "Chat"});
-    const official = mkdtempSync(path.join(tmpdir(), "flareai-official-skills-"));
-    const personal = mkdtempSync(path.join(tmpdir(), "flareai-personal-skills-"));
+    const official = mkdtempSync(path.join(tmpdir(), "polymux-official-skills-"));
+    const personal = mkdtempSync(path.join(tmpdir(), "polymux-personal-skills-"));
     writeTestSkill(official, "browser-use", "Browse live websites.", "OFFICIAL-BROWSER");
     writeTestSkill(official, "chat-style", "Draft chat replies.", "OFFICIAL-CHAT");
     writeTestSkill(personal, "career-advice", "Career planning and interview coaching.", "PERSONAL-INSTRUCTIONS");
     const inference = new FakeInference();
     inference.responses.push([answer("done")], [answer("done")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -238,13 +238,13 @@ test("one official workflow can preload while matching personal skills stay in t
   const storage = new SqliteStorage(":memory:");
   try {
     storage.createConversation({id: "conversation", title: "Chat"});
-    const official = mkdtempSync(path.join(tmpdir(), "flareai-official-mixed-skills-"));
-    const personal = mkdtempSync(path.join(tmpdir(), "flareai-personal-mixed-skills-"));
+    const official = mkdtempSync(path.join(tmpdir(), "polymux-official-mixed-skills-"));
+    const personal = mkdtempSync(path.join(tmpdir(), "polymux-personal-mixed-skills-"));
     writeTestSkill(official, "browser-use", "Browse live websites and find places.", "OFFICIAL-BROWSER");
     writeTestSkill(personal, "local-preferences", "Online place search matching personal preferences.", "PERSONAL-PLACES");
     const inference = new FakeInference();
     inference.responses.push([answer("done")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference, storage, memory: testMemory(), tools: new ToolRegistry(), model,
       skills: {official: [official], personal}, compaction: {enabled: false},
       orchestrationExperiment: true, preloadSingleOfficialSkill: true,
@@ -264,7 +264,7 @@ test("treats slash-prefixed text as an ordinary chat message", async () => {
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("ordinary response")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -301,7 +301,7 @@ test("a recovered durable job reuses its stored user prompt", async () => {
     });
     const inference = new FakeInference();
     inference.responses.push([answer("recovered")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -356,7 +356,7 @@ test("persists assistant messages tagged with their run phase", async () => {
         return { content: "ok" };
       },
     });
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -393,7 +393,7 @@ test("persists replay checkpoints instead of every streamed text fragment", asyn
       { type: "reasoningDelta", index: 0, delta: "checking" },
       answer("Hello"),
     ]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -450,7 +450,7 @@ test("a stopped run keeps the work it had already done", async () => {
         return { content: "ok" };
       },
     });
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -488,7 +488,7 @@ test("creates a durable goal only from structured run metadata", async () => {
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("working")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -541,7 +541,7 @@ test("subagent context modes isolate prior conversation messages", async () => {
     });
     const inference = new FakeInference();
     inference.responses.push([answer("child result")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -584,7 +584,7 @@ test("scheduler-owned top-level runs use a frozen history prefix plus their own 
     });
     const inference = new FakeInference();
     inference.responses.push([answer("isolated result")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -617,7 +617,7 @@ test("scheduler execution scopes do not inherit transient direct-route state", a
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("events")], [answer("choice")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -651,7 +651,7 @@ test("persists attachments and restores their paths into later context", async (
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("received")], [answer("remembered")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -746,7 +746,7 @@ test("a long conversation is compacted before the model ever sees it", async () 
     const inference = new FakeInference();
     inference.responses.push([answer("compacted earlier context")]);
     inference.responses.push([answer("answer")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -805,7 +805,7 @@ test("the compaction watermark marks the real boundary in stored history", async
     const inference = new FakeInference();
     inference.responses.push([answer("compacted earlier context")]);
     inference.responses.push([answer("answer")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1051,7 +1051,7 @@ test("reopening the app continues a compacted conversation without re-summarizin
     const before = new WideInference();
     before.responses.push([answer("what came earlier")]);
     before.responses.push([answer("first answer")]);
-    const first = new FlareAIAgent({ ...options, inference: before });
+    const first = new PolymuxAgent({ ...options, inference: before });
     await first.start({
       conversationId: "conversation",
       text: "next question",
@@ -1065,7 +1065,7 @@ test("reopening the app continues a compacted conversation without re-summarizin
     // it knows about the earlier turns has to have come off disk.
     const after = new WideInference();
     after.responses.push([answer("second answer")]);
-    const second = new FlareAIAgent({ ...options, inference: after });
+    const second = new PolymuxAgent({ ...options, inference: after });
     await second.start({
       conversationId: "conversation",
       text: "and after that?",
@@ -1121,7 +1121,7 @@ test("the agent is given memory tools and its writes land in the vault", async (
       ],
       [answer("Saved.")],
     );
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory,
@@ -1164,7 +1164,7 @@ test("a completed run drives memory consolidation through the runtime", async ()
     inference.responses.push([
       answer("## User Profile\n\nConsolidated briefing."),
     ]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory,
@@ -1290,7 +1290,7 @@ test("the task tool reaches the model with its delegation guidance", async () =>
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("done")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1347,7 +1347,7 @@ test("experimental task schema offers explicit lossless capability routing", asy
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("done")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1409,7 +1409,7 @@ test("a routed experimental worker receives only its declared evidence boundary"
       name: "email_read",
       description: "Read email",
     };
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1509,7 +1509,7 @@ test("a single-source experimental research worker is forced to synthesize after
     }
     inference.responses.push([answer("Bounded synthesis")]);
     let reads = 0;
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1562,7 +1562,7 @@ test("an exact current-page explanation stays on the main agent with read-only b
       parameters: { type: "object", properties: {} },
       async execute() { return { content: "ok" }; },
     };
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1623,7 +1623,7 @@ test("the same deictic wording retains orchestration when the current surface is
       parameters: { type: "object", properties: {} },
       async execute() { return { content: "ok" }; },
     };
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1659,7 +1659,7 @@ test("a subagent is neither given the task tool nor told to delegate", async () 
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("done")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1731,7 +1731,7 @@ test("goal loop keeps running until the judge calls the objective done", async (
       [answer("here are the findings, goal met")],
       [answer('{"verdict":"done","reason":"Findings delivered."}')],
     );
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1785,7 +1785,7 @@ test("goal continuation receives progress receipts while an ordinary turn does n
     );
     const inference = new FakeInference();
     inference.responses.push([answer("continued")], [answer("ordinary")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1831,7 +1831,7 @@ test("goal loop pauses itself once the turn budget is spent", async () => {
         [answer("still working")],
         [answer('{"verdict":"continue","reason":"Not done."}')],
       );
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1868,7 +1868,7 @@ test("an unreadable verdict pauses the goal instead of looping blindly", async (
       [answer("did some work")],
       [answer("I think it is probably fine?")],
     );
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1898,7 +1898,7 @@ test("a paused goal is not driven and a user turn resets the budget", async () =
     storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push([answer("acknowledged")]);
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
@@ -1946,7 +1946,7 @@ test("what is on screen belongs to the run the user is talking to", async () => 
     };
     tools.register({ ...stub, name: "workspace_show", mainAgentOnly: true });
     tools.register({ ...stub, name: "hub_draft" });
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),

@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type {TaskCardDto, TaskCardStatus} from '@flareai/protocol';
+  import type {TaskCardDto, TaskCardStatus} from '@polymux/protocol';
 
   export type TaskCard = TaskCardDto;
 
@@ -274,18 +274,18 @@
 
   {#if contextMenuCard}
     {@const card = contextMenuCard}
-    <div class="flareai-dropdown-menu tasks-context-menu" role="menu" style="left: {contextMenuPos.x}px; top: {contextMenuPos.y}px;">
+    <div class="polymux-dropdown-menu tasks-context-menu" role="menu" style="left: {contextMenuPos.x}px; top: {contextMenuPos.y}px;">
       {#if card.status === 'done' && !card.reviewed}
-        <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { onMarkRead(card.id); closeContextMenu(); }}>
+        <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { onMarkRead(card.id); closeContextMenu(); }}>
           <Icon name="check" size={14}/><span>{$t('tasks.markReviewed')}</span>
         </button>
       {/if}
       {#if card.status === 'done'}
-        <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { onRecycleCard(card.id); closeContextMenu(); }}>
+        <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { onRecycleCard(card.id); closeContextMenu(); }}>
           <Icon name="reload" size={14}/><span>{$t('tasks.recycleCard')}</span>
         </button>
       {/if}
-      <button type="button" class="flareai-dropdown-item destructive" role="menuitem" onclick={() => { onDeleteCard(card.id); closeContextMenu(); }}>
+      <button type="button" class="polymux-dropdown-item destructive" role="menuitem" onclick={() => { onDeleteCard(card.id); closeContextMenu(); }}>
         <Icon name="trash" size={14}/><span>{$t('tasks.deleteCard')}</span>
       </button>
     </div>

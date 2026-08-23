@@ -237,7 +237,7 @@ export type AppPermissionKind =
   | "calendars"
   | "contacts"
   | "photos"
-  // Driving another application, which macOS records per (FlareAI, target app)
+  // Driving another application, which macOS records per (Polymux, target app)
   // pair rather than as one switch. It is presented as one row all the same:
   // the pane it opens is the one place any of those pairs can be changed.
   | "automation";
@@ -280,7 +280,7 @@ export interface McpServerDto {
   name: string;
   description?: string;
   /** "official" marks a server bundled with the app, like official skills. */
-  source: "official" | "flareai" | "codex";
+  source: "official" | "polymux" | "codex";
   editable: boolean;
   enabled: boolean;
   transport: "stdio" | "streamable-http";
@@ -320,8 +320,8 @@ export interface DiscoveredMcpDto {
   /** The scanned file, with the home directory shortened to "~". */
   path: string;
   /**
-   * "loaded" — FlareAI already runs a server with this id.
-   * "available" — it can be copied into ~/.flareai/mcp.json.
+   * "loaded" — Polymux already runs a server with this id.
+   * "available" — it can be copied into ~/.polymux/mcp.json.
    */
   state: "loaded" | "available";
 }
@@ -355,7 +355,7 @@ export interface McpRegistryPageDto {
 export interface SkillDto {
   name: string;
   description: string;
-  source: "official" | "codex" | "flareai" | "agents" | "bundled" | "configured";
+  source: "official" | "codex" | "polymux" | "agents" | "bundled" | "configured";
   filePath: string;
   disableModelInvocation: boolean;
   allowedTools: string[];
@@ -402,9 +402,9 @@ export interface DiscoveredSkillDto {
   /** The skill's own folder, shown so the user can see where it came from. */
   path: string;
   /**
-   * "loaded" — FlareAI already reads this skill, either because the directory
+   * "loaded" — Polymux already reads this skill, either because the directory
    * is one it sources or because a skill of that name is installed already.
-   * "available" — it can be copied into ~/.flareai/skills.
+   * "available" — it can be copied into ~/.polymux/skills.
    */
   state: "loaded" | "available";
 }
@@ -428,7 +428,7 @@ export interface PluginContributionsDto {
   skills: string[];
   /** MCP server ids, connected but deliberately absent from the MCP tab. */
   mcpServers: string[];
-  /** Counted rather than named: FlareAI has no surface for these yet. */
+  /** Counted rather than named: Polymux has no surface for these yet. */
   commands: number;
   agents: number;
   hooks: number;
@@ -441,7 +441,7 @@ export interface PluginContributionsDto {
 export interface PluginConflictDto {
   kind: "skill" | "mcp";
   name: string;
-  /** Where the standalone copy came from, e.g. "flareai" or "official". */
+  /** Where the standalone copy came from, e.g. "polymux" or "official". */
   existingSource: string;
 }
 export interface PluginDto {
@@ -481,7 +481,7 @@ export interface PluginMarketplaceDto {
   source: string;
   /** How many plugins its catalog lists, or 0 when it could not be read. */
   pluginCount: number;
-  /** True for the marketplace FlareAI ships with, which cannot be removed. */
+  /** True for the marketplace Polymux ships with, which cannot be removed. */
   builtin: boolean;
   error?: string;
 }
@@ -504,13 +504,14 @@ export interface ModelDto {
 }
 /**
  * The jobs a model can be assigned to. `main` is the model the agent answers
- * with; `task`, `judge` and `compaction` are overrides that fall back to `main`
+ * with; `subagent`, `judge` and `compaction` are overrides that fall back to `main`
  * when unset. `speech`, `image` and `video` are recorded preferences for the
- * generation surfaces — nothing calls them yet, so they only persist a choice.
+ * generation surfaces; a speech assignment also switches speech mode on. In
+ * basic mode unassigned roles are filled by the automatic picker.
  */
 export type ModelRole =
   | "main"
-  | "task"
+  | "subagent"
   | "judge"
   | "compaction"
   | "speech"
@@ -527,7 +528,7 @@ export interface ModelRoleAssignmentDto {
 }
 /**
  * What each role currently points at. `null` means nothing is assigned: for
- * `task` and `judge` that is "follow the main model", and for the generation
+ * `subagent` and `judge` that is "follow the main model", and for the generation
  * roles it is "not set". `main` is never null once a model has been chosen.
  */
 export type ModelRolesDto = Record<ModelRole, ModelRoleAssignmentDto | null>;
@@ -565,7 +566,7 @@ export interface ProviderDto {
   source: string | null;
   modelCount: number;
   custom: boolean;
-  /** A model server on this machine that FlareAI knows how to set up. Offered
+  /** A model server on this machine that Polymux knows how to set up. Offered
    * in the provider list before it exists, so it is found where every other
    * provider is found rather than behind a custom-endpoint form. */
   localRuntime?: boolean;
@@ -649,7 +650,7 @@ export interface ReferenceDto {
   metadata: JsonValue;
 }
 
-/** State of the FlareAI browser extension, which backs `browser_tabs`. */
+/** State of the Polymux browser extension, which backs `browser_tabs`. */
 export interface BrowserExtensionDto {
   /** True while a recent tab snapshot proves the extension is reporting. */
   installed: boolean;
@@ -943,7 +944,7 @@ export interface CommsHubDto {
   /** The homeserver itself, which the proxy does not expose the admin API of. */
   homeserverUrl: string;
   /**
-   * Whether FlareAI can create its own account on the hub, which is what lets
+   * Whether Polymux can create its own account on the hub, which is what lets
    * messaging be set up without the user entering anything.
    */
   canAutoConnect: boolean;
@@ -1109,14 +1110,14 @@ export interface CommsEmailAccountDto {
   isDefault: boolean;
   incoming: CommsEmailEndpointDto;
   outgoing: CommsEmailEndpointDto;
-  /** Whether FlareAI holds the password for this account in encrypted storage. */
+  /** Whether Polymux holds the password for this account in encrypted storage. */
   secretStored: boolean;
   status: "unknown" | "ok" | "error";
   error: string | null;
 }
 
 /** Known provider whose server settings the UI can fill in for the user. */
-/** A mail provider FlareAI can sign in to on the user's behalf. */
+/** A mail provider Polymux can sign in to on the user's behalf. */
 export type CommsMailProvider = "google" | "microsoft";
 
 export type CommsEmailPreset = "gmail" | "outlook" | "icloud" | "lark" | "fastmail" | "custom";
@@ -1295,7 +1296,7 @@ export interface ChatMessageDto {
   /** Media the message carries. Text messages have none. */
   attachments?: ChatAttachmentDto[];
   /**
-   * Set when the message holds something FlareAI cannot bring across — a
+   * Set when the message holds something Polymux cannot bring across — a
    * voice note on a network with no media API, a photo whose key the source
    * app never unlocked. Names the app that can show it, and how to open it,
    * so the placeholder is a way through rather than a dead end.
@@ -1504,7 +1505,7 @@ export interface DriveAccountDto {
 export interface DriveUsageDto {
   used: number | null;
   total: number | null;
-  /** Bytes stored inside the root FlareAI owns on this provider. */
+  /** Bytes stored inside the root Polymux owns on this provider. */
   appUsed: number | null;
 }
 
@@ -1719,7 +1720,7 @@ export interface TaskCardPatch {
   order?: number;
 }
 
-export interface FlareAIApi {
+export interface PolymuxApi {
   profiles: {
     list(): Promise<ProfilesDto>;
     create(name: string): Promise<ProfilesDto>;
@@ -1898,8 +1899,8 @@ export interface FlareAIApi {
      * machine, grouped by which one they belong to.
      */
     discover(): Promise<DiscoveredMcpGroupDto[]>;
-    /** Copies a discovered server into ~/.flareai/mcp.json, where it becomes
-     * an ordinary FlareAI entry: editable, and removable. */
+    /** Copies a discovered server into ~/.polymux/mcp.json, where it becomes
+     * an ordinary Polymux entry: editable, and removable. */
     adopt(groupId: string, serverId: string): Promise<McpServerDto[]>;
     subscribe(listener: (change: McpChangeDto) => void): () => void;
   };
@@ -1927,7 +1928,7 @@ export interface FlareAIApi {
      * machine, grouped by which one they belong to.
      */
     discover(): Promise<DiscoveredSkillGroupDto[]>;
-    /** Copies a discovered skill's folder into ~/.flareai/skills. */
+    /** Copies a discovered skill's folder into ~/.polymux/skills. */
     adopt(path: string): Promise<SkillDto[]>;
   };
   /**
@@ -1978,13 +1979,13 @@ export interface FlareAIApi {
     wake(platform: CommsPlatform): Promise<CommsStatusDto>;
     setHubUrl(baseUrl: string): Promise<CommsStatusDto>;
     /**
-     * Sets messaging up with no input from the user: FlareAI creates its own
+     * Sets messaging up with no input from the user: Polymux creates its own
      * account on the local hub and keeps the token in encrypted storage.
      */
     connect(): Promise<CommsStatusDto>;
     /**
      * Signs in as an existing account instead of provisioning one. Only needed
-     * for a hub FlareAI cannot provision into, such as a remote homeserver.
+     * for a hub Polymux cannot provision into, such as a remote homeserver.
      */
     signIn(userId: string, password: string): Promise<CommsStatusDto>;
     signOut(): Promise<CommsStatusDto>;
@@ -2247,7 +2248,7 @@ export interface FlareAIApi {
     setSaveOrder(order: DriveProviderId[]): Promise<DriveStatusDto>;
     /**
      * Points the local provider at the folder agent output is written to.
-     * Passing null opens a picker. Defaults to `~/Documents/FlareAI`.
+     * Passing null opens a picker. Defaults to `~/Documents/Polymux`.
      */
     setLocalRoot(path: string | null): Promise<DriveStatusDto>;
     /**

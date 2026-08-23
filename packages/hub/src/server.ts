@@ -6,20 +6,20 @@ import {HomeserverStore, type AppserviceRecord, type StoredEvent} from "./storag
 
 /**
  * The embedded Matrix homeserver: enough of the client-server and appservice
- * APIs for mautrix bridges (with end-to-bridge encryption off) and for FlareAI's
+ * APIs for mautrix bridges (with end-to-bridge encryption off) and for Polymux's
  * own hub client, and nothing more. It binds to loopback only, never
  * federates, and trusts its callers to the extent that a single-user local
  * server can: every token it has ever issued belongs to this machine.
  *
  * What is deliberately absent: /sync (bridges receive events as pushed
- * appservice transactions, and FlareAI reads over the paginated endpoints),
+ * appservice transactions, and Polymux reads over the paginated endpoints),
  * end-to-end encryption and all device/key endpoints, federation, and
  * power-level enforcement (the only writers are the user and bridges the user
  * installed).
  */
 
 export interface HomeserverOptions {
-  /** Domain in user and room ids, e.g. "flareai.local". Never resolved. */
+  /** Domain in user and room ids, e.g. "polymux.local". Never resolved. */
   serverName: string;
   /** Where the database and uploaded media live. */
   dataDirectory: string;
@@ -41,7 +41,7 @@ export interface HomeserverOptions {
     roomId: string;
     sender: string;
     /** The name that sender goes by, so the app never has to show a bridged
-     * `@wechat_e106…:flareai.local` to a person. Null when nobody has set one. */
+     * `@wechat_e106…:polymux.local` to a person. Null when nobody has set one. */
     senderName: string | null;
     type: string;
     /** When the event says it happened. History a bridge backfills on connect
@@ -225,7 +225,7 @@ export class Homeserver {
   createLocalUser(localpart: string): {userId: string; accessToken: string} {
     const userId = this.#fullUserId(localpart);
     this.#store.ensureUser(userId);
-    return {userId, accessToken: this.#store.createToken(userId, "flareai")};
+    return {userId, accessToken: this.#store.createToken(userId, "polymux")};
   }
 
   // --- HTTP plumbing ---
@@ -273,7 +273,7 @@ export class Homeserver {
     if (method === "POST" && rest[0] === "v3" && rest[1] === "login")
       return this.#json(response, 403, {
         errcode: "M_FORBIDDEN",
-        error: "Password login is not supported on the embedded hub; FlareAI holds its token directly.",
+        error: "Password login is not supported on the embedded hub; Polymux holds its token directly.",
       });
 
     const auth = this.#authenticate(request, query);
@@ -456,7 +456,7 @@ export class Homeserver {
        * some other server must not be able to write as you.
        *
        * Here it is the same person either way: this server is local, single
-       * user, never federates, and every appservice on it is one FlareAI
+       * user, never federates, and every appservice on it is one Polymux
        * installed and supervises. Without this a message the user sent in
        * WhatsApp or WeChat itself cannot be attributed to them at all — it has
        * to arrive as the person they were talking to, which is worse than
@@ -487,7 +487,7 @@ export class Homeserver {
     if (input.type !== "m.login.application_service")
       return this.#json(response, 403, {
         errcode: "M_FORBIDDEN",
-        error: "Only appservice registration is supported; FlareAI provisions its own account internally.",
+        error: "Only appservice registration is supported; Polymux provisions its own account internally.",
       });
     const appservice = token ? this.#store.appserviceByToken(token) : null;
     if (!appservice)
@@ -986,7 +986,7 @@ export class Homeserver {
    * streaming, no `since`, no long poll.
    *
    * Bridges here are pushed their events as appservice transactions and never
-   * call this. It exists for FlareAI's own chat list, which otherwise needs a
+   * call this. It exists for Polymux's own chat list, which otherwise needs a
    * name, a member list and a last message per room — four hundred round trips
    * for a couple of hundred rooms, to assemble what one query already knows.
    */
@@ -1521,7 +1521,7 @@ export class Homeserver {
   }
 
   async #deliver(appservice: AppserviceRecord, events: StoredEvent[]): Promise<boolean> {
-    const txnId = `flareai-${events[0].streamOrder}`;
+    const txnId = `polymux-${events[0].streamOrder}`;
     for (const delay of [...PUSH_RETRY_MS, null]) {
       if (this.#closed) return false;
       try {

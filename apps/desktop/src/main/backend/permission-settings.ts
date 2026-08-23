@@ -1,4 +1,4 @@
-import type {GeneralSettingsDto, SystemPermissionKind} from "@flareai/protocol";
+import type {GeneralSettingsDto, SystemPermissionKind} from "@polymux/protocol";
 
 export type PermissionSwitches = GeneralSettingsDto["permissions"];
 

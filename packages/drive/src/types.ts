@@ -5,7 +5,7 @@ import type {
   DriveProviderState,
   DriveUsageDto,
   JsonValue,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 
 /**
  * What a provider reports about itself when the drive probes it. The manager
@@ -85,7 +85,7 @@ export interface DriveAdapter {
    *
    * A path is the provider's own, and joining with a slash only happens to be
    * right for some of them: local files are absolute, so `report.md` in the
-   * root is `/Users/…/FlareAI/report.md` and not `report.md`. Anything that
+   * root is `/Users/…/Polymux/report.md` and not `report.md`. Anything that
    * has to name a destination *before* writing to it — the write lock, the
    * version a conditional write is checked against — asks here, or the two
    * halves end up filing the same file under two different names and neither

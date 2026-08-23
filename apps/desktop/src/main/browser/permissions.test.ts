@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { BrowserPermissionPromptDto } from "@flareai/protocol";
+import type { BrowserPermissionPromptDto } from "@polymux/protocol";
 import type { Session, WebContents } from "electron";
 import { SitePermissions, originOf } from "./permissions.js";
 
@@ -90,14 +90,14 @@ test("the app window keeps its own narrow grant", () => {
   const app = harness();
   // Exactly what the window had before permissions moved here: location for
   // the location setting, microphone for dictation, and nothing else.
-  assert.equal(app.request(app.appContents, "geolocation", "app://flareai"), true);
-  assert.equal(app.request(app.appContents, "notifications", "app://flareai"), false);
+  assert.equal(app.request(app.appContents, "geolocation", "app://polymux"), true);
+  assert.equal(app.request(app.appContents, "notifications", "app://polymux"), false);
   assert.equal(
-    app.check(app.appContents, "media", "app://flareai", { mediaType: "audio" }),
+    app.check(app.appContents, "media", "app://polymux", { mediaType: "audio" }),
     true,
   );
   assert.equal(
-    app.check(app.appContents, "media", "app://flareai", { mediaType: "video" }),
+    app.check(app.appContents, "media", "app://polymux", { mediaType: "video" }),
     false,
   );
 });

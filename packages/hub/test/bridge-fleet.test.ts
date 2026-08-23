@@ -14,7 +14,7 @@ import {
   repairConfig,
   withNetwork,
 } from "../src/bridges.js";
-import {COMMS_PLATFORMS} from "@flareai/protocol";
+import {COMMS_PLATFORMS} from "@polymux/protocol";
 
 /**
  * The fleet is the list of networks this host can run. These tests pin the
@@ -40,7 +40,7 @@ function fakeChild() {
 function fakeHomeserver() {
   return {
     baseUrl: "http://127.0.0.1:47664",
-    serverName: "flareai.local",
+    serverName: "polymux.local",
     registerAppservice: () => {},
     setProvisioningTarget: () => {},
   } as unknown as ConstructorParameters<typeof BridgeHost>[0]["homeserver"];
@@ -57,7 +57,7 @@ async function hostWith(
   binaries: string[],
   options: Partial<ConstructorParameters<typeof BridgeHost>[0]> = {},
 ) {
-  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   for (const binary of binaries) {
@@ -105,7 +105,7 @@ function linkedDatabase(file: string, logins: number): void {
   for (let index = 0; index < logins; index += 1)
     database
       .prepare("insert into user_login values (?, ?, ?, ?)")
-      .run("bridge", "@user:flareai.local", `login-${index}`, "Someone");
+      .run("bridge", "@user:polymux.local", `login-${index}`, "Someone");
   database.close();
 }
 
@@ -170,7 +170,7 @@ test("the inventory reports the whole fleet, installed or not", async () => {
 });
 
 test("a user-supplied binary fills a gap the bundle does not cover", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
   const bundled = path.join(root, "bundled");
   const userSupplied = path.join(root, "bin");
   await mkdir(bundled, {recursive: true});
@@ -198,7 +198,7 @@ test("a user-supplied binary fills a gap the bundle does not cover", async () =>
 });
 
 test("the bundled copy wins over a stale one in the user directory", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
   const bundled = path.join(root, "bundled");
   const userSupplied = path.join(root, "bin");
   await mkdir(bundled, {recursive: true});
@@ -293,8 +293,8 @@ test("a bridge is told to write the user's own messages as the user", async () =
   const seeded = await readFile(configPath, "utf8");
   const asToken = /^[ \t]+as_token:[ \t]*(\S+)/m.exec(seeded)?.[1];
   assert.ok(asToken);
-  assert.match(seeded, /^double_puppet:\n\s+servers:\n\s+flareai\.local: http:\/\/127\.0\.0\.1:47664/m);
-  assert.ok(seeded.includes(`flareai.local: as_token:${asToken}`));
+  assert.match(seeded, /^double_puppet:\n\s+servers:\n\s+polymux\.local: http:\/\/127\.0\.0\.1:47664/m);
+  assert.ok(seeded.includes(`polymux.local: as_token:${asToken}`));
 
   // And repaired in place for a config the binary has upgraded — which is
   // every install already out there, and cannot be fixed by using the app.
@@ -318,7 +318,7 @@ test("a bridge is told to write the user's own messages as the user", async () =
   await host.ensure("whatsapp");
 
   const repaired = await readFile(configPath, "utf8");
-  assert.ok(repaired.includes(`flareai.local: as_token:${asToken}`));
+  assert.ok(repaired.includes(`polymux.local: as_token:${asToken}`));
   assert.ok(!repaired.includes("example.com: as_token:foobar"));
   assert.match(repaired, /^encryption:/m, "and the sections after it survive");
 });
@@ -380,7 +380,7 @@ test("WhatsApp is not asked to export its whole history on every bridge login", 
   });
   const configPath = path.join(root, "bridges", "whatsapp", "config.yaml");
   await seedRegistration(root, "whatsapp");
-  // This is the aggressive config written by older FlareAI versions. Because
+  // This is the aggressive config written by older Polymux versions. Because
   // the request is made when the bridge logs in, it can repeatedly make the
   // phone announce that another device is syncing after desktop restarts.
   await writeFile(
@@ -447,18 +447,18 @@ test("a config with no network block yet gains one", () => {
 });
 
 test("a legacy bridge crash-looping on a modern seed is healed at startup", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   await writeFile(path.join(binariesDirectory, "mautrix-discord"), "", "utf8");
 
-  // What an earlier FlareAI seeded: the modern layout, which mautrix-discord
+  // What an earlier Polymux seeded: the modern layout, which mautrix-discord
   // rejects at startup — plus the registration minted alongside it.
   const home = path.join(root, "bridges", "discord");
   await mkdir(home, {recursive: true});
   await writeFile(
     path.join(home, "config.yaml"),
-    ["homeserver:", "    address: http://x", "    domain: flareai.local", "    software: standard", "database:", "    type: sqlite3-fk-wal", ""].join("\n"),
+    ["homeserver:", "    address: http://x", "    domain: polymux.local", "    software: standard", "database:", "    type: sqlite3-fk-wal", ""].join("\n"),
     "utf8",
   );
   await writeFile(
@@ -500,7 +500,7 @@ test("a legacy bridge crash-looping on a modern seed is healed at startup", asyn
 });
 
 test("a shared binary's config missing its network mode is repaired, not replaced", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   await writeFile(path.join(binariesDirectory, "mautrix-meta"), "", "utf8");
@@ -553,7 +553,7 @@ test("every platform in the fleet is one the protocol knows how to route", () =>
 });
 
 test("the seed config binds each instance to its own network and port", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   await writeFile(path.join(binariesDirectory, "mautrix-meta"), "", "utf8");
@@ -722,7 +722,7 @@ test(
   "iMessage names the grant that would unblock it, and only when one would",
   {skip: process.platform !== "darwin" ? "macOS-only grant" : false},
   async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "flareai-home-"));
+    const home = await mkdtemp(path.join(tmpdir(), "polymux-home-"));
     const database = path.join(home, "Library", "Messages", "chat.db");
 
     const absent = await messagesDatabaseAccess({home});
@@ -840,19 +840,19 @@ test("looking again leaves a bridge that burned its restart budget down", async 
  * minted new ones. The marker has to be something only the modern seed writes.
  */
 test("a healed legacy bridge is left alone on the next launch", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "flareai-fleet-"));
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   await writeFile(path.join(binariesDirectory, "mautrix-discord"), "", "utf8");
 
-  // The legacy layout FlareAI seeds — database under `appservice:` — after the
+  // The legacy layout Polymux seeds — database under `appservice:` — after the
   // binary has upgraded it in place and added its own `software:` default.
   const home = path.join(root, "bridges", "discord");
   await mkdir(home, {recursive: true});
   const seeded = [
     "homeserver:",
     "    address: http://x",
-    "    domain: flareai.local",
+    "    domain: polymux.local",
     "    software: standard",
     "appservice:",
     "    id: discord",

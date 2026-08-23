@@ -15,7 +15,7 @@ import type { InteractionEvent } from "../src/types.js";
 const roots: string[] = [];
 
 function recorder(options: { now?: () => Date } = {}) {
-  const root = mkdtempSync(path.join(tmpdir(), "flareai-recording-"));
+  const root = mkdtempSync(path.join(tmpdir(), "polymux-recording-"));
   roots.push(root);
   let ticks: Array<{ callback: () => void; delayMs: number }> = [];
   const instance = new ComputerHistoryRecorder({

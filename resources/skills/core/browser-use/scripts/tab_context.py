@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-CACHE_PATH = Path.home() / "Library" / "Application Support" / "flareai-tab-context" / "tabs.json"
+CACHE_PATH = Path.home() / "Library" / "Application Support" / "polymux-tab-context" / "tabs.json"
 STOP = {"about", "after", "again", "also", "because", "could", "from", "have", "into", "like", "more", "some", "that", "their", "then", "there", "these", "they", "this", "what", "when", "where", "which", "with", "would", "your"}
 
 

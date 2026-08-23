@@ -7,7 +7,7 @@ import {SECURE_STORAGE_UNAVAILABLE, quarantineUnreadable, type SecretCipher} fro
  * Adding a key would overwrite the file, so the pool refuses and says why.
  */
 export const API_KEYS_LOCKED =
-  "Your saved API keys cannot be read by this build of FlareAI, so they have been left untouched rather than overwritten. Start FlareAI normally and allow keychain access to use them.";
+  "Your saved API keys cannot be read by this build of Polymux, so they have been left untouched rather than overwritten. Start Polymux normally and allow keychain access to use them.";
 
 export interface ApiKeySummary {
   id: string;
@@ -173,7 +173,7 @@ export class EncryptedApiKeyPool {
       // is and the pool locks instead: reads report empty, writes refuse.
       this.#locked = true;
       console.warn(
-        `API keys at ${this.#filePath} could not be decrypted by this process (its OS encryption key does not match). The file has been left untouched — start FlareAI normally, and allow keychain access, to use the keys again.`,
+        `API keys at ${this.#filePath} could not be decrypted by this process (its OS encryption key does not match). The file has been left untouched — start Polymux normally, and allow keychain access, to use the keys again.`,
       );
       return {version: 1, providers: {}};
     }

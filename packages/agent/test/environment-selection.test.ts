@@ -19,7 +19,7 @@ const environment = {
   ],
   windows: [
     { app: "Notion", title: "Singapore plan", frontmost: true },
-    { app: "Zed", title: "flareAI", frontmost: false },
+    { app: "Zed", title: "polymux", frontmost: false },
   ],
 };
 
@@ -209,12 +209,12 @@ test("the page fast path requires a currently usable browser surface", () => {
   }), true);
   assert.equal(currentPageFastPathAvailable({
     ...environment,
-    windows: [{ app: "FlareAI", title: "FlareAI", frontmost: true }],
+    windows: [{ app: "Polymux", title: "Polymux", frontmost: true }],
   }), true);
   assert.equal(currentPageFastPathAvailable({
     ...environment,
     browserTabs: [],
-    windows: [{ app: "FlareAI", title: "FlareAI", frontmost: true }],
+    windows: [{ app: "Polymux", title: "Polymux", frontmost: true }],
   }), false);
   assert.equal(currentPageFastPathAvailable({
     ...environment,

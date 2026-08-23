@@ -42,7 +42,7 @@ async function withConfig(
   body: (accounts: EmailAccounts, storePath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
   results?: (call: Call) => CommandResult | undefined,
 ): Promise<void> {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-email-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-email-"));
   const storePath = path.join(directory, "email-accounts.json");
   if (source) await writeFile(storePath, source, "utf8");
   const harnessed = harness({results});
@@ -61,7 +61,7 @@ async function withConfig(
   }
 }
 
-/** An account file as FlareAI writes it, for tests that start from one. */
+/** An account file as Polymux writes it, for tests that start from one. */
 const EXISTING = JSON.stringify(
   {
     version: 1,
@@ -269,7 +269,7 @@ const OUTGOING: {from: string; to: string[]; cc: string[]; bcc: string[]; subjec
 };
 
 test("writes an attachment into the message", async () => {
-  const file = path.join(await mkdtemp(path.join(tmpdir(), "flareai-mime-")), "note.txt");
+  const file = path.join(await mkdtemp(path.join(tmpdir(), "polymux-mime-")), "note.txt");
   await writeFile(file, "the quick brown fox", "utf8");
   const raw = mimeMessage({
     ...OUTGOING,
@@ -348,7 +348,7 @@ async function withMailbox(
 ): Promise<void> {
   const server = await startImapServer({mailboxes, rejectLogin: options.rejectLogin});
   const smtp = await startSmtpServer();
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-imap-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-imap-"));
   const storePath = path.join(directory, "email-accounts.json");
   await writeFile(
     storePath,
@@ -659,7 +659,7 @@ test("two reads at once queue down the one connection", async () => {
 });
 
 /**
- * Adopting the accounts of an earlier FlareAI, which kept them in a Himalaya
+ * Adopting the accounts of an earlier Polymux, which kept them in a Himalaya
  * config and drove its CLI. Nothing does now, but a user who set their
  * mailboxes up then has them there and nowhere else.
  */
@@ -701,7 +701,7 @@ async function withLegacy(
   body: (accounts: EmailAccounts, storePath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
   options: {existing?: string} = {},
 ): Promise<void> {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-adopt-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-adopt-"));
   const storePath = path.join(directory, "email-accounts.json");
   const legacy = path.join(directory, "himalaya.toml");
   await writeFile(legacy, LEGACY, "utf8");
@@ -726,7 +726,7 @@ async function withLegacy(
   }
 }
 
-test("adopts the accounts of an earlier FlareAI, once", async () => {
+test("adopts the accounts of an earlier Polymux, once", async () => {
   await withLegacy(async (accounts, storePath) => {
     const listed = await accounts.list();
     assert.deepEqual(listed.map((item) => item.id).sort(), ["tokened", "work"]);
@@ -738,20 +738,20 @@ test("adopts the accounts of an earlier FlareAI, once", async () => {
     assert.equal(work?.outgoing.port, 587);
     assert.equal(work?.outgoing.encryption, "start-tls");
     assert.equal(listed.find((item) => item.id === "tokened")?.incoming.auth, "oauth2");
-    // Written as FlareAI's own from then on.
+    // Written as Polymux's own from then on.
     const saved = await stored(storePath);
     assert.equal(saved.accounts.length, 2);
   });
 });
 
-test("adoption carries the secrets across into FlareAI's own keychain entries", async () => {
+test("adoption carries the secrets across into Polymux's own keychain entries", async () => {
   await withLegacy(async (accounts, _storePath, harnessed) => {
     await accounts.list();
     const written = harnessed.calls
       .filter((call) => (call.input ?? "").startsWith("add-generic-password"))
       .map((call) => call.input ?? "");
     // The old config named a command per secret; each was run once and its
-    // output filed under FlareAI's own service name.
+    // output filed under Polymux's own service name.
     assert.ok(
       written.some((line) => line.includes(keychainService("work")) && line.includes("print-the-password-value")),
       "the password should be carried over",
@@ -775,7 +775,7 @@ test("adoption carries the secrets across into FlareAI's own keychain entries", 
   });
 });
 
-test("adoption never runs where FlareAI already has accounts", async () => {
+test("adoption never runs where Polymux already has accounts", async () => {
   await withLegacy(
     async (accounts, storePath) => {
       const listed = await accounts.list();
@@ -789,7 +789,7 @@ test("adoption never runs where FlareAI already has accounts", async () => {
 });
 
 test("adoption leaves the file it read exactly as it found it", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-adopt-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-adopt-"));
   const legacy = path.join(directory, "himalaya.toml");
   await writeFile(legacy, LEGACY, "utf8");
   const accounts = new EmailAccounts({
@@ -843,7 +843,7 @@ function fakeProvider(token: (body: string) => Response): typeof fetch {
 }
 
 test("an expired token is renewed against the provider, and the new one stored", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-oauth-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-oauth-"));
   const storePath = path.join(directory, "email-accounts.json");
   await writeFile(storePath, OAUTH, "utf8");
   const written: string[] = [];
@@ -889,7 +889,7 @@ test("an expired token is renewed against the provider, and the new one stored",
 });
 
 test("a refusal from the provider is reported in its own words", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-oauth-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-oauth-"));
   const storePath = path.join(directory, "email-accounts.json");
   await writeFile(storePath, OAUTH, "utf8");
   const accounts = new EmailAccounts({
@@ -995,8 +995,8 @@ test("an attachment cannot write outside the downloads directory", async () => {
 });
 
 /**
- * An account whose sign-in is held by something outside FlareAI. The old setup
- * pointed at a token helper that refreshes on its own; FlareAI was never given
+ * An account whose sign-in is held by something outside Polymux. The old setup
+ * pointed at a token helper that refreshes on its own; Polymux was never given
  * a refresh token for it, so the only thing that can produce a working token
  * is that same command.
  */
@@ -1032,7 +1032,7 @@ const HELPER = [
 async function withHelper(
   body: (accounts: EmailAccounts, storePath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
 ): Promise<void> {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-helper-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-helper-"));
   const storePath = path.join(directory, "email-accounts.json");
   const legacy = path.join(directory, "himalaya.toml");
   await writeFile(legacy, HELPER, "utf8");
@@ -1068,7 +1068,7 @@ test("an account renewed by a helper keeps the helper, not one reading of it", a
   });
 });
 
-test("a refresh token FlareAI cannot read is not counted as one", async () => {
+test("a refresh token Polymux cannot read is not counted as one", async () => {
   await withHelper(async (accounts, storePath) => {
     await accounts.list();
     const saved = await stored(storePath);
@@ -1083,9 +1083,9 @@ test("a refresh token FlareAI cannot read is not counted as one", async () => {
 });
 
 test("an empty client secret is not recorded as holding one", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-empty-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-empty-"));
   const legacy = path.join(directory, "himalaya.toml");
-  // Same account, but with a refresh token FlareAI can read, so it stays OAuth.
+  // Same account, but with a refresh token Polymux can read, so it stays OAuth.
   await writeFile(
     legacy,
     HELPER.replace(

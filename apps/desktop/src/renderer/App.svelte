@@ -1,7 +1,7 @@
 <script lang="ts">
   import {onDestroy, onMount, type ComponentProps} from 'svelte';
   import {readableError} from './lib/shared/errors';
-  import type {AppUpdateDto, ArtifactDto, BrowserExtensionDto, ConversationDto, DefaultAppDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, ManagerJobDto, ManagerSnapshotDto, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto, WorkspaceRevealDto} from '@flareai/protocol';
+  import type {AppUpdateDto, ArtifactDto, BrowserExtensionDto, ConversationDto, DefaultAppDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, ManagerJobDto, ManagerSnapshotDto, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto, WorkspaceRevealDto} from '@polymux/protocol';
   import TitleBar from './lib/features/chat/TitleBar.svelte';
   import ChatPane, {type ChatMessage} from './lib/features/chat/ChatPane.svelte';
   import TimelineRail, {TIMELINE_RAIL_MINIMUM} from './lib/features/chat/TimelineRail.svelte';
@@ -20,7 +20,7 @@
   import Tooltip from './lib/shared/components/Tooltip.svelte';
   import SettingsPage from './lib/features/settings/SettingsPage.svelte';
   import Onboarding from './lib/features/onboarding/Onboarding.svelte';
-  import {flareaiApi} from './lib/api/flareai';
+  import {polymuxApi} from './lib/api/polymux';
   import {applyTheme, startThemeSync} from './lib/shared/theme';
   import {applyLanguage, locale, startLanguageSync, t, translate, withLocale, type MessageKey} from './i18n';
   import {driveProviderName} from './i18n/names';
@@ -51,7 +51,7 @@
   type SummaryTask = {id: string; title: string; status: 'pending' | 'active' | 'completed' | 'failed'; parentRunId?: string; callId?: string; runId?: string; prompt?: string};
   type QueuedSend = {id: string; text: string; files: File[]; asGoal: boolean};
 
-  const api = flareaiApi();
+  const api = polymuxApi();
   const requestedWorkspaceView = (() => {
     const value = new URLSearchParams(window.location.search).get('workspaceView');
     return value === 'drive' || value === 'schedule' || value === 'hub' || value === 'tasks' ? value : null;
@@ -361,7 +361,7 @@
     unsubscribeFullscreen?.();
     unsubscribeReveal?.();
     unsubscribeManager?.();
-    if (agentInspectionListener) window.removeEventListener('flareai:agent-inspect-settings', agentInspectionListener);
+    if (agentInspectionListener) window.removeEventListener('polymux:agent-inspect-settings', agentInspectionListener);
     cancelAnimationFrame(chromeShiftFrame);
     cancelAnimationFrame(workspaceMotionFrame);
     clearTimeout(resourceRefreshTimer);
@@ -389,13 +389,13 @@
       const detail = (event as CustomEvent<{mode?: string}>).detail;
       if (detail?.mode === 'memory') openSettings('computer-history');
     };
-    window.addEventListener('flareai:agent-inspect-settings', agentInspectionListener);
+    window.addEventListener('polymux:agent-inspect-settings', agentInspectionListener);
     if (startupVisible) {
       // The cover waits for the mark's sequence to finish, which theme-boot
       // announces — it starts when the window reaches the screen, so waiting
       // for it rather than for a timer is what makes the whole of it visible.
       if (document.documentElement.dataset.splash === 'done') startupMinimumElapsed = true;
-      else document.addEventListener('flareai:splash-done', () => {
+      else document.addEventListener('polymux:splash-done', () => {
         startupMinimumElapsed = true;
         finishStartupWhenReady();
       }, {once: true});
@@ -1520,7 +1520,7 @@
   let remoteSingletonOwners: Partial<Record<SharedWorkspaceSingleton, string>> = {};
   const workspaceSingletonChannel = typeof BroadcastChannel === 'undefined'
     ? null
-    : new BroadcastChannel('flareai-workspace-singletons');
+    : new BroadcastChannel('polymux-workspace-singletons');
 
   function isSharedWorkspaceSingleton(kind: WorkspaceTabKind): kind is SharedWorkspaceSingleton {
     return kind === 'drive' || kind === 'schedule' || kind === 'hub' || kind === 'tasks';
@@ -1660,13 +1660,13 @@
    * place rather than an error.
    */
   /** Every source opens at its own root. Output used to be rooted per chat;
-   * it is one FlareAI folder now, which is that provider's root. */
+   * it is one Polymux folder now, which is that provider's root. */
   const driveRootPath = '';
 
   /**
    * The places the drive can open, in the order the switch shows them.
    *
-   * Everything at once leads, then the FlareAI folder the agent writes into,
+   * Everything at once leads, then the Polymux folder the agent writes into,
    * then this Mac; then every signed
    * in cloud account. An account's address trails its provider's name because
    * two Google Drives are otherwise the same entry twice.
@@ -2043,8 +2043,8 @@
    * default surface. A page already open in a workspace tab is just revealed.
    */
   /** A link in a message opens in the system browser: following one is leaving
-   * the conversation, not asking FlareAI to work on the page — the workspace
-   * browser stays for pages FlareAI itself is on. */
+   * the conversation, not asking Polymux to work on the page — the workspace
+   * browser stays for pages Polymux itself is on. */
   /** The install chip's visibility. Re-checked whenever Settings closes, since
    * that is when an install started from the Settings row would have landed. */
   let extensionStatus: BrowserExtensionDto | null = null;
@@ -2268,7 +2268,7 @@
 
   /**
    * What a view should load for a source the host named. A source that already
-   * carries a scheme is loadable as it stands — a bridged `flareai-media://`
+   * carries a scheme is loadable as it stands — a bridged `polymux-media://`
    * attachment, say — and one that does not is a path on disk, which the page
    * may only read once the host has granted it.
    */

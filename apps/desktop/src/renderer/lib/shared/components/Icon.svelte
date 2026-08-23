@@ -88,7 +88,7 @@
   {:else if name === 'attach'}
     <path d="m20.5 11.5-8.2 8.2a6 6 0 0 1-8.5-8.5l8.5-8.5a4 4 0 0 1 5.7 5.7l-8.5 8.5a2 2 0 0 1-2.9-2.8l7.8-7.8"/>
   {:else if name === 'options'}
-    <!-- The original FlareAI glyph, authored on a 20x20 grid; scaled 1.2 onto
+    <!-- The original Polymux glyph, authored on a 20x20 grid; scaled 1.2 onto
          this component's 24x24 viewBox. The transform scales the stroke too,
          so 1.5 here renders at the same weight it did originally. -->
     <path d="M4 5h8m3 0h1M4 10h1m3 0h8M4 15h5m3 0h4M12 3v4M5 8v4M9 13v4" transform="scale(1.2)" stroke-width="1.5"/>
@@ -134,7 +134,7 @@
   {:else if name === 'more'}
     <circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/>
   {:else if name === 'ellipsis'}
-    <!-- Proportioned like the old FlareAI solid ellipsis: chunkier dots set a
+    <!-- Proportioned like the old Polymux solid ellipsis: chunkier dots set a
          little tighter than a hairline three-dot glyph. -->
     <circle cx="5.4" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="18.6" cy="12" r="2" fill="currentColor" stroke="none"/>
   {:else if name === 'trash'}

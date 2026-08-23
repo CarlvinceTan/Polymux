@@ -1,7 +1,7 @@
 import type { WebContents } from "electron";
 
 /**
- * A @flareai/browser transport for a WebContentsView in the in-app
+ * A @polymux/browser transport for a WebContentsView in the in-app
  * Browser.
  *
  * Electron exposes the same Chrome DevTools Protocol the extension reaches
@@ -10,7 +10,7 @@ import type { WebContents } from "electron";
  * and network, dialogs, uploads — rather than the selector-only subset it had
  * when it drove pages through `executeJavaScript`.
  *
- * There is no debugging infobar here: this is FlareAI's own view, not a tab in
+ * There is no debugging infobar here: this is Polymux's own view, not a tab in
  * the user's browser, so attaching costs the user nothing.
  */
 export interface CdpTransport {

@@ -1,9 +1,9 @@
-// FlareAI browser extension — background service worker.
+// Polymux browser extension — background service worker.
 //
 // Three responsibilities:
-//  1. Tab context: stream the open-tab list to the FlareAI desktop agent
-//     through the com.flareai.tab_context native messaging host (tabs.json).
-//  2. Command execution: poll the loopback FlareAI feed, bind each lease to
+//  1. Tab context: stream the open-tab list to the Polymux desktop agent
+//     through the com.polymux.tab_context native messaging host (tabs.json).
+//  2. Command execution: poll the loopback Polymux feed, bind each lease to
 //     the exact tab it names, attach chrome.debugger to that tab, and run the
 //     agent's commands over CDP.
 //  3. Presentation relay: ask the leased tab's content script to animate the
@@ -25,7 +25,7 @@ import {
   stopSession,
 } from "./shared/index.js";
 
-const HOST = "com.flareai.tab_context";
+const HOST = "com.polymux.tab_context";
 const HEARTBEAT_MINUTES = 1;
 const DEBOUNCE_MS = 500;
 
@@ -97,14 +97,14 @@ chrome.tabs.onAttached.addListener(scheduleSnapshot);
 chrome.windows.onFocusChanged.addListener(scheduleSnapshot);
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create("flareai-tab-context-heartbeat", {
+  chrome.alarms.create("polymux-tab-context-heartbeat", {
     periodInMinutes: HEARTBEAT_MINUTES,
   });
   scheduleSnapshot();
 });
 chrome.runtime.onStartup.addListener(scheduleSnapshot);
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "flareai-tab-context-heartbeat") {
+  if (alarm.name === "polymux-tab-context-heartbeat") {
     scheduleSnapshot();
     void pump();
   }
@@ -204,7 +204,7 @@ async function moveCursor(leaseId, tabId, point) {
   try {
     await Promise.race([
       chrome.tabs.sendMessage(tabId, {
-        type: "flareai:move-cursor",
+        type: "polymux:move-cursor",
         leaseId,
         point,
       }),
@@ -366,7 +366,7 @@ async function pump() {
         if (!response.ok) throw new Error(String(response.status));
         snapshot = await response.json();
       } catch {
-        // FlareAI is not running. Drop every attachment so no tab is left
+        // Polymux is not running. Drop every attachment so no tab is left
         // wearing the debugging infobar for a session that no longer exists.
         await releaseAll();
         await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -399,7 +399,7 @@ async function releaseAll() {
 // The content script still reads the feed itself for presentation (badge and
 // cursor state), and cannot fetch 127.0.0.1 from an arbitrary origin.
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "flareai:cursor-arrived") {
+  if (message?.type === "polymux:cursor-arrived") {
     fetch(ARRIVAL_URL, {
       method: "POST",
       cache: "no-store",
@@ -414,10 +414,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "flareai:snapshot" || message?.type === "flareai:changes") {
+  if (message?.type === "polymux:snapshot" || message?.type === "polymux:changes") {
     const url = new URL(SNAPSHOT_URL);
     if (
-      message.type === "flareai:changes" &&
+      message.type === "polymux:changes" &&
       Number.isInteger(message.afterRevision)
     ) {
       url.searchParams.set("after", String(message.afterRevision));
@@ -429,7 +429,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     fetch(url.href, { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok)
-          throw new Error(`FlareAI agent surface returned ${response.status}`);
+          throw new Error(`Polymux agent surface returned ${response.status}`);
         sendResponse({ ok: true, snapshot: await response.json() });
       })
       .catch((error) => sendResponse({ ok: false, error: String(error) }));

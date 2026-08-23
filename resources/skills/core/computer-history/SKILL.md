@@ -1,14 +1,14 @@
 ---
 name: computer-history
-description: Use FlareAI's built-in ComputerHistory to identify the user's current screen, recent on-screen work, or what they actually did — app switches, clicks, keyboard shortcuts, scrolls — and to interpret ComputerHistory evidence. Use when the user explicitly asks what is visible, what they were doing, what they already tried, or about ComputerHistory; or when recent on-screen context cannot be identified safely from the request, workspace, or a narrower source. Do not invoke for ordinary ambiguity that a reasonable inference or concise question can resolve.
-author: FlareAI
+description: Use Polymux's built-in ComputerHistory to identify the user's current screen, recent on-screen work, or what they actually did — app switches, clicks, keyboard shortcuts, scrolls — and to interpret ComputerHistory evidence. Use when the user explicitly asks what is visible, what they were doing, what they already tried, or about ComputerHistory; or when recent on-screen context cannot be identified safely from the request, workspace, or a narrower source. Do not invoke for ordinary ambiguity that a reasonable inference or concise question can resolve.
+author: Polymux
 category: Memory
 ---
 
 # ComputerHistory
 
-Use FlareAI's built-in ComputerHistory recorder. Do not install, run, or maintain a
-second recorder. FlareAI captures accessibility text frames of the user's active
+Use Polymux's built-in ComputerHistory recorder. Do not install, run, or maintain a
+second recorder. Polymux captures accessibility text frames of the user's active
 window and a stream of what they did from inside the app, and owns capture, the
 timeline, and what the user allowed it to see; this skill owns careful
 retrieval, verification, and interpretation.
@@ -21,7 +21,7 @@ confidence is materially limited or the user asks for detail.
 
 1. Use ComputerHistory only when its directory is available locally. If it is not,
    mention this only when the user explicitly requested ComputerHistory.
-2. On macOS, run `"${FLAREAI_NODE:-node}" scripts/computerHistory_health.mjs` before a current-screen
+2. On macOS, run `"${POLYMUX_NODE:-node}" scripts/computerHistory_health.mjs` before a current-screen
    claim or whenever availability or freshness is uncertain. It reports whether
    ComputerHistory is enabled and how fresh the newest frame index and timeline are.
    Treat its `degraded` and `unavailable` results as evidence, not as
@@ -32,8 +32,8 @@ confidence is materially limited or the user asks for detail.
    the latest ComputerHistory evidence generally.
 4. Do not start, replace, or repair the built-in recorder from this skill. If
    it is unavailable, use a narrower authoritative source or tell the user to
-   enable ComputerHistory in FlareAI's settings or restart FlareAI. ComputerHistory capture
-   also requires macOS Accessibility permission for FlareAI.
+   enable ComputerHistory in Polymux's settings or restart Polymux. ComputerHistory capture
+   also requires macOS Accessibility permission for Polymux.
 
 ## Retrieval tools
 
@@ -54,7 +54,7 @@ how a small question turns into a large one.
 
 ## Evidence sources
 
-ComputerHistory lives under `~/Library/Application Support/FlareAI/computerHistory/` and
+ComputerHistory lives under `~/Library/Application Support/Polymux/computerHistory/` and
 holds two complementary streams:
 
 - **Frames:** timestamped accessibility text captures of the active window,
@@ -140,12 +140,12 @@ claims, decisions, and manual memory updates.
   context such as the app, project, and action.
 - This skill improves how ComputerHistory evidence is selected, verified, and used,
   but it cannot change the built-in recorder's capture schedule, capture
-  policy, timeline contents, or FlareAI's memory integration. Those are the
+  policy, timeline contents, or Polymux's memory integration. Those are the
   user's, in Settings → Memory.
 
 ## What outlives the raw capture
 
-Frames and events are pruned within about a day. Before that, FlareAI distils
+Frames and events are pruned within about a day. Before that, Polymux distils
 the window that is old enough to be finished with into ordinary durable
 memories, so what was learnt survives the capture it came from. Two
 consequences for retrieval:

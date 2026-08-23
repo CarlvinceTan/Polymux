@@ -67,7 +67,7 @@ export interface Harness {
   bridge: FakeBridge;
   /** The appservice token, i.e. how a bridge authenticates. */
   asToken: string;
-  /** A local human account with its own client token, i.e. how FlareAI does. */
+  /** A local human account with its own client token, i.e. how Polymux does. */
   user: {userId: string; accessToken: string};
   directory: string;
   cleanup: () => Promise<void>;
@@ -80,10 +80,10 @@ export interface Harness {
 export async function startHarness(
   options: Partial<HomeserverOptions> & {serverName?: string} = {},
 ): Promise<Harness> {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hs-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-hs-"));
   const bridge = await startFakeBridge();
   const hs = new Homeserver({
-    serverName: options.serverName ?? "flareai.test",
+    serverName: options.serverName ?? "polymux.test",
     dataDirectory: directory,
     ...options,
   });
@@ -95,9 +95,9 @@ export async function startHarness(
     hsToken: "hs-token-test",
     url: bridge.base,
     senderLocalpart: "whatsappbot",
-    userNamespaces: [`@whatsapp_.*:${(options.serverName ?? "flareai.test").replace(/\./g, "\\.")}`],
+    userNamespaces: [`@whatsapp_.*:${(options.serverName ?? "polymux.test").replace(/\./g, "\\.")}`],
   });
-  const user = hs.createLocalUser("flareai");
+  const user = hs.createLocalUser("polymux");
   return {
     hs,
     bridge,

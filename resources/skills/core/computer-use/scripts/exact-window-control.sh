@@ -130,7 +130,7 @@ else
   fi
 fi
 
-cache_root="${TMPDIR:-/tmp}/flareai-window-control"
+cache_root="${TMPDIR:-/tmp}/polymux-window-control"
 /bin/mkdir -p "$cache_root" || { print -r -- '{"status":"blocked_controller_cache"}'; exit 5; }
 source_digest="$(/usr/bin/shasum -a 256 "$source_file" | /usr/bin/awk '{print $1}')"
 binary="$cache_root/exact-window-controller-$source_digest"
@@ -163,8 +163,8 @@ if [[ "$first_use" == "true" ]]; then
   frontmost_token="$(/usr/bin/lsappinfo front 2>/dev/null)"
   frontmost_pid_before="$(/usr/bin/lsappinfo info -only pid "$frontmost_token" 2>/dev/null | /usr/bin/sed -n 's/^"pid"=//p')"
   if [[ -n "$frontmost_pid_before" ]]; then
-    recovery_log="$(/usr/bin/mktemp -t flareai-control-recovery)" || { print -r -- '{"status":"blocked_controller_cache"}'; exit 5; }
-    recovery_ready="$(/usr/bin/mktemp -t flareai-control-recovery-ready)" || { /bin/rm -f "$recovery_log"; print -r -- '{"status":"blocked_controller_cache"}'; exit 5; }
+    recovery_log="$(/usr/bin/mktemp -t polymux-control-recovery)" || { print -r -- '{"status":"blocked_controller_cache"}'; exit 5; }
+    recovery_ready="$(/usr/bin/mktemp -t polymux-control-recovery-ready)" || { /bin/rm -f "$recovery_log"; print -r -- '{"status":"blocked_controller_cache"}'; exit 5; }
     /bin/rm -f "$recovery_ready"
     cleanup_recovery() {
       [[ -n "${recovery_pid:-}" ]] && /bin/kill "$recovery_pid" 2>/dev/null || true

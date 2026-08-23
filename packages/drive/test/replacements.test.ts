@@ -37,7 +37,7 @@ async function localFile(): Promise<{
   file: string;
   cleanup(): Promise<void>;
 }> {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-replace-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-replace-"));
   const file = path.join(directory, "report.md");
   await writeFile(file, "updated");
   return {
@@ -49,9 +49,9 @@ async function localFile(): Promise<{
 test("Google Drive updates the existing same-name file", async () => {
   const { file, cleanup } = await localFile();
   const beforeFetch = globalThis.fetch;
-  const beforeId = process.env.FLAREAI_GOOGLE_DRIVE_CLIENT_ID;
+  const beforeId = process.env.POLYMUX_GOOGLE_DRIVE_CLIENT_ID;
   let upload: { url: string; method?: string } | null = null;
-  process.env.FLAREAI_GOOGLE_DRIVE_CLIENT_ID = "client";
+  process.env.POLYMUX_GOOGLE_DRIVE_CLIENT_ID = "client";
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
     if (url.includes("/drive/v3/files?q="))
@@ -76,17 +76,17 @@ test("Google Drive updates the existing same-name file", async () => {
     await cleanup();
     globalThis.fetch = beforeFetch;
     if (beforeId === undefined)
-      delete process.env.FLAREAI_GOOGLE_DRIVE_CLIENT_ID;
-    else process.env.FLAREAI_GOOGLE_DRIVE_CLIENT_ID = beforeId;
+      delete process.env.POLYMUX_GOOGLE_DRIVE_CLIENT_ID;
+    else process.env.POLYMUX_GOOGLE_DRIVE_CLIENT_ID = beforeId;
   }
 });
 
 test("Dropbox overwrites instead of autorenaming", async () => {
   const { file, cleanup } = await localFile();
   const beforeFetch = globalThis.fetch;
-  const beforeId = process.env.FLAREAI_DROPBOX_CLIENT_ID;
+  const beforeId = process.env.POLYMUX_DROPBOX_CLIENT_ID;
   let commit: Record<string, unknown> = {};
-  process.env.FLAREAI_DROPBOX_CLIENT_ID = "client";
+  process.env.POLYMUX_DROPBOX_CLIENT_ID = "client";
   globalThis.fetch = (async (_input, init) => {
     commit = JSON.parse(
       (init?.headers as Record<string, string>)["dropbox-api-arg"],
@@ -113,17 +113,17 @@ test("Dropbox overwrites instead of autorenaming", async () => {
   } finally {
     await cleanup();
     globalThis.fetch = beforeFetch;
-    if (beforeId === undefined) delete process.env.FLAREAI_DROPBOX_CLIENT_ID;
-    else process.env.FLAREAI_DROPBOX_CLIENT_ID = beforeId;
+    if (beforeId === undefined) delete process.env.POLYMUX_DROPBOX_CLIENT_ID;
+    else process.env.POLYMUX_DROPBOX_CLIENT_ID = beforeId;
   }
 });
 
 test("OneDrive requests replacement instead of a renamed copy", async () => {
   const { file, cleanup } = await localFile();
   const beforeFetch = globalThis.fetch;
-  const beforeId = process.env.FLAREAI_ONEDRIVE_CLIENT_ID;
+  const beforeId = process.env.POLYMUX_ONEDRIVE_CLIENT_ID;
   let seen = "";
-  process.env.FLAREAI_ONEDRIVE_CLIENT_ID = "client";
+  process.env.POLYMUX_ONEDRIVE_CLIENT_ID = "client";
   globalThis.fetch = (async (input) => {
     seen = String(input);
     return new Response(
@@ -141,7 +141,7 @@ test("OneDrive requests replacement instead of a renamed copy", async () => {
   } finally {
     await cleanup();
     globalThis.fetch = beforeFetch;
-    if (beforeId === undefined) delete process.env.FLAREAI_ONEDRIVE_CLIENT_ID;
-    else process.env.FLAREAI_ONEDRIVE_CLIENT_ID = beforeId;
+    if (beforeId === undefined) delete process.env.POLYMUX_ONEDRIVE_CLIENT_ID;
+    else process.env.POLYMUX_ONEDRIVE_CLIENT_ID = beforeId;
   }
 });

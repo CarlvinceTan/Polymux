@@ -11,17 +11,17 @@ import type {
   InferenceRequest,
   InferenceService,
   ModelRef,
-} from "@flareai/inference";
-import { SqliteStorage } from "@flareai/storage/sqlite";
-import { ToolRegistry } from "@flareai/tools";
-import { AgentRunControl } from "@flareai/core";
+} from "@polymux/inference";
+import { SqliteStorage } from "@polymux/storage/sqlite";
+import { ToolRegistry } from "@polymux/tools";
+import { AgentRunControl } from "@polymux/core";
 import {
   AGENT_PROMPT_NAMES,
   createWaitAllTasksTool,
   fillPrompt,
   loadAgentPrompts,
   MemoryManager,
-  FlareAIAgent,
+  PolymuxAgent,
 } from "../src/index.js";
 import {readGoalProgress, recordGoalProgress} from "../src/goals/progress-receipts.js";
 import { freshRetainedEntries, selectRetainedForPrompt, SubagentFleet } from "../src/subagents/fleet.js";
@@ -154,11 +154,11 @@ function testAgent(
   storage: SqliteStorage,
   options: { orchestrationExperiment?: boolean } = {},
 ) {
-  return new FlareAIAgent({
+  return new PolymuxAgent({
     inference,
     storage,
     memory: new MemoryManager({
-      directory: mkdtempSync(path.join(tmpdir(), "flareai-subagent-test-")),
+      directory: mkdtempSync(path.join(tmpdir(), "polymux-subagent-test-")),
     }),
     tools: new ToolRegistry(),
     model,
@@ -490,11 +490,11 @@ test("experimental fan-out waits for every task without an extra polling inferen
         () => answer("First and second combined"),
       );
 
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: new MemoryManager({
-        directory: mkdtempSync(path.join(tmpdir(), "flareai-fan-in-test-")),
+        directory: mkdtempSync(path.join(tmpdir(), "polymux-fan-in-test-")),
       }),
       tools: new ToolRegistry(),
       model,
@@ -924,11 +924,11 @@ test("a run that can delegate keeps the screen and gives away the work", async (
     parentRun(storage);
     const inference = new ScriptedInference();
     inference.on(() => true, () => answer("done"));
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: new MemoryManager({
-        directory: mkdtempSync(path.join(tmpdir(), "flareai-orchestrator-test-")),
+        directory: mkdtempSync(path.join(tmpdir(), "polymux-orchestrator-test-")),
       }),
       tools: workAndScreenTools(),
       model,
@@ -986,11 +986,11 @@ test("the experiment gives simple single-domain actions a direct tool fast path"
       parameters: { type: "object", properties: {} },
       async execute() { return { content: "page" }; },
     });
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: new MemoryManager({
-        directory: mkdtempSync(path.join(tmpdir(), "flareai-fast-path-test-")),
+        directory: mkdtempSync(path.join(tmpdir(), "polymux-fast-path-test-")),
       }),
       tools,
       model,
@@ -1066,11 +1066,11 @@ test("single-site discovery and its immediate follow-up keep browser work on the
         async execute() { return { content: "ok" }; },
       });
     }
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: new MemoryManager({
-        directory: mkdtempSync(path.join(tmpdir(), "flareai-discovery-fast-path-test-")),
+        directory: mkdtempSync(path.join(tmpdir(), "polymux-discovery-fast-path-test-")),
       }),
       tools,
       model,
@@ -1120,11 +1120,11 @@ test("the direct action fast path removes the dispatch and relay inferences", as
       parameters: { type: "object", properties: {} },
       async execute() { return { content: "Buy milk" }; },
     });
-    return new FlareAIAgent({
+    return new PolymuxAgent({
       inference,
       storage,
       memory: new MemoryManager({
-        directory: mkdtempSync(path.join(tmpdir(), "flareai-fast-turns-test-")),
+        directory: mkdtempSync(path.join(tmpdir(), "polymux-fast-turns-test-")),
       }),
       tools,
       model,
@@ -1189,11 +1189,11 @@ test("each run is given the brief for the job it is doing", async () => {
     });
     const inference = new ScriptedInference();
     inference.on(() => true, () => answer("done"));
-    const agent = new FlareAIAgent({
+    const agent = new PolymuxAgent({
       inference,
       storage,
       memory: new MemoryManager({
-        directory: mkdtempSync(path.join(tmpdir(), "flareai-orch-mem-")),
+        directory: mkdtempSync(path.join(tmpdir(), "polymux-orch-mem-")),
       }),
       tools: new ToolRegistry(),
       model,

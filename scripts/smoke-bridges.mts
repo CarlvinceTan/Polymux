@@ -15,14 +15,14 @@ import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
-import {Homeserver, BridgeHost} from "@flareai/hub";
+import {Homeserver, BridgeHost} from "@polymux/hub";
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const binaries = path.join(repo, "resources", "bridges");
-const directory = await mkdtemp(path.join(tmpdir(), "flareai-smoke-"));
+const directory = await mkdtemp(path.join(tmpdir(), "polymux-smoke-"));
 
 const homeserver = new Homeserver({
-  serverName: "flareai.local",
+  serverName: "polymux.local",
   dataDirectory: directory,
   port: 0,
 });
@@ -43,7 +43,7 @@ console.log(`homeserver up at ${homeserver.baseUrl}; ${started.length} bridges s
  * so the smoke test exercises its startup path too. It never dials out —
  * whoami is answered before any Telegram connection is attempted. */
 if (started.some((bridge) => bridge.name === "telegram")) {
-  const apiHash = ["flareai", "smoke", "test", "only"].join("-");
+  const apiHash = ["polymux", "smoke", "test", "only"].join("-");
   await bridges.configureNetwork("telegram", {api_id: "1", api_hash: apiHash});
 }
 

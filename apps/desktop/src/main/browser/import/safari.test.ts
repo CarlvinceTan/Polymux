@@ -291,7 +291,7 @@ test("mac absolute time converts, and non-times do not", () => {
 });
 
 test("reads a jar off disk, and reports one it cannot open", async () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-safari-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-safari-"));
   const file = path.join(directory, "Cookies.binarycookies");
   writeFileSync(file, jar([page([record({ url: ".disk.test", name: "a", value: "1" })])]));
 

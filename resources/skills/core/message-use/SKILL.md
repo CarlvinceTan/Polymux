@@ -1,7 +1,7 @@
 ---
 name: message-use
 description: Handle personal messages across connected accounts. Use when the platform is unspecified; a task compares or spans platforms or accounts; all new or unread messages are requested; or WhatsApp, Telegram, Discord, Messenger, Instagram, LinkedIn, iMessage, or WeChat context or sending is needed. Matrix is the default shared backend for verified connected accounts. For clearly scoped email, reminder, or wording-only work, use `email-use`, `apple-reminders`, or `chat-style` directly.
-author: FlareAI
+author: Polymux
 category: Communication
 ---
 
@@ -43,7 +43,7 @@ Never retry an ambiguous send until delivery evidence has been checked.
 - **Matrix unavailable or unsupported:** when Matrix lacks the exact room, account state, media feature, or required capability, immediately report the platform, account, missing capability, and observed blocker. Do not attempt a browser, desktop, phone, or platform-specific fallback unless the user explicitly asks for that alternate route.
 - **Email:** load `email-use` and let it choose the account and route.
 - **WeChat:** use the verified Matrix route for reading, searching, unread retrieval, and text sending. For an unsupported feature, report the limitation and wait for an explicit fallback request.
-- **Web surfaces:** load `browser-use` and use the FlareAI in-app Browser first.
+- **Web surfaces:** load `browser-use` and use the Polymux in-app Browser first.
 - **Reminders:** load `apple-reminders` for Apple Reminders; do not treat reminders as messages.
 
 ## Tiered context

@@ -1,10 +1,10 @@
-import type { Skill } from "@flareai/agent";
+import type { Skill } from "@polymux/agent";
 import type {
   AppPermissionKind,
   GeneralSettingsDto,
   SystemPermissionStatus,
-} from "@flareai/protocol";
-import { isAppPermissionKind } from "@flareai/protocol";
+} from "@polymux/protocol";
+import { isAppPermissionKind } from "@polymux/protocol";
 
 /**
  * The grants a skill declared in its own frontmatter, as `permissions:`.

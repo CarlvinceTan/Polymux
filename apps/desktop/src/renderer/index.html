@@ -2,17 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- `flareai-preview:` is named in img-src and media-src rather than made a
+    <!-- `polymux-preview:` is named in img-src and media-src rather than made a
          CSP-bypassing scheme: it serves whatever local file the host has granted,
          so it earns the two contexts that display one and nothing else — script-src
          stays closed to it. media-src has to be written out because it would
          otherwise fall back to default-src, which no scheme but 'self' satisfies. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: flareai-preview:; media-src 'self' data: blob: flareai-media: flareai-preview:; font-src 'self'; connect-src 'self' http: https: ws: wss:" />
-    <link rel="icon" type="image/svg+xml" href="/flareai.svg" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: polymux-preview:; media-src 'self' data: blob: polymux-media: polymux-preview:; font-src 'self'; connect-src 'self' http: https: ws: wss:" />
+    <link rel="icon" type="image/svg+xml" href="/polymux.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="stylesheet" href="/style.css" />
     <script src="/theme-boot.js"></script>
-    <title>FlareAI</title>
+    <title>Polymux</title>
   </head>
   <body>
     <div class="bg" aria-hidden="true"></div>
@@ -22,7 +22,7 @@
          The mark is inlined rather than linked for the same reason: a fetched
          image arrives after the wordmark and the lockup visibly reflows.
          App.svelte fades the splash out and removes it once startup finishes. -->
-    <div id="startup-splash" class="startup-splash" role="status" aria-label="Loading FlareAI">
+    <div id="startup-splash" class="startup-splash" role="status" aria-label="Loading Polymux">
       <div class="startup-brand">
         <svg class="startup-mark" viewBox="41.41 15.26 99.21 99.19" aria-hidden="true" focusable="false">
           <path d="M72.62,17a3.23,3.23,0,0,0-4.59.79l-2.46,3.62v.13l10.54,8.07,16.33,12,2.88-3.91a3.23,3.23,0,0,0-.69-4.52Z"/>
@@ -42,7 +42,7 @@
           <path d="M118.56,39.4l.76,5.3a3.23,3.23,0,0,0,3.2,2.78h1.61l6.19-8.08Z"/>
           <path d="M93.47,28.26l3.63,2.67a3.22,3.22,0,0,0,4.27-.4l.83-.89-1.37-10.35-8,8.53Z"/>
         </svg>
-        <span class="startup-word"><span class="startup-word-slide">FlareAI</span></span>
+        <span class="startup-word"><span class="startup-word-slide">Polymux</span></span>
       </div>
     </div>
     <script type="module" src="/main.ts"></script>

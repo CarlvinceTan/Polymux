@@ -6,9 +6,9 @@ runtime maintenance. Ordinary message retrieval uses the core skill and the
 
 ## What the backend is
 
-FlareAI runs its own Matrix homeserver and bridge fleet inside the app. There is
+Polymux runs its own Matrix homeserver and bridge fleet inside the app. There is
 no separately installed server, no MCP registration and no launch agent to
-inspect: the hub starts and stops with FlareAI, its data lives under FlareAI's
+inspect: the hub starts and stops with Polymux, its data lives under Polymux's
 own application-support directory, and it is reached through the `message_*` and
 `email_*` tools rather than over the network.
 

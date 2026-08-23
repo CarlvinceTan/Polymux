@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { installOfficialSkills, officialSkillsHome } from "./official.js";
 
 function bundle(): {source: string; home: string} {
-  const root = mkdtempSync(path.join(tmpdir(), "flareai-official-skills-"));
+  const root = mkdtempSync(path.join(tmpdir(), "polymux-official-skills-"));
   const source = path.join(root, "bundle");
   mkdirSync(path.join(source, "computer-use", "scripts"), {recursive: true});
   writeFileSync(path.join(source, "computer-use", "SKILL.md"), "---\nname: computer-use\n---\n");
@@ -16,11 +16,11 @@ function bundle(): {source: string; home: string} {
   return {source, home: path.join(root, "home")};
 }
 
-test("mirrors the bundled skills into ~/.flareai, executable bits intact", () => {
+test("mirrors the bundled skills into ~/.polymux, executable bits intact", () => {
   const {source, home} = bundle();
   const target = installOfficialSkills(source, home);
   assert.equal(target, officialSkillsHome(home));
-  assert.equal(target, path.join(home, ".flareai", "official-skills"));
+  assert.equal(target, path.join(home, ".polymux", "official-skills"));
   assert.match(readFileSync(path.join(target, "computer-use", "SKILL.md"), "utf8"), /name: computer-use/);
   assert.equal(statSync(path.join(target, "computer-use", "scripts", "run.sh")).mode & 0o111, 0o111);
 });

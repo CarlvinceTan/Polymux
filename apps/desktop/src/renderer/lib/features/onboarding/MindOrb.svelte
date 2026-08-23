@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * The voice orb, shown here purely as a picture of what FlareAI is.
+   * The voice orb, shown here purely as a picture of what Polymux is.
    *
    * This is the same visualiser the real voice mode uses — the WebGL orb, with
    * the canvas orb as a fallback — driven by a synthesised speech envelope

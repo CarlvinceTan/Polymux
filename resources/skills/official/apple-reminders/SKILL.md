@@ -1,9 +1,9 @@
 ---
 name: apple-reminders
-description: Manage Apple Reminders on macOS through FlareAI's own reminders tools. Use to list, create, complete, or delete reminders that should sync through the user's normal Apple account. Do not use for calendar events or FlareAI scheduled tasks.
+description: Manage Apple Reminders on macOS through Polymux's own reminders tools. Use to list, create, complete, or delete reminders that should sync through the user's normal Apple account. Do not use for calendar events or Polymux scheduled tasks.
 allowed-tools: reminders_lists reminders_list reminders_create reminders_complete reminders_delete
 permissions: reminders
-author: FlareAI
+author: Polymux
 category: Productivity
 ---
 
@@ -13,7 +13,7 @@ Use the `reminders_*` tools. They reach EventKit directly — the same store the
 Reminders app writes to — so anything created here syncs to the user's iPhone
 the way one added by hand does. Do not launch or automate Reminders.app, and do
 not shell out to a CLI: the tools are the supported path, and they are what
-lets FlareAI ask for Reminders access at the moment it is needed rather than
+lets Polymux ask for Reminders access at the moment it is needed rather than
 failing partway through.
 
 ## The tools

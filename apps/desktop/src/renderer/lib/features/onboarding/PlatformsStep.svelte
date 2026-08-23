@@ -4,10 +4,10 @@
     CommsLoginStepDto,
     CommsPlatform,
     CommsStatusDto,
-    FlareAIApi,
+    PolymuxApi,
     SystemPermissionKind,
-  } from '@flareai/protocol';
-  import {COMMS_EMAIL_PRESETS, permissionPrompts, presetForHost} from '@flareai/protocol';
+  } from '@polymux/protocol';
+  import {COMMS_EMAIL_PRESETS, permissionPrompts, presetForHost} from '@polymux/protocol';
   import {readableError} from '../../shared/errors';
   import {invalidateHubCache} from '../../shared/state/hubCache';
   import {qrSvgPath} from '../../shared/qr';
@@ -18,7 +18,7 @@
   import BackAction from './BackAction.svelte';
 
   interface Props {
-    api: FlareAIApi;
+    api: PolymuxApi;
     onDone: (reach: {messaging: string[]; mail: string[]}) => void;
     /**
      * False while this step is parked off screen. Every step of setup is
@@ -33,7 +33,7 @@
 
   /**
    * One seat on the arc. Messaging and mail are different machinery behind the
-   * scenes, but to the person setting FlareAI up they are the same decision —
+   * scenes, but to the person setting Polymux up they are the same decision —
    * "give it this account" — so they share one ring.
    */
   interface Seat {
@@ -302,7 +302,7 @@
       platform: bridge.platform,
     })),
     // One seat, because mail is the platform. Gmail, Lark and the rest are
-    // providers of it, not networks of their own: what FlareAI connects to is
+    // providers of it, not networks of their own: what Polymux connects to is
     // IMAP either way, so a seat each would put five logos on the ring for one
     // capability — and file a Lark-hosted mailbox under "Lark" as though the
     // messaging side had been linked, which it has not.
@@ -686,7 +686,7 @@
     // seat at the frame is still nearly solid — it just gives the ring some
     // depth, so the middle of the arc is the part being offered.
     const away = Math.min(1, Math.abs(top - centreY) / (winH / 2));
-    return `left:${centreX - seatRadius * Math.cos(radians)}px;top:${top}px;--fade:${(1 - EDGE_FADE * away).toFixed(3)}`;
+    return `--x:${(centreX - seatRadius * Math.cos(radians)).toFixed(2)}px;--y:${top.toFixed(2)}px;--fade:${(1 - EDGE_FADE * away).toFixed(3)}`;
   }
 
   /** Turn the ring, the short way round, until `key` sits dead centre. */
@@ -1167,15 +1167,17 @@
         onblur={hoverOff}
         onclick={() => choose(item)}
       >
-        <span class="pf-seat-mark">
-          {#if item.logo}
-            <img src={item.logo} data-logo={item.platform ?? item.key} alt="" aria-hidden="true" />
-          {:else}
-            {item.initial}
-          {/if}
+        <span class="pf-seat-inner">
+          <span class="pf-seat-mark">
+            {#if item.logo}
+              <img src={item.logo} data-logo={item.platform ?? item.key} alt="" aria-hidden="true" />
+            {:else}
+              {item.initial}
+            {/if}
+          </span>
+          <span class="pf-seat-label">{item.name}</span>
+          <span class="pf-seat-tick"><Icon name="check" size={9} strokeWidth={3} /></span>
         </span>
-        <span class="pf-seat-label">{item.name}</span>
-        <span class="pf-seat-tick"><Icon name="check" size={9} strokeWidth={3} /></span>
       </button>
     {/each}
   </div>
@@ -1305,7 +1307,7 @@
                       : $t('hub.unknown')}
               </span>
               <!-- A relay account is whoever the app on this Mac is signed in
-                   as. FlareAI did not make that login and cannot end it. -->
+                   as. Polymux did not make that login and cannot end it. -->
               {#if activeBridge?.api !== 'none'}
                 <button
                   type="button"
@@ -1670,9 +1672,16 @@
      would widen the button and push the logo off the ring. Position and
      come per-frame from the script, so no left/top transitions here: they
      would fight the animation loop. */
-  .pf-seat{position:absolute;width:var(--seat,44px);height:var(--seat,44px);transform:translate(-50%,-50%);display:block;padding:0;border:0;background:none;pointer-events:auto;cursor:pointer;opacity:var(--fade,1);
-    transition:transform .22s cubic-bezier(.22,1,.36,1)}
+  /* Position rides `transform` on its own compositor layer (translate3d), not
+     left/top: the ring drives it per frame, and sub-pixel left/top values force
+     a fresh paint every frame, which reads as the logos shimmering/jittering.
+     No transition here — a transition on the per-frame transform would smear
+     the drift; the scale that does want easing lives on `.pf-seat-inner`. */
+  .pf-seat{position:absolute;left:0;top:0;width:var(--seat,44px);height:var(--seat,44px);transform:translate3d(var(--x,0),var(--y,0),0) translate(-50%,-50%);display:block;padding:0;border:0;background:none;pointer-events:auto;cursor:pointer;opacity:var(--fade,1)}
   .pf-seat:disabled{cursor:default}
+  /* The disc + tick, sized to the seat, carrying the hover/open scale so its
+     easing never fights the ring's per-frame position. */
+  .pf-seat-inner{position:relative;display:block;width:100%;height:100%;transition:transform .22s cubic-bezier(.22,1,.36,1)}
   /* No entrance of their own: the seats are riding a wheel that is already
      rolling, and a stagger on top of that reads as two animations arguing. */
   .pf-seat-mark{display:grid;place-items:center;width:100%;height:100%;border-radius:50%;border:1px solid rgb(from var(--hub-ink) r g b / .16);background:var(--hub-fill);color:var(--hub-ink-soft);font-size:14.5px;font-weight:650;transition:border-color .22s,color .22s}
@@ -1703,12 +1712,12 @@
   .pf-seat.idle{opacity:calc(var(--fade,1) * .92)}
   .pf-seat.open{z-index:2}
   /* The chosen seat rides the middle of the arc, a size up from the rest. */
-  .pf-seat.open{transform:translate(-50%,-50%) scale(1.3)}
+  .pf-seat.open .pf-seat-inner{transform:scale(1.3)}
   /* Chosen reads as size and a darker ring — no fill, so the logo stays itself. */
   .pf-seat.open .pf-seat-mark{border-color:var(--hub-ink);background:var(--hub-fill)}
   .pf-seat:hover,.pf-seat:focus-visible{z-index:1}
-  .pf-seat:hover:not(:disabled),.pf-seat:focus-visible{transform:translate(-50%,-50%) scale(1.22)}
-  .pf-seat.open:hover,.pf-seat.open:focus-visible{transform:translate(-50%,-50%) scale(1.3)}
+  .pf-seat:hover:not(:disabled) .pf-seat-inner,.pf-seat:focus-visible .pf-seat-inner{transform:scale(1.22)}
+  .pf-seat.open:hover .pf-seat-inner,.pf-seat.open:focus-visible .pf-seat-inner{transform:scale(1.3)}
   .pf-seat:hover:not(:disabled) .pf-seat-mark,.pf-seat:focus-visible .pf-seat-mark{border-color:rgb(from var(--hub-ink) r g b / .45);color:var(--hub-ink)}
   .pf-seat:focus-visible{outline:none}
 
@@ -1843,9 +1852,9 @@
   .pf-code{margin:0;padding:11px 14px;border-radius:11px;background:rgb(from var(--hub-ink) r g b / .12);color:var(--hub-ink);font-size:21px;font-weight:600;letter-spacing:.18em;font-variant-numeric:tabular-nums}
 
   @media (prefers-reduced-motion:reduce){
-    .pf-seat,.pf-seat-mark{transition:opacity .18s ease}
+    .pf-seat-inner,.pf-seat-mark{transition:opacity .18s ease}
     .pf.live .pf-scene,.pf.live .pf-copy{animation:none}
-    .pf-seat:hover:not(:disabled),.pf-seat:focus-visible{transform:translate(-50%,-50%)}
+    .pf-seat:hover:not(:disabled) .pf-seat-inner,.pf-seat:focus-visible .pf-seat-inner{transform:none}
     /* The wait is still readable without the pulse: the note says so in words. */
     .pf-skeleton-qr,.pf-skeleton-lines span{animation:none}
   }

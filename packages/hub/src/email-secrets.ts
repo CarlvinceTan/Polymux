@@ -8,11 +8,11 @@ export type CommandRunner = (
 ) => Promise<{code: number; stdout: string; stderr: string}>;
 
 /**
- * The keychain service every FlareAI mailbox secret is filed under. Changing
+ * The keychain service every Polymux mailbox secret is filed under. Changing
  * it orphans every credential already stored, so it is a contract with the
  * user's keychain rather than a name.
  */
-export const EMAIL_KEYCHAIN_SERVICE = "FlareAI Email";
+export const EMAIL_KEYCHAIN_SERVICE = "Polymux Email";
 
 export function keychainService(accountId: string): string {
   return `${EMAIL_KEYCHAIN_SERVICE}: ${accountId}`;

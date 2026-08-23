@@ -19,7 +19,7 @@ async function withHome(
   body: (home: string) => Promise<void>,
   options: {key?: string; database?: boolean} = {},
 ): Promise<void> {
-  const home = await mkdtemp(path.join(tmpdir(), "flareai-heads-"));
+  const home = await mkdtemp(path.join(tmpdir(), "polymux-heads-"));
   const account = path.join(
     home,
     "Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_owner_1234",
@@ -59,6 +59,6 @@ test("a home with no key, or the wrong one, yields no pictures rather than faili
   await withHome(async (home) => assert.equal((await loadHeadImages({home})).size, 0), {
     database: false,
   });
-  const bare = await mkdtemp(path.join(tmpdir(), "flareai-heads-bare-"));
+  const bare = await mkdtemp(path.join(tmpdir(), "polymux-heads-bare-"));
   assert.equal((await loadHeadImages({home: bare})).size, 0);
 });

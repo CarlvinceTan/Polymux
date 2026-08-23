@@ -3,8 +3,8 @@ import type {
   AgentRunResult,
   ActiveAgentRun,
   AgentTool,
-} from "@flareai/core";
-import { AgentRunControl, AgentRunner, type ToolHooks } from "@flareai/core";
+} from "@polymux/core";
+import { AgentRunControl, AgentRunner, type ToolHooks } from "@polymux/core";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type {
@@ -12,9 +12,9 @@ import type {
   InferenceService,
   ModelRef,
   ReasoningEffort,
-} from "@flareai/inference";
-import type { JsonValue, Storage, StoredMessage } from "@flareai/storage";
-import { ToolRegistry } from "@flareai/tools";
+} from "@polymux/inference";
+import type { JsonValue, Storage, StoredMessage } from "@polymux/storage";
+import { ToolRegistry } from "@polymux/tools";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import { memorySummarySelectionForPrompt } from "./memory/prompt-summary.js";
 import {
@@ -76,7 +76,7 @@ import {
   type TaskToolGroup,
 } from "./subagents/tool-routing.js";
 import type { AgentPrompts } from "./prompts/agent-prompts.js";
-import type { AgentToolContext } from "@flareai/core";
+import type { AgentToolContext } from "@polymux/core";
 import { currentPageFastPathAvailable, selectEnvironmentForPrompt } from "./context/environment-selection.js";
 import {
   directFastPathGroup,
@@ -135,7 +135,7 @@ export interface EnvironmentContextProvider {
 export interface EnvironmentContext {
   /** When the desktop-window portion of this context was last verified. */
   windowsCapturedAt?: string;
-  /** When FlareAI read its own live tab registry for this turn. */
+  /** When Polymux read its own live tab registry for this turn. */
   browserTabsCapturedAt?: string;
   /** When the connected external-browser extension captured its snapshot. */
   externalBrowserCapturedAt?: string;
@@ -150,7 +150,7 @@ export interface EnvironmentContext {
     accuracy: number;
     updatedAt: string;
   };
-  /** Tabs open in FlareAI's own browser, newest last. */
+  /** Tabs open in Polymux's own browser, newest last. */
   browserTabs?: Array<{ tabId: string; url: string; title: string }>;
   /** Fresh tabs reported by the connected external-browser extension. */
   externalBrowserTabs?: Array<{
@@ -164,7 +164,7 @@ export interface EnvironmentContext {
   windows?: Array<{ app: string; title: string; frontmost: boolean }>;
 }
 
-export interface FlareAIAgentOptions {
+export interface PolymuxAgentOptions {
   /** Benchmark-only strategy switch; production behavior remains baseline. */
   orchestrationExperiment?: boolean;
   /** Independent benchmark flag for preloading one trusted official skill.
@@ -179,13 +179,13 @@ export interface FlareAIAgentOptions {
   tools: ToolRegistry;
   model: ModelRef;
   /** Model subagent (Task tool) runs use. Falls back to `model`. */
-  taskModel?: ModelRef;
+  subagentModel?: ModelRef;
   /** Model the goal judge reads with. Falls back to `model`. */
   judgeModel?: ModelRef;
   /** Model that writes compaction summaries. Falls back to `model`. */
   compactionModel?: ModelRef;
   /** Effort subagent runs think at. Falls back to the parent run's level. */
-  taskReasoning?: ReasoningEffort;
+  subagentReasoning?: ReasoningEffort;
   /** Effort the goal judge thinks at. Falls back to the run's level. */
   judgeReasoning?: ReasoningEffort;
   /** Effort the compaction summary is written at. Falls back to the run's. */
@@ -193,7 +193,7 @@ export interface FlareAIAgentOptions {
   reasoning?: ReasoningEffort;
   basePrompt?: string;
   /**
-   * FlareAI's own prompts, read from `resources/prompts` by the host.
+   * Polymux's own prompts, read from `resources/prompts` by the host.
    * `main` is loaded into every run that can delegate and `task` into every
    * delegated run; the rest belong to the internal agents and fall back
    * to the wording in this package.
@@ -238,7 +238,7 @@ export interface GoalContinuation {
   decision: GoalLoopDecision;
 }
 
-export interface StartFlareAIRunInput {
+export interface StartPolymuxRunInput {
   conversationId: string;
   text: string;
   userMessageId?: string;
@@ -293,11 +293,11 @@ export interface StartFlareAIRunInput {
   skillNames?: string[];
 }
 
-export class FlareAIAgent {
+export class PolymuxAgent {
   readonly goals: GoalManager;
   readonly goalLoop: GoalLoop;
   readonly memory: MemoryManager;
-  readonly #options: FlareAIAgentOptions;
+  readonly #options: PolymuxAgentOptions;
   readonly #compaction: CompactionManager;
   readonly #consolidator: MemoryConsolidator;
   readonly #distiller?: ComputerHistoryDistiller;
@@ -310,7 +310,7 @@ export class FlareAIAgent {
   /** The immediately preceding direct route, used only to keep a concise
    * follow-up on the same bounded capability surface. */
   readonly #lastDirectToolGroup = new Map<string, DirectToolGroup>();
-  constructor(options: FlareAIAgentOptions) {
+  constructor(options: PolymuxAgentOptions) {
     this.#options = options;
     this.goals = new GoalManager(options.storage);
     this.goalLoop = new GoalLoop(
@@ -344,7 +344,7 @@ export class FlareAIAgent {
     this.#skillLoader = new SkillLoader(options.skills);
   }
 
-  start(input: StartFlareAIRunInput): ActiveAgentRun {
+  start(input: StartPolymuxRunInput): ActiveAgentRun {
     const conversation = this.#options.storage.getConversation(
       input.conversationId,
     );
@@ -790,7 +790,7 @@ export class FlareAIAgent {
         await this.#driveGoal(input, result);
       })
       .catch((error: unknown) => {
-        console.error("FlareAI post-run bookkeeping failed", error);
+        console.error("Polymux post-run bookkeeping failed", error);
       });
     this.#goalWork.add(settled);
     void settled.finally(() => this.#goalWork.delete(settled));
@@ -843,7 +843,7 @@ export class FlareAIAgent {
    * subagent finishing says nothing about the conversation's goal.
    */
   async #driveGoal(
-    input: StartFlareAIRunInput,
+    input: StartPolymuxRunInput,
     result: AgentRunResult,
   ): Promise<void> {
     if (input.parentRunId || result.status !== "completed") return;
@@ -919,8 +919,8 @@ export class FlareAIAgent {
         parentRunId,
         budgetScope: `${parentRunId}:${entry.name}`,
         includeSubagents: false,
-        model: this.#options.taskModel,
-        reasoning: this.#options.taskReasoning,
+        model: this.#options.subagentModel,
+        reasoning: this.#options.subagentReasoning,
         signal: context.signal,
         contextMode: request.context,
         seedMessages: seed,
@@ -1007,7 +1007,7 @@ export class FlareAIAgent {
       metadata: { phase: event.phase },
     });
   }
-  #finish(input: StartFlareAIRunInput, result: AgentRunResult): void {
+  #finish(input: StartPolymuxRunInput, result: AgentRunResult): void {
     this.#options.storage.updateRun(result.runId, {
       status: result.status,
       error: result.error ? json(result.error) : null,
@@ -1086,7 +1086,7 @@ function readSkill(path: string): string {
 
 function selectContext<T>(
   messages: T[],
-  mode: NonNullable<StartFlareAIRunInput["contextMode"]>,
+  mode: NonNullable<StartPolymuxRunInput["contextMode"]>,
 ): T[] {
   if (mode === "none") return [];
   if (mode === "recent") return messages.slice(-8);

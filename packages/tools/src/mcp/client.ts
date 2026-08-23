@@ -7,7 +7,7 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { AgentTool, AgentToolResult } from "../types.js";
-import type { JsonValue } from "@flareai/inference";
+import type { JsonValue } from "@polymux/inference";
 import type { McpServerConfig } from "./config.js";
 
 export function exposedMcpToolName(serverId: string, toolName: string): string {
@@ -42,7 +42,7 @@ export class McpConnection {
   constructor(config: McpServerConfig) {
     this.config = config;
     this.#client = new Client(
-      { name: "flareai", version: "0.1.0" },
+      { name: "polymux", version: "0.1.0" },
       {
         capabilities: {},
         listChanged: {

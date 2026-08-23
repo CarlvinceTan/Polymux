@@ -6,7 +6,7 @@ import test from "node:test";
 import { GoogleDrive } from "../src/google-drive.js";
 import { Drive } from "../src/manager.js";
 import type { DriveConsentPrompt, DriveSecretStore } from "../src/types.js";
-import type { JsonValue } from "@flareai/protocol";
+import type { JsonValue } from "@polymux/protocol";
 
 /**
  * What a file is called once it reaches this Mac, and what a Google Doc even
@@ -39,7 +39,7 @@ const consent: DriveConsentPrompt = {
 
 function withClientId<T>(run: () => T): T {
   const before = process.env;
-  process.env = { ...before, FLAREAI_GOOGLE_DRIVE_CLIENT_ID: "id" };
+  process.env = { ...before, POLYMUX_GOOGLE_DRIVE_CLIENT_ID: "id" };
   try {
     return run();
   } finally {
@@ -89,7 +89,7 @@ function driveOver(root: string, downloads: string): Drive {
 }
 
 test("downloading the same file twice keeps both copies", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-naming-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-naming-"));
   try {
     const root = path.join(base, "root");
     const downloads = path.join(base, "downloads");
@@ -115,7 +115,7 @@ test("downloading the same file twice keeps both copies", async () => {
 });
 
 test("a Google Doc downloads as its exported form, with the right extension", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-export-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-export-"));
   try {
     const asked: string[] = [];
     await withFetch(
@@ -186,7 +186,7 @@ test("a Workspace document lists under the name it will have on disk", async () 
   );
 });
 
-test("two uploads starting together create one FlareAI folder, not two", async () => {
+test("two uploads starting together create one Polymux folder, not two", async () => {
   let searches = 0;
   let creates = 0;
   await withFetch(
@@ -202,7 +202,7 @@ test("two uploads starting together create one FlareAI folder, not two", async (
       return new Response(JSON.stringify({ files: [] }));
     },
     async () => {
-      const base = await mkdtemp(path.join(tmpdir(), "flareai-root-"));
+      const base = await mkdtemp(path.join(tmpdir(), "polymux-root-"));
       try {
         const file = path.join(base, "a.txt");
         await writeFile(file, "hello");

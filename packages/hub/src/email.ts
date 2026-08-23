@@ -19,7 +19,7 @@ import {
   type MailConsentPrompt,
   type MailOAuthProvider,
 } from "./email-oauth.js";
-import {presetForHost} from "@flareai/protocol";
+import {presetForHost} from "@polymux/protocol";
 import type {
   CommsEmailAccountDto,
   CommsEmailEndpointDto,
@@ -27,7 +27,7 @@ import type {
   MailFolderDto,
   MailMessageDto,
   SaveEmailAccountRequest,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 
 export {EMAIL_KEYCHAIN_SERVICE, keychainService} from "./email-secrets.js";
 export type {CommandRunner} from "./email-secrets.js";
@@ -51,14 +51,14 @@ export interface CommandResult {
 }
 
 export interface EmailAccountsOptions {
-  /** FlareAI's own account file, under its home: `state/email-accounts.json`. */
+  /** Polymux's own account file, under its home: `state/email-accounts.json`. */
   storePath: string;
   /** Runs `security`, and nothing else. */
   run: CommandRunner;
   /** Where `download` saves a message's attachments. */
   downloadsDir: string;
   /**
-   * A Himalaya config to adopt accounts from, once, if FlareAI has none of its
+   * A Himalaya config to adopt accounts from, once, if Polymux has none of its
    * own yet. Absent on a machine that never had one.
    */
   importFrom?: string;
@@ -74,10 +74,10 @@ export interface EmailAccountsOptions {
 }
 
 /**
- * The user's mailboxes: the accounts FlareAI keeps, the credentials it holds
+ * The user's mailboxes: the accounts Polymux keeps, the credentials it holds
  * for them in the OS keychain, and the live IMAP connections reading them.
  *
- * Everything about a mailbox is FlareAI's own. Reading is IMAP over a
+ * Everything about a mailbox is Polymux's own. Reading is IMAP over a
  * connection held open here, sending is SMTP, a draft is an IMAP APPEND, and
  * an expired OAuth token is renewed against the provider's token endpoint.
  * There is no CLI anywhere in it: a mailbox is reached in one round trip on a
@@ -136,7 +136,7 @@ export class EmailAccounts {
    * that the sign-in already answered — including the servers, which follow
    * from the provider. Signing in over an account that already exists replaces
    * how it authenticates and leaves everything else about it alone: that is
-   * how a mailbox held together by an outside token helper becomes one FlareAI
+   * how a mailbox held together by an outside token helper becomes one Polymux
    * can renew on its own.
    */
   async signIn(provider: MailOAuthProvider): Promise<string> {
@@ -660,8 +660,8 @@ export class EmailAccounts {
   }
 
   /**
-   * Adopts the accounts of an earlier FlareAI that kept them in a Himalaya
-   * config, once. Runs only where FlareAI has no accounts of its own, so it
+   * Adopts the accounts of an earlier Polymux that kept them in a Himalaya
+   * config, once. Runs only where Polymux has no accounts of its own, so it
    * cannot overwrite anything, and never touches the file it read.
    */
   #adopt(): Promise<void> {
@@ -754,7 +754,7 @@ function toEndpoint(
     port: endpoint.port,
     encryption: endpoint.encryption,
     login: endpoint.login,
-    // A command account is signed in by something outside FlareAI; saying
+    // A command account is signed in by something outside Polymux; saying
     // "password" would invite the user to change one that does not exist.
     auth: auth === "oauth2" ? "oauth2" : auth === "command" ? "command" : "password",
   };

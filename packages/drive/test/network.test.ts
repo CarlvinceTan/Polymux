@@ -14,7 +14,7 @@ import { NetworkDrive } from "../src/network.js";
  * because that is the one that can silently eat files.
  */
 async function share(): Promise<{root: string; base: string; clean: () => Promise<void>}> {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-network-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-network-"));
   const root = path.join(base, "Volumes", "Studio");
   await mkdir(root, {recursive: true});
   return {root, base, clean: () => rm(base, {recursive: true, force: true})};

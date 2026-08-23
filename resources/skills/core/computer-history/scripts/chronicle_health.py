@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Read-only health report for FlareAI's built-in ComputerHistory on macOS.
+"""Read-only health report for Polymux's built-in ComputerHistory on macOS.
 
-FlareAI records ComputerHistory inside the app itself: accessibility text frames are
+Polymux records ComputerHistory inside the app itself: accessibility text frames are
 saved as Markdown under the ComputerHistory directory, indexed per day, and
 summarised into timeline.md. There is no separate recorder process to check;
 health is the recorder setting plus evidence freshness on disk.
@@ -68,10 +68,10 @@ def recorder_state(root: Path) -> tuple[dict, list[str]]:
         state["records_private_browsing"] = value.get("recordPrivateBrowsing", True)
         state["interaction_events"] = value.get("interactionEvents", True)
     except (OSError, ValueError):
-        # Missing settings mean FlareAI is using its defaults; not an error.
+        # Missing settings mean Polymux is using its defaults; not an error.
         state["enabled"] = None
     if state["enabled"] is False:
-        errors.append("ComputerHistory is disabled in FlareAI settings")
+        errors.append("ComputerHistory is disabled in Polymux settings")
     return state, errors
 
 
@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--computerHistory-root",
         type=Path,
-        default=Path.home() / "Library/Application Support/FlareAI/computerHistory",
+        default=Path.home() / "Library/Application Support/Polymux/computerHistory",
     )
     parser.add_argument("--frame-fresh-seconds", type=float, default=120.0)
     parser.add_argument("--event-fresh-seconds", type=float, default=600.0)

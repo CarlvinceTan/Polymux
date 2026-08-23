@@ -5,7 +5,7 @@ import type {
   MailEnvelopeDto,
   MailFolderDto,
   MailMessageDto,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 
 /**
  * Live IMAP connections, one per account, held open for as long as the app is.

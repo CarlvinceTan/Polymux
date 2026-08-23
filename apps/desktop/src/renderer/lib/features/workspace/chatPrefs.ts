@@ -18,7 +18,7 @@ import {applyOrder} from './hubRailOrder';
  * Only ids are stored, so a chat that disappears leaves a stale id behind and a
  * stale id simply never matches.
  */
-const KEY = 'flareaiHubChatPrefs';
+const KEY = 'polymuxHubChatPrefs';
 
 export type ChatPrefs = {
   /** Chat ids lifted to the top of the list, in the order they were pinned. */

@@ -1,7 +1,7 @@
 ---
 name: computer-use
 description: Mandatory prerequisite for any action that may initialize, launch, open, reveal, focus, inspect, or control a local GUI app, directly or through another skill, plugin, script, or tool. Use it to protect or immediately restore the user's current focus, select preverified background routes, bind work to an exact window or tab, pair exact-window capture with accessibility control, prevent controller overlap, allow passive observation, and prepare user intervention without foregrounding the target. It does not apply to local file inspection, headless rendering, or screenshots produced without a GUI app.
-author: FlareAI
+author: Polymux
 category: System
 ---
 
@@ -98,7 +98,7 @@ existing-tab continuation or a temporary CAPTCHA or passkey fallback.
   selecting neighboring tabs. Sign-in is observed state, not an eligibility
   requirement: an exact signed-out match remains usable for a prepared login
   handoff. Ask when multiple matches remain ambiguous.
-- Route an ordinary public website directly to the FlareAI in-app Browser. For an
+- Route an ordinary public website directly to the Polymux in-app Browser. For an
   external attention handoff, run the preflight against the verified current
   default browser itself; never reuse a Chrome-specific preflight for another
   browser.
@@ -185,7 +185,7 @@ An app name alone never identifies the target.
   recency, list order, position, or an old screenshot.
 - If multiple windows still match, ask the user to distinguish them without
   changing either window.
-- Acquire the window or exact tab atomically with `"${FLAREAI_NODE:-node}" scripts/window-control-lease.mjs`, recording a caller-stable owner,
+- Acquire the window or exact tab atomically with `"${POLYMUX_NODE:-node}" scripts/window-control-lease.mjs`, recording a caller-stable owner,
   controller, app/window identity, scope, and tab identity when relevant.
   Window-scoped control conflicts with every controller in that window.
   Tab-scoped controllers may coexist only on different exact tabs and only when
@@ -296,12 +296,12 @@ An app name alone never identifies the target.
   a verification defect; record that defect and continue from the observed
   state. Otherwise the action remains failed and the route stops.
 
-### Fast FlareAI route
+### Fast Polymux route
 
-Reuse a verified running nonfrontmost exact FlareAI window when one exists. For
-a cold start, use only the compiled background launcher that passes FlareAI's
-background flag. The bundled registry pins `--flareai-background` to
-`com.flarehq.flareai`: first-use lookup must include it after `--args`, compiled
+Reuse a verified running nonfrontmost exact Polymux window when one exists. For
+a cold start, use only the compiled background launcher that passes Polymux's
+background flag. The bundled registry pins `--polymux-background` to
+`com.flarehq.polymux`: first-use lookup must include it after `--args`, compiled
 lookup rejects an older unflagged route, and a passing monitored first use
 remembers the exact flagged command. Then verify both nonfrontmost state and a usable accessibility
 tree before acquiring the lease. Use run/activity and Ledger records for
@@ -309,10 +309,10 @@ progress and timing, reserving exact-window inspection for UI facts. After a
 Space change, follow the stale-state rules above instead of relaunching or
 taking focus.
 
-A development Electron run can expose the FlareAI app name and native window
+A development Electron run can expose the Polymux app name and native window
 while its process or LaunchServices identity does not match the packaged
-`com.flarehq.flareai` tuple. When the fresh environment already contains a
-matching FlareAI window, list native windows first and resolve that exact PID,
+`com.flarehq.polymux` tuple. When the fresh environment already contains a
+matching Polymux window, list native windows first and resolve that exact PID,
 native window ID, title, and bounds. Do not run the packaged-app launch check,
 and never interpret its `app_running=false` result as proof that the development
 window is absent. Reuse the resolved window in place; if it is the exact
@@ -349,7 +349,7 @@ requested material result.
 
 The machine-readable registry holds exact route tuples verified on **this**
 machine. It belongs to the installation, not to the skill: it lives at
-`~/.flareai/state/window-control/app-control-registry.json`, is created empty on
+`~/.polymux/state/window-control/app-control-registry.json`, is created empty on
 first use and stamped with the current macOS build, and fills only as audits
 here enroll routes — a route pins an exact host build and app identity, so one
 recorded on another machine or before a macOS update could never be trusted
@@ -414,7 +414,7 @@ zsh scripts/prepare-background-app.sh \
   pre-arms containment and verifies the entire recorded route before launching.
   The recovered result is usable only when the prior app was restored and the
   target is currently nonfrontmost.
-- For a recorded FlareAI strategy experiment, add
+- For a recorded Polymux strategy experiment, add
   `--orchestration-experiment` to the compiled helper call. The helper appends
   the app-owned switch after the route's `--args`; it refuses the option on an
   uncompiled launcher so experiment setup cannot weaken launch containment.

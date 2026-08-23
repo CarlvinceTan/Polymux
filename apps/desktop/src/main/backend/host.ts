@@ -1,5 +1,5 @@
 import path from "node:path";
-import type {GeneralSettingsDto} from "@flareai/protocol";
+import type {GeneralSettingsDto} from "@polymux/protocol";
 import {app} from "electron";
 import {copyFileSync, existsSync, mkdirSync, readFileSync} from "node:fs";
 import {homedir} from "node:os";
@@ -51,7 +51,7 @@ export function tabContextBrowser(): { name: string; bundleId: string } | null {
           homedir(),
           "Library",
           "Application Support",
-          "flareai-tab-context",
+          "polymux-tab-context",
           "tabs.json",
         ),
         "utf8",

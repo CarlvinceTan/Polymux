@@ -1,10 +1,10 @@
-import type {CommsEmailPreset, DriveProviderId} from '@flareai/protocol';
+import type {CommsEmailPreset, DriveProviderId} from '@polymux/protocol';
 import {translate, type MessageKey} from './index';
 
 /**
  * Names and blurbs for things the backend describes in English.
  *
- * The main process labels a storage provider from `@flareai/protocol`, which is
+ * The main process labels a storage provider from `@polymux/protocol`, which is
  * shared with code that has no catalog to read — so the wording arrives in
  * English and is replaced here, where the interface language is known. Product
  * names are left exactly as they are: "Dropbox" is Dropbox in every language,

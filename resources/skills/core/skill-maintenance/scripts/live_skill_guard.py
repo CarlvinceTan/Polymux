@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pre-tool hook: block direct writes to live skills outside maintenance.
 
-Register in ~/.flareai/hooks.json:
+Register in ~/.polymux/hooks.json:
 
     {
       "version": 1,
@@ -9,7 +9,7 @@ Register in ~/.flareai/hooks.json:
         {
           "event": "pre-tool",
           "tools": ["write", "edit", "bash"],
-          "command": "python3 ~/.flareai/skills/skill-maintenance/scripts/live_skill_guard.py"
+          "command": "python3 ~/.polymux/skills/skill-maintenance/scripts/live_skill_guard.py"
         }
       ]
     }
@@ -17,7 +17,7 @@ Register in ~/.flareai/hooks.json:
 The hook receives {event, tool, arguments} on stdin. Exit 0 allows the call;
 a non-zero exit blocks it and stderr becomes the message shown to the model.
 Writes must go through skill_maintenance.py staging instead; candidate and
-review paths under ~/.flareai/skill-maintenance remain writable.
+review paths under ~/.polymux/skill-maintenance remain writable.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ import re
 import sys
 from pathlib import Path
 
-LIVE_ROOTS = [Path.home() / ".flareai" / "skills", Path.home() / ".agents" / "skills"]
-ALLOWED_ROOT = Path.home() / ".flareai" / "skill-maintenance"
+LIVE_ROOTS = [Path.home() / ".polymux" / "skills", Path.home() / ".agents" / "skills"]
+ALLOWED_ROOT = Path.home() / ".polymux" / "skill-maintenance"
 
 
 def normalized(raw: str) -> Path | None:
@@ -54,7 +54,7 @@ def candidate_paths(tool: str, arguments: dict) -> list[Path]:
     elif tool == "bash":
         command = str(arguments.get("command", ""))
         # Conservative: any literal live-root path in a shell command counts.
-        for match in re.findall(r"(?:~|/Users/[^\s'\"]+)/\.(?:flareai|agents)/skills[^\s'\"]*", command):
+        for match in re.findall(r"(?:~|/Users/[^\s'\"]+)/\.(?:polymux|agents)/skills[^\s'\"]*", command):
             found = normalized(match)
             if found:
                 paths.append(found)

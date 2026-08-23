@@ -72,7 +72,7 @@ async function startFakeService(): Promise<FakeService> {
 async function withAdapter(
   run: (service: FakeService, adapter: AgentSurfaceAdapter, stops: string[]) => Promise<void>,
 ): Promise<void> {
-  const dir = await mkdtemp(path.join(tmpdir(), "flareai-surface-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "polymux-surface-"));
   const tokenPath = path.join(dir, "token");
   await writeFile(tokenPath, "test-token\n", "utf8");
   const service = await startFakeService();
@@ -95,38 +95,38 @@ async function withAdapter(
 
 test("publishes a window lease with the Codex-compatible shape and token", async () => {
   await withAdapter(async (service, adapter) => {
-    const ok = await adapter.acquireWindow("flareai-browser", {
+    const ok = await adapter.acquireWindow("polymux-browser", {
       appName: "Google Chrome",
       bundleId: "com.google.Chrome",
       windowTitle: "Docs",
-      sessionId: "flareai-browser",
+      sessionId: "polymux-browser",
     });
     assert.equal(ok, true);
     assert.equal(service.puts.length, 1);
     const {id, body, auth} = service.puts[0];
-    assert.equal(id, "flareai-browser");
+    assert.equal(id, "polymux-browser");
     assert.equal(auth, "Bearer test-token");
     assert.equal(body.kind, "window");
     assert.equal(body.state, "active");
-    // The agent is Flare; the app it ships in is FlareAI. `id` is the stable
+    // The agent is Flare; the app it ships in is Polymux. `id` is the stable
     // identifier the service routes stop-requests by, so only `name` follows
     // the agent's own name.
-    assert.deepEqual(body.agent, {id: "flareai", name: "Flare"});
+    assert.deepEqual(body.agent, {id: "polymux", name: "Flare"});
     assert.deepEqual(body.app, {name: "Google Chrome", bundleId: "com.google.Chrome"});
-    assert.deepEqual(body.control, {sessionId: "flareai-browser"});
+    assert.deepEqual(body.control, {sessionId: "polymux-browser"});
   });
 });
 
 test("refreshes held leases and releases them", async () => {
   await withAdapter(async (service, adapter) => {
-    await adapter.acquireWindow("flareai-browser", {
+    await adapter.acquireWindow("polymux-browser", {
       appName: "Browser",
-      sessionId: "flareai-browser",
+      sessionId: "polymux-browser",
     });
     await new Promise((resolve) => setTimeout(resolve, 140));
     assert.ok(service.puts.length >= 2, "expected refresh PUTs");
-    await adapter.release("flareai-browser");
-    assert.deepEqual(service.deletes, ["flareai-browser"]);
+    await adapter.release("polymux-browser");
+    assert.deepEqual(service.deletes, ["polymux-browser"]);
     const count = service.puts.length;
     await new Promise((resolve) => setTimeout(resolve, 120));
     assert.equal(service.puts.length, count, "no refreshes after release");
@@ -135,20 +135,20 @@ test("refreshes held leases and releases them", async () => {
 
 test("stop requests from the pill are acknowledged and forwarded", async () => {
   await withAdapter(async (service, adapter, stops) => {
-    await adapter.acquireWindow("flareai-browser", {
+    await adapter.acquireWindow("polymux-browser", {
       appName: "Browser",
-      sessionId: "flareai-browser",
+      sessionId: "polymux-browser",
     });
     service.stopRequests.push({
-      id: "flareai-browser",
-      agentId: "flareai",
-      target: "flareai-browser",
+      id: "polymux-browser",
+      agentId: "polymux",
+      target: "polymux-browser",
       requestedAtMs: Date.now(),
       expiresAtMs: Date.now() + 60_000,
     });
     await new Promise((resolve) => setTimeout(resolve, 150));
-    assert.deepEqual(stops, ["flareai-browser"]);
-    assert.deepEqual(service.stopAcks, ["flareai-browser"]);
+    assert.deepEqual(stops, ["polymux-browser"]);
+    assert.deepEqual(service.stopAcks, ["polymux-browser"]);
   });
 });
 

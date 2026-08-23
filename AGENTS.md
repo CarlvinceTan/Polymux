@@ -1,4 +1,4 @@
-# Working on FlareAI
+# Working on Polymux
 
 Electron + Svelte 5 desktop app. **`CLAUDE.md` is a symlink to this file.**
 Don't edit this file unless explicitly told so.
@@ -14,10 +14,10 @@ npm run isolate
 **Never run `npm start`** — it owns the ordinary userData directory, its
 single-instance lock and hub port 47664, and a second run retires the user's session.
 
-`npm run isolate` is `npm start -- --isolated[=name]`. `FLAREAI_DEV_INSTANCE` keys its
-own userData dir (`…/FlareAI-side`), its own homeserver port (derived from the name),
-and its own `~/.flareai-<name>`. Vite picks a free port. Named isolates automatically
-use FlareAI's `--flareai-background` contract: the window is exposed for the
+`npm run isolate` is `npm start -- --isolated[=name]`. `POLYMUX_DEV_INSTANCE` keys its
+own userData dir (`…/Polymux-side`), its own homeserver port (derived from the name),
+and its own `~/.polymux-<name>`. Vite picks a free port. Named isolates automatically
+use Polymux's `--polymux-background` contract: the window is exposed for the
 renderer/accessibility backend but stays transparent, ignores mouse input, and is
 shown inactive. Use `--visible` only for a developer-run session the user explicitly
 wants to inspect; automation must not use it.
@@ -33,7 +33,7 @@ wants to inspect; automation must not use it.
 The other entry points exist, but **never reach for one on your own — only run these
 when the user explicitly names them:**
 
-| | uses `~/.flareai` | starts from nothing |
+| | uses `~/.polymux` | starts from nothing |
 | --- | --- | --- |
 | ordinary | `npm start` | `npm run new:start` |
 | onboarding | `npm run onboarding` | `npm run new:onboarding` |
@@ -42,7 +42,7 @@ The left column is the app as the user has it — one at a time, and a second ru
 retires the first. The right column is `--new`: an instance named `new<N>`, the
 first number no run holds and no directory is left over from, so several can run
 at once and none of them collides with the user's. It is discarded on exit —
-both `…/FlareAI-new<N>` and `~/.flareai-new<N>` — which is also what keeps the
+both `…/Polymux-new<N>` and `~/.polymux-new<N>` — which is also what keeps the
 numbers from creeping up. Because it is discarded, state never survives the run —
 which is the other reason `isolate` is the default.
 
@@ -55,13 +55,13 @@ variables to `.env.example` too.
 Load `window-control` before touching the app. For ordinary development, start a
 named isolate as a background process and reuse that name so its test state
 survives. Use logs and the run database for most verification; inspect the exact
-FlareAI window only when the result is genuinely visual.
+Polymux window only when the result is genuinely visual.
 
 For the usual reusable development instance, launch it detached and keep its
 log separate from the current turn:
 
 ```bash
-FLAREAI_DEV_INSTANCE=review npm run isolate > /tmp/flareai-review.log 2>&1 &
+POLYMUX_DEV_INSTANCE=review npm run isolate > /tmp/polymux-review.log 2>&1 &
 ```
 
 Before starting another copy, check whether the `review` instance and its
@@ -98,9 +98,9 @@ use only semantically matching open state and refresh the cache off the critical
 path. After an exact window is leased, validate that identity rather than
 re-enumerating every window between actions.
 
-For a benchmark that needs the user's real `~/.flareai` settings or credentials,
+For a benchmark that needs the user's real `~/.polymux` settings or credentials,
 do not substitute an empty isolate and never use `npm start`. Build the packaged
-app, then use the verified FlareAI background-launch route from `window-control`.
+app, then use the verified Polymux background-launch route from `window-control`.
 Confirm it stayed nonfrontmost, identify and lease its exact native window, and
 use only exact-window accessibility actions. Verify the selected main and task
 models in the recorded run rather than assuming the UI setting propagated.
@@ -121,13 +121,13 @@ preflight. Stop before building or launching when the provider probe is not
 ```bash
 npm run eval:orchestration:probe
 python3 resources/skills/core/computer-use/scripts/app-control-registry.py lookup-launch \
-  --app FlareAI --bundle-id com.flarehq.flareai
+  --app Polymux --bundle-id com.flarehq.polymux
 zsh resources/skills/core/computer-use/scripts/prepare-background-app.sh \
-  --app FlareAI --process FlareAI --bundle-id com.flarehq.flareai \
+  --app Polymux --process Polymux --bundle-id com.flarehq.polymux \
   --compiled-launch --check-only
 ```
 
-Proceed only when lookup includes `arg=--flareai-background` and the helper
+Proceed only when lookup includes `arg=--polymux-background` and the helper
 returns `ready_compiled_hidden_launch` or `ready_compiled_recoverable_launch`.
 Do not combine `--compiled-launch` with ad-hoc `--verified-launch-*` arguments:
 the helper rejects those as conflicting launch sources. The first-use route is
@@ -137,12 +137,12 @@ helper with `--compiled-launch` and proceed only if its live result is
 boundary merely to run the benchmark.
 
 Use a dedicated isolated or background-benchmark data directory, verify role
-assignments through FlareAI's own API, and submit through the backend/preload
+assignments through Polymux's own API, and submit through the backend/preload
 API. The macOS lock screen intentionally makes accessibility window mapping
 unavailable; while locked, use only the verified non-GUI backend route and do
 not claim visual UI verification. On completion, cancel unfinished runs, stop
 only the exact test PID, and confirm the prior frontmost app never changed.
-The packaged `--flareai-background` route owns homeserver port 47865; the
+The packaged `--polymux-background` route owns homeserver port 47865; the
 ordinary user session remains on 47664, so a hidden benchmark must never retire
 or bind the user's session even when both are running.
 
@@ -166,6 +166,6 @@ aren't looking. If changes are in the way, work around them or ask.
 
 ## Compatibility
 
-FlareAI is pre-release with no external users. Do not add runtime compatibility
-for obsolete FlareAI formats; reset disposable state, or use a bounded one-time
+Polymux is pre-release with no external users. Do not add runtime compatibility
+for obsolete Polymux formats; reset disposable state, or use a bounded one-time
 migration for valuable local data and remove it once verified.

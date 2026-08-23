@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Native messaging host: persists the browser's tab snapshot for FlareAI.
+ * Native messaging host: persists the browser's tab snapshot for Polymux.
  *
  * Chrome launches this process and frames each JSON message with a 4-byte
  * little-endian length prefix. Every snapshot received is written atomically to
- * ~/Library/Application Support/flareai-tab-context/tabs.json, where the FlareAI
+ * ~/Library/Application Support/polymux-tab-context/tabs.json, where the Polymux
  * browser-use skill reads it (scripts/tab_context.mjs).
  */
 import {mkdirSync, readSync, renameSync, statSync, writeFileSync, writeSync} from "node:fs";
@@ -12,7 +12,7 @@ import {homedir} from "node:os";
 import path from "node:path";
 import {pathToFileURL} from "node:url";
 
-const CACHE_DIR = path.join(homedir(), "Library", "Application Support", "flareai-tab-context");
+const CACHE_DIR = path.join(homedir(), "Library", "Application Support", "polymux-tab-context");
 const CACHE_PATH = path.join(CACHE_DIR, "tabs.json");
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 

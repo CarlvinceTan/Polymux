@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 
-RUNNER = Path.home() / ".flareai" / "skill-maintenance" / "runner.py"
+RUNNER = Path.home() / ".polymux" / "skill-maintenance" / "runner.py"
 HISTORY = Path(__file__).with_name("skill_history.py")
 SYSTEM_UPDATES = Path(__file__).with_name("system_skill_updates.py")
 PYTHON = sys.executable

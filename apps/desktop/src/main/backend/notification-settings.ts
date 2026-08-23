@@ -1,5 +1,5 @@
-import type {GeneralSettingsDto, NotificationKind} from "@flareai/protocol";
-import {NOTIFICATION_KINDS} from "@flareai/protocol";
+import type {GeneralSettingsDto, NotificationKind} from "@polymux/protocol";
+import {NOTIFICATION_KINDS} from "@polymux/protocol";
 
 export type NotificationSwitches = GeneralSettingsDto["notifications"];
 

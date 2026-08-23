@@ -5,12 +5,12 @@ import {randomBytes} from "node:crypto";
 import {homedir} from "node:os";
 import path from "node:path";
 import {DatabaseSync} from "node:sqlite";
-import type {SystemPermissionKind} from "@flareai/protocol";
+import type {SystemPermissionKind} from "@polymux/protocol";
 import type {Homeserver} from "./server.js";
 import {shippedNetworkConfig} from "./shipped-credentials.js";
 
 /**
- * Runs mautrix bridge binaries as supervised children of FlareAI, against the
+ * Runs mautrix bridge binaries as supervised children of Polymux, against the
  * embedded homeserver. No Docker, no separate stack: a bridge is a binary in
  * the bridges directory, and everything else — config, registration, tokens,
  * ports, restarts — is owned here.
@@ -133,7 +133,7 @@ export interface BridgeBlock {
   permission?: SystemPermissionKind;
   /**
    * Whether looking again could clear this. A precondition can be satisfied
-   * while FlareAI is running, so it is worth re-checking; a bridge that burned
+   * while Polymux is running, so it is worth re-checking; a bridge that burned
    * its restart budget is not, and retrying it on a timer would just rebuild
    * the crash loop the budget existed to stop.
    */
@@ -165,11 +165,11 @@ export async function messagesDatabaseAccess({
     // read this file would turn a stale or mismatched grant into a crash loop.
     // Exercise the same parent -> child boundary before allowing the bridge to
     // start. `head` reads at most one byte and never copies message contents
-    // back into FlareAI.
+    // back into Polymux.
     if (await childProbe(database)) return null;
     return {
       reason:
-        "FlareAI has Full Disk Access, but child processes launched by it cannot read your Messages database. Restart FlareAI after granting access.",
+        "Polymux has Full Disk Access, but child processes launched by it cannot read your Messages database. Restart Polymux after granting access.",
       permission: "full-disk-access",
       retryable: true,
     };
@@ -183,7 +183,7 @@ export async function messagesDatabaseAccess({
       retryable: true,
     };
   return {
-    reason: "FlareAI needs Full Disk Access to read your Messages database.",
+    reason: "Polymux needs Full Disk Access to read your Messages database.",
     permission: "full-disk-access",
     retryable: true,
   };
@@ -245,7 +245,7 @@ export const BRIDGE_FLEET: readonly BridgeSpec[] = [
 /**
  * How a bridge records that an account is linked to it, newest generation
  * first. Read straight out of the bridge's own database so the answer survives
- * a FlareAI that has never seen the login happen — the alternative, FlareAI
+ * a Polymux that has never seen the login happen — the alternative, Polymux
  * keeping its own list, is a second source of truth that starts out empty and
  * would silently stop delivering messages for anyone upgrading.
  */
@@ -335,7 +335,7 @@ export class BridgeHost {
     }));
   }
 
-  /** What FlareAI supplies for a platform in place of the user's own pair. */
+  /** What Polymux supplies for a platform in place of the user's own pair. */
   #shipped(platform: string): Readonly<Record<string, string>> {
     return (this.#options.shippedCredentials ?? shippedNetworkConfig)(platform);
   }
@@ -418,7 +418,7 @@ export class BridgeHost {
   }
 
   /**
-   * What has to be up for FlareAI to do its job: the bridges carrying an
+   * What has to be up for Polymux to do its job: the bridges carrying an
    * account. The rest of the installed fleet stays down until `ensure` is
    * asked for it — a dozen idle Go processes and their databases is a real
    * cost to pay for networks nobody has signed into.
@@ -496,7 +496,7 @@ export class BridgeHost {
     const configPath = path.join(directory, "config.yaml");
     const existing = await readFile(configPath, "utf8").catch((): string | null => null);
     // The user's own values last: supplying a pair is how you override the one
-    // FlareAI ships, and a partial answer must not strip the rest of the block.
+    // Polymux ships, and a partial answer must not strip the rest of the block.
     const merged = {...spec.network, ...this.#shipped(platform), ...values};
     const bridge: BridgeDefinition = {
       name: platform,
@@ -604,7 +604,7 @@ export class BridgeHost {
     if (existing === null) {
       await writeFile(configPath, this.#seedConfig(bridge), "utf8");
     } else if (bridge.legacy && /^database:/m.test(existing)) {
-      // An earlier FlareAI seeded this legacy bridge with the modern layout,
+      // An earlier Polymux seeded this legacy bridge with the modern layout,
       // which its generation rejects at startup — it has been crash-looping
       // ever since. Reseed in the shape it accepts. The registration goes with
       // it: the reseed mints new tokens, and a registration carrying the old
@@ -684,7 +684,7 @@ export class BridgeHost {
       }
     }
 
-    // A crashed or force-quit FlareAI leaves its bridge children orphaned, and a
+    // A crashed or force-quit Polymux leaves its bridge children orphaned, and a
     // second copy would fight the first for the appservice port. Reap the
     // previous incumbent before spawning a new one.
     await reapStalePid(path.join(directory, "bridge.pid"));
@@ -707,7 +707,7 @@ export class BridgeHost {
 
   /**
    * Why this bridge cannot run yet, or null when nothing is holding it back.
-   * Both kinds of answer are the user's to give — a credential FlareAI will not
+   * Both kinds of answer are the user's to give — a credential Polymux will not
    * invent, a grant only macOS can hand over — so neither is something a
    * restart can resolve.
    */
@@ -964,7 +964,7 @@ function repairBackfill(source: string): string {
 /**
  * Keeps WhatsApp history sync incremental.
  *
- * `request_full_sync` is sent to the phone when the bridge logs in. FlareAI
+ * `request_full_sync` is sent to the phone when the bridge logs in. Polymux
  * used to force it on with a ten-year, five-gigabyte budget. A desktop restart
  * could therefore make the phone announce another linked-device sync. Normal
  * incremental sync and the backfill queue are enough after pairing, and do not
@@ -1083,7 +1083,7 @@ function doublePuppet(serverName: string, baseUrl: string, asToken: string): str
 }
 
 /**
- * Brings a config seeded by an earlier FlareAI up to the current seed: safe
+ * Brings a config seeded by an earlier Polymux up to the current seed: safe
  * incremental history, the backfill queue, then double puppeting. Returns the source
  * unchanged when there is nothing to do, which is the steady state.
  */
@@ -1126,7 +1126,7 @@ export function withNetwork(source: string, values: Record<string, string>): str
 }
 
 /**
- * Terminates a bridge left over from a previous FlareAI that did not shut down
+ * Terminates a bridge left over from a previous Polymux that did not shut down
  * cleanly, identified by the pid file its supervisor wrote. A stale file whose
  * pid now belongs to some other program is the caveat; the window is narrow
  * (pid reuse between a crash and the next launch) and the alternative — two

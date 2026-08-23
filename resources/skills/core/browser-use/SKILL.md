@@ -1,7 +1,7 @@
 ---
 name: browser-use
-description: Use for website, browser, tab, and tab-group tasks. Default to the FlareAI in-app Browser; use the OS default browser only for required authentication or integration, or when the user explicitly requests it. Lease exact tabs, group external task tabs, and let the user work in other tabs without interruption.
-author: FlareAI
+description: Use for website, browser, tab, and tab-group tasks. Default to the Polymux in-app Browser; use the OS default browser only for required authentication or integration, or when the user explicitly requests it. Lease exact tabs, group external task tabs, and let the user work in other tabs without interruption.
+author: Polymux
 category: Web
 ---
 
@@ -19,7 +19,7 @@ attention preparation; do not duplicate those rules here.
 ## Browser routing
 
 - Use exactly two possible browser surfaces:
-  1. The FlareAI in-app Browser is always the default.
+  1. The Polymux in-app Browser is always the default.
   2. The operating system's verified current default browser is the only local
      external fallback.
 - Use the external browser only when either the in-app Browser is unavailable,
@@ -146,7 +146,7 @@ attention preparation; do not duplicate those rules here.
 
 1. For a substantial request plausibly related to browser research, first check
    the user's open tabs — prefer the `browser_tabs` tool when it is available,
-   otherwise run `"${FLAREAI_NODE:-node}" scripts/tab_context.mjs --query "<user request>"`;
+   otherwise run `"${POLYMUX_NODE:-node}" scripts/tab_context.mjs --query "<user request>"`;
    ignore a missing or older-than-90-seconds cache, treat matches only as
    discovery hints, and never let them replace an owning domain skill's
    evidence or safety rules. Then start in the in-app Browser.
@@ -169,7 +169,7 @@ attention preparation; do not duplicate those rules here.
    `wait` synchronises instead of guessing at a delay.
    To act inside one of the user's external tabs, use the `browser_control`
    tool: `focus` the exact tab by url/title from `browser_tabs`, then work,
-   then `release`. It drives only the leased tab through the FlareAI extension
+   then `release`. It drives only the leased tab through the Polymux extension
    (the in-page cursor shows the user what is happening), runs the tab in the
    background, and never raises the browser or switches focus — the
    `$computer-use` boundaries still govern what may be done there.

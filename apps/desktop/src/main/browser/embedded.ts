@@ -1,12 +1,12 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BrowserDownloadDto, BrowserEventDto } from "@flareai/protocol";
+import type { BrowserDownloadDto, BrowserEventDto } from "@polymux/protocol";
 import {
   createSession,
   startSession,
   stopSession,
-} from "@flareai/browser";
+} from "@polymux/browser";
 import { nativeTheme, WebContentsView, type BrowserWindow, type WebContents } from "electron";
 import { electronTransport, type CdpTransport } from "./cdp.js";
 import { PageCursor } from "./cursor.js";
@@ -463,7 +463,7 @@ export class EmbeddedBrowser {
 }
 
 /**
- * A @flareai/browser session. The package is plain JavaScript so the
+ * A @polymux/browser session. The package is plain JavaScript so the
  * browser extension can load it without a build step, so its shape is named
  * here rather than imported.
  */

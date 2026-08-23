@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentTool } from "@flareai/core";
+import type { AgentTool } from "@polymux/core";
 import {
   boundedResearchToolTurnBudget,
   inferTaskToolGroups,

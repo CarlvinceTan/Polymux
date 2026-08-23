@@ -1,6 +1,6 @@
 # DESIGN.md
 
-Standing UI rules for FlareAI's renderer, collected from the corrections that
+Standing UI rules for Polymux's renderer, collected from the corrections that
 have come up over and over across sessions. Read this before adding or changing
 UI, and check the finished result against it — these are defaults, not requests
 to wait for.

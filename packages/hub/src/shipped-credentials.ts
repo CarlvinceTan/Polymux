@@ -1,9 +1,9 @@
 /**
- * Application credentials FlareAI registers once and ships, so the user does
+ * Application credentials Polymux registers once and ships, so the user does
  * not have to register one of their own before they can sign in.
  *
  * These are *app* identities, not user credentials: they say "mautrix-telegram
- * running inside FlareAI" to the network, and grant nothing on their own. The
+ * running inside Polymux" to the network, and grant nothing on their own. The
  * user still authenticates as themselves afterwards, by QR or by code, and
  * that is what produces a session.
  *
@@ -26,8 +26,8 @@
 import {readFile, writeFile, mkdir} from "node:fs/promises";
 import path from "node:path";
 
-declare const __FLAREAI_TELEGRAM_API_ID__: string | undefined;
-declare const __FLAREAI_TELEGRAM_API_HASH__: string | undefined;
+declare const __POLYMUX_TELEGRAM_API_ID__: string | undefined;
+declare const __POLYMUX_TELEGRAM_API_HASH__: string | undefined;
 
 /**
  * Build-time value first, then the ambient environment. The environment is the
@@ -48,12 +48,12 @@ export function shippedNetworkConfig(platform: string): Readonly<Record<string, 
   if (served) return served;
   if (platform !== "telegram") return {};
   const apiId = injected(
-    typeof __FLAREAI_TELEGRAM_API_ID__ === "undefined" ? undefined : __FLAREAI_TELEGRAM_API_ID__,
-    "FLAREAI_TELEGRAM_API_ID",
+    typeof __POLYMUX_TELEGRAM_API_ID__ === "undefined" ? undefined : __POLYMUX_TELEGRAM_API_ID__,
+    "POLYMUX_TELEGRAM_API_ID",
   );
   const apiHash = injected(
-    typeof __FLAREAI_TELEGRAM_API_HASH__ === "undefined" ? undefined : __FLAREAI_TELEGRAM_API_HASH__,
-    "FLAREAI_TELEGRAM_API_HASH",
+    typeof __POLYMUX_TELEGRAM_API_HASH__ === "undefined" ? undefined : __POLYMUX_TELEGRAM_API_HASH__,
+    "POLYMUX_TELEGRAM_API_HASH",
   );
   // Half a pair is no pair: Telegram rejects the login and the bridge dies on
   // startup, which is a worse outcome than the setup form it replaced.

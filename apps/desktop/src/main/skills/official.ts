@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { flareaiHome } from "../system/paths.js";
+import { polymuxHome } from "../system/paths.js";
 
 /**
  * The skills that back a first-class surface of the app rather than an
@@ -30,21 +30,21 @@ export function coreSkillNames(source: string): string[] {
 
 /** Where the mirrored copy lives, next to the personal skills it shadows. */
 export function officialSkillsHome(home = homedir()): string {
-  return path.join(flareaiHome(home), "official-skills");
+  return path.join(polymuxHome(home), "official-skills");
 }
 
 const MANIFEST = ".installed.json";
 
 /**
- * Mirrors the skills bundled inside the app into `~/.flareai/official-skills`
- * and returns that directory, so every skill FlareAI loads sits under the
- * user's own `~/.flareai` where it can be read, diffed, and pointed at by the
+ * Mirrors the skills bundled inside the app into `~/.polymux/official-skills`
+ * and returns that directory, so every skill Polymux loads sits under the
+ * user's own `~/.polymux` where it can be read, diffed, and pointed at by the
  * scripts the skills themselves run — rather than inside an app bundle that is
  * replaced wholesale on update.
  *
  * The mirror is app-owned: an update rewrites it, and `ProtectedSkillGuard`
  * keeps the agent's file tools out of it. Personal skills belong in
- * `~/.flareai/skills`; a bundled skill of the same name stays authoritative
+ * `~/.polymux/skills`; a bundled skill of the same name stays authoritative
  * in the loader, so saving one under a bundled skill's name is refused rather
  * than silently ignored.
  *

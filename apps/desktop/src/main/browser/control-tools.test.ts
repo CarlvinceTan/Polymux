@@ -61,7 +61,7 @@ function controlTool(surface: AgentSurfaceServer) {
 const context = {} as Parameters<ReturnType<typeof controlTool>["execute"]>[1];
 
 async function currentReadFixture(payload: object, result?: SurfaceCommandResult) {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-current-tab-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-current-tab-"));
   const snapshotPath = path.join(directory, "tabs.json");
   await writeFile(snapshotPath, JSON.stringify(payload));
   const fake = fakeSurface(result);
@@ -151,8 +151,8 @@ test("current read refuses a focused browser tab that is not the current window"
   assert.equal(fixture.leasedTabs.length, 0);
 });
 
-test("current read uses the visible FlareAI page without consulting external browser state", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-current-embedded-"));
+test("current read uses the visible Polymux page without consulting external browser state", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-current-embedded-"));
   const snapshotPath = path.join(directory, "missing.json");
   const fake = fakeSurface();
   const tool = createBrowserControlTools(fake.surface, {
@@ -167,7 +167,7 @@ test("current read uses the visible FlareAI page without consulting external bro
   assert.equal(fake.leasedTabs.length, 0);
 });
 
-test("current read refuses duplicate visible FlareAI pages instead of falling through", async () => {
+test("current read refuses duplicate visible Polymux pages instead of falling through", async () => {
   const fake = fakeSurface();
   const tool = createBrowserControlTools(fake.surface, {
     currentRead: true,

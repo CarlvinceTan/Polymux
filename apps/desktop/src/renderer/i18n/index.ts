@@ -1,5 +1,5 @@
 import {derived, get, writable, type Readable} from 'svelte/store';
-import {SUPPORTED_LANGUAGES} from '@flareai/protocol';
+import {SUPPORTED_LANGUAGES} from '@polymux/protocol';
 import en from './locales/en';
 import es from './locales/es';
 import fr from './locales/fr';
@@ -52,10 +52,10 @@ const rtl = new Set(['ar']);
 /** Mirrors the choice for `public/theme-boot.js`, which applies `lang`/`dir` in
  * <head>. Settings only arrive over IPC after the first paint, so without a
  * pre-paint hint the splash would open in English and swap under the user. */
-const STORAGE_KEY = 'flareai.language';
+const STORAGE_KEY = 'polymux.language';
 
 /** The catalog a preference resolves to. `system` walks the host's language
- * list in order and takes the first one FlareAI is translated into — matching
+ * list in order and takes the first one Polymux is translated into — matching
  * on the full tag first (`zh-Hant` before `zh`), then on the base language, so
  * `en-AU` lands on English and `pt-BR` on Portuguese. */
 export function resolveLocale(preference: string): string {
@@ -113,7 +113,7 @@ export const t: Readable<(key: MessageKey, values?: Record<string, string | numb
 
 /**
  * The tag Intl should format dates, numbers and lists with: the language the
- * interface is in, not the host's regional setting. A user reading FlareAI in
+ * interface is in, not the host's regional setting. A user reading Polymux in
  * Japanese on an English machine wants Japanese month names in the schedule.
  */
 export function activeLocale(): string {

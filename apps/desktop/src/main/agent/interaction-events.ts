@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { InteractionEvent, InteractionEventSource } from "@flareai/computer-history";
+import type { InteractionEvent, InteractionEventSource } from "@polymux/computer-history";
 import { SwiftHelper } from "../system/swift-helper.js";
 
 export interface InteractionEventsOptions {
@@ -14,7 +14,7 @@ export interface InteractionEventsOptions {
  * `ax-events.swift`, which holds a listen-only CGEvent tap and prints one JSON
  * event per line. The tap has to live in a native process — Electron cannot
  * see input aimed at other applications — and it is a child of the app so the
- * accessibility grant it needs is FlareAI's own.
+ * accessibility grant it needs is Polymux's own.
  *
  * Nothing here decides what is worth keeping. Every event goes to the manager,
  * which applies the capture policy; a filter in two places is a filter that

@@ -1,4 +1,4 @@
-import type {NotificationKind} from "@flareai/protocol";
+import type {NotificationKind} from "@polymux/protocol";
 
 /** What the user is told, once the switches have agreed it is worth telling. */
 export interface NotificationRequest {

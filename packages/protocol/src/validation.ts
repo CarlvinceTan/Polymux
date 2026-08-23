@@ -35,7 +35,7 @@ const REASONING_EFFORTS: ReasoningEffort[] = [
 
 /** Model servers that run on the user's own machine. They all speak the
  * OpenAI Chat Completions API, so a runtime is nothing but the port it listens
- * on — which is why FlareAI can offer them as ready-made providers rather than
+ * on — which is why Polymux can offer them as ready-made providers rather than
  * as a custom endpoint the user has to describe. They are listed alongside the
  * hosted providers everywhere providers are listed; setting one up asks it what
  * models it has rather than asking the user. */
@@ -52,7 +52,7 @@ export const LOCAL_RUNTIMES: ReadonlyArray<{
 
 /** The interface languages offered in Settings → General. Every entry here has
  * a message catalog under `src/renderer/lib/i18n/messages`, so the list is
- * exactly what FlareAI is translated into — not every BCP 47 tag Intl would
+ * exactly what Polymux is translated into — not every BCP 47 tag Intl would
  * accept. `system` follows the host locale, falling back to English when it
  * names a language with no catalog. Labels are written in the language itself,
  * so the menu reads the same whatever locale is currently active. */
@@ -195,19 +195,19 @@ export const DRIVE_PROVIDERS: {
     value: "google-drive",
     label: "Google Drive",
     kind: "oauth",
-    description: "Files FlareAI creates live in their own Drive folder.",
+    description: "Files Polymux creates live in their own Drive folder.",
   },
   {
     value: "dropbox",
     label: "Dropbox",
     kind: "oauth",
-    description: "Scoped to the FlareAI app folder, not your whole Dropbox.",
+    description: "Scoped to the Polymux app folder, not your whole Dropbox.",
   },
   {
     value: "onedrive",
     label: "OneDrive",
     kind: "oauth",
-    description: "Personal or work account, in its own FlareAI folder.",
+    description: "Personal or work account, in its own Polymux folder.",
   },
   {
     value: "s3",
@@ -220,7 +220,7 @@ export const DRIVE_PROVIDERS: {
 /** Coerces a renderer-supplied mail provider, which reaches a sign-in flow. */
 export function mailProvider(value: unknown): CommsMailProvider {
   if (value !== "google" && value !== "microsoft")
-    throw new Error(`${String(value)} is not a mail provider FlareAI can sign in to`);
+    throw new Error(`${String(value)} is not a mail provider Polymux can sign in to`);
   return value;
 }
 
@@ -468,7 +468,7 @@ export const COMMS_EMAIL_PRESETS: CommsEmailPresetOption[] = [
 export function validateSaveEmailAccount(value: unknown): SaveEmailAccountRequest {
   const input = record(value, "email account");
   const id = text(input.id, "id");
-  // The id keys the account in FlareAI's own file and names its keychain
+  // The id keys the account in Polymux's own file and names its keychain
   // entries, so keep
   // it to something neither of those has to quote or escape.
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(id))

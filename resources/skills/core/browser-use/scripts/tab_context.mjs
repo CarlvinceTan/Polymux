@@ -4,7 +4,7 @@ import {homedir} from "node:os";
 import path from "node:path";
 
 const CACHE_PATH = path.join(
-  homedir(), "Library", "Application Support", "flareai-tab-context", "tabs.json",
+  homedir(), "Library", "Application Support", "polymux-tab-context", "tabs.json",
 );
 const STOP = new Set(["about", "after", "again", "also", "because", "could", "from", "have", "into", "like", "more", "some", "that", "their", "then", "there", "these", "they", "this", "what", "when", "where", "which", "with", "would", "your"]);
 

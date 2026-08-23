@@ -1,5 +1,5 @@
-import type {InferenceMessage, JsonObject} from "@flareai/inference";
-import type {JsonValue, Storage} from "@flareai/storage";
+import type {InferenceMessage, JsonObject} from "@polymux/inference";
+import type {JsonValue, Storage} from "@polymux/storage";
 
 const KEY_PREFIX = "goal-progress:";
 const MAX_RECEIPTS = 8;

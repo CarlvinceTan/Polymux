@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import type { DriveProviderId } from "@flareai/protocol";
-import { driveProviderLabel } from "@flareai/protocol";
+import type { DriveProviderId } from "@polymux/protocol";
+import { driveProviderLabel } from "@polymux/protocol";
 import type {
   DriveConsentPrompt,
   DriveConsentWindow,
@@ -75,7 +75,7 @@ export function oauthAppFromEnv(
   provider: DriveProviderId,
   defaults: Omit<OAuthApp, "clientId" | "clientSecret">,
 ): OAuthApp | null {
-  const prefix = `FLAREAI_${provider.replace(/-/g, "_").toUpperCase()}`;
+  const prefix = `POLYMUX_${provider.replace(/-/g, "_").toUpperCase()}`;
   const clientId = process.env[`${prefix}_CLIENT_ID`]?.trim();
   if (!clientId) return null;
   const clientSecret = process.env[`${prefix}_CLIENT_SECRET`]?.trim();
@@ -90,7 +90,7 @@ export function oauthAppFromEnv(
  * Runs the authorization-code flow for one provider and holds the resulting
  * tokens.
  *
- * The user signs in on the provider's own page in a dedicated window — FlareAI
+ * The user signs in on the provider's own page in a dedicated window — Polymux
  * never sees the password, only the code the provider hands back. PKCE is
  * always used, so a build shipping a public client id is still safe against an
  * intercepted code.
@@ -325,10 +325,10 @@ export class OAuthClient {
           const failure = incoming.searchParams.get("error");
           response.writeHead(200, { "content-type": "text/html" });
           response.end(
-            `<!doctype html><meta charset="utf-8"><title>FlareAI</title><body style="font:15px -apple-system,sans-serif;display:grid;place-items:center;height:100vh;margin:0"><p>${
+            `<!doctype html><meta charset="utf-8"><title>Polymux</title><body style="font:15px -apple-system,sans-serif;display:grid;place-items:center;height:100vh;margin:0"><p>${
               code && state === expectedState
                 ? "Connected. You can close this window."
-                : "Sign-in failed. Return to FlareAI and try again."
+                : "Sign-in failed. Return to Polymux and try again."
             }</p></body>`,
           );
           // State is what ties the response to the request this flow started;

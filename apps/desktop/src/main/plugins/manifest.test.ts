@@ -6,7 +6,7 @@ import test from "node:test";
 import { pluginMcpServers, readContributions, readManifest } from "./manifest.js";
 
 function plugin(build: (root: string) => void): string {
-  const root = mkdtempSync(path.join(tmpdir(), "flareai-plugin-test-"));
+  const root = mkdtempSync(path.join(tmpdir(), "polymux-plugin-test-"));
   build(root);
   return root;
 }

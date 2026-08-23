@@ -1,5 +1,5 @@
 {
-  "name": "@flareai/core",
+  "name": "@polymux/core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,6 +10,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@flareai/inference": "0.1.0"
+    "@polymux/inference": "0.1.0"
   }
 }

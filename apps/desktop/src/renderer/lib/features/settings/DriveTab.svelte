@@ -6,15 +6,15 @@
     DriveProviderId,
     DriveS3ConfigRequest,
     DriveStatusDto,
-    FlareAIApi,
-  } from '@flareai/protocol';
+    PolymuxApi,
+  } from '@polymux/protocol';
   import {readableError} from '../../shared/errors';
   import {scrollFade} from '../../shared/scrollFade';
   import Icon from '../../shared/components/Icon.svelte';
   import {activeLocale, locale, plural, t, translate, withLocale, type MessageKey} from '../../../i18n';
   import {driveProviderDescription, driveProviderName} from '../../../i18n/names';
 
-  export let api: FlareAIApi;
+  export let api: PolymuxApi;
 
   let status: DriveStatusDto | null = null;
   let selected: DriveProviderId | 'configuration' = 'local';
@@ -566,7 +566,7 @@
             <section class="drive-block">
               <h4>{$t('drive.space')}</h4>
               {#if active.usage.total !== null && active.usage.used !== null}
-                <div class="drive-meter" role="img" aria-label={`${$t('drive.usedOf', {used: formatBytes(active.usage.used), total: formatBytes(active.usage.total)})}${active.usage.appUsed !== null ? `; FlareAI ${formatBytes(active.usage.appUsed)}` : ''}`}>
+                <div class="drive-meter" role="img" aria-label={`${$t('drive.usedOf', {used: formatBytes(active.usage.used), total: formatBytes(active.usage.total)})}${active.usage.appUsed !== null ? `; Polymux ${formatBytes(active.usage.appUsed)}` : ''}`}>
                   <span
                     class="drive-meter-others"
                     style={`width:${usageWidth(Math.max(0, active.usage.used - (active.usage.appUsed ?? 0)), active.usage.total)}%`}
@@ -582,7 +582,7 @@
                   <span>{$t('drive.usedOf', {used: formatBytes(active.usage.used), total: formatBytes(active.usage.total)})}</span>
                   {#if active.usage.appUsed !== null}
                     <span class="drive-usage-separator">·</span>
-                    <span class="drive-app-used">FlareAI {formatBytes(active.usage.appUsed)}</span>
+                    <span class="drive-app-used">Polymux {formatBytes(active.usage.appUsed)}</span>
                   {/if}
                 </p>
               {:else if active.usage.used !== null}

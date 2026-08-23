@@ -6,7 +6,7 @@ import type {
   ScheduleInput,
   SchedulePatch,
   ScheduleRunDto,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 import { localTimeZone, nextRunAfter } from "./time.js";
 
 /** Only what the scheduler needs, so tests can hand it a plain object. */
@@ -83,7 +83,7 @@ export class Scheduler {
       // driving it any more, so it is recorded as failed rather than left to
       // spin forever.
       if (item.status === "running") {
-        this.#settle(item, {outcome: "failed", error: "Interrupted when FlareAI closed"}, now);
+        this.#settle(item, {outcome: "failed", error: "Interrupted when Polymux closed"}, now);
         changed = true;
       }
       const next = this.#computeNext(item, now);

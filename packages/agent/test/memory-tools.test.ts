@@ -3,12 +3,12 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import type { AgentTool, AgentToolResult } from "@flareai/core";
+import type { AgentTool, AgentToolResult } from "@polymux/core";
 import { createMemoryTools, MemoryManager } from "../src/index.js";
 
 function vault(): MemoryManager {
   return new MemoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-memory-tools-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-memory-tools-")),
   });
 }
 
@@ -59,7 +59,7 @@ test("recall narrows to the memories matching every query word", async () => {
   const tools = createMemoryTools(memory, "conversation");
   await call(tools, "remember", { content: "Studies at the University of Melbourne" });
   await call(tools, "remember", { content: "Prefers Melbourne or Sydney for startup roles" });
-  await call(tools, "remember", { content: "Runs the FlareAI desktop agent locally" });
+  await call(tools, "remember", { content: "Runs the Polymux desktop agent locally" });
 
   const matches = payload(await call(tools, "recall", { query: "melbourne startup" })) as Array<{
     content: string;

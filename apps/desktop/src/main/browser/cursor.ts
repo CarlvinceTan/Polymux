@@ -1,5 +1,5 @@
-import cursorMotionSource from "@flareai/browser/src/cursor-motion.js?raw";
-import cursorOverlaySource from "@flareai/browser/src/cursor-overlay.js?raw";
+import cursorMotionSource from "@polymux/browser/src/cursor-motion.js?raw";
+import cursorOverlaySource from "@polymux/browser/src/cursor-overlay.js?raw";
 import type { CdpTransport } from "./cdp.js";
 
 /**
@@ -35,7 +35,7 @@ export class PageCursor {
     // …and for the one already loaded.
     await this.#transport.send("Runtime.evaluate", { expression: source });
     this.#installed = true;
-    if (this.#active) await this.#evaluate("FlareAICursorOverlay.show()").catch(() => {});
+    if (this.#active) await this.#evaluate("PolymuxCursorOverlay.show()").catch(() => {});
   }
 
   /**
@@ -49,7 +49,7 @@ export class PageCursor {
     this.#active = active;
     if (!this.#installed) return;
     await this.#evaluate(
-      active ? "FlareAICursorOverlay.show()" : "FlareAICursorOverlay.hide()",
+      active ? "PolymuxCursorOverlay.show()" : "PolymuxCursorOverlay.hide()",
     ).catch(() => {
       // A navigating or closing page is not worth failing a command over.
     });
@@ -65,7 +65,7 @@ export class PageCursor {
     try {
       await this.install();
       await this.#evaluate(
-        `FlareAICursorOverlay.moveTo({x: ${Math.round(point.x)}, y: ${Math.round(point.y)}})`,
+        `PolymuxCursorOverlay.moveTo({x: ${Math.round(point.x)}, y: ${Math.round(point.y)}})`,
         true,
       );
     } catch {

@@ -3,11 +3,11 @@ import {mkdtempSync, rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {ComputerHistoryStore} from "@flareai/computer-history";
+import {ComputerHistoryStore} from "@polymux/computer-history";
 import {createComputerHistoryTools} from "../src/memory/computer-history-tools.js";
 
 test("previous-screen work resolves one app switch and its nearest frame", async () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-previous-work-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-previous-work-"));
   try {
     const store = new ComputerHistoryStore(directory);
     store.save({

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {SystemPermissionKind, SystemPermissionStatus} from "@flareai/protocol";
+import type {SystemPermissionKind, SystemPermissionStatus} from "@polymux/protocol";
 import {FirstRunPermissions, type PermissionPreferenceStore} from "./first-run-permissions.js";
 
 test("marks first run done, starts what waits on it, and asks macOS for nothing", async () => {

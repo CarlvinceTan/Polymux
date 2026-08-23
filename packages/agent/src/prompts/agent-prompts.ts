@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 /**
- * The prompts FlareAI's own agents run on, as files rather than string
+ * The prompts Polymux's own agents run on, as files rather than string
  * literals buried in the code that uses them.
  *
  * `base` opens the system prompt for every run. `direct` governs a top-level

@@ -22,10 +22,10 @@ import { chromeBinary, startLiveBrowser, type LiveBrowser } from "./live-browser
 const FIXTURE = new URL("./fixtures/page.html", import.meta.url).pathname;
 // Opt-in: this launches a real browser and takes about a minute, so it is not
 // part of `npm test`. Run it with `npm run test:browser-live`.
-const requested = process.env.FLAREAI_LIVE_BROWSER === "1";
+const requested = process.env.POLYMUX_LIVE_BROWSER === "1";
 const available = requested && chromeBinary() !== null;
 
-describe("browser against a real browser", { skip: !available && (requested ? "no Chrome installed" : "set FLAREAI_LIVE_BROWSER=1 to run") }, () => {
+describe("browser against a real browser", { skip: !available && (requested ? "no Chrome installed" : "set POLYMUX_LIVE_BROWSER=1 to run") }, () => {
   let browser: LiveBrowser;
   let session: ReturnType<typeof createSession>;
 
@@ -135,10 +135,10 @@ describe("browser against a real browser", { skip: !available && (requested ? "n
   });
 
   test("upload attaches a real file to a file input", async () => {
-    const file = join(tmpdir(), `flareai-upload-${process.pid}.txt`);
+    const file = join(tmpdir(), `polymux-upload-${process.pid}.txt`);
     writeFileSync(file, "hello");
     await handlers.upload(session, { selector: "#upload", files: [file] });
-    assert.match(await status(), /^file:flareai-upload-/);
+    assert.match(await status(), /^file:polymux-upload-/);
   });
 
   test("a click under an overlay is refused, naming the overlay", async () => {
@@ -225,13 +225,13 @@ describe("browser against a real browser", { skip: !available && (requested ? "n
       readFileSync(new URL("../src/cursor-overlay.js", import.meta.url).pathname, "utf8"),
     ].join("\n");
     await handlers.eval(session, { expression: source });
-    await handlers.eval(session, { expression: "FlareAICursorOverlay.show()" });
+    await handlers.eval(session, { expression: "PolymuxCursorOverlay.show()" });
 
     const cursorSession = createSession({
       ...browser.transport,
       async moveCursor(point) {
         await handlers.eval(cursorSession, {
-          expression: `FlareAICursorOverlay.moveTo({x:${point.x},y:${point.y}})`,
+          expression: `PolymuxCursorOverlay.moveTo({x:${point.x},y:${point.y}})`,
         });
       },
     });
@@ -247,7 +247,7 @@ describe("browser against a real browser", { skip: !available && (requested ? "n
 
     const host = (
       await handlers.eval(cursorSession, {
-        expression: "!!document.getElementById('flareai-agent-overlay-root')",
+        expression: "!!document.getElementById('polymux-agent-overlay-root')",
       })
     ).content;
     assert.equal(host, "true", "the overlay was never attached to the page");
@@ -406,7 +406,7 @@ describe("browser against a real browser", { skip: !available && (requested ? "n
           root.id = 'pace-probe';
           root.style.cssText = 'position:fixed;inset:0;pointer-events:none';
           document.body.appendChild(root);
-          const renderer = FlareAICursorMotion.createRenderer(root, {
+          const renderer = PolymuxCursorMotion.createRenderer(root, {
             travelScale: ${scale},
             onArrived() { done(); },
           });

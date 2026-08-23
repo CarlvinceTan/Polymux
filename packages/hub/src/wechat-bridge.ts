@@ -11,14 +11,14 @@ import {loadHeadImages} from "./wechat-head-images.js";
 /**
  * WeChat, bridged into the embedded homeserver.
  *
- * Every other network here is a mautrix binary FlareAI supervises. WeChat has
+ * Every other network here is a mautrix binary Polymux supervises. WeChat has
  * none — upstream's only Matrix bridge needs a Windows agent doing DLL
  * injection, which cannot run on a Mac. What does work on macOS is a local
  * relay driving the WeChat desktop app, exposing the account over loopback
  * HTTP with an SSE stream of new messages.
  *
  * So this is the missing half: an application service that owns portal rooms
- * and puppets on FlareAI's own homeserver, and carries messages between them
+ * and puppets on Polymux's own homeserver, and carries messages between them
  * and that relay. It runs in-process rather than as a spawned binary, because
  * there is no binary to spawn.
  */
@@ -44,9 +44,9 @@ function cliPaths(): string[] {
   // stand-in that cannot run silently hands the work to the real `wechat-use`
   // on the machine — which is how a test that must never touch WeChat ends up
   // reading someone's actual conversations.
-  if (process.env.FLAREAI_WECHAT_CLI) return [process.env.FLAREAI_WECHAT_CLI];
+  if (process.env.POLYMUX_WECHAT_CLI) return [process.env.POLYMUX_WECHAT_CLI];
   return [
-    process.env.FLAREAI_WECHAT_CLI,
+    process.env.POLYMUX_WECHAT_CLI,
     `${homedir()}/.local/bin/wechat-use`,
     "/opt/homebrew/bin/wechat-use",
     "/usr/local/bin/wechat-use",
@@ -82,7 +82,7 @@ const RELAY_TOKEN_SERVICE = "Matrix Hub WeChat Bridge Token";
 /**
  * The relay's own binaries. `wechatd` is the daemon that talks to the WeChat
  * app; `wechat-bridge` is the loopback HTTP/SSE service over it. Both are
- * FlareAI's plumbing: nobody using the app should have to know they exist, so
+ * Polymux's plumbing: nobody using the app should have to know they exist, so
  * they are started here rather than named in an instruction.
  */
 const RELAY_BINARIES = ["wechat-bridge", "wechat-use"] as const;
@@ -93,7 +93,7 @@ const RELAY_BINARIES = ["wechat-bridge", "wechat-use"] as const;
  * rest are fallbacks for a developer running from a checkout.
  */
 export const WECHAT_FALLBACK_DIRECTORIES = [
-  process.env.FLAREAI_WECHAT_BIN,
+  process.env.POLYMUX_WECHAT_BIN,
   `${homedir()}/.local/bin`,
   "/opt/homebrew/bin",
   "/usr/local/bin",
@@ -417,7 +417,7 @@ export class WeChatBridge {
   #token: string | null = null;
   /** The relay we started, if we were the one to start it. */
   #relayProcess: ChildProcess | null = null;
-  /** Whose portal rooms these are. Known only once FlareAI has its account. */
+  /** Whose portal rooms these are. Known only once Polymux has its account. */
   #owner = "";
   /** When the event stream last answered, so its replay is told from live. */
   #streamConnectAt = 0;
@@ -763,7 +763,7 @@ export class WeChatBridge {
    * Marks a portal read up to whatever WeChat still counts as unread. The
    * receipt is sent as the user rather than as a ghost — this server lets a
    * bridge speak for the account it bridges for, which is what makes the count
-   * clear in FlareAI and anywhere else reading the same room.
+   * clear in Polymux and anywhere else reading the same room.
    */
   async #applyReadState(chatId: string, unread: number): Promise<void> {
     const roomId = this.#state.rooms[chatId]?.roomId;
@@ -894,7 +894,7 @@ export class WeChatBridge {
         as: sender,
         body: {
           ...content,
-          "co.flareai.wechat.remote": true,
+          "co.polymux.wechat.remote": true,
         },
       },
     );
@@ -955,7 +955,7 @@ export class WeChatBridge {
           },
           // Marks what it actually is, for anything that cares to tell a
           // sticker from a photo. It renders as a picture either way.
-          "co.flareai.sticker": true,
+          "co.polymux.sticker": true,
         }};
     }
     if (item.messageKind === "image" && item.messageId) {
@@ -992,7 +992,7 @@ export class WeChatBridge {
       msgtype: "m.text",
       body: bodyOf(item),
       ...(CARRIES_MEDIA.has(item.messageKind ?? "") || item.hasMedia
-        ? {"co.flareai.view_in": {app: "WeChat", url: "weixin://"}}
+        ? {"co.polymux.view_in": {app: "WeChat", url: "weixin://"}}
         : {}),
     };
   }
@@ -1129,7 +1129,7 @@ export class WeChatBridge {
     chatId: string,
     messageId: string,
   ): Promise<{uri: string; name: string; mimeType: string; size: number} | null> {
-    const target = path.join(tmpdir(), `flareai-wechat-${randomBytes(8).toString("hex")}.bin`);
+    const target = path.join(tmpdir(), `polymux-wechat-${randomBytes(8).toString("hex")}.bin`);
     let extracted: {mime?: string; absolutePath?: string; error?: string} | null = null;
     for (const cli of cliPaths()) {
       const result = (await run(
@@ -1329,7 +1329,7 @@ export class WeChatBridge {
         initial_state: [
           {
             // The same state event every mautrix bridge writes, so the rest of
-            // FlareAI files these rooms under WeChat by the identical rule it
+            // Polymux files these rooms under WeChat by the identical rule it
             // uses for WhatsApp — no WeChat-specific case anywhere upstream.
             type: "m.bridge",
             state_key: `${this.#options.homeserver.serverName}/wechat`,
@@ -1415,7 +1415,7 @@ export class WeChatBridge {
       event.sender !== this.#owner ||
       event.content?.msgtype !== "m.text" ||
       // Anything this bridge itself posted; relaying it back would loop.
-      event.content?.["co.flareai.wechat.remote"]
+      event.content?.["co.polymux.wechat.remote"]
     )
       return;
     const chatId = this.#state.roomToChat[event.room_id ?? ""];
@@ -1447,7 +1447,7 @@ export class WeChatBridge {
       this.#token = this.#options.relayToken;
       return;
     }
-    const fromEnvironment = process.env.FLAREAI_WECHAT_RELAY_TOKEN;
+    const fromEnvironment = process.env.POLYMUX_WECHAT_RELAY_TOKEN;
     if (fromEnvironment) {
       this.#token = fromEnvironment;
       return;
@@ -1550,7 +1550,7 @@ export class WeChatBridge {
             body: `* ${picture.body}`,
             "m.new_content": picture,
             "m.relates_to": {rel_type: "m.replace", event_id: item.eventId},
-            "co.flareai.wechat.remote": true,
+            "co.polymux.wechat.remote": true,
           },
         },
       ).catch((error: unknown) => {

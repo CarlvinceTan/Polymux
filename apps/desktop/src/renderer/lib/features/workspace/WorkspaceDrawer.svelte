@@ -586,18 +586,18 @@
       <div bind:this={newTabWrapper} class="new-tab-wrap">
         <button type="button" class="title-bar-icon-button workspace-header-action" aria-label={$t('workspace.newTab')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={addOpen} onclick={() => addOpen = !addOpen}><Icon name="plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
         {#if addOpen}
-          <div class="flareai-dropdown-menu new-tab-menu" role="menu">
-            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('browser'); }}><Icon name="globe" size={14}/><span>{$t('workspace.browser')}</span></button>
+          <div class="polymux-dropdown-menu new-tab-menu" role="menu">
+            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('browser'); }}><Icon name="globe" size={14}/><span>{$t('workspace.browser')}</span></button>
             <!-- Drive and Schedule leave the title bar while the drawer is
                  open, so this menu is where they live instead. -->
             {#if !openKinds.has('drive')}
-              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('drive'); }}><Icon name="drive" size={14}/><span>{$t('workspace.drive')}</span></button>
+              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('drive'); }}><Icon name="drive" size={14}/><span>{$t('workspace.drive')}</span></button>
             {/if}
             {#if !openKinds.has('hub')}
-              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('hub'); }}><Icon name="chat" size={14}/><span>{$t('workspace.hub')}</span></button>
+              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('hub'); }}><Icon name="chat" size={14}/><span>{$t('workspace.hub')}</span></button>
             {/if}
             {#if !openKinds.has('tasks')}
-              <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('tasks'); }}><Icon name="tasks" size={14}/><span>{$t('workspace.tasks')}</span></button>
+              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('tasks'); }}><Icon name="tasks" size={14}/><span>{$t('workspace.tasks')}</span></button>
             {/if}
           </div>
         {/if}
@@ -689,13 +689,13 @@
 </aside>
 
 {#if contextMenu}
-  <div class="flareai-dropdown-menu tab-context-menu" role="menu" style="position: fixed; left: {contextMenu.x}px; top: {contextMenu.y}px; z-index: 200;">
+  <div class="polymux-dropdown-menu tab-context-menu" role="menu" style="position: fixed; left: {contextMenu.x}px; top: {contextMenu.y}px; z-index: 200;">
     {#if isSingletonKind(contextMenu.tab.kind)}
-      <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { const kind = contextMenu?.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks'; closeContextMenu(); onTogglePin(kind); }}>
+      <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { const kind = contextMenu?.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks'; closeContextMenu(); onTogglePin(kind); }}>
         <Icon name={pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks') ? 'pin-off' : 'pin'} size={14}/>
         <span>{pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks') ? $t('titlebar.unpinView') : $t('titlebar.pinView')}</span>
       </button>
-      <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { if (contextMenu) openTabInSeparateWindow(contextMenu.tab); }}>
+      <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { if (contextMenu) openTabInSeparateWindow(contextMenu.tab); }}>
         <Icon name="send" size={14}/>
         <span>{$t('titlebar.openSeparateWindow')}</span>
       </button>

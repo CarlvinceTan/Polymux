@@ -3,14 +3,14 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { ComputerHistoryManager } from "@flareai/computer-history";
+import { ComputerHistoryManager } from "@polymux/computer-history";
 import type {
   InferenceEvent,
   InferenceModel,
   InferenceRequest,
   InferenceService,
   ModelRef,
-} from "@flareai/inference";
+} from "@polymux/inference";
 import { ComputerHistoryDistiller, MemoryManager } from "../src/index.js";
 
 const model: ModelRef = { provider: "test", id: "model" };
@@ -69,7 +69,7 @@ async function computerHistory(count: number): Promise<ComputerHistoryManager> {
   let index = 0;
   let at = new Date("2026-08-13T09:00:00.000Z");
   const manager = new ComputerHistoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-distill-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-distill-")),
     frames: {
       capture: async () => [
         {
@@ -78,7 +78,7 @@ async function computerHistory(count: number): Promise<ComputerHistoryManager> {
           displayId: null,
           width: 0,
           height: 0,
-          image: Buffer.from(`# Zed\n\nediting the flareAI retry policy ${index}`),
+          image: Buffer.from(`# Zed\n\nediting the polymux retry policy ${index}`),
           signature: Uint8Array.from([index, 0, 0]),
           app: "Zed",
         },
@@ -103,7 +103,7 @@ async function computerHistory(count: number): Promise<ComputerHistoryManager> {
 
 function vault(): MemoryManager {
   return new MemoryManager({
-    directory: mkdtempSync(path.join(tmpdir(), "flareai-distill-memory-")),
+    directory: mkdtempSync(path.join(tmpdir(), "polymux-distill-memory-")),
   });
 }
 
@@ -128,7 +128,7 @@ test("frames older than the window become durable memories once", async () => {
   const memory = vault();
   const inference = new FakeInference();
   inference.responses.push([
-    answer("- Works on FlareAI in Zed, currently on the drive retry policy.\n- Short line"),
+    answer("- Works on Polymux in Zed, currently on the drive retry policy.\n- Short line"),
   ]);
   const distiller = new ComputerHistoryDistiller(inference, memory, manager, {}, () => now);
 
@@ -138,7 +138,7 @@ test("frames older than the window become durable memories once", async () => {
   assert.match(memories[0]!.content, /drive retry policy/);
   assert.equal(memories[0]!.kind, "screen");
   // The frame text itself reached the model, not just the index.
-  assert.match(String(inference.requests[0]?.messages[0]?.content), /editing the flareAI retry policy/);
+  assert.match(String(inference.requests[0]?.messages[0]?.content), /editing the polymux retry policy/);
 
   // The watermark has moved, so the same hours are never paid for twice.
   assert.equal(manager.store.state().distilledThrough, manager.store.entries()[0]?.capturedAt);
