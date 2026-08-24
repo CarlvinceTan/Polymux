@@ -1,4 +1,4 @@
-# Polymux Agent Surface (browser extension)
+# Polymux browser extension
 
 The Polymux equivalent of the ChatGPT desktop browser extension: it gives the
 agent context about open tabs **and** lets it control a leased tab, with the

@@ -1,6 +1,6 @@
-# Polymux Agent Surface
+# Polymux
 
-Polymux Agent Surface connects your browser to the Polymux desktop app. It
+Polymux connects your browser to the Polymux desktop app. It
 gives Polymux a lightweight inventory of your open tabs and lets the agent
 control only the exact tab assigned to it, without switching your active tab
 or bringing a browser window to the foreground.
@@ -20,7 +20,7 @@ and a loopback connection on your computer. Open-tab inventory does not include
 page contents. Page content is accessed only when Polymux is asked to work in a
 specific tab.
 
-Polymux Agent Surface never raises the browser window or changes the tab you
+Polymux never raises the browser window or changes the tab you
 are currently using. You remain in control and can stop access by ending the
 task, closing Polymux, or disabling the extension.
 
