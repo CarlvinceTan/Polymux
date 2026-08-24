@@ -16,15 +16,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: apps/site
-    env:
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,22 +34,3 @@ jobs:
       - run: node --test api/*.test.js
       - run: npm run check
       - run: npm run build
-      - run: npm install --global vercel@57.0.0
-      - name: Pull Vercel environment
-        run: vercel pull --yes --environment=${{ github.ref_name == 'main' && 'production' || 'preview' }}
-
-      - name: Build production deployment
-        if: github.ref_name == 'main'
-        run: vercel build --prod
-
-      - name: Build preview deployment
-        if: github.ref_name == 'dev'
-        run: vercel build
-
-      - name: Deploy production
-        if: github.ref_name == 'main'
-        run: vercel deploy --prebuilt --prod
-
-      - name: Deploy preview
-        if: github.ref_name == 'dev'
-        run: vercel deploy --prebuilt
