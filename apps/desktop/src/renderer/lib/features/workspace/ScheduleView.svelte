@@ -311,8 +311,11 @@
   let menuId: string | null = null;
   let menuTop = 0;
   const DEFAULT_FREQUENCY: ScheduleFrequency = {kind: 'daily', interval: 1, time: '09:00'};
+  const copyFrequency = (frequency: ScheduleFrequency): ScheduleFrequency =>
+    frequency.kind === 'weekly' ? {...frequency, days: [...frequency.days]} : {...frequency};
+
   let draft: ScheduleFrequency | null = composeOnMount
-    ? structuredClone(composerItem?.frequency ?? DEFAULT_FREQUENCY)
+    ? copyFrequency(composerItem?.frequency ?? DEFAULT_FREQUENCY)
     : null;
   /** Custom exposes the unit and interval rows; the presets imply both. */
   let repeatMode: 'once' | 'daily' | 'weekly' | 'monthly' | 'yearly' | 'custom' = 'daily';

@@ -188,7 +188,7 @@
   {:else if name === 'languages'}
     <!-- Use the supplied artwork as an alpha mask so its exact silhouette
          still inherits the same colour as every other shared icon. -->
-    <mask id="languages-icon-mask" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+    <mask id="languages-icon-mask" style="mask-type: alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
       <image href={languagesIcon} width="24" height="24" preserveAspectRatio="xMidYMid meet"/>
     </mask>
     <rect width="24" height="24" fill="currentColor" stroke="none" mask="url(#languages-icon-mask)"/>

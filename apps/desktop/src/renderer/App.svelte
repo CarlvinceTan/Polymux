@@ -1865,7 +1865,7 @@
       const paths = actionSource === ALL_SOURCE && source !== ALL_SOURCE
         ? entries.map((entry) => `${source}/${entry.id}`)
         : entries.map((entry) => entry.id);
-      const qualifiedDestination = actionSource === ALL_SOURCE && destinationSource === source
+      const qualifiedDestination = actionSource === ALL_SOURCE && destinationSource === source && !destinationPath.startsWith(`${source}/`)
         ? `${source}/${destinationPath}`
         : destinationPath;
       await api.drive.move(actionSource, paths, qualifiedDestination, onProgress);

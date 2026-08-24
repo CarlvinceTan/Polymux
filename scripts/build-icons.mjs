@@ -14,6 +14,8 @@ import os from 'node:os';
 
 const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const assetRoot = path.join(projectRoot, 'apps/desktop/assets');
+const extensionIconRoot = path.join(projectRoot, 'apps/extension/icons');
+const sitePublicRoot = path.join(projectRoot, 'apps/site/public');
 const source = path.join(assetRoot, 'appicon.svg');
 const work = path.join(os.tmpdir(), `polymux-icons-${process.pid}`);
 
@@ -52,13 +54,13 @@ function findChrome() {
   throw new Error('No Chromium-based browser found to rasterise the icon.');
 }
 
-function render(chrome, size, out) {
+function render(chrome, size, out, rounded = false) {
   // The wrapper pins the drawing to the viewport exactly, so the screenshot is
   // the icon rather than the icon plus a default body margin.
   const page = path.join(work, `page-${size}.html`);
   writeFileSync(page, `<!doctype html><meta charset="utf-8">
 <style>html,body{margin:0;padding:0;background:transparent}
-img{display:block;width:${size}px;height:${size}px}</style>
+img{display:block;width:${size}px;height:${size}px;${rounded ? 'border-radius:22%;' : ''}}</style>
 <img src="${path.relative(work, source)}">`);
   execFileSync(chrome, [
     '--headless=new', '--disable-gpu', '--no-sandbox', '--hide-scrollbars',
@@ -120,5 +122,18 @@ execFileSync('iconutil', ['-c', 'icns', iconset, '-o', path.join(assetRoot, 'app
 buildIco(ICO_SIZES.map((size) => ({size, file: rendered.get(size)})), path.join(assetRoot, 'appicon.ico'));
 writeFileSync(path.join(assetRoot, 'appicon.png'), readFileSync(rendered.get(1024)));
 
+// Browser surfaces do not apply the operating system's icon mask, so render
+// the same white tile and black mark with its rounded-square silhouette baked
+// into the pixels. This keeps the site favicon and extension identical to the
+// desktop app instead of maintaining separate artwork.
+mkdirSync(extensionIconRoot, {recursive: true});
+mkdirSync(sitePublicRoot, {recursive: true});
+for (const size of [16, 32, 48, 128]) {
+  const file = path.join(work, `browser-${size}.png`);
+  render(chrome, size, file, true);
+  writeFileSync(path.join(extensionIconRoot, `icon-${size}.png`), readFileSync(file));
+  if (size === 32) writeFileSync(path.join(sitePublicRoot, 'favicon-32.png'), readFileSync(file));
+}
+
 rmSync(work, {recursive: true, force: true});
-console.log('built apps/desktop/assets/appicon.icns, apps/desktop/assets/appicon.ico, apps/desktop/assets/appicon.png');
+console.log('built desktop, website favicon, and extension icons from apps/desktop/assets/appicon.svg');

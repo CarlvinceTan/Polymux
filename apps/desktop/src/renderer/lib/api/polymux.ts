@@ -1067,7 +1067,8 @@ function createBrowserDemoApi(): PolymuxApi {
         for (const [key, entries] of demoDriveFolders)
           if (key.startsWith(`${source}:`))
             demoDriveFolders.set(key, entries.filter((item) => item.path !== path));
-        demoDriveFolder(source, destinationFolder).push(moved);
+        const destinationKey = `${source}:${destinationFolder}`;
+        demoDriveFolders.set(destinationKey, [...(demoDriveFolders.get(destinationKey) ?? []), moved]);
         return moved;
       }),
       copy: async (source, paths) => paths.map((path) => {

@@ -35,7 +35,7 @@ jobs:
           cache-dependency-path: apps/site/package-lock.json
 
       - run: npm ci
-      - run: node --test api/*.test.js
+      - run: node --test test/*.test.js
       - run: npm run check
       - run: npm run build
       - run: npm install --global vercel@57.0.0

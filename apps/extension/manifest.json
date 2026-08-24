@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Polymux Agent Surface",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Lets Polymux see open-tab metadata and securely control only the browser tabs assigned to it.",
   "icons": {
     "16": "icons/icon-16.png",

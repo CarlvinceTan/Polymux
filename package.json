@@ -1,7 +1,7 @@
 {
   "name": "polymux-desktop",
   "productName": "Polymux",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Polymux desktop agent",
   "author": "Carlvince Tan",
   "main": ".vite/build/main.js",

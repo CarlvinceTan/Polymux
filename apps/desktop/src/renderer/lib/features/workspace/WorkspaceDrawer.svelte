@@ -207,8 +207,8 @@
    */
   export let driveActions: {
     newFolder: (parent: DriveEntry, name: string) => void;
-    upload: (parent: DriveEntry) => void;
-    dropFiles: (files: File[], destination: DriveEntry) => void;
+    upload: (files: File[], parent: DriveEntry, onProgress?: (fraction: number) => void) => Promise<void>;
+    dropFiles: (files: File[], destination: DriveEntry, onProgress?: (fraction: number) => void) => Promise<void>;
     rename: (entry: DriveEntry, name: string) => void;
     move: (entries: DriveEntry[], destination: DriveEntry) => void;
     duplicate: (entries: DriveEntry[]) => void;

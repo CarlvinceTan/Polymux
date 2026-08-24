@@ -3067,7 +3067,7 @@
           {#if pinnedViewsExpanded}
             <div class="pinned-views-config">
               <div class="pinned-views-options">
-                {#each [{kind: 'drive', icon: 'drive', label: 'workspace.drive'}, {kind: 'schedule', icon: 'clock', label: 'workspace.schedule'}, {kind: 'hub', icon: 'chat', label: 'workspace.hub'}, {kind: 'tasks', icon: 'tasks', label: 'workspace.tasks'}] as row (row.kind)}
+                {#each [{kind: 'drive', icon: 'drive', label: 'workspace.drive'}, {kind: 'schedule', icon: 'clock', label: 'workspace.schedule'}, {kind: 'hub', icon: 'chat', label: 'workspace.hub'}, {kind: 'tasks', icon: 'tasks', label: 'workspace.tasks'}] as const as row (row.kind)}
                   <button type="button" class="pinned-view-option" class:checked={general?.pinnedViews.includes(row.kind)} disabled={updatingPinnedViews || !general} onclick={() => void togglePinnedView(row.kind)}>
                     <span class="pinned-view-check">{#if general?.pinnedViews.includes(row.kind)}<Icon name="check" size={12}/>{/if}</span>
                     <Icon name={row.icon} size={16}/>

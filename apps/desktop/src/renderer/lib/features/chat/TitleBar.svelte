@@ -1,11 +1,14 @@
 <script lang="ts">
-  import {afterUpdate, beforeUpdate, tick} from 'svelte';
+  import {afterUpdate, beforeUpdate, tick, type ComponentProps} from 'svelte';
   import {fade} from 'svelte/transition';
   import Icon from '../../shared/components/Icon.svelte';
   import OpenMenu, {type OpenAnchor, type OpenChoice} from '../../shared/components/OpenMenu.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH, SETTINGS_ICON_SIZE, SETTINGS_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import type {PanelMode} from '../../shared/state/panels';
-  import {t} from '../../../i18n';
+  import {t, type MessageKey} from '../../../i18n';
+
+  type IconName = ComponentProps<typeof Icon>['name'];
+  type PinnedView = 'drive' | 'schedule' | 'hub' | 'tasks';
 
   export let title = '';
   export let showTitle = false;
@@ -99,8 +102,8 @@
     }
   }
 
-  const pinnedViewIcons: Record<'drive' | 'schedule' | 'hub' | 'tasks', string> = {drive: 'drive', schedule: 'clock', hub: 'chat', tasks: 'tasks'};
-  const pinnedViewLabels: Record<'drive' | 'schedule' | 'hub' | 'tasks', string> = {drive: 'workspace.drive', schedule: 'workspace.schedule', hub: 'workspace.hub', tasks: 'workspace.tasks'};
+  const pinnedViewIcons: Record<PinnedView, IconName> = {drive: 'drive', schedule: 'clock', hub: 'chat', tasks: 'tasks'};
+  const pinnedViewLabels: Record<PinnedView, MessageKey> = {drive: 'workspace.drive', schedule: 'workspace.schedule', hub: 'workspace.hub', tasks: 'workspace.tasks'};
   let pinnedMenu: {view: 'drive' | 'schedule' | 'hub' | 'tasks'; anchor: OpenAnchor} | null = null;
   let pinnedMenuChoices: OpenChoice[];
   $: pinnedMenuChoices = [
@@ -111,7 +114,7 @@
   function openPinnedMenu(event: MouseEvent, view: 'drive' | 'schedule' | 'hub' | 'tasks'): void {
     event.preventDefault();
     event.stopPropagation();
-    pinnedMenu = {view, anchor: {rect: event.currentTarget.getBoundingClientRect()}};
+    pinnedMenu = {view, anchor: {rect: (event.currentTarget as HTMLButtonElement).getBoundingClientRect()}};
   }
 
   function choosePinnedMenu(value: string): void {

@@ -263,7 +263,7 @@ const PLATFORM_LOGOS = new Set([
  * stable key.
  */
 const skillDisplay: Record<string, {name: string; icon: AgentActivityItem['icon']}> = {
-  'computer-use': {name: 'Computer', icon: 'desktop'},
+  'computer-use': {name: 'Computer', icon: 'computer'},
 };
 
 function skillActivity(value: string): {kind: AgentActivityKind; label: string; icon?: AgentActivityItem['icon']} {

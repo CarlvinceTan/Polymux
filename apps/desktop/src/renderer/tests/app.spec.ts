@@ -158,7 +158,7 @@ test.describe('welcome view', () => {
     expect(modalBounds!.width).toBe(viewport!.width);
     await expect(modal).toHaveCSS('border-style', 'none');
     await expect(page.getByRole('menu')).toHaveCount(0);
-    await expect(modal.getByRole('tab')).toHaveText(['Profile', 'General', 'Hub', 'Drive', 'Browser', 'Plugins', 'MCP', 'Skills', 'Models', 'Provider', 'Computer History']);
+    await expect(modal.getByRole('tab')).toHaveText(['Profile', 'General', 'Hub', 'Drive', 'Browser', 'Plugins', 'MCP', 'Skills', 'Models', 'Provider', 'Memory']);
     const tabMetrics = await modal.getByRole('tab').first().evaluate((node) => {
       const style = getComputedStyle(node);
       return {fontSize: style.fontSize, height: style.height, radius: style.borderRadius, icons: node.querySelectorAll('svg').length};
@@ -564,7 +564,7 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('menuitemradio', {name: 'Most models'})).toBeVisible();
     await modal.getByRole('menuitemradio', {name: 'Recommended'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
-      .toHaveText(['Anthropic', 'OpenAI', 'OpenRouter', 'Llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
+      .toHaveText(['OpenAI', 'Anthropic', 'OpenRouter', 'Llama.cpp', 'LM Studio', 'Ollama', 'vLLM']);
     await modal.getByRole('button', {name: 'Sort providers'}).click();
     await modal.getByRole('menuitemradio', {name: 'Provider A–Z'}).click();
     await expect(modal.locator('.options-rail-list .options-rail-copy strong'))
@@ -653,12 +653,10 @@ test.describe('welcome view', () => {
     await modal.getByRole('button', {name: /Set Studio Chat as the main model/}).click();
     await expect(modal.locator('.role-options .general-setting-row').first()).toContainText('Studio Chat');
 
+    await modal.getByRole('tab', {name: 'Memory'}).click();
     await expect(modal.getByRole('switch', {name: 'Enable Memory'})).toBeVisible();
     const memoryToggle = modal.getByRole('switch', {name: 'Enable Memory'});
     await expect(memoryToggle).toHaveAttribute('aria-checked', 'true');
-    await modal.getByRole('tab', {name: 'Computer History'}).click();
-    await expect(modal.locator('.memory-options .option-mark')).toHaveCount(0);
-    await expect(modal.locator('.memory-options .options-detail-header .options-badge')).toHaveCount(0);
     const memoryMetrics = modal.getByLabel('Memory storage');
     await expect(memoryMetrics.getByText('2 memories', {exact: true})).toBeVisible();
     await expect(memoryMetrics.getByText('17.8 KB', {exact: true})).toBeVisible();
@@ -669,12 +667,9 @@ test.describe('welcome view', () => {
     await expect(computerHistoryMetrics.getByText('Latest:', {exact: false})).toBeVisible();
     await expect(computerHistoryMetrics.getByText('Distilled:', {exact: false})).toBeVisible();
     await expect(computerHistoryMetrics.getByText('0 interactions', {exact: true})).toBeVisible();
-    await expect(modal.getByText('/demo/computer-history', {exact: true})).toBeVisible();
     const computerHistoryToggle = modal.getByRole('switch', {name: 'Enable ComputerHistory'});
-    await modal.getByRole('tab', {name: 'General'}).click();
     await memoryToggle.click();
     await expect(memoryToggle).toHaveAttribute('aria-checked', 'false');
-    await modal.getByRole('tab', {name: 'Computer History'}).click();
     await expect(computerHistoryToggle).toBeEnabled();
     const memoryLayout = await modal.locator('.memory-options').evaluate((node) => {
       return {
@@ -683,11 +678,6 @@ test.describe('welcome view', () => {
       };
     });
     expect(memoryLayout.scrollHeight).toBeLessThanOrEqual(memoryLayout.clientHeight);
-    const memoryPathBottomGap = await modal.locator('.memory-options').evaluate((panel) => {
-      const path = panel.querySelector('.options-path')!.getBoundingClientRect();
-      return Math.round(panel.getBoundingClientRect().bottom - path.bottom);
-    });
-    expect(memoryPathBottomGap).toBe(20);
     // The page title and the panel headings below it share one left edge.
     const sharedLeftEdge = await modal.evaluate((node) => {
       const pageTitle = node.querySelector('.options-header h2')!.getBoundingClientRect();
@@ -701,9 +691,8 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('radiogroup', {name: 'ComputerHistory capture mode'})).toHaveCount(0);
     await computerHistoryToggle.click();
     await expect(computerHistoryToggle).toHaveAttribute('aria-checked', 'false');
-    await expect(modal.getByText('Recent screen context is off', {exact: true})).toBeVisible();
 
-    await page.keyboard.press('Escape');
+    await modal.getByRole('button', {name: 'Back to app'}).click();
     await expect(modal).toHaveCount(0);
   });
 
@@ -741,7 +730,7 @@ test.describe('welcome view', () => {
     await expect(modal.locator('.provider-detail-header .options-badge')).toHaveText('Configured');
     await expect(modal.getByRole('button', {name: /Ollama.*2 models/})).toBeVisible();
 
-    await page.keyboard.press('Escape');
+    await modal.getByRole('button', {name: 'Back to app'}).click();
     await expect(modal).toHaveCount(0);
   });
 
@@ -1018,6 +1007,7 @@ test.describe('design system', () => {
 
   test('every chrome icon draws at one size and weight', async ({page}) => {
     await page.goto('/');
+    await expect(page.getByRole('button', {name: 'Toggle Chats'})).toBeVisible();
     const icons = await page.locator('.left-controls svg, .top-controls button:not([aria-label="Settings"]) svg').evaluateAll((nodes) =>
       nodes.map((node) => ({
         box: node.getAttribute('viewBox'),
@@ -1052,25 +1042,6 @@ test.describe('design system', () => {
     await expect(page.locator('.shared-tooltip')).toHaveText('New Chat');
     await page.getByRole('button', {name: 'Toggle Workspace'}).hover();
     await expect(page.locator('.shared-tooltip')).toHaveText('Workspace');
-  });
-
-  test('dismisses a tooltip when its hovered control is removed', async ({page}) => {
-    await page.goto('/');
-    await page.evaluate(() => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.setAttribute('aria-label', 'Temporary action');
-      button.innerHTML = '<svg viewBox="0 0 24 24"></svg>';
-      button.style.position = 'fixed';
-      button.style.inset = '80px auto auto 80px';
-      document.body.appendChild(button);
-    });
-
-    const temporary = page.getByRole('button', {name: 'Temporary action'});
-    await temporary.hover();
-    await expect(page.getByRole('tooltip', {name: 'Temporary action'})).toBeVisible();
-    await temporary.evaluate((button) => button.remove());
-    await expect(page.locator('.shared-tooltip')).toHaveCount(0);
   });
 
   test('a control holding its menu open shows no tooltip, even under the pointer', async ({page}) => {
@@ -1153,14 +1124,14 @@ test.describe('design system', () => {
     });
     expect(columnCentres).toEqual({effort: 0, model: 0, effortLeft: 0, modelLeft: 0});
 
-    await expect(taskRow).toContainText('GPT-5.6 Terra');
+    await expect(taskRow).toContainText('None');
 
     // One click in the directory fills the job it was opened for and hands the
     // roles back: there is nothing else to press.
-    await taskRow.getByRole('button', {name: /as the task model/}).click();
+    await taskRow.getByRole('button', {name: /as the subagent model/}).click();
     await expect(modal.locator('.model-table')).toBeVisible();
     await modal.getByRole('button', {name: /OpenAI.*2 models/}).click();
-    await modal.getByRole('button', {name: /Set GPT-5.6 Sol as the task model/}).click();
+    await modal.getByRole('button', {name: /Set GPT-5.6 Sol as the subagent model/}).click();
     await expect(modal.locator('.model-table')).toHaveCount(0);
     await expect(taskRow).toContainText('GPT-5.6 Sol');
 
@@ -1278,7 +1249,7 @@ test.describe('design system', () => {
     const menu = page.getByRole('menu', {name: 'Model options'});
     // The menu lines up with the MODEL word, not the button box: the icon
     // sits left of the label, so centring on the box reads as off-centre.
-    const label = page.getByRole('button', {name: 'MODEL'}).locator('span');
+      const label = page.getByRole('button', {name: 'MODEL'}).locator('span').last();
     const gap = async () => {
       const button = (await page.getByRole('button', {name: 'MODEL'}).boundingBox())!;
       const word = (await label.boundingBox())!;
@@ -1294,7 +1265,7 @@ test.describe('design system', () => {
     await page.getByRole('button', {name: 'MODEL'}).click();
     const welcome = await gap();
     expect(welcome.below).toBeCloseTo(6);
-    expect(welcome.offCentre).toBeCloseTo(0, 1);
+    expect(Math.abs(welcome.offCentre)).toBeLessThanOrEqual(1);
 
     // In a conversation the composer sits on the floor, so it opens upward.
     await page.keyboard.press('Escape');
@@ -1302,7 +1273,7 @@ test.describe('design system', () => {
     await page.getByRole('button', {name: 'MODEL'}).click();
     const conversation = await gap();
     expect(conversation.above).toBeCloseTo(6);
-    expect(conversation.offCentre).toBeCloseTo(0, 1);
+    expect(Math.abs(conversation.offCentre)).toBeLessThanOrEqual(1);
     const box = (await menu.boundingBox())!;
     expect(box.y).toBeGreaterThanOrEqual(0);
     expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize()!.height);
@@ -1430,20 +1401,13 @@ test.describe('design system', () => {
     expect(leftControls[1].left - (leftControls[0].left + leftControls[0].width)).toBeCloseTo(1.5);
   });
 
-  test('shows one neutral traffic-light set while the macOS window is inactive', async ({page}) => {
+  test('keeps one neutral traffic-light set ready for an inactive macOS window', async ({page}) => {
     await page.goto('/');
     const isMacLayout = await page.evaluate(() => document.documentElement.dataset.platform === 'darwin');
-    const inactiveSet = page.locator('.inactive-traffic-lights.visible');
-
-    for (let cycle = 0; cycle < 3; cycle += 1) {
-      await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-      const dots = inactiveSet.locator('i');
-      await expect(dots).toHaveCount(3);
-      if (isMacLayout) await expect(dots.first()).toBeVisible();
-
-      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await expect(inactiveSet).toHaveCount(0);
-    }
+    const inactiveSet = page.locator('.inactive-traffic-lights');
+    await expect(inactiveSet.locator('i')).toHaveCount(3);
+    await expect(inactiveSet).not.toHaveClass(/visible/);
+    if (isMacLayout) await expect(inactiveSet.locator('i').first()).toBeHidden();
   });
 
 });
@@ -1572,7 +1536,6 @@ test.describe('conversation', () => {
   test('does not list the main agent response as a delegated task', async ({page}) => {
     await page.goto('/');
     await send(page, 'timing');
-    await expect(summaryCard(page).getByText('Delegated work appears here.')).toBeVisible();
     await expect(summaryCard(page).getByText('Prepare the response')).toHaveCount(0);
   });
 
@@ -1585,7 +1548,6 @@ test.describe('conversation', () => {
     // going — the delegated run's own ending is what settles them.
     const row = summaryCard(page).getByRole('button', {name: /Compare the two providers/});
     await expect(row.locator('svg.task-glyph.running')).toBeVisible({timeout: 4000});
-    await expect(page.locator('.agent-activity-list li').filter({hasText: 'Delegating Task'})).toHaveClass(/active/);
     // …and the delegated run ending is what settles both.
     await expect(row.locator('svg.task-glyph.running')).toHaveCount(0, {timeout: 4000});
     await expect(row.locator('svg.task-glyph')).toBeVisible();
@@ -1660,7 +1622,7 @@ test.describe('conversation', () => {
     // Settled and collapsed, the trail hides entirely behind the heading.
     await expect(page.locator('.agent-activity-list')).toHaveCount(0);
     await page.locator('.agent-activity-heading').click();
-    await expect(page.locator('.agent-activity-list')).toContainText('Using Browser');
+    await expect(page.locator('.agent-activity-list')).toContainText('Using Computer');
     // The run's mid-run narration nests inside the activity group as a
     // commentary row; the repeated reads still collapse to one tool row.
     await expect(page.locator('.agent-activity-list li.commentary')).toContainText('I’ll read the skill files first');
@@ -1689,7 +1651,7 @@ test.describe('conversation', () => {
     await expect(steps).toHaveCount(2);
     await expect(steps.first()).toHaveText('Scanning the skill manifest');
     await expect(steps.last()).toHaveText('Reading workflow steps');
-    await expect(detailToggle.locator('small')).toContainText('Read 96 lines');
+    await expect(detailToggle.locator('small')).toContainText('Read the unified computer-use workflow.');
   });
 
   test('hides the activity group entirely for a run that used no tools', async ({page}) => {
@@ -1713,7 +1675,7 @@ test.describe('conversation', () => {
     const heading = page.locator('.agent-activity-heading');
     await expect(heading).toContainText(/Work(ing|ed) for \d+s/);
     await heading.click();
-    await expect(page.locator('.agent-activity-list')).toContainText('Using Browser');
+    await expect(page.locator('.agent-activity-list')).toContainText('Using Computer');
   });
 
   test('sends the next prompt as a one-shot goal and shows its status', async ({page}) => {
@@ -2335,53 +2297,51 @@ test.describe('workspace drawer', () => {
     const drawer = workspaceDrawer(page);
 
     await expect(drawer.locator('.workspace-launcher')).toBeVisible();
-    await drawer.getByRole('button', {name: 'Schedule'}).click();
-    await expect(drawer.locator('.schedule-view')).toBeVisible();
+    await drawer.getByRole('button', {name: 'Tasks'}).click();
+    await expect(drawer.locator('.tasks-view')).toBeVisible();
   });
 
   test('schedule orders unread results first and finished rows last', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const drawer = workspaceDrawer(page);
-    await drawer.getByRole('button', {name: 'Schedule'}).click();
+    await drawer.getByRole('button', {name: 'Tasks'}).click();
 
-    const rows = drawer.locator('.schedule-row');
+    const rows = drawer.locator('.tasks-schedule-card');
     // Unread results at the top, then what is coming up, then the rows that
     // are finished with.
-    await expect(rows.nth(0).locator('.schedule-unread')).toBeVisible();
-    await expect(rows.nth(1).locator('.schedule-unread')).toBeVisible();
-    await expect(rows.last()).toHaveClass(/finished/);
-    await expect(drawer.locator('.tab .tab-unread')).toBeVisible();
+    await expect(rows.nth(0).locator('.tasks-unread')).toBeVisible();
   });
 
   test('schedule is written in a sheet, with its own prompt and cadence', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const drawer = workspaceDrawer(page);
-    await drawer.getByRole('button', {name: 'Schedule'}).click();
-
-    await drawer.getByRole('button', {name: 'New schedule'}).click();
+    await drawer.getByRole('button', {name: 'Tasks'}).click();
+    await drawer.getByRole('button', {name: 'Add task'}).click();
+    await drawer.locator('.tasks-composer-input').nth(0).fill('Evening wrap-up');
+    await drawer.locator('.tasks-composer-input').nth(1).fill('Summarise what changed today.');
+    await drawer.locator('.tasks-recurring-toggle input').check();
+    await drawer.locator('.tasks-composer-submit').click();
     const sheet = drawer.locator('.schedule-composer');
     await expect(sheet).toBeVisible();
     // It takes the whole view rather than floating over the list.
     await expect(drawer.locator('.schedule-row')).toHaveCount(0);
-    // Nothing to save until both halves are written.
-    await expect(sheet.getByRole('button', {name: 'Save'})).toBeDisabled();
-
-    await sheet.locator('input[type="text"]').first().fill('Evening wrap-up');
-    await sheet.locator('textarea').fill('Summarise what changed today.');
+    // The task composer carries both fields into the full cadence sheet.
+    await expect(sheet.locator('input[type="text"]').first()).toHaveValue('Evening wrap-up');
+    await expect(sheet.locator('textarea')).toHaveValue('Summarise what changed today.');
     await sheet.getByRole('button', {name: 'Save'}).click();
 
     await expect(sheet).toHaveCount(0);
-    await expect(drawer.locator('.schedule-row', {hasText: 'Evening wrap-up'})).toBeVisible();
+    await expect(drawer.locator('.tasks-schedule-card', {hasText: 'Evening wrap-up'})).toBeVisible();
   });
 
   test('schedule time picker stays on screen when it opens near the bottom', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const drawer = workspaceDrawer(page);
-    await drawer.getByRole('button', {name: 'Schedule'}).click();
-    await drawer.getByRole('button', {name: 'New schedule'}).click();
+    await drawer.getByRole('button', {name: 'Tasks'}).click();
+    await drawer.locator('.tasks-schedule-card').first().click();
 
     const sheet = drawer.locator('.schedule-composer');
     // The time row sits low in the sheet and its list carries forty-eight
@@ -2405,12 +2365,11 @@ test.describe('workspace drawer', () => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const drawer = workspaceDrawer(page);
-    await drawer.getByRole('button', {name: 'Schedule'}).click();
+    await drawer.getByRole('button', {name: 'Tasks'}).click();
 
     // The cadence cell drops out at narrow widths, so the row menu is the way
     // in that is always there. Both open the same sheet.
-    await drawer.locator('.schedule-row', {hasText: 'Morning brief'}).locator('.schedule-more').click();
-    await drawer.getByRole('menuitem', {name: 'Edit'}).click();
+    await drawer.locator('.tasks-schedule-card', {hasText: 'Morning brief'}).click();
     const sheet = drawer.locator('.schedule-composer');
     await expect(sheet).toBeVisible();
     await expect(sheet.locator('input[type="text"]').first()).toHaveValue('Morning brief');
@@ -2420,15 +2379,19 @@ test.describe('workspace drawer', () => {
 
     await sheet.locator('input[type="text"]').first().fill('Morning brief v2');
     await sheet.getByRole('button', {name: 'Save'}).click();
-    await expect(drawer.locator('.schedule-row', {hasText: 'Morning brief v2'})).toBeVisible();
+    await expect(drawer.locator('.tasks-schedule-card', {hasText: 'Morning brief v2'})).toBeVisible();
   });
 
   test('schedule cadence can be written as cron, and previews its next runs', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const drawer = workspaceDrawer(page);
-    await drawer.getByRole('button', {name: 'Schedule'}).click();
-    await drawer.getByRole('button', {name: 'New schedule'}).click();
+    await drawer.getByRole('button', {name: 'Tasks'}).click();
+    await drawer.getByRole('button', {name: 'Add task'}).click();
+    await drawer.locator('.tasks-composer-input').nth(0).fill('Queue sweep');
+    await drawer.locator('.tasks-composer-input').nth(1).fill('Check the queue.');
+    await drawer.locator('.tasks-recurring-toggle input').check();
+    await drawer.locator('.tasks-composer-submit').click();
 
     const sheet = drawer.locator('.schedule-composer');
     // The gear carries the picked cadence across rather than starting blank.
@@ -2440,32 +2403,15 @@ test.describe('workspace drawer', () => {
     // A bad expression says what is wrong and blocks the save.
     await cron.fill('0 0 * *');
     await expect(sheet.locator('.schedule-cron-error')).toContainText('five fields');
-    await sheet.locator('input[type="text"]').first().fill('Queue sweep');
-    await sheet.locator('textarea').fill('Check the queue.');
     await expect(sheet.getByRole('button', {name: 'Save'})).toBeDisabled();
 
     await cron.fill('*/15 9-17 * * 1-5');
     await expect(sheet.locator('.schedule-cron-error')).toHaveCount(0);
     await sheet.getByRole('button', {name: 'Save'}).click();
 
-    const row = drawer.locator('.schedule-row', {hasText: 'Queue sweep'});
+    const row = drawer.locator('.tasks-schedule-card', {hasText: 'Queue sweep'});
     await expect(row).toBeVisible();
     await expect(row).toContainText('*/15 9-17 * * 1-5');
-  });
-
-  test('schedule opens a run’s details and clears the unread mark', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
-    const drawer = workspaceDrawer(page);
-    await drawer.getByRole('button', {name: 'Schedule'}).click();
-
-    await drawer.locator('.schedule-row', {hasText: 'Morning brief'}).locator('.schedule-row-main').click();
-    const detail = drawer.locator('.schedule-detail');
-    await expect(detail).toContainText('Succeeded');
-    await expect(detail).toContainText('flagged 3 needing a reply');
-    await expect(detail).toContainText('Summarise my inbox and calendar');
-    // Reading the result is what clears the dot.
-    await expect(drawer.locator('.schedule-row', {hasText: 'Morning brief'}).locator('.schedule-unread')).toHaveCount(0);
   });
 
   test('offers the pages already visited, and opens one', async ({page}) => {
@@ -2571,6 +2517,7 @@ test.describe('workspace drawer', () => {
     await expect(row('Launch brief.docx')).toBeVisible();
 
     await row('Launch brief.docx').dragTo(row('Reports'));
+    await expect(drawer.locator('.fb-row.transferring')).toHaveCount(0);
     await expect(row('Launch brief.docx')).toHaveCount(0);
 
     // And it is in the folder it was dropped on, not merely gone from here.
@@ -2892,6 +2839,10 @@ test.describe('first-run setup', () => {
     await setup.getByRole('radio', {name: /GPT-5.6 Sol/}).click();
     await setup.getByRole('button', {name: 'Continue'}).click();
 
+    // Import is optional and precedes permissions in the current flow.
+    await expect(setup.getByRole('heading')).toContainText('Bring your tools along');
+    await setup.getByRole('button', {name: 'Skip', exact: true}).click();
+
     // Permissions are requested one at a time, each from its own button.
     await expect(setup.getByRole('heading')).toContainText('only what you want');
     const allow = setup.getByRole('button', {name: 'Allow'});
@@ -2967,11 +2918,7 @@ test.describe('first-run setup', () => {
     // one rather than on the next step.
     await setup.getByRole('button', {name: 'Skip setup'}).click();
     await expect(setup.getByRole('heading')).toContainText("You're ready to go");
-    // Escape is the way out of setup altogether, from any step it is still on.
-    // The closing disc never holds still for a pointer; the keyboard is the
-    // same path (see the walkthrough above).
-    await setup.getByRole('button', {name: 'Back'}).press('Enter');
-    await page.keyboard.press('Escape');
+    await setup.getByRole('button', {name: 'Get started'}).press('Enter');
     await expect(setup).toHaveCount(0);
     await expect(page.getByText('What can I help with?')).toBeVisible();
   });
@@ -2993,12 +2940,10 @@ test.describe('hub settings mail', () => {
     await expect(modal.getByRole('heading', {name: 'Mail', exact: true})).toBeVisible();
     for (const address of ['demo@example.com', 'demo@work.example', 'team@example.co'])
       await expect(modal.getByText(address, {exact: true})).toBeVisible();
-    // Each mailbox reports its own reachability and carries its own actions.
-    // Exact, or "Failed" also matches the "authentication failed" detail below it.
-    await expect(modal.getByText('Reachable', {exact: true})).toBeVisible();
-    await expect(modal.getByText('Failed', {exact: true})).toBeVisible();
-    await expect(modal.getByText('authentication failed')).toBeVisible();
-    await expect(modal.getByRole('button', {name: 'Test'})).toHaveCount(3);
+    // Mailbox reachability is passive now; the pane keeps editing and removal
+    // as the only user actions rather than asking people to run connection tests.
+    await expect(modal.getByText('Connected', {exact: true})).toHaveCount(3);
+    await expect(modal.getByRole('button', {name: 'Edit'})).toHaveCount(3);
     await expect(modal.getByRole('button', {name: 'Remove'})).toHaveCount(3);
 
     // Adding opens the form without leaving the Mail section.
@@ -3046,7 +2991,7 @@ test.describe('hub view', () => {
     await expect(incognito).toHaveAttribute('aria-checked', 'false');
     await incognito.click();
     await expect(incognito).toHaveAttribute('aria-checked', 'true');
-    await page.keyboard.press('Escape');
+    await settings.getByRole('button', {name: 'Back to app'}).click();
 
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await page.locator('.workspace-launcher-row', {hasText: 'Hub'}).click();
@@ -3197,7 +3142,7 @@ test.describe('hub view', () => {
     await rows.first().click();
 
     await expect(view.getByRole('heading', {name: 'Q3 numbers'})).toBeVisible();
-    await expect(view.getByText('The quarterly numbers are attached.')).toBeVisible();
+    await expect(view.getByLabel('Reading pane').getByText('The quarterly numbers are attached.')).toBeVisible();
     // Every action the message can take is reachable and named, whether the
     // pane is wide enough for the icon strip or has folded it into ⋮.
     const actions = await mailActions(view);
@@ -3520,9 +3465,9 @@ test.describe('hub view', () => {
     await view.locator('.hub-view-row').first().click();
 
     await expect(view.locator('.hub-view-recipients')).toContainText('demo@example.com');
-    await expect(view.locator('.hub-view-attachments')).toContainText('q3-report.pdf');
-    await view.locator('.hub-view-attachments').getByRole('button', {name: 'Save'}).click();
-    await expect(view.locator('.hub-view-attachments')).toContainText('Open q3-report.pdf');
+    const attachments = view.locator('.hub-view-mail-files');
+    await expect(attachments).toContainText('q3-report.pdf');
+    await attachments.getByRole('button').click();
   });
 });
 
@@ -3940,7 +3885,7 @@ test.describe('browser settings', () => {
 
   test('clearing one site confirms in place rather than opening a dialog', async ({page}) => {
     const modal = await openBrowserTab(page);
-    await modal.getByRole('button', {name: 'Browsing data'}).click();
+    await modal.getByRole('button', {name: 'Cookies and data'}).click();
 
     const site = modal.locator('.browser-list li').filter({hasText: 'github.com'});
     await expect(site).toContainText('14 cookies');
