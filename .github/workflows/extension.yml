@@ -60,6 +60,7 @@ jobs:
           }
 
       - name: Require a version newer than the Store draft or release
+        id: version_check
         env:
           ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
@@ -82,13 +83,22 @@ jobs:
             });
             process.stdout.write(versions[0] ?? "");
           ' "$RUNNER_TEMP/cws-status.json")"
+          current_version="$(node -p "require('./apps/extension/manifest.json').version")"
           if [[ -n "$previous_version" ]]; then
-            node scripts/validate-extension-version.mjs --previous-version "$previous_version"
+            if [[ "$previous_version" == "$current_version" ]]; then
+              echo "Version $current_version is already submitted or published; verifying Store status."
+              echo "release_exists=true" >> "$GITHUB_OUTPUT"
+            else
+              node scripts/validate-extension-version.mjs --previous-version "$previous_version"
+              echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "No published or submitted Store package exists; allowing the initial automated upload."
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload extension package
+        if: steps.version_check.outputs.release_exists != 'true'
         env:
           ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
@@ -110,6 +120,7 @@ jobs:
           ' "$RUNNER_TEMP/cws-upload.json"
 
       - name: Submit update for review and automatic publication
+        if: steps.version_check.outputs.release_exists != 'true'
         env:
           ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
@@ -157,11 +168,42 @@ jobs:
           node -e '
             const fs = require("node:fs");
             const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-            if (value.itemId !== process.env.CWS_EXTENSION_ID || !value.state) {
+            const expected = new Set(["BROAD_HOST_USAGE", "CHANGING_VISIBILITY"]);
+            const warnings = value.warningInfo?.warnings?.map((warning) => warning.reason) ?? [];
+            if (value.itemId !== process.env.CWS_EXTENSION_ID ||
+                warnings.some((warning) => !expected.has(warning))) {
               throw new Error(`Chrome Web Store submission failed: ${JSON.stringify(value)}`);
             }
-            console.log(`Submitted Chrome Web Store update: ${value.state}.`);
+            console.log(`Chrome Web Store accepted the submission${value.state ? `: ${value.state}` : ""}.`);
           ' "$RUNNER_TEMP/cws-publish.json"
+
+      - name: Verify submitted or published Store version
+        env:
+          ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+        run: |
+          expected_version="$(node -p "require('./apps/extension/manifest.json').version")"
+          for attempt in {1..6}; do
+            response="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer $ACCESS_TOKEN" \
+              "https://chromewebstore.googleapis.com/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:fetchStatus")"
+            printf '%s' "$response" > "$RUNNER_TEMP/cws-final-status.json"
+            if node -e '
+              const fs = require("node:fs");
+              const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              const expected = process.argv[2];
+              const revisions = [value.submittedItemRevisionStatus, value.publishedItemRevisionStatus].filter(Boolean);
+              const revision = revisions.find((candidate) =>
+                candidate.distributionChannels?.some((channel) => channel.crxVersion === expected));
+              if (!revision?.state) process.exit(1);
+              console.log(`Chrome Web Store version ${expected}: ${revision.state}.`);
+            ' "$RUNNER_TEMP/cws-final-status.json" "$expected_version"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Chrome Web Store did not report version $expected_version as submitted or published."
+          exit 1
 
       - uses: actions/upload-artifact@v4
         if: always()
