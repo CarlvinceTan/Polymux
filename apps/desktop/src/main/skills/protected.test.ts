@@ -119,5 +119,5 @@ test("combineHooks stops at the first veto and runs afterTool on all", async () 
 test("guard uses the real mirror location shape", () => {
   const home = path.join("/home", "u");
   const root = path.join(home, ".polymux", "official-skills");
-  assert.equal(isInsideProtectedSkills(path.join(root, "email-use"), root), true);
+  assert.equal(isInsideProtectedSkills(path.join(root, "hub-use"), root), true);
 });

@@ -1,5 +1,5 @@
 import type { AgentTool } from "@polymux/core";
-import { digestRecording, readRecording, type RecordingSession } from "@polymux/computer-history";
+import { digestRecording, readRecording, type RecordingSession } from "@polymux/computer";
 import type { RecordingCapture } from "./capture.js";
 
 /**

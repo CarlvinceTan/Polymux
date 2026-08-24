@@ -61,7 +61,7 @@ export function boundedResearchToolTurnBudget(
 }
 
 /**
- * Lossless fallback routing for a coordinator that omits experimental route
+ * Lossless fallback routing for a coordinator that omits route
  * metadata. Only explicit read-only evidence work is narrowed; ambiguous or
  * mutating work returns undefined and keeps the complete tool catalogue.
  */
@@ -110,7 +110,7 @@ function isExternalMessageReadTool(name: string): boolean {
 /**
  * Selects only the host capabilities a delegated task was explicitly given.
  * An absent/empty route and `all` are deliberately lossless fallbacks: this
- * experiment may save context, but it may never silently make an ambiguous
+ * routing may save context, but it may never silently make an ambiguous
  * task impossible. `read` remains available so a routed worker can load the
  * complete SKILL.md it was instructed to follow.
  */
@@ -129,9 +129,9 @@ export function selectTaskTools(
     ) return true;
     if (
       selected.has("browser-read") &&
-      name === "browser_current_read"
+      ["browser_current_read", "computer_state"].includes(name)
     ) return true;
-    if (selected.has("browser") && name.startsWith("browser")) return true;
+    if (selected.has("browser") && (name.startsWith("browser") || ["computer_state", "computer_arbiter"].includes(name))) return true;
     if (selected.has("email-triage") && ["email_search_all", "email_read"].includes(name)) return true;
     if (selected.has("email-read") && ["email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all"].includes(name)) return true;
     if (selected.has("email") && name.startsWith("email_")) return true;
@@ -157,6 +157,7 @@ export function selectTaskTools(
       (
         [
           "bash", "edit", "read", "write",
+          "computer_state", "computer_arbiter",
           "browser", "browser_tabs", "browser_current_read", "browser_read",
           "browser_snapshot_many", "browser_control",
           "email_accounts", "email_folders", "email_list", "email_read",

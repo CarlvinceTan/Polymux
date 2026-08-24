@@ -7,14 +7,14 @@
   type Release = {
     version: string | null;
     releaseUrl: string;
-    platforms: Record<SupportedPlatform, DownloadAsset | null> & {linuxRpm: DownloadAsset | null};
+    platforms: Record<SupportedPlatform, DownloadAsset | null>;
   };
 
   const releaseUrl = 'https://github.com/CarlvinceTan/Polymux/releases/latest';
   const platformCopy: Record<Platform, {name: string; detail: string; format: string; action: string}> = {
     macos: {name: 'macOS', detail: 'Apple silicon', format: '.dmg', action: 'Download for macOS'},
     windows: {name: 'Windows', detail: 'Windows 10 or later · x64', format: 'Setup.exe', action: 'Download for Windows'},
-    linux: {name: 'Linux', detail: 'Ubuntu / Debian · x64', format: '.deb', action: 'Download for Linux'},
+    linux: {name: 'Linux', detail: 'Most distributions · x64', format: 'AppImage', action: 'Download for Linux'},
     other: {name: 'desktop', detail: 'macOS · Windows · Linux', format: 'releases', action: 'View desktop releases'},
   };
   let platform: Platform = 'macos';
@@ -102,7 +102,7 @@ route      this Mac
 
 <b>Ready. No cloud key required.</b></pre></div></section>
 
-  <section class="download grid-paper" id="download"><div><span class="section-number">05 / GET POLYMUX</span><h2>Less setup.<br/><em>Less switching.</em></h2></div><div class="download-card"><span class="mark big"><i></i><i></i><i></i></span><div><h3>Polymux for {copy.name}</h3><p>{copy.detail} · {versionLabel}</p></div><a class="primary red-bg" href={downloadUrl}>{platform === 'other' ? 'View releases' : `Download ${copy.format}`} <span>↓</span></a><small>{#if platform === 'linux'}RPM and other files are on <a href={release?.releaseUrl ?? releaseUrl}>GitHub Releases</a>.{:else if platform === 'other'}Open this page on your desktop for an automatic installer choice.{:else if !download}The first public installer will appear here after release.{:else}Installer selected automatically for this device.{/if}</small></div></section>
+  <section class="download grid-paper" id="download"><div><span class="section-number">05 / GET POLYMUX</span><h2>Less setup.<br/><em>Less switching.</em></h2></div><div class="download-card"><span class="mark big"><i></i><i></i><i></i></span><div><h3>Polymux for {copy.name}</h3><p>{copy.detail} · {versionLabel}</p></div><a class="primary red-bg" href={downloadUrl}>{platform === 'other' ? 'View releases' : `Download ${copy.format}`} <span>↓</span></a><small>{#if platform === 'linux'}Make the AppImage executable once; future releases update inside Polymux.{:else if platform === 'other'}Open this page on your desktop for an automatic installer choice.{:else if !download}The first public installer will appear here after release.{:else}Installer selected automatically for this device.{/if}</small></div></section>
 </main>
 
 <footer><a class="brand" href="#top"><span class="mark"><i></i><i></i><i></i></span>Polymux</a><p>Your digital life, in one place.</p><div><a href={releaseUrl}>GitHub</a><a href="#product">Product</a><a href="#download">Download</a></div><small>© 2026 Polymux</small></footer>

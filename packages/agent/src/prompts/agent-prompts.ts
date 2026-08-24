@@ -6,7 +6,7 @@ import path from "node:path";
  * literals buried in the code that uses them.
  *
  * `base` opens the system prompt for every run. `direct` governs a top-level
- * experimental fast path, `main` every run that can delegate, and `task` every
+ * fast path, `main` every run that can delegate, and `task` every
  * delegated run — one standing brief for each distinct job. The rest belong to the internal agents: the goal judge, the
  * compactor, the memory consolidator, the computerHistory distiller.
  *
@@ -42,22 +42,17 @@ export const AGENT_PROMPT_NAMES: AgentPromptName[] = [
  * an error: the code that asks for it keeps its own default, so a broken
  * install runs on the built-in wording rather than on nothing at all.
  */
-export function loadAgentPrompts(directory: string, overlayDirectory?: string): AgentPrompts {
+export function loadAgentPrompts(directory: string): AgentPrompts {
   const prompts: AgentPrompts = {};
   for (const name of AGENT_PROMPT_NAMES) {
     try {
-      const text = readFileSync(path.join(directory, `${name}.md`), "utf8").trim();
+      const text = readFileSync(
+        path.join(directory, `${name}.md`),
+        "utf8",
+      ).trim();
       if (text) prompts[name] = text;
     } catch {
       // Left to its default.
-    }
-    if (overlayDirectory) {
-      try {
-        const overlay = readFileSync(path.join(overlayDirectory, `${name}.md`), "utf8").trim();
-        if (overlay) prompts[name] = [prompts[name], overlay].filter(Boolean).join("\n\n");
-      } catch {
-        // An experiment need only override the prompts it studies.
-      }
     }
   }
   return prompts;

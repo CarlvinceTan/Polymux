@@ -17,12 +17,10 @@ const personalSkill = (name: string, description: string): Skill => ({
 });
 
 const skills = [
-  skill("browser-use", "Use websites, browser pages and live web research."),
-  skill("email-use", "Read and draft email, inbox, applications and bookings."),
-  skill("message-use", "Read and reply to WhatsApp, WeChat and personal chats."),
+  skill("computer-use", "Use websites, apps, tabs, windows, and recent computer history."),
+  skill("drive-use", "Safely find and manage files and folders in Google Drive."),
+  skill("hub-use", "Read email and reply across inboxes, WhatsApp, WeChat, and personal chats."),
   skill("chat-style", "Draft a short personal chat reply in the user's style."),
-  skill("computerHistory", "Identify recent on-screen work and what happened before."),
-  skill("computer-use", "Control an open GUI app, window or browser tab without foreground focus."),
   skill("skill-maintenance", "Safely review, update, or remove installed personal skills."),
   skill("pdf", "Read and edit PDF documents."),
   skill("unrelated-specialist", "Tune a hydroponic irrigation controller."),
@@ -31,15 +29,15 @@ const skills = [
 test("realistic prompts expose only skills useful to the coordinator", () => {
   assert.deepEqual(
     selectSkillsForPrompt(skills, "Find the latest events from NUSync").map((item) => item.name),
-    ["browser-use"],
+    ["computer-use"],
   );
   assert.deepEqual(
     selectSkillsForPrompt(skills, "Reply to Dad and say I will arrive at 7").map((item) => item.name),
-    ["message-use", "chat-style"],
+    ["hub-use", "chat-style"],
   );
   assert.deepEqual(
     selectSkillsForPrompt(skills, "Continue what I was doing before I switched").map((item) => item.name),
-    ["computerHistory"],
+    ["computer-use"],
   );
 });
 
@@ -50,32 +48,43 @@ test("explicit artifact words retain their specialist without unrelated skills",
   );
 });
 
+test("Google Drive requests retain the core Drive workflow", () => {
+  assert.deepEqual(
+    selectSkillsForPrompt(skills, "Find the project folder in my Google Drive").map((item) => item.name),
+    ["drive-use"],
+  );
+  assert.deepEqual(
+    selectSkillsForPrompt(skills, "Open that Drive file in the browser").map((item) => item.name),
+    ["computer-use", "drive-use"],
+  );
+});
+
 test("change detection exposes independent public and personal evidence skills", () => {
   assert.deepEqual(
     selectSkillsForPrompt(skills, "Has anything changed that affects my Singapore plans?").map((item) => item.name),
-    ["browser-use", "email-use", "message-use"],
+    ["computer-use", "hub-use"],
   );
 });
 
 test("latest communication requests do not acquire an unrelated browser workflow", () => {
   assert.deepEqual(
     selectSkillsForPrompt(skills, "Check my inbox for the latest email from NUS").map((item) => item.name),
-    ["email-use"],
+    ["hub-use"],
   );
   assert.deepEqual(
     selectSkillsForPrompt(skills, "What did Dad message me most recently?").map((item) => item.name),
-    ["message-use", "chat-style"],
+    ["hub-use", "chat-style"],
   );
   assert.deepEqual(
     selectSkillsForPrompt(skills, "Search the web and my email for the latest NUS update").map((item) => item.name),
-    ["browser-use", "email-use"],
+    ["computer-use", "hub-use"],
   );
 });
 
 test("natural time, reminder, and communication wording retains the intended workflows", () => {
   assert.deepEqual(
     selectSkillsForPrompt(skills, "Find the best events this weekend from NUSync and student group pages").map((item) => item.name),
-    ["browser-use"],
+    ["computer-use"],
   );
   const reminderSkills = [skill("apple-reminders", "Create and inspect Apple Reminders."), ...skills];
   assert.deepEqual(
@@ -84,7 +93,7 @@ test("natural time, reminder, and communication wording retains the intended wor
   );
   assert.deepEqual(
     selectSkillsForPrompt(skills, "See if there's anything from NUS I need to respond to today").map((item) => item.name),
-    ["email-use", "message-use", "chat-style"],
+    ["hub-use", "chat-style"],
   );
 });
 
@@ -117,7 +126,7 @@ test("verbose personal skills require direct prompt overlap instead of expanded 
   ];
   assert.deepEqual(
     selectSkillsForPrompt(catalogue, "Find the latest events from NUSync").map((item) => item.name),
-    ["browser-use"],
+    ["computer-use"],
   );
   const broadWorkspaceCatalogue = [
     ...skills,
@@ -125,11 +134,11 @@ test("verbose personal skills require direct prompt overlap instead of expanded 
   ];
   assert.deepEqual(
     selectSkillsForPrompt(broadWorkspaceCatalogue, "Find the best events this weekend from student group pages, then give me a ranked shortlist").map((item) => item.name),
-    ["browser-use"],
+    ["computer-use"],
   );
   assert.deepEqual(
     selectSkillsForPrompt(catalogue, "Do a job search for software engineering roles").map((item) => item.name),
-    ["browser-use", "job-search"],
+    ["computer-use", "job-search"],
   );
   assert.deepEqual(
     selectSkillsForPrompt(catalogue, "Create a project tracker in Notion").map((item) => item.name),
@@ -145,7 +154,7 @@ test("verbose personal skills require direct prompt overlap instead of expanded 
   ];
   assert.deepEqual(
     selectSkillsForPrompt(noisy, "Find a couple of NUS events this weekend and check whether I have anything to reply to").map((item) => item.name),
-    ["browser-use", "email-use", "message-use", "chat-style"],
+    ["computer-use", "hub-use", "chat-style"],
   );
 });
 
@@ -160,7 +169,7 @@ test("configuration-derived skill routing handles inflection without domain hard
   ];
   assert.deepEqual(
     selectSkillsForPrompt(catalogue, "Find software engineering internships for 2027").map((item) => item.name),
-    ["browser-use", "job-search"],
+    ["computer-use", "job-search"],
   );
   assert.deepEqual(
     selectSkillsForPrompt(catalogue, "Update my job tracker in Notion").map((item) => item.name),
@@ -172,7 +181,7 @@ test("configuration-derived skill routing handles inflection without domain hard
   );
   assert.deepEqual(
     selectSkillsForPrompt(catalogue, "Research recent community opinions about local AI models").map((item) => item.name),
-    ["browser-use", "research"],
+    ["computer-use", "research"],
   );
 });
 
@@ -198,14 +207,14 @@ test("renamed official workflows suppress duplicate personal counterparts unless
   ];
   assert.deepEqual(
     selectSkillsForPrompt(catalogue, "Check my email inbox").map((item) => item.name),
-    ["email-use"],
+    ["hub-use"],
   );
   assert.deepEqual(
     selectSkillsForPrompt(catalogue, "Reply to Dad on WhatsApp").map((item) => item.name),
-    ["message-use", "chat-style"],
+    ["hub-use", "chat-style"],
   );
   assert.deepEqual(
     selectSkillsForPrompt(catalogue, "Use the email skill to check my inbox").map((item) => item.name),
-    ["email-use", "email"],
+    ["hub-use", "email"],
   );
 });

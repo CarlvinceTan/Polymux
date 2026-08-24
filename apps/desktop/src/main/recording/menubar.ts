@@ -1,5 +1,5 @@
 import { Menu, Tray, nativeImage } from "electron";
-import { elapsedLabel, type RecordingSession } from "@polymux/computer-history";
+import { elapsedLabel, type RecordingSession } from "@polymux/computer";
 
 /**
  * The menu-bar presence of a running recording.

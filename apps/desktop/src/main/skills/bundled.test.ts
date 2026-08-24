@@ -35,7 +35,7 @@ test("every bundled skill loads, with no duplicate or malformed one", () => {
   const names = loaded.skills.map((skill) => skill.name).sort();
   assert.equal(new Set(names).size, names.length, "a name is claimed twice");
   // Both tiers arrive: a mirror that copied only one still loads cleanly.
-  assert.ok(names.includes("email-use"), "core tier is present");
+  assert.ok(names.includes("hub-use"), "core tier is present");
   assert.ok(names.includes("pdf"), "official tier is present");
 });
 
@@ -56,11 +56,9 @@ test("core membership is the core folder, so the Skills tab hides exactly those"
   assert.deepEqual(
     [...core].sort(),
     [
-      "browser-use",
-      "computer-history",
       "computer-use",
-      "email-use",
-      "message-use",
+      "drive-use",
+      "hub-use",
       "skill-creator",
       "skill-maintenance",
       "skill-record",

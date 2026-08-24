@@ -24,6 +24,7 @@ test-results
 
 # Local OAuth client ids and other development-only environment values
 .env
+!.env.example
 
 # Local experimentation workspace
 /experiments/
@@ -34,3 +35,6 @@ test-results
 
 # Python bytecode from skill scripts run in place
 __pycache__/
+.vercel
+.env*
+!.env.example

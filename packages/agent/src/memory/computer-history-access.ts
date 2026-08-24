@@ -2,7 +2,7 @@ import type {
   ComputerHistoryEntry,
   ComputerHistorySearchHit,
   InteractionEvent,
-} from "@polymux/computer-history";
+} from "@polymux/computer";
 
 /**
  * What the agent is allowed to know about ComputerHistory. The recorder itself is

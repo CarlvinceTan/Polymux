@@ -1,5 +1,5 @@
-import type { ComputerHistoryEntry, InteractionEvent } from "@polymux/computer-history";
-import { describeEvent } from "@polymux/computer-history";
+import type { ComputerHistoryEntry, InteractionEvent } from "@polymux/computer";
+import { describeEvent } from "@polymux/computer";
 import { readFileSync } from "node:fs";
 import type { InferenceService, ModelRef } from "@polymux/inference";
 import type { ComputerHistoryAccess } from "./computer-history-access.js";

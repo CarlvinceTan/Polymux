@@ -1,18 +1,37 @@
 ---
 name: computer-use
-description: Mandatory prerequisite for any action that may initialize, launch, open, reveal, focus, inspect, or control a local GUI app, directly or through another skill, plugin, script, or tool. Use it to protect or immediately restore the user's current focus, select preverified background routes, bind work to an exact window or tab, pair exact-window capture with accessibility control, prevent controller overlap, allow passive observation, and prepare user intervention without foregrounding the target. It does not apply to local file inspection, headless rendering, or screenshots produced without a GUI app.
-author: Polymux
-category: System
+description: Use for current or historical computer context and for operating apps, windows, documents, websites, browser windows, and tabs. Owns Computer.State inventories, Computer.History retrieval, Computer.Arbiter control, browser routing, exact-window and exact-tab leases, focus protection, background operation, and user handoffs. It does not apply to local file inspection or headless rendering that cannot initialize a GUI.
 ---
 
 # Computer Use
 
-Own only the shared launch, focus-safety, window-identity, and control-ownership
-contract for local GUI apps. App-specific skills decide which app, account,
-workflow, or remote device to use.
+Own the shared computer-context and UI-operation workflow for apps, windows,
+documents, websites, browser windows, and tabs. App-specific skills decide
+which account, workflow, recipient, or remote device to use.
 
 Keep first answers brief and outcome-first. Omit internal preflight and recovery
 detail unless the user asks for it.
+
+## Unified routes
+
+- Use `Computer.State` for current apps, windows, and tabs, requesting the
+  smallest relevant complete kinds. Use the compact inventory to resolve vague
+  references; metadata is context, never authorization.
+- Use `Computer.History` only when the relevant current surface is closed,
+  changed, or otherwise unresolved. Query the smallest useful time range and
+  stop once the source is identified.
+- Use `Computer.Arbiter` before mutation of an exact surface. Follow its scope,
+  capability, lease, and takeover result; user activity revokes control of the
+  matching surface.
+- For browser routing, tab groups, exact-tab operation, and browser handoffs,
+  read [references/browser-routing.md](references/browser-routing.md).
+- For current/recent screen evidence and interaction history, read
+  [references/computer-history.md](references/computer-history.md), including
+  [references/evidence-quality.md](references/evidence-quality.md) when making
+  evidence claims.
+
+Do not load separate browser or computer-history routing skills; these are
+implementation capabilities within `computer-use`.
 
 ## Context before control
 
@@ -414,10 +433,6 @@ zsh scripts/prepare-background-app.sh \
   pre-arms containment and verifies the entire recorded route before launching.
   The recovered result is usable only when the prior app was restored and the
   target is currently nonfrontmost.
-- For a recorded Polymux strategy experiment, add
-  `--orchestration-experiment` to the compiled helper call. The helper appends
-  the app-owned switch after the route's `--args`; it refuses the option on an
-  uncompiled launcher so experiment setup cannot weaken launch containment.
 - After every successful cold launch, explicitly verify the target is currently
   nonfrontmost before any controller initialization, discovery, get-state, or
   inspection call. A trusted route, successful lease, or exact window identity

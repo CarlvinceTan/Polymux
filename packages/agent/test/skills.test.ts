@@ -118,19 +118,19 @@ test("official skills ship with the app and shadow same-named user skills", asyn
 test("surfaces manifest and frontmatter metadata for the skill catalogue", async () => {
   const home = await mkdtemp(join(tmpdir(), "polymux-skill-metadata-"));
   try {
-    const directory = join(home, ".polymux", "skills", "email-use");
+    const directory = join(home, ".polymux", "skills", "hub-use");
     await mkdir(directory, { recursive: true });
     await writeFile(
       join(directory, "SKILL.md"),
-      "---\nname: email-use\ndescription: Handle email.\nauthor: Polymux\ncategory: Communication\n---\n",
+      "---\nname: hub-use\ndescription: Handle email.\nauthor: Polymux\ncategory: Communication\n---\n",
     );
     await writeFile(
       join(directory, "flare.yaml"),
-      'display_name: "Email"\n',
+      'display_name: "Hub"\n',
     );
     const loaded = new SkillLoader({ home }).load();
     const skill = loaded.skills[0];
-    assert.equal(skill?.displayName, "Email");
+    assert.equal(skill?.displayName, "Hub");
     assert.equal(skill?.author, "Polymux");
     assert.equal(skill?.category, "Communication");
     assert.ok(skill?.updatedAt && !Number.isNaN(Date.parse(skill.updatedAt)));

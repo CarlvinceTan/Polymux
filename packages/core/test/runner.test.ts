@@ -106,7 +106,7 @@ test("runs inference, streams ordered events, and returns final context", async 
         "- Three",
         "### Open windows",
         "- Four",
-        '<active_skill name="browser-use" location="/official/browser-use/SKILL.md">',
+        '<active_skill name="computer-use" location="/official/computer-use/SKILL.md">',
         "Instructions",
         "</active_skill>",
         "<available_skills>",
@@ -138,7 +138,7 @@ test("runs inference, streams ordered events, and returns final context", async 
   assert.equal(started.footprint.toolCount, 0);
   assert.deepEqual(started.footprint.toolNames, []);
   assert.deepEqual(started.footprint.systemSections, ["Current environment"]);
-  assert.deepEqual(started.footprint.activeSkillNames, ["browser-use"]);
+  assert.deepEqual(started.footprint.activeSkillNames, ["computer-use"]);
   assert.equal(started.footprint.availableSkillCount, 2);
   assert.deepEqual(started.footprint.ambientContextCounts, {
     memoryBlocks: 3,

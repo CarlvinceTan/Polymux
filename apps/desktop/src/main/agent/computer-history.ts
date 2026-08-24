@@ -3,8 +3,8 @@ import type {
   ComputerHistoryFrameSource,
   ComputerHistorySystemState,
   ComputerHistorySystemStateSource,
-} from "@polymux/computer-history";
-import { textSignature } from "@polymux/computer-history";
+} from "@polymux/computer";
+import { textSignature } from "@polymux/computer";
 import { powerMonitor } from "electron";
 import type { AxReader } from "../system/ax-reader.js";
 

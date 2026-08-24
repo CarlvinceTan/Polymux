@@ -102,6 +102,14 @@ confirmation.
    second check or resume fails immediately instead of racing the active run.
    Do not use subagents to duplicate the same gate work.
 
+   For two or more related candidates, run `validate` for every candidate first.
+   If all are structurally valid, start one complete `check` per candidate
+   concurrently and wait for every decision. Never run two checks for the same
+   candidate, and never treat the related candidates as one approval or reuse a
+   report after an approved-state change makes it stale. Concurrent independent
+   checks reduce wall time without removing contracts, repeats, comparisons, or
+   graders.
+
    For a strictly mechanical rename, use the deterministic rename gate instead:
 
    ```bash
@@ -165,6 +173,12 @@ because model output varies; the majority result reduces a one-off false pass or
 failure. Ordinary contracts may use fewer runs. Partial runs remain diagnostic.
 Read [references/protocol.md](references/protocol.md) for execution, resumption,
 and diagnostic details.
+
+Treat baseline-result caching, atomic multi-candidate change sets,
+contract-specific intentional approvals, and majority-based early termination
+as evaluator-runner features. Do not simulate them in skill instructions or
+bypass the complete current gate. Implement them only through a separately
+staged, sealed runner upgrade with deterministic control-plane tests.
 
 ## Deleting a skill
 

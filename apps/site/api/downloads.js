@@ -29,8 +29,7 @@ export default async function handler(_request, response) {
     platforms: {
       macos: asset(release, /\.dmg$/i),
       windows: asset(release, /Setup\.exe$/i),
-      linux: asset(release, /\.deb$/i),
-      linuxRpm: asset(release, /\.rpm$/i),
+      linux: asset(release, /\.AppImage$/i),
     },
   });
 }

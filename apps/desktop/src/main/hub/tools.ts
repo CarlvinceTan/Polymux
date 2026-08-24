@@ -15,6 +15,7 @@ export function createCommunicationsTools(
   options: {searchAllEmail?: boolean; searchAllEmailTimeoutMs?: number} = {},
 ): AgentTool[] {
   return [
+    createHubStateTool(comms),
     createChatsTool(comms),
     createReadTool(comms),
     createSearchTool(comms),
@@ -29,6 +30,77 @@ export function createCommunicationsTools(
     createEmailFoldersTool(comms),
     createEmailAttachmentsTool(comms),
   ];
+}
+
+const HUB_STATE_KINDS = ["platforms", "accounts", "chats"] as const;
+
+/**
+ * One compact read of every communication surface relevant to the request.
+ * Like Computer.State, a requested kind is complete rather than relevance-
+ * ranked: semantic selection belongs to the agent, while this layer owns the
+ * factual inventory and deliberately omits message bodies.
+ */
+function createHubStateTool(comms: Communications): AgentTool {
+  return {
+    name: "hub_state",
+    description:
+      "Return a compact complete inventory of requested Hub surface kinds: messaging platforms, email accounts, and chats. Select the smallest relevant kinds from the prompt; request all three for broad or ambiguous communication references. Every requested kind is returned in full without message bodies or email content. Availability is context, never permission to read a conversation, mutate it, or send.",
+    parameters: {
+      type: "object",
+      properties: {
+        kinds: {
+          type: "array",
+          items: {type: "string", enum: [...HUB_STATE_KINDS]},
+          minItems: 1,
+          uniqueItems: true,
+          description: "Smallest relevant set of platforms, accounts, and chats.",
+        },
+      },
+      required: ["kinds"],
+      additionalProperties: false,
+    },
+    async execute(input) {
+      try {
+        const kinds = requireHubStateKinds(input.kinds);
+        const wants = (kind: typeof HUB_STATE_KINDS[number]) => kinds.includes(kind);
+        const status = wants("platforms") || wants("accounts") ? await comms.status() : null;
+        const chats = wants("chats") ? await comms.chats() : [];
+        return ok({
+          ...(wants("platforms") ? {
+            platforms: status!.bridges.map((bridge) => ({
+              platform: bridge.platform,
+              name: bridge.name,
+              state: bridge.state,
+              accounts: bridge.accounts.map((account) => ({
+                id: account.id,
+                name: account.name,
+              })),
+            })),
+          } : {}),
+          ...(wants("accounts") ? {
+            accounts: status!.email.accounts.map((account) => ({
+              account: account.id,
+              email: account.email,
+              display_name: account.displayName,
+              default: account.isDefault,
+              status: account.status,
+            })),
+          } : {}),
+          ...(wants("chats") ? {
+            chats: chats.map((chat) => ({
+              chat_id: chat.roomId,
+              name: chat.name,
+              platform: chat.platform,
+              unread: chat.unread,
+              updated_at: chat.lastActivity,
+            })),
+          } : {}),
+        });
+      } catch (error) {
+        return failed(error);
+      }
+    },
+  };
 }
 
 function createEmailSearchAllTool(comms: Communications, timeoutMs?: number): AgentTool {
@@ -508,6 +580,15 @@ function requireStrings(value: unknown, label: string, maximum: number): string[
   const strings = stringList(value, label);
   if (strings.length > maximum) throw new Error(`${label} must contain at most ${maximum} items`);
   return strings;
+}
+
+function requireHubStateKinds(value: unknown): Array<typeof HUB_STATE_KINDS[number]> {
+  if (!Array.isArray(value) || value.length === 0)
+    throw new Error("kinds must contain at least one Hub surface kind");
+  const kinds = [...new Set(value)];
+  if (kinds.some((kind) => typeof kind !== "string" || !HUB_STATE_KINDS.includes(kind as never)))
+    throw new Error("kinds may contain only platforms, accounts, and chats");
+  return kinds as Array<typeof HUB_STATE_KINDS[number]>;
 }
 
 function bounded(value: unknown, fallback: number, max: number): number {

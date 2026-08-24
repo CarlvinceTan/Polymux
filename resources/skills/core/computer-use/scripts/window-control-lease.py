@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     acquire.add_argument(
         "--controller",
         required=True,
-        choices=("browser-use", "computer-use", "app-specific"),
+        choices=("computer-use", "app-specific"),
     )
     acquire.add_argument("--ttl-seconds", type=int, default=300)
 

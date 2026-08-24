@@ -1,5 +1,5 @@
-import type { InteractionEvent, InteractionEventSource, RecordingWindow } from "@polymux/computer-history";
-import { ComputerHistoryRecorder, type RecordingEndReason, type RecordingSession } from "@polymux/computer-history";
+import type { InteractionEvent, InteractionEventSource, RecordingWindow } from "@polymux/computer";
+import { ComputerHistoryRecorder, type RecordingEndReason, type RecordingSession } from "@polymux/computer";
 
 /**
  * How often the frontmost window is re-read while a recording runs. A click

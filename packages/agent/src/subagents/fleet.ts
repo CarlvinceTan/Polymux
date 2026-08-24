@@ -25,7 +25,7 @@ export interface SubagentEntry {
   result?: string;
   /** A `retain`ed worker's final context, kept so a follow-up dispatch can
    * resume the task instead of re-browsing. Freed when the task is continued;
-   * the experimental host may carry a bounded clone into the next user turn
+   * the host may carry a bounded clone into the next user turn
    * in this conversation. Never kept for a task that did not opt in. */
   retained?: InferenceMessage[];
   /** When retained context was last produced, for bounded cross-turn reuse. */

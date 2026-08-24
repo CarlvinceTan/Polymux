@@ -26,14 +26,13 @@ compatibility_audit="false"
 audit_authorized="false"
 app_path=""
 first_use_launch="false"
-orchestration_experiment="false"
 compiled_verifies_command="false"
 app_pids_before_snapshot=""
 
 source "${0:A:h}/compiled-launch-identity.sh"
 
 usage() {
-  print -u2 "Usage: prepare-background-app.sh --app APP_NAME [--process PROCESS_NAME] [--bundle-id ID] [--check-only] [--allow-frontmost-requested] [--compiled-launch] [--orchestration-experiment] [--launch-even-if-running] [--verify-command-contains TEXT] [--verified-launch-command ABSOLUTE_PATH] [--verified-launch-arg VALUE ...] [--compatibility-audit --user-authorized-compatibility-audit --app-path APP_PATH]"
+  print -u2 "Usage: prepare-background-app.sh --app APP_NAME [--process PROCESS_NAME] [--bundle-id ID] [--check-only] [--allow-frontmost-requested] [--compiled-launch] [--launch-even-if-running] [--verify-command-contains TEXT] [--verified-launch-command ABSOLUTE_PATH] [--verified-launch-arg VALUE ...] [--compatibility-audit --user-authorized-compatibility-audit --app-path APP_PATH]"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -63,10 +62,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --compiled-launch)
       compiled_launch="true"
-      shift
-      ;;
-    --orchestration-experiment)
-      orchestration_experiment="true"
       shift
       ;;
     --launch-even-if-running)
@@ -129,10 +124,6 @@ if [[ "$compatibility_audit" == "true" ]]; then
   fi
 elif [[ "$audit_authorized" == "true" || -n "$app_path" ]]; then
   print -r -- "status=blocked_conflicting_audit_options"
-  exit 2
-fi
-if [[ "$orchestration_experiment" == "true" && "$compiled_launch" != "true" ]]; then
-  print -r -- "status=blocked_experiment_requires_compiled_launch"
   exit 2
 fi
 
@@ -387,14 +378,6 @@ if [[ "$compiled_launch" == "true" ]]; then
   if [[ -n "$verify_command_contains" ]] &&
       compiled_args_contain "$verify_command_contains" "${verified_launch_args[@]}"; then
     compiled_verifies_command="true"
-  fi
-  if [[ "$orchestration_experiment" == "true" ]]; then
-    (( ${verified_launch_args[(I)--args]} > 0 )) || {
-      report "blocked_compiled_route_invalid"
-      exit 9
-    }
-    (( ${verified_launch_args[(I)--orchestration-experiment]} > 0 )) ||
-      verified_launch_args+=("--orchestration-experiment")
   fi
 fi
 

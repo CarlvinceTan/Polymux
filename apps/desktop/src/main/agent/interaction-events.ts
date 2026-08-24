@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { InteractionEvent, InteractionEventSource } from "@polymux/computer-history";
+import type { InteractionEvent, InteractionEventSource } from "@polymux/computer";
 import { SwiftHelper } from "../system/swift-helper.js";
 
 export interface InteractionEventsOptions {

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { ComputerHistoryManager } from "@polymux/computer-history";
+import { ComputerHistoryManager } from "@polymux/computer";
 import type {
   InferenceEvent,
   InferenceModel,

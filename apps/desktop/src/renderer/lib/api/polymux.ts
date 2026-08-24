@@ -1567,7 +1567,7 @@ function createBrowserDemoApi(): PolymuxApi {
       return {runId};
     }
     if (isActivityDemo) {
-      const args = {path: '/skills/browser-use/SKILL.md'};
+      const args = {path: '/skills/computer-use/SKILL.md'};
       const commentary = 'I’ll read the skill files first to see what applies here.';
       emit(runId, request.conversationId, 'message.completed', {message: {role: 'assistant', content: [{type: 'text', text: commentary}]}, phase: 'commentary'});
       emit(runId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-skill-read-1', name: 'read', arguments: args}});
@@ -1579,8 +1579,8 @@ function createBrowserDemoApi(): PolymuxApi {
     timers.set(runId, setTimeout(() => {
       const text = 'This is the assembled Polymux chat surface. Connect the send handler to your agent backend when it is ready.';
       if (isActivityDemo) {
-        const args = {path: '/skills/browser-use/SKILL.md'};
-        emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}, result: {content: 'Read 96 lines covering the browser-use skill workflow.'}});
+        const args = {path: '/skills/computer-use/SKILL.md'};
+        emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}, result: {content: 'Read the unified computer-use workflow.'}});
         items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [], Date.now() - 2, runId, {phase: 'commentary'}));
         items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [], Date.now() - 1, runId, {phase: 'commentary'}));
       }

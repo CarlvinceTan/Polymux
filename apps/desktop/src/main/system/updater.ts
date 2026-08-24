@@ -1,10 +1,25 @@
-import { app, autoUpdater } from "electron";
+import { app, autoUpdater as squirrelUpdater } from "electron";
+import electronUpdater from "electron-updater";
 import type { AppUpdateDto, AppVersionDto } from "@polymux/protocol";
+
+const { autoUpdater: linuxUpdater } = electronUpdater;
 
 /** The website resolves the latest signed GitHub Release into Squirrel.Mac's
  * tiny JSON feed. Keeping the feed on the product domain makes the update route
  * stable while release assets remain visible and downloadable on GitHub. */
 const FEED_URL = process.env.POLYMUX_UPDATE_FEED_URL ?? "https://polymux.com/api/releases";
+
+function feedUrl(): string {
+  if (process.platform === "win32") {
+    // Squirrel.Windows appends /RELEASES to this base URL. The website turns
+    // that manifest into absolute GitHub Release asset URLs, so both the feed
+    // and immutable packages remain reachable through a stable product URL.
+    return `${FEED_URL.replace(/\/releases$/, '')}/updates/win32/${process.arch}`;
+  }
+  if (process.platform === "linux")
+    return `${FEED_URL.replace(/\/releases$/, '')}/updates/linux/${process.arch}`;
+  return FEED_URL;
+}
 
 // Squirrel polls rather than being pushed to, so the interval is the worst-case
 // delay before a machine notices a release. Ten minutes matches what
@@ -47,17 +62,11 @@ function settle(next: Partial<AppUpdateDto>): void {
  */
 function canSelfUpdate(): boolean {
   if (!app.isPackaged) return false;
-  // deb/rpm are updated through the user's package manager; Squirrel has no
-  // Linux backend to point at.
-  // The product-domain endpoint currently emits Squirrel.Mac JSON. Pointing a
-  // Windows Squirrel client at that JSON is not a degraded update path; it is
-  // a permanently failing one. Windows installers are published in GitHub
-  // Releases and remain manual until the site exposes a signed RELEASES feed.
-  return process.platform === "darwin";
+  return process.platform === "darwin" || process.platform === "win32" || process.platform === "linux";
 }
 
-function feedUrl(): string {
-  return FEED_URL;
+function updater() {
+  return process.platform === "linux" ? linuxUpdater : squirrelUpdater;
 }
 
 /** Installed build identity, shown in the General settings tab. */
@@ -86,27 +95,38 @@ export function startUpdateChecks(): void {
     return;
   }
 
-  autoUpdater.setFeedURL({
-    url: feedUrl(),
-    serverType: process.platform === "darwin" ? "json" : "default",
-  });
+  if (process.platform === "linux") {
+    linuxUpdater.setFeedURL({provider: "generic", url: feedUrl()});
+  } else {
+    squirrelUpdater.setFeedURL({
+      url: feedUrl(),
+      serverType: process.platform === "darwin" ? "json" : "default",
+    });
+  }
 
-  autoUpdater.on("update-not-available", () => settle({ status: "current", latest: null, message: null }));
-  autoUpdater.on("update-available", () => settle({ status: "downloading", message: null }));
-  autoUpdater.on("update-downloaded", (_event, notes, name) =>
-    settle({ status: "ready", latest: name, message: notes || null }),
-  );
-  autoUpdater.on("error", (error) => {
+  const activeUpdater = updater();
+  activeUpdater.on("update-not-available", () => settle({ status: "current", latest: null, message: null }));
+  activeUpdater.on("update-available", () => settle({ status: "downloading", message: null }));
+  if (process.platform === "linux") {
+    linuxUpdater.on("update-downloaded", (info) =>
+      settle({status: "ready", latest: info.version, message: null}),
+    );
+  } else {
+    squirrelUpdater.on("update-downloaded", (_event, notes, name) =>
+      settle({ status: "ready", latest: name, message: notes || null }),
+    );
+  }
+  activeUpdater.on("error", (error: Error) => {
     // A failed check is not worth interrupting the session over: the next poll
     // retries, and the common causes are transient (offline, R2 hiccup).
     settle({ status: "error", message: error instanceof Error ? error.message : String(error) });
   });
 
-  autoUpdater.checkForUpdates();
+  void activeUpdater.checkForUpdates();
   timer = setInterval(() => {
     // Once a build is staged, further checks can only replace it with the same
     // file; the restart is what is outstanding.
-    if (state.status !== "ready") autoUpdater.checkForUpdates();
+    if (state.status !== "ready") void activeUpdater.checkForUpdates();
   }, POLL_INTERVAL_MS);
 }
 
@@ -114,7 +134,7 @@ export function stopUpdateChecks(): void {
   if (timer) clearInterval(timer);
   timer = null;
   started = false;
-  autoUpdater.removeAllListeners();
+  updater().removeAllListeners();
 }
 
 /** Asks the configured update feed whether a newer build exists. */
@@ -135,7 +155,7 @@ export function checkForUpdates(): Promise<AppUpdateDto> {
     };
     pending.push(finish);
     const deadline = setTimeout(() => finish(state), CHECK_TIMEOUT_MS);
-    autoUpdater.checkForUpdates();
+    void updater().checkForUpdates();
   });
 }
 
@@ -144,6 +164,6 @@ export function installUpdate(): Promise<AppUpdateDto> {
   if (state.status !== "ready") return Promise.resolve(state);
   // quitAndInstall does not return; the reply the renderer gets is whatever it
   // manages to read before the process goes away.
-  setImmediate(() => autoUpdater.quitAndInstall());
+  setImmediate(() => updater().quitAndInstall());
   return Promise.resolve(state);
 }

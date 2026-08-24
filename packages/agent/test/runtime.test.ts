@@ -18,7 +18,7 @@ import {
   MemoryManager,
   PolymuxAgent,
 } from "../src/index.js";
-import {recordGoalProgress} from "../src/goals/progress-receipts.js";
+import { recordGoalProgress } from "../src/goals/progress-receipts.js";
 
 const model = { provider: "test", id: "model" };
 const modelInfo: InferenceModel = {
@@ -76,19 +76,31 @@ function testMemory(): MemoryManager {
   });
 }
 
-function writeTestSkill(root: string, name: string, description: string, body: string): void {
+function writeTestSkill(
+  root: string,
+  name: string,
+  description: string,
+  body: string,
+): void {
   const directory = path.join(root, name);
-  mkdirSync(directory, {recursive: true});
-  writeFileSync(path.join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`);
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    path.join(directory, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`,
+  );
 }
 
-test("experimental runtime repairs visible deliberation before persistence", async () => {
+test("runtime repairs visible deliberation before persistence", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
-    storage.createConversation({id: "conversation", title: "Chat"});
+    storage.createConversation({ id: "conversation", title: "Chat" });
     const inference = new FakeInference();
     inference.responses.push(
-      [answer("**Compiling verified events**\n\n**Refining recommendations**\nHere are the events.")],
+      [
+        answer(
+          "**Compiling verified events**\n\n**Refining recommendations**\nHere are the events.",
+        ),
+      ],
       [answer("Here are the verified events.")],
     );
     const agent = new PolymuxAgent({
@@ -97,8 +109,7 @@ test("experimental runtime repairs visible deliberation before persistence", asy
       memory: testMemory(),
       tools: new ToolRegistry(),
       model,
-      orchestrationExperiment: true,
-      compaction: {enabled: false},
+      compaction: { enabled: false },
     });
     const result = await agent.start({
       conversationId: "conversation",
@@ -106,16 +117,23 @@ test("experimental runtime repairs visible deliberation before persistence", asy
     }).result;
     assert.equal(result.lastAgentMessage, "Here are the verified events.");
     assert.equal(inference.requests.length, 2);
-    const persisted = storage.listMessages("conversation").filter((message) => message.role === "assistant");
+    const persisted = storage
+      .listMessages("conversation")
+      .filter((message) => message.role === "assistant");
     assert.equal(persisted.length, 1);
-    assert.doesNotMatch(JSON.stringify(persisted[0]?.content), /Compiling|Refining/);
-  } finally { storage.close(); }
+    assert.doesNotMatch(
+      JSON.stringify(persisted[0]?.content),
+      /Compiling|Refining/,
+    );
+  } finally {
+    storage.close();
+  }
 });
 
-test("experimental runtime rejects an incidental exchange recommendation before persistence", async () => {
+test("runtime rejects an incidental exchange recommendation before persistence", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
-    storage.createConversation({id: "conversation", title: "Chat"});
+    storage.createConversation({ id: "conversation", title: "Chat" });
     const rejected = [
       "Here are the strongest current matches:",
       "",
@@ -127,15 +145,21 @@ test("experimental runtime rejects an incidental exchange recommendation before 
       "     exchange plans.",
     ].join("\n");
     const inference = new FakeInference();
-    inference.responses.push([answer(rejected)], [answer("Friday Hacks #297 is the one strong match for your agent-evaluation work.")]);
+    inference.responses.push(
+      [answer(rejected)],
+      [
+        answer(
+          "Friday Hacks #297 is the one strong match for your agent-evaluation work.",
+        ),
+      ],
+    );
     const agent = new PolymuxAgent({
       inference,
       storage,
       memory: testMemory(),
       tools: new ToolRegistry(),
       model,
-      compaction: {enabled: false},
-      orchestrationExperiment: true,
+      compaction: { enabled: false },
     });
     const active = agent.start({
       conversationId: "conversation",
@@ -144,20 +168,40 @@ test("experimental runtime rejects an incidental exchange recommendation before 
     const events = [];
     for await (const event of active.events) events.push(event);
     const result = await active.result;
-    assert.equal(result.lastAgentMessage, "Friday Hacks #297 is the one strong match for your agent-evaluation work.");
-    assert.equal(events.filter((event) => event.type === "message.final_rejected").length, 1);
-    const persisted = storage.listMessages("conversation").filter((message) => message.role === "assistant");
+    assert.equal(
+      result.lastAgentMessage,
+      "Friday Hacks #297 is the one strong match for your agent-evaluation work.",
+    );
+    assert.equal(
+      events.filter((event) => event.type === "message.final_rejected").length,
+      1,
+    );
+    const persisted = storage
+      .listMessages("conversation")
+      .filter((message) => message.role === "assistant");
     assert.equal(persisted.length, 1);
-    assert.doesNotMatch(JSON.stringify(persisted[0]?.content), /NUS–UM Exchange Programme/);
-  } finally { storage.close(); }
+    assert.doesNotMatch(
+      JSON.stringify(persisted[0]?.content),
+      /NUS–UM Exchange Programme/,
+    );
+  } finally {
+    storage.close();
+  }
 });
 
 test("an unambiguous official workflow is preloaded without a skill-read round trip", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
-    storage.createConversation({id: "conversation", title: "Chat"});
-    const official = mkdtempSync(path.join(tmpdir(), "polymux-official-skill-"));
-    writeTestSkill(official, "browser-use", "Browse and research live websites.", "VERIFY-FIRST-PARTY-EVIDENCE");
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const official = mkdtempSync(
+      path.join(tmpdir(), "polymux-official-skill-"),
+    );
+    writeTestSkill(
+      official,
+      "computer-use",
+      "Browse and research live websites.",
+      "VERIFY-FIRST-PARTY-EVIDENCE",
+    );
     const inference = new FakeInference();
     inference.responses.push([answer("done")]);
     const agent = new PolymuxAgent({
@@ -166,49 +210,89 @@ test("an unambiguous official workflow is preloaded without a skill-read round t
       memory: testMemory(),
       tools: new ToolRegistry(),
       model,
-      skills: {official: [official]},
-      compaction: {enabled: false},
-      orchestrationExperiment: true,
+      skills: { official: [official] },
+      compaction: { enabled: false },
       preloadSingleOfficialSkill: true,
     });
-    await agent.start({conversationId: "conversation", text: "Find the latest events online"}).result;
+    await agent.start({
+      conversationId: "conversation",
+      text: "Find the latest events online",
+    }).result;
     const prompt = inference.requests[0]?.systemPrompt ?? "";
-    assert.match(prompt, /<active_skill name="browser-use"/);
+    assert.match(prompt, /<active_skill name="computer-use"/);
     assert.match(prompt, /VERIFY-FIRST-PARTY-EVIDENCE/);
     assert.match(prompt, /do not call read for its SKILL\.md again/i);
     assert.doesNotMatch(prompt, /<available_skills>/);
-  } finally { storage.close(); }
+  } finally {
+    storage.close();
+  }
 });
 
 test("official skill preloading remains inert without its independent experiment flag", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
-    storage.createConversation({id: "conversation", title: "Chat"});
-    const official = mkdtempSync(path.join(tmpdir(), "polymux-inert-official-skill-"));
-    writeTestSkill(official, "browser-use", "Browse and research live websites.", "SHOULD-NOT-BE-INLINED");
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const official = mkdtempSync(
+      path.join(tmpdir(), "polymux-inert-official-skill-"),
+    );
+    writeTestSkill(
+      official,
+      "computer-use",
+      "Browse and research live websites.",
+      "SHOULD-NOT-BE-INLINED",
+    );
     const inference = new FakeInference();
     inference.responses.push([answer("done")]);
     const agent = new PolymuxAgent({
-      inference, storage, memory: testMemory(), tools: new ToolRegistry(), model,
-      skills: {official: [official]}, compaction: {enabled: false}, orchestrationExperiment: true,
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      skills: { official: [official] },
+      compaction: { enabled: false },
     });
-    await agent.start({conversationId: "conversation", text: "Find the latest events online"}).result;
+    await agent.start({
+      conversationId: "conversation",
+      text: "Find the latest events online",
+    }).result;
     const prompt = inference.requests[0]?.systemPrompt ?? "";
     assert.doesNotMatch(prompt, /<active_skill/);
     assert.doesNotMatch(prompt, /SHOULD-NOT-BE-INLINED/);
     assert.match(prompt, /<available_skills>/);
-  } finally { storage.close(); }
+  } finally {
+    storage.close();
+  }
 });
 
 test("multiple or personal matching skills remain catalogue entries instead of gaining system priority", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
-    storage.createConversation({id: "conversation", title: "Chat"});
-    const official = mkdtempSync(path.join(tmpdir(), "polymux-official-skills-"));
-    const personal = mkdtempSync(path.join(tmpdir(), "polymux-personal-skills-"));
-    writeTestSkill(official, "browser-use", "Browse live websites.", "OFFICIAL-BROWSER");
-    writeTestSkill(official, "chat-style", "Draft chat replies.", "OFFICIAL-CHAT");
-    writeTestSkill(personal, "career-advice", "Career planning and interview coaching.", "PERSONAL-INSTRUCTIONS");
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const official = mkdtempSync(
+      path.join(tmpdir(), "polymux-official-skills-"),
+    );
+    const personal = mkdtempSync(
+      path.join(tmpdir(), "polymux-personal-skills-"),
+    );
+    writeTestSkill(
+      official,
+      "computer-use",
+      "Browse live websites.",
+      "OFFICIAL-BROWSER",
+    );
+    writeTestSkill(
+      official,
+      "chat-style",
+      "Draft chat replies.",
+      "OFFICIAL-CHAT",
+    );
+    writeTestSkill(
+      personal,
+      "career-advice",
+      "Career planning and interview coaching.",
+      "PERSONAL-INSTRUCTIONS",
+    );
     const inference = new FakeInference();
     inference.responses.push([answer("done")], [answer("done")]);
     const agent = new PolymuxAgent({
@@ -217,45 +301,82 @@ test("multiple or personal matching skills remain catalogue entries instead of g
       memory: testMemory(),
       tools: new ToolRegistry(),
       model,
-      skills: {official: [official], personal},
-      compaction: {enabled: false},
-      orchestrationExperiment: true,
+      skills: { official: [official], personal },
+      compaction: { enabled: false },
       preloadSingleOfficialSkill: true,
     });
-    await agent.start({conversationId: "conversation", text: "Find events online and reply to Dad"}).result;
-    assert.doesNotMatch(inference.requests[0]?.systemPrompt ?? "", /<active_skill/);
-    assert.match(inference.requests[0]?.systemPrompt ?? "", /<available_skills>/);
+    await agent.start({
+      conversationId: "conversation",
+      text: "Find events online and reply to Dad",
+    }).result;
+    assert.doesNotMatch(
+      inference.requests[0]?.systemPrompt ?? "",
+      /<active_skill/,
+    );
+    assert.match(
+      inference.requests[0]?.systemPrompt ?? "",
+      /<available_skills>/,
+    );
 
-    await agent.start({conversationId: "conversation", text: "Help with career planning and interview coaching"}).result;
+    await agent.start({
+      conversationId: "conversation",
+      text: "Help with career planning and interview coaching",
+    }).result;
     const personalPrompt = inference.requests[1]?.systemPrompt ?? "";
     assert.doesNotMatch(personalPrompt, /<active_skill/);
     assert.match(personalPrompt, /career-advice/);
     assert.doesNotMatch(personalPrompt, /PERSONAL-INSTRUCTIONS/);
-  } finally { storage.close(); }
+  } finally {
+    storage.close();
+  }
 });
 
 test("one official workflow can preload while matching personal skills stay in the catalogue", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
-    storage.createConversation({id: "conversation", title: "Chat"});
-    const official = mkdtempSync(path.join(tmpdir(), "polymux-official-mixed-skills-"));
-    const personal = mkdtempSync(path.join(tmpdir(), "polymux-personal-mixed-skills-"));
-    writeTestSkill(official, "browser-use", "Browse live websites and find places.", "OFFICIAL-BROWSER");
-    writeTestSkill(personal, "local-preferences", "Online place search matching personal preferences.", "PERSONAL-PLACES");
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const official = mkdtempSync(
+      path.join(tmpdir(), "polymux-official-mixed-skills-"),
+    );
+    const personal = mkdtempSync(
+      path.join(tmpdir(), "polymux-personal-mixed-skills-"),
+    );
+    writeTestSkill(
+      official,
+      "computer-use",
+      "Browse live websites and find places.",
+      "OFFICIAL-BROWSER",
+    );
+    writeTestSkill(
+      personal,
+      "local-preferences",
+      "Online place search matching personal preferences.",
+      "PERSONAL-PLACES",
+    );
     const inference = new FakeInference();
     inference.responses.push([answer("done")]);
     const agent = new PolymuxAgent({
-      inference, storage, memory: testMemory(), tools: new ToolRegistry(), model,
-      skills: {official: [official], personal}, compaction: {enabled: false},
-      orchestrationExperiment: true, preloadSingleOfficialSkill: true,
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      skills: { official: [official], personal },
+      compaction: { enabled: false },
+      preloadSingleOfficialSkill: true,
     });
-    await agent.start({conversationId: "conversation", text: "Find a place nearby online"}).result;
+    await agent.start({
+      conversationId: "conversation",
+      text: "Find a place nearby online",
+    }).result;
     const prompt = inference.requests[0]?.systemPrompt ?? "";
-    assert.match(prompt, /<active_skill name="browser-use"/);
+    assert.match(prompt, /<active_skill name="computer-use"/);
     assert.match(prompt, /OFFICIAL-BROWSER/);
     assert.match(prompt, /<name>local-preferences<\/name>/);
     assert.doesNotMatch(prompt, /PERSONAL-PLACES/);
-  } finally { storage.close(); }
+  } finally {
+    storage.close();
+  }
 });
 
 test("treats slash-prefixed text as an ordinary chat message", async () => {
@@ -318,7 +439,12 @@ test("a recovered durable job reuses its stored user prompt", async () => {
       includeSubagents: false,
     }).result;
 
-    assert.equal(storage.listMessages("conversation").filter((message) => message.role === "user").length, 1);
+    assert.equal(
+      storage
+        .listMessages("conversation")
+        .filter((message) => message.role === "user").length,
+      1,
+    );
   } finally {
     storage.close();
   }
@@ -409,7 +535,9 @@ test("persists replay checkpoints instead of every streamed text fragment", asyn
     });
     const result = await run.result;
 
-    const types = storage.listRunEvents(result.runId).map((event) => event.type);
+    const types = storage
+      .listRunEvents(result.runId)
+      .map((event) => event.type);
     assert.equal(types.includes("message.text.delta"), false);
     assert.equal(types.includes("message.tool_call.delta"), false);
     assert.equal(types.includes("message.reasoning.delta"), true);
@@ -505,8 +633,9 @@ test("creates a durable goal only from structured run metadata", async () => {
       includeSubagents: false,
     }).result;
     assert.ok(
-      inference.requests.every((request) =>
-        !request.tools?.some((tool) => tool.name === "create_goal"),
+      inference.requests.every(
+        (request) =>
+          !request.tools?.some((tool) => tool.name === "create_goal"),
       ),
       "the model cannot create a durable goal; only structured user input can",
     );
@@ -624,7 +753,6 @@ test("scheduler execution scopes do not inherit transient direct-route state", a
       tools: new ToolRegistry(),
       model,
       compaction: { enabled: false },
-      orchestrationExperiment: true,
     });
 
     await agent.start({
@@ -638,8 +766,16 @@ test("scheduler execution scopes do not inherit transient direct-route state", a
       executionScopeId: "job-b",
     }).result;
 
-    assert.ok(!(inference.requests[0]?.tools ?? []).some((tool) => tool.name === "subagent"));
-    assert.ok((inference.requests[1]?.tools ?? []).some((tool) => tool.name === "subagent"));
+    assert.ok(
+      !(inference.requests[0]?.tools ?? []).some(
+        (tool) => tool.name === "subagent",
+      ),
+    );
+    assert.ok(
+      (inference.requests[1]?.tools ?? []).some(
+        (tool) => tool.name === "subagent",
+      ),
+    );
   } finally {
     storage.close();
   }
@@ -705,7 +841,9 @@ test("compaction reuses its summary while the compacted context still fits", asy
       model,
       { messages },
       new AbortController().signal,
-      async () => { compactionReports += 1; },
+      async () => {
+        compactionReports += 1;
+      },
     );
     const second = await manager.transform(
       "conversation",
@@ -874,7 +1012,14 @@ test("a saved summary is reused after a restart instead of being rebuilt", async
       before,
       storage,
       settings,
-    ).transform("conversation", model, { messages }, signal, undefined, sequences);
+    ).transform(
+      "conversation",
+      model,
+      { messages },
+      signal,
+      undefined,
+      sequences,
+    );
     assert.match(compacted.systemPrompt ?? "", /durable summary/);
     assert.equal(before.requests.length, 1);
 
@@ -886,7 +1031,14 @@ test("a saved summary is reused after a restart instead of being rebuilt", async
       after,
       storage,
       settings,
-    ).transform("conversation", model, { messages }, signal, undefined, sequences);
+    ).transform(
+      "conversation",
+      model,
+      { messages },
+      signal,
+      undefined,
+      sequences,
+    );
 
     assert.match(resumed.systemPrompt ?? "", /durable summary/);
     assert.equal(after.requests.length, 0, "the saved summary must be reused");
@@ -935,7 +1087,10 @@ test("the compaction role writes the summary while the run model sets the thresh
       { model: { provider: "test", id: "summarizer" }, reasoning: "low" },
     );
 
-    assert.match(compacted.systemPrompt ?? "", /summary from the compaction model/);
+    assert.match(
+      compacted.systemPrompt ?? "",
+      /summary from the compaction model/,
+    );
     assert.deepEqual(inference.requests[0]?.model, {
       provider: "test",
       id: "summarizer",
@@ -1140,9 +1295,18 @@ test("the agent is given memory tools and its writes land in the vault", async (
     await agent.settleGoalWork();
 
     // The tool has to be offered before it can be called.
-    const offered = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
-    for (const expected of ["remember", "forget", "search_history", "read_conversation"])
-      assert.ok(offered.includes(expected), `${expected} must be offered to the model`);
+    const offered =
+      inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    for (const expected of [
+      "remember",
+      "forget",
+      "search_history",
+      "read_conversation",
+    ])
+      assert.ok(
+        offered.includes(expected),
+        `${expected} must be offered to the model`,
+      );
     const saved = memory.userMemories();
     assert.equal(saved.length, 1);
     assert.equal(saved[0]?.kind, "profile");
@@ -1232,7 +1396,11 @@ test("compaction re-summarizes when the compacted history changed underneath it"
       signal,
     );
 
-    assert.equal(inference.requests.length, 2, "edited history must re-summarize");
+    assert.equal(
+      inference.requests.length,
+      2,
+      "edited history must re-summarize",
+    );
     assert.match(edited.systemPrompt ?? "", /second summary/);
     assert.doesNotMatch(edited.systemPrompt ?? "", /first summary/);
   } finally {
@@ -1331,17 +1499,13 @@ test("the task tool reaches the model with its delegation guidance", async () =>
         `${key} must describe itself to the model`,
       );
     assert.match(properties.prompt.description ?? "", /standalone/);
-    assert.equal(
-      properties.tool_groups,
-      undefined,
-      "the baseline task schema must stay unchanged",
-    );
+    assert.match(properties.tool_groups?.description ?? "", /capabilities/i);
   } finally {
     storage.close();
   }
 });
 
-test("experimental task schema offers explicit lossless capability routing", async () => {
+test("task schema offers explicit lossless capability routing", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
     storage.createConversation({ id: "conversation", title: "Chat" });
@@ -1354,11 +1518,13 @@ test("experimental task schema offers explicit lossless capability routing", asy
       tools: new ToolRegistry(),
       model,
       compaction: { enabled: false },
-      orchestrationExperiment: true,
     });
 
-    await agent.start({ conversationId: "conversation", text: "Research it" }).result;
-    const task = inference.requests[0]?.tools?.find((item) => item.name === "subagent");
+    await agent.start({ conversationId: "conversation", text: "Research it" })
+      .result;
+    const task = inference.requests[0]?.tools?.find(
+      (item) => item.name === "subagent",
+    );
     const properties = task?.parameters.properties as Record<
       string,
       { description?: string; enum?: string[]; items?: { enum?: string[] } }
@@ -1366,18 +1532,37 @@ test("experimental task schema offers explicit lossless capability routing", asy
     assert.ok(properties.tool_groups);
     assert.ok(properties.tool_groups.items?.enum?.includes("browser"));
     assert.ok(properties.tool_groups.items?.enum?.includes("all"));
-    assert.match(properties.tool_groups.description ?? "", /Required minimum capabilities/);
-    assert.match(properties.tool_groups.description ?? "", /\["all"\] explicitly/);
+    assert.match(
+      properties.tool_groups.description ?? "",
+      /Required minimum capabilities/,
+    );
+    assert.match(
+      properties.tool_groups.description ?? "",
+      /\["all"\] explicitly/,
+    );
     assert.ok(properties.coordination);
-    assert.deepEqual(properties.coordination.enum, ["independent", "dependent"]);
-    assert.ok(Array.isArray(task?.parameters.required) && task.parameters.required.includes("coordination"));
-    assert.ok(Array.isArray(task?.parameters.required) && task.parameters.required.includes("tool_groups"));
+    assert.deepEqual(properties.coordination.enum, [
+      "independent",
+      "dependent",
+    ]);
+    assert.ok(
+      Array.isArray(task?.parameters.required) &&
+        task.parameters.required.includes("coordination"),
+    );
+    assert.ok(
+      Array.isArray(task?.parameters.required) &&
+        task.parameters.required.includes("tool_groups"),
+    );
     assert.ok(properties.depends_on);
     assert.equal(properties.ledger, undefined);
     assert.ok(properties.skill_names);
     assert.match(properties.skill_names.description ?? "", /Exact names/);
-    assert.match(properties.skill_names.description ?? "", /complete catalogue/);
-    const toolNames = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    assert.match(
+      properties.skill_names.description ?? "",
+      /complete catalogue/,
+    );
+    const toolNames =
+      inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
     assert.ok(toolNames.includes("cancel_subagents"));
     assert.ok(!toolNames.some((name) => name.startsWith("ledger_")));
     assert.match(task?.description ?? "", /Combining parallel findings/);
@@ -1387,7 +1572,7 @@ test("experimental task schema offers explicit lossless capability routing", asy
   }
 });
 
-test("a routed experimental worker receives only its declared evidence boundary", async () => {
+test("a routed worker receives only its declared evidence boundary", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
     storage.createConversation({ id: "conversation", title: "Chat" });
@@ -1397,12 +1582,18 @@ test("a routed experimental worker receives only its declared evidence boundary"
       status: "running",
     });
     const inference = new FakeInference();
-    inference.responses.push([answer("done")], [answer("memory done")], [answer("fallback done")]);
+    inference.responses.push(
+      [answer("done")],
+      [answer("memory done")],
+      [answer("fallback done")],
+    );
     const browserTool = {
       name: "browser_read",
       description: "Read a web target",
       parameters: { type: "object", properties: {} },
-      async execute() { return { content: "ok" }; },
+      async execute() {
+        return { content: "ok" };
+      },
     };
     const unrelatedTool = {
       ...browserTool,
@@ -1416,7 +1607,6 @@ test("a routed experimental worker receives only its declared evidence boundary"
       tools: new ToolRegistry([browserTool, unrelatedTool]),
       model,
       compaction: { enabled: false },
-      orchestrationExperiment: true,
       environment: {
         promptContext: () => ({
           locationEnabled: false,
@@ -1484,28 +1674,36 @@ test("a routed experimental worker receives only its declared evidence boundary"
   }
 });
 
-test("a single-source experimental research worker is forced to synthesize after four evidence turns", async () => {
+test("a single-source research worker is forced to synthesize after four evidence turns", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
-    storage.createConversation({id: "conversation", title: "Chat"});
-    storage.createRun({id: "parent", conversationId: "conversation", status: "running"});
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    storage.createRun({
+      id: "parent",
+      conversationId: "conversation",
+      status: "running",
+    });
     const inference = new FakeInference();
     for (let index = 0; index < 4; index += 1) {
-      inference.responses.push([{
-        type: "done",
-        reason: "toolUse",
-        message: {
-          role: "assistant",
-          content: [{
-            type: "toolCall",
-            id: `call-${index}`,
-            name: "browser_read",
-            arguments: {url: `https://example.com/${index}`},
-          }],
-          usage,
-          stopReason: "toolUse",
+      inference.responses.push([
+        {
+          type: "done",
+          reason: "toolUse",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: `call-${index}`,
+                name: "browser_read",
+                arguments: { url: `https://example.com/${index}` },
+              },
+            ],
+            usage,
+            stopReason: "toolUse",
+          },
         },
-      }]);
+      ]);
     }
     inference.responses.push([answer("Bounded synthesis")]);
     let reads = 0;
@@ -1513,16 +1711,23 @@ test("a single-source experimental research worker is forced to synthesize after
       inference,
       storage,
       memory: testMemory(),
-      tools: new ToolRegistry([{
-        name: "browser_read",
-        description: "Read a public source",
-        parameters: {type: "object", properties: {url: {type: "string"}}},
-        async execute() { reads += 1; return {content: "evidence"}; },
-      }]),
+      tools: new ToolRegistry([
+        {
+          name: "browser_read",
+          description: "Read a public source",
+          parameters: {
+            type: "object",
+            properties: { url: { type: "string" } },
+          },
+          async execute() {
+            reads += 1;
+            return { content: "evidence" };
+          },
+        },
+      ]),
       model,
       maxTurns: 4,
-      compaction: {enabled: false},
-      orchestrationExperiment: true,
+      compaction: { enabled: false },
     });
 
     const result = await agent.start({
@@ -1538,12 +1743,19 @@ test("a single-source experimental research worker is forced to synthesize after
     assert.equal(result.turns, 5);
     assert.equal(result.lastAgentMessage, "Bounded synthesis");
     assert.equal(reads, 4);
-    assert.ok(inference.requests.slice(0, 4).every((request) =>
-      request.tools.some((tool) => tool.name === "browser_read"),
-    ));
+    assert.ok(
+      inference.requests
+        .slice(0, 4)
+        .every((request) =>
+          request.tools.some((tool) => tool.name === "browser_read"),
+        ),
+    );
     assert.deepEqual(inference.requests[4]?.tools, []);
     assert.match(
-      String((inference.requests[4]?.messages.at(-1) as {content?: string})?.content),
+      String(
+        (inference.requests[4]?.messages.at(-1) as { content?: string })
+          ?.content,
+      ),
       /bounded evidence phase is complete/i,
     );
   } finally {
@@ -1560,7 +1772,9 @@ test("an exact current-page explanation stays on the main agent with read-only b
     const stub = {
       description: "browser evidence",
       parameters: { type: "object", properties: {} },
-      async execute() { return { content: "ok" }; },
+      async execute() {
+        return { content: "ok" };
+      },
     };
     const agent = new PolymuxAgent({
       inference,
@@ -1577,11 +1791,12 @@ test("an exact current-page explanation stays on the main agent with read-only b
       ]),
       model,
       compaction: { enabled: false },
-      orchestrationExperiment: true,
       environment: {
         promptContext: () => ({
           locationEnabled: false,
-          windows: [{ app: "Google Chrome", title: "Current policy", frontmost: true }],
+          windows: [
+            { app: "Google Chrome", title: "Current policy", frontmost: true },
+          ],
         }),
       },
     });
@@ -1621,7 +1836,9 @@ test("the same deictic wording retains orchestration when the current surface is
       description: "read current page",
       mainAgentOnly: true,
       parameters: { type: "object", properties: {} },
-      async execute() { return { content: "ok" }; },
+      async execute() {
+        return { content: "ok" };
+      },
     };
     const agent = new PolymuxAgent({
       inference,
@@ -1630,7 +1847,6 @@ test("the same deictic wording retains orchestration when the current surface is
       tools: new ToolRegistry([stub]),
       model,
       compaction: { enabled: false },
-      orchestrationExperiment: true,
       environment: {
         promptContext: () => ({
           locationEnabled: false,
@@ -1645,9 +1861,18 @@ test("the same deictic wording retains orchestration when the current surface is
     }).result;
     const names = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
     assert.ok(names.includes("subagent"));
-    assert.ok(names.includes("browser_current_read"), "the coordinator retains main-only current-state inspection");
-    assert.ok(!names.includes("recall"), "orchestrated roots delegate missing memory retrieval");
-    assert.ok(!names.includes("search_history"), "orchestrated roots delegate missing history retrieval");
+    assert.ok(
+      names.includes("browser_current_read"),
+      "the coordinator retains main-only current-state inspection",
+    );
+    assert.ok(
+      !names.includes("recall"),
+      "orchestrated roots delegate missing memory retrieval",
+    );
+    assert.ok(
+      !names.includes("search_history"),
+      "orchestrated roots delegate missing history retrieval",
+    );
   } finally {
     storage.close();
   }
@@ -1755,11 +1980,12 @@ test("goal loop keeps running until the judge calls the objective done", async (
     assert.equal(inference.requests.length, 4);
     const continuation = storage
       .listMessages("conversation")
-      .find((message) => (message.metadata as Record<string, unknown>).goalContinuation === true);
-    assert.match(
-      String(continuation?.content),
-      /No findings reported yet/,
-    );
+      .find(
+        (message) =>
+          (message.metadata as Record<string, unknown>).goalContinuation ===
+          true,
+      );
+    assert.match(String(continuation?.content), /No findings reported yet/);
   } finally {
     storage.close();
   }
@@ -1768,7 +1994,7 @@ test("goal loop keeps running until the judge calls the objective done", async (
 test("goal continuation receives progress receipts while an ordinary turn does not", async () => {
   const storage = new SqliteStorage(":memory:");
   try {
-    storage.createConversation({id: "conversation", title: "Chat"});
+    storage.createConversation({ id: "conversation", title: "Chat" });
     storage.createGoal({
       id: "goal",
       conversationId: "conversation",
@@ -1791,8 +2017,7 @@ test("goal continuation receives progress receipts while an ordinary turn does n
       memory: testMemory(),
       tools: new ToolRegistry(),
       model,
-      orchestrationExperiment: true,
-      compaction: {enabled: false},
+      compaction: { enabled: false },
     });
 
     await agent.start({
@@ -1808,10 +2033,14 @@ test("goal continuation receives progress receipts while an ordinary turn does n
     }).result;
 
     const continuationText = inference.requests[0].messages
-      .map((message) => typeof message.content === "string" ? message.content : "")
+      .map((message) =>
+        typeof message.content === "string" ? message.content : "",
+      )
       .join("\n");
     const ordinaryText = inference.requests[1].messages
-      .map((message) => typeof message.content === "string" ? message.content : "")
+      .map((message) =>
+        typeof message.content === "string" ? message.content : "",
+      )
       .join("\n");
     assert.match(continuationText, /<goal_progress>/);
     assert.match(continuationText, /requires the user's login/);
@@ -1933,7 +2162,11 @@ test("what is on screen belongs to the run the user is talking to", async () => 
   const storage = new SqliteStorage(":memory:");
   try {
     storage.createConversation({ id: "conversation", title: "Chat" });
-    storage.createRun({ id: "parent", conversationId: "conversation", status: "running" });
+    storage.createRun({
+      id: "parent",
+      conversationId: "conversation",
+      status: "running",
+    });
     const inference = new FakeInference();
     inference.responses.push([answer("top-level")], [answer("delegated")]);
     const tools = new ToolRegistry();
@@ -1955,7 +2188,10 @@ test("what is on screen belongs to the run the user is talking to", async () => 
       compaction: { enabled: false },
     });
 
-    await agent.start({ conversationId: "conversation", text: "show me the hub" }).result;
+    await agent.start({
+      conversationId: "conversation",
+      text: "show me the hub",
+    }).result;
     const own = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
     // The run the user is talking to owns the view — and only the view. The
     // draft is work, and a run that can delegate sends work out.
@@ -1968,7 +2204,8 @@ test("what is on screen belongs to the run the user is talking to", async () => 
       parentRunId: "parent",
       includeSubagents: false,
     }).result;
-    const delegated = inference.requests[1]?.tools?.map((tool) => tool.name) ?? [];
+    const delegated =
+      inference.requests[1]?.tools?.map((tool) => tool.name) ?? [];
     // The delegated run may still do the work — it just cannot decide what the
     // user is looking at while several of them finish at once.
     assert.ok(!delegated.includes("workspace_show"));

@@ -18,7 +18,7 @@ extension it descends from:
   URL, active/pinned state; never page contents) through the
   `com.polymux.tab_context` native messaging host into
   `~/Library/Application Support/polymux-tab-context/tabs.json`, read by the
-  agent's `browser_tabs` tool and the browser-use skill.
+  agent's `browser_tabs` tool and the computer-use skill.
 - **Control** — Polymux runs a loopback agent-surface feed on
   `http://127.0.0.1:47654`. The background worker long-polls it, binds each
   lease to the exact tab it names (by URL, then title — never by position or

@@ -40,7 +40,7 @@ jobs:
         run: |
           npx tsc --noEmit
           npm run build
-          node --test apps/site/api/*.test.js
+          node --test apps/site/test/*.test.js
           npm run check --prefix apps/site
           npm run build --prefix apps/site
 
@@ -157,15 +157,15 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run test:tools
-      - run: npm run make -- --arch=x64
+      - run: npm run package -- --platform=linux --arch=x64
+      - run: npm run make:appimage
       - name: Verify Linux artifacts
         run: |
-          find out/make -type f -name '*.deb' -print -quit | grep -q .
-          find out/make -type f -name '*.rpm' -print -quit | grep -q .
+          find out/make/appimage -type f -name '*.AppImage' -print -quit | grep -q .
+          test -f out/make/appimage/latest-linux.yml
           file out/Polymux-linux-x64/resources/resources/bridges/mautrix-whatsapp | grep -q 'ELF 64-bit'
           file out/Polymux-linux-x64/resources/resources/bridges/mautrix-googlechat | grep -q 'ELF 64-bit'
           test ! -e out/Polymux-linux-x64/resources/resources/bridges/mautrix-imessage
@@ -175,8 +175,8 @@ jobs:
         with:
           name: Polymux-Linux-x64
           path: |
-            out/make/**/*.deb
-            out/make/**/*.rpm
+            out/make/appimage/*.AppImage
+            out/make/appimage/latest-linux.yml
           if-no-files-found: error
 
   release:
@@ -193,7 +193,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mapfile -t ASSETS < <(find release-assets -type f \
-            \( -name '*.dmg' -o -name '*.zip' -o -name '*Setup.exe' -o -name '*.nupkg' -o -name 'RELEASES' -o -name '*.deb' -o -name '*.rpm' \) \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*Setup.exe' -o -name '*.nupkg' -o -name 'RELEASES' -o -name '*.AppImage' -o -name 'latest-linux.yml' \) \
             -print)
           test "${#ASSETS[@]}" -ge 7
           gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \

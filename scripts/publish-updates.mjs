@@ -1,6 +1,6 @@
 /**
  * Uploads the artifacts produced by `npm run make` to the R2 bucket behind
- * updates.flarehq.co, and writes the feed document macOS reads.
+ * the configured update host, and writes the feed document macOS reads.
  *
  * Electron Forge has no publisher for "static files on an S3-compatible
  * bucket", and electron-updater's generic provider expects the latest-*.yml
@@ -30,7 +30,7 @@ if (missing.length > 0) {
 }
 
 const bucket = process.env.R2_BUCKET;
-const publicHost = process.env.POLYMUX_UPDATE_HOST ?? "https://updates.flarehq.co";
+const publicHost = process.env.POLYMUX_UPDATE_HOST ?? "https://polymux.com/api/releases";
 
 const s3 = new S3Client({
   region: "auto",

@@ -4,7 +4,7 @@
 Chrome launches this process and frames each JSON message with a 4-byte
 little-endian length prefix. Every snapshot received is written atomically to
 ~/Library/Application Support/polymux-tab-context/tabs.json, where the Polymux
-browser-use skill reads it (scripts/tab_context.py).
+computer-use skill reads it (scripts/tab_context.py).
 """
 
 from __future__ import annotations

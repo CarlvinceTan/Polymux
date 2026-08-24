@@ -1,18 +1,42 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, net, protocol, screen } from "electron";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  net,
+  protocol,
+  screen,
+} from "electron";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
-import {homeserverPortFor} from "./system/instance-port.js";
-import {configuredRemoteDebuggingPort, requestsBackgroundLaunch} from "./system/launch-mode.js";
+import { homeserverPortFor } from "./system/instance-port.js";
+import {
+  configuredRemoteDebuggingPort,
+  requestsBackgroundLaunch,
+} from "./system/launch-mode.js";
 import { fileURLToPath } from "node:url";
 import started from "electron-squirrel-startup";
 import { channels } from "@polymux/protocol";
-import { DesktopBackend, modelFromEnvironment, type DesktopBackendOptions } from "./backend.js";
-import {builtinModels} from "@earendil-works/pi-ai/providers/all";
-import {PiInference} from "@polymux/inference/pi";
-import {EncryptedCredentialStore, OpenCodeCredentialFallback} from "./system/credential-store.js";
-import {safeStorage} from "electron";
-import { BridgeHost, Homeserver, WeChatBridge, WECHAT_FALLBACK_DIRECTORIES, loadShippedCredentials } from "@polymux/hub";
+import {
+  DesktopBackend,
+  modelFromEnvironment,
+  type DesktopBackendOptions,
+} from "./backend.js";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { PiInference } from "@polymux/inference/pi";
+import {
+  EncryptedCredentialStore,
+  OpenCodeCredentialFallback,
+} from "./system/credential-store.js";
+import { safeStorage } from "electron";
+import {
+  BridgeHost,
+  Homeserver,
+  WeChatBridge,
+  WECHAT_FALLBACK_DIRECTORIES,
+  loadShippedCredentials,
+} from "@polymux/hub";
 import { serveMedia } from "./hub/media.js";
 import { PREVIEW_SCHEME, previewResponse } from "./workspace/preview.js";
 import { registerPrivilegedSchemes } from "./system/schemes.js";
@@ -32,7 +56,8 @@ import {
 // longer be quit. A log line losing its reader is not a fatal condition.
 for (const stream of [process.stdout, process.stderr]) {
   stream.on("error", (error: NodeJS.ErrnoException) => {
-    if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") throw error;
+    if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED")
+      throw error;
   });
 }
 
@@ -76,21 +101,14 @@ if (process.platform === "darwin") {
 const environmentDebuggingPort = configuredRemoteDebuggingPort(
   process.env.POLYMUX_REMOTE_DEBUGGING_PORT,
 );
-if (environmentDebuggingPort !== null && !app.commandLine.hasSwitch("remote-debugging-port"))
-  app.commandLine.appendSwitch("remote-debugging-port", String(environmentDebuggingPort));
-const orchestrationExperiment =
-  process.env.POLYMUX_ORCHESTRATION_EXPERIMENT === "1" ||
-  app.commandLine.hasSwitch("orchestration-experiment") ||
-  process.argv.includes("--orchestration-experiment");
-if (devInstance)
-  console.log("Polymux launch mode", {
-    orchestrationExperiment,
-    experimentEnvironment: process.env.POLYMUX_ORCHESTRATION_EXPERIMENT === "1",
-    experimentElectronSwitch: app.commandLine.hasSwitch("orchestration-experiment"),
-    experimentArgument: process.argv.includes("--orchestration-experiment"),
-    preloadOfficialSkillExperiment:
-      process.env.POLYMUX_PRELOAD_OFFICIAL_SKILL_EXPERIMENT === "1",
-  });
+if (
+  environmentDebuggingPort !== null &&
+  !app.commandLine.hasSwitch("remote-debugging-port")
+)
+  app.commandLine.appendSwitch(
+    "remote-debugging-port",
+    String(environmentDebuggingPort),
+  );
 // The unsigned benchmark bundle must not open the ordinary encrypted
 // credential files with a different Keychain identity. Its SQLite/session
 // state is disposable, while skills and MCP configuration deliberately remain
@@ -165,7 +183,10 @@ if (!process.env.GOOGLE_API_KEY && process.env.POLYMUX_GOOGLE_API_KEY)
 // this instance's own userData.
 if (
   !exportNodeRuntime({
-    bundledNode: bundledResource("node", process.platform === "win32" ? "node.exe" : "node"),
+    bundledNode: bundledResource(
+      "node",
+      process.platform === "win32" ? "node.exe" : "node",
+    ),
     checkoutMarker: path.join(app.getAppPath(), "resources", "skills"),
     execPath: process.execPath,
     wrapperDirectory: path.join(app.getPath("userData"), "bin"),
@@ -199,7 +220,9 @@ function createStartupShellWindow(): BrowserWindow {
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff",
     titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
     trafficLightPosition:
-      process.platform === "darwin" ? POLYMUX_TRAFFIC_LIGHT_POSITION : undefined,
+      process.platform === "darwin"
+        ? POLYMUX_TRAFFIC_LIGHT_POSITION
+        : undefined,
     webPreferences: {
       preload: path.join(currentDirectory, "preload.js"),
       contextIsolation: true,
@@ -215,10 +238,12 @@ function createStartupShellWindow(): BrowserWindow {
       window.showInactive();
     } else if (devInstance) window.showInactive();
     else window.show();
-    void window.webContents.executeJavaScript(
-      'document.documentElement.dataset.splash = "playing"',
-      true,
-    ).catch(() => {});
+    void window.webContents
+      .executeJavaScript(
+        'document.documentElement.dataset.splash = "playing"',
+        true,
+      )
+      .catch(() => {});
   };
   const deadline = setTimeout(reveal, 4000);
   window.once("ready-to-show", () => {
@@ -234,19 +259,33 @@ function loadStartupShell(window: BrowserWindow): void {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
     url.searchParams.set("splashOnly", "1");
-    void window.loadURL(url.toString()).catch((error: unknown) =>
-      console.error(`[startup-shell] loadURL rejected: ${String(error)}`));
+    void window
+      .loadURL(url.toString())
+      .catch((error: unknown) =>
+        console.error(`[startup-shell] loadURL rejected: ${String(error)}`),
+      );
   } else {
-    void window.loadFile(
-      path.join(currentDirectory, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
-      {query: {splashOnly: "1"}},
-    ).catch((error: unknown) =>
-      console.error(`[startup-shell] loadFile rejected: ${String(error)}`));
+    void window
+      .loadFile(
+        path.join(
+          currentDirectory,
+          `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
+        ),
+        { query: { splashOnly: "1" } },
+      )
+      .catch((error: unknown) =>
+        console.error(`[startup-shell] loadFile rejected: ${String(error)}`),
+      );
   }
 }
 
 type SeparateWorkspaceView = "drive" | "schedule" | "hub" | "tasks";
-type WorkspaceWindowPlacement = {x: number; y: number; width?: number; height?: number};
+type WorkspaceWindowPlacement = {
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+};
 
 const DETACHED_WINDOW_WIDTH = 1000;
 const DETACHED_WINDOW_HEIGHT = 672;
@@ -255,8 +294,8 @@ function detachedWindowBounds(
   placement?: WorkspaceWindowPlacement,
 ): WorkspaceWindowPlacement | undefined {
   if (!placement) return undefined;
-  const point = {x: Math.round(placement.x), y: Math.round(placement.y)};
-  const {workArea} = screen.getDisplayNearestPoint(point);
+  const point = { x: Math.round(placement.x), y: Math.round(placement.y) };
+  const { workArea } = screen.getDisplayNearestPoint(point);
   const width = Math.min(
     Math.max(Math.round(placement.width ?? DETACHED_WINDOW_WIDTH), 360),
     workArea.width,
@@ -318,7 +357,9 @@ function createWindow(
     // render at y=12; these measured positions share the same visual line.
     titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
     trafficLightPosition:
-      process.platform === "darwin" ? POLYMUX_TRAFFIC_LIGHT_POSITION : undefined,
+      process.platform === "darwin"
+        ? POLYMUX_TRAFFIC_LIGHT_POSITION
+        : undefined,
     webPreferences: {
       preload: path.join(currentDirectory, "preload.js"),
       contextIsolation: true,
@@ -336,7 +377,11 @@ function createWindow(
   let appReadyChecking = false;
   const reveal = (readyChecked = false): void => {
     if (window.isDestroyed() || window.isVisible()) return;
-    if (!readyChecked && startupShellWindow && !startupShellWindow.isDestroyed()) {
+    if (
+      !readyChecked &&
+      startupShellWindow &&
+      !startupShellWindow.isDestroyed()
+    ) {
       if (appReadyChecking) return;
       appReadyChecking = true;
       // The real app being ready is only one half of the handoff. The startup
@@ -351,14 +396,16 @@ function createWindow(
           'document.documentElement.dataset.splash === "done"',
           true,
         ) as Promise<boolean>,
-      ]).then(([appReady, splashDone]) => {
-        appReadyChecking = false;
-        if (appReady && splashDone) reveal(true);
-        else appReadyPoll = setTimeout(reveal, 50);
-      }).catch(() => {
-        appReadyChecking = false;
-        appReadyPoll = setTimeout(reveal, 50);
-      });
+      ])
+        .then(([appReady, splashDone]) => {
+          appReadyChecking = false;
+          if (appReady && splashDone) reveal(true);
+          else appReadyPoll = setTimeout(reveal, 50);
+        })
+        .catch(() => {
+          appReadyChecking = false;
+          appReadyPoll = setTimeout(reveal, 50);
+        });
       return;
     }
     // A side instance is an agent's test run, opened beside the window the user
@@ -382,8 +429,7 @@ function createWindow(
       window.setOpacity(0);
       window.setIgnoreMouseEvents(true);
       window.showInactive();
-    } else if (devInstance)
-      window.showInactive();
+    } else if (devInstance) window.showInactive();
     else window.show();
     if (startupShellWindow && !startupShellWindow.isDestroyed()) {
       startupShellWindow.close();
@@ -394,7 +440,10 @@ function createWindow(
     // itself, and a slide started before it is a slide spent behind a window
     // nobody can see. The attribute is what the stylesheet animates on.
     void window.webContents
-      .executeJavaScript('document.documentElement.dataset.splash = "playing"', true)
+      .executeJavaScript(
+        'document.documentElement.dataset.splash = "playing"',
+        true,
+      )
       .catch(() => {});
   };
   const showDeadline = setTimeout(reveal, 4000);
@@ -439,7 +488,9 @@ function createWindow(
       retriesLeft -= 1;
       retryTimer = setTimeout(() => {
         if (window.isDestroyed()) return;
-        console.error(`[renderer] retrying the load (${retriesLeft} attempts left)`);
+        console.error(
+          `[renderer] retrying the load (${retriesLeft} attempts left)`,
+        );
         loadRenderer(window, workspaceView, conversationId);
       }, 1000);
     },
@@ -450,7 +501,9 @@ function createWindow(
   // errors out so a blank window explains itself where the launch was started.
   window.webContents.on("console-message", (event) => {
     if (event.level === "error")
-      console.error(`[renderer] ${event.message} (${event.sourceId}:${event.lineNumber})`);
+      console.error(
+        `[renderer] ${event.message} (${event.sourceId}:${event.lineNumber})`,
+      );
   });
 
   window.once("closed", () => clearTimeout(retryTimer));
@@ -562,47 +615,50 @@ function createWindow(
   return window;
 }
 
-function desktopBackendOptions(window: BrowserWindow): Omit<DesktopBackendOptions, "reloadForProfileChange"> {
+function desktopBackendOptions(
+  window: BrowserWindow,
+): Omit<DesktopBackendOptions, "reloadForProfileChange"> {
   return {
-      dataDirectory: app.getPath("userData"),
-      officialSkillDirectories: [officialSkillDirectory()],
-      coreSkills: coreSkillNames(bundledResource("skills", "core")),
-      // Polymux's own prompts travel as files beside the skills — same bundle,
-      // neither tier, never mirrored into the user's skills directory.
-      agentPrompts: loadAgentPrompts(
-        bundledResource("prompts"),
-        orchestrationExperiment
-          ? bundledResource("prompts", "experiments", "orchestration")
-          : undefined,
-      ),
-      orchestrationExperiment,
-      suppressSystemNotifications: backgroundLaunch,
-      suppressAutomaticUpdateChecks: backgroundLaunch,
-      axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
-      axEventsSourcePath: bundledResource("native", "ax-events.swift"),
-      pillImageSourcePath: bundledResource("native", "pill-image.swift"),
-      appPermissionsSourcePath: bundledResource("native", "app-permissions.swift"),
-      contactsSourcePath: bundledResource("native", "contacts.swift"),
-      remindersSourcePath: bundledResource("native", "reminders.swift"),
-      hub: hub
-        ? {
-            homeserver: hub.homeserver,
-            directory: hub.directory,
-            bridges: hub.bridges,
-            startWeChat: (owner: string) => wechat!.start(owner),
-            stopWeChat: () => wechat!.close(),
-            onActivity: (listener) => {
-              onHubActivity = listener;
-            },
-          }
-        : undefined,
-      window,
-      ipcMain,
-      model: modelFromEnvironment(),
+    dataDirectory: app.getPath("userData"),
+    officialSkillDirectories: [officialSkillDirectory()],
+    coreSkills: coreSkillNames(bundledResource("skills", "core")),
+    // Polymux's own prompts travel as files beside the skills — same bundle,
+    // neither tier, never mirrored into the user's skills directory.
+    agentPrompts: loadAgentPrompts(bundledResource("prompts")),
+    suppressSystemNotifications: backgroundLaunch,
+    suppressAutomaticUpdateChecks: backgroundLaunch,
+    axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
+    axEventsSourcePath: bundledResource("native", "ax-events.swift"),
+    pillImageSourcePath: bundledResource("native", "pill-image.swift"),
+    appPermissionsSourcePath: bundledResource(
+      "native",
+      "app-permissions.swift",
+    ),
+    contactsSourcePath: bundledResource("native", "contacts.swift"),
+    remindersSourcePath: bundledResource("native", "reminders.swift"),
+    hub: hub
+      ? {
+          homeserver: hub.homeserver,
+          directory: hub.directory,
+          bridges: hub.bridges,
+          startWeChat: (owner: string) => wechat!.start(owner),
+          stopWeChat: () => wechat!.close(),
+          onActivity: (listener) => {
+            onHubActivity = listener;
+          },
+        }
+      : undefined,
+    window,
+    ipcMain,
+    model: modelFromEnvironment(),
   };
 }
 
-function createDesktopBackend(window: BrowserWindow, loadMcp = true, selectDefaultProfile = false): DesktopBackend {
+function createDesktopBackend(
+  window: BrowserWindow,
+  loadMcp = true,
+  selectDefaultProfile = false,
+): DesktopBackend {
   let instance!: DesktopBackend;
   instance = new DesktopBackend({
     ...desktopBackendOptions(window),
@@ -611,58 +667,75 @@ function createDesktopBackend(window: BrowserWindow, loadMcp = true, selectDefau
   });
   instance.register();
   if (loadMcp)
-    void instance.reloadMcp().catch((error) => console.error("Could not load MCP configuration", error));
+    void instance
+      .reloadMcp()
+      .catch((error) =>
+        console.error("Could not load MCP configuration", error),
+      );
   return instance;
 }
 
-async function replaceDesktopBackend(previous: DesktopBackend, window: BrowserWindow): Promise<void> {
+async function replaceDesktopBackend(
+  previous: DesktopBackend,
+  window: BrowserWindow,
+): Promise<void> {
   if (backend !== previous || quitting || window.isDestroyed()) return;
   await previous.close("Configuration profile changed");
   if (backend !== previous || quitting || window.isDestroyed()) return;
   const next = createDesktopBackend(window, false);
   backend = next;
   for (const candidate of BrowserWindow.getAllWindows()) {
-    if (candidate !== window && !candidate.isDestroyed()) next.trustWindow(candidate);
+    if (candidate !== window && !candidate.isDestroyed())
+      next.trustWindow(candidate);
   }
-  await next.reloadMcp().catch((error) => console.error("Could not load MCP configuration", error));
-  if (!window.isDestroyed()) window.webContents.send(channels.profilesChanged, next.profileSnapshot());
+  await next
+    .reloadMcp()
+    .catch((error) => console.error("Could not load MCP configuration", error));
+  if (!window.isDestroyed())
+    window.webContents.send(channels.profilesChanged, next.profileSnapshot());
 }
 
-ipcMain.handle(channels.windowOpenWorkspaceView, (
-  event,
-  value: unknown,
-  conversationId: unknown,
-  placement: unknown,
-) => {
-  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
-  if (!sourceWindow || event.senderFrame !== event.sender.mainFrame)
-    throw new Error("Rejected IPC from an untrusted frame");
-  if (value !== "drive" && value !== "schedule" && value !== "hub" && value !== "tasks")
-    throw new Error("Unknown workspace view");
-  if (conversationId !== undefined && typeof conversationId !== "string")
-    throw new Error("Invalid conversation id");
-  if (placement !== undefined && (
-    typeof placement !== "object" || placement === null
-    || typeof (placement as WorkspaceWindowPlacement).x !== "number"
-    || !Number.isFinite((placement as WorkspaceWindowPlacement).x)
-    || typeof (placement as WorkspaceWindowPlacement).y !== "number"
-    || !Number.isFinite((placement as WorkspaceWindowPlacement).y)
-    || ((placement as WorkspaceWindowPlacement).width !== undefined
-      && (typeof (placement as WorkspaceWindowPlacement).width !== "number"
-        || !Number.isFinite((placement as WorkspaceWindowPlacement).width)
-        || (placement as WorkspaceWindowPlacement).width! <= 0))
-    || ((placement as WorkspaceWindowPlacement).height !== undefined
-      && (typeof (placement as WorkspaceWindowPlacement).height !== "number"
-        || !Number.isFinite((placement as WorkspaceWindowPlacement).height)
-        || (placement as WorkspaceWindowPlacement).height! <= 0))
-  )) throw new Error("Invalid workspace window placement");
-  const validPlacement = placement as WorkspaceWindowPlacement | undefined;
-  createWindow(
-    value,
-    typeof conversationId === "string" ? conversationId : undefined,
-    validPlacement,
-  );
-});
+ipcMain.handle(
+  channels.windowOpenWorkspaceView,
+  (event, value: unknown, conversationId: unknown, placement: unknown) => {
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!sourceWindow || event.senderFrame !== event.sender.mainFrame)
+      throw new Error("Rejected IPC from an untrusted frame");
+    if (
+      value !== "drive" &&
+      value !== "schedule" &&
+      value !== "hub" &&
+      value !== "tasks"
+    )
+      throw new Error("Unknown workspace view");
+    if (conversationId !== undefined && typeof conversationId !== "string")
+      throw new Error("Invalid conversation id");
+    if (
+      placement !== undefined &&
+      (typeof placement !== "object" ||
+        placement === null ||
+        typeof (placement as WorkspaceWindowPlacement).x !== "number" ||
+        !Number.isFinite((placement as WorkspaceWindowPlacement).x) ||
+        typeof (placement as WorkspaceWindowPlacement).y !== "number" ||
+        !Number.isFinite((placement as WorkspaceWindowPlacement).y) ||
+        ((placement as WorkspaceWindowPlacement).width !== undefined &&
+          (typeof (placement as WorkspaceWindowPlacement).width !== "number" ||
+            !Number.isFinite((placement as WorkspaceWindowPlacement).width) ||
+            (placement as WorkspaceWindowPlacement).width! <= 0)) ||
+        ((placement as WorkspaceWindowPlacement).height !== undefined &&
+          (typeof (placement as WorkspaceWindowPlacement).height !== "number" ||
+            !Number.isFinite((placement as WorkspaceWindowPlacement).height) ||
+            (placement as WorkspaceWindowPlacement).height! <= 0)))
+    )
+      throw new Error("Invalid workspace window placement");
+    const validPlacement = placement as WorkspaceWindowPlacement | undefined;
+    createWindow(
+      value,
+      typeof conversationId === "string" ? conversationId : undefined,
+      validPlacement,
+    );
+  },
+);
 
 /**
  * Points a window at the renderer. Separate from `createWindow` because the
@@ -670,7 +743,11 @@ ipcMain.handle(channels.windowOpenWorkspaceView, (
  * and a retry that quietly loaded something else would be worse than the blank
  * window it is trying to replace.
  */
-function loadRenderer(window: BrowserWindow, workspaceView?: SeparateWorkspaceView, conversationId?: string): void {
+function loadRenderer(
+  window: BrowserWindow,
+  workspaceView?: SeparateWorkspaceView,
+  conversationId?: string,
+): void {
   const coldStart = !coldStartConsumed;
   coldStartConsumed = true;
 
@@ -696,11 +773,13 @@ function loadRenderer(window: BrowserWindow, workspaceView?: SeparateWorkspaceVi
           currentDirectory,
           `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
         ),
-        { query: {
-          coldStart: coldStart ? "1" : "0",
-          ...(workspaceView ? {workspaceView} : {}),
-          ...(conversationId ? {conversationId} : {}),
-        } },
+        {
+          query: {
+            coldStart: coldStart ? "1" : "0",
+            ...(workspaceView ? { workspaceView } : {}),
+            ...(conversationId ? { conversationId } : {}),
+          },
+        },
       )
       .catch((error: unknown) => {
         console.error(`[renderer] loadFile rejected: ${String(error)}`);
@@ -714,7 +793,9 @@ function loadRenderer(window: BrowserWindow, workspaceView?: SeparateWorkspaceVi
  * conversations keep flowing until the app actually quits. Quitting is the
  * one and only teardown.
  */
-let hub: {homeserver: Homeserver; bridges: BridgeHost; directory: string} | undefined;
+let hub:
+  | { homeserver: Homeserver; bridges: BridgeHost; directory: string }
+  | undefined;
 /**
  * Where conversation traffic is announced. The homeserver is built before the
  * window exists, so it reports into this and the backend puts the real
@@ -742,7 +823,9 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   await withTimeout(
     loadShippedCredentials({
       directory: app.getPath("userData"),
-      host: process.env.POLYMUX_UPDATE_FEED_URL ?? "https://polymux.com/api/releases",
+      host:
+        process.env.POLYMUX_UPDATE_FEED_URL ??
+        "https://polymux.com/api/releases",
       log: (message) => console.warn(`[credentials] ${message}`),
     }),
     8_000,
@@ -759,7 +842,10 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
     // The bundled fleet first, then a writable directory of the user's own:
     // networks upstream ships no macOS build for (Google Chat, iMessage) can
     // be dropped in there and are picked up on the next launch.
-    binariesDirectory: [bundledResource("bridges"), path.join(directory, "bin")],
+    binariesDirectory: [
+      bundledResource("bridges"),
+      path.join(directory, "bin"),
+    ],
     homeserver,
     log: (message) => console.warn(message),
   });
@@ -768,7 +854,9 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   // demand when its platform is opened, which keeps a dozen idle processes and
   // their databases off a machine that signed into two networks.
   void bridges.startLinked().catch((error: unknown) => {
-    console.warn(`Bridges failed to start: ${error instanceof Error ? error.message : String(error)}`);
+    console.warn(
+      `Bridges failed to start: ${error instanceof Error ? error.message : String(error)}`,
+    );
   });
   // No binary to supervise for WeChat, and no account to log into: it is a
   // relay against the desktop app. Started on demand rather than here, because
@@ -786,7 +874,7 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
     ],
     log: (line) => console.warn(line),
   });
-  return {homeserver, bridges, directory};
+  return { homeserver, bridges, directory };
 }
 
 /**
@@ -810,7 +898,11 @@ async function withTimeout<T>(
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
           timedOut = true;
-          reject(new Error(`${what} did not start within ${ms}ms; continuing without it`));
+          reject(
+            new Error(
+              `${what} did not start within ${ms}ms; continuing without it`,
+            ),
+          );
         }, ms);
       }),
     ]);
@@ -831,16 +923,23 @@ async function runProviderProbe(): Promise<number> {
   const provider = "openai-codex";
   const model = "gpt-5.6-luna";
   const started = Date.now();
-  const credentials = new OpenCodeCredentialFallback(new EncryptedCredentialStore(
-    path.join(app.getPath("userData"), "credentials.json"),
-    safeStorage,
-  ));
-  const inference = new PiInference(builtinModels({credentials}));
+  const credentials = new OpenCodeCredentialFallback(
+    new EncryptedCredentialStore(
+      path.join(app.getPath("userData"), "credentials.json"),
+      safeStorage,
+    ),
+  );
+  const inference = new PiInference(builtinModels({ credentials }));
   let answer = "";
-  let failure: {code: string; retryable: boolean} | null = null;
+  let failure: { code: string; retryable: boolean } | null = null;
   for await (const event of inference.stream({
-    model: {provider, id: model},
-    messages: [{role: "user", content: [{type: "text", text: "Reply exactly READY."}]}],
+    model: { provider, id: model },
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Reply exactly READY." }],
+      },
+    ],
     reasoning: "low",
     maxOutputTokens: 16,
     timeoutMs: 20_000,
@@ -849,31 +948,45 @@ async function runProviderProbe(): Promise<number> {
     if (event.type === "textDelta") answer += event.delta;
     // textEnd contains the complete block, not another delta.
     if (event.type === "textEnd") answer = event.text;
-    if (event.type === "error") failure = {code: event.error.code, retryable: event.error.retryable};
+    if (event.type === "error")
+      failure = { code: event.error.code, retryable: event.error.retryable };
   }
-  const status = answer.trim() === "READY" ? "ready" : failure?.code ?? "probe_failed";
-  process.stdout.write(`${JSON.stringify({
-    version: 1,
-    capturedAt: new Date().toISOString(),
-    model: `${provider}/${model}`,
-    reasoning: "low",
-    latencyMs: Date.now() - started,
-    status,
-    retryable: failure?.retryable ?? false,
-  }, null, 2)}\n`);
+  const status =
+    answer.trim() === "READY" ? "ready" : (failure?.code ?? "probe_failed");
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        version: 1,
+        capturedAt: new Date().toISOString(),
+        model: `${provider}/${model}`,
+        reasoning: "low",
+        latencyMs: Date.now() - started,
+        status,
+        retryable: failure?.retryable ?? false,
+      },
+      null,
+      2,
+    )}\n`,
+  );
   return status === "ready" ? 0 : 3;
 }
 
 function writeProviderProbeFailure(status: string): void {
-  process.stdout.write(`${JSON.stringify({
-    version: 1,
-    capturedAt: new Date().toISOString(),
-    model: "openai-codex/gpt-5.6-luna",
-    reasoning: "low",
-    latencyMs: 0,
-    status,
-    retryable: false,
-  }, null, 2)}\n`);
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        version: 1,
+        capturedAt: new Date().toISOString(),
+        model: "openai-codex/gpt-5.6-luna",
+        reasoning: "low",
+        latencyMs: 0,
+        status,
+        retryable: false,
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 app.whenReady().then(async () => {
@@ -901,12 +1014,12 @@ app.whenReady().then(async () => {
   coldStartConsumed = true;
   // Bridged media is fetched by the main process, which holds the token the
   // renderer never sees. Read per request, so a later sign-in is picked up.
-  serveMedia(() => backend?.mediaAuth ?? {homeserverUrl: "", token: null});
+  serveMedia(() => backend?.mediaAuth ?? { homeserverUrl: "", token: null });
   // A produced file is streamed to the page the same way, and for the same
   // reason: an <img> cannot reach the disk, and a data: uri would hold a whole
   // clip in memory. Range is forwarded or a <video> could play but not seek.
   protocol.handle(PREVIEW_SCHEME, async (request) => {
-    if (!backend) return new Response("Not granted", {status: 404});
+    if (!backend) return new Response("Not granted", { status: 404 });
     return previewResponse(
       backend.previewGrants,
       request,
@@ -924,12 +1037,18 @@ app.whenReady().then(async () => {
     // orphaned previous main process has not released yet, a bridge database
     // waiting on a lock — would otherwise hold the first window back forever,
     // which on screen is indistinguishable from the app refusing to start.
-    hub = await withTimeout(startHub(), 10_000, "the embedded message hub", (late) =>
-      Promise.allSettled([late.bridges.close(), late.homeserver.close()]),
+    hub = await withTimeout(
+      startHub(),
+      10_000,
+      "the embedded message hub",
+      (late) =>
+        Promise.allSettled([late.bridges.close(), late.homeserver.close()]),
     );
   } catch (error) {
     // A hub that cannot bind its port degrades messaging, nothing else.
-    console.warn(`Embedded hub failed to start: ${error instanceof Error ? error.message : String(error)}`);
+    console.warn(
+      `Embedded hub failed to start: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   if (quitting) return;
   createWindow();

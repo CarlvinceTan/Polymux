@@ -150,7 +150,7 @@ export function createInAppBrowserTool(browser: InAppBrowser): AgentTool {
   };
 }
 
-/** Experimental read-only batch surface. A separate tool keeps `tabIds` out
+/** Read-only batch surface. A separate tool keeps `tabIds` out
  * of every ordinary browser call, where provider schema filling can otherwise
  * invent placeholder ids and change the meaning of `open` or `snapshot`. */
 export function createInAppBrowserBatchTool(browser: InAppBrowser): AgentTool {
@@ -202,7 +202,7 @@ export function createInAppBrowserBatchTool(browser: InAppBrowser): AgentTool {
   };
 }
 
-/** Experimental research primitive: opening and reading are one semantic
+/** Research primitive: opening and reading are one semantic
  * operation, matching what the worker actually wants and avoiding a second
  * model/tool round solely to snapshot a page it just opened. */
 export function createInAppBrowserReadTool(

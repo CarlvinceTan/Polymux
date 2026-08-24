@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { RecordingEndReason, RecordingSession } from "@polymux/computer-history";
-import { ComputerHistoryRecorder, elapsedLabel } from "@polymux/computer-history";
+import type { RecordingEndReason, RecordingSession } from "@polymux/computer";
+import { ComputerHistoryRecorder, elapsedLabel } from "@polymux/computer";
 import type { RecordingCapture } from "./capture.js";
 import { createRecordingTool } from "./tools.js";
 

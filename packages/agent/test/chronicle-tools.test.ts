@@ -3,7 +3,7 @@ import {mkdtempSync, rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {ComputerHistoryStore} from "@polymux/computer-history";
+import {ComputerHistoryStore} from "@polymux/computer";
 import {createComputerHistoryTools} from "../src/memory/computer-history-tools.js";
 
 test("previous-screen work resolves one app switch and its nearest frame", async () => {
