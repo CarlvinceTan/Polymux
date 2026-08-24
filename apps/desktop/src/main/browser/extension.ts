@@ -2,11 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-/**
- * TODO: replace with the real listing once the extension is published. The
- * chip and the Settings row both open this, so it is the only line to change.
- */
-export const EXTENSION_INSTALL_URL = "https://flarehq.co/extension";
+export { EXTENSION_INSTALL_URL } from "../../shared/extension.js";
 
 /**
  * The extension streams a snapshot of the user's open tabs here, and
