@@ -1,4 +1,4 @@
-import type { InferenceMessage, InputBlock } from "@flareai/inference";
+import type { InferenceMessage, InputBlock } from "@polymux/inference";
 
 /**
  * Rough cost of one image once the provider tiles it. Images never reach the

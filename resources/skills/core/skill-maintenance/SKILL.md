@@ -1,7 +1,7 @@
 ---
 name: skill-maintenance
-description: Stage, compare, and safely promote changes to the user's personal FlareAI skills. Use whenever creating, editing, merging, installing, deleting, or reviewing a skill under ~/.flareai/skills or ~/.agents/skills; when the live-skill guard hook or a drift scan reports drift; or when reviewing a customized bundled-skill update. Keep live skills unchanged until structural checks and protected behavioral contracts pass.
-author: FlareAI
+description: Stage, compare, and safely promote changes to the user's personal Polymux skills. Use whenever creating, editing, merging, installing, deleting, or reviewing a skill under ~/.polymux/skills or ~/.agents/skills; when the live-skill guard hook or a drift scan reports drift; or when reviewing a customized bundled-skill update. Keep live skills unchanged until structural checks and protected behavioral contracts pass.
+author: Polymux
 category: Skills
 ---
 
@@ -9,7 +9,7 @@ category: Skills
 
 Protect existing preferences by testing an isolated candidate against the approved skill snapshot before changing the live skill.
 
-- **Live/deployed skill:** the active approved copy FlareAI loads.
+- **Live/deployed skill:** the active approved copy Polymux loads.
 - **Staged candidate:** an inactive working copy used for editing and testing.
 
 Keep user-facing explanations concise and high-level unless the user asks for
@@ -20,7 +20,7 @@ absolute directory containing this `SKILL.md`, then run exactly
 `python3 <that-absolute-directory>/scripts/audit_dependencies.py` as the first
 and only tool call. Never run the relative path from the task workspace. Do not
 issue parallel reads or shell calls. It
-inspects only the current FlareAI home’s personal and official skill roots,
+inspects only the current Polymux home’s personal and official skill roots,
 summarises the maintenance gate and stale candidates, and returns explicit
 dependency evidence. Use its result before any targeted follow-up reads; do not
 re-enumerate those roots or rerun `doctor`, `scan`, `verify-guard`, or `list`.
@@ -51,8 +51,8 @@ the normal maintenance gate:
   provenance to its registry after promotion. Do not guess a source or request
   separate enrollment approval. Read
   [references/public-updates.md](references/public-updates.md).
-- **Bundled FlareAI source (system skill):** for a customized copy of a skill
-  shipped with FlareAI.
+- **Bundled Polymux source (system skill):** for a customized copy of a skill
+  shipped with Polymux.
   Keep the custom copy in the user-owned skill root and use the integrated
   `system` commands to compare it with the newly bundled version. Read
   [references/system-updates.md](references/system-updates.md).
@@ -84,7 +84,7 @@ confirmation.
 
    ```bash
    python3 scripts/skill_maintenance.py stage <skill-name>
-   python3 scripts/skill_maintenance.py stage-new flareai <new-skill-name>
+   python3 scripts/skill_maintenance.py stage-new polymux <new-skill-name>
    python3 scripts/skill_maintenance.py stage-delete <skill-name>
    ```
 
@@ -102,17 +102,25 @@ confirmation.
    second check or resume fails immediately instead of racing the active run.
    Do not use subagents to duplicate the same gate work.
 
+   For two or more related candidates, run `validate` for every candidate first.
+   If all are structurally valid, start one complete `check` per candidate
+   concurrently and wait for every decision. Never run two checks for the same
+   candidate, and never treat the related candidates as one approval or reuse a
+   report after an approved-state change makes it stale. Concurrent independent
+   checks reduce wall time without removing contracts, repeats, comparisons, or
+   graders.
+
    For a strictly mechanical rename, use the deterministic rename gate instead:
 
    ```bash
    python3 scripts/skill_maintenance.py check-rename <candidate-id> \
-     --source-skill flareai:old-name \
-     --replacement-skill flareai:new-name \
+     --source-skill polymux:old-name \
+     --replacement-skill polymux:new-name \
      --replace old-name=new-name
    ```
 
    For the newly named replacement skill itself, use
-   `--source-skill flareai:old-name` without `--replacement-skill`. For deletion
+   `--source-skill polymux:old-name` without `--replacement-skill`. For deletion
    of the old skill after its replacement is live, use only `--replacement-skill`.
    Repeat `--replace` for deliberate
    spelling forms such as uppercase environment-variable identifiers.
@@ -166,6 +174,12 @@ failure. Ordinary contracts may use fewer runs. Partial runs remain diagnostic.
 Read [references/protocol.md](references/protocol.md) for execution, resumption,
 and diagnostic details.
 
+Treat baseline-result caching, atomic multi-candidate change sets,
+contract-specific intentional approvals, and majority-based early termination
+as evaluator-runner features. Do not simulate them in skill instructions or
+bypass the complete current gate. Implement them only through a separately
+staged, sealed runner upgrade with deterministic control-plane tests.
+
 ## Deleting a skill
 
 A direct, unambiguous request to delete a named personal skill is sufficient authorization to remove that skill and the behavior it provides. Do not ask for a second confirmation merely because deletion causes the deleted skill's behavioral contracts to fail.
@@ -183,8 +197,8 @@ protected dependency policy and public-update registration with the atomic
 migration helper before rechecking the deletion candidate:
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/migrate_skill_delete.mjs <skill-name> --dry-run
-"${FLAREAI_NODE:-node}" scripts/migrate_skill_delete.mjs <skill-name>
+"${POLYMUX_NODE:-node}" scripts/migrate_skill_delete.mjs <skill-name> --dry-run
+"${POLYMUX_NODE:-node}" scripts/migrate_skill_delete.mjs <skill-name>
 ```
 
 The helper backs up every affected metadata file, removes only the exact skill
@@ -214,9 +228,9 @@ infer which skills are installed.
 
 ## Evaluation boundaries
 
-Behavior probes run in isolated read-only FlareAI profiles with memories, GUI control, and external side effects disabled. Never send messages, submit forms, pay, book, power devices, or foreground apps during a probe.
+Behavior probes run in isolated read-only Polymux profiles with memories, GUI control, and external side effects disabled. Never send messages, submit forms, pay, book, power devices, or foreground apps during a probe.
 
-When validation needs a real fresh FlareAI task outside the sealed probe runner:
+When validation needs a real fresh Polymux task outside the sealed probe runner:
 
 - If the user references a specific failed or unsatisfactory task, retrieve and
   reuse the user's exact original prompt as the primary before-versus-after

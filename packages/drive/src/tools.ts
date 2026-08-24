@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AgentTool } from "@flareai/core";
+import type { AgentTool } from "@polymux/core";
 import type { Drive } from "./manager.js";
 import { DriveConflictError } from "./types.js";
 
@@ -105,7 +105,7 @@ function createSourcesTool(drive: Drive): AgentTool {
   return {
     name: "drive_sources",
     description:
-      "List the storage the user has connected: their output folder, this Mac, and every signed-in cloud drive account. Returns the source ids every other drive_* tool takes. Call this first when the user names a drive rather than a path, or when you need to know what a source actually reaches — the cloud accounts are scoped to FlareAI's own folder, so files the user saved there themselves are not visible.",
+      "List the storage the user has connected: their output folder, this Mac, and every signed-in cloud drive account. Returns the source ids every other drive_* tool takes. Call this first when the user names a drive rather than a path, or when you need to know what a source actually reaches — the cloud accounts are scoped to Polymux's own folder, so files the user saved there themselves are not visible.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       try {
@@ -178,7 +178,7 @@ function createReadTool(drive: Drive): AgentTool {
       try {
         const source = text(input, "source");
         const target = text(input, "path");
-        scratch = await mkdtemp(path.join(tmpdir(), "flareai-drive-"));
+        scratch = await mkdtemp(path.join(tmpdir(), "polymux-drive-"));
         // Named after the entry rather than its path: for Drive and OneDrive
         // the path is an opaque id, and the extension is what tells the agent
         // (and the binary check below) what it is looking at.
@@ -248,7 +248,7 @@ function createWriteTool(drive: Drive): AgentTool {
         const folder = typeof input.folder === "string" ? input.folder : "";
         const content = typeof input.content === "string" ? input.content : "";
 
-        scratch = await mkdtemp(path.join(tmpdir(), "flareai-drive-"));
+        scratch = await mkdtemp(path.join(tmpdir(), "polymux-drive-"));
         const local = path.join(scratch, name);
         await writeFile(local, content, "utf8");
 

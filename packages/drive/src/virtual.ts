@@ -1,7 +1,7 @@
 import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
-import type {DriveEntryDto, DriveProviderId} from "@flareai/protocol";
+import type {DriveEntryDto, DriveProviderId} from "@polymux/protocol";
 import type {DriveAdapter, DriveProbe, DriveWriteOptions} from "./types.js";
 
 /**
@@ -16,8 +16,8 @@ export interface VirtualSource {
 /**
  * The drive as one drive.
  *
- * Every provider already keeps FlareAI's files in a folder of its own — Drive
- * makes `FlareAI`, Dropbox and OneDrive use their app folders, S3 takes a
+ * Every provider already keeps Polymux's files in a folder of its own — Drive
+ * makes `Polymux`, Dropbox and OneDrive use their app folders, S3 takes a
  * prefix. This stacks those folders into a single listing so the user has one
  * place to look instead of a switcher to remember, and a new file simply goes
  * wherever the save order says.
@@ -197,7 +197,7 @@ export class VirtualDrive implements DriveAdapter {
       return created;
     }
 
-    const scratch = await mkdtemp(path.join(tmpdir(), "flareai-drive-move-"));
+    const scratch = await mkdtemp(path.join(tmpdir(), "polymux-drive-move-"));
     try {
       const staged = path.join(scratch, named.name || "file");
       await from.adapter.download(fromPath, staged);

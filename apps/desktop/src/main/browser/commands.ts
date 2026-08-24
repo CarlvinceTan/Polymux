@@ -1,4 +1,4 @@
-import type { JsonObject } from "@flareai/inference";
+import type { JsonObject } from "@polymux/inference";
 import type { SurfaceCommand } from "../agent/surface.js";
 
 /**

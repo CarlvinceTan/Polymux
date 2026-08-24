@@ -1,10 +1,10 @@
-import type {GeneralSettingsDto} from '@flareai/protocol';
+import type {GeneralSettingsDto} from '@polymux/protocol';
 
 export type ThemeMode = GeneralSettingsDto['theme'];
 
 /** Mirrors the choice for `public/theme-boot.js`, which applies it in <head> so
  * the startup splash opens in the right theme rather than flashing into it. */
-const STORAGE_KEY = 'flareai.theme';
+const STORAGE_KEY = 'polymux.theme';
 
 function storedMode(): ThemeMode | undefined {
   try {

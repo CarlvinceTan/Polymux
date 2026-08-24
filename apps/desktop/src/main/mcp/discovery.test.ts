@@ -6,7 +6,7 @@ import test from "node:test";
 import { discoverAgentMcpServers, resolveDiscoveredMcp } from "./discovery.js";
 
 function home(): string {
-  return mkdtempSync(path.join(tmpdir(), "flareai-mcp-discovery-"));
+  return mkdtempSync(path.join(tmpdir(), "polymux-mcp-discovery-"));
 }
 
 function write(root: string, file: string, contents: string): void {
@@ -43,7 +43,7 @@ test("reads Codex's TOML, which spells the table mcp_servers", () => {
   assert.equal(group.servers[0]?.target, "node");
 });
 
-test("a server FlareAI already runs reports as loaded rather than offered", () => {
+test("a server Polymux already runs reports as loaded rather than offered", () => {
   const root = home();
   write(root, ".codex/config.toml", '[mcp_servers.files]\ncommand = "node"\n');
   const [group] = discoverAgentMcpServers(new Set(["files"]), root);
@@ -63,9 +63,9 @@ test("unreadable and empty configurations are skipped, not thrown", () => {
   assert.deepEqual(discoverAgentMcpServers(new Set(), root), []);
 });
 
-test("FlareAI's own servers are never offered back to it", () => {
+test("Polymux's own servers are never offered back to it", () => {
   const root = home();
-  write(root, ".flareai/mcp.json", JSON.stringify({mcpServers: {files: {command: "node"}}}));
+  write(root, ".polymux/mcp.json", JSON.stringify({mcpServers: {files: {command: "node"}}}));
   assert.deepEqual(discoverAgentMcpServers(new Set(), root), []);
 });
 

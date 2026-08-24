@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {AgentRunEvent} from "@flareai/core";
-import type {Artifact, NewArtifact, NewReference, StoredReference} from "@flareai/storage";
+import type {AgentRunEvent} from "@polymux/core";
+import type {Artifact, NewArtifact, NewReference, StoredReference} from "@polymux/storage";
 import {RunResourceRecorder, type RunResourceStore} from "./run-resources.js";
 
 function memoryStore(): RunResourceStore & {references: StoredReference[]; artifacts: Artifact[]} {

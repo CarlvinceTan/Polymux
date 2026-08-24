@@ -76,7 +76,7 @@ const authorAliases: Record<string, string> = {
 };
 
 const modelGateways = new Set([
-  'amazon-bedrock', 'cerebras', 'cloudflare-ai-gateway', 'cloudflare-workers-ai',
+  'amazon-bedrock', 'cerebras', 'cloudpolymux-gateway', 'cloudflare-workers-ai',
   'fireworks', 'github-copilot', 'groq', 'huggingface', 'nvidia', 'opencode',
   'opencode-go', 'openrouter', 'qwen-token-plan', 'qwen-token-plan-cn', 'together',
   'vercel-ai-gateway',

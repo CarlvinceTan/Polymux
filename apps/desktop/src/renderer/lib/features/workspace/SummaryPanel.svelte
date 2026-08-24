@@ -66,7 +66,7 @@
 
   <section>
     <header>
-      <!-- Outputs are what FlareAI produced, so there is nothing to add by hand:
+      <!-- Outputs are what Polymux produced, so there is nothing to add by hand:
            an empty editor here would be a file that does not exist yet. -->
       <h2>{$t('summary.outputs')}</h2>
     </header>
@@ -84,9 +84,9 @@
       <div bind:this={referenceMenuWrapper} class="summary-menu-wrap">
         <button type="button" aria-label={$t('summary.addReference')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={referenceMenuOpen} onclick={toggleReferenceMenu}><Icon name="plus" size={18}/></button>
         {#if referenceMenuOpen}
-          <div class="flareai-dropdown-menu summary-action-menu reference-action-menu" role="menu">
-            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => fileInput.click()}><Icon name="file" size={15}/><span>{$t('summary.chooseFiles')}</span></button>
-            <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => folderInput.click()}><Icon name="folder" size={15}/><span>{$t('summary.chooseFolder')}</span></button>
+          <div class="polymux-dropdown-menu summary-action-menu reference-action-menu" role="menu">
+            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => fileInput.click()}><Icon name="file" size={15}/><span>{$t('summary.chooseFiles')}</span></button>
+            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => folderInput.click()}><Icon name="folder" size={15}/><span>{$t('summary.chooseFolder')}</span></button>
           </div>
         {/if}
       </div>

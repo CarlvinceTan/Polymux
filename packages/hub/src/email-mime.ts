@@ -76,7 +76,7 @@ export function mimeMessage(options: {
   if (files.length === 0)
     return `${[...headers, "Content-Type: text/plain; charset=utf-8"].join("\r\n")}\r\n\r\n${body}\r\n`;
 
-  const boundary = `flareai-${Date.now().toString(36)}-${files.length}`;
+  const boundary = `polymux-${Date.now().toString(36)}-${files.length}`;
   const parts = [
     ["Content-Type: text/plain; charset=utf-8", "", body].join("\r\n"),
     ...files.map((file) =>

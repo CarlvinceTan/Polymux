@@ -26,7 +26,7 @@ describe("provider OAuth sessions", () => {
 
 describe("provider OAuth errors", () => {
   it("preserves the actionable credential-store cause across IPC", () => {
-    const cause = new Error("Secure credential storage is unavailable. Restart FlareAI.");
+    const cause = new Error("Secure credential storage is unavailable. Restart Polymux.");
     const wrapped = new Error("Credential store modify failed for openai-codex", {cause});
     assert.equal(providerOAuthError(wrapped).message, cause.message);
   });

@@ -15,8 +15,8 @@ function fixture() {
 }
 
 test("persists user configuration after the database is reopened", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-preferences-"));
-  const databasePath = path.join(directory, "flareai.sqlite");
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-preferences-"));
+  const databasePath = path.join(directory, "polymux.sqlite");
   try {
     const firstSession = new SqliteStorage(databasePath);
     firstSession.setPreference("general-access", {
@@ -145,8 +145,8 @@ test("persists replayable run events and lifecycle state", () => {
 });
 
 test("a store written before summaries were fingerprinted still opens", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-compaction-"));
-  const databasePath = path.join(directory, "flareai.sqlite");
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-compaction-"));
+  const databasePath = path.join(directory, "polymux.sqlite");
   try {
     const before = new SqliteStorage(databasePath);
     before.createConversation({ id: "conversation-1", title: "Chat" });
@@ -301,7 +301,7 @@ test("stores artifacts and references without putting file contents in SQLite", 
       conversationId: "conversation-1",
       runId: "run-1",
       kind: "web",
-      title: "FlareAI",
+      title: "Polymux",
       uri: "https://flarehq.co",
     });
     assert.equal(
@@ -450,8 +450,8 @@ test("a literal wildcard in a search is not treated as a pattern", () => {
 });
 
 test("drops web references the reply never cited when upgrading an old store", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-refs-"));
-  const databasePath = path.join(directory, "flareai.sqlite");
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-refs-"));
+  const databasePath = path.join(directory, "polymux.sqlite");
   try {
     const before = new SqliteStorage(databasePath);
     before.createConversation({ id: "conversation-1", title: "Research" });

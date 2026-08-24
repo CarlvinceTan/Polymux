@@ -2,7 +2,7 @@ import type {
   InferenceService,
   ModelRef,
   ReasoningEffort,
-} from "@flareai/inference";
+} from "@polymux/inference";
 
 /**
  * `done` when the objective is satisfied or unreachable, `continue` when more

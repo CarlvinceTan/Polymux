@@ -2,7 +2,7 @@
  * Turns whatever a failed call threw into a line a person can act on.
  *
  * Electron wraps every rejected `ipcRenderer.invoke` in its own prose — "Error
- * invoking remote method 'flareai:models:assign-role': Error: …" — which puts a
+ * invoking remote method 'polymux:models:assign-role': Error: …" — which puts a
  * channel name and two "Error" labels in front of the only sentence that
  * matters. Stacks arrive in the same string. Both are for a developer reading a
  * console, not for someone reading a settings pane, so neither is shown.

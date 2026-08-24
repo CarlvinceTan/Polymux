@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { availablePath, downloadKind } from "./downloads.js";
 
 function directory(): string {
-  return mkdtempSync(path.join(tmpdir(), "flareai-downloads-"));
+  return mkdtempSync(path.join(tmpdir(), "polymux-downloads-"));
 }
 
 test("a name already taken is stepped past rather than written through", () => {

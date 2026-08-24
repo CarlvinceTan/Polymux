@@ -1,0 +1,43 @@
+name: Tag merged release
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'dev'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate merged version
+        id: version
+        shell: bash
+        run: |
+          RESULT="$(node scripts/validate-release-version.mjs --base=${{ github.event.pull_request.base.sha }})"
+          TAG="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(value.tag)' "$RESULT")"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Create version tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Polymux ${TAG#v}"
+          git push origin "$TAG"
+      - name: Start release build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run release.yml --ref "$TAG"

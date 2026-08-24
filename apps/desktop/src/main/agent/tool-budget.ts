@@ -1,4 +1,4 @@
-import type {AgentTool, AgentToolResult} from "@flareai/core";
+import type {AgentTool, AgentToolResult} from "@polymux/core";
 
 /** Bound a research helper inside one delegated run. This is deliberately a
  * wrapper rather than a global runner limit: interactive browser work and

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {JsonObject} from "@flareai/inference";
+import type {JsonObject} from "@polymux/inference";
 import type {ControlSession} from "./embedded.js";
 import {createInAppBrowserBatchTool, createInAppBrowserReadTool, createInAppBrowserTool, defaultResearchMaxChars, readOnlySectionControls, type InAppBrowser} from "./embedded-tools.js";
 
 /**
- * The page half of the tool now runs the shared @flareai/browser
+ * The page half of the tool now runs the shared @polymux/browser
  * handlers, which talk CDP. The fake answers CDP directly, so these tests
  * cover the tool's own job — workspace tabs, argument shaping, reporting —
  * against the real handlers rather than against stand-ins for them.
@@ -62,14 +62,14 @@ async function runBatch(browser: InAppBrowser, input: JsonObject): Promise<{cont
 
 test("open loads a url and reports the tab it landed in", async () => {
   const browser = fakeBrowser();
-  const result = await run(browser, {action: "open", url: "https://flareai.test/docs"});
+  const result = await run(browser, {action: "open", url: "https://polymux.test/docs"});
   assert.deepEqual(JSON.parse(result.content), {
     ok: true,
     tabId: "tab-2",
-    pageUrl: "https://flareai.test/docs",
+    pageUrl: "https://polymux.test/docs",
     pageTitle: "Opened",
   });
-  assert.deepEqual(browser.calls, ["open https://flareai.test/docs"]);
+  assert.deepEqual(browser.calls, ["open https://polymux.test/docs"]);
 });
 
 test("show brings an open tab to the front for the user", async () => {
@@ -81,8 +81,8 @@ test("show brings an open tab to the front for the user", async () => {
 
 test("open can reveal the page when the user asked to see it", async () => {
   const browser = fakeBrowser();
-  await run(browser, {action: "open", url: "https://flareai.test/docs", show: true});
-  assert.deepEqual(browser.calls, ["open https://flareai.test/docs show"]);
+  await run(browser, {action: "open", url: "https://polymux.test/docs", show: true});
+  assert.deepEqual(browser.calls, ["open https://polymux.test/docs show"]);
 });
 
 test("read returns the page text alongside the page it came from", async () => {
@@ -148,14 +148,14 @@ test("a blocking dialog is reported instead of letting the command hang", async 
 
 test("plain terms search Google, a bare host just gains a scheme", async () => {
   const browser = fakeBrowser();
-  await run(browser, {action: "open", url: "flareai release notes"});
+  await run(browser, {action: "open", url: "polymux release notes"});
   await run(browser, {action: "open", url: "site:mom.gov.sg student pass work"});
-  await run(browser, {action: "open", url: "flareai.test/docs"});
+  await run(browser, {action: "open", url: "polymux.test/docs"});
   await run(browser, {action: "navigate", tabId: "tab-1", url: "who won the toss"});
   assert.deepEqual(browser.calls, [
-    "open https://www.google.com/search?q=flareai%20release%20notes",
+    "open https://www.google.com/search?q=polymux%20release%20notes",
     "open https://www.google.com/search?q=site%3Amom.gov.sg%20student%20pass%20work",
-    "open https://flareai.test/docs",
+    "open https://polymux.test/docs",
     "navigate tab-1 https://www.google.com/search?q=who%20won%20the%20toss",
   ]);
 });

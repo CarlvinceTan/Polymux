@@ -152,7 +152,7 @@ async function decryptDatabase(file: string, key: Buffer): Promise<Buffer | null
 async function readImages(database: Buffer): Promise<Array<[string, Uint8Array]>> {
   const file = path.join(
     tmpdir(),
-    `flareai-wechat-heads-${process.pid}-${Date.now()}.db`,
+    `polymux-wechat-heads-${process.pid}-${Date.now()}.db`,
   );
   await writeFile(file, database, {mode: 0o600});
   try {

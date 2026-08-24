@@ -1,5 +1,5 @@
 {
-  "name": "@flareai/agent",
+  "name": "@polymux/agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@flareai/core": "0.1.0",
-    "@flareai/inference": "0.1.0",
-    "@flareai/storage": "0.1.0",
-    "@flareai/tools": "0.1.0"
+    "@polymux/computer": "0.1.0",
+    "@polymux/core": "0.1.0",
+    "@polymux/inference": "0.1.0",
+    "@polymux/storage": "0.1.0",
+    "@polymux/tools": "0.1.0"
   }
 }

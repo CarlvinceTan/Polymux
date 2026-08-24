@@ -59,7 +59,7 @@ test("a request resolves to its file, and a malformed url to nothing", () => {
   const grants = new PreviewGrants();
   const url = grants.url("/tmp/a.png");
   assert.equal(previewTarget(grants, url), "/tmp/a.png");
-  assert.equal(previewTarget(grants, "flareai-preview://stolen/a.png"), undefined);
+  assert.equal(previewTarget(grants, "polymux-preview://stolen/a.png"), undefined);
   assert.equal(previewTarget(grants, "not a url"), undefined);
 });
 
@@ -191,7 +191,7 @@ test("an ungranted token is refused before the disk is touched", async () => {
 
   const response = await previewResponse(
     grants,
-    {url: "flareai-preview://guessed/granted.png", headers: headers()},
+    {url: "polymux-preview://guessed/granted.png", headers: headers()},
     fetchFile,
     sizeOf(),
   );

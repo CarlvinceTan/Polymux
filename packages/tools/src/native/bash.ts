@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentTool, ToolEnvironment } from "../types.js";
 import { stringInput, workingDirectory } from "../types.js";
@@ -43,9 +43,19 @@ export function createBashTool(environment: ToolEnvironment): AgentTool {
         typeof input.timeout === "number" && input.timeout > 0
           ? Math.min(input.timeout * 1_000, MAX_TIMEOUT_MS)
           : DEFAULT_TIMEOUT_MS;
+      const windows = process.platform === "win32";
+      const shell = environment.shell ??
+        (windows
+          ? "powershell.exe"
+          : process.env.SHELL ?? "/bin/sh");
+      const shellArgs = windows
+        ? path.basename(shell).toLowerCase().startsWith("powershell")
+          ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
+          : ["/d", "/s", "/c", command]
+        : ["-lc", command];
       const child = spawn(
-        environment.shell ?? process.env.SHELL ?? "/bin/sh",
-        ["-lc", command],
+        shell,
+        shellArgs,
         {
           cwd: workingDirectory(environment, context),
           env: { ...process.env, ...environment.env },
@@ -53,7 +63,7 @@ export function createBashTool(environment: ToolEnvironment): AgentTool {
           // Its own process group, so a runaway child of the shell — a
           // recursive `grep` or `find` — is killed along with the shell
           // rather than outliving it.
-          detached: true,
+          detached: !windows,
         },
       );
       let escalation: NodeJS.Timeout | undefined;
@@ -110,7 +120,7 @@ export function createBashTool(environment: ToolEnvironment): AgentTool {
       let logPath: string | undefined;
       if (bounded.truncated || dropped > 0) {
         const directory =
-          environment.temporaryDirectory ?? join(tmpdir(), "flareai-tool-output");
+          environment.temporaryDirectory ?? join(tmpdir(), "polymux-tool-output");
         await mkdir(directory, { recursive: true });
         logPath = join(directory, `${context.runId}-${context.callId}.log`);
         await writeFile(logPath, full, "utf8");
@@ -143,6 +153,14 @@ function killGroup(
   child: { pid?: number; kill: (signal: NodeJS.Signals) => boolean },
   signal: NodeJS.Signals,
 ): void {
+  if (process.platform === "win32") {
+    try {
+      child.kill(signal);
+    } catch {
+      // Already exited.
+    }
+    return;
+  }
   try {
     if (child.pid) process.kill(-child.pid, signal);
     else child.kill(signal);

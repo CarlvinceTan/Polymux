@@ -14,7 +14,7 @@
  * simply never matches. Anything the store has no opinion about keeps its
  * natural order, after everything it does.
  */
-const KEY = 'flareaiHubRailOrder';
+const KEY = 'polymuxHubRailOrder';
 
 type Stored = {
   /** Rail rows, top to bottom: `platform:<name>` and `mail`. */

@@ -1,9 +1,9 @@
-# @flareai/browser
+# @polymux/browser
 
 Everything the agent can do to a page, written once against the Chrome
 DevTools Protocol and nothing else.
 
-Two surfaces drive it: the FlareAI in-app Browser, where the main process
+Two surfaces drive it: the Polymux in-app Browser, where the main process
 speaks CDP through Electron's `webContents.debugger`, and the user's own
 browser, where the extension's service worker speaks it through
 `chrome.debugger`. Both hand this package a transport and get the same command

@@ -1,5 +1,5 @@
-import type { AgentTool, AgentToolContext } from "@flareai/core";
-import type { JsonObject } from "@flareai/inference";
+import type { AgentTool, AgentToolContext } from "@polymux/core";
+import type { JsonObject } from "@polymux/inference";
 import type { SubagentFleet } from "./fleet.js";
 import {
   TASK_TOOL_GROUPS,
@@ -16,15 +16,15 @@ export interface SubagentRequest {
   retain?: boolean;
   /** Fleet name of a retained, settled task this dispatch resumes. */
   continue?: string;
-  /** Experimental continuation is a precondition, never a fresh-task hint. */
+  /** Continuation is a precondition, never a fresh-task hint. */
   strictContinuation?: boolean;
   /** Why this task relates to the rest of the fleet. */
   coordination?: "independent" | "dependent";
   /** Completed prerequisite task for a dependent dispatch. */
   dependsOn?: string;
-  /** Experimental bounded host capability set. Missing means every tool. */
+  /** Bounded host capability set. Missing means every tool. */
   toolGroups?: TaskToolGroup[];
-  /** Experimental exact skill catalogue subset. Missing means every skill. */
+  /** Exact skill catalogue subset. Missing means every skill. */
   skillNames?: string[];
 }
 /** The tool's own call context is handed straight through: the runtime needs
@@ -85,7 +85,7 @@ export function createTaskTool(
   return {
     name: "subagent",
     description: [
-      "Dispatch a bounded piece of work to an independent FlareAI subagent. Returns as soon as the subagent starts — it does not wait for the answer.",
+      "Dispatch a bounded piece of work to an independent Polymux subagent. Returns as soon as the subagent starts — it does not wait for the answer.",
       "",
       "## When to use",
       "Use this whenever the user asks for work to be done rather than explained: research, diagnosis, drafting, building, multi-step execution. Call it instead of doing the work yourself. Send one call per independent piece of work in the same turn and they run in parallel.",
@@ -274,9 +274,10 @@ export function createTaskTool(
 
 /** A read-only native route usually encodes its evidence and safety boundary.
  * Loading the wrapper skill for that same surface only spends context and can
- * re-expand a deliberately bounded workflow. Email is intentionally different:
- * its router carries account-coverage and native-client fallback policy that
- * the configured-mailbox tools cannot infer, so `email-use` must be retained.
+ * re-expand a deliberately bounded workflow. Hub is intentionally different:
+ * its router carries cross-platform inventory, account coverage, send authority,
+ * and native-client fallback policy that native read tools cannot infer, so
+ * `hub-use` must be retained.
  * Distinct specialist skills and full action routes remain untouched. */
 function normalizedNativeSkills(
   groups: TaskToolGroup[] | undefined,
@@ -284,9 +285,6 @@ function normalizedNativeSkills(
 ): string[] | undefined {
   if (!groups?.length || groups.includes("all") || !names?.length) return names;
   const supports = new Map<string, ReadonlySet<TaskToolGroup>>([
-    ["browser-use", new Set(["browser-read", "browser-research"])],
-    ["message-use", new Set(["messages-read"])],
-    ["computerHistory", new Set(["computerHistory"])],
   ]);
   const routed = new Set(groups);
   const kept = names.filter((name) => {
@@ -380,10 +378,10 @@ export function createWaitTaskTool(fleet: SubagentFleet): AgentTool {
 }
 
 /**
- * Experimental coordination barrier for the common fan-out/fan-in shape.
+ * Coordination barrier for the common fan-out/fan-in shape.
  *
  * It is deliberately a separate tool instead of changing `wait_subagent`: normal
- * runs keep their existing surface and semantics, while an experimental
+ * runs keep their existing surface and semantics, while a coordinated
  * coordinator can dispatch several tasks and place this call last in the same
  * response. Marking it sequential makes the runner register every preceding
  * dispatch before it starts waiting; the workers themselves still run in
@@ -494,7 +492,7 @@ export function createCheckTasksTool(fleet: SubagentFleet): AgentTool {
   };
 }
 
-/** Experimental steering control: stop stale work by exact task name without
+/** Steering control: stop stale work by exact task name without
  * cancelling useful siblings or the coordinator itself. */
 export function createCancelTasksTool(fleet: SubagentFleet): AgentTool {
   return {

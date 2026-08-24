@@ -5,7 +5,7 @@
 // instead of flashing into it. `lib/theme.ts` writes the value it reads here.
 (function () {
   try {
-    var stored = localStorage.getItem('flareai.theme');
+    var stored = localStorage.getItem('polymux.theme');
     // A fresh profile has nothing stored, and 'system' is what it will be given
     // — so resolve that here rather than leaving the root bare. The stylesheet
     // can dress an unthemed root, but the attribute would still arrive later,
@@ -28,7 +28,7 @@
   // Arabic arriving on mount would re-lay-out the whole page mid-splash, so the
   // last resolved choice is restored here. `lib/i18n/index.ts` writes it.
   try {
-    var language = localStorage.getItem('flareai.language') || 'system';
+    var language = localStorage.getItem('polymux.language') || 'system';
     if (language === 'system') {
       var requested = (navigator.languages && navigator.languages.length
         ? navigator.languages
@@ -60,7 +60,7 @@
   function done() {
     if (root.dataset.splash === 'done') return;
     root.dataset.splash = 'done';
-    document.dispatchEvent(new Event('flareai:splash-done'));
+    document.dispatchEvent(new Event('polymux:splash-done'));
   }
   // The last beat of the sequence is the lockup settling into place and holding
   // there. Its end is what says the animation has been watched through.
@@ -91,7 +91,7 @@
   // on a lockup nobody had seen move. 6s is past every path main can take, and
   // still well inside the dead-bundle sweep below.
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) done();
-  else if (!window.flareai) play();
+  else if (!window.polymux) play();
   else setTimeout(play, 6000);
 
   // The app lifts the splash when it mounts. If the bundle never loads at all

@@ -1,5 +1,5 @@
 import path from "node:path";
-import {flareaiHome} from "../system/paths.js";
+import {polymuxHome} from "../system/paths.js";
 import {homedir} from "node:os";
 import {spawn} from "node:child_process";
 import {randomBytes} from "node:crypto";
@@ -14,7 +14,7 @@ import {
   type MailOAuthProvider,
   type MatrixMessage,
   type MatrixRoom,
-} from "@flareai/hub";
+} from "@polymux/hub";
 import {
   COMMS_PLATFORMS,
   type CommsBridgeDto,
@@ -30,7 +30,7 @@ import {
   type MailMessageDto,
   type SaveEmailAccountRequest,
   type SystemPermissionKind,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 import type {CredentialStore} from "@earendil-works/pi-ai";
 import type {AppleMailSearchResult} from "./apple-mail.js";
 import type {ContactLookupResult} from "./contacts.js";
@@ -196,7 +196,7 @@ export interface EmbeddedHub {
    */
   retryBlocked?: () => Promise<void>;
   /**
-   * Starts the in-process WeChat bridge against FlareAI's own account. Unlike
+   * Starts the in-process WeChat bridge against Polymux's own account. Unlike
    * the rest of the fleet there is no binary to supervise, and the account has
    * to exist first, so it is started here rather than with the hub.
    */
@@ -227,8 +227,8 @@ function mailOAuthClients(): Partial<
 > {
   const clients: Partial<Record<MailOAuthProvider, {clientId: string; clientSecret?: string}>> = {};
   for (const [provider, prefix] of [
-    ["google", "FLAREAI_GOOGLE_MAIL"],
-    ["microsoft", "FLAREAI_MICROSOFT_MAIL"],
+    ["google", "POLYMUX_GOOGLE_MAIL"],
+    ["microsoft", "POLYMUX_MICROSOFT_MAIL"],
   ] as const) {
     const clientId = process.env[`${prefix}_CLIENT_ID`]?.trim();
     if (!clientId) continue;
@@ -251,7 +251,7 @@ export interface CommunicationsOptions {
   home?: string;
   run?: CommandRunner;
   fetch?: typeof globalThis.fetch;
-  /** FlareAI's own account file; defaults to one under its home. */
+  /** Polymux's own account file; defaults to one under its home. */
   emailStorePath?: string;
   /** Opens a provider's sign-in page; absent where no window can be shown. */
   mailConsent?: MailConsentPrompt;
@@ -360,14 +360,14 @@ export class Communications {
       this.#directory = preference.directory ?? defaultHubDirectory(this.#home);
     }
     this.#email = options.email ?? new EmailAccounts({
-      // Through `flareaiHome`, never a literal join: a side instance keys its
-      // own `.flareai-<name>`, and joining the name here would have an
+      // Through `polymuxHome`, never a literal join: a side instance keys its
+      // own `.polymux-<name>`, and joining the name here would have an
       // isolated run reading and writing the user's real mailboxes.
       storePath:
         options.emailStorePath ??
-        path.join(flareaiHome(this.#home), "state", "email-accounts.json"),
+        path.join(polymuxHome(this.#home), "state", "email-accounts.json"),
       downloadsDir: path.join(this.#home, "Downloads"),
-      // Accounts set up before FlareAI kept its own are adopted once, from
+      // Accounts set up before Polymux kept its own are adopted once, from
       // where they were. Nothing writes there and the file is left whole.
       importFrom: path.join(this.#home, ".config", "himalaya", "config.toml"),
       run: this.#run,
@@ -394,7 +394,7 @@ export class Communications {
 
   /**
    * A deliberate second look, as opposed to the status the tab reads on its
-   * own schedule. Anything the user could have changed outside FlareAI — a grant
+   * own schedule. Anything the user could have changed outside Polymux — a grant
    * given in System Settings, a bridge binary dropped in — is re-checked here,
    * so "look again" actually acts rather than re-reading what was cached.
    */
@@ -439,7 +439,7 @@ export class Communications {
         (await this.#embedded?.networkConfig
           ?.(entry.value)
           .catch((): Record<string, string> => ({}))) ?? {};
-      // A pair FlareAI ships counts as answered, and counts before the bridge
+      // A pair Polymux ships counts as answered, and counts before the bridge
       // has started once: the config that will carry it is not written until
       // the first start, and until then the panel would ask for a credential
       // the user is never going to have to give.
@@ -542,7 +542,7 @@ export class Communications {
         managementRoomHint: null,
         error:
           relay.running && !delivers
-            ? `FlareAI has reached ${entry.label} on this Mac but has not finished connecting it. Reopen this in a moment.`
+            ? `Polymux has reached ${entry.label} on this Mac but has not finished connecting it. Reopen this in a moment.`
             : relay.error,
       };
     };
@@ -639,7 +639,7 @@ export class Communications {
   /**
    * Sets messaging up without asking the user for anything.
    *
-   * FlareAI registers a dedicated account on the local hub with a generated
+   * Polymux registers a dedicated account on the local hub with a generated
    * password it never displays, then keeps only the access token. This is the
    * intended path: the hub is an implementation detail of "messaging works",
    * not something the user should have to hold credentials for. The password is
@@ -650,7 +650,7 @@ export class Communications {
     await this.#load();
     if (this.#matrixToken) return this.status();
     // A random localpart keeps repeat setups on one machine from colliding.
-    const username = `flareai-${randomBytes(4).toString("hex")}`;
+    const username = `polymux-${randomBytes(4).toString("hex")}`;
     if (this.#embeddedMode && this.#embedded) {
       const minted = this.#embedded.provision(username);
       await this.#store(minted.userId, minted.accessToken, null);
@@ -677,7 +677,7 @@ export class Communications {
       key: accessToken,
       env: {
         MATRIX_USER_ID: userId,
-        // Only ever a password FlareAI generated itself.
+        // Only ever a password Polymux generated itself.
         ...(password ? {MATRIX_PROVISIONED_PASSWORD: password} : {}),
       },
     }));
@@ -946,7 +946,7 @@ export class Communications {
       return await read();
     } catch (error) {
       if (!this.#embeddedMode || !this.#embedded || !isUnknownMatrixToken(error)) throw error;
-      const minted = this.#embedded.provision(`flareai-${randomBytes(4).toString("hex")}`);
+      const minted = this.#embedded.provision(`polymux-${randomBytes(4).toString("hex")}`);
       await this.#store(minted.userId, minted.accessToken, null);
       return read();
     }
@@ -1252,7 +1252,7 @@ export class Communications {
     // first time anything asks, and "set up messaging" ceases to be a page.
     if (this.#embeddedMode && this.#embedded && !this.#matrixToken) {
       try {
-        const minted = this.#embedded.provision(`flareai-${randomBytes(4).toString("hex")}`);
+        const minted = this.#embedded.provision(`polymux-${randomBytes(4).toString("hex")}`);
         await this.#store(minted.userId, minted.accessToken, null);
       } catch {
         // The homeserver may still be binding its port; the next status()

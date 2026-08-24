@@ -3,10 +3,10 @@ import test from 'node:test';
 import {backgroundInstanceArguments} from './dev-start-arguments.mjs';
 
 test('named isolates receive the app-owned background switch', () => {
-  assert.deepEqual(backgroundInstanceArguments([], 'review'), ['--', '--flareai-background']);
+  assert.deepEqual(backgroundInstanceArguments([], 'review'), ['--', '--polymux-background']);
   assert.deepEqual(
     backgroundInstanceArguments(['--', '--remote-debugging-port=9341'], 'review'),
-    ['--', '--flareai-background', '--remote-debugging-port=9341'],
+    ['--', '--polymux-background', '--remote-debugging-port=9341'],
   );
 });
 
@@ -17,7 +17,7 @@ test('ordinary and explicitly visible launches keep their original arguments', (
 
 test('an existing background switch is never duplicated', () => {
   assert.deepEqual(
-    backgroundInstanceArguments(['--', '--flareai-background'], 'review'),
-    ['--', '--flareai-background'],
+    backgroundInstanceArguments(['--', '--polymux-background'], 'review'),
+    ['--', '--polymux-background'],
   );
 });

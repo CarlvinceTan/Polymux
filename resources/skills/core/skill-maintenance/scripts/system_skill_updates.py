@@ -17,18 +17,18 @@ import sys
 import tempfile
 
 
-FLAREAI_HOME = Path(os.environ.get("FLAREAI_HOME", Path.home() / ".flareai")).expanduser()
+POLYMUX_HOME = Path(os.environ.get("POLYMUX_HOME", Path.home() / ".polymux")).expanduser()
 DEFAULT_STATE_ROOT = Path(
     os.environ.get(
-        "FLAREAI_SKILL_MAINTENANCE_HOME",
-        FLAREAI_HOME / "skill-maintenance" / "system-updates",
+        "POLYMUX_SKILL_MAINTENANCE_HOME",
+        POLYMUX_HOME / "skill-maintenance" / "system-updates",
     )
 ).expanduser()
-# Official skills ship as a plain directory inside the FlareAI app bundle.
-APP_BUNDLED_SKILLS = Path("/Applications/FlareAI.app/Contents/Resources/skills/official")
+# Official skills ship as a plain directory inside the Polymux app bundle.
+APP_BUNDLED_SKILLS = Path("/Applications/Polymux.app/Contents/Resources/skills/official")
 MAINTENANCE = Path(__file__).with_name("skill_maintenance.py")
 PYTHON = sys.executable
-MARKER = ".flareai-system-skills.marker"
+MARKER = ".polymux-system-skills.marker"
 MISSING = object()
 
 
@@ -81,7 +81,7 @@ def find_bundled_skills(config: dict) -> Path:
     if APP_BUNDLED_SKILLS.is_dir():
         return APP_BUNDLED_SKILLS
     raise UpdateError(
-        "Could not find the bundled FlareAI skills directory; "
+        "Could not find the bundled Polymux skills directory; "
         "set bundled_skills in config.json"
     )
 

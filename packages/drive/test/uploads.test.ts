@@ -65,9 +65,9 @@ function withClientId<T>(run: () => T): T {
   const before = process.env;
   process.env = {
     ...before,
-    FLAREAI_GOOGLE_DRIVE_CLIENT_ID: "id",
-    FLAREAI_DROPBOX_CLIENT_ID: "id",
-    FLAREAI_ONEDRIVE_CLIENT_ID: "id",
+    POLYMUX_GOOGLE_DRIVE_CLIENT_ID: "id",
+    POLYMUX_DROPBOX_CLIENT_ID: "id",
+    POLYMUX_ONEDRIVE_CLIENT_ID: "id",
   };
   try {
     return run();
@@ -81,7 +81,7 @@ async function bigFile(): Promise<{
   size: number;
   clean: () => Promise<void>;
 }> {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-upload-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-upload-"));
   const file = path.join(base, "recording.mov");
   // Two chunks and a bit: enough to exercise a resume in the middle.
   const size = CHUNK_BYTES * 2 + 1024;
@@ -109,7 +109,7 @@ async function withFetch(
 }
 
 test("a file is read one chunk at a time, in order and whole", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-chunks-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-chunks-"));
   try {
     const file = path.join(base, "data.bin");
     await writeFile(file, Buffer.from("abcdefghij"));
@@ -128,7 +128,7 @@ test("a file is read one chunk at a time, in order and whole", async () => {
 });
 
 test("a chunk stream can be told to seek backwards, and re-reads from there", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-chunks-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-chunks-"));
   try {
     const file = path.join(base, "data.bin");
     await writeFile(file, Buffer.from("abcdefghij"));
@@ -148,7 +148,7 @@ test("a chunk stream can be told to seek backwards, and re-reads from there", as
 });
 
 test("an empty file still goes through the simple path", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-chunks-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-chunks-"));
   try {
     const file = path.join(base, "empty.txt");
     await writeFile(file, "");

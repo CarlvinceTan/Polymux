@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
-import type { AgentTool } from "@flareai/core";
+import type { AgentTool } from "@polymux/core";
 import type { ComputerHistoryAccess } from "./computer-history-access.js";
-import { describeEvent } from "@flareai/computer-history";
+import { describeEvent } from "@polymux/computer";
 
 /** How much of one frame a read carries back. */
 const frameLimit = 4_000;

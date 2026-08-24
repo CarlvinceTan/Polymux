@@ -16,7 +16,7 @@ import type {Homeserver} from "../src/server.js";
  * test pins the intended behaviour and says why.
  */
 
-const GHOST = "@whatsapp_1:flareai.test";
+const GHOST = "@whatsapp_1:polymux.test";
 
 function roomPath(roomId: string, suffix: string): string {
   return `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/${suffix}`;
@@ -167,7 +167,7 @@ test("two tokens for the one account share a transaction scope", async () => {
     // user is coarser, and correct here: every token this server ever issues
     // belongs to the one human on this machine, so collapsing them can only
     // prevent a duplicate send, never swallow somebody else's message.
-    const refreshed = hs.createLocalUser("flareai");
+    const refreshed = hs.createLocalUser("polymux");
     assert.equal(refreshed.userId, user.userId);
     assert.notEqual(refreshed.accessToken, user.accessToken);
     const roomId = await createRoom(hs, user.accessToken);
@@ -194,7 +194,7 @@ test("a sent event comes back carrying the transaction id that made it", async (
     const roomId = await createRoom(hs, user.accessToken);
     const sent = await call(hs, "PUT", roomPath(roomId, "send/m.room.message/t4"), {
       token: user.accessToken,
-      body: {msgtype: "m.text", body: "typed in flareai"},
+      body: {msgtype: "m.text", body: "typed in polymux"},
     });
     const eventId = String(sent.body.event_id);
     // The only way a client reconciles its optimistic local echo with the
@@ -567,7 +567,7 @@ test("a message event carries no state key at all", async () => {
     const roomId = await portalRoom(hs, asToken, user.userId);
     const eventId = await sendMessage(hs, user.accessToken, roomId, {
       msgtype: "m.text",
-      body: "reply from flareai",
+      body: "reply from polymux",
     });
     await call(hs, "PUT", roomPath(roomId, "state/m.room.topic"), {
       token: asToken,

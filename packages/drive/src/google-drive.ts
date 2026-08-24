@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type { DriveEntryDto } from "@flareai/protocol";
+import type { DriveEntryDto } from "@polymux/protocol";
 import { contentRange, SIMPLE_UPLOAD_LIMIT, uploadInChunks } from "./chunks.js";
 import { downloadToFile } from "./download.js";
 import {
@@ -23,9 +23,9 @@ import {
 const API = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
-/** The folder FlareAI keeps its files in. Visible in the user's Drive on
- * purpose: files an agent made should be findable without FlareAI. */
-const ROOT_FOLDER_NAME = "FlareAI";
+/** The folder Polymux keeps its files in. Visible in the user's Drive on
+ * purpose: files an agent made should be findable without Polymux. */
+const ROOT_FOLDER_NAME = "Polymux";
 // `webViewLink` is what "open where it lives" needs: Drive's own page for
 // the file, which is the only address that works for a Workspace document.
 const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,webViewLink";
@@ -33,14 +33,14 @@ const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,webViewLink";
 /**
  * Google Drive.
  *
- * Only files FlareAI creates are in scope — the `drive.file` scope means the app
+ * Only files Polymux creates are in scope — the `drive.file` scope means the app
  * can never read the rest of the user's Drive, which is both the least
  * surprising behaviour and the least it can ask for.
  */
 export class GoogleDrive implements DriveAdapter {
   readonly id = "google-drive" as const;
   readonly #oauth: OAuthClient;
-  /** The `FlareAI` folder's id, looked up once per connection. */
+  /** The `Polymux` folder's id, looked up once per connection. */
   #rootId: string | null = null;
   /** The lookup while it is in flight. Shared, because two uploads starting
    * together would otherwise each fail to find the folder and each create
@@ -250,7 +250,7 @@ export class GoogleDrive implements DriveAdapter {
     const bytes = await readFile(localPath);
     // A multipart upload sends the metadata and the bytes in one request,
     // which is what keeps a new file from ever existing without its name.
-    const boundary = `flareai-${Date.now().toString(36)}`;
+    const boundary = `polymux-${Date.now().toString(36)}`;
     const body = Buffer.concat([
       Buffer.from(
         `--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(
@@ -494,7 +494,7 @@ export class GoogleDrive implements DriveAdapter {
     return this.#entry(file);
   }
 
-  /** Finds the `FlareAI` folder, creating it the first time. */
+  /** Finds the `Polymux` folder, creating it the first time. */
   async #root(): Promise<string> {
     if (this.#rootId) return this.#rootId;
     this.#rootLookup ??= this.#findOrCreateRoot().finally(() => {
@@ -525,7 +525,7 @@ export class GoogleDrive implements DriveAdapter {
           parents: ["root"],
         }),
       },
-      "Creating the FlareAI folder",
+      "Creating the Polymux folder",
     );
     this.#rootId = created.id;
     return created.id;

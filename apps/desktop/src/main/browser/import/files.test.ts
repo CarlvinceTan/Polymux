@@ -9,7 +9,7 @@ import { EMPTY_IMPORT } from "./types.js";
 /** Every filesystem test builds its own file: a real profile is the one thing
  * this folder must never touch, and none of this needs a keychain. */
 function directory(): string {
-  return mkdtempSync(path.join(tmpdir(), "flareai-import-files-"));
+  return mkdtempSync(path.join(tmpdir(), "polymux-import-files-"));
 }
 
 function file(folder: string, name: string, body: string | Buffer): string {

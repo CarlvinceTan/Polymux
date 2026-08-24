@@ -6,7 +6,7 @@ import type {
   MarketplacePluginDto,
   PluginDto,
   PluginMarketplaceDto,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 import {
   BUILTIN_MARKETPLACE_SOURCE,
   downloadRepository,
@@ -19,7 +19,7 @@ import {
   type MarketplaceRef,
 } from "./marketplace.js";
 import { readContributions, readManifest, pluginSkillDirectory, pluginMcpServers } from "./manifest.js";
-import { flareaiHome } from "../system/paths.js";
+import { polymuxHome } from "../system/paths.js";
 
 /** Where a plugin uploaded from this machine is filed. It has no repository,
  * so it is never fetched, never listed in Browse, and cannot be removed on its
@@ -60,8 +60,8 @@ export interface PluginRuntime {
  * The plugins on this machine: which marketplaces were added, which plugins
  * were installed from them, and what each one contributes.
  *
- * Plugins live in `~/.flareai/plugins/<marketplace>/<plugin>` and the state
- * file sits beside them, in the same `~/.flareai` the skills and MCP servers
+ * Plugins live in `~/.polymux/plugins/<marketplace>/<plugin>` and the state
+ * file sits beside them, in the same `~/.polymux` the skills and MCP servers
  * use — a plugin is a folder the user can open, not a database row.
  */
 export class PluginRegistry {
@@ -74,8 +74,8 @@ export class PluginRegistry {
   readonly #catalogs = new Map<string, { catalog: Catalog; readAt: number }>();
 
   constructor(home = homedir()) {
-    this.#root = path.join(flareaiHome(home), "plugins");
-    this.#stateFile = path.join(flareaiHome(home), "plugins.json");
+    this.#root = path.join(polymuxHome(home), "plugins");
+    this.#stateFile = path.join(polymuxHome(home), "plugins.json");
   }
 
   /** Reads the state file, seeding the built-in marketplace on first run. */
@@ -279,7 +279,7 @@ export class PluginRegistry {
     const entry = this.#state.marketplaces.find((item) => item.id === marketplace);
     if (!entry || !name) throw new Error(`${id} is not a plugin in an added marketplace`);
     const reference = parseMarketplaceSource(entry.source);
-    const staging = await mkdtemp(path.join(tmpdir(), "flareai-plugin-install-"));
+    const staging = await mkdtemp(path.join(tmpdir(), "polymux-plugin-install-"));
     try {
       const root = await downloadRepository(reference, staging);
       const catalog = await readCatalogFrom(root, reference);

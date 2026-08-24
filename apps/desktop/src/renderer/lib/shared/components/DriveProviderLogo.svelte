@@ -1,7 +1,7 @@
 <script lang="ts">
   import type {SimpleIcon} from 'simple-icons';
   import {siDropbox} from 'simple-icons';
-  import type {DriveProviderId} from '@flareai/protocol';
+  import type {DriveProviderId} from '@polymux/protocol';
 
   interface Props {
     provider: DriveProviderId;

@@ -1,6 +1,6 @@
-# FlareAI Agent Surface (browser extension)
+# Polymux Agent Surface (browser extension)
 
-The FlareAI equivalent of the ChatGPT desktop browser extension: it gives the
+The Polymux equivalent of the ChatGPT desktop browser extension: it gives the
 agent context about open tabs **and** lets it control a leased tab, with the
 same in-page presentation contract as the original Hermes/Agent Surface
 extension it descends from:
@@ -16,10 +16,10 @@ extension it descends from:
 
 - **Tab context** — the background worker streams the open-tab list (title,
   URL, active/pinned state; never page contents) through the
-  `com.flareai.tab_context` native messaging host into
-  `~/Library/Application Support/flareai-tab-context/tabs.json`, read by the
-  agent's `browser_tabs` tool and the browser-use skill.
-- **Control** — FlareAI runs a loopback agent-surface feed on
+  `com.polymux.tab_context` native messaging host into
+  `~/Library/Application Support/polymux-tab-context/tabs.json`, read by the
+  agent's `browser_tabs` tool and the computer-use skill.
+- **Control** — Polymux runs a loopback agent-surface feed on
   `http://127.0.0.1:47654`. The background worker long-polls it, binds each
   lease to the exact tab it names (by URL, then title — never by position or
   recency), attaches `chrome.debugger` to that tab, and executes the lease's
@@ -38,8 +38,8 @@ elsewhere.
 
 ## Commands
 
-Every command lives in [`@flareai/browser`](../../packages/browser),
-shared with the FlareAI in-app Browser, so both browsers answer the same set:
+Every command lives in [`@polymux/browser`](../../packages/browser),
+shared with the Polymux in-app Browser, so both browsers answer the same set:
 `snapshot` (accessibility tree with `[ref=eN]` handles), `read`, `screenshot`,
 `get`, `console`, `network`, `eval`, `click`, `dblclick`, `hover`, `drag`,
 `type`, `fill`, `press`/`keydown`/`keyup`, `scroll`,
@@ -67,9 +67,9 @@ quickest profile that still reads as a person.
 ## The debugging infobar
 
 Everything past click/type/scroll needs `chrome.debugger`, and Chrome shows
-its "FlareAI Agent Surface started debugging this browser" bar on a tab for as
+its "Polymux Agent Surface started debugging this browser" bar on a tab for as
 long as it is attached. The debugger attaches when a lease binds and detaches
-on `release`, when the tab closes, or when FlareAI stops answering the feed —
+on `release`, when the tab closes, or when Polymux stops answering the feed —
 so the bar is scoped to the work rather than left on. This is the same
 trade the Codex extension makes; the alternative, shipping a separate browser
 as Hermes did, gives up the user's logged-in session, which is the whole
@@ -85,7 +85,7 @@ and retry.
    directory. Copy the extension ID.
 2. `./install.sh <extension-id>` — registers the native messaging host for
    every Chromium-based browser it finds (Chrome, Brave, Edge, Arc, …).
-3. Reload the extension. FlareAI must be running for control (the loopback feed
+3. Reload the extension. Polymux must be running for control (the loopback feed
    lives in the app); tab snapshots work either way.
 
 Browser security requires a person to approve an unpacked extension once.

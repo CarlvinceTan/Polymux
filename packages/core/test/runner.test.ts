@@ -7,7 +7,7 @@ import type {
   InferenceRequest,
   InferenceService,
   ModelRef,
-} from "@flareai/inference";
+} from "@polymux/inference";
 import {
   AgentRunControl,
   AgentRunner,
@@ -97,7 +97,7 @@ test("runs inference, streams ordered events, and returns final context", async 
         "Selected durable context: 3 blocks.",
         "Durable context candidates: 8 blocks.",
         "Desktop window snapshot captured: 2026-08-21T02:00:00.000Z",
-        "### Open in the FlareAI browser",
+        "### Open in the Polymux browser",
         "Captured: 2026-08-21T02:00:01.000Z",
         "- One",
         "### Open in the connected external browser",
@@ -106,7 +106,7 @@ test("runs inference, streams ordered events, and returns final context", async 
         "- Three",
         "### Open windows",
         "- Four",
-        '<active_skill name="browser-use" location="/official/browser-use/SKILL.md">',
+        '<active_skill name="computer-use" location="/official/computer-use/SKILL.md">',
         "Instructions",
         "</active_skill>",
         "<available_skills>",
@@ -138,7 +138,7 @@ test("runs inference, streams ordered events, and returns final context", async 
   assert.equal(started.footprint.toolCount, 0);
   assert.deepEqual(started.footprint.toolNames, []);
   assert.deepEqual(started.footprint.systemSections, ["Current environment"]);
-  assert.deepEqual(started.footprint.activeSkillNames, ["browser-use"]);
+  assert.deepEqual(started.footprint.activeSkillNames, ["computer-use"]);
   assert.equal(started.footprint.availableSkillCount, 2);
   assert.deepEqual(started.footprint.ambientContextCounts, {
     memoryBlocks: 3,

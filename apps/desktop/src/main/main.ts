@@ -1,26 +1,50 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, net, protocol, screen } from "electron";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  net,
+  protocol,
+  screen,
+} from "electron";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
-import {homeserverPortFor} from "./system/instance-port.js";
-import {configuredRemoteDebuggingPort, requestsBackgroundLaunch} from "./system/launch-mode.js";
+import { homeserverPortFor } from "./system/instance-port.js";
+import {
+  configuredRemoteDebuggingPort,
+  requestsBackgroundLaunch,
+} from "./system/launch-mode.js";
 import { fileURLToPath } from "node:url";
 import started from "electron-squirrel-startup";
-import { channels } from "@flareai/protocol";
-import { DesktopBackend, modelFromEnvironment, type DesktopBackendOptions } from "./backend.js";
-import {builtinModels} from "@earendil-works/pi-ai/providers/all";
-import {PiInference} from "@flareai/inference/pi";
-import {EncryptedCredentialStore, OpenCodeCredentialFallback} from "./system/credential-store.js";
-import {safeStorage} from "electron";
-import { BridgeHost, Homeserver, WeChatBridge, WECHAT_FALLBACK_DIRECTORIES, loadShippedCredentials } from "@flareai/hub";
+import { channels } from "@polymux/protocol";
+import {
+  DesktopBackend,
+  modelFromEnvironment,
+  type DesktopBackendOptions,
+} from "./backend.js";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { PiInference } from "@polymux/inference/pi";
+import {
+  EncryptedCredentialStore,
+  OpenCodeCredentialFallback,
+} from "./system/credential-store.js";
+import { safeStorage } from "electron";
+import {
+  BridgeHost,
+  Homeserver,
+  WeChatBridge,
+  WECHAT_FALLBACK_DIRECTORIES,
+  loadShippedCredentials,
+} from "@polymux/hub";
 import { serveMedia } from "./hub/media.js";
 import { PREVIEW_SCHEME, previewResponse } from "./workspace/preview.js";
 import { registerPrivilegedSchemes } from "./system/schemes.js";
-import { loadAgentPrompts } from "@flareai/agent";
+import { loadAgentPrompts } from "@polymux/agent";
 import { coreSkillNames, installOfficialSkills } from "./skills/official.js";
 import { exportNodeRuntime } from "./system/node-runtime.js";
 import {
-  FLAREAI_TRAFFIC_LIGHT_POSITION,
+  POLYMUX_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
 } from "./system/window-buttons.js";
 
@@ -32,7 +56,8 @@ import {
 // longer be quit. A log line losing its reader is not a fatal condition.
 for (const stream of [process.stdout, process.stderr]) {
   stream.on("error", (error: NodeJS.ErrnoException) => {
-    if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") throw error;
+    if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED")
+      throw error;
   });
 }
 
@@ -47,13 +72,13 @@ if (started) {
   app.quit();
 }
 
-// A side instance: `npm start -- --isolated` (or any FLAREAI_DEV_INSTANCE
-// value) runs a second FlareAI that shares nothing with the one already open.
+// A side instance: `npm start -- --isolated` (or any POLYMUX_DEV_INSTANCE
+// value) runs a second Polymux that shares nothing with the one already open.
 // Everything that makes two runs collide is keyed off the name — the userData
 // directory, and with it Electron's single-instance lock, plus the hub's
 // homeserver port — so an agent can start the app to check a change without
 // evicting the session the user is sitting in front of.
-const devInstance = process.env.FLAREAI_DEV_INSTANCE?.trim();
+const devInstance = process.env.POLYMUX_DEV_INSTANCE?.trim();
 if (devInstance) {
   app.setPath("userData", `${app.getPath("userData")}-${devInstance}`);
 }
@@ -63,7 +88,7 @@ const backgroundLaunch = requestsBackgroundLaunch({
   hasSwitch: (name) => app.commandLine.hasSwitch(name),
   environment: process.env,
 });
-const providerProbe = process.argv.includes("--flareai-provider-probe");
+const providerProbe = process.argv.includes("--polymux-provider-probe");
 if (process.platform === "darwin") {
   if (providerProbe) app.setActivationPolicy("prohibited");
   // Apply this before app readiness. `open -g` asks Launch Services not to
@@ -74,27 +99,20 @@ if (process.platform === "darwin") {
   else if (backgroundLaunch) app.setActivationPolicy("accessory");
 }
 const environmentDebuggingPort = configuredRemoteDebuggingPort(
-  process.env.FLAREAI_REMOTE_DEBUGGING_PORT,
+  process.env.POLYMUX_REMOTE_DEBUGGING_PORT,
 );
-if (environmentDebuggingPort !== null && !app.commandLine.hasSwitch("remote-debugging-port"))
-  app.commandLine.appendSwitch("remote-debugging-port", String(environmentDebuggingPort));
-const orchestrationExperiment =
-  process.env.FLAREAI_ORCHESTRATION_EXPERIMENT === "1" ||
-  app.commandLine.hasSwitch("orchestration-experiment") ||
-  process.argv.includes("--orchestration-experiment");
-if (devInstance)
-  console.log("FlareAI launch mode", {
-    orchestrationExperiment,
-    experimentEnvironment: process.env.FLAREAI_ORCHESTRATION_EXPERIMENT === "1",
-    experimentElectronSwitch: app.commandLine.hasSwitch("orchestration-experiment"),
-    experimentArgument: process.argv.includes("--orchestration-experiment"),
-    preloadOfficialSkillExperiment:
-      process.env.FLAREAI_PRELOAD_OFFICIAL_SKILL_EXPERIMENT === "1",
-  });
+if (
+  environmentDebuggingPort !== null &&
+  !app.commandLine.hasSwitch("remote-debugging-port")
+)
+  app.commandLine.appendSwitch(
+    "remote-debugging-port",
+    String(environmentDebuggingPort),
+  );
 // The unsigned benchmark bundle must not open the ordinary encrypted
 // credential files with a different Keychain identity. Its SQLite/session
 // state is disposable, while skills and MCP configuration deliberately remain
-// in the ordinary ~/.flareai home.
+// in the ordinary ~/.polymux home.
 if (backgroundLaunch && !devInstance)
   app.setPath("userData", `${app.getPath("userData")}-background-benchmark`);
 
@@ -120,10 +138,10 @@ function homeserverPort(): number {
 if (!providerProbe && !app.requestSingleInstanceLock()) {
   // Say so. This instance dies before it ever builds a window, so without a
   // line here `npm start` looks hung: the dev server stays up, the terminal
-  // goes quiet, and the only FlareAI on screen is the older instance still
+  // goes quiet, and the only Polymux on screen is the older instance still
   // running its older bundle.
   console.error(
-    "FlareAI is already running, so this instance is handing the session over " +
+    "Polymux is already running, so this instance is handing the session over " +
       "and exiting. Quit the running one (Cmd+Q) before starting again.",
   );
   quitting = true;
@@ -146,26 +164,29 @@ if (!providerProbe && !app.requestSingleInstanceLock()) {
 
 // Development runs execute inside Electron.app, whose bundle name would
 // otherwise appear as "Electron" in the macOS Dock tooltip.
-app.setName("FlareAI");
-process.title = "FlareAI";
+app.setName("Polymux");
+process.title = "Polymux";
 // Electron does not always build Chromium's accessibility tree until assistive
 // technology requests it. Keep the renderer tree available so macOS can expose
-// FlareAI's labelled chat controls to VoiceOver and exact-window automation.
+// Polymux's labelled chat controls to VoiceOver and exact-window automation.
 app.commandLine.appendSwitch("force-renderer-accessibility");
 // Electron's geolocation provider reads GOOGLE_API_KEY before any renderer is
-// created. Keep a FlareAI-specific variable available for packaged launches while
+// created. Keep a Polymux-specific variable available for packaged launches while
 // still respecting Electron's documented variable when it is supplied.
-if (!process.env.GOOGLE_API_KEY && process.env.FLAREAI_GOOGLE_API_KEY)
-  process.env.GOOGLE_API_KEY = process.env.FLAREAI_GOOGLE_API_KEY;
+if (!process.env.GOOGLE_API_KEY && process.env.POLYMUX_GOOGLE_API_KEY)
+  process.env.GOOGLE_API_KEY = process.env.POLYMUX_GOOGLE_API_KEY;
 
-// The interpreter the skill scripts run under (`"${FLAREAI_NODE:-node}"`):
+// The interpreter the skill scripts run under (`"${POLYMUX_NODE:-node}"`):
 // the bundled runtime in a packaged app, the dev Electron in a checkout. Set
 // before anything spawns a shell so every agent subprocess inherits it. After
 // the devInstance block above on purpose — the dev wrapper is written into
 // this instance's own userData.
 if (
   !exportNodeRuntime({
-    bundledNode: bundledResource("node", "node"),
+    bundledNode: bundledResource(
+      "node",
+      process.platform === "win32" ? "node.exe" : "node",
+    ),
     checkoutMarker: path.join(app.getAppPath(), "resources", "skills"),
     execPath: process.execPath,
     wrapperDirectory: path.join(app.getPath("userData"), "bin"),
@@ -190,7 +211,7 @@ let startupShellWindow: BrowserWindow | undefined;
  * has rendered its first complete frame. */
 function createStartupShellWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    title: "FlareAI",
+    title: "Polymux",
     width: 1000,
     height: 618,
     minWidth: 973,
@@ -199,7 +220,9 @@ function createStartupShellWindow(): BrowserWindow {
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff",
     titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
     trafficLightPosition:
-      process.platform === "darwin" ? FLAREAI_TRAFFIC_LIGHT_POSITION : undefined,
+      process.platform === "darwin"
+        ? POLYMUX_TRAFFIC_LIGHT_POSITION
+        : undefined,
     webPreferences: {
       preload: path.join(currentDirectory, "preload.js"),
       contextIsolation: true,
@@ -215,10 +238,12 @@ function createStartupShellWindow(): BrowserWindow {
       window.showInactive();
     } else if (devInstance) window.showInactive();
     else window.show();
-    void window.webContents.executeJavaScript(
-      'document.documentElement.dataset.splash = "playing"',
-      true,
-    ).catch(() => {});
+    void window.webContents
+      .executeJavaScript(
+        'document.documentElement.dataset.splash = "playing"',
+        true,
+      )
+      .catch(() => {});
   };
   const deadline = setTimeout(reveal, 4000);
   window.once("ready-to-show", () => {
@@ -234,19 +259,33 @@ function loadStartupShell(window: BrowserWindow): void {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
     url.searchParams.set("splashOnly", "1");
-    void window.loadURL(url.toString()).catch((error: unknown) =>
-      console.error(`[startup-shell] loadURL rejected: ${String(error)}`));
+    void window
+      .loadURL(url.toString())
+      .catch((error: unknown) =>
+        console.error(`[startup-shell] loadURL rejected: ${String(error)}`),
+      );
   } else {
-    void window.loadFile(
-      path.join(currentDirectory, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
-      {query: {splashOnly: "1"}},
-    ).catch((error: unknown) =>
-      console.error(`[startup-shell] loadFile rejected: ${String(error)}`));
+    void window
+      .loadFile(
+        path.join(
+          currentDirectory,
+          `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
+        ),
+        { query: { splashOnly: "1" } },
+      )
+      .catch((error: unknown) =>
+        console.error(`[startup-shell] loadFile rejected: ${String(error)}`),
+      );
   }
 }
 
 type SeparateWorkspaceView = "drive" | "schedule" | "hub" | "tasks";
-type WorkspaceWindowPlacement = {x: number; y: number; width?: number; height?: number};
+type WorkspaceWindowPlacement = {
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+};
 
 const DETACHED_WINDOW_WIDTH = 1000;
 const DETACHED_WINDOW_HEIGHT = 672;
@@ -255,8 +294,8 @@ function detachedWindowBounds(
   placement?: WorkspaceWindowPlacement,
 ): WorkspaceWindowPlacement | undefined {
   if (!placement) return undefined;
-  const point = {x: Math.round(placement.x), y: Math.round(placement.y)};
-  const {workArea} = screen.getDisplayNearestPoint(point);
+  const point = { x: Math.round(placement.x), y: Math.round(placement.y) };
+  const { workArea } = screen.getDisplayNearestPoint(point);
   const width = Math.min(
     Math.max(Math.round(placement.width ?? DETACHED_WINDOW_WIDTH), 360),
     workArea.width,
@@ -286,7 +325,7 @@ function createWindow(
 ): BrowserWindow {
   const bounds = detachedWindowBounds(placement);
   const window = new BrowserWindow({
-    title: "FlareAI",
+    title: "Polymux",
     width: bounds?.width ?? DETACHED_WINDOW_WIDTH,
     height: bounds?.height ?? 618,
     x: bounds?.x,
@@ -318,7 +357,9 @@ function createWindow(
     // render at y=12; these measured positions share the same visual line.
     titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
     trafficLightPosition:
-      process.platform === "darwin" ? FLAREAI_TRAFFIC_LIGHT_POSITION : undefined,
+      process.platform === "darwin"
+        ? POLYMUX_TRAFFIC_LIGHT_POSITION
+        : undefined,
     webPreferences: {
       preload: path.join(currentDirectory, "preload.js"),
       contextIsolation: true,
@@ -336,7 +377,11 @@ function createWindow(
   let appReadyChecking = false;
   const reveal = (readyChecked = false): void => {
     if (window.isDestroyed() || window.isVisible()) return;
-    if (!readyChecked && startupShellWindow && !startupShellWindow.isDestroyed()) {
+    if (
+      !readyChecked &&
+      startupShellWindow &&
+      !startupShellWindow.isDestroyed()
+    ) {
       if (appReadyChecking) return;
       appReadyChecking = true;
       // The real app being ready is only one half of the handoff. The startup
@@ -351,14 +396,16 @@ function createWindow(
           'document.documentElement.dataset.splash === "done"',
           true,
         ) as Promise<boolean>,
-      ]).then(([appReady, splashDone]) => {
-        appReadyChecking = false;
-        if (appReady && splashDone) reveal(true);
-        else appReadyPoll = setTimeout(reveal, 50);
-      }).catch(() => {
-        appReadyChecking = false;
-        appReadyPoll = setTimeout(reveal, 50);
-      });
+      ])
+        .then(([appReady, splashDone]) => {
+          appReadyChecking = false;
+          if (appReady && splashDone) reveal(true);
+          else appReadyPoll = setTimeout(reveal, 50);
+        })
+        .catch(() => {
+          appReadyChecking = false;
+          appReadyPoll = setTimeout(reveal, 50);
+        });
       return;
     }
     // A side instance is an agent's test run, opened beside the window the user
@@ -382,8 +429,7 @@ function createWindow(
       window.setOpacity(0);
       window.setIgnoreMouseEvents(true);
       window.showInactive();
-    } else if (devInstance)
-      window.showInactive();
+    } else if (devInstance) window.showInactive();
     else window.show();
     if (startupShellWindow && !startupShellWindow.isDestroyed()) {
       startupShellWindow.close();
@@ -394,7 +440,10 @@ function createWindow(
     // itself, and a slide started before it is a slide spent behind a window
     // nobody can see. The attribute is what the stylesheet animates on.
     void window.webContents
-      .executeJavaScript('document.documentElement.dataset.splash = "playing"', true)
+      .executeJavaScript(
+        'document.documentElement.dataset.splash = "playing"',
+        true,
+      )
       .catch(() => {});
   };
   const showDeadline = setTimeout(reveal, 4000);
@@ -432,14 +481,16 @@ function createWindow(
       if (retriesLeft <= 0) {
         console.error(
           "[renderer] giving up on the load; the window will stay blank. " +
-            "Check that the dev server is up and quit any other running FlareAI.",
+            "Check that the dev server is up and quit any other running Polymux.",
         );
         return;
       }
       retriesLeft -= 1;
       retryTimer = setTimeout(() => {
         if (window.isDestroyed()) return;
-        console.error(`[renderer] retrying the load (${retriesLeft} attempts left)`);
+        console.error(
+          `[renderer] retrying the load (${retriesLeft} attempts left)`,
+        );
         loadRenderer(window, workspaceView, conversationId);
       }, 1000);
     },
@@ -450,7 +501,9 @@ function createWindow(
   // errors out so a blank window explains itself where the launch was started.
   window.webContents.on("console-message", (event) => {
     if (event.level === "error")
-      console.error(`[renderer] ${event.message} (${event.sourceId}:${event.lineNumber})`);
+      console.error(
+        `[renderer] ${event.message} (${event.sourceId}:${event.lineNumber})`,
+      );
   });
 
   window.once("closed", () => clearTimeout(retryTimer));
@@ -562,47 +615,50 @@ function createWindow(
   return window;
 }
 
-function desktopBackendOptions(window: BrowserWindow): Omit<DesktopBackendOptions, "reloadForProfileChange"> {
+function desktopBackendOptions(
+  window: BrowserWindow,
+): Omit<DesktopBackendOptions, "reloadForProfileChange"> {
   return {
-      dataDirectory: app.getPath("userData"),
-      officialSkillDirectories: [officialSkillDirectory()],
-      coreSkills: coreSkillNames(bundledResource("skills", "core")),
-      // FlareAI's own prompts travel as files beside the skills — same bundle,
-      // neither tier, never mirrored into the user's skills directory.
-      agentPrompts: loadAgentPrompts(
-        bundledResource("prompts"),
-        orchestrationExperiment
-          ? bundledResource("prompts", "experiments", "orchestration")
-          : undefined,
-      ),
-      orchestrationExperiment,
-      suppressSystemNotifications: backgroundLaunch,
-      suppressAutomaticUpdateChecks: backgroundLaunch,
-      axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
-      axEventsSourcePath: bundledResource("native", "ax-events.swift"),
-      pillImageSourcePath: bundledResource("native", "pill-image.swift"),
-      appPermissionsSourcePath: bundledResource("native", "app-permissions.swift"),
-      contactsSourcePath: bundledResource("native", "contacts.swift"),
-      remindersSourcePath: bundledResource("native", "reminders.swift"),
-      hub: hub
-        ? {
-            homeserver: hub.homeserver,
-            directory: hub.directory,
-            bridges: hub.bridges,
-            startWeChat: (owner: string) => wechat!.start(owner),
-            stopWeChat: () => wechat!.close(),
-            onActivity: (listener) => {
-              onHubActivity = listener;
-            },
-          }
-        : undefined,
-      window,
-      ipcMain,
-      model: modelFromEnvironment(),
+    dataDirectory: app.getPath("userData"),
+    officialSkillDirectories: [officialSkillDirectory()],
+    coreSkills: coreSkillNames(bundledResource("skills", "core")),
+    // Polymux's own prompts travel as files beside the skills — same bundle,
+    // neither tier, never mirrored into the user's skills directory.
+    agentPrompts: loadAgentPrompts(bundledResource("prompts")),
+    suppressSystemNotifications: backgroundLaunch,
+    suppressAutomaticUpdateChecks: backgroundLaunch,
+    axReaderSourcePath: bundledResource("native", "ax-reader.swift"),
+    axEventsSourcePath: bundledResource("native", "ax-events.swift"),
+    pillImageSourcePath: bundledResource("native", "pill-image.swift"),
+    appPermissionsSourcePath: bundledResource(
+      "native",
+      "app-permissions.swift",
+    ),
+    contactsSourcePath: bundledResource("native", "contacts.swift"),
+    remindersSourcePath: bundledResource("native", "reminders.swift"),
+    hub: hub
+      ? {
+          homeserver: hub.homeserver,
+          directory: hub.directory,
+          bridges: hub.bridges,
+          startWeChat: (owner: string) => wechat!.start(owner),
+          stopWeChat: () => wechat!.close(),
+          onActivity: (listener) => {
+            onHubActivity = listener;
+          },
+        }
+      : undefined,
+    window,
+    ipcMain,
+    model: modelFromEnvironment(),
   };
 }
 
-function createDesktopBackend(window: BrowserWindow, loadMcp = true, selectDefaultProfile = false): DesktopBackend {
+function createDesktopBackend(
+  window: BrowserWindow,
+  loadMcp = true,
+  selectDefaultProfile = false,
+): DesktopBackend {
   let instance!: DesktopBackend;
   instance = new DesktopBackend({
     ...desktopBackendOptions(window),
@@ -611,58 +667,75 @@ function createDesktopBackend(window: BrowserWindow, loadMcp = true, selectDefau
   });
   instance.register();
   if (loadMcp)
-    void instance.reloadMcp().catch((error) => console.error("Could not load MCP configuration", error));
+    void instance
+      .reloadMcp()
+      .catch((error) =>
+        console.error("Could not load MCP configuration", error),
+      );
   return instance;
 }
 
-async function replaceDesktopBackend(previous: DesktopBackend, window: BrowserWindow): Promise<void> {
+async function replaceDesktopBackend(
+  previous: DesktopBackend,
+  window: BrowserWindow,
+): Promise<void> {
   if (backend !== previous || quitting || window.isDestroyed()) return;
   await previous.close("Configuration profile changed");
   if (backend !== previous || quitting || window.isDestroyed()) return;
   const next = createDesktopBackend(window, false);
   backend = next;
   for (const candidate of BrowserWindow.getAllWindows()) {
-    if (candidate !== window && !candidate.isDestroyed()) next.trustWindow(candidate);
+    if (candidate !== window && !candidate.isDestroyed())
+      next.trustWindow(candidate);
   }
-  await next.reloadMcp().catch((error) => console.error("Could not load MCP configuration", error));
-  if (!window.isDestroyed()) window.webContents.send(channels.profilesChanged, next.profileSnapshot());
+  await next
+    .reloadMcp()
+    .catch((error) => console.error("Could not load MCP configuration", error));
+  if (!window.isDestroyed())
+    window.webContents.send(channels.profilesChanged, next.profileSnapshot());
 }
 
-ipcMain.handle(channels.windowOpenWorkspaceView, (
-  event,
-  value: unknown,
-  conversationId: unknown,
-  placement: unknown,
-) => {
-  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
-  if (!sourceWindow || event.senderFrame !== event.sender.mainFrame)
-    throw new Error("Rejected IPC from an untrusted frame");
-  if (value !== "drive" && value !== "schedule" && value !== "hub" && value !== "tasks")
-    throw new Error("Unknown workspace view");
-  if (conversationId !== undefined && typeof conversationId !== "string")
-    throw new Error("Invalid conversation id");
-  if (placement !== undefined && (
-    typeof placement !== "object" || placement === null
-    || typeof (placement as WorkspaceWindowPlacement).x !== "number"
-    || !Number.isFinite((placement as WorkspaceWindowPlacement).x)
-    || typeof (placement as WorkspaceWindowPlacement).y !== "number"
-    || !Number.isFinite((placement as WorkspaceWindowPlacement).y)
-    || ((placement as WorkspaceWindowPlacement).width !== undefined
-      && (typeof (placement as WorkspaceWindowPlacement).width !== "number"
-        || !Number.isFinite((placement as WorkspaceWindowPlacement).width)
-        || (placement as WorkspaceWindowPlacement).width! <= 0))
-    || ((placement as WorkspaceWindowPlacement).height !== undefined
-      && (typeof (placement as WorkspaceWindowPlacement).height !== "number"
-        || !Number.isFinite((placement as WorkspaceWindowPlacement).height)
-        || (placement as WorkspaceWindowPlacement).height! <= 0))
-  )) throw new Error("Invalid workspace window placement");
-  const validPlacement = placement as WorkspaceWindowPlacement | undefined;
-  createWindow(
-    value,
-    typeof conversationId === "string" ? conversationId : undefined,
-    validPlacement,
-  );
-});
+ipcMain.handle(
+  channels.windowOpenWorkspaceView,
+  (event, value: unknown, conversationId: unknown, placement: unknown) => {
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!sourceWindow || event.senderFrame !== event.sender.mainFrame)
+      throw new Error("Rejected IPC from an untrusted frame");
+    if (
+      value !== "drive" &&
+      value !== "schedule" &&
+      value !== "hub" &&
+      value !== "tasks"
+    )
+      throw new Error("Unknown workspace view");
+    if (conversationId !== undefined && typeof conversationId !== "string")
+      throw new Error("Invalid conversation id");
+    if (
+      placement !== undefined &&
+      (typeof placement !== "object" ||
+        placement === null ||
+        typeof (placement as WorkspaceWindowPlacement).x !== "number" ||
+        !Number.isFinite((placement as WorkspaceWindowPlacement).x) ||
+        typeof (placement as WorkspaceWindowPlacement).y !== "number" ||
+        !Number.isFinite((placement as WorkspaceWindowPlacement).y) ||
+        ((placement as WorkspaceWindowPlacement).width !== undefined &&
+          (typeof (placement as WorkspaceWindowPlacement).width !== "number" ||
+            !Number.isFinite((placement as WorkspaceWindowPlacement).width) ||
+            (placement as WorkspaceWindowPlacement).width! <= 0)) ||
+        ((placement as WorkspaceWindowPlacement).height !== undefined &&
+          (typeof (placement as WorkspaceWindowPlacement).height !== "number" ||
+            !Number.isFinite((placement as WorkspaceWindowPlacement).height) ||
+            (placement as WorkspaceWindowPlacement).height! <= 0)))
+    )
+      throw new Error("Invalid workspace window placement");
+    const validPlacement = placement as WorkspaceWindowPlacement | undefined;
+    createWindow(
+      value,
+      typeof conversationId === "string" ? conversationId : undefined,
+      validPlacement,
+    );
+  },
+);
 
 /**
  * Points a window at the renderer. Separate from `createWindow` because the
@@ -670,7 +743,11 @@ ipcMain.handle(channels.windowOpenWorkspaceView, (
  * and a retry that quietly loaded something else would be worse than the blank
  * window it is trying to replace.
  */
-function loadRenderer(window: BrowserWindow, workspaceView?: SeparateWorkspaceView, conversationId?: string): void {
+function loadRenderer(
+  window: BrowserWindow,
+  workspaceView?: SeparateWorkspaceView,
+  conversationId?: string,
+): void {
   const coldStart = !coldStartConsumed;
   coldStartConsumed = true;
 
@@ -682,7 +759,7 @@ function loadRenderer(window: BrowserWindow, workspaceView?: SeparateWorkspaceVi
     // `npm run onboarding` reopens first-run setup over this machine's
     // real profile without recording that it ran. Only the dev-server branch
     // reads it, so a packaged build has no way to reach it.
-    if (process.env.FLAREAI_ONBOARDING === "1")
+    if (process.env.POLYMUX_ONBOARDING === "1")
       url.searchParams.set("onboarding", "1");
     void window.loadURL(url.toString()).catch((error: unknown) => {
       // `did-fail-load` covers the retry; this only keeps the rejection from
@@ -696,11 +773,13 @@ function loadRenderer(window: BrowserWindow, workspaceView?: SeparateWorkspaceVi
           currentDirectory,
           `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
         ),
-        { query: {
-          coldStart: coldStart ? "1" : "0",
-          ...(workspaceView ? {workspaceView} : {}),
-          ...(conversationId ? {conversationId} : {}),
-        } },
+        {
+          query: {
+            coldStart: coldStart ? "1" : "0",
+            ...(workspaceView ? { workspaceView } : {}),
+            ...(conversationId ? { conversationId } : {}),
+          },
+        },
       )
       .catch((error: unknown) => {
         console.error(`[renderer] loadFile rejected: ${String(error)}`);
@@ -714,7 +793,9 @@ function loadRenderer(window: BrowserWindow, workspaceView?: SeparateWorkspaceVi
  * conversations keep flowing until the app actually quits. Quitting is the
  * one and only teardown.
  */
-let hub: {homeserver: Homeserver; bridges: BridgeHost; directory: string} | undefined;
+let hub:
+  | { homeserver: Homeserver; bridges: BridgeHost; directory: string }
+  | undefined;
 /**
  * Where conversation traffic is announced. The homeserver is built before the
  * window exists, so it reports into this and the backend puts the real
@@ -742,14 +823,16 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   await withTimeout(
     loadShippedCredentials({
       directory: app.getPath("userData"),
-      host: process.env.FLAREAI_UPDATE_HOST ?? "https://updates.flarehq.co",
+      host:
+        process.env.POLYMUX_UPDATE_FEED_URL ??
+        "https://polymux.com/api/releases",
       log: (message) => console.warn(`[credentials] ${message}`),
     }),
     8_000,
     "shipped credentials",
   ).catch((): undefined => undefined);
   const homeserver = new Homeserver({
-    serverName: "flareai.local",
+    serverName: "polymux.local",
     dataDirectory: directory,
     port: homeserverPort(),
     onActivity: (activity) => onHubActivity?.(activity),
@@ -759,7 +842,10 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
     // The bundled fleet first, then a writable directory of the user's own:
     // networks upstream ships no macOS build for (Google Chat, iMessage) can
     // be dropped in there and are picked up on the next launch.
-    binariesDirectory: [bundledResource("bridges"), path.join(directory, "bin")],
+    binariesDirectory: [
+      bundledResource("bridges"),
+      path.join(directory, "bin"),
+    ],
     homeserver,
     log: (message) => console.warn(message),
   });
@@ -768,11 +854,13 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   // demand when its platform is opened, which keeps a dozen idle processes and
   // their databases off a machine that signed into two networks.
   void bridges.startLinked().catch((error: unknown) => {
-    console.warn(`Bridges failed to start: ${error instanceof Error ? error.message : String(error)}`);
+    console.warn(
+      `Bridges failed to start: ${error instanceof Error ? error.message : String(error)}`,
+    );
   });
   // No binary to supervise for WeChat, and no account to log into: it is a
   // relay against the desktop app. Started on demand rather than here, because
-  // portal rooms belong to FlareAI's Matrix user and that does not exist yet.
+  // portal rooms belong to Polymux's Matrix user and that does not exist yet.
   wechat = new WeChatBridge({
     homeserver,
     directory: path.join(directory, "bridges"),
@@ -786,7 +874,7 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
     ],
     log: (line) => console.warn(line),
   });
-  return {homeserver, bridges, directory};
+  return { homeserver, bridges, directory };
 }
 
 /**
@@ -810,7 +898,11 @@ async function withTimeout<T>(
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
           timedOut = true;
-          reject(new Error(`${what} did not start within ${ms}ms; continuing without it`));
+          reject(
+            new Error(
+              `${what} did not start within ${ms}ms; continuing without it`,
+            ),
+          );
         }, ms);
       }),
     ]);
@@ -831,16 +923,23 @@ async function runProviderProbe(): Promise<number> {
   const provider = "openai-codex";
   const model = "gpt-5.6-luna";
   const started = Date.now();
-  const credentials = new OpenCodeCredentialFallback(new EncryptedCredentialStore(
-    path.join(app.getPath("userData"), "credentials.json"),
-    safeStorage,
-  ));
-  const inference = new PiInference(builtinModels({credentials}));
+  const credentials = new OpenCodeCredentialFallback(
+    new EncryptedCredentialStore(
+      path.join(app.getPath("userData"), "credentials.json"),
+      safeStorage,
+    ),
+  );
+  const inference = new PiInference(builtinModels({ credentials }));
   let answer = "";
-  let failure: {code: string; retryable: boolean} | null = null;
+  let failure: { code: string; retryable: boolean } | null = null;
   for await (const event of inference.stream({
-    model: {provider, id: model},
-    messages: [{role: "user", content: [{type: "text", text: "Reply exactly READY."}]}],
+    model: { provider, id: model },
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Reply exactly READY." }],
+      },
+    ],
     reasoning: "low",
     maxOutputTokens: 16,
     timeoutMs: 20_000,
@@ -849,31 +948,45 @@ async function runProviderProbe(): Promise<number> {
     if (event.type === "textDelta") answer += event.delta;
     // textEnd contains the complete block, not another delta.
     if (event.type === "textEnd") answer = event.text;
-    if (event.type === "error") failure = {code: event.error.code, retryable: event.error.retryable};
+    if (event.type === "error")
+      failure = { code: event.error.code, retryable: event.error.retryable };
   }
-  const status = answer.trim() === "READY" ? "ready" : failure?.code ?? "probe_failed";
-  process.stdout.write(`${JSON.stringify({
-    version: 1,
-    capturedAt: new Date().toISOString(),
-    model: `${provider}/${model}`,
-    reasoning: "low",
-    latencyMs: Date.now() - started,
-    status,
-    retryable: failure?.retryable ?? false,
-  }, null, 2)}\n`);
+  const status =
+    answer.trim() === "READY" ? "ready" : (failure?.code ?? "probe_failed");
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        version: 1,
+        capturedAt: new Date().toISOString(),
+        model: `${provider}/${model}`,
+        reasoning: "low",
+        latencyMs: Date.now() - started,
+        status,
+        retryable: failure?.retryable ?? false,
+      },
+      null,
+      2,
+    )}\n`,
+  );
   return status === "ready" ? 0 : 3;
 }
 
 function writeProviderProbeFailure(status: string): void {
-  process.stdout.write(`${JSON.stringify({
-    version: 1,
-    capturedAt: new Date().toISOString(),
-    model: "openai-codex/gpt-5.6-luna",
-    reasoning: "low",
-    latencyMs: 0,
-    status,
-    retryable: false,
-  }, null, 2)}\n`);
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        version: 1,
+        capturedAt: new Date().toISOString(),
+        model: "openai-codex/gpt-5.6-luna",
+        reasoning: "low",
+        latencyMs: 0,
+        status,
+        retryable: false,
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 app.whenReady().then(async () => {
@@ -889,7 +1002,7 @@ app.whenReady().then(async () => {
     app.exit(code);
     return;
   }
-  // FlareAI is designed to be controllable through exact-window accessibility
+  // Polymux is designed to be controllable through exact-window accessibility
   // whether its window was launched normally or in the background. Electron
   // otherwise waits for an assistive client to attach and can leave a running
   // normal window with no semantic tree after a fullscreen/Space transition.
@@ -901,12 +1014,12 @@ app.whenReady().then(async () => {
   coldStartConsumed = true;
   // Bridged media is fetched by the main process, which holds the token the
   // renderer never sees. Read per request, so a later sign-in is picked up.
-  serveMedia(() => backend?.mediaAuth ?? {homeserverUrl: "", token: null});
+  serveMedia(() => backend?.mediaAuth ?? { homeserverUrl: "", token: null });
   // A produced file is streamed to the page the same way, and for the same
   // reason: an <img> cannot reach the disk, and a data: uri would hold a whole
   // clip in memory. Range is forwarded or a <video> could play but not seek.
   protocol.handle(PREVIEW_SCHEME, async (request) => {
-    if (!backend) return new Response("Not granted", {status: 404});
+    if (!backend) return new Response("Not granted", { status: 404 });
     return previewResponse(
       backend.previewGrants,
       request,
@@ -924,12 +1037,18 @@ app.whenReady().then(async () => {
     // orphaned previous main process has not released yet, a bridge database
     // waiting on a lock — would otherwise hold the first window back forever,
     // which on screen is indistinguishable from the app refusing to start.
-    hub = await withTimeout(startHub(), 10_000, "the embedded message hub", (late) =>
-      Promise.allSettled([late.bridges.close(), late.homeserver.close()]),
+    hub = await withTimeout(
+      startHub(),
+      10_000,
+      "the embedded message hub",
+      (late) =>
+        Promise.allSettled([late.bridges.close(), late.homeserver.close()]),
     );
   } catch (error) {
     // A hub that cannot bind its port degrades messaging, nothing else.
-    console.warn(`Embedded hub failed to start: ${error instanceof Error ? error.message : String(error)}`);
+    console.warn(
+      `Embedded hub failed to start: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   if (quitting) return;
   createWindow();
@@ -967,12 +1086,12 @@ app.on("will-quit", (event) => {
 /**
  * `app.isPackaged` cannot pick this path: it merely checks that the executable
  * is not named "electron", and the development bundle is deliberately renamed
- * to "FlareAI" for the Dock (scripts/dev-app-name.mjs), which makes a dev run
+ * to "Polymux" for the Dock (scripts/dev-app-name.mjs), which makes a dev run
  * look packaged and pointed skill loading at the bundle's empty Resources.
  * Probing for the directory that actually exists is launch-mode-proof.
  *
  * The bundle is only the source: skills are loaded from the mirror under
- * `~/.flareai`, so every skill the app runs lives in the user's own directory.
+ * `~/.polymux`, so every skill the app runs lives in the user's own directory.
  */
 function officialSkillDirectory(): string {
   return installOfficialSkills([

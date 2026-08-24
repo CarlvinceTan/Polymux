@@ -1,5 +1,5 @@
 <script lang="ts" context="module">
-  import type {CommsStatusDto as CachedStatusDto} from '@flareai/protocol';
+  import type {CommsStatusDto as CachedStatusDto} from '@polymux/protocol';
 
   /**
    * The last status the Hub tab saw, kept outside the component.
@@ -22,11 +22,11 @@
     CommsPlatform,
     CommsStatusDto,
     CommsMailProvider,
-    FlareAIApi,
+    PolymuxApi,
     SaveEmailAccountRequest,
     SystemPermissionKind,
-  } from '@flareai/protocol';
-  import {COMMS_EMAIL_PRESETS, permissionPrompts, presetForHost} from '@flareai/protocol';
+  } from '@polymux/protocol';
+  import {COMMS_EMAIL_PRESETS, permissionPrompts, presetForHost} from '@polymux/protocol';
   import {readableError} from '../../shared/errors';
   import {invalidateHubCache} from '../../shared/state/hubCache';
   import {scrollFade} from '../../shared/scrollFade';
@@ -37,7 +37,7 @@
   import Icon from '../../shared/components/Icon.svelte';
   import Menu from '../../shared/components/Menu.svelte';
 
-  export let api: FlareAIApi;
+  export let api: PolymuxApi;
 
   /** Which providers this build can sign in to; empty draws no buttons. */
   $: mailSignInProviders = status?.email.signInProviders ?? [];
@@ -69,7 +69,7 @@
   }
 
   /**
-   * The provider's own page opens over FlareAI; everything after it — the
+   * The provider's own page opens over Polymux; everything after it — the
    * address, the servers, the tokens — comes back from the sign-in, so there
    * is nothing left to fill in and the form closes.
    */
@@ -957,7 +957,7 @@
                   <p class="comms-value">
                     <code>{account.name}</code>
                     <!-- A relay account belongs to the app on this Mac, so
-                         unlinking it stops FlareAI carrying its messages
+                         unlinking it stops Polymux carrying its messages
                          rather than signing anything out — but it is still the
                          way off the platform, and belongs on the row. -->
                     <button

@@ -15,7 +15,7 @@ export function tabSnapshotPath(home = homedir()): string {
     home,
     "Library",
     "Application Support",
-    "flareai-tab-context",
+    "polymux-tab-context",
     "tabs.json",
   );
 }

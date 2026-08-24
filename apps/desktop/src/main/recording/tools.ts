@@ -1,11 +1,11 @@
-import type { AgentTool } from "@flareai/core";
-import { digestRecording, readRecording, type RecordingSession } from "@flareai/computer-history";
+import type { AgentTool } from "@polymux/core";
+import { digestRecording, readRecording, type RecordingSession } from "@polymux/computer";
 import type { RecordingCapture } from "./capture.js";
 
 /**
  * How long after a recording ends it is still the one the user means when they
  * come back and say "done". Long enough to cover ending it from the menu bar
- * and walking back to FlareAI; short enough that yesterday's is never picked up.
+ * and walking back to Polymux; short enough that yesterday's is never picked up.
  */
 const RECENTLY_ENDED_MS = 10 * 60 * 1000;
 
@@ -38,7 +38,7 @@ export function createRecordingTool(capture: RecordingCapture): AgentTool {
       "After 'start' succeeds, end your turn and let the user work — never sleep, poll or loop",
       "waiting for them to finish.",
       "'stop' returns a digest of the workflow: the apps it actually happened in, the steps in",
-      "order, and the apps the user only passed through. Summarise from that. FlareAI's own window",
+      "order, and the apps the user only passed through. Summarise from that. Polymux's own window",
       "is never captured, and arriving and leaving are trimmed off, so the digest is the workflow",
       "rather than everything that happened. Read eventsPath only when you need detail the digest",
       "does not carry — it is JSON lines, oldest first.",

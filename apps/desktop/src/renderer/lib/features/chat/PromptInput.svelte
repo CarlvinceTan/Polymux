@@ -1,8 +1,8 @@
 <script lang="ts">
   import {onMount} from 'svelte';
   import {readableError} from '../../shared/errors';
-  import {flareaiApi} from '../../api/flareai';
-  import type {ModelDto, ReasoningEffort} from '@flareai/protocol';
+  import {polymuxApi} from '../../api/polymux';
+  import type {ModelDto, ReasoningEffort} from '@polymux/protocol';
   import Icon from '../../shared/components/Icon.svelte';
   import InlineChip, {type InlineChipItem, type SubmittedChip} from './InlineChip.svelte';
   import ProviderLogo from '../../shared/components/ProviderLogo.svelte';
@@ -29,7 +29,7 @@
   export let insertion: {id: string; text: string} | null = null;
   export let onInsertionApplied: () => void = () => {};
 
-  const api = flareaiApi();
+  const api = polymuxApi();
 
   type Attachment = InlineChipItem & {file: File};
 
@@ -575,11 +575,11 @@
   });
 </script>
 
-<div class:welcome={variant === 'welcome'} class:file-drag-active={fileDragActive} class="flareai-prompt">
+<div class:welcome={variant === 'welcome'} class:file-drag-active={fileDragActive} class="polymux-prompt">
   <input bind:this={fileInput} class="visually-hidden" name="prompt-attachments" type="file" multiple tabindex="-1" aria-hidden="true" onchange={selected}/>
 
-  <div class:expanded class:raised={hasContent} class="flareai-prompt-shell">
-    <div class="flareai-editor-slot">
+  <div class:expanded class:raised={hasContent} class="polymux-prompt-shell">
+    <div class="polymux-editor-slot">
       <InlineChip
         bind:this={editor}
         value={draft}
@@ -594,14 +594,14 @@
     <button
       type="button"
       data-testid="prompt-primary-button"
-      class="flareai-primary"
+      class="polymux-primary"
       aria-label={primary === 'send' ? $t('composer.sendMessage') : primary === 'stop' ? $t('composer.stopAgent') : $t('composer.startSpeechMode')}
       data-tooltip-label={primary === 'send' ? (active ? $t('composer.queueHint') : $t('composer.send')) : primary === 'stop' ? $t('composer.stopAgent') : $t('composer.speechMode')}
       onclick={primaryAction}
     ><Icon name={primary === 'mic' ? 'waveform' : primary} size={primary === 'stop' ? 22 : 18}/></button>
   </div>
 
-  <div class="flareai-prompt-toolbar">
+  <div class="polymux-prompt-toolbar">
     <button type="button" onclick={chooseFiles}><Icon name="attach" size={14}/><span>{$t('composer.attach')}</span></button>
     <button
       class="dictation-toggle"
@@ -635,7 +635,7 @@
     <div bind:this={modelWrap} class="prompt-option-wrap">
       <button type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} onclick={() => void toggleModelMenu()}><Icon name="brain" size={14}/><span>{$t('composer.model')}</span></button>
       {#if modelMenuOpen && modelsLoaded}
-        <div class="flareai-dropdown-menu model-menu" role="menu" aria-label={$t('composer.modelOptions')}>
+        <div class="polymux-dropdown-menu model-menu" role="menu" aria-label={$t('composer.modelOptions')}>
           <div class="model-menu-search">
             <Icon name="search" size={13}/>
             <input
@@ -662,7 +662,7 @@
               <div class="model-menu-row">
                 <button
                   type="button"
-                  class="flareai-dropdown-item"
+                  class="polymux-dropdown-item"
                   class:active={openModelKey === modelKey(model)}
                   role="menuitem"
                   aria-haspopup="menu"
@@ -686,12 +686,12 @@
           <!-- Outside the scroller: a submenu inside it would be clipped by the
                overflow that makes the list scrollable. -->
           {#if openModel}
-            <div class="flareai-dropdown-menu model-submenu" role="menu" aria-label={$t('composer.reasoningFor', {model: openModel.name})} style:top={`${openModelTop}px`}>
+            <div class="polymux-dropdown-menu model-submenu" role="menu" aria-label={$t('composer.reasoningFor', {model: openModel.name})} style:top={`${openModelTop}px`}>
               <p class="model-submenu-title">{$t('composer.reasoning')}</p>
               {#each effortsFor(openModel) as option (option.value)}
                 <button
                   type="button"
-                  class="flareai-dropdown-item"
+                  class="polymux-dropdown-item"
                   role="menuitemradio"
                   aria-checked={openModel.selected && option.value === reasoning}
                   aria-disabled={!adjustable(openModel)}

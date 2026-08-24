@@ -11,7 +11,7 @@
      * in one list are recognisable as Google before their addresses are read.
      * Takes precedence over `icon` where both are set.
      */
-    provider?: import('@flareai/protocol').DriveProviderId;
+    provider?: import('@polymux/protocol').DriveProviderId;
   };
 </script>
 
@@ -25,7 +25,7 @@
    *
    * A native `<select>` renders with the operating system's own chevron and
    * inset, which sits tight against the edge and matches nothing else here.
-   * This is the same `flareai-dropdown-menu` shell every other menu uses.
+   * This is the same `polymux-dropdown-menu` shell every other menu uses.
    */
   export let options: MenuOption[] = [];
   export let value = '';
@@ -164,7 +164,7 @@
   {#if open}
     <div
       bind:this={list}
-      class="flareai-dropdown-menu select-menu-list"
+      class="polymux-dropdown-menu select-menu-list"
       style:max-height={listMaxHeight === null ? null : `${listMaxHeight}px`}
       role="menu"
       aria-label={label}
@@ -173,7 +173,7 @@
         {@const checked = multiple ? values!.includes(option.value) : option.value === value}
         <button
           type="button"
-          class="flareai-dropdown-item"
+          class="polymux-dropdown-item"
           role={multiple ? 'menuitemcheckbox' : 'menuitemradio'}
           aria-checked={checked}
           onclick={() => multiple ? onToggle(option.value) : choose(option.value)}

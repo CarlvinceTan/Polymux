@@ -1,4 +1,4 @@
-// @flareai/browser — the agent's command set for a page, over CDP.
+// @polymux/browser — the agent's command set for a page, over CDP.
 //
 // Consumers supply a transport and drive `handlers`; see the README for the
 // two that exist (the in-app Browser via Electron's webContents.debugger, and

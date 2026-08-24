@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {AgentTool, AgentToolContext} from "@flareai/core";
+import type {AgentTool, AgentToolContext} from "@polymux/core";
 import {createPerRunCallLimit, withPerRunCallLimit} from "./tool-budget.js";
 
 function context(runId: string, subagent = true, budgetScope?: string): AgentToolContext {

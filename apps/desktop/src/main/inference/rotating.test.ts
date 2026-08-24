@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {InferenceEvent, InferenceRequest, InferenceService} from "@flareai/inference";
+import type {InferenceEvent, InferenceRequest, InferenceService} from "@polymux/inference";
 import {RotatingInference, type InferenceKeyPool} from "./rotating.js";
 
 test("rotates to the next key after a pre-response rate limit", async () => {

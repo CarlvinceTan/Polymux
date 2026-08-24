@@ -3,7 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { SkillLoader } from "@flareai/agent";
+import { SkillLoader } from "@polymux/agent";
 import { coreSkillNames } from "./official.js";
 
 const TIERS = ["core", "official"] as const;
@@ -17,8 +17,8 @@ const bundled = (tier: string): string =>
  * otherwise: it simply stops appearing.
  */
 function loadMirror() {
-  const home = mkdtempSync(path.join(tmpdir(), "flareai-bundled-"));
-  const mirror = path.join(home, ".flareai", "official-skills");
+  const home = mkdtempSync(path.join(tmpdir(), "polymux-bundled-"));
+  const mirror = path.join(home, ".polymux", "official-skills");
   mkdirSync(mirror, { recursive: true });
   for (const tier of TIERS) cpSync(bundled(tier), mirror, { recursive: true });
   const loaded = new SkillLoader({ home, official: [mirror] }).load();
@@ -35,7 +35,7 @@ test("every bundled skill loads, with no duplicate or malformed one", () => {
   const names = loaded.skills.map((skill) => skill.name).sort();
   assert.equal(new Set(names).size, names.length, "a name is claimed twice");
   // Both tiers arrive: a mirror that copied only one still loads cleanly.
-  assert.ok(names.includes("email-use"), "core tier is present");
+  assert.ok(names.includes("hub-use"), "core tier is present");
   assert.ok(names.includes("pdf"), "official tier is present");
 });
 
@@ -56,11 +56,9 @@ test("core membership is the core folder, so the Skills tab hides exactly those"
   assert.deepEqual(
     [...core].sort(),
     [
-      "browser-use",
-      "computer-history",
       "computer-use",
-      "email-use",
-      "message-use",
+      "drive-use",
+      "hub-use",
       "skill-creator",
       "skill-maintenance",
       "skill-record",

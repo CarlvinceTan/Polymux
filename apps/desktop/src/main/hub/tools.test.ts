@@ -1,12 +1,69 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {Communications, matchContactChats, resolveChatAliasFromRooms} from "./index.js";
-import type {EmailAccounts} from "@flareai/hub";
+import type {EmailAccounts} from "@polymux/hub";
 import {createCommunicationsTools} from "./tools.js";
 
 function toolResult(value: {content?: unknown}): unknown {
   return JSON.parse(String(value.content));
 }
+
+test("hub_state returns complete compact requested surfaces without message bodies", async () => {
+  let statusCalls = 0;
+  let chatCalls = 0;
+  const tools = createCommunicationsTools({
+    async status() {
+      statusCalls += 1;
+      return {
+        bridges: [{
+          platform: "whatsapp", name: "WhatsApp", state: "connected",
+          accounts: [{id: "wa-1", name: "Personal"}],
+        }],
+        email: {accounts: [{
+          id: "mail-1", email: "me@example.com", displayName: "Me",
+          isDefault: true, status: "ok",
+        }]},
+      };
+    },
+    async chats() {
+      chatCalls += 1;
+      return [{
+        roomId: "room-1", name: "Dad", platform: "whatsapp",
+        unread: 2, lastActivity: "2026-08-24T01:00:00Z", preview: "private body",
+      }];
+    },
+  } as unknown as Communications);
+  const tool = tools.find((candidate) => candidate.name === "hub_state")!;
+
+  assert.deepEqual(toolResult(await tool.execute({kinds: ["platforms", "accounts", "chats"]}, {} as never)), {
+    platforms: [{
+      platform: "whatsapp", name: "WhatsApp", state: "connected",
+      accounts: [{id: "wa-1", name: "Personal"}],
+    }],
+    accounts: [{
+      account: "mail-1", email: "me@example.com", display_name: "Me",
+      default: true, status: "ok",
+    }],
+    chats: [{
+      chat_id: "room-1", name: "Dad", platform: "whatsapp", unread: 2,
+      updated_at: "2026-08-24T01:00:00Z",
+    }],
+  });
+  assert.equal(statusCalls, 1);
+  assert.equal(chatCalls, 1);
+});
+
+test("hub_state reads only the requested surface kind", async () => {
+  let statusCalls = 0;
+  const tools = createCommunicationsTools({
+    status: async () => { statusCalls += 1; throw new Error("not needed"); },
+    chats: async (): Promise<never[]> => [],
+  } as unknown as Communications);
+  const tool = tools.find((candidate) => candidate.name === "hub_state")!;
+
+  assert.deepEqual(toolResult(await tool.execute({kinds: ["chats"]}, {} as never)), {chats: []});
+  assert.equal(statusCalls, 0);
+});
 
 test("message tools include current connected coverage without probing", async () => {
   let coverageCalls = 0;
@@ -171,7 +228,7 @@ test("the all-inbox search does not change the normal tool surface", () => {
     assert.equal(tools.some((tool) => tool.name === "email_search_all"), false);
 });
 
-test("one experimental tool call searches every account", async () => {
+test("one unified tool call searches every account", async () => {
     const calls: Array<{queries: string[]; limitPerQuery: number; maxResults: number; timeoutMs?: number}> = [];
     const emailSearchAll = async (options: {queries: string[]; limitPerQuery: number; maxResults: number; timeoutMs?: number}) => {
       calls.push(options);
@@ -262,7 +319,7 @@ test("all-inbox search deduplicates, caps, compacts, and isolates account failur
     credentials: {} as never,
     storage: {getPreference: () => undefined, setPreference: () => {}},
     onChange: () => {},
-    home: "/tmp/flareai-email-search-test",
+    home: "/tmp/polymux-email-search-test",
     email,
   });
 
@@ -315,7 +372,7 @@ test("all-inbox search bounds a stalled mailbox without hiding healthy results",
     credentials: {} as never,
     storage: {getPreference: () => undefined, setPreference: () => {}},
     onChange: () => {},
-    home: "/tmp/flareai-email-timeout-test",
+    home: "/tmp/polymux-email-timeout-test",
     email,
   });
 
@@ -346,7 +403,7 @@ test("all-inbox search merges Apple Mail coverage without another agent call", a
     credentials: {} as never,
     storage: {getPreference: () => undefined, setPreference: () => {}},
     onChange: () => {},
-    home: "/tmp/flareai-apple-mail-search-test",
+    home: "/tmp/polymux-apple-mail-search-test",
     email,
     appleMailSearch: async ({queries, maxResults}) => {
       fallbacks += 1;

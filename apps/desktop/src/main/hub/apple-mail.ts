@@ -21,7 +21,7 @@ interface MailIndexRow {
 
 /** Search Apple Mail's envelope index directly in read-only mode. This neither
  * launches nor controls Mail and covers institutional accounts that cannot use
- * FlareAI's direct IMAP route. Only compact envelope/summary evidence leaves
+ * Polymux's direct IMAP route. Only compact envelope/summary evidence leaves
  * the index. */
 export function createAppleMailSearcher(options: {
   platform?: NodeJS.Platform; home?: string; indexPath?: string;

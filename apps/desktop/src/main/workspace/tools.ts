@@ -1,5 +1,5 @@
-import type { AgentTool } from "@flareai/core";
-import type { WorkspaceRevealDto, WorkspaceSurface } from "@flareai/protocol";
+import type { AgentTool } from "@polymux/core";
+import type { WorkspaceRevealDto, WorkspaceSurface } from "@polymux/protocol";
 
 /**
  * The agent's handle on the workspace drawer: what "show me" opens.

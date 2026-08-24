@@ -1,10 +1,10 @@
 import { Menu, Tray, nativeImage } from "electron";
-import { elapsedLabel, type RecordingSession } from "@flareai/computer-history";
+import { elapsedLabel, type RecordingSession } from "@polymux/computer";
 
 /**
  * The menu-bar presence of a running recording.
  *
- * It exists because of where the user is: recording is the one thing FlareAI
+ * It exists because of where the user is: recording is the one thing Polymux
  * does while they are deliberately somewhere else. An in-app indicator would
  * be behind the window they just left, and going back to it to say "done" is
  * the very interruption the feature is trying to avoid. So the state and both
@@ -84,8 +84,8 @@ export class RecordingMenubar {
       tray.setTitle(this.#label());
       tray.setToolTip(
         this.#session.label
-          ? `FlareAI is recording "${this.#session.label}"`
-          : "FlareAI is recording your workflow",
+          ? `Polymux is recording "${this.#session.label}"`
+          : "Polymux is recording your workflow",
       );
       // Rebuilt each tick so the elapsed time in the header stays honest; the
       // menu is only ever built, never held open across a rebuild.

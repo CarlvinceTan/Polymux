@@ -11,7 +11,7 @@ export interface SkillLocation {
 export interface SkillLoaderOptions {
   home?: string;
   /**
-   * The user's own skills directory. Defaults to `~/.flareai/skills`; the
+   * The user's own skills directory. Defaults to `~/.polymux/skills`; the
    * desktop app passes it explicitly so a side instance loads from the home
    * its own configuration lives in rather than the user's.
    */
@@ -35,9 +35,9 @@ export class SkillLoader {
       })),
       // ~/.agents/skills is the cross-agent standard directory that
       // Vercel's `npx skills` CLI installs into, so packages added there
-      // appear in FlareAI automatically. Agent-specific stores such as
-      // ~/.codex/skills stay unsourced: a personal skill becomes FlareAI's by
-      // being copied into ~/.flareai/skills, which also wins name clashes so
+      // appear in Polymux automatically. Agent-specific stores such as
+      // ~/.codex/skills stay unsourced: a personal skill becomes Polymux's by
+      // being copied into ~/.polymux/skills, which also wins name clashes so
       // in-app edits keep authority.
       {
         path: join(home, ".agents", "skills"),
@@ -45,8 +45,8 @@ export class SkillLoader {
         includeRootMarkdown: false,
       },
       {
-        path: options.personal ?? join(home, ".flareai", "skills"),
-        source: "flareai",
+        path: options.personal ?? join(home, ".polymux", "skills"),
+        source: "polymux",
         includeRootMarkdown: true,
       },
       ...(options.bundled ?? []).map((path): SkillLocation => ({
@@ -187,7 +187,7 @@ interface SkillManifest {
 }
 
 /**
- * `flare.yaml` beside SKILL.md is FlareAI's own skill manifest: the display
+ * `flare.yaml` beside SKILL.md is Polymux's own skill manifest: the display
  * identity the harness reads, not something the agent is shown. One field is
  * defined — `display_name` — and a skill without the file falls back to its
  * name, so the manifest is optional by design.

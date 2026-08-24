@@ -7,7 +7,7 @@
  *   ERROR: Unrecognized attribute string flag '?' in attribute string
  *   "T@"NSString",?,R,C" for property debugDescription
  *
- * The properties belong to system frameworks Electron loads, not to any FlareAI
+ * The properties belong to system frameworks Electron loads, not to any Polymux
  * code, and the message is written straight to the process's stderr rather
  * than os_log, so there is nothing to silence from inside the app. Dropping
  * the lines here keeps the dev console readable; everything else is forwarded
@@ -64,17 +64,17 @@ loadEnvFile();
 /**
  * `npm start -- --isolated[=name]` runs a *side* instance: its own userData
  * directory, and so its own single-instance lock, and its own homeserver port
- * (see main.ts). Nothing it does reaches the FlareAI the user already has
+ * (see main.ts). Nothing it does reaches the Polymux the user already has
  * open, which is the point — an agent can start the app to look at a change
  * without taking the user's session away from them.
  *
  * The flag is consumed here rather than forwarded: Forge would pass it to
  * Electron, which has no idea what it means. The app reads the name off
- * FLAREAI_DEV_INSTANCE instead, so `FLAREAI_DEV_INSTANCE=review npm start`
+ * POLYMUX_DEV_INSTANCE instead, so `POLYMUX_DEV_INSTANCE=review npm start`
  * works the same way.
  */
 const forwarded = [];
-let instance = process.env.FLAREAI_DEV_INSTANCE?.trim() || '';
+let instance = process.env.POLYMUX_DEV_INSTANCE?.trim() || '';
 let ephemeral = false;
 let visibleInstance = false;
 for (const argument of process.argv.slice(2)) {
@@ -88,7 +88,7 @@ if (ephemeral) {
   await sweepAbandonedInstances();
   instance = freeInstanceName();
 }
-if (instance) process.env.FLAREAI_DEV_INSTANCE = instance;
+if (instance) process.env.POLYMUX_DEV_INSTANCE = instance;
 const launchArguments = backgroundInstanceArguments(forwarded, instance, visibleInstance);
 
 function fail(message) {
@@ -100,10 +100,10 @@ function fail(message) {
  * Everything a named instance owns outside this checkout. Both are keyed off
  * the name — see `main.ts` for the userData directory (and with it Electron's
  * single-instance lock and the homeserver port) and `system/paths.ts` for
- * FlareAI's home.
+ * Polymux's home.
  */
 function instanceDirectories(name) {
-  return [userDataDirectory(name), path.join(homedir(), `.flareai-${name}`)];
+  return [userDataDirectory(name), path.join(homedir(), `.polymux-${name}`)];
 }
 
 /**
@@ -113,13 +113,13 @@ function instanceDirectories(name) {
  * is recognised as this instance's.
  */
 function userDataDirectory(name) {
-  return path.join(homedir(), 'Library/Application Support', `FlareAI-${name}`);
+  return path.join(homedir(), 'Library/Application Support', `Polymux-${name}`);
 }
 
 /**
  * A name no run is using and no directory is left over from.
  *
- * `npm run new` is "as if FlareAI had never been installed here", and several
+ * `npm run new` is "as if Polymux had never been installed here", and several
  * of them have to be able to run at once — beside each other and beside the
  * ordinary `npm start`. So the name cannot be a constant: two `new` runs
  * sharing one would share a userData directory, and the second would find the
@@ -133,11 +133,11 @@ function freeInstanceName() {
   const running = processTable();
   for (let index = 1; index <= 99; index += 1) {
     const name = `new${index}`;
-    if (running.some((entry) => entry.command.includes(`FLAREAI_DEV_INSTANCE=${name}`))) continue;
+    if (running.some((entry) => entry.command.includes(`POLYMUX_DEV_INSTANCE=${name}`))) continue;
     if (instanceDirectories(name).some(existsSync)) continue;
     return name;
   }
-  fail('Every ephemeral instance name is taken. Close some `npm run new` runs, or remove the leftover FlareAI-new* directories.');
+  fail('Every ephemeral instance name is taken. Close some `npm run new` runs, or remove the leftover Polymux-new* directories.');
 }
 
 /**
@@ -173,7 +173,7 @@ function instanceProcesses(name) {
   );
   /**
    * Climb to the app and to Forge. Neither names the instance: the app's main
-   * process renames itself to "FlareAI" (see `dev-app-name.mjs`) so it cannot
+   * process renames itself to "Polymux" (see `dev-app-name.mjs`) so it cannot
    * be matched by path at all, and Forge shows neither the environment nor the
    * data directory. Only the Electron *helpers* carry `--user-data-dir`, so
    * the two processes that matter are reached as their ancestors — and they
@@ -214,7 +214,7 @@ function instanceProcesses(name) {
  */
 function ownsInstance(entry, name) {
   return (
-    entry.command.includes(`FLAREAI_DEV_INSTANCE=${name}`) ||
+    entry.command.includes(`POLYMUX_DEV_INSTANCE=${name}`) ||
     entry.command.includes(`${userDataDirectory(name)}`)
   );
 }
@@ -405,17 +405,17 @@ function processTable() {
  * on the userData directory, so the instance this run is about to launch quits
  * itself before it ever opens a window (see the lock in apps/desktop/src/main/main.ts).
  * Forge does not notice — it keeps its dev servers up and its terminal quiet —
- * and the only FlareAI on screen stays the old one, still on its old bundle.
+ * and the only Polymux on screen stays the old one, still on its old bundle.
  * That reads exactly like `npm start` hanging on a blank window, so retire the
  * old session first.
  *
  * Only this checkout's development app is a candidate: it runs out of
- * `node_modules/electron`, which an installed FlareAI.app never does. Its main
- * process renames itself to "FlareAI" and so cannot be matched by path, but its
+ * `node_modules/electron`, which an installed Polymux.app never does. Its main
+ * process renames itself to "Polymux" and so cannot be matched by path, but its
  * helper processes keep theirs — and their parent is the main process.
  */
 async function retirePreviousDevApp() {
-  const table = processTable().filter((entry) => !entry.command.includes('FLAREAI_DEV_INSTANCE='));
+  const table = processTable().filter((entry) => !entry.command.includes('POLYMUX_DEV_INSTANCE='));
   const distribution = path.join(projectRoot, 'node_modules/electron/dist/');
   const helpers = table.filter((entry) => entry.command.startsWith(distribution));
   const helperPids = new Set(helpers.map((entry) => entry.pid));
@@ -455,7 +455,7 @@ async function retirePreviousDevApp() {
   const doomed = [...apps, ...forges];
   if (doomed.length === 0) return;
 
-  console.error('Retiring the FlareAI dev app left over from an earlier `npm start`.');
+  console.error('Retiring the Polymux dev app left over from an earlier `npm start`.');
   const alive = (pid) => {
     try {
       process.kill(pid, 0);
@@ -478,7 +478,7 @@ async function retirePreviousDevApp() {
   // teardown first — and the single-instance lock outlives the old main
   // process by exactly that long. Spawn Forge before then and the new instance
   // finds the lock still held, hands over its session, and exits: the only
-  // FlareAI on screen stays the old one, whose renderer is usually already dead.
+  // Polymux on screen stays the old one, whose renderer is usually already dead.
   // That is the blank window this whole function is trying to prevent.
   signal('SIGTERM');
   const deadline = Date.now() + 5000;
@@ -499,13 +499,13 @@ async function retirePreviousDevApp() {
 // preflight that clears the previous run is exactly what it must not do.
 if (ephemeral) {
   console.error(
-    `Starting a fresh FlareAI ("${instance}") with no settings, keys, chats, hub or skills, ` +
+    `Starting a fresh Polymux ("${instance}") with no settings, keys, chats, hub or skills, ` +
       `beside any run already open. Everything it writes is discarded when it exits.`,
   );
 } else if (instance) {
   await awaitInstanceExit(instance);
   console.error(
-    `Starting the "${instance}" FlareAI instance beside any run already open; ` +
+    `Starting the "${instance}" Polymux instance beside any run already open; ` +
       `its data lives in a userData directory of its own.`,
   );
 } else {
@@ -548,7 +548,7 @@ child.on('exit', async (code, signal) => {
     console.error(
       instance
         ? `Nothing started: another "${instance}" instance holds the lock, and this run exited.`
-        : 'Nothing started: another FlareAI holds the lock, and this run exited.',
+        : 'Nothing started: another Polymux holds the lock, and this run exited.',
     );
     process.exit(1);
   }

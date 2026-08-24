@@ -7,11 +7,11 @@ import test, { afterEach } from "node:test";
 import { exportNodeRuntime, resolveNodeRuntime } from "./node-runtime.js";
 
 const cleanups: string[] = [];
-const originalEnv = process.env.FLAREAI_NODE;
+const originalEnv = process.env.POLYMUX_NODE;
 afterEach(() => {
   for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true });
-  if (originalEnv === undefined) delete process.env.FLAREAI_NODE;
-  else process.env.FLAREAI_NODE = originalEnv;
+  if (originalEnv === undefined) delete process.env.POLYMUX_NODE;
+  else process.env.POLYMUX_NODE = originalEnv;
 });
 
 function scratch(): string {
@@ -39,14 +39,14 @@ test("a checkout without the bundle gets an ELECTRON_RUN_AS_NODE wrapper", () =>
   const resolved = resolveNodeRuntime({
     bundledNode: path.join(base, "missing", "node"),
     checkoutMarker: path.join(base, "marker"),
-    execPath: path.join(base, "space dir", "FlareAI"),
+    execPath: path.join(base, "space dir", "Polymux"),
     wrapperDirectory: path.join(base, "bin"),
   });
-  assert.equal(resolved, path.join(base, "bin", "flareai-node"));
+  assert.equal(resolved, path.join(base, "bin", "polymux-node"));
   const body = readFileSync(resolved!, "utf8");
   assert.ok(body.startsWith("#!/bin/sh\n"));
   // The exec path is quoted: a userData path with spaces must survive.
-  assert.ok(body.includes(`exec "${path.join(base, "space dir", "FlareAI")}" "$@"`));
+  assert.ok(body.includes(`exec "${path.join(base, "space dir", "Polymux")}" "$@"`));
   assert.ok(body.includes("ELECTRON_RUN_AS_NODE=1 "));
   assert.equal(statSync(resolved!).mode & 0o755, 0o755);
 });
@@ -73,15 +73,15 @@ test("packaged without a bundle resolves to nothing rather than a GUI relaunch",
   const resolved = resolveNodeRuntime({
     bundledNode: path.join(base, "missing", "node"),
     checkoutMarker: path.join(base, "also-missing"),
-    execPath: "/Applications/FlareAI.app/Contents/MacOS/FlareAI",
+    execPath: "/Applications/Polymux.app/Contents/MacOS/Polymux",
     wrapperDirectory: path.join(base, "bin"),
   });
   assert.equal(resolved, undefined);
 });
 
-test("exportNodeRuntime publishes FLAREAI_NODE only when something resolved", () => {
+test("exportNodeRuntime publishes POLYMUX_NODE only when something resolved", () => {
   const base = scratch();
-  delete process.env.FLAREAI_NODE;
+  delete process.env.POLYMUX_NODE;
   const missing = exportNodeRuntime({
     bundledNode: path.join(base, "missing", "node"),
     checkoutMarker: path.join(base, "also-missing"),
@@ -89,7 +89,7 @@ test("exportNodeRuntime publishes FLAREAI_NODE only when something resolved", ()
     wrapperDirectory: path.join(base, "bin"),
   });
   assert.equal(missing, undefined);
-  assert.equal(process.env.FLAREAI_NODE, undefined);
+  assert.equal(process.env.POLYMUX_NODE, undefined);
 
   const bundled = path.join(base, "node");
   writeFileSync(bundled, "");
@@ -100,5 +100,5 @@ test("exportNodeRuntime publishes FLAREAI_NODE only when something resolved", ()
     wrapperDirectory: path.join(base, "bin"),
   });
   assert.equal(resolved, bundled);
-  assert.equal(process.env.FLAREAI_NODE, bundled);
+  assert.equal(process.env.POLYMUX_NODE, bundled);
 });

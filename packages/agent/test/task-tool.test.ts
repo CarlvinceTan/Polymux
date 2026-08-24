@@ -5,7 +5,7 @@ import { SubagentFleet } from "../src/subagents/fleet.js";
 
 const context = {} as Parameters<ReturnType<typeof createTaskTool>["execute"]>[1];
 
-test("experimental coordination mode expresses independent and dependent work", async () => {
+test("coordination mode expresses independent and dependent work", async () => {
   const requests: SubagentRequest[] = [];
   const tool = createTaskTool(async (request) => {
     requests.push(request);
@@ -42,7 +42,7 @@ test("experimental coordination mode expresses independent and dependent work", 
   assert.ok(Array.isArray(tool.parameters.required) && tool.parameters.required.includes("coordination"));
 });
 
-test("experimental task preserves an explicit empty skill route", async () => {
+test("task preserves an explicit empty skill route", async () => {
   let captured: SubagentRequest | undefined;
   const tool = createTaskTool(async (request) => {
     captured = request;
@@ -108,25 +108,25 @@ test("bounded native read routes retain the email router for account coverage", 
     prompt: "Check public and personal evidence",
     coordination: "independent",
     tool_groups: ["browser-research", "email-triage", "messages-read"],
-    skill_names: ["browser-use", "email-use", "message-use", "travel-planner"],
+    skill_names: ["computer-use", "hub-use", "travel-planner"],
   }, context);
   await tool.execute({
     description: "Interactive browser work",
     prompt: "Use the browser workflow",
     coordination: "independent",
     tool_groups: ["browser"],
-    skill_names: ["browser-use"],
+    skill_names: ["computer-use"],
   }, context);
 
-  assert.deepEqual(requests[0]?.skillNames, ["email-use", "travel-planner"]);
-  assert.deepEqual(requests[1]?.skillNames, ["browser-use"]);
+  assert.deepEqual(requests[0]?.skillNames, ["computer-use", "hub-use", "travel-planner"]);
+  assert.deepEqual(requests[1]?.skillNames, ["computer-use"]);
   assert.deepEqual((result.metadata as {effectiveRoute?: unknown} | undefined)?.effectiveRoute, {
     coordination: "independent",
     dependsOn: null,
     continueFrom: null,
     retain: false,
     toolGroups: ["browser-research", "email-triage", "messages-read"],
-    skillNames: ["email-use", "travel-planner"],
+    skillNames: ["computer-use", "hub-use", "travel-planner"],
   });
 });
 

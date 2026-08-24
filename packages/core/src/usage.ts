@@ -1,4 +1,4 @@
-import type { InferenceUsage } from "@flareai/inference";
+import type { InferenceUsage } from "@polymux/inference";
 
 export function emptyUsage(): InferenceUsage {
   return {

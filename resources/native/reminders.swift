@@ -2,7 +2,7 @@
 // command.
 //
 // The point of it being here rather than in a CLI the agent runs through bash:
-// the permission gate becomes exact. FlareAI knows this binary touches
+// the permission gate becomes exact. Polymux knows this binary touches
 // Reminders because that is the only thing it does, so it can ask for the
 // grant at the moment of use and wait for the answer — where a command line
 // can only be guessed at from its text.

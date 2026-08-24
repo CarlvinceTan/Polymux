@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type {FlareAIApi, ModelDto, ProviderDto} from '@flareai/protocol';
+  import type {PolymuxApi, ModelDto, ProviderDto} from '@polymux/protocol';
   import {fly} from 'svelte/transition';
   import {readableError} from '../../shared/errors';
   import Icon from '../../shared/components/Icon.svelte';
@@ -8,7 +8,7 @@
   import {t} from '../../../i18n';
 
   interface Props {
-    api: FlareAIApi;
+    api: PolymuxApi;
     onDone: (label: string) => void;
   }
 
@@ -26,7 +26,7 @@
 
   /**
    * Two halves of one decision, in one step rather than two screens: which
-   * provider FlareAI talks to, and which of that provider's models it thinks
+   * provider Polymux talks to, and which of that provider's models it thinks
    * with. The second half has nothing to show until the first is settled, so
    * the same grid and the same button carry both — the button says what it
    * does at each half, and the copy above changes with it.

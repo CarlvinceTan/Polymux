@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import {flareaiApi} from '../../api/flareai';
+  import {polymuxApi} from '../../api/polymux';
   import {onThemeChange} from '../../shared/theme';
 
   /** Site icons for links, asked for once per site and shared by every message
@@ -26,7 +26,7 @@
   function linkFavicon(url: string): Promise<string | null> {
     let pending = linkFavicons.get(url);
     if (!pending) {
-      pending = flareaiApi().browser.favicon(url).catch(() => null);
+      pending = polymuxApi().browser.favicon(url).catch(() => null);
       linkFavicons.set(url, pending);
     }
     return pending;

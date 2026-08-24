@@ -13,16 +13,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def flareai_home() -> Path:
-    """FlareAI's home, honouring a side instance the way the app itself does."""
-    instance = (os.environ.get("FLAREAI_DEV_INSTANCE") or "").strip()
-    return Path.home() / (f".flareai-{instance}" if instance else ".flareai")
+def polymux_home() -> Path:
+    """Polymux's home, honouring a side instance the way the app itself does."""
+    instance = (os.environ.get("POLYMUX_DEV_INSTANCE") or "").strip()
+    return Path.home() / (f".polymux-{instance}" if instance else ".polymux")
 
 
 # Beside the route registry and the lease state: one place holds everything this
 # installation has learnt about this machine's apps.
-DEFAULT_STATE = flareai_home() / "state" / "window-control" / "route-observations.json"
-LEGACY_STATE = flareai_home() / "window-control" / "route-observations.json"
+DEFAULT_STATE = polymux_home() / "state" / "window-control" / "route-observations.json"
+LEGACY_STATE = polymux_home() / "window-control" / "route-observations.json"
 
 
 def app_identity(app_path: Path) -> dict[str, str]:

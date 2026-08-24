@@ -1,6 +1,6 @@
 import { stat, statfs } from "node:fs/promises";
 import path from "node:path";
-import type { DriveAccountDto, DriveEntryDto } from "@flareai/protocol";
+import type { DriveAccountDto, DriveEntryDto } from "@polymux/protocol";
 import { LocalDrive } from "./local.js";
 import type { DriveAdapter, DriveProbe } from "./types.js";
 

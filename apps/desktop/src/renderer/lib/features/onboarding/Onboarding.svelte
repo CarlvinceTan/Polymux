@@ -1,6 +1,6 @@
 <script lang="ts">
   import {onMount, setContext} from 'svelte';
-  import type {FlareAIApi} from '@flareai/protocol';
+  import type {PolymuxApi} from '@polymux/protocol';
   import ImportStep from './ImportStep.svelte';
   import ModelStep from './ModelStep.svelte';
   import PermissionsStep from './PermissionsStep.svelte';
@@ -9,7 +9,7 @@
   import {t, type MessageKey} from '../../../i18n';
 
   interface Props {
-    api: FlareAIApi;
+    api: PolymuxApi;
     onFinish: () => void;
     /**
      * False while the startup splash still covers the window. The welcome
@@ -380,7 +380,7 @@
   aria-label={$t('onboarding.title')}
   bind:this={root}
 >
-  <!-- No brand lockup here: setup already says FlareAI on the welcome screen,
+  <!-- No brand lockup here: setup already says Polymux on the welcome screen,
        and after that the name in the corner is just furniture. The bar stays
        for the drag region and the way out. -->
   <header class="onb-chrome" class:on-hub={step === 'platforms'}>
@@ -466,7 +466,7 @@
                   <path fill="currentColor" d="M118.56,39.4l.76,5.3a3.23,3.23,0,0,0,3.2,2.78h1.61l6.19-8.08Z"/>
                   <path fill="currentColor" d="M93.47,28.26l3.63,2.67a3.22,3.22,0,0,0,4.27-.4l.83-.89-1.37-10.35-8,8.53Z"/>
                 </svg>
-                <span>FlareAI</span>
+                <span>Polymux</span>
               </h1>
               <button type="button" class="onb-hero-start" onclick={next}>{$t('onboarding.start')}</button>
             </div>

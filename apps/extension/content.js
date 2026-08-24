@@ -1,19 +1,19 @@
-// FlareAI agent surface — in-page presentation and control.
+// Polymux agent surface — in-page presentation and control.
 //
 // Adapted from the user's Hermes Agent Surface extension so the presentation
 // contract matches the ChatGPT desktop one exactly: a Codex-style favicon
 // badge on leased tabs and the same spring-animated cursor (cursor-motion.js).
 // On top of that, this content script executes control commands (navigate,
-// click, type, scroll, read) that the FlareAI agent issues through the loopback
+// click, type, scroll, read) that the Polymux agent issues through the loopback
 // feed, animating the cursor to the target before pointer actions.
 (() => {
   "use strict";
 
-  const BADGE_MARKER = "flareai-favicon-badge";
-  const BADGED_SELECTOR = 'link[data-flareai-favicon-badge="true"]';
+  const BADGE_MARKER = "polymux-favicon-badge";
+  const BADGED_SELECTOR = 'link[data-polymux-favicon-badge="true"]';
   const ICON_SELECTOR = 'link[rel~="icon"], link[rel="shortcut icon"]';
-  const CREATED = "flareaiFaviconBadgeCreated";
-  const ORIGINAL = "flareaiOriginalFaviconHref";
+  const CREATED = "polymuxFaviconBadgeCreated";
+  const ORIGINAL = "polymuxOriginalFaviconHref";
   const APPLE_TOUCH_ICON = "apple-touch-icon";
   const CURSOR_PATH =
     "M3.04536 4.45259C2.7582 3.60299 3.60299 2.7582 4.45259 3.04536L14.1828 6.33403C15.1637 6.66558 15.0872 8.08006 14.0715 8.39045L10.2994 9.54319C9.93919 9.65327 9.65327 9.93919 9.54319 10.2994L8.39046 14.0715C8.08007 15.0872 6.66558 15.1637 6.33404 14.1828L3.04536 4.45259Z";
@@ -50,7 +50,7 @@
 
   function badgedFavicon(state, faviconUrl) {
     const opacity = state === "active" ? ' opacity="0.3"' : "";
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" data-flareai-favicon-badge="${BADGE_MARKER}" width="32" height="32" viewBox="0 0 32 32"><image href="${escapeXml(
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" data-polymux-favicon-badge="${BADGE_MARKER}" width="32" height="32" viewBox="0 0 32 32"><image href="${escapeXml(
       faviconUrl
     )}" width="32" height="32"${opacity} />${badgeShape(state)}</svg>`;
     return `data:image/svg+xml,${encodeURIComponent(svg)}`;
@@ -60,7 +60,7 @@
     if (!value || !value.startsWith("data:image/svg+xml,")) return false;
     try {
       return decodeURIComponent(value.slice(19)).includes(
-        `data-flareai-favicon-badge="${BADGE_MARKER}"`
+        `data-polymux-favicon-badge="${BADGE_MARKER}"`
       );
     } catch {
       return false;
@@ -83,7 +83,7 @@
   }
 
   function clearDataset(link) {
-    delete link.dataset.flareaiFaviconBadge;
+    delete link.dataset.polymuxFaviconBadge;
     delete link.dataset[CREATED];
     delete link.dataset[ORIGINAL];
   }
@@ -142,7 +142,7 @@
       const originalHref = link.getAttribute("href");
       const created = originalHref === null;
       link.href = badgedHref;
-      link.dataset.flareaiFaviconBadge = "true";
+      link.dataset.polymuxFaviconBadge = "true";
       if (created) link.dataset[CREATED] = "true";
       else link.dataset[ORIGINAL] = originalHref;
       return { badgedHref, created, originalHref, link };
@@ -179,9 +179,9 @@
   }
 
   // The overlay itself is shared with the in-app Browser
-  // (@flareai/browser/src/cursor-overlay.js, loaded just before this
+  // (@polymux/browser/src/cursor-overlay.js, loaded just before this
   // file), so the agent's pointer looks and moves identically in both.
-  const overlay = () => globalThis.FlareAICursorOverlay;
+  const overlay = () => globalThis.PolymuxCursorOverlay;
 
   // --- Cursor requests from the background worker ------------------------
 
@@ -190,7 +190,7 @@
   // keeps the move-then-act sequencing the presentation is built around, with
   // the input itself trusted (CDP) rather than synthesized in-page.
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type !== "flareai:move-cursor") return false;
+    if (message?.type !== "polymux:move-cursor") return false;
     if (!currentLease || !message.point) {
       sendResponse({ ok: false });
       return true;
@@ -208,7 +208,7 @@
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
         {
-          type: afterRevision === null ? "flareai:snapshot" : "flareai:changes",
+          type: afterRevision === null ? "polymux:snapshot" : "polymux:changes",
           afterRevision,
           waitMs,
         },

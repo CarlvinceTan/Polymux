@@ -1,5 +1,5 @@
-import {cronError} from "@flareai/protocol";
-import type {BrowserImportRequestDto, BrowserPermissionDto, MailListRequest, PermissionDecisionDto, SaveCustomMcpRequest, SaveCustomSkillRequest, ScheduleInput, SchedulePatch, ScheduleWeekday, SendMailRequest, SkillUploadFile, SystemPermissionKind, WorkspaceSnapshotDto} from "@flareai/protocol";
+import {cronError} from "@polymux/protocol";
+import type {BrowserImportRequestDto, BrowserPermissionDto, MailListRequest, PermissionDecisionDto, SaveCustomMcpRequest, SaveCustomSkillRequest, ScheduleInput, SchedulePatch, ScheduleWeekday, SendMailRequest, SkillUploadFile, SystemPermissionKind, WorkspaceSnapshotDto} from "@polymux/protocol";
 import {app} from "electron";
 import {randomUUID} from "node:crypto";
 import {parse as parseToml} from "smol-toml";
@@ -129,7 +129,7 @@ export function schedulePatch(value: unknown): SchedulePatch {
   };
 }
 
-export function taskCardInput(value: unknown): import("@flareai/protocol").TaskCardInput {
+export function taskCardInput(value: unknown): import("@polymux/protocol").TaskCardInput {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Tasks card must be an object");
   const input = value as Record<string, unknown>;
@@ -140,7 +140,7 @@ export function taskCardInput(value: unknown): import("@flareai/protocol").TaskC
   };
 }
 
-export function taskCardPatch(value: unknown): import("@flareai/protocol").TaskCardPatch {
+export function taskCardPatch(value: unknown): import("@polymux/protocol").TaskCardPatch {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Tasks card patch must be an object");
   const input = value as Record<string, unknown>;
@@ -427,7 +427,7 @@ export function optionalStringRecord(value: unknown, label: string): Record<stri
 /**
  * Carries an existing MCP configuration over from the application-support
  * directory it used to live in. Copied rather than moved, and only when
- * ~/.flareai has none: an older build left running against the same machine
+ * ~/.polymux has none: an older build left running against the same machine
  * still finds its file, and a user who has already configured servers in the
  * new location never has them overwritten by a stale one.
  */

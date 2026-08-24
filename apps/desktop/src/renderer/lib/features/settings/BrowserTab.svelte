@@ -4,7 +4,7 @@
     BrowserSettingsDto as CachedSettingsDto,
     SavedLoginDto as CachedLoginDto,
     SitePermissionDto as CachedPermissionDto,
-  } from '@flareai/protocol';
+  } from '@polymux/protocol';
 
   /**
    * What the Browser tab last saw, kept outside the component.
@@ -32,11 +32,11 @@
     BrowserSettingsDto,
     BrowserSiteDto,
     BrowserSourceDto,
-    FlareAIApi,
+    PolymuxApi,
     PermissionDecisionDto,
     SavedLoginDto,
     SitePermissionDto,
-  } from '@flareai/protocol';
+  } from '@polymux/protocol';
   import {readableError} from '../../shared/errors';
   import {scrollFade} from '../../shared/scrollFade';
   import Icon from '../../shared/components/Icon.svelte';
@@ -44,7 +44,7 @@
 
   type IconName = ComponentProps<Icon>['name'];
 
-  export let api: FlareAIApi;
+  export let api: PolymuxApi;
 
   type Section = 'passwords' | 'downloads' | 'history' | 'permissions' | 'data' | 'import';
 
@@ -128,7 +128,7 @@
     }
   }
 
-  async function patchSettings(patch: Parameters<FlareAIApi['browser']['updateSettings']>[0]): Promise<void> {
+  async function patchSettings(patch: Parameters<PolymuxApi['browser']['updateSettings']>[0]): Promise<void> {
     await guard('settings', async () => {
       settings = browserSnapshot.settings = await api.browser.updateSettings(patch);
     });

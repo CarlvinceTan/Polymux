@@ -21,7 +21,7 @@ const run: (
  */
 
 /** Loopback port `wechat-bridge` binds. Overridable for a non-default run. */
-const RELAY_PORT = Number(process.env.FLAREAI_WECHAT_RELAY_PORT ?? 18400);
+const RELAY_PORT = Number(process.env.POLYMUX_WECHAT_RELAY_PORT ?? 18400);
 const RELAY_URL = `http://127.0.0.1:${RELAY_PORT}/health`;
 /**
  * A relay that has not answered in this long is not going to. The probe runs
@@ -32,7 +32,7 @@ const PROBE_TIMEOUT_MS = 1_500;
 
 /** Where `wechat-use` installs, in the order worth trying. */
 const CLI_PATHS = [
-  process.env.FLAREAI_WECHAT_CLI,
+  process.env.POLYMUX_WECHAT_CLI,
   `${homedir()}/.local/bin/wechat-use`,
   "/opt/homebrew/bin/wechat-use",
   "/usr/local/bin/wechat-use",
@@ -61,15 +61,15 @@ const WECHAT_APP_PATHS = [
  */
 /**
  * What to tell someone whose WeChat is not working. Only ever about WeChat
- * itself: how FlareAI reaches it — a local relay, a daemon, a loopback port —
+ * itself: how Polymux reaches it — a local relay, a daemon, a loopback port —
  * is the app's own plumbing, and naming it hands the user a chore they cannot
  * act on in place of the one thing they can.
  */
 export function setupHint(present: {wechat: boolean; relay: boolean}): string | null {
   if (!present.wechat)
-    return "WeChat for Mac is not installed. Install it from wechat.com and sign in — FlareAI reads WeChat from the desktop app on this Mac rather than through a sign-in of its own.";
+    return "WeChat for Mac is not installed. Install it from wechat.com and sign in — Polymux reads WeChat from the desktop app on this Mac rather than through a sign-in of its own.";
   if (!present.relay)
-    return "FlareAI cannot reach WeChat on this Mac yet. Make sure WeChat is open and signed in.";
+    return "Polymux cannot reach WeChat on this Mac yet. Make sure WeChat is open and signed in.";
   return null;
 }
 
@@ -107,13 +107,13 @@ export async function probeWeChatRelay(): Promise<WeChatRelayStatus> {
       // hear about a relay they have never installed.
       error:
         (await missingPiece()) ??
-        "FlareAI cannot reach WeChat yet. Open WeChat and sign in, then try again.",
+        "Polymux cannot reach WeChat yet. Open WeChat and sign in, then try again.",
     };
   if (health.status !== "connected")
     return {
       running: false,
       account: null,
-      error: "FlareAI cannot reach WeChat yet. Open WeChat and sign in, then try again.",
+      error: "Polymux cannot reach WeChat yet. Open WeChat and sign in, then try again.",
     };
   return {running: true, account: await defaultAccount(), error: null};
 }

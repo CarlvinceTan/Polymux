@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ModelMetadataDto } from "@flareai/protocol";
+import type { ModelMetadataDto } from "@polymux/protocol";
 
 /**
  * Model facts that pi-ai does not carry — descriptions, dates, capability

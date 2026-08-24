@@ -4,8 +4,8 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {Drive, createDriveTools} from "../src/index.js";
-import {DRIVE_LOCAL_HOME, type DriveStatusDto, type JsonValue} from "@flareai/protocol";
-import type {AgentToolContext} from "@flareai/core";
+import {DRIVE_LOCAL_HOME, type DriveStatusDto, type JsonValue} from "@polymux/protocol";
+import type {AgentToolContext} from "@polymux/core";
 
 /** The call context a tool is handed by the runtime. Nothing in the drive tools
  * reads it, so the fields exist only to satisfy the signature. */
@@ -29,7 +29,7 @@ async function fixture() {
   /** What the file picker will answer with. Mutable so a test can create the
    * file it is about to "choose" after the drive is already built. */
   const picked: string[] = [];
-  const base = await mkdtemp(path.join(tmpdir(), "flareai-drive-mgr-"));
+  const base = await mkdtemp(path.join(tmpdir(), "polymux-drive-mgr-"));
   const root = path.join(base, "drive");
   const preferences = new Map<string, JsonValue>([
     ["drive", {localRoot: root} as unknown as JsonValue],
@@ -122,7 +122,7 @@ test("uploads the files the picker returns, into the folder in view", async () =
     assert.equal(
       changes.at(-1)?.providers.find((provider) => provider.id === "local")?.usage?.appUsed,
       5,
-      "an upload publishes the refreshed FlareAI usage",
+      "an upload publishes the refreshed Polymux usage",
     );
 
     assert.deepEqual(
@@ -173,7 +173,7 @@ test("uploads nothing when the picker is cancelled", async () => {
   }
 });
 
-test("output goes in one FlareAI folder, not one per chat", async () => {
+test("output goes in one Polymux folder, not one per chat", async () => {
   const {root, drive, cleanup} = await fixture();
   try {
     const folder = await drive.outputFolder();
@@ -211,7 +211,7 @@ test("offers the output folder and this Mac as separate sources", async () => {
   }
 });
 
-test("reports files below the FlareAI root as app storage", async () => {
+test("reports files below the Polymux root as app storage", async () => {
   const {root, drive, cleanup} = await fixture();
   try {
     await mkdir(path.join(root, "nested"), {recursive: true});
@@ -244,15 +244,15 @@ test("names the storage a new file would go to", async () => {
   }
 });
 
-test("the virtual drive gathers FlareAI's folders, not the whole home directory", async () => {
+test("the virtual drive gathers Polymux's folders, not the whole home directory", async () => {
   const {drive, cleanup} = await fixture();
   try {
     const created = await drive.createFolder("all", "", "New folder");
     const entries = await drive.list("all", "");
 
     // The home source is every folder in `~`. It exists so the agent can reach
-    // files that were never FlareAI's, but the virtual drive is the opposite
-    // idea — FlareAI's own folder in each place — and listing home here buried
+    // files that were never Polymux's, but the virtual drive is the opposite
+    // idea — Polymux's own folder in each place — and listing home here buried
     // a folder the user had just made among their entire home directory.
     assert.equal(
       entries.filter((entry) => entry.path.startsWith(`local#${DRIVE_LOCAL_HOME}/`)).length,

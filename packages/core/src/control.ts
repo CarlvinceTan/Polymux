@@ -1,4 +1,4 @@
-import type { InferenceMessage } from "@flareai/inference";
+import type { InferenceMessage } from "@polymux/inference";
 
 export class AgentRunControl {
   readonly #controller = new AbortController();

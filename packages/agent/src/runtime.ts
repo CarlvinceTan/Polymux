@@ -3,8 +3,8 @@ import type {
   AgentRunResult,
   ActiveAgentRun,
   AgentTool,
-} from "@flareai/core";
-import { AgentRunControl, AgentRunner, type ToolHooks } from "@flareai/core";
+} from "@polymux/core";
+import { AgentRunControl, AgentRunner, type ToolHooks } from "@polymux/core";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type {
@@ -12,9 +12,9 @@ import type {
   InferenceService,
   ModelRef,
   ReasoningEffort,
-} from "@flareai/inference";
-import type { JsonValue, Storage, StoredMessage } from "@flareai/storage";
-import { ToolRegistry } from "@flareai/tools";
+} from "@polymux/inference";
+import type { JsonValue, Storage, StoredMessage } from "@polymux/storage";
+import { ToolRegistry } from "@polymux/tools";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import { memorySummarySelectionForPrompt } from "./memory/prompt-summary.js";
 import {
@@ -76,15 +76,18 @@ import {
   type TaskToolGroup,
 } from "./subagents/tool-routing.js";
 import type { AgentPrompts } from "./prompts/agent-prompts.js";
-import type { AgentToolContext } from "@flareai/core";
-import { currentPageFastPathAvailable, selectEnvironmentForPrompt } from "./context/environment-selection.js";
+import type { AgentToolContext } from "@polymux/core";
+import {
+  currentPageFastPathAvailable,
+  selectEnvironmentForPrompt,
+} from "./context/environment-selection.js";
 import {
   directFastPathGroup,
   type DirectToolGroup,
 } from "./context/delegation-strategy.js";
-import {finalAnswerQualityIssues} from "./context/final-answer-quality.js";
+import { finalAnswerQualityIssues } from "./context/final-answer-quality.js";
 import { selectSkillsForPrompt } from "./context/skill-selection.js";
-import type {Skill} from "./skills/types.js";
+import type { Skill } from "./skills/types.js";
 
 export type { ComputerHistoryAccess } from "./memory/computer-history-access.js";
 
@@ -92,15 +95,18 @@ const MAX_PRELOADED_SKILL_BYTES = 12_000;
 
 function preloadSingleOfficialSkill(
   skills: Skill[],
-): {name: string; filePath: string; instructions: string} | undefined {
+): { name: string; filePath: string; instructions: string } | undefined {
   const official = skills.filter((skill) => skill.source === "official");
   if (official.length !== 1) return undefined;
   const skill = official[0]!;
   try {
     const instructions = readFileSync(skill.filePath, "utf8").trim();
-    if (!instructions || Buffer.byteLength(instructions, "utf8") > MAX_PRELOADED_SKILL_BYTES)
+    if (
+      !instructions ||
+      Buffer.byteLength(instructions, "utf8") > MAX_PRELOADED_SKILL_BYTES
+    )
       return undefined;
-    return {name: skill.name, filePath: skill.filePath, instructions};
+    return { name: skill.name, filePath: skill.filePath, instructions };
   } catch {
     // Missing or unreadable is lossless: the catalogue entry remains visible
     // and the model follows the ordinary read-and-report-failure path.
@@ -135,11 +141,16 @@ export interface EnvironmentContextProvider {
 export interface EnvironmentContext {
   /** When the desktop-window portion of this context was last verified. */
   windowsCapturedAt?: string;
-  /** When FlareAI read its own live tab registry for this turn. */
+  /** When Polymux read its own live tab registry for this turn. */
   browserTabsCapturedAt?: string;
   /** When the connected external-browser extension captured its snapshot. */
   externalBrowserCapturedAt?: string;
-  time?: { local: string; timeZone: string; utcOffset: string; instant?: string };
+  time?: {
+    local: string;
+    timeZone: string;
+    utcOffset: string;
+    instant?: string;
+  };
   locationEnabled: boolean;
   /** The host can convert an authorised fix into a locality without exposing
    * raw coordinates to the model. */
@@ -150,7 +161,7 @@ export interface EnvironmentContext {
     accuracy: number;
     updatedAt: string;
   };
-  /** Tabs open in FlareAI's own browser, newest last. */
+  /** Tabs open in Polymux's own browser, newest last. */
   browserTabs?: Array<{ tabId: string; url: string; title: string }>;
   /** Fresh tabs reported by the connected external-browser extension. */
   externalBrowserTabs?: Array<{
@@ -164,9 +175,7 @@ export interface EnvironmentContext {
   windows?: Array<{ app: string; title: string; frontmost: boolean }>;
 }
 
-export interface FlareAIAgentOptions {
-  /** Benchmark-only strategy switch; production behavior remains baseline. */
-  orchestrationExperiment?: boolean;
+export interface PolymuxAgentOptions {
   /** Independent benchmark flag for preloading one trusted official skill.
    * Remains off until paired latency and quality gates pass. */
   preloadSingleOfficialSkill?: boolean;
@@ -179,13 +188,13 @@ export interface FlareAIAgentOptions {
   tools: ToolRegistry;
   model: ModelRef;
   /** Model subagent (Task tool) runs use. Falls back to `model`. */
-  taskModel?: ModelRef;
+  subagentModel?: ModelRef;
   /** Model the goal judge reads with. Falls back to `model`. */
   judgeModel?: ModelRef;
   /** Model that writes compaction summaries. Falls back to `model`. */
   compactionModel?: ModelRef;
   /** Effort subagent runs think at. Falls back to the parent run's level. */
-  taskReasoning?: ReasoningEffort;
+  subagentReasoning?: ReasoningEffort;
   /** Effort the goal judge thinks at. Falls back to the run's level. */
   judgeReasoning?: ReasoningEffort;
   /** Effort the compaction summary is written at. Falls back to the run's. */
@@ -193,7 +202,7 @@ export interface FlareAIAgentOptions {
   reasoning?: ReasoningEffort;
   basePrompt?: string;
   /**
-   * FlareAI's own prompts, read from `resources/prompts` by the host.
+   * Polymux's own prompts, read from `resources/prompts` by the host.
    * `main` is loaded into every run that can delegate and `task` into every
    * delegated run; the rest belong to the internal agents and fall back
    * to the wording in this package.
@@ -238,7 +247,7 @@ export interface GoalContinuation {
   decision: GoalLoopDecision;
 }
 
-export interface StartFlareAIRunInput {
+export interface StartPolymuxRunInput {
   conversationId: string;
   text: string;
   userMessageId?: string;
@@ -287,30 +296,30 @@ export interface StartFlareAIRunInput {
    * run from scratch — the accepted cost of resuming a long arc.
    */
   seedMessages?: InferenceMessage[];
-  /** Experimental task-declared subset of host work capabilities. */
+  /** Task-declared subset of host work capabilities. */
   toolGroups?: TaskToolGroup[];
-  /** Experimental exact names from the worker's visible skill catalogue. */
+  /** Exact names from the worker's visible skill catalogue. */
   skillNames?: string[];
 }
 
-export class FlareAIAgent {
+export class PolymuxAgent {
   readonly goals: GoalManager;
   readonly goalLoop: GoalLoop;
   readonly memory: MemoryManager;
-  readonly #options: FlareAIAgentOptions;
+  readonly #options: PolymuxAgentOptions;
   readonly #compaction: CompactionManager;
   readonly #consolidator: MemoryConsolidator;
   readonly #distiller?: ComputerHistoryDistiller;
   readonly #skillLoader: SkillLoader;
   readonly #goalWork = new Set<Promise<void>>();
-  /** Experimental, bounded worker context available to the next user turn in
+  /** Bounded worker context available to the next user turn in
    * the same conversation. It is never shared across conversations or saved
    * to durable memory. */
   readonly #retainedTasks = new Map<string, RetainedSubagentEntry[]>();
   /** The immediately preceding direct route, used only to keep a concise
    * follow-up on the same bounded capability surface. */
   readonly #lastDirectToolGroup = new Map<string, DirectToolGroup>();
-  constructor(options: FlareAIAgentOptions) {
+  constructor(options: PolymuxAgentOptions) {
     this.#options = options;
     this.goals = new GoalManager(options.storage);
     this.goalLoop = new GoalLoop(
@@ -344,7 +353,7 @@ export class FlareAIAgent {
     this.#skillLoader = new SkillLoader(options.skills);
   }
 
-  start(input: StartFlareAIRunInput): ActiveAgentRun {
+  start(input: StartPolymuxRunInput): ActiveAgentRun {
     const conversation = this.#options.storage.getConversation(
       input.conversationId,
     );
@@ -397,18 +406,25 @@ export class FlareAIAgent {
           sha256: null,
         });
       }
-      runPromptMessage = toInferenceMessage(
-        message,
-        this.#options.storage.listAttachments(message.id).map((attachment) => attachment.path),
-      ) ?? undefined;
+      runPromptMessage =
+        toInferenceMessage(
+          message,
+          this.#options.storage
+            .listAttachments(message.id)
+            .map((attachment) => attachment.path),
+        ) ?? undefined;
     } else if (!input.parentRunId && input.userMessageId) {
-      const message = this.#options.storage.listMessages(input.conversationId)
+      const message = this.#options.storage
+        .listMessages(input.conversationId)
         .find((candidate) => candidate.id === input.userMessageId);
       if (message)
-        runPromptMessage = toInferenceMessage(
-          message,
-          this.#options.storage.listAttachments(message.id).map((attachment) => attachment.path),
-        ) ?? undefined;
+        runPromptMessage =
+          toInferenceMessage(
+            message,
+            this.#options.storage
+              .listAttachments(message.id)
+              .map((attachment) => attachment.path),
+          ) ?? undefined;
     }
     const model = input.model ?? this.#options.model;
     this.#options.storage.createRun({
@@ -434,9 +450,12 @@ export class FlareAIAgent {
       if (converted)
         durable.push({ message: converted, sequence: message.sequence });
     }
-    const boundedDurable = input.contextThroughSequence === undefined
-      ? durable
-      : durable.filter((item) => item.sequence <= input.contextThroughSequence!);
+    const boundedDurable =
+      input.contextThroughSequence === undefined
+        ? durable
+        : durable.filter(
+            (item) => item.sequence <= input.contextThroughSequence!,
+          );
     const selected = selectContext(
       boundedDurable,
       input.contextMode ?? "conversation",
@@ -456,7 +475,10 @@ export class FlareAIAgent {
       }
       messages.push({ role: "user", content: text });
       durableSequences.push(null);
-    } else if (input.contextThroughSequence !== undefined || input.contextMode === "none") {
+    } else if (
+      input.contextThroughSequence !== undefined ||
+      input.contextMode === "none"
+    ) {
       // A scheduler-owned run intentionally reads a frozen prefix. Its own
       // prompt is newer than that prefix, so add it explicitly as run-local
       // context rather than widening the durable boundary.
@@ -469,41 +491,41 @@ export class FlareAIAgent {
     // the tools that decide what is on it, and says so in its answer instead.
     const subagentRun = Boolean(input.parentRunId);
     const rawEnvironment = this.#options.environment?.promptContext();
-    // Privacy and relevance minimisation are invariants, not an experiment:
-    // precise location and unrelated open state must never enter a prompt just
-    // because the newer orchestration strategy is disabled.
+    // Privacy and relevance minimisation are invariants: precise location and
+    // unrelated open state must never enter a prompt without a relevant need.
     const environment = selectEnvironmentForPrompt(rawEnvironment, text);
     const directToolGroup =
       !subagentRun &&
-      this.#options.orchestrationExperiment === true &&
       input.includeSubagents === undefined &&
       directFastPathGroup(text, {
         hasAttachments: Boolean(input.attachments?.length),
         asGoal: input.asGoal,
         currentPageAvailable: currentPageFastPathAvailable(rawEnvironment),
-        hasPriorAssistant: messages.some((message) => message.role === "assistant"),
+        hasPriorAssistant: messages.some(
+          (message) => message.role === "assistant",
+        ),
         previousDirectGroup: this.#lastDirectToolGroup.get(executionScopeId),
       });
     if (!subagentRun && input.includeSubagents === undefined) {
-      if (directToolGroup) this.#lastDirectToolGroup.set(executionScopeId, directToolGroup);
+      if (directToolGroup)
+        this.#lastDirectToolGroup.set(executionScopeId, directToolGroup);
       else this.#lastDirectToolGroup.delete(executionScopeId);
     }
     const delegation = input.includeSubagents ?? !directToolGroup;
-    // An experimental coordinator resolves what is already in its prompt and
+    // The coordinator resolves what is already in its prompt and
     // delegates missing source work through capability-routed tasks. Giving it
     // the same memory/history/ComputerHistory retrieval schemas as those workers
     // duplicates context and tempts it to perform serial evidence gathering.
     // Direct fast paths keep the tools because there is deliberately no worker.
-    const coordinatorOnly =
-      this.#options.orchestrationExperiment === true && delegation && !subagentRun;
+    const coordinatorOnly = delegation && !subagentRun;
     const routedTask =
       subagentRun &&
-      this.#options.orchestrationExperiment === true &&
       Boolean(input.toolGroups?.length) &&
       !input.toolGroups?.includes("all");
     const taskMayUse = (group: TaskToolGroup): boolean =>
       directToolGroup
-        ? group === "memory" || group === "history" ||
+        ? group === "memory" ||
+          group === "history" ||
           (directToolGroup === "resume" && group === "computerHistory")
         : !routedTask || taskGroupEnabled(input.toolGroups, group);
     const memory = this.memory.promptContext(input.conversationId);
@@ -511,24 +533,20 @@ export class FlareAIAgent {
       ? memorySummarySelectionForPrompt({
           summary: memory.summary,
           prompt: text,
-          orchestrationExperiment: this.#options.orchestrationExperiment === true,
           subagent: subagentRun,
         })
       : { summary: undefined, candidateBlocks: 0, retainedBlocks: 0 };
     const computerHistory = this.#options.computerHistory?.promptContext();
-    const selectedSkills =
-      subagentRun && this.#options.orchestrationExperiment
-        ? selectTaskSkills(skillResult.skills, input.skillNames)
-        : directToolGroup === "resume"
-          ? []
-          : this.#options.orchestrationExperiment
-            ? selectSkillsForPrompt(skillResult.skills, text)
-            : skillResult.skills;
-    const preloadedSkill = this.#options.orchestrationExperiment && this.#options.preloadSingleOfficialSkill === true
-      ? preloadSingleOfficialSkill(selectedSkills)
-      : undefined;
+    const selectedSkills = subagentRun
+      ? selectTaskSkills(skillResult.skills, input.skillNames)
+      : directToolGroup === "resume"
+        ? []
+        : selectSkillsForPrompt(skillResult.skills, text);
+    const preloadedSkill =
+      this.#options.preloadSingleOfficialSkill === true
+        ? preloadSingleOfficialSkill(selectedSkills)
+        : undefined;
     const systemPrompt = buildSystemPrompt({
-      orchestrationExperiment: this.#options.orchestrationExperiment,
       // A prompt the host passes directly still wins: the files are the
       // shipped wording, not a lock on it.
       basePrompt: this.#options.basePrompt ?? this.#options.prompts?.base,
@@ -539,22 +557,27 @@ export class FlareAIAgent {
       // than its contents — which is what keeps a short task fast now that
       // every task is delegated.
       memorySummary: memorySelection.summary,
-      // Report the same privacy-safe accounting for both variants. The
-      // baseline keeps the full summary and the experiment selects from it,
-      // but omitting baseline counts made memory-utilisation comparisons look
-      // like the baseline had no memory at all.
+      // Report privacy-safe accounting without exposing the selected memory.
       memorySummaryBlockCount: memorySelection.retainedBlocks,
       memorySummaryCandidateBlockCount: memorySelection.candidateBlocks,
       memoryRegistryPath:
-        memory.enabled && !coordinatorOnly && taskMayUse("memory") ? memory.registryPath : undefined,
+        memory.enabled && !coordinatorOnly && taskMayUse("memory")
+          ? memory.registryPath
+          : undefined,
       historySearch: !coordinatorOnly && taskMayUse("history"),
       memories:
         memory.enabled && taskMayUse("memory")
           ? memory.conversationMemories
           : [],
       computerHistory:
-        computerHistory?.enabled && !coordinatorOnly && taskMayUse("computerHistory") ? computerHistory : undefined,
-      drive: taskMayUse("drive") ? this.#options.drive?.promptContext() : undefined,
+        computerHistory?.enabled &&
+        !coordinatorOnly &&
+        taskMayUse("computerHistory")
+          ? computerHistory
+          : undefined,
+      drive: taskMayUse("drive")
+        ? this.#options.drive?.promptContext()
+        : undefined,
       environment: routedTask ? undefined : environment,
       skills: selectedSkills,
       preloadedSkill,
@@ -576,18 +599,18 @@ export class FlareAIAgent {
     const availableHostTools = this.#options.tools
       .list()
       .filter((tool) =>
-          subagentRun
-            ? !tool.mainAgentOnly
-            : !delegation || Boolean(tool.mainAgentOnly),
-        );
+        subagentRun
+          ? !tool.mainAgentOnly
+          : !delegation || Boolean(tool.mainAgentOnly),
+      );
     const hostTools = directToolGroup
       ? selectTaskTools(availableHostTools, [directToolGroup])
       : availableHostTools;
     const tools = [
-      ...(subagentRun && this.#options.orchestrationExperiment
+      ...(subagentRun
         ? selectTaskTools(hostTools, input.toolGroups)
         : hostTools),
-      ...(!directToolGroup && (!subagentRun || !this.#options.orchestrationExperiment || !routedTask)
+      ...(!directToolGroup && (!subagentRun || !routedTask)
         ? this.goals.tools(input.conversationId)
         : []),
       ...(!coordinatorOnly && taskMayUse("memory")
@@ -596,18 +619,21 @@ export class FlareAIAgent {
       ...(!coordinatorOnly && taskMayUse("history")
         ? createHistoryTools(this.#options.storage, input.conversationId)
         : []),
-      ...(!coordinatorOnly && taskMayUse("computerHistory") && computerHistory?.enabled && this.#options.computerHistory
+      ...(!coordinatorOnly &&
+      taskMayUse("computerHistory") &&
+      computerHistory?.enabled &&
+      this.#options.computerHistory
         ? createComputerHistoryTools(this.#options.computerHistory)
         : []),
     ];
     // One fleet per run: the tasks a run dispatched, the post between them,
     // and the reason the run cannot end while one of them is still out.
     const carriedTasks =
-      this.#options.orchestrationExperiment && delegation && !subagentRun
+      delegation && !subagentRun
         ? this.#retainedForConversation(executionScopeId, text)
         : [];
     const fleet = new SubagentFleet(carriedTasks);
-    const useGoalReceipts = this.#options.orchestrationExperiment === true;
+    const useGoalReceipts = true;
     if (delegation)
       tools.push(
         createTaskTool(
@@ -623,20 +649,22 @@ export class FlareAIAgent {
               request,
               context,
               useGoalReceipts &&
-              (input.goalContinuation || input.goalProgressContext || input.asGoal || createdThisRun)
+                (input.goalContinuation ||
+                  input.goalProgressContext ||
+                  input.asGoal ||
+                  createdThisRun)
                 ? currentGoal?.id
                 : undefined,
             );
           },
           {
-            capabilityRouting: this.#options.orchestrationExperiment === true,
+            capabilityRouting: true,
             maxDispatches: input.maxTaskDispatches,
           },
         ),
         createWaitTaskTool(fleet),
-        ...(this.#options.orchestrationExperiment
-          ? [createWaitAllTasksTool(fleet), createCancelTasksTool(fleet)]
-          : []),
+        createWaitAllTasksTool(fleet),
+        createCancelTasksTool(fleet),
         createCheckTasksTool(fleet),
       );
     const runner = new AgentRunner({
@@ -654,7 +682,7 @@ export class FlareAIAgent {
     // The coordinator's own instructions, loaded rather than built in.
     //
     // A skill left in the catalogue is one line the model has to choose to
-    // open — which, on a browsing request, it does not: it opens browser-use
+    // open — which, on a browsing request, it does not: it opens computer-use
     // and starts browsing. `agents/main.md` is loaded into every run that can
     // delegate, so the policy is in front of the coordinator before it decides
     // anything, without becoming a section of the system prompt that every
@@ -690,17 +718,18 @@ export class FlareAIAgent {
       });
       durableSequences.splice(at, 0, null);
     }
-    const progressGoal = useGoalReceipts &&
+    const progressGoal =
+      useGoalReceipts &&
       (input.goalContinuation || input.goalProgressContext || input.asGoal)
-      ? this.goals.get(input.conversationId)
-      : null;
+        ? this.goals.get(input.conversationId)
+        : null;
     if (progressGoal) {
       const progress = goalProgressPrompt(
         readGoalProgress(this.#options.storage, progressGoal.id),
       );
       if (progress) {
         const at = Math.max(0, messages.length - 1);
-        messages.splice(at, 0, {role: "user", content: progress});
+        messages.splice(at, 0, { role: "user", content: progress });
         durableSequences.splice(at, 0, null);
       }
     }
@@ -712,85 +741,98 @@ export class FlareAIAgent {
     fleet.attach(control);
     let completionRepairIssued = false;
     let finalQualityRepairs = 0;
-    const active = runner.start({
-      runId,
-      budgetScope: input.budgetScope,
-      model,
-      reasoning: input.reasoning ?? this.#options.reasoning,
-      maxTurns: input.maxTurns ?? this.#options.maxTurns,
-      context: { systemPrompt, messages },
-      tools,
-      subagentRun,
-      toolTurnBudget:
-        this.#options.orchestrationExperiment && subagentRun
+    const active = runner.start(
+      {
+        runId,
+        budgetScope: input.budgetScope,
+        model,
+        reasoning: input.reasoning ?? this.#options.reasoning,
+        maxTurns: input.maxTurns ?? this.#options.maxTurns,
+        context: { systemPrompt, messages },
+        tools,
+        subagentRun,
+        toolTurnBudget: subagentRun
           ? boundedResearchToolTurnBudget(input.toolGroups)
           : undefined,
-      toolExecution: "parallel",
-      signal: input.signal,
-      transformContext: ({ context, signal, reportStatus }) =>
-        this.#compaction.transform(
-          input.conversationId,
-          model,
-          context,
-          signal,
-          () => reportStatus('compacting'),
-          durableSequences,
-          // Whether to compact is still the run model's question — it is its
-          // window that overflows — so only the summarising call moves.
-          this.#options.compactionModel || this.#options.compactionReasoning
-            ? {
-                model: this.#options.compactionModel ?? model,
-                reasoning:
-                  this.#options.compactionReasoning ??
-                  input.reasoning ??
-                  this.#options.reasoning,
-              }
-            : undefined,
-        ),
-      reviewFinal: async ({text: answer}) => {
-        if (!this.#options.orchestrationExperiment) return [];
-        const issues = finalAnswerQualityIssues(text, answer, environment?.time, {
-          resolvedCurrentLocation: Boolean(environment?.location),
-        });
-        if (!issues.length) return [];
-        if (finalQualityRepairs >= 2)
-          throw new Error("The model repeatedly produced a final answer that failed observable quality requirements");
-        finalQualityRepairs += 1;
-        return [{
-          role: "user",
-          content: `<final_quality_check>\nThe proposed final answer violates these observable output requirements:\n${issues.map((issue) => `- ${issue}`).join("\n")}\nOutput only the corrected user-facing answer. Begin with the result or material limitation, never a planning/considering heading or self-talk. Use only evidence already in this conversation. Do not call tools, add facts, expose reasoning, or mention this check.\n</final_quality_check>`,
-        }];
-      },
-      // A run that dispatched work and then wrote its answer would be hanging
-      // up mid-errand: nobody is left to read what the subagent comes back
-      // with. So the run waits its team out and takes another turn with what
-      // they said, rather than ending on an answer written without them.
-      beforeComplete: async ({ signal, lastAgentMessage }) => {
-        if (fleet.outstanding().length) await fleet.settleOutstandingOrSteered(signal);
-        const post = fleet.takePost();
-        if (post.length) return post;
-        if (this.#options.orchestrationExperiment && !subagentRun && !completionRepairIssued) {
-          const missing = fleet.missingOutcomes(lastAgentMessage);
-          if (missing.length) {
-            completionRepairIssued = true;
-            return [{
+        toolExecution: "parallel",
+        signal: input.signal,
+        transformContext: ({ context, signal, reportStatus }) =>
+          this.#compaction.transform(
+            input.conversationId,
+            model,
+            context,
+            signal,
+            () => reportStatus("compacting"),
+            durableSequences,
+            // Whether to compact is still the run model's question — it is its
+            // window that overflows — so only the summarising call moves.
+            this.#options.compactionModel || this.#options.compactionReasoning
+              ? {
+                  model: this.#options.compactionModel ?? model,
+                  reasoning:
+                    this.#options.compactionReasoning ??
+                    input.reasoning ??
+                    this.#options.reasoning,
+                }
+              : undefined,
+          ),
+        reviewFinal: async ({ text: answer }) => {
+          const issues = finalAnswerQualityIssues(
+            text,
+            answer,
+            environment?.time,
+            {
+              resolvedCurrentLocation: Boolean(environment?.location),
+            },
+          );
+          if (!issues.length) return [];
+          if (finalQualityRepairs >= 2)
+            throw new Error(
+              "The model repeatedly produced a final answer that failed observable quality requirements",
+            );
+          finalQualityRepairs += 1;
+          return [
+            {
               role: "user",
-              content: `<completion_check>\nYour proposed final answer omitted attributable outcomes for these completed delegated tasks:\n${missing.map((entry) => `- ${entry.description}: ${entry.status}${entry.result ? ` — ${entry.result}` : ""}`).join("\n")}\nReturn one concise self-contained final answer covering every original request. Do not call more tools or omit results already reported.\n</completion_check>`,
-            }];
+              content: `<final_quality_check>\nThe proposed final answer violates these observable output requirements:\n${issues.map((issue) => `- ${issue}`).join("\n")}\nOutput only the corrected user-facing answer. Begin with the result or material limitation, never a planning/considering heading or self-talk. Use only evidence already in this conversation. Do not call tools, add facts, expose reasoning, or mention this check.\n</final_quality_check>`,
+            },
+          ];
+        },
+        // A run that dispatched work and then wrote its answer would be hanging
+        // up mid-errand: nobody is left to read what the subagent comes back
+        // with. So the run waits its team out and takes another turn with what
+        // they said, rather than ending on an answer written without them.
+        beforeComplete: async ({ signal, lastAgentMessage }) => {
+          if (fleet.outstanding().length)
+            await fleet.settleOutstandingOrSteered(signal);
+          const post = fleet.takePost();
+          if (post.length) return post;
+          if (!subagentRun && !completionRepairIssued) {
+            const missing = fleet.missingOutcomes(lastAgentMessage);
+            if (missing.length) {
+              completionRepairIssued = true;
+              return [
+                {
+                  role: "user",
+                  content: `<completion_check>\nYour proposed final answer omitted attributable outcomes for these completed delegated tasks:\n${missing.map((entry) => `- ${entry.description}: ${entry.status}${entry.result ? ` — ${entry.result}` : ""}`).join("\n")}\nReturn one concise self-contained final answer covering every original request. Do not call more tools or omit results already reported.\n</completion_check>`,
+                },
+              ];
+            }
           }
-        }
-        return [];
+          return [];
+        },
       },
-    }, control);
+      control,
+    );
     const settled = active.result
       .then(async (result) => {
-        if (this.#options.orchestrationExperiment && !subagentRun)
+        if (!subagentRun)
           this.#rememberRetained(executionScopeId, fleet.retainedRoster());
         this.#finish(input, result);
         await this.#driveGoal(input, result);
       })
       .catch((error: unknown) => {
-        console.error("FlareAI post-run bookkeeping failed", error);
+        console.error("Polymux post-run bookkeeping failed", error);
       });
     this.#goalWork.add(settled);
     void settled.finally(() => this.#goalWork.delete(settled));
@@ -833,8 +875,7 @@ export class FlareAIAgent {
    * tests, shutdown — wait here.
    */
   async settleGoalWork(): Promise<void> {
-    while (this.#goalWork.size)
-      await Promise.allSettled([...this.#goalWork]);
+    while (this.#goalWork.size) await Promise.allSettled([...this.#goalWork]);
   }
 
   /**
@@ -843,7 +884,7 @@ export class FlareAIAgent {
    * subagent finishing says nothing about the conversation's goal.
    */
   async #driveGoal(
-    input: StartFlareAIRunInput,
+    input: StartPolymuxRunInput,
     result: AgentRunResult,
   ): Promise<void> {
     if (input.parentRunId || result.status !== "completed") return;
@@ -851,7 +892,9 @@ export class FlareAIAgent {
       conversationId: input.conversationId,
       model: this.#options.judgeModel ?? this.#options.model,
       reasoning:
-        this.#options.judgeReasoning ?? input.reasoning ?? this.#options.reasoning,
+        this.#options.judgeReasoning ??
+        input.reasoning ??
+        this.#options.reasoning,
       lastAgentMessage: result.lastAgentMessage,
       signal: input.signal,
     });
@@ -892,9 +935,8 @@ export class FlareAIAgent {
     const continuationError = continuationDispatchError(fleet, request);
     if (continuationError) throw new Error(continuationError);
     const runId = crypto.randomUUID();
-    // Baseline preserves its permissive continue-or-fresh behavior. The
-    // experiment validates strict continuation above, so a requested resume
-    // can no longer disguise a fresh worker and repeat its evidence gathering.
+    // Strict continuation prevents a requested resume from disguising a fresh
+    // worker and repeating its evidence gathering.
     const prior = request.continue ? fleet.entry(request.continue) : undefined;
     const seed = prior && isFinal(prior.status) ? prior.retained : undefined;
     // Spawned (or re-armed) before start(): the runId is already known, and
@@ -907,7 +949,9 @@ export class FlareAIAgent {
     entry.description = request.description;
     try {
       const progress = receiptGoalId
-        ? goalProgressPrompt(readGoalProgress(this.#options.storage, receiptGoalId))
+        ? goalProgressPrompt(
+            readGoalProgress(this.#options.storage, receiptGoalId),
+          )
         : "";
       const active = this.start({
         conversationId,
@@ -919,8 +963,8 @@ export class FlareAIAgent {
         parentRunId,
         budgetScope: `${parentRunId}:${entry.name}`,
         includeSubagents: false,
-        model: this.#options.taskModel,
-        reasoning: this.#options.taskReasoning,
+        model: this.#options.subagentModel,
+        reasoning: this.#options.subagentReasoning,
         signal: context.signal,
         contextMode: request.context,
         seedMessages: seed,
@@ -941,7 +985,9 @@ export class FlareAIAgent {
       // run to the existing row instead of appending a second one.
       await context.emitProgress(
         "",
-        seed ? { childRunId: runId, continueFrom: entry.name } : { childRunId: runId },
+        seed
+          ? { childRunId: runId, continueFrom: entry.name }
+          : { childRunId: runId },
       );
       fleet.track(
         entry.name,
@@ -950,9 +996,10 @@ export class FlareAIAgent {
           // context behind for a follow-up to resume from.
           if (request.retain)
             fleet.storeRetained(entry.name, result.context.messages);
-          const text = result.status === "completed"
-            ? assistantText(result) || "Subagent returned no text."
-            : result.error?.message || "Subagent did not complete.";
+          const text =
+            result.status === "completed"
+              ? assistantText(result) || "Subagent returned no text."
+              : result.error?.message || "Subagent did not complete.";
           if (receiptGoalId && result.status === "completed")
             recordGoalProgress(
               this.#options.storage,
@@ -966,7 +1013,10 @@ export class FlareAIAgent {
             text,
           };
         }),
-        () => active.control.cancel(new Error(`Task ${entry.name} cancelled by coordinator`)),
+        () =>
+          active.control.cancel(
+            new Error(`Task ${entry.name} cancelled by coordinator`),
+          ),
       );
       return { name: entry.name, continuedFrom: seed ? entry.name : undefined };
     } catch (error) {
@@ -1007,7 +1057,7 @@ export class FlareAIAgent {
       metadata: { phase: event.phase },
     });
   }
-  #finish(input: StartFlareAIRunInput, result: AgentRunResult): void {
+  #finish(input: StartPolymuxRunInput, result: AgentRunResult): void {
     this.#options.storage.updateRun(result.runId, {
       status: result.status,
       error: result.error ? json(result.error) : null,
@@ -1024,11 +1074,12 @@ export class FlareAIAgent {
     // what it writes is exactly what the summary should then fold in — the
     // other order leaves a screen memory waiting a whole turn for its place in
     // the briefing.
-    const memoryWork = (this.#distiller
-      ? this.#distiller
-          .maybeDistill(this.#options.model, new AbortController().signal)
-          .then((): void => undefined)
-      : Promise.resolve()
+    const memoryWork = (
+      this.#distiller
+        ? this.#distiller
+            .maybeDistill(this.#options.model, new AbortController().signal)
+            .then((): void => undefined)
+        : Promise.resolve()
     )
       .then(() =>
         this.#consolidator.maybeConsolidate(
@@ -1086,7 +1137,7 @@ function readSkill(path: string): string {
 
 function selectContext<T>(
   messages: T[],
-  mode: NonNullable<StartFlareAIRunInput["contextMode"]>,
+  mode: NonNullable<StartPolymuxRunInput["contextMode"]>,
 ): T[] {
   if (mode === "none") return [];
   if (mode === "recent") return messages.slice(-8);

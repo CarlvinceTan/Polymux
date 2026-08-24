@@ -150,7 +150,7 @@ export class WhisperDictation {
    * the text a partial leaves behind cannot. */
   async #transcribeWithCli(audio: Buffer, final: boolean): Promise<string> {
     const model = await this.#modelPath();
-    const directory = await mkdtemp(path.join(tmpdir(), "flareai-dictation-"));
+    const directory = await mkdtemp(path.join(tmpdir(), "polymux-dictation-"));
     try {
       const wavPath = path.join(directory, "clip.wav");
       await writeFile(wavPath, audio);

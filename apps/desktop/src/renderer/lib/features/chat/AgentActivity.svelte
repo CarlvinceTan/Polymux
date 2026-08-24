@@ -35,7 +35,7 @@
     /** Overrides the kind's glyph when the activity has one of its own. Set
      * when the row is built, because the label it used to be inferred from is
      * translated and so is no longer a stable key. */
-    icon?: 'globe';
+    icon?: 'globe' | 'computer';
     /** A platform's own mark, drawn in place of the kind's glyph. Set when the
      * row is for one of the hub's accounts, so a WhatsApp read reads as
      * WhatsApp rather than as a generic tool. */

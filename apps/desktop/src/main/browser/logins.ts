@@ -18,7 +18,7 @@ import { SECURE_STORAGE_UNAVAILABLE, type SecretCipher } from "../system/credent
 
 /** Shown when the file exists but this process holds the wrong OS key. */
 export const LOGINS_LOCKED =
-  "Your saved passwords cannot be read by this build of FlareAI, so they have been left untouched rather than overwritten. Start FlareAI normally and allow keychain access to use them.";
+  "Your saved passwords cannot be read by this build of Polymux, so they have been left untouched rather than overwritten. Start Polymux normally and allow keychain access to use them.";
 
 interface VaultFile {
   version: 1;

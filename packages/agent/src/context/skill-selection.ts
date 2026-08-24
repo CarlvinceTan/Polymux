@@ -26,13 +26,11 @@ const TOPICS = [
 
 const CORE_RULES: Record<string, RegExp> = {
   "apple-reminders": /\b(?:remind|reminder|reminders)\b|\b(?:don['’]?t|do not) forget\b/i,
-  "browser-use": /\b(?:browse|browser|events?|find|form|fill|latest|live|page|research|search|site|url|web|website|changed|change)\b/i,
   "chat-style": /\b(?:chat|dad|father|message|mum|mother|parent|reply|respond|text)\b/i,
-  computerHistory: /\b(?:computerHistory|doing|screen|switched)\b/i,
   documents: /\b(?:docx|document|word)\b/i,
-  "email-use": /\b(?:application|booking|changed|change|email|inbox|mail|receipt|reply|respond)\b/i,
-  "message-use": /\b(?:changed|change|chat|dad|father|message|mum|mother|parent|reply|respond|whatsapp|wechat)\b/i,
-  "computer-use": /\b(?:app|fill|focus|form|foreground|gui|open|screen|tab|window)\b|\bthis\s+(?:document|file|form|page|pdf|presentation|spreadsheet|tab|window)\b/i,
+  "drive-use": /\b(?:drive[- ]use|google drive|my drive)\b|\bdrive\s+(?:file|folder|link|sharing|storage)\b/i,
+  "hub-use": /\b(?:application|booking|changed|change|chat|dad|email|father|inbox|mail|message|mum|mother|parent|receipt|reply|respond|whatsapp|wechat)\b/i,
+  "computer-use": /\b(?:app|browse|browser|computerHistory|doing|events?|fill|find|focus|form|foreground|gui|latest|live|open|page|research|screen|search|site|switched|tab|url|web|website|window|changed|change)\b|\bthis\s+(?:document|file|form|page|pdf|presentation|spreadsheet|tab|window)\b/i,
   "skill-record": /\b(?:demonstrate|demonstration|mimic|record workflow|watch me)\b/i,
   pdf: /\bpdf\b/i,
   presentations: /\b(?:powerpoint|pptx|presentation|slides?)\b/i,
@@ -42,14 +40,13 @@ const CORE_RULES: Record<string, RegExp> = {
 };
 
 const EXPLICIT_COMMUNICATION_SOURCE = /\b(?:dad|email|father|inbox|mail|message|mum|mother|parent|whatsapp|wechat)\b/i;
-const EXPLICIT_EMAIL_SOURCE = /\b(?:email|inbox|mail)\b/i;
-const EXPLICIT_MESSAGE_SOURCE = /\b(?:dad|father|message|mum|mother|parent|whatsapp|wechat)\b/i;
+const EXPLICIT_DRIVE_SOURCE = /\b(?:drive[- ]use|google drive|my drive)\b|\bdrive\s+(?:file|folder|link|sharing|storage)\b/i;
 const EXPLICIT_PUBLIC_WEB = /\b(?:browse|browser|online|page|research|search|site|url|web|website)\b/i;
 const REMINDER_INTENT = /\b(?:remind|reminder|reminders)\b|\b(?:don['’]?t|do not) forget\b/i;
 const EXPLICIT_SURFACE_ACTION = /\b(?:browse|browser|fill|open|page|site|tab|web|website|window)\b/i;
 const OFFICIAL_COUNTERPART: Record<string, string> = {
-  email: "email-use",
-  message: "message-use",
+  email: "hub-use",
+  message: "hub-use",
   "window-control": "computer-use",
 };
 
@@ -137,24 +134,20 @@ export function selectSkillsForPrompt(skills: Skill[], prompt: string): Skill[] 
     const coreRule = CORE_RULES[coreName];
     if (coreRule) {
       if (
-        (coreName === "browser-use" || coreName === "computer-use")
+        coreName === "computer-use"
         && REMINDER_INTENT.test(prompt)
         && !EXPLICIT_SURFACE_ACTION.test(prompt)
       ) return false;
       if (
-        coreName === "browser-use"
+        coreName === "computer-use"
         && EXPLICIT_COMMUNICATION_SOURCE.test(prompt)
         && !EXPLICIT_PUBLIC_WEB.test(prompt)
+        && !/\b(?:app|computerHistory|doing|focus|foreground|screen|switched|tab|window)\b/i.test(prompt)
       ) return false;
       if (
-        coreName === "message-use"
-        && EXPLICIT_EMAIL_SOURCE.test(prompt)
-        && !EXPLICIT_MESSAGE_SOURCE.test(prompt)
-      ) return false;
-      if (
-        coreName === "email-use"
-        && EXPLICIT_MESSAGE_SOURCE.test(prompt)
-        && !EXPLICIT_EMAIL_SOURCE.test(prompt)
+        coreName === "computer-use"
+        && EXPLICIT_DRIVE_SOURCE.test(prompt)
+        && !EXPLICIT_SURFACE_ACTION.test(prompt)
       ) return false;
       return coreRule.test(prompt);
     }

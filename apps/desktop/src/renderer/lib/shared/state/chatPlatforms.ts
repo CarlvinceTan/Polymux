@@ -1,4 +1,4 @@
-import {flareaiApi} from '../../api/flareai';
+import {polymuxApi} from '../../api/polymux';
 import type {Platform} from '../components/PlatformLogo.svelte';
 
 /**
@@ -51,7 +51,7 @@ export function asPlatform(value: unknown): Platform | undefined {
 export function primeChatPlatforms(): Promise<void> {
   priming ??= (async () => {
     try {
-      rememberChatPlatforms(await flareaiApi().comms.chats());
+      rememberChatPlatforms(await polymuxApi().comms.chats());
     } catch {
       // No hub, no logos — the trail falls back to its generic glyph.
     }

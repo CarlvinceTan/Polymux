@@ -6,7 +6,7 @@ import type {
   MailEnvelopeDto,
   MailFolderDto,
   MailMessageDto,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 
 /** The slice of storage the cache needs. Narrow on purpose: this is a copy of
  * what the network owns, and nothing here should be able to reach the rest of

@@ -59,7 +59,7 @@ export async function startLiveBrowser(fixture: string): Promise<LiveBrowser> {
     binary,
     [
       `--remote-debugging-port=${debugPort}`,
-      `--user-data-dir=${process.env.TMPDIR ?? "/tmp"}/flareai-live-${process.pid}`,
+      `--user-data-dir=${process.env.TMPDIR ?? "/tmp"}/polymux-live-${process.pid}`,
       // Off-screen rather than headless; see the note above.
       "--window-position=-2400,0",
       // Off-screen windows are treated as occluded, and Chrome throttles

@@ -6,7 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { SkillLoader } from "@flareai/agent";
+import { SkillLoader } from "@polymux/agent";
 
 const run = promisify(execFile);
 
@@ -50,7 +50,7 @@ export interface InstalledSkillSummary {
 /**
  * Downloads a skill package from GitHub — the registry behind skills.sh —
  * and installs every matching skill folder into `destinationDirectory`.
- * Mirrors what `npx skills add` does, but lands the result where FlareAI keeps
+ * Mirrors what `npx skills add` does, but lands the result where Polymux keeps
  * its custom skills.
  */
 export async function installSkillPackage(
@@ -58,7 +58,7 @@ export async function installSkillPackage(
   destinationDirectory: string,
 ): Promise<InstalledSkillSummary[]> {
   const reference = parseSkillPackage(spec);
-  const staging = await mkdtemp(path.join(tmpdir(), "flareai-skill-install-"));
+  const staging = await mkdtemp(path.join(tmpdir(), "polymux-skill-install-"));
   try {
     const extracted = await downloadRepository(reference, staging);
     const candidates = await findSkillDirectories(extracted, reference.subpath);

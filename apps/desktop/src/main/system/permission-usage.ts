@@ -10,15 +10,15 @@
  */
 export const PERMISSION_USAGE_DESCRIPTIONS: Record<string, string> = {
   NSRemindersFullAccessUsageDescription:
-    "FlareAI reads and changes your reminders only when a skill you enabled asks it to.",
+    "Polymux reads and changes your reminders only when a skill you enabled asks it to.",
   NSCalendarsFullAccessUsageDescription:
-    "FlareAI reads and changes your calendar only when a skill you enabled asks it to.",
+    "Polymux reads and changes your calendar only when a skill you enabled asks it to.",
   NSContactsUsageDescription:
-    "FlareAI reads your contacts only when a skill you enabled asks it to.",
+    "Polymux reads your contacts only when a skill you enabled asks it to.",
   NSPhotoLibraryUsageDescription:
-    "FlareAI reads your photo library only when a skill you enabled asks it to.",
+    "Polymux reads your photo library only when a skill you enabled asks it to.",
   NSAppleEventsUsageDescription:
-    "FlareAI controls other applications only when a skill you enabled asks it to.",
+    "Polymux controls other applications only when a skill you enabled asks it to.",
 };
 
 /** The same record as an Info.plist document, for the helper's linked section. */

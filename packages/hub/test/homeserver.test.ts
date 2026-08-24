@@ -73,9 +73,9 @@ interface Harness {
 }
 
 async function startHarness(): Promise<Harness> {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hs-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-hs-"));
   const bridge = await startFakeBridge();
-  const hs = new Homeserver({serverName: "flareai.test", dataDirectory: directory});
+  const hs = new Homeserver({serverName: "polymux.test", dataDirectory: directory});
   await hs.start();
   const asToken = "as-token-test";
   hs.registerAppservice({
@@ -84,7 +84,7 @@ async function startHarness(): Promise<Harness> {
     hsToken: "hs-token-test",
     url: bridge.base,
     senderLocalpart: "whatsappbot",
-    userNamespaces: ["@whatsapp_.*:flareai\\.test"],
+    userNamespaces: ["@whatsapp_.*:polymux\\.test"],
   });
   return {
     hs,
@@ -145,7 +145,7 @@ test("registers the bridge bot and ghosts through appservice registration", asyn
       body: {type: "m.login.application_service", username: "whatsappbot", inhibit_login: true},
     });
     assert.equal(bot.status, 200);
-    assert.equal(bot.body.user_id, "@whatsappbot:flareai.test");
+    assert.equal(bot.body.user_id, "@whatsappbot:polymux.test");
     assert.equal(bot.body.access_token, undefined, "inhibit_login must not mint a token");
 
     const ghost = await call(hs, "POST", "/_matrix/client/v3/register", {
@@ -175,15 +175,15 @@ test("whoami reflects appservice masquerading", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
     const asBot = await call(hs, "GET", "/_matrix/client/v3/account/whoami", {token: asToken});
-    assert.equal(asBot.body.user_id, "@whatsappbot:flareai.test");
+    assert.equal(asBot.body.user_id, "@whatsappbot:polymux.test");
     const asGhost = await call(hs, "GET", "/_matrix/client/v3/account/whoami", {
       token: asToken,
-      query: {user_id: "@whatsapp_1:flareai.test"},
+      query: {user_id: "@whatsapp_1:polymux.test"},
     });
-    assert.equal(asGhost.body.user_id, "@whatsapp_1:flareai.test");
+    assert.equal(asGhost.body.user_id, "@whatsapp_1:polymux.test");
     const outside = await call(hs, "GET", "/_matrix/client/v3/account/whoami", {
       token: asToken,
-      query: {user_id: "@victim:flareai.test"},
+      query: {user_id: "@victim:polymux.test"},
     });
     assert.equal(outside.status, 401, "masquerading outside the namespace must be refused");
   } finally {
@@ -211,10 +211,10 @@ test("round-trips the MSC2659 appservice ping", async () => {
 test("batch sending backfills a room with each event's own timestamp", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("flareai");
+    const user = hs.createLocalUser("polymux");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_61400000000:flareai.test"},
+      query: {user_id: "@whatsapp_61400000000:polymux.test"},
       body: {name: "Jules Tan (WA)", is_direct: true, invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
@@ -236,13 +236,13 @@ test("batch sending backfills a room with each event's own timestamp", async () 
           events: [
             {
               type: "m.room.message",
-              sender: "@whatsapp_61400000000:flareai.test",
+              sender: "@whatsapp_61400000000:polymux.test",
               origin_server_ts: 1_600_000_000_000,
               content: {msgtype: "m.text", body: "first"},
             },
             {
               type: "m.room.message",
-              sender: "@whatsapp_61400000000:flareai.test",
+              sender: "@whatsapp_61400000000:polymux.test",
               origin_server_ts: 1_600_000_060_000,
               content: {msgtype: "m.text", body: "second"},
             },
@@ -276,10 +276,10 @@ test("batch sending backfills a room with each event's own timestamp", async () 
 test("batch sending is refused without an appservice token", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("flareai");
+    const user = hs.createLocalUser("polymux");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_61400000000:flareai.test"},
+      query: {user_id: "@whatsapp_61400000000:polymux.test"},
       body: {name: "Jules Tan (WA)", is_direct: true, invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
@@ -298,10 +298,10 @@ test("batch sending is refused without an appservice token", async () => {
 test("an invite written as plain state still reaches the local user", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("flareai");
+    const user = hs.createLocalUser("polymux");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_61400000000:flareai.test"},
+      query: {user_id: "@whatsapp_61400000000:polymux.test"},
       body: {name: "Jules Tan (WA)", is_direct: true},
     });
     const roomId = created.body.room_id as string;
@@ -315,7 +315,7 @@ test("an invite written as plain state still reaches the local user", async () =
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent(user.userId)}`,
       {
         token: asToken,
-        query: {user_id: "@whatsapp_61400000000:flareai.test"},
+        query: {user_id: "@whatsapp_61400000000:polymux.test"},
         body: {membership: "invite", is_direct: true},
       },
     );
@@ -331,10 +331,10 @@ test("an invite written as plain state still reaches the local user", async () =
 test("a portal room reaches the local user without an autojoin daemon", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("flareai");
+    const user = hs.createLocalUser("polymux");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_61400000000:flareai.test"},
+      query: {user_id: "@whatsapp_61400000000:polymux.test"},
       body: {
         name: "Jules Tan (WA)",
         invite: [user.userId],
@@ -361,10 +361,10 @@ test("a portal room reaches the local user without an autojoin daemon", async ()
 test("bridged messages flow to the user with massaged timestamps and land in unread", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("flareai");
+    const user = hs.createLocalUser("polymux");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_1:flareai.test"},
+      query: {user_id: "@whatsapp_1:polymux.test"},
       body: {invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
@@ -375,7 +375,7 @@ test("bridged messages flow to the user with massaged timestamps and land in unr
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/txn-1`,
       {
         token: asToken,
-        query: {user_id: "@whatsapp_1:flareai.test", ts: "1700000000000"},
+        query: {user_id: "@whatsapp_1:polymux.test", ts: "1700000000000"},
         body: {msgtype: "m.text", body: "hello from whatsapp"},
       },
     );
@@ -388,7 +388,7 @@ test("bridged messages flow to the user with massaged timestamps and land in unr
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/txn-1`,
       {
         token: asToken,
-        query: {user_id: "@whatsapp_1:flareai.test"},
+        query: {user_id: "@whatsapp_1:polymux.test"},
         body: {msgtype: "m.text", body: "hello from whatsapp"},
       },
     );
@@ -427,10 +427,10 @@ test("bridged messages flow to the user with massaged timestamps and land in unr
 test("the user's reply is pushed to the bridge as an ordered transaction", async () => {
   const {hs, bridge, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("flareai");
+    const user = hs.createLocalUser("polymux");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_1:flareai.test"},
+      query: {user_id: "@whatsapp_1:polymux.test"},
       body: {invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
@@ -441,7 +441,7 @@ test("the user's reply is pushed to the bridge as an ordered transaction", async
       hs,
       "PUT",
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/user-txn`,
-      {token: user.accessToken, body: {msgtype: "m.text", body: "reply from flareai"}},
+      {token: user.accessToken, body: {msgtype: "m.text", body: "reply from polymux"}},
     );
     assert.equal(sent.status, 200);
 
@@ -449,15 +449,15 @@ test("the user's reply is pushed to the bridge as an ordered transaction", async
       () =>
         bridge.transactions
           .slice(before)
-          .some((txn) => txn.events.some((event) => (event.content as {body?: string})?.body === "reply from flareai")),
+          .some((txn) => txn.events.some((event) => (event.content as {body?: string})?.body === "reply from polymux")),
       "the reply to be pushed to the bridge",
     );
     const delivery = bridge.transactions.find((txn) =>
-      txn.events.some((event) => (event.content as {body?: string})?.body === "reply from flareai"),
+      txn.events.some((event) => (event.content as {body?: string})?.body === "reply from polymux"),
     )!;
     assert.equal(delivery.auth, "Bearer hs-token-test", "pushes authenticate with the hs_token");
     const event = delivery.events.find(
-      (item) => (item.content as {body?: string})?.body === "reply from flareai",
+      (item) => (item.content as {body?: string})?.body === "reply from polymux",
     )!;
     assert.equal(event.sender, user.userId);
     assert.equal(event.room_id, roomId);
@@ -475,16 +475,16 @@ test("a bridge is never pushed the events it wrote itself", async () => {
   // people they were had with.
   const {hs, bridge, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("flareai");
+    const user = hs.createLocalUser("polymux");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_1:flareai.test"},
+      query: {user_id: "@whatsapp_1:polymux.test"},
       body: {invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
 
     // The bridge backfills the user's own side double-puppeted, and sends a
-    // ghost's live message; the user answers from FlareAI.
+    // ghost's live message; the user answers from Polymux.
     const batch = await call(
       hs,
       "POST",
@@ -510,7 +510,7 @@ test("a bridge is never pushed the events it wrote itself", async () => {
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/ghost-txn`,
       {
         token: asToken,
-        query: {user_id: "@whatsapp_1:flareai.test"},
+        query: {user_id: "@whatsapp_1:polymux.test"},
         body: {msgtype: "m.text", body: "from the contact"},
       },
     );
@@ -518,7 +518,7 @@ test("a bridge is never pushed the events it wrote itself", async () => {
       hs,
       "PUT",
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/user-txn`,
-      {token: user.accessToken, body: {msgtype: "m.text", body: "typed in flareai"}},
+      {token: user.accessToken, body: {msgtype: "m.text", body: "typed in polymux"}},
     );
 
     // The user's own live message is the bridge's to deliver; wait for it so
@@ -526,7 +526,7 @@ test("a bridge is never pushed the events it wrote itself", async () => {
     await until(
       () =>
         bridge.transactions.some((txn) =>
-          txn.events.some((event) => (event.content as {body?: string})?.body === "typed in flareai"),
+          txn.events.some((event) => (event.content as {body?: string})?.body === "typed in polymux"),
         ),
       "the user's live message to be pushed to the bridge",
     );
@@ -546,7 +546,7 @@ test("only sends the user armed this run ever reach a bridge", async () => {
   // event surfaced any other way — here, a replayed delivery position over
   // events from a previous run, the shape every replay bug reduces to — is
   // data about a conversation, not a command to transmit.
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-hs-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-hs-"));
   const bridge = await startFakeBridge();
   const registration = {
     id: "whatsapp",
@@ -554,17 +554,17 @@ test("only sends the user armed this run ever reach a bridge", async () => {
     hsToken: "hs-token-test",
     url: bridge.base,
     senderLocalpart: "whatsappbot",
-    userNamespaces: ["@whatsapp_.*:flareai\\.test"],
+    userNamespaces: ["@whatsapp_.*:polymux\\.test"],
   };
-  const first = new Homeserver({serverName: "flareai.test", dataDirectory: directory});
+  const first = new Homeserver({serverName: "polymux.test", dataDirectory: directory});
   await first.start();
   first.registerAppservice(registration);
   let user: {userId: string; accessToken: string};
   try {
-    user = first.createLocalUser("flareai");
+    user = first.createLocalUser("polymux");
     const created = await call(first, "POST", "/_matrix/client/v3/createRoom", {
       token: registration.asToken,
-      query: {user_id: "@whatsapp_1:flareai.test"},
+      query: {user_id: "@whatsapp_1:polymux.test"},
       body: {invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
@@ -594,7 +594,7 @@ test("only sends the user armed this run ever reach a bridge", async () => {
   const rewind = new DatabaseSync(path.join(directory, "homeserver.sqlite"));
   rewind.prepare("UPDATE appservice_positions SET stream_order = 0").run();
   rewind.close();
-  const second = new Homeserver({serverName: "flareai.test", dataDirectory: directory});
+  const second = new Homeserver({serverName: "polymux.test", dataDirectory: directory});
   await second.start();
   const replayed = bridge.transactions.length;
   second.registerAppservice(registration);
@@ -644,12 +644,12 @@ test("media round-trips through upload and both download endpoints", async () =>
       body: payload,
     });
     const {content_uri} = (await upload.json()) as {content_uri: string};
-    assert.match(content_uri, /^mxc:\/\/flareai\.test\//);
+    assert.match(content_uri, /^mxc:\/\/polymux\.test\//);
     const mediaId = content_uri.split("/").pop()!;
 
     for (const endpoint of [
-      `/_matrix/media/v3/download/flareai.test/${mediaId}`,
-      `/_matrix/client/v1/media/download/flareai.test/${mediaId}`,
+      `/_matrix/media/v3/download/polymux.test/${mediaId}`,
+      `/_matrix/client/v1/media/download/polymux.test/${mediaId}`,
     ]) {
       const download = await fetch(`${hs.baseUrl}${endpoint}`, {
         headers: {Authorization: `Bearer ${asToken}`},
@@ -666,16 +666,16 @@ test("media round-trips through upload and both download endpoints", async () =>
 test("search and account data cover the client surface the hub uses", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const user = hs.createLocalUser("flareai");
+    const user = hs.createLocalUser("polymux");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
       token: asToken,
-      query: {user_id: "@whatsapp_1:flareai.test"},
+      query: {user_id: "@whatsapp_1:polymux.test"},
       body: {invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
     await call(hs, "PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/t1`, {
       token: asToken,
-      query: {user_id: "@whatsapp_1:flareai.test"},
+      query: {user_id: "@whatsapp_1:polymux.test"},
       body: {msgtype: "m.text", body: "the quarterly numbers are ready"},
     });
 
@@ -689,13 +689,13 @@ test("search and account data cover the client surface the hub uses", async () =
     // m.direct is what bridges write to mark DMs.
     const put = await call(hs, "PUT", `/_matrix/client/v3/user/${encodeURIComponent(user.userId)}/account_data/m.direct`, {
       token: user.accessToken,
-      body: {"@whatsapp_1:flareai.test": [roomId]},
+      body: {"@whatsapp_1:polymux.test": [roomId]},
     });
     assert.equal(put.status, 200);
     const got = await call(hs, "GET", `/_matrix/client/v3/user/${encodeURIComponent(user.userId)}/account_data/m.direct`, {
       token: user.accessToken,
     });
-    assert.deepEqual(got.body[`@whatsapp_1:flareai.test`], [roomId]);
+    assert.deepEqual(got.body[`@whatsapp_1:polymux.test`], [roomId]);
   } finally {
     await cleanup();
   }
@@ -705,7 +705,7 @@ test("the provisioning proxy forwards to the bridge listener", async () => {
   const {hs, bridge, cleanup} = await startHarness();
   try {
     hs.setProvisioningTarget("whatsapp", bridge.base);
-    const response = await fetch(`${hs.baseUrl}/bridges/whatsapp/_matrix/provision/v3/whoami?user_id=@flareai:flareai.test`, {
+    const response = await fetch(`${hs.baseUrl}/bridges/whatsapp/_matrix/provision/v3/whoami?user_id=@polymux:polymux.test`, {
       headers: {Authorization: "Bearer some-user-token"},
     });
     assert.equal(response.status, 200);
@@ -721,7 +721,7 @@ test("password login is refused and foreign tokens are rejected", async () => {
   const {hs, cleanup} = await startHarness();
   try {
     const login = await call(hs, "POST", "/_matrix/client/v3/login", {
-      body: {type: "m.login.password", identifier: {type: "m.id.user", user: "flareai"}, password: "x"},
+      body: {type: "m.login.password", identifier: {type: "m.id.user", user: "polymux"}, password: "x"},
     });
     assert.equal(login.status, 403);
     const stranger = await call(hs, "GET", "/_matrix/client/v3/joined_rooms", {token: "not-a-token"});
@@ -742,12 +742,12 @@ test("parseRegistration extracts tokens and user namespaces", () => {
       "rate_limited: false",
       "namespaces:",
       "    users:",
-      "    - regex: ^@whatsappbot:flareai\\.test$",
+      "    - regex: ^@whatsappbot:polymux\\.test$",
       "      exclusive: true",
-      "    - regex: ^@whatsapp_.*:flareai\\.test$",
+      "    - regex: ^@whatsapp_.*:polymux\\.test$",
       "      exclusive: true",
       "    aliases:",
-      "    - regex: ^#whatsapp_.*:flareai\\.test$",
+      "    - regex: ^#whatsapp_.*:polymux\\.test$",
       "      exclusive: true",
     ].join("\n"),
   );
@@ -755,17 +755,17 @@ test("parseRegistration extracts tokens and user namespaces", () => {
   assert.equal(parsed.hsToken, "def456");
   assert.equal(parsed.senderLocalpart, "whatsappbot");
   assert.deepEqual(parsed.userNamespaces, [
-    "@whatsappbot:flareai\\.test",
-    "@whatsapp_.*:flareai\\.test",
+    "@whatsappbot:polymux\\.test",
+    "@whatsapp_.*:polymux\\.test",
   ]);
 });
 
 test("a fresh install creates its own data directory", async () => {
   // The exact crash from first boot: the hub directory does not exist yet and
   // SQLite will not create missing directories itself.
-  const parent = await mkdtemp(path.join(tmpdir(), "flareai-fresh-"));
+  const parent = await mkdtemp(path.join(tmpdir(), "polymux-fresh-"));
   const directory = path.join(parent, "does", "not", "exist", "hub");
-  const hs = new Homeserver({serverName: "flareai.test", dataDirectory: directory});
+  const hs = new Homeserver({serverName: "polymux.test", dataDirectory: directory});
   try {
     await hs.start();
     const versions = await fetch(`${hs.baseUrl}/_matrix/client/versions`);
@@ -777,7 +777,7 @@ test("a fresh install creates its own data directory", async () => {
 });
 
 test("reapStalePid terminates an orphan from a crashed run", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-reap-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-reap-"));
   const pidPath = path.join(directory, "bridge.pid");
   // A stand-in orphan: long-lived, harmless, and ours to kill.
   const {spawn} = await import("node:child_process");

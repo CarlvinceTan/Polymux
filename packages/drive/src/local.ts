@@ -1,6 +1,6 @@
 import {copyFile, cp, mkdir, readdir, rename, rm, stat, statfs} from "node:fs/promises";
 import path from "node:path";
-import type {DriveEntryDto} from "@flareai/protocol";
+import type {DriveEntryDto} from "@polymux/protocol";
 import {
   copyName,
   DriveConflictError,

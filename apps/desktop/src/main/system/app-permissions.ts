@@ -1,4 +1,4 @@
-import type { AppPermissionKind, SystemPermissionStatus } from "@flareai/protocol";
+import type { AppPermissionKind, SystemPermissionStatus } from "@polymux/protocol";
 import { permissionUsagePlist } from "./permission-usage.js";
 import { SwiftHelper } from "./swift-helper.js";
 

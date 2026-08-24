@@ -1,10 +1,10 @@
 /**
- * Rebrands the development Electron bundle as "FlareAI.app".
+ * Rebrands the development Electron bundle as "Polymux.app".
  *
  * `app.setName` fixes the menu bar, but the macOS Dock names a tile from the
  * bundle and executable identity of the process — editing CFBundleName alone
  * verifiably does not change the hover label. So the dev bundle is renamed
- * wholesale: Electron.app -> FlareAI.app, its executable Electron -> FlareAI,
+ * wholesale: Electron.app -> Polymux.app, its executable Electron -> Polymux,
  * CFBundleExecutable updated, and electron's `path.txt` launcher indirection
  * pointed at the new location. The bundle is ad-hoc re-signed because both
  * edits invalidate the signature.
@@ -19,7 +19,7 @@ import {fileURLToPath} from 'node:url';
 
 if (process.platform !== 'darwin') process.exit(0);
 
-const NAME = 'FlareAI';
+const NAME = 'Polymux';
 const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const electronDir = path.join(projectRoot, 'node_modules/electron');
 const dist = path.join(electronDir, 'dist');
@@ -61,14 +61,14 @@ const syncIcon = () => {
  * Ad-hoc signatures get a new identity on every resign, which invalidates the
  * Keychain ACL guarding Electron's "Safe Storage" key — each icon tweak used
  * to break saved API keys until the user re-approved access. A stable local
- * identity (Apple Development, or a self-signed "FlareAI Dev" certificate)
+ * identity (Apple Development, or a self-signed "Polymux Dev" certificate)
  * keeps the same designated requirement across resigns, so one "Always
  * Allow" lasts. Ad-hoc remains the fallback when no identity exists.
  */
 const signingIdentity = () => {
   try {
     const listing = execFileSync('security', ['find-identity', '-p', 'codesigning', '-v'], {encoding: 'utf8'});
-    const match = listing.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"((?:FlareAI Dev|Apple Development)[^"]*)"/m);
+    const match = listing.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"((?:Polymux Dev|Apple Development)[^"]*)"/m);
     return match ? {hash: match[1], authority: match[2]} : {hash: '-', authority: undefined};
   } catch {
     return {hash: '-', authority: undefined};

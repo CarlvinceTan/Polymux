@@ -1,6 +1,6 @@
 <script module lang="ts">
   /**
-   * The task marks: seven flares built the way the FlareAI logo is, so a task
+   * The task marks: seven flares built the way the Polymux logo is, so a task
    * is recognisable by its glyph rather than only by its title.
    *
    * Every arm is a single straight bar with square ends — nothing bends, and

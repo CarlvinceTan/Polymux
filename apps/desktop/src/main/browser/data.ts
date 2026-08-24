@@ -1,4 +1,4 @@
-import type { BrowserSiteDto } from "@flareai/protocol";
+import type { BrowserSiteDto } from "@polymux/protocol";
 import type { Cookie } from "electron";
 
 /**

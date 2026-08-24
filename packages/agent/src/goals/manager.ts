@@ -1,5 +1,5 @@
-import type { AgentTool } from "@flareai/core";
-import type { Goal, GoalStatus, Storage } from "@flareai/storage";
+import type { AgentTool } from "@polymux/core";
+import type { Goal, GoalStatus, Storage } from "@polymux/storage";
 
 export type GoalCommand =
   | { action: "view" | "clear" | "pause" | "resume" }

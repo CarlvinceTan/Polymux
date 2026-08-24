@@ -16,7 +16,7 @@ async function withConfig(
   value: unknown,
   run: (engine: HookEngine, configPath: string) => Promise<void>,
 ): Promise<void> {
-  const dir = await mkdtemp(path.join(tmpdir(), "flareai-hooks-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "polymux-hooks-"));
   const configPath = path.join(dir, "hooks.json");
   try {
     if (value !== undefined)
@@ -78,7 +78,7 @@ test("hooks only run for matching tools", async () => {
 });
 
 test("the hook receives the call payload on stdin", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "flareai-hooks-out-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "polymux-hooks-out-"));
   const out = path.join(dir, "payload.json");
   try {
     await withConfig(
@@ -118,7 +118,7 @@ test("post-tool hooks observe results and never throw", async () => {
 });
 
 test("a malformed config disables hooks and reports the parse error", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "flareai-hooks-bad-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "polymux-hooks-bad-"));
   const configPath = path.join(dir, "hooks.json");
   try {
     await writeFile(configPath, "{not json", "utf8");

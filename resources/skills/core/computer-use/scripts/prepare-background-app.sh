@@ -26,14 +26,13 @@ compatibility_audit="false"
 audit_authorized="false"
 app_path=""
 first_use_launch="false"
-orchestration_experiment="false"
 compiled_verifies_command="false"
 app_pids_before_snapshot=""
 
 source "${0:A:h}/compiled-launch-identity.sh"
 
 usage() {
-  print -u2 "Usage: prepare-background-app.sh --app APP_NAME [--process PROCESS_NAME] [--bundle-id ID] [--check-only] [--allow-frontmost-requested] [--compiled-launch] [--orchestration-experiment] [--launch-even-if-running] [--verify-command-contains TEXT] [--verified-launch-command ABSOLUTE_PATH] [--verified-launch-arg VALUE ...] [--compatibility-audit --user-authorized-compatibility-audit --app-path APP_PATH]"
+  print -u2 "Usage: prepare-background-app.sh --app APP_NAME [--process PROCESS_NAME] [--bundle-id ID] [--check-only] [--allow-frontmost-requested] [--compiled-launch] [--launch-even-if-running] [--verify-command-contains TEXT] [--verified-launch-command ABSOLUTE_PATH] [--verified-launch-arg VALUE ...] [--compatibility-audit --user-authorized-compatibility-audit --app-path APP_PATH]"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -63,10 +62,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --compiled-launch)
       compiled_launch="true"
-      shift
-      ;;
-    --orchestration-experiment)
-      orchestration_experiment="true"
       shift
       ;;
     --launch-even-if-running)
@@ -129,10 +124,6 @@ if [[ "$compatibility_audit" == "true" ]]; then
   fi
 elif [[ "$audit_authorized" == "true" || -n "$app_path" ]]; then
   print -r -- "status=blocked_conflicting_audit_options"
-  exit 2
-fi
-if [[ "$orchestration_experiment" == "true" && "$compiled_launch" != "true" ]]; then
-  print -r -- "status=blocked_experiment_requires_compiled_launch"
   exit 2
 fi
 
@@ -388,14 +379,6 @@ if [[ "$compiled_launch" == "true" ]]; then
       compiled_args_contain "$verify_command_contains" "${verified_launch_args[@]}"; then
     compiled_verifies_command="true"
   fi
-  if [[ "$orchestration_experiment" == "true" ]]; then
-    (( ${verified_launch_args[(I)--args]} > 0 )) || {
-      report "blocked_compiled_route_invalid"
-      exit 9
-    }
-    (( ${verified_launch_args[(I)--orchestration-experiment]} > 0 )) ||
-      verified_launch_args+=("--orchestration-experiment")
-  fi
 fi
 
 if [[ "$mode" == "check" ]]; then
@@ -406,7 +389,7 @@ if [[ "$mode" == "check" ]]; then
   if [[ "$app_running_before" == "true" ]]; then
     if [[ "$launch_even_if_running" == "true" && -n "$compiled_route_id" ]]; then
       # A compiled route may deliberately own a distinct single-instance lock
-      # (FlareAI's packaged background benchmark does). Checking the ordinary
+      # (Polymux's packaged background benchmark does). Checking the ordinary
       # app's process is not evidence that this route is already running.
       if [[ "$launch_behavior" == "restore_previous_frontmost" ]]; then
         report "ready_compiled_recoverable_launch"
@@ -465,7 +448,7 @@ fi
 
 if [[ "$launch_behavior" == "restore_previous_frontmost" ]]; then
   recovery_source="${0:A:h}/foreground-launch-recovery.swift"
-  recovery_cache="${TMPDIR:-/tmp}/flareai-window-control"
+  recovery_cache="${TMPDIR:-/tmp}/polymux-window-control"
   if ! /bin/mkdir -p "$recovery_cache"; then
     report "blocked_state_unavailable"
     exit 6
@@ -483,8 +466,8 @@ if [[ "$launch_behavior" == "restore_previous_frontmost" ]]; then
     /bin/mv -f "$recovery_temporary" "$recovery_binary"
   fi
 
-  recovery_log="$(/usr/bin/mktemp -t flareai-window-control-recovery)" || { report "blocked_state_unavailable"; exit 6; }
-  recovery_ready="$(/usr/bin/mktemp -t flareai-window-control-recovery-ready)" || { /bin/rm -f "$recovery_log"; report "blocked_state_unavailable"; exit 6; }
+  recovery_log="$(/usr/bin/mktemp -t polymux-window-control-recovery)" || { report "blocked_state_unavailable"; exit 6; }
+  recovery_ready="$(/usr/bin/mktemp -t polymux-window-control-recovery-ready)" || { /bin/rm -f "$recovery_log"; report "blocked_state_unavailable"; exit 6; }
   /bin/rm -f "$recovery_ready"
 
   cleanup_recovery() {
@@ -571,7 +554,7 @@ fi
 
 visibility_source="${0:A:h}/window-visibility-monitor.swift"
 strict_recovery_source="${0:A:h}/foreground-launch-recovery.swift"
-visibility_cache="${TMPDIR:-/tmp}/flareai-window-control"
+visibility_cache="${TMPDIR:-/tmp}/polymux-window-control"
 if ! /bin/mkdir -p "$visibility_cache"; then
   report "blocked_state_unavailable"
   exit 6
@@ -600,27 +583,27 @@ if [[ ! -x "$strict_recovery_binary" ]]; then
   /bin/chmod 700 "$strict_recovery_temporary"
   /bin/mv -f "$strict_recovery_temporary" "$strict_recovery_binary"
 fi
-if ! focus_log="$(/usr/bin/mktemp -t flareai-window-control-focus)" || [[ -z "$focus_log" ]]; then
+if ! focus_log="$(/usr/bin/mktemp -t polymux-window-control-focus)" || [[ -z "$focus_log" ]]; then
   report "blocked_state_unavailable"
   exit 6
 fi
-if ! window_log="$(/usr/bin/mktemp -t flareai-window-control-window)" || [[ -z "$window_log" ]]; then
+if ! window_log="$(/usr/bin/mktemp -t polymux-window-control-window)" || [[ -z "$window_log" ]]; then
   /bin/rm -f "$focus_log"
   report "blocked_state_unavailable"
   exit 6
 fi
-if ! window_ready="$(/usr/bin/mktemp -t flareai-window-control-window-ready)" || [[ -z "$window_ready" ]]; then
+if ! window_ready="$(/usr/bin/mktemp -t polymux-window-control-window-ready)" || [[ -z "$window_ready" ]]; then
   /bin/rm -f "$focus_log" "$window_log"
   report "blocked_state_unavailable"
   exit 6
 fi
 /bin/rm -f "$window_ready"
-if ! strict_recovery_log="$(/usr/bin/mktemp -t flareai-window-control-strict-recovery)" || [[ -z "$strict_recovery_log" ]]; then
+if ! strict_recovery_log="$(/usr/bin/mktemp -t polymux-window-control-strict-recovery)" || [[ -z "$strict_recovery_log" ]]; then
   /bin/rm -f "$focus_log" "$window_log" "$window_ready"
   report "blocked_state_unavailable"
   exit 6
 fi
-if ! strict_recovery_ready="$(/usr/bin/mktemp -t flareai-window-control-strict-recovery-ready)" || [[ -z "$strict_recovery_ready" ]]; then
+if ! strict_recovery_ready="$(/usr/bin/mktemp -t polymux-window-control-strict-recovery-ready)" || [[ -z "$strict_recovery_ready" ]]; then
   /bin/rm -f "$focus_log" "$window_log" "$window_ready" "$strict_recovery_log"
   report "blocked_state_unavailable"
   exit 6

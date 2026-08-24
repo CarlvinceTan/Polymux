@@ -110,14 +110,14 @@ async function withBridge(
 ): Promise<void> {
   const relay = await stubRelay();
   prepare?.(relay);
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-wechat-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-"));
   // No port: the OS picks a free one and the harness reads it back off the
   // server. Counting up from a fixed base made two test files run at once
   // fight over the same numbers, which fails as a bridge error rather than as
   // anything to do with the bridge.
-  const homeserver = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
+  const homeserver = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
   await homeserver.start();
-  const owner = homeserver.createLocalUser("flareai-test");
+  const owner = homeserver.createLocalUser("polymux-test");
   // No binary directories: these tests must never spawn the real relay or
   // touch the WeChat app on the machine running them.
   const bridge = new WeChatBridge({
@@ -151,7 +151,7 @@ async function withBridge(
  * the `{meta, rows}` shape the real tool uses with `--fields`.
  */
 async function stubCli(rows: Record<string, Array<{create_time: number; real_sender_id: string}>>): Promise<string> {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-wechat-cli-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-cli-"));
   const file = path.join(directory, "wechat-use");
   const table = JSON.stringify(rows).replace(/'/g, "'\\''");
   await writeFile(
@@ -479,7 +479,7 @@ test("a message the account sent in WeChat itself is shown as its own", async ()
       {create_time: 101, real_sender_id: "50"},
     ],
   });
-  process.env.FLAREAI_WECHAT_CLI = cli;
+  process.env.POLYMUX_WECHAT_CLI = cli;
   try {
     await withBridge(async ({hub, relay}) => {
       // The relay reports both of these the same way — as the contact, with
@@ -493,11 +493,11 @@ test("a message the account sent in WeChat itself is shown as its own", async ()
         "both sides of the conversation to arrive",
       );
       const senders = new Map(messages.map((item) => [item.body, item.sender]));
-      assert.match(senders.get("mine") ?? "", /^@flareai-/, "the account's own message is its own");
+      assert.match(senders.get("mine") ?? "", /^@polymux-/, "the account's own message is its own");
       assert.match(senders.get("theirs") ?? "", /^@wechat_/, "and the contact's is still theirs");
     });
   } finally {
-    delete process.env.FLAREAI_WECHAT_CLI;
+    delete process.env.POLYMUX_WECHAT_CLI;
     delete process.env.WECHAT_STUB_ROWS;
   }
 });
@@ -583,7 +583,7 @@ test("a picture WeChat would not decrypt yet becomes the picture once it will", 
    * be read at all. Importing it once therefore froze it as a text placeholder
    * for good, even after the user opened it in WeChat and it became readable.
    */
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-wechat-cli-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-cli-"));
   const viewed = path.join(directory, "viewed-in-wechat");
   const cli = path.join(directory, "wechat-use");
   await writeFile(
@@ -609,7 +609,7 @@ test("a picture WeChat would not decrypt yet becomes the picture once it will", 
     "utf8",
   );
   await chmod(cli, 0o755);
-  process.env.FLAREAI_WECHAT_CLI = cli;
+  process.env.POLYMUX_WECHAT_CLI = cli;
   try {
     await withBridge(
       async ({hub, relay}) => {
@@ -649,19 +649,19 @@ test("a picture WeChat would not decrypt yet becomes the picture once it will", 
       {imageRetrySweepMs: 50, imageRetryDelaysMs: [10]},
     );
   } finally {
-    delete process.env.FLAREAI_WECHAT_CLI;
+    delete process.env.POLYMUX_WECHAT_CLI;
   }
 });
 
 test("a relay that is not running leaves WeChat unlinked rather than failing", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-wechat-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-"));
   // No port: the OS picks a free one and the harness reads it back off the
   // server. Counting up from a fixed base made two test files run at once
   // fight over the same numbers, which fails as a bridge error rather than as
   // anything to do with the bridge.
-  const homeserver = new Homeserver({serverName: "flareai.local", dataDirectory: directory});
+  const homeserver = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
   await homeserver.start();
-  const owner = homeserver.createLocalUser("flareai-test");
+  const owner = homeserver.createLocalUser("polymux-test");
   // Nothing is listening on this port, which is the ordinary case on a Mac
   // without the relay installed.
   const bridge = new WeChatBridge({
@@ -684,7 +684,7 @@ test("setup names the missing piece, starting with WeChat itself", () => {
   );
   assert.match(setupHint({wechat: false, relay: true}) ?? "", /WeChat for Mac is not installed/);
   assert.match(setupHint({wechat: true, relay: false}) ?? "", /WeChat is open and signed in/);
-  // How FlareAI reaches WeChat is its own plumbing. Naming any of it hands the
+  // How Polymux reaches WeChat is its own plumbing. Naming any of it hands the
   // user a task they cannot act on instead of the one they can.
   for (const hint of [
     setupHint({wechat: false, relay: false}),

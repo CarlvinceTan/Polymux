@@ -8,6 +8,6 @@ test("assigning and clearing the speech model supply automatic speech-mode value
 });
 
 test("other model roles preserve the user's speech-mode choice", () => {
-  assert.equal(speechModeAfterRoleChange("task", true, false), false);
+  assert.equal(speechModeAfterRoleChange("subagent", true, false), false);
   assert.equal(speechModeAfterRoleChange("image", false, true), true);
 });

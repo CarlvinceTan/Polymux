@@ -1,8 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { SkillLoader } from "@flareai/agent";
-import { importMcpServers } from "@flareai/tools";
-import type { PluginContributionsDto } from "@flareai/protocol";
+import { SkillLoader } from "@polymux/agent";
+import { importMcpServers } from "@polymux/tools";
+import type { PluginContributionsDto } from "@polymux/protocol";
 
 /**
  * What a plugin says about itself. Everything is optional but the name, and
@@ -46,7 +46,7 @@ export function readManifest(directory: string): PluginManifest {
  * manifest: the manifest does not have to declare its directories, so the
  * folders themselves are the only honest answer.
  *
- * Skills and MCP servers are named because FlareAI runs them and the names are
+ * Skills and MCP servers are named because Polymux runs them and the names are
  * what can clash with something the user already has. Commands, agents and
  * hooks are counted only — the app has no surface for them yet, and a count
  * that says "3 commands, not used" is truer than a list that implies they are.

@@ -24,7 +24,7 @@ const mismatchedCipher: SecretCipher = {
 };
 
 test("persists encrypted credentials without exposing their values", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-credentials-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-credentials-"));
   const file = path.join(directory, "credentials.json");
   try {
     const store = new EncryptedCredentialStore(file, cipher);
@@ -44,7 +44,7 @@ test("persists encrypted credentials without exposing their values", async () =>
 });
 
 test("refuses to persist a secret when OS encryption is unavailable", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-credentials-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-credentials-"));
   try {
     const unavailable = new EncryptedCredentialStore(path.join(directory, "credentials.json"), {
       ...cipher,
@@ -60,7 +60,7 @@ test("refuses to persist a secret when OS encryption is unavailable", async () =
 });
 
 test("uses OpenCode Go's existing credential when Electron secure storage is unavailable", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-opencode-fallback-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-opencode-fallback-"));
   const authFile = path.join(directory, "auth.json");
   try {
     await writeFile(authFile, JSON.stringify({"opencode-go": {type: "api", key: "sk-external-opencode-key"}}));
@@ -83,7 +83,7 @@ test("uses OpenCode Go's existing credential when Electron secure storage is una
 });
 
 test("stores multiple encrypted API keys and changes the active key after a limit", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-key-pool-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-key-pool-"));
   const file = path.join(directory, "api-keys.json");
   try {
     const pool = new EncryptedApiKeyPool(file, cipher);
@@ -116,7 +116,7 @@ test("stores multiple encrypted API keys and changes the active key after a limi
 });
 
 test("rejects incomplete OpenCode keys instead of treating them as configured", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-opencode-key-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-opencode-key-"));
   try {
     const pool = new EncryptedApiKeyPool(path.join(directory, "api-keys.json"), cipher);
     await assert.rejects(
@@ -130,7 +130,7 @@ test("rejects incomplete OpenCode keys instead of treating them as configured", 
 });
 
 test("keys this process cannot decrypt are left alone, not moved or overwritten", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-key-pool-stale-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-key-pool-stale-"));
   const file = path.join(directory, "api-keys.json");
   try {
     // The user's real keys, saved by the real app.
@@ -159,7 +159,7 @@ test("keys this process cannot decrypt are left alone, not moved or overwritten"
 });
 
 test("an unavailable OS cipher leaves the key pool untouched and readable as empty", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-key-pool-unavailable-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-key-pool-unavailable-"));
   const file = path.join(directory, "api-keys.json");
   try {
     await writeFile(file, "encrypted-by-the-normal-app", "utf8");
@@ -174,7 +174,7 @@ test("an unavailable OS cipher leaves the key pool untouched and readable as emp
 });
 
 test("recovers when the pool file decrypts to a malformed document", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-key-pool-malformed-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-key-pool-malformed-"));
   const file = path.join(directory, "api-keys.json");
   try {
     await writeFile(file, cipher.encryptString("[]").toString("base64"), "utf8");
@@ -188,7 +188,7 @@ test("recovers when the pool file decrypts to a malformed document", async () =>
 });
 
 test("recovers when the credential store is corrupt or its key changed", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-credentials-stale-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-credentials-stale-"));
   const file = path.join(directory, "credentials.json");
   try {
     await writeFile(file, "not json", "utf8");

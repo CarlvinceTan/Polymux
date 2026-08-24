@@ -1,5 +1,5 @@
-import type {AgentTool} from "@flareai/core";
-import type {GeneralSettingsDto} from "@flareai/protocol";
+import type {AgentTool} from "@polymux/core";
+import type {GeneralSettingsDto} from "@polymux/protocol";
 
 const MAX_LOCATION_AGE_MS = 30 * 60 * 1_000;
 const MAX_PROXIMITY_ACCURACY_METRES = 1_000;
@@ -103,7 +103,7 @@ export async function reverseGeocodeCurrentLocation(
     headers: {
       accept: "application/json",
       "accept-language": "en",
-      "user-agent": "FlareAI/0.1 current-location-resolver",
+      "user-agent": "Polymux/0.1 current-location-resolver",
     },
   });
   if (!response.ok) throw new Error(`Locality service returned HTTP ${response.status}`);

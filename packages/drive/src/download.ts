@@ -63,7 +63,7 @@ export async function downloadToFile(
   destination: string,
   source: DownloadSource,
 ): Promise<void> {
-  const partial = `${destination}.flareai-partial`;
+  const partial = `${destination}.polymux-partial`;
   await rm(partial, {force: true});
 
   let expectation: Expectation = source.expect ?? {};

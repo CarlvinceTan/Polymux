@@ -10,8 +10,8 @@ import {call, createRoom, startHarness} from "./test-harness.js";
  * whole of what it can branch on.
  */
 
-const GHOST = "@whatsapp_61400000000:flareai.test";
-const SECOND_GHOST = "@whatsapp_61400000001:flareai.test";
+const GHOST = "@whatsapp_61400000000:polymux.test";
+const SECOND_GHOST = "@whatsapp_61400000001:polymux.test";
 
 /** Room endpoints all hang off an encoded room id; spelling it out once. */
 function room(roomId: string, suffix = ""): string {
@@ -223,7 +223,7 @@ test("a room id is opaque, sigilled and safe to put in a path", async () => {
     const roomId = await createRoom(hs, user.accessToken, {});
     assert.ok(roomId.startsWith("!"), "room ids carry the ! sigil");
     assert.ok(Buffer.byteLength(roomId, "utf8") <= 255, "room ids fit in 255 bytes");
-    assert.ok(roomId.endsWith(":flareai.test"), "room ids are scoped to this server");
+    assert.ok(roomId.endsWith(":polymux.test"), "room ids are scoped to this server");
     // Every later request puts this in a path segment, so a separator in the
     // localpart would route the request to the wrong handler entirely.
     const localpart = roomId.slice(1, roomId.lastIndexOf(":"));
@@ -447,7 +447,7 @@ test("kicking someone who was never in the room is refused", async () => {
   const {hs, asToken, user, cleanup} = await startHarness();
   try {
     const roomId = await createRoom(hs, user.accessToken, {});
-    const stranger = "@whatsapp_neverjoined:flareai.test";
+    const stranger = "@whatsapp_neverjoined:polymux.test";
     const kicked = await call(hs, "POST", room(roomId, "/kick"), {
       token: user.accessToken,
       body: {user_id: stranger},
@@ -534,15 +534,15 @@ test("forgetting a room the user is still in is refused", async () => {
 test("an alias with no room behind it is refused rather than stored", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
-    const empty = "#whatsapp_empty:flareai.test";
-    const dangling = "#whatsapp_dangling:flareai.test";
+    const empty = "#whatsapp_empty:polymux.test";
+    const dangling = "#whatsapp_dangling:polymux.test";
 
     const withoutRoom = await call(hs, "PUT", aliasPath(empty), {token: asToken, body: {}});
     assert.equal(withoutRoom.status, 400, "an alias mapping needs a room_id");
 
     const toNowhere = await call(hs, "PUT", aliasPath(dangling), {
       token: asToken,
-      body: {room_id: "!nosuchroom:flareai.test"},
+      body: {room_id: "!nosuchroom:polymux.test"},
     });
     assert.ok(toNowhere.status >= 400, `an alias for a room that does not exist is refused, got ${toNowhere.status}`);
 
@@ -561,7 +561,7 @@ test("deleting an alias releases it", async () => {
   const {hs, asToken, user, cleanup} = await startHarness();
   try {
     const roomId = await createRoom(hs, user.accessToken, {});
-    const alias = "#whatsapp_portal:flareai.test";
+    const alias = "#whatsapp_portal:polymux.test";
     const mapped = await call(hs, "PUT", aliasPath(alias), {token: asToken, body: {room_id: roomId}});
     assert.equal(mapped.status, 200);
 
@@ -572,7 +572,7 @@ test("deleting an alias releases it", async () => {
     assert.equal(lookup.status, 404, "the alias is released");
     assert.equal(lookup.body.errcode, "M_NOT_FOUND");
 
-    const never = await call(hs, "DELETE", aliasPath("#whatsapp_nothing:flareai.test"), {token: asToken});
+    const never = await call(hs, "DELETE", aliasPath("#whatsapp_nothing:polymux.test"), {token: asToken});
     assert.equal(never.status, 404, "deleting an alias that never existed is a miss");
   } finally {
     await cleanup();
@@ -619,7 +619,7 @@ test("a request for a room that does not exist is forbidden rather than missing"
     // mautrix branches on the status: 403 means "not in the room, drop the
     // portal", while 404 and friends read as transient and are retried
     // forever for a portal that will never exist.
-    const unknown = "!nosuchroom:flareai.test";
+    const unknown = "!nosuchroom:polymux.test";
     const messages = await call(hs, "GET", room(unknown, "/messages"), {
       token: user.accessToken,
       query: {dir: "b"},

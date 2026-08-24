@@ -2,7 +2,7 @@
 name: presentations
 description: Create, inspect, edit, and verify PowerPoint-compatible slide decks. Use for PPTX files, pitch decks, presentations, slide templates, speaker notes, or questions about slide content.
 allowed-tools: read write edit bash
-author: FlareAI
+author: Polymux
 category: Documents
 ---
 

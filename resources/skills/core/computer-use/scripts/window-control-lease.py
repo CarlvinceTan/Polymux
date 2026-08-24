@@ -15,15 +15,15 @@ import time
 from pathlib import Path
 
 
-def flareai_home() -> Path:
-    """FlareAI's home, honouring a side instance the way the app itself does."""
-    instance = (os.environ.get("FLAREAI_DEV_INSTANCE") or "").strip()
-    return Path.home() / (f".flareai-{instance}" if instance else ".flareai")
+def polymux_home() -> Path:
+    """Polymux's home, honouring a side instance the way the app itself does."""
+    instance = (os.environ.get("POLYMUX_DEV_INSTANCE") or "").strip()
+    return Path.home() / (f".polymux-{instance}" if instance else ".polymux")
 
 
 # Instance-scoped deliberately: two runs sharing one lease file would hand a
 # side instance a lease over a window the user's own session is driving.
-STATE_DIR = flareai_home() / "state"
+STATE_DIR = polymux_home() / "state"
 REGISTRY = STATE_DIR / "window-control-leases.json"
 LOCK_FILE = STATE_DIR / "window-control-leases.lock"
 
@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     acquire.add_argument(
         "--controller",
         required=True,
-        choices=("browser-use", "computer-use", "app-specific"),
+        choices=("computer-use", "app-specific"),
     )
     acquire.add_argument("--ttl-seconds", type=int, default=300)
 

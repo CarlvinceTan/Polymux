@@ -18,8 +18,8 @@ import type {Homeserver} from "../src/server.js";
  * behaviour and says what it costs.
  */
 
-const GHOST = "@whatsapp_1:flareai.test";
-const SECOND_GHOST = "@whatsapp_2:flareai.test";
+const GHOST = "@whatsapp_1:polymux.test";
+const SECOND_GHOST = "@whatsapp_2:polymux.test";
 
 function roomPath(roomId: string, suffix: string): string {
   return `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/${suffix}`;
@@ -179,7 +179,7 @@ test("logging out everywhere kills every token the account has", async () => {
   // so the tokens it leaves behind are exactly what /logout/all exists to clear.
   const {hs, user, cleanup} = await startHarness();
   try {
-    const second = hs.createLocalUser("flareai");
+    const second = hs.createLocalUser("polymux");
     assert.equal(second.userId, user.userId, "both tokens belong to the one human account");
 
     const logout = await call(hs, "POST", "/_matrix/client/v3/logout/all", {token: user.accessToken});
@@ -267,7 +267,7 @@ test("a ghost with no profile yet reads as an empty profile, not a missing one",
   // since a bridge needs this shape.
   const {hs, asToken, user, cleanup} = await startHarness();
   try {
-    const unheardOf = await call(hs, "GET", profilePath("@whatsapp_neverseen:flareai.test"), {
+    const unheardOf = await call(hs, "GET", profilePath("@whatsapp_neverseen:polymux.test"), {
       token: user.accessToken,
     });
     assert.equal(unheardOf.status, 200);
@@ -278,7 +278,7 @@ test("a ghost with no profile yet reads as an empty profile, not a missing one",
       body: {type: "m.login.application_service", username: "whatsapp_5", inhibit_login: true},
     });
     assert.equal(registered.status, 200);
-    const named = await call(hs, "GET", profilePath("@whatsapp_5:flareai.test", "displayname"), {
+    const named = await call(hs, "GET", profilePath("@whatsapp_5:polymux.test", "displayname"), {
       token: user.accessToken,
     });
     assert.equal(named.status, 200);
@@ -336,7 +336,7 @@ test("room-scoped account data round-trips and replaces rather than merges", asy
   const {hs, user, cleanup} = await startHarness();
   try {
     const roomId = await createRoom(hs, user.accessToken);
-    const scoped = accountDataPath(user.userId, "com.flareai.test", roomId);
+    const scoped = accountDataPath(user.userId, "com.polymux.test", roomId);
 
     assert.equal(
       (await call(hs, "PUT", scoped, {token: user.accessToken, body: {a: 1}})).status,
@@ -353,20 +353,20 @@ test("room-scoped account data round-trips and replaces rather than merges", asy
     const missing = await call(
       hs,
       "GET",
-      accountDataPath(user.userId, "com.flareai.never_set", roomId),
+      accountDataPath(user.userId, "com.polymux.never_set", roomId),
       {token: user.accessToken},
     );
     assert.equal(missing.status, 404);
     assert.equal(missing.body.errcode, "M_NOT_FOUND");
 
     // The same type globally is a different value; a bridge writes both.
-    await call(hs, "PUT", accountDataPath(user.userId, "com.flareai.test"), {
+    await call(hs, "PUT", accountDataPath(user.userId, "com.polymux.test"), {
       token: user.accessToken,
       body: {global: true},
     });
     assert.deepEqual((await call(hs, "GET", scoped, {token: user.accessToken})).body, {b: 2});
     assert.deepEqual(
-      (await call(hs, "GET", accountDataPath(user.userId, "com.flareai.test"), {token: user.accessToken}))
+      (await call(hs, "GET", accountDataPath(user.userId, "com.polymux.test"), {token: user.accessToken}))
         .body,
       {global: true},
     );
@@ -384,7 +384,7 @@ test("account data written for another account is refused rather than filed unde
   try {
     const written = await call(hs, "PUT", accountDataPath(GHOST, "m.direct"), {
       token: user.accessToken,
-      body: {[GHOST]: ["!somewhere:flareai.test"]},
+      body: {[GHOST]: ["!somewhere:polymux.test"]},
     });
     assert.equal(written.status, 403, "one account may not write another's account data");
 
@@ -508,7 +508,7 @@ test("a sticker from a contact counts as unread", async () => {
     const sent = await call(hs, "PUT", roomPath(roomId, "send/m.sticker/sticker-1"), {
       token: asToken,
       query: {user_id: GHOST},
-      body: {body: "thumbs up", url: "mxc://flareai.test/sticker", info: {}},
+      body: {body: "thumbs up", url: "mxc://polymux.test/sticker", info: {}},
     });
     assert.equal(sent.status, 200);
 
@@ -642,7 +642,7 @@ test("an upload with no content type keeps its bytes", async () => {
     assert.equal(legacy.status, 200);
     const fromLegacy = await fetchMedia(
       hs,
-      `/_matrix/media/v3/download/flareai.test/${legacy.mediaId}`,
+      `/_matrix/media/v3/download/polymux.test/${legacy.mediaId}`,
       user.accessToken,
     );
     assert.deepEqual(fromLegacy.bytes, payload, "the legacy namespace keeps the bytes");
@@ -656,7 +656,7 @@ test("an upload with no content type keeps its bytes", async () => {
     );
     const fromTyped = await fetchMedia(
       hs,
-      `/_matrix/client/v1/media/download/flareai.test/${typed.mediaId}`,
+      `/_matrix/client/v1/media/download/polymux.test/${typed.mediaId}`,
       user.accessToken,
     );
     assert.deepEqual(fromTyped.bytes, payload, "a declared content type survives the round trip");
@@ -666,7 +666,7 @@ test("an upload with no content type keeps its bytes", async () => {
     assert.equal(untyped.status, 200);
     const fromUntyped = await fetchMedia(
       hs,
-      `/_matrix/client/v1/media/download/flareai.test/${untyped.mediaId}`,
+      `/_matrix/client/v1/media/download/polymux.test/${untyped.mediaId}`,
       user.accessToken,
     );
     assert.deepEqual(
@@ -702,7 +702,7 @@ test("a download offers the file name it was uploaded with", async () => {
     const ascii = await upload("holiday photo;1.jpg");
     const served = await fetchMedia(
       hs,
-      `/_matrix/media/v3/download/flareai.test/${ascii}`,
+      `/_matrix/media/v3/download/polymux.test/${ascii}`,
       user.accessToken,
     );
     const disposition = served.headers.get("content-disposition");
@@ -716,7 +716,7 @@ test("a download offers the file name it was uploaded with", async () => {
     const unicode = await upload("写真.jpg");
     const unicodeServed = await fetchMedia(
       hs,
-      `/_matrix/media/v3/download/flareai.test/${unicode}`,
+      `/_matrix/media/v3/download/polymux.test/${unicode}`,
       user.accessToken,
     );
     const unicodeDisposition = unicodeServed.headers.get("content-disposition") ?? "";
@@ -729,7 +729,7 @@ test("a download offers the file name it was uploaded with", async () => {
     // which is how a browser preview asks for a sensible download name.
     const named = await fetchMedia(
       hs,
-      `/_matrix/media/v3/download/flareai.test/${ascii}/renamed.jpg`,
+      `/_matrix/media/v3/download/polymux.test/${ascii}/renamed.jpg`,
       user.accessToken,
     );
     assert.equal(named.status, 200);
@@ -761,7 +761,7 @@ test("a thumbnail request answers with the original image rather than nothing", 
 
     const thumbnail = await fetchMedia(
       hs,
-      `/_matrix/media/v3/thumbnail/flareai.test/${uploaded.mediaId}?width=64&height=64&method=crop`,
+      `/_matrix/media/v3/thumbnail/polymux.test/${uploaded.mediaId}?width=64&height=64&method=crop`,
       user.accessToken,
     );
     assert.equal(thumbnail.status, 200);
@@ -770,7 +770,7 @@ test("a thumbnail request answers with the original image rather than nothing", 
 
     const missing = await fetchMedia(
       hs,
-      "/_matrix/media/v3/thumbnail/flareai.test/never-uploaded?width=64&height=64",
+      "/_matrix/media/v3/thumbnail/polymux.test/never-uploaded?width=64&height=64",
       user.accessToken,
     );
     assert.equal(missing.status, 404);

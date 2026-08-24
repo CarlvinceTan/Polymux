@@ -7,21 +7,21 @@ one installation and is worthless — and misleading — anywhere else.
 
 ## Where the evidence lives
 
-Everything this installation has learnt sits under FlareAI's home, never in the
+Everything this installation has learnt sits under Polymux's home, never in the
 skill:
 
 | Path | Holds |
 | --- | --- |
-| `~/.flareai/state/window-control/app-control-registry.json` | compiled routes: the tuples trusted for a launch or a control capability |
-| `~/.flareai/state/window-control/route-observations.json` | the observation cache: one task's success or failure per app identity, capability and route |
-| `~/.flareai/state/window-control/quarantined-routes.json` | routes withdrawn after a focus or exposure incident |
-| `~/.flareai/state/window-control/incidents.jsonl` | the incidents themselves, append-only |
+| `~/.polymux/state/window-control/app-control-registry.json` | compiled routes: the tuples trusted for a launch or a control capability |
+| `~/.polymux/state/window-control/route-observations.json` | the observation cache: one task's success or failure per app identity, capability and route |
+| `~/.polymux/state/window-control/quarantined-routes.json` | routes withdrawn after a focus or exposure incident |
+| `~/.polymux/state/window-control/incidents.jsonl` | the incidents themselves, append-only |
 
 Read them rather than assuming coverage:
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/app-control-registry.mjs list-routes
-"${FLAREAI_NODE:-node}" scripts/runtime-route-observations.mjs list
+"${POLYMUX_NODE:-node}" scripts/app-control-registry.mjs list-routes
+"${POLYMUX_NODE:-node}" scripts/runtime-route-observations.mjs list
 ```
 
 A fresh installation has none of this. Empty is the correct starting state, and
@@ -73,8 +73,8 @@ zsh scripts/prepare-background-app.sh --app "Example" --process "Example" \
 
 The exception is an app-owned required background contract. The registry maps
 that requirement by exact bundle identity and adds it itself; callers must not
-mix compiled lookup with ad-hoc launcher arguments. For FlareAI,
-`com.flarehq.flareai` requires `--args --flareai-background --remote-debugging-port=9334`.
+mix compiled lookup with ad-hoc launcher arguments. For Polymux,
+`com.flarehq.polymux` requires `--args --polymux-background --remote-debugging-port=9334`.
 The debugging endpoint is loopback-only and belongs to the disposable
 background-benchmark profile; use its preload API for run submission and
 telemetry, while keeping exact-window accessibility as the independent visual
@@ -91,7 +91,7 @@ Record the capability in the observation cache as well, since it remembers the
 task-level result the registry does not:
 
 ```bash
-"${FLAREAI_NODE:-node}" scripts/runtime-route-observations.mjs record \
+"${POLYMUX_NODE:-node}" scripts/runtime-route-observations.mjs record \
   --app-path "/Applications/Example.app" --capability capture \
   --route "open -g -j" --prepared-state hidden --result failure
 ```

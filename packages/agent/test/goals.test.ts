@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SqliteStorage } from "@flareai/storage/sqlite";
+import { SqliteStorage } from "@polymux/storage/sqlite";
 import { GoalManager } from "../src/index.js";
 
 test("persists one unfinished goal and supports pause, resume, completion, and replacement", () => {

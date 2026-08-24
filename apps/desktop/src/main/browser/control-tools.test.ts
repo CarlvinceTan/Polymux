@@ -8,6 +8,7 @@ import type { AgentSurfaceServer } from "../agent/surface.js";
 import type { ControlSession } from "./embedded.js";
 import type { InAppBrowser } from "./embedded-tools.js";
 import { createBrowserControlTools } from "./control-tools.js";
+import {Computer} from "@polymux/computer";
 
 /**
  * A surface that records what it was asked to run, so the tests can assert on
@@ -61,7 +62,7 @@ function controlTool(surface: AgentSurfaceServer) {
 const context = {} as Parameters<ReturnType<typeof controlTool>["execute"]>[1];
 
 async function currentReadFixture(payload: object, result?: SurfaceCommandResult) {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-current-tab-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-current-tab-"));
   const snapshotPath = path.join(directory, "tabs.json");
   await writeFile(snapshotPath, JSON.stringify(payload));
   const fake = fakeSurface(result);
@@ -151,8 +152,8 @@ test("current read refuses a focused browser tab that is not the current window"
   assert.equal(fixture.leasedTabs.length, 0);
 });
 
-test("current read uses the visible FlareAI page without consulting external browser state", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-current-embedded-"));
+test("current read uses the visible Polymux page without consulting external browser state", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-current-embedded-"));
   const snapshotPath = path.join(directory, "missing.json");
   const fake = fakeSurface();
   const tool = createBrowserControlTools(fake.surface, {
@@ -167,7 +168,7 @@ test("current read uses the visible FlareAI page without consulting external bro
   assert.equal(fake.leasedTabs.length, 0);
 });
 
-test("current read refuses duplicate visible FlareAI pages instead of falling through", async () => {
+test("current read refuses duplicate visible Polymux pages instead of falling through", async () => {
   const fake = fakeSurface();
   const tool = createBrowserControlTools(fake.surface, {
     currentRead: true,
@@ -195,6 +196,25 @@ test("focus probes the tab before handing back a lease", async () => {
     pageUrl: "https://example.com/",
     pageTitle: "Example",
   });
+});
+
+test("browser mutations require the exact Computer.Arbiter capability", async () => {
+  const fake = fakeSurface({ok: true, pageUrl: "https://example.com/", pageTitle: "Example"});
+  const computer = new Computer(() => ({
+    externalBrowserTabs: [{tabId: 7, windowId: 2, title: "Example", url: "https://example.com/", active: false}],
+  }));
+  const tool = createBrowserControlTools(fake.surface, {computer}).find((candidate) => candidate.name === "browser_control")!;
+  const focused = await tool.execute({action: "focus", url: "https://example.com/"}, context);
+  const lease = JSON.parse(focused.content as string);
+  assert.equal(lease.surfaceId, "tab:external:7");
+
+  const denied = await tool.execute({action: "click", leaseId: lease.leaseId, ref: "e1"}, context);
+  assert.equal(denied.isError, true);
+  assert.match(denied.content as string, /Computer\.Arbiter/);
+
+  const grant = computer.Arbiter.request({ownerId: "run-1", surfaceId: lease.surfaceId, operation: "press", scope: "tab"});
+  const allowed = await tool.execute({action: "click", leaseId: lease.leaseId, ref: "e1", computerToken: grant.token}, context);
+  assert.equal(allowed.isError, undefined);
 });
 
 test("a tab that never answers releases the lease instead of leaking it", async () => {

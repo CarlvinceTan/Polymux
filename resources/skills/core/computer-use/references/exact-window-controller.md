@@ -55,7 +55,7 @@ on it.
 
 The controller presses controls through accessibility and never moves the real
 pointer, which is what keeps it out of the user's way — but it also means a
-window otherwise changes by itself, with nothing on screen to say why. FlareAI
+window otherwise changes by itself, with nothing on screen to say why. Polymux
 draws the same cursor its browsers use in a transparent click-through window
 over the target (`system/native-cursor.ts`): `cover` it with the window frame,
 `moveToControl` with the control's frame, wait for it to arrive, then press.

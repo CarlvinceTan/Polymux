@@ -1,5 +1,5 @@
 import {writable} from 'svelte/store';
-import {flareaiApi} from '../../api/flareai';
+import {polymuxApi} from '../../api/polymux';
 
 /**
  * Pages visited in the embedded browser, most recent first. The workspace
@@ -11,7 +11,7 @@ export type Visit = {url: string; title: string; favicon?: string | null};
 /** What the launcher shows at most; the store keeps a little more so closing
  * one entry still leaves a full list. */
 export const HISTORY_SUGGESTION_LIMIT = 3;
-const KEY = 'flareaiBrowserHistory';
+const KEY = 'polymuxBrowserHistory';
 const CAP = 24;
 
 function normalized(value: string): string {
@@ -68,7 +68,7 @@ export function resolveVisitFavicons(visits: Visit[], _revision = 0): void {
     // Checked before anything async so a redraw caused by the update below
     // stops here rather than asking again.
     if (!origin || asked.has(origin)) continue;
-    const pending = flareaiApi().browser.favicon(origin).catch((): null => null);
+    const pending = polymuxApi().browser.favicon(origin).catch((): null => null);
     asked.set(origin, pending);
     void pending.then((favicon) => {
       if (!usableIcon(favicon)) return;

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { SavedLoginDto } from "@flareai/protocol";
+import type { SavedLoginDto } from "@polymux/protocol";
 import type { WebContents } from "electron";
 
 /**
@@ -39,7 +39,7 @@ export interface LoginVault {
   clear(): Promise<void>;
 }
 
-export const AUTOFILL_CHANNEL = "flareai:autofill";
+export const AUTOFILL_CHANNEL = "polymux:autofill";
 
 /** What the page sends up. Anything else is ignored — this arrives from a web
  * page's preload, so it is checked rather than trusted. */

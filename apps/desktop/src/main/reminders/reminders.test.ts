@@ -13,7 +13,7 @@ import { Reminders, type RemindersAccess } from "./index.js";
  * which needs a grant on the machine running them.
  */
 const STUB = `import Foundation
-let directory = ProcessInfo.processInfo.environment["FLAREAI_TEST_REMINDERS"] ?? "."
+let directory = ProcessInfo.processInfo.environment["POLYMUX_TEST_REMINDERS"] ?? "."
 let answers = ((try? String(contentsOfFile: directory + "/answers", encoding: .utf8)) ?? "")
   .split(separator: "\\n").map(String.init)
 let tally = directory + "/calls"
@@ -23,7 +23,7 @@ print(seen < answers.count ? answers[seen] : "{\\"ok\\":false,\\"error\\":\\"the
 `;
 
 // One source for the whole suite, so it compiles once and each case reuses it.
-const root = mkdtempSync(path.join(tmpdir(), "flareai-reminders-"));
+const root = mkdtempSync(path.join(tmpdir(), "polymux-reminders-"));
 const sourcePath = path.join(root, "reminders.swift");
 writeFileSync(sourcePath, STUB);
 const cacheDirectory = path.join(root, "bin");
@@ -33,7 +33,7 @@ function answering(...answers: string[]) {
   mkdirSync(directory, {recursive: true});
   writeFileSync(path.join(directory, "answers"), answers.join("\n"));
   writeFileSync(path.join(directory, "calls"), "");
-  process.env.FLAREAI_TEST_REMINDERS = directory;
+  process.env.POLYMUX_TEST_REMINDERS = directory;
   return {
     reminders: (access: RemindersAccess) =>
       new Reminders({sourcePath, cacheDirectory, access}),

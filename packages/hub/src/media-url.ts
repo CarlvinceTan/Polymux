@@ -6,7 +6,7 @@
  * Kept apart from that handler so this stays importable outside Electron: the
  * hub client builds these urls, and its tests run in plain Node.
  */
-export const MEDIA_SCHEME = "flareai-media";
+export const MEDIA_SCHEME = "polymux-media";
 
 /** Builds the renderer-facing url for an `mxc://` uri, or null if it is not one. */
 export function mediaUrl(mxc: string | undefined): string | null {

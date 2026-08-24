@@ -1,10 +1,10 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { importMcpServers } from "@flareai/tools";
-import type { DiscoveredMcpDto, DiscoveredMcpGroupDto } from "@flareai/protocol";
+import { importMcpServers } from "@polymux/tools";
+import type { DiscoveredMcpDto, DiscoveredMcpGroupDto } from "@polymux/protocol";
 import { parse as parseToml } from "smol-toml";
-import { flareaiDirectoryName } from "../system/paths.js";
+import { polymuxDirectoryName } from "../system/paths.js";
 
 /**
  * The agents whose names we know how to write, in the order their groups are
@@ -41,12 +41,12 @@ const CONFIG_FILES = [
 ];
 
 /**
- * FlareAI's own directories: its servers are already the MCP list. Both
+ * Polymux's own directories: its servers are already the MCP list. Both
  * spellings are excluded — a side instance keeps its configuration in
- * `~/.flareai-<name>`, and the ordinary `~/.flareai` beside it is the user's
+ * `~/.polymux-<name>`, and the ordinary `~/.polymux` beside it is the user's
  * own run, not another agent to adopt servers from.
  */
-const SELF = new Set([".flareai", flareaiDirectoryName()]);
+const SELF = new Set([".polymux", polymuxDirectoryName()]);
 
 /**
  * Reads every MCP server configured elsewhere on this machine: the config
@@ -54,7 +54,7 @@ const SELF = new Set([".flareai", flareaiDirectoryName()]);
  * own application-support file. Files with no servers in them are dropped
  * rather than listed empty — a run of empty headings buries the real finds.
  *
- * `installed` is the set of server ids FlareAI already loads, which decides
+ * `installed` is the set of server ids Polymux already loads, which decides
  * whether a find is offered or reported as one it already has.
  */
 export function discoverAgentMcpServers(
@@ -99,7 +99,7 @@ export function discoverAgentMcpServers(
 
 /**
  * Resolves a discovered server back to the raw configuration entry to copy
- * into ~/.flareai/mcp.json. The file is re-read rather than trusting what the
+ * into ~/.polymux/mcp.json. The file is re-read rather than trusting what the
  * renderer sends back: only the group and the id make the round trip.
  */
 export function resolveDiscoveredMcp(

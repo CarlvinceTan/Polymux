@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type { DriveEntryDto } from "@flareai/protocol";
+import type { DriveEntryDto } from "@polymux/protocol";
 import { contentRange, SIMPLE_UPLOAD_LIMIT, uploadInChunks } from "./chunks.js";
 import { downloadToFile } from "./download.js";
 import { DriveRequestError, jsonRequest, request } from "./http.js";
@@ -23,7 +23,7 @@ const ITEM_FIELDS = "id,name,size,lastModifiedDateTime,folder,file,webUrl,eTag";
 /**
  * OneDrive, through Microsoft Graph.
  *
- * Like Dropbox this uses the app-folder permission, so FlareAI can only ever see
+ * Like Dropbox this uses the app-folder permission, so Polymux can only ever see
  * its own directory. The `common` tenant is used so personal and work accounts
  * both sign in through the same flow.
  */
@@ -96,7 +96,7 @@ export class OneDrive implements DriveAdapter {
           total: drive.quota?.total ?? null,
           appUsed: null,
         },
-        root: "Apps/FlareAI",
+        root: "Apps/Polymux",
         error: null,
       };
     } catch (cause) {

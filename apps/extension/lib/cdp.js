@@ -123,7 +123,7 @@ export function onEvent(tabId, method, listener) {
 
 
 /**
- * A @flareai/browser transport bound to one tab.
+ * A @polymux/browser transport bound to one tab.
  *
  * This is the whole of what the extension contributes to command execution:
  * the shared package owns every command, and this hands it a way to speak CDP

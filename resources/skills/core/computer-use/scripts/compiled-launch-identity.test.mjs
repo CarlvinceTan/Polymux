@@ -10,8 +10,8 @@ function zsh(expression, ...args) {
 }
 
 test('recognises only an exact compiled route argument', () => {
-  assert.equal(zsh('compiled_args_contain "$1" "${@:2}" && print yes || print no', '--flareai-background', '--args', '--flareai-background', '--remote-debugging-port=9334'), 'yes');
-  assert.equal(zsh('compiled_args_contain "$1" "${@:2}" && print yes || print no', 'flareai-background', '--args', '--flareai-background'), 'no');
+  assert.equal(zsh('compiled_args_contain "$1" "${@:2}" && print yes || print no', '--polymux-background', '--args', '--polymux-background', '--remote-debugging-port=9334'), 'yes');
+  assert.equal(zsh('compiled_args_contain "$1" "${@:2}" && print yes || print no', 'polymux-background', '--args', '--polymux-background'), 'no');
 });
 
 test('returns only numeric bundle PIDs absent from the pre-launch snapshot', () => {

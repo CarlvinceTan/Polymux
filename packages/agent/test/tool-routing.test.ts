@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentTool } from "@flareai/core";
+import type { AgentTool } from "@polymux/core";
 import {
   boundedResearchToolTurnBudget,
   inferTaskToolGroups,
@@ -17,7 +17,7 @@ const tool = (name: string): AgentTool => ({
 });
 
 const catalogue = [
-  "browser", "browser_tabs", "browser_current_read", "browser_read", "browser_snapshot_many", "browser_control", "resolve_current_location",
+  "browser", "browser_tabs", "browser_current_read", "browser_read", "browser_snapshot_many", "browser_control", "computer_state", "computer_arbiter", "resolve_current_location",
   "email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all", "email_draft", "email_send",
   "message_chats", "message_read", "message_search", "message_unread", "message_link_alias", "message_send",
   "drive_sources", "drive_list", "drive_read", "drive_write", "drive_move",
@@ -28,14 +28,14 @@ const catalogue = [
 test("task capability routing keeps only explicit groups plus skill reading", () => {
   assert.deepEqual(
     selectTaskTools(catalogue, ["browser", "email"]).map((item) => item.name),
-    ["browser", "browser_tabs", "browser_current_read", "browser_read", "browser_snapshot_many", "browser_control", "email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all", "email_draft", "email_send", "read"],
+    ["browser", "browser_tabs", "browser_current_read", "browser_read", "browser_snapshot_many", "browser_control", "computer_state", "computer_arbiter", "email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all", "email_draft", "email_send", "read"],
   );
 });
 
 test("browser-read exposes only non-mutating current-page evidence tools", () => {
   assert.deepEqual(
     selectTaskTools(catalogue, ["browser-read"]).map((item) => item.name),
-    ["browser_current_read", "read"],
+    ["browser_current_read", "computer_state", "read"],
   );
 });
 
@@ -124,10 +124,10 @@ test("missing, empty, and all routes preserve the complete catalogue", () => {
 
 test("skill routing uses exact names and falls back losslessly on a typo", () => {
   const skills = [
-    { name: "browser-use", description: "Browse", filePath: "/browser/SKILL.md", baseDir: "/browser", disableModelInvocation: false, source: "official" as const },
-    { name: "email-use", description: "Mail", filePath: "/email/SKILL.md", baseDir: "/email", disableModelInvocation: false, source: "official" as const },
+    { name: "computer-use", description: "Browse", filePath: "/browser/SKILL.md", baseDir: "/browser", disableModelInvocation: false, source: "official" as const },
+    { name: "hub-use", description: "Communications", filePath: "/hub/SKILL.md", baseDir: "/hub", disableModelInvocation: false, source: "official" as const },
   ];
-  assert.deepEqual(selectTaskSkills(skills, ["browser-use"]), [skills[0]]);
+  assert.deepEqual(selectTaskSkills(skills, ["computer-use"]), [skills[0]]);
   assert.deepEqual(selectTaskSkills(skills, []), []);
   assert.equal(selectTaskSkills(skills), skills);
   assert.equal(selectTaskSkills(skills, ["browser-ues"]), skills);
@@ -140,7 +140,7 @@ test("internal source groups are lossless by default and bounded when routed", (
   assert.equal(taskGroupEnabled(["browser"], "history"), false);
 });
 
-test("omitted experimental routes infer only explicit read-only evidence families", () => {
+test("omitted routes infer only explicit read-only evidence families", () => {
   assert.deepEqual(
     inferTaskToolGroups(
       "Check funding status",

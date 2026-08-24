@@ -68,7 +68,7 @@ test("a key with nothing waiting on it is forgotten", async () => {
 });
 
 test("an atomic write replaces the file and leaves no temporary behind", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-atomic-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-atomic-"));
   const file = path.join(directory, "registry.md");
   writeFileSync(file, "old");
   writeFileAtomicSync(file, "new");
@@ -77,7 +77,7 @@ test("an atomic write replaces the file and leaves no temporary behind", () => {
 });
 
 test("a failed atomic write leaves the original in place", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-atomic-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-atomic-"));
   const file = path.join(directory, "registry.md");
   writeFileSync(file, "old");
   assert.throws(() =>

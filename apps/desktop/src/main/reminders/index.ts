@@ -125,7 +125,7 @@ export class Reminders {
     if (!second.error) return second.result as T;
     throw new Error(
       second.error === NOT_AUTHORIZED
-        ? "FlareAI has not been given access to Reminders. Allow it in System Settings → Privacy & Security → Reminders."
+        ? "Polymux has not been given access to Reminders. Allow it in System Settings → Privacy & Security → Reminders."
         : second.error,
     );
   }

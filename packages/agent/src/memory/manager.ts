@@ -7,10 +7,10 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-import { writeFileAtomicSync } from "@flareai/core";
-import type { MemoryRecord, Storage } from "@flareai/storage";
+import { writeFileAtomicSync } from "@polymux/core";
+import type { MemoryRecord, Storage } from "@polymux/storage";
 
-const notePrefix = "<!-- flareai-memory:";
+const notePrefix = "<!-- polymux-memory:";
 const noteSuffix = " -->";
 
 export interface MemoryManagerOptions {
@@ -83,7 +83,7 @@ export interface MemoryVaultStatus {
  * A local, reviewable memory vault modelled after Codex Desktop's memory
  * layout. SQLite remains responsible for conversation state and compaction;
  * durable memory lives in plain Markdown files that can be opened, searched,
- * diffed, backed up, and edited outside FlareAI.
+ * diffed, backed up, and edited outside Polymux.
  */
 export class MemoryManager {
   readonly directory: string;
@@ -422,7 +422,7 @@ function registry(memories: MemoryRecord[]): string {
     (memory) => memory.scope === "conversation",
   );
   return [
-    "# FlareAI Memory",
+    "# Polymux Memory",
     "",
     "Local memory registry built from reviewable Markdown source notes.",
     "",
@@ -455,7 +455,7 @@ function summary(memories: MemoryRecord[]): string {
   const header = [
     "# Memory Summary",
     "",
-    "Reviewable local context maintained by FlareAI.",
+    "Reviewable local context maintained by Polymux.",
     "",
   ];
   const groups = groupByKind(memories.filter((memory) => memory.scope === "user"));

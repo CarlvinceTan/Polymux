@@ -237,7 +237,7 @@ export async function keychainSecret(item: string): Promise<string> {
  * cookies) live in the `-wal`, and without it they are simply absent.
  */
 export async function withDatabaseCopy<T>(dbPath: string, read: (db: DatabaseSync) => T): Promise<T> {
-  const dir = await mkdtemp(path.join(tmpdir(), "flareai-chromium-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "polymux-chromium-"));
   try {
     const copy = path.join(dir, path.basename(dbPath));
     await copyFile(dbPath, copy);

@@ -460,7 +460,7 @@ export const handlers = {
   /**
    * Set a file input's files by absolute path. This works where the Polymux
    * version had to refuse: there the file lived on a remote server, whereas
-   * FlareAI's agent and browser share one machine, so the path the agent has
+   * Polymux's agent and browser share one machine, so the path the agent has
    * is a path the browser can open.
    */
   async upload(session, command) {

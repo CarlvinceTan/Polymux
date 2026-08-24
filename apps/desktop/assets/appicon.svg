@@ -2,8 +2,8 @@
      glass edge) to app icons, so the source must fill the canvas edge to
      edge. Artwork that carries its own rounded shape gets set on the system's
      grey backing plate instead, which reads as a halo around the icon. The
-     ground stays white so the black FlareAI mark reads over any wallpaper. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 200 200" role="img" aria-label="FlareAI">
+     ground stays white so the black Polymux mark reads over any wallpaper. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 200 200" role="img" aria-label="Polymux">
   <rect width="200" height="200" fill="#fff"/>
   <!-- The mark is radially symmetric, so it is centred on the tile and held to
        76% of its width: big enough to carry the Dock tile, still clear of the

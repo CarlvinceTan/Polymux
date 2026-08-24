@@ -1,4 +1,4 @@
-import type { AgentContext } from "@flareai/core";
+import type { AgentContext } from "@polymux/core";
 import type {
   AssistantBlock,
   InferenceMessage,
@@ -6,8 +6,8 @@ import type {
   InputBlock,
   ModelRef,
   ReasoningEffort,
-} from "@flareai/inference";
-import type { Storage } from "@flareai/storage";
+} from "@polymux/inference";
+import type { Storage } from "@polymux/storage";
 import { estimateContextTokens, estimateMessageTokens } from "./tokens.js";
 
 export interface CompactionSettings {

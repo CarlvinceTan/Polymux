@@ -9,10 +9,10 @@ import { pathToFileURL } from "node:url";
  * fails in exactly the case that matters — a rendered page image or a clip
  * sitting beside the deliverable it came from.
  *
- * So the renderer is handed `flareai-preview://<token>/<name>` instead, and
+ * So the renderer is handed `polymux-preview://<token>/<name>` instead, and
  * this handler streams the bytes on its behalf. Streaming rather than inlining
  * matters for video, where a data: uri would mean holding the whole file in
- * the page — the same reason `flareai-media://` streams.
+ * the page — the same reason `polymux-media://` streams.
  *
  * The token is the point. Nothing in the url says which file it is, and only
  * the main process mints one, so a page cannot ask for a path it was never
@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
  * refuses a `file://` url outright: reaching the disk stays the host's to
  * decide, never the page's or the agent's to spell.
  */
-export const PREVIEW_SCHEME = "flareai-preview";
+export const PREVIEW_SCHEME = "polymux-preview";
 
 /**
  * Registered before `app.whenReady`: a scheme the renderer treats as ordinary
@@ -85,7 +85,7 @@ export class PreviewGrants {
 }
 
 /**
- * What a request for `flareai-preview://…` resolves to: the file on disk, or
+ * What a request for `polymux-preview://…` resolves to: the file on disk, or
  * nothing at all when the token was never minted here.
  */
 export function previewTarget(grants: PreviewGrants, url: string): string | undefined {

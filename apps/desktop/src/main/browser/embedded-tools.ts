@@ -1,6 +1,6 @@
-import { handlers } from "@flareai/browser";
-import type { AgentTool } from "@flareai/core";
-import type { JsonObject } from "@flareai/inference";
+import { handlers } from "@polymux/browser";
+import type { AgentTool } from "@polymux/core";
+import type { JsonObject } from "@polymux/inference";
 import type { ControlSession } from "./embedded.js";
 import {
   buildCommand,
@@ -12,12 +12,12 @@ import {
 } from "./commands.js";
 
 /**
- * The agent's handle on the FlareAI in-app Browser — the shared browser
+ * The agent's handle on the Polymux in-app Browser — the shared browser
  * skill treats as the default. Tabs the agent opens here are its own, appear in
  * the workspace so the user can watch, and never touch the user's browser
  * session.
  *
- * Page work runs the same @flareai/browser command set as
+ * Page work runs the same @polymux/browser command set as
  * `browser_control` does in the user's external browser, over the same
  * protocol: accessibility snapshots with refs, semantic locators, trusted
  * input, screenshots, console and network, dialogs, uploads. The two tools
@@ -50,7 +50,7 @@ export function createInAppBrowserTool(browser: InAppBrowser): AgentTool {
   return {
     name: "browser",
     description: [
-      "Open and control pages in the FlareAI in-app Browser — the default browser surface.",
+      "Open and control pages in the Polymux in-app Browser — the default browser surface.",
       "'open' loads a url in a new tab and returns its tabId (the tab appears in the workspace);",
       "'url' takes a page address or, when you need to look something up, plain search terms — those go to Google, the default search engine;",
       "'show' brings a tab to the front of the workspace — use it, or open with show: true, only when the user asked to be shown the page ('show me', 'open X for me'), never to interrupt them while you work;",
@@ -150,13 +150,13 @@ export function createInAppBrowserTool(browser: InAppBrowser): AgentTool {
   };
 }
 
-/** Experimental read-only batch surface. A separate tool keeps `tabIds` out
+/** Read-only batch surface. A separate tool keeps `tabIds` out
  * of every ordinary browser call, where provider schema filling can otherwise
  * invent placeholder ids and change the meaning of `open` or `snapshot`. */
 export function createInAppBrowserBatchTool(browser: InAppBrowser): AgentTool {
   return {
     name: "browser_snapshot_many",
-    description: "Read 1-8 currently open FlareAI in-app browser tabs. Two or more are read concurrently; a single validated id is accepted as the safe equivalent of one snapshot. A stale id is reported for that item without discarding valid pages. First call browser action 'tabs', then pass only exact ids present in that result.",
+    description: "Read 1-8 currently open Polymux in-app browser tabs. Two or more are read concurrently; a single validated id is accepted as the safe equivalent of one snapshot. A stale id is reported for that item without discarding valid pages. First call browser action 'tabs', then pass only exact ids present in that result.",
     executionMode: "parallel",
     parameters: {
       type: "object",
@@ -202,7 +202,7 @@ export function createInAppBrowserBatchTool(browser: InAppBrowser): AgentTool {
   };
 }
 
-/** Experimental research primitive: opening and reading are one semantic
+/** Research primitive: opening and reading are one semantic
  * operation, matching what the worker actually wants and avoiding a second
  * model/tool round solely to snapshot a page it just opened. */
 export function createInAppBrowserReadTool(
@@ -216,7 +216,7 @@ export function createInAppBrowserReadTool(
   const completedReadsByRun = new Map<string, Map<string, Awaited<ReturnType<AgentTool["execute"]>>>>();
   const tool: InAppBrowserResearchTool = {
     name: "browser_read",
-    description: "Open one URL or web-search query in a hidden FlareAI in-app browser tab and return the page's accessibility content in the same call. Same-run direct URLs on the same origin reuse that worker's tab when idle. A valid site:domain query automatically opens and reads its first same-domain result, so do not spend a second call requesting that page. For a recommendation or comparison on one known official domain, use verifyTopResults=2 or 3 to read that many same-domain results concurrently in this one call. It refuses unscoped or cross-domain auto-following. Otherwise make one broad discovery query, inspect it, then open only the best exact first-party pages.",
+    description: "Open one URL or web-search query in a hidden Polymux in-app browser tab and return the page's accessibility content in the same call. Same-run direct URLs on the same origin reuse that worker's tab when idle. A valid site:domain query automatically opens and reads its first same-domain result, so do not spend a second call requesting that page. For a recommendation or comparison on one known official domain, use verifyTopResults=2 or 3 to read that many same-domain results concurrently in this one call. It refuses unscoped or cross-domain auto-following. Otherwise make one broad discovery query, inspect it, then open only the best exact first-party pages.",
     executionMode: "parallel",
     parameters: {
       type: "object",

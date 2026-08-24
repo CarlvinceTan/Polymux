@@ -1,4 +1,4 @@
-import type {TaskCardDto, TaskCardInput, TaskCardPatch} from "@flareai/protocol";
+import type {TaskCardDto, TaskCardInput, TaskCardPatch} from "@polymux/protocol";
 import type {ChatPool} from "../agent/chat-pool.js";
 
 /** Tasks is a chat-scoped view over the durable ChatPool. */

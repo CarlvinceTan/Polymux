@@ -1,16 +1,16 @@
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { flareaiPath } from "../system/paths.js";
+import { polymuxPath } from "../system/paths.js";
 import type {
   AgentToolResult,
   ToolCallBlock,
   ToolHookDecision,
   ToolHooks,
-} from "@flareai/core";
+} from "@polymux/core";
 
 /**
- * User-configured tool lifecycle hooks, read from `~/.flareai/hooks.json`.
+ * User-configured tool lifecycle hooks, read from `~/.polymux/hooks.json`.
  *
  * ```json
  * {
@@ -19,7 +19,7 @@ import type {
  *     {
  *       "event": "pre-tool",
  *       "tools": ["write", "edit", "bash"],
- *       "command": "python3 ~/.flareai/hooks/guard.py",
+ *       "command": "python3 ~/.polymux/hooks/guard.py",
  *       "timeoutMs": 10000
  *     }
  *   ]
@@ -34,7 +34,7 @@ import type {
  * Post-tool commands are observation only; their exit codes are ignored.
  *
  * The config is re-read when its mtime changes, so edits apply to the next
- * tool call without restarting FlareAI. A missing file means no hooks.
+ * tool call without restarting Polymux. A missing file means no hooks.
  */
 
 export interface HookRule {
@@ -53,7 +53,7 @@ export class HookEngine implements ToolHooks {
   #loadedMtime = -1;
   #loadError: string | null = null;
 
-  constructor(configPath = flareaiPath("hooks.json")) {
+  constructor(configPath = polymuxPath("hooks.json")) {
     this.#configPath = configPath;
   }
 

@@ -41,10 +41,10 @@ export const SAFARI_PROFILE_ID = "safari";
  * pane because "grant Full Disk Access" sends people to the Files and Folders
  * list, which is a different setting and will not fix this — and it names the
  * relaunch because TCC decisions are read at launch, so toggling the switch
- * while FlareAI is running changes nothing until it starts again.
+ * while Polymux is running changes nothing until it starts again.
  */
 export const FULL_DISK_ACCESS_REASON =
-  "Safari keeps its cookies in a container macOS protects, so FlareAI cannot read them without Full Disk Access. Open System Settings → Privacy & Security → Full Disk Access, switch FlareAI on, then quit and reopen FlareAI.";
+  "Safari keeps its cookies in a container macOS protects, so Polymux cannot read them without Full Disk Access. Open System Settings → Privacy & Security → Full Disk Access, switch Polymux on, then quit and reopen Polymux.";
 
 /**
  * Why there is no Safari password path, and why adding one would be wasted
@@ -102,7 +102,7 @@ export function safariCookiePaths(home: string): string[] {
  * The Safari profile, whether or not it can be read. An unreadable one is
  * still worth returning: the user needs to see Safari in the list with the
  * reason attached, rather than watch it silently not appear and conclude
- * FlareAI cannot import from it at all.
+ * Polymux cannot import from it at all.
  *
  * Empty only when there is no Safari jar to speak of — another platform, or a
  * Mac where Safari has never stored a cookie.

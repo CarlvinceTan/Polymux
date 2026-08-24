@@ -1,7 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {expect, test, type Locator, type Page} from '@playwright/test';
 
-const editor = (page: Page) => page.getByRole('textbox', {name: 'Message FlareAI'});
+const editor = (page: Page) => page.getByRole('textbox', {name: 'Message Polymux'});
 const chatDrawer = (page: Page) => page.locator('aside.chat-drawer');
 const workspaceDrawer = (page: Page) => page.locator('aside.workspace-drawer');
 const summaryCard = (page: Page) => page.locator('aside.summary-panel');
@@ -19,12 +19,12 @@ async function send(page: Page, text: string) {
 }
 
 test.describe('welcome view', () => {
-  test('shows a restrained FlareAI startup screen', async ({page}) => {
+  test('shows a restrained Polymux startup screen', async ({page}) => {
     await page.goto('/');
-    const splash = page.getByRole('status', {name: 'Loading FlareAI'});
+    const splash = page.getByRole('status', {name: 'Loading Polymux'});
     await expect(splash).toBeVisible();
     await expect(splash.locator('svg.startup-mark')).toBeVisible();
-    await expect(splash.locator('.startup-word')).toHaveText('FlareAI');
+    await expect(splash.locator('.startup-word')).toHaveText('Polymux');
     // Freeze the sequence before reading it. The rays drop their animation the
     // moment it finishes — that is what leaves the settled mark as plain
     // untransformed paths — so a machine slow enough to arrive after the last
@@ -76,7 +76,7 @@ test.describe('welcome view', () => {
       const round = (value: number) => Math.round(value * 100) / 100;
       return {markWidth: round(mark.width), markHeight: round(mark.height), gap: getComputedStyle(node).gap, fontSize: style.fontSize, fontWeight: style.fontWeight, tracking: style.letterSpacing};
     });
-    // The FlareAI mark is radially symmetric, so the lockup box is square.
+    // The Polymux mark is radially symmetric, so the lockup box is square.
     expect(startupLockup).toEqual({markWidth: 64, markHeight: 64, gap: '12px', fontSize: '48px', fontWeight: '750', tracking: '-2.16px'});
   });
 
@@ -94,14 +94,14 @@ test.describe('welcome view', () => {
    */
   test('holds the startup splash for the whole sequence', async ({page}) => {
     await page.goto('/');
-    const splash = page.getByRole('status', {name: 'Loading FlareAI'});
+    const splash = page.getByRole('status', {name: 'Loading Polymux'});
     await expect(splash).toBeVisible();
     await page.waitForTimeout(2000);
     await expect(splash).toBeVisible();
     await expect(splash).toHaveCount(0, {timeout: 1600});
   });
 
-  test('shows the FlareAI mark, heading and composer, and nothing else', async ({page}) => {
+  test('shows the Polymux mark, heading and composer, and nothing else', async ({page}) => {
     await page.goto('/');
     await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
 
@@ -112,11 +112,11 @@ test.describe('welcome view', () => {
     });
     expect(welcomeGeometry).toEqual({markWidth: 44, markToHeading: 10});
 
-    const logo = await page.evaluate(() => fetch('/flareai.svg').then((response) => response.text()));
+    const logo = await page.evaluate(() => fetch('/polymux.svg').then((response) => response.text()));
     expect(logo).toContain('fill="#000"');
     expect(logo).not.toContain('<rect');
 
-    // Intentional FlareAI simplification: no recent chats, no suggestion cards.
+    // Intentional Polymux simplification: no recent chats, no suggestion cards.
     await expect(page.locator('.welcome-features')).toHaveCount(0);
     await expect(page.locator('.welcome-recents')).toHaveCount(0);
     await expect(page.locator('.recent-grid')).toHaveCount(0);
@@ -129,7 +129,7 @@ test.describe('welcome view', () => {
 
   test('exposes Attach, Voice, Goal and Options without plugins or teams', async ({page}) => {
     await page.goto('/');
-    const toolbar = page.locator('.flareai-prompt-toolbar');
+    const toolbar = page.locator('.polymux-prompt-toolbar');
     await expect(toolbar.getByText('ATTACH')).toBeVisible();
     await expect(toolbar.getByText('VOICE')).toBeVisible();
     await expect(toolbar.getByText('GOAL')).toBeVisible();
@@ -155,7 +155,7 @@ test.describe('welcome view', () => {
     const modal = page.getByRole('region', {name: 'Settings'});
     await expect(modal).toBeVisible();
     await expect(modal.getByRole('heading', {name: 'General'})).toBeVisible();
-    await expect(modal.getByText('Manage FlareAI preferences and access.')).toBeVisible();
+    await expect(modal.getByText('Manage Polymux preferences and access.')).toBeVisible();
     // A full page now, not a sheet: it fills the window and starts at its corner.
     const modalBounds = await modal.boundingBox();
     const viewport = page.viewportSize();
@@ -185,7 +185,7 @@ test.describe('welcome view', () => {
     await theme.getByRole('radio', {name: 'Dark'}).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expect(page.locator('.brand-mark')).toHaveCSS('filter', 'invert(1)');
-    await expect(page.locator('.flareai-prompt-shell').first()).toHaveCSS('background-color', 'rgb(43, 43, 43)');
+    await expect(page.locator('.polymux-prompt-shell').first()).toHaveCSS('background-color', 'rgb(43, 43, 43)');
     await expect(timeAccess).toHaveCSS('background-color', 'rgb(231, 231, 231)');
     await expect(timeAccess.locator('span')).toHaveCSS('background-color', 'rgb(36, 36, 36)');
     await theme.getByRole('radio', {name: 'Light'}).click();
@@ -227,11 +227,11 @@ test.describe('welcome view', () => {
     const officialMcp = modal.getByRole('button', {name: /GitHub Official/});
     await expect(officialMcp.locator('.official-rail-stamp')).toBeVisible();
     await expect(officialMcp.locator('.mcp-name-status')).toHaveCount(0);
-    await expect(officialMcp.locator('small')).toHaveText('FlareAI · Connected');
+    await expect(officialMcp.locator('small')).toHaveText('Polymux · Connected');
     await officialMcp.click();
     await expect(modal.getByRole('heading', {name: 'GitHub'})).toBeVisible();
     await expect(modal.locator('.options-detail-header .options-badge')).toHaveCount(0);
-    await expect(modal.locator('.skill-meta')).toContainText('Bundled with FlareAI');
+    await expect(modal.locator('.skill-meta')).toContainText('Bundled with Polymux');
     await expect(modal.locator('.skill-meta')).toContainText('Connected');
     await expect(modal.getByText('Last error')).toHaveCount(0);
     await modal.getByRole('button', {name: /Filesystem/}).click();
@@ -295,7 +295,7 @@ test.describe('welcome view', () => {
     const officialPdf = modal.getByRole('button', {name: /PDF Official/});
     await expect(officialPdf).toBeVisible();
     await expect(officialPdf.locator('[data-icon="verified"]')).toBeVisible();
-    await expect(officialPdf.locator('small')).toHaveText('FlareAI · Active');
+    await expect(officialPdf.locator('small')).toHaveText('Polymux · Active');
     await expect(officialPdf.locator('.integration-state')).toHaveCount(0);
     const officialSealGap = await officialPdf.evaluate((row) => {
       const name = row.querySelector('.skill-name-line strong')!.getBoundingClientRect();
@@ -363,9 +363,9 @@ test.describe('welcome view', () => {
     await expect(officialBadge.locator('[data-icon="verified"]')).toBeVisible();
     const officialMeta = modal.locator('.skill-meta');
     await expect(officialMeta.locator('dt')).toHaveText(['Author', 'Category', 'Last edited', 'Source']);
-    await expect(officialMeta).toContainText('FlareAI');
+    await expect(officialMeta).toContainText('Polymux');
     await expect(officialMeta).toContainText('Documents');
-    await expect(officialMeta).toContainText('Bundled with FlareAI');
+    await expect(officialMeta).toContainText('Bundled with Polymux');
     const customSkill = modal.getByRole('button', {name: /Personal Research.*Active/});
     await expect(customSkill).toBeVisible();
     await customSkill.click();
@@ -374,7 +374,7 @@ test.describe('welcome view', () => {
     await expect(modal.locator('.skill-detail > .options-detail-header')).toHaveCSS('height', '20px');
     const customMeta = modal.locator('.skill-meta');
     await expect(customMeta).toContainText('Custom');
-    await expect(customMeta).toContainText('FlareAI · ~/.flareai/skills');
+    await expect(customMeta).toContainText('Polymux · ~/.polymux/skills');
     const skillPathBottomGap = await modal.locator('.skill-detail').evaluate((detail) => {
       const path = detail.querySelector('.options-path')!.getBoundingClientRect();
       const bounds = detail.getBoundingClientRect();
@@ -388,7 +388,7 @@ test.describe('welcome view', () => {
     await expect(modal.getByLabel(/Selected model:/)).toHaveCount(0);
     // The tab opens on the roles, not the catalogue: the directory is how one
     // of them is filled, and it is reached from that role's own row.
-    await expect(modal.locator('.role-options .general-setting-copy h4')).toHaveText(['Main', 'Task', 'Judge', 'Compaction', 'Speech', 'Image generation', 'Video generation']);
+    await expect(modal.locator('.role-options .general-setting-copy h4')).toHaveText(['Main', 'Subagent', 'Judge', 'Compaction', 'Speech', 'Image generation', 'Video generation']);
     await modal.getByRole('button', {name: /as the main model/}).click();
     // The directory asks for something different, and says so.
     await expect(modal.getByText('Click a model to assign it to a role.')).toBeVisible();
@@ -774,7 +774,7 @@ test.describe('welcome view', () => {
     const commitWriter = claude.locator('li').filter({hasText: 'commit-writer'});
     await expect(commitWriter).toContainText('~/.claude/skills/commit-writer');
 
-    // A skill FlareAI already has reads as in use rather than offering to add
+    // A skill Polymux already has reads as in use rather than offering to add
     // it a second time, and so does anything under the shared directory.
     await expect(claude.locator('li').filter({hasText: 'pdf'})).toContainText('In use');
     const shared = modal.locator('.discovery-group').filter({hasText: 'Shared skills'});
@@ -871,7 +871,7 @@ test.describe('welcome view', () => {
     await expect(modal.locator('.discovery-groups li').filter({hasText: 'repo-map'})).toBeVisible();
   });
 
-  test('toggles integrations and edits FlareAI-owned skills and MCP servers', async ({page}) => {
+  test('toggles integrations and edits Polymux-owned skills and MCP servers', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
     const modal = page.getByRole('region', {name: 'Settings'});
@@ -1463,7 +1463,7 @@ test.describe('conversation', () => {
     const user = page.locator('.message:not(.assistant)').first();
     const assistant = page.locator('.message.assistant').first();
     await expect(user).toContainText('Test the assembled chat');
-    await expect(assistant).toContainText(/assembled FlareAI chat surface/, {timeout: 4000});
+    await expect(assistant).toContainText(/assembled Polymux chat surface/, {timeout: 4000});
 
     // The user's turn is a right-aligned pill; the assistant's is full width.
     const bubble = await user.locator('.message-content').evaluate((node) => {
@@ -1528,7 +1528,7 @@ test.describe('conversation', () => {
 
     const user = page.locator('.message:not(.assistant)').first();
     const assistant = page.locator('.message.assistant').first();
-    await expect(assistant).toContainText(/assembled FlareAI chat surface/, {timeout: 4000});
+    await expect(assistant).toContainText(/assembled Polymux chat surface/, {timeout: 4000});
 
     await user.hover();
     await user.getByRole('button', {name: 'Edit'}).click();
@@ -1663,7 +1663,7 @@ test.describe('conversation', () => {
   test('shows one readable activity block for a multi-step agent run', async ({page}) => {
     await page.goto('/');
     await send(page, '__demo_activity__');
-    await expect(page.locator('.message.assistant')).toContainText('assembled FlareAI chat surface', {timeout: 4000});
+    await expect(page.locator('.message.assistant')).toContainText('assembled Polymux chat surface', {timeout: 4000});
     // Settled and collapsed, the trail hides entirely behind the heading.
     await expect(page.locator('.agent-activity-list')).toHaveCount(0);
     await page.locator('.agent-activity-heading').click();
@@ -1702,14 +1702,14 @@ test.describe('conversation', () => {
   test('hides the activity group entirely for a run that used no tools', async ({page}) => {
     await page.goto('/');
     await send(page, 'just a question');
-    await expect(page.locator('.message.assistant')).toContainText('assembled FlareAI chat surface', {timeout: 4000});
+    await expect(page.locator('.message.assistant')).toContainText('assembled Polymux chat surface', {timeout: 4000});
     await expect(page.locator('.agent-activity')).toHaveCount(0);
   });
 
   test('restores the worked-duration and activity list for a past chat', async ({page}) => {
     await page.goto('/');
     await send(page, '__demo_activity__');
-    await expect(page.locator('.message.assistant')).toContainText('assembled FlareAI chat surface', {timeout: 4000});
+    await expect(page.locator('.message.assistant')).toContainText('assembled Polymux chat surface', {timeout: 4000});
     await expect(page.locator('.agent-activity-heading')).toContainText(/Work(ing|ed) for \d+s/);
 
     await page.getByRole('button', {name: 'New Chat'}).click();
@@ -2191,7 +2191,7 @@ test.describe('chat drawer', () => {
     // Workspace opened last, so the chat drawer gives way — exactly to its own minimum.
     await expect(chatDrawer(page)).toHaveCSS('width', '180px');
     // One row of these buttons is under 20px tall; a wrap doubles it.
-    const toolbarOnOneLine = () => page.locator('.flareai-prompt-toolbar').evaluate((bar) =>
+    const toolbarOnOneLine = () => page.locator('.polymux-prompt-toolbar').evaluate((bar) =>
       bar.getBoundingClientRect().height < 24);
     expect(await toolbarOnOneLine()).toBe(true);
     // Growing the chat drawer now pushes the workspace back toward its own minimum
@@ -2477,7 +2477,7 @@ test.describe('workspace drawer', () => {
 
   test('offers the pages already visited, and opens one', async ({page}) => {
     await page.addInitScript(() => {
-      localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
+      localStorage.setItem('polymuxBrowserHistory', JSON.stringify([
         {url: 'https://example.com/one', title: 'Example One'},
         {url: 'https://example.com/two', title: 'Example Two'},
         {url: 'https://example.com/three', title: 'Example Three'},
@@ -2500,7 +2500,7 @@ test.describe('workspace drawer', () => {
       // A 1x1 black png: perfectly decodable, and exactly the kind of value
       // older builds wrote alongside the visit.
       const stored = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-      localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
+      localStorage.setItem('polymuxBrowserHistory', JSON.stringify([
         {url: 'https://example.com/one', title: 'Example One', favicon: stored},
         {url: 'https://example.com/two', title: 'Example Two'},
         {url: 'https://example.com/three', title: 'Example Three'},
@@ -2521,7 +2521,7 @@ test.describe('workspace drawer', () => {
 
   test('leaves search-result pages out of the recent list', async ({page}) => {
     await page.addInitScript(() => {
-      localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
+      localStorage.setItem('polymuxBrowserHistory', JSON.stringify([
         {url: 'https://www.google.com/search?q=nus+chatgpt+edu', title: 'nus chatgpt edu - Google Search'},
         {url: 'https://duckduckgo.com/?q=ai+events+singapore', title: 'ai events singapore at DuckDuckGo'},
         {url: 'https://www.bing.com/search?q=luma+ai', title: 'luma ai - Search'},
@@ -2545,7 +2545,7 @@ test.describe('workspace drawer', () => {
 
   test('offers however few pages have been visited, and no section at all with none', async ({page}) => {
     await page.addInitScript(() => {
-      localStorage.setItem('flareaiBrowserHistory', JSON.stringify([
+      localStorage.setItem('polymuxBrowserHistory', JSON.stringify([
         {url: 'https://example.com/one', title: 'Example One'},
         {url: 'https://example.com/two', title: 'Example Two'},
       ]));
@@ -2669,7 +2669,7 @@ test.describe('responsive', () => {
     await page.setViewportSize({width: 1250, height: 720});
     await page.goto('/');
     await send(page, 'first timeline turn');
-    await expect(page.locator('.message.assistant').first()).toContainText(/assembled FlareAI chat surface/, {timeout: 4000});
+    await expect(page.locator('.message.assistant').first()).toContainText(/assembled Polymux chat surface/, {timeout: 4000});
     const rail = page.locator('.timeline-rail');
     // The rail stands down until it has enough turns to draw its full hover
     // curve, so the gutter is only reserved once the conversation is long enough.
@@ -2683,7 +2683,7 @@ test.describe('responsive', () => {
     const positions = await page.evaluate(() => {
       const rail = document.querySelector('.timeline-rail')!.getBoundingClientRect();
       const message = document.querySelector('.message.assistant')!.getBoundingClientRect();
-      const prompt = document.querySelector('.flareai-prompt-shell')!.getBoundingClientRect();
+      const prompt = document.querySelector('.polymux-prompt-shell')!.getBoundingClientRect();
       const chatDrawer = document.querySelector('.chat-drawer');
       const chatDrawerRect = chatDrawer?.getBoundingClientRect();
       const contentLeft = chatDrawer && chatDrawerRect && getComputedStyle(chatDrawer).position !== 'fixed'
@@ -2776,7 +2776,7 @@ test.describe('dictation', () => {
     await page.getByRole('button', {name: 'Back to app'}).click();
   }
 
-  const voiceButton = (page: Page) => page.locator('.flareai-prompt-toolbar button', {hasText: /VOICE|LISTENING/});
+  const voiceButton = (page: Page) => page.locator('.polymux-prompt-toolbar button', {hasText: /VOICE|LISTENING/});
 
   test('the button reads LISTENING before the microphone has opened', async ({page}) => {
     await page.addInitScript(() => {
@@ -2833,7 +2833,7 @@ test.describe('first-run setup', () => {
   /** `?onboarding` puts the demo API into a genuine first-run state. */
   const start = async (page: import('@playwright/test').Page) => {
     await page.goto('/?onboarding');
-    await expect(page.getByRole('region', {name: 'Set up FlareAI'})).toBeVisible({timeout: 15000});
+    await expect(page.getByRole('region', {name: 'Set up Polymux'})).toBeVisible({timeout: 15000});
   };
 
   /**
@@ -2842,8 +2842,8 @@ test.describe('first-run setup', () => {
    */
   const begin = async (page: import('@playwright/test').Page) => {
     await start(page);
-    const setup = page.getByRole('region', {name: 'Set up FlareAI'});
-    await expect(setup.getByRole('heading', {name: 'FlareAI'})).toBeVisible();
+    const setup = page.getByRole('region', {name: 'Set up Polymux'});
+    await expect(setup.getByRole('heading', {name: 'Polymux'})).toBeVisible();
     // Nothing is behind the welcome screen, so it offers no way back — and
     // nothing has been asked of you yet, so there is nothing to skip either.
     await expect(setup.getByRole('button', {name: 'Back'})).toHaveCount(0);
@@ -2858,7 +2858,7 @@ test.describe('first-run setup', () => {
   test('walks every step and ends in the app', async ({page}) => {
     const setup = await begin(page);
 
-    // The Hub comes first, and starting it is the one thing to decide: FlareAI
+    // The Hub comes first, and starting it is the one thing to decide: Polymux
     // makes its own account on it, so there are no fields.
     await expect(setup.getByRole('heading')).toContainText(
       'One place for everything you talk on',
@@ -2867,7 +2867,7 @@ test.describe('first-run setup', () => {
     await setup.getByRole('button', {name: 'Continue'}).click();
 
     // Model: a provider is preselected, and connecting needs a key.
-    await expect(setup.getByRole('heading')).toContainText('Choose who FlareAI thinks with');
+    await expect(setup.getByRole('heading')).toContainText('Choose who Polymux thinks with');
     // Every provider is in the one scrolling grid, and the search above it
     // narrows that grid rather than opening a list of its own.
     // Hosted providers and the local runtimes share one list.
@@ -3072,7 +3072,7 @@ test.describe('hub view', () => {
     const view = page.locator('.hub-view');
 
     await page.evaluate(() => {
-      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+      (window as unknown as {polymuxDemoReveal: (request: unknown) => void}).polymuxDemoReveal({
         surface: 'hub',
         chat: {name: 'Jules Tan', draft: 'Thursday works — see you at 2.'},
       });
@@ -3089,7 +3089,7 @@ test.describe('hub view', () => {
     const view = page.locator('.hub-view');
 
     await page.evaluate(() => {
-      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+      (window as unknown as {polymuxDemoReveal: (request: unknown) => void}).polymuxDemoReveal({
         surface: 'hub',
         mail: {
           account: 'demo@example.com',
@@ -3109,7 +3109,7 @@ test.describe('hub view', () => {
     const view = page.locator('.hub-view');
 
     await page.evaluate(() => {
-      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+      (window as unknown as {polymuxDemoReveal: (request: unknown) => void}).polymuxDemoReveal({
         surface: 'hub',
         chat: {name: 'Jules Tan', replyTo: 'c1', draft: 'Yes — 2pm works.'},
       });
@@ -3125,7 +3125,7 @@ test.describe('hub view', () => {
     const view = page.locator('.hub-view');
 
     await page.evaluate(() => {
-      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+      (window as unknown as {polymuxDemoReveal: (request: unknown) => void}).polymuxDemoReveal({
         surface: 'hub',
         mail: {
           account: 'demo@example.com',
@@ -3151,7 +3151,7 @@ test.describe('hub view', () => {
     const view = page.locator('.hub-view');
 
     await page.evaluate(() => {
-      (window as unknown as {flareaiDemoReveal: (request: unknown) => void}).flareaiDemoReveal({
+      (window as unknown as {polymuxDemoReveal: (request: unknown) => void}).polymuxDemoReveal({
         surface: 'hub',
         mail: {
           account: 'demo@example.com',
@@ -3607,7 +3607,7 @@ test.describe('interface language', () => {
     // The page retranslates in place — including its own accessible name, so
     // the region has to be found again under the Spanish one.
     await expect(page.getByRole('region', {name: 'Ajustes'})).toBeVisible();
-    await expect(page.getByText('El idioma de la interfaz de FlareAI')).toBeVisible();
+    await expect(page.getByText('El idioma de la interfaz de Polymux')).toBeVisible();
     await page.getByRole('button', {name: 'Volver a la app'}).click();
 
     // …and so does the app behind it, down to the composer's placeholder.
@@ -3868,7 +3868,7 @@ test.describe('browser settings', () => {
     // Passing no path opens the picker in the main process; the demo stands in
     // for it and answers with the folder that was chosen.
     await modal.getByRole('button', {name: 'Change'}).click();
-    await expect(modal.getByText('/demo/Documents/FlareAI')).toBeVisible();
+    await expect(modal.getByText('/demo/Documents/Polymux')).toBeVisible();
 
     const ask = modal.getByRole('switch', {name: 'Ask where to save each file'});
     await expect(ask).toHaveAttribute('aria-checked', 'false');
@@ -4050,7 +4050,7 @@ test.describe('notification settings', () => {
 
   test('says so when the system will not show a notification at all', async ({page}) => {
     const modal = await openNotifications(page);
-    await expect(modal.getByText('Let FlareAI notify you outside the app')).toBeVisible();
+    await expect(modal.getByText('Let Polymux notify you outside the app')).toBeVisible();
     await modal.getByRole('button', {name: 'Send a test'}).click();
     // The browser demo has no notification centre behind it, so the row is
     // expected to report exactly that rather than claim success.

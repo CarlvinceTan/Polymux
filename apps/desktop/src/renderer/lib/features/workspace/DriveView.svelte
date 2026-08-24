@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type {DriveProviderId} from '@flareai/protocol';
+  import type {DriveProviderId} from '@polymux/protocol';
   import {activeLocale, translate, type MessageKey} from '../../../i18n';
   import type {MenuOption} from '../../shared/components/Menu.svelte';
 
@@ -771,7 +771,7 @@
    * folder they land on. Which one is happening is read off the drag itself,
    * so a folder highlights the same way for both.
    */
-  const DRIVE_DRAG_TYPE = 'application/x-flareai-drive';
+  const DRIVE_DRAG_TYPE = 'application/x-polymux-drive';
 
   /** Ids being dragged out of the list. Held here rather than read back from
    * `dataTransfer`, which refuses to be read until the drop lands. */
@@ -1103,14 +1103,14 @@
               <Icon name="folder-move" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
             </button>
             {#if moveOpen}
-              <div class="flareai-dropdown-menu fb-move-menu" role="menu">
+              <div class="polymux-dropdown-menu fb-move-menu" role="menu">
                 <label class="fb-move-search">
                   <Icon name="search" size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
                   <input bind:value={moveQuery} type="search" placeholder={$t('drive.searchPlaceholder')} aria-label={$t('drive.searchFiles')}/>
                 </label>
                 <div class="fb-move-folders">
                 {#each filteredMoveTargets as target, index (target.id)}
-                  <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => requestMove(target)}>
+                  <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => requestMove(target)}>
                     <span class="fb-move-name">
                       <Icon name="folder" size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
                       <!-- The first entry is the way back up when there is one,
@@ -1125,7 +1125,7 @@
                 </div>
                 <div class="fb-move-providers" role="group" aria-label={$t('drive.storage')}>
                   {#each moveProviderTargets as source (source.id)}
-                    <button type="button" class="flareai-dropdown-item" role="menuitemradio" aria-checked={source.id === currentMoveSourceId} onclick={() => chooseMoveProvider(source)}>
+                    <button type="button" class="polymux-dropdown-item" role="menuitemradio" aria-checked={source.id === currentMoveSourceId} onclick={() => chooseMoveProvider(source)}>
                       <span class="fb-move-name">
                         {#if source.provider}<DriveProviderLogo provider={source.provider} size={13} plain/>{/if}
                         <span>{source.provider === 'local' ? providerLabel('local') : source.name}</span>

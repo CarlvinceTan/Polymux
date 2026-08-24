@@ -2,7 +2,7 @@ import {readFile} from "node:fs/promises";
 import {createHmac} from "node:crypto";
 import path from "node:path";
 import {mediaUrl} from "./media-url.js";
-import {COMMS_PLATFORMS} from "@flareai/protocol";
+import {COMMS_PLATFORMS} from "@polymux/protocol";
 import type {
   CommsBridgeAccountDto,
   CommsBridgeDto,
@@ -11,7 +11,7 @@ import type {
   CommsLoginFlowDto,
   CommsLoginStepDto,
   CommsPlatform,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 
 /** Provisioning route prefix every bridgev2 bridge serves its login API under. */
 const BRIDGEV2_PREFIX = "_matrix/provision/v3";
@@ -123,7 +123,7 @@ export class MatrixHub {
     const secret = await this.#registrationSecret();
     if (!secret)
       throw new Error(
-        "Could not read the homeserver's registration secret, so FlareAI cannot create its own account. Sign in with an existing account instead.",
+        "Could not read the homeserver's registration secret, so Polymux cannot create its own account. Sign in with an existing account instead.",
       );
     const {nonce} = await this.#json<{nonce: string}>(
       `${this.#homeserverUrl}/_synapse/admin/v1/register`,
@@ -144,7 +144,7 @@ export class MatrixHub {
           password,
           admin: false,
           mac,
-          initial_device_display_name: "FlareAI",
+          initial_device_display_name: "Polymux",
         },
       },
     );
@@ -179,7 +179,7 @@ export class MatrixHub {
    * appservice is registered here and its traffic can actually arrive.
    *
    * A relay can be perfectly healthy and still be delivering somewhere else
-   * entirely; asking the relay how it is does not answer whether FlareAI can
+   * entirely; asking the relay how it is does not answer whether Polymux can
    * see anything it carries. Only the hub can answer that.
    */
   async hasBridgeBot(localpart: string): Promise<boolean> {
@@ -222,7 +222,7 @@ export class MatrixHub {
           type: "m.login.password",
           identifier: {type: "m.id.user", user: localpart},
           password,
-          initial_device_display_name: "FlareAI",
+          initial_device_display_name: "Polymux",
         },
       },
     );
@@ -567,7 +567,7 @@ export class MatrixHub {
 
   /** A transaction id makes a send idempotent if the request is retried. */
   #txnId(): string {
-    return `flareai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return `polymux-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
   /**
@@ -632,7 +632,7 @@ export class MatrixHub {
     const {matrixToken} = this.#auth();
     if (!matrixToken)
       throw new Error(
-        "FlareAI is not signed in to the Matrix hub. Open Settings → Communications to connect it.",
+        "Polymux is not signed in to the Matrix hub. Open Settings → Communications to connect it.",
       );
     return this.#json<T>(`${this.#homeserverUrl}${endpoint}`, {
       method: options.method,
@@ -669,7 +669,7 @@ export class MatrixHub {
         // Reached only by a platform with no route and no relay handler of its
         // own — WeChat's row is built from its relay before this is asked.
         error:
-          "FlareAI has no way to bring this platform in yet, so there is nothing to link here.",
+          "Polymux has no way to bring this platform in yet, so there is nothing to link here.",
       };
 
     const whoami = await this.#provision<WhoamiResponse>(route, "whoami", {}).catch(
@@ -856,7 +856,7 @@ export class MatrixHub {
       const secret = await this.#sharedSecret(route);
       if (!secret)
         throw new ProvisioningError(
-          `Could not read ${route}'s provisioning secret from the hub, and FlareAI holds no Matrix token for this bridge.`,
+          `Could not read ${route}'s provisioning secret from the hub, and Polymux holds no Matrix token for this bridge.`,
           0,
           null,
         );
@@ -1007,9 +1007,9 @@ interface RawEvent {
     displayname?: string;
     avatar_url?: string;
     /** Written by a bridge onto media it could not fetch; see `viewIn`. */
-    "co.flareai.view_in"?: {app?: string; url?: string};
+    "co.polymux.view_in"?: {app?: string; url?: string};
     /** Set by the WeChat bridge on a sticker, which it sends as a picture. */
-    "co.flareai.sticker"?: boolean;
+    "co.polymux.sticker"?: boolean;
     /** Set on `m.bridge`: which network the room is a portal for. */
     protocol?: {id?: string};
     /** mautrix marks direct chats "dm" here; groups carry their own type. */
@@ -1231,7 +1231,7 @@ function withEdits(chunk: RawEvent[]): RawEvent[] {
 function previewOf(event: RawEvent): string {
   // Either shape of sticker: its own event type, or a picture a bridge marked
   // as one because it sends stickers as images.
-  if (event.type === "m.sticker" || event.content?.["co.flareai.sticker"]) return "Sticker";
+  if (event.type === "m.sticker" || event.content?.["co.polymux.sticker"]) return "Sticker";
   switch (contentOf(event)?.msgtype) {
     case "m.image":
       return "Photo";
@@ -1255,7 +1255,7 @@ const ATTACHMENT_KINDS: Record<string, MatrixAttachment["kind"]> = {
 
 function attachmentsOf(event: RawEvent): MatrixAttachment[] {
   // A sticker carries no msgtype; the event type is what says it is a picture.
-  const sticker = event.type === "m.sticker" || Boolean(event.content?.["co.flareai.sticker"]);
+  const sticker = event.type === "m.sticker" || Boolean(event.content?.["co.polymux.sticker"]);
   const kind = sticker ? "image" : ATTACHMENT_KINDS[event.content?.msgtype ?? ""];
   const url = mediaUrl(event.content?.url);
   if (!kind || !url) return [];
@@ -1296,10 +1296,10 @@ function toMessage(raw: RawEvent): MatrixMessage {
     attachments,
     reactions: [],
     replyTo: event.content?.["m.relates_to"]?.["m.in_reply_to"]?.event_id ?? null,
-    viewIn: event.content?.["co.flareai.view_in"]?.url
+    viewIn: event.content?.["co.polymux.view_in"]?.url
       ? {
-          app: event.content["co.flareai.view_in"].app ?? "the app",
-          url: event.content["co.flareai.view_in"].url,
+          app: event.content["co.polymux.view_in"].app ?? "the app",
+          url: event.content["co.polymux.view_in"].url,
         }
       : null,
   };

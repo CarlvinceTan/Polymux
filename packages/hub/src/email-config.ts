@@ -3,7 +3,7 @@ import path from "node:path";
 import {parse as parseToml} from "smol-toml";
 
 /**
- * FlareAI's own record of the user's mailboxes.
+ * Polymux's own record of the user's mailboxes.
  *
  * An account is described here and nowhere else. What the file never holds is
  * a secret: passwords and OAuth tokens live in the OS keychain, and this names
@@ -24,7 +24,7 @@ export type StoredAuth =
       kind: "oauth2";
       clientId: string;
       /**
-       * Which provider this is, when FlareAI signed the account in itself.
+       * Which provider this is, when Polymux signed the account in itself.
        * Renewal then goes through the OAuth library's discovery rather than a
        * URL written down here. An account adopted from a foreign config has no
        * provider — only the token endpoint it was configured with.
@@ -44,8 +44,8 @@ export type StoredAuth =
    * A token produced by a command the user configured.
    *
    * This is the only honest description of an account whose sign-in is held by
-   * something outside FlareAI — a token helper the user already runs, which
-   * refreshes on its own. FlareAI cannot renew such an account, because it was
+   * something outside Polymux — a token helper the user already runs, which
+   * refreshes on its own. Polymux cannot renew such an account, because it was
    * never given the refresh token: it can only ask, each time, for whatever the
    * command prints. Storing one reading of that command would work for an hour
    * and then leave the mailbox dead.
@@ -135,17 +135,17 @@ function isAccount(value: unknown): value is StoredAccount {
 /**
  * The accounts described by a Himalaya config, for the one-time import.
  *
- * FlareAI used to keep its mailboxes in Himalaya's file and drive its CLI.
+ * Polymux used to keep its mailboxes in Himalaya's file and drive its CLI.
  * Nothing does now — but a user who set accounts up under that arrangement has
  * them there and nowhere else, and silently starting them at zero would read
  * as having lost them. So the file is read once, on a machine that has one and
- * no accounts of FlareAI's own, and then never again. It is never written to
+ * no accounts of Polymux's own, and then never again. It is never written to
  * and never deleted: it is not ours, and leaving it whole is what lets the
  * import be undone by deleting *our* file.
  *
  * Credentials cannot come across as data. The config names a command that
  * prints each secret; `readSecret` runs it, and the result is filed in
- * FlareAI's own keychain entries by the caller.
+ * Polymux's own keychain entries by the caller.
  */
 export async function importHimalayaAccounts(file: string): Promise<StoredAccount[]> {
   const source = await readFile(file, "utf8").catch((): string | undefined => undefined);
@@ -219,7 +219,7 @@ export function himalayaSecrets(config: string, id: string): {
 /**
  * How an imported account signs in.
  *
- * An OAuth account is only carried across as OAuth if FlareAI can actually
+ * An OAuth account is only carried across as OAuth if Polymux can actually
  * renew it — which needs a refresh token it can read. Where the old setup
  * delegated renewal to a command (a token helper that refreshes on its own),
  * that command comes across instead: it is the only thing that knows how to
@@ -231,7 +231,7 @@ function importedAuth(auth: Record<string, unknown> | null, oauth: boolean): Sto
   const refresh = source(auth?.["refresh-token"]);
   const accessCommand = source(auth?.["access-token"])?.cmd;
   // A keyring reference names an entry in someone else's keychain namespace,
-  // which FlareAI cannot resolve; it counts as no refresh token at all.
+  // which Polymux cannot resolve; it counts as no refresh token at all.
   const hasRefresh = !!refresh && (!!refresh.raw || !!refresh.cmd);
   // Renewal goes through the OAuth library, which works from a provider rather
   // than a bare endpoint — so an account is only carried across as OAuth if we

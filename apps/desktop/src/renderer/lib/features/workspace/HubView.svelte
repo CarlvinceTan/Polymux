@@ -7,8 +7,8 @@
     MailFolderDto as CachedFolderDto,
     MailImportance as CachedImportance,
     MailMessageDto as CachedMailDto,
-  } from '@flareai/protocol';
-  import {flareaiApi} from '../../api/flareai';
+  } from '@polymux/protocol';
+  import {polymuxApi} from '../../api/polymux';
   import {onHubCacheInvalidated} from '../../shared/state/hubCache';
   import {rememberChatPlatforms} from '../../shared/state/chatPlatforms';
 
@@ -91,7 +91,7 @@
     if (seeded) return seeded;
     seeded = (async () => {
       try {
-        const snapshot = await flareaiApi().comms.snapshot();
+        const snapshot = await polymuxApi().comms.snapshot();
         session.status ??= snapshot.status;
         if (!session.chats.length) session.chats = snapshot.chats;
         rememberChatPlatforms(session.chats);
@@ -188,7 +188,7 @@
   export async function warmHub(): Promise<void> {
     if (warming) return warming;
     warming = (async () => {
-      const api = flareaiApi();
+      const api = polymuxApi();
       await seedHub();
       try {
         const status = await api.comms.status();
@@ -264,8 +264,8 @@
     MailFolderDto,
     MailImportance,
     MailMessageDto,
-    FlareAIApi,
-  } from '@flareai/protocol';
+    PolymuxApi,
+  } from '@polymux/protocol';
   import DOMPurify from 'dompurify';
   import {readableError} from '../../shared/errors';
   import {displayTime} from '../../shared/displayTime';
@@ -286,7 +286,7 @@
 
   type IconName = ComponentProps<typeof Icon>['name'];
 
-  const api: FlareAIApi = flareaiApi();
+  const api: PolymuxApi = polymuxApi();
 
   /**
    * One unified inbox over every linked platform plus every mailbox. The source
@@ -2990,7 +2990,7 @@
         <!-- Fixed to the viewport rather than to the list, which scrolls: a
              menu that scrolled with it would drift off the row it belongs to. -->
         <div
-          class="flareai-dropdown-menu hub-view-chat-menu"
+          class="polymux-dropdown-menu hub-view-chat-menu"
           role="menu"
           bind:this={chatMenuEl}
           style:left={`${chatMenu.x}px`}
@@ -2998,14 +2998,14 @@
           style:visibility={chatMenu.placed ? 'visible' : 'hidden'}
         >
           <button
-            class="flareai-dropdown-item"
+            class="polymux-dropdown-item"
             role="menuitem"
             onclick={() => { chatPrefs = togglePinned(chatPrefs, target.id); closeChatMenu(); }}
           ><Icon name={pinned ? 'pin-off' : 'pin'} size={14} /><span
             >{pinned ? $t('hub.unpinChat') : $t('hub.pinChat')}</span
           ></button>
           <button
-            class="flareai-dropdown-item"
+            class="polymux-dropdown-item"
             role="menuitem"
             onclick={() => { chatPrefs = toggleHidden(chatPrefs, target.id); closeChatMenu(); }}
           ><Icon name={hidden ? 'eye' : 'eye-off'} size={14} /><span
@@ -3496,7 +3496,7 @@
              scrolls, and a menu that scrolls with it would drift away from the
              message it was opened on. -->
         <div
-          class="flareai-dropdown-menu hub-view-message-menu"
+          class="polymux-dropdown-menu hub-view-message-menu"
           role="menu"
           bind:this={messageMenuEl}
           style:left={`${messageMenu.x}px`}
@@ -3509,12 +3509,12 @@
             {/each}
           </span>
           <button
-            class="flareai-dropdown-item"
+            class="polymux-dropdown-item"
             role="menuitem"
             onclick={() => { startReply(target); closeMessageMenu(); }}
           ><Icon name="reply" size={14} /><span>{$t('hub.reply')}</span></button>
           <button
-            class="flareai-dropdown-item"
+            class="polymux-dropdown-item"
             role="menuitem"
             onclick={() => { void copyMessage(target); closeMessageMenu(); }}
           ><Icon name="copy" size={14} /><span>{$t('common.copy')}</span></button>

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { discoverAgentSkills, resolveDiscoveredSkill } from "./discovery.js";
 
 function home(): string {
-  return mkdtempSync(path.join(tmpdir(), "flareai-skill-discovery-"));
+  return mkdtempSync(path.join(tmpdir(), "polymux-skill-discovery-"));
 }
 
 function skill(directory: string, name: string): void {
@@ -94,13 +94,13 @@ test("reads the XDG layout too, and the singular skill folder", () => {
   );
 });
 
-test("FlareAI's own directories are not offered back to it", () => {
+test("Polymux's own directories are not offered back to it", () => {
   const root = home();
-  skill(path.join(root, ".flareai", "skills", "personal-research"), "personal-research");
+  skill(path.join(root, ".polymux", "skills", "personal-research"), "personal-research");
   assert.deepEqual(discoverAgentSkills(new Set(), root), []);
 });
 
-test("a directory FlareAI already sources reads as in use, not as something to add", () => {
+test("a directory Polymux already sources reads as in use, not as something to add", () => {
   const root = home();
   skill(path.join(root, ".agents", "skills", "find-skills"), "find-skills");
   const [shared] = discoverAgentSkills(new Set(), root);
@@ -108,7 +108,7 @@ test("a directory FlareAI already sources reads as in use, not as something to a
   assert.equal(shared!.skills[0]!.state, "loaded");
 });
 
-test("a skill FlareAI has under that name is not offered again", () => {
+test("a skill Polymux has under that name is not offered again", () => {
   const root = home();
   skill(path.join(root, ".claude", "skills", "pdf"), "pdf");
   const [claude] = discoverAgentSkills(new Set(["pdf"]), root);

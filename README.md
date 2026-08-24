@@ -1,6 +1,9 @@
-# FlareAI
+# Polymux
 
-FlareAI is a desktop agent built with Electron and TypeScript, designed around the
+**The open-source ChatGPT desktop app—with messaging, social media, a virtual
+drive, browser automation, and more built in.**
+
+Polymux is a desktop agent built with Electron and TypeScript, designed around the
 idea that one agent should be able to work with you throughout a session. Its core
 capabilities include **Hub**, a central communication layer supporting around 17
 platforms, including email; **Drive**, a virtual filesystem backed by local and
@@ -16,17 +19,19 @@ work, while keeping the interface as low-friction as possible. Basic mode offers
 simple plug-and-play experience; Advanced mode exposes additional configuration for
 those who want more control.
 
-FlareAI is desktop-only for now. This is an intentional starting point: a local
+Polymux is desktop-only for now. This is an intentional starting point: a local
 environment offers an agent broad capabilities with fewer restrictions, while the
 architecture can be extended to a web or cloud-backed deployment later.
 
-**Apple Silicon Mac only for now.** The Hub and its bridge fleet have currently only
-been tested when compiled for `darwin-arm64`.
+**macOS currently has the best support.** Polymux is also available for Windows and
+Linux, but those platforms do not yet have the same depth of UI testing or feature
+coverage as the macOS version. Some integrations and platform-specific features may
+therefore behave differently or remain unavailable outside macOS.
 
 ## Backend
 
 - `core` owns the provider-neutral agent loop, streaming events, cancellation, steering, and tool execution.
-- `agent` adds FlareAI policy: layered prompts, Pi-compatible skills, file-backed local memory, goals, compaction, and simple subagents.
+- `agent` adds Polymux policy: layered prompts, Pi-compatible skills, file-backed local memory, goals, compaction, and simple subagents.
 - `inference` is a thin adapter over `pi-ai`.
 - `tools` provides only `read`, `bash`, `edit`, and `write` by default, plus MCP connections.
 - `storage` persists chats, runs, replayable events, goals, compaction summaries, artifacts, and references in SQLite.
@@ -37,5 +42,5 @@ the intended design for simplicity of use.
 
 ## Development
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for setup instructions, development commands,
+See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for setup instructions, development commands,
 bridge binaries, storage providers, skills, MCP, and memory details.

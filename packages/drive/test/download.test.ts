@@ -22,7 +22,7 @@ async function workspace(): Promise<{
   file: string;
   clean: () => Promise<void>;
 }> {
-  const dir = await mkdtemp(path.join(tmpdir(), "flareai-download-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "polymux-download-"));
   return {
     dir,
     file: path.join(dir, "report.pdf"),
@@ -191,7 +191,7 @@ test("an existing partial from an earlier attempt is not appended to", async () 
   const {file, clean} = await workspace();
   const bytes = Buffer.from("fresh content");
   try {
-    await writeFile(`${file}.flareai-partial`, "left over from last time");
+    await writeFile(`${file}.polymux-partial`, "left over from last time");
     await downloadToFile(file, {
       expect: {size: bytes.byteLength, hash: {algorithm: "md5", expected: md5(bytes)}},
       open: async () => whole(bytes),

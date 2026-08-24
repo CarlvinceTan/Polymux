@@ -9,7 +9,7 @@
     ProviderDto as CachedProviderDto,
     PluginDto as CachedPluginDto,
     SkillDto as CachedSkillDto,
-  } from '@flareai/protocol';
+  } from '@polymux/protocol';
 
   /**
    * The last answers Settings had, kept outside the component.
@@ -50,9 +50,9 @@
   import {onDestroy, onMount, tick, type ComponentProps} from 'svelte';
   import {readableError} from '../../shared/errors';
   import {scrollFade} from '../../shared/scrollFade';
-  import type {AppUpdateDto, AppVersionDto, BrowserExtensionDto, ComputerHistoryEntryDto, ComputerHistoryStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryEntryDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProfileDto, ProfilesDto, ProviderDto, ProviderOAuthEventDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, AppPermissionKind} from '@flareai/protocol';
-  import {SUPPORTED_LANGUAGES} from '@flareai/protocol';
-  import {flareaiApi} from '../../api/flareai';
+  import type {AppUpdateDto, AppVersionDto, BrowserExtensionDto, ComputerHistoryEntryDto, ComputerHistoryStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryEntryDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProfileDto, ProfilesDto, ProviderDto, ProviderOAuthEventDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, AppPermissionKind} from '@polymux/protocol';
+  import {SUPPORTED_LANGUAGES} from '@polymux/protocol';
+  import {polymuxApi} from '../../api/polymux';
   import {applyTheme, type ThemeMode} from '../../shared/theme';
   import {activeLocale, applyLanguage, plural, t, translate, type MessageKey} from '../../../i18n';
   import {companyId, modelCompanyId, providerName} from '../../shared/options/providerBrands';
@@ -69,6 +69,13 @@
   export let currentPinnedViews: GeneralSettingsDto['pinnedViews'] = [];
 
   type IconName = ComponentProps<Icon>['name'];
+  type PinnedView = GeneralSettingsDto['pinnedViews'][number];
+  const PINNED_VIEW_OPTIONS: Array<{kind: PinnedView; icon: IconName; label: MessageKey}> = [
+    {kind: 'drive', icon: 'drive', label: 'workspace.drive'},
+    {kind: 'schedule', icon: 'clock', label: 'workspace.schedule'},
+    {kind: 'hub', icon: 'chat', label: 'workspace.hub'},
+    {kind: 'tasks', icon: 'tasks', label: 'workspace.tasks'},
+  ];
   type ProviderGroup = {
     id: string;
     name: string;
@@ -90,7 +97,7 @@
   type ModelKind = 'text' | 'image' | 'video' | 'audio' | 'embedding';
   type Currency = Exclude<GeneralSettingsDto['currency'], null>;
 
-  const api = flareaiApi();
+  const api = polymuxApi();
   /** How much of a marketplace arrives at once, and how much more each time
    * the list is scrolled to its end. */
   const CATALOG_PAGE = 30;
@@ -342,7 +349,7 @@
      labels and tooltips still spell out. */
   $: MODEL_ROLES = [
     {value: 'main' as ModelRole, label: $t('settings.roleMain'), job: $t('settings.roleMainJob'), hint: $t('settings.roleMainHint'), followsMain: false, kind: 'text' as ModelKind},
-    {value: 'task' as ModelRole, label: $t('settings.roleTask'), job: $t('settings.roleTaskJob'), hint: $t('settings.roleTaskHint'), followsMain: true, kind: 'text' as ModelKind},
+    {value: 'subagent' as ModelRole, label: $t('settings.roleSubagent'), job: $t('settings.roleSubagentJob'), hint: $t('settings.roleSubagentHint'), followsMain: true, kind: 'text' as ModelKind},
     {value: 'judge' as ModelRole, label: $t('settings.roleJudge'), job: $t('settings.roleJudgeJob'), hint: $t('settings.roleJudgeHint'), followsMain: true, kind: 'text' as ModelKind},
     {value: 'compaction' as ModelRole, label: $t('settings.roleCompaction'), job: $t('settings.roleCompactionJob'), hint: $t('settings.roleCompactionHint'), followsMain: true, kind: 'text' as ModelKind},
     {value: 'speech' as ModelRole, label: $t('settings.roleSpeech'), job: $t('settings.roleSpeechJob'), hint: $t('settings.roleSpeechHint'), followsMain: false, kind: 'audio' as ModelKind},
@@ -698,12 +705,12 @@
   }
 
   function skillAuthor(item: SkillDto): string {
-    return item.author ?? (item.source === 'official' ? 'FlareAI' : translate('settings.custom'));
+    return item.author ?? (item.source === 'official' ? 'Polymux' : translate('settings.custom'));
   }
 
   function skillOrigin(item: SkillDto): string {
     if (item.source === 'official' || item.source === 'bundled') return translate('settings.bundled');
-    if (item.source === 'flareai') return 'FlareAI · ~/.flareai/skills';
+    if (item.source === 'polymux') return 'Polymux · ~/.polymux/skills';
     if (item.source === 'codex') return 'Codex · ~/.codex/skills';
     if (item.source === 'agents') return 'Agents · ~/.agents/skills';
     return translate('settings.configuredFolder');
@@ -719,11 +726,11 @@
   function mcpOrigin(item: McpServerDto): string {
     if (item.source === 'official') return translate('settings.bundled');
     if (item.source === 'codex') return 'Codex';
-    return 'FlareAI';
+    return 'Polymux';
   }
 
   function mcpAuthor(item: McpServerDto): string {
-    if (item.source === 'official') return 'FlareAI';
+    if (item.source === 'official') return 'Polymux';
     if (item.source === 'codex') return 'Codex';
     return translate('settings.custom');
   }
@@ -779,7 +786,7 @@
   }
 
   function skillSourceLabel(source: SkillDto['source']): string {
-    return source === 'codex' || source === 'flareai' || source === 'agents' || source === 'configured'
+    return source === 'codex' || source === 'polymux' || source === 'agents' || source === 'configured'
       ? 'Custom'
       : source;
   }
@@ -958,7 +965,7 @@
       // annotate the General tab and must never block the settings lists.
       void api.general.version().then((value) => appVersion = value).catch(() => {});
       void checkForUpdates();
-      if (general.locationEnabled && !general.location && window.flareai) void refreshLocation();
+      if (general.locationEnabled && !general.location && window.polymux) void refreshLocation();
       // Grants change outside the app, in System Settings, so the statuses are
       // read rather than remembered.
       void refreshPermissionStatuses();
@@ -1452,10 +1459,10 @@
   ];
 
   /**
-   * The grants a skill asks for, rather than ones FlareAI has of its own. A
+   * The grants a skill asks for, rather than ones Polymux has of its own. A
    * row appears because something installed declared it in its SKILL.md, which
    * is why the list is filtered by what the skills actually say instead of
-   * showing switches for apps the user may never have asked FlareAI to
+   * showing switches for apps the user may never have asked Polymux to
    * touch.
    */
   const APP_PERMISSION_ROWS: Array<{kind: AppPermissionKind; icon: ComponentProps<typeof Icon>['name']; title: MessageKey; reason: MessageKey}> = [
@@ -2596,7 +2603,7 @@
   }
 
   /** A known local runtime needs nothing but its address, so setting one up is
-   * one button: FlareAI asks the server what it serves and files it under the
+   * one button: Polymux asks the server what it serves and files it under the
    * runtime's own name. */
   async function setupLocalRuntime(provider: ProviderDto): Promise<void> {
     savingCredential = true;
@@ -3067,7 +3074,7 @@
           {#if pinnedViewsExpanded}
             <div class="pinned-views-config">
               <div class="pinned-views-options">
-                {#each [{kind: 'drive', icon: 'drive', label: 'workspace.drive'}, {kind: 'schedule', icon: 'clock', label: 'workspace.schedule'}, {kind: 'hub', icon: 'chat', label: 'workspace.hub'}, {kind: 'tasks', icon: 'tasks', label: 'workspace.tasks'}] as row (row.kind)}
+                {#each PINNED_VIEW_OPTIONS as row (row.kind)}
                   <button type="button" class="pinned-view-option" class:checked={general?.pinnedViews.includes(row.kind)} disabled={updatingPinnedViews || !general} onclick={() => void togglePinnedView(row.kind)}>
                     <span class="pinned-view-check">{#if general?.pinnedViews.includes(row.kind)}<Icon name="check" size={12}/>{/if}</span>
                     <Icon name={row.icon} size={16}/>
@@ -3207,7 +3214,7 @@
               <button type="button" class="permission-retry" onclick={() => void installUpdate()}>{$t('settings.installNow')}</button>
             {:else}
               <span class="setting-value">{updateSummaryText}</span>
-              <button type="button" class="update-refresh" class:spinning={checkingUpdate || update?.status === 'downloading'} aria-label={$t('settings.checkForUpdates')} data-tooltip-label={$t('settings.checkForUpdates')} disabled={checkingUpdate || update?.status === 'downloading'} onclick={() => void checkForUpdates()}><Icon name="reload" size={13}/></button>
+              <button type="button" class="update-refresh" class:spinning={checkingUpdate || update?.status === 'downloading'} aria-label={$t('settings.checkForUpdates')} disabled={checkingUpdate || update?.status === 'downloading'} onclick={() => void checkForUpdates()}><Icon name="reload" size={13}/></button>
             {/if}
           </section>
         </section>
@@ -3252,7 +3259,7 @@
           <h3>History</h3>
           <span class="history-heading-actions">
             <span class="history-view-switch" role="tablist" aria-label="Memory view"><button type="button" role="tab" class:active={memoryBrowserMode === 'history'} aria-selected={memoryBrowserMode === 'history'} onclick={() => memoryBrowserMode = 'history'}><i class="history-key-dot history" aria-hidden="true"></i>History</button><button type="button" role="tab" class:active={memoryBrowserMode === 'memory'} aria-selected={memoryBrowserMode === 'memory'} onclick={() => memoryBrowserMode = 'memory'}><i class="history-key-dot memory" aria-hidden="true"></i>Memory</button></span>
-            <span class="history-clear-menu"><button type="button" class="history-outline history-clear-trigger" disabled={!computerHistory || Boolean(forgetting)} aria-haspopup="menu" aria-expanded={clearHistoryMenuOpen} onclick={() => clearHistoryMenuOpen = !clearHistoryMenuOpen}><span>Clear history</span><span class:open={clearHistoryMenuOpen} class="history-clear-chevron"><Icon name="chevron" size={12}/></span></button>{#if clearHistoryMenuOpen}<span class="flareai-dropdown-menu history-clear-options" role="menu" aria-label={$t('settings.computerHistoryForget')}><button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { clearHistoryMenuOpen = false; void forgetComputerHistory(1); }}><span>{$t('settings.computerHistoryForgetHour')}</span></button><button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { clearHistoryMenuOpen = false; void forgetComputerHistory(24); }}><span>{$t('settings.computerHistoryForgetDay')}</span></button><button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => { clearHistoryMenuOpen = false; void forgetComputerHistory(null); }}><span>{$t('settings.computerHistoryForgetAll')}</span></button></span>{/if}</span>
+            <span class="history-clear-menu"><button type="button" class="history-outline history-clear-trigger" disabled={!computerHistory || Boolean(forgetting)} aria-haspopup="menu" aria-expanded={clearHistoryMenuOpen} onclick={() => clearHistoryMenuOpen = !clearHistoryMenuOpen}><span>Clear history</span><span class:open={clearHistoryMenuOpen} class="history-clear-chevron"><Icon name="chevron" size={12}/></span></button>{#if clearHistoryMenuOpen}<span class="polymux-dropdown-menu history-clear-options" role="menu" aria-label={$t('settings.computerHistoryForget')}><button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { clearHistoryMenuOpen = false; void forgetComputerHistory(1); }}><span>{$t('settings.computerHistoryForgetHour')}</span></button><button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { clearHistoryMenuOpen = false; void forgetComputerHistory(24); }}><span>{$t('settings.computerHistoryForgetDay')}</span></button><button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { clearHistoryMenuOpen = false; void forgetComputerHistory(null); }}><span>{$t('settings.computerHistoryForgetAll')}</span></button></span>{/if}</span>
           </span>
         </div>
         <div class="history-browser">
@@ -3394,9 +3401,9 @@
             <div class="rail-tool-wrap">
               <button type="button" class:active={activeRailFilter !== activeRailDefaultFilter} class="rail-tool" aria-label={$t('settings.filterSubject', {subject: activeRailSubject})} aria-haspopup="menu" aria-expanded={openRailMenu === 'filter'} data-tooltip-label={$t('drive.filter')} onclick={() => toggleRailMenu('filter')}><Icon name="filter" size={15}/></button>
               {#if openRailMenu === 'filter'}
-                <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('settings.filterSubject', {subject: activeRailSubject})}>
+                <div class="polymux-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('settings.filterSubject', {subject: activeRailSubject})}>
                   {#each activeRailFilterOptions as option (option.value)}
-                    <button type="button" class="flareai-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailFilter} onclick={() => chooseRailOption('filter', option.value)}><span>{option.label}</span>{#if option.value === activeRailFilter}<Icon name="check" size={13}/>{/if}</button>
+                    <button type="button" class="polymux-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailFilter} onclick={() => chooseRailOption('filter', option.value)}><span>{option.label}</span>{#if option.value === activeRailFilter}<Icon name="check" size={13}/>{/if}</button>
                   {/each}
                 </div>
               {/if}
@@ -3404,9 +3411,9 @@
             <div class="rail-tool-wrap">
               <button type="button" class:active={activeRailSort !== activeRailDefaultSort} class="rail-tool" aria-label={$t('settings.sortSubject', {subject: activeRailSubject})} aria-haspopup="menu" aria-expanded={openRailMenu === 'sort'} data-tooltip-label={$t('hub.sort')} onclick={() => toggleRailMenu('sort')}><Icon name="sort" size={15}/></button>
               {#if openRailMenu === 'sort'}
-                <div class="flareai-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('settings.sortSubject', {subject: activeRailSubject})}>
+                <div class="polymux-dropdown-menu rail-tool-menu" role="menu" aria-label={$t('settings.sortSubject', {subject: activeRailSubject})}>
                   {#each activeRailSortOptions as option (option.value)}
-                    <button type="button" class="flareai-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailSort} onclick={() => chooseRailOption('sort', option.value)}><span>{option.label}</span>{#if option.value === activeRailSort}<Icon name="check" size={13}/>{/if}</button>
+                    <button type="button" class="polymux-dropdown-item" role="menuitemradio" aria-checked={option.value === activeRailSort} onclick={() => chooseRailOption('sort', option.value)}><span>{option.label}</span>{#if option.value === activeRailSort}<Icon name="check" size={13}/>{/if}</button>
                   {/each}
                 </div>
               {/if}
@@ -3421,9 +3428,9 @@
               <div class="rail-tool-wrap">
                 <button type="button" class:active={adding === 'mcp' || mcpAddMenuOpen} class="rail-tool" aria-label={$t('settings.addMcpServer')} aria-haspopup="menu" aria-expanded={mcpAddMenuOpen} data-tooltip-label={$t('settings.addMcpServer')} onclick={() => { openRailMenu = null; mcpAddMenuOpen = !mcpAddMenuOpen; }}><Icon name="plus" size={15}/></button>
                 {#if mcpAddMenuOpen}
-                  <div class="flareai-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label={$t('settings.addMcpServer')}>
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => beginAdd('mcp')}><span>{$t('settings.createCustom')}</span></button>
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={beginDiscoverMcp}><span>{$t('settings.autoDiscovery')}</span></button>
+                  <div class="polymux-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label={$t('settings.addMcpServer')}>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => beginAdd('mcp')}><span>{$t('settings.createCustom')}</span></button>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={beginDiscoverMcp}><span>{$t('settings.autoDiscovery')}</span></button>
                   </div>
                 {/if}
               </div>
@@ -3432,10 +3439,10 @@
               <div class="rail-tool-wrap">
                 <button type="button" class:active={adding === 'skills' || skillAddMenuOpen} class="rail-tool" aria-label={$t('settings.addSkills')} aria-haspopup="menu" aria-expanded={skillAddMenuOpen} data-tooltip-label={$t('settings.addSkills')} onclick={() => { openRailMenu = null; skillAddMenuOpen = !skillAddMenuOpen; }}><Icon name="plus" size={15}/></button>
                 {#if skillAddMenuOpen}
-                  <div class="flareai-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label={$t('settings.addSkills')}>
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => beginAdd('skills')}><span>{$t('settings.createCustom')}</span></button>
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={beginDiscoverSkills}><span>{$t('settings.autoDiscovery')}</span></button>
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => skillFolderInput.click()}><span>{$t('settings.uploadSkills')}</span></button>
+                  <div class="polymux-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label={$t('settings.addSkills')}>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => beginAdd('skills')}><span>{$t('settings.createCustom')}</span></button>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={beginDiscoverSkills}><span>{$t('settings.autoDiscovery')}</span></button>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => skillFolderInput.click()}><span>{$t('settings.uploadSkills')}</span></button>
                     <input bind:this={skillFolderInput} class="skill-folder-input" type="file" webkitdirectory multiple aria-label={$t('settings.uploadSkillFolder')} onchange={(event) => void uploadSkillFolder(event)}/>
                   </div>
                 {/if}
@@ -3445,9 +3452,9 @@
               <div class="rail-tool-wrap">
                 <button type="button" class:active={adding === 'plugins' || pluginAddMenuOpen} class="rail-tool" aria-label={$t('settings.addPlugins')} aria-haspopup="menu" aria-expanded={pluginAddMenuOpen} data-tooltip-label={$t('settings.addPlugins')} onclick={() => { openRailMenu = null; pluginAddMenuOpen = !pluginAddMenuOpen; }}><Icon name="plus" size={15}/></button>
                 {#if pluginAddMenuOpen}
-                  <div class="flareai-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label={$t('settings.addPlugins')}>
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => beginAdd('plugins')}><span>{$t('settings.addMarketplace')}</span></button>
-                    <button type="button" class="flareai-dropdown-item" role="menuitem" onclick={() => pluginFolderInput.click()}><span>{$t('settings.uploadPlugin')}</span></button>
+                  <div class="polymux-dropdown-menu rail-tool-menu skill-add-menu" role="menu" aria-label={$t('settings.addPlugins')}>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => beginAdd('plugins')}><span>{$t('settings.addMarketplace')}</span></button>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => pluginFolderInput.click()}><span>{$t('settings.uploadPlugin')}</span></button>
                     <input bind:this={pluginFolderInput} class="skill-folder-input" type="file" webkitdirectory multiple aria-label={$t('settings.uploadPluginFolder')} onchange={(event) => void uploadPluginFolder(event)}/>
                   </div>
                 {/if}
@@ -3541,7 +3548,7 @@
             <section><header><h4>MCP</h4><span>{plugin.contributions.mcpServers.length}</span></header><ul use:scrollFade={plugin.contributions.mcpServers}>{#each plugin.contributions.mcpServers as name}<li><Icon name="mcp" size={14}/>{name}</li>{:else}<li class="muted">{$t('settings.pluginNoMcp')}</li>{/each}</ul></section>
           </div>
           {#if plugin.contributions.commands || plugin.contributions.agents || plugin.contributions.hooks}
-            <!-- Counted rather than listed: FlareAI has no surface for these
+            <!-- Counted rather than listed: Polymux has no surface for these
                  yet, and a list would imply they run. -->
             <p class="plugin-unsupported">{$t('settings.pluginUnsupported', {parts: [
               plugin.contributions.commands ? plural('settings.pluginCommands', plugin.contributions.commands) : '',
@@ -3594,7 +3601,7 @@
         {:else if mode === 'mcp' && discoveringMcp}
           <header class="options-detail-header"><span class="options-title-group"><h3>{$t('settings.autoDiscovery')}</h3></span></header>
           <section class="skill-registry">
-            <p class="discovery-lede">{$t('settings.mcpDiscoveryLede')} <code>~/.flareai/mcp.json</code>{$t('settings.discoveryLedeTail')}</p>
+            <p class="discovery-lede">{$t('settings.mcpDiscoveryLede')} <code>~/.polymux/mcp.json</code>{$t('settings.discoveryLedeTail')}</p>
             <div class="discovery-groups" use:scrollFade={collapsedMcpGroups}>
               {#each discoveredMcpGroups as group (group.id)}
                 <section class="discovery-group">
@@ -3625,7 +3632,7 @@
         {:else if mode === 'skills' && discoveringSkills}
           <header class="options-detail-header"><span class="options-title-group"><h3>{$t('settings.autoDiscovery')}</h3></span></header>
           <section class="skill-registry">
-            <p class="discovery-lede">{$t('settings.discoveryLede')} <code>~/.flareai/skills</code>{$t('settings.discoveryLedeTail')}</p>
+            <p class="discovery-lede">{$t('settings.discoveryLede')} <code>~/.polymux/skills</code>{$t('settings.discoveryLedeTail')}</p>
             <div class="discovery-groups" use:scrollFade={collapsedGroups}>
               {#each discoveredGroups as group (group.id)}
                 <section class="discovery-group">
@@ -3971,7 +3978,7 @@
   .general-group>.computerHistory-group:last-child>.general-setting-row:last-child{border-bottom:0}
   .permission-retry:disabled{cursor:default;opacity:.55}
   /* The row keeps the app mark rather than a generic puzzle piece, so the
-     extension reads as part of FlareAI in both places it is offered. */
+     extension reads as part of Polymux in both places it is offered. */
   /* The mark is flat black artwork with a baked-in fill, so on a dark row it
      is invisible; inverting it is what turns it white without a second asset. */
   .extension-installed{flex:none;color:var(--neutral-500);font-size:10.5px;font-weight:550}
@@ -3997,7 +4004,7 @@
   .skill-registry-results .skill-registry-more{display:grid;place-items:center;min-height:40px;border:0;color:var(--neutral-400);font-size:11px}
   .skill-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 18px;margin:8px 0 0;max-width:460px}.skill-meta div{min-width:0;display:flex;flex-direction:column;gap:2px}.skill-meta dt{color:var(--neutral-400);font-size:10.5px;font-weight:550;letter-spacing:.02em}.skill-meta dd{margin:0;overflow:hidden;color:var(--neutral-700);text-overflow:ellipsis;white-space:nowrap;font-size:12px}.options-rail-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.options-rail-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:530}.options-rail-copy small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;text-transform:capitalize}.options-name{display:flex;align-items:center;gap:5px}.options-name strong{min-width:0;flex:1}.options-name i{padding:1px 5px;border-radius:5px;background:#fff;color:var(--neutral-600);font-size:9px;font-style:normal}
   .provider-mark{width:26px;height:26px;display:grid;flex:none;place-items:center;border:1px solid var(--neutral-200);border-radius:8px;background:#fff}.provider-mark.large{width:34px;height:34px;border-radius:10px}.provider-row.selected .provider-mark{border-color:rgba(0,0,0,.08)}.provider-row.has-check{position:relative}.provider-row.has-check .options-rail-copy{-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px));mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px))}.configured-check{position:absolute;top:0;right:15px;bottom:0;width:18px;display:grid;place-items:center;color:var(--neutral-600)}
-  .options-rail-tools{position:relative;flex:none;display:flex;align-items:center;justify-content:flex-start;gap:2px;margin-top:2px}.rail-tool-wrap{position:relative}.rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}.rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}.rail-tool-menu .flareai-dropdown-item>span{min-width:0;flex:1}.rail-tool-text{width:auto;padding:0 9px;font-family:inherit;font-size:11px;font-weight:540}
+  .options-rail-tools{position:relative;flex:none;display:flex;align-items:center;justify-content:flex-start;gap:2px;margin-top:2px}.rail-tool-wrap{position:relative}.rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}.rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}.rail-tool-menu .polymux-dropdown-item>span{min-width:0;flex:1}.rail-tool-text{width:auto;padding:0 9px;font-family:inherit;font-size:11px;font-weight:540}
   .options-detail{min-height:0;overflow-y:auto;padding:0 18px 20px var(--options-divider-gap)}.options-detail-header{display:flex;align-items:center;gap:11px}.options-detail-header>.computerHistory-toggle{margin-right:8px}.options-title-group{min-width:0;flex:1;display:flex;align-items:center;gap:8px}.options-title-group h3{min-width:0;margin:0;overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:570}.options-badge{flex:none;padding:2px 8px;border-radius:7px;background:var(--neutral-200);color:var(--neutral-600);font-size:10.5px;font-weight:540;text-transform:capitalize}.options-badge.good{background:#e8f5ec;color:#347049}.official-badge{display:inline-flex;align-items:center;gap:4px;padding:0;background:transparent;transform:translateY(1px)}.official-badge :global(svg){flex:none}
   .options-detail.mcp-detail{display:flex;flex-direction:column;overflow:hidden}.mcp-detail>.options-detail-header,.mcp-detail>.options-detail-block{flex:none}.mcp-detail>.options-resources{min-height:0;flex:1}.mcp-detail>.options-resources>section{min-height:0;display:flex;flex-direction:column}.mcp-detail>.options-resources ul{min-height:0;max-height:none;flex:1;overflow-y:auto}
   /* The conflict mark sits on the name's line, like the official stamp, and
@@ -4061,7 +4068,7 @@
   .pinned-view-option.checked .pinned-view-check{background:var(--neutral-900);border-color:var(--neutral-900);color:#fff}
   .pinned-views-preview{min-width:0;display:flex;flex-direction:column;align-items:flex-end;gap:5px}.pinned-views-preview>small{width:100%;color:var(--neutral-400);text-align:right;font-size:9.5px}.top-bar-mock{width:100%;height:70px;display:flex;align-items:flex-start;justify-content:flex-end;border-top:1px solid var(--neutral-250,var(--neutral-200));border-right:1px solid var(--neutral-250,var(--neutral-200));border-radius:0 10px 0 0;padding:var(--titlebar-control-top) 8px 0;background:color-mix(in srgb,var(--app-surface) 94%,var(--neutral-100))}.top-bar-mock-icons{min-height:var(--titlebar-control-size);display:flex;align-items:center;justify-content:flex-end;gap:var(--main-control-gap)}.top-bar-mock-button{flex:none;cursor:grab;touch-action:none;user-select:none}.top-bar-mock-button:active{cursor:grabbing}.top-bar-mock-button.dragging{opacity:.35}
   @media(max-width:760px){.pinned-views-config{grid-template-columns:1fr;gap:14px}.pinned-views-preview{align-items:stretch}.pinned-views-preview>small{text-align:left}}
-  .history-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px}.history-outline{border:1px solid var(--neutral-200);border-radius:8px;padding:6px 10px;background:transparent;color:var(--neutral-800);font:inherit;font-size:10.5px;white-space:nowrap}.history-section-heading h3{margin:0;font-size:13px;font-weight:570}.history-clear-menu{position:relative}.history-clear-trigger{display:flex;align-items:center;gap:6px}.history-clear-chevron{display:grid;place-items:center;color:var(--neutral-500);transition:transform .15s ease}.history-clear-chevron.open{transform:rotate(180deg)}.history-clear-options{position:absolute;z-index:6;top:calc(100% + 6px);right:0;width:142px}.history-clear-options .flareai-dropdown-item>span{min-width:0;flex:1}.history-browser{min-height:430px;display:grid;grid-template-columns:minmax(250px,320px) minmax(0,1fr);gap:28px}.history-calendar{align-self:start;border:1px solid var(--neutral-200);border-radius:12px;padding:12px;background:var(--app-surface)}.history-calendar>header{height:28px;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.history-calendar>header button{width:24px;height:24px;display:grid;place-items:center;border:0;padding:0;background:none;color:var(--neutral-500);cursor:pointer}.history-calendar>header button:hover,.history-calendar>header button:focus-visible{outline:0;color:var(--neutral-950)}.history-weekdays,.history-calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}.history-weekdays span{height:22px;display:grid;place-items:center;color:var(--neutral-400);font-size:9px;font-weight:570}.history-calendar-grid button{position:relative;aspect-ratio:1;min-width:0;display:grid;place-items:center;border:0;border-radius:7px;padding:0;background:none;color:var(--neutral-400);font:inherit;font-size:10.5px}.history-calendar-grid button:not(:disabled){color:var(--neutral-800);cursor:pointer}.history-calendar-grid button:not(:disabled):hover,.history-calendar-grid button:not(:disabled):focus-visible{outline:0;background:var(--neutral-100)}.history-calendar-grid button.selected{background:var(--neutral-900);color:var(--on-primary)}.history-calendar-grid button.outside{opacity:.32}.history-calendar-grid button i{position:absolute;bottom:4px;width:3px;height:3px;border-radius:50%;background:currentColor}.history-calendar-grid button.selected i{background:var(--on-primary)}.history-timeline{min-width:0;border:0;border-radius:0;padding:4px 0 18px}.history-timeline>h4{margin:0 0 16px;font-size:12.5px;font-weight:550}.history-entry{display:grid;grid-template-columns:58px 14px minmax(0,1fr);gap:9px;min-height:84px}.history-entry time{padding-top:0;color:var(--neutral-500);font-size:10.5px;line-height:17px;text-align:right}.history-entry>div{min-width:0;border-left:0;padding:0 0 18px 3px}.history-entry>div strong{display:block;overflow:hidden;font-size:12.5px;font-weight:570;line-height:17px;text-overflow:ellipsis;white-space:nowrap}.history-entry>div p{margin:5px 0 0;font-size:10.5px;line-height:1.5}.history-dot{position:relative;align-self:stretch;width:14px;height:auto;margin:0;background:none;box-shadow:none}.history-dot::after{position:absolute;top:8px;bottom:-8px;left:50%;width:1px;background:var(--neutral-200);content:"";transform:translateX(-50%)}.history-dot::before{position:absolute;z-index:1;top:4px;left:50%;width:9px;height:9px;border-radius:50%;background:var(--neutral-400);content:"";transform:translateX(-50%)}.history-entry.last .history-dot::after{display:none}.history-empty{margin:28px 0;text-align:center;color:var(--neutral-500);font-size:12px}
+  .history-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px}.history-outline{border:1px solid var(--neutral-200);border-radius:8px;padding:6px 10px;background:transparent;color:var(--neutral-800);font:inherit;font-size:10.5px;white-space:nowrap}.history-section-heading h3{margin:0;font-size:13px;font-weight:570}.history-clear-menu{position:relative}.history-clear-trigger{display:flex;align-items:center;gap:6px}.history-clear-chevron{display:grid;place-items:center;color:var(--neutral-500);transition:transform .15s ease}.history-clear-chevron.open{transform:rotate(180deg)}.history-clear-options{position:absolute;z-index:6;top:calc(100% + 6px);right:0;width:142px}.history-clear-options .polymux-dropdown-item>span{min-width:0;flex:1}.history-browser{min-height:430px;display:grid;grid-template-columns:minmax(250px,320px) minmax(0,1fr);gap:28px}.history-calendar{align-self:start;border:1px solid var(--neutral-200);border-radius:12px;padding:12px;background:var(--app-surface)}.history-calendar>header{height:28px;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.history-calendar>header button{width:24px;height:24px;display:grid;place-items:center;border:0;padding:0;background:none;color:var(--neutral-500);cursor:pointer}.history-calendar>header button:hover,.history-calendar>header button:focus-visible{outline:0;color:var(--neutral-950)}.history-weekdays,.history-calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}.history-weekdays span{height:22px;display:grid;place-items:center;color:var(--neutral-400);font-size:9px;font-weight:570}.history-calendar-grid button{position:relative;aspect-ratio:1;min-width:0;display:grid;place-items:center;border:0;border-radius:7px;padding:0;background:none;color:var(--neutral-400);font:inherit;font-size:10.5px}.history-calendar-grid button:not(:disabled){color:var(--neutral-800);cursor:pointer}.history-calendar-grid button:not(:disabled):hover,.history-calendar-grid button:not(:disabled):focus-visible{outline:0;background:var(--neutral-100)}.history-calendar-grid button.selected{background:var(--neutral-900);color:var(--on-primary)}.history-calendar-grid button.outside{opacity:.32}.history-calendar-grid button i{position:absolute;bottom:4px;width:3px;height:3px;border-radius:50%;background:currentColor}.history-calendar-grid button.selected i{background:var(--on-primary)}.history-timeline{min-width:0;border:0;border-radius:0;padding:4px 0 18px}.history-timeline>h4{margin:0 0 16px;font-size:12.5px;font-weight:550}.history-entry{display:grid;grid-template-columns:58px 14px minmax(0,1fr);gap:9px;min-height:84px}.history-entry time{padding-top:0;color:var(--neutral-500);font-size:10.5px;line-height:17px;text-align:right}.history-entry>div{min-width:0;border-left:0;padding:0 0 18px 3px}.history-entry>div strong{display:block;overflow:hidden;font-size:12.5px;font-weight:570;line-height:17px;text-overflow:ellipsis;white-space:nowrap}.history-entry>div p{margin:5px 0 0;font-size:10.5px;line-height:1.5}.history-dot{position:relative;align-self:stretch;width:14px;height:auto;margin:0;background:none;box-shadow:none}.history-dot::after{position:absolute;top:8px;bottom:-8px;left:50%;width:1px;background:var(--neutral-200);content:"";transform:translateX(-50%)}.history-dot::before{position:absolute;z-index:1;top:4px;left:50%;width:9px;height:9px;border-radius:50%;background:var(--neutral-400);content:"";transform:translateX(-50%)}.history-entry.last .history-dot::after{display:none}.history-empty{margin:28px 0;text-align:center;color:var(--neutral-500);font-size:12px}
   @media (max-width:760px){.history-section-heading{align-items:flex-start}.history-section-heading>span{flex-wrap:wrap;justify-content:flex-end}.history-browser{grid-template-columns:1fr}.history-calendar{max-width:340px}}
   .history-browser{height:335px;min-height:0}
   .history-calendar{height:100%;box-sizing:border-box}

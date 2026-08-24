@@ -8,9 +8,9 @@ import type {
   ModelRef,
   ReasoningEffort,
   ToolCallBlock,
-} from "@flareai/inference";
+} from "@polymux/inference";
 
-export type { ToolCallBlock } from "@flareai/inference";
+export type { ToolCallBlock } from "@polymux/inference";
 
 export type RunId = string;
 export type RunStatus =

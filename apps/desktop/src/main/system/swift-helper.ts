@@ -38,7 +38,7 @@ export interface SwiftHelperOptions {
  *
  * Running it as a child of the app is not incidental: macOS attributes a
  * privacy request to the responsible process, so a helper the app spawns asks
- * — and is granted — as FlareAI. The same binary run from a terminal is
+ * — and is granted — as Polymux. The same binary run from a terminal is
  * attributed to the terminal, which is why one tested that way proves nothing.
  */
 export class SwiftHelper {

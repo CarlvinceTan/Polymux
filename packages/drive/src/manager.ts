@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { access, mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
-import { locks } from "@flareai/core";
+import { locks } from "@polymux/core";
 import type {
   DriveEntryDto,
   DriveProviderDto,
@@ -12,7 +12,7 @@ import type {
   DriveSourceDto,
   DriveStatusDto,
   JsonValue,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 import {
   DRIVE_ALL_ACCOUNT,
   DRIVE_CONNECTABLE,
@@ -22,7 +22,7 @@ import {
   driveSaveOrder,
   driveSourceId,
   parseDriveSourceId,
-} from "@flareai/protocol";
+} from "@polymux/protocol";
 import { DropboxDrive } from "./dropbox.js";
 import { GoogleDrive } from "./google-drive.js";
 import { LocalDrive } from "./local.js";
@@ -63,7 +63,7 @@ const PREFERENCE_KEY = "drive";
  * that Time Machine and iCloud already cover.
  */
 export function defaultOutputRoot(): string {
-  return path.join(homedir(), "Documents", "FlareAI");
+  return path.join(homedir(), "Documents", "Polymux");
 }
 
 /** The one account id S3 and the local folders have; neither can hold two. */
@@ -198,8 +198,8 @@ export class Drive {
           [...this.#sources.values()]
             .filter((source) => source.provider !== "all")
             // The home source is the whole of `~`, kept so the agent can reach
-            // files that were never FlareAI's. The virtual drive is the other
-            // thing entirely — FlareAI's own folder in each place, gathered
+            // files that were never Polymux's. The virtual drive is the other
+            // thing entirely — Polymux's own folder in each place, gathered
             // into one — so listing home here buried it: every folder in the
             // user's home directory arrived alongside, and a folder just
             // created sorted away among them.
@@ -208,8 +208,8 @@ export class Drive {
                 source.id !== driveSourceId("local", DRIVE_LOCAL_HOME),
             )
             // The home source is the whole of `~`, kept so the agent can reach
-            // files that were never FlareAI's. The virtual drive is the other
-            // thing entirely — FlareAI's own folder in each place, gathered
+            // files that were never Polymux's. The virtual drive is the other
+            // thing entirely — Polymux's own folder in each place, gathered
             // into one — so listing home here buried it: every folder in the
             // user's home directory arrived alongside, and a folder just
             // created sorted away among them.
@@ -220,7 +220,7 @@ export class Drive {
 
     add("local", DRIVE_LOCAL_OUTPUTS, this.#outputs);
     // Unconfined on purpose: this source exists so the agent and the user can
-    // reach files that were never FlareAI's to begin with.
+    // reach files that were never Polymux's to begin with.
     add("local", DRIVE_LOCAL_HOME, new LocalDrive(homedir()));
 
     const accounts = this.#accounts();
@@ -321,7 +321,7 @@ export class Drive {
     return this.refresh();
   }
 
-  /** Forgets a share. The files are untouched — only FlareAI stops listing it. */
+  /** Forgets a share. The files are untouched — only Polymux stops listing it. */
   async removeShare(id: string): Promise<DriveStatusDto> {
     const shares = this.#shares().filter((share) => share.id !== id);
     this.#save({ shares: shares as unknown as JsonValue });
@@ -346,7 +346,7 @@ export class Drive {
       [...this.#sources.values()].map(async (source) => {
         const probe = await probeSafely(source.adapter);
         // The home source is intentionally unrestricted. Walking it would be
-        // slow and would not describe space used by FlareAI anyway.
+        // slow and would not describe space used by Polymux anyway.
         if (
           probe.state === "connected" &&
           probe.usage &&
@@ -638,7 +638,7 @@ export class Drive {
     // way to be rate-limited, and the drive has no progress UI to justify it.
     for (const item of chosen)
       uploaded.push(await this.#uploadItem(source, parentPath, item, options));
-    // Uploading changes both the folder listing and FlareAI's share of the
+    // Uploading changes both the folder listing and Polymux's share of the
     // provider quota. Re-probe before resolving so settings subscribers never
     // keep showing the pre-upload byte count after the new file is visible.
     if (uploaded.length) await this.refresh();
@@ -828,7 +828,7 @@ export class Drive {
           `${source.accountLabel ? `${source.name} – ${source.accountLabel}` : source.name} (${source.id})`,
       ),
       // The boundary is the reason a "look in my Drive" request can fail with
-      // everything connected: the cloud providers are scoped to FlareAI's own
+      // everything connected: the cloud providers are scoped to Polymux's own
       // folder, so a file the user put there themselves is not visible.
       reach: [...new Set(sources.map((source) => reachOf(source.provider)))],
     };
@@ -901,7 +901,7 @@ function reachOf(provider: DriveProviderId): string {
     case "google-drive":
     case "dropbox":
     case "onedrive":
-      return "the cloud drives hold only FlareAI's own folder — files the user put there themselves are outside it";
+      return "the cloud drives hold only Polymux's own folder — files the user put there themselves are outside it";
     case "local":
       return "Local storage reaches the output folder and the whole home directory";
     case "network":

@@ -4,9 +4,9 @@ import {configuredRemoteDebuggingPort, requestsBackgroundLaunch} from "./launch-
 
 test("background launch can be requested by switch, argument, or packaged environment", () => {
   const base = {platform: "darwin" as const, argv: [] as string[], hasSwitch: () => false};
-  assert.equal(requestsBackgroundLaunch({...base, hasSwitch: (name) => name === "flareai-background"}), true);
-  assert.equal(requestsBackgroundLaunch({...base, argv: ["--flareai-background"]}), true);
-  assert.equal(requestsBackgroundLaunch({...base, environment: {FLAREAI_BACKGROUND_LAUNCH: "1"}}), true);
+  assert.equal(requestsBackgroundLaunch({...base, hasSwitch: (name) => name === "polymux-background"}), true);
+  assert.equal(requestsBackgroundLaunch({...base, argv: ["--polymux-background"]}), true);
+  assert.equal(requestsBackgroundLaunch({...base, environment: {POLYMUX_BACKGROUND_LAUNCH: "1"}}), true);
   assert.equal(requestsBackgroundLaunch(base), false);
   assert.equal(requestsBackgroundLaunch({...base, platform: "linux"}), false);
 });

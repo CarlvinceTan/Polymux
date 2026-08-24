@@ -15,8 +15,8 @@ test("ordinary, named, and hidden benchmark launches never share a homeserver po
 
 test("named hidden benchmarks keep distinct homeserver ownership", () => {
   const baseline = homeserverPortFor("eval-baseline", true);
-  const experiment = homeserverPortFor("eval-experiment", true);
-  assert.notEqual(baseline, experiment);
+  const candidate = homeserverPortFor("eval-candidate", true);
+  assert.notEqual(baseline, candidate);
   assert.notEqual(baseline, homeserverPortFor(undefined, true));
-  assert.notEqual(experiment, homeserverPortFor(undefined, true));
+  assert.notEqual(candidate, homeserverPortFor(undefined, true));
 });

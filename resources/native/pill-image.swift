@@ -1,4 +1,4 @@
-// Draws FlareAI's Computer Use pill and writes it as a PNG.
+// Draws Polymux's Computer Use pill and writes it as a PNG.
 //
 // Usage: pill-image --out <path> [--dark|--light] <bundleId> [<bundleId> ...]
 //

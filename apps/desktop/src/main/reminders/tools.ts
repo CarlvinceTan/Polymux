@@ -1,4 +1,4 @@
-import type { AgentTool } from "@flareai/core";
+import type { AgentTool } from "@polymux/core";
 import type { Reminders } from "./index.js";
 
 /**

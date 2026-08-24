@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import path from "node:path";
-import type { ToolHooks } from "@flareai/core";
+import type { ToolHooks } from "@polymux/core";
 import {
   ProtectedSkillGuard,
   blocksShellCommand,
@@ -9,7 +9,7 @@ import {
   isInsideProtectedSkills,
 } from "./protected.js";
 
-const ROOT = "/home/u/.flareai/official-skills";
+const ROOT = "/home/u/.polymux/official-skills";
 const call = (name: string, args: Record<string, unknown>) =>
   ({ id: "1", name, arguments: args }) as never;
 
@@ -19,7 +19,7 @@ test("recognises paths inside the protected mirror", () => {
   assert.equal(isInsideProtectedSkills(`${ROOT}/../skills/mine/SKILL.md`, ROOT), false);
   // A sibling that merely shares the prefix is not inside it.
   assert.equal(isInsideProtectedSkills(`${ROOT}-backup/SKILL.md`, ROOT), false);
-  assert.equal(isInsideProtectedSkills("/home/u/.flareai/skills/mine/SKILL.md", ROOT), false);
+  assert.equal(isInsideProtectedSkills("/home/u/.polymux/skills/mine/SKILL.md", ROOT), false);
 });
 
 test("blocks writes and edits aimed at a built-in skill", async () => {
@@ -36,7 +36,7 @@ test("blocks writes and edits aimed at a built-in skill", async () => {
 test("allows writes to the user's own skills", async () => {
   const guard = new ProtectedSkillGuard(ROOT);
   const decision = await guard.beforeTool(
-    call("write", { path: "/home/u/.flareai/skills/mine/SKILL.md" }),
+    call("write", { path: "/home/u/.polymux/skills/mine/SKILL.md" }),
   );
   assert.equal(decision.allow, true);
 });
@@ -52,10 +52,10 @@ test("allows reading a built-in skill", async () => {
 test("blocks mutating shell commands that touch the mirror", () => {
   assert.equal(blocksShellCommand(`rm -rf ${ROOT}/computer-use`, ROOT), true);
   assert.equal(blocksShellCommand(`echo x > ${ROOT}/a/SKILL.md`, ROOT), true);
-  assert.equal(blocksShellCommand("rm -rf ~/.flareai/official-skills/a", ROOT), true);
+  assert.equal(blocksShellCommand("rm -rf ~/.polymux/official-skills/a", ROOT), true);
   // Reads stay allowed: the skills' own scripts and references live there.
   assert.equal(blocksShellCommand(`cat ${ROOT}/computer-use/SKILL.md`, ROOT), false);
-  assert.equal(blocksShellCommand("rm -rf /home/u/.flareai/skills/mine", ROOT), false);
+  assert.equal(blocksShellCommand("rm -rf /home/u/.polymux/skills/mine", ROOT), false);
 });
 
 test("allows trusted bundled scripts without allowing shell composition", () => {
@@ -118,6 +118,6 @@ test("combineHooks stops at the first veto and runs afterTool on all", async () 
 
 test("guard uses the real mirror location shape", () => {
   const home = path.join("/home", "u");
-  const root = path.join(home, ".flareai", "official-skills");
-  assert.equal(isInsideProtectedSkills(path.join(root, "email-use"), root), true);
+  const root = path.join(home, ".polymux", "official-skills");
+  assert.equal(isInsideProtectedSkills(path.join(root, "hub-use"), root), true);
 });

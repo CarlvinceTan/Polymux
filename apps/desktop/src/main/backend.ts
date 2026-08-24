@@ -1,23 +1,39 @@
-import {existsSync, mkdirSync, readFileSync} from "node:fs";
-import {copyFile, cp, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile} from "node:fs/promises";
-import type {Stats} from "node:fs";
-import {execFile} from "node:child_process";
-import {promisify} from "node:util";
-import {randomUUID} from "node:crypto";
-import {homedir, tmpdir} from "node:os";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import {
   GoalManager,
   MemoryManager,
-  FlareAIAgent,
+  PolymuxAgent,
   SkillLoader,
+  createComputerTools,
   type AgentPrompts,
   type SkillLoaderOptions,
-} from "@flareai/agent";
-import {ComputerHistoryManager} from "@flareai/computer-history";
-import type {ActiveAgentRun} from "@flareai/core";
-import type {InferenceModel, InferenceService, ModelRef} from "@flareai/inference";
-import {PiInference} from "@flareai/inference/pi";
+} from "@polymux/agent";
+import { Computer } from "@polymux/computer";
+import { ComputerHistoryManager } from "@polymux/computer";
+import type { ActiveAgentRun } from "@polymux/core";
+import type {
+  InferenceModel,
+  InferenceService,
+  ModelRef,
+} from "@polymux/inference";
+import { PiInference } from "@polymux/inference/pi";
 import type {
   ChatDto,
   MailFolderDto,
@@ -50,8 +66,8 @@ import type {
   DefaultAppDto,
   EnqueueManagerJobRequest,
   ManagerSnapshotDto,
-} from "@flareai/protocol";
-import {createAppleMailSearcher} from "./hub/apple-mail.js";
+} from "@polymux/protocol";
+import { createAppleMailSearcher } from "./hub/apple-mail.js";
 import {
   channels,
   commsPlatform,
@@ -64,20 +80,24 @@ import {
   validateGoalCommand,
   validateSaveEmailAccount,
   validateStartRun,
-} from "@flareai/protocol";
-import {SqliteStorage} from "@flareai/storage/sqlite";
-import type {StoredMessage} from "@flareai/storage";
-import {ProfileManager} from "./profiles.js";
+} from "@polymux/protocol";
+import { SqliteStorage } from "@polymux/storage/sqlite";
+import type { StoredMessage } from "@polymux/storage";
+import { ProfileManager } from "./profiles.js";
 import {
   createNativeTools,
   importMcpServers,
   McpManager,
   ToolRegistry,
-} from "@flareai/tools";
-import {builtinModels} from "@earendil-works/pi-ai/providers/all";
-import {createProvider, type Model, type MutableModels} from "@earendil-works/pi-ai";
-import {registerBunOAuthFlows} from "@earendil-works/pi-ai/bun-oauth";
-import {openAICompletionsApi} from "@earendil-works/pi-ai/api/openai-completions.lazy";
+} from "@polymux/tools";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import {
+  createProvider,
+  type Model,
+  type MutableModels,
+} from "@earendil-works/pi-ai";
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
   app,
   dialog,
@@ -91,14 +111,19 @@ import {
   type IpcMainInvokeEvent,
 } from "electron";
 
-import {assistantText, eventDto, storedEventDto} from "./backend/dto.js";
-import {ChatPool, type JobPriority} from "./agent/chat-pool.js";
+import { assistantText, eventDto, storedEventDto } from "./backend/dto.js";
+import { ChatPool, type JobPriority } from "./agent/chat-pool.js";
 import {
   shouldBoundGoalContinuation,
   shouldResumePausedGoal,
   shouldUseGoalProgressContext,
 } from "./agent/goal-intent.js";
-import {managerClaimContextThroughSequence, managerContextThroughSequence, managerJobRequiresExclusiveRun, managerRunCapacity} from "./agent/manager-scheduler.js";
+import {
+  managerClaimContextThroughSequence,
+  managerContextThroughSequence,
+  managerJobRequiresExclusiveRun,
+  managerRunCapacity,
+} from "./agent/manager-scheduler.js";
 import {
   WORKSPACE_BOOT_ID,
   audioBuffer,
@@ -140,8 +165,8 @@ import {
   hasOnboardingFlag,
   reasoningEffort,
 } from "./backend/settings.js";
-import type {CustomProviderConfig} from "./backend/models.js";
-import type {RoleSelection} from "./backend/models.js";
+import type { CustomProviderConfig } from "./backend/models.js";
+import type { RoleSelection } from "./backend/models.js";
 import {
   customProviderPreference,
   customProviderRequest,
@@ -163,8 +188,12 @@ import {
   mimetypeOf,
   skillInstructions,
 } from "./backend/host.js";
-import {speechModeAfterRoleChange} from "./backend/speech-mode.js";
-import {EncryptedCredentialStore, OpenCodeCredentialFallback} from "./system/credential-store.js";
+import { speechModeAfterRoleChange } from "./backend/speech-mode.js";
+import { autoRolePicks } from "./backend/role-advisor.js";
+import {
+  EncryptedCredentialStore,
+  OpenCodeCredentialFallback,
+} from "./system/credential-store.js";
 import {
   appVersion,
   checkForUpdates,
@@ -172,77 +201,107 @@ import {
   startUpdateChecks,
   stopUpdateChecks,
 } from "./system/updater.js";
-import {HookEngine} from "./agent/hooks.js";
-import {officialSkillsHome} from "./skills/official.js";
-import {EXTENSION_INSTALL_URL, readExtensionStatus, readExternalPromptSnapshot} from "./browser/extension.js";
-import {ProtectedSkillGuard, combineHooks} from "./skills/protected.js";
-import {AgentSurfaceServer} from "./agent/surface.js";
-import {AgentSurfaceAdapter} from "./agent/surface-adapter.js";
-import {createFlareAIUiInspectionTool} from "./agent/ui-inspection.js";
-import {createCurrentLocationResolutionTool, reverseGeocodeCurrentLocation} from "./agent/location-resolution.js";
-import {refreshLocationForPrompt} from "./agent/prompt-location-refresh.js";
-import {createBrowserControlTools} from "./browser/control-tools.js";
+import { HookEngine } from "./agent/hooks.js";
+import { officialSkillsHome } from "./skills/official.js";
+import {
+  EXTENSION_INSTALL_URL,
+  readExtensionStatus,
+  readExternalPromptSnapshot,
+} from "./browser/extension.js";
+import { ProtectedSkillGuard, combineHooks } from "./skills/protected.js";
+import { AgentSurfaceServer } from "./agent/surface.js";
+import { AgentSurfaceAdapter } from "./agent/surface-adapter.js";
+import { createPolymuxUiInspectionTool } from "./agent/ui-inspection.js";
+import {
+  createCurrentLocationResolutionTool,
+  reverseGeocodeCurrentLocation,
+} from "./agent/location-resolution.js";
+import { refreshLocationForPrompt } from "./agent/prompt-location-refresh.js";
+import { createBrowserControlTools } from "./browser/control-tools.js";
 import {
   createInAppBrowserBatchTool,
   createInAppBrowserReadTool,
   createInAppBrowserTool,
   type InAppBrowserResearchTool,
 } from "./browser/embedded-tools.js";
-import {createHubDraftTool, createWorkspaceTool} from "./workspace/tools.js";
-import {RunResourceRecorder} from "./agent/run-resources.js";
-import {EncryptedApiKeyPool} from "./inference/api-key-pool.js";
-import {openAICodexInteraction, providerOAuthError, ProviderOAuthSessions} from "./inference/provider-oauth.js";
-import {WhisperDictation} from "./system/dictation.js";
-import {discoverAgentSkills, resolveDiscoveredSkill} from "./skills/discovery.js";
-import {installSkillPackage, searchSkillRegistry} from "./skills/registry.js";
-import {declaredPermissions, permissionsToRequest} from "./skills/permissions.js";
-import {discoverAgentMcpServers, resolveDiscoveredMcp} from "./mcp/discovery.js";
-import {searchMcpRegistry} from "./mcp/registry.js";
-import {PluginRegistry} from "./plugins/registry.js";
-import {readManifest as readPluginManifest} from "./plugins/manifest.js";
-import {ModelCatalog} from "./inference/model-catalog.js";
-import {Autofill, AUTOFILL_CHANNEL, autofillMessage} from "./browser/autofill.js";
-import {BrowsingData} from "./browser/data.js";
-import {Downloads} from "./browser/downloads.js";
-import {EmbeddedBrowser} from "./browser/embedded.js";
-import {EncryptedLoginVault} from "./browser/logins.js";
-import {SitePermissions, originOf} from "./browser/permissions.js";
-import {applyImport} from "./browser/import/apply.js";
-import {discoverBrowsers, importFrom} from "./browser/import/discovery.js";
-import {importFromFile} from "./browser/import/files.js";
-import type {ImportedData} from "./browser/import/types.js";
-import {siteFaviconDataUrl} from "./browser/favicon.js";
-import {RotatingInference} from "./inference/rotating.js";
-import {AccessibilityComputerHistoryFrames, ElectronComputerHistorySystem} from "./agent/computer-history.js";
-import {NativeInteractionEvents} from "./agent/interaction-events.js";
-import {compactPromptWindows, needsFreshDesktopContext} from "./agent/environment-context.js";
-import {createPerRunCallLimit} from "./agent/tool-budget.js";
-import {RecordingCapture} from "./recording/capture.js";
-import {createRecordingTool} from "./recording/tools.js";
-import {RecordingMenubar} from "./recording/menubar.js";
-import {ComputerUseMenubar} from "./computer-use/menubar.js";
-import {PillIcon} from "./computer-use/pill-icon.js";
-import {WindowControlMonitor} from "./computer-use/monitor.js";
-import {AxReader, type AxWindow} from "./system/ax-reader.js";
-import {FileReloadWatcher} from "./system/file-reload-watcher.js";
-import {DirectoryWatcher} from "./system/directory-watcher.js";
-import {flareaiPath} from "./system/paths.js";
+import { createHubDraftTool, createWorkspaceTool } from "./workspace/tools.js";
+import { RunResourceRecorder } from "./agent/run-resources.js";
+import { EncryptedApiKeyPool } from "./inference/api-key-pool.js";
+import {
+  openAICodexInteraction,
+  providerOAuthError,
+  ProviderOAuthSessions,
+} from "./inference/provider-oauth.js";
+import { WhisperDictation } from "./system/dictation.js";
+import {
+  discoverAgentSkills,
+  resolveDiscoveredSkill,
+} from "./skills/discovery.js";
+import { installSkillPackage, searchSkillRegistry } from "./skills/registry.js";
+import {
+  declaredPermissions,
+  permissionsToRequest,
+} from "./skills/permissions.js";
+import {
+  discoverAgentMcpServers,
+  resolveDiscoveredMcp,
+} from "./mcp/discovery.js";
+import { searchMcpRegistry } from "./mcp/registry.js";
+import { PluginRegistry } from "./plugins/registry.js";
+import { readManifest as readPluginManifest } from "./plugins/manifest.js";
+import { ModelCatalog } from "./inference/model-catalog.js";
+import {
+  Autofill,
+  AUTOFILL_CHANNEL,
+  autofillMessage,
+} from "./browser/autofill.js";
+import { BrowsingData } from "./browser/data.js";
+import { Downloads } from "./browser/downloads.js";
+import { EmbeddedBrowser } from "./browser/embedded.js";
+import { EncryptedLoginVault } from "./browser/logins.js";
+import { SitePermissions, originOf } from "./browser/permissions.js";
+import { applyImport } from "./browser/import/apply.js";
+import { discoverBrowsers, importFrom } from "./browser/import/discovery.js";
+import { importFromFile } from "./browser/import/files.js";
+import type { ImportedData } from "./browser/import/types.js";
+import { siteFaviconDataUrl } from "./browser/favicon.js";
+import { RotatingInference } from "./inference/rotating.js";
+import {
+  AccessibilityComputerHistoryFrames,
+  ElectronComputerHistorySystem,
+} from "./agent/computer-history.js";
+import { NativeInteractionEvents } from "./agent/interaction-events.js";
+import {
+  compactPromptWindows,
+  needsFreshDesktopContext,
+} from "./agent/environment-context.js";
+import { createPerRunCallLimit } from "./agent/tool-budget.js";
+import { RecordingCapture } from "./recording/capture.js";
+import { createRecordingTool } from "./recording/tools.js";
+import { RecordingMenubar } from "./recording/menubar.js";
+import { ComputerUseMenubar } from "./computer-use/menubar.js";
+import { PillIcon } from "./computer-use/pill-icon.js";
+import { WindowControlMonitor } from "./computer-use/monitor.js";
+import { AxReader, type AxWindow } from "./system/ax-reader.js";
+import { FileReloadWatcher } from "./system/file-reload-watcher.js";
+import { DirectoryWatcher } from "./system/directory-watcher.js";
+import { polymuxPath } from "./system/paths.js";
 import {
   Notifier,
   notificationBody,
   type NotificationRequest,
 } from "./system/notifications.js";
-import {Scheduler} from "./scheduler/index.js";
-import {createScheduleTool} from "./scheduler/tools.js";
-import {TaskBoard} from "./tasks/index.js";
-import {createTasksTool} from "./tasks/tools.js";
-import {Communications} from "./hub/index.js";
-import {HubCache} from "./hub/cache.js";
-import {Drive, createDriveTools} from "@flareai/drive";
-import {electronConsent} from "./system/drive-consent.js";
-import {sessionScopedSnapshot} from "./workspace/snapshot.js";
-import {PreviewGrants} from "./workspace/preview.js";
-import type {Homeserver, MatrixRoom} from "@flareai/hub";
+import { Scheduler } from "./scheduler/index.js";
+import { createScheduleTool } from "./scheduler/tools.js";
+import { TaskBoard } from "./tasks/index.js";
+import { createTasksTool } from "./tasks/tools.js";
+import { Communications } from "./hub/index.js";
+import { HubCache } from "./hub/cache.js";
+import { Drive, createDriveTools } from "@polymux/drive";
+import { electronConsent } from "./system/drive-consent.js";
+import { sessionScopedSnapshot } from "./workspace/snapshot.js";
+import { PreviewGrants } from "./workspace/preview.js";
+import type { Homeserver, MatrixRoom } from "@polymux/hub";
 /**
  * How recent a message has to be to be worth announcing. Anything older is
  * history a bridge is catching up on rather than something just said.
@@ -253,7 +312,7 @@ import type {Homeserver, MatrixRoom} from "@flareai/hub";
 registerBunOAuthFlows();
 
 const MESSAGE_NOTIFICATION_MAX_AGE_MS = 60_000;
-/** Remote unlinking happens outside FlareAI, so it needs a quiet current-state check. */
+/** Remote unlinking happens outside Polymux, so it needs a quiet current-state check. */
 const COMMS_STATUS_INTERVAL_MS = 30_000;
 
 /** The part of BridgeHost the backend needs: what is installed, and what is held back. */
@@ -263,24 +322,26 @@ interface BridgeInventory {
       platform: string;
       binary: string;
       installed: boolean;
-      blocked: {reason: string; permission?: SystemPermissionKind} | null;
+      blocked: { reason: string; permission?: SystemPermissionKind } | null;
     }[]
   >;
   networkConfig: (platform: string) => Promise<Record<string, string>>;
-  configureNetwork: (platform: string, values: Record<string, string>) => Promise<void>;
+  configureNetwork: (
+    platform: string,
+    values: Record<string, string>,
+  ) => Promise<void>;
   retryBlocked: () => Promise<void>;
   ensure: (platform: string) => Promise<void>;
 }
-import {cancelCookieLogin, runCookieLogin} from "./hub/cookie-login.js";
-import {createCommunicationsTools} from "./hub/tools.js";
-import {parse as parseToml} from "smol-toml";
-import {FirstRunPermissions} from "./system/first-run-permissions.js";
-import {AppPermissions} from "./system/app-permissions.js";
-import {ContactLookup} from "./hub/contacts.js";
-import {Reminders} from "./reminders/index.js";
-import {createRemindersTools} from "./reminders/tools.js";
+import { cancelCookieLogin, runCookieLogin } from "./hub/cookie-login.js";
+import { createCommunicationsTools } from "./hub/tools.js";
+import { parse as parseToml } from "smol-toml";
+import { FirstRunPermissions } from "./system/first-run-permissions.js";
+import { AppPermissions } from "./system/app-permissions.js";
+import { ContactLookup } from "./hub/contacts.js";
+import { Reminders } from "./reminders/index.js";
+import { createRemindersTools } from "./reminders/tools.js";
 import {
-
   openSystemPermissionSettings,
   permissionStatus,
   requestSystemPermission,
@@ -304,14 +365,12 @@ export interface DesktopBackendOptions {
    */
   coreSkills?: string[];
   /**
-   * FlareAI's own prompts, read from `resources/prompts`. Not skills:
+   * Polymux's own prompts, read from `resources/prompts`. Not skills:
    * they are never listed, never switchable, and never something the model
    * chooses to open — `main.md` is loaded into every run that can delegate,
    * and the rest belong to the judge, the compactor and the memory jobs.
    */
   agentPrompts?: AgentPrompts;
-  /** Opt-in benchmark strategy. Never enabled by stored user state. */
-  orchestrationExperiment?: boolean;
   /** Background automation must never invoke Notification Center or surface a
    * delayed OS prompt above the user's foreground app. */
   suppressSystemNotifications?: boolean;
@@ -344,7 +403,7 @@ export interface DesktopBackendOptions {
     homeserver: Homeserver;
     directory: string;
     bridges?: BridgeInventory;
-    /** Brings the in-process WeChat bridge up for FlareAI's own account. */
+    /** Brings the in-process WeChat bridge up for Polymux's own account. */
     startWeChat?: (owner: string) => Promise<boolean>;
     /** Takes it back down again, when WeChat is unlinked from the Hub tab. */
     stopWeChat?: () => Promise<void>;
@@ -421,14 +480,14 @@ ${JXA_ICON_TO_PNG}
 
 export class DesktopBackend {
   #window: BrowserWindow;
-  /** Every FlareAI renderer allowed to use the preload API. Detached
+  /** Every Polymux renderer allowed to use the preload API. Detached
    * workspace windows are trusted without becoming the embedded-browser
    * owner represented by `#window`. */
   readonly #trustedWindows = new Map<number, BrowserWindow>();
   readonly #ipcMain: IpcMain;
   readonly #storage: SqliteStorage;
   readonly #profiles: ProfileManager;
-  #agent?: FlareAIAgent;
+  #agent?: PolymuxAgent;
   #model?: ModelRef;
   /** Per-role model overrides, each with the reasoning level it was assigned
    * at. An absent role follows the main model. */
@@ -442,12 +501,15 @@ export class DesktopBackend {
   readonly #skills: SkillLoader;
   readonly #coreSkills: ReadonlySet<string>;
   readonly #agentPrompts: AgentPrompts;
-  readonly #orchestrationExperiment: boolean;
   readonly #suppressAutomaticUpdateChecks: boolean;
   readonly #agentSkillOptions: SkillLoaderOptions;
   readonly #goals: GoalManager;
   readonly #memory: MemoryManager;
   readonly #computerHistory: ComputerHistoryManager;
+  readonly #computer: Computer;
+  readonly #computerSystem: ElectronComputerHistorySystem;
+  readonly #interactionEvents: NativeInteractionEvents;
+  #computerObservationStarted = false;
   readonly #recording: RecordingCapture;
   readonly #computerUse: ComputerUseMenubar;
   readonly #windowControl: WindowControlMonitor;
@@ -513,7 +575,7 @@ export class DesktopBackend {
   readonly #embeddedBrowser: EmbeddedBrowser;
   readonly #axReader: AxReader;
   /** Last trusted window listing, retained as a fallback if a refresh fails. */
-  #windowSnapshot: {at: number; windows: AxWindow[]} = {at: 0, windows: []};
+  #windowSnapshot: { at: number; windows: AxWindow[] } = { at: 0, windows: [] };
   #windowRefresh?: Promise<void>;
   #locationRefresh?: Promise<void>;
   readonly #sitePermissions: SitePermissions;
@@ -544,19 +606,21 @@ export class DesktopBackend {
     this.#reloadForProfileChange = options.reloadForProfileChange;
     this.#coreSkills = new Set(options.coreSkills ?? []);
     this.#agentPrompts = options.agentPrompts ?? {};
-    this.#orchestrationExperiment = options.orchestrationExperiment === true;
-    this.#suppressAutomaticUpdateChecks = options.suppressAutomaticUpdateChecks === true;
-    this.#storage = new SqliteStorage(path.join(options.dataDirectory, "flareai.sqlite"));
+    this.#suppressAutomaticUpdateChecks =
+      options.suppressAutomaticUpdateChecks === true;
+    this.#storage = new SqliteStorage(
+      path.join(options.dataDirectory, "polymux.sqlite"),
+    );
     this.#profiles = new ProfileManager(
       this.#storage,
       options.dataDirectory,
-      flareaiPath(),
-      flareaiPath("profiles"),
+      polymuxPath(),
+      polymuxPath("profiles"),
     );
     if (options.selectDefaultProfile) this.#profiles.selectDefault();
     const activeProfile = this.#profiles.snapshot().activeId;
     const profileDirectory = this.#profiles.directory(activeProfile);
-    mkdirSync(profileDirectory, {recursive: true});
+    mkdirSync(profileDirectory, { recursive: true });
     const personalSkills = path.join(profileDirectory, "skills");
     this.#skills = new SkillLoader({
       official: options.officialSkillDirectories,
@@ -568,7 +632,8 @@ export class DesktopBackend {
       // Core integrations have no Skills-list toggle, so nothing may switch
       // them off — including a stale preference from before they were core.
       isEnabled: (skill) =>
-        this.#coreSkills.has(skill.name) || this.#integrationEnabled("skill-enabled", skill.name),
+        this.#coreSkills.has(skill.name) ||
+        this.#integrationEnabled("skill-enabled", skill.name),
     };
     this.#managerJobs = new ChatPool(this.#storage);
     this.#credentials = new EncryptedCredentialStore(
@@ -583,11 +648,14 @@ export class DesktopBackend {
       // The default profile retains the convenient read-only OpenCode login
       // bridge. Named profiles are strict isolation boundaries and may only
       // see credentials saved inside their own profile directory.
-      credentials: activeProfile === "default"
-        ? new OpenCodeCredentialFallback(this.#credentials)
-        : this.#credentials,
+      credentials:
+        activeProfile === "default"
+          ? new OpenCodeCredentialFallback(this.#credentials)
+          : this.#credentials,
     });
-    for (const config of customProviderPreference(this.#profilePreference("custom-providers")?.value))
+    for (const config of customProviderPreference(
+      this.#profilePreference("custom-providers")?.value,
+    ))
       this.#registerCustomProvider(config);
     this.#inference = new RotatingInference(
       new PiInference(this.#models),
@@ -598,7 +666,7 @@ export class DesktopBackend {
       // Outside the Electron data directory on purpose: the vault is plain
       // Markdown meant to be opened, searched, and edited by hand, and it is
       // the same layout Codex keeps at ~/.codex/memories.
-      directory: flareaiPath("memories"),
+      directory: polymuxPath("memories"),
       legacyStorage: this.#storage,
     });
     this.#axReader = new AxReader({
@@ -617,23 +685,28 @@ export class DesktopBackend {
     this.#reminders = new Reminders({
       sourcePath: options.remindersSourcePath ?? "",
       cacheDirectory: path.join(options.dataDirectory, "bin"),
-      access: {ensure: () => this.#requireAppPermission("reminders")},
+      access: { ensure: () => this.#requireAppPermission("reminders") },
     });
+    this.#interactionEvents = new NativeInteractionEvents({
+      sourcePath: options.axEventsSourcePath ?? "",
+      cacheDirectory: path.join(options.dataDirectory, "bin"),
+    });
+    this.#computerSystem = new ElectronComputerHistorySystem();
     this.#computerHistory = new ComputerHistoryManager({
       directory: path.join(options.dataDirectory, "computer-history"),
       frames: new AccessibilityComputerHistoryFrames(this.#axReader),
-      system: new ElectronComputerHistorySystem(),
-      interactions: new NativeInteractionEvents({
-        sourcePath: options.axEventsSourcePath ?? "",
-        cacheDirectory: path.join(options.dataDirectory, "bin"),
-      }),
+      system: this.#computerSystem,
+    });
+    this.#computer = new Computer(() => this.#computerStateInput(), {
+      search: ({ query, app, since, until, limit }) =>
+        this.#computerHistory.store.search(query, { app, since, until, limit }),
     });
     // Record & Replay runs on its own tap and its own reads: a demonstration
     // the user just asked for must not depend on the ambient history being
     // switched on, or be narrowed by a capture policy written for it.
     this.#recording = new RecordingCapture({
       directory: path.join(options.dataDirectory, "recordings"),
-      // Recording is the one thing FlareAI does while the user is deliberately
+      // Recording is the one thing Polymux does while the user is deliberately
       // in another app, so its state and its controls belong in the menu bar
       // rather than behind the window they just left.
       indicator: new RecordingMenubar({
@@ -650,10 +723,10 @@ export class DesktopBackend {
         if (!snapshot.trusted || snapshot.skipped || !snapshot.app) return null;
         return {
           app: snapshot.app,
-          ...(snapshot.bundleId ? {bundleId: snapshot.bundleId} : {}),
-          ...(snapshot.title ? {title: snapshot.title} : {}),
-          ...(snapshot.url ? {url: snapshot.url} : {}),
-          ...(snapshot.text ? {text: snapshot.text} : {}),
+          ...(snapshot.bundleId ? { bundleId: snapshot.bundleId } : {}),
+          ...(snapshot.title ? { title: snapshot.title } : {}),
+          ...(snapshot.url ? { url: snapshot.url } : {}),
+          ...(snapshot.text ? { text: snapshot.text } : {}),
         };
       },
     });
@@ -673,7 +746,7 @@ export class DesktopBackend {
       },
     });
     this.#windowControl = new WindowControlMonitor({
-      registryPath: flareaiPath("state", "window-control-leases.json"),
+      registryPath: polymuxPath("state", "window-control-leases.json"),
       windows: () => this.#windowSnapshot.windows,
       onChange: (apps) => void this.#computerUse.update(apps),
     });
@@ -683,9 +756,9 @@ export class DesktopBackend {
     this.#firstRunPermissions = new FirstRunPermissions({
       store: this.#storage,
       status: systemPermissionStatus,
-      onReady: () => this.#computerHistory.start(),
+      onReady: () => this.#startComputerObservation(),
     });
-    this.#modelCatalog = new ModelCatalog({cacheDir: options.dataDirectory});
+    this.#modelCatalog = new ModelCatalog({ cacheDir: options.dataDirectory });
     this.#downloads = new Downloads({
       records: this.#storage,
       preferences: () => {
@@ -697,7 +770,10 @@ export class DesktopBackend {
       },
       send: (downloads) => {
         if (!this.#closing && !this.#window.isDestroyed())
-          this.#window.webContents.send(channels.browserEvent, {type: "downloads", downloads});
+          this.#window.webContents.send(channels.browserEvent, {
+            type: "downloads",
+            downloads,
+          });
       },
       shell: {
         openPath: (target) => void shell.openPath(target),
@@ -715,7 +791,11 @@ export class DesktopBackend {
         // Local browsing lands in the same table an import writes to, tagged
         // so "clear what I imported" stays a separate act from clearing what
         // the user did here.
-        this.#storage.recordVisit({url: visit.url, title: visit.title, source: "local"});
+        this.#storage.recordVisit({
+          url: visit.url,
+          title: visit.title,
+          source: "local",
+        });
       },
       onTabReset: (tabId) => this.#sitePermissions.dismissTab(tabId),
     });
@@ -729,7 +809,9 @@ export class DesktopBackend {
       enabled: () => this.#browserSettings().autofillEnabled,
       changed: () => {
         if (!this.#closing && !this.#window.isDestroyed())
-          this.#window.webContents.send(channels.browserEvent, {type: "logins"});
+          this.#window.webContents.send(channels.browserEvent, {
+            type: "logins",
+          });
       },
     });
     this.#browsingData = new BrowsingData({
@@ -749,23 +831,26 @@ export class DesktopBackend {
         // to a user who has looked away.
         this.#notifier.notify({
           kind: "agent-attention",
-          title: "FlareAI needs your answer",
+          title: "Polymux needs your answer",
           body: notificationBody(
             `${prompt.origin || "A page"} is asking for ${prompt.permission}.`,
           ),
         });
       },
     });
-    // FlareAI's own configuration lives in ~/.flareai next to its skills, not
+    // Polymux's own configuration lives in ~/.polymux next to its skills, not
     // buried in the platform's application-support directory: it is a file the
     // user is meant to be able to open, and a skill or script may be asked to.
     this.#mcpConfigPath = path.join(profileDirectory, "mcp.json");
-    adoptLegacyMcpConfig(path.join(options.dataDirectory, "mcp.json"), this.#mcpConfigPath);
-    this.#customSkillDirectory = path.join(profileDirectory, "skills");
-    this.#codexMcpConfigPath = options.codexConfigPath ?? path.join(homedir(), ".codex", "config.toml");
-    this.#mcpConfigWatcher = new FileReloadWatcher(
+    adoptLegacyMcpConfig(
+      path.join(options.dataDirectory, "mcp.json"),
       this.#mcpConfigPath,
-      () => this.#requestMcpReload(),
+    );
+    this.#customSkillDirectory = path.join(profileDirectory, "skills");
+    this.#codexMcpConfigPath =
+      options.codexConfigPath ?? path.join(homedir(), ".codex", "config.toml");
+    this.#mcpConfigWatcher = new FileReloadWatcher(this.#mcpConfigPath, () =>
+      this.#requestMcpReload(),
     );
     // A skill most often appears because the agent just wrote one from a
     // recording, and the Skills tab should show it without the user reloading.
@@ -775,12 +860,15 @@ export class DesktopBackend {
       () => {
         if (this.#closing || this.#window.isDestroyed()) return;
         try {
-          this.#window.webContents.send(channels.skillsChanged, this.#skillDtos());
+          this.#window.webContents.send(
+            channels.skillsChanged,
+            this.#skillDtos(),
+          );
         } catch {
           // A window mid-teardown is not worth failing a file watch over.
         }
       },
-      {debounceMs: 500},
+      { debounceMs: 500 },
     );
     // A message landing anywhere in the hub is pushed straight to the window,
     // so a conversation on screen updates as it arrives.
@@ -822,7 +910,8 @@ export class DesktopBackend {
         ? {
             baseUrl: options.hub.homeserver.baseUrl,
             directory: options.hub.directory,
-            provision: (localpart) => options.hub!.homeserver.createLocalUser(localpart),
+            provision: (localpart) =>
+              options.hub!.homeserver.createLocalUser(localpart),
             inventory: options.hub.bridges
               ? () => options.hub!.bridges!.inventory()
               : undefined,
@@ -830,7 +919,8 @@ export class DesktopBackend {
               ? (platform) => options.hub!.bridges!.networkConfig(platform)
               : undefined,
             configureNetwork: options.hub.bridges
-              ? (platform, values) => options.hub!.bridges!.configureNetwork(platform, values)
+              ? (platform, values) =>
+                  options.hub!.bridges!.configureNetwork(platform, values)
               : undefined,
             retryBlocked: options.hub.bridges
               ? () => options.hub!.bridges!.retryBlocked()
@@ -850,7 +940,7 @@ export class DesktopBackend {
         if (!this.#closing && !this.#window.isDestroyed())
           this.#window.webContents.send(channels.commsChanged, status);
       },
-      // Parented, so the network's sign-in page opens as a sheet over FlareAI
+      // Parented, so the network's sign-in page opens as a sheet over Polymux
       // rather than as a window that can end up behind it.
       cookieLogin: (request) => runCookieLogin(request, this.#window),
       cancelCookieLogin,
@@ -888,7 +978,7 @@ export class DesktopBackend {
         // that can end up behind it — an upload picker lost behind the app is
         // indistinguishable from an upload button that does nothing.
         folder: async () => {
-          const {dialog} = await import("electron");
+          const { dialog } = await import("electron");
           const result = await dialog.showOpenDialog(this.#window, {
             properties: ["openDirectory", "createDirectory"],
             title: "Choose the Drive folder",
@@ -896,7 +986,7 @@ export class DesktopBackend {
           return result.canceled ? null : (result.filePaths[0] ?? null);
         },
         files: async () => {
-          const {dialog} = await import("electron");
+          const { dialog } = await import("electron");
           const result = await dialog.showOpenDialog(this.#window, {
             properties: ["openFile", "multiSelections"],
             title: "Upload to Drive",
@@ -918,7 +1008,9 @@ export class DesktopBackend {
       preferences: () => {
         const general = this.#generalSettings();
         return {
-          enabled: !options.suppressSystemNotifications && general.notificationsEnabled,
+          enabled:
+            !options.suppressSystemNotifications &&
+            general.notificationsEnabled,
           kinds: general.notifications,
         };
       },
@@ -927,7 +1019,9 @@ export class DesktopBackend {
       // The window is re-aimed when one closes and another opens, so this is
       // read at post time rather than captured here.
       focused: () =>
-        !this.#closing && !this.#window.isDestroyed() && this.#window.isFocused(),
+        !this.#closing &&
+        !this.#window.isDestroyed() &&
+        this.#window.isFocused(),
     });
     // A schedule that fires while the user is elsewhere is the case system
     // notifications exist for, so both outcomes are announced around the run
@@ -938,7 +1032,9 @@ export class DesktopBackend {
         this.#notifier.notify({
           kind: "schedule-completed",
           title: schedule.title,
-          body: notificationBody(result.summary ?? "This scheduled task finished."),
+          body: notificationBody(
+            result.summary ?? "This scheduled task finished.",
+          ),
         });
         return result;
       } catch (error) {
@@ -962,35 +1058,57 @@ export class DesktopBackend {
         this.#window.webContents.send(channels.tasksChanged, items);
     });
     this.#registry = new ToolRegistry(
-      createNativeTools({ cwd: (context) => this.#runDirectory(context.runId) }),
+      createNativeTools({
+        cwd: (context) => this.#runDirectory(context.runId),
+      }),
     );
+    for (const tool of createComputerTools(this.#computer))
+      this.#registry.register(tool);
     for (const tool of createRemindersTools(this.#reminders))
       this.#registry.register(tool);
     for (const tool of createBrowserControlTools(this.#agentSurface, {
-      currentRead: this.#orchestrationExperiment,
+      currentRead: true,
       embeddedBrowser: this.#embeddedBrowser,
+      computer: this.#computer,
     }))
       this.#registry.register(tool);
     // The in-app Browser is the default surface for web work, so the agent
     // drives it directly rather than through the user's external browser.
     const inAppBrowserTool = createInAppBrowserTool(this.#embeddedBrowser);
-    if (this.#orchestrationExperiment) {
-      const boundResearch = createPerRunCallLimit(
+    const boundResearch = createPerRunCallLimit(
         6,
         "The bounded public-research budget is complete. Do not open, read, snapshot, or interact with more research pages; synthesize from the current first-party evidence and state any remaining uncertainty.",
       );
       const workflowActions = new Set([
-        "tabs", "show", "close", "get", "fill", "type", "select", "check",
-        "uncheck", "upload", "dialog", "wait",
+        "tabs",
+        "show",
+        "close",
+        "get",
+        "fill",
+        "type",
+        "select",
+        "check",
+        "uncheck",
+        "upload",
+        "dialog",
+        "wait",
       ]);
-      this.#registry.register(boundResearch(
-        inAppBrowserTool,
-        (input) => !workflowActions.has(String((input as {action?: unknown})?.action ?? "")),
-      ));
-      this.#registry.register(boundResearch(createInAppBrowserBatchTool(this.#embeddedBrowser)));
-      this.#browserResearchTool = createInAppBrowserReadTool(this.#embeddedBrowser);
-      this.#registry.register(boundResearch(this.#browserResearchTool));
-    } else this.#registry.register(inAppBrowserTool);
+      this.#registry.register(
+        boundResearch(
+          inAppBrowserTool,
+          (input) =>
+            !workflowActions.has(
+              String((input as { action?: unknown })?.action ?? ""),
+            ),
+        ),
+      );
+      this.#registry.register(
+        boundResearch(createInAppBrowserBatchTool(this.#embeddedBrowser)),
+      );
+      this.#browserResearchTool = createInAppBrowserReadTool(
+        this.#embeddedBrowser,
+      );
+    this.#registry.register(boundResearch(this.#browserResearchTool));
     // The work the agent does lands in places the user cannot see while it
     // happens, so it needs a way to answer "show me" by opening one.
     // Both halves of the workspace surface run off the same revealer: one
@@ -998,16 +1116,17 @@ export class DesktopBackend {
     // from delegated runs.
     this.#registry.register(createWorkspaceTool(this.#workspaceRevealer()));
     this.#registry.register(createHubDraftTool(this.#workspaceRevealer()));
-    if (this.#orchestrationExperiment)
-      this.#registry.register(createFlareAIUiInspectionTool({
-        openSettings: async (mode) => {
-          await this.#window.webContents.executeJavaScript(
-            `window.dispatchEvent(new CustomEvent("flareai:agent-inspect-settings", {detail: {mode: ${JSON.stringify(mode)}}}))`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, 350));
-        },
-        snapshot: async () => {
-          const semantic = await this.#window.webContents.executeJavaScript(`(() => {
+    this.#registry.register(
+        createPolymuxUiInspectionTool({
+          openSettings: async (mode) => {
+            await this.#window.webContents.executeJavaScript(
+              `window.dispatchEvent(new CustomEvent("polymux:agent-inspect-settings", {detail: {mode: ${JSON.stringify(mode)}}}))`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, 350));
+          },
+          snapshot: async () => {
+            const semantic = await this.#window.webContents
+              .executeJavaScript(`(() => {
             const visible = (element) => {
               const style = getComputedStyle(element);
               const rect = element.getBoundingClientRect();
@@ -1022,40 +1141,47 @@ export class DesktopBackend {
             }));
             return {text: document.body.innerText.slice(0, 12000), images};
           })()`);
-          const image = await this.#window.webContents.capturePage();
-          return {
-            image: {data: image.toPNG().toString("base64"), mimeType: "image/png" as const},
-            text: String(semantic?.text ?? ""),
-            images: Array.isArray(semantic?.images) ? semantic.images : [],
-          };
-        },
-      }));
-    if (this.#orchestrationExperiment)
-      this.#registry.register(createCurrentLocationResolutionTool({
-        current: () => {
-          const settings = this.#generalSettings();
-          return {
-            enabled: settings.locationEnabled,
-            location: settings.locationEnabled ? settings.location : null,
-          };
-        },
-        resolve: reverseGeocodeCurrentLocation,
-      }));
+            const image = await this.#window.webContents.capturePage();
+            return {
+              image: {
+                data: image.toPNG().toString("base64"),
+                mimeType: "image/png" as const,
+              },
+              text: String(semantic?.text ?? ""),
+              images: Array.isArray(semantic?.images) ? semantic.images : [],
+            };
+          },
+        }),
+      );
+    this.#registry.register(
+        createCurrentLocationResolutionTool({
+          current: () => {
+            const settings = this.#generalSettings();
+            return {
+              enabled: settings.locationEnabled,
+              location: settings.locationEnabled ? settings.location : null,
+            };
+          },
+          resolve: reverseGeocodeCurrentLocation,
+        }),
+      );
     // Asking for something to happen every morning is a chat request like any
     // other, so the agent needs a way to write one down.
     this.#registry.register(createScheduleTool(this.#scheduler));
-    this.#registry.register(createTasksTool(
-      this.#tasks,
-      (runId) => this.#storage.getRun(runId)?.conversationId ?? null,
-    ));
+    this.#registry.register(
+      createTasksTool(
+        this.#tasks,
+        (runId) => this.#storage.getRun(runId)?.conversationId ?? null,
+      ),
+    );
     // Showing the agent a workflow is a chat request too, so the recorder is
     // always present rather than something the user has to switch on first.
     this.#registry.register(createRecordingTool(this.#recording));
     // Messaging and email are app capabilities rather than an MCP server the
     // user has to register, so their tools are always present.
     for (const tool of createCommunicationsTools(this.#comms, {
-      searchAllEmail: this.#orchestrationExperiment,
-      searchAllEmailTimeoutMs: this.#orchestrationExperiment ? 3_500 : undefined,
+      searchAllEmail: true,
+      searchAllEmailTimeoutMs: 3_500,
     }))
       this.#registry.register(tool);
     // Same reasoning as messaging: the drives the user connected in Settings
@@ -1067,30 +1193,41 @@ export class DesktopBackend {
     void this.#agentSurface.start().catch(() => {});
     // Prime the window listing; each turn still awaits a fresh snapshot.
     void this.#refreshOpenWindows();
-    // Mirror active browser-use leases into the user's Agent Surface
+    // Mirror active computer-use browser leases into the user's Agent Surface
     // menu-bar pill (the ChatGPT-desktop-style Computer Use capsule), when
     // that presentation layer is installed.
     this.#agentSurface.onLeasesChanged = (leases) => {
-      if (leases.length === 0) void this.#surfaceMenubar.release("flareai-browser");
+      if (leases.length === 0)
+        void this.#surfaceMenubar.release("polymux-browser");
       else
-        void this.#surfaceMenubar.acquireWindow("flareai-browser", {
+        void this.#surfaceMenubar.acquireWindow("polymux-browser", {
           appName: browserAppName(),
           bundleId: browserBundleId(),
           windowTitle: leases[0].tab.title || leases[0].tab.url,
-          sessionId: "flareai-browser",
+          sessionId: "polymux-browser",
         });
     };
-    this.#roleOverrides = modelRolesPreference(this.#profilePreference("model-roles")?.value);
-    if (options.model && process.env.FLAREAI_MODEL_ALL_ROLES === "1") {
-      const reasoning = reasoningEffort(process.env.FLAREAI_REASONING, "low") ?? "low";
+    this.#roleOverrides = modelRolesPreference(
+      this.#profilePreference("model-roles")?.value,
+    );
+    if (options.model && process.env.POLYMUX_MODEL_ALL_ROLES === "1") {
+      const reasoning =
+        reasoningEffort(process.env.POLYMUX_REASONING, "low") ?? "low";
       for (const role of MODEL_ROLES) {
-        if (role !== "main") this.#roleOverrides[role] = {...options.model, reasoning};
+        if (role !== "main")
+          this.#roleOverrides[role] = { ...options.model, reasoning };
       }
     }
-    const storedModel = modelPreference(this.#profilePreference("model")?.value);
+    const storedModel = modelPreference(
+      this.#profilePreference("model")?.value,
+    );
     if (options.model) this.#selectModel(options.model, false);
     else if (storedModel && this.#inference.getModel(storedModel))
       this.#selectModel(storedModel, false);
+    // Providers may have changed while the app was closed; selection above
+    // already built the agent with the effective roles, so this only settles
+    // the speech-mode consequence of the current automatic picks.
+    this.#reconcileAutoRoles(false);
   }
 
   /**
@@ -1111,13 +1248,13 @@ export class DesktopBackend {
   async #defaultApp(target?: string): Promise<DefaultAppDto | null> {
     if (target) return this.#appForFile(target);
     try {
-      const {app} = await import("electron");
+      const { app } = await import("electron");
       const info = await app.getApplicationInfoForProtocol("http://");
       if (!info?.name) return null;
       const icon = info.icon?.isEmpty() ? null : info.icon;
       return {
         name: info.name,
-        icon: icon ? icon.resize({width: 32, height: 32}).toDataURL() : null,
+        icon: icon ? icon.resize({ width: 32, height: 32 }).toDataURL() : null,
       };
     } catch {
       // A platform or a machine that cannot say. The menu falls back to naming
@@ -1145,18 +1282,21 @@ export class DesktopBackend {
     if (cached !== undefined) return cached;
     let answer: DefaultAppDto | null = null;
     try {
-      const {stdout} = await promisify(execFile)(
+      const { stdout } = await promisify(execFile)(
         "osascript",
         ["-l", "JavaScript", "-e", FILE_OWNER_SCRIPT, filePath],
-        {timeout: 4000, maxBuffer: 1024 * 1024},
+        { timeout: 4000, maxBuffer: 1024 * 1024 },
       );
       const parsed: unknown = JSON.parse(stdout.trim() || "null");
       if (parsed && typeof parsed === "object" && "name" in parsed) {
-        const {name, icon} = parsed as {name?: unknown; icon?: unknown};
+        const { name, icon } = parsed as { name?: unknown; icon?: unknown };
         if (typeof name === "string" && name)
           answer = {
             name,
-            icon: typeof icon === "string" && icon ? `data:image/png;base64,${icon}` : null,
+            icon:
+              typeof icon === "string" && icon
+                ? `data:image/png;base64,${icon}`
+                : null,
           };
       }
     } catch {
@@ -1171,7 +1311,7 @@ export class DesktopBackend {
 
   readonly #fileApps = new Map<string, DefaultAppDto>();
 
-  get mediaAuth(): {homeserverUrl: string; token: string | null} {
+  get mediaAuth(): { homeserverUrl: string; token: string | null } {
     return this.#comms.mediaAuth;
   }
 
@@ -1193,15 +1333,20 @@ export class DesktopBackend {
     this.#embeddedBrowser.attachWindow(window);
   }
 
-  /** Grants a secondary FlareAI window access to the app IPC surface without
+  /** Grants a secondary Polymux window access to the app IPC surface without
    * moving browser views or changing which window agent reveals target. */
   trustWindow(window: BrowserWindow): void {
     this.#trustedWindows.set(window.webContents.id, window);
-    this.#sitePermissions.install(window.webContents.session, window.webContents);
+    this.#sitePermissions.install(
+      window.webContents.session,
+      window.webContents,
+    );
   }
 
   untrustWindow(window: BrowserWindow | number): void {
-    this.#trustedWindows.delete(typeof window === "number" ? window : window.webContents.id);
+    this.#trustedWindows.delete(
+      typeof window === "number" ? window : window.webContents.id,
+    );
   }
 
   /** Rescues the embedded browser's pages before their window is destroyed. */
@@ -1212,29 +1357,43 @@ export class DesktopBackend {
   register(): void {
     // The first window never goes through attachWindow, so it installs its
     // permission handlers from here; every later window installs from there.
-    this.#sitePermissions.install(this.#window.webContents.session, this.#window.webContents);
+    this.#sitePermissions.install(
+      this.#window.webContents.session,
+      this.#window.webContents,
+    );
     this.#registerAutofill();
-    if (this.#firstRunPermissions.completed()) this.#computerHistory.start();
+    if (this.#firstRunPermissions.completed()) this.#startComputerObservation();
     this.#scheduler.start();
     this.#handle(channels.profilesList, () => this.#profiles.snapshot());
     this.#handle(channels.profilesCreate, (_event, name: unknown) =>
-      this.#profiles.create(required(name, "profile name")));
-    this.#handle(channels.profilesRename, (_event, id: unknown, name: unknown) =>
-      this.#profiles.rename(required(id, "profile id"), required(name, "profile name")));
+      this.#profiles.create(required(name, "profile name")),
+    );
+    this.#handle(
+      channels.profilesRename,
+      (_event, id: unknown, name: unknown) =>
+        this.#profiles.rename(
+          required(id, "profile id"),
+          required(name, "profile name"),
+        ),
+    );
     this.#handle(channels.profilesSetDefault, (_event, id: unknown) =>
-      this.#profiles.setDefault(required(id, "profile id")));
+      this.#profiles.setDefault(required(id, "profile id")),
+    );
     this.#handle(channels.profilesDuplicate, (_event, id: unknown) =>
-      this.#profiles.duplicate(required(id, "profile id")));
+      this.#profiles.duplicate(required(id, "profile id")),
+    );
     this.#handle(channels.profilesRemove, async (_event, id: unknown) => {
       const before = this.#profiles.snapshot().activeId;
       const result = await this.#profiles.remove(required(id, "profile id"));
-      if (result.activeId !== before) setTimeout(() => this.#reloadForProfileChange?.(), 0);
+      if (result.activeId !== before)
+        setTimeout(() => this.#reloadForProfileChange?.(), 0);
       return result;
     });
     this.#handle(channels.profilesSelect, (_event, id: unknown) => {
       const before = this.#profiles.snapshot().activeId;
       const result = this.#profiles.select(required(id, "profile id"));
-      if (result.activeId !== before) setTimeout(() => this.#reloadForProfileChange?.(), 0);
+      if (result.activeId !== before)
+        setTimeout(() => this.#reloadForProfileChange?.(), 0);
       return result;
     });
     // WhatsApp and similar platforms can be unlinked from the phone. Their
@@ -1271,7 +1430,13 @@ export class DesktopBackend {
       if (!next.advancedMode && previous.advancedMode !== next.advancedMode)
         this.#enableAllMemory();
       this.#storeGeneralSettings(next);
-      return next;
+      // Flipping advanced mode changes which layer answers for the roles, so
+      // the automatic consequences are re-derived under the new flag — which
+      // can itself store a speech-mode change, so the settings are re-read
+      // rather than answered from the pre-reconcile snapshot.
+      if (previous.advancedMode !== next.advancedMode)
+        this.#reconcileAutoRoles();
+      return this.#generalSettings();
     });
     // Deliberately past every switch, including the focus check: this is sent
     // from Settings, where the window is certainly in front, and its whole job
@@ -1281,7 +1446,7 @@ export class DesktopBackend {
       if (!Notification.isSupported()) return "unsupported" as const;
       this.#presentNotification({
         kind: "agent-completed",
-        title: "FlareAI",
+        title: "Polymux",
         body: "System notifications are working.",
       });
       return "posted" as const;
@@ -1300,7 +1465,9 @@ export class DesktopBackend {
     this.#handle(channels.permissionsRequest, (_event, value: unknown) =>
       requestSystemPermission(systemPermission(value)),
     );
-    this.#handle(channels.permissionsRequestAll, () => this.#ensurePermissions());
+    this.#handle(channels.permissionsRequestAll, () =>
+      this.#ensurePermissions(),
+    );
     this.#handle(channels.permissionsOpenSettings, (_event, value: unknown) =>
       openSystemPermissionSettings(systemPermission(value, true)),
     );
@@ -1308,10 +1475,13 @@ export class DesktopBackend {
       this.#requireMicrophone();
       return this.#dictation.prepare();
     });
-    this.#handle(channels.dictationTranscribe, (_event, audio: unknown, final: unknown) => {
-      this.#requireMicrophone();
-      return this.#dictation.transcribe(audioBuffer(audio), final !== false);
-    });
+    this.#handle(
+      channels.dictationTranscribe,
+      (_event, audio: unknown, final: unknown) => {
+        this.#requireMicrophone();
+        return this.#dictation.transcribe(audioBuffer(audio), final !== false);
+      },
+    );
     this.#handle(channels.conversationsList, () =>
       this.#storage.listConversations(),
     );
@@ -1337,7 +1507,10 @@ export class DesktopBackend {
       // a delegated run immediately before observing cancellation.
       while (true) {
         const active = [...this.#activeRuns.entries()]
-          .filter(([runId]) => this.#storage.getRun(runId)?.conversationId === conversationId)
+          .filter(
+            ([runId]) =>
+              this.#storage.getRun(runId)?.conversationId === conversationId,
+          )
           .map(([, run]) => run);
         if (!active.length) break;
         for (const run of active)
@@ -1347,7 +1520,8 @@ export class DesktopBackend {
       }
       this.#runResources.forget(conversationId);
       const removed = this.#storage.deleteConversation(conversationId);
-      if (this.#managerJobs.removeChat(conversationId)) this.#publishManagerJobs();
+      if (this.#managerJobs.removeChat(conversationId))
+        this.#publishManagerJobs();
       return removed;
     });
     this.#handle(channels.messagesList, (_event, id: string) =>
@@ -1363,18 +1537,22 @@ export class DesktopBackend {
         patch: { content?: unknown; metadata?: unknown; attachments?: unknown },
       ) => {
         const messageId = required(id, "message id");
-        const updated = this.#storage.updateMessage(
-          messageId,
-          {
-            content:
-              patch.content === undefined ? undefined : json(patch.content),
-            metadata:
-              patch.metadata === undefined ? undefined : json(patch.metadata),
-          },
-        );
+        const updated = this.#storage.updateMessage(messageId, {
+          content:
+            patch.content === undefined ? undefined : json(patch.content),
+          metadata:
+            patch.metadata === undefined ? undefined : json(patch.metadata),
+        });
         if (!updated) return null;
-        const existingPaths = new Set(this.#storage.listAttachments(messageId).map((attachment) => attachment.path));
-        for (const attachmentPath of optionalStringArray(patch.attachments, "attachments")) {
+        const existingPaths = new Set(
+          this.#storage
+            .listAttachments(messageId)
+            .map((attachment) => attachment.path),
+        );
+        for (const attachmentPath of optionalStringArray(
+          patch.attachments,
+          "attachments",
+        )) {
           if (existingPaths.has(attachmentPath)) continue;
           this.#storage.addAttachment({
             id: crypto.randomUUID(),
@@ -1396,65 +1574,82 @@ export class DesktopBackend {
     this.#handle(channels.runsCancel, (_event, runId: string) => {
       this.#activeRuns.get(required(runId, "run id"))?.control.cancel();
     });
-    this.#handle(channels.runsSteer, (_event, runId: string, text: string, messageId?: string) => {
-      const id = required(runId, "run id");
-      const value = required(text, "text");
-      const run = this.#storage.getRun(id);
-      if (!run) throw new Error(`Run not found: ${id}`);
-      // Resolve the live run before persisting: a run that settled between the
-      // click and this handler must not leave an orphaned user message behind.
-      const active = this.#requireRun(id);
-      active.control.steer({
-        role: "user",
-        content: value,
-      });
-      this.#storage.appendMessage({
-        id: messageId ? required(messageId, "message id") : crypto.randomUUID(),
-        conversationId: run.conversationId,
-        runId: id,
-        role: "user",
-        content: value,
-      });
-    });
+    this.#handle(
+      channels.runsSteer,
+      (_event, runId: string, text: string, messageId?: string) => {
+        const id = required(runId, "run id");
+        const value = required(text, "text");
+        const run = this.#storage.getRun(id);
+        if (!run) throw new Error(`Run not found: ${id}`);
+        // Resolve the live run before persisting: a run that settled between the
+        // click and this handler must not leave an orphaned user message behind.
+        const active = this.#requireRun(id);
+        active.control.steer({
+          role: "user",
+          content: value,
+        });
+        this.#storage.appendMessage({
+          id: messageId
+            ? required(messageId, "message id")
+            : crypto.randomUUID(),
+          conversationId: run.conversationId,
+          runId: id,
+          role: "user",
+          content: value,
+        });
+      },
+    );
     this.#handle(channels.managerSnapshot, () => this.#managerSnapshot());
     this.#handle(channels.managerEnqueue, (_event, value: unknown) => {
-      this.#requireManagerExperiment();
       const request = managerJobRequest(value);
-      const visible = this.#storage.listMessages(request.chatId).at(-1)?.sequence ?? 0;
+      const visible =
+        this.#storage.listMessages(request.chatId).at(-1)?.sequence ?? 0;
       const contextThroughSequence = managerContextThroughSequence({
         jobs: this.#managerJobs.list(request.chatId),
         chatId: request.chatId,
         job: request,
         latestSequence: visible,
       });
-      const job = this.#managerJobs.enqueue({...request, contextThroughSequence});
+      const job = this.#managerJobs.enqueue({
+        ...request,
+        contextThroughSequence,
+      });
       this.#publishManagerJobs();
       void this.#drainManagerConversation(job.chatId);
       return job;
     });
     this.#handle(channels.managerCancel, (_event, id: string) => {
-      this.#requireManagerExperiment();
       const job = this.#managerJobs.cancel(required(id, "manager job id"));
-      if (job.runId) this.#activeRuns.get(job.runId)?.control.cancel(new Error(`Manager job ${job.id} cancelled`));
+      if (job.runId)
+        this.#activeRuns
+          .get(job.runId)
+          ?.control.cancel(new Error(`Manager job ${job.id} cancelled`));
       this.#publishManagerJobs();
       void this.#drainManagerConversation(job.chatId);
       return job;
     });
-    this.#handle(channels.managerReprioritize, (_event, id: string, priority: JobPriority) => {
-      this.#requireManagerExperiment();
-      const job = this.#managerJobs.reprioritize(required(id, "manager job id"), managerPriority(priority));
-      this.#publishManagerJobs();
-      return job;
-    });
-    this.#handle(channels.managerReorder, (_event, id: string, targetId: string) => {
-      this.#requireManagerExperiment();
-      const jobs = this.#managerJobs.reorder(
-        required(id, "manager job id"),
-        required(targetId, "target manager job id"),
-      );
-      this.#publishManagerJobs();
-      return jobs;
-    });
+    this.#handle(
+      channels.managerReprioritize,
+      (_event, id: string, priority: JobPriority) => {
+        const job = this.#managerJobs.reprioritize(
+          required(id, "manager job id"),
+          managerPriority(priority),
+        );
+        this.#publishManagerJobs();
+        return job;
+      },
+    );
+    this.#handle(
+      channels.managerReorder,
+      (_event, id: string, targetId: string) => {
+        const jobs = this.#managerJobs.reorder(
+          required(id, "manager job id"),
+          required(targetId, "target manager job id"),
+        );
+        this.#publishManagerJobs();
+        return jobs;
+      },
+    );
     this.#handle(
       channels.runEventsList,
       (_event, runId: string, afterSequence = 0) => {
@@ -1478,8 +1673,13 @@ export class DesktopBackend {
     this.#handle(channels.schedulesCreate, (_event, value: unknown) =>
       this.#scheduler.create(scheduleInput(value)),
     );
-    this.#handle(channels.schedulesUpdate, (_event, id: string, value: unknown) =>
-      this.#scheduler.update(required(id, "schedule id"), schedulePatch(value)),
+    this.#handle(
+      channels.schedulesUpdate,
+      (_event, id: string, value: unknown) =>
+        this.#scheduler.update(
+          required(id, "schedule id"),
+          schedulePatch(value),
+        ),
     );
     this.#handle(channels.schedulesRemove, (_event, id: string) => {
       this.#scheduler.remove(required(id, "schedule id"));
@@ -1506,91 +1706,119 @@ export class DesktopBackend {
       this.#tasks.markRead(required(id, "card id")),
     );
     this.#handle(channels.memoryStatus, () => this.#memory.status());
-    this.#handle(channels.memoryEntries, () => this.#memory.list().map((entry) => ({
-      id: entry.id,
-      scope: entry.scope,
-      kind: entry.kind,
-      content: entry.content,
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt,
-    })));
+    this.#handle(channels.memoryEntries, () =>
+      this.#memory.list().map((entry) => ({
+        id: entry.id,
+        scope: entry.scope,
+        kind: entry.kind,
+        content: entry.content,
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+      })),
+    );
     this.#handle(channels.memorySetEnabled, (_event, enabled: boolean) => {
-      if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
+      if (typeof enabled !== "boolean")
+        throw new Error("enabled must be a boolean");
       return this.#memory.setEnabled(enabled);
     });
-    this.#handle(channels.computerHistoryStatus, () => this.#computerHistory.status());
-    this.#handle(channels.computerHistorySetEnabled, async (_event, enabled: boolean) => {
-      if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
-      if (enabled) await requestSystemPermission("accessibility");
-      const status = this.#computerHistory.setEnabled(enabled);
-      if (enabled) {
-        await this.#computerHistory.captureOnce();
-        return this.#computerHistory.status();
-      }
-      return status;
-    });
+    this.#handle(channels.computerHistoryStatus, () =>
+      this.#computerHistory.status(),
+    );
+    this.#handle(
+      channels.computerHistorySetEnabled,
+      async (_event, enabled: boolean) => {
+        if (typeof enabled !== "boolean")
+          throw new Error("enabled must be a boolean");
+        if (enabled) await requestSystemPermission("accessibility");
+        const status = this.#computerHistory.setEnabled(enabled);
+        if (enabled) {
+          await this.#computerHistory.captureOnce();
+          return this.#computerHistory.status();
+        }
+        return status;
+      },
+    );
     this.#handle(channels.computerHistoryUpdate, (_event, value: unknown) =>
       this.#computerHistory.update(computerHistoryPatch(value)),
     );
-    this.#handle(channels.computerHistoryForget, (_event, since: unknown, until: unknown) => {
-      const range = computerHistoryRange(since, until);
-      return this.#computerHistory.forget(range.since, range.until);
-    });
-    this.#handle(channels.computerHistoryRemoveEntry, (_event, value: unknown) =>
-      this.#computerHistory.removeEntry(required(value, "history entry id")),
+    this.#handle(
+      channels.computerHistoryForget,
+      (_event, since: unknown, until: unknown) => {
+        const range = computerHistoryRange(since, until);
+        return this.#computerHistory.forget(range.since, range.until);
+      },
     );
-    this.#handle(channels.computerHistoryRevealEntry, (_event, value: unknown) => {
-      const id = required(value, "history entry id");
-      const entry = this.#computerHistory.store.entries({limit: Number.MAX_SAFE_INTEGER}).find((candidate) => candidate.id === id);
-      if (!entry || !existsSync(entry.path)) throw new Error("History entry is no longer available");
-      shell.showItemInFolder(entry.path);
-    });
+    this.#handle(
+      channels.computerHistoryRemoveEntry,
+      (_event, value: unknown) =>
+        this.#computerHistory.removeEntry(required(value, "history entry id")),
+    );
+    this.#handle(
+      channels.computerHistoryRevealEntry,
+      (_event, value: unknown) => {
+        const id = required(value, "history entry id");
+        const entry = this.#computerHistory.store
+          .entries({ limit: Number.MAX_SAFE_INTEGER })
+          .find((candidate) => candidate.id === id);
+        if (!entry || !existsSync(entry.path))
+          throw new Error("History entry is no longer available");
+        shell.showItemInFolder(entry.path);
+      },
+    );
     this.#handle(channels.computerHistoryEntries, (_event, value?: unknown) => {
       const options = computerHistoryQuery(value);
       return this.#computerHistory.store.entries(options);
     });
     // Parented like the other pickers, so it opens as a sheet over the app.
     this.#handle(channels.computerHistoryPickApp, async () => {
-      const {dialog} = await import("electron");
+      const { dialog } = await import("electron");
       const result = await dialog.showOpenDialog(this.#window, {
         title: "Choose an application",
         defaultPath: "/Applications",
         properties: ["openFile"],
-        filters: [{name: "Applications", extensions: ["app"]}],
+        filters: [{ name: "Applications", extensions: ["app"] }],
       });
       const chosen = result.canceled ? null : (result.filePaths[0] ?? null);
       return chosen ? path.basename(chosen).replace(/\.app$/i, "") : null;
     });
     // The app's own icon, by the name the list holds. A row for an app that
     // has since been removed simply gets no icon back and keeps its glyph.
-    this.#handle(channels.computerHistoryAppIcon, async (_event, value: unknown) => {
-      const name = required(value, "application name");
-      if (process.platform !== "darwin" || name.includes("/")) return null;
-      const bundle = await applicationBundle(name);
-      if (!bundle) return null;
-      try {
-        // Through LaunchServices, the route the open-with menu takes: an app
-        // path in, its own icon out.
-        const {stdout} = await promisify(execFile)(
-          "osascript",
-          ["-l", "JavaScript", "-e", APP_ICON_SCRIPT, bundle],
-          {timeout: 4000, maxBuffer: 1024 * 1024},
-        );
-        const icon = stdout.trim();
-        return icon ? `data:image/png;base64,${icon}` : null;
-      } catch (error) {
-        console.warn(`Could not read the icon for ${name}`, error);
-        return null;
-      }
-    });
-    this.#handle(channels.mcpList, () =>
-      this.#mcpDtos(this.#mcp.snapshots()),
+    this.#handle(
+      channels.computerHistoryAppIcon,
+      async (_event, value: unknown) => {
+        const name = required(value, "application name");
+        if (process.platform !== "darwin" || name.includes("/")) return null;
+        const bundle = await applicationBundle(name);
+        if (!bundle) return null;
+        try {
+          // Through LaunchServices, the route the open-with menu takes: an app
+          // path in, its own icon out.
+          const { stdout } = await promisify(execFile)(
+            "osascript",
+            ["-l", "JavaScript", "-e", APP_ICON_SCRIPT, bundle],
+            { timeout: 4000, maxBuffer: 1024 * 1024 },
+          );
+          const icon = stdout.trim();
+          return icon ? `data:image/png;base64,${icon}` : null;
+        } catch (error) {
+          console.warn(`Could not read the icon for ${name}`, error);
+          return null;
+        }
+      },
     );
+    this.#handle(channels.mcpList, () => this.#mcpDtos(this.#mcp.snapshots()));
     this.#handle(channels.mcpReload, () => this.reloadMcp());
-    this.#handle(channels.mcpSetEnabled, async (_event, id: string, enabled: boolean) => {
-      this.#setIntegrationEnabled("mcp-enabled", required(id, "MCP id"), enabled);
-      return this.#reloadMcpAfterMutation();
-    });
+    this.#handle(
+      channels.mcpSetEnabled,
+      async (_event, id: string, enabled: boolean) => {
+        this.#setIntegrationEnabled(
+          "mcp-enabled",
+          required(id, "MCP id"),
+          enabled,
+        );
+        return this.#reloadMcpAfterMutation();
+      },
+    );
     this.#handle(channels.mcpSaveCustom, async (_event, value: unknown) => {
       await this.#saveCustomMcp(customMcpRequest(value));
       return this.#reloadMcpAfterMutation();
@@ -1599,28 +1827,41 @@ export class DesktopBackend {
       await this.#removeCustomMcp(required(id, "MCP id"));
       return this.#reloadMcpAfterMutation();
     });
-    this.#handle(channels.mcpSearchRegistry, (_event, query: unknown, cursor: unknown) =>
-      searchMcpRegistry(typeof query === "string" ? query : "", typeof cursor === "string" ? cursor : ""),
+    this.#handle(
+      channels.mcpSearchRegistry,
+      (_event, query: unknown, cursor: unknown) =>
+        searchMcpRegistry(
+          typeof query === "string" ? query : "",
+          typeof cursor === "string" ? cursor : "",
+        ),
     );
     this.#handle(channels.mcpDiscover, () =>
       discoverAgentMcpServers(new Set(this.#mcpConfigs.keys())),
     );
-    this.#handle(channels.mcpAdopt, async (_event, groupId: unknown, serverId: unknown) => {
-      const found = resolveDiscoveredMcp(
-        required(groupId, "MCP group id"),
-        required(serverId, "MCP id"),
-      );
-      await this.#writeMcpConfig((servers) => {
-        servers[found.id] = found.entry;
-      });
-      return this.#reloadMcpAfterMutation();
-    });
-    this.#handle(channels.workspaceSnapshotGet, (_event, conversationId: unknown) => {
-      const stored = this.#storage.getPreference(
-        `workspace-snapshot:${required(conversationId, "conversation id")}`,
-      );
-      return stored ? sessionScopedSnapshot(stored.value, WORKSPACE_BOOT_ID) : null;
-    });
+    this.#handle(
+      channels.mcpAdopt,
+      async (_event, groupId: unknown, serverId: unknown) => {
+        const found = resolveDiscoveredMcp(
+          required(groupId, "MCP group id"),
+          required(serverId, "MCP id"),
+        );
+        await this.#writeMcpConfig((servers) => {
+          servers[found.id] = found.entry;
+        });
+        return this.#reloadMcpAfterMutation();
+      },
+    );
+    this.#handle(
+      channels.workspaceSnapshotGet,
+      (_event, conversationId: unknown) => {
+        const stored = this.#storage.getPreference(
+          `workspace-snapshot:${required(conversationId, "conversation id")}`,
+        );
+        return stored
+          ? sessionScopedSnapshot(stored.value, WORKSPACE_BOOT_ID)
+          : null;
+      },
+    );
     this.#handle(
       channels.workspaceSnapshotSave,
       (_event, conversationId: unknown, snapshot: unknown) => {
@@ -1628,7 +1869,10 @@ export class DesktopBackend {
           `workspace-snapshot:${required(conversationId, "conversation id")}`,
           // Through the existing json() laundering: optional DTO fields do not
           // satisfy JsonValue's index signature structurally.
-          json({...workspaceSnapshot(snapshot), bootId: WORKSPACE_BOOT_ID}) as JsonValue,
+          json({
+            ...workspaceSnapshot(snapshot),
+            bootId: WORKSPACE_BOOT_ID,
+          }) as JsonValue,
         );
       },
     );
@@ -1652,8 +1896,13 @@ export class DesktopBackend {
       this.#comms.setHubUrl(required(baseUrl, "hub address")),
     );
     this.#handle(channels.commsConnect, () => this.#comms.connect());
-    this.#handle(channels.commsSignIn, (_event, userId: unknown, password: unknown) =>
-      this.#comms.signIn(required(userId, "Matrix user ID"), required(password, "password")),
+    this.#handle(
+      channels.commsSignIn,
+      (_event, userId: unknown, password: unknown) =>
+        this.#comms.signIn(
+          required(userId, "Matrix user ID"),
+          required(password, "password"),
+        ),
     );
     // Signing out takes the copy with it: a stale inbox left on disk is a
     // privacy problem, not merely a wrong screen.
@@ -1662,12 +1911,23 @@ export class DesktopBackend {
       this.#hubCache.clear();
       return status;
     });
-    this.#handle(channels.commsLoginStart, (_event, platform: unknown, flowId: unknown) =>
-      this.#comms.loginStart(commsPlatform(platform), required(flowId, "login method")),
+    this.#handle(
+      channels.commsLoginStart,
+      (_event, platform: unknown, flowId: unknown) =>
+        this.#comms.loginStart(
+          commsPlatform(platform),
+          required(flowId, "login method"),
+        ),
     );
     this.#handle(
       channels.commsLoginSubmit,
-      (_event, platform: unknown, loginId: unknown, stepId: unknown, values: unknown) =>
+      (
+        _event,
+        platform: unknown,
+        loginId: unknown,
+        stepId: unknown,
+        values: unknown,
+      ) =>
         this.#comms.loginSubmit(
           commsPlatform(platform),
           required(loginId, "login id"),
@@ -1693,11 +1953,18 @@ export class DesktopBackend {
           required(stepId, "step id"),
         ),
     );
-    this.#handle(channels.commsLoginCancel, (_event, platform: unknown, loginId: unknown) =>
-      this.#comms.loginCancel(commsPlatform(platform), required(loginId, "login id")),
+    this.#handle(
+      channels.commsLoginCancel,
+      (_event, platform: unknown, loginId: unknown) =>
+        this.#comms.loginCancel(
+          commsPlatform(platform),
+          required(loginId, "login id"),
+        ),
     );
-    this.#handle(channels.commsBridgeSetup, (_event, platform: unknown, values: unknown) =>
-      this.#comms.bridgeSetup(commsPlatform(platform), loginValues(values)),
+    this.#handle(
+      channels.commsBridgeSetup,
+      (_event, platform: unknown, values: unknown) =>
+        this.#comms.bridgeSetup(commsPlatform(platform), loginValues(values)),
     );
     // Unlinking an account is a sign-out of that account, so the copy goes
     // with it for the same two reasons: its chats and message bodies must not
@@ -1706,31 +1973,32 @@ export class DesktopBackend {
     // The whole prefix, because `hub:chats` is one blob of every platform's
     // chats and a cached page is keyed by room id alone — neither can be
     // pruned down to one platform, and a cold paint is the entire cost.
-    this.#handle(channels.commsBridgeLogout, async (_event, platform: unknown, accountId: unknown) => {
-      const status = await this.#comms.bridgeLogout(
-        commsPlatform(platform),
-        required(accountId, "account id"),
-      );
-      this.#hubCache.clear();
-      return status;
-    });
+    this.#handle(
+      channels.commsBridgeLogout,
+      async (_event, platform: unknown, accountId: unknown) => {
+        const status = await this.#comms.bridgeLogout(
+          commsPlatform(platform),
+          required(accountId, "account id"),
+        );
+        this.#hubCache.clear();
+        return status;
+      },
+    );
     // The hub speaks Matrix — rooms and events. The renderer speaks chats and
     // messages, so the shapes are mapped here rather than leaking room ids
     // and mxc uris into the UI.
     this.#handle(channels.commsChats, async () => {
       const rooms = await this.#comms.chats();
-      const chats = rooms.map(
-        (room): ChatDto => ({
-          id: room.roomId,
-          name: room.name,
-          platform: room.platform,
-          avatarUrl: room.avatarUrl,
-          unread: room.unread,
-          lastActivity: room.lastActivity,
-          preview: room.preview,
-          group: room.group,
-        }),
-      );
+      const chats = rooms.map((room): ChatDto => ({
+        id: room.roomId,
+        name: room.name,
+        platform: room.platform,
+        avatarUrl: room.avatarUrl,
+        unread: room.unread,
+        lastActivity: room.lastActivity,
+        preview: room.preview,
+        group: room.group,
+      }));
       this.#hubCache.putChats(chats);
       return chats;
     });
@@ -1747,42 +2015,55 @@ export class DesktopBackend {
           // Carried through so the reader can walk further back: without it
           // a conversation stops at whatever the first page happened to hold.
           nextBefore: result.nextBefore ?? null,
-          messages: result.messages.map(
-            (message): ChatMessageDto => ({
-              id: message.eventId,
-              chatId: message.roomId || required(chatId, "chat id"),
-              sender: message.sender,
-              senderName: message.senderName || message.sender,
-              senderAvatarUrl: message.senderAvatarUrl,
-              body: message.body,
-              sentAt: message.sentAt,
-              mine: Boolean(me) && message.sender === me,
-              attachments: message.attachments,
-              viewIn: message.viewIn,
-              reactions: message.reactions,
-              replyTo: message.replyTo,
-            }),
-          ),
+          messages: result.messages.map((message): ChatMessageDto => ({
+            id: message.eventId,
+            chatId: message.roomId || required(chatId, "chat id"),
+            sender: message.sender,
+            senderName: message.senderName || message.sender,
+            senderAvatarUrl: message.senderAvatarUrl,
+            body: message.body,
+            sentAt: message.sentAt,
+            mine: Boolean(me) && message.sender === me,
+            attachments: message.attachments,
+            viewIn: message.viewIn,
+            reactions: message.reactions,
+            replyTo: message.replyTo,
+          })),
         };
         // Only the newest page is worth keeping: it is what a conversation
         // opens on, and a page reached by scrolling back is one the reader is
         // already looking at.
         if (typeof before !== "string")
-          this.#hubCache.putChatPage(required(chatId, "chat id"), page.messages, page.nextBefore);
+          this.#hubCache.putChatPage(
+            required(chatId, "chat id"),
+            page.messages,
+            page.nextBefore,
+          );
         return page;
       },
     );
-    this.#handle(channels.commsChatMarkRead, async (_event, chatId: unknown, messageId: unknown) => {
-      if (this.#generalSettings().hubIncognitoMode) return false;
-      await this.#comms.markChatRead(required(chatId, "chat id"), required(messageId, "message id"));
-      return true;
-    });
+    this.#handle(
+      channels.commsChatMarkRead,
+      async (_event, chatId: unknown, messageId: unknown) => {
+        if (this.#generalSettings().hubIncognitoMode) return false;
+        await this.#comms.markChatRead(
+          required(chatId, "chat id"),
+          required(messageId, "message id"),
+        );
+        return true;
+      },
+    );
     // The hub answers a send with the event id it minted. The renderer shows
     // the sent message immediately rather than re-reading the room, so it is
     // handed the whole message — an id alone lands in the thread as a blank.
     this.#handle(
       channels.commsChatSend,
-      async (_event, chatId: unknown, text: unknown, replyTo: unknown): Promise<ChatMessageDto> => {
+      async (
+        _event,
+        chatId: unknown,
+        text: unknown,
+        replyTo: unknown,
+      ): Promise<ChatMessageDto> => {
         const room = required(chatId, "chat id");
         const body = required(text, "message");
         const answering = typeof replyTo === "string" ? replyTo : undefined;
@@ -1802,19 +2083,22 @@ export class DesktopBackend {
         };
       },
     );
-    this.#handle(channels.commsChatSendFiles, async (_event, chatId: unknown, paths: unknown) => {
-      const {readFile} = await import("node:fs/promises");
-      const files = await Promise.all(
-        optionalStringArray(paths, "paths").map(async (file) => ({
-          name: path.basename(file),
-          mimetype: mimetypeOf(file),
-          bytes: new Uint8Array(await readFile(file)),
-        })),
-      );
-      await this.#comms.sendChatFiles(required(chatId, "chat id"), files);
-    });
+    this.#handle(
+      channels.commsChatSendFiles,
+      async (_event, chatId: unknown, paths: unknown) => {
+        const { readFile } = await import("node:fs/promises");
+        const files = await Promise.all(
+          optionalStringArray(paths, "paths").map(async (file) => ({
+            name: path.basename(file),
+            mimetype: mimetypeOf(file),
+            bytes: new Uint8Array(await readFile(file)),
+          })),
+        );
+        await this.#comms.sendChatFiles(required(chatId, "chat id"), files);
+      },
+    );
     this.#handle(channels.commsChatPickFiles, async () => {
-      const {dialog} = await import("electron");
+      const { dialog } = await import("electron");
       const result = await dialog.showOpenDialog({
         properties: ["openFile", "multiSelections"],
         title: "Attach files",
@@ -1824,14 +2108,16 @@ export class DesktopBackend {
     this.#handle(
       channels.commsChatSendAudio,
       async (_event, chatId: unknown, bytes: unknown, mimetype: unknown) => {
-        if (!(bytes instanceof Uint8Array)) throw new Error("voice note must be bytes");
-        const type = typeof mimetype === "string" && mimetype ? mimetype : "audio/webm";
+        if (!(bytes instanceof Uint8Array))
+          throw new Error("voice note must be bytes");
+        const type =
+          typeof mimetype === "string" && mimetype ? mimetype : "audio/webm";
         // Named for when it was taken, which is all a voice note has to go on.
         const name = `voice-${new Date().toISOString().replace(/[:.]/g, "-")}.${
           type.includes("ogg") ? "ogg" : type.includes("mp4") ? "m4a" : "webm"
         }`;
         await this.#comms.sendChatFiles(required(chatId, "chat id"), [
-          {name, mimetype: type, bytes},
+          { name, mimetype: type, bytes },
         ]);
       },
     );
@@ -1844,27 +2130,52 @@ export class DesktopBackend {
           required(key, "reaction"),
         ),
     );
-    this.#handle(channels.commsChatUnreact, (_event, chatId: unknown, reactionId: unknown) =>
-      this.#comms.unreactChat(required(chatId, "chat id"), required(reactionId, "reaction id")),
+    this.#handle(
+      channels.commsChatUnreact,
+      (_event, chatId: unknown, reactionId: unknown) =>
+        this.#comms.unreactChat(
+          required(chatId, "chat id"),
+          required(reactionId, "reaction id"),
+        ),
     );
-    this.#handle(channels.commsMailFolders, async (_event, account: unknown) => {
-      const folders = await this.#comms.mailFolders(
-        typeof account === "string" ? account : undefined,
-      );
-      if (typeof account === "string") this.#mailFolders.set(account, folders);
-      return folders;
-    });
-    this.#handle(channels.commsMailEnvelopes, async (_event, value: unknown) => {
-      const request = mailListRequest(value);
-      const envelopes = await this.#comms.mailEnvelopes(request);
-      // The first page of a plain listing is what the mail pane opens on. A
-      // search or a later page is where the user went next, and caching it
-      // would only push out the screen worth having.
-      const folders = request.account ? this.#mailFolders.get(request.account) : undefined;
-      if (folders && request.account && request.folder && !request.query && (request.page ?? 1) === 1)
-        this.#hubCache.putMailbox(request.account, request.folder, folders, envelopes);
-      return envelopes;
-    });
+    this.#handle(
+      channels.commsMailFolders,
+      async (_event, account: unknown) => {
+        const folders = await this.#comms.mailFolders(
+          typeof account === "string" ? account : undefined,
+        );
+        if (typeof account === "string")
+          this.#mailFolders.set(account, folders);
+        return folders;
+      },
+    );
+    this.#handle(
+      channels.commsMailEnvelopes,
+      async (_event, value: unknown) => {
+        const request = mailListRequest(value);
+        const envelopes = await this.#comms.mailEnvelopes(request);
+        // The first page of a plain listing is what the mail pane opens on. A
+        // search or a later page is where the user went next, and caching it
+        // would only push out the screen worth having.
+        const folders = request.account
+          ? this.#mailFolders.get(request.account)
+          : undefined;
+        if (
+          folders &&
+          request.account &&
+          request.folder &&
+          !request.query &&
+          (request.page ?? 1) === 1
+        )
+          this.#hubCache.putMailbox(
+            request.account,
+            request.folder,
+            folders,
+            envelopes,
+          );
+        return envelopes;
+      },
+    );
     this.#handle(
       channels.commsMailMessage,
       async (_event, id: unknown, account: unknown, folder: unknown) => {
@@ -1920,12 +2231,12 @@ export class DesktopBackend {
         ),
     );
     this.#handle(channels.commsMailOpenFile, async (_event, file: unknown) => {
-      const {shell} = await import("electron");
+      const { shell } = await import("electron");
       const error = await shell.openPath(required(file, "file path"));
       if (error) throw new Error(error);
     });
     this.#handle(channels.commsMailPickFiles, async () => {
-      const {dialog} = await import("electron");
+      const { dialog } = await import("electron");
       const result = await dialog.showOpenDialog({
         properties: ["openFile", "multiSelections"],
         title: "Attach files",
@@ -1934,7 +2245,13 @@ export class DesktopBackend {
     });
     this.#handle(
       channels.commsMailMove,
-      (_event, ids: unknown, target: unknown, account: unknown, folder: unknown) =>
+      (
+        _event,
+        ids: unknown,
+        target: unknown,
+        account: unknown,
+        folder: unknown,
+      ) =>
         this.#comms.mailMove(
           optionalStringArray(ids, "ids"),
           required(target, "target folder"),
@@ -1944,7 +2261,14 @@ export class DesktopBackend {
     );
     this.#handle(
       channels.commsMailFlag,
-      (_event, ids: unknown, flag: unknown, on: unknown, account: unknown, folder: unknown) =>
+      (
+        _event,
+        ids: unknown,
+        flag: unknown,
+        on: unknown,
+        account: unknown,
+        folder: unknown,
+      ) =>
         this.#comms.mailFlag(
           optionalStringArray(ids, "ids"),
           flag === "flagged" ? "flagged" : "seen",
@@ -1969,15 +2293,18 @@ export class DesktopBackend {
     );
     this.#handle(channels.skillsList, () => this.#skillDtos());
     this.#handle(channels.skillsReload, () => this.#skillDtos());
-    this.#handle(channels.skillsSetEnabled, async (_event, name: string, enabled: boolean) => {
-      const skill = required(name, "skill name");
-      this.#setIntegrationEnabled("skill-enabled", skill, enabled);
-      // Switching a skill on is the moment its grants are worth asking for:
-      // the user is here, and the alternative is the agent meeting the refusal
-      // on its own halfway through the first thing it is asked to do.
-      if (enabled) await this.#ensurePermissions([skill]);
-      return this.#skillDtos();
-    });
+    this.#handle(
+      channels.skillsSetEnabled,
+      async (_event, name: string, enabled: boolean) => {
+        const skill = required(name, "skill name");
+        this.#setIntegrationEnabled("skill-enabled", skill, enabled);
+        // Switching a skill on is the moment its grants are worth asking for:
+        // the user is here, and the alternative is the agent meeting the refusal
+        // on its own halfway through the first thing it is asked to do.
+        if (enabled) await this.#ensurePermissions([skill]);
+        return this.#skillDtos();
+      },
+    );
     this.#handle(channels.skillsSaveCustom, async (_event, value: unknown) => {
       await this.#saveCustomSkill(customSkillRequest(value));
       return this.#skillDtos();
@@ -1999,14 +2326,18 @@ export class DesktopBackend {
       await this.#ensurePermissions(installed.map((skill) => skill.name));
       return this.#skillDtos();
     });
-    this.#handle(channels.skillsSearchRegistry, (_event, query: unknown, limit: unknown) =>
-      searchSkillRegistry(
-        typeof query === "string" ? query : "",
-        typeof limit === "number" && Number.isFinite(limit) ? limit : 15,
-      ),
+    this.#handle(
+      channels.skillsSearchRegistry,
+      (_event, query: unknown, limit: unknown) =>
+        searchSkillRegistry(
+          typeof query === "string" ? query : "",
+          typeof limit === "number" && Number.isFinite(limit) ? limit : 15,
+        ),
     );
     this.#handle(channels.skillsDiscover, () =>
-      discoverAgentSkills(new Set(this.#skills.load().skills.map((skill) => skill.name))),
+      discoverAgentSkills(
+        new Set(this.#skills.load().skills.map((skill) => skill.name)),
+      ),
     );
     this.#handle(channels.skillsAdopt, async (_event, target: unknown) => {
       const adopted = await this.#adoptSkill(required(target, "skill path"));
@@ -2014,13 +2345,20 @@ export class DesktopBackend {
       return this.#skillDtos();
     });
     this.#handle(channels.pluginsList, () => this.#pluginDtos());
-    this.#handle(channels.pluginsSetEnabled, async (_event, id: unknown, enabled: unknown) => {
-      this.#setIntegrationEnabled("plugin-enabled", required(id, "plugin id"), enabled);
-      // Switching a plugin off has to stop its servers and drop its skills,
-      // both of which the reload is what actually does.
-      await this.#reloadMcpAfterMutation();
-      return this.#pluginDtos();
-    });
+    this.#handle(
+      channels.pluginsSetEnabled,
+      async (_event, id: unknown, enabled: unknown) => {
+        this.#setIntegrationEnabled(
+          "plugin-enabled",
+          required(id, "plugin id"),
+          enabled,
+        );
+        // Switching a plugin off has to stop its servers and drop its skills,
+        // both of which the reload is what actually does.
+        await this.#reloadMcpAfterMutation();
+        return this.#pluginDtos();
+      },
+    );
     this.#handle(channels.pluginsInstall, async (_event, id: unknown) => {
       await this.#ensurePlugins();
       await this.#plugins.install(required(id, "plugin id"));
@@ -2037,19 +2375,27 @@ export class DesktopBackend {
       await this.#ensurePlugins();
       return this.#plugins.marketplaces();
     });
-    this.#handle(channels.pluginsAddMarketplace, async (_event, source: unknown) => {
-      await this.#ensurePlugins();
-      await this.#plugins.addMarketplace(required(source, "marketplace"));
-      return this.#plugins.marketplaces();
-    });
-    this.#handle(channels.pluginsRemoveMarketplace, async (_event, id: unknown) => {
-      await this.#ensurePlugins();
-      await this.#plugins.removeMarketplace(required(id, "marketplace id"));
-      return this.#plugins.marketplaces();
-    });
+    this.#handle(
+      channels.pluginsAddMarketplace,
+      async (_event, source: unknown) => {
+        await this.#ensurePlugins();
+        await this.#plugins.addMarketplace(required(source, "marketplace"));
+        return this.#plugins.marketplaces();
+      },
+    );
+    this.#handle(
+      channels.pluginsRemoveMarketplace,
+      async (_event, id: unknown) => {
+        await this.#ensurePlugins();
+        await this.#plugins.removeMarketplace(required(id, "marketplace id"));
+        return this.#plugins.marketplaces();
+      },
+    );
     this.#handle(channels.pluginsBrowse, async (_event, query: unknown) => {
       await this.#ensurePlugins();
-      const result = await this.#plugins.browse(typeof query === "string" ? query : "");
+      const result = await this.#plugins.browse(
+        typeof query === "string" ? query : "",
+      );
       const errors = Object.values(result.errors);
       // Every marketplace failing is a failure; one of several failing is a
       // shorter list, and saying so would bury the plugins that did arrive.
@@ -2065,31 +2411,46 @@ export class DesktopBackend {
     this.#handle(channels.modelsList, () =>
       this.#inference.listModels().map((model) => this.#modelDto(model)),
     );
-    this.#handle(channels.modelsSelect, async (_event, provider: string, modelId: string) => {
-      const ref = {
-        provider: required(provider, "provider"),
-        id: required(modelId, "model id"),
-      };
-      await this.#assertProviderConfigured(ref.provider);
-      return this.#selectModel(ref);
-    });
+    this.#handle(
+      channels.modelsSelect,
+      async (_event, provider: string, modelId: string) => {
+        const ref = {
+          provider: required(provider, "provider"),
+          id: required(modelId, "model id"),
+        };
+        await this.#assertProviderConfigured(ref.provider);
+        return this.#selectModel(ref);
+      },
+    );
     this.#handle(channels.modelsRoles, () => this.#modelRoles());
-    this.#handle(channels.modelsAssignRole, (_event, role: unknown, provider: unknown, modelId: unknown, reasoning: unknown) => {
-      const effort = reasoning === undefined ? null : reasoningEffort(reasoning, null);
-      if (reasoning !== undefined && !effort)
-        throw new Error("reasoning must be a supported reasoning effort");
-      return this.#assignRole(modelRole(role), {
-        provider: required(provider, "provider"),
-        id: required(modelId, "model id"),
-        ...(effort ? {reasoning: effort} : {}),
-      });
-    });
+    this.#handle(
+      channels.modelsAssignRole,
+      (
+        _event,
+        role: unknown,
+        provider: unknown,
+        modelId: unknown,
+        reasoning: unknown,
+      ) => {
+        const effort =
+          reasoning === undefined ? null : reasoningEffort(reasoning, null);
+        if (reasoning !== undefined && !effort)
+          throw new Error("reasoning must be a supported reasoning effort");
+        return this.#assignRole(modelRole(role), {
+          provider: required(provider, "provider"),
+          id: required(modelId, "model id"),
+          ...(effort ? { reasoning: effort } : {}),
+        });
+      },
+    );
     this.#handle(channels.modelsClearRole, (_event, role: unknown) =>
       this.#clearRole(modelRole(role)),
     );
     this.#handle(channels.modelsMetadata, () =>
       this.#modelCatalog.metadataFor(
-        this.#inference.listModels().map((model) => ({provider: model.provider, id: model.id})),
+        this.#inference
+          .listModels()
+          .map((model) => ({ provider: model.provider, id: model.id })),
       ),
     );
     this.#handle(channels.workspacePreview, async (_event, target: unknown) => {
@@ -2106,54 +2467,83 @@ export class DesktopBackend {
     this.#handle(channels.browserOpen, (_event, tabId: string, url?: string) =>
       this.#embeddedBrowser.open(required(tabId, "tab id"), url),
     );
-    this.#handle(channels.browserNavigate, (_event, tabId: string, url: string) =>
-      this.#embeddedBrowser.navigate(required(tabId, "tab id"), required(url, "url")),
+    this.#handle(
+      channels.browserNavigate,
+      (_event, tabId: string, url: string) =>
+        this.#embeddedBrowser.navigate(
+          required(tabId, "tab id"),
+          required(url, "url"),
+        ),
     );
-    this.#handle(channels.browserHistory, (_event, tabId: string, delta: -1 | 1) =>
-      this.#embeddedBrowser.history(required(tabId, "tab id"), delta === -1 ? -1 : 1),
+    this.#handle(
+      channels.browserHistory,
+      (_event, tabId: string, delta: -1 | 1) =>
+        this.#embeddedBrowser.history(
+          required(tabId, "tab id"),
+          delta === -1 ? -1 : 1,
+        ),
     );
     this.#handle(channels.browserReload, (_event, tabId: string) =>
       this.#embeddedBrowser.reload(required(tabId, "tab id")),
     );
-    this.#handle(channels.browserSetBounds, (_event, tabId: string, bounds: {x: number; y: number; width: number; height: number}) =>
-      this.#embeddedBrowser.setBounds(required(tabId, "tab id"), bounds),
+    this.#handle(
+      channels.browserSetBounds,
+      (
+        _event,
+        tabId: string,
+        bounds: { x: number; y: number; width: number; height: number },
+      ) => this.#embeddedBrowser.setBounds(required(tabId, "tab id"), bounds),
     );
-    this.#handle(channels.browserSetVisible, (_event, tabId: string, visible: boolean) =>
-      this.#embeddedBrowser.setVisible(required(tabId, "tab id"), Boolean(visible)),
+    this.#handle(
+      channels.browserSetVisible,
+      (_event, tabId: string, visible: boolean) =>
+        this.#embeddedBrowser.setVisible(
+          required(tabId, "tab id"),
+          Boolean(visible),
+        ),
     );
     this.#handle(channels.browserClose, (_event, tabId: string) =>
       this.#embeddedBrowser.close(required(tabId, "tab id")),
     );
     this.#handle(channels.browserOpenExternal, (_event, url: string) =>
-      import("electron").then(({shell}) => shell.openExternal(required(url, "url"))),
+      import("electron").then(({ shell }) =>
+        shell.openExternal(required(url, "url")),
+      ),
     );
     this.#handle(channels.browserDefaultApp, async (_event, target: unknown) =>
-      this.#defaultApp(typeof target === "string" && target ? target : undefined),
+      this.#defaultApp(
+        typeof target === "string" && target ? target : undefined,
+      ),
     );
-    this.#handle(channels.browserOpenPath, async (_event, filePath: unknown) => {
-      // The path arrives from a link in model-written markdown, so it is
-      // treated as input: it must be an existing regular file, and it is
-      // resolved before the shell ever sees it. Directories and specials are
-      // refused rather than handed to the desktop to interpret.
-      const resolved = path.resolve(required(filePath, "file path"));
-      let stats: Stats;
-      try {
-        stats = await stat(resolved);
-      } catch {
-        throw new Error(`No such file: ${resolved}`);
-      }
-      if (!stats.isFile()) throw new Error(`Not a file: ${resolved}`);
-      const {shell} = await import("electron");
-      const error = await shell.openPath(resolved);
-      if (error) throw new Error(error);
-    });
+    this.#handle(
+      channels.browserOpenPath,
+      async (_event, filePath: unknown) => {
+        // The path arrives from a link in model-written markdown, so it is
+        // treated as input: it must be an existing regular file, and it is
+        // resolved before the shell ever sees it. Directories and specials are
+        // refused rather than handed to the desktop to interpret.
+        const resolved = path.resolve(required(filePath, "file path"));
+        let stats: Stats;
+        try {
+          stats = await stat(resolved);
+        } catch {
+          throw new Error(`No such file: ${resolved}`);
+        }
+        if (!stats.isFile()) throw new Error(`Not a file: ${resolved}`);
+        const { shell } = await import("electron");
+        const error = await shell.openPath(resolved);
+        if (error) throw new Error(error);
+      },
+    );
     this.#handle(channels.extensionStatus, () => this.#extensionStatus());
     this.#handle(channels.extensionDismiss, () => {
       this.#storage.setPreference("extension-prompt-dismissed", true);
       return this.#extensionStatus();
     });
     this.#handle(channels.extensionOpenInstall, () =>
-      import("electron").then(({shell}) => shell.openExternal(EXTENSION_INSTALL_URL)),
+      import("electron").then(({ shell }) =>
+        shell.openExternal(EXTENSION_INSTALL_URL),
+      ),
     );
     this.#handle(channels.browserHistoryList, (_event, options: unknown) =>
       this.#storage.listHistory(browserHistoryQuery(options)),
@@ -2163,24 +2553,37 @@ export class DesktopBackend {
       return this.#storage.listHistory({});
     });
     this.#handle(channels.browserHistoryClear, (_event, options: unknown) => {
-      const input = options && typeof options === "object" ? (options as Record<string, unknown>) : {};
-      this.#storage.clearHistory(input.source === "import" ? {source: "import"} : {});
+      const input =
+        options && typeof options === "object"
+          ? (options as Record<string, unknown>)
+          : {};
+      this.#storage.clearHistory(
+        input.source === "import" ? { source: "import" } : {},
+      );
       return this.#storage.listHistory({});
     });
     this.#handle(channels.browserImportSources, () => discoverBrowsers());
-    this.#handle(channels.browserImportRun, async (_event, request: unknown) => {
-      // The browser and profile are looked up from the id rather than taken as
-      // a path, so a payload cannot name a file of its own choosing.
-      const data = await importFrom(browserImportRequest(request));
-      return this.#applyImport(data);
-    });
+    this.#handle(
+      channels.browserImportRun,
+      async (_event, request: unknown) => {
+        // The browser and profile are looked up from the id rather than taken as
+        // a path, so a payload cannot name a file of its own choosing.
+        const data = await importFrom(browserImportRequest(request));
+        return this.#applyImport(data);
+      },
+    );
     this.#handle(channels.browserImportFile, async (_event, file: unknown) => {
       const chosen =
         file === undefined || file === null
           ? ((
               await dialog.showOpenDialog(this.#window, {
                 properties: ["openFile"],
-                filters: [{name: "Exported passwords or cookies", extensions: ["csv", "txt"]}],
+                filters: [
+                  {
+                    name: "Exported passwords or cookies",
+                    extensions: ["csv", "txt"],
+                  },
+                ],
               })
             ).filePaths[0] ?? null)
           : required(file, "file");
@@ -2200,18 +2603,25 @@ export class DesktopBackend {
     this.#handle(channels.browserClearSiteData, (_event, site: unknown) =>
       this.#browsingData.clearSite(origin(site)),
     );
-    this.#handle(channels.browserClearBrowsingData, async (_event, options: unknown) => {
-      const wanted = clearDataOptions(options);
-      await this.#browsingData.clearAll(wanted);
-      if (wanted.downloads) this.#downloads.clear();
-      if (wanted.permissions) this.#sitePermissions.clear();
-      if (wanted.logins) await this.#autofill.clear();
-    });
+    this.#handle(
+      channels.browserClearBrowsingData,
+      async (_event, options: unknown) => {
+        const wanted = clearDataOptions(options);
+        await this.#browsingData.clearAll(wanted);
+        if (wanted.downloads) this.#downloads.clear();
+        if (wanted.permissions) this.#sitePermissions.clear();
+        if (wanted.logins) await this.#autofill.clear();
+      },
+    );
     this.#handle(channels.browserLoginsList, () => this.#autofill.list());
     this.#handle(
       channels.browserLoginSave,
       (_event, site: unknown, username: unknown, password: unknown) =>
-        this.#autofill.save(origin(site), required(username, "username"), required(password, "password")),
+        this.#autofill.save(
+          origin(site),
+          required(username, "username"),
+          required(password, "password"),
+        ),
     );
     this.#handle(channels.browserLoginReveal, (_event, id: unknown) =>
       this.#autofill.reveal(required(id, "login id")),
@@ -2220,22 +2630,29 @@ export class DesktopBackend {
       this.#autofill.delete(required(id, "login id")),
     );
     this.#handle(channels.browserSettingsGet, () => this.#browserSettings());
-    this.#handle(channels.browserSettingsUpdate, async (_event, patch: unknown) => {
-      const requested = browserSettingsPatch(patch);
-      // A null directory asks for the picker, which only this side can open.
-      // Parented to the window, like the drive's own folder chooser.
-      const chosen =
-        requested.downloadDirectory === null
-          ? ((
-              await dialog.showOpenDialog(this.#window, {
-                properties: ["openDirectory", "createDirectory"],
-              })
-            ).filePaths[0] ?? null)
-          : null;
-      const settings = browserSettingsUpdate(requested, this.#browserSettings(), chosen);
-      this.#storage.setPreference("browser-settings", {...settings});
-      return settings;
-    });
+    this.#handle(
+      channels.browserSettingsUpdate,
+      async (_event, patch: unknown) => {
+        const requested = browserSettingsPatch(patch);
+        // A null directory asks for the picker, which only this side can open.
+        // Parented to the window, like the drive's own folder chooser.
+        const chosen =
+          requested.downloadDirectory === null
+            ? ((
+                await dialog.showOpenDialog(this.#window, {
+                  properties: ["openDirectory", "createDirectory"],
+                })
+              ).filePaths[0] ?? null)
+            : null;
+        const settings = browserSettingsUpdate(
+          requested,
+          this.#browserSettings(),
+          chosen,
+        );
+        this.#storage.setPreference("browser-settings", { ...settings });
+        return settings;
+      },
+    );
     this.#handle(channels.browserPauseDownload, (_event, id: unknown) =>
       this.#downloads.pause(required(id, "download id")),
     );
@@ -2249,7 +2666,9 @@ export class DesktopBackend {
       this.#downloads.remove(required(id, "download id")),
     );
     this.#handle(channels.browserClearDownloads, () => this.#downloads.clear());
-    this.#handle(channels.browserPermissionsList, () => this.#sitePermissions.list());
+    this.#handle(channels.browserPermissionsList, () =>
+      this.#sitePermissions.list(),
+    );
     this.#handle(
       channels.browserPermissionSet,
       (_event, site: unknown, permission: unknown, decision: unknown) =>
@@ -2260,7 +2679,9 @@ export class DesktopBackend {
         ),
     );
     this.#handle(channels.browserPermissionsClear, (_event, site: unknown) =>
-      this.#sitePermissions.clear(site === undefined ? undefined : origin(site)),
+      this.#sitePermissions.clear(
+        site === undefined ? undefined : origin(site),
+      ),
     );
     this.#handle(
       channels.browserPermissionRespond,
@@ -2272,8 +2693,14 @@ export class DesktopBackend {
         );
       },
     );
-    this.#handle(channels.browserFind, (_event, tabId: string, text: string, forward: boolean) =>
-      this.#embeddedBrowser.find(required(tabId, "tab id"), String(text ?? ""), forward !== false),
+    this.#handle(
+      channels.browserFind,
+      (_event, tabId: string, text: string, forward: boolean) =>
+        this.#embeddedBrowser.find(
+          required(tabId, "tab id"),
+          String(text ?? ""),
+          forward !== false,
+        ),
     );
     this.#handle(channels.browserStopFind, (_event, tabId: string) =>
       this.#embeddedBrowser.stopFind(required(tabId, "tab id")),
@@ -2294,7 +2721,9 @@ export class DesktopBackend {
         prefersDark: nativeTheme.shouldUseDarkColors,
       }),
     );
-    this.#handle(channels.browserDownloadsList, () => this.#embeddedBrowser.downloads());
+    this.#handle(channels.browserDownloadsList, () =>
+      this.#embeddedBrowser.downloads(),
+    );
     this.#handle(channels.browserOpenDownload, (_event, id: string) =>
       this.#embeddedBrowser.openDownload(required(id, "download id")),
     );
@@ -2322,61 +2751,82 @@ export class DesktopBackend {
     this.#handle(channels.driveSetLocalRoot, (_event, target: unknown) =>
       this.#drive.setLocalRoot(typeof target === "string" ? target : null),
     );
-    this.#handle(channels.driveRevealEntry, async (_event, source: unknown, target: unknown) => {
-      // `describe` resolves the entry through whichever source holds it, which
-      // is what turns a virtual-drive path back into a real one on disk.
-      const entry = await this.#drive.describe(driveSource(source), required(target, "path"));
-      const onDisk = entry.path.includes("#") ? entry.path.slice(entry.path.indexOf("/") + 1) : entry.path;
-      // Nothing to say if it cannot be shown — an unmounted share is not an
-      // error the user can do anything with from here.
-      if (existsSync(onDisk)) shell.showItemInFolder(onDisk);
-    });
-    this.#handle(channels.driveOpenEntry, async (_event, source: unknown, target: unknown) => {
-      const from = driveSource(source);
-      const path_ = required(target, "path");
-      const entry = await this.#drive.describe(from, path_);
-      const onDisk = entry.path.includes("#") ? entry.path.slice(entry.path.indexOf("/") + 1) : entry.path;
-      // A file on a volume opens where it already is. Silent on failure by
-      // design: a share that went away mid-session should do nothing rather
-      // than raise an error the user cannot act on.
-      if (existsSync(onDisk)) {
-        await shell.openPath(onDisk);
-        return;
-      }
-      // Otherwise it lives somewhere with no page to send the user to — an S3
-      // object, or any provider that does not publish a link. Fetching it and
-      // handing it to the application that owns the type is the nearest thing
-      // to opening it, and beats a control that does nothing.
-      const downloaded = await this.#drive.download(from, path_);
-      await shell.openPath(downloaded);
-    });
-    this.#handle(channels.driveAddShare, async (_event, target: unknown, label: unknown) => {
-      // No path means the user is choosing one, which is a folder picker over
-      // whatever they have mounted rather than a bespoke "browse the network"
-      // dialog: macOS already puts shares under /Volumes once they are open.
-      const chosen =
-        typeof target === "string" && target
-          ? target
-          : ((
-              await dialog.showOpenDialog(this.#window, {
-                properties: ["openDirectory"],
-                defaultPath: "/Volumes",
-              })
-            ).filePaths[0] ?? null);
-      if (!chosen) return this.#drive.status();
-      return this.#drive.addShare(chosen, typeof label === "string" ? label : undefined);
-    });
+    this.#handle(
+      channels.driveRevealEntry,
+      async (_event, source: unknown, target: unknown) => {
+        // `describe` resolves the entry through whichever source holds it, which
+        // is what turns a virtual-drive path back into a real one on disk.
+        const entry = await this.#drive.describe(
+          driveSource(source),
+          required(target, "path"),
+        );
+        const onDisk = entry.path.includes("#")
+          ? entry.path.slice(entry.path.indexOf("/") + 1)
+          : entry.path;
+        // Nothing to say if it cannot be shown — an unmounted share is not an
+        // error the user can do anything with from here.
+        if (existsSync(onDisk)) shell.showItemInFolder(onDisk);
+      },
+    );
+    this.#handle(
+      channels.driveOpenEntry,
+      async (_event, source: unknown, target: unknown) => {
+        const from = driveSource(source);
+        const path_ = required(target, "path");
+        const entry = await this.#drive.describe(from, path_);
+        const onDisk = entry.path.includes("#")
+          ? entry.path.slice(entry.path.indexOf("/") + 1)
+          : entry.path;
+        // A file on a volume opens where it already is. Silent on failure by
+        // design: a share that went away mid-session should do nothing rather
+        // than raise an error the user cannot act on.
+        if (existsSync(onDisk)) {
+          await shell.openPath(onDisk);
+          return;
+        }
+        // Otherwise it lives somewhere with no page to send the user to — an S3
+        // object, or any provider that does not publish a link. Fetching it and
+        // handing it to the application that owns the type is the nearest thing
+        // to opening it, and beats a control that does nothing.
+        const downloaded = await this.#drive.download(from, path_);
+        await shell.openPath(downloaded);
+      },
+    );
+    this.#handle(
+      channels.driveAddShare,
+      async (_event, target: unknown, label: unknown) => {
+        // No path means the user is choosing one, which is a folder picker over
+        // whatever they have mounted rather than a bespoke "browse the network"
+        // dialog: macOS already puts shares under /Volumes once they are open.
+        const chosen =
+          typeof target === "string" && target
+            ? target
+            : ((
+                await dialog.showOpenDialog(this.#window, {
+                  properties: ["openDirectory"],
+                  defaultPath: "/Volumes",
+                })
+              ).filePaths[0] ?? null);
+        if (!chosen) return this.#drive.status();
+        return this.#drive.addShare(
+          chosen,
+          typeof label === "string" ? label : undefined,
+        );
+      },
+    );
     this.#handle(channels.driveRemoveShare, (_event, id: unknown) =>
       this.#drive.removeShare(required(id, "share")),
     );
     this.#handle(channels.driveSaveS3, (_event, config: unknown) =>
       this.#drive.saveS3(driveS3Config(config)),
     );
-    this.#handle(channels.driveList, (_event, source: unknown, target: unknown) =>
-      this.#drive.list(
-        driveSource(source),
-        typeof target === "string" ? target : "",
-      ),
+    this.#handle(
+      channels.driveList,
+      (_event, source: unknown, target: unknown) =>
+        this.#drive.list(
+          driveSource(source),
+          typeof target === "string" ? target : "",
+        ),
     );
     this.#handle(
       channels.driveCreateFolder,
@@ -2389,30 +2839,54 @@ export class DesktopBackend {
     );
     this.#handle(
       channels.driveUpload,
-      (event, source: unknown, parentPath: unknown, paths: unknown, operationId: unknown) =>
+      (
+        event,
+        source: unknown,
+        parentPath: unknown,
+        paths: unknown,
+        operationId: unknown,
+      ) =>
         this.#drive.upload(
           driveSource(source),
           typeof parentPath === "string" ? parentPath : "",
           Array.isArray(paths)
-            ? paths.filter((entry): entry is string => typeof entry === "string")
+            ? paths.filter(
+                (entry): entry is string => typeof entry === "string",
+              )
             : undefined,
           {
-            onProgress: typeof operationId === "string"
-              ? (completed, total) => event.sender.send(channels.driveProgress, operationId, completed, total)
-              : undefined,
+            onProgress:
+              typeof operationId === "string"
+                ? (completed, total) =>
+                    event.sender.send(
+                      channels.driveProgress,
+                      operationId,
+                      completed,
+                      total,
+                    )
+                : undefined,
           },
         ),
     );
-    this.#handle(channels.driveDownload, (_event, source: unknown, target: unknown) =>
-      this.#drive.download(driveSource(source), required(target, "file path")),
+    this.#handle(
+      channels.driveDownload,
+      (_event, source: unknown, target: unknown) =>
+        this.#drive.download(
+          driveSource(source),
+          required(target, "file path"),
+        ),
     );
-    this.#handle(channels.driveRemove, (_event, source: unknown, paths: unknown) =>
-      this.#drive.remove(
-        driveSource(source),
-        Array.isArray(paths)
-          ? paths.filter((entry): entry is string => typeof entry === "string")
-          : [],
-      ),
+    this.#handle(
+      channels.driveRemove,
+      (_event, source: unknown, paths: unknown) =>
+        this.#drive.remove(
+          driveSource(source),
+          Array.isArray(paths)
+            ? paths.filter(
+                (entry): entry is string => typeof entry === "string",
+              )
+            : [],
+        ),
     );
     this.#handle(
       channels.driveRename,
@@ -2425,143 +2899,221 @@ export class DesktopBackend {
     );
     this.#handle(
       channels.driveMove,
-      (event, source: unknown, paths: unknown, destination: unknown, operationId: unknown) =>
+      (
+        event,
+        source: unknown,
+        paths: unknown,
+        destination: unknown,
+        operationId: unknown,
+      ) =>
         this.#drive.move(
           driveSource(source),
           Array.isArray(paths)
-            ? paths.filter((entry): entry is string => typeof entry === "string")
+            ? paths.filter(
+                (entry): entry is string => typeof entry === "string",
+              )
             : [],
           typeof destination === "string" ? destination : "",
           typeof operationId === "string"
-            ? (completed, total) => event.sender.send(channels.driveProgress, operationId, completed, total)
+            ? (completed, total) =>
+                event.sender.send(
+                  channels.driveProgress,
+                  operationId,
+                  completed,
+                  total,
+                )
             : undefined,
         ),
     );
-    this.#handle(channels.driveCopy, (_event, source: unknown, paths: unknown) =>
-      this.#drive.copy(
-        driveSource(source),
-        Array.isArray(paths)
-          ? paths.filter((entry): entry is string => typeof entry === "string")
-          : [],
-      ),
+    this.#handle(
+      channels.driveCopy,
+      (_event, source: unknown, paths: unknown) =>
+        this.#drive.copy(
+          driveSource(source),
+          Array.isArray(paths)
+            ? paths.filter(
+                (entry): entry is string => typeof entry === "string",
+              )
+            : [],
+        ),
     );
     this.#handle(channels.providersList, () => this.#providerDtos());
-    this.#handle(channels.providersSaveApiKey, async (_event, providerId: string, apiKey: string) => {
-      const id = required(providerId, "provider");
-      const provider = this.#models.getProvider(id);
-      if (!provider) throw new Error(`Unknown provider: ${id}`);
-      if (!provider.auth.apiKey) throw new Error(`${provider.name} does not support API-key authentication`);
-      await this.#apiKeys.add(id, required(apiKey, "API key"));
-      const updated = await this.#providerDto(id);
-      const currentUsable = this.#model
-        ? (await this.#providerDto(this.#model.provider)).configured
-        : false;
-      if (!currentUsable) {
-        const model = this.#inference.listModels(id)[0];
-        if (model) this.#selectModel({provider: model.provider, id: model.id});
-      }
-      return updated;
-    });
-    this.#handle(channels.providersRemoveApiKey, async (_event, providerId: string, keyId: string) => {
-      const id = required(providerId, "provider");
-      if (!this.#models.getProvider(id)) throw new Error(`Unknown provider: ${id}`);
-      await this.#apiKeys.remove(id, required(keyId, "API key id"));
-      return this.#providerDto(id);
-    });
-    this.#handle(channels.providersConnectOAuth, async (event, providerId: string) => {
-      const id = required(providerId, "provider");
-      const provider = this.#models.getProvider(id);
-      if (!provider) throw new Error(`Unknown provider: ${id}`);
-      if (!provider.auth.oauth) throw new Error(`${provider.name} does not support account login`);
-      if (id !== "openai-codex")
-        throw new Error("Only OpenAI Codex account login is available in Settings");
-      const controller = this.#providerOAuth.begin(id);
-      const cancel = () => controller.abort();
-      event.sender.once("destroyed", cancel);
-      try {
-        try {
-          await this.#models.login(id, "oauth", openAICodexInteraction(
-            id,
-            controller.signal,
-            (value) => {
-              if (!event.sender.isDestroyed())
-                event.sender.send(channels.providersOAuthEvent, value);
-            },
-          ));
-        } catch (reason) {
-          throw providerOAuthError(reason);
+    this.#handle(
+      channels.providersSaveApiKey,
+      async (_event, providerId: string, apiKey: string) => {
+        const id = required(providerId, "provider");
+        const provider = this.#models.getProvider(id);
+        if (!provider) throw new Error(`Unknown provider: ${id}`);
+        if (!provider.auth.apiKey)
+          throw new Error(
+            `${provider.name} does not support API-key authentication`,
+          );
+        await this.#apiKeys.add(id, required(apiKey, "API key"));
+        const updated = await this.#providerDto(id);
+        const currentUsable = this.#model
+          ? (await this.#providerDto(this.#model.provider)).configured
+          : false;
+        if (!currentUsable) {
+          const model = this.#inference.listModels(id)[0];
+          if (model)
+            this.#selectModel({ provider: model.provider, id: model.id });
         }
-      } finally {
-        event.sender.removeListener("destroyed", cancel);
-        this.#providerOAuth.finish(id, controller);
-      }
-      const updated = await this.#providerDto(id);
-      const preferred = this.#inference.listModels(id).find((model) => model.id === "gpt-5.6-luna")
-        ?? this.#inference.listModels(id)[0];
-      if (preferred) {
-        const ref = {provider: preferred.provider, id: preferred.id, reasoning: "low" as const};
-        this.#selectModel(ref);
-        this.#roleOverrides = {...this.#roleOverrides, task: ref};
+        this.#reconcileAutoRoles();
+        return updated;
+      },
+    );
+    this.#handle(
+      channels.providersRemoveApiKey,
+      async (_event, providerId: string, keyId: string) => {
+        const id = required(providerId, "provider");
+        if (!this.#models.getProvider(id))
+          throw new Error(`Unknown provider: ${id}`);
+        await this.#apiKeys.remove(id, required(keyId, "API key id"));
+        this.#reconcileAutoRoles();
+        return this.#providerDto(id);
+      },
+    );
+    this.#handle(
+      channels.providersConnectOAuth,
+      async (event, providerId: string) => {
+        const id = required(providerId, "provider");
+        const provider = this.#models.getProvider(id);
+        if (!provider) throw new Error(`Unknown provider: ${id}`);
+        if (!provider.auth.oauth)
+          throw new Error(`${provider.name} does not support account login`);
+        if (id !== "openai-codex")
+          throw new Error(
+            "Only OpenAI Codex account login is available in Settings",
+          );
+        const controller = this.#providerOAuth.begin(id);
+        const cancel = () => controller.abort();
+        event.sender.once("destroyed", cancel);
+        try {
+          try {
+            await this.#models.login(
+              id,
+              "oauth",
+              openAICodexInteraction(id, controller.signal, (value) => {
+                if (!event.sender.isDestroyed())
+                  event.sender.send(channels.providersOAuthEvent, value);
+              }),
+            );
+          } catch (reason) {
+            throw providerOAuthError(reason);
+          }
+        } finally {
+          event.sender.removeListener("destroyed", cancel);
+          this.#providerOAuth.finish(id, controller);
+        }
+        const updated = await this.#providerDto(id);
+        const preferred =
+          this.#inference
+            .listModels(id)
+            .find((model) => model.id === "gpt-5.6-luna") ??
+          this.#inference.listModels(id)[0];
+        if (preferred) {
+          const ref = {
+            provider: preferred.provider,
+            id: preferred.id,
+            reasoning: "low" as const,
+          };
+          this.#selectModel(ref);
+          this.#setReasoningLevel("low");
+        }
+        this.#reconcileAutoRoles();
+        return updated;
+      },
+    );
+    this.#handle(
+      channels.providersCancelOAuth,
+      (_event, providerId: string) => {
+        const id = required(providerId, "provider");
+        this.#providerOAuth.cancel(id);
+      },
+    );
+    this.#handle(
+      channels.providersDisconnectOAuth,
+      async (_event, providerId: string) => {
+        const id = required(providerId, "provider");
+        const provider = this.#models.getProvider(id);
+        if (!provider) throw new Error(`Unknown provider: ${id}`);
+        if (!provider.auth.oauth)
+          throw new Error(`${provider.name} does not support account login`);
+        this.#providerOAuth.cancel(id);
+        await this.#models.logout(id);
+        this.#roleOverrides = Object.fromEntries(
+          Object.entries(this.#roleOverrides).filter(
+            ([, ref]) => ref?.provider !== id,
+          ),
+        );
         this.#persistRoles();
-        this.#setReasoningLevel("low");
-      }
-      return updated;
-    });
-    this.#handle(channels.providersCancelOAuth, (_event, providerId: string) => {
-      const id = required(providerId, "provider");
-      this.#providerOAuth.cancel(id);
-    });
-    this.#handle(channels.providersDisconnectOAuth, async (_event, providerId: string) => {
-      const id = required(providerId, "provider");
-      const provider = this.#models.getProvider(id);
-      if (!provider) throw new Error(`Unknown provider: ${id}`);
-      if (!provider.auth.oauth) throw new Error(`${provider.name} does not support account login`);
-      this.#providerOAuth.cancel(id);
-      await this.#models.logout(id);
-      this.#roleOverrides = Object.fromEntries(
-        Object.entries(this.#roleOverrides).filter(([, ref]) => ref?.provider !== id),
-      );
-      this.#persistRoles();
-      return this.#providerDto(id);
-    });
-    this.#handle(channels.providersCreateCustom, async (_event, value: unknown) => {
-      const request = customProviderRequest(value);
-      const id = this.#availableCustomProviderId(request.name);
-      const config: CustomProviderConfig = {
-        id,
-        name: request.name,
-        baseUrl: request.baseUrl,
-        logoDataUrl: request.logoDataUrl,
-        models: request.models.map((model) => ({id: model.id, name: model.name ?? model.id})),
-      };
-      this.#registerCustomProvider(config);
-      this.#persistCustomProviders();
-      if (request.apiKey) await this.#apiKeys.add(id, request.apiKey);
-      return this.#providerDto(id);
-    });
-    this.#handle(channels.providersUpdateCustom, async (_event, value: unknown) => {
-      const request = updateCustomProviderRequest(value);
-      if (!this.#customProviders.has(request.id)) throw new Error(`Unknown custom provider: ${request.id}`);
-      const config: CustomProviderConfig = {
-        id: request.id,
-        name: request.name,
-        baseUrl: request.baseUrl,
-        logoDataUrl: request.logoDataUrl,
-        models: request.models.map((model) => ({id: model.id, name: model.name ?? model.id})),
-      };
-      this.#registerCustomProvider(config);
-      this.#persistCustomProviders();
-      if (this.#model?.provider === request.id) {
-        const current = config.models.some((model) => model.id === this.#model!.id);
-        this.#selectModel({provider: request.id, id: current ? this.#model.id : config.models[0]!.id}, !current);
-      }
-      return this.#providerDto(request.id);
-    });
+        this.#reconcileAutoRoles(false);
+        return this.#providerDto(id);
+      },
+    );
+    this.#handle(
+      channels.providersCreateCustom,
+      async (_event, value: unknown) => {
+        const request = customProviderRequest(value);
+        const id = this.#availableCustomProviderId(request.name);
+        const config: CustomProviderConfig = {
+          id,
+          name: request.name,
+          baseUrl: request.baseUrl,
+          logoDataUrl: request.logoDataUrl,
+          models: request.models.map((model) => ({
+            id: model.id,
+            name: model.name ?? model.id,
+          })),
+        };
+        this.#registerCustomProvider(config);
+        this.#persistCustomProviders();
+        if (request.apiKey) await this.#apiKeys.add(id, request.apiKey);
+        this.#reconcileAutoRoles();
+        return this.#providerDto(id);
+      },
+    );
+    this.#handle(
+      channels.providersUpdateCustom,
+      async (_event, value: unknown) => {
+        const request = updateCustomProviderRequest(value);
+        if (!this.#customProviders.has(request.id))
+          throw new Error(`Unknown custom provider: ${request.id}`);
+        const config: CustomProviderConfig = {
+          id: request.id,
+          name: request.name,
+          baseUrl: request.baseUrl,
+          logoDataUrl: request.logoDataUrl,
+          models: request.models.map((model) => ({
+            id: model.id,
+            name: model.name ?? model.id,
+          })),
+        };
+        this.#registerCustomProvider(config);
+        this.#persistCustomProviders();
+        if (this.#model?.provider === request.id) {
+          const current = config.models.some(
+            (model) => model.id === this.#model!.id,
+          );
+          this.#selectModel(
+            {
+              provider: request.id,
+              id: current ? this.#model.id : config.models[0]!.id,
+            },
+            !current,
+          );
+        }
+        this.#reconcileAutoRoles();
+        return this.#providerDto(request.id);
+      },
+    );
     this.#handle(channels.providersDiscoverModels, (_event, value: unknown) =>
       discoverModels(discoverModelsRequest(value)),
     );
-    this.#handle(channels.providersSetupLocalRuntime, (_event, value: unknown) =>
-      this.#setupLocalRuntime(setupLocalRuntimeRequest(value)),
+    this.#handle(
+      channels.providersSetupLocalRuntime,
+      (_event, value: unknown) =>
+        this.#setupLocalRuntime(setupLocalRuntimeRequest(value)),
     );
     this.#handle(channels.artifactsList, (_event, conversationId: string) =>
       this.#storage.listArtifacts(required(conversationId, "conversation id")),
@@ -2574,27 +3126,38 @@ export class DesktopBackend {
       (
         _event,
         conversationId: string,
-        files: Array<{ name: string; path: string; mimeType: string | null; size: number }>,
+        files: Array<{
+          name: string;
+          path: string;
+          mimeType: string | null;
+          size: number;
+        }>,
       ) => {
         const id = required(conversationId, "conversation id");
         if (!Array.isArray(files)) throw new Error("files must be an array");
-        return files.map((file) => this.#storage.createReference({
-          id: crypto.randomUUID(),
-          conversationId: id,
-          kind: "file",
-          title: required(file.name, "file name"),
-          uri: required(file.path, "file path"),
-          metadata: {mimeType: file.mimeType, size: file.size},
-        }));
+        return files.map((file) =>
+          this.#storage.createReference({
+            id: crypto.randomUUID(),
+            conversationId: id,
+            kind: "file",
+            title: required(file.name, "file name"),
+            uri: required(file.path, "file path"),
+            metadata: { mimeType: file.mimeType, size: file.size },
+          }),
+        );
       },
     );
     this.#mcpConfigWatcher.start();
     this.#customSkillWatcher.start();
     this.#windowControl.start();
-    if (this.#orchestrationExperiment) queueMicrotask(() => {
-      for (const conversationId of new Set(
-        this.#managerJobs.list().filter((job) => job.status === "queued").map((job) => job.chatId),
-      )) void this.#drainManagerConversation(conversationId);
+    queueMicrotask(() => {
+        for (const conversationId of new Set(
+          this.#managerJobs
+            .list()
+            .filter((job) => job.status === "queued")
+            .map((job) => job.chatId),
+        ))
+          void this.#drainManagerConversation(conversationId);
     });
   }
 
@@ -2605,8 +3168,13 @@ export class DesktopBackend {
     try {
       return await reload;
     } finally {
-      if (this.#mcpReloadInFlight === reload) this.#mcpReloadInFlight = undefined;
-      if (this.#mcpReloadPending && this.#activeRuns.size === 0 && !this.#closing)
+      if (this.#mcpReloadInFlight === reload)
+        this.#mcpReloadInFlight = undefined;
+      if (
+        this.#mcpReloadPending &&
+        this.#activeRuns.size === 0 &&
+        !this.#closing
+      )
         queueMicrotask(() => this.#requestMcpReload());
     }
   }
@@ -2619,17 +3187,22 @@ export class DesktopBackend {
         throw error;
       },
     );
-    // ~/.flareai/mcp.json is the one place servers are read from, which is what
+    // ~/.polymux/mcp.json is the one place servers are read from, which is what
     // makes every one of them editable and removable in Settings. Another
     // agent's servers arrive through Auto discovery, as copies.
     const configs = importMcpServers(JSON.parse(source)).map((config) => ({
       ...config,
-      metadata: {...config.metadata, source: "flareai"},
-      enabled: this.#integrationEnabled("mcp-enabled", config.id, config.enabled !== false),
+      metadata: { ...config.metadata, source: "polymux" },
+      enabled: this.#integrationEnabled(
+        "mcp-enabled",
+        config.id,
+        config.enabled !== false,
+      ),
     }));
     const plugins = await this.#pluginMcpConfigs();
     this.#mcpConfigs.clear();
-    for (const config of [...configs, ...plugins]) this.#mcpConfigs.set(config.id, config);
+    for (const config of [...configs, ...plugins])
+      this.#mcpConfigs.set(config.id, config);
     this.#mcp.configure([...configs, ...plugins]);
     const snapshots = await this.#mcp.connectEnabled();
     for (const name of this.#mcpToolNames) this.#registry.remove(name);
@@ -2665,7 +3238,9 @@ export class DesktopBackend {
    */
   async #pluginMcpConfigs(): Promise<ReturnType<typeof importMcpServers>> {
     await this.#ensurePlugins();
-    const runtimes = this.#plugins.runtime((id) => this.#integrationEnabled("plugin-enabled", id));
+    const runtimes = this.#plugins.runtime((id) =>
+      this.#integrationEnabled("plugin-enabled", id),
+    );
     this.#pluginMcpIds.clear();
     // Replaced rather than appended to: a disabled or removed plugin has to
     // lose its skills on the next run, not keep them until a restart.
@@ -2676,7 +3251,11 @@ export class DesktopBackend {
       runtime.mcpServers.map((server) => {
         const id = `plugin:${runtime.pluginId}:${server.id}`;
         this.#pluginMcpIds.add(id);
-        return {...server, id, metadata: {...server.metadata, source: "plugin"}};
+        return {
+          ...server,
+          id,
+          metadata: { ...server.metadata, source: "plugin" },
+        };
       }),
     );
   }
@@ -2690,33 +3269,39 @@ export class DesktopBackend {
   }
 
   /**
-   * FlareAI used to run Codex's servers straight out of ~/.codex/config.toml,
+   * Polymux used to run Codex's servers straight out of ~/.codex/config.toml,
    * which left them unremovable here. They are copied across once so nothing
    * a user already had disappears; after that the copy is theirs, and deleting
    * it stays deleted rather than being re-imported on the next reload.
    */
   async #migrateCodexMcpConfig(): Promise<void> {
-    if (this.#storage.getPreference("mcp-codex-migrated")?.value === true) return;
+    if (this.#storage.getPreference("mcp-codex-migrated")?.value === true)
+      return;
     const codexSource = await readFile(this.#codexMcpConfigPath, "utf8").catch(
       (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return "";
         throw error;
       },
     );
-    const codexConfigs = codexSource ? importMcpServers(parseToml(codexSource)) : [];
+    const codexConfigs = codexSource
+      ? importMcpServers(parseToml(codexSource))
+      : [];
     if (codexConfigs.length)
       await this.#writeMcpConfig((servers) => {
         for (const config of codexConfigs) {
-          // A FlareAI entry of the same id wins: it was the deliberate local
+          // A Polymux entry of the same id wins: it was the deliberate local
           // override of Codex's, and stays that way.
           if (config.id in servers) continue;
-          servers[config.id] = {...config.metadata, name: config.name ?? config.id};
+          servers[config.id] = {
+            ...config.metadata,
+            name: config.name ?? config.id,
+          };
         }
       });
     this.#storage.setPreference("mcp-codex-migrated", true);
   }
 
-  async close(reason = "FlareAI is closing"): Promise<void> {
+  async close(reason = "Polymux is closing"): Promise<void> {
     this.#closing = true;
     if (this.#commsStatusTimer) clearInterval(this.#commsStatusTimer);
     stopUpdateChecks();
@@ -2728,14 +3313,14 @@ export class DesktopBackend {
     this.#windowControl.stop();
     this.#computerUse.hide();
     this.#computerHistory.stop();
+    this.#interactionEvents.stop();
     // A recording that outlived the app would keep a tap alive with nobody to
     // end it, so an app quit ends it as an interruption rather than a stop.
     this.#recording.stop("interrupted");
     this.#scheduler.stop();
     this.#dictation.close();
     const activeRuns = [...this.#activeRuns.values()];
-    for (const run of activeRuns)
-      run.control.cancel(new Error(reason));
+    for (const run of activeRuns) run.control.cancel(new Error(reason));
     for (const channel of this.#registeredChannels)
       this.#ipcMain.removeHandler(channel);
     await Promise.allSettled([
@@ -2761,7 +3346,7 @@ export class DesktopBackend {
     active: ActiveAgentRun,
   ): void {
     if (this.#closing) {
-      active.control.cancel(new Error("FlareAI is closing"));
+      active.control.cancel(new Error("Polymux is closing"));
       return;
     }
     this.#goalContinuations.set(conversationId, runId);
@@ -2827,24 +3412,28 @@ export class DesktopBackend {
     // Only deictic/current-screen requests pay for a synchronous AX refresh.
     // Other turns use the latest trusted snapshot and refresh it in parallel
     // for later, avoiding desktop inspection on the inference critical path.
-    const desktopContext = this.#orchestrationExperiment && needsFreshDesktopContext(request.text)
+    const desktopContext = needsFreshDesktopContext(request.text)
       ? this.#refreshOpenWindows()
       : (void this.#refreshOpenWindows(), Promise.resolve());
-    const locationContext = this.#orchestrationExperiment
-      ? this.#refreshPromptLocation(request.text)
-      : Promise.resolve();
-    await Promise.all([this.#prepareMcpForRun(), desktopContext, locationContext]);
+    const locationContext = this.#refreshPromptLocation(request.text);
+    await Promise.all([
+      this.#prepareMcpForRun(),
+      desktopContext,
+      locationContext,
+    ]);
     const agent = await this.#ensureConfiguredAgent();
     const pausedGoal = this.#storage.getGoal(request.conversationId);
     const maxTaskDispatches =
-      pausedGoal && (pausedGoal.status === "active" || pausedGoal.status === "paused") &&
+      pausedGoal &&
+      (pausedGoal.status === "active" || pausedGoal.status === "paused") &&
       shouldBoundGoalContinuation(request.text, pausedGoal.objective)
         ? 2
         : undefined;
     if (
       pausedGoal?.status === "paused" &&
       shouldResumePausedGoal(request.text, pausedGoal.objective)
-    ) this.#storage.updateGoal(request.conversationId, {status: "active"});
+    )
+      this.#storage.updateGoal(request.conversationId, { status: "active" });
     const runId = preparedRunId ?? crypto.randomUUID();
     const active = agent.start({
       conversationId: request.conversationId,
@@ -2861,7 +3450,8 @@ export class DesktopBackend {
       replyToMessageId: request.replyToMessageId,
       maxTaskDispatches,
       goalProgressContext: Boolean(
-        pausedGoal && (pausedGoal.status === "active" || pausedGoal.status === "paused") &&
+        pausedGoal &&
+        (pausedGoal.status === "active" || pausedGoal.status === "paused") &&
         shouldUseGoalProgressContext(request.text, pausedGoal.objective),
       ),
     });
@@ -2870,18 +3460,19 @@ export class DesktopBackend {
     return { runId };
   }
 
-  #activeTopLevelRuns(): Array<{runId: string; conversationId: string}> {
-    const result: Array<{runId: string; conversationId: string}> = [];
+  #activeTopLevelRuns(): Array<{ runId: string; conversationId: string }> {
+    const result: Array<{ runId: string; conversationId: string }> = [];
     for (const runId of this.#activeRuns.keys()) {
       const run = this.#storage.getRun(runId);
       if (!run || run.parentRunId) continue;
-      result.push({runId, conversationId: run.conversationId});
+      result.push({ runId, conversationId: run.conversationId });
     }
     return result;
   }
 
   async #drainManagerConversation(conversationId: string): Promise<void> {
-    if (!this.#orchestrationExperiment || this.#closing || this.#drainingManagerConversations.has(conversationId)) return;
+    if (this.#closing || this.#drainingManagerConversations.has(conversationId))
+      return;
     this.#drainingManagerConversations.add(conversationId);
     try {
       while (!this.#closing) {
@@ -2894,10 +3485,15 @@ export class DesktopBackend {
         if (capacity <= 0) return;
         const next = this.#managerJobs.nextReady(conversationId);
         if (!next) return;
-        const conversationOccupied = jobs.some((job) =>
-          job.chatId === conversationId && job.status === "running")
-          || this.#activeTopLevelRuns().some((run) => run.conversationId === conversationId);
-        if (managerJobRequiresExclusiveRun(next) && conversationOccupied) return;
+        const conversationOccupied =
+          jobs.some(
+            (job) => job.chatId === conversationId && job.status === "running",
+          ) ||
+          this.#activeTopLevelRuns().some(
+            (run) => run.conversationId === conversationId,
+          );
+        if (managerJobRequiresExclusiveRun(next) && conversationOccupied)
+          return;
         const runId = crypto.randomUUID();
         const dependencyBoundary = managerClaimContextThroughSequence(
           next,
@@ -2909,19 +3505,27 @@ export class DesktopBackend {
         if (!claimed || claimed.id !== next.id) return;
         this.#publishManagerJobs();
         try {
-          await this.#startRun({
-            conversationId: claimed.chatId,
-            text: claimed.text,
-            messageId: claimed.messageId,
-            reuseUserMessage: Boolean(this.#storage.getMessage(claimed.messageId)),
-            attachments: claimed.attachments,
-            asGoal: claimed.asGoal,
-            contextThroughSequence: claimed.contextThroughSequence ?? 0,
-            executionScopeId: claimed.executionScopeId,
-            replyToMessageId: claimed.replyToMessageId,
-          }, runId);
+          await this.#startRun(
+            {
+              conversationId: claimed.chatId,
+              text: claimed.text,
+              messageId: claimed.messageId,
+              reuseUserMessage: Boolean(
+                this.#storage.getMessage(claimed.messageId),
+              ),
+              attachments: claimed.attachments,
+              asGoal: claimed.asGoal,
+              contextThroughSequence: claimed.contextThroughSequence ?? 0,
+              executionScopeId: claimed.executionScopeId,
+              replyToMessageId: claimed.replyToMessageId,
+            },
+            runId,
+          );
         } catch (error) {
-          this.#managerJobs.fail(claimed.id, error instanceof Error ? error.message : String(error));
+          this.#managerJobs.fail(
+            claimed.id,
+            error instanceof Error ? error.message : String(error),
+          );
           this.#publishManagerJobs();
           continue;
         }
@@ -2933,8 +3537,12 @@ export class DesktopBackend {
 
   #drainManagerQueues(): void {
     for (const conversationId of new Set(
-      this.#managerJobs.list().filter((job) => job.status === "queued").map((job) => job.chatId),
-    )) void this.#drainManagerConversation(conversationId);
+      this.#managerJobs
+        .list()
+        .filter((job) => job.status === "queued")
+        .map((job) => job.chatId),
+    ))
+      void this.#drainManagerConversation(conversationId);
   }
 
   /**
@@ -2952,14 +3560,17 @@ export class DesktopBackend {
       throw new Error("This schedule has no instruction to run");
     // Every firing appends to the same conversation, so the thread reads as
     // one recurring task rather than a new chat each morning.
-    const previous = schedule.history.find((entry) => entry.conversationId)?.conversationId;
-    const conversationId = (previous && this.#storage.getConversation(previous)?.id)
-      ?? this.#storage.createConversation({
+    const previous = schedule.history.find(
+      (entry) => entry.conversationId,
+    )?.conversationId;
+    const conversationId =
+      (previous && this.#storage.getConversation(previous)?.id) ??
+      this.#storage.createConversation({
         id: randomUUID(),
         title: schedule.title,
       }).id;
     const before = this.#storage.listMessages(conversationId).length;
-    const {runId} = await this.#startRun({
+    const { runId } = await this.#startRun({
       conversationId,
       text: schedule.prompt,
       messageId: randomUUID(),
@@ -2972,8 +3583,16 @@ export class DesktopBackend {
     if (active) await active.result;
     const run = this.#storage.getRun(runId);
     if (run?.status === "failed")
-      throw new Error(typeof run.error === "string" && run.error ? run.error : "The scheduled run failed");
-    return {conversationId, runId, summary: this.#runSummary(conversationId, before)};
+      throw new Error(
+        typeof run.error === "string" && run.error
+          ? run.error
+          : "The scheduled run failed",
+      );
+    return {
+      conversationId,
+      runId,
+      summary: this.#runSummary(conversationId, before),
+    };
   }
 
   /**
@@ -2982,13 +3601,16 @@ export class DesktopBackend {
    * a notification that does nothing when clicked reads as broken.
    */
   #presentNotification(request: NotificationRequest): void {
-    const notification = new Notification({title: request.title, body: request.body});
+    const notification = new Notification({
+      title: request.title,
+      body: request.body,
+    });
     notification.on("click", () => {
       if (this.#closing || this.#window.isDestroyed()) return;
       if (this.#window.isMinimized()) this.#window.restore();
       this.#window.show();
       this.#window.focus();
-      app.focus({steal: true});
+      app.focus({ steal: true });
     });
     notification.show();
   }
@@ -3006,13 +3628,15 @@ export class DesktopBackend {
     const conversation = run.conversationId
       ? this.#storage.getConversation(run.conversationId)
       : null;
-    const title = conversation?.title?.trim() || "FlareAI";
+    const title = conversation?.title?.trim() || "Polymux";
     if (run.status === "failed") {
       this.#notifier.notify({
         kind: "agent-completed",
         title,
         body: notificationBody(
-          typeof run.error === "string" && run.error ? run.error : "The run failed.",
+          typeof run.error === "string" && run.error
+            ? run.error
+            : "The run failed.",
         ),
       });
       return;
@@ -3029,7 +3653,9 @@ export class DesktopBackend {
 
   /** The agent's closing words, as the account of what the run achieved. */
   #runSummary(conversationId: string, afterCount: number): string | undefined {
-    const produced = this.#storage.listMessages(conversationId).slice(afterCount);
+    const produced = this.#storage
+      .listMessages(conversationId)
+      .slice(afterCount);
     for (let index = produced.length - 1; index >= 0; index -= 1) {
       const message = produced[index];
       if (message.role !== "assistant") continue;
@@ -3085,15 +3711,20 @@ export class DesktopBackend {
       const goalConversation = settledRun?.conversationId;
       const managerJob = this.#managerJobs.forRun(runId);
       if (managerJob?.status === "running") {
-        if (settledRun?.status === "completed") this.#managerJobs.complete(managerJob.id);
-        else if (settledRun?.status === "cancelled") this.#managerJobs.cancel(managerJob.id);
-        else this.#managerJobs.fail(
-          managerJob.id,
-          settledRun?.error && typeof settledRun.error === "object" && !Array.isArray(settledRun.error)
-            && typeof settledRun.error.message === "string"
-            ? settledRun.error.message
-            : "Run interrupted",
-        );
+        if (settledRun?.status === "completed")
+          this.#managerJobs.complete(managerJob.id);
+        else if (settledRun?.status === "cancelled")
+          this.#managerJobs.cancel(managerJob.id);
+        else
+          this.#managerJobs.fail(
+            managerJob.id,
+            settledRun?.error &&
+              typeof settledRun.error === "object" &&
+              !Array.isArray(settledRun.error) &&
+              typeof settledRun.error.message === "string"
+              ? settledRun.error.message
+              : "Run interrupted",
+          );
         this.#publishManagerJobs();
       }
       if (
@@ -3114,7 +3745,7 @@ export class DesktopBackend {
           sequence: Number.MAX_SAFE_INTEGER,
           timestamp: Date.now(),
           type: "run.settled",
-          payload: {runId, conversationId},
+          payload: { runId, conversationId },
         } satisfies RunEventDto);
       }
       this.#drainManagerQueues();
@@ -3191,7 +3822,9 @@ export class DesktopBackend {
    * which is a thing to do when someone pressed a button, never something to
    * do to them because a run was starting.
    */
-  async #ensurePermissions(names?: Iterable<string>): Promise<AppPermissionKind[]> {
+  async #ensurePermissions(
+    names?: Iterable<string>,
+  ): Promise<AppPermissionKind[]> {
     // App grants only. The app's own permissions are swept below and each has
     // a row with its own Allow button, so folding them in here would let a
     // press on "ask again" — which sits with the skill grants — open the
@@ -3209,7 +3842,8 @@ export class DesktopBackend {
         ? only.has(skill.name)
         : this.#coreSkills.has(skill.name) ||
           this.#integrationEnabled("skill-enabled", skill.name);
-      if (active) for (const kind of declaredPermissions(skill)) declared.add(kind);
+      if (active)
+        for (const kind of declaredPermissions(skill)) declared.add(kind);
     }
     const statuses = new Map<AppPermissionKind, SystemPermissionStatus>();
     for (const kind of declared) {
@@ -3219,23 +3853,28 @@ export class DesktopBackend {
       // "not-determined" is the only status worth revisiting: a granted one is
       // done, and a refused one cannot be changed from here. Nothing is
       // remembered across a restart, so a grant reset outside the app is
-      // noticed the next time FlareAI runs.
+      // noticed the next time Polymux runs.
       if (status !== "not-determined") this.#permissionsSettled.add(kind);
     }
-    const {kinds} = permissionsToRequest(
+    const { kinds } = permissionsToRequest(
       statuses.keys(),
       settings,
       (kind) => statuses.get(kind) ?? "unknown",
     );
     for (const kind of kinds) {
       this.#permissionsSettled.add(kind);
-      if ((await requestSystemPermission(kind)) !== "granted") withheld.push(kind);
+      if ((await requestSystemPermission(kind)) !== "granted")
+        withheld.push(kind);
     }
     // A grant that was already decided against is reported too. macOS will not
     // show its dialog a second time, so the caller offering System Settings is
     // the only thing left that can change the answer.
     for (const [kind, status] of statuses)
-      if (status !== "not-determined" && status !== "granted" && !withheld.includes(kind))
+      if (
+        status !== "not-determined" &&
+        status !== "granted" &&
+        !withheld.includes(kind)
+      )
         withheld.push(kind);
     // The app's own grants are deliberately not swept here. Each has a row
     // with its own button, and a run starting is not a reason to ask for a
@@ -3246,38 +3885,46 @@ export class DesktopBackend {
   #skillDtos(): SkillDto[] {
     // Core integrations stay loaded for the agent; they are only kept out of
     // the Skills list, which is the optional-add-on surface.
-    return this.#skills.load().skills.filter((skill) => !this.#coreSkills.has(skill.name)).map((skill) => ({
-      name: skill.name,
-      description: skill.description,
-      source: skill.source,
-      filePath: skill.filePath,
-      disableModelInvocation: skill.disableModelInvocation,
-      allowedTools: skill.allowedTools ?? [],
-      permissions: declaredPermissions(skill),
-      enabled: this.#integrationEnabled("skill-enabled", skill.name),
-      editable: skill.source === "flareai",
-      instructions: skill.source === "flareai" ? skillInstructions(readFileSync(skill.filePath, "utf8")) : undefined,
-      displayName: skill.displayName,
-      author: skill.author,
-      category: skill.category,
-      updatedAt: skill.updatedAt,
-    }));
+    return this.#skills
+      .load()
+      .skills.filter((skill) => !this.#coreSkills.has(skill.name))
+      .map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        source: skill.source,
+        filePath: skill.filePath,
+        disableModelInvocation: skill.disableModelInvocation,
+        allowedTools: skill.allowedTools ?? [],
+        permissions: declaredPermissions(skill),
+        enabled: this.#integrationEnabled("skill-enabled", skill.name),
+        editable: skill.source === "polymux",
+        instructions:
+          skill.source === "polymux"
+            ? skillInstructions(readFileSync(skill.filePath, "utf8"))
+            : undefined,
+        displayName: skill.displayName,
+        author: skill.author,
+        category: skill.category,
+        updatedAt: skill.updatedAt,
+      }));
   }
 
   /**
    * The installed plugins, each told what of its own the user already has
    * standalone. The comparison is made here rather than in the registry
    * because this is where both lists exist: the Skills tab's own skills, and
-   * the servers configured in ~/.flareai/mcp.json.
+   * the servers configured in ~/.polymux/mcp.json.
    */
   #pluginDtos(): PluginDto[] {
     const skills = new Map(
-      this.#skills.load().skills.map((skill) => [skill.name, skill.source] as const),
+      this.#skills
+        .load()
+        .skills.map((skill) => [skill.name, skill.source] as const),
     );
     const mcpServers = new Map(
       [...this.#mcpConfigs.values()]
         .filter((config) => !this.#pluginMcpIds.has(config.id))
-        .map((config) => [config.id, "flareai"] as const),
+        .map((config) => [config.id, "polymux"] as const),
     );
     return this.#plugins.list({
       skills,
@@ -3286,20 +3933,31 @@ export class DesktopBackend {
     });
   }
 
-  #integrationEnabled(key: "skill-enabled" | "mcp-enabled" | "plugin-enabled", id: string, fallback = true): boolean {
+  #integrationEnabled(
+    key: "skill-enabled" | "mcp-enabled" | "plugin-enabled",
+    id: string,
+    fallback = true,
+  ): boolean {
     const value = this.#profilePreference(key)?.value;
-    if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return fallback;
     const stored = (value as Record<string, unknown>)[id];
     return typeof stored === "boolean" ? stored : fallback;
   }
 
-  #setIntegrationEnabled(key: "skill-enabled" | "mcp-enabled" | "plugin-enabled", id: string, enabled: unknown): void {
-    if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
+  #setIntegrationEnabled(
+    key: "skill-enabled" | "mcp-enabled" | "plugin-enabled",
+    id: string,
+    enabled: unknown,
+  ): void {
+    if (typeof enabled !== "boolean")
+      throw new Error("enabled must be a boolean");
     const value = this.#profilePreference(key)?.value;
-    const current = value && typeof value === "object" && !Array.isArray(value)
-      ? value as Record<string, boolean>
-      : {};
-    this.#setProfilePreference(key, {...current, [id]: enabled});
+    const current =
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, boolean>)
+        : {};
+    this.#setProfilePreference(key, { ...current, [id]: enabled });
   }
 
   #profilePreference(key: string) {
@@ -3311,7 +3969,7 @@ export class DesktopBackend {
   }
 
   /**
-   * Every server FlareAI runs is written here, so one editor covers adding a
+   * Every server Polymux runs is written here, so one editor covers adding a
    * custom server, adopting a discovered one and removing either. The file is
    * replaced by rename, so a crash mid-write leaves the previous list intact.
    */
@@ -3319,16 +3977,18 @@ export class DesktopBackend {
     edit: (servers: Record<string, unknown>) => void,
   ): Promise<void> {
     const source = await readFile(this.#mcpConfigPath, "utf8").catch(
-      (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? "{}" : Promise.reject(error),
+      (error: NodeJS.ErrnoException) =>
+        error.code === "ENOENT" ? "{}" : Promise.reject(error),
     );
     const root = JSON.parse(source) as Record<string, unknown>;
     const existing = root.mcpServers;
-    const servers = existing && typeof existing === "object" && !Array.isArray(existing)
-      ? {...existing as Record<string, unknown>}
-      : {};
+    const servers =
+      existing && typeof existing === "object" && !Array.isArray(existing)
+        ? { ...(existing as Record<string, unknown>) }
+        : {};
     edit(servers);
     root.mcpServers = servers;
-    await mkdir(path.dirname(this.#mcpConfigPath), {recursive: true});
+    await mkdir(path.dirname(this.#mcpConfigPath), { recursive: true });
     const temporary = `${this.#mcpConfigPath}.tmp`;
     await writeFile(temporary, `${JSON.stringify(root, null, 2)}\n`, "utf8");
     await rename(temporary, this.#mcpConfigPath);
@@ -3336,20 +3996,34 @@ export class DesktopBackend {
 
   async #saveCustomMcp(request: SaveCustomMcpRequest): Promise<void> {
     await this.#writeMcpConfig((servers) => {
-      servers[request.id] = request.transport === "stdio"
-        ? {name: request.name, description: request.description, command: request.command, args: request.args, env: request.env, cwd: request.cwd}
-        : {name: request.name, description: request.description, url: request.url, headers: request.headers};
+      servers[request.id] =
+        request.transport === "stdio"
+          ? {
+              name: request.name,
+              description: request.description,
+              command: request.command,
+              args: request.args,
+              env: request.env,
+              cwd: request.cwd,
+            }
+          : {
+              name: request.name,
+              description: request.description,
+              url: request.url,
+              headers: request.headers,
+            };
     });
   }
 
   async #removeCustomMcp(id: string): Promise<void> {
     await this.#writeMcpConfig((servers) => {
-      if (!(id in servers)) throw new Error(`MCP server is not removable: ${id}`);
+      if (!(id in servers))
+        throw new Error(`MCP server is not removable: ${id}`);
       delete servers[id];
     });
     const cached = this.#profilePreference("mcp-capabilities")?.value;
     if (cached && typeof cached === "object" && !Array.isArray(cached)) {
-      const next = {...cached};
+      const next = { ...cached };
       delete next[id];
       this.#setProfilePreference("mcp-capabilities", next);
     }
@@ -3363,13 +4037,16 @@ export class DesktopBackend {
   #extensionStatus(): BrowserExtensionDto {
     const status = readExtensionStatus();
     if (status.installed) {
-      if (this.#storage.getPreference("extension-prompt-dismissed")?.value === true)
+      if (
+        this.#storage.getPreference("extension-prompt-dismissed")?.value ===
+        true
+      )
         this.#storage.setPreference("extension-prompt-dismissed", false);
-      return {...status, promptToInstall: false};
+      return { ...status, promptToInstall: false };
     }
     const dismissed =
       this.#storage.getPreference("extension-prompt-dismissed")?.value === true;
-    return {...status, promptToInstall: !dismissed};
+    return { ...status, promptToInstall: !dismissed };
   }
 
   async #saveCustomSkill(request: SaveCustomSkillRequest): Promise<void> {
@@ -3379,16 +4056,19 @@ export class DesktopBackend {
     const clash = this.#skills
       .load()
       .skills.find((candidate) => candidate.name === request.name);
-    if (clash && clash.source !== "flareai")
+    if (clash && clash.source !== "polymux")
       throw new Error(
         `${request.name} is a built-in skill and cannot be replaced. Save your version under a different name.`,
       );
     const destination = path.join(this.#customSkillDirectory, request.name);
     if (request.originalName && request.originalName !== request.name) {
-      const original = path.join(this.#customSkillDirectory, request.originalName);
+      const original = path.join(
+        this.#customSkillDirectory,
+        request.originalName,
+      );
       await rename(original, destination);
     }
-    await mkdir(destination, {recursive: true});
+    await mkdir(destination, { recursive: true });
     const contents = `---\nname: ${request.name}\ndescription: ${request.description}\n---\n\n${request.instructions.trim()}\n`;
     const temporary = path.join(destination, "SKILL.md.tmp");
     await writeFile(temporary, contents, "utf8");
@@ -3396,65 +4076,103 @@ export class DesktopBackend {
   }
 
   async #removeCustomSkill(name: string): Promise<void> {
-    const skill = this.#skills.load().skills.find((candidate) => candidate.name === name);
-    if (!skill || skill.source !== "flareai") throw new Error(`Skill is not removable: ${name}`);
+    const skill = this.#skills
+      .load()
+      .skills.find((candidate) => candidate.name === name);
+    if (!skill || skill.source !== "polymux")
+      throw new Error(`Skill is not removable: ${name}`);
     const root = path.resolve(this.#customSkillDirectory);
     const destination = path.resolve(root, name);
-    if (path.dirname(destination) !== root) throw new Error(`Invalid skill name: ${name}`);
-    await rm(destination, {recursive: true, force: false});
+    if (path.dirname(destination) !== root)
+      throw new Error(`Invalid skill name: ${name}`);
+    await rm(destination, { recursive: true, force: false });
     const stored = this.#profilePreference("skill-enabled")?.value;
     if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-      const next = {...stored};
+      const next = { ...stored };
       delete next[name];
       this.#setProfilePreference("skill-enabled", next);
     }
   }
 
   /**
-   * Copies a skill another agent already has into ~/.flareai/skills. A copy,
+   * Copies a skill another agent already has into ~/.polymux/skills. A copy,
    * not a link or a second sourced directory: the other agent stays free to
-   * change or remove its own copy, and the user can edit FlareAI's in place.
+   * change or remove its own copy, and the user can edit Polymux's in place.
    */
   async #adoptSkill(displayed: string): Promise<string> {
     const source = resolveDiscoveredSkill(displayed);
-    const result = new SkillLoader({configured: [source]}).load();
-    const skill = result.skills.find((item) => item.filePath === path.join(source, "SKILL.md"));
+    const result = new SkillLoader({ configured: [source] }).load();
+    const skill = result.skills.find(
+      (item) => item.filePath === path.join(source, "SKILL.md"),
+    );
     if (!skill) throw new Error("That folder no longer holds a valid SKILL.md");
     const destination = path.join(this.#customSkillDirectory, skill.name);
-    const exists = await stat(destination).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error));
+    const exists = await stat(destination).then(
+      () => true,
+      (error: NodeJS.ErrnoException) =>
+        error.code === "ENOENT" ? false : Promise.reject(error),
+    );
     if (exists) throw new Error(`A skill named ${skill.name} already exists`);
-    await mkdir(this.#customSkillDirectory, {recursive: true});
-    await cp(source, destination, {recursive: true});
+    await mkdir(this.#customSkillDirectory, { recursive: true });
+    await cp(source, destination, { recursive: true });
     return skill.name;
   }
 
   async #uploadSkill(files: SkillUploadFile[]): Promise<string[]> {
-    const skillFiles = files.filter((file) => file.relativePath.split("/").length === 2 && path.basename(file.relativePath) === "SKILL.md");
-    if (skillFiles.length !== 1) throw new Error("Choose one skill folder with a SKILL.md at its top level");
+    const skillFiles = files.filter(
+      (file) =>
+        file.relativePath.split("/").length === 2 &&
+        path.basename(file.relativePath) === "SKILL.md",
+    );
+    if (skillFiles.length !== 1)
+      throw new Error(
+        "Choose one skill folder with a SKILL.md at its top level",
+      );
     const rootName = skillFiles[0]!.relativePath.split("/")[0]!;
-    const selected = files.filter((file) => file.relativePath.startsWith(`${rootName}/`));
-    const temporary = path.join(this.#customSkillDirectory, `.upload-${randomUUID()}`);
-    await mkdir(temporary, {recursive: true});
+    const selected = files.filter((file) =>
+      file.relativePath.startsWith(`${rootName}/`),
+    );
+    const temporary = path.join(
+      this.#customSkillDirectory,
+      `.upload-${randomUUID()}`,
+    );
+    await mkdir(temporary, { recursive: true });
     try {
       for (const file of selected) {
         const relative = file.relativePath.slice(rootName.length + 1);
-        if (!relative || path.isAbsolute(relative) || relative.split(/[\\/]/).includes("..")) throw new Error("Skill folder contains an invalid path");
+        if (
+          !relative ||
+          path.isAbsolute(relative) ||
+          relative.split(/[\\/]/).includes("..")
+        )
+          throw new Error("Skill folder contains an invalid path");
         const destination = path.join(temporary, relative);
-        await mkdir(path.dirname(destination), {recursive: true});
+        await mkdir(path.dirname(destination), { recursive: true });
         await copyFile(file.path, destination);
       }
-      const result = new SkillLoader({configured: [temporary]}).load();
-      const skill = result.skills.find((item) => item.filePath === path.join(temporary, "SKILL.md"));
-      if (!skill) throw new Error("The selected folder does not contain a valid SKILL.md with a name and description");
-      const diagnostic = result.diagnostics.find((item) => item.severity === "error");
+      const result = new SkillLoader({ configured: [temporary] }).load();
+      const skill = result.skills.find(
+        (item) => item.filePath === path.join(temporary, "SKILL.md"),
+      );
+      if (!skill)
+        throw new Error(
+          "The selected folder does not contain a valid SKILL.md with a name and description",
+        );
+      const diagnostic = result.diagnostics.find(
+        (item) => item.severity === "error",
+      );
       if (diagnostic) throw new Error(diagnostic.message);
       const destination = path.join(this.#customSkillDirectory, skill.name);
-      const exists = await stat(destination).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error));
+      const exists = await stat(destination).then(
+        () => true,
+        (error: NodeJS.ErrnoException) =>
+          error.code === "ENOENT" ? false : Promise.reject(error),
+      );
       if (exists) throw new Error(`A skill named ${skill.name} already exists`);
       await rename(temporary, destination);
       return [skill.name];
     } catch (error) {
-      await rm(temporary, {recursive: true, force: true});
+      await rm(temporary, { recursive: true, force: true });
       throw error;
     }
   }
@@ -3465,27 +4183,42 @@ export class DesktopBackend {
    * so a folder that turns out not to be a plugin leaves nothing behind.
    */
   async #uploadPlugin(files: SkillUploadFile[]): Promise<void> {
-    const manifests = files.filter((file) =>
-      file.relativePath.split("/").length === 3
-      && file.relativePath.split("/")[1] === ".claude-plugin"
-      && path.basename(file.relativePath) === "plugin.json");
+    const manifests = files.filter(
+      (file) =>
+        file.relativePath.split("/").length === 3 &&
+        file.relativePath.split("/")[1] === ".claude-plugin" &&
+        path.basename(file.relativePath) === "plugin.json",
+    );
     if (manifests.length !== 1)
-      throw new Error("Choose one plugin folder with a .claude-plugin/plugin.json inside it");
+      throw new Error(
+        "Choose one plugin folder with a .claude-plugin/plugin.json inside it",
+      );
     const rootName = manifests[0]!.relativePath.split("/")[0]!;
-    const selected = files.filter((file) => file.relativePath.startsWith(`${rootName}/`));
-    const staging = await mkdtemp(path.join(tmpdir(), "flareai-plugin-upload-"));
+    const selected = files.filter((file) =>
+      file.relativePath.startsWith(`${rootName}/`),
+    );
+    const staging = await mkdtemp(
+      path.join(tmpdir(), "polymux-plugin-upload-"),
+    );
     try {
       for (const file of selected) {
         const relative = file.relativePath.slice(rootName.length + 1);
-        if (!relative || path.isAbsolute(relative) || relative.split(/[\\/]/).includes(".."))
+        if (
+          !relative ||
+          path.isAbsolute(relative) ||
+          relative.split(/[\\/]/).includes("..")
+        )
           throw new Error("Plugin folder contains an invalid path");
         const destination = path.join(staging, relative);
-        await mkdir(path.dirname(destination), {recursive: true});
+        await mkdir(path.dirname(destination), { recursive: true });
         await copyFile(file.path, destination);
       }
-      await this.#plugins.installLocal(staging, readPluginManifest(staging).name);
+      await this.#plugins.installLocal(
+        staging,
+        readPluginManifest(staging).name,
+      );
     } finally {
-      await rm(staging, {recursive: true, force: true});
+      await rm(staging, { recursive: true, force: true });
     }
   }
 
@@ -3514,7 +4247,9 @@ export class DesktopBackend {
   }
 
   #browserSettings(): BrowserSettingsDto {
-    return browserSettingsPreference(this.#storage.getPreference("browser-settings")?.value);
+    return browserSettingsPreference(
+      this.#storage.getPreference("browser-settings")?.value,
+    );
   }
 
   #generalSettings(): GeneralSettingsDto {
@@ -3528,7 +4263,7 @@ export class DesktopBackend {
       !hasOnboardingFlag(stored) &&
       this.#firstRunPermissions.completed()
     )
-      return {...settings, onboardingCompleted: true};
+      return { ...settings, onboardingCompleted: true };
     return settings;
   }
 
@@ -3584,7 +4319,7 @@ export class DesktopBackend {
     if ((await requestSystemPermission(kind)) === "granted") return null;
     // macOS raises its dialog once. Past that the only thing that changes the
     // answer is the pane, so say where rather than asking again next turn.
-    return `FlareAI has not been given access to ${kind}. Allow it in System Settings → Privacy & Security.`;
+    return `Polymux has not been given access to ${kind}. Allow it in System Settings → Privacy & Security.`;
   }
 
   #permissionAvailable(kind: SystemPermissionKind): boolean {
@@ -3592,7 +4327,8 @@ export class DesktopBackend {
     // The master switch covers every app grant at once. It is a refusal to use
     // them, not a revocation: macOS still holds whatever it granted, so
     // switching it back on needs no second trip through System Settings.
-    if (isAppPermissionKind(kind) && !settings.appPermissionsEnabled) return false;
+    if (isAppPermissionKind(kind) && !settings.appPermissionsEnabled)
+      return false;
     if (!settings.permissions[kind]) return false;
     return systemPermissionStatus(kind) === "granted";
   }
@@ -3600,7 +4336,9 @@ export class DesktopBackend {
   /** The switch is the app's own, so the refusal names it rather than macOS. */
   #requireMicrophone(): void {
     if (!this.#generalSettings().permissions.microphone)
-      throw new Error("Microphone access is switched off in Settings → General → Permissions");
+      throw new Error(
+        "Microphone access is switched off in Settings → General → Permissions",
+      );
   }
 
   /** The seam both workspace tools drive: a pane to show, and what the hub is
@@ -3618,10 +4356,12 @@ export class DesktopBackend {
             id: account.id,
             email: account.email,
           })),
-          chats: (await this.#comms.chats().catch((): MatrixRoom[] => [])).map((chat) => ({
-            id: chat.roomId,
-            name: chat.name,
-          })),
+          chats: (await this.#comms.chats().catch((): MatrixRoom[] => [])).map(
+            (chat) => ({
+              id: chat.roomId,
+              name: chat.name,
+            }),
+          ),
         };
       },
     };
@@ -3633,7 +4373,8 @@ export class DesktopBackend {
       this.#windowRefresh = this.#axReader
         .windows(process.pid)
         .then((result) => {
-          if (result.trusted) this.#windowSnapshot = {at: Date.now(), windows: result.windows};
+          if (result.trusted)
+            this.#windowSnapshot = { at: Date.now(), windows: result.windows };
         })
         .catch(() => {})
         .finally(() => {
@@ -3653,10 +4394,14 @@ export class DesktopBackend {
       this.#locationRefresh = refreshLocationForPrompt(prompt, {
         current: () => {
           const settings = this.#generalSettings();
-          return {enabled: settings.locationEnabled, location: settings.location};
+          return {
+            enabled: settings.locationEnabled,
+            location: settings.location,
+          };
         },
         permission: async () => {
-          const state = await this.#window.webContents.executeJavaScript(`(async () => {
+          const state = await this.#window.webContents
+            .executeJavaScript(`(async () => {
             if (!navigator.permissions) return "unsupported";
             try {
               const result = await navigator.permissions.query({name: "geolocation"});
@@ -3668,7 +4413,8 @@ export class DesktopBackend {
             : "unsupported";
         },
         position: async (signal) => {
-          const value = await this.#window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+          const value = await this.#window.webContents
+            .executeJavaScript(`new Promise((resolve, reject) => {
             if (!navigator.geolocation) { reject(new Error("unavailable")); return; }
             navigator.geolocation.getCurrentPosition(
               position => resolve({
@@ -3687,11 +4433,15 @@ export class DesktopBackend {
         persist: (location) => {
           const current = this.#generalSettings();
           if (!current.locationEnabled) return;
-          this.#storeGeneralSettings(generalSettingsUpdate({location}, current));
+          this.#storeGeneralSettings(
+            generalSettingsUpdate({ location }, current),
+          );
         },
-      }).then(() => {}).finally(() => {
-        this.#locationRefresh = undefined;
-      });
+      })
+        .then(() => {})
+        .finally(() => {
+          this.#locationRefresh = undefined;
+        });
     }
     await this.#locationRefresh;
   }
@@ -3700,21 +4450,28 @@ export class DesktopBackend {
     const settings = this.#generalSettings();
     const now = new Date();
     const capturedForTurn = now.toISOString();
-    const externalBrowser = this.#orchestrationExperiment
-      ? readExternalPromptSnapshot(now.getTime(), undefined, 100)
-      : undefined;
+    const externalBrowser = readExternalPromptSnapshot(
+      now.getTime(),
+      undefined,
+      100,
+    );
     const offsetMinutes = -now.getTimezoneOffset();
     const offsetSign = offsetMinutes >= 0 ? "+" : "-";
-    const offsetHours = String(Math.floor(Math.abs(offsetMinutes) / 60)).padStart(2, "0");
-    const offsetRemainder = String(Math.abs(offsetMinutes) % 60).padStart(2, "0");
+    const offsetHours = String(
+      Math.floor(Math.abs(offsetMinutes) / 60),
+    ).padStart(2, "0");
+    const offsetRemainder = String(Math.abs(offsetMinutes) % 60).padStart(
+      2,
+      "0",
+    );
     const windows = this.#windowSnapshot.windows
-      .map(({app, title, frontmost}) => ({app, title, frontmost}))
+      .map(({ app, title, frontmost }) => ({ app, title, frontmost }))
       .sort((left, right) => Number(right.frontmost) - Number(left.frontmost));
     return {
       windowsCapturedAt: this.#windowSnapshot.at
         ? new Date(this.#windowSnapshot.at).toISOString()
         : undefined,
-      browserTabsCapturedAt: this.#orchestrationExperiment ? capturedForTurn : undefined,
+      browserTabsCapturedAt: capturedForTurn,
       externalBrowserCapturedAt: externalBrowser?.capturedAt,
       time: settings.timeEnabled
         ? {
@@ -3728,24 +4485,59 @@ export class DesktopBackend {
           }
         : undefined,
       locationEnabled: settings.locationEnabled,
-      locationResolverAvailable: this.#orchestrationExperiment,
+      locationResolverAvailable: true,
       location:
         settings.locationEnabled && settings.location
           ? settings.location
           : undefined,
-      browserTabs: this.#orchestrationExperiment
-        ? this.#embeddedBrowser.promptTabs(12)
-        : this.#embeddedBrowser.tabs(),
-      externalBrowserTabs: this.#orchestrationExperiment
-        // Read a wider bounded inventory here; prompt selection first filters
+      browserTabs: this.#embeddedBrowser.promptTabs(12),
+      // Read a wider bounded inventory here; prompt selection first filters
+      externalBrowserTabs:
         // by the user's request and only then keeps twenty. Capping before
         // relevance would hide a useful inactive tab in a busy browser.
-        ? externalBrowser?.tabs
-        : undefined,
+        externalBrowser?.tabs,
       // Frontmost first: the window the user is actually in is the one an
       // ambiguous "this" most often means.
-      windows: this.#orchestrationExperiment ? compactPromptWindows(windows, 20) : windows,
+      windows: compactPromptWindows(windows, 20),
     };
+  }
+
+  #computerStateInput() {
+    const now = Date.now();
+    const external = readExternalPromptSnapshot(
+      now,
+      undefined,
+      Number.MAX_SAFE_INTEGER,
+    );
+    return {
+      windowsCapturedAt: this.#windowSnapshot.at
+        ? new Date(this.#windowSnapshot.at).toISOString()
+        : undefined,
+      browserTabsCapturedAt: new Date(now).toISOString(),
+      externalBrowserCapturedAt: external.capturedAt,
+      locked: this.#computerSystem.current().locked,
+      windows: this.#windowSnapshot.windows.map(
+        ({ app, title, frontmost }) => ({ app, title, frontmost }),
+      ),
+      browserTabs: this.#embeddedBrowser.tabs(),
+      externalBrowserTabs: external.tabs,
+    };
+  }
+
+  #startComputerObservation(): void {
+    this.#computerHistory.start();
+    if (this.#computerObservationStarted) return;
+    this.#computerObservationStarted = true;
+    void this.#interactionEvents
+      .start((event) => {
+        this.#computer.observe(event);
+        // History remains independently optional: record() applies its enabled,
+        // privacy, and interaction-event settings before retaining anything.
+        this.#computerHistory.record(event);
+      })
+      .catch(() => {
+        this.#computerObservationStarted = false;
+      });
   }
 
   /** Switch every memory surface on, for the mode that offers no way to. */
@@ -3772,7 +4564,7 @@ export class DesktopBackend {
   }
 
   #buildAgent(ref: ModelRef): void {
-    this.#agent = new FlareAIAgent({
+    this.#agent = new PolymuxAgent({
       inference: this.#inference,
       storage: this.#storage,
       memory: this.#memory,
@@ -3783,19 +4575,16 @@ export class DesktopBackend {
       model: ref,
       // Both fall back to the main model inside the agent when undefined, so
       // an override that no longer resolves simply stops applying.
-      taskModel: this.#usableRole("task"),
-      judgeModel: this.#usableRole("judge"),
-      compactionModel: this.#usableRole("compaction"),
+      subagentModel: this.#effectiveRole("subagent"),
+      judgeModel: this.#effectiveRole("judge"),
+      compactionModel: this.#effectiveRole("compaction"),
       // The level chosen with a role's model applies wherever that model runs;
       // undefined leaves the run on the level it was started at.
-      taskReasoning: this.#usableRole("task")?.reasoning,
-      judgeReasoning: this.#usableRole("judge")?.reasoning,
-      compactionReasoning: this.#usableRole("compaction")?.reasoning,
+      subagentReasoning: this.#effectiveRole("subagent")?.reasoning,
+      judgeReasoning: this.#effectiveRole("judge")?.reasoning,
+      compactionReasoning: this.#effectiveRole("compaction")?.reasoning,
       skills: this.#agentSkillOptions,
       prompts: this.#agentPrompts,
-      orchestrationExperiment: this.#orchestrationExperiment,
-      preloadSingleOfficialSkill:
-        this.#orchestrationExperiment && process.env.FLAREAI_PRELOAD_OFFICIAL_SKILL_EXPERIMENT === "1",
       // The guard runs first so a built-in skill stays read-only even when the
       // user's own hooks would have allowed the call.
       hooks: combineHooks(
@@ -3814,8 +4603,39 @@ export class DesktopBackend {
     return ref && this.#inference.getModel(ref) ? ref : undefined;
   }
 
+  /** What a role actually runs with: the stored override, or — while basic
+   * mode hides the roles UI — the automatic pick for the available models.
+   * The picks are computed, never persisted, so they track provider changes
+   * on their own and step aside the moment advanced mode returns control. */
+  #effectiveRole(role: ModelRole): RoleSelection | undefined {
+    const override = this.#usableRole(role);
+    if (override || role === "main") return override;
+    if (this.#generalSettings().advancedMode) return undefined;
+    return autoRolePicks(this.#inference.listModels(), this.#model)[role];
+  }
+
+  /** Re-derives what follows from the automatic picks after anything that can
+   * change them: provider changes, the main model, or the advanced-mode flag.
+   * Speech mode flips only when the effective speech assignment transitions,
+   * so a user who switched it off stays off until the assignment changes. */
+  #reconcileAutoRoles(rebuild = true): void {
+    const assigned = Boolean(this.#effectiveRole("speech"));
+    const marker =
+      this.#profilePreference("speech-role-assigned")?.value === true;
+    if (assigned !== marker) {
+      this.#setProfilePreference("speech-role-assigned", assigned);
+      this.#setSpeechModeForRoleChange("speech", assigned);
+    }
+    // The agent snapshots its role models when built, so a change in the
+    // picks only reaches runs through a rebuild. Callers that already rebuilt
+    // (role persistence does) skip the second one.
+    if (rebuild && this.#model) this.#buildAgent(this.#model);
+  }
+
   #modelRoles(): ModelRolesDto {
-    const assignment = (ref: RoleSelection | undefined): ModelRoleAssignmentDto | null => {
+    const assignment = (
+      ref: RoleSelection | undefined,
+    ): ModelRoleAssignmentDto | null => {
       if (!ref) return null;
       const model = this.#inference.getModel(ref);
       if (!model) return null;
@@ -3826,7 +4646,7 @@ export class DesktopBackend {
         provider: ref.provider,
         id: ref.id,
         name: model.name ?? ref.id,
-        ...(reasoning ? {reasoning} : {}),
+        ...(reasoning ? { reasoning } : {}),
       };
     };
     // Main's level is the one runs are started at, which the composer owns, so
@@ -3834,19 +4654,25 @@ export class DesktopBackend {
     return {
       main: assignment(
         this.#model
-          ? {...this.#model, reasoning: this.#generalSettings().reasoningLevel}
+          ? {
+              ...this.#model,
+              reasoning: this.#generalSettings().reasoningLevel,
+            }
           : undefined,
       ),
-      task: assignment(this.#usableRole("task")),
-      judge: assignment(this.#usableRole("judge")),
-      compaction: assignment(this.#usableRole("compaction")),
-      speech: assignment(this.#usableRole("speech")),
-      image: assignment(this.#usableRole("image")),
-      video: assignment(this.#usableRole("video")),
+      subagent: assignment(this.#effectiveRole("subagent")),
+      judge: assignment(this.#effectiveRole("judge")),
+      compaction: assignment(this.#effectiveRole("compaction")),
+      speech: assignment(this.#effectiveRole("speech")),
+      image: assignment(this.#effectiveRole("image")),
+      video: assignment(this.#effectiveRole("video")),
     };
   }
 
-  async #assignRole(role: ModelRole, ref: RoleSelection): Promise<ModelRolesDto> {
+  async #assignRole(
+    role: ModelRole,
+    ref: RoleSelection,
+  ): Promise<ModelRolesDto> {
     await this.#assertProviderConfigured(ref.provider);
     if (role === "main") {
       this.#selectModel(ref);
@@ -3859,7 +4685,10 @@ export class DesktopBackend {
       throw new Error(`Unknown model: ${ref.provider}/${ref.id}`);
     this.#roleOverrides = { ...this.#roleOverrides, [role]: ref };
     this.#persistRoles();
+    // A deliberate assignment always turns speech mode on; the transition
+    // logic in the reconcile then only aligns its marker.
     this.#setSpeechModeForRoleChange(role, true);
+    this.#reconcileAutoRoles(false);
     return this.#modelRoles();
   }
 
@@ -3867,10 +4696,13 @@ export class DesktopBackend {
     // The main model is what everything else falls back to, so there is
     // nothing to clear it to.
     if (role === "main") throw new Error("The main model cannot be cleared");
-    const {[role]: _removed, ...rest} = this.#roleOverrides;
+    const { [role]: _removed, ...rest } = this.#roleOverrides;
     this.#roleOverrides = rest;
     this.#persistRoles();
+    // Deliberately clearing speech switches speech mode off even when an
+    // automatic pick still stands; the reconcile only aligns its marker.
     this.#setSpeechModeForRoleChange(role, false);
+    this.#reconcileAutoRoles(false);
     return this.#modelRoles();
   }
 
@@ -3883,7 +4715,7 @@ export class DesktopBackend {
           {
             provider: ref.provider,
             id: ref.id,
-            ...(ref.reasoning ? {reasoning: ref.reasoning} : {}),
+            ...(ref.reasoning ? { reasoning: ref.reasoning } : {}),
           },
         ]),
       ),
@@ -3920,7 +4752,7 @@ export class DesktopBackend {
       settings.speechModeEnabled,
     );
     if (speechModeEnabled !== settings.speechModeEnabled)
-      this.#storeGeneralSettings({...settings, speechModeEnabled});
+      this.#storeGeneralSettings({ ...settings, speechModeEnabled });
   }
 
   #modelDto(model: InferenceModel): ModelDto {
@@ -3933,16 +4765,26 @@ export class DesktopBackend {
       cost: {
         input: knownRate(model.cost?.input),
         output: knownRate(model.cost?.output),
-        cacheRead: free ? knownRate(model.cost?.cacheRead) : positiveRate(model.cost?.cacheRead),
-        cacheWrite: free ? knownRate(model.cost?.cacheWrite) : positiveRate(model.cost?.cacheWrite),
+        cacheRead: free
+          ? knownRate(model.cost?.cacheRead)
+          : positiveRate(model.cost?.cacheRead),
+        cacheWrite: free
+          ? knownRate(model.cost?.cacheWrite)
+          : positiveRate(model.cost?.cacheWrite),
       },
-      selected: this.#model?.provider === model.provider && this.#model.id === model.id,
+      selected:
+        this.#model?.provider === model.provider && this.#model.id === model.id,
       custom: this.#customProviders.has(model.provider),
     };
   }
 
   #availableCustomProviderId(name: string): string {
-    const stem = `custom-${name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "provider"}`;
+    const stem = `custom-${
+      name
+        .toLocaleLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "") || "provider"
+    }`;
     let id = stem;
     let suffix = 2;
     while (this.#models.getProvider(id)) id = `${stem}-${suffix++}`;
@@ -3950,48 +4792,62 @@ export class DesktopBackend {
   }
 
   #registerCustomProvider(config: CustomProviderConfig): void {
-    const models: Array<Model<"openai-completions">> = config.models.map((model) => ({
-      id: model.id,
-      name: model.name,
-      api: "openai-completions",
-      provider: config.id,
-      baseUrl: config.baseUrl,
-      reasoning: false,
-      input: ["text"],
-      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
-      contextWindow: 128_000,
-      maxTokens: 8_192,
-    }));
-    this.#models.setProvider(createProvider({
-      id: config.id,
-      name: config.name,
-      baseUrl: config.baseUrl,
-      auth: {apiKey: {
-        name: `${config.name} API key`,
-        resolve: async ({credential}) => ({
-          auth: {apiKey: credential?.key ?? "flareai-local"},
-          source: credential?.key ? "Saved API key" : "Custom endpoint",
-        }),
-      }},
-      models,
-      api: openAICompletionsApi(),
-    }));
+    const models: Array<Model<"openai-completions">> = config.models.map(
+      (model) => ({
+        id: model.id,
+        name: model.name,
+        api: "openai-completions",
+        provider: config.id,
+        baseUrl: config.baseUrl,
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+      }),
+    );
+    this.#models.setProvider(
+      createProvider({
+        id: config.id,
+        name: config.name,
+        baseUrl: config.baseUrl,
+        auth: {
+          apiKey: {
+            name: `${config.name} API key`,
+            resolve: async ({ credential }) => ({
+              auth: { apiKey: credential?.key ?? "polymux-local" },
+              source: credential?.key ? "Saved API key" : "Custom endpoint",
+            }),
+          },
+        },
+        models,
+        api: openAICompletionsApi(),
+      }),
+    );
     this.#customProviders.set(config.id, config);
   }
 
   #persistCustomProviders(): void {
-    this.#setProfilePreference("custom-providers", [...this.#customProviders.values()].map((provider) => ({
-      id: provider.id,
-      name: provider.name,
-      baseUrl: provider.baseUrl,
-      logoDataUrl: provider.logoDataUrl,
-      models: provider.models.map((model) => ({id: model.id, name: model.name})),
-    })));
+    this.#setProfilePreference(
+      "custom-providers",
+      [...this.#customProviders.values()].map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        logoDataUrl: provider.logoDataUrl,
+        models: provider.models.map((model) => ({
+          id: model.id,
+          name: model.name,
+        })),
+      })),
+    );
   }
 
   async #providerDtos(): Promise<ProviderDto[]> {
     const configured = await Promise.all(
-      this.#models.getProviders().map((provider) => this.#providerDto(provider.id)),
+      this.#models
+        .getProviders()
+        .map((provider) => this.#providerDto(provider.id)),
     );
     // A local runtime nobody has set up yet is still offered, in the same list
     // as everything else, so it is found where providers are looked for rather
@@ -3999,37 +4855,45 @@ export class DesktopBackend {
     const known = new Set(configured.map((provider) => provider.id));
     return [
       ...configured,
-      ...LOCAL_RUNTIMES.filter((runtime) => !known.has(runtime.id)).map((runtime): ProviderDto => ({
-        id: runtime.id,
-        name: runtime.name,
-        baseUrl: runtime.baseUrl,
-        apiKeyLabel: null,
-        supportsOAuth: false,
-        storedCredential: false,
-        configured: false,
-        source: null,
-        modelCount: 0,
-        custom: true,
-        localRuntime: true,
-        apiKeys: [],
-      })),
+      ...LOCAL_RUNTIMES.filter((runtime) => !known.has(runtime.id)).map(
+        (runtime): ProviderDto => ({
+          id: runtime.id,
+          name: runtime.name,
+          baseUrl: runtime.baseUrl,
+          apiKeyLabel: null,
+          supportsOAuth: false,
+          storedCredential: false,
+          configured: false,
+          source: null,
+          modelCount: 0,
+          custom: true,
+          localRuntime: true,
+          apiKeys: [],
+        }),
+      ),
     ];
   }
 
   /** Reads the models off a local server and files it as a provider under the
    * runtime's own id, so it keeps its name and logo. */
-  async #setupLocalRuntime(request: SetupLocalRuntimeRequest): Promise<ProviderDto> {
+  async #setupLocalRuntime(
+    request: SetupLocalRuntimeRequest,
+  ): Promise<ProviderDto> {
     const runtime = LOCAL_RUNTIMES.find((item) => item.id === request.id);
     if (!runtime) throw new Error(`Unknown local runtime: ${request.id}`);
     const baseUrl = request.baseUrl ?? runtime.baseUrl;
-    const models = await discoverModels({baseUrl});
+    const models = await discoverModels({ baseUrl });
     this.#registerCustomProvider({
       id: runtime.id,
       name: runtime.name,
       baseUrl,
-      models: models.map((model) => ({id: model.id, name: model.name ?? model.id})),
+      models: models.map((model) => ({
+        id: model.id,
+        name: model.name ?? model.id,
+      })),
     });
     this.#persistCustomProviders();
+    this.#reconcileAutoRoles();
     return this.#providerDto(runtime.id);
   }
 
@@ -4052,8 +4916,11 @@ export class DesktopBackend {
       // Configuration means a credential is present, not that its latest
       // authentication attempt succeeded. Invalid keys remain visible as
       // invalid in the detail pane without making the rail look disconnected.
-      configured: auth !== undefined || stored !== undefined || apiKeys.length > 0,
-      source: apiKeys.length ? `${apiKeys.length} saved API ${apiKeys.length === 1 ? "key" : "keys"}` : auth?.source ?? null,
+      configured:
+        auth !== undefined || stored !== undefined || apiKeys.length > 0,
+      source: apiKeys.length
+        ? `${apiKeys.length} saved API ${apiKeys.length === 1 ? "key" : "keys"}`
+        : (auth?.source ?? null),
       modelCount: provider.getModels().length,
       custom: this.#customProviders.has(provider.id),
       apiKeys,
@@ -4071,7 +4938,7 @@ export class DesktopBackend {
   /** Keep a stale model preference from making chat unusable after credentials
    * are removed or changed. The user's selection wins while it is usable;
    * otherwise the first configured provider becomes the active model. */
-  async #ensureConfiguredAgent(): Promise<FlareAIAgent> {
+  async #ensureConfiguredAgent(): Promise<PolymuxAgent> {
     if (this.#model) {
       const current = await this.#providerDto(this.#model.provider);
       if (current.configured) return this.#requireAgent();
@@ -4082,7 +4949,7 @@ export class DesktopBackend {
       if (!provider.configured) continue;
       const model = this.#inference.listModels(provider.id)[0];
       if (!model) continue;
-      this.#selectModel({provider: model.provider, id: model.id});
+      this.#selectModel({ provider: model.provider, id: model.id });
       return this.#requireAgent();
     }
 
@@ -4100,25 +4967,23 @@ export class DesktopBackend {
 
   #managerSnapshot(): ManagerSnapshotDto {
     return {
-      enabled: this.#orchestrationExperiment,
-      jobs: this.#orchestrationExperiment ? this.#managerJobs.list() : [],
+      enabled: true,
+      jobs: this.#managerJobs.list(),
     };
-  }
-
-  #requireManagerExperiment(): void {
-    if (!this.#orchestrationExperiment)
-      throw new Error("The manager scheduler is available only in the orchestration experiment");
   }
 
   #publishManagerJobs(): void {
     if (this.#closing || this.#window.isDestroyed()) return;
-    this.#window.webContents.send(channels.managerChanged, this.#managerSnapshot());
+    this.#window.webContents.send(
+      channels.managerChanged,
+      this.#managerSnapshot(),
+    );
   }
 
-  #requireAgent(): FlareAIAgent {
+  #requireAgent(): PolymuxAgent {
     if (!this.#agent)
       throw new Error(
-        "No inference model is configured. Set FLAREAI_MODEL to provider/model.",
+        "No inference model is configured. Set POLYMUX_MODEL to provider/model.",
       );
     return this.#agent;
   }
@@ -4136,40 +5001,76 @@ export class DesktopBackend {
       ...snapshot,
       ...capabilities,
       name: config?.name ?? snapshot.id,
-      description: typeof config?.metadata?.description === "string" ? config.metadata.description : undefined,
-      source: config?.metadata?.source === "codex"
-        ? "codex"
-        : config?.metadata?.source === "official"
-          ? "official"
-          : "flareai",
-      editable: config?.metadata?.source === "flareai",
-      enabled: this.#integrationEnabled("mcp-enabled", snapshot.id, config?.enabled !== false),
+      description:
+        typeof config?.metadata?.description === "string"
+          ? config.metadata.description
+          : undefined,
+      source:
+        config?.metadata?.source === "codex"
+          ? "codex"
+          : config?.metadata?.source === "official"
+            ? "official"
+            : "polymux",
+      editable: config?.metadata?.source === "polymux",
+      enabled: this.#integrationEnabled(
+        "mcp-enabled",
+        snapshot.id,
+        config?.enabled !== false,
+      ),
       transport: config?.transport ?? "stdio",
       ...(config?.transport === "stdio"
-        ? {command: config.command, args: config.args, env: config.env, cwd: config.cwd}
+        ? {
+            command: config.command,
+            args: config.args,
+            env: config.env,
+            cwd: config.cwd,
+          }
         : config?.transport === "streamable-http"
-          ? {url: config.url, headers: config.headers}
+          ? { url: config.url, headers: config.headers }
           : {}),
     };
   }
 
-  #mcpCapabilities(snapshot: ReturnType<McpManager["snapshots"]>[number]): Pick<McpServerDto, "toolNames" | "resourceUris" | "promptNames"> {
-    const current = {toolNames: snapshot.toolNames, resourceUris: snapshot.resourceUris, promptNames: snapshot.promptNames};
+  #mcpCapabilities(
+    snapshot: ReturnType<McpManager["snapshots"]>[number],
+  ): Pick<McpServerDto, "toolNames" | "resourceUris" | "promptNames"> {
+    const current = {
+      toolNames: snapshot.toolNames,
+      resourceUris: snapshot.resourceUris,
+      promptNames: snapshot.promptNames,
+    };
     const value = this.#profilePreference("mcp-capabilities")?.value;
-    const cache = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const cache =
+      value && typeof value === "object" && !Array.isArray(value) ? value : {};
     if (snapshot.status === "connected") {
       const previous = cache[snapshot.id];
       if (JSON.stringify(previous) !== JSON.stringify(current))
-        this.#setProfilePreference("mcp-capabilities", {...cache, [snapshot.id]: current});
+        this.#setProfilePreference("mcp-capabilities", {
+          ...cache,
+          [snapshot.id]: current,
+        });
       return current;
     }
     const saved = cache[snapshot.id];
-    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return current;
+    if (!saved || typeof saved !== "object" || Array.isArray(saved))
+      return current;
     const record = saved as Record<string, unknown>;
     return {
-      toolNames: Array.isArray(record.toolNames) && record.toolNames.every((item) => typeof item === "string") ? record.toolNames : current.toolNames,
-      resourceUris: Array.isArray(record.resourceUris) && record.resourceUris.every((item) => typeof item === "string") ? record.resourceUris : current.resourceUris,
-      promptNames: Array.isArray(record.promptNames) && record.promptNames.every((item) => typeof item === "string") ? record.promptNames : current.promptNames,
+      toolNames:
+        Array.isArray(record.toolNames) &&
+        record.toolNames.every((item) => typeof item === "string")
+          ? record.toolNames
+          : current.toolNames,
+      resourceUris:
+        Array.isArray(record.resourceUris) &&
+        record.resourceUris.every((item) => typeof item === "string")
+          ? record.resourceUris
+          : current.resourceUris,
+      promptNames:
+        Array.isArray(record.promptNames) &&
+        record.promptNames.every((item) => typeof item === "string")
+          ? record.promptNames
+          : current.promptNames,
     };
   }
 
@@ -4180,7 +5081,10 @@ export class DesktopBackend {
     this.#registeredChannels.push(channel);
     this.#ipcMain.handle(channel, (event, ...args) => {
       const trustedWindow = this.#trustedWindows.get(event.sender.id);
-      if (!trustedWindow || event.senderFrame !== trustedWindow.webContents.mainFrame)
+      if (
+        !trustedWindow ||
+        event.senderFrame !== trustedWindow.webContents.mainFrame
+      )
         throw new Error("Rejected IPC from an untrusted frame");
       return listener(event, ...(args as T));
     });
@@ -4205,7 +5109,9 @@ export class DesktopBackend {
       if (message.kind === "submitted")
         void this.#autofill
           .captureSubmission(message)
-          .catch((error: unknown) => console.warn("Could not save the submitted login", error));
+          .catch((error: unknown) =>
+            console.warn("Could not save the submitted login", error),
+          );
     });
   }
 }
@@ -4214,20 +5120,29 @@ function managerJobRequest(value: unknown): EnqueueManagerJobRequest {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Manager job request must be an object");
   const input = value as Record<string, unknown>;
-  const priority = input.priority === undefined ? undefined : managerPriority(input.priority);
+  const priority =
+    input.priority === undefined ? undefined : managerPriority(input.priority);
   return {
-    ...(typeof input.id === "string" ? {id: required(input.id, "manager job id")} : {}),
+    ...(typeof input.id === "string"
+      ? { id: required(input.id, "manager job id") }
+      : {}),
     chatId: required(input.chatId, "chat id"),
     text: typeof input.text === "string" ? input.text : "",
     attachments: optionalStringArray(input.attachments, "attachments"),
     asGoal: input.asGoal === true,
-    ...(priority ? {priority} : {}),
+    ...(priority ? { priority } : {}),
     dependencyIds: optionalStringArray(input.dependencyIds, "dependency ids"),
   };
 }
 
 function managerPriority(value: unknown): JobPriority {
-  if (value === "background" || value === "normal" || value === "urgent" || value === "attention") return value;
+  if (
+    value === "background" ||
+    value === "normal" ||
+    value === "urgent" ||
+    value === "attention"
+  )
+    return value;
   throw new Error(`Unknown manager priority: ${String(value)}`);
 }
 
@@ -4252,7 +5167,7 @@ async function applicationBundle(name: string): Promise<string | null> {
     .find((candidate) => existsSync(candidate));
   if (direct) return direct;
   try {
-    const {stdout} = await promisify(execFile)("mdfind", [
+    const { stdout } = await promisify(execFile)("mdfind", [
       "-name",
       `${name}.app`,
       "-onlyin",
@@ -4268,4 +5183,4 @@ async function applicationBundle(name: string): Promise<string | null> {
   }
 }
 
-export {modelFromEnvironment} from "./backend/models.js";
+export { modelFromEnvironment } from "./backend/models.js";

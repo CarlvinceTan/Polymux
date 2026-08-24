@@ -1,5 +1,5 @@
-import type { AgentTool, AgentToolContext, AgentToolResult } from "@flareai/core";
-import type { JsonObject } from "@flareai/inference";
+import type { AgentTool, AgentToolContext, AgentToolResult } from "@polymux/core";
+import type { JsonObject } from "@polymux/inference";
 
 export interface ToolEnvironment {
   /**

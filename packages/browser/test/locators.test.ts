@@ -30,5 +30,5 @@ test("an explicit zero index selects the first match", async () => {
     throw new Error(`unexpected ${method}`);
   };
   assert.equal((await findByLocator(send, locator(0))).backendNodeId, 42);
-  assert.ok(calls.includes("window.__flareaiLocatorMatches[0]"));
+  assert.ok(calls.includes("window.__polymuxLocatorMatches[0]"));
 });

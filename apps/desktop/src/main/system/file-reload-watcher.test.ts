@@ -56,7 +56,7 @@ function manualWatcher(target: string, onChange: () => void) {
 }
 
 test("coalesces a burst of writes into a single reload", async () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-reload-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-reload-"));
   const target = path.join(directory, "mcp.json");
   writeFileSync(target, "{}\n");
 
@@ -94,7 +94,7 @@ test("coalesces a burst of writes into a single reload", async () => {
 });
 
 test("observes an atomic replacement of the watched file", async () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-reload-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-reload-"));
   const target = path.join(directory, "mcp.json");
   writeFileSync(target, "{}\n");
 
@@ -127,7 +127,7 @@ test("observes an atomic replacement of the watched file", async () => {
 });
 
 test("ignores changes to other files in the same directory", async () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-reload-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-reload-"));
   const target = path.join(directory, "mcp.json");
   writeFileSync(target, "{}\n");
 
@@ -185,7 +185,7 @@ test("a directory that does not exist yet is created rather than thrown at", asy
   // What a fresh instance looks like: nothing has written state, so the file's
   // directory is absent. Starting here used to throw ENOENT out of an async
   // caller, which reads as an unhandled rejection at launch.
-  const home = mkdtempSync(path.join(tmpdir(), "flareai-reload-"));
+  const home = mkdtempSync(path.join(tmpdir(), "polymux-reload-"));
   const target = path.join(home, "state", "registry.json");
   const seen: number[] = [];
   const {watcher, flush} = manualWatcher(target, () => seen.push(1));

@@ -1,5 +1,5 @@
-import type {ModelRef} from "@flareai/inference";
-import type {CreateCustomProviderRequest, DiscoverModelsRequest, ModelRole, ReasoningEffort, SetupLocalRuntimeRequest, UpdateCustomProviderRequest} from "@flareai/protocol";
+import type {ModelRef} from "@polymux/inference";
+import type {CreateCustomProviderRequest, DiscoverModelsRequest, ModelRole, ReasoningEffort, SetupLocalRuntimeRequest, UpdateCustomProviderRequest} from "@polymux/protocol";
 import {json, required, validProviderLogo} from "./requests.js";
 import {reasoningEffort} from "./settings.js";
 
@@ -21,12 +21,12 @@ export interface CustomProviderConfig {
 
 /** Model roles, custom providers, and discovering what a provider offers. */
 export function modelFromEnvironment(
-  value = process.env.FLAREAI_MODEL,
+  value = process.env.POLYMUX_MODEL,
 ): ModelRef | undefined {
   if (!value) return undefined;
   const separator = value.indexOf("/");
   if (separator <= 0 || separator === value.length - 1)
-    throw new Error("FLAREAI_MODEL must use provider/model format");
+    throw new Error("POLYMUX_MODEL must use provider/model format");
   return {
     provider: value.slice(0, separator),
     id: value.slice(separator + 1),
@@ -40,7 +40,7 @@ export function modelFromEnvironment(
  * agent context — weather, local time, nearby places — city-level is enough.
  */
 
-export const MODEL_ROLES: ModelRole[] = ["main", "task", "judge", "compaction", "speech", "image", "video"];
+export const MODEL_ROLES: ModelRole[] = ["main", "subagent", "judge", "compaction", "speech", "image", "video"];
 
 export function modelRole(value: unknown): ModelRole {
   if (typeof value === "string" && (MODEL_ROLES as string[]).includes(value))

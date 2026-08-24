@@ -290,7 +290,7 @@ export class SqliteStorage implements Storage {
   }
 
   transaction<T>(work: () => T): T {
-    const savepoint = `flareai_nested_${this.#transactionDepth}`;
+    const savepoint = `polymux_nested_${this.#transactionDepth}`;
     this.database.exec(
       this.#transactionDepth === 0
         ? "BEGIN IMMEDIATE"

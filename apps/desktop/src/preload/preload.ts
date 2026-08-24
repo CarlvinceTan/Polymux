@@ -1,8 +1,8 @@
-import type { BrowserEventDto, ChatActivityDto, CommsStatusDto, DriveStatusDto, McpChangeDto, FlareAIApi, ProviderOAuthEventDto, RunEventDto, ScheduleDto, SkillDto, WorkspaceRevealDto } from "@flareai/protocol";
-import { channels } from "@flareai/protocol";
+import type { BrowserEventDto, ChatActivityDto, CommsStatusDto, DriveStatusDto, McpChangeDto, PolymuxApi, ProviderOAuthEventDto, RunEventDto, ScheduleDto, SkillDto, WorkspaceRevealDto } from "@polymux/protocol";
+import { channels } from "@polymux/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
-const api: FlareAIApi = {
+const api: PolymuxApi = {
   profiles: {
     list: () => ipcRenderer.invoke(channels.profilesList),
     create: (name) => ipcRenderer.invoke(channels.profilesCreate, name),
@@ -88,7 +88,7 @@ const api: FlareAIApi = {
     reprioritize: (id, priority) => ipcRenderer.invoke(channels.managerReprioritize, id, priority),
     reorder: (id, targetId) => ipcRenderer.invoke(channels.managerReorder, id, targetId),
     subscribe(listener) {
-      const receive = (_event: Electron.IpcRendererEvent, value: import("@flareai/protocol").ManagerSnapshotDto) => listener(value);
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").ManagerSnapshotDto) => listener(value);
       ipcRenderer.on(channels.managerChanged, receive);
       return () => ipcRenderer.removeListener(channels.managerChanged, receive);
     },
@@ -114,7 +114,7 @@ const api: FlareAIApi = {
     remove: (id) => ipcRenderer.invoke(channels.tasksRemove, id),
     markRead: (id) => ipcRenderer.invoke(channels.tasksMarkRead, id),
     subscribe(listener) {
-      const receive = (_event: Electron.IpcRendererEvent, items: import("@flareai/protocol").TaskCardDto[]) =>
+      const receive = (_event: Electron.IpcRendererEvent, items: import("@polymux/protocol").TaskCardDto[]) =>
         listener(items);
       ipcRenderer.on(channels.tasksChanged, receive);
       return () => ipcRenderer.removeListener(channels.tasksChanged, receive);
@@ -437,4 +437,4 @@ const api: FlareAIApi = {
   },
 };
 
-contextBridge.exposeInMainWorld("flareai", api);
+contextBridge.exposeInMainWorld("polymux", api);

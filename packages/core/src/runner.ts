@@ -4,7 +4,7 @@ import type {
   InferenceTool,
   ToolCallBlock,
   ToolResultInferenceMessage,
-} from "@flareai/inference";
+} from "@polymux/inference";
 import { AgentRunControl } from "./control.js";
 import { addUsage, emptyUsage } from "./usage.js";
 import type {
@@ -649,13 +649,13 @@ function promptFootprint(
     ambientContextCounts: {
       memoryBlocks: Number(systemPrompt.match(/Selected durable context: (\d+) blocks\./)?.[1] ?? 0),
       memoryCandidateBlocks: Number(systemPrompt.match(/Durable context candidates: (\d+) blocks\./)?.[1] ?? 0),
-      flareBrowserTabs: itemCount("Open in the FlareAI browser"),
+      flareBrowserTabs: itemCount("Open in the Polymux browser"),
       externalBrowserTabs: itemCount("Open in the connected external browser"),
       openWindows: itemCount("Open windows"),
     },
     ambientContextCapturedAt: {
       windows: captured(/^Desktop window snapshot captured: (.+)$/m),
-      flareBrowser: captured(/^### Open in the FlareAI browser\nCaptured: (.+)$/m),
+      flareBrowser: captured(/^### Open in the Polymux browser\nCaptured: (.+)$/m),
       externalBrowser: captured(/^### Open in the connected external browser\nCaptured: (.+)$/m),
     },
     totalBytes: systemPromptBytes + messageBytes + toolSchemaBytes,

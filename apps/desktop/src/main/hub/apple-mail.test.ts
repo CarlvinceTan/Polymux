@@ -12,7 +12,7 @@ test("Apple Mail fallback is inert off macOS", async () => {
 });
 
 test("Apple Mail fallback searches the local index read-only and stays bounded", async () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "flareai-mail-index-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-mail-index-"));
   const indexPath = path.join(directory, "Envelope Index");
   const database = new DatabaseSync(indexPath);
   database.exec(`

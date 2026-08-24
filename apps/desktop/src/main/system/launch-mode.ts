@@ -7,9 +7,9 @@ export interface LaunchModeInput {
 
 export function requestsBackgroundLaunch(input: LaunchModeInput): boolean {
   if (input.platform !== "darwin") return false;
-  return input.hasSwitch("flareai-background") ||
-    input.argv.includes("--flareai-background") ||
-    input.environment?.FLAREAI_BACKGROUND_LAUNCH === "1";
+  return input.hasSwitch("polymux-background") ||
+    input.argv.includes("--polymux-background") ||
+    input.environment?.POLYMUX_BACKGROUND_LAUNCH === "1";
 }
 
 export function configuredRemoteDebuggingPort(value: string | undefined): number | null {

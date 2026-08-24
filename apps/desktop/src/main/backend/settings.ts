@@ -1,6 +1,6 @@
 import {clearFaviconCache} from "../browser/favicon.js";
-import {SUPPORTED_LANGUAGES, supportedLanguage} from "@flareai/protocol";
-import type {BrowserSettingsDto, GeneralSettingsDto, ReasoningEffort} from "@flareai/protocol";
+import {SUPPORTED_LANGUAGES, supportedLanguage} from "@polymux/protocol";
+import type {BrowserSettingsDto, GeneralSettingsDto, ReasoningEffort} from "@polymux/protocol";
 import {app, nativeTheme} from "electron";
 import {rename} from "node:fs/promises";
 import {parse as parseToml} from "smol-toml";
@@ -61,7 +61,7 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
     timeEnabled: true,
     locationEnabled: true,
     hubIncognitoMode: false,
-    reasoningLevel: reasoningEffort(process.env.FLAREAI_REASONING, "medium") ?? "medium",
+    reasoningLevel: reasoningEffort(process.env.POLYMUX_REASONING, "medium") ?? "medium",
     advancedMode: false,
     onboardingCompleted: false,
     // Every capability is on by default: the OS grant is the real gate, and

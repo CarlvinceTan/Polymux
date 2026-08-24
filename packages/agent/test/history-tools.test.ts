@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AgentTool, AgentToolResult } from "@flareai/core";
-import { SqliteStorage } from "@flareai/storage/sqlite";
+import type { AgentTool, AgentToolResult } from "@polymux/core";
+import { SqliteStorage } from "@polymux/storage/sqlite";
 import { createHistoryTools } from "../src/index.js";
 
 function call(

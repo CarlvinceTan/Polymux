@@ -1,11 +1,11 @@
-import type { AgentRunEvent } from "@flareai/core";
+import type { AgentRunEvent } from "@polymux/core";
 import type {
   Artifact,
   ArtifactKind,
   NewArtifact,
   NewReference,
   StoredReference,
-} from "@flareai/storage";
+} from "@polymux/storage";
 
 /**
  * The Summary panel's Outputs and References are fed from what a run actually

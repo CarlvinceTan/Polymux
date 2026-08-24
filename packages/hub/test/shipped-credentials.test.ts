@@ -11,7 +11,7 @@ import {
 } from "../src/shipped-credentials.js";
 
 /**
- * The application pair FlareAI signs Telegram in with. It is served as well as
+ * The application pair Polymux signs Telegram in with. It is served as well as
  * compiled in, because the failure it exists for — the registration being
  * banned — is one every install hits at the same moment, and a fix that has to
  * be built and notarised arrives days after it is needed.
@@ -35,7 +35,7 @@ test.beforeEach(() => resetShippedCredentials());
 test.after(() => resetShippedCredentials());
 
 test("a served pair outranks the one compiled into the build", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-creds-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-creds-"));
   const {fetch, calls} = serving(PAIR);
 
   await loadShippedCredentials({directory, host: "https://updates.example", fetch});
@@ -50,7 +50,7 @@ test("a served pair outranks the one compiled into the build", async () => {
 });
 
 test("a machine that cannot reach the host runs on its cached copy", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-creds-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-creds-"));
   await writeFile(
     path.join(directory, "shipped-credentials.json"),
     JSON.stringify(PAIR),
@@ -66,7 +66,7 @@ test("a machine that cannot reach the host runs on its cached copy", async () =>
 });
 
 test("nothing served and nothing cached leaves the built-in pair in charge", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-creds-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-creds-"));
   const {fetch} = serving(null, {ok: false});
 
   await loadShippedCredentials({directory, host: "https://updates.example", fetch});
@@ -77,7 +77,7 @@ test("nothing served and nothing cached leaves the built-in pair in charge", asy
 });
 
 test("a served document that has lost its pair does not take the good one away", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "flareai-creds-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-creds-"));
   await writeFile(path.join(directory, "shipped-credentials.json"), JSON.stringify(PAIR), "utf8");
   const {fetch} = serving({telegram: {api_id: "2040"}});
 

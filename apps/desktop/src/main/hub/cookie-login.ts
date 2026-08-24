@@ -1,6 +1,6 @@
 import {BrowserWindow, nativeTheme, session, type BrowserWindow as BrowserWindowType} from "electron";
-import {commsPlatformLabel} from "@flareai/protocol";
-import type {CommsPlatform} from "@flareai/protocol";
+import {commsPlatformLabel} from "@polymux/protocol";
+import type {CommsPlatform} from "@polymux/protocol";
 import type {CookieLoginRequest} from "./index.js";
 
 /**
@@ -37,13 +37,13 @@ export async function runCookieLogin(
   request: CookieLoginRequest,
   parent?: BrowserWindowType,
 ): Promise<Record<string, string>> {
-  const partition = `persist:flareai-comms-${request.platform}`;
+  const partition = `persist:polymux-comms-${request.platform}`;
   const userAgent = request.userAgent ?? FALLBACK_USER_AGENT;
   const label = commsPlatformLabel(request.platform as CommsPlatform);
   const window = new BrowserWindow({
     width: 520,
     height: 760,
-    // Kept above FlareAI so it cannot be lost behind the window waiting on it,
+    // Kept above Polymux so it cannot be lost behind the window waiting on it,
     // but deliberately not modal: a macOS modal sheet is drawn without a title
     // bar, which left the user with no visible way out of a network's sign-in
     // page. A framed child window gets real traffic lights, so closing it is
@@ -56,7 +56,7 @@ export async function runCookieLogin(
     // desktop before the network's own page arrives.
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff",
     autoHideMenuBar: true,
-    // Nothing here belongs to FlareAI, so there is no app chrome to imitate:
+    // Nothing here belongs to Polymux, so there is no app chrome to imitate:
     // the window is the network's page under the platform's name, and it
     // resizes like the browser window it stands in for.
     minimizable: true,

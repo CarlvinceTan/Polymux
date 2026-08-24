@@ -1,7 +1,7 @@
-import type { ComputerHistoryEntry, InteractionEvent } from "@flareai/computer-history";
-import { describeEvent } from "@flareai/computer-history";
+import type { ComputerHistoryEntry, InteractionEvent } from "@polymux/computer";
+import { describeEvent } from "@polymux/computer";
 import { readFileSync } from "node:fs";
-import type { InferenceService, ModelRef } from "@flareai/inference";
+import type { InferenceService, ModelRef } from "@polymux/inference";
 import type { ComputerHistoryAccess } from "./computer-history-access.js";
 import type { MemoryManager } from "./manager.js";
 import { fillPrompt } from "../prompts/agent-prompts.js";

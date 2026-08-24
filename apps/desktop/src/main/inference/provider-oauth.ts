@@ -87,4 +87,4 @@ export function openAICodexInteraction(
   };
 }
 import type {AuthInteraction} from "@earendil-works/pi-ai";
-import type {ProviderOAuthEventDto} from "@flareai/protocol";
+import type {ProviderOAuthEventDto} from "@polymux/protocol";

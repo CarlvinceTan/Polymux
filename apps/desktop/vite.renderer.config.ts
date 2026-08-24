@@ -32,7 +32,7 @@ export default defineConfig({
   // own packages resolve through node_modules. Vite serves anything under
   // node_modules with a `?v=<hash>` query and `Cache-Control: immutable`, and
   // that hash only changes when the lockfile or the optimizer's config does —
-  // never when packages/* is edited. So adding an export to @flareai/protocol
+  // never when packages/* is edited. So adding an export to @polymux/protocol
   // left the renderer holding a year-long cached copy without it, dying at
   // module load with "does not provide an export" and painting nothing. It
   // survived restarts because the staleness lived in the browser's HTTP cache
@@ -45,7 +45,7 @@ export default defineConfig({
   // it stops the prebundling but not the immutable caching.
   resolve: {
     alias: {
-      '@flareai/protocol': path.join(projectRoot, 'packages/protocol/src/index.ts'),
+      '@polymux/protocol': path.join(projectRoot, 'packages/protocol/src/index.ts'),
     },
   },
   build: {

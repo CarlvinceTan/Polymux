@@ -1,5 +1,5 @@
-import type {AgentRunEvent} from "@flareai/core";
-import type {RunEventDto} from "@flareai/protocol";
+import type {AgentRunEvent} from "@polymux/core";
+import type {RunEventDto} from "@polymux/protocol";
 import {parse as parseToml} from "smol-toml";
 import {json, number} from "./requests.js";
 

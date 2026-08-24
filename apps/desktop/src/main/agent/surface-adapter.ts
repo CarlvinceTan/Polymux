@@ -8,12 +8,12 @@ import path from "node:path";
  * pill (capsule status item, overlapping app icons, and the native
  * `Stop Using <App>` menu).
  *
- * FlareAI publishes expiring `window` leases to the loopback service on
+ * Polymux publishes expiring `window` leases to the loopback service on
  * `127.0.0.1:47652` while it is driving something the user can see (for now,
- * browser control through the FlareAI extension), refreshes them while the work
+ * browser control through the Polymux extension), refreshes them while the work
  * continues, and releases them when it stops. Choosing `Stop Using <App>` in
  * the menu turns into a stop request that this adapter polls and hands back
- * to FlareAI so the owning run is actually cancelled.
+ * to Polymux so the owning run is actually cancelled.
  *
  * Everything degrades to a no-op when Agent Surface is not installed or the
  * service is not running: the mutation token in `~/.agent-surface/token` is
@@ -33,7 +33,7 @@ export interface AgentSurfaceAdapterOptions {
   ttlMs?: number;
   refreshMs?: number;
   stopPollMs?: number;
-  /** Called with the lease's sessionId when the user asks FlareAI to stop. */
+  /** Called with the lease's sessionId when the user asks Polymux to stop. */
   onStop?: (sessionId: string) => void;
 }
 
@@ -62,7 +62,7 @@ export class AgentSurfaceAdapter {
     this.#baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.#tokenPath =
       options.tokenPath ?? path.join(homedir(), ".agent-surface", "token");
-    this.#agentId = options.agentId ?? "flareai";
+    this.#agentId = options.agentId ?? "polymux";
     this.#agentName = options.agentName ?? "Flare";
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.#refreshMs = options.refreshMs ?? DEFAULT_REFRESH_MS;

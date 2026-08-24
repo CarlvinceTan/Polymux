@@ -1,4 +1,4 @@
-import type {WorkspaceSnapshotDto} from "@flareai/protocol";
+import type {WorkspaceSnapshotDto} from "@polymux/protocol";
 
 /**
  * The drawer-openness rule for stored workspace snapshots: a snapshot restores

@@ -1,5 +1,5 @@
-import type { AgentTool } from "@flareai/core";
-import type { ScheduleDto, ScheduleFrequencyDto, ScheduleInput, SchedulePatch } from "@flareai/protocol";
+import type { AgentTool } from "@polymux/core";
+import type { ScheduleDto, ScheduleFrequencyDto, ScheduleInput, SchedulePatch } from "@polymux/protocol";
 
 /** The scheduler, as the tool needs it. */
 export interface ScheduleBook {
