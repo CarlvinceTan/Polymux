@@ -102,12 +102,16 @@ jobs:
         run: |
           APP_PATH="out/Polymux-darwin-arm64/Polymux.app"
           test -d "$APP_PATH"
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          plutil -lint "$APP_PATH/Contents/Info.plist"
+          file "$APP_PATH/Contents/MacOS/Polymux" | grep -q 'arm64'
+          DMG="$(find out/make -type f -name '*.dmg' -print -quit)"
+          ZIP="$(find out/make -type f -name '*.zip' -print -quit)"
+          test -n "$DMG" && test -n "$ZIP"
+          hdiutil verify "$DMG"
+          unzip -tq "$ZIP"
           if [[ "$GITHUB_REF" == refs/tags/* && "$UNSIGNED_PRERELEASE" != "true" ]]; then
+            codesign --verify --deep --strict --verbose=2 "$APP_PATH"
             spctl --assess --type execute --verbose=2 "$APP_PATH"
-            DMG="$(find out/make -type f -name '*.dmg' -print -quit)"
-            ZIP="$(find out/make -type f -name '*.zip' -print -quit)"
-            test -n "$DMG" && test -n "$ZIP"
             xcrun stapler validate "$DMG"
           fi
 
