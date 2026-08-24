@@ -114,20 +114,45 @@ jobs:
           ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
         run: |
-          status_code="$(curl --silent --show-error \
-            --output "$RUNNER_TEMP/cws-publish.json" \
-            --write-out '%{http_code}' \
-            -H "Authorization: Bearer $ACCESS_TOKEN" \
-            -H "Content-Type: application/json" \
-            -X POST \
-            -d '{"publishType":"DEFAULT_PUBLISH","blockOnWarnings":true}' \
-            "https://chromewebstore.googleapis.com/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:publish")"
+          publish() {
+            local block_on_warnings="$1"
+            curl --silent --show-error \
+              --output "$RUNNER_TEMP/cws-publish.json" \
+              --write-out '%{http_code}' \
+              -H "Authorization: Bearer $ACCESS_TOKEN" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              -d "{\"publishType\":\"DEFAULT_PUBLISH\",\"blockOnWarnings\":$block_on_warnings}" \
+              "https://chromewebstore.googleapis.com/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:publish"
+          }
+
+          status_code="$(publish true)"
           if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
+            # Chrome requires explicit confirmation for the extension's
+            # intentional all-sites content script and the initial visibility
+            # change. Confirm only those known warnings; a new warning remains
+            # a hard failure instead of being silently accepted.
             node -e '
               const fs = require("node:fs");
               const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-              throw new Error(`Chrome Web Store submission returned HTTP ${process.argv[2]}: ${JSON.stringify(value)}`);
+              const warnings = value.error?.details
+                ?.find((detail) => detail["@type"]?.endsWith("WarningsInfo"))
+                ?.warnings?.map((warning) => warning.reason) ?? [];
+              const expected = new Set(["BROAD_HOST_USAGE", "CHANGING_VISIBILITY"]);
+              if (value.error?.status !== "FAILED_PRECONDITION" || warnings.length === 0 ||
+                  warnings.some((warning) => !expected.has(warning))) {
+                throw new Error(`Chrome Web Store submission returned HTTP ${process.argv[2]}: ${JSON.stringify(value)}`);
+              }
+              console.log(`Confirming expected Chrome Web Store warnings: ${warnings.join(", ")}.`);
             ' "$RUNNER_TEMP/cws-publish.json" "$status_code"
+            status_code="$(publish false)"
+            if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
+              node -e '
+                const fs = require("node:fs");
+                const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                throw new Error(`Chrome Web Store confirmation returned HTTP ${process.argv[2]}: ${JSON.stringify(value)}`);
+              ' "$RUNNER_TEMP/cws-publish.json" "$status_code"
+            fi
           fi
           node -e '
             const fs = require("node:fs");
