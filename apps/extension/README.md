@@ -90,3 +90,28 @@ and retry.
 
 Browser security requires a person to approve an unpacked extension once.
 There is no silent profile mutation or enterprise policy installation.
+
+## Chrome Web Store releases
+
+Changes to the packaged extension on `main` trigger
+`.github/workflows/extension.yml`. The workflow requires a higher
+`manifest.json` version, creates a ZIP with the shared browser sources copied
+into it, uploads the package through Chrome Web Store API v2, and submits it for
+review with automatic publication after approval.
+
+Configure the GitHub `chrome-web-store` environment with:
+
+- variable `CWS_PUBLISHER_ID`: the publisher ID shown under Developer Dashboard
+  → Account;
+- variable `GCP_WORKLOAD_IDENTITY_PROVIDER`: the full Google Cloud workload
+  identity provider resource name;
+- variable `GCP_SERVICE_ACCOUNT`: the service account email authorised for the
+  publisher.
+
+The workflow uses GitHub OIDC and Google Cloud Workload Identity Federation, so
+it does not store a service-account JSON key.
+
+Add that service account's email to the Chrome Web Store Developer Dashboard
+publisher account. Google currently permits one service account per publisher.
+The listing, privacy declarations, and public visibility must be completed and
+published manually once before API releases can preserve that visibility.

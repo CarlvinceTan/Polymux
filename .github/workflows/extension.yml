@@ -1,0 +1,139 @@
+name: Chrome extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/extension/background.js"
+      - "apps/extension/content.js"
+      - "apps/extension/lib/**"
+      - "apps/extension/icons/**"
+      - "apps/extension/manifest.json"
+      - "packages/browser/src/**"
+      - "scripts/package-chrome-extension.sh"
+      - "scripts/validate-extension-version.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: chrome-extension-production
+  cancel-in-progress: false
+
+env:
+  CWS_EXTENSION_ID: abcoknklbjpjkchpejlfpkjlajmifgnk
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: chrome-web-store
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Validate extension manifest
+        run: node scripts/validate-extension-version.mjs
+
+      - name: Package extension
+        run: scripts/package-chrome-extension.sh dist/polymux-agent-surface.zip
+
+      - uses: google-github-actions/auth@v3
+        id: google-auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+
+      - name: Require Chrome Web Store configuration
+        env:
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+        run: |
+          test -n "$CWS_PUBLISHER_ID" || {
+            echo "Repository variable CWS_PUBLISHER_ID is required."
+            exit 1
+          }
+
+      - name: Require a version newer than the Store draft or release
+        env:
+          ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+        run: |
+          response="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://chromewebstore.googleapis.com/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:fetchStatus")"
+          printf '%s' "$response" > "$RUNNER_TEMP/cws-status.json"
+          previous_version="$(node -e '
+            const fs = require("node:fs");
+            const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const revisions = [value.publishedItemRevisionStatus, value.submittedItemRevisionStatus];
+            const versions = revisions.flatMap((revision) =>
+              (revision?.distributionChannels ?? []).map((channel) => channel.crxVersion).filter(Boolean));
+            const parts = (version) => [...version.split(".").map(Number), 0, 0, 0, 0].slice(0, 4);
+            versions.sort((left, right) => {
+              const a = parts(left), b = parts(right);
+              for (let index = 0; index < 4; index += 1) if (a[index] !== b[index]) return b[index] - a[index];
+              return 0;
+            });
+            process.stdout.write(versions[0] ?? "");
+          ' "$RUNNER_TEMP/cws-status.json")"
+          if [[ -n "$previous_version" ]]; then
+            node scripts/validate-extension-version.mjs --previous-version "$previous_version"
+          else
+            echo "No published or submitted Store package exists; allowing the initial automated upload."
+          fi
+
+      - name: Upload extension package
+        env:
+          ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+        run: |
+          response="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/zip" \
+            -X POST \
+            --data-binary @dist/polymux-agent-surface.zip \
+            "https://chromewebstore.googleapis.com/upload/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:upload")"
+          printf '%s' "$response" > "$RUNNER_TEMP/cws-upload.json"
+          node -e '
+            const fs = require("node:fs");
+            const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (!value.itemId || !["UPLOAD_SUCCESS", "UPLOAD_IN_PROGRESS"].includes(value.uploadState)) {
+              throw new Error(`Chrome Web Store upload failed: ${JSON.stringify(value)}`);
+            }
+            console.log(`Uploaded ${value.crxVersion ?? "extension package"} (${value.uploadState}).`);
+          ' "$RUNNER_TEMP/cws-upload.json"
+
+      - name: Submit update for review and automatic publication
+        env:
+          ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+        run: |
+          response="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d '{"publishType":"DEFAULT_PUBLISH","blockOnWarnings":true}' \
+            "https://chromewebstore.googleapis.com/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:publish")"
+          printf '%s' "$response" > "$RUNNER_TEMP/cws-publish.json"
+          node -e '
+            const fs = require("node:fs");
+            const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (value.itemId !== process.env.CWS_EXTENSION_ID || !value.state) {
+              throw new Error(`Chrome Web Store submission failed: ${JSON.stringify(value)}`);
+            }
+            console.log(`Submitted Chrome Web Store update: ${value.state}.`);
+          ' "$RUNNER_TEMP/cws-publish.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polymux-agent-surface
+          path: dist/polymux-agent-surface.zip
+          if-no-files-found: error
+          retention-days: 14
