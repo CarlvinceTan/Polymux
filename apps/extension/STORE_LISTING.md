@@ -26,6 +26,15 @@ task, closing Polymux, or disabling the extension.
 
 The Polymux desktop app is required.
 
+### Native messaging justification
+
+Native messaging is required so the Polymux extension can communicate with the
+locally installed Polymux desktop app. It uses the `com.polymux.tab_context`
+native host to share current tab metadata and coordinate access to browser tabs
+assigned to Polymux. This communication stays on the user's device. Without
+this permission, the desktop app cannot discover the extension or coordinate
+browser-tab access.
+
 ## Screenshots
 
 Upload only these approved `1280 × 800` captures from
