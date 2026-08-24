@@ -31,7 +31,8 @@ The Polymux desktop app is required.
 ### Single purpose
 
 Polymux connects browser tabs to the locally installed Polymux desktop app so
-the app can list open tabs and read or control only a tab assigned to it.
+the app can list open tabs and read or control only a tab assigned to it by the
+user.
 
 ### Permission justifications
 
@@ -67,9 +68,9 @@ released, the tab closes, or the desktop app disconnects.
 
 #### Host permission: `http://127.0.0.1:47654/*`
 
-This host permission is required to exchange leases, commands, cursor status,
-and results with the Polymux desktop app over a loopback-only HTTP service on
-the user's computer. It does not grant access to a remote website or server.
+The `127.0.0.1` host permission exchanges leases, commands, cursor status, and
+results with the Polymux desktop app through a loopback-only service on the
+user's computer. It does not grant access to a remote website or server.
 
 #### Website access: `http://*/*` and `https://*/*`
 
@@ -80,8 +81,13 @@ only after the user asks Polymux to work in a specific tab.
 
 ### Remote code
 
-No. The extension does not download or execute remote code. All executable code
-is included in the extension package.
+Yes. Polymux can receive an `eval` command from the locally installed desktop
+app and execute its JavaScript expression in the exact assigned tab through
+Chrome DevTools Protocol `Runtime.evaluate`. This supports user-requested page
+inspection or interaction. The extension does not download scripts or modules
+into its own execution context; all extension code is included in the package.
+Commands and results use the loopback-only desktop connection on the user's
+device.
 
 ### Data-use disclosures
 
