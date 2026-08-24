@@ -22,7 +22,7 @@
 
 import {createHash} from "node:crypto";
 import {execFileSync} from "node:child_process";
-import {chmod, mkdir, mkdtemp, rm, rename, readFile, stat, writeFile} from "node:fs/promises";
+import {chmod, copyFile, mkdir, mkdtemp, rm, rename, readFile, stat, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
@@ -97,8 +97,14 @@ async function main() {
         : `node-v${NODE_VERSION}-${platform}/bin/node`,
     ]);
     await mkdir(outputDirectory, {recursive: true});
+    const pendingBinaryPath = path.join(outputDirectory, `${binaryName}.pending`);
+    await rm(pendingBinaryPath, {force: true});
+    // CI can place the system temp directory and workspace on different
+    // Windows drives, where rename() fails with EXDEV. Copy onto the target
+    // volume first, then retain an atomic same-volume replacement.
+    await copyFile(path.join(staging, binaryName), pendingBinaryPath);
     await rm(binaryPath, {force: true});
-    await rename(path.join(staging, binaryName), binaryPath);
+    await rename(pendingBinaryPath, binaryPath);
     await chmod(binaryPath, 0o755);
     await writeFile(versionStamp, `${NODE_VERSION}\n`);
   } finally {
