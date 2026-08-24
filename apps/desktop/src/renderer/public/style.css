@@ -345,6 +345,7 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 .polymux-prompt-toolbar .goal-toggle { margin: -4px -7px; padding: 4px 7px; border-radius: 8px; transition: color .15s ease, background-color .15s ease, opacity .15s; }
 .polymux-prompt-toolbar .goal-toggle.active { background: var(--neutral-200); }
 .polymux-prompt-toolbar .prompt-option-wrap { position: relative; display: inline-flex; }
+.prompt-model-mark { width: 16px; height: 16px; display: grid; flex: none; place-items: center; border: 1px solid var(--neutral-200); border-radius: 5px; background: #fff; }
 /* In a conversation the composer sits on the floor of the window, so the menu
    opens upward. The welcome prompt is centred with the heading above it, so
    there it drops down instead of covering the greeting. */
@@ -2042,8 +2043,8 @@ a.hub-view-bubble-file:hover { text-decoration: underline; }
    reaches the screen (main.ts, on its first frame), so none of the animation is
    spent behind a window nobody can see yet. The beats, from that moment:
 
-     0.00s  the mark, alone on the window's centre, is drawn: all sixteen rays
-            growing out of its middle, each at its own full thickness
+     0.00s  the mark, alone on the window's centre, is drawn continuously from
+            its left endpoint to its right endpoint at full stroke thickness
      1.08s  the lockup opens — the mark travels left while the wordmark slides
             the other way, out from behind it through a soft edge that stays put
             in the gap, so the letters emerge rather than being wiped on
@@ -2147,48 +2148,9 @@ a.hub-view-bubble-file:hover { text-decoration: underline; }
   100% { --startup-travel: 0px; }
 }
 
-/* Every ray keeps its full thickness from the first frame — what grows is its
-   length. Each one is scaled along its own axis from the end nearest the middle
-   of the mark: `rotate(a) scaleX(k) rotate(-a)` swings the ray's axis onto x,
-   stretches it, and swings it back, so nothing but length changes. `--a` is
-   that axis and `--o` the end it grows from, read off the path's own box —
-   which is why the sixteen values below are geometry, not taste.
-
-   The eight points go first and the eight notches that cap them follow, timed
-   to arrive about where a point has reached by then, so the mark assembles
-   outward instead of in two disconnected halves. */
-.startup-mark { width: 64px; height: 64px; display: block; }
-.startup-mark path { fill: currentColor; transform-box: fill-box; transform-origin: var(--o); transform: rotate(var(--a)) scaleX(0) rotate(calc(var(--a) * -1)); }
-.startup-mark path:nth-child(1)  { --o: 100% 100%; --a: -140.3deg; }
-.startup-mark path:nth-child(2)  { --o: 100% 100%; --a: -160.2deg; }
-.startup-mark path:nth-child(3)  { --o: 100% 0%;   --a:  129.7deg; }
-.startup-mark path:nth-child(4)  { --o: 100% 0%;   --a:  109.9deg; }
-.startup-mark path:nth-child(5)  { --o: 0% 0%;     --a:   39.7deg; }
-.startup-mark path:nth-child(6)  { --o: 0% 0%;     --a:   19.8deg; }
-.startup-mark path:nth-child(7)  { --o: 0% 100%;   --a:  -50.3deg; }
-.startup-mark path:nth-child(8)  { --o: 0% 100%;   --a:  -70.1deg; }
-.startup-mark path:nth-child(9)  { --o: 100% 100%; --a: -125.3deg; }
-.startup-mark path:nth-child(10) { --o: 100% 100%; --a: -141.5deg; }
-.startup-mark path:nth-child(11) { --o: 100% 0%;   --a:  144.8deg; }
-.startup-mark path:nth-child(12) { --o: 100% 0%;   --a:  127.8deg; }
-.startup-mark path:nth-child(13) { --o: 0% 0%;     --a:   53.7deg; }
-.startup-mark path:nth-child(14) { --o: 0% 0%;     --a:   37.4deg; }
-.startup-mark path:nth-child(15) { --o: 0% 100%;   --a:  -34.5deg; }
-.startup-mark path:nth-child(16) { --o: 0% 100%;   --a:  -52.6deg; }
-:root[data-splash] .startup-mark path { animation: startup-mark-draw .9s cubic-bezier(.22,.7,.3,1) both; }
-:root[data-splash] .startup-mark path:nth-child(n+9) { animation-duration: .48s; animation-delay: .42s; }
-@keyframes startup-mark-draw {
-  from { transform: rotate(var(--a)) scaleX(0) rotate(calc(var(--a) * -1)); }
-  to   { transform: rotate(var(--a)) scaleX(1) rotate(calc(var(--a) * -1)); }
-}
-/* Then take the transform off them again once the sequence is over. At full
-   length that pair of rotations cancels, but only to within floating point, so
-   the draw's fill would otherwise hold a nearly-but-not-exactly identity matrix
-   on every ray for as long as the splash is up. `done` is the moment it is safe
-   to drop — the rays are long since grown, so no transform at all *is* their
-   settled pose — and it leaves the mark as sixteen plain paths for the whole
-   tail of the splash, including the crossfade out of it. */
-:root[data-splash="done"] .startup-mark path { animation: none; transform: none; }
+/* The complete mark is present from the first frame. Only the lockup moves. */
+.startup-mark { width: 64px; height: 64px; display: block; color: #000; }
+.startup-mark path { fill: currentColor; }
 
 @property --startup-word-travel {
   syntax: "<length-percentage>";
@@ -2242,7 +2204,7 @@ a.hub-view-bubble-file:hover { text-decoration: underline; }
   :root[data-splash] .startup-splash.leaving.to-app .startup-brand { animation: none; }
   .app-entering { animation: none; opacity: 1; }
   :root[data-splash] .startup-word-slide { transform: none; animation: none; }
-  :root[data-splash] .startup-mark path { transform: none; animation: none; }
+  :root[data-splash] .startup-mark path { animation: none; stroke-dashoffset: 0; }
 }
 
 /* ── Tasks board ───────────────────────────────────────────────────── */

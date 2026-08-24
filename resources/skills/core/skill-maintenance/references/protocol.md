@@ -16,7 +16,7 @@ Each behavioral contract runs the same prompt against the approved snapshot and 
 
 A pass reduces regression risk; it does not prove every possible model response. Use repeated runs for important behavior and add a contract whenever a new stable preference is introduced.
 
-Reports contain an immutable execution plan and an atomic job ledger. Resumption may reuse a completed job only when its inputs, output, candidate, baseline, contracts, model, evaluator context, and artifact hashes still match. Promotion rechecks the complete ledger and rejects partial, altered, stale, or diagnostic-only reports.
+Reports contain an immutable execution plan and atomic job records. Resumption may reuse a completed job only when its inputs, output, candidate, baseline, contracts, model, evaluator context, and artifact hashes still match. Promotion rechecks the complete report and rejects partial, altered, stale, or diagnostic-only results.
 
 ## Efficient complete checks
 

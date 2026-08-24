@@ -187,13 +187,13 @@ interface SkillManifest {
 }
 
 /**
- * `flare.yaml` beside SKILL.md is Polymux's own skill manifest: the display
+ * `polymux.yaml` beside SKILL.md is Polymux's own skill manifest: the display
  * identity the harness reads, not something the agent is shown. One field is
  * defined — `display_name` — and a skill without the file falls back to its
  * name, so the manifest is optional by design.
  */
 function skillManifest(baseDir: string): SkillManifest {
-  const metadataPath = join(baseDir, "flare.yaml");
+  const metadataPath = join(baseDir, "polymux.yaml");
   if (!existsSync(metadataPath) || !statSync(metadataPath).isFile()) return {};
   const metadata = readFileSync(metadataPath, "utf8");
   return {

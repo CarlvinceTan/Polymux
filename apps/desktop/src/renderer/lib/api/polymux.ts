@@ -45,6 +45,7 @@ import type {
   StartRunRequest,
 } from '@polymux/protocol';
 import {LOCAL_RUNTIMES, parseDriveSourceId} from '@polymux/protocol';
+import {EXTENSION_INSTALL_URL} from '../../../shared/extension';
 
 let browserApi: PolymuxApi | undefined;
 
@@ -227,7 +228,7 @@ function createBrowserDemoApi(): PolymuxApi {
       {platform: 'gvoice', name: 'Google Voice', api: 'bridgev2', state: 'unreachable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'mautrix-gvoice is not installed on this Mac.'},
       {platform: 'zulip', name: 'Zulip', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'apitoken', name: 'API token', description: 'Login with your Zulip email and API token'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'messenger', name: 'Messenger', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'messenger', name: 'messenger.com', description: 'Login using cookies from messenger.com'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'instagram', name: 'Instagram', api: 'bridgev2', state: 'connected', accounts: [{id: 'ig1', name: '@carl.builds', state: 'connected', error: null}, {id: 'ig2', name: '@flarehq', state: 'connected', error: null}], flows: [{id: 'instagram', name: 'instagram.com', description: 'Login using cookies from instagram.com'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'instagram', name: 'Instagram', api: 'bridgev2', state: 'connected', accounts: [{id: 'ig1', name: '@carl.builds', state: 'connected', error: null}, {id: 'ig2', name: '@polymux', state: 'connected', error: null}], flows: [{id: 'instagram', name: 'instagram.com', description: 'Login using cookies from instagram.com'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'discord', name: 'Discord', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Scan a QR code with the Discord app'}, {id: 'token', name: 'Token', description: 'Paste a Discord account token to link it'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'linkedin', name: 'LinkedIn', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Cookies', description: 'Log in with your LinkedIn account using your cookies'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'imessage', name: 'iMessage', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'local', name: 'This Mac', description: 'Read the Messages database on this Mac'}], setup: null, managementRoomHint: null, error: null},
@@ -397,7 +398,7 @@ function createBrowserDemoApi(): PolymuxApi {
         demoExtensionDismissed = true;
         return demoExtensionStatus();
       },
-      openInstall: async () => { window.open('https://flarehq.co/extension', '_blank'); },
+      openInstall: async () => { window.open(EXTENSION_INSTALL_URL, '_blank'); },
     },
     general: {
       get: async () => structuredClone(demoGeneral),
@@ -1825,7 +1826,7 @@ function demoBrowserDownloadState(
 }
 
 function demoReferences(conversationId: string): ReferenceDto[] {
-  return [{id: 'polymux-site', conversationId, runId: null, kind: 'web', title: 'flarehq.co', uri: 'https://flarehq.co', createdAt: new Date().toISOString(), metadata: {}}];
+  return [{id: 'polymux-site', conversationId, runId: null, kind: 'web', title: 'polymux.com', uri: 'https://polymux.com', createdAt: new Date().toISOString(), metadata: {}}];
 }
 
 /**

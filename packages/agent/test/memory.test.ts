@@ -3,31 +3,22 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { SqliteStorage } from "@polymux/storage/sqlite";
 import { MemoryManager } from "../src/index.js";
 
 function temporaryVault(): string {
   return mkdtempSync(path.join(tmpdir(), "polymux-memory-vault-"));
 }
 
-test("creates a Codex-style local memory vault and migrates SQLite memory once", () => {
-  const storage = new SqliteStorage(":memory:");
-  storage.upsertMemory({
-    id: "legacy-memory",
-    scope: "user",
-    kind: "preference",
-    content: "Prefer clear explanations",
-  });
+test("creates a Codex-style local memory vault", () => {
   const directory = temporaryVault();
-
-  const memory = new MemoryManager({ directory, legacyStorage: storage });
+  const memory = new MemoryManager({ directory, id: () => "preference" });
+  memory.remember("Prefer clear explanations", {kind: "preference"});
 
   assert.equal(memory.list()[0]?.content, "Prefer clear explanations");
   assert.ok(existsSync(path.join(directory, "MEMORY.md")));
   assert.ok(existsSync(path.join(directory, "memory_summary.md")));
   assert.match(readFileSync(memory.registryPath, "utf8"), /Prefer clear explanations/);
   assert.match(readFileSync(memory.summaryPath, "utf8"), /Prefer clear explanations/);
-  assert.ok(existsSync(path.join(directory, ".sqlite-memory-migrated-v1")));
   assert.deepEqual(memory.status(), {
     enabled: true,
     directory,
@@ -48,7 +39,6 @@ test("creates a Codex-style local memory vault and migrates SQLite memory once",
   assert.equal(memory.promptContext().enabled, false);
   assert.equal(memory.promptContext().summary, "");
   assert.equal(memory.setEnabled(true).enabled, true);
-  storage.close();
 });
 
 test("keeps conversation memory scoped and archives forgotten notes", () => {

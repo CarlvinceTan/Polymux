@@ -16,17 +16,6 @@ import {
 } from "./notification-settings.js";
 import {number} from "./requests.js";
 
-/** Stored general settings: reading a preference back into a DTO, and folding
- * an update into it. */
-export function hasOnboardingFlag(value: unknown): boolean {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    "onboardingCompleted" in (value as Record<string, unknown>)
-  );
-}
-
 /**
  * Puts Chromium's colour scheme on the app's theme rather than the system's.
  *

@@ -54,23 +54,6 @@ test("restart requeues interrupted work without duplicating or leaking chats", (
   assert.equal(restored.list("chat-a")[0]?.status, "queued");
 });
 
-test("saved conversation ids migrate once to chat ids", () => {
-  const preferences = new Preferences();
-  const first = new ChatPool(preferences, {clock: clock()});
-  first.enqueue({id: "legacy", chatId: "chat", text: "Keep this task"});
-  const key = "orchestration-manager-jobs-v1";
-  const stored = structuredClone(preferences.values.get(key)) as Array<Record<string, JsonValue>>;
-  stored[0]!.conversationId = stored[0]!.chatId!;
-  delete stored[0]!.chatId;
-  preferences.values.set(key, stored);
-
-  const migrated = new ChatPool(preferences, {clock: clock()});
-  assert.equal(migrated.list("chat")[0]?.chatId, "chat");
-  const rewritten = preferences.values.get(key) as Array<Record<string, JsonValue>>;
-  assert.equal(rewritten[0]?.chatId, "chat");
-  assert.equal("conversationId" in rewritten[0]!, false);
-});
-
 test("scheduler jobs durably freeze context and reply ownership", () => {
   const preferences = new Preferences();
   const first = new ChatPool(preferences, {clock: clock()});

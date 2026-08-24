@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Flare YAML Generator - Creates flare.yaml for a skill folder.
+Polymux YAML Generator - Creates polymux.yaml for a skill folder.
 
 Usage:
-    generate_flare_yaml.py <skill_dir> [--name <skill_name>] [--interface key=value]
+    generate_polymux_yaml.py <skill_dir> [--name <skill_name>] [--interface key=value]
 """
 
 import argparse
@@ -113,22 +113,22 @@ def parse_interface_overrides(raw_overrides):
     return overrides
 
 
-def write_flare_yaml(skill_dir, skill_name, raw_overrides):
+def write_polymux_yaml(skill_dir, skill_name, raw_overrides):
     overrides = parse_interface_overrides(raw_overrides)
     if overrides is None:
         return None
 
     display_name = overrides.get("display_name") or format_display_name(skill_name)
 
-    output_path = Path(skill_dir) / "flare.yaml"
+    output_path = Path(skill_dir) / "polymux.yaml"
     output_path.write_text(f"display_name: {yaml_quote(display_name)}\n")
-    print("[OK] Created flare.yaml")
+    print("[OK] Created polymux.yaml")
     return output_path
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create flare.yaml for a skill directory.",
+        description="Create polymux.yaml for a skill directory.",
     )
     parser.add_argument("skill_dir", help="Path to the skill directory")
     parser.add_argument(
@@ -155,7 +155,7 @@ def main():
     if not skill_name:
         sys.exit(1)
 
-    result = write_flare_yaml(skill_dir, skill_name, args.interface)
+    result = write_polymux_yaml(skill_dir, skill_name, args.interface)
     if result:
         sys.exit(0)
     sys.exit(1)

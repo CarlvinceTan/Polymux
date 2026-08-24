@@ -3,7 +3,6 @@ import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {parse as parseToml} from "smol-toml";
 import {
   EmailAccounts,
   type CommandResult,
@@ -95,7 +94,6 @@ const OAUTH = JSON.stringify({
         provider: "google",
         clientId: "client-1",
         hasClientSecret: true,
-        tokenUrl: "https://accounts.google.com",
       },
     },
   ],
@@ -189,7 +187,6 @@ test("editing an OAuth2 account keeps the client it was registered with", async 
       provider: "google",
       clientId: "client-1",
       hasClientSecret: true,
-      tokenUrl: "https://accounts.google.com",
     });
   });
 });
@@ -659,153 +656,6 @@ test("two reads at once queue down the one connection", async () => {
 });
 
 /**
- * Adopting the accounts of an earlier Polymux, which kept them in a Himalaya
- * config and drove its CLI. Nothing does now, but a user who set their
- * mailboxes up then has them there and nowhere else.
- */
-const LEGACY = [
-  "[accounts.work]",
-  'email = "me@work.com"',
-  'display-name = "Me At Work"',
-  "default = true",
-  'backend.type = "imap"',
-  'backend.host = "imap.gmail.com"',
-  "backend.port = 993",
-  'backend.encryption.type = "tls"',
-  'backend.login = "me@work.com"',
-  'backend.auth.type = "password"',
-  "backend.auth.cmd = \"print-the-password\"",
-  'message.send.backend.type = "smtp"',
-  'message.send.backend.host = "smtp.gmail.com"',
-  "message.send.backend.port = 587",
-  'message.send.backend.encryption.type = "start-tls"',
-  'message.send.backend.login = "me@work.com"',
-  "",
-  "[accounts.tokened]",
-  'email = "carl@kinnov.com"',
-  'backend.type = "imap"',
-  'backend.host = "imap.gmail.com"',
-  "backend.port = 993",
-  'backend.encryption.type = "tls"',
-  'backend.login = "carl@kinnov.com"',
-  'backend.auth.type = "oauth2"',
-  'backend.auth.client-id = "client-1"',
-  'backend.auth.client-secret = "shh"',
-  'backend.auth.token-url = "https://oauth2.googleapis.com/token"',
-  'backend.auth.access-token.cmd = "print-the-access-token"',
-  'backend.auth.refresh-token.cmd = "print-the-refresh-token"',
-  "",
-].join("\n");
-
-async function withLegacy(
-  body: (accounts: EmailAccounts, storePath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
-  options: {existing?: string} = {},
-): Promise<void> {
-  const directory = await mkdtemp(path.join(tmpdir(), "polymux-adopt-"));
-  const storePath = path.join(directory, "email-accounts.json");
-  const legacy = path.join(directory, "himalaya.toml");
-  await writeFile(legacy, LEGACY, "utf8");
-  if (options.existing) await writeFile(storePath, options.existing, "utf8");
-  const harnessed = harness({
-    results: (call) =>
-      call.command === "/bin/sh"
-        ? {code: 0, stdout: `${call.args[1]}-value\n`, stderr: ""}
-        : undefined,
-  });
-  const accounts = new EmailAccounts({
-    storePath,
-    downloadsDir: path.join(directory, "Downloads"),
-    importFrom: legacy,
-    run: harnessed.run,
-  });
-  try {
-    await body(accounts, storePath, harnessed);
-  } finally {
-    await accounts.close();
-    await rm(directory, {recursive: true, force: true});
-  }
-}
-
-test("adopts the accounts of an earlier Polymux, once", async () => {
-  await withLegacy(async (accounts, storePath) => {
-    const listed = await accounts.list();
-    assert.deepEqual(listed.map((item) => item.id).sort(), ["tokened", "work"]);
-    const work = listed.find((item) => item.id === "work");
-    assert.equal(work?.email, "me@work.com");
-    assert.equal(work?.displayName, "Me At Work");
-    assert.equal(work?.isDefault, true);
-    assert.equal(work?.incoming.host, "imap.gmail.com");
-    assert.equal(work?.outgoing.port, 587);
-    assert.equal(work?.outgoing.encryption, "start-tls");
-    assert.equal(listed.find((item) => item.id === "tokened")?.incoming.auth, "oauth2");
-    // Written as Polymux's own from then on.
-    const saved = await stored(storePath);
-    assert.equal(saved.accounts.length, 2);
-  });
-});
-
-test("adoption carries the secrets across into Polymux's own keychain entries", async () => {
-  await withLegacy(async (accounts, _storePath, harnessed) => {
-    await accounts.list();
-    const written = harnessed.calls
-      .filter((call) => (call.input ?? "").startsWith("add-generic-password"))
-      .map((call) => call.input ?? "");
-    // The old config named a command per secret; each was run once and its
-    // output filed under Polymux's own service name.
-    assert.ok(
-      written.some((line) => line.includes(keychainService("work")) && line.includes("print-the-password-value")),
-      "the password should be carried over",
-    );
-    assert.ok(
-      written.some(
-        (line) =>
-          line.includes(keychainService("tokened")) &&
-          line.includes("(access-token)") &&
-          line.includes("print-the-access-token-value"),
-      ),
-      "the access token should be carried over",
-    );
-    assert.ok(
-      written.some(
-        (line) =>
-          line.includes("(refresh-token)") && line.includes("print-the-refresh-token-value"),
-      ),
-      "the refresh token is what lets the account renew at all",
-    );
-  });
-});
-
-test("adoption never runs where Polymux already has accounts", async () => {
-  await withLegacy(
-    async (accounts, storePath) => {
-      const listed = await accounts.list();
-      assert.deepEqual(listed.map((item) => item.id), ["work"]);
-      const saved = await stored(storePath);
-      assert.equal(saved.accounts.length, 1, "the existing file must win");
-      assert.equal((saved.accounts[0] as {email: string}).email, "me@work.com");
-    },
-    {existing: EXISTING},
-  );
-});
-
-test("adoption leaves the file it read exactly as it found it", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "polymux-adopt-"));
-  const legacy = path.join(directory, "himalaya.toml");
-  await writeFile(legacy, LEGACY, "utf8");
-  const accounts = new EmailAccounts({
-    storePath: path.join(directory, "email-accounts.json"),
-    downloadsDir: path.join(directory, "Downloads"),
-    importFrom: legacy,
-    run: async () => ({code: 0, stdout: "", stderr: ""}),
-  });
-  await accounts.list();
-  await accounts.close();
-  assert.equal(await readFile(legacy, "utf8"), LEGACY, "the old file is not ours to change");
-  await rm(directory, {recursive: true, force: true});
-});
-
-
-/**
  * Answers the two requests the OAuth library makes: the provider's discovery
  * document, then the token exchange. Faking at this level keeps the real
  * library in the path — the part worth testing is that a rotated refresh token
@@ -991,161 +841,6 @@ test("an attachment cannot write outside the downloads directory", async () => {
     const [written] = await accounts.download({id: "7", account: "work", folder: "INBOX"});
     assert.match(written, /Downloads\/escaped\.txt$/);
     assert.equal(written.includes(".."), false, "a filename is not a path");
-  });
-});
-
-/**
- * An account whose sign-in is held by something outside Polymux. The old setup
- * pointed at a token helper that refreshes on its own; Polymux was never given
- * a refresh token for it, so the only thing that can produce a working token
- * is that same command.
- */
-const HELPER = [
-  "[accounts.helped]",
-  'email = "carl@kinnov.com"',
-  'backend.type = "imap"',
-  'backend.host = "imap.gmail.com"',
-  "backend.port = 993",
-  'backend.encryption.type = "tls"',
-  'backend.login = "carl@kinnov.com"',
-  'backend.auth.type = "oauth2"',
-  'backend.auth.client-id = "client-1"',
-  'backend.auth.token-url = "https://oauth2.googleapis.com/token"',
-  'backend.auth.access-token.cmd = "print-a-fresh-token"',
-  "",
-  "[accounts.keyringed]",
-  'email = "carl@live.com"',
-  'backend.type = "imap"',
-  'backend.host = "outlook.office365.com"',
-  "backend.port = 993",
-  'backend.encryption.type = "tls"',
-  'backend.login = "carl@live.com"',
-  'backend.auth.type = "oauth2"',
-  'backend.auth.client-id = "client-2"',
-  'backend.auth.client-secret.raw = ""',
-  'backend.auth.token-url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"',
-  'backend.auth.access-token.cmd = "print-another-fresh-token"',
-  'backend.auth.refresh-token.keyring = "somewhere-else"',
-  "",
-].join("\n");
-
-async function withHelper(
-  body: (accounts: EmailAccounts, storePath: string, harnessed: ReturnType<typeof harness>) => Promise<void>,
-): Promise<void> {
-  const directory = await mkdtemp(path.join(tmpdir(), "polymux-helper-"));
-  const storePath = path.join(directory, "email-accounts.json");
-  const legacy = path.join(directory, "himalaya.toml");
-  await writeFile(legacy, HELPER, "utf8");
-  let minted = 0;
-  const harnessed = harness({
-    results: (call) =>
-      call.command === "/bin/sh"
-        ? {code: 0, stdout: `token-${++minted}\n`, stderr: ""}
-        : undefined,
-  });
-  const accounts = new EmailAccounts({
-    storePath,
-    downloadsDir: path.join(directory, "Downloads"),
-    importFrom: legacy,
-    run: harnessed.run,
-  });
-  try {
-    await body(accounts, storePath, harnessed);
-  } finally {
-    await accounts.close();
-    await rm(directory, {recursive: true, force: true});
-  }
-}
-
-test("an account renewed by a helper keeps the helper, not one reading of it", async () => {
-  await withHelper(async (accounts, storePath) => {
-    await accounts.list();
-    const saved = await stored(storePath);
-    const helped = saved.accounts.find((item) => item.id === "helped");
-    // Storing the command's output once would work until the token expired and
-    // then leave the mailbox dead with nothing able to renew it.
-    assert.deepEqual(helped?.auth, {kind: "command", cmd: "print-a-fresh-token"});
-  });
-});
-
-test("a refresh token Polymux cannot read is not counted as one", async () => {
-  await withHelper(async (accounts, storePath) => {
-    await accounts.list();
-    const saved = await stored(storePath);
-    // `refresh-token.keyring` names an entry in another tool's keychain
-    // namespace. Treating it as a refresh token would produce an account that
-    // claims to be renewable and is not.
-    assert.deepEqual((saved.accounts.find((item) => item.id === "keyringed"))?.auth, {
-      kind: "command",
-      cmd: "print-another-fresh-token",
-    });
-  });
-});
-
-test("an empty client secret is not recorded as holding one", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "polymux-empty-"));
-  const legacy = path.join(directory, "himalaya.toml");
-  // Same account, but with a refresh token Polymux can read, so it stays OAuth.
-  await writeFile(
-    legacy,
-    HELPER.replace(
-      'backend.auth.refresh-token.keyring = "somewhere-else"',
-      'backend.auth.refresh-token.raw = "a-real-refresh-token"',
-    ),
-    "utf8",
-  );
-  const storePath = path.join(directory, "email-accounts.json");
-  const accounts = new EmailAccounts({
-    storePath,
-    downloadsDir: path.join(directory, "Downloads"),
-    importFrom: legacy,
-    run: async () => ({code: 0, stdout: "", stderr: ""}),
-  });
-  await accounts.list();
-  const saved = await stored(storePath);
-  const auth = saved.accounts.find((item) => item.id === "keyringed")?.auth as Record<string, unknown>;
-  assert.equal(auth.kind, "oauth2");
-  // `client-secret.raw = ""` is a public client saying it has none. Claiming
-  // one makes the account file disagree with the keychain.
-  assert.equal("hasClientSecret" in auth, false);
-  await accounts.close();
-  await rm(directory, {recursive: true, force: true});
-});
-
-test("the helper is asked again rather than its answer being reused forever", async () => {
-  await withHelper(async (accounts, _storePath, harnessed) => {
-    await accounts.list();
-    // Two mailbox operations; the token is cached briefly, so the helper runs
-    // once — but nothing is ever written to the keychain for this account.
-    await accounts.folders("helped").catch((): undefined => undefined);
-    await accounts.folders("helped").catch((): undefined => undefined);
-    const helperRuns = harnessed.calls.filter(
-      (call) => call.command === "/bin/sh" && call.args[1] === "print-a-fresh-token",
-    );
-    assert.ok(helperRuns.length >= 1, "the helper has to be asked for a token");
-    const filed = harnessed.calls.filter((call) =>
-      (call.input ?? "").startsWith("add-generic-password") && (call.input ?? "").includes("helped"),
-    );
-    assert.deepEqual(filed, [], "a token that expires must not be filed as a stored secret");
-  });
-});
-
-test("deleting the last mailbox does not bring them all back", async () => {
-  await withHelper(async (accounts, storePath) => {
-    assert.equal((await accounts.list()).length, 2);
-    await accounts.remove("helped");
-    await accounts.remove("keyringed");
-    assert.deepEqual(await accounts.list(), []);
-    // A second run must not re-adopt: the accounts were removed on purpose,
-    // and an empty store is a decision rather than a fresh install.
-    const again = new EmailAccounts({
-      storePath,
-      downloadsDir: path.join(path.dirname(storePath), "Downloads"),
-      importFrom: path.join(path.dirname(storePath), "himalaya.toml"),
-      run: async () => ({code: 0, stdout: "", stderr: ""}),
-    });
-    assert.deepEqual(await again.list(), [], "removal has to stick");
-    await again.close();
   });
 });
 

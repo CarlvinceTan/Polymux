@@ -216,16 +216,6 @@ export type NewRun = Pick<AgentRun, "id" | "conversationId"> &
 export type NewGoal = Pick<Goal, "id" | "conversationId" | "objective"> &
   Partial<Pick<Goal, "status">>;
 export type NewCompaction = Omit<Compaction, "createdAt">;
-export type NewMemory = Pick<
-  MemoryRecord,
-  "id" | "scope" | "kind" | "content"
-> &
-  Partial<
-    Pick<
-      MemoryRecord,
-      "scopeId" | "sourceConversationId" | "confidence" | "metadata"
-    >
-  >;
 export type NewArtifact = Pick<Artifact, "id" | "kind" | "name" | "path"> &
   Partial<
     Pick<

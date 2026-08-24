@@ -47,15 +47,6 @@ const migrations: Migration[] = [
       UNIQUE(conversation_id, through_message_sequence)
     ) STRICT;
 
-    CREATE TABLE memories (
-      id TEXT PRIMARY KEY, scope TEXT NOT NULL, scope_id TEXT, kind TEXT NOT NULL, content TEXT NOT NULL,
-      source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL, confidence REAL NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT, metadata_json TEXT NOT NULL DEFAULT '{}',
-      CHECK(scope IN ('user','conversation')), CHECK(confidence >= 0 AND confidence <= 1),
-      CHECK((scope = 'user' AND scope_id IS NULL) OR (scope != 'user' AND scope_id IS NOT NULL))
-    ) STRICT;
-    CREATE INDEX memories_scope_idx ON memories(scope, scope_id, updated_at DESC);
-
     CREATE TABLE preferences (
       key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL
     ) STRICT;
@@ -114,14 +105,6 @@ const migrations: Migration[] = [
     sql: `
     ALTER TABLE messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
   `,
-  },
-  {
-    // References used to be recorded for every page a run opened, which filled
-    // the Summary panel with search-result pages the reply never cited. The
-    // rule is now "a link the assistant put in its readable text", so drop the
-    // rows the old rule collected that the new one would not have kept.
-    version: 4,
-    run: dropUncitedWebReferences,
   },
   {
     // A summary is only safe to reuse while the turns it describes are still
@@ -220,65 +203,6 @@ function addCompactionFingerprint(database: DatabaseSync): void {
   database.exec(
     "ALTER TABLE compactions ADD COLUMN prefix_fingerprint TEXT NOT NULL DEFAULT ''",
   );
-}
-
-function dropUncitedWebReferences(database: DatabaseSync): void {
-  // Only agent-recorded web rows are in question: a file the user attached has
-  // no run, and is theirs to remove.
-  const rows = database
-    .prepare("SELECT id, conversation_id, uri FROM refs WHERE kind='web' AND run_id IS NOT NULL")
-    .all() as Array<{ id: string; conversation_id: string; uri: string }>;
-  if (!rows.length) return;
-
-  const cited = new Map<string, Set<string>>();
-  const citedIn = (conversationId: string): Set<string> => {
-    const known = cited.get(conversationId);
-    if (known) return known;
-    const messages = database
-      .prepare("SELECT content_json FROM messages WHERE conversation_id=? AND role='assistant'")
-      .all(conversationId) as Array<{ content_json: string }>;
-    const urls = new Set<string>();
-    for (const message of messages)
-      for (const url of urlsInReply(message.content_json)) urls.add(url);
-    cited.set(conversationId, urls);
-    return urls;
-  };
-
-  const remove = database.prepare("DELETE FROM refs WHERE id=?");
-  for (const row of rows) if (!citedIn(row.conversation_id).has(normalizeUri(row.uri))) remove.run(row.id);
-}
-
-/** Urls in an assistant message's readable text. Tool-call arguments and
- * reasoning are not the reply, so a page merely opened stays uncited. */
-function urlsInReply(contentJson: string): string[] {
-  let content: unknown;
-  try {
-    content = JSON.parse(contentJson);
-  } catch {
-    return [];
-  }
-  const blocks = Array.isArray(content) ? content : [];
-  const text = typeof content === "string"
-    ? content
-    : blocks
-        .map((block) => {
-          const item = block as { type?: unknown; text?: unknown };
-          return item.type === "text" && typeof item.text === "string" ? item.text : "";
-        })
-        .filter(Boolean)
-        .join("\n");
-  return [...text.matchAll(/https?:\/\/[^\s<>()[\]"']+/g)]
-    .map((match) => normalizeUri(match[0]!.replace(/[).,;:!?'"]+$/, "")));
-}
-
-/** Stored uris went through `new URL()` when they were recorded; cited ones
- * have not, so both sides are normalised before they are compared. */
-function normalizeUri(value: string): string {
-  try {
-    return new URL(value).toString();
-  } catch {
-    return value;
-  }
 }
 
 export function migrate(database: DatabaseSync): void {

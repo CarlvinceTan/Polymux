@@ -15,7 +15,7 @@ test("discovers Pi-compatible global skills with progressive metadata", async ()
       "---\nname: pdf-tools\ndescription: Work with PDF files.\n---\n\n# Instructions",
     );
     await writeFile(
-      join(directory, "flare.yaml"),
+      join(directory, "polymux.yaml"),
       'display_name: "PDF Tools"\n',
     );
     const loaded = new SkillLoader({ home }).load();
@@ -125,7 +125,7 @@ test("surfaces manifest and frontmatter metadata for the skill catalogue", async
       "---\nname: hub-use\ndescription: Handle email.\nauthor: Polymux\ncategory: Communication\n---\n",
     );
     await writeFile(
-      join(directory, "flare.yaml"),
+      join(directory, "polymux.yaml"),
       'display_name: "Hub"\n',
     );
     const loaded = new SkillLoader({ home }).load();

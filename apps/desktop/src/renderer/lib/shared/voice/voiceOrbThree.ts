@@ -204,7 +204,7 @@ void main() {
   // The dark sweep remains predominantly blue. Magenta only tints its endpoint
   // before the ramp travels through violet, brand blue, and cyan. Violet and
   // magenta hold just enough hue travel to keep the form from flattening; brand
-  // blue owns the widest band so the orb reads as FlareHQ's blue.
+  // blue owns the widest band so the orb reads as Polymux's blue.
   vec3 magentaHint = mix(uBlue, uMagenta, 0.10);
   vec3 colour = mix(uInk, magentaHint, smoothstep(0.0, 0.18, shade));
   colour = mix(colour, uViolet, smoothstep(0.16, 0.32, shade));

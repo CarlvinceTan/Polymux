@@ -56,6 +56,7 @@
   /** Only models whose provider is configured — the ones a run can actually
       use — reach the menu. */
   let availableModels: ModelDto[] = [];
+  let providerLogos: Record<string, string | undefined> = {};
   let modelsLoaded = false;
   let modelSearch = '';
   let searchField: HTMLInputElement;
@@ -116,6 +117,7 @@
   $: primary = (hasContent ? 'send' : active ? 'stop' : speechModeEnabled ? 'mic' : 'send') as 'send' | 'stop' | 'mic';
   $: chips = attachments.map(({file: _file, ...chip}) => chip);
   $: openModel = modelMenuItems.find((model) => modelKey(model) === openModelKey) ?? null;
+  $: selectedModel = availableModels.find((model) => model.selected) ?? null;
   /** The selected model leads the list so the current choice is visible without
       scrolling; the rest keep their original order. */
   $: modelMenuItems = availableModels
@@ -233,6 +235,7 @@
       try {
         const [models, providers] = await Promise.all([api.models.list(), api.providers.list()]);
         const configured = new Set(providers.filter((provider) => provider.configured).map((provider) => provider.id));
+        providerLogos = Object.fromEntries(providers.map((provider) => [provider.id, provider.logoDataUrl]));
         availableModels = models.filter((model) => model.custom || configured.has(model.provider));
         modelsLoaded = true;
       } catch {
@@ -633,7 +636,14 @@
     {/if}
     {#if advancedMode}
     <div bind:this={modelWrap} class="prompt-option-wrap">
-      <button type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} onclick={() => void toggleModelMenu()}><Icon name="brain" size={14}/><span>{$t('composer.model')}</span></button>
+      <button type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} onclick={() => void toggleModelMenu()}>
+        {#if selectedModel}
+          <span class="prompt-model-mark"><ProviderLogo provider={selectedModel.provider} logoDataUrl={providerLogos[selectedModel.provider]} size={12}/></span>
+        {:else}
+          <Icon name="brain" size={14}/>
+        {/if}
+        <span>{$t('composer.model')}</span>
+      </button>
       {#if modelMenuOpen && modelsLoaded}
         <div class="polymux-dropdown-menu model-menu" role="menu" aria-label={$t('composer.modelOptions')}>
           <div class="model-menu-search">
@@ -671,7 +681,7 @@
                   onfocus={(event) => openRow(model, event.currentTarget)}
                   onclick={(event) => openRow(model, event.currentTarget)}
                 >
-                  <span class="model-menu-mark"><ProviderLogo provider={model.provider} size={14}/></span>
+                  <span class="model-menu-mark"><ProviderLogo provider={model.provider} logoDataUrl={providerLogos[model.provider]} size={14}/></span>
                   <span class="model-menu-name">{model.name}</span>
                   <span class="reasoning-menu-check" aria-hidden="true">
                     {#if model.selected}<Icon name="check" size={13}/>{/if}

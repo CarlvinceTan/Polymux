@@ -25,25 +25,17 @@ test.describe('welcome view', () => {
     await expect(splash).toBeVisible();
     await expect(splash.locator('svg.startup-mark')).toBeVisible();
     await expect(splash.locator('.startup-word')).toHaveText('Polymux');
-    // Freeze the sequence before reading it. The rays drop their animation the
-    // moment it finishes — that is what leaves the settled mark as plain
-    // untransformed paths — so a machine slow enough to arrive after the last
-    // beat would otherwise read the wiring as absent rather than as done.
+    // Freeze the sequence before reading it so the moving lockup stays put.
     await page.evaluate(() => document.getAnimations().forEach((a) => a.pause()));
-    // The beats of the sequence, each on the element that carries it: the mark
-    // drawing itself, then the lockup opening — the brand travelling left while
-    // the wordmark slides the other way out from behind it. Names rather than
-    // pixels — what a machine can hold to here is that every beat is still
-    // wired up, and that the last of them is the one theme-boot waits on to
-    // lift the cover.
+    // The mark itself stays complete and still. The only beats are the lockup
+    // travelling left and the wordmark sliding right out from behind it.
     const beats = await splash.evaluate((node) => {
       const of = (selector: string) => {
         const style = getComputedStyle(node.querySelector(selector)!);
         return [style.animationName, style.animationDuration, style.animationDelay];
       };
       return {
-        ray: of('.startup-mark path'),
-        notch: of('.startup-mark path:nth-child(16)'),
+        mark: of('.startup-mark path'),
         brand: of('.startup-brand'),
         slide: of('.startup-word-slide'),
         // The edge the wordmark comes through does not move, so it is a static
@@ -55,10 +47,7 @@ test.describe('welcome view', () => {
       };
     });
     expect(beats).toEqual({
-      ray: ['startup-mark-draw', '0.9s', '0s'],
-      // The notches that cap the rays run shorter and start later, so they
-      // arrive about where a ray has grown to by then.
-      notch: ['startup-mark-draw', '0.48s', '0.42s'],
+      mark: ['none', '0s', '0s'],
       // Last to end — the extra .22s past the travel is the settled hold, and
       // its end is what lifts the cover.
       brand: ['startup-brand-in', '1.22s', '1.08s'],
@@ -76,7 +65,7 @@ test.describe('welcome view', () => {
       const round = (value: number) => Math.round(value * 100) / 100;
       return {markWidth: round(mark.width), markHeight: round(mark.height), gap: getComputedStyle(node).gap, fontSize: style.fontSize, fontWeight: style.fontWeight, tracking: style.letterSpacing};
     });
-    // The Polymux mark is radially symmetric, so the lockup box is square.
+    // The mark keeps a square optical box so the lockup does not move at handoff.
     expect(startupLockup).toEqual({markWidth: 64, markHeight: 64, gap: '12px', fontSize: '48px', fontWeight: '750', tracking: '-2.16px'});
   });
 
@@ -114,6 +103,7 @@ test.describe('welcome view', () => {
 
     const logo = await page.evaluate(() => fetch('/polymux.svg').then((response) => response.text()));
     expect(logo).toContain('fill="#000"');
+    expect(logo).toContain('M 40 40 L 120 40 A 60 60');
     expect(logo).not.toContain('<rect');
 
     // Intentional Polymux simplification: no recent chats, no suggestion cards.
@@ -134,6 +124,9 @@ test.describe('welcome view', () => {
     await expect(toolbar.getByText('VOICE')).toBeVisible();
     await expect(toolbar.getByText('GOAL')).toBeVisible();
     await expect(toolbar.getByText('MODEL')).toBeVisible();
+    await toolbar.getByText('MODEL').click();
+    await expect(toolbar.locator('.prompt-model-mark .provider-logo')).toBeVisible();
+    await expect(page.getByRole('menu', {name: 'Model options'}).locator('.model-menu-mark .provider-logo').first()).toBeVisible();
     await expect(toolbar.getByText('PLUGINS')).toHaveCount(0);
     await expect(toolbar.getByText('TEAMS')).toHaveCount(0);
   });
@@ -3547,7 +3540,7 @@ test.describe('hub multi-account', () => {
 
     await expect(modal.getByRole('heading', {name: 'Linked accounts'})).toBeVisible();
     await expect(modal.getByRole('code').filter({hasText: '@carl.builds'})).toBeVisible();
-    await expect(modal.getByRole('code').filter({hasText: '@flarehq'})).toBeVisible();
+    await expect(modal.getByRole('code').filter({hasText: '@polymux'})).toBeVisible();
     // Each account carries its own unlink, and more can be added alongside.
     await expect(modal.getByRole('button', {name: 'Unlink'})).toHaveCount(2);
     await expect(modal.getByRole('heading', {name: 'Add another account'})).toBeVisible();
@@ -3556,7 +3549,7 @@ test.describe('hub multi-account', () => {
     // code element: the surviving name also appears in the rail and header.
     await modal.getByRole('button', {name: 'Unlink'}).first().click();
     await expect(modal.getByRole('button', {name: 'Unlink'})).toHaveCount(1);
-    await expect(modal.getByRole('code').filter({hasText: '@flarehq'})).toBeVisible();
+    await expect(modal.getByRole('code').filter({hasText: '@polymux'})).toBeVisible();
     await expect(modal.getByRole('heading', {name: 'Linked account', exact: true})).toBeVisible();
   });
 });

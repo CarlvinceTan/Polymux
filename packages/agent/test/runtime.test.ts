@@ -1554,7 +1554,6 @@ test("task schema offers explicit lossless capability routing", async () => {
         task.parameters.required.includes("tool_groups"),
     );
     assert.ok(properties.depends_on);
-    assert.equal(properties.ledger, undefined);
     assert.ok(properties.skill_names);
     assert.match(properties.skill_names.description ?? "", /Exact names/);
     assert.match(
@@ -1564,9 +1563,7 @@ test("task schema offers explicit lossless capability routing", async () => {
     const toolNames =
       inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
     assert.ok(toolNames.includes("cancel_subagents"));
-    assert.ok(!toolNames.some((name) => name.startsWith("ledger_")));
     assert.match(task?.description ?? "", /Combining parallel findings/);
-    assert.doesNotMatch(task?.description ?? "", /ledger|shared_pool/i);
   } finally {
     storage.close();
   }

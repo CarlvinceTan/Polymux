@@ -162,7 +162,6 @@ import {
   browserSettingsUpdate,
   generalSettingsPreference,
   generalSettingsUpdate,
-  hasOnboardingFlag,
   reasoningEffort,
 } from "./backend/settings.js";
 import type { CustomProviderConfig } from "./backend/models.js";
@@ -667,7 +666,6 @@ export class DesktopBackend {
       // Markdown meant to be opened, searched, and edited by hand, and it is
       // the same layout Codex keeps at ~/.codex/memories.
       directory: polymuxPath("memories"),
-      legacyStorage: this.#storage,
     });
     this.#axReader = new AxReader({
       sourcePath: options.axReaderSourcePath ?? "",
@@ -4254,17 +4252,7 @@ export class DesktopBackend {
 
   #generalSettings(): GeneralSettingsDto {
     const stored = this.#storage.getPreference("general-access")?.value;
-    const settings = generalSettingsPreference(stored);
-    // First-run setup predates nothing: an install that already asked for
-    // permissions has been used before, so it must not be sent back through
-    // setup just because this flag did not exist when it was last written.
-    if (
-      !settings.onboardingCompleted &&
-      !hasOnboardingFlag(stored) &&
-      this.#firstRunPermissions.completed()
-    )
-      return { ...settings, onboardingCompleted: true };
-    return settings;
+    return generalSettingsPreference(stored);
   }
 
   #storeGeneralSettings(settings: GeneralSettingsDto): void {

@@ -134,9 +134,3 @@ test("a cancelled exclusive run keeps the lane closed until the agent settles", 
   }), 0);
   assert.equal(managerRunCapacity({jobs: jobs.list(), activeTopLevelRuns: [], chatId: "chat"}), 2);
 });
-
-test("manager scheduling has no candidate-store coordination surface", async () => {
-  const source = await import("node:fs/promises").then(({readFile}) =>
-    readFile(new URL("./manager-scheduler.ts", import.meta.url), "utf8"));
-  assert.doesNotMatch(source, /shared_pool|candidate.store/i);
-});

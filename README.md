@@ -3,6 +3,29 @@
 **The open-source ChatGPT desktop app—with messaging, social media, a virtual
 drive, browser automation, and more built in.**
 
+<p align="center">
+  <img src="docs/assets/polymux-chat.png" alt="Polymux main chat with the chat and workspace drawers open" width="100%">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/polymux-drive-expanded.png" alt="Polymux Drive workspace"></td>
+    <td width="50%"><img src="docs/assets/polymux-hub-expanded.png" alt="Polymux Hub workspace with an email open"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Drive</sub></td>
+    <td align="center"><sub>Hub</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/polymux-browser-expanded.png" alt="Polymux Browser workspace showing GitHub"></td>
+    <td width="50%"><img src="docs/assets/polymux-tasks-expanded.png" alt="Polymux Tasks workspace with a populated board"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Browser</sub></td>
+    <td align="center"><sub>Tasks</sub></td>
+  </tr>
+</table>
+
 Polymux is a desktop agent built with Electron and TypeScript, designed around the
 idea that one agent should be able to work with you throughout a session. Its core
 capabilities include **Hub**, a central communication layer supporting around 17
@@ -12,12 +35,11 @@ external and in-app browsing; **Workspace**, a tabbed interface for accessing ev
 core feature; and a fast, grep-based **Memory** system, complemented by **ComputerHistory**
 for understanding your computer-use history.
 
-The Main Agent uses a **Ledger** to delegate work to parallel Task Agents, either
-through deliberate task design or by allowing agents to take ownership themselves.
-This keeps more context with the Main Agent for better delegation and long-running
-work, while keeping the interface as low-friction as possible. Basic mode offers a
-simple plug-and-play experience; Advanced mode exposes additional configuration for
-those who want more control.
+The main agent can delegate focused work to parallel **Subagents**, keeping the
+primary chat coherent while specialised work runs independently. The chat-scoped
+**Tasks** board tracks work that needs attention and its progress. Basic mode offers
+a simple plug-and-play experience; Advanced mode exposes additional configuration
+for those who want more control.
 
 Polymux is desktop-only for now. This is an intentional starting point: a local
 environment offers an agent broad capabilities with fewer restrictions, while the

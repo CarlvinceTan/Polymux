@@ -35,7 +35,7 @@ Do not edit either instruction file unless explicitly asked.
 ## Verification
 
 - Match verification to the change. For agent activity, confirm the parent run,
-  terminal state, elapsed time, result, and any expected Ledger update; a
+  terminal state, elapsed time, result, and any expected Tasks update; a
   completed-looking activity row alone is insufficient.
 - Do not claim visual verification when only logs or backend state were checked.
 - Restore temporary settings, cancel unfinished test runs, and leave the user's

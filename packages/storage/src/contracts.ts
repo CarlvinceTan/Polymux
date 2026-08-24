@@ -6,15 +6,12 @@ import type {
   Conversation,
   Id,
   JsonValue,
-  MemoryRecord,
-  MemoryScope,
   MessageRole,
   MessageSearchHit,
   NewArtifact,
   NewAttachment,
   NewCompaction,
   NewConversation,
-  NewMemory,
   NewMessage,
   NewReference,
   NewRun,
@@ -91,14 +88,6 @@ export interface RunStore {
 export interface MemoryStore {
   saveCompaction(input: NewCompaction): Compaction;
   getLatestCompaction(conversationId: Id): Compaction | null;
-  upsertMemory(input: NewMemory): MemoryRecord;
-  getMemory(id: Id): MemoryRecord | null;
-  listMemories(filter?: {
-    scope?: MemoryScope;
-    scopeId?: Id | null;
-    includeDeleted?: boolean;
-  }): MemoryRecord[];
-  deleteMemory(id: Id): boolean;
   setPreference(key: string, value: JsonValue): Preference;
   getPreference(key: string): Preference | null;
   listPreferences(): Preference[];

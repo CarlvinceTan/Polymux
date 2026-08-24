@@ -13,7 +13,7 @@ const bundled = (tier: string): string =>
 /**
  * The bundled set is only ever read through the mirror, so it is loaded the way
  * the app loads it — both tiers merged flat — rather than by walking the source
- * tree. A skill whose frontmatter or `flare.yaml` is malformed ships silently
+ * tree. A skill whose frontmatter or `polymux.yaml` is malformed ships silently
  * otherwise: it simply stops appearing.
  */
 function loadMirror() {

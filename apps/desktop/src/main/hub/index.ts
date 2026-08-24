@@ -367,9 +367,6 @@ export class Communications {
         options.emailStorePath ??
         path.join(polymuxHome(this.#home), "state", "email-accounts.json"),
       downloadsDir: path.join(this.#home, "Downloads"),
-      // Accounts set up before Polymux kept its own are adopted once, from
-      // where they were. Nothing writes there and the file is left whole.
-      importFrom: path.join(this.#home, ".config", "himalaya", "config.toml"),
       run: this.#run,
       ...(options.mailConsent ? {consent: options.mailConsent} : {}),
       oauthClients: mailOAuthClients(),

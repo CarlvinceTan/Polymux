@@ -31,7 +31,6 @@ test("coordination mode expresses independent and dependent work", async () => {
   assert.ok(requests.every((request) => request.strictContinuation === true));
   const properties = tool.parameters.properties as Record<string, unknown>;
   assert.ok(properties.coordination);
-  assert.equal(properties.ledger, undefined);
   assert.ok(properties.depends_on);
   assert.match(
     (properties.skill_names as { description?: string }).description ?? "",
@@ -204,25 +203,22 @@ test("strict continuation refuses silent fresh-worker fallback", () => {
   );
 });
 
-test("baseline task dispatch has no shared-store controls", async () => {
+test("baseline task dispatch has no optional routing controls", async () => {
   let captured: SubagentRequest | undefined;
   const tool = createTaskTool(async (request) => {
     captured = request;
     return { name: "subagent_1" };
   });
-  await tool.execute({ description: "Legacy", prompt: "Work" }, context);
+  await tool.execute({ description: "Baseline", prompt: "Work" }, context);
   assert.equal(captured?.coordination, undefined);
   assert.equal(captured?.strictContinuation, undefined);
   const properties = tool.parameters.properties as Record<string, unknown>;
-  assert.equal(properties.ledger, undefined);
   assert.equal(properties.coordination, undefined);
 });
 
-test("the routed task surface exposes no removed shared-store controls", () => {
+test("the routed task surface exposes current coordination controls", () => {
   const runner = async () => ({ name: "subagent_1" });
   const task = createTaskTool(runner, { capabilityRouting: true });
-  const serialized = JSON.stringify({description: task.description, parameters: task.parameters});
-  assert.doesNotMatch(serialized, /ledger|shared_pool/i);
   const properties = task.parameters.properties as Record<string, {enum?: string[]}>;
   assert.deepEqual(properties.coordination?.enum, ["independent", "dependent"]);
 });

@@ -95,10 +95,9 @@ export class ChatPool {
     this.#terminalHistoryLimit =
       options.terminalHistoryLimit ?? DEFAULT_TERMINAL_HISTORY_LIMIT;
     const stored = store.getPreference(PREFERENCE_KEY)?.value;
-    const parsed = parseJobs(stored);
-    this.#jobs = parsed.jobs;
+    this.#jobs = parseJobs(stored);
     this.#recoverInterruptedJobs();
-    if (parsed.migrated || this.#pruneTerminalJobs()) this.#persist();
+    if (this.#pruneTerminalJobs()) this.#persist();
   }
 
   enqueue(input: EnqueueManagerJob): ManagerJob {
@@ -516,23 +515,13 @@ function clone(job: ManagerJob): ManagerJob {
   };
 }
 
-function parseJobs(value: JsonValue | undefined): {
-  jobs: ManagerJob[];
-  migrated: boolean;
-} {
-  if (!Array.isArray(value)) return { jobs: [], migrated: false };
-  let migrated = false;
+function parseJobs(value: JsonValue | undefined): ManagerJob[] {
+  if (!Array.isArray(value)) return [];
   const jobs = value.flatMap((entry) => {
     if (!validJob(entry)) return [];
-    const stored = entry as unknown as ManagerJob & { conversationId?: string };
-    if (!stored.chatId && stored.conversationId) {
-      stored.chatId = stored.conversationId;
-      delete stored.conversationId;
-      migrated = true;
-    }
-    return [clone(stored)];
+    return [clone(entry as unknown as ManagerJob)];
   });
-  return { jobs, migrated };
+  return jobs;
 }
 
 function validJob(value: JsonValue): boolean {
@@ -541,8 +530,7 @@ function validJob(value: JsonValue): boolean {
   return (
     typeof job.id === "string" &&
     typeof job.messageId === "string" &&
-    (typeof job.chatId === "string" ||
-      typeof job.conversationId === "string") &&
+    typeof job.chatId === "string" &&
     typeof job.text === "string" &&
     Array.isArray(job.attachments) &&
     job.attachments.every((item) => typeof item === "string") &&

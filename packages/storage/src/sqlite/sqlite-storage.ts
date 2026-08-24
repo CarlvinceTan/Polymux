@@ -8,15 +8,12 @@ import type {
   Conversation,
   Id,
   JsonValue,
-  MemoryRecord,
-  MemoryScope,
   MessageRole,
   MessageSearchHit,
   NewArtifact,
   NewAttachment,
   NewCompaction,
   NewConversation,
-  NewMemory,
   NewMessage,
   NewReference,
   NewRun,
@@ -145,21 +142,6 @@ function compaction(row: Row): Compaction {
     tokenCount: nullableNumber(row.token_count),
     prefixFingerprint: text(row.prefix_fingerprint),
     createdAt: text(row.created_at),
-  };
-}
-function memory(row: Row): MemoryRecord {
-  return {
-    id: text(row.id),
-    scope: text(row.scope) as MemoryScope,
-    scopeId: nullableText(row.scope_id),
-    kind: text(row.kind),
-    content: text(row.content),
-    sourceConversationId: nullableText(row.source_conversation_id),
-    confidence: Number(row.confidence),
-    createdAt: text(row.created_at),
-    updatedAt: text(row.updated_at),
-    deletedAt: nullableText(row.deleted_at),
-    metadata: decode(row.metadata_json),
   };
 }
 function artifact(row: Row): Artifact {
@@ -681,75 +663,6 @@ export class SqliteStorage implements Storage {
       )
       .get(conversationId) as Row | undefined;
     return row ? compaction(row) : null;
-  }
-
-  upsertMemory(input: NewMemory): MemoryRecord {
-    const existing = this.getMemory(input.id);
-    const now = this.#clock();
-    this.database
-      .prepare(
-        `INSERT INTO memories (id,scope,scope_id,kind,content,source_conversation_id,confidence,created_at,updated_at,deleted_at,metadata_json)
-      VALUES (?,?,?,?,?,?,?,?,?,NULL,?) ON CONFLICT(id) DO UPDATE SET scope=excluded.scope,scope_id=excluded.scope_id,kind=excluded.kind,content=excluded.content,source_conversation_id=excluded.source_conversation_id,confidence=excluded.confidence,updated_at=excluded.updated_at,deleted_at=NULL,metadata_json=excluded.metadata_json`,
-      )
-      .run(
-        input.id,
-        input.scope,
-        input.scopeId ?? null,
-        input.kind,
-        input.content,
-        input.sourceConversationId ?? null,
-        input.confidence ?? 1,
-        existing?.createdAt ?? now,
-        now,
-        encode(input.metadata ?? emptyObject),
-      );
-    return this.getMemory(input.id)!;
-  }
-
-  getMemory(id: Id): MemoryRecord | null {
-    const row = this.database
-      .prepare("SELECT * FROM memories WHERE id=?")
-      .get(id) as Row | undefined;
-    return row ? memory(row) : null;
-  }
-
-  listMemories(
-    filter: {
-      scope?: MemoryScope;
-      scopeId?: Id | null;
-      includeDeleted?: boolean;
-    } = {},
-  ): MemoryRecord[] {
-    const clauses: string[] = [];
-    const params: Array<string | null> = [];
-    if (filter.scope) {
-      clauses.push("scope=?");
-      params.push(filter.scope);
-    }
-    if (filter.scopeId !== undefined) {
-      clauses.push("scope_id IS ?");
-      params.push(filter.scopeId);
-    }
-    if (!filter.includeDeleted) clauses.push("deleted_at IS NULL");
-    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    return (
-      this.database
-        .prepare(`SELECT * FROM memories ${where} ORDER BY updated_at DESC,id`)
-        .all(...params) as Row[]
-    ).map(memory);
-  }
-
-  deleteMemory(id: Id): boolean {
-    const now = this.#clock();
-    return (
-      Number(
-        this.database
-          .prepare(
-            "UPDATE memories SET deleted_at=?,updated_at=? WHERE id=? AND deleted_at IS NULL",
-          )
-          .run(now, now, id).changes,
-      ) > 0
-    );
   }
 
   setPreference(key: string, value: JsonValue): Preference {

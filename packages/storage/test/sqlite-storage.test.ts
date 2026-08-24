@@ -211,7 +211,7 @@ test("recompacting the same prefix replaces its summary", () => {
   }
 });
 
-test("keeps compaction, durable memory and preferences distinct", () => {
+test("keeps compaction and preferences distinct", () => {
   const storage = fixture();
   try {
     storage.createConversation({ id: "conversation-1", title: "Memory" });
@@ -234,41 +234,6 @@ test("keeps compaction, durable memory and preferences distinct", () => {
     assert.equal(
       storage.getLatestCompaction("conversation-1")?.id,
       "compact-2",
-    );
-
-    storage.upsertMemory({
-      id: "memory-1",
-      scope: "user",
-      kind: "preference",
-      content: "Keep responses concise",
-    });
-    storage.upsertMemory({
-      id: "memory-2",
-      scope: "conversation",
-      scopeId: "conversation-1",
-      kind: "decision",
-      content: "Use SQLite",
-      confidence: 0.9,
-    });
-    assert.deepEqual(
-      storage
-        .listMemories({ scope: "conversation", scopeId: "conversation-1" })
-        .map((item) => item.id),
-      ["memory-2"],
-    );
-    assert.equal(storage.deleteMemory("memory-2"), true);
-    assert.equal(
-      storage.listMemories({ scope: "conversation", scopeId: "conversation-1" })
-        .length,
-      0,
-    );
-    assert.equal(
-      storage.listMemories({
-        scope: "conversation",
-        scopeId: "conversation-1",
-        includeDeleted: true,
-      }).length,
-      1,
     );
 
     storage.setPreference("system.responseStyle", { verbosity: "concise" });
@@ -302,7 +267,7 @@ test("stores artifacts and references without putting file contents in SQLite", 
       runId: "run-1",
       kind: "web",
       title: "Polymux",
-      uri: "https://flarehq.co",
+      uri: "https://polymux.com",
     });
     assert.equal(
       storage.listArtifacts("conversation-1")[0]?.path,
@@ -310,7 +275,7 @@ test("stores artifacts and references without putting file contents in SQLite", 
     );
     assert.equal(
       storage.listReferences("conversation-1")[0]?.uri,
-      "https://flarehq.co",
+      "https://polymux.com",
     );
   } finally {
     storage.close();
@@ -446,58 +411,6 @@ test("a literal wildcard in a search is not treated as a pattern", () => {
     assert.equal(storage.searchMessages("%%%").length, 0);
   } finally {
     storage.close();
-  }
-});
-
-test("drops web references the reply never cited when upgrading an old store", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "polymux-refs-"));
-  const databasePath = path.join(directory, "polymux.sqlite");
-  try {
-    const before = new SqliteStorage(databasePath);
-    before.createConversation({ id: "conversation-1", title: "Research" });
-    before.createRun({ id: "run-1", conversationId: "conversation-1" });
-    before.appendMessage({
-      id: "message-1",
-      conversationId: "conversation-1",
-      runId: "run-1",
-      role: "assistant",
-      content: [
-        { type: "toolCall", id: "call-1", name: "browser_control", arguments: { url: "https://search.example/?q=ai" } },
-        { type: "text", text: "The one worth your time is [AI Summit](https://one.example/summit)." },
-      ],
-    });
-    // Cited in the reply, a page only opened along the way, and a file the
-    // user attached by hand.
-    for (const [id, uri] of [
-      ["kept", "https://one.example/summit"],
-      ["opened", "https://search.example/?q=ai"],
-    ] as const)
-      before.createReference({ id, conversationId: "conversation-1", runId: "run-1", kind: "web", title: id, uri });
-    before.createReference({
-      id: "attached",
-      conversationId: "conversation-1",
-      kind: "file",
-      title: "notes.md",
-      uri: "/home/me/notes.md",
-    });
-    before.close();
-
-    // Reopen as a store written by the previous version.
-    const rollback = new DatabaseSync(databasePath);
-    rollback.exec("PRAGMA user_version = 3");
-    rollback.close();
-
-    const after = new SqliteStorage(databasePath);
-    try {
-      assert.deepEqual(
-        after.listReferences("conversation-1").map((item) => item.id).sort(),
-        ["attached", "kept"],
-      );
-    } finally {
-      after.close();
-    }
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
   }
 });
 

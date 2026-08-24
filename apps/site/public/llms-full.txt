@@ -1,0 +1,25 @@
+# Polymux
+
+Polymux is a personal desktop assistant with chats, email, files, browser tabs, and AI models built in. It is designed to be useful with almost no setup: the user asks once, and Polymux identifies the relevant conversation, file, or page and carries out the requested work.
+
+## Capabilities
+
+- Hub brings supported messaging and email services into one workspace.
+- Drive searches local files and connected cloud drives.
+- Browser works with an in-app browser or an explicitly assigned existing browser tab.
+- Model selection supports hosted providers and locally run models while preserving the same workspace.
+- The desktop app is available for macOS, Windows, and Linux.
+
+## Browser privacy model
+
+The Polymux browser extension keeps a local inventory of open-tab metadata such as titles, URLs, window relationships, active or pinned state, audible state, and last-accessed time. That inventory does not include page contents. Page content and browser interaction are available only for the exact tab assigned to a task.
+
+The extension communicates with the locally installed desktop app through a native-messaging host and a loopback-only service on the user's computer. It does not send browsing data to a hosted Polymux service. Access ends when the task releases the tab, the tab closes, the desktop app disconnects, or the extension is disabled.
+
+## Canonical links
+
+- Product: https://polymux.com/
+- Privacy: https://polymux.com/privacy-policy/
+- Releases: https://github.com/CarlvinceTan/Polymux/releases/latest
+- Source: https://github.com/CarlvinceTan/Polymux
+- Contact: carlvince@polymux.com

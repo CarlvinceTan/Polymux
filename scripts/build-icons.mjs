@@ -13,7 +13,8 @@ import {fileURLToPath} from 'node:url';
 import os from 'node:os';
 
 const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const source = path.join(projectRoot, 'assets/appicon.svg');
+const assetRoot = path.join(projectRoot, 'apps/desktop/assets');
+const source = path.join(assetRoot, 'appicon.svg');
 const work = path.join(os.tmpdir(), `polymux-icons-${process.pid}`);
 
 /** macOS ships every size an .icns needs; .ico wants the Windows shell set. */
@@ -114,10 +115,10 @@ mkdirSync(iconset, {recursive: true});
 for (const [name, size] of ICNS_ENTRIES) {
   writeFileSync(path.join(iconset, name), readFileSync(rendered.get(size)));
 }
-execFileSync('iconutil', ['-c', 'icns', iconset, '-o', path.join(projectRoot, 'assets/appicon.icns')]);
+execFileSync('iconutil', ['-c', 'icns', iconset, '-o', path.join(assetRoot, 'appicon.icns')]);
 
-buildIco(ICO_SIZES.map((size) => ({size, file: rendered.get(size)})), path.join(projectRoot, 'assets/appicon.ico'));
-writeFileSync(path.join(projectRoot, 'assets/appicon.png'), readFileSync(rendered.get(1024)));
+buildIco(ICO_SIZES.map((size) => ({size, file: rendered.get(size)})), path.join(assetRoot, 'appicon.ico'));
+writeFileSync(path.join(assetRoot, 'appicon.png'), readFileSync(rendered.get(1024)));
 
 rmSync(work, {recursive: true, force: true});
-console.log('built assets/appicon.icns, assets/appicon.ico, assets/appicon.png');
+console.log('built apps/desktop/assets/appicon.icns, apps/desktop/assets/appicon.ico, apps/desktop/assets/appicon.png');

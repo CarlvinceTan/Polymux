@@ -23,7 +23,7 @@ preferences, fragile workflows, and reusable resources needed for reliable work.
   triggers and important nearby boundaries.
 - Avoid duplicating instructions between the core and references.
 - Add only resources the workflow consumes. Test every changed script.
-- Treat `flare.yaml` as part of the finished user experience, not optional
+- Treat `polymux.yaml` as part of the finished user experience, not optional
   cleanup.
 
 ## Structure and resources
@@ -33,7 +33,7 @@ Every skill requires `SKILL.md`. Add only the resources it uses:
 - `scripts/` for deterministic or repeatedly reused operations;
 - `references/` for detailed or variant-specific material loaded on demand;
 - `assets/` for templates, icons, fonts, and files used in outputs;
-- `flare.yaml` for the display name shown in Polymux.
+- `polymux.yaml` for the display name shown in Polymux.
 
 Keep the core workflow and routing in `SKILL.md`. Move schemas, provider
 details, long examples, and conditional variants into directly linked
@@ -61,8 +61,8 @@ reference files that the workflow never consumes.
    - Keep references one level from `SKILL.md` and state exactly when to read
      each one.
    - Remove all unused placeholders and resources.
-   - Read [references/flare_yaml.md](references/flare_yaml.md), then create or
-     update `flare.yaml` with a clear, unique display name. Skip the file when
+   - Read [references/polymux_yaml.md](references/polymux_yaml.md), then create or
+     update `polymux.yaml` with a clear, unique display name. Skip the file when
      the folder name already title-cases into that name.
 5. **Validate the authored content**
    - Run `scripts/quick_validate.mjs <skill-folder>`.

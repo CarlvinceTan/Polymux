@@ -323,7 +323,7 @@ background flag. The bundled registry pins `--polymux-background` to
 `com.flarehq.polymux`: first-use lookup must include it after `--args`, compiled
 lookup rejects an older unflagged route, and a passing monitored first use
 remembers the exact flagged command. Then verify both nonfrontmost state and a usable accessibility
-tree before acquiring the lease. Use run/activity and Ledger records for
+tree before acquiring the lease. Use run/activity and Tasks records for
 progress and timing, reserving exact-window inspection for UI facts. After a
 Space change, follow the stale-state rules above instead of relaunching or
 taking focus.
@@ -340,11 +340,10 @@ If exact native-window identity cannot be established, stop or use a verified
 backend/renderer route rather than launching another copy.
 
 Treat AgentActivity as an event trail, not proof by itself: correlate every task
-start with its parent run, terminal state, elapsed time, and final result. Check
-Ledger reads and writes only for shared-pool work; an independent task using the
-Ledger is overhead, while a shared-pool claim without a later update is an
-unfinished handoff. Verify the final answer or external state independently
-before calling the run successful.
+start with its parent run, terminal state, elapsed time, and final result. When a
+run owns a Tasks card, verify that its status and result were updated; activity
+without the corresponding Tasks update is an unfinished handoff. Verify the final
+answer or external state independently before calling the run successful.
 
 When an owning messaging skill routes WeChat through its verified Matrix shared
 backend, that backend remains the default because it avoids local GUI control.

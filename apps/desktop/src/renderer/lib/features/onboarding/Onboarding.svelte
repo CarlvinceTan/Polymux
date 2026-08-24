@@ -448,7 +448,9 @@
                  can never drift apart while the window is still settling. -->
             <div class="onb-hero-lockup">
               <h1 class="onb-hero-brand">
-                <svg class="onb-hero-mark" viewBox="41.41 15.26 99.21 99.19" aria-hidden="true" focusable="false">
+                <svg class="onb-hero-mark" viewBox="0 0 200 200" aria-hidden="true" focusable="false">
+                  <path fill="currentColor" transform="translate(-10 0)" d="M 40 40 L 120 40 A 60 60 0 0 1 120 160 L 40 160 L 70 120 L 110 120 A 20 20 0 0 0 110 80 L 70 80 Z"/>
+<!--
                   <path fill="currentColor" d="M72.62,17a3.23,3.23,0,0,0-4.59.79l-2.46,3.62v.13l10.54,8.07,16.33,12,2.88-3.91a3.23,3.23,0,0,0-.69-4.52Z"/>
                   <path fill="currentColor" d="M71.16,39.87l-27,4.12a3.23,3.23,0,0,0-2.69,3.8l.84,4.36,0,0,13.23-1.75,20-3-.73-4.8A3.23,3.23,0,0,0,71.16,39.87Z"/>
                   <path fill="currentColor" d="M59.3,61.22l-16.2,22a3.23,3.23,0,0,0,.79,4.59l3.62,2.45h.13l8.07-10.54,12-16.34-3.91-2.87A3.23,3.23,0,0,0,59.3,61.22Z"/>
@@ -465,6 +467,7 @@
                   <path fill="currentColor" d="M128.1,66.73,125,71a3.23,3.23,0,0,0,.39,4.28l.87.82,10.34-1.37Z"/>
                   <path fill="currentColor" d="M118.56,39.4l.76,5.3a3.23,3.23,0,0,0,3.2,2.78h1.61l6.19-8.08Z"/>
                   <path fill="currentColor" d="M93.47,28.26l3.63,2.67a3.22,3.22,0,0,0,4.27-.4l.83-.89-1.37-10.35-8,8.53Z"/>
+-->
                 </svg>
                 <span>Polymux</span>
               </h1>
@@ -714,7 +717,7 @@
   .onb-hero{position:absolute;inset:0;display:grid;place-items:center}
   /* Metric-for-metric the splash's .startup-brand at its animation's end. */
   .onb-hero-brand{display:flex;align-items:center;gap:12px;margin:0;color:var(--neutral-950)}
-  .onb-hero-mark{width:64px;height:64px;display:block}
+  .onb-hero-mark{width:64px;height:64px;display:block;color:#000}
   .onb-hero-brand span{font-size:48px;font-weight:750;letter-spacing:-.045em;line-height:1;text-rendering:geometricPrecision;-webkit-font-smoothing:antialiased}
   /* Measured from the lockup's own box rather than from the window's centre
      line. Both used to be positioned off the viewport independently, so while

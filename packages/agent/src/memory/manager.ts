@@ -8,14 +8,13 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { writeFileAtomicSync } from "@polymux/core";
-import type { MemoryRecord, Storage } from "@polymux/storage";
+import type { MemoryRecord } from "@polymux/storage";
 
 const notePrefix = "<!-- polymux-memory:";
 const noteSuffix = " -->";
 
 export interface MemoryManagerOptions {
   directory: string;
-  legacyStorage?: Storage;
   clock?: () => Date;
   id?: () => string;
 }
@@ -112,7 +111,6 @@ export class MemoryManager {
     this.#clock = options.clock ?? (() => new Date());
     this.#id = options.id ?? (() => crypto.randomUUID());
     this.#initialize();
-    if (options.legacyStorage) this.#migrateLegacy(options.legacyStorage);
   }
 
   list(conversationId?: string): MemoryRecord[] {
@@ -327,17 +325,6 @@ export class MemoryManager {
     if (!existsSync(this.registryPath)) writeFileAtomicSync(this.registryPath, registry([]));
     if (!existsSync(this.summaryPath)) writeFileAtomicSync(this.summaryPath, summary([]));
     if (!existsSync(this.settingsPath)) writeFileAtomicSync(this.settingsPath, `${JSON.stringify({enabled: true}, null, 2)}\n`);
-  }
-
-  #migrateLegacy(storage: Storage): void {
-    const marker = path.join(this.directory, ".sqlite-memory-migrated-v1");
-    if (existsSync(marker)) return;
-    for (const memory of storage.listMemories({ includeDeleted: false })) {
-      if (this.#all().some((item) => item.id === memory.id)) continue;
-      this.#write(memory);
-    }
-    this.#rebuildIndexes();
-    writeFileAtomicSync(marker, `${this.#clock().toISOString()}\n`);
   }
 
   #write(memory: MemoryRecord): void {

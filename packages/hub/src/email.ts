@@ -3,8 +3,6 @@ import path from "node:path";
 import nodemailer from "nodemailer";
 import {MailStore, type MailCredentials} from "./mail-store.js";
 import {
-  importHimalayaAccounts,
-  himalayaSecrets,
   readAccounts,
   writeAccounts,
   type StoredAccount,
@@ -32,14 +30,6 @@ import type {
 export {EMAIL_KEYCHAIN_SERVICE, keychainService} from "./email-secrets.js";
 export type {CommandRunner} from "./email-secrets.js";
 
-/**
- * How long a command-produced token is reused before the command is asked
- * again. Well under the hour an access token usually lasts, so a stale one is
- * never presented, and long enough that opening a folder does not run the
- * helper once per message.
- */
-const COMMAND_TOKEN_MS = 5 * 60_000;
-
 /** How many times Sent is asked before a copy is filed there. */
 const SENT_LOOKUPS = 3;
 const SENT_LOOKUP_WAIT_MS = 800;
@@ -57,11 +47,6 @@ export interface EmailAccountsOptions {
   run: CommandRunner;
   /** Where `download` saves a message's attachments. */
   downloadsDir: string;
-  /**
-   * A Himalaya config to adopt accounts from, once, if Polymux has none of its
-   * own yet. Absent on a machine that never had one.
-   */
-  importFrom?: string;
   /** Swapped in tests; the token endpoint is the only thing fetched. */
   fetch?: typeof fetch;
   /**
@@ -90,23 +75,15 @@ export interface EmailAccountsOptions {
 export class EmailAccounts {
   readonly #storePath: string;
   readonly #downloadsDir: string;
-  readonly #importFrom: string | undefined;
-  readonly #run: CommandRunner;
   readonly #fetch: typeof fetch | undefined;
   readonly #secrets: EmailSecrets;
   readonly #consent: MailConsentPrompt | undefined;
   readonly #oauthClients: Partial<Record<MailOAuthProvider, {clientId: string; clientSecret?: string}>>;
   readonly #store: MailStore;
-  /** The one-time adoption, attempted once per run whatever asks first. */
-  #imported: Promise<void> | undefined;
-  /** Tokens a command produced, held only long enough to answer a burst. */
-  readonly #commandTokens = new Map<string, {token: string; until: number}>();
 
   constructor(options: EmailAccountsOptions) {
     this.#storePath = options.storePath;
     this.#downloadsDir = options.downloadsDir;
-    this.#importFrom = options.importFrom;
-    this.#run = options.run;
     this.#fetch = options.fetch;
     this.#secrets = new EmailSecrets(options.run);
     this.#consent = options.consent;
@@ -135,9 +112,7 @@ export class EmailAccounts {
    * The address comes back from the provider, so nothing is asked of the user
    * that the sign-in already answered — including the servers, which follow
    * from the provider. Signing in over an account that already exists replaces
-   * how it authenticates and leaves everything else about it alone: that is
-   * how a mailbox held together by an outside token helper becomes one Polymux
-   * can renew on its own.
+   * how it authenticates and leaves everything else about it alone.
    */
   async signIn(provider: MailOAuthProvider): Promise<string> {
     const client = this.#oauthClients[provider];
@@ -171,7 +146,6 @@ export class EmailAccounts {
         provider,
         clientId: client.clientId,
         ...(client.clientSecret ? {hasClientSecret: true} : {}),
-        tokenUrl: MAIL_OAUTH_PROVIDERS[provider].issuer,
       },
       ...(accounts.length === 0 ? {isDefault: true} : {}),
     };
@@ -179,7 +153,6 @@ export class EmailAccounts {
     // A password left over from however this mailbox used to sign in is not
     // the credential any more, and keeping it invites a stale one being tried.
     await this.#secrets.remove(id, login, "password");
-    this.#commandTokens.delete(id);
     await this.#store.disconnect(id);
     return id;
   }
@@ -541,21 +514,6 @@ export class EmailAccounts {
    * stored one has run out. A password is simply what is in the keychain.
    */
   async #secret(account: StoredAccount): Promise<string> {
-    if (account.auth.kind === "command") {
-      // Asked again each time rather than stored: the command is a token
-      // helper that refreshes on its own, so its answer is only good for as
-      // long as the token it just minted. Held briefly in memory so a burst of
-      // prefetches does not run it once per message.
-      const cached = this.#commandTokens.get(account.id);
-      if (cached && cached.until > Date.now()) return cached.token;
-      const token = await this.#print(account.auth.cmd);
-      if (!token)
-        throw new Error(
-          `The token command for ${account.email} printed nothing. Check that it still runs.`,
-        );
-      this.#commandTokens.set(account.id, {token, until: Date.now() + COMMAND_TOKEN_MS});
-      return token;
-    }
     if (account.auth.kind === "password") {
       const password = await this.#secrets.read(account.id, account.imap.login, "password");
       if (!password) throw new Error(`No password is stored for ${account.email}.`);
@@ -605,12 +563,6 @@ export class EmailAccounts {
    */
   async #renew(accountId: string): Promise<void> {
     const account = await this.#account(accountId);
-    if (account.auth.kind === "command") {
-      // The helper is what renews; all this side has to do is stop reusing
-      // the token it was last given.
-      this.#commandTokens.delete(accountId);
-      return;
-    }
     if (account.auth.kind !== "oauth2") return;
     await this.#secrets.remove(accountId, account.imap.login, "access-token");
     await this.#renewNow(account);
@@ -651,65 +603,11 @@ export class EmailAccounts {
   }
 
   async #accounts(): Promise<StoredAccount[]> {
-    await this.#adopt();
     return readAccounts(this.#storePath);
   }
 
   async #write(accounts: StoredAccount[]): Promise<void> {
     await writeAccounts(this.#storePath, accounts);
-  }
-
-  /**
-   * Adopts the accounts of an earlier Polymux that kept them in a Himalaya
-   * config, once. Runs only where Polymux has no accounts of its own, so it
-   * cannot overwrite anything, and never touches the file it read.
-   */
-  #adopt(): Promise<void> {
-    this.#imported ??= this.#adoptOnce().catch((): undefined => undefined);
-    return this.#imported;
-  }
-
-  async #adoptOnce(): Promise<void> {
-    if (!this.#importFrom) return;
-    // The guard is the file's existence, not its contents. Keyed on "no
-    // accounts", deleting the last mailbox would import all of them back on
-    // the next launch, secrets and all — an undo that undoes the user.
-    const {access} = await import("node:fs/promises");
-    const adopted = await access(this.#storePath).then(
-      (): boolean => true,
-      (): boolean => false,
-    );
-    if (adopted) return;
-    const accounts = await importHimalayaAccounts(this.#importFrom);
-    if (!accounts.length) return;
-    const {readFile} = await import("node:fs/promises");
-    const config = await readFile(this.#importFrom, "utf8").catch((): string => "");
-    for (const account of accounts) {
-      // A command account keeps its command; there is no secret to carry, and
-      // one reading of it would expire.
-      if (account.auth.kind === "command") continue;
-      const sources = himalayaSecrets(config, account.id);
-      for (const [kind, source] of [
-        ["password", sources.password],
-        ["access-token", sources.accessToken],
-        ["refresh-token", sources.refreshToken],
-        ["client-secret", sources.clientSecret],
-      ] as const) {
-        if (!source) continue;
-        const secret = source.raw ?? (await this.#print(source.cmd ?? ""));
-        if (secret) await this.#secrets.write(account.id, account.imap.login, kind, secret);
-      }
-    }
-    await writeAccounts(this.#storePath, accounts);
-  }
-
-  /** Runs a credential command from the old config, which was shell syntax. */
-  async #print(command: string): Promise<string> {
-    if (!command) return "";
-    const result = await this.#run("/bin/sh", ["-c", command]).catch(
-      (): CommandResult => ({code: -1, stdout: "", stderr: ""}),
-    );
-    return result.code === 0 ? result.stdout.trim() : "";
   }
 
   /** A path that does not exist yet, so a second save cannot overwrite a first. */
@@ -754,9 +652,7 @@ function toEndpoint(
     port: endpoint.port,
     encryption: endpoint.encryption,
     login: endpoint.login,
-    // A command account is signed in by something outside Polymux; saying
-    // "password" would invite the user to change one that does not exist.
-    auth: auth === "oauth2" ? "oauth2" : auth === "command" ? "command" : "password",
+    auth: auth === "oauth2" ? "oauth2" : "password",
   };
 }
 
