@@ -15,6 +15,9 @@ concurrency:
 jobs:
   macos:
     runs-on: macos-14
+    env:
+      # Temporary until a Developer ID Application certificate is available.
+      UNSIGNED_PRERELEASE: true
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +55,7 @@ jobs:
           key: polymux-runtime-${{ runner.os }}-arm64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs') }}
 
       - name: Require release credentials
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && env.UNSIGNED_PRERELEASE != 'true'
         env:
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -67,7 +70,7 @@ jobs:
             }
 
       - name: Import Developer ID certificate
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && env.UNSIGNED_PRERELEASE != 'true'
         env:
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -100,7 +103,7 @@ jobs:
           APP_PATH="out/Polymux-darwin-arm64/Polymux.app"
           test -d "$APP_PATH"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* && "$UNSIGNED_PRERELEASE" != "true" ]]; then
             spctl --assess --type execute --verbose=2 "$APP_PATH"
             DMG="$(find out/make -type f -name '*.dmg' -print -quit)"
             ZIP="$(find out/make -type f -name '*.zip' -print -quit)"
@@ -191,11 +194,18 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          UNSIGNED_PRERELEASE: true
         run: |
           mapfile -t ASSETS < <(find release-assets -type f \
             \( -name '*.dmg' -o -name '*.zip' -o -name '*Setup.exe' -o -name '*.nupkg' -o -name 'RELEASES' -o -name '*.AppImage' -o -name 'latest-linux.yml' \) \
             -print)
           test "${#ASSETS[@]}" -ge 7
-          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
-            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+          FLAGS=()
+          if [[ "$UNSIGNED_PRERELEASE" == "true" ]]; then
+            FLAGS+=(--prerelease --notes "Temporary unsigned preview. macOS users must approve Polymux in System Settings > Privacy & Security after the first blocked launch.")
+          else
+            FLAGS+=(--generate-notes)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" "${FLAGS[@]}" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "Polymux ${GITHUB_REF_NAME#v}"

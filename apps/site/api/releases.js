@@ -1,7 +1,7 @@
 const REPOSITORY = 'CarlvinceTan/Polymux';
 
 export default async function handler(_request, response) {
-  const result = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases/latest`, {
+  const result = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases?per_page=10`, {
     headers: {
       Accept: 'application/vnd.github+json',
       'User-Agent': 'Polymux-Updater',
@@ -14,7 +14,12 @@ export default async function handler(_request, response) {
     return response.status(503).json({error: 'No public Polymux release is available yet.'});
   }
 
-  const release = await result.json();
+  const releases = await result.json();
+  const release = releases.find((item) => !item.draft);
+  if (!release) {
+    response.setHeader('Cache-Control', 'no-store');
+    return response.status(503).json({error: 'No public Polymux release is available yet.'});
+  }
   const asset = release.assets?.find((item) =>
     /darwin-arm64.*\.zip$/i.test(item.name) || /arm64.*\.zip$/i.test(item.name),
   );

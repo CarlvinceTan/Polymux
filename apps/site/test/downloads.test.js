@@ -16,7 +16,7 @@ function response() {
 test('maps the latest release to native installers for each platform', async (context) => {
   context.mock.method(globalThis, 'fetch', async () => ({
     ok: true,
-    json: async () => ({
+    json: async () => [{
       tag_name: 'v0.3.0',
       published_at: '2026-08-23T00:00:00Z',
       html_url: 'https://github.com/CarlvinceTan/Polymux/releases/tag/v0.3.0',
@@ -25,7 +25,7 @@ test('maps the latest release to native installers for each platform', async (co
         {name: 'Polymux-0.3.0-Setup.exe', browser_download_url: 'https://files/windows', size: 2},
         {name: 'Polymux-0.3.0-x86_64.AppImage', browser_download_url: 'https://files/appimage', size: 3},
       ],
-    }),
+    }],
   }));
   const result = response();
   await handler({}, result);
