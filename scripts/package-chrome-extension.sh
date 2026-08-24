@@ -37,7 +37,7 @@ for (const relative of referenced) {
   if (!fs.existsSync(path.join(root, relative))) throw new Error(`Missing packaged file: ${relative}`);
 }
 if (fs.lstatSync(root).isSymbolicLink()) throw new Error("Package root must not be a symlink");
-console.log(`Packaging Polymux Agent Surface ${manifest.version}.`);
+console.log(`Packaging Polymux ${manifest.version}.`);
 NODE
 
 if find "$package_root" -type l -print -quit | grep -q .; then

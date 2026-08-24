@@ -25,9 +25,13 @@ const appRoot = path.dirname(fileURLToPath(import.meta.url));
  * shipped beside it. Nothing here is a native module — `node:sqlite` is a
  * builtin — so there is nothing that must stay unbundled.
  */
-const nodeBuiltins = [
+export const nodeBuiltins = [
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
+  // Node 22 exposes the experimental SQLite module but omits it from
+  // `builtinModules`. Without the explicit entry Vite replaces it with its
+  // browser-compatibility stub and a packaged app crashes before onboarding.
+  'node:sqlite',
 ];
 
 export default defineConfig({

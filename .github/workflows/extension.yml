@@ -103,7 +103,7 @@ jobs:
           node -e '
             const fs = require("node:fs");
             const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-            if (!value.itemId || !["UPLOAD_SUCCESS", "UPLOAD_IN_PROGRESS"].includes(value.uploadState)) {
+            if (!value.itemId || !["SUCCEEDED", "IN_PROGRESS", "UPLOAD_SUCCESS", "UPLOAD_IN_PROGRESS"].includes(value.uploadState)) {
               throw new Error(`Chrome Web Store upload failed: ${JSON.stringify(value)}`);
             }
             console.log(`Uploaded ${value.crxVersion ?? "extension package"} (${value.uploadState}).`);
@@ -114,13 +114,21 @@ jobs:
           ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
         run: |
-          response="$(curl --fail-with-body --silent --show-error \
+          status_code="$(curl --silent --show-error \
+            --output "$RUNNER_TEMP/cws-publish.json" \
+            --write-out '%{http_code}' \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
             -H "Content-Type: application/json" \
             -X POST \
             -d '{"publishType":"DEFAULT_PUBLISH","blockOnWarnings":true}' \
             "https://chromewebstore.googleapis.com/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:publish")"
-          printf '%s' "$response" > "$RUNNER_TEMP/cws-publish.json"
+          if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
+            node -e '
+              const fs = require("node:fs");
+              const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              throw new Error(`Chrome Web Store submission returned HTTP ${process.argv[2]}: ${JSON.stringify(value)}`);
+            ' "$RUNNER_TEMP/cws-publish.json" "$status_code"
+          fi
           node -e '
             const fs = require("node:fs");
             const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));

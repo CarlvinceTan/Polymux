@@ -7,8 +7,8 @@
   import type {PanelMode} from '../../shared/state/panels';
   import {t, type MessageKey} from '../../../i18n';
 
-  type IconName = ComponentProps<typeof Icon>['name'];
   type PinnedView = 'drive' | 'schedule' | 'hub' | 'tasks';
+  type IconName = ComponentProps<typeof Icon>['name'];
 
   export let title = '';
   export let showTitle = false;
@@ -114,7 +114,7 @@
   function openPinnedMenu(event: MouseEvent, view: 'drive' | 'schedule' | 'hub' | 'tasks'): void {
     event.preventDefault();
     event.stopPropagation();
-    pinnedMenu = {view, anchor: {rect: (event.currentTarget as HTMLButtonElement).getBoundingClientRect()}};
+    pinnedMenu = {view, anchor: {rect: (event.currentTarget as HTMLElement).getBoundingClientRect()}};
   }
 
   function choosePinnedMenu(value: string): void {

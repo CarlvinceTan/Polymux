@@ -20,31 +20,29 @@ import ar from './locales/ar';
 import ru from './locales/ru';
 
 export type MessageKey = keyof typeof en;
-/** Locale files may trail the English source catalog while a new surface is
- * being translated. Missing strings deterministically fall back to English;
- * keys that do exist remain checked against the source catalog. */
+/** Translated catalogs may lag English; missing entries deliberately fall back
+ * to the English source text in `t` below. */
 export type Catalog = Partial<Record<MessageKey, string>>;
-type ResolvedCatalog = Record<MessageKey, string>;
 
-const catalogs: Record<string, ResolvedCatalog> = {
+const catalogs: Record<string, Catalog> = {
   en,
-  es: {...en, ...es},
-  fr: {...en, ...fr},
-  de: {...en, ...de},
-  pt: {...en, ...pt},
-  it: {...en, ...it},
-  nl: {...en, ...nl},
-  ja: {...en, ...ja},
-  ko: {...en, ...ko},
-  'zh-Hans': {...en, ...zhHans},
-  'zh-Hant': {...en, ...zhHant},
-  hi: {...en, ...hi},
-  id: {...en, ...id},
-  ms: {...en, ...ms},
-  th: {...en, ...th},
-  vi: {...en, ...vi},
-  ar: {...en, ...ar},
-  ru: {...en, ...ru},
+  es,
+  fr,
+  de,
+  pt,
+  it,
+  nl,
+  ja,
+  ko,
+  'zh-Hans': zhHans,
+  'zh-Hant': zhHant,
+  hi,
+  id,
+  ms,
+  th,
+  vi,
+  ar,
+  ru,
 };
 
 /** Written right to left, so the whole document flips direction for these. */
