@@ -103,7 +103,7 @@ jobs:
           node -e '
             const fs = require("node:fs");
             const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-            if (!value.itemId || !["UPLOAD_SUCCESS", "UPLOAD_IN_PROGRESS"].includes(value.uploadState)) {
+            if (!value.itemId || !["SUCCEEDED", "IN_PROGRESS", "UPLOAD_SUCCESS", "UPLOAD_IN_PROGRESS"].includes(value.uploadState)) {
               throw new Error(`Chrome Web Store upload failed: ${JSON.stringify(value)}`);
             }
             console.log(`Uploaded ${value.crxVersion ?? "extension package"} (${value.uploadState}).`);
