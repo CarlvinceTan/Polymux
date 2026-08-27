@@ -1,8 +1,14 @@
 import type {
   ArtifactDto,
+  AgentRuntimeDto,
+  AgentSettingsDto,
   AppUpdateDto,
+  CalendarEventDto,
+  CalendarListDto,
   ChatDto,
   ChatMessageDto,
+  ComputerHistoryActivityDto,
+  ComputerHistoryEntryDto,
   ComputerHistoryStatusDto,
   CommsEmailAccountDto,
   CommsStatusDto,
@@ -80,10 +86,72 @@ function createBrowserDemoApi(): PolymuxApi {
   const runConversations = new Map<string, string>();
   let demoProfiles = [{id: 'default', name: 'Default Profile', isDefault: true}];
   let demoActiveProfile = 'default';
+  let demoAgentRuntime: AgentRuntimeDto = {kind: 'polymux', name: 'Polymux Agent'};
+  const demoCompactAgentSettings: AgentSettingsDto = {
+    authMethods: [{id: 'account', name: 'Sign in with agent account', description: 'Continue with the account managed by this agent.', type: 'agent', available: true}],
+    authRequired: false,
+    supportsLogout: true,
+    configOptions: [
+      {id: 'model', name: 'Model', description: 'AI model used by this agent', category: 'model', type: 'select', currentValue: 'default', options: [
+        {value: 'default', name: 'Default', description: 'Use the agent recommendation'},
+        {value: 'opus', name: 'Claude Opus', description: 'Most capable'},
+        {value: 'sonnet', name: 'Claude Sonnet', description: 'Balanced'},
+        {value: 'haiku', name: 'Claude Haiku', description: 'Fastest'},
+      ], groups: []},
+      {id: 'effort', name: 'Reasoning', description: 'How deeply the agent should reason', category: 'thought_level', type: 'select', currentValue: 'high', options: [
+        {value: 'low', name: 'Low', description: null},
+        {value: 'medium', name: 'Medium', description: null},
+        {value: 'high', name: 'High', description: null},
+      ], groups: []},
+    ],
+    providers: [],
+    supportsProviders: false,
+  };
+  const demoPiAgentSettings: AgentSettingsDto = {
+    authMethods: [{id: 'provider', name: 'Sign in with provider', description: 'Let pi complete authentication with the selected provider.', type: 'agent', available: true}],
+    authRequired: false,
+    supportsLogout: true,
+    configOptions: [
+      {id: 'model', name: 'Model', description: 'AI model used by pi', category: 'model', type: 'select', currentValue: 'anthropic/claude-sonnet-4', options: [
+        {value: 'openai/gpt-5.2', name: 'GPT-5.2', description: 'OpenAI flagship model'},
+        {value: 'openai/gpt-5.1-codex', name: 'GPT-5.1 Codex', description: 'Optimized for coding'},
+        {value: 'openai/gpt-4.1', name: 'GPT-4.1', description: 'Fast general-purpose model'},
+        {value: 'anthropic/claude-opus-4', name: 'Claude Opus 4', description: 'Most capable Anthropic model'},
+        {value: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', description: 'Balanced Anthropic model'},
+        {value: 'anthropic/claude-haiku-3.5', name: 'Claude Haiku 3.5', description: 'Fast Anthropic model'},
+        {value: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Google flagship model'},
+        {value: 'google/gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Fast Google model'},
+      ], groups: [
+        {id: 'openai', name: 'OpenAI', options: [
+          {value: 'openai/gpt-5.2', name: 'GPT-5.2', description: 'OpenAI flagship model'},
+          {value: 'openai/gpt-5.1-codex', name: 'GPT-5.1 Codex', description: 'Optimized for coding'},
+          {value: 'openai/gpt-4.1', name: 'GPT-4.1', description: 'Fast general-purpose model'},
+        ]},
+        {id: 'anthropic', name: 'Anthropic', options: [
+          {value: 'anthropic/claude-opus-4', name: 'Claude Opus 4', description: 'Most capable Anthropic model'},
+          {value: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', description: 'Balanced Anthropic model'},
+          {value: 'anthropic/claude-haiku-3.5', name: 'Claude Haiku 3.5', description: 'Fast Anthropic model'},
+        ]},
+        {id: 'google', name: 'Google', options: [
+          {value: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Google flagship model'},
+          {value: 'google/gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Fast Google model'},
+        ]},
+      ]},
+      {id: 'effort', name: 'Reasoning', description: 'How deeply the agent should reason', category: 'thought_level', type: 'select', currentValue: 'high', options: [
+        {value: 'low', name: 'Low', description: null},
+        {value: 'medium', name: 'Medium', description: null},
+        {value: 'high', name: 'High', description: null},
+      ], groups: []},
+    ],
+    providers: [],
+    supportsProviders: false,
+  };
+  let demoAgentSettings = structuredClone(demoCompactAgentSettings);
   const demoAcpRegistry = [
-    {id: 'codex-acp', name: 'Codex', description: "OpenAI's coding assistant", version: '1.6.2', icon: '', command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.6.2']},
-    {id: 'claude-acp', name: 'Claude Agent', description: "Anthropic's Claude agent", version: '0.70.0', icon: '', command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.70.0']},
-    {id: 'opencode', name: 'OpenCode', description: 'Open source coding agent', version: '1.0.0', icon: '', command: 'npx', args: ['-y', 'opencode-ai@1.0.0', 'acp']},
+    {id: 'codex-acp', name: 'Codex', description: "OpenAI's coding assistant", version: '1.6.2', icon: '', installed: true, command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.6.2']},
+    {id: 'claude-acp', name: 'Claude Agent', description: "Anthropic's Claude agent", version: '0.70.0', icon: '', installed: true, command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.70.0']},
+    {id: 'pi-acp', name: 'pi ACP', description: 'Run pi through Agent Client Protocol', version: '0.0.33', icon: '', installed: false, command: 'npx', args: ['-y', 'pi-acp@0.0.33']},
+    {id: 'opencode', name: 'OpenCode', description: 'Open source coding agent', version: '1.0.0', icon: '', installed: false, command: 'npx', args: ['-y', 'opencode-ai@1.0.0', 'acp']},
   ];
   let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string; reasoning?: ReasoningEffort}>> = {};
   const demoRoles = (): ModelRolesDto => {
@@ -245,9 +313,9 @@ function createBrowserDemoApi(): PolymuxApi {
       accounts: onboardingPreview
         ? []
         : [
-            {id: 'personal', displayName: 'Demo User', email: 'demo@example.com', isDefault: true, incoming: {kind: 'imap', host: 'imap.gmail.com', port: 993, encryption: 'tls', login: 'demo@example.com', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.gmail.com', port: 587, encryption: 'start-tls', login: 'demo@example.com', auth: 'command'}, secretStored: true, status: 'ok', error: null},
-            {id: 'work', displayName: 'Demo At Work', email: 'demo@work.example', isDefault: false, incoming: {kind: 'imap', host: 'outlook.office365.com', port: 993, encryption: 'tls', login: 'demo@work.example', auth: 'oauth2'}, outgoing: {kind: 'smtp', host: 'smtp.office365.com', port: 587, encryption: 'start-tls', login: 'demo@work.example', auth: 'oauth2'}, secretStored: false, status: 'unknown', error: null},
-            {id: 'team', displayName: null, email: 'team@example.co', isDefault: false, incoming: {kind: 'imap', host: 'imap.larksuite.com', port: 993, encryption: 'tls', login: 'team@example.co', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.larksuite.com', port: 465, encryption: 'tls', login: 'team@example.co', auth: 'command'}, secretStored: true, status: 'error', error: 'authentication failed'},
+            {id: 'personal', displayName: 'Demo User', email: 'demo@example.com', incoming: {kind: 'imap', host: 'imap.gmail.com', port: 993, encryption: 'tls', login: 'demo@example.com', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.gmail.com', port: 587, encryption: 'start-tls', login: 'demo@example.com', auth: 'command'}, secretStored: true, signatures: [{id: 'personal-default', name: 'Personal', body: 'Kind regards,\nDemo User', html: '<b>Kind regards,</b><br>Demo User'}], defaultSignatureId: 'personal-default', status: 'ok', error: null},
+            {id: 'work', displayName: 'Demo At Work', email: 'demo@work.example', incoming: {kind: 'imap', host: 'outlook.office365.com', port: 993, encryption: 'tls', login: 'demo@work.example', auth: 'oauth2'}, outgoing: {kind: 'smtp', host: 'smtp.office365.com', port: 587, encryption: 'start-tls', login: 'demo@work.example', auth: 'oauth2'}, secretStored: false, signatures: [{id: 'work-default', name: 'Work', body: 'Best,\nDemo User\nProduct Engineering', html: null}], defaultSignatureId: 'work-default', status: 'unknown', error: null},
+            {id: 'team', displayName: null, email: 'team@example.co', incoming: {kind: 'imap', host: 'imap.larksuite.com', port: 993, encryption: 'tls', login: 'team@example.co', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.larksuite.com', port: 465, encryption: 'tls', login: 'team@example.co', auth: 'command'}, secretStored: true, signatures: [], defaultSignatureId: null, status: 'error', error: 'authentication failed'},
           ],
     },
   };
@@ -274,20 +342,41 @@ function createBrowserDemoApi(): PolymuxApi {
     (request) => demoRevealListeners.forEach((listener) => listener(request));
   let demoChats: ChatDto[] = [
     {id: '!wx-filehelper:local', name: 'File Transfer', platform: 'wechat', unread: 0, lastActivity: new Date(now - 1_800_000).toISOString(), preview: 'Project notes.pdf', group: false, avatarUrl: null},
-    {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp', unread: 2, lastActivity: new Date(now - 3_500_000).toISOString(), preview: 'Yes — 2pm works.', group: false, avatarUrl: null},
+    {id: '!wa-default-space:local', name: 'WhatsApp (+61426982339)', platform: 'whatsapp', accountIds: ['wa1'], unread: 0, lastActivity: null, preview: null, group: true, space: true, defaultSpace: true, parentIds: [], avatarUrl: null},
+    {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 3_500_000).toISOString(), preview: 'Yes — 2pm works.', group: false, parentIds: ['!wa-default-space:local'], avatarUrl: null},
+    {id: '!wa-phone:local', name: '+12262184662', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 3_700_000).toISOString(), preview: null, group: false, parentIds: ['!wa-default-space:local'], avatarUrl: null},
+    {id: '!ig-carl:local', name: 'Carl’s chat', platform: 'instagram', accountIds: ['ig1'], unread: 0, lastActivity: new Date(now - 4_000_000).toISOString(), preview: 'Personal account', group: false, avatarUrl: null},
+    {id: '!ig-polymux:local', name: 'Polymux chat', platform: 'instagram', accountIds: ['ig2'], unread: 0, lastActivity: new Date(now - 4_100_000).toISOString(), preview: 'Project account', group: false, avatarUrl: null},
+    {id: '!ig-project-space:local', name: 'Polymux community', platform: 'instagram', accountIds: ['ig2'], unread: 0, lastActivity: null, preview: null, group: true, space: true, parentIds: [], avatarUrl: null},
+    {id: '!ig-project-news:local', name: 'Project updates', platform: 'instagram', accountIds: ['ig2'], unread: 0, lastActivity: new Date(now - 4_200_000).toISOString(), preview: 'Latest build notes', group: true, parentIds: ['!ig-project-space:local'], avatarUrl: null},
     {id: '!tg-devs:local', name: 'Dev Chat', platform: 'telegram', unread: 0, lastActivity: new Date(now - 7_200_000).toISOString(), preview: 'Shipped the build, logs look clean.', group: true, avatarUrl: null},
-    {id: '!wa-family:local', name: 'Family', platform: 'whatsapp', unread: 0, lastActivity: new Date(now - 86_400_000).toISOString(), preview: 'Dinner Sunday?', group: true, avatarUrl: null},
+    {id: '!wa-family:local', name: 'Family', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 2}, unread: 2, lastActivity: new Date(now - 86_400_000).toISOString(), preview: 'Dinner Sunday?', group: true, parentIds: ['!wa-default-space:local'], avatarUrl: null},
+    {id: '!wa-nus-space:local', name: 'NUS exchange students AY26/27', platform: 'whatsapp', accountIds: ['wa1'], unread: 0, lastActivity: null, preview: null, group: true, space: true, parentIds: ['!wa-default-space:local'], avatarUrl: null},
+    {id: '!wa-nus-social:local', name: 'Social 💃', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 1}, unread: 1, lastActivity: new Date(now - 5_400_000).toISOString(), preview: 'Dinner after class?', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
+    {id: '!wa-nus-soc:local', name: 'School of Computing', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 10_800_000).toISOString(), preview: 'Tutorial group list', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
+    {id: '!wa-nus-running:local', name: 'Running 👟', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 14_400_000).toISOString(), preview: 'Saturday, 8am at UTown', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
   ];
+  // A real, short vertical WebM behind an .mp4 name. That mismatch reproduces
+  // the generic-file route used by some reel shares while still letting the
+  // headless browser prove the inline player receives playable bytes.
+  const demoReelUrl = 'data:video/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAJeEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggElTbuMU6uEHFO7a1OsggJI7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjIuMTIuMTAyV0GNTGF2ZjYyLjEyLjEwMkSJiEBpAAAAAAAAFlSua8iuAQAAAAAAAD/XgQFzxYisFaVyoEewLpyBACK1nIN1bmSIgQCGhVZfVlA5g4EBI+ODhAJiWgDgkLCBELqBHJqBAlWwhFW5gQESVMNnQIBzc6BjwIBnyJpFo4dFTkNPREVSRIeNTGF2ZjYyLjEyLjEwMnNz2mPAi2PFiKwVpXKgR7AuZ8ilRaOHRU5DT0RFUkSHmExhdmM2Mi4yOC4xMDIgbGlidnB4LXZwOWfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDAuMjAwMDAwMDAwAB9DtnVAl+eBAKO+gQAAgIJJg0IAAPABtgY4JBwYSgAAIEAAMV///5V29t/0rJIV6+83T8qAkchIzbj8ppDSUIBEwUeNuAQOsACjk4EAKACGAECSnEhQAAADcAAAUuKjk4EAUACGAECSnEBO4AADcAAAUuKjk4EAeACGAECSnEhQAAADcAAAUuKjk4EAoACGAECSnDhNQAADcAAAUuIcU7trkbuPs4EAt4r3gQHxggGr8IED';
   let demoChatMessages: ChatMessageDto[] = [
     {id: 'wx1', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 2_100_000).toISOString(), mine: true, attachments: [{kind: 'file', url: null, name: 'Project notes.pdf', mimeType: null, size: 1_572_864}], viewIn: {app: 'WeChat', url: 'weixin://'}},
     {id: 'wx2', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 2_000_000).toISOString(), mine: true, attachments: [{kind: 'audio', url: null, name: 'Voice message', mimeType: null, size: null, duration: 8}], viewIn: {app: 'WeChat', url: 'weixin://'}},
     {id: 'wx3', chatId: '!wx-filehelper:local', sender: 'WeChat', body: 'A message was recalled', notice: true, sentAt: new Date(now - 1_900_000).toISOString(), mine: false},
     {id: 'wx4', chatId: '!wx-filehelper:local', sender: 'You', body: 'My answer\n↳ Alice: Earlier text', sentAt: new Date(now - 1_800_000).toISOString(), mine: true, viewIn: {app: 'WeChat', url: 'weixin://'}},
     {id: 'wx5', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 1_700_000).toISOString(), mine: true, linkPreview: {title: 'Useful article', description: 'A short description', url: 'https://example.test/article', source: 'example.test'}, viewIn: {app: 'WeChat', url: 'weixin://'}},
-    {id: 'c1', chatId: '!wa-jules:local', sender: 'Jules Tan', body: 'Are we still on for Thursday?', sentAt: new Date(now - 3_600_000).toISOString(), mine: false},
-    {id: 'c2', chatId: '!wa-jules:local', sender: 'You', body: 'Yes — 2pm works.', sentAt: new Date(now - 3_500_000).toISOString(), mine: true},
+    {id: 'wx6', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 1_600_000).toISOString(), mine: true, attachments: [{kind: 'file', url: demoReelUrl, name: 'AQO35LDKTG5E80mb8IC1UxBCatqRtz5e1UfSQbW_6TuswMo_IDXhnFdRLTK0IsjSS6YM4A.mp4', mimeType: null, size: 654, width: 16, height: 28, duration: .2}]},
+    {id: 'c1', chatId: '!wa-jules:local', sender: '@whatsapp_jules:local', senderName: 'Jules Tan (WA)', body: 'Are we still on for Thursday?', sentAt: new Date(now - 3_600_000).toISOString(), mine: false},
+    {id: 'c2', chatId: '!wa-jules:local', sender: '@meta_demo-account:local', senderName: 'Unknown user', body: 'Yes — 2pm works.', sentAt: new Date(now - 3_500_000).toISOString(), mine: true},
     {id: 'c3', chatId: '!wa-family:local', sender: 'Mum', senderAvatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', body: 'Dinner Sunday?', sentAt: new Date(now - 86_400_000).toISOString(), mine: false},
+    {id: 'wa-notice', chatId: '!wa-family:local', sender: '@whatsapp_aaron:local', body: 'Áron joined the group', notice: true, sentAt: new Date(now - 86_370_000).toISOString(), mine: false},
     {id: 'c4', chatId: '!tg-devs:local', sender: 'Priya', body: 'Shipped the build, logs look clean.', sentAt: new Date(now - 7_200_000).toISOString(), mine: false},
+    {id: 'tg-notice', chatId: '!tg-devs:local', sender: '@telegrambot:local', body: 'Manny Asbanu joined the group', notice: true, sentAt: new Date(now - 7_260_000).toISOString(), mine: false},
+    {id: 'tg-link', chatId: '!tg-devs:local', sender: 'Pp Ll', body: 'https://docs.google.com/presentation/d/tutorial/edit?usp=sharing', sentAt: new Date(now - 7_230_000).toISOString(), mine: false, linkPreview: {title: 'CS3210 Tutorial 1', description: 'Instrumentation, Profiling, Slurm, and Report Writing', url: 'https://docs.google.com/presentation/d/tutorial/edit?usp=sharing', source: 'docs.google.com', imageUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', imageMimeType: 'image/gif', imageWidth: 1200, imageHeight: 630}},
+    {id: 'nus1', chatId: '!wa-nus-social:local', sender: 'Amelia', body: 'Dinner after class?', sentAt: new Date(now - 5_400_000).toISOString(), mine: false},
+    {id: 'nus2', chatId: '!wa-nus-soc:local', sender: 'Kai', body: 'Tutorial group list', sentAt: new Date(now - 10_800_000).toISOString(), mine: false},
+    {id: 'nus3', chatId: '!wa-nus-running:local', sender: 'Sam', body: 'Saturday, 8am at UTown', sentAt: new Date(now - 14_400_000).toISOString(), mine: false},
     // A second message from the same person, close behind: a group names the
     // first of someone's run and lets the rest follow it.
     {id: 'c6', chatId: '!wa-family:local', sender: 'Mum', senderAvatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', body: 'Roast if you can make it.', sentAt: new Date(now - 86_340_000).toISOString(), mine: false},
@@ -298,7 +387,7 @@ function createBrowserDemoApi(): PolymuxApi {
     // now swaps an image the homeserver would not serve for a named chip, and
     // a truncated fixture is indistinguishable from one, so a placeholder that
     // merely looked like a GIF made the sticker vanish from the demo.
-    {id: 'c5', chatId: '!wa-jules:local', sender: 'Jules Tan', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
+    {id: 'c5', chatId: '!wa-jules:local', sender: '@whatsapp_jules:local', senderName: 'Jules Tan (WA)', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, replyTo: 'c2', attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
   ];
   const demoMailFolders: MailFolderDto[] = [
     {name: 'INBOX', label: 'Inbox', role: 'inbox'},
@@ -317,6 +406,26 @@ function createBrowserDemoApi(): PolymuxApi {
   const demoWorkspaceSnapshots = new Map<string, WorkspaceSnapshotDto>();
   let demoDictationPass = 0;
   let demoComputerHistoryEnabled = true;
+  const demoHistoryPreview =
+    typeof location !== 'undefined' && new URLSearchParams(location.search).get('history') === 'summary';
+  const demoActivityStart = Math.floor((now - 20 * 60_000) / (10 * 60_000)) * (10 * 60_000);
+  const demoComputerHistoryEntries: ComputerHistoryEntryDto[] = demoHistoryPreview ? [
+    {id: 'history-chatgpt', capturedAt: new Date(demoActivityStart + 60_000).toISOString(), sourceId: 'ax-chatgpt', sourceName: 'ChatGPT — Computer History comparison', displayId: null, width: 0, height: 0, path: '/demo/computer-history/chatgpt.md', change: 1, reason: 'initial', bytes: 540, kind: 'text', app: 'ChatGPT'},
+    {id: 'history-polymux', capturedAt: new Date(demoActivityStart + 4 * 60_000).toISOString(), sourceId: 'ax-polymux', sourceName: 'Polymux — Memory settings', displayId: null, width: 0, height: 0, path: '/demo/computer-history/polymux.md', change: .18, reason: 'change', bytes: 860, kind: 'text', app: 'Polymux'},
+    {id: 'history-zed', capturedAt: new Date(demoActivityStart + 7 * 60_000).toISOString(), sourceId: 'ax-zed', sourceName: 'Zed — SettingsPage.svelte', displayId: null, width: 0, height: 0, path: '/demo/computer-history/zed.md', change: .12, reason: 'change', bytes: 720, kind: 'text', app: 'Zed'},
+  ] : [];
+  const demoComputerHistoryActivities: ComputerHistoryActivityDto[] = demoHistoryPreview ? [{
+    id: new Date(demoActivityStart).toISOString(),
+    startedAt: new Date(demoActivityStart).toISOString(),
+    endedAt: new Date(demoActivityStart + 10 * 60_000).toISOString(),
+    title: 'Computer History timeline redesign',
+    summary: 'You compared Polymux with ChatGPT’s activity timeline, then reworked Computer History around concise semantic summaries with raw captures kept as supporting evidence.',
+    apps: ['ChatGPT', 'Polymux', 'Zed'],
+    entryIds: demoComputerHistoryEntries.map((entry) => entry.id),
+    captures: demoComputerHistoryEntries.length,
+    events: 14,
+    summarized: true,
+  }] : [];
   let demoComputerHistorySettings: Pick<
     ComputerHistoryStatusDto,
     'excludeApps' | 'excludeSites' | 'recordPrivateBrowsing' | 'interactionEvents'
@@ -331,12 +440,11 @@ function createBrowserDemoApi(): PolymuxApi {
     enabled: demoComputerHistoryEnabled,
     running: demoComputerHistoryEnabled,
     directory: '/demo/computer-history',
-    lastCapturedAt: null,
+    lastCapturedAt: demoComputerHistoryEntries[0]?.capturedAt ?? null,
     lastError: null,
-    storedFrames: 0,
-    storedBytes: 0,
-    storedEvents: 0,
-    distilledThrough: null,
+    storedFrames: demoComputerHistoryEntries.length,
+    storedBytes: demoComputerHistoryEntries.reduce((total, entry) => total + entry.bytes, 0),
+    storedEvents: demoComputerHistoryActivities.reduce((total, activity) => total + activity.events, 0),
   });
   let demoMemoryEnabled = true;
   let demoGeneral: GeneralSettingsDto = {
@@ -392,11 +500,38 @@ function createBrowserDemoApi(): PolymuxApi {
 
   const api: PolymuxApi = {
     agentRuntime: {
-      get: async () => ({kind: 'polymux', name: 'Polymux Agent'}),
+      get: async () => structuredClone(demoAgentRuntime),
       registry: async () => demoAcpRegistry,
-      update: async (request) => request.kind === 'polymux'
-        ? {kind: 'polymux', name: 'Polymux Agent'}
-        : {kind: 'acp', name: request.name, command: request.command, args: request.args ?? [], cwd: request.cwd ?? null},
+      update: async (request) => {
+        demoAgentRuntime = request.kind === 'polymux'
+          ? {kind: 'polymux', name: 'Polymux Agent'}
+          : {kind: 'acp', name: request.name, command: request.command, args: request.args ?? [], cwd: request.cwd ?? null, config: request.config ?? {}};
+        if (request.kind === 'acp') demoAgentSettings = structuredClone(request.name === 'pi ACP' ? demoPiAgentSettings : demoCompactAgentSettings);
+        return structuredClone(demoAgentRuntime);
+      },
+      settings: async () => structuredClone(demoAgentSettings),
+      authenticate: async (methodId) => {
+        if (!demoAgentSettings.authMethods.some((method) => method.id === methodId && method.available)) throw new Error(`Unsupported authentication method: ${methodId}`);
+        demoAgentSettings = {...demoAgentSettings, authRequired: false};
+        return structuredClone(demoAgentSettings);
+      },
+      logout: async () => {
+        demoAgentSettings = {...demoAgentSettings, authRequired: true};
+        return structuredClone(demoAgentSettings);
+      },
+      setConfigOption: async (id, value) => {
+        demoAgentSettings = {...demoAgentSettings, configOptions: demoAgentSettings.configOptions.map((option) => option.id === id ? {...option, currentValue: value} as typeof option : option)};
+        if (demoAgentRuntime.kind === 'acp') demoAgentRuntime.config[id] = value;
+        return structuredClone(demoAgentSettings);
+      },
+      setProvider: async (request) => {
+        demoAgentSettings = {...demoAgentSettings, providers: demoAgentSettings.providers.map((provider) => provider.id === request.id ? {...provider, apiType: request.apiType, baseUrl: request.baseUrl} : provider)};
+        return structuredClone(demoAgentSettings);
+      },
+      disableProvider: async (id) => {
+        demoAgentSettings = {...demoAgentSettings, providers: demoAgentSettings.providers.map((provider) => provider.id === id ? {...provider, apiType: null, baseUrl: null} : provider)};
+        return structuredClone(demoAgentSettings);
+      },
     },
     profiles: {
       list: async () => ({activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}),
@@ -445,7 +580,10 @@ function createBrowserDemoApi(): PolymuxApi {
     },
     // A browser tab has no traffic lights to move out of, so the state never
     // changes and the subscription has nothing to tear down.
-    window: {openWorkspaceView: async () => {}, subscribeFullscreen: () => () => {}},
+    window: {
+      openWorkspaceView: async () => {},
+      subscribeFullscreen: () => () => {},
+    },
     permissions: {
       ensureFirstRun: async () => ({firstRun: false, microphone: 'granted', screenRecording: 'granted'}),
       status: async () => (onboardingPreview ? 'not-determined' : 'granted'),
@@ -623,6 +761,53 @@ function createBrowserDemoApi(): PolymuxApi {
         },
       };
     })(),
+    calendar: (() => {
+      const day = 86_400_000;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const calendars: CalendarListDto[] = [
+        {id: 'demo-personal', title: 'Personal', color: '#e05a4f', editable: true, subscribed: false, source: {id: 'demo-icloud', title: 'iCloud', kind: 'icloud'}},
+        {id: 'demo-exchange', title: 'University', color: '#4b82d0', editable: true, subscribed: false, source: {id: 'demo-google', title: 'Google', kind: 'google'}},
+        {id: 'demo-birthdays', title: 'Birthdays', color: '#8d6ac8', editable: false, subscribed: true, source: {id: 'demo-other', title: 'Other', kind: 'birthdays'}},
+      ];
+      let events: CalendarEventDto[] = [
+        {id: 'demo-event-1', calendarId: 'demo-exchange', title: 'CS4234 Lecture', start: new Date(today.getTime() + day + 10 * 3_600_000).toISOString(), end: new Date(today.getTime() + day + 12 * 3_600_000).toISOString(), allDay: false, location: 'COM3-01-20', notes: 'Approximation algorithms', availability: 'busy', attendees: [], editable: true},
+        {id: 'demo-event-2', calendarId: 'demo-personal', title: 'Polymux calendar review', start: new Date(today.getTime() + 2 * day + 14 * 3_600_000).toISOString(), end: new Date(today.getTime() + 2 * day + 15.5 * 3_600_000).toISOString(), allDay: false, alarmMinutes: 15, availability: 'busy', attendees: [], editable: true},
+        {id: 'demo-event-3', calendarId: 'demo-personal', title: 'Exchange planning', start: new Date(today.getTime() + 4 * day).toISOString(), end: new Date(today.getTime() + 5 * day).toISOString(), allDay: true, availability: 'free', attendees: [], editable: true},
+        {id: 'demo-event-4', calendarId: 'demo-birthdays', title: 'Percival’s Birthday', start: new Date(today.getTime() + 7 * day).toISOString(), end: new Date(today.getTime() + 8 * day).toISOString(), allDay: true, recurrence: {frequency: 'yearly', interval: 1}, availability: 'free', attendees: [], editable: false},
+      ];
+      return {
+        calendars: async () => structuredClone(calendars),
+        events: async (start, end, ids) => {
+          const from = Date.parse(start);
+          const until = Date.parse(end);
+          return structuredClone(events.filter((event) => Date.parse(event.start) < until && Date.parse(event.end) > from && (!ids || ids.includes(event.calendarId))));
+        },
+        create: async (input) => {
+          const created: CalendarEventDto = {...input, id: crypto.randomUUID(), recurrence: input.recurrence ?? undefined, alarmMinutes: input.alarmMinutes ?? undefined, availability: input.availability ?? 'busy', attendees: [], editable: true};
+          events = [...events, created];
+          return structuredClone(created);
+        },
+        update: async (id, change) => {
+          events = events.map((event) => event.id === id ? {
+            ...event,
+            ...change,
+            location: change.location === null ? undefined : change.location ?? event.location,
+            notes: change.notes === null ? undefined : change.notes ?? event.notes,
+            url: change.url === null ? undefined : change.url ?? event.url,
+            recurrence: change.recurrence === null ? undefined : change.recurrence ?? event.recurrence,
+            alarmMinutes: change.alarmMinutes === null ? undefined : change.alarmMinutes ?? event.alarmMinutes,
+          } : event);
+          const found = events.find((event) => event.id === id);
+          if (!found) throw new Error(`Event not found: ${id}`);
+          return structuredClone(found);
+        },
+        remove: async (id) => { events = events.filter((event) => event.id !== id); },
+        importFile: async () => ({imported: 0, skipped: 0, fileName: null}),
+        exportFile: async () => null,
+        openAccounts: async () => {},
+      };
+    })(),
     tasks: (() => {
       let cards: import('@polymux/protocol').TaskCardDto[] = [
         {id: crypto.randomUUID(), chatId: 'demo', title: 'Research competitor features', status: 'todo', reviewed: false, order: 0, createdAt: Date.now(), updatedAt: Date.now()},
@@ -720,7 +905,16 @@ function createBrowserDemoApi(): PolymuxApi {
       forget: async () => demoComputerHistoryStatus(),
       removeEntry: async () => demoComputerHistoryStatus(),
       revealEntry: async () => {},
-      entries: async () => [],
+      entries: async (options) => demoComputerHistoryEntries.filter((entry) => {
+        const at = Date.parse(entry.capturedAt);
+        return (!options?.since || at >= Date.parse(options.since)) &&
+          (!options?.until || at <= Date.parse(options.until));
+      }).slice(0, options?.limit ?? demoComputerHistoryEntries.length),
+      activities: async (options) => demoComputerHistoryActivities.filter((activity) => {
+        const at = Date.parse(activity.startedAt);
+        return (!options?.since || at >= Date.parse(options.since)) &&
+          (!options?.until || at <= Date.parse(options.until));
+      }).slice(0, options?.limit ?? demoComputerHistoryActivities.length),
       pickApp: async () => null,
       appIcon: async () => null,
     },
@@ -820,6 +1014,43 @@ function createBrowserDemoApi(): PolymuxApi {
         return demoCommsStatus;
       },
       chats: async () => demoChats,
+      chatContacts: async () => demoChats
+        .filter((chat) => !chat.group && !chat.space)
+        .map((chat) => ({
+          id: `${chat.platform}:demo:${chat.id}`,
+          remoteId: chat.id,
+          name: chat.name,
+          platform: chat.platform as import('@polymux/protocol').CommsPlatform,
+          accountId: 'demo',
+          accountName: 'Demo account',
+          avatarUrl: chat.avatarUrl ?? null,
+          identifiers: [],
+          chatId: chat.id,
+          accounts: [{
+            accountId: 'demo',
+            accountName: 'Demo account',
+            remoteId: chat.id,
+            chatId: chat.id,
+          }],
+        })),
+      chatCreate: async (request) => {
+        const existing = request.participantIds.length === 1
+          ? demoChats.find((chat) => chat.id === request.participantIds[0])
+          : undefined;
+        if (existing) return existing.id;
+        const id = `demo-${crypto.randomUUID()}`;
+        demoChats = [{
+          id,
+          name: request.name ?? 'New conversation',
+          platform: request.platform,
+          accountIds: [request.accountId],
+          unread: 0,
+          lastActivity: null,
+          preview: null,
+          group: request.participantIds.length > 1,
+        }, ...demoChats];
+        return id;
+      },
       chatMarkRead: async (chatId) => {
         if (demoGeneral.hubIncognitoMode) return false;
         demoChats = demoChats.map((chat) => (chat.id === chatId ? {...chat, unread: 0} : chat));
@@ -874,7 +1105,7 @@ function createBrowserDemoApi(): PolymuxApi {
         if (!found) throw new Error(`No message ${id}`);
         return {id, subject: found.envelope.subject, from: found.envelope.from, to: found.envelope.to ? [found.envelope.to] : [], cc: [], bcc: [], date: found.envelope.date, body: found.body, html: found.html ?? null, attachments: found.envelope.hasAttachment ? [{name: 'q3-report.pdf', mime: 'application/pdf'}] : [], messageId: `<demo-${id}@example.com>`, references: []};
       },
-      mailSend: async () => {},
+      mailSend: async () => ({}),
       mailDelete: async (ids) => {
         demoEnvelopes = demoEnvelopes.filter((item) => !ids.includes(item.envelope.id));
       },
@@ -892,22 +1123,39 @@ function createBrowserDemoApi(): PolymuxApi {
       // Real enough to exercise the UI: several mailboxes can share a
       // provider, and each is edited or removed on its own.
       emailSave: async (request) => {
+        const existing = request.originalId ?? request.id;
+        const previous = demoCommsStatus.email.accounts.find((item) => item.id === existing);
         const account: CommsEmailAccountDto = {
           id: request.id,
           displayName: request.displayName ?? null,
           email: request.email,
-          isDefault: request.isDefault ?? demoCommsStatus.email.accounts.length === 0,
           incoming: {kind: 'imap', host: request.imapHost, port: request.imapPort, encryption: request.imapEncryption, login: request.email, auth: 'password'},
           outgoing: {kind: 'smtp', host: request.smtpHost, port: request.smtpPort, encryption: request.smtpEncryption, login: request.email, auth: 'password'},
           secretStored: true,
+          signatures: previous?.signatures ?? [],
+          defaultSignatureId: previous?.defaultSignatureId ?? null,
           status: 'ok',
           error: null,
         };
-        const existing = request.originalId ?? request.id;
         const accounts = demoCommsStatus.email.accounts.some((item) => item.id === existing)
           ? demoCommsStatus.email.accounts.map((item) => (item.id === existing ? account : item))
           : [...demoCommsStatus.email.accounts, account];
         demoCommsStatus.email = {...demoCommsStatus.email, accounts};
+        return demoCommsStatus;
+      },
+      emailSignaturesSave: async (request) => {
+        demoCommsStatus.email = {
+          ...demoCommsStatus.email,
+          accounts: demoCommsStatus.email.accounts.map((account) =>
+            account.id === request.account
+              ? {
+                  ...account,
+                  signatures: request.signatures.map((signature) => ({...signature})),
+                  defaultSignatureId: request.defaultSignatureId,
+                }
+              : account,
+          ),
+        };
         return demoCommsStatus;
       },
       emailRemove: async (id) => {

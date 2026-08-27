@@ -69,6 +69,8 @@
   /** Text to drop into the composer, e.g. a queued message pulled back for edits. */
   export let insertion: {id: string; text: string} | null = null;
   export let onInsertionApplied: () => void = () => {};
+  export let onFileDragActiveChange: (active: boolean) => void = () => {};
+  export let draftKey = 'new';
   export let onEditGoal: (text: string) => void = () => {};
   export let onToggleGoalPaused: () => void = () => {};
   export let onDeleteGoal: () => void = () => {};
@@ -189,6 +191,8 @@
         {onReasoningChange}
         {insertion}
         {onInsertionApplied}
+        {onFileDragActiveChange}
+        {draftKey}
       />
     </div>
   {:else}
@@ -228,7 +232,9 @@
           />
         {/if}
         {#if !speechMode}
-          <PromptInput active={running} {speechModeEnabled} {advancedMode} {onOpenPlugins} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied}/>
+          {#key draftKey}
+            <PromptInput active={running} {speechModeEnabled} {advancedMode} {onOpenPlugins} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied} {onFileDragActiveChange} {draftKey}/>
+          {/key}
         {/if}
       </div>
     </div>

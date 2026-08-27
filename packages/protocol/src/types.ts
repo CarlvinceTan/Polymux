@@ -77,7 +77,6 @@ export interface ComputerHistoryStatusDto {
   excludeSites: string[];
   recordPrivateBrowsing: boolean;
   interactionEvents: boolean;
-  distilledThrough: string | null;
 }
 export interface ComputerHistorySettingsPatchDto {
   excludeApps?: string[];
@@ -101,6 +100,19 @@ export interface ComputerHistoryEntryDto {
   app?: string;
   bundleId?: string;
   url?: string;
+}
+export interface ComputerHistoryActivityDto {
+  id: string;
+  startedAt: string;
+  endedAt: string;
+  title: string;
+  summary: string;
+  apps: string[];
+  /** Raw accessibility captures retained as evidence behind this activity. */
+  entryIds: string[];
+  captures: number;
+  events: number;
+  summarized: boolean;
 }
 export interface GeneralSettingsDto {
   theme: "light" | "dark" | "system";
@@ -152,7 +164,7 @@ export interface GeneralSettingsDto {
    */
   appPermissionsEnabled: boolean;
   /** Workspace views pinned to the title bar, in display order. */
-  pinnedViews: Array<'drive' | 'schedule' | 'hub' | 'tasks'>;
+  pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'>;
   location: {
     latitude: number;
     longitude: number;
@@ -191,11 +203,82 @@ export type AgentRuntimeDto =
       command: string;
       args: string[];
       cwd: string | null;
+      /** Session options remembered for new ACP sessions. */
+      config: Record<string, string | boolean>;
     };
 
 export type UpdateAgentRuntimeRequest =
   | {kind: "polymux"}
-  | {kind: "acp"; name: string; command: string; args?: string[]; cwd?: string | null};
+  | {kind: "acp"; name: string; command: string; args?: string[]; cwd?: string | null; config?: Record<string, string | boolean>};
+
+export interface AgentConfigValueDto {
+  value: string;
+  name: string;
+  description: string | null;
+}
+
+export interface AgentConfigValueGroupDto {
+  id: string;
+  name: string;
+  options: AgentConfigValueDto[];
+}
+
+/** A control advertised by the active agent through ACP session config. */
+export type AgentConfigOptionDto =
+  | {
+      id: string;
+      name: string;
+      description: string | null;
+      category: string | null;
+      type: "select";
+      currentValue: string;
+      options: AgentConfigValueDto[];
+      groups: AgentConfigValueGroupDto[];
+    }
+  | {
+      id: string;
+      name: string;
+      description: string | null;
+      category: string | null;
+      type: "boolean";
+      currentValue: boolean;
+    };
+
+/** Non-secret routing state advertised by an ACP agent. */
+export interface AgentProviderDto {
+  id: string;
+  supported: string[];
+  required: boolean;
+  apiType: string | null;
+  baseUrl: string | null;
+}
+
+/** A login route advertised by the selected ACP agent during initialization. */
+export interface AgentAuthMethodDto {
+  id: string;
+  name: string;
+  description: string | null;
+  type: "agent" | "terminal";
+  /** Terminal methods need an interactive terminal, which Polymux does not yet expose. */
+  available: boolean;
+}
+
+export interface AgentSettingsDto {
+  authMethods: AgentAuthMethodDto[];
+  authRequired: boolean;
+  supportsLogout: boolean;
+  configOptions: AgentConfigOptionDto[];
+  providers: AgentProviderDto[];
+  /** Provider routing is a draft ACP capability and is absent on most agents. */
+  supportsProviders: boolean;
+}
+
+export interface SetAgentProviderRequest {
+  id: string;
+  apiType: string;
+  baseUrl: string;
+  headers?: Record<string, string>;
+}
 /**
  * An event worth interrupting the user for. Each one is a row in Settings and
  * a key in the map above, so adding a kind here is all it takes for the row
@@ -366,6 +449,8 @@ export interface AcpRegistryEntryDto {
   description: string;
   version: string;
   icon: string;
+  /** Whether this exact registry package is already available locally. */
+  installed: boolean;
   /** Empty for binary-only entries, whose installed command is machine-specific. */
   command: string;
   args: string[];
@@ -1139,16 +1224,29 @@ export interface CommsEmailEndpointDto {
   auth: "password" | "oauth2" | "command" | "keyring" | "none";
 }
 
+/** A reusable ending for mail sent from one account. */
+export interface MailSignatureDto {
+  /** Stable within its account, so an open composer can keep its selection. */
+  id: string;
+  name: string;
+  /** Plain-text alternative, used by text-only recipients and search. */
+  body: string;
+  /** Sanitised email-safe formatting; null for a plain-text signature. */
+  html: string | null;
+}
+
 export interface CommsEmailAccountDto {
   /** Account key, unique across the user's mailboxes. */
   id: string;
   displayName: string | null;
   email: string;
-  isDefault: boolean;
   incoming: CommsEmailEndpointDto;
   outgoing: CommsEmailEndpointDto;
   /** Whether Polymux holds the password for this account in encrypted storage. */
   secretStored: boolean;
+  signatures: MailSignatureDto[];
+  /** Null means new mail from this account starts without a signature. */
+  defaultSignatureId: string | null;
   status: "unknown" | "ok" | "error";
   error: string | null;
 }
@@ -1177,9 +1275,15 @@ export interface SaveEmailAccountRequest {
   /**
    * Plaintext only in transit from the settings form; it is written to
    * OS-encrypted storage and never returned to the renderer.
-   */
+  */
   password?: string;
-  isDefault?: boolean;
+}
+
+/** Replaces the reusable signatures belonging to one mailbox. */
+export interface SaveMailSignaturesRequest {
+  account: string;
+  signatures: MailSignatureDto[];
+  defaultSignatureId: string | null;
 }
 
 /** A mailbox folder, classified by the IMAP special-use flags it advertises. */
@@ -1265,6 +1369,8 @@ export interface SendMailRequest {
   bcc?: string[];
   subject: string;
   body: string;
+  /** Optional formatted alternative for clients that render HTML mail. */
+  html?: string;
   /** Saves to the drafts folder instead of sending. */
   draft?: boolean;
   /** Absolute paths to files to attach. */
@@ -1281,11 +1387,27 @@ export interface SendMailRequest {
   replacesDraft?: {id: string; folder: string} | null;
 }
 
+export interface SendMailResult {
+  /** The mailbox copy created by a draft save, so the next autosave can
+   * replace it instead of adding another version. */
+  draft?: {id: string; folder: string};
+}
+
 /** One conversation on a linked messaging platform. */
 export interface ChatDto {
   id: string;
   name: string;
   platform: string;
+  /** A Matrix Space: a navigational container whose child rooms are chats. */
+  space?: boolean;
+  /** A bridge's account-wide container, flattened into the platform rail. */
+  defaultSpace?: boolean;
+  /** Matrix Spaces this chat belongs to. A room may appear in more than one. */
+  parentIds?: string[];
+  /** Linked bridge accounts through which this conversation is available. */
+  accountIds?: string[];
+  /** Account-specific unread counts when a bridge exposes remote read state. */
+  unreadByAccount?: Record<string, number>;
   /** Room avatar as an http(s) url the renderer can show, when it has one. */
   avatarUrl?: string | null;
   /** Unread messages the account has not acknowledged. */
@@ -1300,6 +1422,41 @@ export interface ChatDto {
   preview?: string | null;
   /** Whether this is a group, which is drawn and named differently. */
   group?: boolean;
+}
+
+/** A person a linked messaging account can start a conversation with. */
+export interface CommsContactDto {
+  /** Stable across refreshes and unique across platform accounts. */
+  id: string;
+  /** The bridge's remote user id, passed back when starting a chat. */
+  remoteId: string | null;
+  name: string;
+  platform: CommsPlatform;
+  accountId: string;
+  accountName: string;
+  avatarUrl: string | null;
+  /** Phone numbers, usernames, and other identifiers the platform exposes. */
+  identifiers: string[];
+  /** An already-open DM for this person, when one exists. */
+  chatId: string | null;
+  /** Every linked account that can reach this person. Keeping these routes on
+   * one row avoids showing the same address-book entry once per login, and
+   * lets a multi-selection choose an account shared by every participant. */
+  accounts: Array<{
+    accountId: string;
+    accountName: string;
+    remoteId: string | null;
+    chatId: string | null;
+  }>;
+}
+
+/** Starts one direct conversation or a remote group on one linked account. */
+export interface CreateChatRequest {
+  platform: CommsPlatform;
+  accountId: string;
+  participantIds: string[];
+  /** Required by group-capable platforms once more than one person is chosen. */
+  name?: string;
 }
 
 /** An image, voice note, video, or file carried by a message. */
@@ -1323,6 +1480,19 @@ export interface ChatAttachmentDto {
   sticker?: boolean;
 }
 
+/** Metadata for a web link carried with a chat message. */
+export interface ChatLinkPreviewDto {
+  title: string;
+  description: string | null;
+  url: string | null;
+  source: string | null;
+  /** Authenticated renderer-facing image URL, when the preview supplies one. */
+  imageUrl?: string | null;
+  imageMimeType?: string | null;
+  imageWidth?: number | null;
+  imageHeight?: number | null;
+}
+
 export interface ChatMessageDto {
   id: string;
   chatId: string;
@@ -1339,7 +1509,7 @@ export interface ChatMessageDto {
   /** Media the message carries. Text messages have none. */
   attachments?: ChatAttachmentDto[];
   /** Structured link/card metadata rendered consistently across bridges. */
-  linkPreview?: {title: string; description: string | null; url: string | null; source: string | null} | null;
+  linkPreview?: ChatLinkPreviewDto | null;
   /**
    * Set when the message holds something Polymux cannot bring across — a
    * voice note on a network with no media API, a photo whose key the source
@@ -1731,6 +1901,96 @@ export interface SchedulePatch {
   status?: "active" | "paused";
 }
 
+export type CalendarSourceKind =
+  | "local"
+  | "icloud"
+  | "google"
+  | "exchange"
+  | "caldav"
+  | "subscription"
+  | "birthdays"
+  | "other";
+
+export interface CalendarSourceDto {
+  id: string;
+  title: string;
+  kind: CalendarSourceKind;
+}
+
+export interface CalendarListDto {
+  id: string;
+  title: string;
+  color: string;
+  editable: boolean;
+  subscribed: boolean;
+  source: CalendarSourceDto;
+}
+
+export type CalendarRecurrenceFrequency = "daily" | "weekly" | "monthly" | "yearly";
+
+export interface CalendarRecurrenceDto {
+  frequency: CalendarRecurrenceFrequency;
+  interval: number;
+  count?: number;
+  until?: string;
+}
+
+export type CalendarAvailability = "busy" | "free" | "tentative" | "unavailable";
+
+export interface CalendarEventDto {
+  id: string;
+  calendarId: string;
+  title: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  location?: string;
+  notes?: string;
+  url?: string;
+  timeZone?: string;
+  recurrence?: CalendarRecurrenceDto;
+  alarmMinutes?: number;
+  availability: CalendarAvailability;
+  attendees: string[];
+  editable: boolean;
+}
+
+export interface CalendarEventInput {
+  calendarId: string;
+  title: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  location?: string;
+  notes?: string;
+  url?: string;
+  recurrence?: CalendarRecurrenceDto | null;
+  alarmMinutes?: number | null;
+  availability?: CalendarAvailability;
+}
+
+export type CalendarEventPatch = Omit<
+  Partial<CalendarEventInput>,
+  "location" | "notes" | "url"
+> & {
+  /** Null clears an existing EventKit value; omission leaves it unchanged. */
+  location?: string | null;
+  notes?: string | null;
+  url?: string | null;
+};
+
+export interface CalendarImportResultDto {
+  imported: number;
+  skipped: number;
+  fileName: string | null;
+}
+
+export interface CalendarExportRequest {
+  start: string;
+  end: string;
+  calendarIds?: string[];
+}
+
 export type TaskCardStatus = "todo" | "in_progress" | "done";
 
 export interface TaskCardDto {
@@ -1770,6 +2030,12 @@ export interface PolymuxApi {
     get(): Promise<AgentRuntimeDto>;
     registry(): Promise<AcpRegistryEntryDto[]>;
     update(request: UpdateAgentRuntimeRequest): Promise<AgentRuntimeDto>;
+    settings(): Promise<AgentSettingsDto>;
+    authenticate(methodId: string): Promise<AgentSettingsDto>;
+    logout(): Promise<AgentSettingsDto>;
+    setConfigOption(id: string, value: string | boolean): Promise<AgentSettingsDto>;
+    setProvider(request: SetAgentProviderRequest): Promise<AgentSettingsDto>;
+    disableProvider(id: string): Promise<AgentSettingsDto>;
   };
   profiles: {
     list(): Promise<ProfilesDto>;
@@ -1813,7 +2079,7 @@ export interface PolymuxApi {
   window: {
     /** Opens a built-in workspace view in its own app window. */
     openWorkspaceView(
-      kind: "drive" | "schedule" | "hub" | "tasks",
+      kind: "drive" | "schedule" | "calendar" | "hub" | "tasks",
       conversationId?: string,
       placement?: {x: number; y: number; width?: number; height?: number},
     ): Promise<void>;
@@ -1930,6 +2196,12 @@ export interface PolymuxApi {
       until?: string;
       limit?: number;
     }): Promise<ComputerHistoryEntryDto[]>;
+    /** Human-readable ten-minute activities derived from raw local evidence. */
+    activities(options?: {
+      since?: string;
+      until?: string;
+      limit?: number;
+    }): Promise<ComputerHistoryActivityDto[]>;
     /** Opens the system file picker at the applications folder. Returns the
      * chosen application's name, or null when the picker was dismissed. */
     pickApp(): Promise<string | null>;
@@ -2083,6 +2355,10 @@ export interface PolymuxApi {
     ): Promise<CommsStatusDto>;
     /** Conversations across every linked messaging platform. */
     chats(): Promise<ChatDto[]>;
+    /** People exposed by linked accounts, including DMs already in the Hub. */
+    chatContacts(): Promise<CommsContactDto[]>;
+    /** Opens a DM or creates a real remote group, returning its Matrix room id. */
+    chatCreate(request: CreateChatRequest): Promise<string>;
     /**
      * One page of a conversation, newest first, with the token that reaches
      * the page before it. Scrolling back up a long history is walking that
@@ -2108,7 +2384,7 @@ export interface PolymuxApi {
     mailEnvelopes(request: MailListRequest): Promise<MailEnvelopeDto[]>;
     mailMessage(id: string, account?: string, folder?: string): Promise<MailMessageDto>;
     /** Sends, or saves to drafts when `draft` is set. */
-    mailSend(request: SendMailRequest): Promise<void>;
+    mailSend(request: SendMailRequest): Promise<SendMailResult>;
     /** Moves messages to another folder — how junk and trash are applied. */
     mailMove(ids: string[], target: string, account?: string, folder?: string): Promise<void>;
     /** Erases messages outright. Emptying trash is this over every id in it. */
@@ -2131,6 +2407,7 @@ export interface PolymuxApi {
       folder?: string,
     ): Promise<void>;
     emailSave(request: SaveEmailAccountRequest): Promise<CommsStatusDto>;
+    emailSignaturesSave(request: SaveMailSignaturesRequest): Promise<CommsStatusDto>;
     emailRemove(id: string): Promise<CommsStatusDto>;
     /** Opens IMAP and SMTP connections to prove the account works. */
     emailTest(id: string): Promise<CommsEmailAccountDto>;
@@ -2356,6 +2633,22 @@ export interface PolymuxApi {
     /** Clears the unread mark a finished run left behind. */
     markRead(id: string): Promise<ScheduleDto>;
     subscribe(listener: (items: ScheduleDto[]) => void): () => void;
+  };
+  /** The Mac's calendar accounts through EventKit. Accounts already connected
+   * to iCloud, Google, Exchange or CalDAV stay synced by the system; Polymux
+   * reads and writes the same event store Apple Calendar uses. */
+  calendar: {
+    calendars(): Promise<CalendarListDto[]>;
+    events(start: string, end: string, calendarIds?: string[]): Promise<CalendarEventDto[]>;
+    create(input: CalendarEventInput): Promise<CalendarEventDto>;
+    update(id: string, patch: CalendarEventPatch): Promise<CalendarEventDto>;
+    remove(id: string): Promise<void>;
+    /** Opens an .ics picker and imports its events into one writable calendar. */
+    importFile(calendarId: string): Promise<CalendarImportResultDto>;
+    /** Saves the selected range as an interoperable .ics file. */
+    exportFile(request: CalendarExportRequest): Promise<string | null>;
+    /** Opens the system account pane where Google, Exchange and CalDAV accounts are added. */
+    openAccounts(): Promise<void>;
   };
   tasks: {
     list(chatId: string): Promise<TaskCardDto[]>;

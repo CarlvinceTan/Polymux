@@ -2163,16 +2163,11 @@ export class WeChatBridge {
         });
         return result.messageId;
       }
-      // Despite the option name, wechat-use puts a file URL on the pasteboard.
-      // WeChat classifies ordinary files and videos itself. A sticker can use
-      // the established image fallback until the typed sticker handler is
-      // available; voice notes must not silently become generic files.
-      if (
-        mediaType !== "image" &&
-        mediaType !== "sticker" &&
-        mediaType !== "file" &&
-        mediaType !== "video"
-      )
+      // The helper's --image route decodes the input as an image. It does not
+      // paste arbitrary file URLs despite earlier assumptions; live File
+      // Transfer verification showed a text attachment produced no message.
+      // Stickers may intentionally use the established image fallback.
+      if (mediaType !== "image" && mediaType !== "sticker")
         throw new Error(`WeChat ${mediaType} sending needs the native writer`);
       for (const cli of this.#cliPaths()) {
         const result = await run(

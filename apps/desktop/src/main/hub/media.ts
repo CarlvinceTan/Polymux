@@ -1,7 +1,9 @@
 import { protocol, net } from "electron";
 import { MEDIA_SCHEME, mediaUrl } from "@polymux/hub";
+import {mediaResponse, type MediaAuth} from "./media-response.js";
 
 export { MEDIA_SCHEME, mediaUrl };
+export type {MediaAuth} from "./media-response.js";
 
 /**
  * Bridged messages carry their media as `mxc://` uris, which nothing in a page
@@ -18,14 +20,9 @@ export { MEDIA_SCHEME, mediaUrl };
 const SIGN_IN_POLL_MS = 100;
 const SIGN_IN_GRACE_ATTEMPTS = 50;
 
-export interface MediaAuth {
-  homeserverUrl: string;
-  token: string | null;
-}
-
 /** Wires the handler up once the app is ready. `auth` is read per request so a
  * sign-in that happens later is picked up without re-registering. */
-export function serveMedia(auth: () => MediaAuth): void {
+export function serveMedia(auth: () => Omit<MediaAuth, "token"> & {token: string | null}): void {
   protocol.handle(MEDIA_SCHEME, async (request) => {
     /**
      * Signing in to the hub happens after the window is up, so the pictures
@@ -41,33 +38,10 @@ export function serveMedia(auth: () => MediaAuth): void {
       ({homeserverUrl, token} = auth());
     }
     if (!token) return new Response("Not signed in", {status: 401});
-    const url = new URL(request.url);
-    // `host` is the media's origin server; the path carries its id.
-    const server = url.host;
-    const mediaId = decodeURIComponent(url.pathname.replace(/^\//, ""));
-    if (!server || !mediaId) return new Response("Bad media url", {status: 400});
-    const target = new URL(
-      `/_matrix/client/v1/media/download/${encodeURIComponent(server)}/${encodeURIComponent(mediaId)}`,
-      homeserverUrl,
+    return mediaResponse(
+      {homeserverUrl, token},
+      request,
+      (url, init) => net.fetch(url, init),
     );
-    try {
-      const response = await net.fetch(target.toString(), {
-        headers: {Authorization: `Bearer ${token}`},
-      });
-      // The homeserver stores media by id alone, with no federation and no
-      // remote-media proxy, so anything a bridge advertises on another server
-      // can never resolve here. That is worth saying once with the mxc in
-      // hand: it is the difference between "the picture is missing" and "the
-      // bridge pointed us at a server we do not have."
-      if (!response.ok)
-        console.warn(
-          `[media] ${response.status} for mxc://${server}/${mediaId} — the homeserver does not hold this media`,
-        );
-      return response;
-    } catch (cause) {
-      return new Response(cause instanceof Error ? cause.message : "Media fetch failed", {
-        status: 502,
-      });
-    }
   });
 }

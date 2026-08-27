@@ -85,6 +85,21 @@ const SYNC_INCREMENT_LIMIT = 10_000;
 /** Retry schedule for pushing transactions to a bridge that is down. */
 const PUSH_RETRY_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
+/** The one byte-range shape Chromium's media player sends. Multiple ranges
+ * would require a multipart response and are refused instead of returning the
+ * wrong bytes under a successful status. */
+function requestedByteRange(value: string, size: number): {start: number; end: number} | undefined {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
+  if (!match) return undefined;
+  const [, rawStart, rawEnd] = match;
+  if (!rawStart && !rawEnd) return undefined;
+  const start = rawStart ? Number(rawStart) : Math.max(0, size - Number(rawEnd));
+  const end = rawStart ? (rawEnd ? Math.min(Number(rawEnd), size - 1) : size - 1) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size)
+    return undefined;
+  return {start, end};
+}
+
 export class Homeserver {
   readonly #options: Required<Pick<HomeserverOptions, "serverName" | "dataDirectory" | "autoJoin">> &
     HomeserverOptions;
@@ -1179,20 +1194,39 @@ export class Homeserver {
       const record = this.#store.media(mediaId);
       if (!record) return this.#json(response, 404, {errcode: "M_NOT_FOUND", error: "Unknown media"});
       const data = await readFile(path.join(this.#mediaDir, mediaId));
-      response.writeHead(200, {
+      const named = parts[3] ?? record.fileName;
+      const headers = {
         "Content-Type": record.contentType,
-        "Content-Length": data.length,
+        "Accept-Ranges": "bytes",
         // The name the file was uploaded with, so saving an attachment keeps it
         // rather than inventing one from the media id. A name in the last path
         // segment wins, which is how a client asks for a download name of its
         // own choosing.
-        ...(() => {
-          const named = parts[3] ?? record.fileName;
-          return named
-            ? {"Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(named)}`}
-            : {};
-        })(),
-      });
+        ...(named
+          ? {"Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(named)}`}
+          : {}),
+      };
+      const asked = request.headers.range;
+      if (asked) {
+        const range = requestedByteRange(asked, data.length);
+        if (!range) {
+          response.writeHead(416, {
+            ...headers,
+            "Content-Range": `bytes */${data.length}`,
+          });
+          response.end();
+          return;
+        }
+        const part = data.subarray(range.start, range.end + 1);
+        response.writeHead(206, {
+          ...headers,
+          "Content-Length": part.length,
+          "Content-Range": `bytes ${range.start}-${range.end}/${data.length}`,
+        });
+        response.end(part);
+        return;
+      }
+      response.writeHead(200, {...headers, "Content-Length": data.length});
       response.end(data);
       return;
     }

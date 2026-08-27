@@ -44,12 +44,14 @@ export {
 } from "./wechat-native-profile.js";
 export {loadHeadImages, type HeadImageOptions} from "./wechat-head-images.js";
 export {
+  bridgeDisplayName,
   MatrixHub,
   ProvisioningError,
   provisioningSecret,
   type HubAuth,
   type HubProbe,
   type MatrixAttachment,
+  type MatrixContact,
   type MatrixHubOptions,
   type MatrixMessage,
   type MatrixReaction,

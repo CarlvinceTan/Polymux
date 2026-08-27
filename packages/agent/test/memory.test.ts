@@ -58,3 +58,19 @@ test("keeps conversation memory scoped and archives forgotten notes", () => {
   assert.equal(memory.list().length, 0);
   assert.equal(readdirSync(memory.archiveDirectory).length, 1);
 });
+
+test("archives legacy Computer History notes instead of exposing them as memory", () => {
+  const directory = temporaryVault();
+  const legacy = new MemoryManager({directory, id: () => "legacy-screen"});
+  const screen = legacy.remember("You worked in ChatGPT and Notion.", {kind: "screen"});
+  legacy.saveConsolidation("# Memory\n\nYou worked in ChatGPT and Notion.", screen.updatedAt);
+  legacy.remember("Prefer simple explanations", {kind: "preference"});
+
+  const memory = new MemoryManager({directory});
+
+  assert.deepEqual(memory.list().map((entry) => entry.content), ["Prefer simple explanations"]);
+  assert.doesNotMatch(readFileSync(memory.registryPath, "utf8"), /ChatGPT and Notion/);
+  assert.doesNotMatch(readFileSync(memory.summaryPath, "utf8"), /ChatGPT and Notion/);
+  assert.match(readdirSync(memory.archiveDirectory).join("\n"), /computer-history\.md$/);
+  assert.equal(memory.consolidationState().watermark, null);
+});

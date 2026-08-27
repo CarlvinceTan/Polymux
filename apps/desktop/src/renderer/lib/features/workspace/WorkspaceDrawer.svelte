@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type WorkspaceTabKind = 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'marketplace' | 'view';
+  export type WorkspaceTabKind = 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'calendar' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'view';
   export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; section?: 'outputs' | 'references' | 'tasks'};
 
   /**
@@ -140,10 +140,10 @@
   export const SINGLETON_TAB_IDS: Partial<Record<WorkspaceTabKind, string>> = {
     drive: 'workspace-drive',
     schedule: 'workspace-schedule',
+    calendar: 'workspace-calendar',
     hub: 'workspace-hub',
     subagents: 'workspace-subagents',
     tasks: 'workspace-tasks',
-    marketplace: 'workspace-marketplace',
   };
 </script>
 
@@ -172,9 +172,8 @@
   import SummaryView, {type SummaryViewData} from './SummaryView.svelte';
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
   import ScheduleView, {type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './ScheduleView.svelte';
+  import CalendarView from './CalendarView.svelte';
   import TasksView, {type TaskCard} from './TasksView.svelte';
-  import MarketplaceView from './MarketplaceView.svelte';
-  import type {PluginViewDto} from '@polymux/protocol';
   import {t, translate, type MessageKey} from '../../../i18n';
 
   export let tabs: WorkspaceTab[] = [];
@@ -245,7 +244,6 @@
   export let onSelect: (id: string) => void = () => {};
   export let onClose: (id: string) => void = () => {};
   export let onNew: (kind: WorkspaceTabKind) => void = () => {};
-  export let onOpenPluginView: (view: PluginViewDto) => void = () => {};
   export let onReorderTabs: (ids: string[]) => void = () => {};
   /** Opens a previously visited page in a browser tab. */
   export let onOpenUrl: (url: string, title: string) => void = () => {};
@@ -256,8 +254,8 @@
    * native view must hide under it. */
   export let browserObscured = false;
   export let onTabState: (id: string, patch: {title?: string; url?: string; favicon?: string | null}) => void = () => {};
-  export let pinnedViews: Array<'drive' | 'schedule' | 'hub' | 'tasks'> = [];
-  export let onTogglePin: (kind: 'drive' | 'schedule' | 'hub' | 'tasks') => void = () => {};
+  export let pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'> = [];
+  export let onTogglePin: (kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') => void = () => {};
   export let onOpenSeparateWindow: (
     kind: WorkspaceTabKind,
     placement?: {x: number; y: number; width?: number; height?: number},
@@ -334,8 +332,8 @@
     });
   }
 
-  $: isSingletonKind = (kind: WorkspaceTabKind): kind is 'drive' | 'schedule' | 'hub' | 'tasks' =>
-    kind === 'drive' || kind === 'schedule' || kind === 'hub' || kind === 'tasks';
+  $: isSingletonKind = (kind: WorkspaceTabKind): kind is 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' =>
+    kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks';
 
   $: activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   /** A task tab is named by its row in Summary and takes its status from it, so
@@ -353,6 +351,7 @@
   const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {
     drive: 'workspace.drive',
     schedule: 'workspace.schedule',
+    calendar: 'workspace.calendar',
     hub: 'workspace.hub',
     subagents: 'workspace.subagents',
     tasks: 'workspace.tasks',
@@ -371,17 +370,17 @@
   $: taskTabStatus = (tab: WorkspaceTab): TaskStatus =>
     summaryData.tasks.find((task) => task.id === tab.id)?.status ?? 'active';
 
-  const tabIcons: Record<WorkspaceTabKind, 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'send' | 'task' | 'tasks' | 'storefront' | 'panel'> = {
+  const tabIcons: Record<WorkspaceTabKind, 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'calendar' | 'send' | 'task' | 'tasks' | 'panel'> = {
     media: 'image',
     browser: 'globe',
     summary: 'summary',
     drive: 'drive',
     schedule: 'clock',
+    calendar: 'calendar',
     hub: 'chat',
     subagent: 'task',
     subagents: 'send',
     tasks: 'tasks',
-    marketplace: 'storefront',
     view: 'panel',
   };
 
@@ -467,23 +466,63 @@
     onResize(clampPanelWidth(window.innerWidth - clientX, workspaceResizeBounds(window.innerWidth, reservedWidth)));
   }
 
+  let pointerResizing = false;
+  let pendingResizeX: number | null = null;
+  let resizeFrame = 0;
+
+  /** Pointer events can arrive several times between paints. Keep the newest
+   * sample and perform one layout update per frame so the divider follows the
+   * pointer without making the rest of the shell repeatedly reflow. */
+  function latestClientX(event: PointerEvent): number {
+    const samples = event.getCoalescedEvents?.();
+    return samples?.length ? samples[samples.length - 1].clientX : event.clientX;
+  }
+
+  function queuePointerResize(clientX: number): void {
+    pendingResizeX = clientX;
+    if (resizeFrame) return;
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = 0;
+      if (!pointerResizing || pendingResizeX === null) return;
+      const nextX = pendingResizeX;
+      pendingResizeX = null;
+      resizeFromPointer(nextX);
+    });
+  }
+
+  function flushPointerResize(clientX: number): void {
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+    resizeFrame = 0;
+    pendingResizeX = null;
+    resizeFromPointer(clientX);
+  }
+
   function startResize(event: PointerEvent): void {
     if (expanded || window.innerWidth < SPLIT_LAYOUT_MIN_WIDTH) return;
+    pointerResizing = true;
     onResizeState(true);
     (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
-    resizeFromPointer(event.clientX);
+    flushPointerResize(latestClientX(event));
     event.preventDefault();
   }
 
   function dragResize(event: PointerEvent): void {
-    if (resizing) resizeFromPointer(event.clientX);
+    if (!pointerResizing) return;
+    queuePointerResize(latestClientX(event));
+    event.preventDefault();
   }
 
   function stopResize(event: PointerEvent): void {
-    if (!resizing) return;
+    if (!pointerResizing) return;
+    flushPointerResize(latestClientX(event));
+    pointerResizing = false;
     onResizeState(false);
     (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
   }
+
+  onDestroy(() => {
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+  });
 
   function resizeWithKeyboard(event: KeyboardEvent): void {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -599,14 +638,14 @@
             {#if !openKinds.has('drive')}
               <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('drive'); }}><Icon name="drive" size={14}/><span>{$t('workspace.drive')}</span></button>
             {/if}
+            {#if !openKinds.has('calendar')}
+              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('calendar'); }}><Icon name="calendar" size={14}/><span>{$t('workspace.calendar')}</span></button>
+            {/if}
             {#if !openKinds.has('hub')}
               <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('hub'); }}><Icon name="chat" size={14}/><span>{$t('workspace.hub')}</span></button>
             {/if}
             {#if !openKinds.has('tasks')}
               <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('tasks'); }}><Icon name="tasks" size={14}/><span>{$t('workspace.tasks')}</span></button>
-            {/if}
-            {#if !openKinds.has('marketplace')}
-              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('marketplace'); }}><Icon name="storefront" size={14}/><span>Marketplace</span></button>
             {/if}
           </div>
         {/if}
@@ -624,7 +663,11 @@
     ><Icon name={expanded ? 'collapse' : 'expand'} size={14} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>{/if}
   </div>
 
-  <div class="workspace-content">
+  <div
+    class="workspace-content"
+    class:empty={!activeTab}
+    class:browser={activeTab?.kind === 'browser' || activeTab?.kind === 'view'}
+  >
     {#if !activeTab}
       <div class="workspace-launcher">
         <p class="workspace-launcher-heading">{$t('workspace.open')}</p>
@@ -633,12 +676,12 @@
           {#if !openKinds.has('drive')}
             <button type="button" class="workspace-launcher-row" onclick={() => onNew('drive')}><Icon name="drive" size={16}/><span>{$t('workspace.drive')}</span></button>
           {/if}
+          {#if !openKinds.has('calendar')}
+            <button type="button" class="workspace-launcher-row" onclick={() => onNew('calendar')}><Icon name="calendar" size={16}/><span>{$t('workspace.calendar')}</span></button>
+          {/if}
           <button type="button" class="workspace-launcher-row" onclick={() => onNew('hub')}><Icon name="chat" size={16}/><span>{$t('workspace.hub')}</span></button>
           {#if !openKinds.has('tasks')}
             <button type="button" class="workspace-launcher-row" onclick={() => onNew('tasks')}><Icon name="tasks" size={16}/><span>{$t('workspace.tasks')}</span></button>
-          {/if}
-          {#if !openKinds.has('marketplace')}
-            <button type="button" class="workspace-launcher-row" onclick={() => onNew('marketplace')}><Icon name="storefront" size={16}/><span>Marketplace</span></button>
           {/if}
         </div>
         {#if historySuggestions.length}
@@ -673,7 +716,7 @@
     />
     {:else if activeTab.kind === 'subagents'}<SubagentsView subagents={summaryData.tasks} onOpenSubagent={onOpenTask}/>
     {:else if activeTab.kind === 'hub'}<HubView {onOpenFilePath}/>
-    {:else if activeTab.kind === 'marketplace'}<MarketplaceView onOpenView={onOpenPluginView}/>
+    {:else if activeTab.kind === 'calendar'}<CalendarView/>
     {:else if activeTab.kind === 'drive'}<DriveView
       title={activeTab.title}
       root={driveRoot}
@@ -704,9 +747,9 @@
 {#if contextMenu}
   <div class="polymux-dropdown-menu tab-context-menu" role="menu" style="position: fixed; left: {contextMenu.x}px; top: {contextMenu.y}px; z-index: 200;">
     {#if isSingletonKind(contextMenu.tab.kind)}
-      <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { const kind = contextMenu?.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks'; closeContextMenu(); onTogglePin(kind); }}>
-        <Icon name={pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks') ? 'pin-off' : 'pin'} size={14}/>
-        <span>{pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'hub' | 'tasks') ? $t('titlebar.unpinView') : $t('titlebar.pinView')}</span>
+      <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { const kind = contextMenu?.tab.kind as 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'; closeContextMenu(); onTogglePin(kind); }}>
+        <Icon name={pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') ? 'pin-off' : 'pin'} size={14}/>
+        <span>{pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') ? $t('titlebar.unpinView') : $t('titlebar.pinView')}</span>
       </button>
       <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { if (contextMenu) openTabInSeparateWindow(contextMenu.tab); }}>
         <Icon name="send" size={14}/>

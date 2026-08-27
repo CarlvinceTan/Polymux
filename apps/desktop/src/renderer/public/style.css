@@ -39,6 +39,9 @@
   --neutral-800: #3a3a3a;
   --neutral-900: #1a1a1a;
   --neutral-950: #0a0a0a;
+  /* neutral-950 reverses with the theme, so the same veil darkens light mode
+     and lightens dark mode without maintaining two unrelated highlight hues. */
+  --file-drop-pane-tint: color-mix(in srgb, var(--neutral-950) 6%, transparent);
   --tracking-overline: .14em;
   --panel-width: min(44vw, 720px);
   --app-topbar-height: 50px;
@@ -239,21 +242,11 @@ main { --chat-drawer-column: 0px; --content-right-column: 0px; --content-compose
    drawer-closed place while the drawer was still sliding out, and the drawer
    rode over it for the rest of the slide. */
 main.summary-open { transition: --chat-drawer-column var(--drawer-motion-duration) var(--drawer-motion-ease), --chat-drawer-offset var(--drawer-motion-duration) var(--drawer-motion-ease), --content-docked-column var(--drawer-motion-duration) var(--drawer-motion-ease), --content-right-column var(--summary-motion-duration) var(--drawer-motion-ease), --content-composer-column var(--summary-motion-duration) var(--drawer-motion-ease); }
-main.summary-open .conversation-column, main.summary-open .composer-column-content { transition-duration: var(--summary-motion-duration); }
 main.summary-open .sticky-composer { transition: transform var(--summary-motion-duration) var(--drawer-motion-ease), opacity var(--summary-motion-duration) var(--drawer-motion-ease); }
-main.workspace-resizing, main.workspace-resizing .conversation-column, main.workspace-resizing .sticky-composer, main.workspace-resizing .composer-column-content,
-main.chat-drawer-resizing, main.chat-drawer-resizing .conversation-column, main.chat-drawer-resizing .sticky-composer, main.chat-drawer-resizing .composer-column-content,
-/* A window-edge drag reclamps the drawers every frame; the open/close motion
-   would leave the content column and its fixed chrome behind the viewport and
-   under the workspace panel. */
-/* With the workspace docked, the panes are sized off --chat-drawer-offset,
-   which the drawer slide already animates. Their own width transition would
-   ease that eased value a second time: the grid track moves out from under
-   them at full speed while the panes lag, so the content reads as pushed
-   right and its trailing edge is clipped by the panel before it catches up.
-   For the length of the slide the registered property is the only animation. */
-main.workspace-open.chat-drawer-sliding .conversation-column,
-main.workspace-open.chat-drawer-sliding .composer-column-content { transition: none; }
+/* Direct drawer manipulation and window-edge drags reclamp the layout every
+   frame, so those updates must never inherit an open/close transition. */
+main.workspace-resizing,
+main.chat-drawer-resizing,
 main.window-resizing, main.window-resizing .conversation-column, main.window-resizing .sticky-composer, main.window-resizing .composer-column-content { transition: none; }
 main.workspace-resizing .speech-orb.in-chat, main.chat-drawer-resizing .speech-orb.in-chat, main.window-resizing .speech-orb.in-chat { transition: none; }
 main.workspace-resizing .scroll-to-latest,
@@ -271,13 +264,15 @@ main.window-resizing .workspace-drawer.open, main.chat-drawer-resizing .workspac
    are position:fixed inside it, and any of those would make it their containing
    block: their left/right would stop resolving against the viewport and the
    composer would collapse to the column's width. The expand animation lives on
-   the column's contents instead, which the composer is not one of. */
-.conversation-column { grid-column: 2; grid-row: 1; width: min(792px, calc(100vw - 8px)); height: 100vh; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding-inline: 16px; margin: 0 auto; transition: width var(--drawer-motion-duration) var(--drawer-motion-ease); }
-main.chat-drawer-open .conversation-column { width: min(792px,calc(100% - 8px)); }
-main.summary-open .conversation-column { width: min(792px,calc(100% - 8px)); margin: 0 auto; }
-/* Animate directly to the docked measure. Using the live grid track here makes
-   the max-width pane wait for most of the slide and compress only at the end. */
-main.workspace-open .conversation-column { width: min(792px, calc(100vw - var(--chat-drawer-offset) - var(--content-docked-column) - 8px)); }
+   the column's contents instead, which the composer is not one of.
+
+   Its measure is derived from the same two animated insets that move the grid.
+   Giving the column a second width transition made it repeatedly catch up with
+   the drawers as text reflowed. One geometry source keeps every frame centred
+   in the space that is actually available. */
+.conversation-column { grid-column: 2; grid-row: 1; width: min(792px, calc(100vw - var(--chat-drawer-offset) - var(--content-right-column) - 8px)); height: 100vh; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding-inline: 16px; margin: 0 auto; }
+.agent-file-drop-pane-overlay { pointer-events: none; position: fixed; z-index: 49; inset: 0 var(--content-right-column) 0 var(--chat-drawer-offset); background: var(--file-drop-pane-tint); opacity: 0; transition: opacity 140ms ease; }
+main.agent-file-drag-active > .agent-file-drop-pane-overlay { opacity: 1; }
 /* Track 3 stays at the docked width so the main pane cannot reflow mid-slide —
    but the panel itself grows to fill the viewport, and a wider item in a
    narrower track overflows to the right unless it is end-aligned. The track's
@@ -311,7 +306,6 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 .polymux-prompt.welcome .inline-chip-editor { font-size: .9375rem; }
 .polymux-prompt-shell.expanded { align-items: flex-start; }
 .polymux-prompt-shell:focus-within, .polymux-prompt-shell.raised { background: var(--prompt-surface-active); outline: 1px solid color-mix(in srgb,var(--neutral-400) 42%,transparent); box-shadow: 0 0 0 1px color-mix(in srgb,var(--neutral-300) 42%,transparent); }
-.polymux-prompt.file-drag-active .polymux-prompt-shell { background: var(--neutral-50); outline: 1px solid var(--neutral-400); box-shadow: 0 0 0 3px rgba(10,10,10,.055); }
 .polymux-editor-slot { position: relative; min-width: 0; flex: 1; padding-left: 8px; padding-right: 49px; }
 .inline-editor-wrap { position: relative; width: 100%; }
 .inline-chip-editor { width: 100%; overflow-y: auto; background: transparent; color: var(--on-surface); font-size: .875rem; line-height: 1.5; word-break: break-word; white-space: pre-wrap; scrollbar-width: none; }
@@ -345,7 +339,6 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 .polymux-prompt-toolbar .goal-toggle { margin: -4px -7px; padding: 4px 7px; border-radius: 8px; transition: color .15s ease, background-color .15s ease, opacity .15s; }
 .polymux-prompt-toolbar .goal-toggle.active { background: var(--neutral-200); }
 .polymux-prompt-toolbar .prompt-option-wrap { position: relative; display: inline-flex; }
-.prompt-model-mark { width: 16px; height: 16px; display: grid; flex: none; place-items: center; border: 1px solid var(--neutral-200); border-radius: 5px; background: #fff; }
 /* In a conversation the composer sits on the floor of the window, so the menu
    opens upward. The welcome prompt is centred with the heading above it, so
    there it drops down instead of covering the greeting. */
@@ -383,7 +376,7 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 .model-menu-caret { flex: none; display: grid; place-items: center; color: var(--neutral-400); transform: rotate(-90deg); }
 .model-menu-empty { margin: 0; padding: 8px; color: var(--neutral-400); font-size: 11px; font-weight: 450; text-align: center; }
 /* The submenu hangs off the row's right edge, aligned to its top. */
-.model-submenu { position: absolute; top: -4px; left: calc(100% + 4px); z-index: 1; width: 116px; }
+.model-submenu { position: absolute; top: -4px; left: calc(100% + 4px); z-index: 1; max-width: 180px; }
 .model-submenu-title { margin: 0; padding: 5px 8px 3px; color: var(--neutral-400); font-size: 9px; font-weight: 600; letter-spacing: var(--tracking-overline); text-transform: uppercase; }
 .model-submenu .polymux-dropdown-item { padding-right: 10px; padding-left: 10px; }
 .model-submenu .polymux-dropdown-item > span:first-child { flex: 1; min-width: 0; }
@@ -396,16 +389,19 @@ main.workspace-expanded .conversation-column { pointer-events: none; }
 @keyframes dictation-ping { 75%,100% { opacity: 0; transform: scale(2); } }
 @media (prefers-reduced-motion: reduce) { .dictation-ping { animation: none; opacity: .5; } }
 
-.polymux-dropdown-menu { width: max-content; padding: 4px; border-radius: 12px; background: var(--app-surface); box-shadow: 0 4px 12px rgba(0,0,0,.16); outline: 1px solid var(--neutral-200); animation: dropdown-in .12s ease-out; }
-.polymux-dropdown-item { width: 100%; min-height: 28px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 8px; padding: 7px 8px; background: transparent; color: var(--neutral-700); cursor: pointer; font-size: 11px; font-weight: 450; line-height: 1.3; text-align: left; }
+/* An action menu follows its longest row. A specific width belongs only to a
+   control such as a search field, select trigger or emoji grid that needs one. */
+.polymux-dropdown-menu { width: max-content; max-width: calc(100vw - 16px); box-sizing: border-box; padding: 4px; border-radius: 12px; background: var(--app-surface); box-shadow: 0 4px 12px rgba(0,0,0,.16); outline: 1px solid var(--neutral-200); animation: dropdown-in .12s ease-out; }
+.polymux-dropdown-item { width: 100%; min-height: 28px; display: flex; align-items: center; gap: 7px; box-sizing: border-box; border: 0; border-radius: 8px; padding: 7px 8px; background: transparent; color: var(--neutral-700); cursor: pointer; font-size: 11px; font-weight: 450; line-height: 1.3; text-align: left; }
+.polymux-dropdown-item > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .polymux-dropdown-item:hover:not(:disabled), .polymux-dropdown-item:focus-visible { background: var(--neutral-50); color: var(--neutral-950); }
 
 /* A menu summoned by pointing at something: fixed to the viewport, because the
    point it was asked for is a viewport point and the thing under it may sit in
    a panel that scrolls. Held invisible for the one frame between mounting and
    being measured, so it never appears at a corner and then jumps. */
-.open-menu { position: fixed; z-index: 200; min-width: 168px; max-width: 280px; }
-.open-menu.compact { min-width: 140px; max-width: 190px; }
+.open-menu { position: fixed; z-index: 200; max-width: 280px; }
+.open-menu.compact { max-width: 190px; }
 .open-menu:not(.placed) { opacity: 0; pointer-events: none; }
 .open-menu .polymux-dropdown-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* An application's own icon, drawn at the size of the glyphs beside it. */
@@ -494,9 +490,24 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
    drawer's right edge stays a clean hairline against the conversation. */
 .chat-drawer-resize-handle:hover::after, .chat-drawer-resize-handle:focus-visible::after, .chat-drawer.resizing .chat-drawer-resize-handle::after { background: var(--neutral-400); }
 .chat-drawer-resize-handle:focus-visible { outline: none; }
-.chat-drawer h2 { align-self: flex-start; margin: 0 10px 11px; color: var(--neutral-950); font-size: 15px; font-weight: 600; }
+.chat-drawer-heading { width: 100%; height: 24px; display: flex; flex: none; align-items: center; margin: 0 0 11px; }
+.chat-drawer h2 { min-width: 0; flex: 1; margin: 0 10px; color: var(--neutral-950); font-size: 15px; font-weight: 600; }
+.chat-drawer-new-folder { width: 24px; height: 24px; display: grid; flex: none; appearance: none; place-items: center; border: 0; border-radius: 0; padding: 0; background: transparent; box-shadow: none; color: var(--neutral-500); cursor: pointer; transition: color .15s ease; }
+.chat-drawer-new-folder:hover, .chat-drawer-new-folder:focus, .chat-drawer-new-folder:active { outline: none; background: transparent; box-shadow: none; color: var(--neutral-950); }
 .chat-drawer-groups { min-height: 0; flex: 1; overflow-y: auto; scrollbar-width: none; }
 .chat-drawer-groups::-webkit-scrollbar { display: none; }
+.chat-drawer-folders { margin-bottom: 8px !important; }
+.chat-drawer-folder + .chat-drawer-folder { margin-top: 2px; }
+.chat-drawer-folder-row, .chat-drawer-folder-edit { width: 100%; min-height: 34px; display: flex; align-items: center; border-radius: 10px; background: transparent; color: var(--neutral-950); transition: background-color .15s ease; }
+.chat-drawer-folder-row:hover, .chat-drawer-folder-row:has(:focus-visible) { background: rgba(217,217,217,.6); }
+.chat-drawer-folder-toggle { min-width: 0; min-height: 34px; display: flex; flex: 1; align-items: center; gap: 8px; border: 0; padding: 7px 0 7px 8px; background: transparent; color: inherit; cursor: pointer; text-align: left; }
+.chat-drawer-folder-toggle:focus-visible { outline: none; }
+.chat-drawer-folder-toggle > span { min-width: 0; flex: 1; overflow: hidden; font-size: .8125rem; font-weight: 520; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.chat-drawer-folder-edit { gap: 8px; padding: 7px 8px; }
+.chat-drawer-folder-edit > svg { flex: none; }
+.chat-drawer-folder-edit input { width: 100%; min-width: 0; border: 0; padding: 0; outline: 0; background: transparent; color: var(--neutral-950); font: inherit; font-size: .8125rem; line-height: 1.25; }
+.chat-drawer-folder-edit input::placeholder { color: var(--neutral-400); }
+.chat-drawer-folder-chats { margin-top: 2px !important; }
 .chat-drawer-group + .chat-drawer-group { margin-top: 8px; }
 .chat-drawer-group-toggle { width: 100%; height: 30px; display: flex; align-items: center; justify-content: space-between; border: 0; padding: 0 8px; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 12.5px; font-weight: 580; line-height: 1.2; text-align: left; }
 .chat-drawer-group-toggle:hover, .chat-drawer-group-toggle:focus-visible { outline: none; color: var(--neutral-900); }
@@ -507,19 +518,31 @@ main.has-conversation::after { content: ''; pointer-events: none; position: fixe
 .chat-drawer-row, .chat-drawer-edit { width: 100%; min-height: 34px; display: flex; align-items: center; border-radius: 10px; background: transparent; color: var(--neutral-950); transition: background-color .15s ease; }
 .chat-drawer-row:hover, .chat-drawer-row:has(:focus-visible) { background: rgba(217,217,217,.6); } .chat-drawer-row.active { background: var(--neutral-300); }
 .chat-drawer-open-chat { min-width: 0; min-height: 34px; display: flex; flex: 1; align-items: center; border: 0; padding: 7px 0 7px 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.chat-drawer-row.nested .chat-drawer-open-chat { padding-left: 36px; }
 .chat-drawer-open-chat:focus-visible { outline: none; } .chat-drawer-open-chat > span { min-width: 0; flex: 1; overflow: hidden; font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.chat-drawer-more { width: 0; height: 20px; display: grid; flex: none; place-items: center; overflow: hidden; border: 0; padding: 0; background: transparent; color: var(--neutral-400); opacity: 0; cursor: pointer; transition: width .14s ease, margin .14s ease, opacity .12s ease, color .12s ease; }
-.chat-drawer-row:hover .chat-drawer-more, .chat-drawer-row:has(:focus-visible) .chat-drawer-more, .chat-drawer-row.menu-open .chat-drawer-more { width: 20px; margin: 0 7px 0 6px; opacity: 1; } .chat-drawer-more:hover, .chat-drawer-more:focus-visible { outline: none; background: transparent; color: var(--neutral-950); }
+.chat-drawer-row-action { position: relative; width: 0; height: 20px; display: block; flex: none; margin: 0; transition: width .14s ease, margin .14s ease; }
+.chat-drawer-row.running .chat-drawer-row-action, .chat-drawer-row:hover .chat-drawer-row-action, .chat-drawer-row:has(:focus-visible) .chat-drawer-row-action, .chat-drawer-row.menu-open .chat-drawer-row-action { width: 20px; margin: 0 7px 0 6px; }
+.chat-drawer-more { height: 20px; display: grid; flex: none; place-items: center; overflow: hidden; border: 0; padding: 0; background: transparent; color: var(--neutral-400); opacity: 0; cursor: pointer; transition: width .14s ease, margin .14s ease, opacity .12s ease, color .12s ease; }
+.chat-drawer-row-action .chat-drawer-more { position: absolute; inset: 0; width: 20px; margin: 0; }
+.chat-drawer-folder-row > .chat-drawer-more { width: 0; }
+.chat-drawer-folder-row:hover > .chat-drawer-more, .chat-drawer-folder-row:has(:focus-visible) > .chat-drawer-more, .chat-drawer-folder-row.menu-open > .chat-drawer-more { width: 20px; margin: 0 7px 0 6px; opacity: 1; }
+.chat-drawer-row:hover .chat-drawer-more, .chat-drawer-row:has(:focus-visible) .chat-drawer-more, .chat-drawer-row.menu-open .chat-drawer-more { opacity: 1; }
+.chat-drawer-more:hover, .chat-drawer-more:focus-visible { outline: none; background: transparent; color: var(--neutral-950); }
+.chat-drawer-running-ring { position: absolute; inset: 3px; box-sizing: border-box; display: block; border: 2px solid var(--neutral-500); border-right-color: transparent; border-radius: 50%; opacity: 1; animation: chat-drawer-running .72s linear infinite; transition: opacity .12s ease; }
+.chat-drawer-row:hover .chat-drawer-running-ring, .chat-drawer-row:has(:focus-visible) .chat-drawer-running-ring, .chat-drawer-row.menu-open .chat-drawer-running-ring { opacity: 0; animation-play-state: paused; }
+@keyframes chat-drawer-running { to { transform: rotate(360deg); } }
 :root[data-theme="dark"] .chat-drawer-more { color: var(--neutral-600); }
-:root[data-theme="dark"] .chat-drawer-row:hover .chat-drawer-more, :root[data-theme="dark"] .chat-drawer-row:has(:focus-visible) .chat-drawer-more { color: #595959; }
-:root[data-theme="dark"] .chat-drawer-row:hover .chat-drawer-more:hover, :root[data-theme="dark"] .chat-drawer-row:has(:focus-visible) .chat-drawer-more:focus-visible { color: #171717; }
-.chat-drawer-edit { padding: 7px 10px; } .chat-drawer-edit input { width: 100%; min-width: 0; border: 0; padding: 0; outline: 0; background: transparent; color: var(--neutral-950); font-size: .8125rem; line-height: 1.25; }
-.chat-drawer-row-menu { position: absolute; z-index: 90; right: 10px; width: 144px; } .chat-drawer-row-menu .destructive { color: #b42318; } .chat-drawer-row-menu .destructive:hover { background: #fff1f0; color: #8f1d15; }
+:root[data-theme="dark"] .chat-drawer-row:hover .chat-drawer-more, :root[data-theme="dark"] .chat-drawer-row:has(:focus-visible) .chat-drawer-more, :root[data-theme="dark"] .chat-drawer-folder-row:hover .chat-drawer-more, :root[data-theme="dark"] .chat-drawer-folder-row:has(:focus-visible) .chat-drawer-more { color: #595959; }
+:root[data-theme="dark"] .chat-drawer-row:hover .chat-drawer-more:hover, :root[data-theme="dark"] .chat-drawer-row:has(:focus-visible) .chat-drawer-more:focus-visible, :root[data-theme="dark"] .chat-drawer-folder-row:hover .chat-drawer-more:hover, :root[data-theme="dark"] .chat-drawer-folder-row:has(:focus-visible) .chat-drawer-more:focus-visible { color: #171717; }
+.chat-drawer-edit { padding: 7px 10px; } .chat-drawer-edit.nested { padding-left: 36px; } .chat-drawer-edit input { width: 100%; min-width: 0; border: 0; padding: 0; outline: 0; background: transparent; color: var(--neutral-950); font-size: .8125rem; line-height: 1.25; }
+.chat-drawer-row-menu { position: absolute; z-index: 90; max-width: min(170px,calc(100% - 20px)); max-height: min(268px,calc(100% - 20px)); overflow-y: auto; scrollbar-width: none; } .chat-drawer-row-menu::-webkit-scrollbar { display: none; } .chat-drawer-row-menu .destructive { color: #b42318; } .chat-drawer-row-menu .destructive:hover { background: #fff1f0; color: #8f1d15; }
+.chat-drawer-menu-label { display: block; padding: 7px 9px 3px; color: var(--neutral-400); font-size: 10.5px; font-weight: 600; line-height: 1.2; }
 /* Same treatment as .fb-error: the destructive tint is restated for the dark
    ground instead of dropping a light pink panel into it. */
 :root[data-theme="dark"] .chat-drawer-row-menu .destructive { color: #eea7a7; }
 :root[data-theme="dark"] .chat-drawer-row-menu .destructive:hover { background: #321f1f; color: #f3bcbc; }
 .chat-drawer-empty { margin: 8px 10px; color: var(--neutral-400); font-size: 12px; line-height: 1.5; }
+@media (prefers-reduced-motion: reduce) { .chat-drawer-running-ring { animation: none; } }
 
 /* The foot reserves exactly as far as the composer's own controls reach, so the
    space under the last message is its ordinary bottom margin — the same gap that
@@ -719,8 +742,7 @@ main.workspace-expanded .scroll-to-latest { display: none; }
 /* Expansion is an overlay slide. ChatPane keeps its docked geometry underneath
    instead of fading, translating, or reflowing while Workspace crosses it. */
 main.workspace-expanded .sticky-composer { pointer-events: none; }
-.composer-column-content { width: min(760px,calc(100% - 40px)); padding-top: 28px; background: var(--composer-fade); transition: width var(--drawer-motion-duration) var(--drawer-motion-ease); }
-main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var(--chat-drawer-offset) - var(--content-docked-column) - 40px)); }
+.composer-column-content { width: min(760px,calc(100% - 40px)); padding-top: 28px; background: var(--composer-fade); }
 
 /* The goal bar and the queue stack are one design: the same translucent card,
    the same slim row. The queue is only allowed more than one row. */
@@ -840,8 +862,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
    stopped animation leaves the mark as it was drawn. */
 @media (prefers-reduced-motion: reduce) { .task-glyph.running path { animation: none; } }
 .summary-menu-wrap { position: relative; }
-.summary-action-menu { position: absolute; z-index: 90; top: calc(100% + 4px); right: 0; width: 190px; }
-.reference-action-menu { width: 208px; }
+.summary-action-menu { position: absolute; z-index: 90; top: calc(100% + 4px); right: 0; }
 .reference-action-menu .polymux-dropdown-item > svg:last-child { margin-left: auto; }
 .reference-action-menu .polymux-dropdown-item.active { background: var(--neutral-100); color: var(--neutral-950); }
 
@@ -918,7 +939,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .workspace-drawer.open .workspace-header-action { opacity: 1; visibility: visible; pointer-events: auto; transform: none; transition: opacity var(--drawer-fade-duration) ease, transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s; }
 /* Sized to its longest label rather than a fixed column, so the menu stays a
    small tag beside the + instead of a panel. */
-.new-tab-menu { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; width: max-content; min-width: 120px; max-width: 200px; }
+.new-tab-menu { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; max-width: 200px; }
 .workspace-drawer.standalone .new-tab-menu { right: 0; left: auto; }
 
 .browser-bar { height: 39px; flex: none; display: flex; align-items: center; gap: 7px; padding: 5px 12px; border-bottom: 1px solid var(--neutral-200); }
@@ -948,7 +969,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .workspace-more-wrap > button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; padding: 0; border-radius: 8px; background: none; color: var(--neutral-500); cursor: pointer; }
 .workspace-more-wrap > button:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-900); }
 .workspace-more-wrap > button:disabled { color: var(--neutral-300); cursor: default; }
-.workspace-more-menu { position: absolute; z-index: 70; top: calc(100% + 4px); right: 0; width: 244px; padding: 5px; }
+.workspace-more-menu { position: absolute; z-index: 70; top: calc(100% + 4px); right: 0; padding: 5px; }
 .workspace-menu-divider { height: 1px; margin: 4px 7px; background: var(--neutral-200); }
 .workspace-downloads-wrap { position: relative; flex: none; }
 .workspace-downloads-wrap > button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; padding: 0; border-radius: 8px; background: none; color: var(--neutral-500); cursor: pointer; }
@@ -968,7 +989,13 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .download-copy strong { font-size: 13px; font-weight: 520; }
 .download-copy small { margin-top: 2px; color: var(--neutral-500); font-size: 11.5px; }
 .downloads-empty { margin: 8px 5px 10px; color: var(--neutral-500); font-size: 12px; }
-.workspace-content { flex: 1; min-height: 0; overflow: hidden; background: var(--main-panel-background); }
+/* Every workspace view meets the tab strip at the same boundary. */
+.workspace-content { flex: 1; min-height: 0; overflow: hidden; border-top: 1px solid var(--neutral-200); background: var(--main-panel-background); }
+/* With no tabs, the launcher is the whole workspace rather than tab content. */
+.workspace-content.empty { border-top: 0; }
+/* Browser chrome belongs to the tab content, so its divider sits under the
+   navigation row, immediately above the page, instead of above the controls. */
+.workspace-content.browser { border-top: 0; }
 .browser-surface { position: relative; }
 /* The page is a WebContentsView, a native layer that paints above every DOM
    element whatever its z-index — including the drawer's one-pixel left
@@ -1016,10 +1043,9 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 /* Drive is the old web app's Finder-style file browser: a flush table with
    zebra rows and no panel chrome. Schedule reuses the .list-* table below. */
 .schedule-view { height: 100%; display: flex; flex-direction: column; background: var(--main-panel-background); container-type: inline-size; }
-.schedule-view { border-top: 1px solid var(--neutral-200); }
-/* A rule across the whole top so the view starts from one edge rather than
-   running straight into the tab strip. */
-.fb { position: relative; height: 100%; display: flex; flex-direction: column; overflow: hidden; border-top: 1px solid var(--neutral-200); background: var(--main-panel-background); container-type: inline-size; }
+/* The workspace content owns the rule above this view, so its own first row
+   can stay flush without drawing a second divider. */
+.fb { position: relative; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--main-panel-background); container-type: inline-size; }
 /* Sits behind the toolbar rather than below it, so an empty folder still reads
    as one surface. */
 .fb-empty { position: absolute; inset: 0; z-index: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 0 18px; color: var(--neutral-400); pointer-events: none; text-align: center; }
@@ -1145,7 +1171,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .fb-info-path { font-size: 11px; }
 
 .fb-filter { position: relative; }
-.fb-filter-menu { position: absolute; z-index: 50; top: 100%; right: 0; width: 160px; margin-top: 4px; overflow: hidden; border: 1px solid var(--neutral-300); border-radius: 8px; background: var(--app-surface); box-shadow: 0 8px 20px rgba(0,0,0,.12); }
+.fb-filter-menu { position: absolute; z-index: 50; top: 100%; right: 0; width: max-content; max-width: calc(100vw - 16px); box-sizing: border-box; margin-top: 4px; overflow: hidden; border: 1px solid var(--neutral-300); border-radius: 8px; background: var(--app-surface); box-shadow: 0 8px 20px rgba(0,0,0,.12); }
 .fb-filter-item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 0; padding: 8px 12px; background: transparent; color: var(--neutral-700); cursor: pointer; font-size: 13px; text-align: left; }
 .fb-filter-item:hover { background: var(--neutral-100); }
 .fb-filter-item.active { color: var(--neutral-950); font-weight: 500; }
@@ -1268,7 +1294,7 @@ main.workspace-open .composer-column-content { width: min(760px,calc(100vw - var
 .schedule-row:hover .schedule-more, .schedule-row.menu-open .schedule-more, .schedule-more:focus-visible { opacity: 1; }
 .schedule-more:hover { background: var(--neutral-100); color: var(--neutral-950); }
 .schedule-row.menu-open { background: var(--neutral-50); }
-.schedule-row-menu { position: absolute; z-index: 80; right: 14px; width: 172px; padding: 5px; }
+.schedule-row-menu { position: absolute; z-index: 80; right: 14px; padding: 5px; }
 
 /* A finished row is history: still readable, but it stops competing with the
    rows that have something coming. */
@@ -1500,6 +1526,7 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
    the 4px is the menu's own vertical padding. */
 .select-menu-list { position: absolute; z-index: 93; top: calc(100% + 5px); right: 0; min-width: 100%; width: max-content; max-width: 220px; max-height: calc(var(--select-menu-rows, 8) * var(--select-menu-row, 28.3px) + 8px); overflow-y: auto; overscroll-behavior: contain; }
 .select-menu-list .polymux-dropdown-item > svg:last-child { margin-left: auto; }
+.select-menu-check-slot { width: 13px; height: 13px; flex: none; display: grid; place-items: center; margin-left: auto; }
 /* A plain trigger leads a row rather than ending one, so its list hangs from
    the left edge; anchoring it right would push a list wider than the label off
    the panel and clip it. */
@@ -1615,20 +1642,27 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
    view never actually has. */
 /* The container is the outer element and the grid is inside it: an element
    cannot query its own size, so the two cannot be the same node. */
-/* A rule across the whole top so the rail and the list start from one edge
-   rather than the rail running straight into the tab strip. */
-.hub-view { height: 100%; min-height: 0; container-type: inline-size; border-top: 1px solid var(--neutral-200); background: var(--main-panel-background); }
-.hub-view-grid { height: 100%; min-height: 0; display: grid; grid-template-columns: 172px minmax(0, 1fr); }
+/* The shared workspace rule crosses the whole top, so the rail and list begin
+   at one edge without this view drawing another divider. */
+.hub-view { height: 100%; min-height: 0; container-type: inline-size; background: var(--main-panel-background); }
+.hub-view-grid { --hub-rail-width: 156px; position: relative; height: 100%; min-height: 0; display: grid; grid-template-columns: var(--hub-rail-width) minmax(0, 1fr); transition: grid-template-columns 160ms cubic-bezier(.2,.7,.3,1); }
+.hub-view-grid.rail-resizing { cursor: col-resize; user-select: none; }
 .hub-view-back { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 8px; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; font-family: inherit; font-size: 11.5px; }
 .hub-view-back:hover { color: var(--neutral-950); }
 .hub-view-grid > * { min-width: 0; min-height: 0; }
 
-/* The same edge fade the settings rail carries, and by the same rule: solid
-   where the list ends, faded only where it runs on past the edge. */
-.hub-view-rail { --rail-mask-top: transparent; --rail-mask-bottom: transparent; min-width: 0; overflow-y: auto; padding: 12px 8px; border-right: 1px solid var(--neutral-200); -webkit-mask-image: linear-gradient(to bottom,var(--rail-mask-top),#000 12px,#000 calc(100% - 12px),var(--rail-mask-bottom)); mask-image: linear-gradient(to bottom,var(--rail-mask-top),#000 12px,#000 calc(100% - 12px),var(--rail-mask-bottom)); }
-.hub-view-rail.at-top { --rail-mask-top: #000; }
-.hub-view-rail.at-bottom { --rail-mask-bottom: #000; }
+/* Contacts is pinned to the rail's bottom edge, outside the platform flow.
+   The source list alone scrolls and reserves room for the fixed action. */
+.hub-view-rail { position: relative; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.hub-view-rail-scroll { --rail-mask-top: transparent; --rail-mask-bottom: transparent; min-height: 0; flex: 1; overflow-y: auto; padding: 6px 8px 58px; -webkit-mask-image: linear-gradient(to bottom,var(--rail-mask-top),#000 12px,#000 calc(100% - 12px),var(--rail-mask-bottom)); mask-image: linear-gradient(to bottom,var(--rail-mask-top),#000 12px,#000 calc(100% - 12px),var(--rail-mask-bottom)); }
+.hub-view-rail-scroll.at-top { --rail-mask-top: #000; }
+.hub-view-rail-scroll.at-bottom { --rail-mask-bottom: #000; }
+.hub-view-rail-footer { position: absolute; z-index: 3; inset-inline: 8px; inset-block-end: 0; padding: 7px 0 8px; border-top: 1px solid var(--neutral-200); background: var(--main-panel-background); }
 .hub-view-rail-empty { margin: 4px 6px; color: var(--neutral-400); font-size: 10.5px; line-height: 1.45; }
+.hub-view-rail-resize-handle { position: absolute; z-index: 6; inset-block: 0; inset-inline-start: calc(var(--hub-rail-width) - 9px); width: 18px; border: 0; padding: 0; background: transparent; cursor: col-resize; touch-action: none; }
+.hub-view-rail-resize-handle::after { content: ''; position: absolute; inset-block: 0; inset-inline-start: 9px; width: 1px; background: var(--neutral-200); transition: background-color .16s ease; }
+.hub-view-rail-resize-handle:hover::after, .hub-view-rail-resize-handle:focus-visible::after, .hub-view-rail-resize-handle.resizing::after { background: var(--neutral-400); }
+.hub-view-rail-resize-handle:focus-visible { outline: none; }
 /* `margin` rather than a gap on the rail: the highlight is the row, so the
    space between highlights has to belong to the rows themselves. */
 .hub-view-source { width: 100%; display: grid; grid-template-columns: 17px minmax(0,1fr); align-items: center; gap: 9px; margin: 2px 0; border: 0; border-radius: 10px; padding: 7px 9px; background: transparent; color: var(--neutral-800); cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 520; text-align: left; }
@@ -1639,6 +1673,10 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
    same optical weight, so a fixed column — not the icon — lines the labels up.
    Sizing the svg itself would stretch one of the two. */
 .hub-view-source > :first-child { justify-self: center; }
+.hub-view-grid.rail-compact .hub-view-rail-scroll { padding-block-start: 5px; padding-inline: 7px; }
+.hub-view-grid.rail-compact .hub-view-rail-footer { inset-inline: 7px; }
+.hub-view-grid.rail-compact .hub-view-source { grid-template-columns: 17px; justify-content: center; gap: 0; padding-inline: 0; }
+.hub-view-grid.rail-compact .hub-view-source > span, .hub-view-grid.rail-compact .hub-view-rail-empty { display: none; }
 /* The row being dragged is carried under the pointer rather than left behind
    at half opacity: it rides above the rows shuffling past it, and on release it
    slides the last few pixels into the place it was let go over. */
@@ -1663,12 +1701,44 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-folder-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hub-view-folder-button > svg:last-child { color: var(--neutral-400); transition: transform .16s ease; }
 .hub-view-folder-button.open > svg:last-child { transform: rotate(180deg); }
-.hub-view-folder-menu { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; min-width: 150px; margin: 0; padding: 4px; border: 1px solid var(--neutral-200); border-radius: 10px; background: var(--app-surface); box-shadow: 0 8px 22px rgb(0 0 0 / .10); list-style: none; }
+.hub-view-folder-menu { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; width: max-content; max-width: min(240px, calc(100vw - 16px)); box-sizing: border-box; margin: 0; padding: 4px; border: 1px solid var(--neutral-200); border-radius: 10px; background: var(--app-surface); box-shadow: 0 8px 22px rgb(0 0 0 / .10); list-style: none; }
 .hub-view-folder-menu button { width: 100%; display: grid; grid-template-columns: 15px minmax(0,1fr); align-items: center; gap: 8px; border: 0; border-radius: 7px; padding: 6px 8px; background: transparent; color: var(--neutral-700); cursor: pointer; font-family: inherit; font-size: 11.5px; text-align: left; }
 .hub-view-folder-menu button:hover { background: var(--neutral-100); color: var(--neutral-950); }
 .hub-view-folder-menu button.active { color: var(--neutral-950); font-weight: 560; }
 .hub-view-list-head input { min-width: 0; flex: 1; height: 28px; border: 1px solid var(--neutral-200); border-radius: 8px; padding: 0 9px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 11.5px; }
 .hub-view-list-head input:focus-visible { border-color: var(--neutral-500); outline: 0; }
+/* The compose glyph sits directly beside search, matching the app's title-bar
+   new-chat control: bare icon, no hover plate. */
+.hub-view-new-chat-icon { width: 24px; height: 28px; display: grid; flex: none; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
+.hub-view-new-chat-icon:hover, .hub-view-new-chat-icon:focus-visible { outline: none; color: var(--neutral-950); }
+/* Selected people occupy one quiet horizontal strip. The chips scroll under
+   the fixed action instead of wrapping it onto a second line. */
+.hub-view-new-chat-selection { flex: none; border-bottom: 1px solid var(--neutral-200); }
+.hub-view-new-chat-selection-row { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+.hub-view-new-chat-selected { min-width: 0; display: flex; flex: 1 1 auto; flex-wrap: nowrap; gap: 5px; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: none; }
+.hub-view-new-chat-selected::-webkit-scrollbar { display: none; }
+.hub-view-new-chat-chip { min-width: 0; max-width: 150px; display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; height: 26px; border: 1px solid var(--neutral-200); border-radius: 999px; padding: 0 6px 0 4px; background: var(--neutral-50); color: var(--neutral-700); cursor: pointer; font-family: inherit; font-size: 10.5px; }
+.hub-view-new-chat-chip:hover { border-color: var(--neutral-300); color: var(--neutral-950); }
+.hub-view-new-chat-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-view-new-chat-chip .hub-view-chat-avatar.inline { width: 15px; height: 15px; border-radius: 5px; font-size: 7px; }
+.hub-view-new-chat-group-name { padding: 0 10px 8px; }
+.hub-view-new-chat-group-name input { box-sizing: border-box; width: 100%; height: 28px; border: 1px solid var(--neutral-200); border-radius: 8px; padding: 0 9px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 11.5px; }
+.hub-view-new-chat-group-name input:focus-visible { border-color: var(--neutral-500); outline: 0; }
+.hub-view-new-chat-action { display: flex; flex: none; justify-content: flex-end; }
+.hub-view-new-chat-action button { height: 27px; border: 0; border-radius: 8px; padding: 0 10px; white-space: nowrap; background: var(--neutral-950); color: var(--app-bg); cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 560; }
+.hub-view-new-chat-action button:disabled { cursor: default; opacity: .4; }
+.hub-view-new-chat-error { flex: none; margin: 0; padding: 7px 10px; border-bottom: 1px solid var(--neutral-200); background: #fff5f5; color: #8f3e3e; font-size: 10.5px; line-height: 1.4; }
+:root[data-theme="dark"] .hub-view-new-chat-error { background: #321f1f; color: #eea7a7; }
+.hub-view-new-chat-contact > svg { flex: none; margin-inline-start: auto; color: var(--neutral-800); }
+.hub-view-new-chat-contact:disabled { cursor: default; opacity: .38; }
+.hub-view-new-chat-contact:disabled:hover { background: transparent; }
+.hub-view-space-heading { min-width: 0; flex: 1 0 100%; display: flex; align-items: center; gap: 8px; height: 22px; }
+.hub-view-space-heading strong { min-width: 0; overflow: hidden; color: var(--neutral-950); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 580; }
+.hub-view-space-back { width: 18px; height: 22px; display: grid; flex: none; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
+.hub-view-space-back:hover, .hub-view-space-back:focus-visible { outline: none; color: var(--neutral-950); }
+.hub-view-account-picker { min-width: 0; max-width: 46%; flex: none; }
+.hub-view-account-picker .select-menu { min-width: 0; max-width: 100%; }
+.hub-view-account-picker .select-menu-trigger { min-width: 0; max-width: 100%; height: 28px; border-radius: 8px; padding-inline: 8px; font-size: 11.5px; }
 .hub-view-filter { position: relative; flex: none; }
 .hub-view-menu-right { left: auto; right: 0; }
 .hub-view-icon-button { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--neutral-200); border-radius: 8px; background: var(--app-surface); color: var(--neutral-600); cursor: pointer; }
@@ -1710,8 +1780,22 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
    the radius is proportionate to the 28px tile rather than a fixed curve that
    would read differently if the tile ever changes size. */
 .hub-view-chat-avatar { flex: none; width: 28px; height: 28px; border-radius: 8px; object-fit: cover; background: var(--neutral-100); }
+.hub-view-chat-avatar.inline { width: 11px; height: 11px; border-radius: 3px; }
 .hub-view-chat-avatar.placeholder { display: grid; place-items: center; color: var(--neutral-500); font-size: 11px; font-weight: 560; }
+.hub-view-chat-avatar.placeholder.inline { font-size: 6.5px; }
 .hub-view-chat-avatar-wrap { position: relative; width: 28px; height: 28px; flex: none; display: block; }
+/* A Space is a stack rather than one oversized chat: two quiet cards sit
+   behind its own avatar, enough depth to signal navigation without adding
+   another badge or container around the mark. */
+.hub-view-space-stack { position: relative; width: 28px; height: 32px; display: block; flex: none; }
+.hub-view-space-layer, .hub-view-space-front { position: absolute; width: 28px; height: 28px; border-radius: 8px; }
+.hub-view-space-layer { background: var(--neutral-200); box-shadow: 0 0 0 1px var(--main-panel-background); }
+.hub-view-space-layer-back { z-index: 1; top: 0; left: -6px; transform: rotate(-7deg); }
+.hub-view-space-layer-middle { z-index: 2; top: 1px; left: -3px; transform: rotate(-3deg); background: var(--neutral-300); }
+.hub-view-space-front { z-index: 3; left: 0; bottom: 0; }
+.hub-view-space-stack .hub-view-platform-badge { z-index: 4; right: -3px; bottom: -3px; }
+.hub-view-space-open-mark { transition: color .15s ease, transform .15s ease; }
+.hub-view-space-row:hover .hub-view-space-open-mark { color: var(--neutral-800); transform: translateX(1px); }
 /* The source mark sits over the picture's corner, with a surface-coloured keyline
    keeping two neighbouring colours legible without turning it into a separate chip. */
 .hub-view-platform-badge { position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; display: block; border: 2px solid var(--main-panel-background); border-radius: 5px; background: var(--main-panel-background); }
@@ -1773,10 +1857,15 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-mail-file:disabled { cursor: default; opacity: 0.6; }
 
 .hub-view-reader { position: relative; flex-direction: column; overflow: hidden; }
+.hub-file-drop-pane-overlay { pointer-events: none; position: absolute; z-index: 70; inset: 0; background: var(--file-drop-pane-tint); opacity: 0; transition: opacity 140ms ease; }
+.hub-view-reader.file-drag-active > .hub-file-drop-pane-overlay { opacity: 1; }
+.hub-view-chat-footer { position: relative; display: flow-root; flex: none; background: transparent; }
+@media (prefers-reduced-motion: reduce) { .agent-file-drop-pane-overlay, .hub-file-drop-pane-overlay { transition: none; } }
 /* Floats over the foot of the thread rather than sitting in the column, so
    showing it never shifts the messages under the pointer. Same round shape the
    conversation pane uses for the same job. */
-.hub-view-to-latest { position: absolute; z-index: 3; left: 50%; bottom: 68px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--neutral-200); border-radius: 999px; padding: 5px 12px 5px 10px; background: var(--app-translucent, var(--app-surface)); color: var(--neutral-700); box-shadow: 0 4px 14px rgb(0 0 0 / .16); font-family: inherit; font-size: 11px; transform: translateX(-50%); cursor: pointer; backdrop-filter: blur(10px); }
+.hub-view-to-latest { position: absolute; z-index: 3; left: 50%; top: -31px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--neutral-200); border-radius: 999px; padding: 5px 12px 5px 10px; background: var(--app-translucent, var(--app-surface)); color: var(--neutral-700); box-shadow: 0 4px 14px rgb(0 0 0 / .16); font-family: inherit; font-size: 11px; transform: translateX(-50%); cursor: pointer; backdrop-filter: blur(10px); }
+.hub-view-chat-footer.replying .hub-view-to-latest { top: -63px; }
 .hub-view-to-latest:hover { color: var(--neutral-950); }
 .hub-view-reader-head { flex: none; padding: 14px 18px 12px; border-bottom: 1px solid var(--neutral-200); }
 /* The chevron reads as part of the title rather than a step above it. */
@@ -1834,6 +1923,11 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-file { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--neutral-200); border-radius: 7px; padding: 3px 8px; color: var(--neutral-700); font-size: 11px; }
 .hub-view-file button { display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-400); cursor: pointer; }
 .hub-view-file button:hover { color: var(--neutral-950); }
+/* Floats over the message field's content column. On the leading side it
+   clears the footer margin, 42px add circle, 6px row gap and field padding. */
+.hub-view-chat-files { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 28px -3px 76px; }
+.hub-view-chat-files .hub-view-file { min-width: 0; max-width: min(100%, 260px); }
+.hub-view-chat-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hub-view-attachments > button { display: inline-flex; align-items: center; gap: 5px; height: 24px; border: 1px solid var(--neutral-200); border-radius: 7px; padding: 0 9px; background: var(--app-surface); color: var(--neutral-700); cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 540; }
 .hub-view-attachments > button:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-950); }
 .hub-view-chain { flex: none; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px 14px; border-top: 1px solid var(--neutral-200); }
@@ -1891,17 +1985,67 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
    bubble, rather than a row of icons under every message: they are used
    occasionally, and a permanent row competes with the conversation itself.
    Fixed to the viewport so it opens exactly where the pointer is. */
-.hub-view-message-menu { position: fixed; z-index: 90; width: 178px; padding: 5px; }
+.hub-view-message-menu { position: fixed; z-index: 90; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--neutral-200); outline: 0; padding: 5px; background: var(--app-surface); box-shadow: 0 4px 12px rgba(0,0,0,.16); }
+/* The picker is a real row in this menu. For upward reveals the menu is
+   bottom-anchored in the component, so the row changes the bubble's real
+   height while the quick strip and actions remain physically still. */
+/* The grid is the one deliberate exception: equal reaction cells need a
+   stable plate. WeChat's Reply/Copy-only menu keeps the shared wrapped width. */
+.hub-view-message-menu.has-reactions { width: 180px; }
 /* The chat row's own menu, opened the same way as the message one above:
    pinning and hiding are occasional, and a control sitting on every row would
-   cost more space than either action is worth. It takes its width from its two
-   labels rather than the message menu's fixed one, whose width belongs to the
-   row of reactions across its top; the floor keeps a short translation from
-   reading as cramped, the ceiling keeps a long one from running wide. */
-.hub-view-chat-menu { position: fixed; z-index: 90; width: max-content; min-width: 124px; max-width: 220px; }
+   cost more space than either action is worth. It follows its two labels, with
+   a ceiling that keeps an unusually long translation from running wide. */
+.hub-view-chat-menu { position: fixed; z-index: 90; max-width: 220px; }
 .hub-view-emoji-row { display: flex; gap: 2px; padding: 1px 2px 5px; border-bottom: 1px solid var(--neutral-100); margin-bottom: 4px; }
 .hub-view-emoji-row button { flex: 1; border: 0; border-radius: 7px; padding: 3px 0; background: transparent; font-size: 15px; line-height: 1; cursor: pointer; }
 .hub-view-emoji-row button:hover { background: var(--neutral-100); }
+.hub-view-emoji-row .hub-view-emoji-more { display: grid; place-items: center; color: var(--neutral-600); }
+.hub-view-emoji-row .hub-view-emoji-more:hover,
+.hub-view-emoji-row .hub-view-emoji-more.active { background: transparent; color: var(--neutral-950); }
+.hub-view-emoji-picker { width: 100%; }
+/* Content only: the parent menu remains the sole bubble. Above the quick strip,
+   this row carries the same inset divider treatment the quick strip already
+   uses above Reply and Copy. The divider is clipped naturally with the row. */
+.hub-view-message-menu > .hub-view-emoji-picker { position: relative; width: 100%; height: 168px; flex: none; box-sizing: border-box; margin: 0; border: 0; border-radius: 0; padding: 0; overflow: clip; background: transparent; box-shadow: none; }
+.hub-view-message-menu > .hub-view-emoji-picker.above { order: -1; height: 168px; }
+.hub-view-emoji-picker-content { width: 100%; height: 168px; box-sizing: border-box; padding: 2px; }
+.hub-view-emoji-picker.above > .hub-view-emoji-picker-content { padding-bottom: 6px; }
+/* This line belongs to the fixed boundary above the quick strip, not to the
+   sliding edge of the picker. It remains still, stays faint, and appears only
+   after the content has cleared it; collapse hides it before content crosses
+   it again. The reveal still clips the line for the final few pixels. */
+.hub-view-message-menu > .hub-view-emoji-picker.above::after { content: ''; position: absolute; right: 2px; bottom: 4px; left: 2px; height: 1px; background: var(--neutral-200); opacity: 0; }
+.hub-view-message-menu:has(.hub-view-emoji-more[aria-expanded="true"]) > .hub-view-emoji-picker.above::after { animation: hub-view-emoji-divider-in 320ms linear both; }
+.hub-view-message-menu:has(.hub-view-emoji-more[aria-expanded="false"]) > .hub-view-emoji-picker.above::after { animation: hub-view-emoji-divider-out 20ms linear both; }
+@keyframes hub-view-emoji-divider-in {
+  0%, 76% { opacity: 0; }
+  90%, 100% { opacity: .42; }
+}
+@keyframes hub-view-emoji-divider-out {
+  from { opacity: .42; }
+  to { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hub-view-message-menu:has(.hub-view-emoji-more[aria-expanded="true"]) > .hub-view-emoji-picker.above::after { animation: none; opacity: .42; }
+  .hub-view-message-menu:has(.hub-view-emoji-more[aria-expanded="false"]) > .hub-view-emoji-picker.above::after { animation: none; opacity: 0; }
+}
+.hub-view-emoji-search { height: 27px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--neutral-200); border-radius: 7px; padding: 0 7px; color: var(--neutral-400); }
+.hub-view-emoji-search:focus-within { border-color: var(--neutral-400); color: var(--neutral-700); }
+.hub-view-emoji-search > svg { flex: none; }
+.hub-view-emoji-search input { min-width: 0; flex: 1; border: 0; padding: 0; outline: 0; background: transparent; color: var(--neutral-900); font: inherit; font-size: 11px; }
+.hub-view-emoji-search input::placeholder { color: var(--neutral-400); }
+.hub-view-emoji-search input::-webkit-search-cancel-button { display: none; }
+.hub-view-emoji-grid { height: 128px; max-height: 128px; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); grid-auto-rows: 24px; gap: 2px; margin-top: 4px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; -webkit-mask-image: linear-gradient(to bottom, transparent, #000 10px, #000 calc(100% - 10px), transparent); mask-image: linear-gradient(to bottom, transparent, #000 10px, #000 calc(100% - 10px), transparent); }
+.hub-view-emoji-grid::-webkit-scrollbar { display: none; }
+.hub-view-emoji-grid.at-top:not(.at-bottom) { -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 10px), transparent); mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 10px), transparent); }
+.hub-view-emoji-grid.at-bottom:not(.at-top) { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 10px, #000 100%); mask-image: linear-gradient(to bottom, transparent, #000 10px, #000 100%); }
+.hub-view-emoji-grid.at-top.at-bottom { -webkit-mask-image: none; mask-image: none; }
+.hub-view-emoji-grid button { min-width: 0; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px; padding: 0; background: transparent; font-size: 15px; line-height: 1; cursor: pointer; }
+.hub-view-emoji-grid button:hover { opacity: .72; }
+.hub-view-emoji-grid button:focus-visible { outline: 1px solid var(--neutral-400); outline-offset: -2px; }
+.hub-view-emoji-grid.empty { min-height: 72px; place-items: center; color: var(--neutral-400); font-size: 11px; }
+.hub-view-emoji-grid.empty span { grid-column: 1 / -1; }
 /* A reaction belongs to the message without being part of it: in the flow it
    widened the bubble to fit the chips and pushed the timestamp down. Pinned to
    the bubble instead, a fixed distance in from its trailing edge and centred on
@@ -1914,24 +2058,49 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-reaction.mine { border-color: var(--neutral-500); }
 .hub-view-quote { display: block; margin-bottom: 4px; border-left: 2px solid currentColor; padding-left: 6px; opacity: .7; font-size: 11px; line-height: 1.35; }
 .hub-view-quote strong { display: block; font-weight: 560; }
-/* Tucked just above the field it belongs to, sharing its margin. */
-.hub-view-replying { display: flex; align-items: center; gap: 6px; flex: none; margin: 0 14px -4px; border-radius: 10px 10px 0 0; padding: 7px 12px 9px; background: var(--neutral-100); color: var(--neutral-500); font-size: 11.5px; }
+/* Arrives only after the reply-pill scroll settles. The fill briefly gains
+   contrast — darker in light mode, brighter in dark — without drawing a ring
+   or changing the bubble's size. */
+.hub-view-bubble.reply-target-highlight { --hub-reply-target-fill: var(--neutral-200); animation: hub-view-reply-target-highlight 1.3s ease-in-out; }
+.hub-view-bubble.mine.reply-target-highlight { --hub-reply-target-fill: #000; }
+:root[data-theme="dark"] .hub-view-bubble.mine.reply-target-highlight { --hub-reply-target-fill: #fff; }
+@keyframes hub-view-reply-target-highlight {
+  28%, 58% { background-color: var(--hub-reply-target-fill); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hub-view-bubble.reply-target-highlight { animation: none; background-color: var(--hub-reply-target-fill); }
+}
+/* Tucked just above the field it belongs to. It is positioned out of flow so
+   the thread continues behind the clear space around the pill instead of
+   ending at a full-width rectangular strip. */
+.hub-view-replying { position: absolute; z-index: 4; top: -26px; left: 14px; right: 14px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; height: 30px; border-radius: 999px; padding: 0 12px; background: var(--neutral-100); color: var(--neutral-500); font-size: 11.5px; line-height: 1; }
+.hub-view-replying .hub-view-reply-jump { min-width: 0; height: 100%; display: flex; align-items: center; gap: 6px; flex: 1; border: 0; padding: 0; background: none; color: inherit; cursor: pointer; font: inherit; line-height: inherit; text-align: left; }
+.hub-view-reply-jump:hover { color: var(--neutral-700); }
+.hub-view-reply-jump > [data-icon] { display: block; flex: none; }
 .hub-view-replying span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hub-view-replying strong { color: var(--neutral-950); font-weight: 560; }
-.hub-view-replying button { display: inline-flex; border: 0; padding: 0; background: none; color: inherit; cursor: pointer; }
+.hub-view-replying .hub-view-reply-cancel { display: grid; place-items: center; flex: none; width: 12px; height: 12px; border: 0; padding: 0; background: none; color: inherit; line-height: 0; cursor: pointer; }
+.hub-view-reply-cancel [data-icon] { display: block; }
 .hub-view-bubble.mine { align-self: flex-end; background: var(--neutral-950); color: var(--app-bg); }
 .hub-view-bubble p { margin: 0; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
 .hub-view-message-link { color: inherit; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
-.hub-view-link-card { display: flex; min-width: 190px; max-width: 280px; flex-direction: column; gap: 2px; border-left: 2px solid currentColor; padding: 3px 0 3px 8px; color: inherit; text-decoration: none; }
-.hub-view-link-card strong { overflow: hidden; text-overflow: ellipsis; font-size: 12px; font-weight: 590; }
-.hub-view-link-card span { color: inherit; opacity: .75; font-size: 10.5px; line-height: 1.35; }
-.hub-view-link-card small { margin-top: 2px; opacity: .55; font-size: 9.5px; }
+.hub-view-link-card { width: min(280px,100%); min-width: 0; box-sizing: border-box; display: grid; grid-template-columns: minmax(0,1fr); overflow: hidden; margin-top: 7px; border-left: 3px solid currentColor; border-radius: 7px; background: color-mix(in srgb,currentColor 8%,transparent); color: inherit; text-decoration: none; }
+.hub-view-link-card.with-image { grid-template-columns: minmax(0,1fr) 64px; }
+.hub-view-link-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; }
+.hub-view-link-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 590; }
+.hub-view-link-card .hub-view-link-copy > span { display: -webkit-box; overflow: hidden; opacity: .75; font-size: 10.5px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.hub-view-link-card small { order: -1; overflow: hidden; opacity: .58; white-space: nowrap; text-overflow: ellipsis; font-size: 9.5px; }
+.hub-view-link-card img { width: 64px; height: 100%; min-height: 64px; display: block; align-self: stretch; object-fit: cover; }
 a.hub-view-link-card:hover strong { text-decoration: underline; }
 /* Outside the bubble rather than in it, lined up with the bubble's leading
    edge and quiet enough to read past: it labels the message, it is not part of
    what was said. */
-.hub-view-bubble-who { display: flex; align-items: center; gap: 4px; max-width: 76%; margin: 2px 0 2px 10px; overflow: hidden; color: var(--neutral-500); white-space: nowrap; font-size: 10.5px; font-weight: 540; }
-.hub-view-bubble-who img { width: 11px; height: 11px; flex: none; border-radius: 50%; object-fit: cover; }
+.hub-view-bubble-who,
+.hub-view-bubble-who-space { max-width: 76%; margin: 2px 0 2px 10px; overflow: hidden; color: var(--neutral-500); white-space: nowrap; font-size: 10.5px; font-weight: 540; }
+.hub-view-bubble-who { display: flex; align-items: center; gap: 4px; }
+/* An outgoing run omits the redundant "You" label but keeps its line box, so
+   switching senders has the same vertical rhythm in both directions. */
+.hub-view-bubble-who-space { visibility: hidden; }
 .hub-view-bubble-who > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .hub-view-bubble em { display: block; margin-top: 3px; opacity: .6; font-style: normal; font-size: 9.5px; }
 /* Media sits flush to the bubble's padding rather than filling it: an image
@@ -1942,9 +2111,11 @@ a.hub-view-link-card:hover strong { text-decoration: underline; }
    than as the sticker itself. The corner radius goes too — a sticker is
    usually transparent, and rounding it clips the artwork. */
 .hub-view-bubble-image.sticker { width: 132px; max-width: 100%; border-radius: 0; }
-.hub-view-bubble-video { display: block; max-width: 100%; border-radius: 8px; }
+.hub-view-bubble-video { display: block; width: 300px; max-width: 100%; max-height: min(62vh, 520px); border-radius: 8px; background: #000; object-fit: contain; }
 .hub-view-bubble-audio { display: block; width: 220px; max-width: 100%; height: 32px; }
-.hub-view-bubble-file { display: inline-flex; align-items: center; gap: 5px; color: inherit; font-size: 11.5px; text-decoration: none; }
+.hub-view-bubble-file { display: inline-flex; min-width: 0; max-width: 100%; align-items: center; gap: 5px; color: inherit; font-size: 11.5px; text-decoration: none; }
+.hub-view-bubble-file > [data-icon] { flex: none; }
+.hub-view-bubble-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Only the real link underlines: the same chip also stands in for media whose
    bytes are gone, and that one is a label, not a control. */
 a.hub-view-bubble-file:hover { text-decoration: underline; }
@@ -1953,17 +2124,29 @@ a.hub-view-bubble-file:hover { text-decoration: underline; }
 .hub-view-bubble-viewin { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 0; border: 0; background: none; color: inherit; opacity: .75; font: inherit; font-size: 11px; cursor: pointer; }
 .hub-view-bubble-viewin:hover { opacity: 1; text-decoration: underline; }
 
-/* One rounded field, the way the prompt input is drawn: the text and its three
-   controls share a border rather than sitting in a row of separate boxes.
-   Attach, voice, then send, all inside that border. */
-.hub-view-composer { display: flex; align-items: center; gap: 2px; flex: none; margin: 10px 14px 14px; border: 1px solid var(--neutral-200); border-radius: 21px; padding: 4px 5px 4px 14px; background: var(--app-surface); }
+/* The add circle and message field are peers in one footer row. The field keeps
+   only its immediate voice/send action; occasional tools live above the plus. */
+.hub-view-composer-row { position: relative; display: flex; align-items: flex-end; gap: 6px; flex: none; margin: 10px 14px 14px; }
+.hub-view-composer { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; border: 1px solid var(--neutral-200); border-radius: 21px; padding: 4px 5px 4px 14px; background: var(--app-surface); }
+.hub-view-composer:not(.capturing) { align-items: flex-end; }
 .hub-view-composer:focus-within { border-color: var(--neutral-500); }
-.hub-view-composer input { min-width: 0; flex: 1; height: 32px; border: 0; padding: 0; background: transparent; color: var(--neutral-950); font-family: inherit; font-size: 12.5px; }
-.hub-view-composer input:focus-visible { outline: 0; }
-/* Attach and voice are quiet; only send carries the filled treatment, so the
-   field has one obvious action and two tools beside it. */
+.hub-view-composer textarea { box-sizing: border-box; display: block; min-width: 0; width: 0; min-height: 32px; max-height: 66px; flex: 1; field-sizing: content; overflow-y: auto; scrollbar-width: none; resize: none; border: 0; padding: 7.5px 0; background: transparent; color: var(--neutral-950); font-family: inherit; font-size: 12.5px; line-height: 17px; overflow-wrap: anywhere; }
+.hub-view-composer textarea::-webkit-scrollbar { display: none; }
+.hub-view-composer textarea:focus-visible { outline: 0; }
+/* Voice is quiet; only send carries the filled treatment, so the field has one
+   obvious action. */
 .hub-view-composer button { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border: 0; border-radius: 50%; background: transparent; color: var(--neutral-500); cursor: pointer; }
 .hub-view-composer button:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-950); }
+.hub-view-composer-add { width: 42px; height: 42px; display: grid; place-items: center; flex: none; box-sizing: border-box; border: 1px solid var(--neutral-200); border-radius: 50%; padding: 0; background: var(--app-surface); color: var(--neutral-500); cursor: pointer; }
+.hub-view-composer-add:hover, .hub-view-composer-add.active { border-color: var(--neutral-400); color: var(--neutral-950); }
+/* Both surfaces reveal upward from the fixed add control and clamp to the
+   footer's left edge. The 42px control, not the growing textarea, owns their
+   vertical anchor; a taller draft therefore passes behind the popover. */
+.hub-view-composer-tools-menu { position: absolute; left: 0; bottom: calc(42px + 7px); z-index: 8; min-width: 132px; }
+.hub-view-composer-tools-menu .polymux-dropdown-item > svg { flex: none; }
+.hub-view-composer-row > .hub-view-emoji-picker { position: absolute; left: 0; bottom: calc(42px + 7px); z-index: 8; width: 180px; height: 168px; box-sizing: border-box; overflow: clip; border: 1px solid var(--neutral-200); border-radius: 12px; padding: 4px; background: var(--app-surface); box-shadow: 0 4px 12px rgba(0,0,0,.16); }
+.hub-view-composer-row > .hub-view-emoji-picker > .hub-view-emoji-picker-content { height: 158px; padding: 0; }
+.hub-view-composer-row > .hub-view-emoji-picker .hub-view-emoji-grid { height: 123px; max-height: 123px; }
 /* While a take is running the field is a meter, so the ground shifts with it:
    the trash and the send button sit outside a pill holding the clock and the
    bars, which is the shape every messenger uses for this. */
@@ -1991,6 +2174,15 @@ a.hub-view-bubble-file:hover { text-decoration: underline; }
 .hub-view-compose-form input { height: 32px; border: 1px solid var(--neutral-200); border-radius: 9px; padding: 0 10px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 12.5px; }
 .hub-view-compose-form textarea { min-height: 200px; flex: 1; border: 1px solid var(--neutral-200); border-radius: 11px; padding: 11px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 12.5px; line-height: 1.55; resize: none; }
 .hub-view-compose-form input:focus-visible, .hub-view-compose-form textarea:focus-visible { border-color: var(--neutral-500); outline: 0; }
+.hub-view-signature-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: none; }
+.hub-view-signature-control > span { color: var(--neutral-600); font-size: 11px; font-weight: 530; }
+.hub-view-signature-control .select-menu { max-width: min(230px, 70%); }
+.hub-view-signature-control .select-menu-trigger { min-width: 150px; max-width: 100%; height: 30px; font-size: 11.5px; }
+.hub-view-signature-preview { flex: none; border-left: 2px solid var(--neutral-200); padding: 2px 0 2px 10px; }
+.hub-view-signature-preview > span { display: block; margin-bottom: 4px; color: var(--neutral-400); font-size: 9.5px; font-weight: 580; letter-spacing: .04em; text-transform: uppercase; }
+.hub-view-signature-preview pre { margin: 0; color: var(--neutral-700); font: inherit; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.hub-view-signature-html { overflow-wrap: anywhere; color: var(--neutral-700); font-size: 11.5px; line-height: 1.5; }
+.hub-view-signature-html p, .hub-view-signature-html div { margin: 0; }
 /* The attach control leads, the send controls trail, and a pane too narrow
    for all four wraps rather than pushing them out of it. */
 .hub-view-compose-form footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
@@ -2012,7 +2204,7 @@ a.hub-view-bubble-file:hover { text-decoration: underline; }
 .hub-view-grid.reading > .hub-view-list { display: none; }
 .hub-view-grid.reading > .hub-view-reader { display: flex; }
 @container (min-width: 720px) {
-  .hub-view-grid { grid-template-columns: 172px minmax(200px, 280px) minmax(0, 1fr); }
+  .hub-view-grid { grid-template-columns: var(--hub-rail-width) minmax(200px, 280px) minmax(0, 1fr); }
   .hub-view-grid > .hub-view-list,
   .hub-view-grid.reading > .hub-view-list { display: flex; }
   .hub-view-grid > .hub-view-reader,
@@ -2171,7 +2363,7 @@ a.hub-view-bubble-file:hover { text-decoration: underline; }
 }
 
 /* The complete mark is present from the first frame. Only the lockup moves. */
-.startup-mark { width: 64px; height: 64px; display: block; color: #000; }
+.startup-mark { width: 64px; height: 64px; display: block; }
 .startup-mark path { fill: currentColor; }
 
 @property --startup-word-travel {
@@ -2249,7 +2441,7 @@ a.hub-view-bubble-file:hover { text-decoration: underline; }
 }
 
 /* ── Tasks board ───────────────────────────────────────────────────── */
-.tasks-view { height: 100%; display: flex; flex-direction: column; background: var(--main-panel-background); container-type: inline-size; border-top: 1px solid var(--neutral-200); }
+.tasks-view { height: 100%; display: flex; flex-direction: column; background: var(--main-panel-background); container-type: inline-size; }
 .tasks-toolbar { display: flex; align-items: center; gap: 8px; padding: 12px 16px 0; flex: none; }
 .tasks-title { font-size: 14px; font-weight: 600; color: var(--neutral-900); flex: 1; margin: 0; }
 .tasks-add-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--neutral-500); cursor: pointer; }

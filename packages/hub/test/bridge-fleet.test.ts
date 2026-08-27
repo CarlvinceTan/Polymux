@@ -1071,6 +1071,14 @@ test("a config already repaired is left byte for byte alone", () => {
   assert.equal(repairConfig(once, HOMESERVER), once);
 });
 
+test("Instagram reel media is fetched during live sync and backfill", () => {
+  const source = `${CLEANUP_DEFAULTS}network:\n    mode: instagram\n    disable_xma_backfill: true\n    disable_xma_always: true\n`;
+  const repaired = repairConfig(source, {...HOMESERVER, platform: "instagram"});
+  assert.match(repaired, /^    disable_xma_backfill: false$/m);
+  assert.match(repaired, /^    disable_xma_always: false$/m);
+  assert.equal(repairConfig(repaired, {...HOMESERVER, platform: "instagram"}), repaired);
+});
+
 test("a legacy config is not touched by the cleanup repair", () => {
   const repaired = repairConfig(CLEANUP_DEFAULTS, {...HOMESERVER, legacy: true});
   assert.ok(repaired.includes("enabled: false"));

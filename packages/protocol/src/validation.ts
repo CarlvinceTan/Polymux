@@ -8,6 +8,7 @@ import type {
   GoalCommandRequest,
   ReasoningEffort,
   SaveEmailAccountRequest,
+  SaveMailSignaturesRequest,
   StartRunRequest,
   SystemPermissionKind,
   CommsMailProvider,
@@ -506,9 +507,51 @@ export function validateSaveEmailAccount(value: unknown): SaveEmailAccountReques
       input.password === undefined || input.password === ""
         ? undefined
         : text(input.password, "password"),
-    isDefault:
-      input.isDefault === undefined ? undefined : boolean(input.isDefault, "isDefault"),
   };
+}
+
+/**
+ * Keeps renderer-provided signature content bounded and account-local before it
+ * reaches the account file. Bodies deliberately keep their whitespace: line
+ * breaks and indentation are part of a signature, unlike an account id.
+ */
+export function validateSaveMailSignatures(value: unknown): SaveMailSignaturesRequest {
+  const input = record(value, "mail signatures");
+  const account = text(input.account, "account");
+  if (!Array.isArray(input.signatures))
+    throw new Error("signatures must be a list");
+  if (input.signatures.length > 50)
+    throw new Error("An account may have at most 50 signatures");
+
+  const seen = new Set<string>();
+  const signatures = input.signatures.map((value, index) => {
+    const signature = record(value, `signature ${index + 1}`);
+    const id = text(signature.id, "signature id");
+    if (!/^[a-z0-9][a-z0-9_-]{0,127}$/i.test(id))
+      throw new Error("Signature ids may contain letters, numbers, dashes, and underscores");
+    if (seen.has(id)) throw new Error(`Duplicate signature id: ${id}`);
+    seen.add(id);
+    const name = text(signature.name, "signature name").trim();
+    if (name.length > 80) throw new Error("Signature names may be at most 80 characters");
+    if (typeof signature.body !== "string") throw new Error("signature body must be text");
+    if (signature.body.length > 50_000)
+      throw new Error("Signature bodies may be at most 50,000 characters");
+    const html = signature.html === null || signature.html === undefined || signature.html === ""
+      ? null
+      : text(signature.html, "signature html");
+    if (html && html.length > 100_000)
+      throw new Error("Formatted signatures may be at most 100,000 characters");
+    if (html && /<\s*(?:script|style|iframe|frame|object|embed|form|base|link|meta)\b|\bon\w+\s*=|javascript\s*:|(?:url|expression)\s*\(/i.test(html))
+      throw new Error("Formatted signatures contain unsupported markup");
+    return {id, name, body: signature.body.replace(/\r\n?/g, "\n"), html};
+  });
+  const defaultSignatureId =
+    input.defaultSignatureId === null || input.defaultSignatureId === undefined
+      ? null
+      : text(input.defaultSignatureId, "default signature id");
+  if (defaultSignatureId && !seen.has(defaultSignatureId))
+    throw new Error("The default signature must belong to this account");
+  return {account, signatures, defaultSignatureId};
 }
 
 export function validateStartRun(value: unknown): StartRunRequest {

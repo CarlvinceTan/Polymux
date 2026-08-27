@@ -32,6 +32,8 @@ export interface AcpRuntimeConfig {
   command: string;
   args: string[];
   cwd?: string;
+  /** Preferred ACP session options, applied whenever a new session is made. */
+  config?: Record<string, string | boolean>;
 }
 
 export type AgentRuntimeConfig = {kind: "polymux"} | AcpRuntimeConfig;

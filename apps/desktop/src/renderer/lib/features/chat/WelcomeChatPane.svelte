@@ -20,6 +20,8 @@
   export let onReasoningChange: (value: ReasoningEffort) => void = () => {};
   export let insertion: {id: string; text: string} | null = null;
   export let onInsertionApplied: () => void = () => {};
+  export let onFileDragActiveChange: (active: boolean) => void = () => {};
+  export let draftKey = 'new';
 
   /**
    * Centres the composer itself on the viewport rather than the whole stack, by
@@ -74,6 +76,8 @@
     <p>{subtitle || $t('welcome.subtitle')}</p>
   </div>
   {#if showComposer}
-    <PromptInput variant="welcome" {active} {speechModeEnabled} {advancedMode} {onOpenPlugins} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied}/>
+    {#key draftKey}
+      <PromptInput variant="welcome" {active} {speechModeEnabled} {advancedMode} {onOpenPlugins} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied} {onFileDragActiveChange} {draftKey}/>
+    {/key}
   {/if}
 </div>

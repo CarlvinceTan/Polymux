@@ -160,7 +160,8 @@ export function sendMailRequest(value: unknown): SendMailRequest {
     throw new Error("Mail request must be an object");
   const input = value as Record<string, unknown>;
   const to = optionalStringArray(input.to, "to");
-  if (to.length === 0) throw new Error("At least one recipient is required");
+  const draft = input.draft === true;
+  if (!draft && to.length === 0) throw new Error("At least one recipient is required");
   return {
     account: typeof input.account === "string" ? input.account : undefined,
     to,
@@ -168,7 +169,8 @@ export function sendMailRequest(value: unknown): SendMailRequest {
     bcc: optionalStringArray(input.bcc, "bcc"),
     subject: typeof input.subject === "string" ? input.subject : "",
     body: typeof input.body === "string" ? input.body : "",
-    draft: input.draft === true,
+    html: typeof input.html === "string" ? input.html : undefined,
+    draft,
     attachments: optionalStringArray(input.attachments, "attachments"),
     importance: mailImportance(input.importance),
     inReplyTo: typeof input.inReplyTo === "string" ? input.inReplyTo : undefined,

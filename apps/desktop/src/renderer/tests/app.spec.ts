@@ -10,6 +10,80 @@ const summaryCard = (page: Page) => page.locator('aside.summary-panel');
 const recentRows = (drawer: Locator) =>
   drawer.locator('.workspace-launcher-rows').last().locator('.workspace-launcher-row');
 
+async function openAgentSection(settings: Locator, section: 'Models' | 'Providers') {
+  await settings.getByRole('tab', {name: 'Agent'}).click();
+  await settings.getByRole('button', {name: new RegExp(`${section}.*Configure`)}).click();
+}
+
+/** The conversation and composer derive their geometry from the same animated
+ * insets as the drawers. Checking the live frame catches a second, lagging
+ * width transition even when everything happens to agree at rest. */
+async function expectContentToFollowDrawerInsets(page: Page, label: string) {
+  const geometry = await page.evaluate(() => {
+    const main = document.querySelector('main')!;
+    const style = getComputedStyle(main);
+    const leftInset = Number.parseFloat(style.getPropertyValue('--chat-drawer-offset')) || 0;
+    const rightInset = Number.parseFloat(style.getPropertyValue('--content-right-column')) || 0;
+    const composerRightInset = Number.parseFloat(style.getPropertyValue('--content-composer-column')) || 0;
+    const conversation = document.querySelector('.conversation-column')!.getBoundingClientRect();
+    const composer = document.querySelector('.composer-column-content')!.getBoundingClientRect();
+    const availableWidth = window.innerWidth - leftInset - rightInset;
+    const composerAvailableWidth = window.innerWidth - leftInset - composerRightInset;
+    return {
+      conversationWidth: conversation.width,
+      conversationCentre: conversation.left + conversation.width / 2,
+      expectedConversationWidth: Math.min(792, availableWidth - 8),
+      expectedConversationCentre: leftInset + availableWidth / 2,
+      composerWidth: composer.width,
+      composerCentre: composer.left + composer.width / 2,
+      expectedComposerWidth: Math.min(760, composerAvailableWidth - 40),
+      expectedComposerCentre: leftInset + composerAvailableWidth / 2,
+    };
+  });
+  expect(Math.abs(geometry.conversationWidth - geometry.expectedConversationWidth), `${label} conversation width`).toBeLessThanOrEqual(2);
+  expect(Math.abs(geometry.conversationCentre - geometry.expectedConversationCentre), `${label} conversation centre`).toBeLessThanOrEqual(2);
+  expect(Math.abs(geometry.composerWidth - geometry.expectedComposerWidth), `${label} composer width`).toBeLessThanOrEqual(2);
+  expect(Math.abs(geometry.composerCentre - geometry.expectedComposerCentre), `${label} composer centre`).toBeLessThanOrEqual(2);
+}
+
+/** Drags from the visible divider rather than the middle of its deliberately
+ * generous hit target, then checks the edge and the adjacent content at every
+ * stop. This catches both dropped early events and a divider that trails the
+ * pointer behind a second layout transition. */
+async function dragDrawerDivider(
+  page: Page,
+  handle: Locator,
+  drawer: Locator,
+  edge: 'left' | 'right',
+  direction: -1 | 1,
+  resizingClass: string,
+) {
+  const [handleBox, drawerBox] = await Promise.all([handle.boundingBox(), drawer.boundingBox()]);
+  expect(handleBox).not.toBeNull();
+  expect(drawerBox).not.toBeNull();
+  const startX = edge === 'left' ? drawerBox!.x - .5 : drawerBox!.x + drawerBox!.width - .5;
+  const y = handleBox!.y + handleBox!.height / 2;
+
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  await expect(page.locator('main')).toHaveClass(new RegExp(resizingClass));
+
+  for (const distance of [48, 96, 32]) {
+    const targetX = startX + direction * distance;
+    await page.mouse.move(targetX, y, {steps: 4});
+    await expect.poll(async () => {
+      const box = await drawer.boundingBox();
+      if (!box) return Number.POSITIVE_INFINITY;
+      const drawerEdge = edge === 'left' ? box.x : box.x + box.width;
+      return Math.abs(drawerEdge - targetX);
+    }).toBeLessThanOrEqual(1);
+    await expectContentToFollowDrawerInsets(page, `${resizingClass} at ${distance}px`);
+  }
+
+  await page.mouse.up();
+  await expect(page.locator('main')).not.toHaveClass(new RegExp(resizingClass));
+}
+
 /** The composer's contenteditable does not take synthetic key events from
     `fill`, so a prompt is typed the way a person types it. */
 async function send(page: Page, text: string) {
@@ -67,6 +141,22 @@ test.describe('welcome view', () => {
     });
     // The mark keeps a square optical box so the lockup does not move at handoff.
     expect(startupLockup).toEqual({markWidth: 64, markHeight: 64, gap: '12px', fontSize: '48px', fontWeight: '750', tracking: '-2.16px'});
+    const darkLockup = await splash.locator('.startup-brand').evaluate((node) => {
+      document.documentElement.dataset.theme = 'dark';
+      return {
+        brand: getComputedStyle(node).color,
+        mark: getComputedStyle(node.querySelector('.startup-mark')!).color,
+      };
+    });
+    expect(darkLockup).toEqual({brand: 'rgb(250, 250, 250)', mark: 'rgb(250, 250, 250)'});
+  });
+
+  test('restores an unfinished prompt after the app document reloads', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    await editor(page).click();
+    await page.keyboard.type('Keep this unfinished prompt');
+    await page.reload();
+    await expect(editor(page)).toHaveText('Keep this unfinished prompt');
   });
 
   /**
@@ -165,8 +255,10 @@ test.describe('welcome view', () => {
     await expect(toolbar.getByText('VOICE')).toBeVisible();
     await expect(toolbar.getByText('GOAL')).toBeVisible();
     await expect(toolbar.getByText('MODEL')).toBeVisible();
+    const modelButton = toolbar.getByRole('button', {name: 'MODEL'});
+    await expect(modelButton.locator('[data-icon="brain"]')).toBeVisible();
+    await expect(modelButton.locator('.provider-logo')).toHaveCount(0);
     await toolbar.getByText('MODEL').click();
-    await expect(toolbar.locator('.prompt-model-mark .provider-logo')).toBeVisible();
     await expect(page.getByRole('menu', {name: 'Model options'}).locator('.model-menu-mark .provider-logo').first()).toBeVisible();
     await expect(toolbar.getByText('PLUGINS')).toHaveCount(0);
     await expect(toolbar.getByText('TEAMS')).toHaveCount(0);
@@ -199,7 +291,7 @@ test.describe('welcome view', () => {
     expect(modalBounds!.width).toBe(viewport!.width);
     await expect(modal).toHaveCSS('border-style', 'none');
     await expect(page.getByRole('menu')).toHaveCount(0);
-    await expect(modal.getByRole('tab')).toHaveText(['Profile', 'General', 'Hub', 'Drive', 'Browser', 'Plugins', 'MCP', 'Skills', 'Models', 'Provider', 'Memory']);
+    await expect(modal.getByRole('tab')).toHaveText(['Agent', 'General', 'Hub', 'Drive', 'Browser', 'Plugins', 'MCP', 'Skills', 'Memory']);
     const tabMetrics = await modal.getByRole('tab').first().evaluate((node) => {
       const style = getComputedStyle(node);
       return {fontSize: style.fontSize, height: style.height, radius: style.borderRadius, icons: node.querySelectorAll('svg').length};
@@ -416,7 +508,7 @@ test.describe('welcome view', () => {
     });
     expect(skillPathBottomGap).toBe(20);
 
-    await modal.getByRole('tab', {name: 'Models'}).click();
+    await openAgentSection(modal, 'Models');
     await expect(modal.getByRole('heading', {name: 'Models'})).toBeVisible();
     await expect(modal.getByText('Set the model and reasoning level for each role.')).toBeVisible();
     await expect(modal.getByLabel(/Selected model:/)).toHaveCount(0);
@@ -568,7 +660,7 @@ test.describe('welcome view', () => {
     await modal.getByRole('button', {name: /Google.*1 model/}).click();
     await expect(modal.getByRole('heading', {name: 'Google'})).toBeVisible();
 
-    await modal.getByRole('tab', {name: 'Provider'}).click();
+    await openAgentSection(modal, 'Providers');
     await expect(modal.locator('.options-rail-list .configured-check')).toHaveCount(1);
     await expect(modal.locator('.options-rail-list .provider-row').first()).toHaveClass(/has-check/);
     await expect(modal.locator('.options-rail-list')).not.toContainText('Configured');
@@ -684,7 +776,7 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('button', {name: /Local Studio.*1 model/})).toBeVisible();
     await expect(modal.getByRole('heading', {name: 'Local Studio'})).toBeVisible();
 
-    await modal.getByRole('tab', {name: 'Models'}).click();
+    await openAgentSection(modal, 'Models');
     await modal.getByRole('button', {name: /as the main model/}).click();
     await modal.getByRole('button', {name: 'Filter models'}).click();
     await modal.getByRole('menuitemradio', {name: 'Custom Provider'}).click();
@@ -751,30 +843,303 @@ test.describe('welcome view', () => {
     await expect(settings.getByRole('menu', {name: 'Profiles'})).toHaveCount(0);
   });
 
+  test('keeps the profile menu open on selection and renames a double-clicked row', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.locator('.profile-trigger').click();
+    await settings.getByRole('button', {name: 'New profile'}).click();
+    await settings.getByRole('textbox', {name: 'Profile name'}).fill('Work');
+    await settings.getByRole('button', {name: 'Create'}).click();
+
+    await settings.locator('.profile-trigger').click();
+    const profiles = settings.getByRole('menu', {name: 'Profiles'});
+    const defaultProfile = profiles.getByRole('menuitemradio', {name: 'Default Profile'});
+    await defaultProfile.click();
+    await expect(profiles).toBeVisible();
+    await expect(defaultProfile).toHaveAttribute('aria-checked', 'true');
+
+    const profileRow = profiles.locator('.profile-row').first();
+    const displayBox = (await profileRow.boundingBox())!;
+    const displayTextBox = (await defaultProfile.locator('span').first().boundingBox())!;
+    await defaultProfile.dblclick();
+    const rename = profiles.getByRole('textbox', {name: 'Rename Default Profile'});
+    await expect(rename).toBeFocused();
+    await expect(rename).toHaveValue('Default Profile');
+    const renameBox = (await profileRow.boundingBox())!;
+    const renameTextBox = (await rename.boundingBox())!;
+    expect(renameBox.height).toBe(displayBox.height);
+    expect(renameBox.y).toBe(displayBox.y);
+    expect(renameTextBox.x).toBe(displayTextBox.x);
+    expect(renameTextBox.y).toBe(displayTextBox.y);
+    expect(renameTextBox.height).toBe(displayTextBox.height);
+    await rename.fill('Personal');
+    await rename.press('Enter');
+    await expect(profiles.getByRole('menuitemradio', {name: 'Personal'})).toBeVisible();
+    await expect(profiles).toBeVisible();
+  });
+
+  test('opens profile actions at any right-click point without clipping', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    const trigger = settings.locator('.profile-trigger');
+    for (const profileName of ['Work', 'Personal']) {
+      await trigger.click();
+      await settings.getByRole('button', {name: 'New profile'}).click();
+      await settings.getByRole('textbox', {name: 'Profile name'}).fill(profileName);
+      await settings.getByRole('button', {name: 'Create'}).click();
+    }
+
+    await trigger.click();
+    const profiles = settings.getByRole('menu', {name: 'Profiles'});
+    const checkContextMenu = async (profileName: string, verticalEdge: 'top' | 'bottom', atActions = false) => {
+      const row = profiles.locator('.profile-row', {hasText: profileName});
+      const rowBox = (await row.boundingBox())!;
+      const position = {x: atActions ? rowBox.width - 3 : 8, y: rowBox.height / 2};
+      const point = {x: rowBox.x + position.x, y: rowBox.y + position.y};
+      await row.click({button: 'right', position});
+
+      const actions = settings.getByRole('menu', {name: `Actions for ${profileName}`});
+      await expect(actions.getByRole('menuitem', {name: 'Rename'})).toBeVisible();
+      await expect(actions.getByRole('menuitem', {name: 'Duplicate'})).toBeVisible();
+      const box = (await actions.boundingBox())!;
+      expect(Math.abs(box.x - point.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs((verticalEdge === 'top' ? box.y : box.y + box.height) - point.y)).toBeLessThanOrEqual(1);
+      expect(box.x).toBeGreaterThanOrEqual(8);
+      expect(box.y).toBeGreaterThanOrEqual(8);
+      expect(box.x + box.width).toBeLessThanOrEqual(1272);
+      expect(box.y + box.height).toBeLessThanOrEqual(712);
+    };
+
+    await checkContextMenu('Default Profile', 'top');
+    await settings.getByRole('tab', {name: 'Agent'}).click();
+    await trigger.click();
+    await checkContextMenu('Personal', 'bottom', true);
+  });
+
+  test('offers the same rename and context actions from the profile row in the settings rail', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    const railProfile = settings.locator('.profile-trigger');
+    const railBox = (await railProfile.boundingBox())!;
+    const position = {x: 12, y: railBox.height / 2};
+    const point = {x: railBox.x + position.x, y: railBox.y + position.y};
+    await railProfile.click({button: 'right', position});
+
+    const actions = settings.getByRole('menu', {name: 'Actions for Default Profile'});
+    await expect(actions.getByRole('menuitem', {name: 'Rename'})).toBeVisible();
+    await expect(actions.getByRole('menuitem', {name: 'Duplicate'})).toBeVisible();
+    const actionsBox = (await actions.boundingBox())!;
+    expect(Math.abs(actionsBox.x - point.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(actionsBox.y + actionsBox.height - point.y)).toBeLessThanOrEqual(1);
+
+    await actions.getByRole('menuitem', {name: 'Rename'}).click();
+    const firstRename = settings.getByRole('textbox', {name: 'Rename Default Profile'});
+    await expect(firstRename).toBeFocused();
+    await firstRename.press('Escape');
+    await expect(firstRename).toHaveCount(0);
+    await expect(railProfile).toHaveText('Default Profile');
+
+    const displayBox = (await railProfile.boundingBox())!;
+    const displayTextBox = (await railProfile.locator('span').first().boundingBox())!;
+    await railProfile.dblclick();
+    const rename = settings.getByRole('textbox', {name: 'Rename Default Profile'});
+    await expect(rename).toBeFocused();
+    const renameBox = (await settings.locator('form.profile-trigger.profile-rename').boundingBox())!;
+    const renameTextBox = (await rename.boundingBox())!;
+    expect(renameBox.height).toBe(displayBox.height);
+    expect(renameBox.y).toBe(displayBox.y);
+    expect(renameTextBox.x).toBe(displayTextBox.x);
+    expect(renameTextBox.y).toBe(displayTextBox.y);
+    expect(renameTextBox.height).toBe(displayTextBox.height);
+    await rename.fill('Personal');
+    await rename.press('Enter');
+    await expect(railProfile).toHaveText('Personal');
+  });
+
+  test('presents Computer History as summarized activities with raw evidence on demand', async ({page}) => {
+    await page.goto('/?history=summary');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.getByRole('tab', {name: 'Memory'}).click();
+
+    const activity = settings.locator('.history-activity');
+    await expect(activity.getByRole('heading', {name: 'Computer History timeline redesign'})).toBeVisible();
+    await expect(activity).toContainText('concise semantic summaries');
+    await expect(activity.locator('.history-activity-apps').locator('img, span')).toHaveCount(3);
+    await expect(settings.getByText('0×0')).toHaveCount(0);
+    await expect(settings.getByText('Activity continued')).toHaveCount(0);
+
+    await activity.getByRole('button', {name: '3 captures'}).click();
+    await expect(activity.locator('.history-evidence-row')).toHaveCount(3);
+    await expect(activity).toContainText('ChatGPT — Computer History comparison');
+    await expect(activity.getByRole('button', {name: 'Hide details'})).toBeVisible();
+  });
+
   test('switches the active profile between Polymux and a custom ACP agent', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
     const settings = page.getByRole('region', {name: 'Settings'});
+    await expect(settings).not.toHaveClass(/settling/);
+    await expect(settings).toHaveCSS('opacity', '1');
     await settings.getByRole('tab', {name: 'Agent'}).click();
 
     const runtime = settings.getByRole('radiogroup', {name: 'Agent runtime'});
     await expect(runtime.getByRole('radio', {name: /^Polymux Built in$/})).toHaveAttribute('aria-checked', 'true');
     await expect(runtime.getByRole('radio', {name: /Codex/})).toBeVisible();
+    await expect(settings.getByText('Polymux Agent is active')).toHaveCount(0);
+    await expect(settings.getByRole('button', {name: 'Use agent'})).toHaveCount(0);
+    await expect(runtime).toHaveClass(/scroll-fade/);
+    await expect(runtime).toHaveClass(/at-top/);
+    await runtime.evaluate((grid) => {
+      grid.style.flex = '0 0 166px';
+      grid.style.height = '166px';
+      grid.style.minHeight = '166px';
+      grid.style.gridTemplateColumns = '1fr';
+    });
+    await expect.poll(() => runtime.evaluate((grid) => grid.scrollHeight - grid.clientHeight)).toBeGreaterThan(2);
+    await expect(runtime).not.toHaveClass(/at-bottom/);
+    await runtime.evaluate((grid) => { grid.scrollTop = (grid.scrollHeight - grid.clientHeight) / 2; });
+    await expect(runtime).not.toHaveClass(/at-top/);
+    await expect(runtime).not.toHaveClass(/at-bottom/);
+    await runtime.evaluate((grid) => { grid.scrollTop = grid.scrollHeight; });
+    await expect(runtime).not.toHaveClass(/at-top/);
+    await expect(runtime).toHaveClass(/at-bottom/);
+    await runtime.evaluate((grid) => { grid.scrollTop = 0; });
+    await expect(runtime).toHaveClass(/at-top/);
+    await expect(runtime).not.toHaveClass(/at-bottom/);
+    await runtime.evaluate((grid) => {
+      grid.style.removeProperty('flex');
+      grid.style.removeProperty('height');
+      grid.style.removeProperty('min-height');
+      grid.style.removeProperty('grid-template-columns');
+    });
+    const runtimeGridHeight = await runtime.evaluate((grid) => grid.getBoundingClientRect().height);
+    expect(runtimeGridHeight).toBeGreaterThan(294);
+    const configurationBottomGap = await settings.locator('.profile-options').evaluate((panel) => {
+      const configuration = panel.querySelector<HTMLElement>('.agent-configuration');
+      if (!configuration) throw new Error('Agent configuration is missing');
+      return panel.getBoundingClientRect().bottom
+        - Number.parseFloat(getComputedStyle(panel).paddingBottom)
+        - configuration.getBoundingClientRect().bottom;
+    });
+    expect(Math.abs(configurationBottomGap)).toBeLessThanOrEqual(1);
     await runtime.getByRole('radio', {name: /Custom/}).click();
+    expect(await runtime.evaluate((grid) => grid.getBoundingClientRect().height)).toBeGreaterThanOrEqual(294);
     await settings.getByRole('textbox', {name: 'Name'}).fill('Codex');
     await settings.getByRole('textbox', {name: 'Command'}).fill('codex-acp');
     await settings.getByRole('textbox', {name: 'Arguments'}).fill('--profile\nwork');
-    await settings.getByRole('button', {name: 'Use agent'}).click();
+    await settings.getByRole('button', {name: 'Use custom agent'}).click();
 
-    await expect(settings.getByText('Codex is active')).toBeVisible();
     await expect(runtime.getByRole('radio', {name: /Custom/})).toHaveAttribute('aria-checked', 'true');
+    await expect(settings.getByRole('button', {name: 'Model'})).toBeVisible();
+    await expect(settings.getByText('Providers', {exact: true})).toHaveCount(0);
+  });
+
+  test('uses the full model directory when an ACP agent advertises a large catalogue', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.getByRole('tab', {name: 'Agent'}).click();
+    const pi = settings.getByRole('radio', {name: /pi ACP/});
+    await pi.click();
+    await expect(pi).toContainText('Click again to install');
+    const installHint = pi.locator('small');
+    await expect(installHint).toHaveText('Click again to install');
+    await expect.poll(() => installHint.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+    await expect(settings.getByRole('button', {name: /Models.*Configure/})).toBeVisible();
+    await expect(settings.locator('button.agent-option-open')).toHaveCount(0);
+
+    await pi.click();
+
+    const model = settings.locator('button.agent-option-open');
+    await expect(model).toContainText('Claude Sonnet 4');
+    await expect(model).toHaveCSS('font-size', '10.5px');
+    await expect(model).toHaveCSS('font-weight', '550');
+    await model.click();
+    await expect(settings.getByRole('heading', {name: 'Model'})).toBeVisible();
+    await expect(settings.getByRole('button', {name: /OpenAI 3 models/})).toBeVisible();
+    await expect(settings.getByRole('button', {name: /Anthropic 3 models/})).toBeVisible();
+    await expect(settings.getByRole('button', {name: /Google 2 models/})).toBeVisible();
+    await settings.getByRole('button', {name: /OpenAI 3 models/}).click();
+    await settings.getByRole('button', {name: /GPT-5.2/}).click();
+    await settings.getByRole('button', {name: 'Back to Agent'}).click();
+    await expect(settings.locator('button.agent-option-open')).toContainText('GPT-5.2');
+  });
+
+  test('uses a bare aligned chevron on Agent configuration pages', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+
+    for (const section of ['Models', 'Providers'] as const) {
+      await openAgentSection(settings, section);
+      const agentBack = settings.getByRole('button', {name: 'Back to Agent'});
+      await expect(agentBack).toHaveText('');
+      await expect(agentBack.locator('svg')).toHaveCount(1);
+      const alignment = await settings.locator('.options-header').evaluate((header) => {
+        const back = header.querySelector('.agent-back')!.getBoundingClientRect();
+        const titleElement = header.querySelector<HTMLElement>('h2')!;
+        const title = titleElement.getBoundingClientRect();
+        return {
+          horizontalGap: Math.round(title.left + Number.parseFloat(getComputedStyle(titleElement).paddingLeft) - back.right),
+          centreOffset: Math.round((title.top + title.bottom - back.top - back.bottom) / 2),
+        };
+      });
+      expect(alignment).toEqual({horizontalGap: 8, centreOffset: 1});
+    }
+  });
+
+  test('activates an already installed ACP agent on the first click', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.getByRole('tab', {name: 'Agent'}).click();
+
+    const codex = settings.getByRole('radio', {name: /Codex/});
+    await codex.click();
+    await expect(codex).not.toContainText('Click again to install');
+    await expect(settings.getByRole('button', {name: 'Model'})).toBeVisible();
+    const agentLayout = await settings.locator('.profile-options').evaluate((panel) => {
+      const grid = panel.querySelector<HTMLElement>('.runtime-grid');
+      const configuration = panel.querySelector<HTMLElement>('.agent-configuration');
+      if (!grid || !configuration) throw new Error('Agent layout is incomplete');
+      return {
+        gridHeight: grid.getBoundingClientRect().height,
+        overlap: grid.getBoundingClientRect().bottom - configuration.getBoundingClientRect().top,
+      };
+    });
+    expect(agentLayout.gridHeight).toBeGreaterThanOrEqual(294);
+    expect(agentLayout.overlap).toBeLessThanOrEqual(0);
+  });
+
+  test('uses authentication methods advertised by the selected ACP agent', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.getByRole('tab', {name: 'Agent'}).click();
+    await settings.getByRole('radio', {name: /Codex/}).click();
+
+    await settings.getByRole('button', {name: /Authentication/}).click();
+    await expect(settings.getByRole('heading', {name: 'Authentication', level: 2})).toBeVisible();
+    await expect(settings.getByRole('heading', {name: 'Connected', level: 4})).toBeVisible();
+
+    await settings.getByRole('button', {name: 'Sign out'}).click();
+    await expect(settings.getByRole('heading', {name: 'Sign in required', level: 4})).toBeVisible();
+    await settings.getByRole('button', {name: 'Sign in', exact: true}).click();
+    await expect(settings.getByRole('heading', {name: 'Connected', level: 4})).toBeVisible();
+
+    await settings.getByRole('button', {name: 'Back to Agent'}).click();
+    await expect(settings.getByRole('button', {name: 'Model'})).toBeVisible();
   });
 
   test('a local runtime sits with the other providers and needs only connecting', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
     const modal = page.getByRole('region', {name: 'Settings'});
-    await modal.getByRole('tab', {name: 'Provider'}).click();
+    await openAgentSection(modal, 'Providers');
 
     // Found by name, in the same rail as the hosted providers.
     await modal.getByLabel('Search provider').fill('ollama');
@@ -981,7 +1346,7 @@ test.describe('welcome view', () => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
     const modal = page.getByRole('region', {name: 'Settings'});
-    await modal.getByRole('tab', {name: 'Provider'}).click();
+    await openAgentSection(modal, 'Providers');
     await expect(modal.getByRole('switch', {name: 'Enable auto API key rotation'})).toHaveCount(0);
     await expect(modal.getByText('rotates through them automatically')).toBeVisible();
   });
@@ -1053,6 +1418,65 @@ test.describe('welcome view', () => {
     await expect(page.getByRole('button', {name: 'Start speech mode'})).toHaveCount(0);
     await send.hover();
     await expect(page.locator('.shared-tooltip')).toHaveText('Send');
+  });
+});
+
+test.describe('top bar settings', () => {
+  test('expands as one section and applies checkbox changes immediately', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.getByRole('tab', {name: 'General'}).click();
+
+    const row = settings.getByRole('button', {name: /Top bar.*Configure/});
+    const chevron = row.locator('.pinned-views-chevron');
+    await expect(row).toHaveAttribute('aria-expanded', 'false');
+    await row.click();
+    await expect(row).toHaveAttribute('aria-expanded', 'true');
+    await expect(chevron).toHaveCSS('transform', 'matrix(-1, 0, 0, -1, 0, 0)');
+    await expect(row).toHaveCSS('border-bottom-color', 'rgba(0, 0, 0, 0)');
+
+    const drive = settings.getByRole('checkbox', {name: 'Drive', exact: true});
+    await expect(drive).toHaveAttribute('aria-checked', 'false');
+    await drive.click();
+    await expect(drive).toHaveAttribute('aria-checked', 'true');
+    await expect(settings.locator('[data-pinned-view="drive"]')).toHaveCount(1);
+    await drive.click();
+    await expect(drive).toHaveAttribute('aria-checked', 'false');
+    await expect(settings.locator('[data-pinned-view="drive"]')).toHaveCount(0);
+  });
+
+  test('clears the grabbed colour after an icon is reordered and released', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.getByRole('tab', {name: 'General'}).click();
+    await settings.getByRole('button', {name: /Top bar.*Configure/}).click();
+
+    for (const name of ['Drive', 'Calendar', 'Tasks']) {
+      const option = settings.getByRole('checkbox', {name, exact: true});
+      await option.click();
+      await expect(option).toHaveAttribute('aria-checked', 'true');
+      await expect(option).toBeEnabled();
+    }
+
+    await page.waitForTimeout(180);
+    const icons = settings.locator('.top-bar-mock-button');
+    const drive = settings.locator('[data-pinned-view="drive"]');
+    const source = await drive.boundingBox();
+    const destination = await icons.last().boundingBox();
+    expect(source).not.toBeNull();
+    expect(destination).not.toBeNull();
+
+    await page.mouse.move(source!.x + source!.width / 2, source!.y + source!.height / 2);
+    await page.mouse.down();
+    await expect(drive).toHaveClass(/dragging/);
+    await page.mouse.move(destination!.x + destination!.width + 4, destination!.y + destination!.height / 2, {steps: 8});
+    await page.mouse.up();
+
+    await expect(settings.locator('.top-bar-mock-button.dragging')).toHaveCount(0);
+    await expect(drive).toHaveCSS('opacity', '1');
+    await expect(settings.locator('.top-bar-mock-button[data-pinned-view]').first()).not.toHaveAttribute('data-pinned-view', 'drive');
   });
 });
 
@@ -1171,7 +1595,7 @@ test.describe('design system', () => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
     const modal = page.getByRole('region', {name: 'Settings'});
-    await modal.getByRole('tab', {name: 'Models'}).click();
+    await openAgentSection(modal, 'Models');
     await modal.getByRole('button', {name: /as the main model/}).click();
     await modal.getByRole('button', {name: 'Filter models'}).click();
     await modal.getByRole('menuitemradio', {name: 'All Companies'}).click();
@@ -1199,7 +1623,7 @@ test.describe('design system', () => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
     const modal = page.getByRole('region', {name: 'Settings'});
-    await modal.getByRole('tab', {name: 'Models'}).click();
+    await openAgentSection(modal, 'Models');
     const roles = modal.locator('.role-options .general-setting-row');
     const taskRow = roles.nth(1);
 
@@ -1287,6 +1711,15 @@ test.describe('design system', () => {
     await menu.getByRole('menuitem').first().click();
     await expect(submenu.getByRole('menuitemradio', {name: 'High'})).toHaveAttribute('aria-checked', 'true');
     await expect(submenu.getByRole('menuitemradio', {name: 'Medium'})).toHaveAttribute('aria-checked', 'false');
+
+    // The toolbar is an affordance for choosing a model, not a provider badge:
+    // changing the model must never replace its brain glyph.
+    await page.keyboard.press('Escape');
+    await menu.getByRole('menuitem', {name: /GPT-5.6 Sol/}).click();
+    await page.getByRole('menu', {name: 'Reasoning for GPT-5.6 Sol'}).getByRole('menuitemradio', {name: 'Low'}).click();
+    const modelButton = page.getByRole('button', {name: 'MODEL'});
+    await expect(modelButton.locator('[data-icon="brain"]')).toBeVisible();
+    await expect(modelButton.locator('.provider-logo')).toHaveCount(0);
   });
 
   test('the model menu searches the list and stays a few rows tall', async ({page}) => {
@@ -2023,9 +2456,12 @@ test.describe('panels', () => {
 
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await expect(workspaceDrawer(page)).toHaveClass(/open/);
-    await page.waitForTimeout(190);
+    for (let frame = 0; frame < 6; frame++) {
+      await page.waitForTimeout(60);
+      await expectContentToFollowDrawerInsets(page, `workspace open frame ${frame}`);
+    }
     const midway = await column.boundingBox();
-    await page.waitForTimeout(410);
+    await page.waitForTimeout(300);
     const docked = await column.boundingBox();
 
     // Docking progressively resizes the pane instead of jumping to its final
@@ -2073,6 +2509,12 @@ test.describe('panels', () => {
     expect(Math.round(minimisedDrawer!.x + minimisedDrawer!.width)).toBe(
       Math.round(expandedDrawer!.x + expandedDrawer!.width),
     );
+
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    for (let frame = 0; frame < 6; frame++) {
+      await page.waitForTimeout(60);
+      await expectContentToFollowDrawerInsets(page, `workspace close frame ${frame}`);
+    }
   });
 });
 
@@ -2121,6 +2563,7 @@ test.describe('chat drawer', () => {
           // A hairline of rounding is fine; a drawer riding over the content is not.
           expect(Math.abs(composer - drawer), `${step} frame ${frame} composer`).toBeLessThanOrEqual(2);
           expect(Math.abs(title - drawer), `${step} frame ${frame} title bar`).toBeLessThanOrEqual(2);
+          await expectContentToFollowDrawerInsets(page, `${surface} chat ${step} frame ${frame}`);
         }
         await page.waitForTimeout(500);
       }
@@ -2218,6 +2661,109 @@ test.describe('chat drawer', () => {
     await expect(drawer.getByText('Renamed from the drawer')).toBeVisible();
   });
 
+  test('creates a one-level folder and moves an indented chat into it', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    const drawer = chatDrawer(page);
+
+    const newFolder = drawer.getByRole('button', {name: 'New folder'});
+    await expect(newFolder).toHaveCSS('appearance', 'none');
+    await newFolder.hover();
+    await expect(newFolder).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(newFolder).toHaveCSS('box-shadow', 'none');
+    await newFolder.focus();
+    await expect(newFolder).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(newFolder).toHaveCSS('box-shadow', 'none');
+    await newFolder.click();
+    await drawer.getByRole('textbox', {name: 'Folder name'}).fill('Polymux');
+    await page.keyboard.press('Enter');
+
+    const chat = drawer.getByRole('button', {name: 'Open chat: Planning a product launch'});
+    const row = chat.locator('..');
+    await row.hover();
+    await row.getByRole('button', {name: 'More actions: Planning a product launch'}).click();
+    await page.getByRole('menuitem', {name: 'Polymux', exact: true}).click();
+
+    const folder = drawer.getByRole('button', {name: 'Collapse folder: Polymux'});
+    const nested = drawer.locator('.chat-drawer-folder-chats .chat-drawer-row');
+    await expect(folder).toBeVisible();
+    await expect(folder.locator('[data-icon="folder-open"]')).toBeVisible();
+    await expect(nested).toHaveCount(1);
+    const indentation = await nested.locator('.chat-drawer-open-chat').evaluate((node) =>
+      Number.parseFloat(getComputedStyle(node).paddingLeft));
+    expect(indentation).toBeGreaterThan(10);
+
+    await folder.click();
+    const collapsedFolder = drawer.getByRole('button', {name: 'Expand folder: Polymux'});
+    await expect(collapsedFolder.locator('[data-icon="folder"]')).toBeVisible();
+    await expect(nested).toHaveCount(0);
+
+    // Folder identity, membership, and collapse state survive a renderer reload.
+    await page.reload();
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    await expect(chatDrawer(page).getByRole('button', {name: 'Expand folder: Polymux'})).toBeVisible();
+    await expect(chatDrawer(page).getByRole('button', {name: 'New folder'})).toHaveCount(1);
+  });
+
+  test('opens folder and chat menus from the right-clicked row position', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    const drawer = chatDrawer(page);
+
+    await drawer.getByRole('button', {name: 'New folder'}).click();
+    await drawer.getByRole('textbox', {name: 'Folder name'}).fill('Context Folder');
+    await page.keyboard.press('Enter');
+
+    const folderRow = drawer.getByRole('button', {name: 'Collapse folder: Context Folder'}).locator('..');
+    const folderRowBox = await folderRow.boundingBox();
+    expect(folderRowBox).not.toBeNull();
+    const folderClickX = folderRowBox!.width - 60;
+    await folderRow.click({button: 'right', position: {x: folderClickX, y: 17}});
+
+    let menu = drawer.getByRole('menu');
+    await expect(menu.getByRole('menuitem')).toHaveText(['Rename', 'Delete folder']);
+    let menuBox = await menu.boundingBox();
+    expect(menuBox).not.toBeNull();
+    expect(Math.abs(menuBox!.x - (folderRowBox!.x + folderClickX))).toBeLessThan(2);
+    expect(Math.abs(menuBox!.y - (folderRowBox!.y + 17))).toBeLessThan(2);
+
+    await page.keyboard.press('Escape');
+    const chatRow = drawer.getByRole('button', {name: 'Open chat: Planning a product launch'}).locator('..');
+    const chatRowBox = await chatRow.boundingBox();
+    expect(chatRowBox).not.toBeNull();
+    const chatClickX = chatRowBox!.width - 60;
+    await chatRow.click({button: 'right', position: {x: chatClickX, y: 17}});
+
+    menu = drawer.getByRole('menu');
+    await expect(menu.getByRole('menuitem')).toHaveText(['Rename', 'Context Folder', 'Delete']);
+    menuBox = await menu.boundingBox();
+    expect(menuBox).not.toBeNull();
+    expect(Math.abs(menuBox!.x - (chatRowBox!.x + chatClickX))).toBeLessThan(2);
+    expect(Math.abs(menuBox!.y - (chatRowBox!.y + 17))).toBeLessThan(2);
+  });
+
+  test('shows a running ring in the row action slot and swaps it for more actions on hover', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    await send(page, '__demo_run_2400__');
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    const drawer = chatDrawer(page);
+    const row = drawer.getByRole('button', {name: 'Open chat: __demo_run_2400__'}).locator('..');
+    const ring = row.locator('.chat-drawer-running-ring');
+    const more = row.getByRole('button', {name: /More actions:/});
+
+    await expect(row).toHaveClass(/running/);
+    await expect(ring).toBeVisible();
+    await expect(ring).toHaveCSS('opacity', '1');
+    await expect(more).toHaveCSS('opacity', '0');
+    await row.hover();
+    await expect(ring).toHaveCSS('opacity', '0');
+    await expect(more).toHaveCSS('opacity', '1');
+
+    await page.mouse.move(420, 420);
+    await expect(row).not.toHaveClass(/running/, {timeout: 4000});
+    await expect(row.locator('.chat-drawer-running-ring')).toHaveCount(0);
+  });
+
   test('deletes a chat from its row menu', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Chats'}).click();
@@ -2240,6 +2786,23 @@ test.describe('chat drawer', () => {
     await expect(chatDrawer(page)).not.toHaveCSS('width', '240px');
   });
 
+  test('keeps its divider and adjacent content on the pointer while dragging', async ({page}) => {
+    await page.setViewportSize({width: 1300, height: 800});
+    await page.goto('/');
+    await send(page, 'in step');
+    await page.getByRole('button', {name: 'Toggle Chats'}).click();
+    await page.waitForTimeout(500);
+
+    await dragDrawerDivider(
+      page,
+      page.getByRole('button', {name: 'Resize Chats'}),
+      chatDrawer(page),
+      'right',
+      1,
+      'chat-drawer-resizing',
+    );
+  });
+
   test('drawers yield to the conversation floor instead of squeezing the composer', async ({page}) => {
     // 1000px leaves less room than both drawers' preferred widths plus the
     // conversation floor, so opening both must trigger the readjustment.
@@ -2248,7 +2811,19 @@ test.describe('chat drawer', () => {
     await page.getByRole('button', {name: 'Toggle Chats'}).click();
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     // Workspace opened last, so the chat drawer gives way — exactly to its own minimum.
-    await expect(chatDrawer(page)).toHaveCSS('width', '180px');
+    const drawer = chatDrawer(page);
+    await expect(drawer).toHaveCSS('width', '183px');
+    await expect.poll(async () => {
+      const [searchBox, folderBox] = await Promise.all([
+        page.getByRole('button', {name: 'Search Chats'}).boundingBox(),
+        drawer.getByRole('button', {name: 'New folder'}).boundingBox(),
+      ]);
+      if (!searchBox || !folderBox) return Number.POSITIVE_INFINITY;
+      return Math.abs(
+        (searchBox.x + searchBox.width / 2) -
+        (folderBox.x + folderBox.width / 2)
+      );
+    }).toBeLessThanOrEqual(.5);
     // One row of these buttons is under 20px tall; a wrap doubles it.
     const toolbarOnOneLine = () => page.locator('.polymux-prompt-toolbar').evaluate((bar) =>
       bar.getBoundingClientRect().height < 24);
@@ -2265,6 +2840,45 @@ test.describe('chat drawer', () => {
 });
 
 test.describe('workspace drawer', () => {
+  test('keeps its divider and adjacent content on the pointer while dragging', async ({page}) => {
+    await page.setViewportSize({width: 1300, height: 800});
+    await page.goto('/');
+    await send(page, 'in step');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await page.waitForTimeout(500);
+
+    await dragDrawerDivider(
+      page,
+      page.getByRole('button', {name: 'Resize Workspace'}),
+      workspaceDrawer(page),
+      'left',
+      -1,
+      'workspace-resizing',
+    );
+  });
+
+  test('keeps one divider between workspace chrome and tab content', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+
+    const drawer = workspaceDrawer(page);
+    const content = drawer.locator('.workspace-content');
+    await expect(content).toHaveClass(/empty/);
+    await expect(content).toHaveCSS('border-top-width', '0px');
+
+    await drawer.getByRole('button', {name: 'Browser'}).click();
+    await expect(content).not.toHaveClass(/empty/);
+    await expect(content).toHaveClass(/browser/);
+    await expect(content).toHaveCSS('border-top-width', '0px');
+    await expect(drawer.locator('.browser-bar')).toHaveCSS('border-bottom-width', '1px');
+
+    await drawer.getByLabel('New tab', {exact: true}).click();
+    await drawer.getByRole('menuitem', {name: 'Drive'}).click();
+    await expect(content).not.toHaveClass(/browser/);
+    await expect(content).toHaveCSS('border-top-width', '1px');
+    await expect(drawer.locator('.fb')).toHaveCSS('border-top-width', '0px');
+  });
+
   test('separate workspace opens directly with only its tabs and new-tab control', async ({page}) => {
     await page.goto('/?workspaceView=drive&coldStart=0');
 
@@ -3049,10 +3663,158 @@ test.describe('hub settings mail', () => {
     await expect(modal.getByText('Connected', {exact: true})).toHaveCount(3);
     await expect(modal.getByRole('button', {name: 'Edit'})).toHaveCount(3);
     await expect(modal.getByRole('button', {name: 'Remove'})).toHaveCount(3);
+    await expect(modal.locator('.comms-mailboxes').getByText('Default', {exact: true})).toHaveCount(0);
 
     // Adding opens the form without leaving the Mail section.
     await modal.getByRole('button', {name: 'Add mailbox'}).click();
     await expect(modal.getByRole('heading', {name: 'Add a mailbox'})).toBeVisible();
+    await expect(modal.getByText('Send from this mailbox by default', {exact: true})).toHaveCount(0);
+  });
+
+  test('signatures are managed per mailbox with a saved default', async ({page}) => {
+    await page.setViewportSize({width: 760, height: 640});
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.locator('.options-page');
+    await modal.getByRole('tab', {name: 'Hub'}).click();
+    await modal.getByRole('button', {name: /^Mail/}).click();
+    await modal.getByRole('button', {name: 'Manage signatures'}).click();
+
+    const accountMenu = modal.getByRole('button', {name: 'Mail accounts'});
+    await expect(accountMenu).toBeVisible();
+    const compactWidth = (await accountMenu.boundingBox())?.width ?? Infinity;
+    expect(Math.abs(compactWidth - 160)).toBeLessThanOrEqual(0.5);
+    const initialChevron = await accountMenu.evaluate((button) => {
+      const trigger = button.getBoundingClientRect();
+      const chevron = button.querySelector('[data-icon="chevron"]')?.getBoundingClientRect();
+      const icon = button.querySelector('.select-menu-icon')?.getBoundingClientRect();
+      const label = button.querySelector(':scope > span:not(.select-menu-icon)');
+      if (!chevron) throw new Error('Account menu lost its chevron');
+      if (!icon || !label) throw new Error('Account menu lost its icon or label');
+      const range = document.createRange();
+      range.selectNodeContents(label);
+      return {
+        x: chevron.left,
+        labelGap: range.getBoundingClientRect().left - icon.right,
+        topInset: chevron.top - trigger.top,
+        rightInset: trigger.right - chevron.right,
+      };
+    });
+    expect(Math.abs(initialChevron.labelGap - 6)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(initialChevron.topInset - initialChevron.rightInset)).toBeLessThanOrEqual(1);
+    await expect(modal.getByRole('region', {name: 'Signature choices'})).toContainText('Personal');
+    await expect(modal.getByRole('region', {name: 'Signature choices'})).toContainText('Work');
+
+    await accountMenu.click();
+    const accountList = modal.getByRole('menu', {name: 'Mail accounts'});
+    const menuBounds = await accountList.evaluate((list) => {
+      const detail = list.closest('.comms-detail');
+      const trigger = detail?.querySelector<HTMLButtonElement>('.comms-signature-toolbar .select-menu-trigger');
+      if (!detail) throw new Error('Signature menu lost its detail pane');
+      if (!trigger) throw new Error('Signature menu lost its trigger');
+      const menu = list.getBoundingClientRect();
+      const pane = detail.getBoundingClientRect();
+      return {
+        menuLeft: menu.left,
+        menuRight: menu.right,
+        menuWidth: menu.width,
+        triggerLeft: trigger.getBoundingClientRect().left,
+        triggerWidth: trigger.getBoundingClientRect().width,
+        paneLeft: pane.left,
+        paneRight: pane.right,
+      };
+    });
+    expect(Math.abs(menuBounds.menuLeft - menuBounds.triggerLeft)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(menuBounds.menuWidth - menuBounds.triggerWidth)).toBeLessThanOrEqual(0.5);
+    expect(menuBounds.menuLeft).toBeGreaterThanOrEqual(menuBounds.paneLeft - 1);
+    expect(menuBounds.menuRight).toBeLessThanOrEqual(menuBounds.paneRight + 1);
+    const overflowStyles = await accountList.evaluate((list) => {
+      const triggerLabel = list.parentElement?.querySelector<HTMLElement>('.select-menu-trigger > span:not(.select-menu-icon)');
+      const optionLabel = list.querySelector<HTMLElement>('.polymux-dropdown-item > span:not(.select-menu-icon):not(.select-menu-check-slot)');
+      if (!triggerLabel || !optionLabel) throw new Error('Account menu lost an ellipsis label');
+      const trigger = getComputedStyle(triggerLabel);
+      const option = getComputedStyle(optionLabel);
+      return {
+        trigger: [trigger.overflow, trigger.textOverflow, trigger.whiteSpace],
+        option: [option.overflow, option.textOverflow, option.whiteSpace],
+      };
+    });
+    expect(overflowStyles.trigger).toEqual(['hidden', 'ellipsis', 'nowrap']);
+    expect(overflowStyles.option).toEqual(['hidden', 'ellipsis', 'nowrap']);
+    const initialMenuWidth = (await accountList.boundingBox())?.width ?? 0;
+    const initialTriggerWidth = (await accountMenu.boundingBox())?.width ?? 0;
+    await modal.getByRole('menuitemradio', {name: 'demo@work.example'}).click();
+    await expect(accountList).toBeVisible();
+    await expect(modal.getByRole('menuitemradio', {name: 'demo@work.example'})).toHaveAttribute('aria-checked', 'true');
+    expect(Math.abs(((await accountList.boundingBox())?.width ?? 0) - initialMenuWidth)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(((await accountMenu.boundingBox())?.width ?? 0) - initialTriggerWidth)).toBeLessThanOrEqual(0.5);
+    const selectedTrigger = await accountMenu.evaluate((button) => {
+      const chevron = button.querySelector('[data-icon="chevron"]')?.getBoundingClientRect();
+      const icon = button.querySelector('.select-menu-icon')?.getBoundingClientRect();
+      const label = button.querySelector(':scope > span:not(.select-menu-icon)');
+      if (!chevron) throw new Error('Account menu lost its chevron');
+      if (!icon || !label) throw new Error('Account menu lost its icon or label');
+      const range = document.createRange();
+      range.selectNodeContents(label);
+      return {chevronX: chevron.left, labelGap: range.getBoundingClientRect().left - icon.right};
+    });
+    expect(Math.abs(selectedTrigger.chevronX - initialChevron.x)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(selectedTrigger.labelGap - initialChevron.labelGap)).toBeLessThanOrEqual(0.5);
+    await modal.getByRole('menuitemradio', {name: 'All Signatures'}).click();
+    await expect(accountList).toBeVisible();
+    expect(Math.abs(((await accountList.boundingBox())?.width ?? 0) - initialMenuWidth)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(((await accountMenu.boundingBox())?.width ?? 0) - initialTriggerWidth)).toBeLessThanOrEqual(0.5);
+    await modal.getByRole('menuitemradio', {name: 'demo@work.example'}).click();
+    await expect(accountList).toBeVisible();
+    await modal.getByRole('heading', {name: 'Signatures', exact: true}).click();
+    await expect(accountList).toHaveCount(0);
+    await modal.getByRole('button', {name: 'Add signature'}).click();
+    const editor = modal.getByRole('region', {name: 'Signature editor'});
+    await editor.getByLabel('Name').fill('Events');
+    const signature = editor.getByLabel('Signature preview');
+    await signature.fill('See you there,\nDemo User');
+    await signature.press(process.platform === 'darwin' ? 'Meta+a' : 'Control+a');
+    await editor.getByRole('button', {name: 'Bold'}).click();
+    await expect(signature.locator('b').first()).toContainText('See you there,');
+
+    const defaultControl = editor.getByRole('checkbox');
+    await defaultControl.click();
+    await expect(defaultControl).toBeChecked();
+    const choices = modal.getByRole('region', {name: 'Signature choices'});
+    await choices.getByRole('button', {name: /Work/}).click();
+    await expect(editor.getByRole('checkbox')).not.toBeChecked();
+    await choices.getByRole('button', {name: /Events/}).click();
+    await expect(editor.getByRole('checkbox')).toBeChecked();
+    await expect(editor.locator('input[type="checkbox"]')).toHaveCount(0);
+    const aligned = await editor.locator('.comms-signature-editor-footer').evaluate((footer) => {
+      const centre = (node: Element | null) => {
+        if (!node) throw new Error('Signature footer item is missing');
+        const box = node.getBoundingClientRect();
+        return box.top + box.height / 2;
+      };
+      const check = footer.querySelector('[role="checkbox"]');
+      const checkmark = footer.querySelector('.comms-signature-checkmark');
+      const checkLabel = check?.querySelector('span:last-child') ?? null;
+      const remove = footer.querySelector('.destructive');
+      return {
+        row: centre(footer),
+        check: centre(check),
+        checkmark: centre(checkmark),
+        checkLabel: centre(checkLabel),
+        remove: centre(remove),
+        removeIcon: centre(remove?.querySelector('svg') ?? null),
+        removeLabel: centre(remove?.querySelector('span') ?? null),
+      };
+    });
+    for (const value of Object.values(aligned)) expect(Math.abs(value - aligned.row)).toBeLessThanOrEqual(0.75);
+    await modal.getByRole('button', {name: 'Save signatures'}).click();
+    await expect(modal.getByRole('button', {name: 'Save signatures'})).toBeDisabled();
+
+    await modal.getByRole('button', {name: 'Cancel'}).click();
+    await modal.locator('.comms-mailboxes li', {hasText: 'demo@work.example'}).getByRole('button', {name: 'Signatures'}).click();
+    await expect(modal.getByRole('region', {name: 'Signature choices'})).toContainText('Events');
+    await modal.getByRole('region', {name: 'Signature choices'}).getByRole('button', {name: /Events/}).click();
+    await expect(modal.getByRole('region', {name: 'Signature editor'}).getByRole('checkbox')).toBeChecked();
   });
 });
 
@@ -3087,6 +3849,25 @@ test.describe('hub view', () => {
     await expect(page.locator('.hub-view')).toBeVisible();
   };
 
+  test('new mail starts with the mailbox default and can swap it', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await openMailbox(view);
+    await view.getByRole('button', {name: 'New', exact: true}).click();
+
+    const picker = view.getByRole('button', {name: 'Choose signature'});
+    await expect(picker).toContainText('Personal');
+    await expect(view.getByRole('region', {name: 'Signature preview'})).toContainText('Kind regards,');
+
+    await picker.click();
+    await view.getByRole('menuitemradio', {name: 'No signature'}).click();
+    await expect(view.getByRole('region', {name: 'Signature preview'})).toHaveCount(0);
+
+    await picker.click();
+    await view.getByRole('menuitemradio', {name: 'Personal'}).click();
+    await expect(view.getByRole('region', {name: 'Signature preview'})).toContainText('Demo User');
+  });
+
   test('remote WeChat media and events keep their native conversation shape', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
@@ -3095,8 +3876,34 @@ test.describe('hub view', () => {
     // and thread implementation with the WeChat-shaped fixture.
     await view.locator('.hub-view-row', {hasText: 'File Transfer'}).click();
 
-    await expect(view.locator('.hub-view-bubble-file', {hasText: 'Project notes.pdf'})).toBeVisible();
+    const fileChip = view.locator('.hub-view-bubble-file', {hasText: 'Project notes.pdf'});
+    await expect(fileChip).toBeVisible();
+    const overflow = await fileChip.locator('.hub-view-bubble-file-name').evaluate((node) => {
+      node.textContent = 'AQO35LDKTG5E80mb8IC1UxBCatqRtz5e1UfSQyGjSubW_6TuswMo_IDXhnFdRLTK0IsjSS6YM4A.mp4';
+      const style = getComputedStyle(node);
+      return {
+        clipped: node.scrollWidth > node.clientWidth,
+        overflow: style.overflow,
+        textOverflow: style.textOverflow,
+        whiteSpace: style.whiteSpace,
+      };
+    });
+    expect(overflow).toEqual({clipped: true, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'});
     await expect(view.locator('.hub-view-bubble-file', {hasText: 'Voice message'})).toBeVisible();
+    const reel = view.getByLabel('AQO35LDKTG5E80mb8IC1UxBCatqRtz5e1UfSQbW_6TuswMo_IDXhnFdRLTK0IsjSS6YM4A.mp4');
+    await expect(reel).toBeVisible();
+    await expect(reel).toHaveAttribute('controls', '');
+    await expect(reel).toHaveAttribute('playsinline', '');
+    await expect.poll(() => reel.evaluate((node: HTMLVideoElement) => node.readyState)).toBeGreaterThanOrEqual(1);
+    await reel.evaluate((node: HTMLVideoElement) => node.play());
+    await expect.poll(() => reel.evaluate((node: HTMLVideoElement) => node.currentTime)).toBeGreaterThan(0);
+    await expect.poll(() => reel.evaluate((node: HTMLVideoElement) => node.ended)).toBe(true);
+    const completed = await reel.evaluate((node: HTMLVideoElement) => ({
+      currentTime: node.currentTime,
+      duration: node.duration,
+    }));
+    expect(completed.currentTime).toBeCloseTo(completed.duration, 2);
+    expect(await reel.evaluate((node: HTMLVideoElement) => node.error?.code ?? null)).toBeNull();
     await expect(view.locator('.hub-view-notice', {hasText: 'A message was recalled'})).toBeVisible();
     const richReply = view.getByText('My answer\n↳ Alice: Earlier text', {exact: true});
     await expect(richReply).toBeVisible();
@@ -3107,12 +3914,168 @@ test.describe('hub view', () => {
     await expect(view.getByRole('button', {name: 'View in WeChat'})).toHaveCount(4);
     await expect(view.getByText('[File]', {exact: true})).toHaveCount(0);
     await expect(view.getByText('[Voice message]', {exact: true})).toHaveCount(0);
-    await expect(view.getByRole('button', {name: 'Record a voice message'})).toHaveCount(0);
-
+    await expect(view.getByRole('button', {name: 'Record a voice message'})).toBeVisible();
     await richReply.click({button: 'right'});
     await expect(view.locator('.hub-view-emoji-row')).toHaveCount(0);
     // Replies remain available: the adapter carries their context in text.
     await expect(view.getByRole('menuitem', {name: 'Reply'})).toBeVisible();
+    const actionMenu = view.locator('.hub-view-message-menu');
+    const wrapping = await actionMenu.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const labels = [...node.querySelectorAll<HTMLElement>('.polymux-dropdown-item > span')];
+      return {
+        width: box.width,
+        trailingSpace: box.right - Math.max(...labels.map((label) => label.getBoundingClientRect().right)),
+      };
+    });
+    // A text-only context menu follows its longest row instead of inheriting
+    // the reaction grid's wider plate.
+    expect(wrapping.width).toBeLessThan(120);
+    expect(wrapping.trailingSpace).toBeLessThanOrEqual(14);
+  });
+
+  test('drops files into the composer under the pointer', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-row', {hasText: 'File Transfer'}).click();
+
+    const hubDrop = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(['hub image'], 'hub-photo.png', {type: 'image/png'}));
+      return transfer;
+    });
+    const reader = view.locator('.hub-view-reader');
+    const main = page.locator('main');
+    const hubOverlay = reader.locator('.hub-file-drop-pane-overlay');
+    const agentOverlay = main.locator(':scope > .agent-file-drop-pane-overlay');
+    await reader.dispatchEvent('dragenter', {dataTransfer: hubDrop});
+    await reader.dispatchEvent('dragover', {dataTransfer: hubDrop});
+    await expect(reader).toHaveClass(/file-drag-active/);
+    await expect(page.locator('.polymux-prompt')).not.toHaveClass(/file-drag-active/);
+    await expect(main).not.toHaveClass(/agent-file-drag-active/);
+    await expect.poll(() => hubOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('1');
+    expect(await hubOverlay.evaluate((node) => getComputedStyle(node).pointerEvents)).toBe('none');
+    await expect.poll(() => agentOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+    const hubCoverage = await reader.evaluate((node) => {
+      const overlay = node.querySelector<HTMLElement>('.hub-file-drop-pane-overlay');
+      if (!overlay) throw new Error('Hub pane overlay is missing');
+      const paneBox = node.getBoundingClientRect();
+      const overlayBox = overlay.getBoundingClientRect();
+      return {
+        top: overlayBox.top - paneBox.top,
+        right: paneBox.right - overlayBox.right,
+        bottom: paneBox.bottom - overlayBox.bottom,
+        left: overlayBox.left - paneBox.left,
+      };
+    });
+    for (const inset of Object.values(hubCoverage)) expect(Math.abs(inset)).toBeLessThanOrEqual(0.5);
+    const themeTints = await hubOverlay.evaluate((node) => {
+      const root = document.documentElement;
+      const originalTheme = root.getAttribute('data-theme');
+      root.setAttribute('data-theme', 'light');
+      const light = getComputedStyle(node).backgroundColor;
+      root.setAttribute('data-theme', 'dark');
+      const dark = getComputedStyle(node).backgroundColor;
+      if (originalTheme === null) root.removeAttribute('data-theme');
+      else root.setAttribute('data-theme', originalTheme);
+      return {light, dark};
+    });
+    expect(themeTints.light).not.toBe('transparent');
+    expect(themeTints.dark).not.toBe('transparent');
+    expect(themeTints.light).not.toBe(themeTints.dark);
+    await reader.dispatchEvent('drop', {dataTransfer: hubDrop});
+
+    await expect(view.locator('.hub-view-chat-files')).toContainText('hub-photo.png');
+    const attachmentAlignment = await view.locator('.hub-view-chat-footer').evaluate((footer) => {
+      const files = footer.querySelector<HTMLElement>('.hub-view-chat-files');
+      const composer = footer.querySelector<HTMLElement>('.hub-view-composer');
+      if (!files || !composer) throw new Error('Hub attachment row or composer is missing');
+      const fileBox = files.getBoundingClientRect();
+      const composerBox = composer.getBoundingClientRect();
+      const composerStyle = getComputedStyle(composer);
+      return {
+        leading: fileBox.left - composerBox.left,
+        trailing: composerBox.right - fileBox.right,
+        paddingLeading: Number.parseFloat(composerStyle.paddingLeft),
+      };
+    });
+    expect(attachmentAlignment.leading).toBe(attachmentAlignment.paddingLeading);
+    expect(attachmentAlignment.trailing).toBe(attachmentAlignment.paddingLeading);
+    const hubSend = view.locator('.hub-view-composer').getByRole('button', {name: 'Send'});
+    await expect(hubSend).toBeVisible();
+    await expect(page.locator('.polymux-prompt [data-chip]')).toHaveCount(0);
+    await hubSend.click();
+    await expect(view.locator('.hub-view-chat-files')).toHaveCount(0);
+
+    const agentDrop = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(['agent note'], 'agent-note.txt', {type: 'text/plain'}));
+      return transfer;
+    });
+    const prompt = page.locator('.polymux-prompt');
+    const neutralHubRail = view.locator('.hub-view-rail');
+    const [agentBox, neutralBox, readerBox] = await Promise.all([
+      agentOverlay.boundingBox(),
+      neutralHubRail.boundingBox(),
+      reader.boundingBox(),
+    ]);
+    if (!agentBox || !neutralBox || !readerBox) throw new Error('File drop destinations are not measurable');
+    const agentPoint = {clientX: agentBox.x + agentBox.width / 2, clientY: agentBox.y + agentBox.height / 2};
+    const neutralPoint = {clientX: neutralBox.x + neutralBox.width / 2, clientY: neutralBox.y + neutralBox.height / 2};
+    const hubPoint = {clientX: readerBox.x + readerBox.width / 2, clientY: readerBox.y + readerBox.height / 2};
+
+    await prompt.dispatchEvent('dragenter', {dataTransfer: agentDrop, ...agentPoint});
+    await prompt.dispatchEvent('dragover', {dataTransfer: agentDrop, ...agentPoint});
+    await expect(prompt).toHaveClass(/file-drag-active/);
+    await expect(main).toHaveClass(/agent-file-drag-active/);
+    await expect.poll(() => agentOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('1');
+    expect(await agentOverlay.evaluate((node) => getComputedStyle(node).pointerEvents)).toBe('none');
+    await expect.poll(() => hubOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+
+    // Leaving a destination for the neutral workspace rail clears both panes. Moving
+    // directly from agent to Hub hands the tint across without preserving the
+    // old one, even though Hub stops the bubbling drag event it owns.
+    await neutralHubRail.dispatchEvent('dragover', {dataTransfer: agentDrop, ...neutralPoint});
+    await expect(main).not.toHaveClass(/agent-file-drag-active/);
+    await expect(reader).not.toHaveClass(/file-drag-active/);
+    await expect.poll(() => agentOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+    await expect.poll(() => hubOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+
+    await reader.dispatchEvent('dragenter', {dataTransfer: agentDrop, ...hubPoint});
+    await reader.dispatchEvent('dragover', {dataTransfer: agentDrop, ...hubPoint});
+    await expect(reader).toHaveClass(/file-drag-active/);
+    await expect(main).not.toHaveClass(/agent-file-drag-active/);
+    await expect.poll(() => hubOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('1');
+    await expect.poll(() => agentOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+
+    await reader.dispatchEvent('dragleave', {dataTransfer: agentDrop, ...neutralPoint});
+    await neutralHubRail.dispatchEvent('dragover', {dataTransfer: agentDrop, ...neutralPoint});
+    await expect(reader).not.toHaveClass(/file-drag-active/);
+    await expect(main).not.toHaveClass(/agent-file-drag-active/);
+    await expect.poll(() => hubOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+    await expect.poll(() => agentOverlay.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+
+    await prompt.dispatchEvent('dragenter', {dataTransfer: agentDrop, ...agentPoint});
+    await prompt.dispatchEvent('dragover', {dataTransfer: agentDrop, ...agentPoint});
+    await expect(main).toHaveClass(/agent-file-drag-active/);
+    const agentCoverage = await main.evaluate((node) => {
+      const overlay = node.querySelector<HTMLElement>(':scope > .agent-file-drop-pane-overlay');
+      const workspace = node.querySelector<HTMLElement>('.workspace-drawer.open');
+      if (!overlay || !workspace) throw new Error('Agent pane overlay or open workspace is missing');
+      const overlayBox = overlay.getBoundingClientRect();
+      const workspaceBox = workspace.getBoundingClientRect();
+      return {
+        top: overlayBox.top,
+        left: overlayBox.left,
+        rightGap: workspaceBox.left - overlayBox.right,
+        bottomGap: window.innerHeight - overlayBox.bottom,
+      };
+    });
+    for (const inset of Object.values(agentCoverage)) expect(Math.abs(inset)).toBeLessThanOrEqual(0.5);
+    await prompt.dispatchEvent('drop', {dataTransfer: agentDrop, ...agentPoint});
+
+    await expect(prompt.locator('[data-chip][data-name="agent-note.txt"]')).toHaveCount(1);
+    await expect(view.locator('.hub-view-chat-files')).toHaveCount(0);
   });
 
   test('Hub incognito mode keeps a conversation unread when it is opened', async ({page}) => {
@@ -3128,7 +4091,7 @@ test.describe('hub view', () => {
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await page.locator('.workspace-launcher-row', {hasText: 'Hub'}).click();
     const view = page.locator('.hub-view');
-    const chat = view.locator('.hub-view-row', {hasText: 'Jules Tan'});
+    const chat = view.locator('.hub-view-row', {hasText: 'Family'});
     const unread = chat.locator('.hub-view-chat-unread');
     await expect(unread).toBeVisible();
     await chat.click();
@@ -3149,7 +4112,7 @@ test.describe('hub view', () => {
     });
 
     await expect(view.locator('.hub-view-thread')).toBeVisible();
-    await expect(view.locator('.hub-view-composer input')).toHaveValue('Thursday works — see you at 2.');
+    await expect(view.locator('.hub-view-composer textarea')).toHaveValue('Thursday works — see you at 2.');
     // Prefilled, never sent: the thread still ends where it did.
     await expect(view.locator('.hub-view-thread')).not.toContainText('Thursday works');
   });
@@ -3186,8 +4149,79 @@ test.describe('hub view', () => {
     });
 
     // The composer says what it is answering, the same as pressing Reply does.
-    await expect(view.locator('.hub-view-replying')).toContainText('Are we still on for Thursday?');
-    await expect(view.locator('.hub-view-composer input')).toHaveValue('Yes — 2pm works.');
+    const replying = view.locator('.hub-view-replying');
+    await expect(replying).toContainText('Are we still on for Thursday?');
+    await expect(replying.locator('[data-icon="reply"]')).toHaveCount(1);
+    await expect(replying.locator('[data-icon="back"]')).toHaveCount(0);
+    await expect(view.locator('.hub-view-composer textarea')).toHaveValue('Yes — 2pm works.');
+
+    // The pill overlaps the thread rather than reserving an opaque horizontal
+    // strip. Messages can remain visible around it until the real composer.
+    const floating = await view.locator('.hub-view-chat-footer').evaluate((footer) => {
+      const thread = footer.previousElementSibling!.getBoundingClientRect();
+      const pill = footer.querySelector<HTMLElement>('.hub-view-replying')!.getBoundingClientRect();
+      const composer = footer.querySelector<HTMLElement>('.hub-view-composer')!.getBoundingClientRect();
+      const style = getComputedStyle(footer);
+      return {
+        overlap: thread.bottom - pill.top,
+        composerGap: composer.top - pill.bottom,
+        backgroundColor: style.backgroundColor,
+        backgroundImage: style.backgroundImage,
+      };
+    });
+    expect(floating.overlap).toBeGreaterThanOrEqual(25);
+    expect(floating.composerGap).toBe(6);
+    expect(floating.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(floating.backgroundImage).toBe('none');
+
+    // The compact thread makes the older quoted message leave the viewport.
+    // Pressing the reply pill brings that exact message back into view.
+    const thread = view.locator('.hub-view-thread');
+    const target = thread.locator('[data-message-id="c1"]');
+    await thread.evaluate((node) => {
+      node.style.flex = '0 0 90px';
+      node.scrollTo({top: 0, behavior: 'instant'});
+    });
+    const targetIsVisible = () => target.evaluate((node) => {
+      const targetBox = node.getBoundingClientRect();
+      const threadBox = node.parentElement!.getBoundingClientRect();
+      return targetBox.bottom > threadBox.top && targetBox.top < threadBox.bottom;
+    });
+    expect(await targetIsVisible()).toBe(false);
+    await page.evaluate(() => (document.documentElement.dataset.theme = 'light'));
+    await replying.locator('.hub-view-reply-jump').click();
+    await expect.poll(targetIsVisible).toBe(true);
+    const targetBubble = target.locator('.hub-view-bubble');
+    await expect(targetBubble).toHaveClass(/reply-target-highlight/);
+    await expect(targetBubble).toHaveCSS('animation-name', 'hub-view-reply-target-highlight');
+    const pulsePaint = () => targetBubble.evaluate((node) => {
+      const animation = node.getAnimations()[0];
+      if (!animation) throw new Error('Reply target animation is missing');
+      animation.pause();
+      animation.currentTime = 0;
+      const resting = getComputedStyle(node).backgroundColor;
+      animation.currentTime = 500;
+      const style = getComputedStyle(node);
+      return {resting, highlighted: style.backgroundColor, shadow: style.boxShadow};
+    });
+    const brightness = (colour: string) => {
+      const channels = colour.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+      if (!channels || channels.length !== 3) throw new Error(`Unreadable colour: ${colour}`);
+      return channels.reduce((sum, channel) => sum + channel, 0) / channels.length;
+    };
+    const lightPaint = await pulsePaint();
+    expect(brightness(lightPaint.highlighted)).toBeLessThan(brightness(lightPaint.resting));
+    expect(lightPaint.shadow).toBe('none');
+    await expect(targetBubble).not.toHaveClass(/reply-target-highlight/, {timeout: 2_500});
+
+    // Dark mode uses the same fill-only cue in the other direction.
+    await page.evaluate(() => (document.documentElement.dataset.theme = 'dark'));
+    await replying.locator('.hub-view-reply-jump').click();
+    await expect(targetBubble).toHaveClass(/reply-target-highlight/);
+    const darkPaint = await pulsePaint();
+    expect(brightness(darkPaint.highlighted)).toBeGreaterThan(brightness(darkPaint.resting));
+    expect(darkPaint.shadow).toBe('none');
+    await expect(targetBubble).not.toHaveClass(/reply-target-highlight/, {timeout: 2_500});
   });
 
   test('a drafted mail reply opens as a real reply, with the words above the quote', async ({page}) => {
@@ -3296,6 +4330,109 @@ test.describe('hub view', () => {
     await expect(view.locator('.hub-view-accounts')).toHaveCount(0);
   });
 
+  test('opens a bridged Space stack into its child chats and returns to the platform', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+
+    await expect(view.getByRole('button', {name: /Open space: WhatsApp \(/})).toHaveCount(0);
+    await expect(view.locator('.hub-view-row', {hasText: 'Jules Tan'})).toBeVisible();
+
+    const space = view.getByRole('button', {
+      name: 'Open space: NUS exchange students AY26/27, 3 chats',
+    });
+    await expect(space).toBeVisible();
+    await expect(space.locator('.hub-view-space-layer')).toHaveCount(2);
+    const avatarAlignment = await view.evaluate(() => {
+      const normal = document.querySelector('.hub-view-row:not(.hub-view-space-row) .hub-view-chat-avatar')!;
+      const front = document.querySelector('.hub-view-space-front .hub-view-chat-avatar')!;
+      return Math.round(front.getBoundingClientRect().left - normal.getBoundingClientRect().left);
+    });
+    expect(avatarAlignment).toBe(0);
+    const fanOffsets = await space.locator('.hub-view-space-stack').evaluate((stack) => {
+      const offset = (selector: string) => (stack.querySelector<HTMLElement>(selector))!.offsetLeft;
+      return [offset('.hub-view-space-layer-back'), offset('.hub-view-space-layer-middle'), offset('.hub-view-space-front')];
+    });
+    expect(fanOffsets).toEqual([-6, -3, 0]);
+    // Child names describe the stack; they are not duplicate root chat rows.
+    await expect(view.locator('.hub-view-row strong', {hasText: 'Social 💃'})).toHaveCount(0);
+
+    await space.click();
+    await expect(view.locator('.hub-view-space-heading strong')).toHaveText(
+      'NUS exchange students AY26/27',
+    );
+    await expect(view.locator('.hub-view-rows > li > .hub-view-row strong')).toHaveText([
+      'Social 💃',
+      'School of Computing',
+      'Running 👟',
+    ]);
+
+    await view.getByRole('button', {name: 'Back to WhatsApp'}).click();
+    await expect(space).toBeVisible();
+  });
+
+  test('anchors Contacts at the bottom and lists direct contacts from every platform', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const rail = view.getByRole('navigation', {name: 'Message sources'});
+    const contacts = rail.getByRole('button', {name: 'Contacts'});
+
+    await expect(contacts).toContainText('Contacts');
+    await expect(contacts.locator('[data-icon="contacts"]')).toBeVisible();
+    const placement = await rail.evaluate((node) => {
+      const railBox = node.getBoundingClientRect();
+      const footerBox = node.querySelector('.hub-view-rail-footer')!.getBoundingClientRect();
+      const platformRows = [...node.querySelectorAll('.hub-view-rail-scroll .hub-view-source')];
+      const lastPlatformBox = platformRows.at(-1)!.getBoundingClientRect();
+      return {
+        bottomGap: Math.round(railBox.bottom - footerBox.bottom),
+        platformGap: Math.round(footerBox.top - lastPlatformBox.bottom),
+      };
+    });
+    expect(placement.bottomGap).toBe(0);
+    expect(placement.platformGap).toBeGreaterThan(40);
+
+    await contacts.click();
+    await expect(contacts).toHaveClass(/active/);
+    const contactRows = view.locator('.hub-view-contact-row');
+    await expect(contactRows.locator('strong')).toHaveText([
+      '+12262184662',
+      'Carl’s chat',
+      'File Transfer',
+      'Jules Tan',
+      'Polymux chat',
+    ]);
+    await expect(contactRows.filter({hasText: 'Family'})).toHaveCount(0);
+    await expect(contactRows.filter({hasText: 'Dev Chat'})).toHaveCount(0);
+    await expect(contactRows.locator('.hub-view-platform-badge')).toHaveCount(5);
+
+    const search = view.getByRole('searchbox', {name: 'Search contacts'});
+    await search.fill('WhatsApp');
+    await expect(contactRows.locator('strong')).toHaveText(['+12262184662', 'Jules Tan']);
+    await search.fill('');
+    await view.getByRole('button', {name: 'Open Jules Tan on WhatsApp'}).click();
+    await expect(view.getByRole('heading', {name: 'Jules Tan'})).toBeVisible();
+  });
+
+  test('uses a profile glyph when a bare phone number has no avatar initial', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+
+    const phoneAvatar = view
+      .locator('.hub-view-row', {hasText: '+12262184662'})
+      .locator('.hub-view-chat-avatar.placeholder');
+    await expect(phoneAvatar.locator('[data-icon="user"]')).toBeVisible();
+    await expect(phoneAvatar).toHaveCSS('width', '28px');
+    await expect(phoneAvatar).toHaveCSS('height', '28px');
+
+    const namedAvatar = view
+      .locator('.hub-view-row', {hasText: 'Jules Tan'})
+      .locator('.hub-view-chat-avatar.placeholder');
+    await expect(namedAvatar).toHaveText('J');
+    await expect(namedAvatar.locator('[data-icon="user"]')).toHaveCount(0);
+  });
+
   test('mutes chats from the context menu in All Platforms and every platform list', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
@@ -3366,6 +4503,100 @@ test.describe('hub view', () => {
     await expect(view.locator('.hub-view-source', {hasText: 'WhatsApp'})).toHaveClass(/active/);
   });
 
+  test('snaps the platform rail to icons and switches accounts beside search', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const grid = view.locator('.hub-view-grid');
+    const handle = view.getByRole('button', {name: 'Resize platform rail'});
+    const railWidth = () => view.locator('.hub-view-rail').evaluate((rail) =>
+      Math.round(rail.getBoundingClientRect().width));
+    const railInsets = () => view.evaluate((node) => {
+      const rail = node.querySelector('.hub-view-rail')!.getBoundingClientRect();
+      const row = node.querySelector('.hub-view-source')!.getBoundingClientRect();
+      return {
+        top: Math.round(row.top - rail.top),
+        side: Math.round(row.left - rail.left),
+      };
+    });
+
+    await expect(grid).not.toHaveClass(/rail-compact/);
+    await expect(view.getByRole('button', {name: 'Instagram'})).toContainText('Instagram');
+    expect(await railInsets()).toEqual({top: 8, side: 8});
+
+    const divider = (await handle.boundingBox())!;
+    const dividerX = divider.x + divider.width / 2;
+    await page.mouse.move(dividerX, divider.y + divider.height / 2);
+    await page.mouse.down();
+    await expect(grid).toHaveClass(/rail-resizing/);
+    await page.mouse.move(dividerX - 40, divider.y + divider.height / 2);
+    expect(await railWidth()).toBe(156);
+    await page.mouse.move(dividerX - 60, divider.y + divider.height / 2);
+    await expect.poll(railWidth).toBe(52);
+    await page.mouse.up();
+
+    await expect(grid).toHaveClass(/rail-compact/);
+    await expect(view.locator('.hub-view-accounts')).toHaveCount(0);
+    await expect(view.locator('.hub-view-source span').first()).toBeHidden();
+    expect(await railInsets()).toEqual({top: 7, side: 7});
+
+    await view.getByRole('button', {name: 'Instagram'}).click();
+    const accounts = view.getByRole('button', {name: 'Choose account'});
+    await expect(accounts).toHaveText(/@carl\.builds/);
+    const accountBox = (await accounts.boundingBox())!;
+    const searchBox = (await view.getByRole('searchbox', {name: 'Search conversations'}).boundingBox())!;
+    expect(accountBox.x + accountBox.width).toBeLessThanOrEqual(searchBox.x + 1);
+    await accounts.click();
+    await view.getByRole('menuitemradio', {name: '@polymux'}).click();
+    await expect(accounts).toHaveText(/@polymux/);
+    await expect(view.locator('.hub-view-row', {hasText: 'Polymux chat'})).toBeVisible();
+    await expect(view.locator('.hub-view-row', {hasText: 'Carl’s chat'})).toHaveCount(0);
+
+    await view.getByRole('button', {name: 'Open space: Polymux community, 1 chat'}).click();
+    await expect(view.locator('.hub-view-space-heading strong')).toHaveText('Polymux community');
+    await expect(accounts).toHaveCount(0);
+    await view.getByRole('button', {name: 'Back to Instagram'}).click();
+    await expect(accounts).toHaveText(/@polymux/);
+
+    const compactDivider = (await handle.boundingBox())!;
+    const compactDividerX = compactDivider.x + compactDivider.width / 2;
+    await page.mouse.move(compactDividerX, compactDivider.y + compactDivider.height / 2);
+    await page.mouse.down();
+    await expect(grid).toHaveClass(/rail-resizing/);
+    await page.mouse.move(compactDividerX + 40, compactDivider.y + compactDivider.height / 2);
+    expect(await railWidth()).toBe(52);
+    await page.mouse.move(compactDividerX + 60, compactDivider.y + compactDivider.height / 2);
+    await expect.poll(railWidth).toBe(156);
+    await page.mouse.up();
+
+    await expect(grid).not.toHaveClass(/rail-compact/);
+    await expect(view.getByRole('button', {name: 'Instagram'})).toContainText('Instagram');
+  });
+
+  test('keeps each linked account to its own conversations', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'Instagram'}).click();
+
+    await view.locator('.hub-view-accounts button', {hasText: '@carl.builds'}).click();
+    await expect(view.locator('.hub-view-row', {hasText: 'Carl’s chat'})).toBeVisible();
+    await expect(view.locator('.hub-view-row', {hasText: 'Polymux chat'})).toHaveCount(0);
+
+    await view.locator('.hub-view-accounts button', {hasText: '@polymux'}).click();
+    await expect(view.locator('.hub-view-row', {hasText: 'Polymux chat'})).toBeVisible();
+    await expect(view.locator('.hub-view-row', {hasText: 'Carl’s chat'})).toHaveCount(0);
+  });
+
+  test('does not badge a conversation whose latest message is mine', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const replied = view.locator('.hub-view-row', {hasText: 'Jules Tan'});
+    const waiting = view.locator('.hub-view-row', {hasText: 'Family'});
+
+    await expect(replied).not.toHaveClass(/unread/);
+    await expect(replied.locator('.hub-view-chat-unread')).toHaveCount(0);
+    await expect(waiting.locator('.hub-view-chat-unread')).toHaveText('2');
+  });
+
   test('filters the list down to unread messages', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
@@ -3403,13 +4634,30 @@ test.describe('hub view', () => {
 
     // Two messages and a sticker.
     await expect(view.locator('.hub-view-bubble')).toHaveCount(3);
-    await view.locator('.hub-view-composer input').fill('See you then.');
+    // The incoming sticker quotes the account's bridge ghost. Ownership, not
+    // that ghost's incomplete profile, decides how the quoted author reads.
+    await expect(view.locator('.hub-view-quote strong')).toHaveText('You');
+    await expect(view.getByText('Unknown user', {exact: true})).toHaveCount(0);
+    await view.locator('.hub-view-composer textarea').fill('See you then.');
     // Send only appears once there is something to send; before that the
     // primary button is the microphone.
     await view.locator('.hub-view-composer button[aria-label="Send"]').click();
     await expect(view.locator('.hub-view-bubble')).toHaveCount(4);
     // The sent message is attributed to the user, not the remote side.
     await expect(view.locator('.hub-view-bubble.mine').first()).toContainText('See you then.');
+  });
+
+  test('keeps the back chevron accessible without showing a hover tooltip', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+    await expect(page.locator('#startup-splash')).toHaveCount(0, {timeout: 10_000});
+
+    const back = view.getByRole('button', {name: 'Back', exact: true});
+    await expect(back.locator(':scope > [data-icon="back"]')).toBeVisible();
+    await back.hover();
+    await expect(page.locator('.shared-tooltip')).toHaveCount(0);
   });
 
   test('returning to a conversation paints what it knew rather than reloading', async ({page}) => {
@@ -3445,7 +4693,47 @@ test.describe('hub view', () => {
     await expect(page.locator('.hub-view .hub-view-bubble-skeleton')).toHaveCount(0);
   });
 
-  test('a group names who sent each run of messages, above the bubble', async ({page}) => {
+  test('keeps each chat draft when conversations and workspace tabs change', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+    await view.locator('.hub-view-composer textarea').fill('Draft for Jules');
+
+    await view.locator('.hub-view-back').click();
+    await view.locator('.hub-view-row', {hasText: 'Family'}).click();
+    await view.locator('.hub-view-composer textarea').fill('Draft for Family');
+    await view.locator('.hub-view-back').click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+    await expect(view.locator('.hub-view-composer textarea')).toHaveValue('Draft for Jules');
+
+    await page.getByRole('button', {name: 'New tab', exact: true}).click();
+    await page.getByRole('menuitem', {name: 'Browser'}).click();
+    await page.locator('.tab', {hasText: 'Hub'}).locator('.tab-main').click();
+    await expect(page.locator('.hub-view-composer textarea')).toHaveValue('Draft for Jules');
+  });
+
+  test('recovers an email compose after leaving the Hub', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await openMailbox(view);
+    await view.getByRole('button', {name: 'New'}).click();
+    const compose = view.locator('.hub-view-compose-form');
+    await compose.locator('input').first().fill('dana@example.com');
+    await compose.locator('input').nth(1).fill('Friday plans');
+    await compose.locator('textarea').fill('Are we still on?');
+
+    await page.getByRole('button', {name: 'New tab', exact: true}).click();
+    await page.getByRole('menuitem', {name: 'Browser'}).click();
+    await page.locator('.tab', {hasText: 'Hub'}).locator('.tab-main').click();
+
+    const restored = page.locator('.hub-view-compose-form');
+    await expect(restored.locator('input').first()).toHaveValue('dana@example.com');
+    await expect(restored.locator('input').nth(1)).toHaveValue('Friday plans');
+    await expect(restored.locator('textarea')).toHaveValue('Are we still on?');
+  });
+
+  test('every chat names incoming sender runs with the shared rounded-square avatar', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
     await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
@@ -3453,18 +4741,47 @@ test.describe('hub view', () => {
 
     // The label belongs to the row, outside the bubble, not inside it.
     await expect(view.locator('.hub-view-bubble .hub-view-bubble-who')).toHaveCount(0);
-    const names = view.locator('.hub-view-bubble-who');
+    const identities = view.locator('.hub-view-bubble-who');
+    const names = identities.locator(':scope > span:last-child');
     // Newest first: Dad's message, then the run of two from Mum named once.
     await expect(names).toHaveText(['Dad', 'Mum']);
-    const avatar = names.filter({hasText: 'Mum'}).locator('img');
+    const avatar = identities.filter({hasText: 'Mum'}).locator('img');
     await expect(avatar).toHaveCount(1);
     await expect(avatar).toHaveCSS('width', '11px');
     await expect(avatar).toHaveCSS('height', '11px');
+    await expect(avatar).toHaveCSS('border-radius', '3px');
 
-    // A direct chat says who it is in the header, so the bubbles do not.
+    // Direct conversations use the same sender identity treatment. With no
+    // source image in this fixture, the shared fallback supplies the initial.
     await view.locator('.hub-view-back').click();
     await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
-    await expect(view.locator('.hub-view-bubble-who')).toHaveCount(0);
+    const directSender = view.locator('.hub-view-bubble-who');
+    // The bridge's raw profile still carries its Matrix compatibility suffix;
+    // the visible identity above both message runs does not.
+    await expect(directSender.locator(':scope > span:last-child')).toHaveText(['Jules Tan', 'Jules Tan']);
+    await expect(view.getByText('Jules Tan (WA)', {exact: true})).toHaveCount(0);
+    const fallback = directSender.locator('.hub-view-chat-avatar.placeholder');
+    await expect(fallback).toHaveText(['J', 'J']);
+    await expect(fallback.first()).toHaveCSS('border-radius', '3px');
+  });
+
+  test('outgoing sender runs reserve the same identity-line spacing without showing You', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const incomingIdentity = view.locator('.hub-view-bubble-who').first();
+    const outgoingRun = view.locator('.hub-view-bubble-row.mine').first();
+    const reservedIdentity = outgoingRun.locator('.hub-view-bubble-who-space');
+    await expect(outgoingRun.locator('.hub-view-bubble-who')).toHaveCount(0);
+    await expect(reservedIdentity).toHaveCSS('visibility', 'hidden');
+
+    const heights = await view.evaluate((node) => ({
+      incoming: node.querySelector('.hub-view-bubble-who')!.getBoundingClientRect().height,
+      outgoing: node.querySelector('.hub-view-bubble-who-space')!.getBoundingClientRect().height,
+    }));
+    expect(heights.outgoing).toBe(heights.incoming);
   });
 
   test('a conversation notice is centred text rather than an outgoing bubble', async ({page}) => {
@@ -3473,10 +4790,49 @@ test.describe('hub view', () => {
     await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
     await view.locator('.hub-view-row', {hasText: 'Family'}).click();
 
-    const notice = view.locator('.hub-view-notice');
+    const notice = view.locator('.hub-view-notice', {hasText: 'Peter6C invited Percival'});
     await expect(notice).toHaveText('Peter6C invited Percival to the group chat');
     await expect(notice).toHaveCSS('text-align', 'center');
     await expect(view.locator('.hub-view-bubble', {hasText: 'Peter6C invited Percival'})).toHaveCount(0);
+  });
+
+  test('a WhatsApp membership change uses the same centred notice treatment', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Family'}).click();
+
+    const notice = view.locator('.hub-view-notice', {hasText: 'Áron joined the group'});
+    await expect(notice).toBeVisible();
+    await expect(notice).toHaveCSS('text-align', 'center');
+    await expect(view.locator('.hub-view-bubble', {hasText: 'Áron joined the group'})).toHaveCount(0);
+  });
+
+  test('Telegram service events and rich links use the shared thread treatment', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    // The demo keeps Telegram logged out to exercise setup, while its unified
+    // inbox still carries a Telegram-shaped thread through the shared reader.
+    await view.locator('.hub-view-row', {hasText: 'Dev Chat'}).click();
+
+    const notice = view.locator('.hub-view-notice', {hasText: 'Manny Asbanu joined the group'});
+    await expect(notice).toBeVisible();
+    await expect(notice).toHaveCSS('text-align', 'center');
+
+    const bubble = view.locator('.hub-view-bubble', {hasText: 'CS3210 Tutorial 1'});
+    const rawLink = bubble.locator('.hub-view-message-link');
+    const card = bubble.locator('.hub-view-link-card');
+    await expect(rawLink).toHaveText('https://docs.google.com/presentation/d/tutorial/edit?usp=sharing');
+    await expect(card).toContainText('Instrumentation, Profiling, Slurm, and Report Writing');
+    await expect(card).toContainText('docs.google.com');
+    await expect(card.locator('img')).toBeVisible();
+    await expect(card.locator('img')).toHaveCSS('width', '64px');
+    const rawLinkComesFirst = await bubble.evaluate((node) => {
+      const link = node.querySelector('.hub-view-message-link');
+      const preview = node.querySelector('.hub-view-link-card');
+      return Boolean(link && preview && (link.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING));
+    });
+    expect(rawLinkComesFirst).toBe(true);
   });
 
   test('the composer offers the microphone until there is something to send', async ({page}) => {
@@ -3485,19 +4841,155 @@ test.describe('hub view', () => {
     await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
     await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
 
-    const composer = view.locator('.hub-view-composer');
-    // Empty: one primary button, and it records rather than sends nothing.
+    const row = view.locator('.hub-view-composer-row');
+    const composer = row.locator('.hub-view-composer');
+    const add = row.getByRole('button', {name: 'More actions'});
+    // Empty: the plus stays outside the field, whose one primary button records
+    // rather than sending nothing.
+    let labels = await composer.locator(':scope > button').evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute('aria-label')),
+    );
+    expect(labels).toEqual(['Record a voice message']);
     await expect(composer.locator('button[aria-label="Record a voice message"]')).toBeVisible();
     await expect(composer.locator('button[aria-label="Send"]')).toHaveCount(0);
+    const geometry = await row.evaluate((node) => {
+      const addBox = node.querySelector<HTMLElement>('.hub-view-composer-add')!.getBoundingClientRect();
+      const fieldBox = node.querySelector<HTMLElement>('.hub-view-composer')!.getBoundingClientRect();
+      return {
+        addWidth: addBox.width,
+        addHeight: addBox.height,
+        fieldHeight: fieldBox.height,
+        gap: fieldBox.left - addBox.right,
+      };
+    });
+    expect(geometry).toEqual({addWidth: 42, addHeight: 42, fieldHeight: 42, gap: 6});
 
-    await composer.locator('input').fill('typing');
+    await composer.locator('textarea').fill('typing');
     await expect(composer.locator('button[aria-label="Send"]')).toBeVisible();
     await expect(composer.locator('button[aria-label="Record a voice message"]')).toHaveCount(0);
+    labels = await composer.locator(':scope > button').evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute('aria-label')),
+    );
+    expect(labels).toEqual(['Send']);
+    const sendGap = await composer.evaluate((node) => {
+      const fieldBox = node.querySelector('textarea')!.getBoundingClientRect();
+      const sendBox = node.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.getBoundingClientRect();
+      return sendBox.left - fieldBox.right;
+    });
+    expect(sendGap).toBe(6);
 
-    // Attach stays available either way; it is not part of the swap.
-    await expect(composer.locator('button[aria-label="Attach files"]')).toBeVisible();
-    await composer.locator('input').fill('');
+    // Occasional tools stay available from the plus either way.
+    await expect(add).toBeVisible();
+    await composer.locator('textarea').fill('');
     await expect(composer.locator('button[aria-label="Record a voice message"]')).toBeVisible();
+  });
+
+  test('opens a searchable emoji picker and inserts at the composer caret', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const row = view.locator('.hub-view-composer-row');
+    const composer = row.locator('.hub-view-composer');
+    const field = composer.locator('textarea');
+    await field.fill('Hello there');
+    await field.evaluate((node) => (node as HTMLTextAreaElement).setSelectionRange(6, 6));
+    await row.getByRole('button', {name: 'More actions'}).click();
+
+    const menu = row.getByRole('menu', {name: 'More actions'});
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole('menuitem')).toHaveText(['Attach files', 'Add emoji']);
+    const compactMenu = await row.evaluate((node) => {
+      const menuBox = node.querySelector<HTMLElement>('.hub-view-composer-tools-menu')!.getBoundingClientRect();
+      const addBox = node.querySelector<HTMLElement>('.hub-view-composer-add')!.getBoundingClientRect();
+      return {top: menuBox.top, bottomGap: addBox.top - menuBox.bottom};
+    });
+    expect(compactMenu.bottomGap).toBe(7);
+
+    // The actions menu owns only itself and its trigger. Clicking the draft is
+    // outside it and dismisses it, even though the field shares the same row.
+    await field.click();
+    await expect(menu).toHaveCount(0);
+
+    // Growing the message field does not push the menu upwards. It remains
+    // fixed over the plus and may overlap the taller draft behind it.
+    await field.fill('one\ntwo\nthree');
+    await row.getByRole('button', {name: 'More actions'}).click();
+    await expect(menu).toBeVisible();
+    const tallMenu = await row.evaluate((node) => {
+      const menuBox = node.querySelector<HTMLElement>('.hub-view-composer-tools-menu')!.getBoundingClientRect();
+      const addBox = node.querySelector<HTMLElement>('.hub-view-composer-add')!.getBoundingClientRect();
+      return {top: menuBox.top, bottomGap: addBox.top - menuBox.bottom};
+    });
+    expect(tallMenu).toEqual(compactMenu);
+    await field.click();
+    await field.fill('Hello there');
+    await field.evaluate((node) => (node as HTMLTextAreaElement).setSelectionRange(6, 6));
+    await row.getByRole('button', {name: 'More actions'}).click();
+    await menu.getByRole('menuitem', {name: 'Add emoji'}).click();
+
+    const picker = row.getByRole('group', {name: 'Emoji'});
+    const search = picker.getByRole('searchbox', {name: 'Search'});
+    await expect(picker).toBeVisible();
+    await expect(search).toBeFocused();
+
+    // Clicking back into the message keeps the picker available. It closes
+    // only once that focus becomes an actual text edit.
+    await field.click();
+    await expect(picker).toBeVisible();
+    await field.evaluate((node) => (node as HTMLTextAreaElement).setSelectionRange(6, 6));
+    await search.fill('fire');
+    await picker.getByRole('button', {name: 'fire', exact: true}).click();
+
+    await expect(picker).toHaveCount(0);
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue('Hello 🔥there');
+    await expect.poll(() => field.evaluate((node) => (node as HTMLTextAreaElement).selectionStart)).toBe(8);
+
+    await row.getByRole('button', {name: 'More actions'}).click();
+    await menu.getByRole('menuitem', {name: 'Add emoji'}).click();
+    await field.click();
+    await field.press('End');
+    await field.type('!');
+    await expect(picker).toHaveCount(0);
+    await expect(field).toHaveValue('Hello 🔥there!');
+  });
+
+  test('the message composer grows to three lines, then scrolls without a scrollbar', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const composer = view.locator('.hub-view-composer');
+    const field = composer.locator('textarea');
+    const heights: number[] = [];
+    for (const value of ['one', 'one\ntwo', 'one\ntwo\nthree', 'one\ntwo\nthree\nfour']) {
+      await field.fill(value);
+      heights.push(await field.evaluate((node) => node.getBoundingClientRect().height));
+    }
+    expect(heights[1]).toBeGreaterThan(heights[0]);
+    expect(heights[2]).toBeGreaterThan(heights[1]);
+    expect(heights[3]).toBe(heights[2]);
+
+    const overflow = await field.evaluate((node) => ({
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+      scrollbarWidth: getComputedStyle(node).scrollbarWidth,
+      webkitScrollbarDisplay: getComputedStyle(node, '::-webkit-scrollbar').display,
+    }));
+    expect(overflow.scrollHeight).toBeGreaterThan(overflow.clientHeight);
+    expect(overflow.scrollbarWidth).toBe('none');
+    expect(overflow.webkitScrollbarDisplay).toBe('none');
+
+    const bottoms = await composer.evaluate((node) => ({
+      field: node.querySelector('textarea')!.getBoundingClientRect().bottom,
+      controls: [...node.querySelectorAll('button')].map((button) => button.getBoundingClientRect().bottom),
+    }));
+    for (const control of bottoms.controls) {
+      expect(Math.abs(control - bottoms.field)).toBeLessThanOrEqual(0.5);
+    }
   });
 
   test('reacts to a message, and answers it with the original quoted', async ({page}) => {
@@ -3516,14 +5008,284 @@ test.describe('hub view', () => {
     await expect(menu).toHaveCount(0);
     await expect(first.locator('.hub-view-reaction')).toContainText('👍');
 
+    // More reactions stay inside this compact menu: the + is the last quick
+    // action. Its attached picker extends without moving the menu or strip.
+    await first.click({button: 'right'});
+    const moreReactions = menu.getByRole('button', {name: 'React'});
+    await expect(menu.locator('.hub-view-emoji-row button').last()).toHaveAttribute('aria-label', 'React');
+    const beforeExpansion = await menu.evaluate((node) => {
+      const strip = node.querySelector<HTMLElement>('.hub-view-emoji-row');
+      if (!strip) throw new Error('Quick reaction strip is missing');
+      return {
+        menu: node.getBoundingClientRect().toJSON(),
+        strip: strip.getBoundingClientRect().toJSON(),
+      };
+    });
+    await moreReactions.click();
+    const picker = menu.locator('.hub-view-emoji-picker');
+    const search = picker.getByRole('searchbox', {name: 'Search'});
+    await expect(picker).toBeVisible();
+    await expect(search).toBeFocused();
+    await expect.poll(() => picker.evaluate((node) => node.getBoundingClientRect().height)).toBe(168);
+    const proportions = await menu.evaluate((node) => {
+      const quick = node.querySelector<HTMLElement>('.hub-view-emoji-row button:not(.hub-view-emoji-more)');
+      const expanded = node.querySelector<HTMLElement>('.hub-view-emoji-grid button');
+      const picker = node.querySelector<HTMLElement>('.hub-view-emoji-picker');
+      if (!quick || !expanded || !picker) throw new Error('Reaction picker is incomplete');
+      const pickerStyle = getComputedStyle(picker);
+      const dividerStyle = getComputedStyle(picker, '::after');
+      const menuStyle = getComputedStyle(node);
+      const pickerRect = picker.getBoundingClientRect();
+      return {
+        quickSize: getComputedStyle(quick).fontSize,
+        expandedSize: getComputedStyle(expanded).fontSize,
+        pickerHeight: picker.getBoundingClientRect().height,
+        menu: node.getBoundingClientRect().toJSON(),
+        strip: node.querySelector<HTMLElement>('.hub-view-emoji-row')!.getBoundingClientRect().toJSON(),
+        pickerWidth: pickerRect.width,
+        pickerLeft: pickerRect.left,
+        pickerRight: pickerRect.right,
+        pickerTop: pickerRect.top,
+        pickerBottom: pickerRect.bottom,
+        viewportBottom: window.innerHeight - 8,
+        pickerBorder: pickerStyle.borderTopStyle,
+        pickerDivider: dividerStyle.backgroundColor,
+        pickerDividerHeight: dividerStyle.height,
+        pickerDividerOpacity: dividerStyle.opacity,
+        pickerDividerAnimation: dividerStyle.animationName,
+        pickerDividerY: pickerRect.bottom - parseFloat(dividerStyle.bottom),
+        pickerBackground: pickerStyle.backgroundColor,
+        pickerShadow: pickerStyle.boxShadow,
+        menuBackground: menuStyle.backgroundColor,
+        menuBorder: menuStyle.borderTopWidth,
+        menuOutline: menuStyle.outlineStyle,
+        menuRadius: menuStyle.borderTopLeftRadius,
+        menuShadow: menuStyle.boxShadow,
+      };
+    });
+    expect(proportions.expandedSize).toBe(proportions.quickSize);
+    expect(proportions.pickerHeight).toBeLessThan(170);
+    expect(proportions.menu.height).toBe(beforeExpansion.menu.height + 168);
+    expect(proportions.menu.top).toBe(beforeExpansion.menu.top - 168);
+    expect(proportions.menu.bottom).toBe(beforeExpansion.menu.bottom);
+    expect(proportions.strip).toEqual(beforeExpansion.strip);
+    // The picker is an ordinary content row inside the same menu. Its inset
+    // divider matches the quick strip's divider above Reply and Copy.
+    expect(proportions.pickerWidth).toBe(proportions.strip.width);
+    expect(proportions.pickerLeft).toBe(proportions.strip.left);
+    expect(proportions.pickerRight).toBe(proportions.strip.right);
+    expect(proportions.pickerBorder).toBe('none');
+    expect(proportions.pickerDivider).not.toBe('rgba(0, 0, 0, 0)');
+    expect(proportions.pickerDividerHeight).toBe('1px');
+    expect(proportions.pickerDividerOpacity).toBe('0.42');
+    expect(proportions.pickerDividerAnimation).toBe('hub-view-emoji-divider-in');
+    expect(proportions.pickerBackground).toBe('rgba(0, 0, 0, 0)');
+    expect(proportions.pickerShadow).toBe('none');
+    expect(proportions.menuBackground).not.toBe('rgba(0, 0, 0, 0)');
+    expect(proportions.menuBorder).toBe('1px');
+    expect(proportions.menuOutline).toBe('none');
+    expect(proportions.menuRadius).toBe('12px');
+    expect(proportions.menuShadow).not.toBe('none');
+    expect(proportions.pickerTop).toBeGreaterThanOrEqual(8);
+    expect(proportions.pickerBottom).toBeLessThanOrEqual(proportions.viewportBottom);
+
+    // Pressing + again removes height from that same menu. The menu is anchored
+    // by its bottom edge, so the quick strip stays fixed without ever entering
+    // a transformed layer that could snap on the final animation frame.
+    await moreReactions.click();
+    await expect(picker).toHaveCount(1);
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+    const closing = await menu.evaluate((node) => {
+      const picker = node.querySelector<HTMLElement>('.hub-view-emoji-picker');
+      const strip = node.querySelector<HTMLElement>('.hub-view-emoji-row');
+      if (!picker || !strip) throw new Error('Closing reaction picker is missing');
+      const style = getComputedStyle(picker);
+      const dividerStyle = getComputedStyle(picker, '::after');
+      const menuStyle = getComputedStyle(node);
+      const pickerRect = picker.getBoundingClientRect();
+      return {
+        position: style.position,
+        animatingHeight: style.overflow === 'clip',
+        direction: picker.classList.contains('above') ? 'above' : 'below',
+        dividerHeight: dividerStyle.height,
+        dividerAnimation: dividerStyle.animationName,
+        dividerAnimationDuration: dividerStyle.animationDuration,
+        dividerY: pickerRect.bottom - parseFloat(dividerStyle.bottom),
+        outline: style.outlineStyle,
+        menuBorder: menuStyle.borderTopWidth,
+        menuBorderColor: menuStyle.borderTopColor,
+        menuOutline: menuStyle.outlineStyle,
+        menuBackground: menuStyle.backgroundColor,
+        menuShadow: menuStyle.boxShadow,
+        menuRadius: menuStyle.borderTopLeftRadius,
+        menuTop: node.style.top,
+        menuBottom: node.style.bottom,
+        menuTransform: menuStyle.transform,
+        menu: node.getBoundingClientRect().toJSON(),
+        strip: strip.getBoundingClientRect().toJSON(),
+      };
+    });
+    expect(closing.position).toBe('relative');
+    expect(closing.animatingHeight).toBe(true);
+    expect(closing.dividerHeight).toBe('1px');
+    expect(closing.dividerAnimation).toBe('hub-view-emoji-divider-out');
+    expect(closing.dividerAnimationDuration).toBe('0.02s');
+    expect(closing.dividerY).toBe(proportions.pickerDividerY);
+    expect(closing.outline).toBe('none');
+    expect(closing.menuBorder).toBe('1px');
+    expect(closing.menuBorderColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(closing.menuOutline).toBe('none');
+    expect(closing.menuBackground).not.toBe('rgba(0, 0, 0, 0)');
+    expect(closing.menuShadow).not.toBe('none');
+    expect(closing.menuRadius).toBe('12px');
+    expect(closing.menuTop).toBe('auto');
+    expect(closing.menuBottom).not.toBe('auto');
+    expect(closing.menuTransform).toBe('none');
+    expect(closing.menu.bottom).toBe(beforeExpansion.menu.bottom);
+    expect(closing.strip).toEqual(beforeExpansion.strip);
+    await expect(picker).toHaveCount(0);
+    await expect.poll(() => menu.evaluate((node) => node.getBoundingClientRect().toJSON())).toEqual(beforeExpansion.menu);
+    await expect(menu).toHaveCSS('border-top-left-radius', '12px');
+
+    // The same control reverses cleanly and restores the searchable picker.
+    await moreReactions.click();
+    await expect(picker).toBeVisible();
+    await expect(search).toBeFocused();
+    await search.fill('fire');
+    await picker.getByRole('button', {name: 'fire', exact: true}).click();
+    await expect(menu).toHaveCount(0);
+    await expect(first.locator('.hub-view-reaction', {hasText: '🔥'})).toBeVisible();
+
     await first.click({button: 'right'});
     await menu.getByRole('menuitem', {name: 'Reply'}).click();
     // The bar says what is being answered before the answer is written.
-    await expect(view.locator('.hub-view-replying')).toBeVisible();
-    await view.locator('.hub-view-composer input').fill('Works for me.');
+    const replying = view.locator('.hub-view-replying');
+    await expect(replying).toBeVisible();
+    await expect(replying).toHaveCSS('border-bottom-left-radius', '999px');
+    await expect(replying).toHaveCSS('border-bottom-right-radius', '999px');
+    const centres = await replying.evaluate((pill) => {
+      const centre = (box: DOMRect) => box.top + box.height / 2;
+      const iconInkCentre = (icon: SVGSVGElement) => {
+        const path = icon.querySelector<SVGGraphicsElement>('path');
+        if (!path) throw new Error('Reply icon is missing its visible path');
+        const ink = path.getBBox();
+        const box = icon.getBoundingClientRect();
+        return box.top + ((ink.y + ink.height / 2) / 24) * box.height;
+      };
+      const text = pill.querySelector<HTMLElement>('.hub-view-reply-jump > span');
+      const icons = pill.querySelectorAll<SVGSVGElement>('[data-icon]');
+      if (!text || icons.length !== 2) throw new Error('Reply pill contents are incomplete');
+      return {
+        pill: centre(pill.getBoundingClientRect()),
+        text: centre(text.getBoundingClientRect()),
+        reply: iconInkCentre(icons[0]),
+        close: iconInkCentre(icons[1]),
+      };
+    });
+    for (const component of [centres.text, centres.reply, centres.close]) {
+      expect(Math.abs(component - centres.pill)).toBeLessThanOrEqual(0.5);
+    }
+    await view.locator('.hub-view-composer textarea').fill('Works for me.');
     await view.locator('.hub-view-composer button[aria-label="Send"]').click();
-    await expect(view.locator('.hub-view-replying')).toHaveCount(0);
+    await expect(replying).toHaveCount(0);
     await expect(view.locator('.hub-view-bubble.mine').first()).toContainText('Works for me.');
+  });
+
+  test('reveals the reaction picker below without a final search-field shift', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const first = view.locator('.hub-view-bubble-row').first();
+    await first.evaluate((node) => {
+      const hub = node.closest<HTMLElement>('.hub-view');
+      if (!hub) throw new Error('Hub surface is missing');
+      const rowRect = node.getBoundingClientRect();
+      const hubRect = hub.getBoundingClientRect();
+      node.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: rowRect.right - 10,
+        clientY: hubRect.top + 12,
+      }));
+    });
+    const menu = page.locator('.hub-view-message-menu');
+    await expect(menu).toBeVisible();
+    const before = await menu.evaluate((node) => {
+      const strip = node.querySelector<HTMLElement>('.hub-view-emoji-row');
+      if (!strip) throw new Error('Quick reaction strip is missing');
+      return {
+        menu: node.getBoundingClientRect().toJSON(),
+        strip: strip.getBoundingClientRect().toJSON(),
+      };
+    });
+
+    await menu.getByRole('button', {name: 'React'}).click();
+    const picker = menu.locator('.hub-view-emoji-picker');
+    await expect(picker).toHaveClass(/below/);
+    await expect(picker.getByRole('searchbox', {name: 'Search'})).toBeFocused();
+    const frames = await picker.evaluate(async (node) => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const reveal = node.getAnimations({subtree: true}).find((animation) =>
+        !(animation.effect as KeyframeEffect).pseudoElement,
+      );
+      const search = node.querySelector<HTMLElement>('.hub-view-emoji-search');
+      const content = node.querySelector<HTMLElement>('.hub-view-emoji-picker-content');
+      if (!reveal || !search || !content) throw new Error('Picker reveal is incomplete');
+      reveal.pause();
+      const duration = reveal.effect?.getTiming().duration;
+      const sample = async (time: number) => {
+        reveal.currentTime = time;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        return {
+          height: node.getBoundingClientRect().height,
+          searchTop: search.getBoundingClientRect().top,
+          scrollTop: node.scrollTop,
+          opacity: getComputedStyle(node).opacity,
+          edgeMask: getComputedStyle(node).webkitMaskImage,
+        };
+      };
+      const halfway = await sample(160);
+      const settled = await sample(319);
+      reveal.finish();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const finished = {
+        height: node.getBoundingClientRect().height,
+        searchTop: search.getBoundingClientRect().top,
+        scrollTop: node.scrollTop,
+      };
+      return {
+        duration,
+        rootPaddingTop: getComputedStyle(node).paddingTop,
+        contentPaddingTop: getComputedStyle(content).paddingTop,
+        halfway,
+        settled,
+        finished,
+      };
+    });
+    expect(frames.duration).toBe(320);
+    expect(frames.rootPaddingTop).toBe('0px');
+    expect(frames.contentPaddingTop).toBe('2px');
+    expect(frames.halfway.height).toBeGreaterThan(80);
+    expect(frames.halfway.height).toBeLessThan(90);
+    expect(frames.halfway.edgeMask).not.toBe('none');
+    expect(frames.settled.height).toBeGreaterThan(167);
+    expect(frames.settled.searchTop).toBe(frames.halfway.searchTop);
+    expect(frames.finished.searchTop).toBe(frames.halfway.searchTop);
+    expect(frames.halfway.scrollTop).toBe(0);
+    expect(frames.settled.scrollTop).toBe(0);
+    expect(frames.finished.scrollTop).toBe(0);
+
+    const after = await menu.evaluate((node) => ({
+      menu: node.getBoundingClientRect().toJSON(),
+      strip: node.querySelector<HTMLElement>('.hub-view-emoji-row')!.getBoundingClientRect().toJSON(),
+    }));
+    expect(after.menu.top).toBe(before.menu.top);
+    expect(after.menu.height).toBe(before.menu.height + 168);
+    expect(after.strip).toEqual(before.strip);
   });
 
   test('filters the conversation list from the box above it', async ({page}) => {
@@ -4147,6 +5909,22 @@ test.describe('notification settings', () => {
       await expect(modal.getByRole('switch', {name, exact: true})).toHaveAttribute('aria-checked', 'true');
   });
 
+  test('uses an event-specific icon for each notification', async ({page}) => {
+    const modal = await openNotifications(page);
+    const icons = [
+      ['Scheduled task finished', 'calendar'],
+      ['Scheduled task failed', 'calendar-error'],
+      ['Agent finished', 'circle-check'],
+      ['Agent needs you', 'circle-question'],
+      ['New message', 'inbox'],
+    ] as const;
+
+    for (const [name, icon] of icons) {
+      const row = modal.locator('.general-setting-row').filter({hasText: name});
+      await expect(row.locator(`[data-icon="${icon}"]`)).toHaveCount(1);
+    }
+  });
+
   test('the master switch greys the rows below it and stops them answering', async ({page}) => {
     const modal = await openNotifications(page);
     const group = modal.locator('.computerHistory-group').filter({hasText: 'Scheduled task finished'});
@@ -4180,5 +5958,112 @@ test.describe('notification settings', () => {
     // Silencing everything must not rewrite what the user chose underneath.
     await expect(failed).toHaveAttribute('aria-checked', 'false');
     await expect(finished).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
+test.describe('calendar workspace', () => {
+  test('keeps compact month headings left-aligned within their day columns', async ({page}) => {
+    await page.setViewportSize({width: 520, height: 720});
+    await page.goto('/?workspaceView=calendar&coldStart=0');
+    const calendar = page.getByRole('region', {name: 'Calendar'});
+    const headings = calendar.locator('.month-weekdays span');
+    const dayCells = calendar.locator('.month-day');
+    await expect(headings).toHaveCount(7);
+    await expect(dayCells).toHaveCount(42);
+    await expect(headings.first()).toHaveCSS('text-align', 'left');
+    await expect(headings.first()).toHaveCSS('padding-left', '4px');
+
+    for (let column = 0; column < 7; column += 1) {
+      const [heading, dayCell] = await Promise.all([
+        headings.nth(column).boundingBox(),
+        dayCells.nth(column).boundingBox(),
+      ]);
+      expect(Math.abs(heading!.x - dayCell!.x)).toBeLessThan(1);
+      expect(Math.abs(heading!.width - dayCell!.width)).toBeLessThan(1);
+    }
+
+    const width = await calendar.locator('.month-grid').evaluate((grid) => ({
+      visible: grid.clientWidth,
+      content: grid.scrollWidth,
+    }));
+    expect(width.content).toBe(width.visible);
+  });
+
+  test('uses a calendar menu instead of a sidebar when compact', async ({page}) => {
+    await page.setViewportSize({width: 780, height: 720});
+    await page.goto('/?workspaceView=calendar&coldStart=0');
+    const calendar = page.getByRole('region', {name: 'Calendar'});
+    const toolbar = calendar.locator('.calendar-toolbar');
+    const compactMenu = calendar.getByRole('button', {name: 'Calendars', exact: true});
+    await expect(compactMenu).toBeVisible();
+    await expect(calendar.getByRole('button', {name: 'Hide calendars'})).toBeHidden();
+    await expect(calendar.locator('.calendar-sidebar')).toBeHidden();
+
+    const toolbarHeight = (await toolbar.boundingBox())!.height;
+    await compactMenu.click();
+    const menu = calendar.getByRole('menu', {name: 'Calendars'});
+    await expect(menu.getByRole('menuitemcheckbox', {name: 'iCloud · Personal'})).toBeVisible();
+    await expect(menu.getByRole('menuitemcheckbox', {name: 'Google · University'})).toBeVisible();
+    const [triggerBox, menuBox] = await Promise.all([compactMenu.boundingBox(), menu.boundingBox()]);
+    expect(Math.abs(menuBox!.y - (triggerBox!.y + triggerBox!.height + 5))).toBeLessThan(1);
+
+    await page.setViewportSize({width: 700, height: 720});
+    await expect(toolbar).toHaveCSS('height', `${toolbarHeight}px`);
+    await expect(compactMenu).toBeVisible();
+
+    await page.setViewportSize({width: 1100, height: 720});
+    await expect(compactMenu).toBeHidden();
+    await expect(calendar.getByRole('button', {name: 'Hide calendars'})).toBeVisible();
+    await expect(calendar.locator('.calendar-sidebar')).toBeVisible();
+    await expect(toolbar).toHaveCSS('height', `${toolbarHeight}px`);
+  });
+
+  test('switches views and creates, edits, and deletes an event', async ({page}) => {
+    await page.goto('/?workspaceView=calendar&coldStart=0');
+    const calendar = page.getByRole('region', {name: 'Calendar'});
+    await expect(calendar).toBeVisible();
+    await expect(calendar.locator('.month-grid')).toBeVisible();
+    await expect(calendar.getByText('iCloud', {exact: true})).toBeVisible();
+    await expect(calendar.getByText('Google', {exact: true})).toBeVisible();
+
+    await calendar.getByRole('button', {name: 'Week', exact: true}).click();
+    await expect(calendar.locator('.time-grid')).toBeVisible();
+    await expect(calendar.getByText('CS4234 Lecture', {exact: true})).toBeVisible();
+
+    await calendar.getByRole('button', {name: 'New event'}).click();
+    const editor = page.getByRole('dialog', {name: 'New event'});
+    await expect(editor.getByPlaceholder('Event title')).toHaveCSS('padding-left', '8px');
+    const calendarDropdown = editor.getByRole('button', {name: 'Calendar'});
+    await calendarDropdown.click();
+    const calendarMenu = editor.getByRole('menu', {name: 'Calendar'});
+    const [triggerBox, menuBox] = await Promise.all([calendarDropdown.boundingBox(), calendarMenu.boundingBox()]);
+    expect(Math.abs(menuBox!.y - (triggerBox!.y + triggerBox!.height + 5))).toBeLessThan(1);
+    expect(Math.abs(menuBox!.x - triggerBox!.x)).toBeLessThan(1);
+    expect(Math.abs(menuBox!.width - triggerBox!.width)).toBeLessThan(1);
+    await calendarMenu.getByRole('menuitemradio', {name: 'iCloud · Personal'}).click();
+    await editor.getByPlaceholder('Event title').fill('Calendar verification');
+    await editor.getByLabel('Repeat').selectOption('weekly');
+    await editor.getByLabel('Location').fill('Polymux');
+    await editor.getByRole('button', {name: 'Save'}).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(calendar.getByRole('button', {name: /Calendar verification/})).toBeVisible();
+
+    await calendar.getByRole('button', {name: /Calendar verification/}).click();
+    const details = page.getByRole('dialog', {name: 'Event details'});
+    await details.getByPlaceholder('Event title').fill('Calendar verified');
+    await details.getByLabel('Location').fill('');
+    await details.getByRole('button', {name: 'Save'}).click();
+    await expect(calendar.getByRole('button', {name: /Calendar verified/})).toBeVisible();
+
+    await calendar.getByRole('button', {name: /Calendar verified/}).click();
+    const reopened = page.getByRole('dialog', {name: 'Event details'});
+    await expect(reopened.getByLabel('Location')).toHaveValue('');
+    await reopened.getByRole('button', {name: 'Delete'}).click();
+    await expect(calendar.getByRole('button', {name: /Calendar verified/})).toHaveCount(0);
+
+    await calendar.getByRole('button', {name: 'Day', exact: true}).click();
+    await expect(calendar.locator('.time-view.single')).toBeVisible();
+    await calendar.getByRole('button', {name: 'Year', exact: true}).click();
+    await expect(calendar.locator('.year-view .year-month')).toHaveCount(12);
   });
 });

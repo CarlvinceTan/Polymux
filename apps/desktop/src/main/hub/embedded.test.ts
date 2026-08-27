@@ -244,7 +244,7 @@ test("zero-config connect and a full message round-trip on the embedded hub", as
 
     const chats = await comms.chats();
     assert.equal(chats.length, 1);
-    assert.equal(chats[0].name, "Jules Tan (WA)");
+    assert.equal(chats[0].name, "Jules Tan");
     assert.equal(chats[0].platform, "whatsapp");
 
     const unread = await comms.unreadChats(10);

@@ -226,7 +226,18 @@ export const BRIDGE_FLEET: readonly BridgeSpec[] = [
   {platform: "slack", binary: "mautrix-slack"},
   // These use the same config shape but separate executables upstream.
   {platform: "messenger", binary: "mautrix-meta", network: {mode: "messenger"}},
-  {platform: "instagram", binary: "mautrix-instagram", network: {mode: "instagram"}},
+  {
+    platform: "instagram",
+    binary: "mautrix-instagram",
+    // Rich-media backfill is the difference between a historical reel and
+    // only its cover image. Live and backfilled reels should both attempt the
+    // real video; an expired source URL can still fall back to its post link.
+    network: {
+      mode: "instagram",
+      disable_xma_backfill: "false",
+      disable_xma_always: "false",
+    },
+  },
   {platform: "googlechat", binary: "mautrix-googlechat"},
   {platform: "gmessages", binary: "mautrix-gmessages"},
   {platform: "linkedin", binary: "mautrix-linkedin"},
@@ -675,6 +686,7 @@ export class BridgeHost {
         serverName: this.#options.homeserver.serverName,
         baseUrl: this.#options.homeserver.baseUrl,
         legacy: bridge.legacy,
+        platform: bridge.name,
       });
       if (repaired !== onDisk) {
         this.#options.log?.(`[${bridge.name}] config was missing history, logout cleanup or double puppeting; repaired`);
@@ -1080,10 +1092,11 @@ function doublePuppet(serverName: string, baseUrl: string, asToken: string): str
  */
 export function repairConfig(
   source: string,
-  options: {serverName: string; baseUrl: string; legacy?: boolean},
+  options: {serverName: string; baseUrl: string; legacy?: boolean; platform?: string},
 ): string {
-  const {serverName, baseUrl, legacy} = options;
+  const {serverName, baseUrl, legacy, platform} = options;
   let repaired = repairHistorySync(repairBackfill(source));
+  if (platform === "instagram") repaired = repairInstagramMediaFetch(repaired);
   // A legacy config keeps double puppeting as two maps nested under `bridge:`,
   // so there is no top-level block to swap wholesale. It is left to the seed:
   // the one bridge in that generation reseeds itself anyway when its layout is
@@ -1105,6 +1118,18 @@ export function repairConfig(
     return repaired.replace(DOUBLE_PUPPET_BLOCK, `${block}\n`);
   }
   return `${repaired.replace(/\n*$/, "\n")}${block}`;
+}
+
+/** The bridge writes these switches as true in older configs, which makes a
+ * backfilled reel indistinguishable from an ordinary image in the client. */
+function repairInstagramMediaFetch(source: string): string {
+  const match = /^network:\n(?:[ \t]+.*\n?)*/m.exec(source);
+  if (!match) return source;
+  const network = match[0].replace(
+    /^([ \t]+disable_xma_(?:backfill|always):[ \t]*)true([ \t]*(?:#.*)?)$/gm,
+    "$1false$2",
+  );
+  return source.slice(0, match.index) + network + source.slice(match.index + match[0].length);
 }
 
 export function withNetwork(source: string, values: Record<string, string>): string {

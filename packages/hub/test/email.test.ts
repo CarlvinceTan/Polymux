@@ -9,7 +9,7 @@ import {
   keychainService,
 } from "../src/email.js";
 import {mimeMessage} from "../src/email-mime.js";
-import {searchCriteria} from "../src/mail-store.js";
+import {MailStore, searchCriteria} from "../src/mail-store.js";
 import {
   startImapServer,
   type FakeImapServer,
@@ -120,15 +120,58 @@ test("reads accounts without exposing their secrets", async () => {
     assert.equal(account.id, "work");
     assert.equal(account.email, "me@work.com");
     assert.equal(account.displayName, "Me At Work");
-    assert.equal(account.isDefault, true);
+    assert.equal("isDefault" in account, false);
     assert.equal(account.incoming.host, "imap.gmail.com");
     assert.equal(account.incoming.auth, "password");
     assert.equal(account.outgoing.port, 587);
     assert.equal(account.outgoing.encryption, "start-tls");
+    assert.deepEqual(account.signatures, []);
+    assert.equal(account.defaultSignatureId, null);
     // Nothing on the wire to the renderer carries the credential itself —
     // only whether one is held.
     assert.equal(account.secretStored, false);
     assert.equal(JSON.stringify(account).includes("hunter2"), false);
+  });
+});
+
+test("persists multiple signatures and the account default", async () => {
+  await withConfig(EXISTING, async (accounts, file) => {
+    await accounts.saveSignatures({
+      account: "work",
+      signatures: [
+        {id: "usual", name: "Usual", body: "Kind regards,\nCarlvince", html: "<b>Kind regards,</b><br>Carlvince"},
+        {id: "short", name: "Short", body: "Thanks,\nCarlvince", html: null},
+      ],
+      defaultSignatureId: "usual",
+    });
+    const [account] = await accounts.list();
+    assert.deepEqual(account.signatures.map((signature) => signature.name), ["Usual", "Short"]);
+    assert.equal(account.defaultSignatureId, "usual");
+    const saved = (await stored(file)).accounts[0];
+    assert.deepEqual(saved.signatures, [
+      {id: "usual", name: "Usual", body: "Kind regards,\nCarlvince", html: "<b>Kind regards,</b><br>Carlvince"},
+      {id: "short", name: "Short", body: "Thanks,\nCarlvince", html: null},
+    ]);
+    assert.equal(saved.defaultSignatureId, "usual");
+  });
+});
+
+test("editing mailbox connection settings keeps its signatures", async () => {
+  await withConfig(EXISTING, async (accounts) => {
+    await accounts.saveSignatures({
+      account: "work",
+      signatures: [{id: "usual", name: "Usual", body: "Best,\nCarlvince", html: null}],
+      defaultSignatureId: "usual",
+    });
+    await accounts.save({
+      ...BASE,
+      id: "work",
+      originalId: "work",
+      email: "me@work.com",
+    });
+    const [account] = await accounts.list();
+    assert.deepEqual(account.signatures, [{id: "usual", name: "Usual", body: "Best,\nCarlvince", html: null}]);
+    assert.equal(account.defaultSignatureId, "usual");
   });
 });
 
@@ -142,7 +185,7 @@ test("reports an oauth2 account's auth kind", async () => {
 
 test("a new account's password goes to the keychain, never to the file", async () => {
   await withConfig("", async (accounts, file, harnessed) => {
-    await accounts.save({...BASE, id: "personal", password: "hunter2", isDefault: true});
+    await accounts.save({...BASE, id: "personal", password: "hunter2"});
     const written = await readFile(file, "utf8");
     assert.equal(written.includes("hunter2"), false, "the file must never hold a secret");
     const saved = (await stored(file)).accounts[0];
@@ -229,12 +272,26 @@ test("moves the keychain entries when an account is renamed", async () => {
   );
 });
 
-test("keeps exactly one default account", async () => {
+test("drops legacy default metadata when accounts are saved", async () => {
   await withConfig(EXISTING, async (accounts, file) => {
-    await accounts.save({...BASE, id: "personal", isDefault: true, password: "x"});
+    await accounts.save({...BASE, id: "personal", password: "x"});
     const saved = await stored(file);
-    const defaults = saved.accounts.filter((item) => item.isDefault === true);
-    assert.deepEqual(defaults.map((item) => item.id), ["personal"]);
+    assert.equal(saved.accounts.some((item) => "isDefault" in item), false);
+  });
+});
+
+test("a bare operation requires an account when several mailboxes exist", async () => {
+  const configured = JSON.parse(EXISTING) as {accounts: Array<Record<string, unknown>>};
+  configured.accounts.push({
+    ...configured.accounts[0],
+    id: "personal",
+    email: "me@example.com",
+  });
+  await withConfig(JSON.stringify(configured), async (accounts) => {
+    await assert.rejects(
+      accounts.folders(),
+      /More than one email account is set up\. Choose an account explicitly\./,
+    );
   });
 });
 
@@ -277,6 +334,28 @@ test("writes an attachment into the message", async () => {
   assert.match(raw, /Content-Type: multipart\/mixed/);
   assert.match(raw, /Content-Disposition: attachment; filename="note.txt"/);
   assert.match(raw, new RegExp(Buffer.from("the quick brown fox").toString("base64")));
+});
+
+test("writes formatted mail as text and HTML alternatives", () => {
+  const raw = mimeMessage({
+    ...OUTGOING,
+    html: "<div>Are we <b>still</b> on?</div>",
+    attachments: [],
+  });
+  assert.match(raw, /Content-Type: multipart\/alternative/);
+  assert.match(raw, /Content-Type: text\/plain; charset=utf-8\r?\n\r?\nAre we still on\?/);
+  assert.match(raw, /Content-Type: text\/html; charset=utf-8\r?\n\r?\n<div>Are we <b>still<\/b> on\?<\/div>/);
+});
+
+test("keeps formatted alternatives together when files are attached", () => {
+  const raw = mimeMessage({
+    ...OUTGOING,
+    html: "<b>Are we still on?</b>",
+    attachments: [{name: "note.txt", mime: "text/plain", content: Buffer.from("note")}],
+  });
+  assert.match(raw, /Content-Type: multipart\/mixed/);
+  assert.match(raw, /Content-Type: multipart\/alternative/);
+  assert.match(raw, /Content-Disposition: attachment; filename="note.txt"/);
 });
 
 test("threading headers travel with a reply", () => {
@@ -355,7 +434,6 @@ async function withMailbox(
         {
           id: "work",
           email: "me@work.com",
-          isDefault: true,
           imap: {host: "127.0.0.1", port: server.port, encryption: "none", login: "me@work.com"},
           smtp: {host: "127.0.0.1", port: smtp.port, encryption: "none", login: "me@work.com"},
           auth: {kind: "password"},
@@ -633,6 +711,71 @@ test("a failed login is reported rather than cached as a broken account", async 
   );
 });
 
+test("an ImapFlow OAuth rejection refreshes the access token and reconnects", async () => {
+  const server = await startImapServer({
+    mailboxes: [{path: "INBOX", messages: []}],
+    oauthAccessToken: "fresh-access",
+  });
+  let accessToken = "expired-access";
+  let renewals = 0;
+  const store = new MailStore({
+    credentials: async () => ({
+      host: "127.0.0.1",
+      port: server.port,
+      encryption: "none",
+      login: "me@example.com",
+      kind: "oauth2",
+      secret: accessToken,
+    }),
+    renew: async () => {
+      renewals += 1;
+      accessToken = "fresh-access";
+    },
+  });
+  try {
+    assert.deepEqual(await store.folders("work"), [
+      {name: "INBOX", label: "Inbox", role: "inbox"},
+    ]);
+    assert.equal(renewals, 1);
+    assert.equal(
+      server.commands.filter((line) => line.startsWith("AUTHENTICATE OAUTHBEARER")).length,
+      2,
+    );
+  } finally {
+    await store.close();
+    await server.close();
+  }
+});
+
+test("a failed OAuth refresh surfaces the provider error", async () => {
+  const server = await startImapServer({
+    mailboxes: [{path: "INBOX", messages: []}],
+    oauthAccessToken: "fresh-access",
+  });
+  const store = new MailStore({
+    credentials: async () => ({
+      host: "127.0.0.1",
+      port: server.port,
+      encryption: "none",
+      login: "me@example.com",
+      kind: "oauth2",
+      secret: "expired-access",
+    }),
+    renew: async () => {
+      throw new Error("The refresh token was revoked; sign in again.");
+    },
+  });
+  try {
+    await assert.rejects(
+      store.folders("work"),
+      /refresh token was revoked; sign in again/i,
+    );
+  } finally {
+    await store.close();
+    await server.close();
+  }
+});
+
 test("a passing connection test clears the error", async () => {
   await withMailbox([{path: "INBOX", messages: []}], async (accounts) => {
     const tested = await accounts.test("work");
@@ -770,7 +913,7 @@ test("a refusal from the provider is reported in its own words", async () => {
 test("a draft is appended to the mailbox's own Drafts folder", async () => {
   const drafts: FakeMailbox = {path: "[Gmail]/Drafts", specialUse: "\\Drafts", messages: []};
   await withMailbox([{path: "INBOX", messages: []}, drafts], async (accounts, server) => {
-    await accounts.send({
+    const result = await accounts.send({
       account: "work",
       from: "me@work.com",
       to: ["dana@example.com"],
@@ -780,6 +923,7 @@ test("a draft is appended to the mailbox's own Drafts folder", async () => {
       body: "Are we still on?",
       draft: true,
     });
+    assert.deepEqual(result, {draft: {id: '1', folder: '[Gmail]/Drafts'}});
     // Named from the server's own special-use flag, not guessed from "Drafts".
     const appended = server.commands.find((line) => line.startsWith("APPEND"));
     assert.ok(appended, "the draft should be appended over IMAP");

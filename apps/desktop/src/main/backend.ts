@@ -56,6 +56,7 @@ import type {
   ProviderDto,
   RunEventDto,
   ScheduleDto,
+  CalendarExportRequest,
   SkillDto,
   SkillUploadFile,
   AppPermissionKind,
@@ -67,6 +68,8 @@ import type {
   EnqueueManagerJobRequest,
   ManagerSnapshotDto,
   AgentRuntimeDto,
+  CreateChatRequest,
+  SetAgentProviderRequest,
 } from "@polymux/protocol";
 import { createAppleMailSearcher } from "./hub/apple-mail.js";
 import {
@@ -80,6 +83,7 @@ import {
   isAppPermissionKind,
   validateGoalCommand,
   validateSaveEmailAccount,
+  validateSaveMailSignatures,
   validateStartRun,
 } from "@polymux/protocol";
 import { SqliteStorage } from "@polymux/storage/sqlite";
@@ -113,6 +117,7 @@ import {
 } from "electron";
 
 import { assistantText, eventDto, storedEventDto } from "./backend/dto.js";
+import {ComputerHistoryActivities} from "./agent/computer-history-activities.js";
 import {BuiltinAgentRuntime} from "./agent-runtime/builtin.js";
 import {AcpAgentRuntime} from "./agent-runtime/acp.js";
 import {listAcpRegistry} from "./agent-runtime/registry.js";
@@ -169,6 +174,7 @@ import {
   generalSettingsUpdate,
   reasoningEffort,
 } from "./backend/settings.js";
+import { generalSettingsStorage } from "./backend/general-settings-storage.js";
 import type { CustomProviderConfig } from "./backend/models.js";
 import type { RoleSelection } from "./backend/models.js";
 import {
@@ -345,6 +351,8 @@ import { AppPermissions } from "./system/app-permissions.js";
 import { ContactLookup } from "./hub/contacts.js";
 import { Reminders } from "./reminders/index.js";
 import { createRemindersTools } from "./reminders/tools.js";
+import { NativeCalendar } from "./calendar/index.js";
+import { serializeIcsEvents } from "./calendar/ics.js";
 import {
   openSystemPermissionSettings,
   permissionStatus,
@@ -393,6 +401,8 @@ export interface DesktopBackendOptions {
   contactsSourcePath?: string;
   /** Path to the bundled native/reminders.swift EventKit helper. */
   remindersSourcePath?: string;
+  /** Path to the bundled native/calendar.swift EventKit helper. */
+  calendarSourcePath?: string;
   /** Rebuilds profile-bound services while keeping the app window alive. */
   reloadForProfileChange?: () => void;
   /** Selects the designated default only for a fresh app launch. */
@@ -416,16 +426,16 @@ export interface DesktopBackendOptions {
      * before the window, so it reports into the host and the host hands the
      * listener over here.
      */
-    onActivity?: (
-      listener: (activity: {
-        roomId: string;
-        sender: string;
-        senderName: string | null;
-        type: string;
-        ts: number;
-      }) => void,
-    ) => void;
+    onActivity?: (listener: (activity: HubMessageActivity) => void) => void;
   };
+}
+
+interface HubMessageActivity {
+  roomId: string;
+  sender: string;
+  senderName: string | null;
+  type: string;
+  ts: number;
 }
 
 /**
@@ -511,6 +521,7 @@ export class DesktopBackend {
   readonly #goals: GoalManager;
   readonly #memory: MemoryManager;
   readonly #computerHistory: ComputerHistoryManager;
+  readonly #computerHistoryActivities: ComputerHistoryActivities;
   readonly #computer: Computer;
   readonly #computerSystem: ElectronComputerHistorySystem;
   readonly #interactionEvents: NativeInteractionEvents;
@@ -520,6 +531,7 @@ export class DesktopBackend {
   readonly #windowControl: WindowControlMonitor;
   readonly #firstRunPermissions: FirstRunPermissions;
   readonly #reminders: Reminders;
+  readonly #calendar: NativeCalendar;
   /**
    * App grants macOS has given a final answer for this session, so the sweep
    * before each run costs nothing once every answer is in. Deliberately not
@@ -691,6 +703,11 @@ export class DesktopBackend {
       cacheDirectory: path.join(options.dataDirectory, "bin"),
       access: { ensure: () => this.#requireAppPermission("reminders") },
     });
+    this.#calendar = new NativeCalendar({
+      sourcePath: options.calendarSourcePath ?? "",
+      cacheDirectory: path.join(options.dataDirectory, "bin"),
+      access: { ensure: () => this.#requireCalendarPermission() },
+    });
     this.#interactionEvents = new NativeInteractionEvents({
       sourcePath: options.axEventsSourcePath ?? "",
       cacheDirectory: path.join(options.dataDirectory, "bin"),
@@ -700,6 +717,10 @@ export class DesktopBackend {
       directory: path.join(options.dataDirectory, "computer-history"),
       frames: new AccessibilityComputerHistoryFrames(this.#axReader),
       system: this.#computerSystem,
+    });
+    this.#computerHistoryActivities = new ComputerHistoryActivities({
+      store: this.#computerHistory.store,
+      inference: this.#inference,
     });
     this.#computer = new Computer(() => this.#computerStateInput(), {
       search: ({ query, app, since, until, limit }) =>
@@ -878,22 +899,7 @@ export class DesktopBackend {
     // notifications. UI freshness follows Matrix `/sync` below, which also
     // works when Communications points at an external homeserver.
     options.hub?.onActivity?.((activity) => {
-      if (this.#closing || this.#window.isDestroyed()) return;
-      // Only what a person actually said, and never the user's own message
-      // coming back down their own sync.
-      if (activity.type !== "m.room.message") return;
-      if (this.#comms?.userId && activity.sender === this.#comms.userId) return;
-      // A bridge backfills a conversation's history when it connects, and
-      // every one of those events lands here exactly like a live one. They
-      // have already been read wherever they came from, so announcing them
-      // fires a burst of notifications for messages the user answered days
-      // ago; only a message that just arrived is news.
-      if (Date.now() - activity.ts > MESSAGE_NOTIFICATION_MAX_AGE_MS) return;
-      this.#notifier.notify({
-        kind: "message-received",
-        title: activity.senderName || activity.sender || "New message",
-        body: "Sent you a message.",
-      });
+      void this.#notifyHubMessage(activity);
     });
     this.#hubCache = new HubCache(this.#storage);
     const contacts = options.contactsSourcePath
@@ -1389,6 +1395,59 @@ export class DesktopBackend {
       this.#configureAgentRuntime(config);
       return this.#agentRuntimeDto();
     });
+    this.#handle(channels.agentRuntimeSettings, () => {
+      const runtime = this.#agentRuntime;
+      return runtime instanceof AcpAgentRuntime
+        ? runtime.settings()
+        : {authMethods: [], authRequired: false, supportsLogout: false, configOptions: [], providers: [], supportsProviders: false};
+    });
+    this.#handle(channels.agentRuntimeAuthenticate, async (_event, id: unknown) => {
+      if (this.#activeRuns.size)
+        throw new Error("Wait for the active agent run to finish before signing in.");
+      const runtime = this.#agentRuntime;
+      if (!(runtime instanceof AcpAgentRuntime))
+        throw new Error("The active agent does not expose ACP authentication.");
+      return runtime.authenticate(required(id, "ACP authentication method"));
+    });
+    this.#handle(channels.agentRuntimeLogout, async () => {
+      if (this.#activeRuns.size)
+        throw new Error("Wait for the active agent run to finish before signing out.");
+      const runtime = this.#agentRuntime;
+      if (!(runtime instanceof AcpAgentRuntime))
+        throw new Error("The active agent does not expose ACP authentication.");
+      return runtime.logout();
+    });
+    this.#handle(channels.agentRuntimeSetConfigOption, async (_event, id: unknown, value: unknown) => {
+      if (this.#activeRuns.size)
+        throw new Error("Wait for the active agent run to finish before changing its options.");
+      const runtime = this.#agentRuntime;
+      const config = this.#runtimeConfig();
+      if (!(runtime instanceof AcpAgentRuntime) || config.kind !== "acp")
+        throw new Error("The active agent does not expose ACP options.");
+      const optionId = required(id, "ACP option");
+      if (typeof value !== "string" && typeof value !== "boolean")
+        throw new Error("ACP option value must be a selection or switch");
+      const settings = await runtime.setConfigOption(optionId, value);
+      const next = {...config, config: {...config.config, [optionId]: value}};
+      this.#setProfilePreference("agent-runtime", next as unknown as JsonValue);
+      return settings;
+    });
+    this.#handle(channels.agentRuntimeSetProvider, async (_event, value: unknown) => {
+      if (this.#activeRuns.size)
+        throw new Error("Wait for the active agent run to finish before changing its providers.");
+      const runtime = this.#agentRuntime;
+      if (!(runtime instanceof AcpAgentRuntime))
+        throw new Error("The active agent does not expose ACP providers.");
+      return runtime.setProvider(agentProviderRequest(value));
+    });
+    this.#handle(channels.agentRuntimeDisableProvider, async (_event, id: unknown) => {
+      if (this.#activeRuns.size)
+        throw new Error("Wait for the active agent run to finish before changing its providers.");
+      const runtime = this.#agentRuntime;
+      if (!(runtime instanceof AcpAgentRuntime))
+        throw new Error("The active agent does not expose ACP providers.");
+      return runtime.disableProvider(required(id, "ACP provider"));
+    });
     this.#handle(channels.profilesCreate, (_event, name: unknown) =>
       this.#profiles.create(required(name, "profile name")),
     );
@@ -1714,6 +1773,55 @@ export class DesktopBackend {
     this.#handle(channels.schedulesMarkRead, (_event, id: string) =>
       this.#scheduler.markRead(required(id, "schedule id")),
     );
+    this.#handle(channels.calendarCalendars, () => this.#calendar.calendars());
+    this.#handle(
+      channels.calendarEvents,
+      (_event, start: unknown, end: unknown, calendarIds: unknown) =>
+        this.#calendar.events(
+          required(start, "calendar range start"),
+          required(end, "calendar range end"),
+          calendarIds === undefined ? undefined : optionalStringArray(calendarIds, "calendar ids"),
+        ),
+    );
+    this.#handle(channels.calendarCreate, (_event, value: unknown) =>
+      this.#calendar.create(value),
+    );
+    this.#handle(channels.calendarUpdate, (_event, id: unknown, value: unknown) =>
+      this.#calendar.update(required(id, "event id"), value),
+    );
+    this.#handle(channels.calendarRemove, async (_event, id: unknown) => {
+      await this.#calendar.remove(required(id, "event id"));
+    });
+    this.#handle(channels.calendarImport, async (_event, calendarId: unknown) => {
+      const result = await dialog.showOpenDialog(this.#window, {
+        title: "Import Calendar",
+        properties: ["openFile"],
+        filters: [{name: "Calendar files", extensions: ["ics", "ical"]}],
+      });
+      const file = result.canceled ? undefined : result.filePaths[0];
+      if (!file) return {imported: 0, skipped: 0, fileName: null};
+      return this.#calendar.importIcs(
+        await readFile(file, "utf8"),
+        required(calendarId, "calendar id"),
+        path.basename(file),
+      );
+    });
+    this.#handle(channels.calendarExport, async (_event, value: unknown) => {
+      const request = calendarExportRequest(value);
+      const events = await this.#calendar.events(request.start, request.end, request.calendarIds);
+      const result = await dialog.showSaveDialog(this.#window, {
+        title: "Export Calendar",
+        defaultPath: `Calendar ${new Date(request.start).toISOString().slice(0, 10)}.ics`,
+        filters: [{name: "Calendar file", extensions: ["ics"]}],
+      });
+      if (result.canceled || !result.filePath) return null;
+      await writeFile(result.filePath, serializeIcsEvents(events), "utf8");
+      return result.filePath;
+    });
+    this.#handle(channels.calendarOpenAccounts, async () => {
+      if (process.platform === "darwin")
+        await shell.openExternal("x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension");
+    });
     this.#handle(channels.tasksList, (_event, chatId: string) =>
       this.#tasks.list(required(chatId, "chat id")),
     );
@@ -1792,6 +1900,13 @@ export class DesktopBackend {
     this.#handle(channels.computerHistoryEntries, (_event, value?: unknown) => {
       const options = computerHistoryQuery(value);
       return this.#computerHistory.store.entries(options);
+    });
+    this.#handle(channels.computerHistoryActivities, (_event, value?: unknown) => {
+      const options = computerHistoryQuery(value);
+      return this.#computerHistoryActivities.list({
+        ...options,
+        model: this.#effectiveRole("compaction") ?? this.#model,
+      });
     });
     // Parented like the other pickers, so it opens as a sheet over the app.
     this.#handle(channels.computerHistoryPickApp, async () => {
@@ -2017,6 +2132,11 @@ export class DesktopBackend {
         id: room.roomId,
         name: room.name,
         platform: room.platform,
+        ...(room.space ? {space: true} : {}),
+        ...(room.defaultSpace ? {defaultSpace: true} : {}),
+        ...(room.parentIds?.length ? {parentIds: room.parentIds} : {}),
+        accountIds: room.accountIds,
+        unreadByAccount: room.unreadByAccount,
         avatarUrl: room.avatarUrl,
         unread: room.unread,
         lastActivity: room.lastActivity,
@@ -2025,6 +2145,28 @@ export class DesktopBackend {
       }));
       this.#hubCache.putChats(chats);
       return chats;
+    });
+    this.#handle(channels.commsChatContacts, () => this.#comms.contacts());
+    this.#handle(channels.commsChatCreate, async (_event, input: unknown) => {
+      const value = (input ?? {}) as Partial<CreateChatRequest>;
+      const participantIds = Array.isArray(value.participantIds)
+        ? value.participantIds
+            .filter((id): id is string => typeof id === "string")
+            .map((id) => id.trim())
+            .filter(Boolean)
+        : [];
+      if (participantIds.length === 0) throw new Error("Choose at least one person.");
+      if (participantIds.length > 128) throw new Error("A group can include at most 128 people here.");
+      const roomId = await this.#comms.createChat({
+        platform: commsPlatform(value.platform),
+        accountId: required(value.accountId, "account id"),
+        participantIds,
+        ...(typeof value.name === "string" ? {name: value.name} : {}),
+      });
+      // The bridge has created a new portal. The next list read is the source
+      // of truth; retaining the old snapshot would paint a list that omits it.
+      this.#hubCache.clear();
+      return roomId;
     });
     this.#handle(
       channels.commsChatMessages,
@@ -2039,22 +2181,31 @@ export class DesktopBackend {
           // Carried through so the reader can walk further back: without it
           // a conversation stops at whatever the first page happened to hold.
           nextBefore: result.nextBefore ?? null,
-          messages: result.messages.map((message): ChatMessageDto => ({
-            id: message.eventId,
-            chatId: message.roomId || required(chatId, "chat id"),
-            sender: message.sender,
-            senderName: message.senderName || message.sender,
-            senderAvatarUrl: message.senderAvatarUrl,
-            body: message.body,
-            notice: message.notice,
-            sentAt: message.sentAt,
-            mine: Boolean(me) && message.sender === me,
-            attachments: message.attachments,
-            linkPreview: message.linkPreview,
-            viewIn: message.viewIn,
-            reactions: message.reactions,
-            replyTo: message.replyTo,
-          })),
+          messages: result.messages.map((message): ChatMessageDto => {
+            // Imported outgoing history may use the linked account's bridge
+            // ghost rather than the Matrix account. MatrixHub resolves that
+            // losslessly from the bridge database; retain the direct-id check
+            // for external hubs that do not expose local bridge state.
+            const mine = message.mine || (Boolean(me) && message.sender === me);
+            return {
+              id: message.eventId,
+              chatId: message.roomId || required(chatId, "chat id"),
+              sender: message.sender,
+              // Quotes, reply previews and cached pages also read this field.
+              // Ownership wins over an incomplete bridge profile everywhere.
+              senderName: mine ? "You" : message.senderName || message.sender,
+              senderAvatarUrl: message.senderAvatarUrl,
+              body: message.body,
+              notice: message.notice,
+              sentAt: message.sentAt,
+              mine,
+              attachments: message.attachments,
+              linkPreview: message.linkPreview,
+              viewIn: message.viewIn,
+              reactions: message.reactions,
+              replyTo: message.replyTo,
+            };
+          }),
         };
         // Only the newest page is worth keeping: it is what a conversation
         // opens on, and a page reached by scrolling back is one the reader is
@@ -2217,13 +2368,14 @@ export class DesktopBackend {
     );
     this.#handle(channels.commsMailSend, async (_event, value: unknown) => {
       const request = sendMailRequest(value);
-      await this.#comms.emailSend({
+      const result = await this.#comms.emailSend({
         account: request.account,
         to: request.to,
         cc: request.cc ?? [],
         bcc: request.bcc ?? [],
         subject: request.subject,
         body: request.body,
+        html: request.html,
         draft: request.draft,
         attachments: request.attachments,
         importance: request.importance,
@@ -2237,6 +2389,7 @@ export class DesktopBackend {
         await this.#comms
           .mailDelete([replaces.id], request.account, replaces.folder)
           .catch(() => {});
+      return result.draft ? {draft: result.draft} : {};
     });
     this.#handle(
       channels.commsMailDelete,
@@ -2305,6 +2458,9 @@ export class DesktopBackend {
     );
     this.#handle(channels.commsEmailSave, (_event, value: unknown) =>
       this.#comms.emailSave(validateSaveEmailAccount(value)),
+    );
+    this.#handle(channels.commsEmailSignaturesSave, (_event, value: unknown) =>
+      this.#comms.emailSignaturesSave(validateSaveMailSignatures(value)),
     );
     this.#handle(channels.commsEmailRemove, async (_event, id: unknown) => {
       const status = await this.#comms.emailRemove(required(id, "account id"));
@@ -3628,6 +3784,31 @@ export class DesktopBackend {
   }
 
   /**
+   * Announces a genuinely incoming live message. A bridge may write the
+   * signed-in person's own message as a remote-account ghost, so suppressing
+   * only the Matrix user id would announce it as coming from "Unknown user".
+   */
+  async #notifyHubMessage(activity: HubMessageActivity): Promise<void> {
+    if (this.#closing || this.#window.isDestroyed()) return;
+    if (activity.type !== "m.room.message") return;
+    // A bridge backfills a conversation's history when it connects, and every
+    // one of those events lands here exactly like a live one. Only a message
+    // that just arrived is news.
+    if (Date.now() - activity.ts > MESSAGE_NOTIFICATION_MAX_AGE_MS) return;
+    const comms = this.#comms;
+    if (comms?.userId && activity.sender === comms.userId) return;
+    const mine = await comms
+      ?.senderIsMine(activity.roomId, activity.sender)
+      .catch((): boolean => false);
+    if (mine || this.#closing || this.#window.isDestroyed()) return;
+    this.#notifier.notify({
+      kind: "message-received",
+      title: activity.senderName || activity.sender || "New message",
+      body: "Sent you a message.",
+    });
+  }
+
+  /**
    * Hands a notification to the OS. Clicking it brings the app back, which is
    * the only thing every one of these notifications is asking the user to do —
    * a notification that does nothing when clicked reads as broken.
@@ -4290,23 +4471,7 @@ export class DesktopBackend {
   }
 
   #storeGeneralSettings(settings: GeneralSettingsDto): void {
-    this.#storage.setPreference("general-access", {
-      theme: settings.theme,
-      language: settings.language,
-      currency: settings.currency,
-      advancedMode: settings.advancedMode,
-      speechModeEnabled: settings.speechModeEnabled,
-      dictationAutoStopSeconds: settings.dictationAutoStopSeconds,
-      timeEnabled: settings.timeEnabled,
-      locationEnabled: settings.locationEnabled,
-      hubIncognitoMode: settings.hubIncognitoMode,
-      reasoningLevel: settings.reasoningLevel,
-      onboardingCompleted: settings.onboardingCompleted,
-      permissions: settings.permissions,
-      notificationsEnabled: settings.notificationsEnabled,
-      notifications: settings.notifications,
-      location: settings.location,
-    });
+    this.#storage.setPreference("general-access", generalSettingsStorage(settings));
   }
 
   /**
@@ -4344,6 +4509,16 @@ export class DesktopBackend {
     return `Polymux has not been given access to ${kind}. Allow it in System Settings → Privacy & Security.`;
   }
 
+  /** Calendar is a first-party workspace view, not an agent skill. Its own
+   * permission switch still applies, while the skills master switch does not. */
+  async #requireCalendarPermission(): Promise<string | null> {
+    if (!this.#generalSettings().permissions.calendars)
+      return "Calendar access is switched off in Settings → General → Permissions.";
+    if ((await permissionStatus("calendars")) === "granted") return null;
+    if ((await requestSystemPermission("calendars")) === "granted") return null;
+    return "Polymux has not been given access to Calendars. Allow it in System Settings → Privacy & Security → Calendars.";
+  }
+
   #permissionAvailable(kind: SystemPermissionKind): boolean {
     const settings = this.#generalSettings();
     // The master switch covers every app grant at once. It is a refusal to use
@@ -4378,12 +4553,12 @@ export class DesktopBackend {
             id: account.id,
             email: account.email,
           })),
-          chats: (await this.#comms.chats().catch((): MatrixRoom[] => [])).map(
-            (chat) => ({
+          chats: (await this.#comms.chats().catch((): MatrixRoom[] => []))
+            .filter((chat) => !chat.space)
+            .map((chat) => ({
               id: chat.roomId,
               name: chat.name,
-            }),
-          ),
+            })),
         };
       },
     };
@@ -4633,6 +4808,7 @@ export class DesktopBackend {
       command: stored.command.trim(),
       args: Array.isArray(stored.args) ? stored.args.filter((item): item is string => typeof item === "string") : [],
       ...(typeof stored.cwd === "string" && stored.cwd.trim() ? {cwd: stored.cwd.trim()} : {}),
+      config: agentRuntimeConfigValues(stored.config),
     };
   }
 
@@ -4653,7 +4829,7 @@ export class DesktopBackend {
     const config = this.#runtimeConfig();
     return config.kind === "polymux"
       ? {kind: "polymux", name: "Polymux Agent"}
-      : {kind: "acp", name: config.name, command: config.command, args: config.args, cwd: config.cwd ?? null};
+      : {kind: "acp", name: config.name, command: config.command, args: config.args, cwd: config.cwd ?? null, config: {...config.config}};
   }
 
   #acpMcpServers(): import("@agentclientprotocol/sdk").McpServer[] {
@@ -4828,19 +5004,7 @@ export class DesktopBackend {
    * as it stands. */
   #setReasoningLevel(reasoning: ReasoningEffort): void {
     const settings = this.#generalSettings();
-    this.#storage.setPreference("general-access", {
-      theme: settings.theme,
-      language: settings.language,
-      currency: settings.currency,
-      advancedMode: settings.advancedMode,
-      speechModeEnabled: settings.speechModeEnabled,
-      dictationAutoStopSeconds: settings.dictationAutoStopSeconds,
-      timeEnabled: settings.timeEnabled,
-      locationEnabled: settings.locationEnabled,
-      reasoningLevel: reasoning,
-      onboardingCompleted: settings.onboardingCompleted,
-      location: settings.location,
-    });
+    this.#storeGeneralSettings({...settings, reasoningLevel: reasoning});
   }
 
   /** Model assignment provides the automatic default; the ordinary settings
@@ -5229,6 +5393,23 @@ export class DesktopBackend {
   }
 }
 
+function calendarExportRequest(value: unknown): CalendarExportRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Calendar export request must be an object");
+  const input = value as Record<string, unknown>;
+  const start = required(input.start, "calendar range start");
+  const end = required(input.end, "calendar range end");
+  if (!Number.isFinite(Date.parse(start)) || !Number.isFinite(Date.parse(end)) || Date.parse(start) >= Date.parse(end))
+    throw new Error("Calendar export range is invalid");
+  return {
+    start: new Date(start).toISOString(),
+    end: new Date(end).toISOString(),
+    ...(input.calendarIds === undefined
+      ? {}
+      : {calendarIds: optionalStringArray(input.calendarIds, "calendar ids")}),
+  };
+}
+
 function managerJobRequest(value: unknown): EnqueueManagerJobRequest {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Manager job request must be an object");
@@ -5261,7 +5442,29 @@ function agentRuntimeRequest(value: unknown): AgentRuntimeConfig {
     : "ACP Agent";
   const args = optionalStringArray(input.args, "ACP arguments");
   const cwd = input.cwd == null ? undefined : required(input.cwd, "ACP working directory").trim() || undefined;
-  return {kind: "acp", name, command, args, ...(cwd ? {cwd} : {})};
+  return {kind: "acp", name, command, args, ...(cwd ? {cwd} : {}), config: agentRuntimeConfigValues(input.config)};
+}
+
+function agentRuntimeConfigValues(value: unknown): Record<string, string | boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string | boolean] =>
+    typeof entry[1] === "string" || typeof entry[1] === "boolean",
+  ));
+}
+
+function agentProviderRequest(value: unknown): SetAgentProviderRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("ACP provider must be an object");
+  const input = value as Record<string, unknown>;
+  const headers = input.headers && typeof input.headers === "object" && !Array.isArray(input.headers)
+    ? Object.fromEntries(Object.entries(input.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+    : undefined;
+  return {
+    id: required(input.id, "ACP provider"),
+    apiType: required(input.apiType, "ACP provider protocol"),
+    baseUrl: required(input.baseUrl, "ACP provider base URL"),
+    ...(headers ? {headers} : {}),
+  };
 }
 
 function resolveExecutable(command: string): string {

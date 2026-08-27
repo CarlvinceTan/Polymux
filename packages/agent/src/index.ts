@@ -9,7 +9,6 @@ export * from "./goals/manager.js";
 export * from "./goals/judge.js";
 export * from "./goals/loop.js";
 export * from "./memory/computer-history-access.js";
-export * from "./memory/computer-history-distiller.js";
 export * from "./memory/computer-history-tools.js";
 export * from "./computer/tools.js";
 export * from "./memory/consolidator.js";

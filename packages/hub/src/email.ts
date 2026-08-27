@@ -25,6 +25,7 @@ import type {
   MailFolderDto,
   MailMessageDto,
   SaveEmailAccountRequest,
+  SaveMailSignaturesRequest,
 } from "@polymux/protocol";
 
 export {EMAIL_KEYCHAIN_SERVICE, keychainService} from "./email-secrets.js";
@@ -147,7 +148,6 @@ export class EmailAccounts {
         clientId: client.clientId,
         ...(client.clientSecret ? {hasClientSecret: true} : {}),
       },
-      ...(accounts.length === 0 ? {isDefault: true} : {}),
     };
     await this.#write([...accounts.filter((item) => item.id !== id), account]);
     // A password left over from however this mailbox used to sign in is not
@@ -187,7 +187,13 @@ export class EmailAccounts {
       id: request.id,
       email: request.email,
       ...(request.displayName ? {displayName: request.displayName} : {}),
-      ...(request.isDefault ? {isDefault: true} : {}),
+      ...(previous?.signatures ? {signatures: previous.signatures} : {}),
+      ...(previous?.defaultSignatureId
+        ? {defaultSignatureId: previous.defaultSignatureId}
+        : {}),
+      ...(previous?.filesSentCopy !== undefined
+        ? {filesSentCopy: previous.filesSentCopy}
+        : {}),
       imap: {
         host: request.imapHost,
         port: request.imapPort,
@@ -210,14 +216,28 @@ export class EmailAccounts {
 
     const next = accounts.filter((item) => item.id !== previousId && item.id !== request.id);
     next.push(account);
-    // Exactly one default, or which mailbox a bare request means is a guess.
-    await this.#write(
-      request.isDefault
-        ? next.map((item) => (item.id === account.id ? item : dropDefault(item)))
-        : next,
-    );
+    await this.#write(next);
     await this.#store.disconnect(previousId);
     if (renamed) await this.#store.disconnect(request.id);
+  }
+
+  /** Replaces only one account's signatures, leaving its connection intact. */
+  async saveSignatures(request: SaveMailSignaturesRequest): Promise<void> {
+    const accounts = await this.#accounts();
+    const index = accounts.findIndex((account) => account.id === request.account);
+    if (index < 0) throw new Error(`No email account named ${request.account}`);
+    const account = accounts[index];
+    const next = [...accounts];
+    next[index] = {
+      ...account,
+      ...(request.signatures.length
+        ? {signatures: request.signatures.map((signature) => ({...signature}))}
+        : {signatures: []}),
+      ...(request.defaultSignatureId
+        ? {defaultSignatureId: request.defaultSignatureId}
+        : {defaultSignatureId: undefined}),
+    };
+    await this.#write(next);
   }
 
   async remove(id: string): Promise<void> {
@@ -296,12 +316,13 @@ export class EmailAccounts {
     bcc: string[];
     subject: string;
     body: string;
+    html?: string;
     draft?: boolean;
     attachments?: string[];
     importance?: "high" | "normal" | "low";
     inReplyTo?: string;
     references?: string[];
-  }): Promise<void> {
+  }): Promise<{draft?: {id: string; folder: string}}> {
     const accountId = await this.#accountId(options.account);
     const account = await this.#account(accountId);
     const files = await Promise.all(
@@ -322,12 +343,18 @@ export class EmailAccounts {
     if (options.draft) {
       const folders = await this.folders(accountId);
       const drafts = folders.find((folder) => folder.role === "drafts")?.name ?? "Drafts";
-      await this.#store
-        .append({account: accountId, folder: drafts, raw, flags: ["\\Draft"]})
+      const id = await this.#store
+        .append({
+          account: accountId,
+          folder: drafts,
+          raw,
+          flags: ["\\Draft"],
+          messageId,
+        })
         .catch((cause: unknown) => {
           throw new Error(`Could not save the draft: ${reason(cause)}`);
         });
-      return;
+      return id ? {draft: {id, folder: drafts}} : {};
     }
     const deliver = async (): Promise<void> => {
       const transport = await this.#transport(account);
@@ -354,13 +381,14 @@ export class EmailAccounts {
         try {
           await deliver();
           await this.#fileInSent(accountId, raw, messageId);
-          return;
+          return {};
         } catch (second) {
           throw new Error(`Could not send the email: ${reason(second)}`);
         }
       }
       throw new Error(`Could not send the email: ${reason(cause)}`);
     }
+    return {};
   }
 
   /**
@@ -590,16 +618,14 @@ export class EmailAccounts {
     return account;
   }
 
-  /**
-   * The account an operation belongs to, defaulting to the one the user marked
-   * as theirs rather than making every caller know about the default.
-   */
+  /** A bare operation is unambiguous only when there is one mailbox. */
   async #accountId(account?: string): Promise<string> {
     if (account) return account;
     const accounts = await this.#accounts();
-    const chosen = accounts.find((item) => item.isDefault) ?? accounts[0];
-    if (!chosen) throw new Error("No email account is set up yet.");
-    return chosen.id;
+    if (accounts.length === 0) throw new Error("No email account is set up yet.");
+    if (accounts.length > 1)
+      throw new Error("More than one email account is set up. Choose an account explicitly.");
+    return accounts[0].id;
   }
 
   async #accounts(): Promise<StoredAccount[]> {
@@ -631,10 +657,18 @@ export class EmailAccounts {
       id: account.id,
       displayName: account.displayName ?? null,
       email: account.email,
-      isDefault: account.isDefault === true,
       incoming: toEndpoint(account.imap, "imap", account.auth.kind),
       outgoing: toEndpoint(account.smtp, "smtp", account.auth.kind),
       secretStored: await this.#secrets.held(account.id, account.imap.login),
+      signatures: (account.signatures ?? []).map((signature) => ({
+        ...signature,
+        html: signature.html ?? null,
+      })),
+      defaultSignatureId:
+        account.defaultSignatureId &&
+        account.signatures?.some((signature) => signature.id === account.defaultSignatureId)
+          ? account.defaultSignatureId
+          : null,
       status: "unknown",
       error: null,
     };
@@ -654,13 +688,6 @@ function toEndpoint(
     login: endpoint.login,
     auth: auth === "oauth2" ? "oauth2" : "password",
   };
-}
-
-function dropDefault(account: StoredAccount): StoredAccount {
-  if (!account.isDefault) return account;
-  const {isDefault, ...rest} = account;
-  void isDefault;
-  return rest;
 }
 
 /** A short, unique id for a newly signed-in mailbox. */

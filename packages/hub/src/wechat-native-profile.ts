@@ -7,15 +7,29 @@ export interface WeChatNativeProfile {
   wechatVersion: string;
   build: string;
   entryPoints: {
+    /** Session send-handler entry; observed ABI starts with (Session*, action). */
+    sessionSendHandlerRva?: number;
+    /** Text-send routing slot observed while delivering to File Transfer. */
+    slotSendRva?: number;
     /** Constructor/dispatcher anchor recovered for the native revoke task. */
     revokeTaskRva?: number;
     /** Sole direct call site, used to recover the task's three arguments. */
     revokeTaskCallerRva?: number;
-    /** Objective-C implementation of WeTypeStickerService's encoded sender. */
+    /**
+     * WeType synchronization entry point. It publishes encoded sticker data
+     * to WeType; it is deliberately not an outbound chat-sticker handler.
+     */
     weTypeStickerSendRva?: number;
   };
+  sendRouting?: {
+    mode: "entry-register-plus-offset";
+    /** ARM64 register containing the live Session object at slotSendRva. */
+    sessionRegister: "x26";
+    /** Offset of the recipient std::string read by sessionSendHandlerRva. */
+    recipientOffset: number;
+  };
   methodEncodings?: {
-    /** Exact runtime ABI; the argument is a libc++ std::string by value. */
+    /** Exact runtime ABI for WeType synchronization, not chat delivery. */
     weTypeStickerSend?: string;
   };
 }
@@ -27,9 +41,16 @@ export const WECHAT_NATIVE_PROFILES: readonly WeChatNativeProfile[] = [
     wechatVersion: "4.1.11",
     build: "269136",
     entryPoints: {
+      sessionSendHandlerRva: 0x6f7abc,
+      slotSendRva: 0x6f9e74,
       revokeTaskRva: 0x4f115d4,
       revokeTaskCallerRva: 0x503fe48,
       weTypeStickerSendRva: 0x39b89b0,
+    },
+    sendRouting: {
+      mode: "entry-register-plus-offset",
+      sessionRegister: "x26",
+      recipientOffset: 0x2c0,
     },
     methodEncodings: {
       weTypeStickerSend:

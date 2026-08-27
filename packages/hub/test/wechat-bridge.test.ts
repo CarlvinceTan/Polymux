@@ -161,6 +161,7 @@ async function withBridge(
     baseUrl: homeserver.baseUrl,
     homeserverUrl: homeserver.baseUrl,
     directory,
+    embedded: true,
     auth: () => ({ matrixToken: owner.accessToken, userId: owner.userId }),
   });
   try {
@@ -1049,12 +1050,8 @@ test("a native Matrix sticker event reaches WeChat and its echo is suppressed", 
   );
 });
 
-test("shared Hub files and videos use WeChat's generic file-url paste path", async () => {
-  const directory = await mkdtemp(
-    path.join(tmpdir(), "polymux-wechat-file-send-"),
-  );
-  const log = path.join(directory, "send.jsonl");
-  const cli = await stubCli({}, log);
+test("files and videos never masquerade as images without a native writer", async () => {
+  const logs: string[] = [];
   await withBridge(
     async ({ hub, relay }) => {
       relay.emit({
@@ -1070,7 +1067,7 @@ test("shared Hub files and videos use WeChat's generic file-url paste path", asy
         (rooms) => rooms.length === 1,
         "File Transfer to open",
       );
-      const fixtures = [
+      for (const fixture of [
         {
           name: "parity.txt",
           mimetype: "text/plain",
@@ -1085,8 +1082,7 @@ test("shared Hub files and videos use WeChat's generic file-url paste path", asy
           msgtype: "m.video",
           bytes: new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70]),
         },
-      ] as const;
-      for (const fixture of fixtures) {
+      ] as const) {
         const url = await hub.upload(
           fixture.name,
           fixture.mimetype,
@@ -1097,40 +1093,18 @@ test("shared Hub files and videos use WeChat's generic file-url paste path", asy
           url,
           size: fixture.bytes.length,
         });
+        const kind = fixture.msgtype === "m.file" ? "file" : "video";
+        await until(
+          () =>
+            logs.some((line) =>
+              line.includes(`WeChat ${kind} sending needs the native writer`),
+            ),
+          `${kind} refusal to be reported`,
+        );
       }
-
-      await until(
-        () =>
-          existsSync(log) &&
-          readFileSync(log, "utf8").trim().split("\n").length ===
-            fixtures.length,
-        "the attachments to reach WeChat's sender",
-      );
-      const sent = (await readFile(log, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { args: string[]; bytes: string });
-      assert.deepEqual(
-        sent.map((item) => item.args.slice(0, 2)),
-        [
-          ["send", "--image"],
-          ["send", "--image"],
-        ],
-      );
-      assert.deepEqual(
-        sent.map((item) => item.args.slice(-3)),
-        [
-          ["--wxid", "filehelper", "--json"],
-          ["--wxid", "filehelper", "--json"],
-        ],
-      );
-      assert.deepEqual(
-        sent.map((item) => Buffer.from(item.bytes, "base64")),
-        fixtures.map((item) => Buffer.from(item.bytes)),
-      );
     },
     undefined,
-    { cliPaths: [cli] },
+    {log: (line) => logs.push(line)},
   );
 });
 
@@ -1605,12 +1579,16 @@ test("a WeChat link becomes a shared structured preview card", async () => {
       ({ messages }) => messages.length === 1,
       "the preview card to arrive",
     );
-    assert.equal(messages[0].body, "");
+    assert.equal(messages[0].body, "https://example.test/article");
     assert.deepEqual(messages[0].linkPreview, {
       title: "Useful article",
       description: "A short description",
       url: "https://example.test/article",
       source: "example.test",
+      imageUrl: null,
+      imageMimeType: null,
+      imageWidth: null,
+      imageHeight: null,
     });
   });
 });

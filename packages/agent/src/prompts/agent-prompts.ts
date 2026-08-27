@@ -7,8 +7,9 @@ import path from "node:path";
  *
  * `base` opens the system prompt for every run. `direct` governs a top-level
  * fast path, `main` every run that can delegate, and `task` every
- * delegated run — one standing brief for each distinct job. The rest belong to the internal agents: the goal judge, the
- * compactor, the memory consolidator, the computerHistory distiller.
+ * delegated run — one standing brief for each distinct job. The rest belong to
+ * the internal agents: the goal judge, the compactor, and the memory
+ * consolidator.
  *
  * None of them is a skill: they are not listed, not switchable, and not
  * something the model chooses to open. They ship as `resources/prompts/<name>.md`,
@@ -21,8 +22,7 @@ export type AgentPromptName =
   | "task"
   | "judge"
   | "compaction"
-  | "consolidation"
-  | "distillation";
+  | "consolidation";
 
 export type AgentPrompts = Partial<Record<AgentPromptName, string>>;
 
@@ -34,7 +34,6 @@ export const AGENT_PROMPT_NAMES: AgentPromptName[] = [
   "judge",
   "compaction",
   "consolidation",
-  "distillation",
 ];
 
 /**

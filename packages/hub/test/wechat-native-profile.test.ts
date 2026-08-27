@@ -8,6 +8,13 @@ test("native WeChat addresses are enabled only for an exact dylib digest", () =>
   );
   assert.equal(profile?.wechatVersion, "4.1.11");
   assert.equal(profile?.build, "269136");
+  assert.equal(profile?.entryPoints.sessionSendHandlerRva, 0x6f7abc);
+  assert.equal(profile?.entryPoints.slotSendRva, 0x6f9e74);
+  assert.deepEqual(profile?.sendRouting, {
+    mode: "entry-register-plus-offset",
+    sessionRegister: "x26",
+    recipientOffset: 0x2c0,
+  });
   assert.equal(profile?.entryPoints.revokeTaskRva, 0x4f115d4);
   assert.equal(profile?.entryPoints.revokeTaskCallerRva, 0x503fe48);
   assert.match(

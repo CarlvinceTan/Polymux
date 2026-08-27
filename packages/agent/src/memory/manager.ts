@@ -79,10 +79,11 @@ export interface MemoryVaultStatus {
 }
 
 /**
- * A local, reviewable memory vault modelled after Codex Desktop's memory
- * layout. SQLite remains responsible for conversation state and compaction;
- * durable memory lives in plain Markdown files that can be opened, searched,
- * diffed, backed up, and edited outside Polymux.
+ * A local, reviewable vault for durable memories the agent saves. Computer
+ * history has its own store and retrieval tools; it never becomes a memory by
+ * passing through this manager. SQLite remains responsible for conversation
+ * state and compaction, while memory lives in plain Markdown files that can be
+ * opened, searched, diffed, backed up, and edited outside Polymux.
  */
 export class MemoryManager {
   readonly directory: string;
@@ -325,6 +326,29 @@ export class MemoryManager {
     if (!existsSync(this.registryPath)) writeFileAtomicSync(this.registryPath, registry([]));
     if (!existsSync(this.summaryPath)) writeFileAtomicSync(this.summaryPath, summary([]));
     if (!existsSync(this.settingsPath)) writeFileAtomicSync(this.settingsPath, `${JSON.stringify({enabled: true}, null, 2)}\n`);
+    if (this.#archiveLegacyScreenMemories()) {
+      // Older builds copied distilled Computer History into this vault as
+      // `screen` notes. Preserve those source files in the archive, then make
+      // every active index describe only genuine saved memories.
+      this.#writeConsolidation({ ...emptyConsolidation });
+      this.#rebuildIndexes();
+    }
+  }
+
+  #archiveLegacyScreenMemories(): boolean {
+    let migrated = false;
+    for (const file of this.#noteFiles()) {
+      if (readNote(file)?.kind !== "screen") continue;
+      renameSync(
+        file,
+        uniquePath(
+          this.archiveDirectory,
+          `${path.basename(file, ".md")}.computer-history.md`,
+        ),
+      );
+      migrated = true;
+    }
+    return migrated;
   }
 
   #write(memory: MemoryRecord): void {

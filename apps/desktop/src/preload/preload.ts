@@ -7,6 +7,12 @@ const api: PolymuxApi = {
     get: () => ipcRenderer.invoke(channels.agentRuntimeGet),
     registry: () => ipcRenderer.invoke(channels.agentRuntimeRegistry),
     update: (request) => ipcRenderer.invoke(channels.agentRuntimeUpdate, request),
+    settings: () => ipcRenderer.invoke(channels.agentRuntimeSettings),
+    authenticate: (methodId) => ipcRenderer.invoke(channels.agentRuntimeAuthenticate, methodId),
+    logout: () => ipcRenderer.invoke(channels.agentRuntimeLogout),
+    setConfigOption: (id, value) => ipcRenderer.invoke(channels.agentRuntimeSetConfigOption, id, value),
+    setProvider: (request) => ipcRenderer.invoke(channels.agentRuntimeSetProvider, request),
+    disableProvider: (id) => ipcRenderer.invoke(channels.agentRuntimeDisableProvider, id),
   },
   profiles: {
     list: () => ipcRenderer.invoke(channels.profilesList),
@@ -112,6 +118,17 @@ const api: PolymuxApi = {
       return () => ipcRenderer.removeListener(channels.schedulesChanged, receive);
     },
   },
+  calendar: {
+    calendars: () => ipcRenderer.invoke(channels.calendarCalendars),
+    events: (start, end, calendarIds) =>
+      ipcRenderer.invoke(channels.calendarEvents, start, end, calendarIds),
+    create: (input) => ipcRenderer.invoke(channels.calendarCreate, input),
+    update: (id, patch) => ipcRenderer.invoke(channels.calendarUpdate, id, patch),
+    remove: (id) => ipcRenderer.invoke(channels.calendarRemove, id),
+    importFile: (calendarId) => ipcRenderer.invoke(channels.calendarImport, calendarId),
+    exportFile: (request) => ipcRenderer.invoke(channels.calendarExport, request),
+    openAccounts: () => ipcRenderer.invoke(channels.calendarOpenAccounts),
+  },
   tasks: {
     list: (chatId) => ipcRenderer.invoke(channels.tasksList, chatId),
     create: (input) => ipcRenderer.invoke(channels.tasksCreate, input),
@@ -178,6 +195,8 @@ const api: PolymuxApi = {
       ipcRenderer.invoke(channels.computerHistorySetEnabled, enabled),
     entries: (options) =>
       ipcRenderer.invoke(channels.computerHistoryEntries, options),
+    activities: (options) =>
+      ipcRenderer.invoke(channels.computerHistoryActivities, options),
     pickApp: () => ipcRenderer.invoke(channels.computerHistoryPickApp),
     appIcon: (name: string) => ipcRenderer.invoke(channels.computerHistoryAppIcon, name),
   },
@@ -221,6 +240,8 @@ const api: PolymuxApi = {
     bridgeSetup: (platform, values) =>
       ipcRenderer.invoke(channels.commsBridgeSetup, platform, values),
     chats: () => ipcRenderer.invoke(channels.commsChats),
+    chatContacts: () => ipcRenderer.invoke(channels.commsChatContacts),
+    chatCreate: (request) => ipcRenderer.invoke(channels.commsChatCreate, request),
     chatMessages: (chatId, limit, before) =>
       ipcRenderer.invoke(channels.commsChatMessages, chatId, limit, before),
     chatSend: (chatId, text, replyTo) =>
@@ -252,6 +273,8 @@ const api: PolymuxApi = {
     mailOpenFile: (path) => ipcRenderer.invoke(channels.commsMailOpenFile, path),
     mailPickFiles: () => ipcRenderer.invoke(channels.commsMailPickFiles),
     emailSave: (request) => ipcRenderer.invoke(channels.commsEmailSave, request),
+    emailSignaturesSave: (request) =>
+      ipcRenderer.invoke(channels.commsEmailSignaturesSave, request),
     emailRemove: (id) => ipcRenderer.invoke(channels.commsEmailRemove, id),
     emailTest: (id) => ipcRenderer.invoke(channels.commsEmailTest, id),
     emailSignIn: (provider) => ipcRenderer.invoke(channels.commsEmailSignIn, provider),

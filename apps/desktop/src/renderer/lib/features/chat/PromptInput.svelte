@@ -6,6 +6,7 @@
   import Icon from '../../shared/components/Icon.svelte';
   import InlineChip, {type InlineChipItem, type SubmittedChip} from './InlineChip.svelte';
   import ProviderLogo from '../../shared/components/ProviderLogo.svelte';
+  import {loadAgentDraft, saveAgentDraft} from '../../shared/state/composerDrafts';
   import {t, translate} from '../../../i18n';
 
   export let active = false;
@@ -28,12 +29,17 @@
   /** Text to drop into the draft, keyed so the same request applies once. */
   export let insertion: {id: string; text: string} | null = null;
   export let onInsertionApplied: () => void = () => {};
+  /** Lets the shell tint the actual agent pane instead of styling this input. */
+  export let onFileDragActiveChange: (active: boolean) => void = () => {};
+  /** Conversation-local persistence key. The parent remounts the composer when
+   * this changes, so each chat gets its own recovered text. */
+  export let draftKey = 'new';
 
   const api = polymuxApi();
 
   type Attachment = InlineChipItem & {file: File};
 
-  let draft = '';
+  let draft = loadAgentDraft(draftKey);
   let attachments: Attachment[] = [];
   let editor: InlineChip;
   let fileInput: HTMLInputElement;
@@ -117,7 +123,6 @@
   $: primary = (hasContent ? 'send' : active ? 'stop' : speechModeEnabled ? 'mic' : 'send') as 'send' | 'stop' | 'mic';
   $: chips = attachments.map(({file: _file, ...chip}) => chip);
   $: openModel = modelMenuItems.find((model) => modelKey(model) === openModelKey) ?? null;
-  $: selectedModel = availableModels.find((model) => model.selected) ?? null;
   /** The selected model leads the list so the current choice is visible without
       scrolling; the rest keep their original order. */
   $: modelMenuItems = availableModels
@@ -134,8 +139,14 @@
     if (!next || next.id === appliedInsertionId) return;
     appliedInsertionId = next.id;
     draft = draft ? `${draft} ${next.text}` : next.text;
+    saveAgentDraft(draftKey, draft);
     editor?.setText(draft);
     onInsertionApplied();
+  }
+
+  function changeDraft(text: string): void {
+    draft = text;
+    saveAgentDraft(draftKey, text);
   }
 
   async function primaryAction(): Promise<void> {
@@ -156,6 +167,7 @@
     onSend(trimmed, files.length ? files : attachments.map((attachment) => attachment.file), goalEnabled, immediate);
     goalEnabled = false;
     draft = '';
+    saveAgentDraft(draftKey, '');
     attachments = [];
     editor?.setText('');
   }
@@ -287,27 +299,62 @@
     return Array.from(event.dataTransfer?.types ?? []).includes('Files') || Boolean(event.dataTransfer?.files.length);
   }
 
+  /** A workspace pane can claim its own file drop. The prompt still accepts a
+   * drop anywhere else in the window, but it must not intercept one whose
+   * nearest destination is another composer. */
+  function belongsToAnotherDropScope(event: DragEvent): boolean {
+    const target = event.target;
+    if (!(target instanceof Element)) return false;
+    const scope = target.closest<HTMLElement>('[data-file-drop-scope]');
+    return Boolean(scope && scope.dataset.fileDropScope !== 'agent');
+  }
+
+  /** The agent accepts files across its whole pane, not across the whole
+   * window. Re-checking the actual pane bounds on every drag event also gives
+   * the neutral space between the agent and workspace a clean no-target state. */
+  function isInsideAgentDropPane(event: DragEvent): boolean {
+    const pane = document.querySelector<HTMLElement>('.agent-file-drop-pane-overlay');
+    if (!pane) return false;
+    const box = pane.getBoundingClientRect();
+    return event.clientX >= box.left && event.clientX < box.right &&
+      event.clientY >= box.top && event.clientY < box.bottom;
+  }
+
+  function isAgentDropTarget(event: DragEvent): boolean {
+    return !belongsToAnotherDropScope(event) && isInsideAgentDropPane(event);
+  }
+
+  function setFileDragActive(active: boolean): void {
+    if (fileDragActive === active) return;
+    fileDragActive = active;
+    onFileDragActiveChange(active);
+  }
+
   function windowDragEnter(event: DragEvent): void {
     if (!isFileDrag(event)) return;
     event.preventDefault();
-    fileDragActive = true;
+    const active = isAgentDropTarget(event);
+    setFileDragActive(active);
+    if (!active && event.dataTransfer && !belongsToAnotherDropScope(event)) event.dataTransfer.dropEffect = 'none';
   }
 
   function windowDragOver(event: DragEvent): void {
     if (!isFileDrag(event)) return;
     event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-    fileDragActive = true;
+    const active = isAgentDropTarget(event);
+    setFileDragActive(active);
+    if (event.dataTransfer && !belongsToAnotherDropScope(event)) event.dataTransfer.dropEffect = active ? 'copy' : 'none';
   }
 
   function windowDragLeave(event: DragEvent): void {
-    if (!event.relatedTarget) fileDragActive = false;
+    if (!event.relatedTarget || !isInsideAgentDropPane(event)) setFileDragActive(false);
   }
 
   function windowDrop(event: DragEvent): void {
     if (!isFileDrag(event)) return;
     event.preventDefault();
-    fileDragActive = false;
+    setFileDragActive(false);
+    if (!isAgentDropTarget(event)) return;
     addFiles(event.dataTransfer?.files ?? []);
   }
 
@@ -560,25 +607,33 @@
     // ready long before anyone presses it. Failures are the download's to
     // report when dictation is actually used.
     if (speechModeEnabled) void api.dictation.prepare().catch(() => {});
-    window.addEventListener('dragenter', windowDragEnter);
-    window.addEventListener('dragover', windowDragOver);
-    window.addEventListener('dragleave', windowDragLeave);
-    window.addEventListener('drop', windowDrop);
+    // Capture first so a destination pane can stop bubbling without leaving
+    // the previously hovered pane highlighted.
+    window.addEventListener('dragenter', windowDragEnter, true);
+    window.addEventListener('dragover', windowDragOver, true);
+    window.addEventListener('dragleave', windowDragLeave, true);
+    window.addEventListener('drop', windowDrop, true);
     window.addEventListener('click', dismissModelMenu);
     window.addEventListener('keydown', modelMenuKeydown);
     return () => {
       cancelDictation();
-      window.removeEventListener('dragenter', windowDragEnter);
-      window.removeEventListener('dragover', windowDragOver);
-      window.removeEventListener('dragleave', windowDragLeave);
-      window.removeEventListener('drop', windowDrop);
+      setFileDragActive(false);
+      window.removeEventListener('dragenter', windowDragEnter, true);
+      window.removeEventListener('dragover', windowDragOver, true);
+      window.removeEventListener('dragleave', windowDragLeave, true);
+      window.removeEventListener('drop', windowDrop, true);
       window.removeEventListener('click', dismissModelMenu);
       window.removeEventListener('keydown', modelMenuKeydown);
     };
   });
 </script>
 
-<div class:welcome={variant === 'welcome'} class:file-drag-active={fileDragActive} class="polymux-prompt">
+<div
+  class:welcome={variant === 'welcome'}
+  class:file-drag-active={fileDragActive}
+  class="polymux-prompt"
+  data-file-drop-scope="agent"
+>
   <input bind:this={fileInput} class="visually-hidden" name="prompt-attachments" type="file" multiple tabindex="-1" aria-hidden="true" onchange={selected}/>
 
   <div class:expanded class:raised={hasContent} class="polymux-prompt-shell">
@@ -588,7 +643,7 @@
         value={draft}
         {chips}
         placeholder={placeholder || $t('composer.placeholder')}
-        onChange={(text) => draft = text}
+        onChange={changeDraft}
         onSubmit={submit}
         onRemove={removeAttachment}
         onExpanded={(value) => expanded = value}
@@ -637,11 +692,7 @@
     {#if advancedMode}
     <div bind:this={modelWrap} class="prompt-option-wrap">
       <button type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} onclick={() => void toggleModelMenu()}>
-        {#if selectedModel}
-          <span class="prompt-model-mark"><ProviderLogo provider={selectedModel.provider} logoDataUrl={providerLogos[selectedModel.provider]} size={12}/></span>
-        {:else}
-          <Icon name="brain" size={14}/>
-        {/if}
+        <Icon name="brain" size={14}/>
         <span>{$t('composer.model')}</span>
       </button>
       {#if modelMenuOpen && modelsLoaded}

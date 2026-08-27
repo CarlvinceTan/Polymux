@@ -16,6 +16,13 @@ export interface StoredEndpoint {
   login: string;
 }
 
+export interface StoredMailSignature {
+  id: string;
+  name: string;
+  body: string;
+  html?: string | null;
+}
+
 /** How an account proves who it is. */
 export type StoredAuth =
   | {kind: "password"}
@@ -36,7 +43,8 @@ export interface StoredAccount {
   id: string;
   email: string;
   displayName?: string;
-  isDefault?: boolean;
+  signatures?: StoredMailSignature[];
+  defaultSignatureId?: string;
   /**
    * Whether this account's provider files its own copy of a sent message.
    *
@@ -80,7 +88,7 @@ export async function readAccounts(file: string): Promise<StoredAccount[]> {
   }
   if (!parsed || typeof parsed !== "object") return [];
   const accounts = (parsed as Partial<StoreFile>).accounts;
-  return Array.isArray(accounts) ? accounts.filter(isAccount) : [];
+  return Array.isArray(accounts) ? accounts.filter(isAccount).map(withoutLegacyDefault) : [];
 }
 
 /**
@@ -90,11 +98,22 @@ export async function readAccounts(file: string): Promise<StoredAccount[]> {
  */
 export async function writeAccounts(file: string, accounts: StoredAccount[]): Promise<void> {
   await mkdir(path.dirname(file), {recursive: true});
-  const body = `${JSON.stringify({version: 1, accounts} satisfies StoreFile, null, 2)}\n`;
+  const current = accounts.map(withoutLegacyDefault);
+  const body = `${JSON.stringify({version: 1, accounts: current} satisfies StoreFile, null, 2)}\n`;
   const temporary = `${file}.${process.pid}.tmp`;
   // 0600: it names hosts, logins and the shape of the user's correspondence.
   await writeFile(temporary, body, {encoding: "utf8", mode: 0o600});
   await rename(temporary, file);
+}
+
+/** Old pre-release builds stored a preferred mailbox. It never affected the
+ * mailbox itself, so drop it as the file is read or rewritten. */
+function withoutLegacyDefault(account: StoredAccount): StoredAccount {
+  const {isDefault: _isDefault, ...current} = account as StoredAccount & {
+    isDefault?: unknown;
+  };
+  void _isDefault;
+  return current;
 }
 
 function isAccount(value: unknown): value is StoredAccount {

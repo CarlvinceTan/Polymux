@@ -4,6 +4,7 @@ import {homedir} from "node:os";
 import {spawn} from "node:child_process";
 import {randomBytes} from "node:crypto";
 import {
+  bridgeDisplayName,
   EmailAccounts,
   MatrixHub,
   probeWeChatRelay,
@@ -13,22 +14,26 @@ import {
   type MailConsentPrompt,
   type MailOAuthProvider,
   type MatrixMessage,
+  type MatrixContact,
   type MatrixRoom,
 } from "@polymux/hub";
 import {
   COMMS_PLATFORMS,
   type CommsBridgeDto,
   type CommsBridgeSetupDto,
+  type CommsContactDto,
   type CommsEmailAccountDto,
   type CommsLoginStepDto,
   type CommsPlatform,
   type CommsStatusDto,
+  type CreateChatRequest,
   type JsonValue,
   type MailEnvelopeDto,
   type MailFolderDto,
   type MailListRequest,
   type MailMessageDto,
   type SaveEmailAccountRequest,
+  type SaveMailSignaturesRequest,
   type SystemPermissionKind,
 } from "@polymux/protocol";
 import type {CredentialStore} from "@earendil-works/pi-ai";
@@ -129,6 +134,7 @@ export async function resolveChatAliasFromRooms(
   lookup?: (alias: string) => Promise<ContactLookupResult>,
   remembered: StoredContactAlias[] = [],
 ): Promise<{status: string; identities: ContactLookupResult["matches"]; chats: MatrixRoom[]}> {
+  rooms = rooms.filter((room) => !room.space);
   const stored = remembered.filter((entry) => normalizedIdentity(entry.alias) === normalizedIdentity(alias));
   const rememberedRooms = rooms.filter((room) => stored.some((entry) =>
     room.roomId === entry.roomId ||
@@ -299,6 +305,99 @@ function settleWithin<T>(promise: Promise<T>, timeoutMs: number, message: string
       (error) => { clearTimeout(timer); reject(error); },
     );
   });
+}
+
+function normalizedContactIdentifier(value: string): string {
+  const trimmed = value.trim().normalize("NFKC").toLowerCase();
+  if (trimmed.startsWith("tel:")) return `tel:${normalizedPhone(trimmed)}`;
+  return trimmed.replace(/\s+/g, "");
+}
+
+function contactMergeKeys(contact: CommsContactDto): string[] {
+  const scope = contact.platform;
+  const keys = new Set<string>();
+  for (const account of contact.accounts) {
+    if (account.chatId) keys.add(`${scope}:chat:${account.chatId}`);
+    if (account.remoteId)
+      keys.add(`${scope}:remote:${account.remoteId.trim().normalize("NFKC").toLowerCase()}`);
+  }
+  for (const identifier of contact.identifiers) {
+    const normalized = normalizedContactIdentifier(identifier);
+    if (normalized) keys.add(`${scope}:identifier:${normalized}`);
+  }
+  // An imported room with no remote identity must remain distinct. A matching
+  // room id, remote id or platform identifier may merge it later; a shared
+  // display name alone is never enough evidence that two people are one.
+  if (keys.size === 0) keys.add(`${scope}:row:${contact.id}`);
+  return [...keys];
+}
+
+function mergeContactRows(left: CommsContactDto, right: CommsContactDto): CommsContactDto {
+  const accounts = new Map<string, CommsContactDto["accounts"][number]>();
+  for (const account of [...left.accounts, ...right.accounts]) {
+    const previous = accounts.get(account.accountId);
+    accounts.set(account.accountId, previous
+      ? {
+          accountId: previous.accountId,
+          accountName: previous.accountName || account.accountName,
+          remoteId: previous.remoteId ?? account.remoteId,
+          chatId: previous.chatId ?? account.chatId,
+        }
+      : account);
+  }
+  const routes = [...accounts.values()].sort((left, right) =>
+    left.accountName.localeCompare(right.accountName) || left.accountId.localeCompare(right.accountId));
+  const primary = routes.find((route) => route.accountId === left.accountId) ?? routes[0]!;
+  return {
+    ...left,
+    remoteId: primary.remoteId,
+    accountId: primary.accountId,
+    accountName: primary.accountName,
+    avatarUrl: left.avatarUrl ?? right.avatarUrl,
+    identifiers: [...new Set([...left.identifiers, ...right.identifiers])],
+    chatId: primary.chatId,
+    accounts: routes,
+  };
+}
+
+/** Collapses one person imported through several linked accounts into one
+ * picker row while retaining each account-specific remote id and DM room. */
+export function dedupeCommsContacts(contacts: CommsContactDto[]): CommsContactDto[] {
+  const visibleContacts = contacts.map((contact) => ({
+    ...contact,
+    name: bridgeDisplayName(contact.name, contact.platform),
+  }));
+  const parent = visibleContacts.map((_, index) => index);
+  const root = (index: number): number => {
+    let current = index;
+    while (parent[current] !== current) current = parent[current]!;
+    while (parent[index] !== index) {
+      const next = parent[index]!;
+      parent[index] = current;
+      index = next;
+    }
+    return current;
+  };
+  const merge = (left: number, right: number): void => {
+    const leftRoot = root(left);
+    const rightRoot = root(right);
+    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
+  };
+  const seen = new Map<string, number>();
+  visibleContacts.forEach((contact, index) => {
+    for (const key of contactMergeKeys(contact)) {
+      const previous = seen.get(key);
+      if (previous !== undefined) merge(previous, index);
+      else seen.set(key, index);
+    }
+  });
+  const rows = new Map<number, CommsContactDto>();
+  visibleContacts.forEach((contact, index) => {
+    const key = root(index);
+    const previous = rows.get(key);
+    rows.set(key, previous ? mergeContactRows(previous, contact) : contact);
+  });
+  return [...rows.values()];
 }
 
 export class Communications {
@@ -913,6 +1012,11 @@ export class Communications {
     return this.#publish();
   }
 
+  async emailSignaturesSave(request: SaveMailSignaturesRequest): Promise<CommsStatusDto> {
+    await this.#email.saveSignatures(request);
+    return this.#publish();
+  }
+
   async emailRemove(id: string): Promise<CommsStatusDto> {
     await this.#email.remove(id);
     this.#emailStatus.delete(id);
@@ -944,6 +1048,112 @@ export class Communications {
     return this.#readWithEmbeddedAuthRecovery(() => this.#hub.rooms());
   }
 
+  /** One merged address book over every linked account. A bridge directory is
+   * the complete source where it exists; already-open direct rooms fill the
+   * gaps for legacy bridges and local relays. */
+  async contacts(): Promise<CommsContactDto[]> {
+    const [rooms, status] = await Promise.all([this.chats(), this.status()]);
+    const directRooms = rooms.filter((room) => !room.group && !room.space);
+    const found: CommsContactDto[] = [];
+
+    await Promise.all(status.bridges.flatMap((bridge) => {
+      const route = COMMS_PLATFORMS.find((entry) => entry.value === bridge.platform)?.route;
+      if (!route || bridge.api !== "bridgev2" || bridge.state !== "connected") return [];
+      return bridge.accounts.map(async (account) => {
+        const contacts = await this.#hub.contacts(route, account.id).catch((): MatrixContact[] => []);
+        for (const contact of contacts) {
+          const name = bridgeDisplayName(contact.name, bridge.platform);
+          const candidates = directRooms.filter((room) =>
+            room.platform === bridge.platform &&
+            (!room.accountIds?.length || room.accountIds.includes(account.id)));
+          const exact = candidates.find((room) =>
+            room.roomId === contact.chatId || room.remoteId === contact.id);
+          // Some WhatsApp identities move between a phone JID and a LID. When
+          // the bridge has not attached the DM room to its directory result,
+          // an otherwise unique name+avatar match reconnects that imported
+          // room without treating a shared display name as identity evidence.
+          const visual = exact ? [] : candidates.filter((room) =>
+            Boolean(contact.avatarUrl) &&
+            room.avatarUrl === contact.avatarUrl &&
+            room.name.trim().normalize("NFKC").toLowerCase() ===
+              name.trim().normalize("NFKC").toLowerCase());
+          const existing = exact ?? (visual.length === 1 ? visual[0] : undefined);
+          const key = `${bridge.platform}:${account.id}:${contact.id}`;
+          const chatId = contact.chatId ?? existing?.roomId ?? null;
+          found.push({
+            id: key,
+            remoteId: contact.id,
+            name,
+            platform: bridge.platform,
+            accountId: account.id,
+            accountName: account.name,
+            avatarUrl: contact.avatarUrl ?? existing?.avatarUrl ?? null,
+            identifiers: contact.identifiers,
+            chatId,
+            accounts: [{
+              accountId: account.id,
+              accountName: account.name,
+              remoteId: contact.id,
+              chatId,
+            }],
+          });
+        }
+      });
+    }));
+
+    for (const room of directRooms) {
+      // A directory result already linked to this room is the same person.
+      // Older rooms may not carry accountIds, so key comparison alone would
+      // otherwise add a second synthetic-account row for them.
+      if (found.some((contact) => contact.accounts.some((account) => account.chatId === room.roomId)))
+        continue;
+      const bridge = status.bridges.find((entry) => entry.platform === room.platform);
+      const accounts = room.accountIds?.length
+        ? room.accountIds
+        : bridge?.accounts.length === 1
+          ? [bridge.accounts[0]!.id]
+          : [status.hub.userId ?? room.platform];
+      for (const accountId of accounts) {
+        const accountName = bridge?.accounts.find((account) => account.id === accountId)?.name ??
+          COMMS_PLATFORMS.find((entry) => entry.value === room.platform)?.label ??
+          accountId;
+        const key = `${room.platform}:${accountId}:${room.remoteId ?? room.roomId}`;
+        found.push({
+          id: key,
+          remoteId: room.remoteId ?? null,
+          name: room.name,
+          platform: room.platform as CommsPlatform,
+          accountId,
+          accountName,
+          avatarUrl: room.avatarUrl,
+          identifiers: [],
+          chatId: room.roomId,
+          accounts: [{
+            accountId,
+            accountName,
+            remoteId: room.remoteId ?? null,
+            chatId: room.roomId,
+          }],
+        });
+      }
+    }
+
+    return dedupeCommsContacts(found).sort((left, right) =>
+      left.name.localeCompare(right.name) ||
+      left.platform.localeCompare(right.platform) ||
+      left.accountName.localeCompare(right.accountName));
+  }
+
+  async createChat(request: CreateChatRequest): Promise<string> {
+    const participantIds = [...new Set(request.participantIds.map((id) => id.trim()).filter(Boolean))];
+    if (participantIds.length === 0) throw new Error("Choose at least one person.");
+    const {route, api} = await this.#target(request.platform);
+    if (api !== "bridgev2")
+      throw new Error(`${COMMS_PLATFORMS.find((entry) => entry.value === request.platform)?.label ?? request.platform} cannot start new conversations from the Hub yet.`);
+    await this.#load();
+    return this.#hub.createChat(route, request.accountId, participantIds, request.name);
+  }
+
   async resolveChatAlias(alias: string): Promise<{
     status: string;
     identities: ContactLookupResult["matches"];
@@ -957,7 +1167,7 @@ export class Communications {
   }
 
   async linkChatAlias(alias: string, chatId: string): Promise<StoredContactAlias> {
-    const room = (await this.chats()).find((candidate) => candidate.roomId === chatId);
+    const room = (await this.chats()).find((candidate) => candidate.roomId === chatId && !candidate.space);
     if (!room) throw new Error("The selected conversation no longer exists.");
     const current = storedContactAliases(
       this.#storage.getPreference(CONTACT_ALIASES_PREFERENCE)?.value,
@@ -981,6 +1191,13 @@ export class Communications {
     before?: string,
   ): Promise<{nextBefore: string | null; messages: MatrixMessage[]}> {
     return this.#readWithEmbeddedAuthRecovery(() => this.#hub.messages(chatId, limit, before));
+  }
+
+  /** True for both Polymux's Matrix account and any linked bridge identity
+   * used to carry that account's imported outgoing history. */
+  async senderIsMine(chatId: string, sender: string): Promise<boolean> {
+    await this.#load();
+    return this.#hub.senderIsMine(chatId, sender);
   }
 
   async searchChats(
@@ -1253,32 +1470,43 @@ export class Communications {
     bcc: string[];
     subject: string;
     body: string;
+    html?: string;
     draft?: boolean;
     attachments?: string[];
     importance?: "high" | "normal" | "low";
     inReplyTo?: string;
     references?: string[];
-  }): Promise<{sent: boolean; saved?: string; account: string; from: string}> {
+  }): Promise<{
+    sent: boolean;
+    saved?: string;
+    account: string;
+    from: string;
+    draft?: {id: string; folder: string};
+  }> {
     const accounts = await this.#email.list();
     const account = options.account
       ? accounts.find((item) => item.id === options.account)
-      : (accounts.find((item) => item.isDefault) ?? accounts[0]);
+      : accounts.length === 1
+        ? accounts[0]
+        : undefined;
     if (!account)
       throw new Error(
         options.account
           ? `No email account named ${options.account}. Call email_accounts to see what is configured.`
-          : "No email accounts are configured. Add one in Settings → Communications.",
+          : accounts.length === 0
+            ? "No email accounts are configured. Add one in Settings → Communications."
+            : "More than one email account is configured. Pass an account id from email_accounts.",
       );
     // The From header has to match the account actually sending, or the
     // provider will reject or silently rewrite it.
     const from = account.displayName
       ? `${account.displayName} <${account.email}>`
       : account.email;
-    await this.#email.send({...options, account: account.id, from});
+    const result = await this.#email.send({...options, account: account.id, from});
     // A draft went to the mailbox rather than to anyone: saying "sent" here
     // would have the agent report a message the recipient never got.
     return options.draft
-      ? {sent: false, saved: "Drafts", account: account.id, from}
+      ? {sent: false, saved: "Drafts", account: account.id, from, draft: result.draft}
       : {sent: true, account: account.id, from};
   }
 
@@ -1415,6 +1643,7 @@ export class Communications {
       baseUrl: this.#baseUrl,
       homeserverUrl: this.#homeserverUrl,
       directory: this.#directory,
+      embedded: this.#embeddedMode,
       auth: () => ({matrixToken: this.#matrixToken, userId: this.#userId}),
       fetch: this.#fetch,
     });

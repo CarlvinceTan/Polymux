@@ -722,7 +722,23 @@ test("media round-trips through upload and both download endpoints", async () =>
       });
       assert.equal(download.status, 200, endpoint);
       assert.equal(download.headers.get("content-type"), "image/jpeg");
+      assert.equal(download.headers.get("accept-ranges"), "bytes");
       assert.deepEqual(Buffer.from(await download.arrayBuffer()), payload);
+
+      const ranged = await fetch(`${hs.baseUrl}${endpoint}`, {
+        headers: {Authorization: `Bearer ${asToken}`, Range: "bytes=5-9"},
+      });
+      assert.equal(ranged.status, 206, endpoint);
+      assert.equal(ranged.headers.get("content-range"), `bytes 5-9/${payload.length}`);
+      assert.equal(ranged.headers.get("content-length"), "5");
+      assert.equal(ranged.headers.get("accept-ranges"), "bytes");
+      assert.deepEqual(Buffer.from(await ranged.arrayBuffer()), payload.subarray(5, 10));
+
+      const unsatisfied = await fetch(`${hs.baseUrl}${endpoint}`, {
+        headers: {Authorization: `Bearer ${asToken}`, Range: `bytes=${payload.length}-`},
+      });
+      assert.equal(unsatisfied.status, 416, endpoint);
+      assert.equal(unsatisfied.headers.get("content-range"), `bytes */${payload.length}`);
     }
   } finally {
     await cleanup();

@@ -6,6 +6,7 @@ import path from "node:path";
 import type {AgentRunEvent, AgentRunResult, ActiveAgentRun} from "@polymux/core";
 import {AgentRunControl} from "@polymux/core";
 import type {AssistantBlock, InferenceUsage, ToolCallBlock} from "@polymux/inference";
+import type {AgentAuthMethodDto, AgentConfigOptionDto, AgentProviderDto, AgentSettingsDto, SetAgentProviderRequest} from "@polymux/protocol";
 import type {JsonValue, Storage} from "@polymux/storage";
 import type {AcpRuntimeConfig, AgentRuntime, AgentRuntimeStartInput} from "./types.js";
 
@@ -59,8 +60,11 @@ interface ConnectedAgent {
   child: ChildProcessWithoutNullStreams;
   connection: acp.ClientConnection;
   sessions: Map<string, acp.ActiveSession>;
+  configOptions: Map<string, acp.SessionConfigOption[]>;
   info: acp.InitializeResponse;
 }
+
+const SETTINGS_SESSION = "__polymux_agent_settings__";
 
 /** Runs any stdio ACP v1 agent behind Polymux's existing run/event contract. */
 export class AcpAgentRuntime implements AgentRuntime {
@@ -102,6 +106,86 @@ export class AcpAgentRuntime implements AgentRuntime {
     if (!connected.child.killed) connected.child.kill();
   }
 
+  /** Reads the controls this agent actually exposes instead of guessing from
+   * its registry name. The reserved session is never prompted. */
+  async settings(): Promise<AgentSettingsDto> {
+    const connected = await this.#connect();
+    const supportsProviders = connected.info.agentCapabilities?.providers != null;
+    let session: acp.ActiveSession;
+    try {
+      session = (await this.#session(SETTINGS_SESSION)).session;
+    } catch (error) {
+      if (isAuthRequired(error))
+        return agentSettingsDto([], [], supportsProviders, connected.info, true);
+      throw error;
+    }
+    const providers = supportsProviders
+      ? (await connected.connection.agent.request(acp.methods.agent.providers.list, {})).providers
+      : [];
+    return agentSettingsDto(
+      connected.configOptions.get(session.sessionId) ?? [],
+      providers,
+      supportsProviders,
+      connected.info,
+      false,
+    );
+  }
+
+  async authenticate(methodId: string): Promise<AgentSettingsDto> {
+    const connected = await this.#connect();
+    const method = connected.info.authMethods?.find((candidate) => candidate.id === methodId);
+    if (!method) throw new Error(`Unknown ACP authentication method: ${methodId}`);
+    if ("type" in method && method.type === "terminal")
+      throw new Error("This authentication method requires interactive terminal support.");
+    await connected.connection.agent.request(acp.methods.agent.authenticate, {methodId});
+    this.#disposeSettingsSession(connected);
+    return this.settings();
+  }
+
+  async logout(): Promise<AgentSettingsDto> {
+    const connected = await this.#connect();
+    if (connected.info.agentCapabilities?.auth?.logout == null)
+      throw new Error(`${this.name} does not advertise ACP logout support`);
+    await connected.connection.agent.request(acp.methods.agent.logout, {});
+    for (const session of connected.sessions.values()) session.dispose();
+    connected.sessions.clear();
+    connected.configOptions.clear();
+    return this.settings();
+  }
+
+  async setConfigOption(id: string, value: string | boolean): Promise<AgentSettingsDto> {
+    const {connected, session: settingsSession} = await this.#session(SETTINGS_SESSION);
+    const option = (connected.configOptions.get(settingsSession.sessionId) ?? [])
+      .find((candidate) => candidate.id === id);
+    if (!option) throw new Error(`Unknown ACP option: ${id}`);
+    assertConfigValue(option, value);
+    this.#config.config = {...this.#config.config, [id]: value};
+    for (const session of connected.sessions.values())
+      await this.#setSessionConfigOption(connected, session, id, value);
+    return this.settings();
+  }
+
+  async setProvider(request: SetAgentProviderRequest): Promise<AgentSettingsDto> {
+    const connected = await this.#connect();
+    if (connected.info.agentCapabilities?.providers == null)
+      throw new Error(`${this.name} does not expose provider configuration through ACP`);
+    await connected.connection.agent.request(acp.methods.agent.providers.set, {
+      providerId: request.id,
+      apiType: request.apiType,
+      baseUrl: request.baseUrl,
+      ...(request.headers ? {headers: request.headers} : {}),
+    });
+    return this.settings();
+  }
+
+  async disableProvider(id: string): Promise<AgentSettingsDto> {
+    const connected = await this.#connect();
+    if (connected.info.agentCapabilities?.providers == null)
+      throw new Error(`${this.name} does not expose provider configuration through ACP`);
+    await connected.connection.agent.request(acp.methods.agent.providers.disable, {providerId: id});
+    return this.settings();
+  }
+
   async #connect(): Promise<ConnectedAgent> {
     if (this.#connected) return this.#connected;
     this.#connected = (async () => {
@@ -141,7 +225,7 @@ export class AcpAgentRuntime implements AgentRuntime {
       const info = await Promise.race([
         connection.agent.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
-          clientCapabilities: {},
+          clientCapabilities: {session: {configOptions: {boolean: {}}}},
           clientInfo: {name: "Polymux", version: "0.2.1"},
         }),
         exited,
@@ -153,7 +237,7 @@ export class AcpAgentRuntime implements AgentRuntime {
           `${this.name} negotiated unsupported ACP version ${info.protocolVersion}`,
         );
       }
-      return {child, connection, sessions: new Map(), info};
+      return {child, connection, sessions: new Map(), configOptions: new Map(), info};
     })().catch((error) => {
       this.#connected = undefined;
       throw error;
@@ -172,7 +256,48 @@ export class AcpAgentRuntime implements AgentRuntime {
       })
       .start();
     connected.sessions.set(conversationId, session);
+    connected.configOptions.set(session.sessionId, session.newSessionResponse.configOptions ?? []);
+    await this.#applyPreferredConfig(connected, session);
     return {connected, session};
+  }
+
+  #disposeSettingsSession(connected: ConnectedAgent): void {
+    const session = connected.sessions.get(SETTINGS_SESSION);
+    if (!session) return;
+    session.dispose();
+    connected.sessions.delete(SETTINGS_SESSION);
+    connected.configOptions.delete(session.sessionId);
+  }
+
+  async #applyPreferredConfig(connected: ConnectedAgent, session: acp.ActiveSession): Promise<void> {
+    const options = connected.configOptions.get(session.sessionId) ?? [];
+    for (const [id, value] of Object.entries(this.#config.config ?? {})) {
+      const option = options.find((candidate) => candidate.id === id);
+      if (!option) continue;
+      try {
+        assertConfigValue(option, value);
+        if (option.currentValue !== value)
+          await this.#setSessionConfigOption(connected, session, id, value);
+      } catch {
+        // An agent upgrade may remove a model or change an option's type. The
+        // session remains usable with its own current value.
+      }
+    }
+  }
+
+  async #setSessionConfigOption(
+    connected: ConnectedAgent,
+    session: acp.ActiveSession,
+    id: string,
+    value: string | boolean,
+  ): Promise<void> {
+    const response = await connected.connection.agent.request(
+      acp.methods.agent.session.setConfigOption,
+      typeof value === "boolean"
+        ? {sessionId: session.sessionId, configId: id, type: "boolean", value}
+        : {sessionId: session.sessionId, configId: id, value},
+    );
+    connected.configOptions.set(session.sessionId, response.configOptions);
   }
 
   async #run(
@@ -317,6 +442,8 @@ export class AcpAgentRuntime implements AgentRuntime {
               : {type: "tool.completed", turn, toolCall: current.call, result, durationMs: Date.now() - current.startedAt});
             toolCalls.delete(update.toolCallId);
           }
+        } else if (update.sessionUpdate === "config_option_update") {
+          connected.configOptions.set(session.sessionId, update.configOptions);
         }
       }
       await prompt;
@@ -412,4 +539,90 @@ function toolContent(content: acp.ToolCallContent[] | null | undefined, raw: unk
   });
   if (lines.length) return lines.join("\n");
   return typeof raw === "string" ? raw : raw === undefined ? "Completed" : JSON.stringify(raw);
+}
+
+function agentSettingsDto(
+  options: acp.SessionConfigOption[],
+  providers: acp.ProviderInfo[],
+  supportsProviders: boolean,
+  info: acp.InitializeResponse,
+  authRequired: boolean,
+): AgentSettingsDto {
+  return {
+    authMethods: (info.authMethods ?? []).map(authMethodDto),
+    authRequired,
+    supportsLogout: info.agentCapabilities?.auth?.logout != null,
+    configOptions: options.map(configOptionDto),
+    providers: providers.map(providerDto),
+    supportsProviders,
+  };
+}
+
+function authMethodDto(method: acp.AuthMethod): AgentAuthMethodDto {
+  const terminal = "type" in method && method.type === "terminal";
+  return {
+    id: method.id,
+    name: method.name,
+    description: method.description ?? null,
+    type: terminal ? "terminal" : "agent",
+    available: !terminal,
+  };
+}
+
+function isAuthRequired(error: unknown): boolean {
+  return error instanceof acp.RequestError && error.code === -32000;
+}
+
+function configOptionDto(option: acp.SessionConfigOption): AgentConfigOptionDto {
+  const common = {
+    id: option.id,
+    name: option.name,
+    description: option.description ?? null,
+    category: option.category ?? null,
+  };
+  if (option.type === "boolean")
+    return {...common, type: "boolean", currentValue: option.currentValue};
+  const grouped = option.options.length > 0 && "group" in option.options[0]!;
+  const groups = grouped
+    ? (option.options as acp.SessionConfigSelectGroup[]).map((group) => ({
+        id: group.group,
+        name: group.name,
+        options: group.options.map(configValueDto),
+      }))
+    : [];
+  return {
+    ...common,
+    type: "select",
+    currentValue: option.currentValue,
+    options: grouped
+      ? groups.flatMap((group) => group.options)
+      : (option.options as acp.SessionConfigSelectOption[]).map(configValueDto),
+    groups,
+  };
+}
+
+function configValueDto(option: acp.SessionConfigSelectOption) {
+  return {value: option.value, name: option.name, description: option.description ?? null};
+}
+
+function providerDto(provider: acp.ProviderInfo): AgentProviderDto {
+  return {
+    id: provider.providerId,
+    supported: provider.supported,
+    required: provider.required,
+    apiType: provider.current?.apiType ?? null,
+    baseUrl: provider.current?.baseUrl ?? null,
+  };
+}
+
+function assertConfigValue(option: acp.SessionConfigOption, value: string | boolean): void {
+  if (option.type === "boolean") {
+    if (typeof value !== "boolean") throw new Error(`${option.name} requires an on or off value`);
+    return;
+  }
+  if (typeof value !== "string") throw new Error(`${option.name} requires a selection`);
+  const values = option.options.flatMap((candidate) =>
+    "group" in candidate ? candidate.options.map((item) => item.value) : [candidate.value],
+  );
+  if (!values.includes(value)) throw new Error(`Unknown ${option.name} selection: ${value}`);
 }

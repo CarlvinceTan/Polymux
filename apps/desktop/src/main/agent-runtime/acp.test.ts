@@ -34,3 +34,72 @@ test("ACP runtime negotiates, streams, and persists a completed turn", async () 
     storage.close();
   }
 });
+
+test("ACP runtime discovers, updates, and reapplies advertised session options", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({id: "chat-1", title: "ACP"});
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const runtime = new AcpAgentRuntime({
+    kind: "acp",
+    name: "Fake ACP Agent",
+    command: process.execPath,
+    args: [fixture],
+    config: {model: "capable", brave: true},
+  }, storage);
+
+  try {
+    const settings = await runtime.settings();
+    assert.equal(settings.supportsProviders, false);
+    assert.deepEqual(settings.configOptions.map((option) => [option.id, option.currentValue]), [
+      ["model", "capable"],
+      ["brave", true],
+    ]);
+
+    const updated = await runtime.setConfigOption("model", "fast");
+    assert.equal(updated.configOptions[0]?.currentValue, "fast");
+    await runtime.setConfigOption("model", "capable");
+
+    const active = runtime.start({conversationId: "chat-1", runId: "run-1", text: "Hello"});
+    for await (const _event of active.events) void _event;
+    assert.equal((await active.result).lastAgentMessage, "Hello from capable ACP");
+  } finally {
+    await runtime.close();
+    storage.close();
+  }
+});
+
+test("ACP runtime exposes agent-managed authentication before session settings", async () => {
+  const storage = new SqliteStorage(":memory:");
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const runtime = new AcpAgentRuntime({
+    kind: "acp",
+    name: "Authenticated ACP Agent",
+    command: process.execPath,
+    args: [fixture, "--require-auth"],
+  }, storage);
+
+  try {
+    const required = await runtime.settings();
+    assert.equal(required.authRequired, true);
+    assert.equal(required.supportsLogout, true);
+    assert.deepEqual(required.authMethods, [{
+      id: "account",
+      name: "Agent account",
+      description: "Sign in through the agent",
+      type: "agent",
+      available: true,
+    }]);
+    assert.deepEqual(required.configOptions, []);
+
+    const authenticated = await runtime.authenticate("account");
+    assert.equal(authenticated.authRequired, false);
+    assert.deepEqual(authenticated.configOptions.map((option) => option.id), ["model", "brave"]);
+
+    const loggedOut = await runtime.logout();
+    assert.equal(loggedOut.authRequired, true);
+    assert.deepEqual(loggedOut.configOptions, []);
+  } finally {
+    await runtime.close();
+    storage.close();
+  }
+});

@@ -193,7 +193,7 @@ export function generalSettingsUpdate(
   )
     throw new Error("reasoningLevel must be a supported reasoning effort");
   if (record.pinnedViews !== undefined && !validPinnedViews(record.pinnedViews))
-    throw new Error("pinnedViews must be an array of drive, schedule, hub, or tasks");
+    throw new Error("pinnedViews must be an array of drive, schedule, calendar, hub, or tasks");
   const locationEnabled =
     typeof record.locationEnabled === "boolean"
       ? record.locationEnabled
@@ -346,7 +346,7 @@ export function requiredLocation(value: unknown): NonNullable<GeneralSettingsDto
   return { latitude, longitude, accuracy, updatedAt: record.updatedAt };
 }
 
-const PINNABLE_VIEWS = new Set(['drive', 'schedule', 'hub', 'tasks']);
+const PINNABLE_VIEWS = new Set(['drive', 'schedule', 'calendar', 'hub', 'tasks']);
 
 function validPinnedViews(value: unknown): string[] | false {
   if (!Array.isArray(value)) return false;
@@ -363,7 +363,7 @@ function validPinnedViews(value: unknown): string[] | false {
 function pinnedViewsPreference(value: unknown): GeneralSettingsDto['pinnedViews'] {
   if (!Array.isArray(value)) return [];
   return value.filter(
-    (item): item is 'drive' | 'schedule' | 'hub' | 'tasks' =>
+    (item): item is 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' =>
       typeof item === 'string' && PINNABLE_VIEWS.has(item),
   ).filter((item, i, arr) => arr.indexOf(item) === i);
 }

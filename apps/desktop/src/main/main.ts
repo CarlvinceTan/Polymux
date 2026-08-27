@@ -324,7 +324,7 @@ async function waitForStartupShell(window: BrowserWindow): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 500));
 }
 
-type SeparateWorkspaceView = "drive" | "schedule" | "hub" | "tasks";
+type SeparateWorkspaceView = "drive" | "schedule" | "calendar" | "hub" | "tasks";
 type WorkspaceWindowPlacement = {
   x: number;
   y: number;
@@ -694,6 +694,7 @@ function desktopBackendOptions(
     ),
     contactsSourcePath: bundledResource("native", "contacts.swift"),
     remindersSourcePath: bundledResource("native", "reminders.swift"),
+    calendarSourcePath: bundledResource("native", "calendar.swift"),
     hub: hub
       ? {
           homeserver: hub.homeserver,
@@ -762,6 +763,7 @@ ipcMain.handle(
     if (
       value !== "drive" &&
       value !== "schedule" &&
+      value !== "calendar" &&
       value !== "hub" &&
       value !== "tasks"
     )

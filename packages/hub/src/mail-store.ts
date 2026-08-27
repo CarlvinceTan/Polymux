@@ -401,9 +401,30 @@ export class MailStore {
     folder: string;
     raw: string;
     flags?: string[];
-  }): Promise<void> {
-    await this.#run(options.account, async (client) => {
-      await client.append(options.folder, Buffer.from(options.raw, "utf8"), options.flags ?? []);
+    messageId?: string;
+  }): Promise<string | null> {
+    return this.#run(options.account, async (client) => {
+      const appended = await client.append(
+        options.folder,
+        Buffer.from(options.raw, "utf8"),
+        options.flags ?? [],
+      );
+      if (!appended) throw new Error(`Could not append the message to ${options.folder}.`);
+      if (appended.uid) return String(appended.uid);
+      if (!options.messageId) return null;
+
+      // UIDPLUS normally gives the new UID in the APPEND response. A smaller
+      // IMAP server may omit it, so find the one-off Message-ID we just wrote.
+      const lock = await client.getMailboxLock(options.folder);
+      try {
+        const found = await client.search(
+          {header: {"message-id": options.messageId}},
+          {uid: true},
+        );
+        return Array.isArray(found) && found.length ? String(found.at(-1)) : null;
+      } finally {
+        lock.release();
+      }
     });
   }
 
@@ -517,7 +538,10 @@ export class MailStore {
       // renewal is asked for once and only once — a genuinely wrong password
       // must not become an endless pair of round trips.
       if (!renewed && credentials.kind === "oauth2" && isAuthFailure(cause)) {
-        await this.#options.renew(accountId).catch(() => {});
+        // If the refresh token itself was revoked, that provider error is the
+        // useful answer: retrying the same rejected access token would only
+        // replace it with the server's generic "Invalid credentials".
+        await this.#options.renew(accountId);
         return this.#open(accountId, true);
       }
       throw cause;
@@ -992,7 +1016,30 @@ function decodeQuotedPrintable(raw: Buffer): Buffer {
 }
 
 function isAuthFailure(cause: unknown): boolean {
-  const text = cause instanceof Error ? `${cause.message}` : String(cause);
+  if (cause && typeof cause === "object") {
+    const detail = cause as {
+      authenticationFailed?: unknown;
+      serverResponseCode?: unknown;
+      responseStatus?: unknown;
+      responseText?: unknown;
+      oauthError?: {status?: unknown};
+    };
+    // ImapFlow deliberately keeps the top-level message generic ("Command
+    // failed") and records authentication failures in structured fields.
+    // Gmail's OAUTHBEARER rejection therefore has to be recognized here, or
+    // the expired access token is never exchanged for a fresh one.
+    if (detail.authenticationFailed === true) return true;
+    const structured = [
+      detail.serverResponseCode,
+      detail.responseStatus,
+      detail.responseText,
+      detail.oauthError?.status,
+    ]
+      .filter((value): value is string => typeof value === "string")
+      .join(" ");
+    if (/auth|credential|password|token|login|AUTHENTICATIONFAILED/i.test(structured)) return true;
+  }
+  const text = cause instanceof Error ? cause.message : String(cause);
   return /auth|credential|password|token|login|AUTHENTICATIONFAILED/i.test(text);
 }
 
