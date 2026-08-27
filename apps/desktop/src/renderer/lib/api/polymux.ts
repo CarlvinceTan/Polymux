@@ -59,13 +59,8 @@ export function polymuxApi(): PolymuxApi {
 /** A development-only adapter keeps browser-based component tests useful. The
  * packaged desktop never selects it because preload supplies `window.polymux`. */
 function createBrowserDemoApi(): PolymuxApi {
-  /**
-   * `?onboarding` puts the demo into a genuine first-run state — nothing
-   * configured, nothing granted — so first-run setup can be previewed and
-   * tested without a second dev server.
-   */
-  const onboardingPreview =
-    typeof location !== 'undefined' && new URLSearchParams(location.search).has('onboarding');
+  // The dev branch always represents an already-configured profile.
+  const onboardingPreview = false;
   const now = Date.now();
   let conversations: ConversationDto[] = [
     conversation('welcome', 'Planning a product launch', now - 86_400_000),

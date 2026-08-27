@@ -19,7 +19,6 @@
   import {recordVisit} from './lib/features/workspace/visitHistory';
   import Tooltip from './lib/shared/components/Tooltip.svelte';
   import SettingsPage from './lib/features/settings/SettingsPage.svelte';
-  import Onboarding from './lib/features/onboarding/Onboarding.svelte';
   import {polymuxApi} from './lib/api/polymux';
   import {applyTheme, startThemeSync} from './lib/shared/theme';
   import {applyLanguage, locale, startLanguageSync, t, translate, withLocale, type MessageKey} from './i18n';
@@ -183,15 +182,6 @@
     settingsMode = mode;
     settingsOpen = true;
   }
-  let onboardingOpen = false;
-  /**
-   * Dev-only: `?onboarding` reopens first-run setup over a profile that has
-   * already completed it, and keeps it from recording that it ran. Behind
-   * `import.meta.env.DEV`, which Vite folds to `false` for a packaged build,
-   * so this and everything it guards is dropped from production output.
-   */
-  const onboardingPreview =
-    import.meta.env.DEV && new URLSearchParams(location.search).has('onboarding');
   // index.html paints the splash before this bundle even loads, so startup is
   // driven by taking that element over rather than by rendering one here.
   // (theme-boot's dead-bundle deadline stands down by itself: it only fires
@@ -418,11 +408,7 @@
       pinnedViews = settings.pinnedViews;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       reasoningLevel = settings.reasoningLevel;
-      onboardingOpen = onboardingPreview || !settings.onboardingCompleted;
-      // Setup explains each permission and lets the user start the prompt
-      // itself. Asking here would fire the macOS dialogs first, with no
-      // context, which is the surest way to a permanent refusal.
-      if (!onboardingOpen) void api.permissions.ensureFirstRun().catch(() => {});
+      void api.permissions.ensureFirstRun().catch(() => {});
     }).catch(() => {});
     refreshExtensionStatus();
     // What the hub knew when the app last quit, read from disk. It is local
@@ -517,15 +503,9 @@
     if (!startupVisible || startupLeaving || !startupMinimumElapsed || !startupReady) return;
     startupLeaving = true;
     clearTimeout(startupDeadlineTimer);
-    // Onto setup, the lockup underneath is identical and in the same place, so
-    // the cover can go in a quick crossfade nobody sees. Onto the app there is
-    // nothing under it to match, and that same quick fade reads as the brand
-    // lying over the interface and then vanishing — so it leaves in two beats
-    // instead: the lockup goes first, then the ground it stood on.
-    const toApp = !onboardingOpen;
-    startupToApp = toApp;
+    startupToApp = true;
     startupSplash?.classList.add('leaving');
-    if (toApp) startupSplash?.classList.add('to-app');
+    startupSplash?.classList.add('to-app');
     // Comfortably past the staged exit's own 760ms rather than level with it:
     // cutting the element at the exact frame the fade ends takes the tail of
     // it off on any machine that ran a frame late.
@@ -533,7 +513,7 @@
       startupVisible = false;
       startupSplash?.remove();
       delete document.documentElement.dataset.startup;
-    }, toApp ? 860 : 240);
+    }, 860);
   }
 
   function syncConversationPanel(hasMessages: boolean, splitLayout: boolean, dismissed: boolean): void {
@@ -2740,23 +2720,6 @@
       if (!speechModeEnabled) closeVoice();
     }}
   />{/if}
-
-  {#if onboardingOpen}
-    <!-- Mounted beneath the splash, whose welcome lockup sits at the same
-         point on screen: lifting the cover is then a crossfade between two
-         identical brands, and only the rest of setup appears. -->
-    <Onboarding
-      {api}
-      revealed={!startupVisible || startupLeaving}
-      preview={onboardingPreview}
-      onFinish={() => {
-        onboardingOpen = false;
-        // Anything setup did not grant is still requested the old way, so a
-        // skipped run does not leave enabled features without permission.
-        void api.permissions.ensureFirstRun().catch(() => {});
-      }}
-    />
-  {/if}
 
   <Tooltip/>
 

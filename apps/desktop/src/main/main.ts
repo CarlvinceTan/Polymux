@@ -756,11 +756,6 @@ function loadRenderer(
     url.searchParams.set("coldStart", coldStart ? "1" : "0");
     if (workspaceView) url.searchParams.set("workspaceView", workspaceView);
     if (conversationId) url.searchParams.set("conversationId", conversationId);
-    // `npm run onboarding` reopens first-run setup over this machine's
-    // real profile without recording that it ran. Only the dev-server branch
-    // reads it, so a packaged build has no way to reach it.
-    if (process.env.POLYMUX_ONBOARDING === "1")
-      url.searchParams.set("onboarding", "1");
     void window.loadURL(url.toString()).catch((error: unknown) => {
       // `did-fail-load` covers the retry; this only keeps the rejection from
       // surfacing as an unhandled promise on top of it.
