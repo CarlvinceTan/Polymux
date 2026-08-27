@@ -1,7 +1,10 @@
 // The conversation never compresses below a readable measure, so both side
 // surfaces resize against this floor rather than against the viewport alone.
 export const MIN_MAIN_PANE_WIDTH = 432;
-export const MIN_CHAT_DRAWER_WIDTH = 180;
+// In a normal macOS window this is the compact point where the right-aligned
+// New Folder control sits directly below Search in the title-bar strip:
+// Search centres at x=161px and the folder centre is drawer width - 22px.
+export const MIN_CHAT_DRAWER_WIDTH = 183;
 export const MAX_CHAT_DRAWER_WIDTH = 480;
 export const MIN_WORKSPACE_WIDTH = 360;
 export const MAX_WORKSPACE_WIDTH = 720;

@@ -21,7 +21,7 @@ test("hub_state returns complete compact requested surfaces without message bodi
         }],
         email: {accounts: [{
           id: "mail-1", email: "me@example.com", displayName: "Me",
-          isDefault: true, status: "ok",
+          status: "ok",
         }]},
       };
     },
@@ -41,8 +41,7 @@ test("hub_state returns complete compact requested surfaces without message bodi
       accounts: [{id: "wa-1", name: "Personal"}],
     }],
     accounts: [{
-      account: "mail-1", email: "me@example.com", display_name: "Me",
-      default: true, status: "ok",
+      account: "mail-1", email: "me@example.com", display_name: "Me", status: "ok",
     }],
     chats: [{
       chat_id: "room-1", name: "Dad", platform: "whatsapp", unread: 2,
@@ -283,6 +282,45 @@ test("one worker run cannot repeat the all-inbox search", async () => {
     errorCount: 0,
     note: "The bounded all-inbox search already completed in this worker run. Use its earlier results; do not search the same mailboxes again.",
   });
+});
+
+test("mail sending infers the account only when exactly one mailbox exists", async () => {
+  let configured: Array<{id: string; email: string; displayName: string | null}> = [
+    {id: "personal", email: "me@example.com", displayName: null},
+  ];
+  const used: string[] = [];
+  const email = {
+    async list() {
+      return configured;
+    },
+    async send(options: {account: string}) {
+      used.push(options.account);
+      return {};
+    },
+  } as unknown as EmailAccounts;
+  const comms = new Communications({
+    credentials: {} as never,
+    storage: {getPreference: () => undefined, setPreference: () => {}},
+    onChange: () => {},
+    home: "/tmp/polymux-email-account-selection-test",
+    email,
+  });
+  const message: Parameters<Communications["emailSend"]>[0] = {
+    to: ["you@example.com"], cc: [], bcc: [], subject: "Hello", body: "Hi",
+  };
+
+  assert.equal((await comms.emailSend(message)).account, "personal");
+  assert.deepEqual(used, ["personal"]);
+
+  configured = [
+    ...configured,
+    {id: "work", email: "me@work.example", displayName: null},
+  ];
+  await assert.rejects(
+    comms.emailSend(message),
+    /More than one email account is configured\. Pass an account id from email_accounts\./,
+  );
+  assert.deepEqual(used, ["personal"]);
 });
 
 test("all-inbox search deduplicates, caps, compacts, and isolates account failures", async () => {

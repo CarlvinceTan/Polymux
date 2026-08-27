@@ -25,6 +25,7 @@ export function mimeMessage(options: {
   bcc: string[];
   subject: string;
   body: string;
+  html?: string;
   inReplyTo?: string;
   references?: string[];
   importance?: "high" | "normal" | "low";
@@ -73,12 +74,42 @@ export function mimeMessage(options: {
     "MIME-Version: 1.0",
   ];
   const body = options.body.replace(/\r?\n/g, "\r\n");
-  if (files.length === 0)
+  const html = options.html?.replace(/\r?\n/g, "\r\n");
+  if (files.length === 0 && !html)
     return `${[...headers, "Content-Type: text/plain; charset=utf-8"].join("\r\n")}\r\n\r\n${body}\r\n`;
+
+  const alternativeBoundary = `polymux-alt-${Date.now().toString(36)}`;
+  const alternativeBody = html
+    ? [
+        `--${alternativeBoundary}`,
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        body,
+        `--${alternativeBoundary}`,
+        "Content-Type: text/html; charset=utf-8",
+        "",
+        html,
+        `--${alternativeBoundary}--`,
+      ].join("\r\n")
+    : "";
+  if (files.length === 0)
+    return [
+      ...headers,
+      `Content-Type: multipart/alternative; boundary="${alternativeBoundary}"`,
+      "",
+      alternativeBody,
+      "",
+    ].join("\r\n");
 
   const boundary = `polymux-${Date.now().toString(36)}-${files.length}`;
   const parts = [
-    ["Content-Type: text/plain; charset=utf-8", "", body].join("\r\n"),
+    html
+      ? [
+          `Content-Type: multipart/alternative; boundary="${alternativeBoundary}"`,
+          "",
+          alternativeBody,
+        ].join("\r\n")
+      : ["Content-Type: text/plain; charset=utf-8", "", body].join("\r\n"),
     ...files.map((file) =>
       [
         `Content-Type: ${file.mime}; name="${headerValue(file.name)}"`,

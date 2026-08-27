@@ -7,7 +7,7 @@
   import type {PanelMode} from '../../shared/state/panels';
   import {t, type MessageKey} from '../../../i18n';
 
-  type PinnedView = 'drive' | 'schedule' | 'hub' | 'tasks';
+  type PinnedView = 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks';
   type IconName = ComponentProps<typeof Icon>['name'];
 
   export let title = '';
@@ -23,10 +23,10 @@
   export let onSearchChats: () => void = () => {};
   export let onTogglePanel: (mode: 'summary' | 'workspace') => void = () => {};
   export let onOpenSettings: () => void = () => {};
-  export let pinnedViews: Array<'drive' | 'schedule' | 'hub' | 'tasks'> = [];
-  export let onOpenView: (kind: 'drive' | 'schedule' | 'hub' | 'tasks') => void = () => {};
-  export let onOpenViewInNewWindow: (kind: 'drive' | 'schedule' | 'hub' | 'tasks') => void = () => {};
-  export let onReorderPinnedViews: (views: Array<'drive' | 'schedule' | 'hub' | 'tasks'>) => void = () => {};
+  export let pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'> = [];
+  export let onOpenView: (kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') => void = () => {};
+  export let onOpenViewInNewWindow: (kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') => void = () => {};
+  export let onReorderPinnedViews: (views: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'>) => void = () => {};
   export let showExtensionPrompt = false;
   export let onInstallExtension: () => void = () => {};
   export let onDismissExtension: () => void = () => {};
@@ -102,16 +102,16 @@
     }
   }
 
-  const pinnedViewIcons: Record<PinnedView, IconName> = {drive: 'drive', schedule: 'clock', hub: 'chat', tasks: 'tasks'};
-  const pinnedViewLabels: Record<PinnedView, MessageKey> = {drive: 'workspace.drive', schedule: 'workspace.schedule', hub: 'workspace.hub', tasks: 'workspace.tasks'};
-  let pinnedMenu: {view: 'drive' | 'schedule' | 'hub' | 'tasks'; anchor: OpenAnchor} | null = null;
+  const pinnedViewIcons: Record<PinnedView, IconName> = {drive: 'drive', schedule: 'clock', calendar: 'calendar', hub: 'chat', tasks: 'tasks'};
+  const pinnedViewLabels: Record<PinnedView, MessageKey> = {drive: 'workspace.drive', schedule: 'workspace.schedule', calendar: 'workspace.calendar', hub: 'workspace.hub', tasks: 'workspace.tasks'};
+  let pinnedMenu: {view: PinnedView; anchor: OpenAnchor} | null = null;
   let pinnedMenuChoices: OpenChoice[];
   $: pinnedMenuChoices = [
     {value: 'unpin', label: $t('titlebar.unpinView'), icon: 'pin-off'},
     {value: 'new-window', label: $t('titlebar.openSeparateWindow'), icon: 'send'},
   ];
 
-  function openPinnedMenu(event: MouseEvent, view: 'drive' | 'schedule' | 'hub' | 'tasks'): void {
+  function openPinnedMenu(event: MouseEvent, view: PinnedView): void {
     event.preventDefault();
     event.stopPropagation();
     pinnedMenu = {view, anchor: {rect: (event.currentTarget as HTMLElement).getBoundingClientRect()}};
@@ -212,13 +212,26 @@
   <!-- Sits ahead of the panel icons so it reads as a notice about the app
        rather than another panel toggle. It is a link with its own dismiss,
        not a toggle, so the two actions are separate controls. -->
-  {#if showExtensionPrompt}
+  {#if showUpdatePrompt}
+    <span class="extension-chip update-chip" transition:fade={iconFade}>
+      <button
+        type="button"
+        class="extension-chip-install"
+        aria-label="Restart to Update"
+        onclick={onInstallUpdate}
+      >
+        <Icon name="download" size={14}/>
+        Restart to Update
+      </button>
+    </span>
+  {:else if showExtensionPrompt}
     <span class="extension-chip" transition:fade={iconFade}>
       <button
         type="button"
         class="extension-chip-install"
         onclick={onInstallExtension}
       >
+        <Icon name="download" size={14}/>
         {$t('extension.install')}
       </button>
       <!-- No tooltip and no hover state: the divider and the glyph already say
@@ -235,18 +248,6 @@
         onclick={onDismissExtension}
       >
         <Icon name="close" size={14}/>
-      </button>
-    </span>
-  {/if}
-  {#if showUpdatePrompt}
-    <span class="extension-chip update-chip" transition:fade={iconFade}>
-      <button
-        type="button"
-        class="extension-chip-install"
-        aria-label="Install Update"
-        onclick={onInstallUpdate}
-      >
-        Install Update
       </button>
     </span>
   {/if}

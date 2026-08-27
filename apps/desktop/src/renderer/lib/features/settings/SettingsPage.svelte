@@ -49,8 +49,9 @@
   import {flip} from 'svelte/animate';
   import {onDestroy, onMount, tick, type ComponentProps} from 'svelte';
   import {readableError} from '../../shared/errors';
+  import type {AcpRegistryEntryDto, AgentConfigOptionDto, AgentProviderDto, AgentSettingsDto} from '@polymux/protocol';
   import {scrollFade} from '../../shared/scrollFade';
-  import type {AppUpdateDto, AppVersionDto, BrowserExtensionDto, ComputerHistoryEntryDto, ComputerHistoryStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryEntryDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProfileDto, ProfilesDto, ProviderDto, ProviderOAuthEventDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, AppPermissionKind} from '@polymux/protocol';
+  import type {AgentRuntimeDto, AppUpdateDto, AppVersionDto, BrowserExtensionDto, ComputerHistoryActivityDto, ComputerHistoryEntryDto, ComputerHistoryStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryEntryDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProfileDto, ProfilesDto, ProviderDto, ProviderOAuthEventDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, AppPermissionKind} from '@polymux/protocol';
   import {SUPPORTED_LANGUAGES} from '@polymux/protocol';
   import {polymuxApi} from '../../api/polymux';
   import {applyTheme, type ThemeMode} from '../../shared/theme';
@@ -73,6 +74,7 @@
   const PINNED_VIEW_OPTIONS: Array<{kind: PinnedView; icon: IconName; label: MessageKey}> = [
     {kind: 'drive', icon: 'drive', label: 'workspace.drive'},
     {kind: 'schedule', icon: 'clock', label: 'workspace.schedule'},
+    {kind: 'calendar', icon: 'calendar', label: 'workspace.calendar'},
     {kind: 'hub', icon: 'chat', label: 'workspace.hub'},
     {kind: 'tasks', icon: 'tasks', label: 'workspace.tasks'},
   ];
@@ -117,12 +119,50 @@
   let mode: Mode = initialMode || 'general';
   let profiles: ProfilesDto = {activeId: 'default', profiles: [{id: 'default', name: 'Default Profile', isDefault: true}]};
   let profileMenuOpen = false;
+  let profileActionsId = '';
+  let profileActionsPosition = {left: 0, top: 0};
+  let profileActionsMenu: HTMLDivElement | null = null;
+  let profileActionsPlaced = true;
+  let profileActionsSurface: 'menu' | 'rail' = 'menu';
+  let profileRenameId = '';
+  let profileRenameSurface: 'menu' | 'rail' | '' = '';
+  let profileRenameDraft = '';
+  let profileRenameInput: HTMLInputElement | null = null;
+  let profileRenameSaving = false;
   let profileCreateOpen = false;
   let profileCreateName = 'New profile';
   let profileCreateInput: HTMLInputElement;
   let switchingToDefault = false;
+  let agentRuntime: AgentRuntimeDto = {kind: 'polymux', name: 'Polymux Agent'};
+  let runtimeKind: AgentRuntimeDto['kind'] = 'polymux';
+  let runtimeName = 'ACP Agent';
+  let runtimeCommand = '';
+  let runtimeArgs = '';
+  let runtimeCwd = '';
+  let runtimePresetId = 'polymux';
+  let acpRegistry: AcpRegistryEntryDto[] = [];
+  let acpRegistryLoading = true;
+  let acpRegistryError = '';
+  let savingRuntime = false;
+  let armedAgentInstallId = '';
+  let installingAgentId = '';
+  let agentPane: 'agents' | 'auth' | 'option' | 'providers' = 'agents';
+  let agentSettings: AgentSettingsDto | null = null;
+  let agentSettingsLoading = false;
+  let agentSettingsError = '';
+  let agentAuthSaving = '';
+  let agentConfigSaving = '';
+  let selectedAgentOption = '';
+  let selectedAgentOptionGroup = '';
+  let selectedAgentProvider = '';
+  let agentProviderApiType = '';
+  let agentProviderBaseUrl = '';
+  let agentProviderAuthorization = '';
+  let agentProviderSaving = false;
   $: activeProfile = profiles.profiles.find(profile => profile.id === profiles.activeId);
   $: defaultProfile = profiles.profiles.find(profile => profile.isDefault) ?? profiles.profiles[0];
+  $: railProfile = activeProfile ?? defaultProfile;
+  $: profileActionsProfile = profiles.profiles.find(profile => profile.id === profileActionsId);
   let settled = false;
   let search = '';
   /** The rail's filter over the tab list, kept apart from `search`, which is
@@ -136,6 +176,12 @@
   let providers: ProviderDto[] = settingsSnapshot.providers;
   let computerHistory: ComputerHistoryStatusDto | null = settingsSnapshot.computerHistory;
   let computerHistoryEntries: ComputerHistoryEntryDto[] = [];
+  let computerHistoryActivitiesByDay: Record<string, ComputerHistoryActivityDto[]> = {};
+  let historyActivitiesLoadingDay = '';
+  let historyActivityRequest = 0;
+  let expandedHistoryActivity = '';
+  let historyActivityCaptures: Record<string, ComputerHistoryEntryDto[]> = {};
+  let historyActivityCapturesLoading = '';
   let memoryEntries: MemoryEntryDto[] = [];
   let memoryBrowserMode: 'history' | 'memory' = 'history';
   const latestHistoryMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
@@ -149,7 +195,7 @@
   $: historyCalendarYears = calendarYears(latestHistoryMonth.getFullYear(), historyEntriesByDay, memoryEntriesByDay);
   $: canMoveHistoryForward = historyMonth < latestHistoryMonth;
   $: canMoveHistoryYearForward = historyMonth.getFullYear() < latestHistoryMonth.getFullYear();
-  $: selectedHistoryEntries = historyEntriesByDay[selectedHistoryDay] ?? [];
+  $: selectedHistoryActivities = computerHistoryActivitiesByDay[selectedHistoryDay] ?? [];
   $: selectedMemoryEntries = memoryEntriesByDay[selectedHistoryDay] ?? [];
   let memory: MemoryStatusDto | null = settingsSnapshot.memory;
   let general: GeneralSettingsDto | null = settingsSnapshot.general
@@ -188,9 +234,6 @@
   let updatingAppPermissions = false;
   /** The kind whose switch is in flight, or 'all' for the master one. */
   let updatingNotifications: NotificationKind | 'all' | '' = '';
-  /** Set when a test notification found the OS will not show one, so the row
-   * can say why nothing appeared instead of looking broken. */
-  let notificationsUnsupported = false;
   let locating = false;
   let locationError = '';
   let selectedMcp = '';
@@ -367,7 +410,13 @@
   $: skillSortOptions = [{value: 'recommended', label: $t('hub.sortRecommended')}, {value: 'updated-desc', label: $t('settings.lastEdited')}, {value: 'name-asc', label: $t('settings.sortSkillAsc')}, {value: 'name-desc', label: $t('settings.sortSkillDesc')}];
   $: MODE_HEADERS = {
     general: {title: $t('settings.tabGeneral'), description: $t('settings.generalBlurb')},
-    profile: {title: 'Profile', description: 'Manage the active configuration profile.'},
+    profile: agentPane === 'option'
+      ? {title: agentConfigOption?.name ?? 'Models', description: agentConfigOption?.description ?? 'Choose an option supplied by this agent.'}
+      : agentPane === 'auth'
+        ? {title: 'Authentication', description: `Sign in to ${agentRuntime.name} using the methods it exposes through ACP.`}
+      : agentPane === 'providers'
+        ? {title: 'Providers', description: 'Configure the provider routes supplied by this agent.'}
+        : {title: 'Agent', description: 'Choose and configure the agent used by this profile.'},
     hub: {title: $t('workspace.hub'), description: $t('settings.hubBlurb')},
     drive: {title: $t('workspace.drive'), description: $t('settings.driveBlurb')},
     browser: {title: $t('settings.tabBrowser'), description: $t('settings.browserBlurb')},
@@ -444,6 +493,16 @@
   $: credentialProviders = credentialProviderGroup?.providers ?? [];
   $: credentialProvider = credentialProviders[0];
   $: openAIAccountProvider = providers.find((item) => item.id === 'openai-codex');
+  $: agentConfigOption = agentSettings?.configOptions.find((item) => item.id === selectedAgentOption) ?? null;
+  $: agentConfigGroups = agentConfigOption?.type === 'select'
+    ? agentConfigOption.groups.length
+      ? agentConfigOption.groups
+      : [{id: 'all', name: agentConfigOption.name, options: agentConfigOption.options}]
+    : [];
+  $: if (agentConfigGroups.length && !agentConfigGroups.some((group) => group.id === selectedAgentOptionGroup))
+    selectedAgentOptionGroup = agentConfigGroups[0]!.id;
+  $: agentConfigGroup = agentConfigGroups.find((group) => group.id === selectedAgentOptionGroup) ?? null;
+  $: agentProvider = agentSettings?.providers.find((item) => item.id === selectedAgentProvider) ?? null;
   // Follows the selection, including the automatic one made when the rail is
   // first filled. Typing in the field does not disturb it.
   $: runtimeUrl = credentialProvider?.baseUrl ?? '';
@@ -471,13 +530,13 @@
      on one that no longer exists would read as Settings having gone blank.
      Plugins is the surface that stays: what MCP and Skills configure piecemeal,
      a plugin brings as one thing, and that is the whole of the simple view. */
-  $: if (!advanced && (mode === 'profile' || mode === 'model' || mode === 'computer-history' || mode === 'mcp' || mode === 'skills'))
+  $: if (!advanced && (mode === 'computer-history' || mode === 'mcp' || mode === 'skills'))
     mode = 'plugins';
   /* One icon per tab, all from the shared set at one size, so the rail reads as
      a single strip rather than eight separately chosen marks. */
   $: navTabs = [
-    ...(advanced ? [{id: 'profile' as Mode, icon: 'user' as IconName, label: 'Profile'}] : []),
     {id: 'general' as Mode, icon: 'settings' as IconName, label: $t('settings.tabGeneral')},
+    {id: 'profile' as Mode, icon: 'bot' as IconName, label: 'Agent'},
     {id: 'hub' as Mode, icon: 'chat' as IconName, label: $t('workspace.hub')},
     {id: 'drive' as Mode, icon: 'drive' as IconName, label: $t('workspace.drive')},
     {id: 'browser' as Mode, icon: 'globe' as IconName, label: $t('settings.tabBrowser')},
@@ -486,8 +545,6 @@
        never sees them; advanced mode manages them one by one as well. */
     ...(advanced ? [{id: 'mcp' as Mode, icon: 'mcp' as IconName, label: 'MCP'}] : []),
     ...(advanced ? [{id: 'skills' as Mode, icon: 'sparkles' as IconName, label: $t('settings.tabSkills')}] : []),
-    ...(advanced ? [{id: 'model' as Mode, icon: 'bot' as IconName, label: $t('settings.tabModels')}] : []),
-    {id: 'provider' as Mode, icon: 'bolt' as IconName, label: $t('settings.tabProvider')},
     ...(advanced ? [{id: 'computer-history' as Mode, icon: 'clock' as IconName, label: $t('settings.tabMemory')}] : []),
   ];
   /* The rail's own search narrows the tab list. It never hides the tab you are
@@ -495,7 +552,7 @@
      setting having been removed. */
   $: navQuery = navSearch.trim().toLowerCase();
   $: visibleNavTabs = navQuery
-    ? navTabs.filter((tab) => tab.id === mode || tab.label.toLowerCase().includes(navQuery))
+    ? navTabs.filter((tab) => tabIsActive(tab.id) || tab.label.toLowerCase().includes(navQuery))
     : navTabs;
   /* Named against the counts rather than the filtered rails: a search that
      hides every row is the user narrowing a list they have, not an empty tab. */
@@ -519,13 +576,19 @@
   });
 
   onMount(() => {
+    const dismissProfileActions = () => profileActionsId = '';
+    window.addEventListener('resize', dismissProfileActions);
     void api.profiles.list().then(value => profiles = value).catch(() => {});
     const stopProfiles = api.profiles.subscribe((value) => {
       profiles = value;
-      profileMenuOpen = false;
       void loadAll();
     });
     void loadAll();
+    void api.agentRuntime.registry().then((entries) => {
+      acpRegistry = entries;
+      acpRegistryError = '';
+      matchRuntimePreset();
+    }).catch((reason) => acpRegistryError = readableError(reason)).finally(() => acpRegistryLoading = false);
     void loadCurrencyRates();
     // Warm the marketplace while the user is still browsing Settings so its
     // first reveal does not wait on the registry network request.
@@ -548,6 +611,7 @@
       stopSkills();
       stopOAuth();
       stopProfiles();
+      window.removeEventListener('resize', dismissProfileActions);
     };
   });
 
@@ -577,9 +641,8 @@
     }
   }
   async function selectProfile(id: string): Promise<void> {
-    if (id === profiles.activeId) { profileMenuOpen = false; return; }
+    if (id === profiles.activeId) return;
     profiles = await api.profiles.select(id);
-    profileMenuOpen = false;
   }
   async function selectDefaultForBasicMode(id: string): Promise<void> {
     switchingToDefault = true;
@@ -589,14 +652,56 @@
       switchingToDefault = false;
     }
   }
-  async function renameProfile(profile: ProfileDto): Promise<void> {
-    const name = window.prompt('Rename profile', profile.name);
-    if (name === null) return;
-    if (profileNameExists(name, profile.id)) {
-      window.alert('A profile with this name already exists.');
+  async function startProfileRename(profile: ProfileDto, surface: 'menu' | 'rail'): Promise<void> {
+    profileActionsId = '';
+    profileRenameId = profile.id;
+    profileRenameSurface = surface;
+    profileRenameDraft = profile.name;
+    if (surface === 'rail') profileMenuOpen = false;
+    await tick();
+    profileRenameInput?.focus();
+    profileRenameInput?.select();
+  }
+  function cancelProfileRename(): void {
+    profileRenameId = '';
+    profileRenameSurface = '';
+    profileRenameDraft = '';
+  }
+  async function saveProfileRename(profile: ProfileDto): Promise<void> {
+    if (profileRenameId !== profile.id || profileRenameSaving) return;
+    const name = profileRenameDraft.trim() || 'New profile';
+    if (name === profile.name) {
+      cancelProfileRename();
       return;
     }
-    profiles = await api.profiles.rename(profile.id, name);
+    if (profileNameExists(name, profile.id)) {
+      error = 'A profile with this name already exists.';
+      await tick();
+      profileRenameInput?.focus();
+      profileRenameInput?.select();
+      return;
+    }
+    profileRenameSaving = true;
+    try {
+      profiles = await api.profiles.rename(profile.id, name);
+      error = '';
+      cancelProfileRename();
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      profileRenameSaving = false;
+    }
+  }
+  function profileRenameKeydown(event: KeyboardEvent, profile: ProfileDto): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      void saveProfileRename(profile);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelProfileRename();
+    }
   }
   function profileNameExists(name: string, excludedId = ''): boolean {
     const candidate = name.trim() || 'New profile';
@@ -604,13 +709,324 @@
   }
   async function duplicateProfile(profile: ProfileDto): Promise<void> {
     profiles = await api.profiles.duplicate(profile.id);
+    profileActionsId = '';
   }
   async function setDefaultProfile(profile: ProfileDto): Promise<void> {
     profiles = await api.profiles.setDefault(profile.id);
+    profileActionsId = '';
   }
   async function removeProfile(profile: ProfileDto): Promise<void> {
     if (!window.confirm(`Delete “${profile.name}”? This removes its model, provider, MCP and skill configuration.`)) return;
     profiles = await api.profiles.remove(profile.id);
+    profileActionsId = '';
+  }
+  function toggleProfileActions(event: MouseEvent, profileId: string): void {
+    if (profileActionsId === profileId) {
+      profileActionsId = '';
+      return;
+    }
+    const trigger = event.currentTarget as HTMLElement;
+    const parentMenu = trigger.closest('.profile-menu')?.getBoundingClientRect();
+    const triggerRect = trigger.getBoundingClientRect();
+    // The menu hugs its labels; this conservative bound is used only to decide
+    // whether it needs to flip before the menu is mounted and measurable.
+    const width = 180;
+    const height = 122;
+    const gap = 7;
+    const viewportGap = 8;
+    const preferredLeft = (parentMenu?.right ?? triggerRect.right) + gap;
+    const left = preferredLeft + width <= window.innerWidth - viewportGap
+      ? preferredLeft
+      : Math.max(viewportGap, (parentMenu?.left ?? triggerRect.left) - width - gap);
+    const centredTop = triggerRect.top + triggerRect.height / 2 - height / 2;
+    profileActionsPosition = {
+      left,
+      top: Math.max(viewportGap, Math.min(centredTop, window.innerHeight - height - viewportGap)),
+    };
+    profileActionsSurface = 'menu';
+    profileActionsPlaced = true;
+    profileActionsId = profileId;
+  }
+  async function openProfileActionsAtPoint(event: MouseEvent, profileId: string, surface: 'menu' | 'rail'): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    const point = {x: event.clientX, y: event.clientY};
+    const viewportGap = 8;
+    profileActionsPlaced = false;
+    profileActionsPosition = {left: point.x, top: point.y};
+    profileActionsSurface = surface;
+    profileActionsId = profileId;
+    await tick();
+    if (profileActionsId !== profileId || !profileActionsMenu) return;
+    const {width, height} = profileActionsMenu.getBoundingClientRect();
+    const preferredLeft = point.x + width <= window.innerWidth - viewportGap ? point.x : point.x - width;
+    const preferredTop = point.y + height <= window.innerHeight - viewportGap ? point.y : point.y - height;
+    profileActionsPosition = {
+      left: Math.max(viewportGap, Math.min(preferredLeft, window.innerWidth - width - viewportGap)),
+      top: Math.max(viewportGap, Math.min(preferredTop, window.innerHeight - height - viewportGap)),
+    };
+    profileActionsPlaced = true;
+  }
+  async function saveAgentRuntime(restoreDraftOnFailure = false): Promise<boolean> {
+    savingRuntime = true;
+    try {
+      const keepsConfig = agentRuntime.kind === 'acp'
+        && runtimeKind === 'acp'
+        && agentRuntime.command === runtimeCommand.trim()
+        && agentRuntime.args.join('\n') === runtimeArgs.split('\n').map((item) => item.trim()).filter(Boolean).join('\n');
+      agentRuntime = runtimeKind === 'polymux'
+        ? await api.agentRuntime.update({kind: 'polymux'})
+        : await api.agentRuntime.update({
+            kind: 'acp',
+            name: runtimeName.trim() || 'ACP Agent',
+            command: runtimeCommand.trim(),
+            args: runtimeArgs.split('\n').map((item) => item.trim()).filter(Boolean),
+            cwd: runtimeCwd.trim() || null,
+            config: keepsConfig && agentRuntime.kind === 'acp' ? agentRuntime.config : {},
+          });
+      matchRuntimePreset();
+      agentSettings = null;
+      agentSettingsError = '';
+      if (agentRuntime.kind === 'acp') await loadAgentSettings();
+      error = '';
+      return true;
+    } catch (reason) {
+      error = readableError(reason);
+      if (restoreDraftOnFailure) {
+        restoreRuntimeDraft();
+        if (agentRuntime.kind === 'acp') await loadAgentSettings();
+      }
+      return false;
+    } finally {
+      savingRuntime = false;
+    }
+  }
+  async function useRuntimePreset(entry: AcpRegistryEntryDto): Promise<void> {
+    if (!entry.command || savingRuntime) return;
+    const installed = registryEntryIsInstalled(entry);
+    if (!installed && armedAgentInstallId !== entry.id) {
+      selectRuntimePreset(entry);
+      armedAgentInstallId = entry.id;
+      return;
+    }
+    armedAgentInstallId = '';
+    selectRuntimePreset(entry);
+    if (runtimeDraftIsActive()) return;
+    installingAgentId = installed ? '' : entry.id;
+    const saved = await saveAgentRuntime(true);
+    installingAgentId = '';
+    if (saved && !installed)
+      acpRegistry = acpRegistry.map((candidate) => candidate.id === entry.id ? {...candidate, installed: true} : candidate);
+  }
+  function selectRuntimePreset(entry: AcpRegistryEntryDto): void {
+    if (!entry.command) return;
+    runtimeKind = 'acp';
+    runtimePresetId = entry.id;
+    runtimeName = entry.name;
+    runtimeCommand = entry.command;
+    runtimeArgs = entry.args.join('\n');
+    runtimeCwd = '';
+    agentPane = 'agents';
+    agentSettings = null;
+    agentSettingsError = '';
+  }
+  async function usePolymuxRuntime(): Promise<void> {
+    if (savingRuntime) return;
+    armedAgentInstallId = '';
+    selectPolymuxRuntime();
+    if (!runtimeDraftIsActive()) await saveAgentRuntime(true);
+  }
+  function selectPolymuxRuntime(): void {
+    runtimeKind = 'polymux';
+    runtimePresetId = 'polymux';
+    agentPane = 'agents';
+    agentSettings = null;
+    agentSettingsError = '';
+  }
+  function restoreRuntimeDraft(): void {
+    if (agentRuntime.kind === 'polymux') {
+      selectPolymuxRuntime();
+      return;
+    }
+    runtimeKind = 'acp';
+    runtimeName = agentRuntime.name;
+    runtimeCommand = agentRuntime.command;
+    runtimeArgs = agentRuntime.args.join('\n');
+    runtimeCwd = agentRuntime.cwd ?? '';
+    matchRuntimePreset();
+    agentPane = 'agents';
+    agentSettings = null;
+    agentSettingsError = '';
+  }
+  function selectCustomRuntime(): void {
+    armedAgentInstallId = '';
+    runtimeKind = 'acp';
+    runtimePresetId = 'custom';
+    runtimeName = agentRuntime.kind === 'acp' ? agentRuntime.name : 'ACP Agent';
+    runtimeCommand = agentRuntime.kind === 'acp' ? agentRuntime.command : '';
+    runtimeArgs = agentRuntime.kind === 'acp' ? agentRuntime.args.join('\n') : '';
+    runtimeCwd = agentRuntime.kind === 'acp' ? agentRuntime.cwd ?? '' : '';
+    agentPane = 'agents';
+    agentSettings = null;
+    agentSettingsError = '';
+  }
+  function matchRuntimePreset(): void {
+    if (agentRuntime.kind !== 'acp') {
+      runtimePresetId = 'polymux';
+      return;
+    }
+    const match = acpRegistry.find(registryEntryMatchesRuntime);
+    runtimePresetId = match?.id ?? 'custom';
+  }
+
+  function registryEntryMatchesRuntime(entry: AcpRegistryEntryDto): boolean {
+    return agentRuntime.kind === 'acp'
+      && entry.command === agentRuntime.command
+      && entry.args.join('\n') === agentRuntime.args.join('\n');
+  }
+
+  function registryEntryIsInstalled(entry: AcpRegistryEntryDto): boolean {
+    return entry.installed || registryEntryMatchesRuntime(entry);
+  }
+
+  function runtimeDraftIsActive(): boolean {
+    if (runtimeKind === 'polymux') return agentRuntime.kind === 'polymux';
+    return agentRuntime.kind === 'acp'
+      && agentRuntime.command === runtimeCommand.trim()
+      && agentRuntime.args.join('\n') === runtimeArgs.split('\n').map((item) => item.trim()).filter(Boolean).join('\n');
+  }
+
+  async function loadAgentSettings(): Promise<void> {
+    if (agentRuntime.kind !== 'acp' || agentSettingsLoading) return;
+    agentSettingsLoading = true;
+    agentSettingsError = '';
+    try {
+      agentSettings = await api.agentRuntime.settings();
+      selectedAgentProvider = agentSettings.providers[0]?.id ?? '';
+    } catch (reason) {
+      agentSettings = null;
+      agentSettingsError = readableError(reason);
+    } finally {
+      agentSettingsLoading = false;
+    }
+  }
+
+  function agentOptionUsesDirectory(option: AgentConfigOptionDto): boolean {
+    return option.type === 'select' && (option.options.length > 6 || option.groups.length > 1);
+  }
+
+  function agentOptionLabel(option: AgentConfigOptionDto): string {
+    if (option.type === 'boolean') return option.currentValue ? 'On' : 'Off';
+    return option.options.find((item) => item.value === option.currentValue)?.name ?? option.currentValue;
+  }
+
+  function openAgentOption(option: AgentConfigOptionDto): void {
+    if (option.type !== 'select') return;
+    selectedAgentOption = option.id;
+    selectedAgentOptionGroup = option.groups[0]?.id ?? 'all';
+    agentPane = 'option';
+  }
+
+  async function setAgentConfigOption(option: AgentConfigOptionDto, value: string | boolean): Promise<void> {
+    agentConfigSaving = option.id;
+    try {
+      agentSettings = await api.agentRuntime.setConfigOption(option.id, value);
+      if (agentRuntime.kind === 'acp') agentRuntime = {...agentRuntime, config: {...agentRuntime.config, [option.id]: value}};
+      agentSettingsError = '';
+    } catch (reason) {
+      agentSettingsError = readableError(reason);
+    } finally {
+      agentConfigSaving = '';
+    }
+  }
+
+  function openAgentModels(): void {
+    agentPane = 'agents';
+    selectMode('model');
+  }
+
+  function openAgentProviders(): void {
+    agentPane = 'agents';
+    selectMode('provider');
+  }
+
+  function openAcpProviders(): void {
+    const first = agentSettings?.providers[0];
+    if (first) chooseAgentProvider(first);
+    agentPane = 'providers';
+  }
+
+  function openAgentAuthentication(): void {
+    agentPane = 'auth';
+  }
+
+  function backToAgent(): void {
+    agentPane = 'agents';
+    selectMode('profile');
+  }
+
+  async function authenticateAgent(methodId: string): Promise<void> {
+    agentAuthSaving = methodId;
+    agentSettingsError = '';
+    try {
+      agentSettings = await api.agentRuntime.authenticate(methodId);
+      selectedAgentProvider = agentSettings.providers[0]?.id ?? '';
+    } catch (reason) {
+      agentSettingsError = readableError(reason);
+    } finally {
+      agentAuthSaving = '';
+    }
+  }
+
+  async function logoutAgent(): Promise<void> {
+    agentAuthSaving = 'logout';
+    agentSettingsError = '';
+    try {
+      agentSettings = await api.agentRuntime.logout();
+      selectedAgentProvider = '';
+    } catch (reason) {
+      agentSettingsError = readableError(reason);
+    } finally {
+      agentAuthSaving = '';
+    }
+  }
+
+  function chooseAgentProvider(provider: AgentProviderDto): void {
+    selectedAgentProvider = provider.id;
+    agentProviderApiType = provider.apiType ?? provider.supported[0] ?? '';
+    agentProviderBaseUrl = provider.baseUrl ?? '';
+    agentProviderAuthorization = '';
+  }
+
+  async function saveAgentProvider(provider: AgentProviderDto): Promise<void> {
+    agentProviderSaving = true;
+    try {
+      agentSettings = await api.agentRuntime.setProvider({
+        id: provider.id,
+        apiType: agentProviderApiType,
+        baseUrl: agentProviderBaseUrl.trim(),
+        ...(agentProviderAuthorization.trim() ? {headers: {Authorization: agentProviderAuthorization.trim()}} : {}),
+      });
+      agentProviderAuthorization = '';
+      agentSettingsError = '';
+    } catch (reason) {
+      agentSettingsError = readableError(reason);
+    } finally {
+      agentProviderSaving = false;
+    }
+  }
+
+  async function disableAgentProvider(provider: AgentProviderDto): Promise<void> {
+    agentProviderSaving = true;
+    try {
+      agentSettings = await api.agentRuntime.disableProvider(provider.id);
+      chooseAgentProvider(agentSettings.providers.find((item) => item.id === provider.id) ?? provider);
+      agentSettingsError = '';
+    } catch (reason) {
+      agentSettingsError = readableError(reason);
+    } finally {
+      agentProviderSaving = false;
+    }
   }
   /** Collapsing is per agent and reassigns the set, since Svelte tracks the
    * binding rather than the mutation. */
@@ -935,11 +1351,16 @@
 
   function selectMode(next: Mode): void {
     mode = next;
+    if (next === 'profile') agentPane = 'agents';
     search = '';
     browsingRole = '';
     adding = null;
     addingCustomProvider = false;
     openRailMenu = null;
+  }
+
+  function tabIsActive(tab: Mode): boolean {
+    return tab === 'profile' ? mode === 'profile' || mode === 'model' || mode === 'provider' : mode === tab;
   }
 
   function selectMcp(id: string): void { browsingMcpRegistry = false; discoveringMcp = false; selectedMcp = id; adding = null; }
@@ -950,10 +1371,19 @@
   async function loadAll(): Promise<void> {
     loading = !settingsSnapshot.loaded;
     try {
-      [mcpServers, skills, plugins, models, providers, memory, computerHistory, general, extensionStatus] = await Promise.all([api.mcp.list(), api.skills.list(), api.plugins.list(), api.models.list(), api.providers.list(), api.memory.status(), api.computerHistory.status(), api.general.get(), api.extension.status()]);
+      [mcpServers, skills, plugins, models, providers, memory, computerHistory, general, extensionStatus, agentRuntime] = await Promise.all([api.mcp.list(), api.skills.list(), api.plugins.list(), api.models.list(), api.providers.list(), api.memory.status(), api.computerHistory.status(), api.general.get(), api.extension.status(), api.agentRuntime.get()]);
+      runtimeKind = agentRuntime.kind;
+      if (agentRuntime.kind === 'acp') {
+        runtimeName = agentRuntime.name;
+        runtimeCommand = agentRuntime.command;
+        runtimeArgs = agentRuntime.args.join('\n');
+        runtimeCwd = agentRuntime.cwd ?? '';
+      }
+      matchRuntimePreset();
       general = {...general, pinnedViews: currentPinnedViews};
-      [computerHistoryEntries, memoryEntries] = await Promise.all([api.computerHistory.entries({limit: 120}), api.memory.entries()]);
+      [computerHistoryEntries, memoryEntries] = await Promise.all([api.computerHistory.entries({limit: 1000}), api.memory.entries()]);
       void loadSourceIcons(computerHistory);
+      void loadHistoryActivities(selectedHistoryDay);
       currency = general.currency ?? defaultCurrency(general.location);
       settingsSnapshot.loaded = true;
       error = '';
@@ -1012,34 +1442,41 @@
   let updatingPinnedViews = false;
   let pinnedViewsExpanded = false;
   let pinnedViewMockIcons: HTMLDivElement;
-  let pinnedViewDragKind: 'drive' | 'schedule' | 'hub' | 'tasks' | null = null;
+  let pinnedViewDragKind: PinnedView | null = null;
   let pinnedViewPointerId: number | null = null;
-  let pinnedViewDragStartOrder: Array<'drive' | 'schedule' | 'hub' | 'tasks'> | null = null;
-  async function togglePinnedView(kind: 'drive' | 'schedule' | 'hub' | 'tasks'): Promise<void> {
-    if (!general) return;
+  let pinnedViewDragStartOrder: PinnedView[] | null = null;
+  async function togglePinnedView(kind: PinnedView): Promise<void> {
+    if (!general || updatingPinnedViews) return;
+    const previous = general;
+    const next = previous.pinnedViews.includes(kind)
+      ? previous.pinnedViews.filter((view) => view !== kind)
+      : [...previous.pinnedViews, kind];
+    general = {...previous, pinnedViews: next};
+    onGeneralChange(general);
     updatingPinnedViews = true;
     try {
-      const current = general.pinnedViews;
-      const next = current.includes(kind)
-        ? current.filter((v) => v !== kind)
-        : [...current, kind];
       general = await api.general.update({pinnedViews: next});
       onGeneralChange(general);
       error = '';
     } catch (reason) {
+      general = previous;
+      onGeneralChange(general);
       error = readableError(reason);
     } finally {
       updatingPinnedViews = false;
     }
   }
 
-  function startPinnedViewDrag(event: PointerEvent, view: 'drive' | 'schedule' | 'hub' | 'tasks'): void {
+  function startPinnedViewDrag(event: PointerEvent, view: PinnedView): void {
     if (!general || event.button !== 0) return;
     event.preventDefault();
     pinnedViewDragKind = view;
     pinnedViewPointerId = event.pointerId;
     pinnedViewDragStartOrder = [...general.pinnedViews];
-    (event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+    // Capture on the strip, not the icon. Reordering a keyed icon moves its DOM
+    // node and Chromium releases capture from that child before pointerup,
+    // which otherwise leaves the icon permanently in its dragging colour.
+    pinnedViewMockIcons.setPointerCapture(event.pointerId);
   }
 
   function previewPinnedViewDrop(event: PointerEvent): void {
@@ -1077,6 +1514,11 @@
     } finally {
       updatingPinnedViews = false;
     }
+  }
+
+  function finishPinnedViewPointer(event: PointerEvent): void {
+    if (event.pointerId !== pinnedViewPointerId) return;
+    void finishPinnedViewDrag();
   }
 
   async function setSpeechModeEnabled(enabled: boolean): Promise<void> {
@@ -1281,6 +1723,9 @@
       ...status.excludeApps.map((name) => ['apps', name] as [ComputerHistoryList, string]),
       ...status.excludeSites.map((host) => ['sites', host] as [ComputerHistoryList, string]),
       ...computerHistoryEntries.map((entry) => ['apps', historyEntryApp(entry)] as [ComputerHistoryList, string]),
+      ...Object.values(computerHistoryActivitiesByDay).flatMap((activities) =>
+        activities.flatMap((activity) => activity.apps.map((app) => ['apps', app] as [ComputerHistoryList, string])),
+      ),
     ];
     for (const [list, source] of wanted) {
       if (iconsAsked.has(source)) continue;
@@ -1374,11 +1819,67 @@
         const captured = new Date(entry.capturedAt).getTime();
         return captured < since.getTime() || captured > until.getTime();
       });
+      computerHistoryActivitiesByDay = {};
+      historyActivityCaptures = {};
+      expandedHistoryActivity = '';
+      void loadHistoryActivities(selectedHistoryDay);
       error = '';
     } catch (reason) {
       error = readableError(reason);
     } finally {
       forgetting = '';
+    }
+  }
+
+  function historyDayRange(key: string): {since: string; until: string} | null {
+    const [year, month, day] = key.split('-').map(Number);
+    if (!year || !month || !day) return null;
+    const since = new Date(year, month - 1, day);
+    const until = new Date(year, month - 1, day + 1);
+    return {since: since.toISOString(), until: new Date(until.getTime() - 1).toISOString()};
+  }
+
+  async function loadHistoryActivities(day: string): Promise<void> {
+    const range = historyDayRange(day);
+    if (!range) return;
+    const request = ++historyActivityRequest;
+    historyActivitiesLoadingDay = day;
+    try {
+      const activities = await api.computerHistory.activities({...range, limit: 200});
+      if (request !== historyActivityRequest) return;
+      computerHistoryActivitiesByDay = {...computerHistoryActivitiesByDay, [day]: activities};
+      void loadSourceIcons(computerHistory);
+      error = '';
+    } catch (reason) {
+      if (request === historyActivityRequest) error = readableError(reason);
+    } finally {
+      if (request === historyActivityRequest) historyActivitiesLoadingDay = '';
+    }
+  }
+
+  async function toggleHistoryActivity(activity: ComputerHistoryActivityDto): Promise<void> {
+    if (expandedHistoryActivity === activity.id) {
+      expandedHistoryActivity = '';
+      return;
+    }
+    expandedHistoryActivity = activity.id;
+    if (historyActivityCaptures[activity.id]) return;
+    historyActivityCapturesLoading = activity.id;
+    try {
+      const ids = new Set(activity.entryIds);
+      const entries = await api.computerHistory.entries({
+        since: activity.startedAt,
+        until: activity.endedAt,
+        limit: 1000,
+      });
+      historyActivityCaptures = {
+        ...historyActivityCaptures,
+        [activity.id]: entries.filter((entry) => ids.has(entry.id)),
+      };
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      if (historyActivityCapturesLoading === activity.id) historyActivityCapturesLoading = '';
     }
   }
 
@@ -1396,6 +1897,13 @@
     try {
       computerHistory = await api.computerHistory.removeEntry(entry.id);
       computerHistoryEntries = computerHistoryEntries.filter((candidate) => candidate.id !== entry.id);
+      historyActivityCaptures = Object.fromEntries(
+        Object.entries(historyActivityCaptures).map(([id, entries]) => [
+          id,
+          entries.filter((candidate) => candidate.id !== entry.id),
+        ]),
+      );
+      void loadHistoryActivities(localDateKey(new Date(entry.capturedAt)));
       error = '';
     } catch (reason) {
       error = readableError(reason);
@@ -1406,19 +1914,6 @@
 
   function historyEntryApp(entry: ComputerHistoryEntryDto): string {
     return entry.app?.trim() || entry.sourceName;
-  }
-
-  function historyEntryDetail(entry: ComputerHistoryEntryDto): string {
-    const activity = entry.reason === 'initial'
-      ? 'Started tracking this activity'
-      : entry.reason === 'change'
-        ? `${Math.round(entry.change * 100)}% of the window changed`
-        : 'Activity continued';
-    let location = entry.sourceName !== historyEntryApp(entry) ? entry.sourceName : '';
-    if (entry.url) {
-      try { location = new URL(entry.url).hostname; } catch { location = entry.url; }
-    }
-    return [location, activity, `${entry.width}×${entry.height}`, formatBytes(entry.bytes)].filter(Boolean).join(' · ');
   }
 
   async function setMemoryEnabled(enabled: boolean): Promise<void> {
@@ -1588,10 +2083,10 @@
    */
   const NOTIFICATION_ROWS: Array<{kind: NotificationKind; icon: ComponentProps<typeof Icon>['name']; title: MessageKey; hint: MessageKey}> = [
     {kind: 'schedule-completed', icon: 'calendar', title: 'settings.notifyScheduleCompleted', hint: 'settings.notifyScheduleCompletedHint'},
-    {kind: 'schedule-failed', icon: 'info', title: 'settings.notifyScheduleFailed', hint: 'settings.notifyScheduleFailedHint'},
-    {kind: 'agent-completed', icon: 'bot', title: 'settings.notifyAgentCompleted', hint: 'settings.notifyAgentCompletedHint'},
-    {kind: 'agent-attention', icon: 'shield', title: 'settings.notifyAgentAttention', hint: 'settings.notifyAgentAttentionHint'},
-    {kind: 'message-received', icon: 'chat', title: 'settings.notifyMessageReceived', hint: 'settings.notifyMessageReceivedHint'},
+    {kind: 'schedule-failed', icon: 'calendar-error', title: 'settings.notifyScheduleFailed', hint: 'settings.notifyScheduleFailedHint'},
+    {kind: 'agent-completed', icon: 'circle-check', title: 'settings.notifyAgentCompleted', hint: 'settings.notifyAgentCompletedHint'},
+    {kind: 'agent-attention', icon: 'circle-question', title: 'settings.notifyAgentAttention', hint: 'settings.notifyAgentAttentionHint'},
+    {kind: 'message-received', icon: 'inbox', title: 'settings.notifyMessageReceived', hint: 'settings.notifyMessageReceivedHint'},
   ];
 
   async function setNotificationsEnabled(next: boolean): Promise<void> {
@@ -1615,17 +2110,6 @@
       error = readableError(reason);
     } finally {
       updatingNotifications = '';
-    }
-  }
-
-  /** Proves the OS half of this works, which no switch here can promise on
-   * its own — the grant lives in System Settings, not in the app. */
-  async function sendTestNotification(): Promise<void> {
-    try {
-      notificationsUnsupported = (await api.general.testNotification()) === 'unsupported';
-      error = '';
-    } catch (reason) {
-      error = readableError(reason);
     }
   }
 
@@ -1701,8 +2185,10 @@
 
   function selectHistoryDay(key: string): void {
     selectedHistoryDay = key;
+    expandedHistoryActivity = '';
     const [year, month] = key.split('-').map(Number);
     if (year && month) historyMonth = new Date(year, month - 1, 1);
+    if (!computerHistoryActivitiesByDay[key]) void loadHistoryActivities(key);
   }
 
   function historyMonthLabel(month: Date): string {
@@ -2818,7 +3304,10 @@
    * press lands outside it, not once the button is released. */
   function dismissRailMenu(event: Event): void {
     const insideProfileSwitcher = event.target instanceof Element && !!event.target.closest('.profile-switcher');
-    if (!insideProfileSwitcher) profileMenuOpen = false;
+    if (!insideProfileSwitcher) {
+      profileMenuOpen = false;
+      profileActionsId = '';
+    }
     if (pressKeepsRailMenu(event.target)) return;
     openRailMenu = null;
     skillAddMenuOpen = false;
@@ -2843,6 +3332,7 @@
       event.preventDefault();
       event.stopPropagation();
       profileMenuOpen = false;
+      profileActionsId = '';
       return;
     }
     if (openRailMenu) {
@@ -2875,7 +3365,13 @@
   }
 </script>
 
-<svelte:window onkeydown={keydown} onpointerdown={dismissRailMenu}/>
+<svelte:window
+  onkeydown={keydown}
+  onpointerdown={dismissRailMenu}
+  onpointermove={previewPinnedViewDrop}
+  onpointerup={finishPinnedViewPointer}
+  onpointercancel={finishPinnedViewPointer}
+/>
 
 <!-- Stands in until a toggle's value has loaded. The real control then mounts
      already showing that value, so its slide only ever means a user click. -->
@@ -2947,7 +3443,7 @@
 
     <div class="options-nav-list" role="tablist" use:scrollFade={visibleNavTabs.length} aria-label={$t('settings.tabsLabel')}>
       {#each visibleNavTabs as tab (tab.id)}
-        <button type="button" role="tab" class="options-nav-item" aria-selected={mode === tab.id} class:active={mode === tab.id} onclick={() => selectMode(tab.id)}>
+        <button type="button" role="tab" class="options-nav-item" aria-selected={tabIsActive(tab.id)} class:active={tabIsActive(tab.id)} onclick={() => selectMode(tab.id)}>
           <Icon name={tab.icon} size={16} strokeWidth={1.7}/><span>{tab.label}</span>
         </button>
       {/each}
@@ -2956,13 +3452,22 @@
     <div class="profile-switcher">
       {#if advanced && profileMenuOpen}
         <div class="profile-menu" role="menu" aria-label="Profiles">
-          <div class="profile-list">
+          <div class="profile-list" onscroll={() => profileActionsId = ''}>
             {#each visibleProfiles as profile (profile.id)}
               <div class="profile-row" class:active={profile.id === profiles.activeId}>
-                <button type="button" class="profile-select" role="menuitemradio" aria-checked={profile.id === profiles.activeId} onclick={() => void selectProfile(profile.id)}>
-                  <span>{profile.name}</span>
-                  {#if profile.id === profiles.activeId}<Icon name="check" size={13}/>{/if}
-                </button>
+                {#if profileRenameId === profile.id && profileRenameSurface === 'menu'}
+                  <form class="profile-rename" onsubmit={(event) => {event.preventDefault(); void saveProfileRename(profile);}}>
+                    <input bind:this={profileRenameInput} bind:value={profileRenameDraft} aria-label={`Rename ${profile.name}`} disabled={profileRenameSaving} onkeydown={(event) => profileRenameKeydown(event, profile)} onblur={() => void saveProfileRename(profile)}/>
+                  </form>
+                {:else}
+                  <button type="button" class="profile-select" role="menuitemradio" aria-checked={profile.id === profiles.activeId} onclick={() => void selectProfile(profile.id)} ondblclick={(event) => {event.preventDefault(); event.stopPropagation(); void startProfileRename(profile, 'menu');}} oncontextmenu={(event) => void openProfileActionsAtPoint(event, profile.id, 'menu')}>
+                    <span>{profile.name}</span>
+                    {#if profile.id === profiles.activeId}<Icon name="check" size={13}/>{/if}
+                  </button>
+                  <button type="button" class="profile-actions-trigger" class:open={profileActionsId === profile.id} aria-label="Options" aria-haspopup="menu" aria-expanded={profileActionsId === profile.id} onclick={(event) => toggleProfileActions(event, profile.id)} oncontextmenu={(event) => void openProfileActionsAtPoint(event, profile.id, 'menu')}>
+                    <Icon name="more" size={15}/>
+                  </button>
+                {/if}
               </div>
             {/each}
           </div>
@@ -2976,10 +3481,24 @@
           {/if}
         </div>
       {/if}
+      {#if profileActionsProfile}
+        <div bind:this={profileActionsMenu} class="polymux-dropdown-menu profile-actions-menu" class:placed={profileActionsPlaced} role="menu" aria-label={`Actions for ${profileActionsProfile.name}`} style:left={`${profileActionsPosition.left}px`} style:top={`${profileActionsPosition.top}px`}>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => void startProfileRename(profileActionsProfile, profileActionsSurface)}><Icon name="edit" size={14}/><span>Rename</span></button>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => void duplicateProfile(profileActionsProfile)}><Icon name="copy" size={14}/><span>Duplicate</span></button>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={profileActionsProfile.isDefault} onclick={() => void setDefaultProfile(profileActionsProfile)}><Icon name={profileActionsProfile.isDefault ? 'check' : 'pin'} size={14}/><span>{profileActionsProfile.isDefault ? 'Default profile' : 'Set as default profile'}</span></button>
+          <button type="button" class="polymux-dropdown-item danger" role="menuitem" disabled={profileActionsProfile.isDefault || profileActionsProfile.id === 'default'} onclick={() => void removeProfile(profileActionsProfile)}><Icon name="trash" size={14}/><span>Delete</span></button>
+        </div>
+      {/if}
       {#if advanced}
-        <button type="button" class="profile-trigger" aria-expanded={profileMenuOpen} onclick={() => profileMenuOpen = !profileMenuOpen}>
-          <span>{activeProfile?.name ?? defaultProfile?.name ?? 'Default Profile'}</span>
-        </button>
+        {#if railProfile && profileRenameId === railProfile.id && profileRenameSurface === 'rail'}
+          <form class="profile-trigger profile-rename rail" onsubmit={(event) => {event.preventDefault(); void saveProfileRename(railProfile);}}>
+            <input bind:this={profileRenameInput} bind:value={profileRenameDraft} aria-label={`Rename ${railProfile.name}`} disabled={profileRenameSaving} onkeydown={(event) => profileRenameKeydown(event, railProfile)} onblur={() => void saveProfileRename(railProfile)}/>
+          </form>
+        {:else}
+          <button type="button" class="profile-trigger" aria-expanded={profileMenuOpen} onclick={() => {profileMenuOpen = !profileMenuOpen; profileActionsId = '';}} ondblclick={(event) => {event.preventDefault(); event.stopPropagation(); if (railProfile) void startProfileRename(railProfile, 'rail');}} oncontextmenu={(event) => {if (railProfile) void openProfileActionsAtPoint(event, railProfile.id, 'rail');}}>
+            <span>{railProfile?.name ?? 'Default Profile'}</span>
+          </button>
+        {/if}
       {:else}
         <div class="profile-trigger basic"><span>{defaultProfile?.name ?? 'Default Profile'}</span></div>
       {/if}
@@ -2989,6 +3508,9 @@
 
   <div class="options-page-content" class:whole-page-scroll={mode === 'general' || mode === 'computer-history'} use:scrollFade={mode}>
     <header class="options-header">
+      {#if mode === 'model' || mode === 'provider' || mode === 'profile' && agentPane !== 'agents'}
+        <button type="button" class="agent-back" aria-label="Back to Agent" onclick={backToAgent}><Icon name="back" size={14}/></button>
+      {/if}
       <h2>{modeHeader.title}</h2>
       <p>{modeHeader.description}</p>
     </header>
@@ -2996,40 +3518,189 @@
     {#if error}<p class="options-error" role="alert">{error}</p>{/if}
 
     {#if mode === 'profile'}
-      <div class="general-options profile-options" role="tabpanel">
-        {#if activeProfile}
-          <section class="general-group">
-            <h3>Profile</h3>
-            <section class="general-setting-row profile-identity-row">
-              <span class="general-setting-copy"><h4>{activeProfile.name}</h4><small>Active profile</small></span>
-              <button type="button" class="profile-text-action" onclick={() => void renameProfile(activeProfile)}>Rename</button>
-            </section>
-          </section>
-          <section class="general-group">
-            <h3>Profile actions</h3>
-            <section class="general-setting-row">
-              <span class="general-setting-copy"><h4>Default Profile</h4><small>Used whenever advanced mode is off.</small></span>
-              {#if activeProfile.isDefault}
-                <span class="profile-default-status">Set</span>
-              {:else}
-                <button type="button" class="profile-text-action" onclick={() => void setDefaultProfile(activeProfile)}>Set</button>
-              {/if}
-            </section>
-            <section class="general-setting-row">
-              <span class="option-mark large"><Icon name="copy" size={18}/></span>
-              <span class="general-setting-copy"><h4>Duplicate profile</h4><small>Creates a separate copy of this profile’s configuration.</small></span>
-              <button type="button" class="profile-text-action" onclick={() => void duplicateProfile(activeProfile)}>Duplicate</button>
-            </section>
-            {#if !activeProfile.isDefault && activeProfile.id !== 'default'}
-              <section class="general-setting-row">
-                <span class="option-mark large"><Icon name="trash" size={18}/></span>
-                <span class="general-setting-copy"><h4>Delete profile</h4><small>Permanently removes this profile’s configuration.</small></span>
-                <button type="button" class="profile-text-action danger" onclick={() => void removeProfile(activeProfile)}>Delete</button>
-              </section>
+      {#if agentPane === 'agents'}
+        <div class="general-options profile-options" role="tabpanel">
+          {#if activeProfile}
+          <section class="general-group runtime-group">
+            <h3>Agents</h3>
+            <div class="runtime-grid" role="radiogroup" aria-label="Agent runtime" aria-busy={savingRuntime} use:scrollFade={acpRegistry.length}>
+              <button type="button" class="runtime-card" class:active={runtimePresetId === 'polymux'} role="radio" aria-checked={runtimePresetId === 'polymux'} disabled={savingRuntime} onclick={() => void usePolymuxRuntime()}>
+                <span class="runtime-card-icon polymux"><img src="polymux.svg" alt="" /></span><strong>Polymux</strong><small>{savingRuntime && runtimePresetId === 'polymux' ? 'Switching…' : 'Built in'}</small>
+              </button>
+              {#each acpRegistry as entry (entry.id)}
+                <button type="button" class="runtime-card" class:active={runtimePresetId === entry.id} class:unavailable={!entry.command} role="radio" aria-checked={runtimePresetId === entry.id} disabled={savingRuntime || !entry.command} title={!entry.command ? 'Choose Custom to set the installed command' : undefined} onclick={() => void useRuntimePreset(entry)}>
+                  <span class="runtime-card-icon">{#if entry.icon}<img src={entry.icon} alt="" />{:else}{entry.name.slice(0, 1)}{/if}</span>
+                  <strong>{entry.name}</strong><small>{savingRuntime && runtimePresetId === entry.id ? installingAgentId === entry.id ? 'Installing…' : 'Connecting…' : armedAgentInstallId === entry.id && !registryEntryIsInstalled(entry) ? 'Click again to install' : entry.command ? `v${entry.version}` : 'Custom command'}</small>
+                </button>
+              {/each}
+              <button type="button" class="runtime-card" class:active={runtimePresetId === 'custom'} role="radio" aria-checked={runtimePresetId === 'custom'} disabled={savingRuntime} onclick={selectCustomRuntime}>
+                <span class="runtime-card-icon custom">+</span><strong>Custom</strong><small>Name and command</small>
+              </button>
+            </div>
+            {#if acpRegistryLoading}<p class="runtime-registry-status">Loading ACP agents…</p>{/if}
+            {#if acpRegistryError}<p class="runtime-registry-status">{acpRegistryError}</p>{/if}
+            {#if runtimeKind === 'acp' && runtimePresetId === 'custom'}
+              <label class="runtime-field"><span>Name</span><input bind:value={runtimeName} placeholder="Codex" /></label>
+              <label class="runtime-field"><span>Command</span><input bind:value={runtimeCommand} placeholder="codex-acp" spellcheck="false" /></label>
+              <label class="runtime-field"><span>Arguments</span><textarea bind:value={runtimeArgs} placeholder="One argument per line" spellcheck="false"></textarea></label>
+              <label class="runtime-field"><span>Working folder</span><input bind:value={runtimeCwd} placeholder="Use Polymux folder" spellcheck="false" /></label>
+              <p class="runtime-note">Uses this profile’s enabled MCP connections.</p>
+              <div class="runtime-custom-actions">
+                <button type="button" class="profile-text-action" disabled={savingRuntime || !runtimeCommand.trim()} onclick={() => void saveAgentRuntime()}>{savingRuntime ? 'Using…' : 'Use custom agent'}</button>
+              </div>
             {/if}
           </section>
-        {/if}
-      </div>
+          {#if runtimeDraftIsActive()}
+            <section class="general-group agent-configuration">
+              <h3>Configuration</h3>
+              {#if agentRuntime.kind === 'polymux'}
+                <button type="button" class="general-setting-row agent-setting-link" onclick={openAgentModels}>
+                  <span class="option-mark large"><Icon name="bot" size={18}/></span>
+                  <span class="general-setting-copy"><h4>Models</h4><small>Choose the model used for each Polymux role.</small></span>
+                  <span class="agent-setting-value">Configure <Icon name="forward" size={13}/></span>
+                </button>
+                <button type="button" class="general-setting-row agent-setting-link" onclick={openAgentProviders}>
+                  <span class="option-mark large"><Icon name="bolt" size={18}/></span>
+                  <span class="general-setting-copy"><h4>Providers</h4><small>Connect hosted and local inference providers.</small></span>
+                  <span class="agent-setting-value">Configure <Icon name="forward" size={13}/></span>
+                </button>
+              {:else if agentSettingsLoading}
+                <p class="agent-settings-state">Loading options from {agentRuntime.name}…</p>
+              {:else if !agentSettings}
+                <div class="agent-settings-load">
+                  <span><h4>Agent options</h4><small>{agentSettingsError || `Read the models and providers ${agentRuntime.name} exposes through ACP.`}</small></span>
+                  <button type="button" class="profile-text-action" onclick={() => void loadAgentSettings()}>Load options</button>
+                </div>
+              {:else}
+                {#if agentSettings.authRequired || agentSettings.authMethods.length || agentSettings.supportsLogout}
+                  <button type="button" class="general-setting-row agent-setting-link" onclick={openAgentAuthentication}>
+                    <span class="option-mark large"><Icon name="key" size={18}/></span>
+                    <span class="general-setting-copy"><h4>Authentication</h4><small>{agentSettings.authRequired ? `Sign in before configuring ${agentRuntime.name}.` : `Authentication is managed by ${agentRuntime.name} through ACP.`}</small></span>
+                    <span class="agent-setting-value">{agentSettings.authRequired ? 'Sign in' : 'Connected'} <Icon name="forward" size={13}/></span>
+                  </button>
+                {/if}
+                {#if !agentSettings.authRequired}
+                  {#each agentSettings.configOptions as option (option.id)}
+                    <section class="general-setting-row">
+                      <span class="option-mark large"><Icon name={option.category === 'model' ? 'bot' : option.category === 'thought_level' ? 'sparkles' : option.category === 'mode' ? 'cursor' : 'settings'} size={18}/></span>
+                      <span class="general-setting-copy"><h4>{option.name}</h4><small>{option.description ?? 'Supplied by the agent through ACP.'}</small></span>
+                      {#if option.type === 'boolean'}
+                        <button type="button" class:enabled={option.currentValue} class="computerHistory-toggle" role="switch" aria-label={option.name} aria-checked={option.currentValue} disabled={agentConfigSaving !== ''} onclick={() => void setAgentConfigOption(option, !option.currentValue)}><span></span></button>
+                      {:else if agentOptionUsesDirectory(option)}
+                        <button type="button" class="agent-option-open" disabled={agentConfigSaving !== ''} onclick={() => openAgentOption(option)}><span>{agentOptionLabel(option)}</span><Icon name="forward" size={13}/></button>
+                      {:else}
+                        <div class="setting-menu agent-option-menu" class:busy={agentConfigSaving !== ''}>
+                          <Menu options={option.options.map((item) => ({value: item.value, label: item.name}))} value={option.currentValue} label={option.name} wide onChange={(value) => void setAgentConfigOption(option, value)}/>
+                        </div>
+                      {/if}
+                    </section>
+                  {/each}
+                  {#if agentSettings.supportsProviders}
+                    <button type="button" class="general-setting-row agent-setting-link" onclick={openAcpProviders}>
+                      <span class="option-mark large"><Icon name="bolt" size={18}/></span>
+                      <span class="general-setting-copy"><h4>Providers</h4><small>Configure the routes this agent exposes through ACP.</small></span>
+                      <span class="agent-setting-value">{agentSettings.providers.length} <Icon name="forward" size={13}/></span>
+                    </button>
+                  {/if}
+                  {#if !agentSettings.configOptions.length && !agentSettings.supportsProviders && !agentSettings.authMethods.length && !agentSettings.supportsLogout}
+                    <p class="agent-settings-state">{agentRuntime.name} does not advertise configurable models, providers, or authentication through ACP.</p>
+                  {/if}
+                {/if}
+                {#if agentSettingsError}<p class="agent-settings-error" role="alert">{agentSettingsError}</p>{/if}
+              {/if}
+            </section>
+          {/if}
+          {/if}
+        </div>
+      {:else if agentPane === 'auth'}
+        <div class="general-options agent-auth-options" role="tabpanel">
+          <section class="general-group">
+            <h3>Authentication</h3>
+            <section class="general-setting-row agent-auth-status">
+              <span class="option-mark large"><Icon name="key" size={18}/></span>
+              <span class="general-setting-copy"><h4>{agentSettings?.authRequired ? 'Sign in required' : 'Connected'}</h4><small>{agentSettings?.authRequired ? `${agentRuntime.name} requires authentication before it can create a session.` : `${agentRuntime.name} can create ACP sessions with its current credentials.`}</small></span>
+              {#if !agentSettings?.authRequired && agentSettings?.supportsLogout}
+                <button type="button" class="profile-text-action" disabled={agentAuthSaving !== ''} onclick={() => void logoutAgent()}>{agentAuthSaving === 'logout' ? 'Signing out…' : 'Sign out'}</button>
+              {/if}
+            </section>
+            {#each (agentSettings?.authRequired ? agentSettings.authMethods : []) as method (method.id)}
+              <section class="general-setting-row">
+                <span class="option-mark large"><Icon name={method.type === 'terminal' ? 'terminal' : 'user'} size={18}/></span>
+                <span class="general-setting-copy"><h4>{method.name}</h4><small>{method.description ?? (method.type === 'terminal' ? 'Complete authentication in an interactive terminal.' : 'Complete authentication with this agent.')}</small></span>
+                <button type="button" class="profile-text-action" disabled={agentAuthSaving !== '' || !method.available} title={!method.available ? 'Interactive terminal authentication is not available in Polymux yet.' : undefined} onclick={() => void authenticateAgent(method.id)}>{agentAuthSaving === method.id ? 'Signing in…' : method.available ? 'Sign in' : 'Terminal required'}</button>
+              </section>
+            {:else}
+              {#if agentSettings?.authRequired}
+                <div class="agent-settings-load">
+                  <span><h4>No ACP login method advertised</h4><small>Authenticate with the agent’s native CLI, then reload its status.</small></span>
+                  <button type="button" class="profile-text-action" disabled={agentSettingsLoading} onclick={() => void loadAgentSettings()}>{agentSettingsLoading ? 'Checking…' : 'Check again'}</button>
+                </div>
+              {/if}
+            {/each}
+            {#if agentSettingsError}<p class="agent-settings-error" role="alert">{agentSettingsError}</p>{/if}
+          </section>
+        </div>
+      {:else if agentPane === 'option' && agentConfigOption?.type === 'select'}
+        <div class="options-body agent-option-directory" role="tabpanel">
+          <div class="options-rail">
+            <ul class="options-rail-list" use:scrollFade={agentConfigGroups.length}>
+              {#each agentConfigGroups as group (group.id)}
+                <li><button type="button" class:selected={group.id === selectedAgentOptionGroup} class="options-rail-row provider-row" onclick={() => selectedAgentOptionGroup = group.id}>
+                  <span class="provider-mark"><ProviderLogo provider={group.id} size={18}/></span>
+                  <span class="options-rail-copy"><strong>{group.name}</strong><small>{group.options.length} {group.options.length === 1 ? 'model' : 'models'}</small></span>
+                </button></li>
+              {/each}
+            </ul>
+          </div>
+          <div class="options-detail agent-option-detail">
+            <header class="options-detail-header provider-detail-header">
+              <span class="provider-mark large"><ProviderLogo provider={agentConfigGroup?.id ?? 'acp'} size={22}/></span>
+              <span class="options-title-group"><h3>{agentConfigGroup?.name ?? agentConfigOption.name}</h3><span class="model-count">{agentConfigGroup?.options.length ?? 0} models</span></span>
+            </header>
+            <div class="agent-option-values" use:scrollFade={agentConfigGroup?.id}>
+              {#each agentConfigGroup?.options ?? [] as item (item.value)}
+                <button type="button" class:active={item.value === agentConfigOption.currentValue} disabled={agentConfigSaving !== ''} onclick={() => void setAgentConfigOption(agentConfigOption!, item.value)}>
+                  <span><strong>{item.name}</strong>{#if item.description}<small>{item.description}</small>{/if}</span>
+                  {#if item.value === agentConfigOption.currentValue}<Icon name="check" size={14}/>{/if}
+                </button>
+              {/each}
+            </div>
+            {#if agentSettingsError}<p class="agent-settings-error" role="alert">{agentSettingsError}</p>{/if}
+          </div>
+        </div>
+      {:else if agentPane === 'providers'}
+        <div class="options-body agent-provider-directory" role="tabpanel">
+          <div class="options-rail">
+            <ul class="options-rail-list" use:scrollFade={agentSettings?.providers.length}>
+              {#each agentSettings?.providers ?? [] as provider (provider.id)}
+                <li><button type="button" class:selected={provider.id === selectedAgentProvider} class:has-check={provider.baseUrl !== null} class="options-rail-row provider-row" onclick={() => chooseAgentProvider(provider)}>
+                  <span class="provider-mark"><ProviderLogo provider={provider.apiType ?? provider.id} size={18}/></span>
+                  <span class="options-rail-copy"><strong>{provider.id}</strong><small>{provider.baseUrl ? 'Configured' : 'Not configured'}</small></span>
+                  {#if provider.baseUrl}<span class="configured-check"><Icon name="check" size={13}/></span>{/if}
+                </button></li>
+              {:else}<li class="options-empty rail-empty">No providers advertised</li>{/each}
+            </ul>
+          </div>
+          <div class="options-detail">
+            {#if agentProvider}
+              <header class="options-detail-header provider-detail-header">
+                <span class="provider-mark large"><ProviderLogo provider={agentProvider.apiType ?? agentProvider.id} size={22}/></span>
+                <span class="options-title-group"><h3>{agentProvider.id}</h3><span class:good={agentProvider.baseUrl !== null} class="options-badge">{agentProvider.baseUrl ? 'Configured' : 'Not configured'}</span></span>
+              </header>
+              <form class="agent-provider-form" onsubmit={(event) => {event.preventDefault(); void saveAgentProvider(agentProvider!);}}>
+                <label><span>Protocol</span><div class="setting-menu"><Menu options={agentProvider.supported.map((item) => ({value: item, label: item}))} bind:value={agentProviderApiType} label="Provider protocol" wide/></div></label>
+                <label><span>Base URL</span><input bind:value={agentProviderBaseUrl} aria-label="Base URL" placeholder="https://api.example.com" spellcheck="false" required/></label>
+                <label><span>Authorization</span><input bind:value={agentProviderAuthorization} aria-label="Authorization header" type="password" placeholder="Bearer …" spellcheck="false"/><small>Sent once as the Authorization header; it is never read back.</small></label>
+                <div class="custom-provider-actions">
+                  {#if !agentProvider.required}<button type="button" disabled={agentProviderSaving || !agentProvider.baseUrl} onclick={() => void disableAgentProvider(agentProvider!)}>Disable</button>{/if}
+                  <button type="submit" class="credential-primary" disabled={agentProviderSaving || !agentProviderApiType || !agentProviderBaseUrl.trim()}>{agentProviderSaving ? 'Saving…' : 'Save provider'}</button>
+                </div>
+              </form>
+              {#if agentSettingsError}<p class="agent-settings-error" role="alert">{agentSettingsError}</p>{/if}
+            {:else}<p class="options-empty detail">Select a provider</p>{/if}
+          </div>
+        </div>
+      {/if}
     {:else if mode === 'hub'}
       <HubTab {api} />
     {:else if mode === 'drive'}
@@ -3061,7 +3732,7 @@
             <span class="general-setting-copy"><h4>{$t('settings.advancedMode')}</h4><small>{$t('settings.advancedModeHint')}</small></span>
             {#if general}<button type="button" class:enabled={general.advancedMode} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableAdvancedMode')} aria-checked={general.advancedMode} disabled={updatingAdvancedMode} onclick={() => void setAdvancedMode(!general!.advancedMode)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
-          <button type="button" class="general-setting-row pinned-views-row" class:expanded={pinnedViewsExpanded} aria-expanded={pinnedViewsExpanded} onclick={() => pinnedViewsExpanded = !pinnedViewsExpanded}>
+          <button type="button" class="general-setting-row pinned-views-row" class:expanded={pinnedViewsExpanded} aria-expanded={pinnedViewsExpanded} aria-controls="pinned-views-config" onclick={() => pinnedViewsExpanded = !pinnedViewsExpanded}>
             <span class="option-mark large"><Icon name="pin" size={18}/></span>
             <span class="general-setting-copy pinned-views-toggle">
               <h4>{$t('settings.pinnedViews')}</h4><small>{$t('settings.pinnedViewsHint')}</small>
@@ -3072,10 +3743,10 @@
             </span>
           </button>
           {#if pinnedViewsExpanded}
-            <div class="pinned-views-config">
+            <div id="pinned-views-config" class="pinned-views-config">
               <div class="pinned-views-options">
                 {#each PINNED_VIEW_OPTIONS as row (row.kind)}
-                  <button type="button" class="pinned-view-option" class:checked={general?.pinnedViews.includes(row.kind)} disabled={updatingPinnedViews || !general} onclick={() => void togglePinnedView(row.kind)}>
+                  <button type="button" role="checkbox" aria-checked={general?.pinnedViews.includes(row.kind) ?? false} class="pinned-view-option" class:checked={general?.pinnedViews.includes(row.kind)} disabled={updatingPinnedViews || !general} onclick={() => void togglePinnedView(row.kind)}>
                     <span class="pinned-view-check">{#if general?.pinnedViews.includes(row.kind)}<Icon name="check" size={12}/>{/if}</span>
                     <Icon name={row.icon} size={16}/>
                     <span>{$t(row.label)}</span>
@@ -3084,7 +3755,10 @@
               </div>
               <div class="pinned-views-preview">
                 <div class="top-bar-mock" aria-label={$t('settings.pinnedViewsHint')}>
-                  <div class="top-bar-mock-icons" bind:this={pinnedViewMockIcons}>
+                  <div
+                    class="top-bar-mock-icons"
+                    bind:this={pinnedViewMockIcons}
+                  >
                     {#each general?.pinnedViews ?? [] as view (view)}
                       <button
                         type="button"
@@ -3092,13 +3766,10 @@
                         class:dragging={pinnedViewDragKind === view}
                         data-pinned-view={view}
                         disabled={updatingPinnedViews}
-                        aria-label={$t(view === 'drive' ? 'workspace.drive' : view === 'schedule' ? 'workspace.schedule' : view === 'hub' ? 'workspace.hub' : 'workspace.tasks')}
+                        aria-label={$t(view === 'drive' ? 'workspace.drive' : view === 'schedule' ? 'workspace.schedule' : view === 'calendar' ? 'workspace.calendar' : view === 'hub' ? 'workspace.hub' : 'workspace.tasks')}
                         onpointerdown={(event) => startPinnedViewDrag(event, view)}
-                        onpointermove={previewPinnedViewDrop}
-                        onpointerup={() => void finishPinnedViewDrag()}
-                        onpointercancel={() => void finishPinnedViewDrag()}
                         animate:flip={{duration: 140}}
-                      ><Icon name={view === 'drive' ? 'drive' : view === 'schedule' ? 'clock' : view === 'hub' ? 'chat' : 'tasks'} size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
+                      ><Icon name={view === 'drive' ? 'drive' : view === 'schedule' ? 'clock' : view === 'calendar' ? 'calendar' : view === 'hub' ? 'chat' : 'tasks'} size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
                     {/each}
                     <span class="title-bar-icon-button top-bar-mock-fixed" aria-hidden="true"><Icon name="settings" size={SETTINGS_ICON_SIZE} strokeWidth={SETTINGS_ICON_STROKE_WIDTH}/></span>
                     <span class="title-bar-icon-button top-bar-mock-fixed" aria-hidden="true"><Icon name="panel" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></span>
@@ -3174,10 +3845,7 @@
           <h3>{$t('settings.groupNotifications')}</h3>
           <section class="general-setting-row">
             <span class="option-mark large"><Icon name="bell" size={18}/></span>
-            <span class="general-setting-copy"><h4>{$t('settings.notifications')}</h4><small>{notificationsUnsupported ? $t('settings.notificationsUnsupported') : $t('settings.notificationsHint')}</small></span>
-            {#if general?.notificationsEnabled}
-              <button type="button" class="permission-retry" onclick={() => void sendTestNotification()}>{$t('settings.notificationTest')}</button>
-            {/if}
+            <span class="general-setting-copy"><h4>{$t('settings.notifications')}</h4><small>{$t('settings.notificationsHint')}</small></span>
             {#if general}<button type="button" class:enabled={general.notificationsEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableNotifications')} aria-checked={general.notificationsEnabled} disabled={updatingNotifications === 'all'} onclick={() => void setNotificationsEnabled(!general!.notificationsEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
           <!-- The master switch above owns these: with it off they are greyed
@@ -3228,7 +3896,7 @@
         </section>
         <section class="memory-setting-row memory-primary-row">
           <span class="option-mark large"><Icon name="computer" size={18}/></span>
-          <span class="general-setting-copy"><h4>Computer history</h4><small>{$t('settings.computerHistoryBody')}</small><span class="computerHistory-inline-stats" aria-label="Computer history storage"><span>{$t('settings.computerHistoryCaptures', {count: computerHistory?.storedFrames ?? 0})}</span><span>{formatBytes(computerHistory?.storedBytes ?? 0)}</span><span>{$t('settings.computerHistoryLatest', {time: formatMemoryTime(computerHistory?.lastCapturedAt)})}</span><span>{$t('settings.computerHistoryDistilled', {time: formatMemoryTime(computerHistory?.distilledThrough)})}</span><span>{$t('settings.computerHistoryEvents', {count: computerHistory?.storedEvents ?? 0})}</span></span></span>
+          <span class="general-setting-copy"><h4>Computer history</h4><small>{$t('settings.computerHistoryBody')}</small><span class="computerHistory-inline-stats" aria-label="Computer history storage"><span>{$t('settings.computerHistoryCaptures', {count: computerHistory?.storedFrames ?? 0})}</span><span>{formatBytes(computerHistory?.storedBytes ?? 0)}</span><span>{$t('settings.computerHistoryLatest', {time: formatMemoryTime(computerHistory?.lastCapturedAt)})}</span><span>{$t('settings.computerHistoryEvents', {count: computerHistory?.storedEvents ?? 0})}</span></span></span>
           {#if computerHistory}<button type="button" class:enabled={computerHistory.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableComputerHistory')} aria-checked={computerHistory.enabled} disabled={updatingComputerHistory} onclick={() => void setComputerHistoryEnabled(!computerHistory!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
         </section>
         {#if memory?.consolidationError}<section class="computerHistory-error"><span><h4>{$t('settings.consolidationFailed')}</h4><p>{memory.consolidationError}</p><small>{$t('settings.consolidationFallback')}{#if memory.consolidationRetryAfter}{$t('settings.consolidationRetryAt', {time: formatMemoryTime(memory.consolidationRetryAfter)})}{:else}{$t('settings.consolidationRetryNext')}{/if}</small></span></section>{/if}
@@ -3289,11 +3957,45 @@
           <section class="history-timeline" use:scrollFade={`${selectedHistoryDay}:${memoryBrowserMode}`}>
             <h4>{selectedHistoryDayLabel()}</h4>
             {#if memoryBrowserMode === 'history'}
-              {#each selectedHistoryEntries as entry, entryIndex (entry.id)}
-                <article class="history-entry" class:last={entryIndex === selectedHistoryEntries.length - 1}>
-                  <time>{historyTime(entry.capturedAt)}</time><span class="history-dot"></span><div class="history-entry-card"><header><span class="history-entry-app">{#if sourceIcons[historyEntryApp(entry)]}<img src={sourceIcons[historyEntryApp(entry)] ?? ''} alt=""/>{:else}<Icon name="apps" size={15}/>{/if}<strong title={historyEntryApp(entry)}>{historyEntryApp(entry)}</strong></span><span class="history-entry-actions"><button type="button" aria-label={`Show ${historyEntryApp(entry)} capture in folder`} data-tooltip-label="Show in folder" onclick={() => void revealComputerHistoryEntry(entry)}><Icon name="folder" size={14}/></button><button type="button" class="destructive" aria-label={`Delete ${historyEntryApp(entry)} capture`} data-tooltip-label="Delete capture" disabled={deletingHistoryEntry === entry.id} onclick={() => void removeComputerHistoryEntry(entry)}><Icon name="trash" size={14}/></button></span></header><p>{historyEntryDetail(entry)}</p></div>
-                </article>
-              {:else}<p class="history-empty">No computer history captured for this day.</p>{/each}
+              {#if historyActivitiesLoadingDay === selectedHistoryDay && !selectedHistoryActivities.length}
+                <p class="history-empty">Summarizing recent activity…</p>
+            {:else}
+              {#each selectedHistoryActivities as activity, activityIndex (activity.id)}
+                  <article class="history-entry history-activity" class:last={activityIndex === selectedHistoryActivities.length - 1}>
+                    <time>{historyTime(activity.startedAt)}</time>
+                    <span class="history-dot"></span>
+                    <div class="history-entry-card">
+                      <h5>{activity.title}</h5>
+                      <p>{activity.summary}</p>
+                      <footer class="history-activity-footer">
+                        <span class="history-activity-apps" aria-label={`Apps used: ${activity.apps.join(', ')}`}>
+                          {#each activity.apps as app (app)}
+                            {#if sourceIcons[app]}<img src={sourceIcons[app] ?? ''} alt={app} title={app}/>{:else}<span title={app}><Icon name="apps" size={15}/></span>{/if}
+                          {/each}
+                        </span>
+                        {#if activity.captures}
+                          <button type="button" class="history-evidence-toggle" aria-expanded={expandedHistoryActivity === activity.id} onclick={() => void toggleHistoryActivity(activity)}>{expandedHistoryActivity === activity.id ? 'Hide details' : `${activity.captures} ${activity.captures === 1 ? 'capture' : 'captures'}`}</button>
+                        {/if}
+                      </footer>
+                      {#if expandedHistoryActivity === activity.id}
+                        <div class="history-evidence">
+                          {#if historyActivityCapturesLoading === activity.id}
+                            <p class="history-evidence-empty">Loading details…</p>
+                          {:else}
+                            {#each historyActivityCaptures[activity.id] ?? [] as entry (entry.id)}
+                              <div class="history-evidence-row">
+                                <time>{historyTime(entry.capturedAt)}</time>
+                                <span class="history-entry-app">{#if sourceIcons[historyEntryApp(entry)]}<img src={sourceIcons[historyEntryApp(entry)] ?? ''} alt=""/>{:else}<Icon name="apps" size={15}/>{/if}<span title={entry.sourceName}>{entry.sourceName}</span></span>
+                                <span class="history-entry-actions"><button type="button" aria-label={`Show ${historyEntryApp(entry)} capture in folder`} data-tooltip-label="Show in folder" onclick={() => void revealComputerHistoryEntry(entry)}><Icon name="folder" size={14}/></button><button type="button" class="destructive" aria-label={`Delete ${historyEntryApp(entry)} capture`} data-tooltip-label="Delete capture" disabled={deletingHistoryEntry === entry.id} onclick={() => void removeComputerHistoryEntry(entry)}><Icon name="trash" size={14}/></button></span>
+                              </div>
+                            {:else}<p class="history-evidence-empty">No raw captures remain.</p>{/each}
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  </article>
+              {:else}<p class="history-empty">No summarized activity for this day.</p>{/each}
+              {/if}
             {:else}
               <div class="memory-snippets">
                 {#each selectedMemoryEntries as entry (entry.id)}
@@ -3435,7 +4137,7 @@
                 {/if}
               </div>
             {:else if mode === 'skills'}
-              <button type="button" class:active={installingSkill} class="rail-tool" aria-label={$t('settings.installFromVercel')} data-tooltip-label={$t('settings.vercelSkills')} onclick={beginInstallSkill}><Icon name="storefront" size={15}/></button>
+              <button type="button" class:active={installingSkill} class="rail-tool" aria-label={$t('settings.installFromVercel')} data-tooltip-label={$t('settings.marketplace')} onclick={beginInstallSkill}><Icon name="storefront" size={15}/></button>
               <div class="rail-tool-wrap">
                 <button type="button" class:active={adding === 'skills' || skillAddMenuOpen} class="rail-tool" aria-label={$t('settings.addSkills')} aria-haspopup="menu" aria-expanded={skillAddMenuOpen} data-tooltip-label={$t('settings.addSkills')} onclick={() => { openRailMenu = null; skillAddMenuOpen = !skillAddMenuOpen; }}><Icon name="plus" size={15}/></button>
                 {#if skillAddMenuOpen}
@@ -3546,6 +4248,7 @@
           <div class="options-resources">
             <section><header><h4>{$t('settings.tabSkills')}</h4><span>{plugin.contributions.skills.length}</span></header><ul use:scrollFade={plugin.contributions.skills}>{#each plugin.contributions.skills as name}<li><Icon name="sparkles" size={14}/>{name}</li>{:else}<li class="muted">{$t('settings.pluginNoSkills')}</li>{/each}</ul></section>
             <section><header><h4>MCP</h4><span>{plugin.contributions.mcpServers.length}</span></header><ul use:scrollFade={plugin.contributions.mcpServers}>{#each plugin.contributions.mcpServers as name}<li><Icon name="mcp" size={14}/>{name}</li>{:else}<li class="muted">{$t('settings.pluginNoMcp')}</li>{/each}</ul></section>
+            <section><header><h4>Views</h4><span>{plugin.contributions.views.length}</span></header><ul use:scrollFade={plugin.contributions.views}>{#each plugin.contributions.views as name}<li><Icon name="panel" size={14}/>{name}</li>{:else}<li class="muted">No views</li>{/each}</ul></section>
           </div>
           {#if plugin.contributions.commands || plugin.contributions.agents || plugin.contributions.hooks}
             <!-- Counted rather than listed: Polymux has no surface for these
@@ -3909,7 +4612,7 @@
   /* The window has no title bar of its own while this is up, so the top strip
      stays draggable. It sits under the controls, which opt back out. */
   .options-page-drag{position:absolute;z-index:0;top:0;right:0;left:0;height:var(--app-topbar-height);-webkit-app-region:drag}
-  .options-nav{position:relative;z-index:1;min-height:0;display:flex;flex-direction:column;gap:10px;padding:0 12px 14px;border-right:1px solid var(--neutral-200);-webkit-app-region:no-drag}
+  .options-nav{position:relative;z-index:2;min-height:0;display:flex;flex-direction:column;gap:10px;padding:0 12px 14px;border-right:1px solid var(--neutral-200);-webkit-app-region:no-drag}
   /* Clears the traffic lights instead of dropping below them; full screen zeroes
      --chrome-inset and the label slides to the window edge, exactly as the new
      chat and search controls do. */
@@ -3924,7 +4627,7 @@
   .options-nav-item:hover,.options-nav-item:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
   .options-nav-item.active{background:var(--neutral-200);color:var(--neutral-950);font-weight:540}
   .profile-switcher{position:relative;flex:none;padding-top:10px;border-top:1px solid var(--neutral-200)}
-  .profile-trigger{width:100%;height:34px;display:flex;align-items:center;justify-content:flex-start;border:0;border-radius:9px;padding:0 8px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:12px;text-align:left}
+  .profile-trigger{width:100%;height:34px;display:flex;align-items:center;justify-content:flex-start;box-sizing:border-box;border:0;border-radius:9px;padding:0 8px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:12px;line-height:14px;text-align:left}
   .profile-trigger:hover,.profile-trigger:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
   .profile-trigger.basic{cursor:default}
   .profile-trigger.basic:hover{background:transparent;color:var(--neutral-700)}
@@ -3941,24 +4644,39 @@
   .profile-create button:hover,.profile-create button:focus-visible{outline:0;border-color:var(--neutral-300);color:var(--neutral-950)}
   .profile-list{min-height:0;display:flex;flex-direction:column;gap:2px;overflow-y:auto;padding-bottom:4px;scrollbar-width:none}
   .profile-list::-webkit-scrollbar{display:none}
-  .profile-row{position:relative;display:flex;align-items:center;border-radius:8px}
+  .profile-row{position:relative;height:32px;display:flex;align-items:center;box-sizing:border-box;border-radius:8px}
   .profile-row:hover,.profile-row:focus-within{background:var(--neutral-100)}
   .profile-row.active:hover,.profile-row.active:focus-within{background:var(--neutral-200)}
   .profile-row.active{background:var(--neutral-100)}
-  .profile-select{min-width:0;height:32px;display:flex;flex:1;align-items:center;gap:7px;border:0;padding:0 3px 0 6px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11.5px;text-align:left}
+  .profile-select{min-width:0;height:32px;display:flex;flex:1;align-items:center;gap:7px;border:0;padding:0 3px 0 6px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11.5px;line-height:13.5px;text-align:left}
   .profile-select>span:first-child{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .profile-select>:global(svg){flex:none;margin-left:auto}
-  .profile-options{padding-top:2px}
-  .profile-text-action,.profile-default-status{height:28px;display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--app-surface);font:inherit;font-size:11px;font-weight:550}
-  .profile-text-action{color:var(--neutral-700);cursor:pointer}
-  .profile-default-status{color:var(--neutral-400)}
+  .profile-rename{position:relative;min-width:0;height:32px;display:flex;flex:1;align-items:center;box-sizing:border-box;padding:0 6px}
+  .profile-rename::after{position:absolute;right:6px;bottom:4px;left:6px;height:1px;background:var(--neutral-400);content:'';pointer-events:none}
+  .profile-rename input{min-width:0;width:100%;height:13.5px;box-sizing:border-box;appearance:none;border:0;padding:0;background:transparent;color:var(--neutral-950);font:inherit;font-size:11.5px;line-height:13.5px;outline:0}
+  .profile-trigger.profile-rename{height:34px;padding:0 8px;cursor:text}
+  .profile-trigger.profile-rename::after{right:8px;bottom:5px;left:8px}
+  .profile-trigger.profile-rename input{height:14px;font-size:12px;line-height:14px}
+  .profile-actions-trigger{width:25px;height:32px;display:grid;flex:none;place-items:center;border:0;padding:0;background:transparent;color:var(--neutral-400);cursor:pointer;transition:color .12s ease}
+  .profile-actions-trigger:hover,.profile-actions-trigger:focus-visible,.profile-actions-trigger.open{outline:0;color:var(--neutral-950)}
+  .profile-actions-menu{position:fixed;z-index:1100;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);display:flex;flex-direction:column;overflow-y:auto;box-sizing:border-box;scrollbar-width:none}
+  .profile-actions-menu:not(.placed){opacity:0;pointer-events:none}
+  .profile-actions-menu::-webkit-scrollbar{display:none}
+  .profile-actions-menu :global(svg){flex:none}
+  .profile-actions-menu .polymux-dropdown-item span{white-space:nowrap}
+  .profile-actions-menu .danger{color:var(--danger-600,#c74848)}
+  .profile-options{display:flex;flex-direction:column;padding-top:2px}.profile-options>.agent-configuration{margin-top:auto}
+  .profile-text-action{height:28px;display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11px;font-weight:550}
   .profile-text-action:hover,.profile-text-action:focus-visible{outline:0;border-color:var(--neutral-300);color:var(--neutral-950)}
-  .profile-text-action.danger{color:var(--danger-600,#c74848)}
+  .profile-options>.runtime-group{min-height:0;display:flex;flex:1 0 auto;flex-direction:column;padding-bottom:0}.runtime-field{display:grid;grid-template-columns:90px minmax(0,1fr);align-items:center;gap:10px;min-height:42px;border-bottom:1px solid var(--neutral-200);color:var(--neutral-600);font-size:10.5px}.runtime-field:first-of-type{margin-top:8px}.runtime-field input,.runtime-field textarea{width:100%;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:8px;background:var(--app-surface);color:var(--neutral-900);font:inherit;font-size:10.5px}.runtime-field input{height:28px;padding:0 9px}.runtime-field textarea{min-height:54px;margin:6px 0;padding:7px 9px;resize:vertical}.runtime-field input:focus,.runtime-field textarea:focus{outline:0;border-color:var(--neutral-400)}.runtime-note{margin:8px 0 0;color:var(--neutral-500);font-size:10.5px}.runtime-custom-actions{display:flex;justify-content:flex-end;margin-top:10px}.profile-text-action:disabled{cursor:default;opacity:.45}
+  .runtime-grid{height:294px;min-height:294px;display:grid;flex:1 1 auto;grid-template-columns:repeat(auto-fill,minmax(144px,1fr));align-content:start;gap:7px;overflow-y:auto;margin:10px 0 0;padding:1px;scrollbar-width:none}.runtime-grid::-webkit-scrollbar{display:none}.runtime-card{min-width:0;height:82px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:3px;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:10px;padding:9px;background:var(--app-surface);color:var(--neutral-600);cursor:pointer;text-align:left;font:inherit;transition:border-color .15s ease,color .15s ease,background .15s ease}.runtime-card:hover,.runtime-card:focus-visible{outline:0;border-color:var(--neutral-400);color:var(--neutral-950)}.runtime-card.active{border-color:var(--neutral-700);background:var(--neutral-100);color:var(--neutral-950)}.runtime-card:disabled{cursor:default}.runtime-card.unavailable{opacity:.5}.runtime-card-icon{width:18px;height:18px;display:grid;place-items:center;overflow:hidden;border-radius:5px;background:var(--neutral-200);color:var(--neutral-700);font-size:10px;font-weight:650}.runtime-card-icon img{width:14px;height:14px;object-fit:contain}.runtime-card-icon.polymux{overflow:visible;border-radius:0;background:transparent}.runtime-card-icon.polymux img{width:18px;height:18px}.runtime-card-icon.custom{background:transparent;color:var(--neutral-700);font-size:18px;font-weight:400}.runtime-card strong,.runtime-card small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runtime-card strong{font-size:11px;font-weight:570}.runtime-card small{color:var(--neutral-400);font-size:9.5px}.runtime-registry-status{margin:8px 0;color:var(--neutral-500);font-size:10.5px}:global(:root[data-theme="dark"]) .runtime-card-icon.polymux img{filter:invert(1)}
+  .agent-configuration{padding-bottom:12px}.agent-setting-link{width:100%;border:0;padding:0;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit}.agent-setting-link:hover .general-setting-copy h4,.agent-setting-link:focus-visible .general-setting-copy h4{color:var(--neutral-950)}.agent-setting-link:focus-visible{outline:0}.agent-setting-value,.agent-option-open{display:flex;flex:none;align-items:center;gap:6px;color:var(--neutral-500);font-size:10.5px;font-weight:550}.agent-option-open{max-width:230px;height:28px;border:1px solid var(--neutral-200);border-radius:8px;padding:0 8px 0 10px;background:var(--app-surface);cursor:pointer;font-family:inherit}.agent-option-open span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.agent-option-open:hover,.agent-option-open:focus-visible{outline:0;border-color:var(--neutral-300);color:var(--neutral-950)}.agent-option-open:disabled{cursor:default;opacity:.5}.agent-option-menu{max-width:230px}.agent-settings-state{margin:12px 0 0;color:var(--neutral-500);font-size:11px}.agent-settings-load{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:62px}.agent-settings-load>span{min-width:0;display:flex;flex-direction:column;gap:3px}.agent-settings-load h4{margin:0;color:var(--neutral-900);font-size:12.5px;font-weight:570}.agent-settings-load small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.agent-settings-error{margin:10px 0 0;color:#b34b4b;font-size:10.5px}.agent-option-directory,.agent-provider-directory{flex:1}.agent-option-directory .options-rail,.agent-provider-directory .options-rail{padding-top:0}.agent-option-detail{display:flex;min-height:0;flex-direction:column;overflow:hidden}.agent-option-values{min-height:0;display:flex;flex:1;flex-direction:column;overflow-y:auto;scrollbar-width:none}.agent-option-values::-webkit-scrollbar{display:none}.agent-option-values button{min-height:50px;display:flex;flex:none;align-items:center;gap:12px;border:0;border-bottom:1px solid var(--neutral-100);padding:7px 10px;background:transparent;color:var(--neutral-500);cursor:pointer;text-align:left;font:inherit}.agent-option-values button:hover,.agent-option-values button:focus-visible{outline:0;background:var(--neutral-50);color:var(--neutral-900)}.agent-option-values button.active{background:var(--neutral-100);color:var(--neutral-900)}.agent-option-values button>span{min-width:0;display:flex;flex:1;flex-direction:column;gap:2px}.agent-option-values strong,.agent-option-values small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.agent-option-values strong{color:var(--neutral-950);font-size:12px;font-weight:540}.agent-option-values small{font-size:10px}.agent-provider-form{max-width:560px;display:flex;flex-direction:column;gap:12px;margin-top:14px}.agent-provider-form>label{display:grid;grid-template-columns:90px minmax(0,1fr);align-items:center;gap:10px;color:var(--neutral-600);font-size:10.5px}.agent-provider-form input{height:30px;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:8px;padding:0 9px;background:var(--app-surface);color:var(--neutral-900);font:inherit;font-size:10.5px}.agent-provider-form input:focus{outline:0;border-color:var(--neutral-400)}.agent-provider-form label small{grid-column:2;color:var(--neutral-400);font-size:9.5px}.agent-provider-form .custom-provider-actions{margin-top:4px}.agent-provider-form .setting-menu{min-width:180px;justify-self:start}
+  .agent-auth-options{padding-top:0}.agent-auth-status{margin-top:0}.agent-auth-options .general-group{padding-bottom:12px}
   .options-page-content{position:relative;z-index:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;-webkit-app-region:no-drag}
   /* A plain cross-fade: the page arrives over the app in place, and a fade that
      also scaled would read as a second, contradictory movement. */
   @keyframes options-page-in{from{opacity:0}}
-  .options-header{flex:none;min-width:0;padding:calc(var(--app-topbar-height) - 4px) var(--options-detail-edge) 18px calc(var(--options-content-edge) + var(--options-tab-inline))}.options-header h2{margin:0;color:var(--neutral-950);font-size:28px;font-weight:570;letter-spacing:-.025em}
+  .options-header{position:relative;flex:none;min-width:0;padding:calc(var(--app-topbar-height) - 4px) var(--options-detail-edge) 18px calc(var(--options-content-edge) + var(--options-tab-inline))}.options-header h2{margin:0;color:var(--neutral-950);font-size:28px;font-weight:570;letter-spacing:-.025em}.options-header:has(.agent-back) h2{padding-left:22px}.agent-back{position:absolute;top:calc(var(--app-topbar-height) - 1px);left:calc(var(--options-content-edge) + var(--options-tab-inline));height:28px;display:flex;align-items:center;border:0;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer;line-height:0}.agent-back:hover,.agent-back:focus-visible{outline:0;color:var(--neutral-950)}
   /* Explicit line boxes, not glyph-driven ones: scripts with taller ascenders
      (CJK, Thai, Devanagari) would otherwise grow the header and shift the tab
      row down as you switch tabs. Both lines are short by design, so clipping
@@ -4004,7 +4722,7 @@
   .skill-registry-results .skill-registry-more{display:grid;place-items:center;min-height:40px;border:0;color:var(--neutral-400);font-size:11px}
   .skill-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 18px;margin:8px 0 0;max-width:460px}.skill-meta div{min-width:0;display:flex;flex-direction:column;gap:2px}.skill-meta dt{color:var(--neutral-400);font-size:10.5px;font-weight:550;letter-spacing:.02em}.skill-meta dd{margin:0;overflow:hidden;color:var(--neutral-700);text-overflow:ellipsis;white-space:nowrap;font-size:12px}.options-rail-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}.options-rail-copy strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:530}.options-rail-copy small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;text-transform:capitalize}.options-name{display:flex;align-items:center;gap:5px}.options-name strong{min-width:0;flex:1}.options-name i{padding:1px 5px;border-radius:5px;background:#fff;color:var(--neutral-600);font-size:9px;font-style:normal}
   .provider-mark{width:26px;height:26px;display:grid;flex:none;place-items:center;border:1px solid var(--neutral-200);border-radius:8px;background:#fff}.provider-mark.large{width:34px;height:34px;border-radius:10px}.provider-row.selected .provider-mark{border-color:rgba(0,0,0,.08)}.provider-row.has-check{position:relative}.provider-row.has-check .options-rail-copy{-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px));mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 34px),transparent calc(100% - 13px))}.configured-check{position:absolute;top:0;right:15px;bottom:0;width:18px;display:grid;place-items:center;color:var(--neutral-600)}
-  .options-rail-tools{position:relative;flex:none;display:flex;align-items:center;justify-content:flex-start;gap:2px;margin-top:2px}.rail-tool-wrap{position:relative}.rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}.rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0;width:154px}.rail-tool-menu .polymux-dropdown-item>span{min-width:0;flex:1}.rail-tool-text{width:auto;padding:0 9px;font-family:inherit;font-size:11px;font-weight:540}
+  .options-rail-tools{position:relative;flex:none;display:flex;align-items:center;justify-content:flex-start;gap:2px;margin-top:2px}.rail-tool-wrap{position:relative}.rail-tool{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:8px;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer}.rail-tool:hover,.rail-tool:focus-visible,.rail-tool.active,.rail-tool[aria-expanded="true"]{outline:0;background:var(--neutral-100);color:var(--neutral-900)}.rail-tool-menu{position:absolute;z-index:5;bottom:36px;left:0}.rail-tool-menu .polymux-dropdown-item>span{min-width:0;flex:1}.rail-tool-text{width:auto;padding:0 9px;font-family:inherit;font-size:11px;font-weight:540}
   .options-detail{min-height:0;overflow-y:auto;padding:0 18px 20px var(--options-divider-gap)}.options-detail-header{display:flex;align-items:center;gap:11px}.options-detail-header>.computerHistory-toggle{margin-right:8px}.options-title-group{min-width:0;flex:1;display:flex;align-items:center;gap:8px}.options-title-group h3{min-width:0;margin:0;overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:570}.options-badge{flex:none;padding:2px 8px;border-radius:7px;background:var(--neutral-200);color:var(--neutral-600);font-size:10.5px;font-weight:540;text-transform:capitalize}.options-badge.good{background:#e8f5ec;color:#347049}.official-badge{display:inline-flex;align-items:center;gap:4px;padding:0;background:transparent;transform:translateY(1px)}.official-badge :global(svg){flex:none}
   .options-detail.mcp-detail{display:flex;flex-direction:column;overflow:hidden}.mcp-detail>.options-detail-header,.mcp-detail>.options-detail-block{flex:none}.mcp-detail>.options-resources{min-height:0;flex:1}.mcp-detail>.options-resources>section{min-height:0;display:flex;flex-direction:column}.mcp-detail>.options-resources ul{min-height:0;max-height:none;flex:1;overflow-y:auto}
   /* The conflict mark sits on the name's line, like the official stamp, and
@@ -4045,7 +4763,7 @@
   .models-field-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 5px;color:var(--neutral-700);font-size:11px;font-weight:540}
   .detect-models{height:22px;border:1px solid var(--neutral-200);border-radius:7px;padding:0 8px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10px;font-weight:540}.detect-models:hover,.detect-models:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.detect-models:disabled{cursor:default;opacity:.5}
   .custom-provider-logo{display:block;flex:none;cursor:pointer}.custom-provider-logo>input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.custom-provider-logo-preview{position:relative;overflow:hidden;transition:background-color .14s ease}.custom-provider-logo:hover .custom-provider-logo-preview,.custom-provider-logo:focus-within .custom-provider-logo-preview{background:var(--neutral-300)}.custom-provider-logo-preview img{width:100%;height:100%;display:block;object-fit:cover}
-  .skill-add-menu{min-width:142px}.skill-folder-input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  .skill-folder-input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
   .credential-keys{margin-top:12px}.credential-key-row{min-height:42px;display:flex;align-items:center;gap:9px;padding:0 6px;border-bottom:1px solid var(--neutral-100)}.credential-key-state{width:7px;height:7px;flex:none;border-radius:50%;background:var(--neutral-300)}.credential-key-state.active{background:#4da46a}.credential-key-copy{min-width:0;flex:1;display:flex;flex-direction:column}.credential-key-row strong{color:var(--neutral-800);font-size:11.5px;font-weight:520}.credential-key-row small{color:var(--neutral-400);font-size:10px}.credential-key-row button{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:var(--neutral-400);cursor:pointer}.credential-key-row button:hover{background:var(--neutral-100);color:#a44343}.credential-unavailable{margin:22px 0 0;padding:10px;border-radius:9px;background:var(--neutral-100);color:var(--neutral-500);font-size:12px}
   .model-table tr.model-row{cursor:pointer}
   /* The roles view: each job on one row, with what it runs and how hard it
@@ -4059,7 +4777,8 @@
   .pinned-views-control{height:28px;display:flex;flex:none;align-items:center;gap:4px;margin-left:auto}
   .pinned-views-chevron{display:grid;place-items:center;color:var(--neutral-400);transition:transform .15s ease}
   .pinned-views-configure{flex:none;color:var(--neutral-500);font-size:10.5px;font-weight:550;line-height:14px}
-  .pinned-views-chevron.open{transform:rotate(90deg)}
+  .pinned-views-chevron.open{transform:rotate(180deg)}
+  .general-options .pinned-views-row.expanded{border-bottom-color:transparent}
   .pinned-views-config{display:grid;grid-template-columns:minmax(150px,1fr) minmax(210px,.9fr);gap:28px;padding:8px 10px 12px 42px}.pinned-views-options{display:flex;flex-direction:column;gap:2px}
   .pinned-view-option{all:unset;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:450;color:var(--neutral-700);transition:background .12s}
   .pinned-view-option:hover{background:var(--neutral-100)}
@@ -4068,7 +4787,7 @@
   .pinned-view-option.checked .pinned-view-check{background:var(--neutral-900);border-color:var(--neutral-900);color:#fff}
   .pinned-views-preview{min-width:0;display:flex;flex-direction:column;align-items:flex-end;gap:5px}.pinned-views-preview>small{width:100%;color:var(--neutral-400);text-align:right;font-size:9.5px}.top-bar-mock{width:100%;height:70px;display:flex;align-items:flex-start;justify-content:flex-end;border-top:1px solid var(--neutral-250,var(--neutral-200));border-right:1px solid var(--neutral-250,var(--neutral-200));border-radius:0 10px 0 0;padding:var(--titlebar-control-top) 8px 0;background:color-mix(in srgb,var(--app-surface) 94%,var(--neutral-100))}.top-bar-mock-icons{min-height:var(--titlebar-control-size);display:flex;align-items:center;justify-content:flex-end;gap:var(--main-control-gap)}.top-bar-mock-button{flex:none;cursor:grab;touch-action:none;user-select:none}.top-bar-mock-button:active{cursor:grabbing}.top-bar-mock-button.dragging{opacity:.35}
   @media(max-width:760px){.pinned-views-config{grid-template-columns:1fr;gap:14px}.pinned-views-preview{align-items:stretch}.pinned-views-preview>small{text-align:left}}
-  .history-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px}.history-outline{border:1px solid var(--neutral-200);border-radius:8px;padding:6px 10px;background:transparent;color:var(--neutral-800);font:inherit;font-size:10.5px;white-space:nowrap}.history-section-heading h3{margin:0;font-size:13px;font-weight:570}.history-clear-menu{position:relative}.history-clear-trigger{display:flex;align-items:center;gap:6px}.history-clear-chevron{display:grid;place-items:center;color:var(--neutral-500);transition:transform .15s ease}.history-clear-chevron.open{transform:rotate(180deg)}.history-clear-options{position:absolute;z-index:6;top:calc(100% + 6px);right:0;width:142px}.history-clear-options .polymux-dropdown-item>span{min-width:0;flex:1}.history-browser{min-height:430px;display:grid;grid-template-columns:minmax(250px,320px) minmax(0,1fr);gap:28px}.history-calendar{align-self:start;border:1px solid var(--neutral-200);border-radius:12px;padding:12px;background:var(--app-surface)}.history-calendar>header{height:28px;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.history-calendar>header button{width:24px;height:24px;display:grid;place-items:center;border:0;padding:0;background:none;color:var(--neutral-500);cursor:pointer}.history-calendar>header button:hover,.history-calendar>header button:focus-visible{outline:0;color:var(--neutral-950)}.history-weekdays,.history-calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}.history-weekdays span{height:22px;display:grid;place-items:center;color:var(--neutral-400);font-size:9px;font-weight:570}.history-calendar-grid button{position:relative;aspect-ratio:1;min-width:0;display:grid;place-items:center;border:0;border-radius:7px;padding:0;background:none;color:var(--neutral-400);font:inherit;font-size:10.5px}.history-calendar-grid button:not(:disabled){color:var(--neutral-800);cursor:pointer}.history-calendar-grid button:not(:disabled):hover,.history-calendar-grid button:not(:disabled):focus-visible{outline:0;background:var(--neutral-100)}.history-calendar-grid button.selected{background:var(--neutral-900);color:var(--on-primary)}.history-calendar-grid button.outside{opacity:.32}.history-calendar-grid button i{position:absolute;bottom:4px;width:3px;height:3px;border-radius:50%;background:currentColor}.history-calendar-grid button.selected i{background:var(--on-primary)}.history-timeline{min-width:0;border:0;border-radius:0;padding:4px 0 18px}.history-timeline>h4{margin:0 0 16px;font-size:12.5px;font-weight:550}.history-entry{display:grid;grid-template-columns:58px 14px minmax(0,1fr);gap:9px;min-height:84px}.history-entry time{padding-top:0;color:var(--neutral-500);font-size:10.5px;line-height:17px;text-align:right}.history-entry>div{min-width:0;border-left:0;padding:0 0 18px 3px}.history-entry>div strong{display:block;overflow:hidden;font-size:12.5px;font-weight:570;line-height:17px;text-overflow:ellipsis;white-space:nowrap}.history-entry>div p{margin:5px 0 0;font-size:10.5px;line-height:1.5}.history-dot{position:relative;align-self:stretch;width:14px;height:auto;margin:0;background:none;box-shadow:none}.history-dot::after{position:absolute;top:8px;bottom:-8px;left:50%;width:1px;background:var(--neutral-200);content:"";transform:translateX(-50%)}.history-dot::before{position:absolute;z-index:1;top:4px;left:50%;width:9px;height:9px;border-radius:50%;background:var(--neutral-400);content:"";transform:translateX(-50%)}.history-entry.last .history-dot::after{display:none}.history-empty{margin:28px 0;text-align:center;color:var(--neutral-500);font-size:12px}
+  .history-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px}.history-outline{border:1px solid var(--neutral-200);border-radius:8px;padding:6px 10px;background:transparent;color:var(--neutral-800);font:inherit;font-size:10.5px;white-space:nowrap}.history-section-heading h3{margin:0;font-size:13px;font-weight:570}.history-clear-menu{position:relative}.history-clear-trigger{display:flex;align-items:center;gap:6px}.history-clear-chevron{display:grid;place-items:center;color:var(--neutral-500);transition:transform .15s ease}.history-clear-chevron.open{transform:rotate(180deg)}.history-clear-options{position:absolute;z-index:6;top:calc(100% + 6px);right:0}.history-clear-options .polymux-dropdown-item>span{min-width:0;flex:1}.history-browser{min-height:430px;display:grid;grid-template-columns:minmax(250px,320px) minmax(0,1fr);gap:28px}.history-calendar{align-self:start;border:1px solid var(--neutral-200);border-radius:12px;padding:12px;background:var(--app-surface)}.history-calendar>header{height:28px;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.history-calendar>header button{width:24px;height:24px;display:grid;place-items:center;border:0;padding:0;background:none;color:var(--neutral-500);cursor:pointer}.history-calendar>header button:hover,.history-calendar>header button:focus-visible{outline:0;color:var(--neutral-950)}.history-weekdays,.history-calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}.history-weekdays span{height:22px;display:grid;place-items:center;color:var(--neutral-400);font-size:9px;font-weight:570}.history-calendar-grid button{position:relative;aspect-ratio:1;min-width:0;display:grid;place-items:center;border:0;border-radius:7px;padding:0;background:none;color:var(--neutral-400);font:inherit;font-size:10.5px}.history-calendar-grid button:not(:disabled){color:var(--neutral-800);cursor:pointer}.history-calendar-grid button:not(:disabled):hover,.history-calendar-grid button:not(:disabled):focus-visible{outline:0;background:var(--neutral-100)}.history-calendar-grid button.selected{background:var(--neutral-900);color:var(--on-primary)}.history-calendar-grid button.outside{opacity:.32}.history-calendar-grid button i{position:absolute;bottom:4px;width:3px;height:3px;border-radius:50%;background:currentColor}.history-calendar-grid button.selected i{background:var(--on-primary)}.history-timeline{min-width:0;border:0;border-radius:0;padding:4px 0 18px}.history-timeline>h4{margin:0 0 16px;font-size:12.5px;font-weight:550}.history-entry{display:grid;grid-template-columns:58px 14px minmax(0,1fr);gap:9px;min-height:84px}.history-entry time{padding-top:0;color:var(--neutral-500);font-size:10.5px;line-height:17px;text-align:right}.history-entry>div{min-width:0;border-left:0;padding:0 0 18px 3px}.history-entry>div p{margin:5px 0 0;font-size:10.5px;line-height:1.5}.history-dot{position:relative;align-self:stretch;width:14px;height:auto;margin:0;background:none;box-shadow:none}.history-dot::after{position:absolute;top:8px;bottom:-8px;left:50%;width:1px;background:var(--neutral-200);content:"";transform:translateX(-50%)}.history-dot::before{position:absolute;z-index:1;top:4px;left:50%;width:9px;height:9px;border-radius:50%;background:var(--neutral-400);content:"";transform:translateX(-50%)}.history-entry.last .history-dot::after{display:none}.history-empty{margin:28px 0;text-align:center;color:var(--neutral-500);font-size:12px}
   @media (max-width:760px){.history-section-heading{align-items:flex-start}.history-section-heading>span{flex-wrap:wrap;justify-content:flex-end}.history-browser{grid-template-columns:1fr}.history-calendar{max-width:340px}}
   .history-browser{height:335px;min-height:0}
   .history-calendar{height:100%;box-sizing:border-box}
@@ -4106,6 +4825,9 @@
   .history-heading-actions>.history-view-switch,.history-heading-actions>.history-clear-menu{flex:none}
   .history-section-heading{min-height:30px;align-items:center}
   .history-section-heading h3{color:var(--neutral-950);font-size:15px;line-height:18px}
+  .history-clear-trigger{cursor:pointer}
+  .history-clear-chevron{transform:translateY(1px)}
+  .history-clear-chevron.open{transform:translateY(1px) rotate(180deg)}
   .history-calendar-indicators{position:absolute;right:0;bottom:4px;left:0;display:flex;align-items:center;justify-content:center;gap:4px}
   .history-weekdays,.history-calendar-grid{column-gap:2px}
   .history-calendar-grid{row-gap:2px}
@@ -4134,18 +4856,33 @@
   .memory-snippet time{flex:none;color:var(--neutral-400);font-size:9.5px}
   .memory-snippet p{display:-webkit-box;overflow:hidden;margin:5px 0 0;color:var(--neutral-700);font-size:10.5px;line-height:1.45;line-clamp:3;-webkit-box-orient:vertical;-webkit-line-clamp:3}
   .history-timeline>h4{color:var(--neutral-950)}
-  .history-entry>div strong{color:var(--neutral-900)}
   .history-entry>div p{color:var(--neutral-600)}
   .memory-snippet strong{color:var(--neutral-800)}
   .memory-snippet time{color:var(--neutral-500)}
-  .history-entry-card>header{min-height:18px;display:flex;align-items:center;justify-content:space-between;gap:8px}
   .history-entry-app{min-width:0;display:flex;align-items:center;gap:7px}
   .history-entry-app img{width:16px;height:16px;flex:none;border-radius:4px;object-fit:contain}
   .history-entry-app>:global(svg){flex:none;color:var(--neutral-500)}
   .history-entry-actions{display:flex;flex:none;align-items:center;gap:3px;opacity:0;transition:opacity .12s ease}
-  .history-entry-card:hover .history-entry-actions,.history-entry-actions:focus-within{opacity:1}
+  .history-evidence-row:hover .history-entry-actions,.history-entry-actions:focus-within{opacity:1}
   .history-entry-actions button{width:22px;height:22px;display:grid;place-items:center;border:0;padding:0;background:none;color:var(--neutral-400);cursor:pointer}
   .history-entry-actions button:hover,.history-entry-actions button:focus-visible{outline:0;color:var(--neutral-900)}
   .history-entry-actions button.destructive:hover,.history-entry-actions button.destructive:focus-visible{color:#b34b4b}
   .history-entry-actions button:disabled{cursor:default;opacity:.45}
+  .history-activity{min-height:0}
+  .history-activity>.history-entry-card{padding-bottom:27px}
+  .history-activity h5{margin:0;color:var(--neutral-900);font-size:13px;font-weight:570;line-height:17px;letter-spacing:-.01em}
+  .history-activity>.history-entry-card>p{margin:7px 0 0;color:var(--neutral-600);font-size:11.5px;line-height:1.55}
+  .history-activity-footer{min-height:20px;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:11px}
+  .history-activity-apps{min-width:0;display:flex;align-items:center;gap:8px}
+  .history-activity-apps img,.history-activity-apps>span{width:18px;height:18px;display:grid;flex:none;place-items:center;border-radius:4px;object-fit:contain}
+  .history-activity-apps>span{color:var(--neutral-500)}
+  .history-evidence-toggle{flex:none;border:0;padding:0;background:none;color:var(--neutral-500);cursor:pointer;font:inherit;font-size:10px}
+  .history-evidence-toggle:hover,.history-evidence-toggle:focus-visible{outline:0;color:var(--neutral-900)}
+  .history-evidence{display:flex;flex-direction:column;gap:1px;margin-top:12px;border-top:1px solid var(--neutral-200);padding-top:7px}
+  .history-evidence-row{min-width:0;min-height:28px;display:grid;grid-template-columns:46px minmax(0,1fr) auto;align-items:center;gap:8px;border-radius:7px;padding:0 3px;color:var(--neutral-600)}
+  .history-evidence-row:hover{background:var(--neutral-100)}
+  .history-evidence-row>time{padding:0;color:var(--neutral-400);font-size:9.5px;line-height:14px;text-align:left}
+  .history-evidence-row .history-entry-app{gap:6px}
+  .history-evidence-row .history-entry-app>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}
+  .history-evidence-empty{min-height:52px;display:flex;align-items:center;justify-content:center;margin:0;color:var(--neutral-400);font-size:10px;text-align:center}
 </style>

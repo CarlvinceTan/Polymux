@@ -2,7 +2,10 @@ import type {AgentTool} from "@polymux/core";
 import type {Computer} from "@polymux/computer";
 import type {ControlOperation, ControlScope, SurfaceView} from "@polymux/computer";
 
-export function createComputerTools(computer: Computer): AgentTool[] {
+export function createComputerTools(
+  computer: Computer,
+  options: {refreshState?: () => Promise<void>} = {},
+): AgentTool[] {
   const result = (value: unknown) => ({content: JSON.stringify(value, null, 2)});
   return [
     {
@@ -20,6 +23,7 @@ export function createComputerTools(computer: Computer): AgentTool[] {
         additionalProperties: false,
       },
       async execute(input) {
+        await options.refreshState?.();
         const surfaces = Array.isArray(input.surfaces)
           ? input.surfaces.filter((value): value is SurfaceView => value === "apps" || value === "windows" || value === "tabs")
           : undefined;

@@ -7,8 +7,6 @@ npm install
 POLYMUX_MODEL=openai/gpt-5.6-luna npm run isolate
 npm start                 # ordinary user profile
 npm run new:start         # temporary empty profile
-npm run new:onboarding    # temporary profile in onboarding mode
-npm run onboarding        # ordinary profile in onboarding mode
 
 npm run check
 npm run test

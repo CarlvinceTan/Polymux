@@ -853,6 +853,24 @@ test("an invite through /invite is answered like one written as state", async ()
   }
 });
 
+test("auto-joining a bridge portal is not echoed back as a remote membership command", async () => {
+  const {hs, bridge, asToken, user, cleanup} = await startScriptedHarness();
+  try {
+    const roomId = await portal(hs, asToken, user);
+    const joined = await call(hs, "GET", "/_matrix/client/v3/joined_rooms", {
+      token: user.accessToken,
+    });
+    assert.deepEqual(joined.body.joined_rooms, [roomId], "the portal still becomes locally visible");
+
+    await stays(
+      () => bridge.attempts.length === 0,
+      "the synthetic local join must not be delivered to the inviting bridge",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("with auto-join off, an invited portal stays an invitation", async () => {
   // The hop is an extension standing in for an autojoin daemon, and the option
   // is the switch that turns it off; pinning both sides keeps it from becoming

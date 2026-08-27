@@ -1,7 +1,14 @@
 import type {
   ArtifactDto,
+  AgentRuntimeDto,
+  AgentSettingsDto,
+  AppUpdateDto,
+  CalendarEventDto,
+  CalendarListDto,
   ChatDto,
   ChatMessageDto,
+  ComputerHistoryActivityDto,
+  ComputerHistoryEntryDto,
   ComputerHistoryStatusDto,
   CommsEmailAccountDto,
   CommsStatusDto,
@@ -59,13 +66,8 @@ export function polymuxApi(): PolymuxApi {
 /** A development-only adapter keeps browser-based component tests useful. The
  * packaged desktop never selects it because preload supplies `window.polymux`. */
 function createBrowserDemoApi(): PolymuxApi {
-  /**
-   * `?onboarding` puts the demo into a genuine first-run state — nothing
-   * configured, nothing granted — so first-run setup can be previewed and
-   * tested without a second dev server.
-   */
-  const onboardingPreview =
-    typeof location !== 'undefined' && new URLSearchParams(location.search).has('onboarding');
+  // The dev branch always represents an already-configured profile.
+  const onboardingPreview = false;
   const now = Date.now();
   let conversations: ConversationDto[] = [
     conversation('welcome', 'Planning a product launch', now - 86_400_000),
@@ -84,6 +86,73 @@ function createBrowserDemoApi(): PolymuxApi {
   const runConversations = new Map<string, string>();
   let demoProfiles = [{id: 'default', name: 'Default Profile', isDefault: true}];
   let demoActiveProfile = 'default';
+  let demoAgentRuntime: AgentRuntimeDto = {kind: 'polymux', name: 'Polymux Agent'};
+  const demoCompactAgentSettings: AgentSettingsDto = {
+    authMethods: [{id: 'account', name: 'Sign in with agent account', description: 'Continue with the account managed by this agent.', type: 'agent', available: true}],
+    authRequired: false,
+    supportsLogout: true,
+    configOptions: [
+      {id: 'model', name: 'Model', description: 'AI model used by this agent', category: 'model', type: 'select', currentValue: 'default', options: [
+        {value: 'default', name: 'Default', description: 'Use the agent recommendation'},
+        {value: 'opus', name: 'Claude Opus', description: 'Most capable'},
+        {value: 'sonnet', name: 'Claude Sonnet', description: 'Balanced'},
+        {value: 'haiku', name: 'Claude Haiku', description: 'Fastest'},
+      ], groups: []},
+      {id: 'effort', name: 'Reasoning', description: 'How deeply the agent should reason', category: 'thought_level', type: 'select', currentValue: 'high', options: [
+        {value: 'low', name: 'Low', description: null},
+        {value: 'medium', name: 'Medium', description: null},
+        {value: 'high', name: 'High', description: null},
+      ], groups: []},
+    ],
+    providers: [],
+    supportsProviders: false,
+  };
+  const demoPiAgentSettings: AgentSettingsDto = {
+    authMethods: [{id: 'provider', name: 'Sign in with provider', description: 'Let pi complete authentication with the selected provider.', type: 'agent', available: true}],
+    authRequired: false,
+    supportsLogout: true,
+    configOptions: [
+      {id: 'model', name: 'Model', description: 'AI model used by pi', category: 'model', type: 'select', currentValue: 'anthropic/claude-sonnet-4', options: [
+        {value: 'openai/gpt-5.2', name: 'GPT-5.2', description: 'OpenAI flagship model'},
+        {value: 'openai/gpt-5.1-codex', name: 'GPT-5.1 Codex', description: 'Optimized for coding'},
+        {value: 'openai/gpt-4.1', name: 'GPT-4.1', description: 'Fast general-purpose model'},
+        {value: 'anthropic/claude-opus-4', name: 'Claude Opus 4', description: 'Most capable Anthropic model'},
+        {value: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', description: 'Balanced Anthropic model'},
+        {value: 'anthropic/claude-haiku-3.5', name: 'Claude Haiku 3.5', description: 'Fast Anthropic model'},
+        {value: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Google flagship model'},
+        {value: 'google/gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Fast Google model'},
+      ], groups: [
+        {id: 'openai', name: 'OpenAI', options: [
+          {value: 'openai/gpt-5.2', name: 'GPT-5.2', description: 'OpenAI flagship model'},
+          {value: 'openai/gpt-5.1-codex', name: 'GPT-5.1 Codex', description: 'Optimized for coding'},
+          {value: 'openai/gpt-4.1', name: 'GPT-4.1', description: 'Fast general-purpose model'},
+        ]},
+        {id: 'anthropic', name: 'Anthropic', options: [
+          {value: 'anthropic/claude-opus-4', name: 'Claude Opus 4', description: 'Most capable Anthropic model'},
+          {value: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', description: 'Balanced Anthropic model'},
+          {value: 'anthropic/claude-haiku-3.5', name: 'Claude Haiku 3.5', description: 'Fast Anthropic model'},
+        ]},
+        {id: 'google', name: 'Google', options: [
+          {value: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Google flagship model'},
+          {value: 'google/gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Fast Google model'},
+        ]},
+      ]},
+      {id: 'effort', name: 'Reasoning', description: 'How deeply the agent should reason', category: 'thought_level', type: 'select', currentValue: 'high', options: [
+        {value: 'low', name: 'Low', description: null},
+        {value: 'medium', name: 'Medium', description: null},
+        {value: 'high', name: 'High', description: null},
+      ], groups: []},
+    ],
+    providers: [],
+    supportsProviders: false,
+  };
+  let demoAgentSettings = structuredClone(demoCompactAgentSettings);
+  const demoAcpRegistry = [
+    {id: 'codex-acp', name: 'Codex', description: "OpenAI's coding assistant", version: '1.6.2', icon: '', installed: true, command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.6.2']},
+    {id: 'claude-acp', name: 'Claude Agent', description: "Anthropic's Claude agent", version: '0.70.0', icon: '', installed: true, command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.70.0']},
+    {id: 'pi-acp', name: 'pi ACP', description: 'Run pi through Agent Client Protocol', version: '0.0.33', icon: '', installed: false, command: 'npx', args: ['-y', 'pi-acp@0.0.33']},
+    {id: 'opencode', name: 'OpenCode', description: 'Open source coding agent', version: '1.0.0', icon: '', installed: false, command: 'npx', args: ['-y', 'opencode-ai@1.0.0', 'acp']},
+  ];
   let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string; reasoning?: ReasoningEffort}>> = {};
   const demoRoles = (): ModelRolesDto => {
     const assignment = (ref?: {provider: string; id: string; reasoning?: ReasoningEffort}): ModelRoleAssignmentDto | null => {
@@ -153,7 +222,7 @@ function createBrowserDemoApi(): PolymuxApi {
       marketplaceName: 'claude-code-plugins',
       directory: '~/.polymux/plugins/claude-code/code-review',
       enabled: true,
-      contributions: {skills: ['review-diff'], mcpServers: [], commands: 1, agents: 3, hooks: 0},
+      contributions: {skills: ['review-diff'], mcpServers: [], views: [], commands: 1, agents: 3, hooks: 0},
       conflicts: [],
     },
     {
@@ -166,7 +235,7 @@ function createBrowserDemoApi(): PolymuxApi {
       marketplaceName: 'claude-code-plugins',
       directory: '~/.polymux/plugins/claude-code/pdf-tools',
       enabled: false,
-      contributions: {skills: ['pdf'], mcpServers: ['pdf-server'], commands: 0, agents: 0, hooks: 2},
+      contributions: {skills: ['pdf'], mcpServers: ['pdf-server'], views: [], commands: 0, agents: 0, hooks: 2},
       // A name the demo's own skills already carry, so the warning has
       // something true to point at.
       conflicts: [{kind: 'skill', name: 'pdf', existingSource: 'official'}],
@@ -218,18 +287,18 @@ function createBrowserDemoApi(): PolymuxApi {
     },
     bridges: [
       {platform: 'whatsapp', name: 'WhatsApp', api: 'bridgev2', state: onboardingPreview ? 'logged-out' : 'connected', accounts: onboardingPreview ? [] : [{id: 'wa1', name: '+61 400 000 000', state: 'connected', error: null}], flows: onboardingPreview ? [{id: 'qr', name: 'QR Code', description: 'Scan a QR code to pair the bridge to your WhatsApp account'}, {id: 'phone', name: 'Pairing code', description: 'Enter your phone number and type the code WhatsApp shows into your phone'}] : [], setup: null, managementRoomHint: null, error: null},
-      {platform: 'telegram', name: 'Telegram', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'phone', name: 'Phone Number', description: 'Login using your Telegram phone number'}, {id: 'qr', name: 'QR Code', description: 'Login by scanning a QR code from your phone'}], setup: {fields: [{id: 'api_id', name: 'API ID', description: 'The numeric ID of your Telegram application.', helpUrl: 'https://my.telegram.org/apps', secret: false}, {id: 'api_hash', name: 'API hash', description: 'The hash shown next to it.', helpUrl: 'https://my.telegram.org/apps', secret: true}], configured: false}, managementRoomHint: null, error: null},
+      {platform: 'telegram', name: 'Telegram', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'phone', name: 'Phone Number', description: 'Login using your Telegram phone number'}, {id: 'qr', name: 'QR Code', description: 'Login by scanning a QR code from your phone'}, {id: 'bot', name: 'Bot token', description: 'Bots only · Uses a token from BotFather and does not act as your personal account'}, {id: 'manual', name: 'Manual', description: 'Advanced · Existing session credentials; the bridge recommends not using this method'}], setup: {fields: [{id: 'api_id', name: 'API ID', description: 'The numeric ID of your Telegram application.', helpUrl: 'https://my.telegram.org/apps', secret: false}, {id: 'api_hash', name: 'API hash', description: 'The hash shown next to it.', helpUrl: 'https://my.telegram.org/apps', secret: true}], configured: false}, managementRoomHint: null, error: null},
       {platform: 'signal', name: 'Signal', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Link this Mac as a Signal device by scanning a QR code'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'slack', name: 'Slack', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'token', name: 'Token', description: 'Sign in with a Slack token pair'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'slack', name: 'Slack', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'token', name: 'Auth token & cookie', description: 'Personal account · Browser tokens require the matching cookie'}, {id: 'app', name: 'Slack app', description: 'Workspace app · Limited to channels and permissions granted to the app'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'googlechat', name: 'Google Chat', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Google login', description: 'Sign in to your Google account'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'gmessages', name: 'Google Messages', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Pair with Messages for web by scanning a QR code'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'gmessages', name: 'Google Messages', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'google', name: 'Google Account', description: 'Pair with your Google account by matching the emoji shown on your phone'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'twitter', name: 'X', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'x.com', description: 'Login using cookies from x.com'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'bluesky', name: 'Bluesky', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'password', name: 'App password', description: 'Sign in with a Bluesky app password'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'gvoice', name: 'Google Voice', api: 'bridgev2', state: 'unreachable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'mautrix-gvoice is not installed on this Mac.'},
       {platform: 'zulip', name: 'Zulip', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'apitoken', name: 'API token', description: 'Login with your Zulip email and API token'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'messenger', name: 'Messenger', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'messenger', name: 'messenger.com', description: 'Login using cookies from messenger.com'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'instagram', name: 'Instagram', api: 'bridgev2', state: 'connected', accounts: [{id: 'ig1', name: '@carl.builds', state: 'connected', error: null}, {id: 'ig2', name: '@polymux', state: 'connected', error: null}], flows: [{id: 'instagram', name: 'instagram.com', description: 'Login using cookies from instagram.com'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'discord', name: 'Discord', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Scan a QR code with the Discord app'}, {id: 'token', name: 'Token', description: 'Paste a Discord account token to link it'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'discord', name: 'Discord', api: 'legacy', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR code', description: 'Recommended · Scan with the Discord mobile app; CAPTCHAs are not supported'}, {id: 'user-token', name: 'User token', description: 'Full personal account access · Manual and sensitive; may carry account risk'}, {id: 'bot-token', name: 'Bot token', description: 'Servers only · The bot sees only channels and permissions granted to it'}, {id: 'oauth-token', name: 'OAuth token', description: 'Limited scopes · Standard Discord OAuth cannot provide all personal messages'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'linkedin', name: 'LinkedIn', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Cookies', description: 'Log in with your LinkedIn account using your cookies'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'imessage', name: 'iMessage', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'local', name: 'This Mac', description: 'Read the Messages database on this Mac'}], setup: null, managementRoomHint: null, error: null},
       // No bridge to log in to: a relay against the WeChat app on this Mac,
@@ -244,9 +313,9 @@ function createBrowserDemoApi(): PolymuxApi {
       accounts: onboardingPreview
         ? []
         : [
-            {id: 'personal', displayName: 'Demo User', email: 'demo@example.com', isDefault: true, incoming: {kind: 'imap', host: 'imap.gmail.com', port: 993, encryption: 'tls', login: 'demo@example.com', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.gmail.com', port: 587, encryption: 'start-tls', login: 'demo@example.com', auth: 'command'}, secretStored: true, status: 'ok', error: null},
-            {id: 'work', displayName: 'Demo At Work', email: 'demo@work.example', isDefault: false, incoming: {kind: 'imap', host: 'outlook.office365.com', port: 993, encryption: 'tls', login: 'demo@work.example', auth: 'oauth2'}, outgoing: {kind: 'smtp', host: 'smtp.office365.com', port: 587, encryption: 'start-tls', login: 'demo@work.example', auth: 'oauth2'}, secretStored: false, status: 'unknown', error: null},
-            {id: 'team', displayName: null, email: 'team@example.co', isDefault: false, incoming: {kind: 'imap', host: 'imap.larksuite.com', port: 993, encryption: 'tls', login: 'team@example.co', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.larksuite.com', port: 465, encryption: 'tls', login: 'team@example.co', auth: 'command'}, secretStored: true, status: 'error', error: 'authentication failed'},
+            {id: 'personal', displayName: 'Demo User', email: 'demo@example.com', incoming: {kind: 'imap', host: 'imap.gmail.com', port: 993, encryption: 'tls', login: 'demo@example.com', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.gmail.com', port: 587, encryption: 'start-tls', login: 'demo@example.com', auth: 'command'}, secretStored: true, signatures: [{id: 'personal-default', name: 'Personal', body: 'Kind regards,\nDemo User', html: '<b>Kind regards,</b><br>Demo User'}], defaultSignatureId: 'personal-default', status: 'ok', error: null},
+            {id: 'work', displayName: 'Demo At Work', email: 'demo@work.example', incoming: {kind: 'imap', host: 'outlook.office365.com', port: 993, encryption: 'tls', login: 'demo@work.example', auth: 'oauth2'}, outgoing: {kind: 'smtp', host: 'smtp.office365.com', port: 587, encryption: 'start-tls', login: 'demo@work.example', auth: 'oauth2'}, secretStored: false, signatures: [{id: 'work-default', name: 'Work', body: 'Best,\nDemo User\nProduct Engineering', html: null}], defaultSignatureId: 'work-default', status: 'unknown', error: null},
+            {id: 'team', displayName: null, email: 'team@example.co', incoming: {kind: 'imap', host: 'imap.larksuite.com', port: 993, encryption: 'tls', login: 'team@example.co', auth: 'command'}, outgoing: {kind: 'smtp', host: 'smtp.larksuite.com', port: 465, encryption: 'tls', login: 'team@example.co', auth: 'command'}, secretStored: true, signatures: [], defaultSignatureId: null, status: 'error', error: 'authentication failed'},
           ],
     },
   };
@@ -272,25 +341,53 @@ function createBrowserDemoApi(): PolymuxApi {
   (window as unknown as {polymuxDemoReveal?: (request: WorkspaceRevealDto) => void}).polymuxDemoReveal =
     (request) => demoRevealListeners.forEach((listener) => listener(request));
   let demoChats: ChatDto[] = [
-    {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp', unread: 2, lastActivity: new Date(now - 3_500_000).toISOString(), preview: 'Yes — 2pm works.', group: false, avatarUrl: null},
+    {id: '!wx-filehelper:local', name: 'File Transfer', platform: 'wechat', unread: 0, lastActivity: new Date(now - 1_800_000).toISOString(), preview: 'Project notes.pdf', group: false, avatarUrl: null},
+    {id: '!wa-default-space:local', name: 'WhatsApp (+61426982339)', platform: 'whatsapp', accountIds: ['wa1'], unread: 0, lastActivity: null, preview: null, group: true, space: true, defaultSpace: true, parentIds: [], avatarUrl: null},
+    {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 3_500_000).toISOString(), preview: 'Yes — 2pm works.', group: false, parentIds: ['!wa-default-space:local'], avatarUrl: null},
+    {id: '!wa-phone:local', name: '+12262184662', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 3_700_000).toISOString(), preview: null, group: false, parentIds: ['!wa-default-space:local'], avatarUrl: null},
+    {id: '!ig-carl:local', name: 'Carl’s chat', platform: 'instagram', accountIds: ['ig1'], unread: 0, lastActivity: new Date(now - 4_000_000).toISOString(), preview: 'Personal account', group: false, avatarUrl: null},
+    {id: '!ig-polymux:local', name: 'Polymux chat', platform: 'instagram', accountIds: ['ig2'], unread: 0, lastActivity: new Date(now - 4_100_000).toISOString(), preview: 'Project account', group: false, avatarUrl: null},
+    {id: '!ig-project-space:local', name: 'Polymux community', platform: 'instagram', accountIds: ['ig2'], unread: 0, lastActivity: null, preview: null, group: true, space: true, parentIds: [], avatarUrl: null},
+    {id: '!ig-project-news:local', name: 'Project updates', platform: 'instagram', accountIds: ['ig2'], unread: 0, lastActivity: new Date(now - 4_200_000).toISOString(), preview: 'Latest build notes', group: true, parentIds: ['!ig-project-space:local'], avatarUrl: null},
     {id: '!tg-devs:local', name: 'Dev Chat', platform: 'telegram', unread: 0, lastActivity: new Date(now - 7_200_000).toISOString(), preview: 'Shipped the build, logs look clean.', group: true, avatarUrl: null},
-    {id: '!wa-family:local', name: 'Family', platform: 'whatsapp', unread: 0, lastActivity: new Date(now - 86_400_000).toISOString(), preview: 'Dinner Sunday?', group: true, avatarUrl: null},
+    {id: '!wa-family:local', name: 'Family', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 2}, unread: 2, lastActivity: new Date(now - 86_400_000).toISOString(), preview: 'Dinner Sunday?', group: true, parentIds: ['!wa-default-space:local'], avatarUrl: null},
+    {id: '!wa-nus-space:local', name: 'NUS exchange students AY26/27', platform: 'whatsapp', accountIds: ['wa1'], unread: 0, lastActivity: null, preview: null, group: true, space: true, parentIds: ['!wa-default-space:local'], avatarUrl: null},
+    {id: '!wa-nus-social:local', name: 'Social 💃', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 1}, unread: 1, lastActivity: new Date(now - 5_400_000).toISOString(), preview: 'Dinner after class?', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
+    {id: '!wa-nus-soc:local', name: 'School of Computing', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 10_800_000).toISOString(), preview: 'Tutorial group list', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
+    {id: '!wa-nus-running:local', name: 'Running 👟', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 14_400_000).toISOString(), preview: 'Saturday, 8am at UTown', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
   ];
+  // A real, short vertical WebM behind an .mp4 name. That mismatch reproduces
+  // the generic-file route used by some reel shares while still letting the
+  // headless browser prove the inline player receives playable bytes.
+  const demoReelUrl = 'data:video/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAJeEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggElTbuMU6uEHFO7a1OsggJI7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjIuMTIuMTAyV0GNTGF2ZjYyLjEyLjEwMkSJiEBpAAAAAAAAFlSua8iuAQAAAAAAAD/XgQFzxYisFaVyoEewLpyBACK1nIN1bmSIgQCGhVZfVlA5g4EBI+ODhAJiWgDgkLCBELqBHJqBAlWwhFW5gQESVMNnQIBzc6BjwIBnyJpFo4dFTkNPREVSRIeNTGF2ZjYyLjEyLjEwMnNz2mPAi2PFiKwVpXKgR7AuZ8ilRaOHRU5DT0RFUkSHmExhdmM2Mi4yOC4xMDIgbGlidnB4LXZwOWfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDAuMjAwMDAwMDAwAB9DtnVAl+eBAKO+gQAAgIJJg0IAAPABtgY4JBwYSgAAIEAAMV///5V29t/0rJIV6+83T8qAkchIzbj8ppDSUIBEwUeNuAQOsACjk4EAKACGAECSnEhQAAADcAAAUuKjk4EAUACGAECSnEBO4AADcAAAUuKjk4EAeACGAECSnEhQAAADcAAAUuKjk4EAoACGAECSnDhNQAADcAAAUuIcU7trkbuPs4EAt4r3gQHxggGr8IED';
   let demoChatMessages: ChatMessageDto[] = [
-    {id: 'c1', chatId: '!wa-jules:local', sender: 'Jules Tan', body: 'Are we still on for Thursday?', sentAt: new Date(now - 3_600_000).toISOString(), mine: false},
-    {id: 'c2', chatId: '!wa-jules:local', sender: 'You', body: 'Yes — 2pm works.', sentAt: new Date(now - 3_500_000).toISOString(), mine: true},
-    {id: 'c3', chatId: '!wa-family:local', sender: 'Mum', body: 'Dinner Sunday?', sentAt: new Date(now - 86_400_000).toISOString(), mine: false},
+    {id: 'wx1', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 2_100_000).toISOString(), mine: true, attachments: [{kind: 'file', url: null, name: 'Project notes.pdf', mimeType: null, size: 1_572_864}], viewIn: {app: 'WeChat', url: 'weixin://'}},
+    {id: 'wx2', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 2_000_000).toISOString(), mine: true, attachments: [{kind: 'audio', url: null, name: 'Voice message', mimeType: null, size: null, duration: 8}], viewIn: {app: 'WeChat', url: 'weixin://'}},
+    {id: 'wx3', chatId: '!wx-filehelper:local', sender: 'WeChat', body: 'A message was recalled', notice: true, sentAt: new Date(now - 1_900_000).toISOString(), mine: false},
+    {id: 'wx4', chatId: '!wx-filehelper:local', sender: 'You', body: 'My answer\n↳ Alice: Earlier text', sentAt: new Date(now - 1_800_000).toISOString(), mine: true, viewIn: {app: 'WeChat', url: 'weixin://'}},
+    {id: 'wx5', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 1_700_000).toISOString(), mine: true, linkPreview: {title: 'Useful article', description: 'A short description', url: 'https://example.test/article', source: 'example.test'}, viewIn: {app: 'WeChat', url: 'weixin://'}},
+    {id: 'wx6', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 1_600_000).toISOString(), mine: true, attachments: [{kind: 'file', url: demoReelUrl, name: 'AQO35LDKTG5E80mb8IC1UxBCatqRtz5e1UfSQbW_6TuswMo_IDXhnFdRLTK0IsjSS6YM4A.mp4', mimeType: null, size: 654, width: 16, height: 28, duration: .2}]},
+    {id: 'c1', chatId: '!wa-jules:local', sender: '@whatsapp_jules:local', senderName: 'Jules Tan (WA)', body: 'Are we still on for Thursday?', sentAt: new Date(now - 3_600_000).toISOString(), mine: false},
+    {id: 'c2', chatId: '!wa-jules:local', sender: '@meta_demo-account:local', senderName: 'Unknown user', body: 'Yes — 2pm works.', sentAt: new Date(now - 3_500_000).toISOString(), mine: true},
+    {id: 'c3', chatId: '!wa-family:local', sender: 'Mum', senderAvatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', body: 'Dinner Sunday?', sentAt: new Date(now - 86_400_000).toISOString(), mine: false},
+    {id: 'wa-notice', chatId: '!wa-family:local', sender: '@whatsapp_aaron:local', body: 'Áron joined the group', notice: true, sentAt: new Date(now - 86_370_000).toISOString(), mine: false},
     {id: 'c4', chatId: '!tg-devs:local', sender: 'Priya', body: 'Shipped the build, logs look clean.', sentAt: new Date(now - 7_200_000).toISOString(), mine: false},
+    {id: 'tg-notice', chatId: '!tg-devs:local', sender: '@telegrambot:local', body: 'Manny Asbanu joined the group', notice: true, sentAt: new Date(now - 7_260_000).toISOString(), mine: false},
+    {id: 'tg-link', chatId: '!tg-devs:local', sender: 'Pp Ll', body: 'https://docs.google.com/presentation/d/tutorial/edit?usp=sharing', sentAt: new Date(now - 7_230_000).toISOString(), mine: false, linkPreview: {title: 'CS3210 Tutorial 1', description: 'Instrumentation, Profiling, Slurm, and Report Writing', url: 'https://docs.google.com/presentation/d/tutorial/edit?usp=sharing', source: 'docs.google.com', imageUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', imageMimeType: 'image/gif', imageWidth: 1200, imageHeight: 630}},
+    {id: 'nus1', chatId: '!wa-nus-social:local', sender: 'Amelia', body: 'Dinner after class?', sentAt: new Date(now - 5_400_000).toISOString(), mine: false},
+    {id: 'nus2', chatId: '!wa-nus-soc:local', sender: 'Kai', body: 'Tutorial group list', sentAt: new Date(now - 10_800_000).toISOString(), mine: false},
+    {id: 'nus3', chatId: '!wa-nus-running:local', sender: 'Sam', body: 'Saturday, 8am at UTown', sentAt: new Date(now - 14_400_000).toISOString(), mine: false},
     // A second message from the same person, close behind: a group names the
     // first of someone's run and lets the rest follow it.
-    {id: 'c6', chatId: '!wa-family:local', sender: 'Mum', body: 'Roast if you can make it.', sentAt: new Date(now - 86_340_000).toISOString(), mine: false},
+    {id: 'c6', chatId: '!wa-family:local', sender: 'Mum', senderAvatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', body: 'Roast if you can make it.', sentAt: new Date(now - 86_340_000).toISOString(), mine: false},
     {id: 'c7', chatId: '!wa-family:local', sender: 'Dad', body: 'I can bring dessert.', sentAt: new Date(now - 86_280_000).toISOString(), mine: false},
+    {id: 'c8', chatId: '!wa-family:local', sender: 'WeChat', body: 'Peter6C invited Percival to the group chat', notice: true, sentAt: new Date(now - 86_220_000).toISOString(), mine: false},
     // A sticker, which is carried as an image but drawn at a sticker's size.
     // A real 1x1 GIF, terminator and all. The bytes have to decode: the thread
     // now swaps an image the homeserver would not serve for a named chip, and
     // a truncated fixture is indistinguishable from one, so a placeholder that
     // merely looked like a GIF made the sticker vanish from the demo.
-    {id: 'c5', chatId: '!wa-jules:local', sender: 'Jules Tan', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
+    {id: 'c5', chatId: '!wa-jules:local', sender: '@whatsapp_jules:local', senderName: 'Jules Tan (WA)', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, replyTo: 'c2', attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
   ];
   const demoMailFolders: MailFolderDto[] = [
     {name: 'INBOX', label: 'Inbox', role: 'inbox'},
@@ -309,6 +406,26 @@ function createBrowserDemoApi(): PolymuxApi {
   const demoWorkspaceSnapshots = new Map<string, WorkspaceSnapshotDto>();
   let demoDictationPass = 0;
   let demoComputerHistoryEnabled = true;
+  const demoHistoryPreview =
+    typeof location !== 'undefined' && new URLSearchParams(location.search).get('history') === 'summary';
+  const demoActivityStart = Math.floor((now - 20 * 60_000) / (10 * 60_000)) * (10 * 60_000);
+  const demoComputerHistoryEntries: ComputerHistoryEntryDto[] = demoHistoryPreview ? [
+    {id: 'history-chatgpt', capturedAt: new Date(demoActivityStart + 60_000).toISOString(), sourceId: 'ax-chatgpt', sourceName: 'ChatGPT — Computer History comparison', displayId: null, width: 0, height: 0, path: '/demo/computer-history/chatgpt.md', change: 1, reason: 'initial', bytes: 540, kind: 'text', app: 'ChatGPT'},
+    {id: 'history-polymux', capturedAt: new Date(demoActivityStart + 4 * 60_000).toISOString(), sourceId: 'ax-polymux', sourceName: 'Polymux — Memory settings', displayId: null, width: 0, height: 0, path: '/demo/computer-history/polymux.md', change: .18, reason: 'change', bytes: 860, kind: 'text', app: 'Polymux'},
+    {id: 'history-zed', capturedAt: new Date(demoActivityStart + 7 * 60_000).toISOString(), sourceId: 'ax-zed', sourceName: 'Zed — SettingsPage.svelte', displayId: null, width: 0, height: 0, path: '/demo/computer-history/zed.md', change: .12, reason: 'change', bytes: 720, kind: 'text', app: 'Zed'},
+  ] : [];
+  const demoComputerHistoryActivities: ComputerHistoryActivityDto[] = demoHistoryPreview ? [{
+    id: new Date(demoActivityStart).toISOString(),
+    startedAt: new Date(demoActivityStart).toISOString(),
+    endedAt: new Date(demoActivityStart + 10 * 60_000).toISOString(),
+    title: 'Computer History timeline redesign',
+    summary: 'You compared Polymux with ChatGPT’s activity timeline, then reworked Computer History around concise semantic summaries with raw captures kept as supporting evidence.',
+    apps: ['ChatGPT', 'Polymux', 'Zed'],
+    entryIds: demoComputerHistoryEntries.map((entry) => entry.id),
+    captures: demoComputerHistoryEntries.length,
+    events: 14,
+    summarized: true,
+  }] : [];
   let demoComputerHistorySettings: Pick<
     ComputerHistoryStatusDto,
     'excludeApps' | 'excludeSites' | 'recordPrivateBrowsing' | 'interactionEvents'
@@ -323,12 +440,11 @@ function createBrowserDemoApi(): PolymuxApi {
     enabled: demoComputerHistoryEnabled,
     running: demoComputerHistoryEnabled,
     directory: '/demo/computer-history',
-    lastCapturedAt: null,
+    lastCapturedAt: demoComputerHistoryEntries[0]?.capturedAt ?? null,
     lastError: null,
-    storedFrames: 0,
-    storedBytes: 0,
-    storedEvents: 0,
-    distilledThrough: null,
+    storedFrames: demoComputerHistoryEntries.length,
+    storedBytes: demoComputerHistoryEntries.reduce((total, entry) => total + entry.bytes, 0),
+    storedEvents: demoComputerHistoryActivities.reduce((total, activity) => total + activity.events, 0),
   });
   let demoMemoryEnabled = true;
   let demoGeneral: GeneralSettingsDto = {
@@ -347,8 +463,6 @@ function createBrowserDemoApi(): PolymuxApi {
     locationEnabled: true,
     hubIncognitoMode: false,
     reasoningLevel: 'medium',
-    // The demo is a returning user; the Playwright suite drives the main UI,
-    // not first-run setup. Flip to false to preview setup in the browser.
     onboardingCompleted: !onboardingPreview,
     permissions: {microphone: true, 'screen-recording': true, accessibility: true, 'full-disk-access': true, reminders: true, calendars: true, contacts: true, photos: true, automation: true},
     appPermissionsEnabled: true,
@@ -358,12 +472,15 @@ function createBrowserDemoApi(): PolymuxApi {
     location: null,
   };
 
-  const demoUpdate = {
-    status: 'unsupported' as const,
+  const demoUpdateReady =
+    typeof location !== 'undefined' &&
+    new URLSearchParams(location.search).get('update') === 'ready';
+  const demoUpdate: AppUpdateDto = {
+    status: demoUpdateReady ? 'ready' : 'unsupported',
     version: '0.1.0',
-    latest: null,
+    latest: demoUpdateReady ? '0.1.1' : null,
     checkedAt: '2026-08-14T00:00:00.000Z',
-    message: 'Updates are managed by the desktop app.',
+    message: demoUpdateReady ? null : 'Updates are managed by the desktop app.',
   };
 
   // The demo has no way to observe a real extension, so it reports installed
@@ -382,6 +499,40 @@ function createBrowserDemoApi(): PolymuxApi {
   });
 
   const api: PolymuxApi = {
+    agentRuntime: {
+      get: async () => structuredClone(demoAgentRuntime),
+      registry: async () => demoAcpRegistry,
+      update: async (request) => {
+        demoAgentRuntime = request.kind === 'polymux'
+          ? {kind: 'polymux', name: 'Polymux Agent'}
+          : {kind: 'acp', name: request.name, command: request.command, args: request.args ?? [], cwd: request.cwd ?? null, config: request.config ?? {}};
+        if (request.kind === 'acp') demoAgentSettings = structuredClone(request.name === 'pi ACP' ? demoPiAgentSettings : demoCompactAgentSettings);
+        return structuredClone(demoAgentRuntime);
+      },
+      settings: async () => structuredClone(demoAgentSettings),
+      authenticate: async (methodId) => {
+        if (!demoAgentSettings.authMethods.some((method) => method.id === methodId && method.available)) throw new Error(`Unsupported authentication method: ${methodId}`);
+        demoAgentSettings = {...demoAgentSettings, authRequired: false};
+        return structuredClone(demoAgentSettings);
+      },
+      logout: async () => {
+        demoAgentSettings = {...demoAgentSettings, authRequired: true};
+        return structuredClone(demoAgentSettings);
+      },
+      setConfigOption: async (id, value) => {
+        demoAgentSettings = {...demoAgentSettings, configOptions: demoAgentSettings.configOptions.map((option) => option.id === id ? {...option, currentValue: value} as typeof option : option)};
+        if (demoAgentRuntime.kind === 'acp') demoAgentRuntime.config[id] = value;
+        return structuredClone(demoAgentSettings);
+      },
+      setProvider: async (request) => {
+        demoAgentSettings = {...demoAgentSettings, providers: demoAgentSettings.providers.map((provider) => provider.id === request.id ? {...provider, apiType: request.apiType, baseUrl: request.baseUrl} : provider)};
+        return structuredClone(demoAgentSettings);
+      },
+      disableProvider: async (id) => {
+        demoAgentSettings = {...demoAgentSettings, providers: demoAgentSettings.providers.map((provider) => provider.id === id ? {...provider, apiType: null, baseUrl: null} : provider)};
+        return structuredClone(demoAgentSettings);
+      },
+    },
     profiles: {
       list: async () => ({activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}),
       create: async (name) => { demoProfiles.push({id: crypto.randomUUID(), name: name.trim() || 'New profile', isDefault: false}); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
@@ -429,11 +580,12 @@ function createBrowserDemoApi(): PolymuxApi {
     },
     // A browser tab has no traffic lights to move out of, so the state never
     // changes and the subscription has nothing to tear down.
-    window: {openWorkspaceView: async () => {}, subscribeFullscreen: () => () => {}},
+    window: {
+      openWorkspaceView: async () => {},
+      subscribeFullscreen: () => () => {},
+    },
     permissions: {
       ensureFirstRun: async () => ({firstRun: false, microphone: 'granted', screenRecording: 'granted'}),
-      // The onboarding preview starts from a genuine first run, so the states
-      // setup actually has to handle are the ones on screen.
       status: async () => (onboardingPreview ? 'not-determined' : 'granted'),
       requestAll: async () => [],
       request: async () => {
@@ -609,6 +761,53 @@ function createBrowserDemoApi(): PolymuxApi {
         },
       };
     })(),
+    calendar: (() => {
+      const day = 86_400_000;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const calendars: CalendarListDto[] = [
+        {id: 'demo-personal', title: 'Personal', color: '#e05a4f', editable: true, subscribed: false, source: {id: 'demo-icloud', title: 'iCloud', kind: 'icloud'}},
+        {id: 'demo-exchange', title: 'University', color: '#4b82d0', editable: true, subscribed: false, source: {id: 'demo-google', title: 'Google', kind: 'google'}},
+        {id: 'demo-birthdays', title: 'Birthdays', color: '#8d6ac8', editable: false, subscribed: true, source: {id: 'demo-other', title: 'Other', kind: 'birthdays'}},
+      ];
+      let events: CalendarEventDto[] = [
+        {id: 'demo-event-1', calendarId: 'demo-exchange', title: 'CS4234 Lecture', start: new Date(today.getTime() + day + 10 * 3_600_000).toISOString(), end: new Date(today.getTime() + day + 12 * 3_600_000).toISOString(), allDay: false, location: 'COM3-01-20', notes: 'Approximation algorithms', availability: 'busy', attendees: [], editable: true},
+        {id: 'demo-event-2', calendarId: 'demo-personal', title: 'Polymux calendar review', start: new Date(today.getTime() + 2 * day + 14 * 3_600_000).toISOString(), end: new Date(today.getTime() + 2 * day + 15.5 * 3_600_000).toISOString(), allDay: false, alarmMinutes: 15, availability: 'busy', attendees: [], editable: true},
+        {id: 'demo-event-3', calendarId: 'demo-personal', title: 'Exchange planning', start: new Date(today.getTime() + 4 * day).toISOString(), end: new Date(today.getTime() + 5 * day).toISOString(), allDay: true, availability: 'free', attendees: [], editable: true},
+        {id: 'demo-event-4', calendarId: 'demo-birthdays', title: 'Percival’s Birthday', start: new Date(today.getTime() + 7 * day).toISOString(), end: new Date(today.getTime() + 8 * day).toISOString(), allDay: true, recurrence: {frequency: 'yearly', interval: 1}, availability: 'free', attendees: [], editable: false},
+      ];
+      return {
+        calendars: async () => structuredClone(calendars),
+        events: async (start, end, ids) => {
+          const from = Date.parse(start);
+          const until = Date.parse(end);
+          return structuredClone(events.filter((event) => Date.parse(event.start) < until && Date.parse(event.end) > from && (!ids || ids.includes(event.calendarId))));
+        },
+        create: async (input) => {
+          const created: CalendarEventDto = {...input, id: crypto.randomUUID(), recurrence: input.recurrence ?? undefined, alarmMinutes: input.alarmMinutes ?? undefined, availability: input.availability ?? 'busy', attendees: [], editable: true};
+          events = [...events, created];
+          return structuredClone(created);
+        },
+        update: async (id, change) => {
+          events = events.map((event) => event.id === id ? {
+            ...event,
+            ...change,
+            location: change.location === null ? undefined : change.location ?? event.location,
+            notes: change.notes === null ? undefined : change.notes ?? event.notes,
+            url: change.url === null ? undefined : change.url ?? event.url,
+            recurrence: change.recurrence === null ? undefined : change.recurrence ?? event.recurrence,
+            alarmMinutes: change.alarmMinutes === null ? undefined : change.alarmMinutes ?? event.alarmMinutes,
+          } : event);
+          const found = events.find((event) => event.id === id);
+          if (!found) throw new Error(`Event not found: ${id}`);
+          return structuredClone(found);
+        },
+        remove: async (id) => { events = events.filter((event) => event.id !== id); },
+        importFile: async () => ({imported: 0, skipped: 0, fileName: null}),
+        exportFile: async () => null,
+        openAccounts: async () => {},
+      };
+    })(),
     tasks: (() => {
       let cards: import('@polymux/protocol').TaskCardDto[] = [
         {id: crypto.randomUUID(), chatId: 'demo', title: 'Research competitor features', status: 'todo', reviewed: false, order: 0, createdAt: Date.now(), updatedAt: Date.now()},
@@ -706,7 +905,16 @@ function createBrowserDemoApi(): PolymuxApi {
       forget: async () => demoComputerHistoryStatus(),
       removeEntry: async () => demoComputerHistoryStatus(),
       revealEntry: async () => {},
-      entries: async () => [],
+      entries: async (options) => demoComputerHistoryEntries.filter((entry) => {
+        const at = Date.parse(entry.capturedAt);
+        return (!options?.since || at >= Date.parse(options.since)) &&
+          (!options?.until || at <= Date.parse(options.until));
+      }).slice(0, options?.limit ?? demoComputerHistoryEntries.length),
+      activities: async (options) => demoComputerHistoryActivities.filter((activity) => {
+        const at = Date.parse(activity.startedAt);
+        return (!options?.since || at >= Date.parse(options.since)) &&
+          (!options?.until || at <= Date.parse(options.until));
+      }).slice(0, options?.limit ?? demoComputerHistoryActivities.length),
       pickApp: async () => null,
       appIcon: async () => null,
     },
@@ -806,6 +1014,43 @@ function createBrowserDemoApi(): PolymuxApi {
         return demoCommsStatus;
       },
       chats: async () => demoChats,
+      chatContacts: async () => demoChats
+        .filter((chat) => !chat.group && !chat.space)
+        .map((chat) => ({
+          id: `${chat.platform}:demo:${chat.id}`,
+          remoteId: chat.id,
+          name: chat.name,
+          platform: chat.platform as import('@polymux/protocol').CommsPlatform,
+          accountId: 'demo',
+          accountName: 'Demo account',
+          avatarUrl: chat.avatarUrl ?? null,
+          identifiers: [],
+          chatId: chat.id,
+          accounts: [{
+            accountId: 'demo',
+            accountName: 'Demo account',
+            remoteId: chat.id,
+            chatId: chat.id,
+          }],
+        })),
+      chatCreate: async (request) => {
+        const existing = request.participantIds.length === 1
+          ? demoChats.find((chat) => chat.id === request.participantIds[0])
+          : undefined;
+        if (existing) return existing.id;
+        const id = `demo-${crypto.randomUUID()}`;
+        demoChats = [{
+          id,
+          name: request.name ?? 'New conversation',
+          platform: request.platform,
+          accountIds: [request.accountId],
+          unread: 0,
+          lastActivity: null,
+          preview: null,
+          group: request.participantIds.length > 1,
+        }, ...demoChats];
+        return id;
+      },
       chatMarkRead: async (chatId) => {
         if (demoGeneral.hubIncognitoMode) return false;
         demoChats = demoChats.map((chat) => (chat.id === chatId ? {...chat, unread: 0} : chat));
@@ -860,7 +1105,7 @@ function createBrowserDemoApi(): PolymuxApi {
         if (!found) throw new Error(`No message ${id}`);
         return {id, subject: found.envelope.subject, from: found.envelope.from, to: found.envelope.to ? [found.envelope.to] : [], cc: [], bcc: [], date: found.envelope.date, body: found.body, html: found.html ?? null, attachments: found.envelope.hasAttachment ? [{name: 'q3-report.pdf', mime: 'application/pdf'}] : [], messageId: `<demo-${id}@example.com>`, references: []};
       },
-      mailSend: async () => {},
+      mailSend: async () => ({}),
       mailDelete: async (ids) => {
         demoEnvelopes = demoEnvelopes.filter((item) => !ids.includes(item.envelope.id));
       },
@@ -878,22 +1123,39 @@ function createBrowserDemoApi(): PolymuxApi {
       // Real enough to exercise the UI: several mailboxes can share a
       // provider, and each is edited or removed on its own.
       emailSave: async (request) => {
+        const existing = request.originalId ?? request.id;
+        const previous = demoCommsStatus.email.accounts.find((item) => item.id === existing);
         const account: CommsEmailAccountDto = {
           id: request.id,
           displayName: request.displayName ?? null,
           email: request.email,
-          isDefault: request.isDefault ?? demoCommsStatus.email.accounts.length === 0,
           incoming: {kind: 'imap', host: request.imapHost, port: request.imapPort, encryption: request.imapEncryption, login: request.email, auth: 'password'},
           outgoing: {kind: 'smtp', host: request.smtpHost, port: request.smtpPort, encryption: request.smtpEncryption, login: request.email, auth: 'password'},
           secretStored: true,
+          signatures: previous?.signatures ?? [],
+          defaultSignatureId: previous?.defaultSignatureId ?? null,
           status: 'ok',
           error: null,
         };
-        const existing = request.originalId ?? request.id;
         const accounts = demoCommsStatus.email.accounts.some((item) => item.id === existing)
           ? demoCommsStatus.email.accounts.map((item) => (item.id === existing ? account : item))
           : [...demoCommsStatus.email.accounts, account];
         demoCommsStatus.email = {...demoCommsStatus.email, accounts};
+        return demoCommsStatus;
+      },
+      emailSignaturesSave: async (request) => {
+        demoCommsStatus.email = {
+          ...demoCommsStatus.email,
+          accounts: demoCommsStatus.email.accounts.map((account) =>
+            account.id === request.account
+              ? {
+                  ...account,
+                  signatures: request.signatures.map((signature) => ({...signature})),
+                  defaultSignatureId: request.defaultSignatureId,
+                }
+              : account,
+          ),
+        };
         return demoCommsStatus;
       },
       emailRemove: async (id) => {
@@ -1359,7 +1621,7 @@ function createBrowserDemoApi(): PolymuxApi {
           marketplaceName: 'claude-code-plugins',
           directory: `~/.polymux/plugins/claude-code/${entry.name}`,
           enabled: true,
-          contributions: {skills: [], mcpServers: [], commands: 1, agents: 0, hooks: 0},
+          contributions: {skills: [], mcpServers: [], views: [], commands: 1, agents: 0, hooks: 0},
           conflicts: [],
         });
         return demoPlugins;
@@ -1388,6 +1650,7 @@ function createBrowserDemoApi(): PolymuxApi {
         return demoCatalog.filter((entry) =>
           !text || `${entry.name} ${entry.description}`.toLowerCase().includes(text));
       },
+      views: async () => [],
       upload: async () => demoPlugins,
     },
     providers: {

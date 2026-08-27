@@ -145,6 +145,51 @@ test("a message landing is announced as it happens, not when next asked for", as
   }
 });
 
+test("Communications follows sync and announces a changed room without polling", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-sync-follower-"));
+  const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
+  await hs.start();
+  const activity: Array<{roomId: string; sender: string}> = [];
+  const credentials = memoryCredentials();
+  const comms = new Communications({
+    credentials,
+    storage: memoryPreferences(),
+    onChange: () => {},
+    onActivity: (event) => activity.push(event),
+    embedded: {
+      baseUrl: hs.baseUrl,
+      directory,
+      provision: (localpart) => hs.createLocalUser(localpart),
+    },
+    emailStorePath: path.join(directory, "email-accounts.json"),
+    run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
+  });
+
+  try {
+    await comms.status();
+    // Let the zero-timeout initial sync establish the token before the event.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const credential = await credentials.read("matrix-hub");
+    assert.equal(credential?.type, "api_key");
+    const created = await fetch(`${hs.baseUrl}/_matrix/client/v3/createRoom`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential?.type === "api_key" ? credential.key : ""}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({name: "Live room"}),
+    });
+    const roomId = ((await created.json()) as {room_id: string}).room_id;
+    for (let attempt = 0; attempt < 100 && activity.length === 0; attempt += 1)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(activity, [{roomId, sender: credential!.env!.MATRIX_USER_ID as string}]);
+  } finally {
+    comms.close();
+    await hs.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test("zero-config connect and a full message round-trip on the embedded hub", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "polymux-embedded-"));
   const bridge = await startFakeBridge();
@@ -199,7 +244,7 @@ test("zero-config connect and a full message round-trip on the embedded hub", as
 
     const chats = await comms.chats();
     assert.equal(chats.length, 1);
-    assert.equal(chats[0].name, "Jules Tan (WA)");
+    assert.equal(chats[0].name, "Jules Tan");
     assert.equal(chats[0].platform, "whatsapp");
 
     const unread = await comms.unreadChats(10);

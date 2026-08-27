@@ -19,7 +19,6 @@
   import {recordVisit} from './lib/features/workspace/visitHistory';
   import Tooltip from './lib/shared/components/Tooltip.svelte';
   import SettingsPage from './lib/features/settings/SettingsPage.svelte';
-  import Onboarding from './lib/features/onboarding/Onboarding.svelte';
   import {polymuxApi} from './lib/api/polymux';
   import {applyTheme, startThemeSync} from './lib/shared/theme';
   import {applyLanguage, locale, startLanguageSync, t, translate, withLocale, type MessageKey} from './i18n';
@@ -54,7 +53,7 @@
   const api = polymuxApi();
   const requestedWorkspaceView = (() => {
     const value = new URLSearchParams(window.location.search).get('workspaceView');
-    return value === 'drive' || value === 'schedule' || value === 'hub' || value === 'tasks' ? value : null;
+    return value === 'drive' || value === 'schedule' || value === 'calendar' || value === 'hub' || value === 'tasks' ? value : null;
   })();
   let conversations: Conversation[] = [];
   let activeId = '';
@@ -123,7 +122,6 @@
    * settles. Stepping the width in whole pixels keeps the edge on the pixel
    * grid, so the divider stays a hairline the whole way across.
    */
-  const DRAWER_MOTION_MS = 440;
   const WORKSPACE_MOTION_MS = 440;
   let workspaceMotionWidth: number | null = null;
   let workspaceMotionFrame = 0;
@@ -183,15 +181,6 @@
     settingsMode = mode;
     settingsOpen = true;
   }
-  let onboardingOpen = false;
-  /**
-   * Dev-only: `?onboarding` reopens first-run setup over a profile that has
-   * already completed it, and keeps it from recording that it ran. Behind
-   * `import.meta.env.DEV`, which Vite folds to `false` for a packaged build,
-   * so this and everything it guards is dropped from production output.
-   */
-  const onboardingPreview =
-    import.meta.env.DEV && new URLSearchParams(location.search).has('onboarding');
   // index.html paints the splash before this bundle even loads, so startup is
   // driven by taking that element over rather than by rendering one here.
   // (theme-boot's dead-bundle deadline stands down by itself: it only fires
@@ -200,8 +189,13 @@
   // Main marks the first window of a process as the cold start; a window
   // reopened while the app kept running gets `coldStart=0` and no splash.
   const coldStart = new URLSearchParams(window.location.search).get('coldStart') !== '0';
+  // The startup shell already played the animation in this same window and
+  // this document opened on its settled lockup (theme-boot). The cover is
+  // still up, so it must leave through the ordinary staged exit — not the
+  // immediate removal a warm reopen gets.
+  const settledSplash = new URLSearchParams(window.location.search).has('splashSettled');
   const requestedConversationId = new URLSearchParams(window.location.search).get('conversationId');
-  let startupVisible = coldStart && startupSplash !== null;
+  let startupVisible = (coldStart || settledSplash) && startupSplash !== null;
   if (!startupVisible) startupSplash?.remove();
   // The cover is click-through and the app under it is only held at opacity 0,
   // so the pointer still reaches the controls behind it — and a tooltip is
@@ -224,11 +218,12 @@
   let speechModeEnabled = true;
   /** Off by default, matching the stored setting: basic mode until asked for. */
   let advancedMode = false;
-  let pinnedViews: Array<'drive' | 'schedule' | 'hub' | 'tasks'> = [];
+  let pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'> = [];
   let dictationAutoStopSeconds: number | null = 6;
   let reasoningLevel: ReasoningEffort = 'medium';
   let windowActive = true;
   let queueHeight = 0;
+  let agentFileDragActive = false;
   /** Text handed back to the composer when a queued message is edited. */
   let composerInsertion: {id: string; text: string} | null = null;
   let showJumpToLatest = false;
@@ -280,7 +275,12 @@
       text: item.text,
       files: item.files.map((file) => ({name: file.name, type: file.type})),
     }));
-  $: chatEntries = conversations.map(({id, title, updatedAt}) => ({id, title, updatedAt}));
+  $: chatEntries = conversations.map(({id, title, updatedAt}) => ({
+    id,
+    title,
+    updatedAt,
+    running: Boolean(runsByConversation[id]?.length),
+  }));
   $: timeline = buildTimeline(active.messages);
 
   /**
@@ -327,20 +327,6 @@
   // The search entry point lives with the drawer, so closing the drawer closes it.
   $: if (!chatDrawerOpen) chatSearchOpen = false;
 
-  // Panes sized off the drawer's own animated width must not transition their
-  // width on top of it for the length of the slide — see .chat-drawer-sliding.
-  let chatDrawerSliding = false;
-  let chatDrawerSlideTimer: ReturnType<typeof setTimeout> | undefined;
-  let chatDrawerSlideState: boolean | null = null;
-  $: if (typeof window !== 'undefined' && chatDrawerSlideState !== chatDrawerOpen) {
-    const first = chatDrawerSlideState === null;
-    chatDrawerSlideState = chatDrawerOpen;
-    if (!first) {
-      chatDrawerSliding = true;
-      if (chatDrawerSlideTimer) clearTimeout(chatDrawerSlideTimer);
-      chatDrawerSlideTimer = setTimeout(() => { chatDrawerSliding = false; }, DRAWER_MOTION_MS);
-    }
-  }
   $: dockedChatDrawerWidth = viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH && chatDrawerOpen ? chatDrawerWidth : 0;
   $: dockedRightWidth = viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH
     ? mode === 'summary' ? SUMMARY_RESERVED_COLUMN : mode === 'workspace' ? workspaceWidth : 0
@@ -394,7 +380,10 @@
       // The cover waits for the mark's sequence to finish, which theme-boot
       // announces — it starts when the window reaches the screen, so waiting
       // for it rather than for a timer is what makes the whole of it visible.
-      if (document.documentElement.dataset.splash === 'done') startupMinimumElapsed = true;
+      const splashState = document.documentElement.dataset.splash;
+      // 'settled' is the handoff document: the sequence was watched through in
+      // the shell, so there is nothing left to wait for.
+      if (splashState === 'done' || splashState === 'settled') startupMinimumElapsed = true;
       else document.addEventListener('polymux:splash-done', () => {
         startupMinimumElapsed = true;
         finishStartupWhenReady();
@@ -418,11 +407,7 @@
       pinnedViews = settings.pinnedViews;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       reasoningLevel = settings.reasoningLevel;
-      onboardingOpen = onboardingPreview || !settings.onboardingCompleted;
-      // Setup explains each permission and lets the user start the prompt
-      // itself. Asking here would fire the macOS dialogs first, with no
-      // context, which is the surest way to a permanent refusal.
-      if (!onboardingOpen) void api.permissions.ensureFirstRun().catch(() => {});
+      void api.permissions.ensureFirstRun().catch(() => {});
     }).catch(() => {});
     refreshExtensionStatus();
     // What the hub knew when the app last quit, read from disk. It is local
@@ -517,15 +502,9 @@
     if (!startupVisible || startupLeaving || !startupMinimumElapsed || !startupReady) return;
     startupLeaving = true;
     clearTimeout(startupDeadlineTimer);
-    // Onto setup, the lockup underneath is identical and in the same place, so
-    // the cover can go in a quick crossfade nobody sees. Onto the app there is
-    // nothing under it to match, and that same quick fade reads as the brand
-    // lying over the interface and then vanishing — so it leaves in two beats
-    // instead: the lockup goes first, then the ground it stood on.
-    const toApp = !onboardingOpen;
-    startupToApp = toApp;
+    startupToApp = true;
     startupSplash?.classList.add('leaving');
-    if (toApp) startupSplash?.classList.add('to-app');
+    startupSplash?.classList.add('to-app');
     // Comfortably past the staged exit's own 760ms rather than level with it:
     // cutting the element at the exact frame the fade ends takes the tail of
     // it off on any machine that ran a frame late.
@@ -533,7 +512,7 @@
       startupVisible = false;
       startupSplash?.remove();
       delete document.documentElement.dataset.startup;
-    }, toApp ? 860 : 240);
+    }, 860);
   }
 
   function syncConversationPanel(hasMessages: boolean, splitLayout: boolean, dismissed: boolean): void {
@@ -1407,7 +1386,7 @@
   }
 
   /** Tab kinds a stored snapshot may re-create; anything else is stale data. */
-  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['media', 'browser', 'summary', 'drive', 'schedule', 'hub', 'subagents', 'tasks']);
+  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['media', 'browser', 'summary', 'drive', 'schedule', 'calendar', 'hub', 'subagents', 'tasks']);
   /** True while a snapshot is being applied, so the auto-save sits out. */
   let workspaceRestoring = false;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1478,7 +1457,7 @@
     outputs = artifacts.map(({id, name}) => ({id, name}));
     references = storedReferences.map(({id, title, kind, uri}) => ({id, title, kind, uri}));
     const resourceTabs = artifacts.map(artifactTab);
-    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'subagent' || tab.kind === 'subagents' || tab.kind === 'tasks'), ...resourceTabs];
+    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'calendar' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'subagent' || tab.kind === 'subagents' || tab.kind === 'tasks'), ...resourceTabs];
     if (activeTabId && !workspaceTabs.some((tab) => tab.id === activeTabId)) activeTabId = workspaceTabs[0]?.id ?? null;
   }
 
@@ -1511,8 +1490,8 @@
     if (reordered.length === workspaceTabs.length) workspaceTabs = reordered;
   }
 
-  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', schedule: 'workspace.schedule', hub: 'workspace.hub', subagents: 'workspace.subagents', tasks: 'workspace.tasks'};
-  type SharedWorkspaceSingleton = 'drive' | 'schedule' | 'hub' | 'tasks';
+  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', schedule: 'workspace.schedule', calendar: 'workspace.calendar', hub: 'workspace.hub', subagents: 'workspace.subagents', tasks: 'workspace.tasks'};
+  type SharedWorkspaceSingleton = 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks';
   type WorkspaceSingletonMessage =
     | {type: 'query'; owner: string}
     | {type: 'opened' | 'closed'; kind: SharedWorkspaceSingleton; owner: string};
@@ -1523,7 +1502,7 @@
     : new BroadcastChannel('polymux-workspace-singletons');
 
   function isSharedWorkspaceSingleton(kind: WorkspaceTabKind): kind is SharedWorkspaceSingleton {
-    return kind === 'drive' || kind === 'schedule' || kind === 'hub' || kind === 'tasks';
+    return kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks';
   }
 
   function localWorkspaceSingletons(): SharedWorkspaceSingleton[] {
@@ -1571,12 +1550,12 @@
     };
   });
 
-  function reorderPinnedViews(views: Array<'drive' | 'schedule' | 'hub' | 'tasks'>): void {
+  function reorderPinnedViews(views: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'>): void {
     pinnedViews = views;
     void api.general.update({pinnedViews: views}).catch(() => {});
   }
 
-  function togglePinView(kind: 'drive' | 'schedule' | 'hub' | 'tasks'): void {
+  function togglePinView(kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'): void {
     const next = pinnedViews.includes(kind)
       ? pinnedViews.filter((v) => v !== kind)
       : [...pinnedViews, kind];
@@ -1585,7 +1564,7 @@
   }
 
   function openSeparateWorkspaceView(
-    kind: 'drive' | 'schedule' | 'hub' | 'tasks',
+    kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks',
     placement?: {x: number; y: number; width?: number; height?: number},
   ): void {
     const tabId = SINGLETON_TAB_IDS[kind];
@@ -2546,14 +2525,15 @@
   class:chat-drawer-resizing={chatDrawerResizing}
   class:window-resizing={windowResizing}
   class:chat-drawer-open={chatDrawerOpen}
-  class:chat-drawer-sliding={chatDrawerSliding}
   class:has-queue={queueHeight > 0}
+  class:agent-file-drag-active={agentFileDragActive}
   style={`--chat-drawer-column: ${chatDrawerOpen ? chatDrawerWidth : 0}px; --chat-drawer-offset: ${chatDrawerOpen ? chatDrawerWidth : 0}px; --content-right-column: ${contentRightColumn}; --content-composer-column: ${composerColumn}; --content-docked-column: ${workspaceWidth}px; --workspace-panel-width: ${workspacePanelWidth}; --workspace-expanded-tab-left: ${chatDrawerOpen ? "8px" : "calc(var(--chrome-inset) + 8px + var(--titlebar-control-size) + var(--titlebar-control-lead))"}; --chat-drawer-panel-width: ${chatDrawerWidth}px; --queue-height: ${queueHeight}px; --timeline-left: ${timelineLeft}px`}
 >
   <div class="window-drag-region" aria-hidden="true"></div>
   <div class:visible={!windowActive} class="inactive-traffic-lights" aria-hidden="true">
     <i></i><i></i><i></i>
   </div>
+  <div class="agent-file-drop-pane-overlay" aria-hidden="true"></div>
 
   {#if requestedWorkspaceView === null}<TitleBar
     title={active.title || $t('chat.untitled')}
@@ -2626,8 +2606,10 @@
     onRemoveQueued={removeQueued}
     onEditQueued={editQueued}
     onReorderQueued={reorderQueued}
+    draftKey={activeId || 'new'}
     insertion={composerInsertion}
     onInsertionApplied={() => composerInsertion = null}
+    onFileDragActiveChange={(value) => agentFileDragActive = value}
     onJumpAvailability={(value) => showJumpToLatest = value}
     onOpenLink={openLink}
     onOpenFilePath={openFilePath}
@@ -2723,7 +2705,7 @@
     {pinnedViews}
     onTogglePin={togglePinView}
     onOpenSeparateWindow={(kind, placement) => {
-      if (kind === 'drive' || kind === 'schedule' || kind === 'hub' || kind === 'tasks')
+      if (kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks')
         openSeparateWorkspaceView(kind, placement);
     }}
   />
@@ -2740,23 +2722,6 @@
       if (!speechModeEnabled) closeVoice();
     }}
   />{/if}
-
-  {#if onboardingOpen}
-    <!-- Mounted beneath the splash, whose welcome lockup sits at the same
-         point on screen: lifting the cover is then a crossfade between two
-         identical brands, and only the rest of setup appears. -->
-    <Onboarding
-      {api}
-      revealed={!startupVisible || startupLeaving}
-      preview={onboardingPreview}
-      onFinish={() => {
-        onboardingOpen = false;
-        // Anything setup did not grant is still requested the old way, so a
-        // skipped run does not leave enabled features without permission.
-        void api.permissions.ensureFirstRun().catch(() => {});
-      }}
-    />
-  {/if}
 
   <Tooltip/>
 

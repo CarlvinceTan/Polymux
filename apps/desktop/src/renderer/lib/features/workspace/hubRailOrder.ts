@@ -2,17 +2,16 @@
  * The order the hub rail puts its sources in, and its accounts within each of
  * them.
  *
- * The rail's natural order is whatever the status report happens to list —
- * bridges as the homeserver returns them, mailboxes as the account file holds
- * them. That is not an order anyone chose, so the rail lets a row be dragged
- * and remembers where it was put. It survives restarts in localStorage, next to
- * the browser history, because it is a preference about this window rather than
- * anything the backend needs to know.
+ * The first order the rail shows becomes its baseline; later status responses
+ * are discovery, not a request to reshuffle it. The rail lets a row be dragged
+ * and remembers where it was put. It survives restarts in localStorage, next
+ * to the browser history, because it is a preference about this window rather
+ * than anything the backend needs to know.
  *
  * Only positions are stored, never the sources themselves: a platform that is
  * unlinked or a mailbox that is deleted leaves a stale id behind, and a stale id
- * simply never matches. Anything the store has no opinion about keeps its
- * natural order, after everything it does.
+ * simply never matches. A genuinely new source or account is appended after
+ * the remembered ones in the order it was first seen.
  */
 const KEY = 'polymuxHubRailOrder';
 
@@ -54,8 +53,48 @@ function persist(order: Stored): void {
 
 export type RailOrder = Stored;
 
+export type ObservedRailRow = {
+  id: string;
+  accountIds: string[];
+};
+
 export function loadRailOrder(): RailOrder {
   return load();
+}
+
+/** Adds ids the rail has seen without letting a later status refresh reorder
+ * the ones it already knows. The first status therefore becomes a remembered
+ * order even before anyone drags a row; future refreshes can only append a
+ * genuinely new source or account. Stale ids deliberately remain, so an
+ * account that disappears during a reconnect returns to the same position. */
+export function rememberRailOrder(order: RailOrder, rows: ObservedRailRow[]): RailOrder {
+  const appendMissing = (remembered: string[], observed: string[]): string[] => {
+    const seen = new Set<string>();
+    const next: string[] = [];
+    for (const id of [...remembered, ...observed]) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      next.push(id);
+    }
+    return next;
+  };
+
+  const sources = appendMissing(order.sources, rows.map((row) => row.id));
+  const accounts = {...order.accounts};
+  let changed = sources.length !== order.sources.length ||
+    sources.some((id, index) => id !== order.sources[index]);
+  for (const row of rows) {
+    const remembered = accounts[row.id] ?? [];
+    const next = appendMissing(remembered, row.accountIds);
+    if (next.length !== remembered.length || next.some((id, index) => id !== remembered[index])) {
+      accounts[row.id] = next;
+      changed = true;
+    }
+  }
+  if (!changed) return order;
+  const next = {sources, accounts};
+  persist(next);
+  return next;
 }
 
 export function saveSourceOrder(order: RailOrder, sources: string[]): RailOrder {

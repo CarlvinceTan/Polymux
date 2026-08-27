@@ -37,8 +37,10 @@ const FLEET = [
   {binary: "mautrix-signal", repo: "signal", tag: "v0.2607.0"},
   {binary: "mautrix-discord", repo: "discord", tag: "v0.7.6"},
   {binary: "mautrix-slack", repo: "slack", tag: "v0.2607.0"},
-  // One binary, two networks: Messenger and Instagram both run from this.
   {binary: "mautrix-meta", repo: "meta", tag: "v0.2607.0"},
+  // Instagram moved to its own executable in v26.07. It is published from the
+  // same repository and can use the existing Instagram config/database.
+  {binary: "mautrix-instagram", repo: "meta", tag: "v0.2607.0"},
   {binary: "mautrix-gmessages", repo: "gmessages", tag: "v0.2605.0"},
   {binary: "mautrix-linkedin", repo: "linkedin", tag: "v0.2604.0"},
   {binary: "mautrix-twitter", repo: "twitter", tag: "v0.2606.0"},

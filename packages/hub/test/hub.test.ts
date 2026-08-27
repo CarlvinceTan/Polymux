@@ -3,6 +3,7 @@ import {createServer, type Server} from "node:http";
 import {mkdir, mkdtemp, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
+import {DatabaseSync} from "node:sqlite";
 import test from "node:test";
 import {MatrixHub, provisioningSecret} from "../src/hub.js";
 
@@ -58,6 +59,7 @@ async function withHub(
         baseUrl: `http://127.0.0.1:${port}`,
         homeserverUrl: `http://127.0.0.1:${port}`,
         directory,
+        embedded: directory !== null,
         auth: () => auth,
       }),
       calls,
@@ -68,6 +70,118 @@ async function withHub(
 }
 
 const WA = "/bridges/whatsapp/_matrix/provision/v3";
+
+test("lists remote contacts through one linked bridge account", async () => {
+  await withHub(
+    {
+      [`GET ${WA}/contacts`]: {
+        body: {
+          contacts: [
+            {
+              id: "61400111222@s.whatsapp.net",
+              name: "Jules Tan",
+              avatar_url: "mxc://local/jules",
+              identifiers: ["tel:+61400111222"],
+              dm_room_mxid: "!jules:local",
+            },
+          ],
+        },
+      },
+    },
+    async (hub, calls) => {
+      assert.deepEqual(await hub.contacts("whatsapp", "61400999888"), [
+        {
+          id: "61400111222@s.whatsapp.net",
+          name: "Jules Tan",
+          avatarUrl: "polymux-media://local/jules",
+          identifiers: ["tel:+61400111222"],
+          chatId: "!jules:local",
+        },
+      ]);
+      assert.deepEqual(calls[0]?.query, {
+        login_id: "61400999888",
+        user_id: "@me:local",
+      });
+      assert.equal(calls[0]?.auth, "Bearer syt_token");
+    },
+  );
+});
+
+test("opens a DM and creates a named remote group through provisioning", async () => {
+  const remoteId = "61400111222@s.whatsapp.net";
+  await withHub(
+    {
+      [`POST ${WA}/create_dm/${encodeURIComponent(remoteId)}`]: {
+        body: {id: remoteId, dm_room_mxid: "!jules:local"},
+      },
+      [`POST ${WA}/create_group/group`]: {
+        body: {id: "group-1", mxid: "!group:local"},
+      },
+    },
+    async (hub, calls) => {
+      assert.equal(
+        await hub.createChat("whatsapp", "61400999888", [remoteId]),
+        "!jules:local",
+      );
+      assert.equal(
+        await hub.createChat(
+          "whatsapp",
+          "61400999888",
+          [remoteId, "61400333444@s.whatsapp.net"],
+          "Weekend",
+        ),
+        "!group:local",
+      );
+      assert.deepEqual(calls[0]?.body, {});
+      assert.deepEqual(calls[1]?.body, {
+        participants: [remoteId, "61400333444@s.whatsapp.net"],
+        name: {name: "Weekend"},
+      });
+      assert.equal(calls[1]?.query.login_id, "61400999888");
+    },
+  );
+});
+
+test("incremental sync establishes a token then reports changed rooms", async () => {
+  await withHub(
+    {
+      "GET /_matrix/client/v3/sync": {
+        body: {
+          next_batch: "42",
+          rooms: {
+            join: {
+              "!chat:local": {
+                timeline: {
+                  events: [
+                    {
+                      event_id: "$message",
+                      room_id: "!chat:local",
+                      sender: "@whatsapp_jules:local",
+                      type: "m.room.message",
+                      content: {body: "hello"},
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (hub, calls) => {
+      const initial = await hub.sync(null);
+      assert.deepEqual(initial, {nextBatch: "42", activities: []});
+
+      const incremental = await hub.sync("41");
+      assert.deepEqual(incremental, {
+        nextBatch: "42",
+        activities: [{roomId: "!chat:local", sender: "@whatsapp_jules:local"}],
+      });
+      assert.deepEqual(calls[0]?.query, {timeout: "0"});
+      assert.deepEqual(calls[1]?.query, {timeout: "30000", since: "41"});
+    },
+  );
+});
 
 test("reports a linked bridge account from whoami", async () => {
   await withHub(
@@ -96,6 +210,12 @@ test("reports a linked bridge account from whoami", async () => {
       assert.equal(bridge.api, "bridgev2");
       assert.equal(bridge.state, "connected");
       assert.equal(bridge.accounts.length, 1);
+      // Do not collapse the bridge's choices to a preferred method, even when
+      // an account is already linked and this is an add-another-account flow.
+      assert.deepEqual(
+        bridge.flows.map((flow) => flow.id),
+        ["qr", "phone"],
+      );
       // The remote profile is a better label than the login's own name.
       assert.equal(bridge.accounts[0].name, "+61400000000");
       assert.equal(bridge.managementRoomHint, "!admin:local");
@@ -109,6 +229,31 @@ test("reports a linked bridge account from whoami", async () => {
       // Matrix-token auth is still validated against this user, so the query
       // parameter is mandatory in both auth modes.
       assert.equal(calls[0].query.user_id, "@me:local");
+    },
+  );
+});
+
+test("keeps every advertised method and adds known limitation notes", async () => {
+  await withHub(
+    {
+      [`GET ${WA}/whoami`]: {
+        body: {
+          login_flows: [
+            {id: "phone", name: "Phone Number", description: "Phone"},
+            {id: "qr", name: "QR Code", description: "QR"},
+            {id: "bot", name: "Bot token", description: "Bot"},
+            {id: "manual", name: "Manual", description: "Manual"},
+          ],
+          logins: [],
+        },
+      },
+    },
+    async (hub) => {
+      const bridge = await hub.bridge("telegram", "Telegram", "whatsapp");
+      assert.deepEqual(bridge.flows.map((flow) => flow.id), ["phone", "qr", "bot", "manual"]);
+      assert.equal(bridge.flows[0]!.description, "Phone");
+      assert.match(bridge.flows[2]!.description, /Bots only/);
+      assert.match(bridge.flows[3]!.description, /Advanced/);
     },
   );
 });
@@ -269,6 +414,971 @@ test("every bridge's rooms are filed under the platform its tab uses", async () 
   });
 });
 
+test("rooms expose Matrix Space containers and both forms of current parent link", async () => {
+  const bridge = {
+    type: "m.bridge",
+    state_key: "whatsapp",
+    content: {protocol: {id: "whatsapp"}},
+  };
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!default:local": {
+        state: {events: [
+          {type: "m.room.create", state_key: "", content: {type: "m.space"}},
+          {type: "m.room.name", state_key: "", content: {name: "WhatsApp (+61426982339)"}},
+          {
+            ...bridge,
+            content: {
+              ...bridge.content,
+              "com.beeper.room_type.v2": "personal_filtering_space",
+            },
+          },
+          {
+            type: "m.space.child",
+            state_key: "!social:local",
+            content: {via: ["local"]},
+          },
+        ]},
+        timeline: {events: []},
+      },
+      "!community:local": {
+        state: {events: [
+          {type: "m.room.create", state_key: "", content: {type: "m.space"}},
+          {type: "m.room.name", state_key: "", content: {name: "NUS exchange students"}},
+          {
+            type: "m.space.child",
+            state_key: "!running:local",
+            content: {via: ["local"]},
+          },
+        ]},
+        timeline: {events: []},
+      },
+      "!social:local": {
+        state: {events: [
+          {type: "m.room.name", state_key: "", content: {name: "Social"}},
+          bridge,
+          {
+            type: "m.space.parent",
+            state_key: "!community:local",
+            content: {via: ["local"]},
+          },
+          // An empty current-state event means this older parent was removed.
+          {type: "m.space.parent", state_key: "!old:local", content: {}},
+        ]},
+        timeline: {events: []},
+      },
+      "!running:local": {
+        state: {events: [
+          {type: "m.room.name", state_key: "", content: {name: "Running"}},
+          bridge,
+        ]},
+        timeline: {events: []},
+      },
+    }}}}},
+    async (hub) => {
+      const byId = new Map((await hub.rooms()).map((room) => [room.roomId, room]));
+      assert.equal(byId.get("!default:local")?.space, true);
+      assert.equal(byId.get("!default:local")?.defaultSpace, true);
+      assert.equal(byId.get("!community:local")?.space, true);
+      assert.equal(byId.get("!community:local")?.defaultSpace, false);
+      assert.equal(byId.get("!community:local")?.platform, "whatsapp");
+      assert.deepEqual(byId.get("!community:local")?.parentIds, []);
+      assert.equal(byId.get("!social:local")?.space, false);
+      assert.deepEqual(
+        byId.get("!social:local")?.parentIds,
+        ["!community:local", "!default:local"],
+      );
+      assert.deepEqual(byId.get("!running:local")?.parentIds, ["!community:local"]);
+    },
+  );
+});
+
+test("WhatsApp contact and group names hide bridge metadata", async () => {
+  const room = (name: string, protocol: string, roomType: string) => ({
+    state: {events: [
+      {type: "m.room.name", state_key: "", content: {name}},
+      {
+        type: "m.bridge",
+        state_key: protocol,
+        content: {
+          protocol: {id: protocol},
+          "com.beeper.room_type": roomType,
+        },
+      },
+    ]},
+    timeline: {events: [] as Array<Record<string, unknown>>},
+  });
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!contact:local": room("Jules Tan (WA)", "whatsapp", "dm"),
+      "!number:local": room("@whatsapp_13135550002:polymux.local", "whatsapp", "dm"),
+      "!group:local": room("Weekend Plans (WA)", "whatsapp", "group"),
+      "!number-group:local": room("@whatsapp_13135550002:polymux.local", "whatsapp", "group"),
+      "!other:local": room("Release (WA)", "slackgo", "dm"),
+    }}}}},
+    async (hub) => {
+      const byId = new Map((await hub.rooms()).map((item) => [item.roomId, item.name]));
+      assert.equal(byId.get("!contact:local"), "Jules Tan");
+      assert.equal(byId.get("!number:local"), "+13135550002");
+      assert.equal(byId.get("!group:local"), "Weekend Plans");
+      assert.equal(byId.get("!number-group:local"), "@whatsapp_13135550002:polymux.local");
+      assert.equal(byId.get("!other:local"), "Release (WA)");
+    },
+  );
+});
+
+test("WhatsApp sender names hide bridge metadata above messages", async () => {
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/!kheam%3Alocal/messages": {
+        body: {
+          chunk: [{
+            type: "m.room.message",
+            event_id: "$message",
+            room_id: "!kheam:local",
+            sender: "@whatsapp_kheam:local",
+            content: {body: "Hello"},
+          }],
+          state: [{
+            type: "m.room.member",
+            state_key: "@whatsapp_kheam:local",
+            content: {membership: "join", displayname: "Kheam Tan (WA)"},
+          }],
+        },
+      },
+    },
+    async (hub) => {
+      const [message] = (await hub.messages("!kheam:local", 10)).messages;
+      assert.equal(message.senderName, "Kheam Tan");
+    },
+  );
+});
+
+test("rooms carry the linked account that owns their bridge portal", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-room-accounts-"));
+  const bridgeDirectory = path.join(directory, "bridges", "whatsapp");
+  await mkdir(bridgeDirectory, {recursive: true});
+  const database = new DatabaseSync(path.join(bridgeDirectory, "bridge.db"));
+  database.exec(`
+    CREATE TABLE portal (
+      bridge_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      receiver TEXT NOT NULL,
+      mxid TEXT
+    );
+    CREATE TABLE user_portal (
+      bridge_id TEXT NOT NULL,
+      login_id TEXT NOT NULL,
+      portal_id TEXT NOT NULL,
+      portal_receiver TEXT NOT NULL
+    );
+    INSERT INTO portal VALUES
+      ('whatsapp', 'alice', 'personal', '!alice:local'),
+      ('whatsapp', 'work', 'work-account', '!work:local');
+  `);
+  database.close();
+
+  const room = (name: string) => ({
+    state: {events: [
+      {type: "m.room.name", state_key: "", content: {name}},
+      {type: "m.bridge", state_key: "wa", content: {protocol: {id: "whatsapp"}}},
+    ]},
+    timeline: {events: [] as Array<Record<string, unknown>>},
+  });
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!alice:local": room("Alice"),
+      "!work:local": room("Work group"),
+    }}}}},
+    async (hub) => {
+      const listed = await hub.rooms();
+      assert.deepEqual(
+        Object.fromEntries(listed.map((item) => [item.roomId, item.accountIds])),
+        {"!alice:local": ["personal"], "!work:local": ["work-account"]},
+      );
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
+test("a direct room uses the contact portal avatar instead of the linked account avatar", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-room-avatar-"));
+  const bridgeDirectory = path.join(directory, "bridges", "instagram");
+  await mkdir(bridgeDirectory, {recursive: true});
+  const database = new DatabaseSync(path.join(bridgeDirectory, "bridge.db"));
+  database.exec(`
+    CREATE TABLE portal (
+      bridge_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      receiver TEXT NOT NULL,
+      mxid TEXT,
+      avatar_mxc TEXT
+    );
+    CREATE TABLE user_portal (
+      bridge_id TEXT NOT NULL,
+      login_id TEXT NOT NULL,
+      portal_id TEXT NOT NULL,
+      portal_receiver TEXT NOT NULL
+    );
+    INSERT INTO portal VALUES (
+      'instagram', 'pranav', 'my-account', '!pranav:local',
+      'mxc://local/pranav-avatar'
+    );
+    INSERT INTO user_portal VALUES (
+      'instagram', 'my-account', 'pranav', 'my-account'
+    );
+  `);
+  database.close();
+
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!pranav:local": {
+        state: {events: [
+          {type: "m.room.name", state_key: "", content: {name: "Pranav"}},
+          {
+            type: "m.bridge",
+            state_key: "instagram",
+            content: {
+              protocol: {id: "instagram"},
+              "com.beeper.room_type": "dm",
+            },
+          },
+          // The linked account arrives first. Falling back to the first other
+          // member reproduces the bug: it puts the user's portrait on Pranav.
+          {
+            type: "m.room.member",
+            state_key: "@meta_my-account:local",
+            content: {membership: "join", displayname: "Me", avatar_url: "mxc://local/my-avatar"},
+          },
+          {
+            type: "m.room.member",
+            state_key: "@meta_pranav:local",
+            content: {membership: "join", displayname: "Pranav"},
+          },
+          {type: "m.room.member", state_key: "@me:local", content: {membership: "join"}},
+        ]},
+        timeline: {events: []},
+      },
+    }}}}},
+    async (hub) => {
+      const [room] = await hub.rooms();
+      assert.equal(room?.name, "Pranav");
+      assert.equal(room?.avatarUrl, "polymux-media://local/pranav-avatar");
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
+test("a direct room with no contact picture never borrows the linked account picture", async () => {
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!pranav:local": {
+        state: {events: [
+          {type: "m.room.name", state_key: "", content: {name: "Pranav (WA)"}},
+          {
+            type: "m.bridge",
+            state_key: "whatsapp",
+            content: {
+              protocol: {id: "whatsapp"},
+              "com.beeper.room_type": "dm",
+            },
+          },
+          // Both bridge ghosts are other Matrix members. Only the second one
+          // names this room; the first is the signed-in WhatsApp account.
+          {
+            type: "m.room.member",
+            state_key: "@whatsapp_mine:local",
+            content: {membership: "join", displayname: "Me (WA)", avatar_url: "mxc://local/my-avatar"},
+          },
+          {
+            type: "m.room.member",
+            state_key: "@whatsapp_pranav:local",
+            content: {membership: "join", displayname: "Pranav (WA)"},
+          },
+          {type: "m.room.member", state_key: "@me:local", content: {membership: "join"}},
+        ]},
+        timeline: {events: []},
+      },
+    }}}}},
+    async (hub) => {
+      const [room] = await hub.rooms();
+      assert.equal(room?.name, "Pranav");
+      assert.equal(room?.avatarUrl, null);
+    },
+  );
+});
+
+test("WhatsApp unread counts follow remote reads and recognise both self identities", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-whatsapp-unread-"));
+  const bridgeDirectory = path.join(directory, "bridges", "whatsapp");
+  await mkdir(bridgeDirectory, {recursive: true});
+  const database = new DatabaseSync(path.join(bridgeDirectory, "bridge.db"));
+  database.exec(`
+    CREATE TABLE portal (
+      bridge_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      receiver TEXT NOT NULL,
+      mxid TEXT
+    );
+    CREATE TABLE user_portal (
+      bridge_id TEXT NOT NULL,
+      login_id TEXT NOT NULL,
+      portal_id TEXT NOT NULL,
+      portal_receiver TEXT NOT NULL,
+      last_read BIGINT
+    );
+    CREATE TABLE whatsmeow_device (jid TEXT NOT NULL, lid TEXT);
+    CREATE TABLE whatsapp_history_sync_conversation (
+      bridge_id TEXT NOT NULL,
+      user_login_id TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      last_message_timestamp BIGINT,
+      synced_login_ts BIGINT,
+      unread_count INTEGER,
+      marked_as_unread BOOLEAN
+    );
+    CREATE TABLE message (
+      bridge_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      room_receiver TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      timestamp BIGINT NOT NULL
+    );
+
+    INSERT INTO whatsmeow_device VALUES
+      ('61400000000:7@s.whatsapp.net', '123456789:7@lid');
+    INSERT INTO portal VALUES
+      ('whatsapp', 'replied', '61400000000', '!replied:local'),
+      ('whatsapp', 'read-elsewhere', '61400000000', '!read:local'),
+      ('whatsapp', 'waiting', '61400000000', '!waiting:local');
+    INSERT INTO user_portal VALUES
+      ('whatsapp', '61400000000', 'replied', '61400000000', 1050000000000),
+      ('whatsapp', '61400000000', 'read-elsewhere', '61400000000', 1050000000000),
+      ('whatsapp', '61400000000', 'waiting', '61400000000', 1050000000000);
+    INSERT INTO whatsapp_history_sync_conversation VALUES
+      ('whatsapp', '61400000000', 'replied', 1001, 1000, 5, 0),
+      ('whatsapp', '61400000000', 'read-elsewhere', 1001, 1000, 2, 0),
+      ('whatsapp', '61400000000', 'waiting', 1001, 1000, 2, 0);
+    INSERT INTO message VALUES
+      ('whatsapp', 'reply-in', 'replied', '61400000000', '44770000000', 1700000000000),
+      ('whatsapp', 'reply-out', 'replied', '61400000000', 'lid-123456789', 1800000000000),
+      ('whatsapp', 'read-in', 'read-elsewhere', '61400000000', '44770000001', 1900000000000),
+      ('whatsapp', 'waiting-one', 'waiting', '61400000000', '44770000002', 1700000000000),
+      ('whatsapp', 'waiting-two', 'waiting', '61400000000', '44770000002', 1800000000000);
+  `);
+  database.close();
+  const homeserver = new DatabaseSync(path.join(directory, "homeserver.sqlite"));
+  homeserver.exec(`
+    CREATE TABLE receipts (user_id TEXT, room_id TEXT, stream_order INTEGER);
+    CREATE TABLE events (stream_order INTEGER, origin_server_ts INTEGER);
+    INSERT INTO receipts VALUES ('@me:local', '!read:local', 1);
+    INSERT INTO events VALUES (1, 2000000);
+  `);
+  homeserver.close();
+
+  const room = (name: string) => ({
+    state: {events: [
+      {type: "m.room.name", state_key: "", content: {name}},
+      {type: "m.bridge", state_key: "wa", content: {protocol: {id: "whatsapp"}}},
+    ]},
+    timeline: {events: [] as Array<Record<string, unknown>>},
+    // Deliberately wrong: backfilled events make Matrix's raw count huge.
+    unread_notifications: {notification_count: 99},
+  });
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!replied:local": room("Replied"),
+      "!read:local": room("Read elsewhere"),
+      "!waiting:local": room("Waiting"),
+    }}}}},
+    async (hub) => {
+      const byId = new Map((await hub.rooms()).map((item) => [item.roomId, item]));
+      assert.equal(byId.get("!replied:local")?.unread, 0, "a latest message from the linked LID is mine");
+      assert.equal(byId.get("!read:local")?.unread, 0, "a later remote read watermark clears the chat");
+      assert.equal(byId.get("!waiting:local")?.unread, 4, "native unread plus later inbound messages remains unread");
+      assert.deepEqual(byId.get("!waiting:local")?.unreadByAccount, {61400000000: 4});
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
+test("messages recognise a linked bridge login's ghost as the user", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-instagram-ownership-"));
+  const bridgeDirectory = path.join(directory, "bridges", "instagram");
+  await mkdir(bridgeDirectory, {recursive: true});
+  const database = new DatabaseSync(path.join(bridgeDirectory, "bridge.db"));
+  database.exec(`
+    CREATE TABLE portal (
+      bridge_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      receiver TEXT NOT NULL,
+      mxid TEXT
+    );
+    CREATE TABLE user_portal (
+      bridge_id TEXT NOT NULL,
+      login_id TEXT NOT NULL,
+      portal_id TEXT NOT NULL,
+      portal_receiver TEXT NOT NULL
+    );
+    CREATE TABLE message (
+      bridge_id TEXT NOT NULL,
+      mxid TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      room_receiver TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      sender_mxid TEXT NOT NULL
+    );
+    INSERT INTO portal VALUES ('instagram', 'thread-1', '', '!instagram:local');
+    INSERT INTO user_portal VALUES ('instagram', 'account-42', 'thread-1', '');
+    INSERT INTO message VALUES
+      ('instagram', '$mine', 'thread-1', '', 'account-42', '@meta_account-42:local'),
+      -- Batch backfill replaces this remote id in the local homeserver.
+      ('instagram', '$remote-backfill-id', 'thread-1', '', 'account-42', '@meta_account-42:local'),
+      ('instagram', '$theirs', 'thread-1', '', 'friend-7', '@meta_friend-7:local');
+  `);
+  database.close();
+
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/!instagram%3Alocal/messages": {
+        body: {
+          chunk: [
+            {
+              type: "m.room.message",
+              event_id: "$mine",
+              room_id: "!instagram:local",
+              sender: "@meta_account-42:local",
+              content: {body: "sent on Instagram"},
+            },
+            {
+              type: "m.room.message",
+              event_id: "$theirs",
+              room_id: "!instagram:local",
+              sender: "@meta_friend-7:local",
+              content: {body: "received on Instagram"},
+            },
+            {
+              type: "m.room.message",
+              event_id: "$local-backfill-id",
+              room_id: "!instagram:local",
+              sender: "@meta_account-42:local",
+              content: {body: "sent earlier on Instagram"},
+            },
+            {
+              type: "m.room.message",
+              event_id: "$matrix",
+              room_id: "!instagram:local",
+              sender: "@me:local",
+              content: {body: "sent from Polymux"},
+            },
+          ],
+        },
+      },
+      "POST /_matrix/client/v3/search": {
+        body: {search_categories: {room_events: {results: [
+          {result: {
+            type: "m.room.message",
+            event_id: "$search-mine",
+            room_id: "!instagram:local",
+            sender: "@meta_account-42:local",
+            content: {body: "my matching message"},
+          }},
+          {result: {
+            type: "m.room.message",
+            event_id: "$search-theirs",
+            room_id: "!instagram:local",
+            sender: "@meta_friend-7:local",
+            content: {body: "their matching message"},
+          }},
+        ]}}},
+      },
+      "GET /_matrix/client/v3/notifications": {
+        body: {notifications: [
+          {read: false, room_id: "!instagram:local", event: {
+            type: "m.room.message",
+            event_id: "$unread-mine",
+            room_id: "!instagram:local",
+            sender: "@meta_account-42:local",
+            content: {body: "my apparent unread"},
+          }},
+          {read: false, room_id: "!instagram:local", event: {
+            type: "m.room.message",
+            event_id: "$unread-theirs",
+            room_id: "!instagram:local",
+            sender: "@meta_friend-7:local",
+            content: {body: "their unread"},
+          }},
+        ]},
+      },
+      "GET /_matrix/client/v3/rooms/!instagram%3Alocal/state/m.room.name": {
+        body: {name: "Friend"},
+      },
+    },
+    async (hub) => {
+      const byId = new Map((await hub.messages("!instagram:local", 10)).messages.map(
+        (message) => [message.eventId, message],
+      ));
+      assert.equal(byId.get("$mine")?.mine, true, "the linked remote account is mine");
+      assert.equal(byId.get("$mine")?.senderName, "You", "its incomplete profile never leaks");
+      assert.equal(
+        byId.get("$local-backfill-id")?.mine,
+        true,
+        "backfill remains mine when its local event id was replaced",
+      );
+      assert.equal(byId.get("$theirs")?.mine, false, "another remote account stays incoming");
+      assert.equal(byId.get("$matrix")?.mine, true, "the direct Matrix identity remains mine");
+      assert.equal(hub.senderIsMine("!instagram:local", "@meta_account-42:local"), true);
+      assert.equal(hub.senderIsMine("!instagram:local", "@meta_friend-7:local"), false);
+
+      const searched = new Map((await hub.search("matching", 10)).messages.map(
+        (message) => [message.eventId, message],
+      ));
+      assert.equal(searched.get("$search-mine")?.mine, true);
+      assert.equal(searched.get("$search-mine")?.senderName, "You");
+      assert.equal(searched.get("$search-theirs")?.mine, false);
+
+      const unread = await hub.unread(10);
+      assert.deepEqual(
+        unread.map((message) => message.eventId),
+        ["$unread-theirs"],
+        "the account's bridge ghost is never reported as an unread sender",
+      );
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
+test("messages recognise WhatsApp's alternate LID as the linked account", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-whatsapp-ownership-"));
+  const bridgeDirectory = path.join(directory, "bridges", "whatsapp");
+  await mkdir(bridgeDirectory, {recursive: true});
+  const database = new DatabaseSync(path.join(bridgeDirectory, "bridge.db"));
+  database.exec(`
+    CREATE TABLE portal (
+      bridge_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      receiver TEXT NOT NULL,
+      mxid TEXT
+    );
+    CREATE TABLE user_portal (
+      bridge_id TEXT NOT NULL,
+      login_id TEXT NOT NULL,
+      portal_id TEXT NOT NULL,
+      portal_receiver TEXT NOT NULL
+    );
+    CREATE TABLE message (
+      bridge_id TEXT NOT NULL,
+      mxid TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      room_receiver TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      sender_mxid TEXT NOT NULL
+    );
+    CREATE TABLE whatsmeow_device (jid TEXT NOT NULL, lid TEXT);
+    INSERT INTO portal VALUES ('whatsapp', 'chat-1', '61400000000', '!whatsapp:local');
+    INSERT INTO user_portal VALUES ('whatsapp', '61400000000', 'chat-1', '61400000000');
+    INSERT INTO whatsmeow_device VALUES (
+      '61400000000:7@s.whatsapp.net',
+      '123456789:7@lid'
+    );
+    INSERT INTO message VALUES (
+      'whatsapp', '$remote-lid', 'chat-1', '61400000000', 'lid-123456789',
+      '@whatsapp_lid-123456789:local'
+    );
+  `);
+  database.close();
+
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/!whatsapp%3Alocal/messages": {
+        body: {
+          chunk: [
+            {
+              type: "m.room.message",
+              event_id: "$local-lid",
+              room_id: "!whatsapp:local",
+              sender: "@whatsapp_lid-123456789:local",
+              content: {body: "sent from the linked phone"},
+            },
+          ],
+        },
+      },
+    },
+    async (hub) => {
+      const [message] = (await hub.messages("!whatsapp:local", 10)).messages;
+      assert.equal(message.mine, true, "LID ownership survives a rewritten backfill event id");
+      assert.equal(message.senderName, "You", "the linked LID never reads as an unknown user");
+      assert.equal(hub.senderIsMine("!whatsapp:local", "@whatsapp_lid-123456789:local"), true);
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
+test("embedded message pages keep new messages ahead of later-inserted backfill", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-timeline-order-"));
+  const database = new DatabaseSync(path.join(directory, "homeserver.sqlite"));
+  database.exec(`
+    CREATE TABLE events (
+      stream_order INTEGER PRIMARY KEY,
+      event_id TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      type TEXT NOT NULL,
+      state_key TEXT,
+      content_json TEXT NOT NULL,
+      origin_server_ts INTEGER NOT NULL,
+      redacts TEXT,
+      redacted_by TEXT
+    );
+    INSERT INTO events VALUES
+      (1, '$today', '!instagram:local', '@meta_friend:local', 'm.room.message', NULL, '{"body":"today"}', 3000, NULL, NULL),
+      (2, '$yesterday', '!instagram:local', '@meta_friend:local', 'm.room.message', NULL, '{"body":"yesterday"}', 2000, NULL, NULL),
+      -- Imported last, but authored first: insertion order must not put it at
+      -- the head of a person's conversation.
+      (3, '$old-backfill', '!instagram:local', '@meta_friend:local', 'm.room.message', NULL, '{"body":"old"}', 1000, NULL, NULL);
+  `);
+  database.close();
+
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/!instagram%3Alocal/messages": {
+        body: {chunk: [{type: "m.room.message", content: {body: "wrong edge"}}]},
+      },
+    },
+    async (hub, calls) => {
+      const first = await hub.messages("!instagram:local", 2);
+      assert.deepEqual(first.messages.map((message) => message.body), ["today", "yesterday"]);
+      assert.match(first.nextBefore ?? "", /^local:/);
+
+      const second = await hub.messages("!instagram:local", 2, first.nextBefore!);
+      assert.deepEqual(second.messages.map((message) => message.body), ["old"]);
+      assert.equal(second.nextBefore, null);
+      assert.ok(
+        calls.every((call) => !call.path.endsWith("/messages")),
+        "the embedded reader does not ask the insertion-ordered Matrix page",
+      );
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
+test("embedded Telegram pages keep visible events ahead of room setup noise", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-telegram-timeline-"));
+  const database = new DatabaseSync(path.join(directory, "homeserver.sqlite"));
+  database.exec(`
+    CREATE TABLE events (
+      stream_order INTEGER PRIMARY KEY,
+      event_id TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      type TEXT NOT NULL,
+      state_key TEXT,
+      content_json TEXT NOT NULL,
+      origin_server_ts INTEGER NOT NULL,
+      redacts TEXT,
+      redacted_by TEXT
+    );
+  `);
+  const insert = database.prepare(`
+    INSERT INTO events (
+      stream_order, event_id, room_id, sender, type, state_key,
+      content_json, origin_server_ts, redacts, redacted_by
+    ) VALUES (?, ?, '!telegram:local', ?, ?, ?, ?, ?, NULL, NULL)
+  `);
+  insert.run(
+    1,
+    "$slides",
+    "@telegram_presenter:local",
+    "m.room.message",
+    null,
+    JSON.stringify({
+      body: "https://docs.google.com/presentation/d/tutorial/edit?usp=sharing",
+      msgtype: "m.text",
+      "com.beeper.linkpreviews": [{
+        matched_url: "https://docs.google.com/presentation/d/tutorial/edit?usp=sharing",
+        "og:title": "CS3210 Tutorial 1",
+        "og:description": "Instrumentation, Profiling, Slurm, and Report Writing",
+        "og:image": "mxc://local/tutorial",
+        "og:image:type": "image/jpeg",
+        "og:image:width": 1200,
+        "og:image:height": 630,
+      }],
+    }),
+    1_000,
+  );
+  // These are transport/setup rows, not fifty chat items. Before the reader
+  // filtered at the database boundary they consumed the whole first page and
+  // pushed the real link message out of sight.
+  for (let index = 0; index < 55; index += 1)
+    insert.run(
+      2 + index,
+      `$setup-${index}`,
+      "@telegrambot:local",
+      "m.room.power_levels",
+      `setup-${index}`,
+      "{}",
+      1_100 + index,
+    );
+  insert.run(
+    57,
+    "$invite",
+    "@telegrambot:local",
+    "m.room.member",
+    "@telegram_kaiwen:local",
+    JSON.stringify({
+      membership: "invite",
+      displayname: "Kaiwen",
+      "com.beeper.exclude_from_timeline": true,
+    }),
+    1_200,
+  );
+  insert.run(
+    58,
+    "$join",
+    "@telegram_kaiwen:local",
+    "m.room.member",
+    "@telegram_kaiwen:local",
+    JSON.stringify({membership: "join", displayname: "Kaiwen"}),
+    1_201,
+  );
+  insert.run(
+    59,
+    "$followup",
+    "@telegram_presenter:local",
+    "m.room.message",
+    null,
+    JSON.stringify({body: "today's slides", msgtype: "m.text"}),
+    1_202,
+  );
+  database.close();
+
+  await withHub(
+    {},
+    async (hub) => {
+      const page = await hub.messages("!telegram:local", 50);
+      assert.equal(page.nextBefore, null, "invisible setup rows do not create a phantom older page");
+      assert.deepEqual(page.messages.map((message) => message.body), [
+        "today's slides",
+        "Kaiwen joined the group",
+        "https://docs.google.com/presentation/d/tutorial/edit?usp=sharing",
+      ]);
+      assert.equal(page.messages[1].notice, true);
+      const preview = page.messages[2].linkPreview;
+      assert.equal(preview?.title, "CS3210 Tutorial 1");
+      assert.equal(preview?.source, "docs.google.com");
+      assert.equal(preview?.imageUrl, "polymux-media://local/tutorial");
+      assert.equal(preview?.imageWidth, 1200);
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
+test("membership notices are platform-neutral once bridge setup is excluded", async () => {
+  const members = [
+    ["@whatsapp_alice:local", "WhatsApp Alice"],
+    ["@telegram_alice:local", "Telegram Alice"],
+    ["@signal_alice:local", "Signal Alice"],
+    ["@facebook_alice:local", "Messenger Alice"],
+    ["@meta_alice:local", "Instagram Alice"],
+    ["@discord_alice:local", "Discord Alice"],
+    ["@slack_alice:local", "Slack Alice"],
+    ["@linkedin_alice:local", "LinkedIn Alice"],
+    ["@googlechat_alice:local", "Google Chat Alice"],
+    ["@gmessages_alice:local", "Google Messages Alice"],
+    ["@twitter_alice:local", "X Alice"],
+    ["@bluesky_alice:local", "Bluesky Alice"],
+    ["@gvoice_alice:local", "Google Voice Alice"],
+    ["@zulip_alice:local", "Zulip Alice"],
+    ["@imessage_alice:local", "iMessage Alice"],
+    ["@wechat_alice:local", "WeChat Alice"],
+    ["@matrix-alice:local", "Matrix Alice"],
+  ] as const;
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/room1/messages": {
+        body: {
+          end: null,
+          chunk: [
+            ...members.map(([stateKey, name], index) => ({
+              type: "m.room.member",
+              event_id: `$member-${index}`,
+              room_id: "room1",
+              sender: stateKey,
+              state_key: stateKey,
+              origin_server_ts: 1_000 + index,
+              content: {membership: "join", displayname: name},
+            })),
+            {
+              type: "m.room.member",
+              event_id: "$setup",
+              room_id: "room1",
+              sender: "@whatsappbot:local",
+              state_key: "@whatsapp_setup:local",
+              origin_server_ts: 2_000,
+              content: {
+                membership: "invite",
+                displayname: "Transport puppet",
+                "com.beeper.exclude_from_timeline": true,
+              },
+            },
+          ],
+        },
+      },
+    },
+    async (hub) => {
+      const {messages} = await hub.messages("room1", 50);
+      assert.equal(messages.length, members.length);
+      assert.deepEqual(
+        messages.map((message) => [message.body, message.notice]),
+        members.map(([, name]) => [`${name} joined the group`, true]),
+      );
+    },
+  );
+});
+
+test("embedded rooms hide setup joins but retain later cross-platform membership changes", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-membership-timeline-"));
+  const database = new DatabaseSync(path.join(directory, "homeserver.sqlite"));
+  database.exec(`
+    CREATE TABLE events (
+      stream_order INTEGER PRIMARY KEY,
+      event_id TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      type TEXT NOT NULL,
+      state_key TEXT,
+      content_json TEXT NOT NULL,
+      origin_server_ts INTEGER NOT NULL,
+      redacts TEXT,
+      redacted_by TEXT
+    );
+    INSERT INTO events VALUES
+      (1, '$create', '!whatsapp:local', '@whatsappbot:local', 'm.room.create', '', '{}', 1000, NULL, NULL),
+      (2, '$setup', '!whatsapp:local', '@whatsapp_alice:local', 'm.room.member', '@whatsapp_alice:local', '{"membership":"join","displayname":"Setup Alice"}', 2000, NULL, NULL),
+      (3, '$rename', '!whatsapp:local', '@whatsapp_alice:local', 'm.room.member', '@whatsapp_alice:local', '{"membership":"join","displayname":"Alice"}', 400000, NULL, NULL),
+      (4, '$leave', '!whatsapp:local', '@whatsapp_bob:local', 'm.room.member', '@whatsapp_bob:local', '{"membership":"leave","displayname":"Bob"}', 401000, NULL, NULL),
+      (5, '$message', '!whatsapp:local', '@whatsapp_alice:local', 'm.room.message', NULL, '{"msgtype":"m.text","body":"See you"}', 402000, NULL, NULL);
+  `);
+  database.close();
+
+  await withHub(
+    {},
+    async (hub) => {
+      const {messages} = await hub.messages("!whatsapp:local", 20);
+      assert.deepEqual(messages.map((message) => message.body), [
+        "See you",
+        "Bob left the group",
+        "Setup Alice changed their name to Alice",
+      ]);
+      assert.deepEqual(messages.map((message) => message.notice), [false, true, true]);
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
+test("an external homeserver can enrich a plain cross-platform link", async () => {
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/room1/messages": {
+        body: {
+          end: null,
+          chunk: [{
+            type: "m.room.message",
+            event_id: "$link",
+            room_id: "room1",
+            sender: "@slack_alice:local",
+            origin_server_ts: 1_000,
+            content: {body: "See https://example.test/story", msgtype: "m.text"},
+          }],
+        },
+      },
+      "GET /_matrix/client/v1/media/preview_url": {
+        body: {
+          "og:title": "A useful story",
+          "og:description": "The short version",
+          "og:url": "https://example.test/story",
+          "og:image": "mxc://local/story",
+          "og:image:type": "image/jpeg",
+          "og:image:width": 800,
+          "og:image:height": 450,
+        },
+      },
+    },
+    async (hub, calls) => {
+      const [message] = (await hub.messages("room1", 10)).messages;
+      assert.equal(message.linkPreview?.title, "A useful story");
+      assert.equal(message.linkPreview?.source, "example.test");
+      assert.equal(message.linkPreview?.imageUrl, "polymux-media://local/story");
+      const previewCall = calls.find((call) => call.path.endsWith("/preview_url"));
+      assert.equal(previewCall?.query.url, "https://example.test/story");
+    },
+  );
+});
+
+test("embedded room rows keep new messages ahead of later-inserted backfill", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-room-order-"));
+  const database = new DatabaseSync(path.join(directory, "homeserver.sqlite"));
+  database.exec(`
+    CREATE TABLE events (
+      stream_order INTEGER PRIMARY KEY,
+      event_id TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      type TEXT NOT NULL,
+      state_key TEXT,
+      content_json TEXT NOT NULL,
+      origin_server_ts INTEGER NOT NULL,
+      redacts TEXT,
+      redacted_by TEXT
+    );
+    INSERT INTO events VALUES
+      (1, '$today', '!instagram:local', '@meta_friend:local', 'm.room.message', NULL, '{"body":"today"}', 3000, NULL, NULL),
+      -- Imported afterward, but authored first: it must not replace the row's
+      -- current preview, timestamp, or position.
+      (2, '$old-backfill', '!instagram:local', '@meta_friend:local', 'm.room.message', NULL, '{"body":"old"}', 1000, NULL, NULL);
+  `);
+  database.close();
+
+  await withHub(
+    {
+      "GET /_matrix/client/v3/sync": {
+        body: {rooms: {join: {
+          "!instagram:local": {
+            state: {events: [
+              {type: "m.room.name", state_key: "", content: {name: "Friends"}},
+              {type: "m.bridge", state_key: "instagram", content: {protocol: {id: "instagram"}}},
+            ]},
+            timeline: {events: [{
+              event_id: "$old-backfill",
+              room_id: "!instagram:local",
+              sender: "@meta_friend:local",
+              type: "m.room.message",
+              origin_server_ts: 1000,
+              content: {body: "old"},
+            }]},
+          },
+        }}},
+      },
+    },
+    async (hub) => {
+      const [room] = await hub.rooms();
+      assert.equal(room.preview, "today");
+      assert.equal(room.lastActivity, new Date(3000).toISOString());
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
 test("a room is filed by its ghosts when the bridge writes no protocol id", async () => {
   await withHub(
     {
@@ -331,6 +1441,42 @@ test("a sticker is carried into the thread rather than dropped", async () => {
       assert.equal(attachment?.kind, "image");
       assert.equal(attachment?.width, 240);
       assert.match(attachment?.url ?? "", /parrot/);
+    },
+  );
+});
+
+test("an Instagram reel cover keeps a route to the original post", async () => {
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/room1/messages": {
+        body: {
+          end: null,
+          chunk: [
+            {
+              type: "m.room.message",
+              event_id: "$reel-cover",
+              room_id: "room1",
+              sender: "@instagram_1:local",
+              origin_server_ts: 1_000,
+              content: {
+                body: "Reel cover",
+                msgtype: "m.image",
+                url: "mxc://local/reel-cover",
+                external_url: "https://www.instagram.com/reel/example/",
+                info: {mimetype: "image/jpeg", w: 720, h: 1280},
+              },
+            },
+          ],
+        },
+      },
+    },
+    async (hub) => {
+      const {messages} = await hub.messages("room1", 10);
+      assert.equal(messages[0].attachments[0]?.kind, "image");
+      assert.deepEqual(messages[0].viewIn, {
+        app: "Instagram",
+        url: "https://www.instagram.com/reel/example/",
+      });
     },
   );
 });
@@ -672,7 +1818,7 @@ test("falls back to the legacy API when v3 is absent", async () => {
   );
 });
 
-test("offers a token flow for an unlinked legacy bridge", async () => {
+test("offers every supported login flow for an unlinked Discord bridge", async () => {
   const legacy = "/bridges/discord/_matrix/provision/v1";
   const directory = await legacyHubDirectory("another-secret-16-chars");
   await withHub(
@@ -688,8 +1834,11 @@ test("offers a token flow for an unlinked legacy bridge", async () => {
       assert.equal(bridge.state, "logged-out");
       assert.deepEqual(
         bridge.flows.map((flow) => flow.id),
-        ["token"],
+        ["qr", "user-token", "bot-token", "oauth-token"],
       );
+      assert.match(bridge.flows[0]!.description, /CAPTCHA/);
+      assert.match(bridge.flows[2]!.description, /Servers only/);
+      assert.match(bridge.flows[3]!.description, /cannot provide all personal messages/);
     },
     {matrixToken: "syt_token", userId: "@me:local"},
     directory,

@@ -22,6 +22,7 @@
     CommsPlatform,
     CommsStatusDto,
     CommsMailProvider,
+    MailSignatureDto,
     PolymuxApi,
     SaveEmailAccountRequest,
     SystemPermissionKind,
@@ -36,6 +37,7 @@
   import {locale, plural, t, translate, withLocale} from '../../../i18n';
   import Icon from '../../shared/components/Icon.svelte';
   import Menu from '../../shared/components/Menu.svelte';
+  import RichSignatureEditor from './RichSignatureEditor.svelte';
 
   export let api: PolymuxApi;
 
@@ -123,6 +125,23 @@
   let emailOriginalId = '';
   let emailPassword = '';
 
+  type SignatureAccountDraft = {
+    signatures: MailSignatureDto[];
+    defaultSignatureId: string | null;
+  };
+  type SignatureRow = {
+    key: string;
+    accountId: string;
+    accountEmail: string;
+    signature: MailSignatureDto;
+    isDefault: boolean;
+  };
+  let editingSignatures = false;
+  let signatureAccountId = 'all';
+  let signatureSelectedKey = '';
+  let signatureDrafts: Record<string, SignatureAccountDraft> = {};
+  let dirtySignatureAccounts: string[] = [];
+
   onMount(() => {
     const unsubscribe = api.comms.subscribe((next) => {
       status = next;
@@ -135,7 +154,7 @@
     };
   });
 
-  /** Keep mailbox state current without making connection testing a user task. */
+  /** Keep mailbox state current while reconnection remains background work. */
   async function checkEmailConnections(): Promise<void> {
     if (emailHealthChecking || !status?.email.accounts.length) return;
     emailHealthChecking = true;
@@ -248,6 +267,21 @@
   );
   $: bridges = status?.bridges ?? [];
   $: emailAccounts = status?.email.accounts ?? [];
+  $: signatureRows = signatureRowsFor(signatureAccountId, signatureDrafts, emailAccounts);
+  $: selectedSignatureRow = signatureRows.find((row) => row.key === signatureSelectedKey) ?? null;
+  $: signatureAccountOptions = [
+    {value: 'all', label: $t('hub.allSignatures'), icon: 'signature' as const},
+    ...emailAccounts.map((account) => ({
+      value: account.id,
+      label: account.email,
+      icon: 'mail' as const,
+    })),
+  ];
+  $: signatureScopeCount = signatureRows.length;
+  $: signaturesSaveable = dirtySignatureAccounts.length > 0 &&
+    Object.values(signatureDrafts).every((draft) =>
+      draft.signatures.every((signature) => signature.name.trim().length > 0),
+    );
   $: signedIn = status?.hub.status === 'signed-in';
   // svelte-check does not narrow `selected` across the ternary, so the tagged
   // branch is pulled into a local first.
@@ -626,7 +660,6 @@
       smtpPort: account.outgoing.port ?? 587,
       smtpEncryption: account.outgoing.encryption ?? 'start-tls',
       smtpLogin: account.outgoing.login ?? '',
-      isDefault: account.isDefault,
     };
     editingEmail = true;
   }
@@ -636,6 +669,176 @@
     emailPassword = '';
     emailForm = blankEmail();
     editingEmail = true;
+  }
+
+  function signatureKey(accountId: string, signatureId: string): string {
+    return `${accountId}:${signatureId}`;
+  }
+
+  function signatureRowsFor(
+    accountId: string,
+    drafts: Record<string, SignatureAccountDraft>,
+    accounts: CommsEmailAccountDto[],
+  ): SignatureRow[] {
+    const visible = accountId === 'all'
+      ? accounts
+      : accounts.filter((account) => account.id === accountId);
+    return visible.flatMap((account) => {
+      const draft = drafts[account.id] ?? {
+        signatures: account.signatures,
+        defaultSignatureId: account.defaultSignatureId,
+      };
+      return draft.signatures.map((signature) => ({
+        key: signatureKey(account.id, signature.id),
+        accountId: account.id,
+        accountEmail: account.email,
+        signature,
+        isDefault: draft.defaultSignatureId === signature.id,
+      }));
+    });
+  }
+
+  function openSignatures(accountId = 'all'): void {
+    signatureDrafts = Object.fromEntries(
+      emailAccounts.map((account) => [
+        account.id,
+        {
+          signatures: account.signatures.map((signature) => ({...signature})),
+          defaultSignatureId: account.defaultSignatureId,
+        },
+      ]),
+    );
+    dirtySignatureAccounts = [];
+    signatureAccountId = accountId;
+    const rows = signatureRowsFor(accountId, signatureDrafts, emailAccounts);
+    signatureSelectedKey = rows[0]?.key ?? '';
+    editingEmail = false;
+    editingSignatures = true;
+  }
+
+  function chooseSignatureAccount(accountId: string): void {
+    signatureAccountId = accountId;
+    const rows = signatureRowsFor(accountId, signatureDrafts, emailAccounts);
+    signatureSelectedKey = rows[0]?.key ?? '';
+  }
+
+  function markSignaturesDirty(accountId: string): void {
+    if (!dirtySignatureAccounts.includes(accountId))
+      dirtySignatureAccounts = [...dirtySignatureAccounts, accountId];
+  }
+
+  function addSignature(): void {
+    const accountId =
+      (signatureAccountId === 'all' ? selectedSignatureRow?.accountId : signatureAccountId) ??
+      emailAccounts[0]?.id;
+    if (!accountId) return;
+    const current = signatureDrafts[accountId] ?? {signatures: [], defaultSignatureId: null};
+    const signature: MailSignatureDto = {
+      id: crypto.randomUUID(),
+      name: translate('hub.newSignature'),
+      body: '',
+      html: null,
+    };
+    signatureDrafts = {
+      ...signatureDrafts,
+      [accountId]: {
+        signatures: [...current.signatures, signature],
+        defaultSignatureId: current.defaultSignatureId ?? signature.id,
+      },
+    };
+    signatureAccountId = accountId;
+    signatureSelectedKey = signatureKey(accountId, signature.id);
+    markSignaturesDirty(accountId);
+  }
+
+  function removeSignature(): void {
+    if (!selectedSignatureRow) return;
+    const {accountId, signature} = selectedSignatureRow;
+    const current = signatureDrafts[accountId];
+    if (!current) return;
+    const signatures = current.signatures.filter((item) => item.id !== signature.id);
+    signatureDrafts = {
+      ...signatureDrafts,
+      [accountId]: {
+        signatures,
+        defaultSignatureId:
+          current.defaultSignatureId === signature.id ? (signatures[0]?.id ?? null) : current.defaultSignatureId,
+      },
+    };
+    markSignaturesDirty(accountId);
+    const rows = signatureRowsFor(signatureAccountId, signatureDrafts, emailAccounts);
+    signatureSelectedKey = rows[0]?.key ?? '';
+  }
+
+  function updateSignature(field: 'name' | 'body', value: string): void {
+    if (!selectedSignatureRow) return;
+    const {accountId, signature} = selectedSignatureRow;
+    const current = signatureDrafts[accountId];
+    if (!current) return;
+    signatureDrafts = {
+      ...signatureDrafts,
+      [accountId]: {
+        ...current,
+        signatures: current.signatures.map((item) =>
+          item.id === signature.id ? {...item, [field]: value} : item,
+        ),
+      },
+    };
+    markSignaturesDirty(accountId);
+  }
+
+  function updateSignatureContent(value: {body: string; html: string | null}): void {
+    if (!selectedSignatureRow) return;
+    const {accountId, signature} = selectedSignatureRow;
+    const current = signatureDrafts[accountId];
+    if (!current) return;
+    signatureDrafts = {
+      ...signatureDrafts,
+      [accountId]: {
+        ...current,
+        signatures: current.signatures.map((item) =>
+          item.id === signature.id ? {...item, body: value.body, html: value.html} : item,
+        ),
+      },
+    };
+    markSignaturesDirty(accountId);
+  }
+
+  function setDefaultSignature(on: boolean): void {
+    if (!selectedSignatureRow) return;
+    const {accountId, signature} = selectedSignatureRow;
+    const current = signatureDrafts[accountId];
+    if (!current) return;
+    signatureDrafts = {
+      ...signatureDrafts,
+      [accountId]: {...current, defaultSignatureId: on ? signature.id : null},
+    };
+    markSignaturesDirty(accountId);
+  }
+
+  async function saveSignatures(): Promise<void> {
+    if (!signaturesSaveable) return;
+    busy = 'signatures-save';
+    try {
+      for (const account of dirtySignatureAccounts) {
+        const draft = signatureDrafts[account];
+        if (!draft) continue;
+        status = await api.comms.emailSignaturesSave({
+          account,
+          signatures: draft.signatures.map((signature) => ({
+            ...signature,
+            name: signature.name.trim(),
+          })),
+          defaultSignatureId: draft.defaultSignatureId,
+        });
+      }
+      dirtySignatureAccounts = [];
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
   }
 
   async function saveEmail(): Promise<void> {
@@ -816,10 +1019,6 @@
                 <input bind:value={emailForm.smtpPort} type="number" />
               </label>
             </div>
-            <label class="comms-check">
-              <input type="checkbox" bind:checked={emailForm.isDefault} />
-              <span>{$t('hub.sendByDefault')}</span>
-            </label>
             <footer class="comms-actions">
               <button type="button" onclick={() => (editingEmail = false)}>{$t('common.cancel')}</button>
               <button
@@ -829,6 +1028,114 @@
                 onclick={() => void saveEmail()}
               >
                 {busy === 'email-save' ? $t('hub.saving') : $t('hub.saveMailbox')}
+              </button>
+            </footer>
+          </div>
+        {:else if editingSignatures}
+          <div class="comms-signature-page">
+            <header class="comms-detail-header comms-signature-header">
+              <h3>{$t('hub.signaturesTitle')}</h3>
+              {#if selectedSignatureRow}
+                <span class="comms-detail-actions">
+                  <button type="button" aria-label={$t('hub.addSignature')} onclick={addSignature}>
+                    <Icon name="plus" size={14} />
+                  </button>
+                </span>
+              {/if}
+            </header>
+            <div class="comms-signature-toolbar">
+              <Menu
+                options={signatureAccountOptions}
+                value={signatureAccountId}
+                label={$t('hub.signatureAccounts')}
+                icon="mail"
+                wide
+                keepOpenOnChange
+                onChange={chooseSignatureAccount}
+              />
+              <small>{plural('hub.signatures', signatureScopeCount)}</small>
+            </div>
+
+            {#if selectedSignatureRow}
+              <div class="comms-signature-workspace">
+                <section class="comms-signature-list" aria-label={$t('hub.signatureChoices')} use:scrollFade={signatureAccountId}>
+                  {#each signatureRows as row (row.key)}
+                    <button type="button" class:active={row.key === signatureSelectedKey} onclick={() => (signatureSelectedKey = row.key)}>
+                      <span class="comms-signature-row-mark"><Icon name="signature" size={15} /></span>
+                      <span class="comms-signature-row-copy">
+                        <strong>{row.signature.name}</strong>
+                        <small>
+                          {signatureAccountId === 'all' ? row.accountEmail : row.isDefault ? $t('hub.default') : row.accountEmail}
+                        </small>
+                      </span>
+                      {#if row.isDefault && signatureAccountId === 'all'}
+                        <Icon name="check" size={12} />
+                      {/if}
+                    </button>
+                  {/each}
+                </section>
+
+                <section class="comms-signature-editor" aria-label={$t('hub.signatureEditor')}>
+                  <label>
+                    <span>{$t('hub.signatureName')}</span>
+                    <input
+                      value={selectedSignatureRow.signature.name}
+                      maxlength="80"
+                      oninput={(event) => updateSignature('name', event.currentTarget.value)}
+                    />
+                  </label>
+                  <div class="comms-signature-body">
+                    <span>{$t('hub.signaturePreview')}</span>
+                    {#key selectedSignatureRow.key}
+                      <RichSignatureEditor
+                        text={selectedSignatureRow.signature.body}
+                        html={selectedSignatureRow.signature.html}
+                        label={$t('hub.signaturePreview')}
+                        placeholder={$t('hub.signaturePlaceholder')}
+                        onChange={updateSignatureContent}
+                      />
+                    {/key}
+                  </div>
+                  <footer class="comms-signature-editor-footer">
+                    <button
+                      type="button"
+                      class="comms-signature-default"
+                      class:checked={selectedSignatureRow.isDefault}
+                      role="checkbox"
+                      aria-checked={selectedSignatureRow.isDefault}
+                      onclick={() => setDefaultSignature(!selectedSignatureRow?.isDefault)}
+                    >
+                      <span class="comms-signature-checkmark">
+                        {#if selectedSignatureRow.isDefault}<Icon name="check" size={11} strokeWidth={2.2} />{/if}
+                      </span>
+                      <span>{$t('hub.useSignatureByDefault', {email: selectedSignatureRow.accountEmail})}</span>
+                    </button>
+                    <button type="button" class="destructive" onclick={removeSignature}>
+                      <Icon name="trash" size={13} />
+                      <span>{$t('hub.removeSignature')}</span>
+                    </button>
+                  </footer>
+                </section>
+              </div>
+            {:else}
+              <section class="comms-signature-empty" aria-label={$t('hub.signatureChoices')}>
+                <span><Icon name="signature" size={22} /></span>
+                <strong>{$t('hub.noSignatures')}</strong>
+                <button type="button" onclick={addSignature}>
+                  <Icon name="plus" size={13} />
+                  {$t('hub.addSignature')}
+                </button>
+              </section>
+            {/if}
+            <footer class="comms-actions comms-signature-actions">
+              <button type="button" onclick={() => (editingSignatures = false)}>{$t('common.cancel')}</button>
+              <button
+                type="button"
+                class="primary"
+                disabled={busy === 'signatures-save' || !signaturesSaveable}
+                onclick={() => void saveSignatures()}
+              >
+                {busy === 'signatures-save' ? $t('hub.saving') : $t('hub.saveSignatures')}
               </button>
             </footer>
           </div>
@@ -1064,6 +1371,11 @@
             <h3>{$t('hub.mail')}</h3>
             <p>{$t('hub.mailBlurb')}</p>
             <span class="comms-detail-actions">
+              {#if emailAccounts.length > 0}
+                <button type="button" aria-label={$t('hub.manageSignatures')} onclick={() => openSignatures()}>
+                  <Icon name="signature" size={15} />
+                </button>
+              {/if}
               <button type="button" aria-label={$t('hub.addMailboxShort')} onclick={addEmail}>
                 <Icon name="plus" size={14} />
               </button>
@@ -1081,10 +1393,9 @@
                   <div class="comms-mailbox-head">
                     <span class="comms-mailbox-name">
                       <strong>{account.email}</strong>
-                      {#if account.isDefault}<em>{$t('hub.default')}</em>{/if}
                     </span>
                     <span class="comms-status" data-state={account.status}>
-                      {account.status === 'ok' ? $t('hub.reachable') : account.status === 'error' ? $t('drive.stateDisconnected') : $t('hub.testing')}
+                      {account.status === 'ok' ? $t('hub.reachable') : account.status === 'error' ? $t('drive.stateDisconnected') : $t('hub.connecting')}
                     </span>
                   </div>
                   <p class="comms-mailbox-servers">
@@ -1096,6 +1407,7 @@
                   </p>
                   {#if account.error}<p class="comms-hint warn">{account.error}</p>{/if}
                   <div class="comms-mailbox-actions">
+                    <button type="button" onclick={() => openSignatures(account.id)}>{$t('hub.signaturesTitle')}</button>
                     <button type="button" onclick={() => editEmail(account)}>{$t('common.edit')}</button>
                     <button
                       type="button"
@@ -1169,6 +1481,10 @@
   .comms-dot[data-state="unreachable"],.comms-dot[data-state="unavailable"]{background:var(--neutral-200);box-shadow:inset 0 0 0 1px var(--neutral-300)}
 
   .comms-detail{min-height:0;overflow-y:auto;padding-right:2px}
+  /* The signature page owns its two internal scrollers. Keeping the outer
+     detail pane scrollable would clip and mask the account menu before it can
+     float over the workspace below. */
+  .comms-detail:has(>.comms-signature-page){overflow:visible;-webkit-mask-image:none;mask-image:none}
   /* The action sits out of the text's way rather than on top of it: the header
      keeps a lane clear on the right wide enough for the button and its gap. */
   .comms-detail-header{position:relative;margin-bottom:14px;padding-right:44px}
@@ -1198,7 +1514,7 @@
      Microsoft mailbox there is nothing below worth filling in. */
   .comms-signin{display:flex;max-width:440px;flex-direction:column;gap:7px;margin:0 0 14px}
   .comms-signin-button{display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:none;color:var(--ink);font-family:inherit;font-size:12.5px;font-weight:560;cursor:pointer;transition:border-color .16s,opacity .16s}
-  .comms-signin-button img{width:16px;height:16px;border-radius:50%;background:#fff;object-fit:contain;padding:1px}
+  .comms-signin-button img{width:18px;height:18px;display:block;flex:none;object-fit:contain}
   .comms-signin-button:hover:not(:disabled){border-color:var(--ink-soft)}
   .comms-signin-button:disabled{opacity:.55;cursor:default}
   .comms-signin-button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
@@ -1212,8 +1528,6 @@
   .comms-form-row{display:flex;max-width:440px;gap:9px}
   .comms-form-row>label{flex:1}
   .comms-form-row .comms-port{max-width:82px;flex:none}
-  .comms-check{flex-direction:row!important;align-items:center;gap:7px!important}
-  .comms-check input{width:14px;height:14px;flex:none}
 
   .comms-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:12px}
   .comms-actions button{height:29px;border:1px solid var(--neutral-200);border-radius:8px;padding:0 12px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:11px;font-weight:550}
@@ -1245,7 +1559,6 @@
   .comms-mailbox-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
   .comms-mailbox-name{min-width:0;display:flex;align-items:center;gap:7px}
   .comms-mailbox-name strong{overflow:hidden;color:var(--neutral-950);text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:555}
-  .comms-mailbox-name em{flex:none;padding:1px 6px;border-radius:5px;background:var(--neutral-100);color:var(--neutral-600);font-size:9.5px;font-style:normal;font-weight:550}
   .comms-mailbox-servers{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0 0;color:var(--neutral-500);font-size:10.5px}
   .comms-mailbox-actions{display:flex;gap:6px;margin-top:9px}
   .comms-mailbox-actions button{height:26px;border:1px solid var(--neutral-200);border-radius:7px;padding:0 9px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
@@ -1256,6 +1569,56 @@
   .comms-mailbox-empty p{margin:0;color:var(--neutral-500);font-size:11px}
   .comms-mailbox-empty button{height:27px;flex:none;border:1px solid var(--neutral-200);border-radius:7px;padding:0 11px;background:var(--app-surface);color:var(--neutral-800);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
   .comms-mailbox-empty button:hover{background:var(--neutral-100)}
+
+  /* Signatures use the same compact filter, inset list highlights, form
+     fields and bare actions as the rest of Settings. The nested mail-client
+     rail from the reference is deliberately flattened: Hub already owns the
+     page rail, so another full-height account rail only adds chrome. */
+  .comms-signature-page{height:100%;min-height:0;display:flex;flex-direction:column}
+  .comms-signature-header{flex:none;margin-bottom:10px}
+  .comms-signature-toolbar{display:flex;align-items:center;gap:9px;margin-bottom:12px}
+  .comms-signature-toolbar :global(.select-menu){width:160px;min-width:160px;max-width:160px;flex:0 0 160px}
+  .comms-signature-toolbar :global(.select-menu-trigger){box-sizing:border-box;width:100%;min-width:0;max-width:100%;height:29px;justify-content:flex-start;gap:6px;padding:0 9px 0 8px;font-size:10.5px}
+  .comms-signature-toolbar :global(.select-menu-trigger>span:not(.select-menu-icon)){min-width:0;flex:1;text-align:left}
+  .comms-signature-toolbar :global(.select-menu-trigger>[data-icon="chevron"]){flex:none;margin-left:auto;transform:translateY(1px)}
+  .comms-signature-toolbar :global(.select-menu-list){right:auto;left:0;width:100%;min-width:100%;max-width:100%}
+  .comms-signature-toolbar>small{margin-left:auto;color:var(--neutral-400);font-size:10px;white-space:nowrap}
+
+  .comms-signature-workspace{min-height:0;flex:1;display:grid;grid-template-columns:minmax(176px,.8fr) minmax(260px,1.7fr);gap:18px;animation:comms-signature-in .14s ease-out both}
+  .comms-signature-list{position:relative;min-width:0;min-height:0;overflow-y:auto;padding:3px 18px 3px 0;scrollbar-width:none}
+  .comms-signature-list::after{position:absolute;top:8px;right:0;bottom:8px;width:1px;background:var(--neutral-200);content:""}
+  .comms-signature-list::-webkit-scrollbar,.comms-signature-editor::-webkit-scrollbar{display:none}
+  .comms-signature-list>button{width:100%;min-width:0;display:flex;align-items:center;gap:8px;margin:2px 0;border:0;border-radius:8px;padding:7px 8px;background:transparent;color:var(--neutral-600);cursor:pointer;font-family:inherit;text-align:left}
+  .comms-signature-list>button:hover,.comms-signature-list>button.active{background:var(--neutral-100);color:var(--neutral-950)}
+  .comms-signature-row-mark{width:17px;height:17px;flex:none;display:grid;place-items:center;color:var(--neutral-500)}
+  .comms-signature-row-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+  .comms-signature-row-copy strong,.comms-signature-row-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .comms-signature-row-copy strong{color:var(--neutral-900);font-size:11.5px;font-weight:545}
+  .comms-signature-row-copy small{color:var(--neutral-400);font-size:9.5px}
+
+  .comms-signature-editor{min-width:0;min-height:0;display:flex;flex-direction:column;gap:10px;overflow-y:auto;padding:3px 2px 3px 0;scrollbar-width:none}
+  .comms-signature-editor>label,.comms-signature-editor>.comms-signature-body{min-width:0;display:flex;flex-direction:column;gap:4px}
+  .comms-signature-editor>label>span,.comms-signature-editor>.comms-signature-body>span{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:540}
+  .comms-signature-editor input:not([type]){height:29px;border:1px solid var(--neutral-200);border-radius:8px;padding:0 9px;background:var(--app-surface);color:var(--neutral-950);font-family:inherit;font-size:11.5px}
+  .comms-signature-body{min-height:0;flex:1}
+  .comms-signature-editor input:focus-visible{border-color:var(--neutral-500);outline:0}
+  .comms-signature-editor-footer{min-width:0;min-height:24px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:1px 2px 0}
+  .comms-signature-default{min-width:0;min-height:24px;flex:1;display:flex;align-items:center;gap:7px;border:0;padding:0;background:transparent;color:var(--neutral-600);cursor:pointer;font-family:inherit;text-align:left;font-size:10.5px;font-weight:500;line-height:1.2}
+  .comms-signature-default>span:last-child{min-width:0;white-space:normal}
+  .comms-signature-checkmark{box-sizing:border-box;width:15px;height:15px;flex:none;display:grid;place-items:center;border:1px solid var(--neutral-300);border-radius:5px;background:var(--app-surface);color:transparent;transition:background .12s ease,border-color .12s ease,color .12s ease}
+  .comms-signature-default:hover .comms-signature-checkmark{border-color:var(--neutral-500)}
+  .comms-signature-default.checked .comms-signature-checkmark{border-color:var(--neutral-900);background:var(--neutral-900);color:var(--app-bg)}
+  .comms-signature-editor-footer>button.destructive{min-height:24px;display:flex;align-items:center;gap:5px;flex:none;border:0;padding:0;background:transparent;color:#a04545;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:530;line-height:1.2}
+  .comms-signature-editor-footer>button.destructive:hover{color:#7f2f2f}
+  :global(:root[data-theme="dark"]) .comms-signature-editor-footer>button.destructive{color:#d98d8d}
+
+  .comms-signature-empty{min-height:0;flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:7px;color:var(--neutral-400);animation:comms-signature-in .14s ease-out both}
+  .comms-signature-empty>span{width:28px;height:28px;display:grid;place-items:center;color:var(--neutral-400)}
+  .comms-signature-empty strong{color:var(--neutral-600);font-size:11.5px;font-weight:550}
+  .comms-signature-empty button{display:flex;align-items:center;gap:5px;margin-top:3px;border:0;padding:3px;background:transparent;color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
+  .comms-signature-empty button:hover{color:var(--neutral-950)}
+  .comms-signature-actions{flex:none;margin-top:14px}
+  @keyframes comms-signature-in{from{opacity:0}to{opacity:1}}
 
   .comms-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:540}
   .comms-status::before{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor;content:""}

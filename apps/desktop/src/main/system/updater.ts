@@ -61,7 +61,11 @@ function settle(next: Partial<AppUpdateDto>): void {
  * `npm start` would spend the session retrying an update it can never install.
  */
 function canSelfUpdate(): boolean {
-  if (!app.isPackaged) return false;
+  // The development Electron bundle is renamed to Polymux.app on macOS so its
+  // Dock identity is correct. That makes `app.isPackaged` report true even
+  // though Forge launched the checkout through Electron's default-app route.
+  // Squirrel cannot update that bundle and macOS rejects its commands.
+  if (!app.isPackaged || process.defaultApp) return false;
   return process.platform === "darwin" || process.platform === "win32" || process.platform === "linux";
 }
 

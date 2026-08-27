@@ -12,7 +12,7 @@ export const PERMISSION_USAGE_DESCRIPTIONS: Record<string, string> = {
   NSRemindersFullAccessUsageDescription:
     "Polymux reads and changes your reminders only when a skill you enabled asks it to.",
   NSCalendarsFullAccessUsageDescription:
-    "Polymux reads and changes your calendar only when a skill you enabled asks it to.",
+    "Polymux reads and changes your calendars only when you open Calendar or a skill you enabled asks it to.",
   NSContactsUsageDescription:
     "Polymux reads your contacts only when a skill you enabled asks it to.",
   NSPhotoLibraryUsageDescription:

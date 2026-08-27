@@ -27,6 +27,10 @@
   function tooltipLabel(button: HTMLButtonElement): string {
     const setting = button.getAttribute('data-tooltip');
     if (setting === '' || setting === 'none') return '';
+    // A left chevron already carries the universal meaning of going back.
+    // Keep its aria-label for assistive technology without repeating it in a
+    // hover pill, everywhere the shared Back icon is used.
+    if (button.querySelector(':scope > svg[data-icon="back"]')) return '';
     // A button holding its menu open has already said what it does — the menu
     // is on screen, usually right under the pill, so a tooltip would only
     // cover the first item. Applies to every popover trigger in the app.

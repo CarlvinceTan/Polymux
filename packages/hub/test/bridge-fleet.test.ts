@@ -18,9 +18,9 @@ import {COMMS_PLATFORMS} from "@polymux/protocol";
 
 /**
  * The fleet is the list of networks this host can run. These tests pin the
- * parts that are easy to get quietly wrong: a binary that serves two networks,
- * ports that must not drift when the installed set changes, and the config
- * that tells a shared binary which network it is.
+ * parts that are easy to get quietly wrong: the dedicated Meta binaries,
+ * ports that must not drift when the installed set changes, and each binary's
+ * required network mode.
  */
 
 /** A child that starts and simply stays up, so supervision has something to hold. */
@@ -124,21 +124,21 @@ const blockedBy = async (host: BridgeHost, platform: string) =>
 const blockedReason = async (host: BridgeHost, platform: string) =>
   (await blockedBy(host, platform))?.reason ?? null;
 
-test("one binary serving two networks is discovered as two bridges", async () => {
-  const {host} = await hostWith(["mautrix-meta"]);
+test("Messenger and Instagram are discovered from their dedicated binaries", async () => {
+  const {host} = await hostWith(["mautrix-meta", "mautrix-instagram"]);
   const found = await host.discover();
 
   assert.deepEqual(
     found.map((bridge) => bridge.name).sort(),
     ["instagram", "messenger"],
-    "mautrix-meta serves Messenger and Instagram, so it runs once for each",
+    "both Meta networks are available",
   );
   const ports = new Set(found.map((bridge) => bridge.port));
   assert.equal(ports.size, 2, "the two instances cannot share a port");
   assert.equal(
     found.find((bridge) => bridge.name === "instagram")?.network?.mode,
     "instagram",
-    "the network mode is what tells the shared binary which side it is on",
+    "the Instagram config keeps its network mode",
   );
 });
 
@@ -323,7 +323,7 @@ test("a bridge is told to write the user's own messages as the user", async () =
   assert.match(repaired, /^encryption:/m, "and the sections after it survive");
 });
 
-test("a bridge is asked for the history its network still has, not the last page", async () => {
+test("a bridge archives history once with persistent queue progress", async () => {
   const {host, root} = await hostWith(["mautrix-whatsapp"], {
     spawn: (() => fakeChild()) as unknown as typeof spawnFn,
   });
@@ -331,12 +331,13 @@ test("a bridge is asked for the history its network still has, not the last page
   await seedRegistration(root, "whatsapp");
 
   await host.ensure("whatsapp");
-  // The queue is what walks past the page the network hands over on connect;
-  // without it a busy group shows a fraction of what the phone shows.
-  assert.match(await readFile(configPath, "utf8"), /^backfill:\n(?:[ \t][^\n]*\n)*?\s+queue:\n\s+enabled: true/m);
+  const seeded = await readFile(configPath, "utf8");
+  assert.match(seeded, /^    max_initial_messages: 50$/m);
+  assert.match(seeded, /^    max_catchup_messages: 500$/m);
+  assert.match(seeded, /^backfill:\n(?:[ \t][^\n]*\n)*?\s+queue:\n(?:\s+#.*\n)*\s+enabled: true/m);
 
-  // The binaries write their own defaults back when they upgrade a config in
-  // place, which turns the queue off again.
+  // Repair the aggressive immediate budgets without disabling the persistent
+  // archive queue. Its database, not this config, owns completed-task progress.
   await writeFile(
     configPath,
     [
@@ -346,8 +347,8 @@ test("a bridge is asked for the history its network still has, not the last page
       "    as_token: aaa",
       "backfill:",
       "    enabled: true",
-      "    max_initial_messages: 50",
-      "    max_catchup_messages: 500",
+      "    max_initial_messages: 500",
+      "    max_catchup_messages: 5000",
       "    threads:",
       "        max_initial_messages: 50",
       "    queue:",
@@ -365,8 +366,8 @@ test("a bridge is asked for the history its network still has, not the last page
 
   const repaired = await readFile(configPath, "utf8");
   assert.match(repaired, /^\s+queue:\n\s+#.*\n\s+enabled: true/m);
-  assert.match(repaired, /^    max_initial_messages: 500/m, "the limits are raised too");
-  assert.match(repaired, /^    max_catchup_messages: 5000/m);
+  assert.match(repaired, /^    max_initial_messages: 50/m, "the old initial budget is reduced");
+  assert.match(repaired, /^    max_catchup_messages: 500/m);
   // A per-thread budget, multiplied by every thread in a chat — not the same
   // number as the chat's own limit and not raised with it.
   assert.match(repaired, /^        max_initial_messages: 50$/m);
@@ -499,11 +500,11 @@ test("a legacy bridge crash-looping on a modern seed is healed at startup", asyn
   assert.match(registration, /as_token: new/, "the stale registration was regenerated");
 });
 
-test("a shared binary's config missing its network mode is repaired, not replaced", async () => {
+test("an Instagram config missing its network mode is repaired, not replaced", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
-  await writeFile(path.join(binariesDirectory, "mautrix-meta"), "", "utf8");
+  await writeFile(path.join(binariesDirectory, "mautrix-instagram"), "", "utf8");
 
   const home = path.join(root, "bridges", "instagram");
   await mkdir(home, {recursive: true});
@@ -557,6 +558,7 @@ test("the seed config binds each instance to its own network and port", async ()
   const binariesDirectory = path.join(root, "bin");
   await mkdir(binariesDirectory, {recursive: true});
   await writeFile(path.join(binariesDirectory, "mautrix-meta"), "", "utf8");
+  await writeFile(path.join(binariesDirectory, "mautrix-instagram"), "", "utf8");
 
   // A registration the bridge would otherwise generate with `-g`, so startup
   // never has to run the (empty) binary to produce one.
@@ -597,7 +599,7 @@ test("the seed config binds each instance to its own network and port", async ()
   assert.notEqual(
     portOf(instagram),
     portOf(messenger),
-    "two instances of one binary cannot share an appservice port",
+    "the two services cannot share an appservice port",
   );
   assert.equal(spawned.length, 2, "both instances are supervised");
 });
@@ -1067,6 +1069,14 @@ test("credentials invalidated by the network delete nothing", () => {
 test("a config already repaired is left byte for byte alone", () => {
   const once = repairConfig(CLEANUP_DEFAULTS, HOMESERVER);
   assert.equal(repairConfig(once, HOMESERVER), once);
+});
+
+test("Instagram reel media is fetched during live sync and backfill", () => {
+  const source = `${CLEANUP_DEFAULTS}network:\n    mode: instagram\n    disable_xma_backfill: true\n    disable_xma_always: true\n`;
+  const repaired = repairConfig(source, {...HOMESERVER, platform: "instagram"});
+  assert.match(repaired, /^    disable_xma_backfill: false$/m);
+  assert.match(repaired, /^    disable_xma_always: false$/m);
+  assert.equal(repairConfig(repaired, {...HOMESERVER, platform: "instagram"}), repaired);
 });
 
 test("a legacy config is not touched by the cleanup repair", () => {

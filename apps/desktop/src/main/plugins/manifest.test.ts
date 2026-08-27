@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { pluginMcpServers, readContributions, readManifest } from "./manifest.js";
+import { pluginMcpServers, pluginViews, readContributions, readManifest } from "./manifest.js";
 
 function plugin(build: (root: string) => void): string {
   const root = mkdtempSync(path.join(tmpdir(), "polymux-plugin-test-"));
@@ -78,12 +78,33 @@ test("counts what it has no surface for and names what it runs", () => {
     assert.deepEqual(readContributions(root), {
       skills: ["expand", "summarise"],
       mcpServers: ["notes"],
+      views: [],
       commands: 2,
       agents: 1,
       hooks: 3,
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("discovers bundled workspace views and keeps their entry inside the view folder", () => {
+  const root = plugin((directory) => {
+    write(path.join(directory, "views", "dashboard", "view.json"), JSON.stringify({name: "Dashboard", description: "Project overview", entry: "index.html"}));
+    write(path.join(directory, "views", "dashboard", "index.html"), "<h1>Dashboard</h1>");
+    write(path.join(directory, "views", "unsafe", "view.json"), JSON.stringify({entry: "../../outside.html"}));
+  });
+  try {
+    assert.deepEqual(pluginViews(root, "market/plugin"), [{
+      id: "market/plugin/dashboard",
+      pluginId: "market/plugin",
+      name: "Dashboard",
+      description: "Project overview",
+      entry: path.join(root, "views", "dashboard", "index.html"),
+    }]);
+    assert.deepEqual(readContributions(root).views, ["Dashboard"]);
+  } finally {
+    rmSync(root, {recursive: true, force: true});
   }
 });
 

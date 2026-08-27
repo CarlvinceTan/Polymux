@@ -9,8 +9,9 @@ import net from "node:net";
  * BODYSTRUCTURE walked incorrectly, a UID range built by hand — and none of
  * them survive contact with a server that answers in the protocol's own words.
  *
- * It speaks no TLS and advertises no AUTH extensions, so the client falls back
- * to plain LOGIN and the whole exchange stays readable in a transcript.
+ * It speaks no TLS. By default it advertises no AUTH extensions, so the client
+ * falls back to plain LOGIN; an OAuth test can instead give it the one bearer
+ * token it should accept.
  */
 
 export interface FakeMessage {
@@ -46,6 +47,8 @@ export async function startImapServer(options: {
   password?: string;
   /** Fails every login, the way an expired token does. */
   rejectLogin?: boolean;
+  /** Advertises OAUTHBEARER and accepts only this access token. */
+  oauthAccessToken?: string;
 }): Promise<FakeImapServer> {
   const commands: string[] = [];
   const mailboxes = options.mailboxes;
@@ -59,7 +62,8 @@ export async function startImapServer(options: {
     let literal: {tag: string; box: FakeMailbox | undefined; flags: string[]; bytes: number} | null =
       null;
     const send = (line: string): void => void socket.write(`${line}\r\n`);
-    send("* OK [CAPABILITY IMAP4rev1 UIDPLUS MOVE] fake ready");
+    const capabilities = `IMAP4rev1 UIDPLUS MOVE${options.oauthAccessToken ? " AUTH=OAUTHBEARER" : ""}`;
+    send(`* OK [CAPABILITY ${capabilities}] fake ready`);
 
     socket.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
@@ -98,8 +102,13 @@ export async function startImapServer(options: {
         const command = name.toUpperCase();
 
         if (command === "CAPABILITY") {
-          send("* CAPABILITY IMAP4rev1 UIDPLUS MOVE");
+          send(`* CAPABILITY ${capabilities}`);
           send(`${tag} OK done`);
+        } else if (command === "AUTHENTICATE") {
+          const payload = Buffer.from(args[1] ?? "", "base64").toString("utf8");
+          const token = /(?:^|\x01)auth=Bearer ([^\x01]+)/.exec(payload)?.[1];
+          if (token && token === options.oauthAccessToken) send(`${tag} OK authenticated`);
+          else send(`${tag} NO [AUTHENTICATIONFAILED] Invalid credentials (Failure)`);
         } else if (command === "LOGIN") {
           if (options.rejectLogin) send(`${tag} NO [AUTHENTICATIONFAILED] Invalid credentials`);
           else send(`${tag} OK logged in`);

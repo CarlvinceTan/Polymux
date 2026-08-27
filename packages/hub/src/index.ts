@@ -32,15 +32,26 @@ export {
   WeChatBridge,
   WECHAT_FALLBACK_DIRECTORIES,
   type WeChatBridgeOptions,
+  type WeChatWriter,
+  type WeChatWriteRequest,
+  type WeChatWriteResult,
 } from "./wechat-bridge.js";
+export {ProcessWeChatWriter} from "./wechat-writer.js";
+export {
+  WECHAT_NATIVE_PROFILES,
+  findWeChatNativeProfile,
+  type WeChatNativeProfile,
+} from "./wechat-native-profile.js";
 export {loadHeadImages, type HeadImageOptions} from "./wechat-head-images.js";
 export {
+  bridgeDisplayName,
   MatrixHub,
   ProvisioningError,
   provisioningSecret,
   type HubAuth,
   type HubProbe,
   type MatrixAttachment,
+  type MatrixContact,
   type MatrixHubOptions,
   type MatrixMessage,
   type MatrixReaction,

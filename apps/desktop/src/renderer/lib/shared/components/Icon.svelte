@@ -2,20 +2,20 @@
   import languagesIcon from '../../../assets/icons/languages.png';
 
   export let name:
-    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'computer' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'waveform' | 'stop' | 'cursor'
+    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'computer' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'smile' | 'waveform' | 'stop' | 'cursor'
     | 'attach' | 'options' | 'verified' | 'globe' | 'file' | 'task' | 'back'
     | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down' | 'arrow-up'
     | 'bolt' | 'document-text' | 'paper-airplane' | 'history' | 'archive' | 'drive' | 'new-chat'
-    | 'copy' | 'check' | 'edit' | 'thumb-up' | 'thumb-down' | 'search' | 'terminal' | 'wrench' | 'book-open' | 'languages'
+    | 'copy' | 'check' | 'circle-check' | 'circle-question' | 'edit' | 'signature' | 'thumb-up' | 'thumb-down' | 'search' | 'terminal' | 'wrench' | 'book-open' | 'languages'
     | 'brain' | 'compact' | 'compress' | 'sparkles' | 'bot'
     | 'connections' | 'mcp' | 'link' | 'puzzle' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
-    | 'document' | 'presentation' | 'folder' | 'pdf' | 'spreadsheet' | 'image' | 'audio' | 'video' | 'code'
-    | 'calendar' | 'clock' | 'sun' | 'sun-moon' | 'goal' | 'user' | 'users' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
+    | 'document' | 'presentation' | 'folder' | 'folder-open' | 'pdf' | 'spreadsheet' | 'image' | 'audio' | 'video' | 'code'
+    | 'calendar' | 'calendar-error' | 'clock' | 'sun' | 'sun-moon' | 'goal' | 'user' | 'users' | 'contacts' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
     | 'folder-plus' | 'upload' | 'home' | 'folder-move' | 'info'
     | 'mail' | 'inbox' | 'spam' | 'storefront' | 'settings' | 'cloud'
     | 'reply' | 'reply-all' | 'mail-forward' | 'flag'
     | 'key' | 'shield' | 'prohibited' | 'eye' | 'eye-off' | 'incognito' | 'external' | 'import' | 'cookie'
-    | 'pin' | 'pin-off' | 'bell' | 'tasks';
+    | 'pin' | 'pin-off' | 'bell' | 'tasks' | 'platforms' | 'align-left' | 'align-center' | 'align-right';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -50,14 +50,26 @@
   {:else if name === 'apps'}
     <!-- One application window for the aggregate app-access permission. -->
     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 8.5h17"/><circle cx="6.5" cy="6.5" r=".7" fill="currentColor" stroke="none"/><circle cx="9" cy="6.5" r=".7" fill="currentColor" stroke="none"/>
+  {:else if name === 'platforms'}
+    <!-- Four equal service tiles: an aggregate of platforms, without the
+         network-node meaning carried by the Connections icon. -->
+    <rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>
   {:else if name === 'plus'}
     <path d="M12 5v14M5 12h14"/>
+  {:else if name === 'align-left'}
+    <path d="M5 7h14M5 11h10M5 15h14M5 19h8"/>
+  {:else if name === 'align-center'}
+    <path d="M5 7h14M7 11h10M5 15h14M8 19h8"/>
+  {:else if name === 'align-right'}
+    <path d="M5 7h14M9 11h10M5 15h14M11 19h8"/>
   {:else if name === 'close'}
     <path d="m7 7 10 10M17 7 7 17"/>
   {:else if name === 'send'}
     <path d="M7 17 17 7M17 7H9M17 7v8"/>
   {:else if name === 'mic'}
     <rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"/>
+  {:else if name === 'smile'}
+    <circle cx="12" cy="12" r="8.5"/><path d="M8.5 14.2a4.2 4.2 0 0 0 7 0"/><circle cx="9" cy="9.5" r=".8" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r=".8" fill="currentColor" stroke="none"/>
   {:else if name === 'mic-off'}
     <path d="m4 4 16 16M9 6v5a3 3 0 0 0 4.7 2.5M15 10V6a3 3 0 0 0-5.7-1.3M5.5 11a6.5 6.5 0 0 0 10.7 5M12 17.5V21M9 21h6"/>
   {:else if name === 'play'}
@@ -171,8 +183,17 @@
     <rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>
   {:else if name === 'check'}
     <path d="m5 12 4 4L19 6"/>
+  {:else if name === 'circle-check'}
+    <circle cx="12" cy="12" r="9"/><path d="m8 12 2.7 2.7L16.5 9"/>
+  {:else if name === 'circle-question'}
+    <circle cx="12" cy="12" r="9"/><path d="M9.9 9.4a2.15 2.15 0 1 1 4.15.75c0 1.45-2.05 2-2.05 3.15"/><circle cx="12" cy="16.55" r=".85" fill="currentColor" stroke="none"/>
   {:else if name === 'edit'}
     <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/>
+  {:else if name === 'signature'}
+    <!-- A written mark rather than a pen: this control chooses the reusable
+         result, while the settings editor is where its words are changed. -->
+    <path d="M4 17.5c2.2-5.7 4-8.5 5.4-8.5 2.2 0-.7 8.5 1.9 8.5 1.4 0 2.2-3.7 3.5-3.7 1.1 0 .2 3.7 1.7 3.7 1 0 1.8-1.3 3.5-1.3"/>
+    <path d="M4 20h16"/>
   {:else if name === 'thumb-up'}
     <path d="M7 10v11H3V10h4Zm0 9h9.2a2 2 0 0 0 1.9-1.4l2.2-7A2 2 0 0 0 18.4 8H14l.7-3.1A2.4 2.4 0 0 0 10.2 3L7 10Z"/>
   {:else if name === 'thumb-down'}
@@ -245,8 +266,10 @@
     <rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20l4-4 4 4M12 16v4M8 9h8M8 12h5"/>
   {:else if name === 'folder'}
     <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+  {:else if name === 'folder-open'}
+    <path d="m6 14 1.5-2.4A2 2 0 0 1 9.24 11H20a2 2 0 0 1 1.94 2l-1.54 5a2 2 0 0 1-1.95 1.2H4a2 2 0 0 1-2-1.7V7a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.75l.81 1a2 2 0 0 0 1.67.75H18a2 2 0 0 1 2 2V11"/>
   {:else if name === 'folder-plus'}
-    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/>
+    <path d="M14.5 7.5H12l-2-2H5a2 2 0 0 0-2 2v9.75a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V10.5"/><path d="M18.5 2v5M16 4.5h5"/>
   {:else if name === 'upload'}
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/>
   {:else if name === 'folder-move'}
@@ -269,6 +292,8 @@
     <path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14"/>
   {:else if name === 'calendar'}
     <rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18M8 14h3M8 17h6"/>
+  {:else if name === 'calendar-error'}
+    <rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18M9.75 13.25l4.5 4.5m0-4.5-4.5 4.5"/>
   {:else if name === 'clock'}
     <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
   {:else if name === 'sun'}
@@ -293,6 +318,8 @@
     <circle cx="12" cy="8" r="3.5"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>
   {:else if name === 'users'}
     <circle cx="9" cy="8" r="3"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0M15 5.5a3 3 0 0 1 0 5.8M16 15a5 5 0 0 1 4.5 5"/>
+  {:else if name === 'contacts'}
+    <rect x="5" y="3" width="16" height="18" rx="2.5"/><path d="M3 7h4M3 12h4M3 17h4"/><circle cx="13" cy="9" r="2.3"/><path d="M9 17a4 4 0 0 1 8 0"/>
   {:else if name === 'briefcase'}
     <rect x="3" y="7" width="18" height="13" rx="3"/><path d="M8 7V4h8v3M3 12h18M10 12v2h4v-2"/>
   {:else if name === 'banknote'}

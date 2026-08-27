@@ -1,0 +1,9 @@
+#!/bin/sh
+
+branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+
+if [ "$branch" = "main" ]; then
+  echo "Commit blocked: main is protected in this checkout." >&2
+  echo "Switch to dev or a feature branch before committing." >&2
+  exit 1
+fi

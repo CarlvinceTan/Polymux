@@ -46,6 +46,12 @@
    */
   export let plain = false;
   /**
+   * Keeps a single-choice menu open while its value changes. Useful for a
+   * filter whose choices are worth comparing in place; every option reserves
+   * the check column so moving the check never changes the menu's width.
+   */
+  export let keepOpenOnChange = false;
+  /**
    * Several choices at once. `values` holds the chosen ones and `onToggle`
    * reports each change; the menu stays open, because picking two days means
    * two clicks and reopening between them is busywork. The trigger reads from
@@ -120,6 +126,10 @@
   function choose(next: string): void {
     value = next;
     onChange(next);
+    if (keepOpenOnChange) {
+      void tick().then(place);
+      return;
+    }
     open = false;
     trigger?.focus();
   }
@@ -184,7 +194,13 @@
             <span class="select-menu-icon"><Icon name={option.icon} size={16} strokeWidth={1.5}/></span>
           {/if}
           <span>{option.label}</span>
-          {#if checked}<Icon name="check" size={13}/>{/if}
+          {#if keepOpenOnChange && !multiple}
+            <span class="select-menu-check-slot">
+              {#if checked}<Icon name="check" size={13}/>{/if}
+            </span>
+          {:else if checked}
+            <Icon name="check" size={13}/>
+          {/if}
         </button>
       {/each}
     </div>

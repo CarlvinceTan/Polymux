@@ -18,7 +18,19 @@ export function registerPrivilegedSchemes(): void {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: MEDIA_SCHEME,
-      privileges: {stream: true, supportFetchAPI: true, bypassCSP: true, secure: true},
+      // The media URL has HTTP-style authority/path semantics and Chromium's
+      // player issues cross-origin byte-range requests against it. `stream`
+      // alone makes the body incremental, but leaves the scheme non-standard
+      // and outside CORS; Electron can then decode the first response and
+      // reject the follow-up request as an unsupported media source.
+      privileges: {
+        standard: true,
+        stream: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+        bypassCSP: true,
+        secure: true,
+      },
     },
     {scheme: PREVIEW_SCHEME, privileges: {...PREVIEW_PRIVILEGES}},
   ]);

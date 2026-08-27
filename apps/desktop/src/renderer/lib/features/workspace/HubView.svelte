@@ -11,10 +11,13 @@
   import {polymuxApi} from '../../api/polymux';
   import {onHubCacheInvalidated} from '../../shared/state/hubCache';
   import {rememberChatPlatforms} from '../../shared/state/chatPlatforms';
+  import {MailDraftAutosave} from './mailDraftAutosave';
 
   /** Which source the rail has selected: a platform, or a mailbox folder. */
   export type Source =
-    | {kind: 'platform'; platform: string; account?: string}
+    | {kind: 'all'}
+    | {kind: 'contacts'}
+    | {kind: 'platform'; platform: string; account?: string; space?: string}
     | {kind: 'mail'; account: string; folder: string};
 
   /**
@@ -75,6 +78,9 @@
   /** Guards against two callers warming the hub at once. */
   let warming: Promise<void> | null = null;
   let seeded: Promise<void> | null = null;
+  /** One autosave queue survives Hub tab mounts, so leaving the workspace does
+   * not cancel the mailbox write it just triggered. */
+  const mailDraftAutosave = new MailDraftAutosave((request) => polymuxApi().comms.mailSend(request));
 
   /**
    * What the hub knew when the app last quit, put back before anything is
@@ -233,7 +239,7 @@
         }
         // The conversations at the top of the list, for the same reason: a
         // chat opens on its newest page, and that page is a round trip.
-        for (const chat of session.chats.slice(0, WARM_CHATS)) {
+        for (const chat of session.chats.filter((item) => !item.space).slice(0, WARM_CHATS)) {
           if (session.messages.has(chat.id)) continue;
           try {
             const page = await api.comms.chatMessages(chat.id, 50);
@@ -253,29 +259,51 @@
 <script lang="ts">
   import {onMount, tick, type ComponentProps} from 'svelte';
   import {flip} from 'svelte/animate';
-  import type {
-    ChatDto,
-    ChatMessageDto,
-    ChatReactionDto,
-    CommsPlatform,
-    CommsStatusDto,
-    MailAddressDto,
-    MailEnvelopeDto,
-    MailFolderDto,
-    MailImportance,
-    MailMessageDto,
-    PolymuxApi,
+  import {
+    commsPlatformLabel,
+    type ChatDto,
+    type ChatMessageDto,
+    type ChatReactionDto,
+    type CommsContactDto,
+    type CommsPlatform,
+    type CommsStatusDto,
+    type MailAddressDto,
+    type MailEnvelopeDto,
+    type MailFolderDto,
+    type MailImportance,
+    type MailMessageDto,
+    type PolymuxApi,
   } from '@polymux/protocol';
   import DOMPurify from 'dompurify';
   import {readableError} from '../../shared/errors';
   import {displayTime} from '../../shared/displayTime';
   import Icon from '../../shared/components/Icon.svelte';
-  import PlatformLogo from '../../shared/components/PlatformLogo.svelte';
+  import Menu from '../../shared/components/Menu.svelte';
+  import PlatformLogo, {type Platform} from '../../shared/components/PlatformLogo.svelte';
+  import {avatarInitial} from './avatarFallback';
+  import {attachmentRenderKind} from './chatAttachments';
+  import {chatsInSpace, spaceRootChats} from './chatSpaces';
+  import {mailBodyWithSignature, mailHtmlWithSignature} from './mailSignatures';
   import {MAIN_UI_ICON_STROKE_WIDTH, RAIL_TILE_SIZE} from '../../shared/layout/iconSizing';
   import {activeLocale, t, translate} from '../../../i18n';
-  import {applyOrder, loadRailOrder, moveBy, saveAccountOrder, saveSourceOrder} from './hubRailOrder';
-  import {arrangeChats, hiddenChats, loadChatPrefs, toggleHidden, togglePinned} from './chatPrefs';
+  import {
+    applyOrder,
+    loadRailOrder,
+    moveBy,
+    rememberRailOrder,
+    saveAccountOrder,
+    saveSourceOrder,
+    type ObservedRailRow,
+  } from './hubRailOrder';
+  import {arrangeChats, hiddenChats, loadChatPrefs, toggleHidden, toggleMuted, togglePinned} from './chatPrefs';
   import FileAttachment from '../chat/FileAttachment.svelte';
+  import EmojiPicker from './EmojiPicker.svelte';
+  import {
+    loadChatDraft,
+    loadMailDraft,
+    saveChatDraft,
+    type MailComposerDraft,
+  } from '../../shared/state/composerDrafts';
 
   /**
    * Hands a saved file to the app's own open menu — the one the chat and the
@@ -296,6 +324,30 @@
    */
   // Whatever the last mount learned, on screen before the first request.
   let status: CommsStatusDto | null = session.status;
+  /** The first account order observed is already a user-visible arrangement.
+   * Remember it immediately, then let only the rail's reorder controls change
+   * existing positions. Bridge status responses are not an ordering signal. */
+  function observedRailRows(next: CommsStatusDto | null): ObservedRailRow[] {
+    if (!next) return [];
+    return [
+      ...next.bridges
+        .filter((bridge) => bridge.state === 'connected')
+        .map((bridge) => ({
+          id: `platform:${bridge.platform}`,
+          accountIds: bridge.accounts.map((account) => account.id),
+        })),
+      ...(next.email.accounts.length > 0
+        ? [{id: 'mail', accountIds: next.email.accounts.map((account) => account.id)}]
+        : []),
+    ];
+  }
+  let railOrder = rememberRailOrder(loadRailOrder(), observedRailRows(status));
+
+  function acceptStatus(next: CommsStatusDto): void {
+    status = next;
+    session.status = next;
+    railOrder = rememberRailOrder(railOrder, observedRailRows(next));
+  }
   let chats: ChatDto[] = session.chats;
   let source: Source | null = session.source;
   /**
@@ -313,6 +365,10 @@
   let activeChat: ChatDto | null = null;
   let chatMessages: ChatMessageDto[] = [];
   let draft = '';
+  /** Files waiting beside the active chat draft. Unlike the native picker,
+   * dragging into Hub stages them here rather than sending on drop. */
+  let chatFiles: string[] = [];
+  let chatFileDragActive = false;
   /** Token for the page of older messages, null once the room's start is in. */
   let chatBefore: string | null = null;
   /** The thread's scroller, so reaching its top can pull the page before. */
@@ -330,6 +386,9 @@
   let composeBcc = '';
   let composeSubject = '';
   let composeBody = '';
+  let composeSignatureId = '';
+  let composeSignatureBody = '';
+  let composeSignatureHtml: string | null = null;
   let composeFiles: string[] = [];
   /** "normal" writes no header; the flag is a toggle rather than a menu
    * because the low end of the scale is asked for about once a decade. */
@@ -340,6 +399,13 @@
   let composeReply: {inReplyTo: string | null; references: string[]} | null = null;
   /** The draft this compose replaces, when it was opened from one. */
   let composeDraft: {id: string; folder: string} | null = null;
+  /** Stable identity for this local compose, across debounced mailbox saves. */
+  let composeLocalId = '';
+  let composeRevision = 0;
+  let composeDirty = false;
+  /** A fresh mount may recover the one composer that was open when it left.
+   * Normal folder changes in the same mount should not keep reopening it. */
+  let mailDraftRestoreEligible = true;
   let search = '';
   /** Ids the list has selected, for actions that act on more than one. */
   let selected = new Set<string>();
@@ -370,7 +436,7 @@
    */
   let openGroups: Record<string, boolean> = {};
   /** Chats whose avatar the homeserver would not serve, so the row falls back
-   * to its initial rather than retrying a picture that is not there. */
+   * to its initial or profile glyph rather than retrying a missing picture. */
   let brokenAvatars = new Set<string>();
   /** Media urls that failed to load, shown as a named file chip instead: a
    * picture whose bytes are gone would otherwise hold its full frame open as
@@ -406,6 +472,18 @@
   let railElement: HTMLElement;
   let railAtTop = true;
   let railAtBottom = true;
+  /** The rail has two deliberate widths: the labelled default and an icon-only
+   * strip. It stays on one until the pointer crosses the midpoint, then snaps
+   * straight to the other rather than exposing arbitrary widths between them. */
+  const RAIL_DEFAULT_WIDTH = 156;
+  const RAIL_COMPACT_WIDTH = 52;
+  const RAIL_SNAP_AT = (RAIL_DEFAULT_WIDTH + RAIL_COMPACT_WIDTH) / 2;
+  const RAIL_COMPACT_KEY = 'polymuxHubRailCompact';
+  let railCompact = loadRailCompact();
+  let railDragWidth: number | null = null;
+  let railResizeStart: {x: number; width: number; direction: 1 | -1} | null = null;
+  $: railWidth = railDragWidth ?? (railCompact ? RAIL_COMPACT_WIDTH : RAIL_DEFAULT_WIDTH);
+  $: railIconOnly = railWidth < RAIL_SNAP_AT;
   /** Whether the mailbox dropdown over the message list is showing. */
   let folderMenu = false;
   /** Which slice of the folder the list shows. Applied here rather than in the
@@ -449,6 +527,7 @@
   }
 
   $: safeHtml = openMail?.html ? sanitiseMail(openMail.html) : '';
+  $: safeComposeSignatureHtml = composeSignatureHtml ? sanitiseMail(composeSignatureHtml) : '';
 
   /**
    * Strips everything a message has no business carrying — scripts, frames,
@@ -512,6 +591,37 @@
     if (/^https?:\/\//i.test(href)) void api.browser.openExternal(href);
   }
 
+  /**
+   * Splits authored text without turning it into HTML. Linkification belongs
+   * to the shared renderer, while escaping remains Svelte's responsibility.
+   */
+  function messageParts(body: string): Array<{text: string; url: string | null}> {
+    const parts: Array<{text: string; url: string | null}> = [];
+    const links = /https?:\/\/[^\s<>]+/gi;
+    let from = 0;
+    for (const match of body.matchAll(links)) {
+      const index = match.index ?? 0;
+      if (index > from) parts.push({text: body.slice(from, index), url: null});
+      // Sentence punctuation is not part of the URL. Balanced `)` remains,
+      // while the common trailing one in prose stays ordinary text.
+      let url = match[0];
+      let trailing = '';
+      while (/[.,!?;:]$/.test(url)) {
+        trailing = url.slice(-1) + trailing;
+        url = url.slice(0, -1);
+      }
+      if (url.endsWith(')') && (url.match(/\(/g)?.length ?? 0) < (url.match(/\)/g)?.length ?? 0)) {
+        trailing = ')' + trailing;
+        url = url.slice(0, -1);
+      }
+      parts.push({text: url, url});
+      if (trailing) parts.push({text: trailing, url: null});
+      from = index + match[0].length;
+    }
+    if (from < body.length) parts.push({text: body.slice(from), url: null});
+    return parts.length > 0 ? parts : [{text: body, url: null}];
+  }
+
   $: accounts = status?.email.accounts ?? [];
   $: linked = (status?.bridges ?? []).filter((bridge) => bridge.state === 'connected');
 
@@ -549,6 +659,22 @@
     (row) => row.id,
     railOrder.sources,
   ).map((row) => ({...row, accounts: applyOrder(row.accounts, (item) => item.id, railOrder.accounts[row.id] ?? [])}));
+  /** The accounts moved out of an icon-only rail and into the list header. */
+  $: currentRailPlatform = source?.kind === 'platform' ? source.platform : '';
+  $: currentRailRow = source?.kind === 'mail'
+    ? railRows.find((row) => row.id === 'mail') ?? null
+    : currentRailPlatform
+      ? railRows.find((row) => row.platform === currentRailPlatform) ?? null
+      : null;
+  $: currentRailAccount = source?.kind === 'mail'
+    ? source.account
+    : source?.kind === 'platform'
+      ? source.account ?? ''
+      : '';
+  $: compactAccountOptions = currentRailRow?.accounts.map((account) => ({
+    value: account.id,
+    label: account.label,
+  })) ?? [];
   // Expanding a group changes how far the rail scrolls, so the edges are
   // re-read whenever its content does.
   $: if (railRows.length || openGroups) void tick().then(measureRailEdges);
@@ -561,8 +687,64 @@
    * and how fast it scrolls once it is hard against that edge. */
   const RAIL_EDGE_ZONE = 26;
   const RAIL_EDGE_SPEED = 14;
-  /** Where the rail's arrangement is remembered between runs. */
-  let railOrder = loadRailOrder();
+  function loadRailCompact(): boolean {
+    if (typeof localStorage === 'undefined') return false;
+    try {
+      return localStorage.getItem(RAIL_COMPACT_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  function saveRailCompact(compact: boolean): void {
+    railCompact = compact;
+    try {
+      localStorage.setItem(RAIL_COMPACT_KEY, String(compact));
+    } catch {
+      // An unavailable store costs persistence, not the resize itself.
+    }
+  }
+
+  function startRailResize(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    const direction = document.documentElement.dir === 'rtl' ? -1 : 1;
+    railResizeStart = {x: event.clientX, width: railWidth, direction};
+    railDragWidth = railWidth;
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  }
+
+  function dragRailResize(event: PointerEvent): void {
+    if (!railResizeStart) return;
+    const requestedWidth = railResizeStart.width +
+      (event.clientX - railResizeStart.x) * railResizeStart.direction;
+    railDragWidth = requestedWidth < RAIL_SNAP_AT
+      ? RAIL_COMPACT_WIDTH
+      : RAIL_DEFAULT_WIDTH;
+  }
+
+  function stopRailResize(event: PointerEvent): void {
+    if (!railResizeStart) return;
+    saveRailCompact((railDragWidth ?? railWidth) === RAIL_COMPACT_WIDTH);
+    railResizeStart = null;
+    railDragWidth = null;
+    (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
+  }
+
+  function resizeRailWithKeyboard(event: KeyboardEvent): void {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    const compact = document.documentElement.dir === 'rtl'
+      ? event.key === 'ArrowRight'
+      : event.key === 'ArrowLeft';
+    saveRailCompact(compact);
+    event.preventDefault();
+  }
+
+  function chooseCompactAccount(account: string): void {
+    if (!currentRailRow) return;
+    if (currentRailRow.id === 'mail') void selectMail(account);
+    else selectPlatform(currentRailRow.platform, account);
+  }
   /**
    * What is being dragged, and the layout it is being dragged through: its
    * scope (`sources`, or a row id for the accounts inside it), its id, and the
@@ -750,9 +932,19 @@
   }
   /** Chats belonging to whichever platform the rail has selected, pinned rows
    * first and hidden ones collected under their own row below. */
-  $: platformChats = chatsFor(source, chats, chatSearch);
-  $: visibleChats = arrangeChats(platformChats, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
-  $: hiddenRows = hiddenChats(platformChats, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
+  $: platformChats = chatsFor(source, chats);
+  $: selectedSpaceId = source?.kind === 'platform' ? source.space ?? null : null;
+  $: focusedSpace = selectedSpaceId
+    ? platformChats.find((chat) => chat.space && chat.id === selectedSpaceId) ?? null
+    : null;
+  $: currentChatRows = focusedSpace
+    ? chatsInSpace(platformChats, focusedSpace.id, chatSearch)
+    : spaceRootChats(platformChats, chatSearch);
+  $: visibleChats = arrangeChats(currentChatRows, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
+  $: hiddenRows = hiddenChats(currentChatRows, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
+  type UnifiedRow =
+    | {kind: 'chat'; at: string; chat: ChatDto}
+    | {kind: 'mail'; at: string; account: string; folder: string; envelope: MailEnvelopeDto};
   // A group with nothing left in it takes its expanded state with it, so it
   // does not reappear open the next time something is hidden.
   $: if (hiddenRows.length === 0) hiddenOpen = false;
@@ -837,19 +1029,199 @@
 
   /** What the box over the conversation list is filtering on. */
   let chatSearch = '';
+  /** Contacts have their own query so leaving the address book does not filter
+   * the platform or combined lists the user returns to. */
+  let contactSearch = '';
+  /** The list pane temporarily becomes a contact picker. Its selection stays
+   * local to the picker and is discarded when it closes. */
+  let newChatOpen = false;
+  let newChatLoading = false;
+  let newChatCreating = false;
+  let newChatSearch = '';
+  let newChatSearchInput: HTMLInputElement | null = null;
+  let newChatContacts: CommsContactDto[] = [];
+  let newChatSelected = new Set<string>();
+  let newChatGroupName = '';
+  let newChatError = '';
 
-  function chatsFor(current: Source | null, list: ChatDto[], query: string): ChatDto[] {
+  function chatsFor(current: Source | null, list: ChatDto[]): ChatDto[] {
     if (current?.kind !== 'platform') return [];
-    const needle = query.trim().toLowerCase();
+    const accountCount = status?.bridges.find((bridge) => bridge.platform === current.platform)?.accounts.length ?? 0;
     return list.filter(
       (chat) =>
         chat.platform === current.platform &&
-        // Name and last line, which is what someone scanning for a
-        // conversation actually remembers about it.
-        (!needle ||
-          chat.name.toLowerCase().includes(needle) ||
-          (chat.preview ?? '').toLowerCase().includes(needle)),
+        (!current.account || chat.accountIds?.includes(current.account) || (!chat.accountIds && accountCount <= 1)),
     );
+  }
+
+  /** Direct conversations are the identities the linked platforms have made
+   * available to the Hub. Names are not merged across services: two matching
+   * labels are not enough evidence that they are the same person. */
+  function contactsFor(list: ChatDto[], query: string): ChatDto[] {
+    const needle = query.trim().toLowerCase();
+    return list
+      .filter((chat) => !chat.group && !chat.space)
+      .filter((chat) =>
+        !needle ||
+        chat.name.toLowerCase().includes(needle) ||
+        commsPlatformLabel(chat.platform as CommsPlatform).toLowerCase().includes(needle),
+      )
+      .sort((a, b) =>
+        a.name.localeCompare(b.name) ||
+        commsPlatformLabel(a.platform as CommsPlatform).localeCompare(
+          commsPlatformLabel(b.platform as CommsPlatform),
+        ),
+      );
+  }
+
+  $: contactRows = contactsFor(chats, contactSearch);
+  $: selectedNewChatContacts = newChatContacts.filter((contact) => newChatSelected.has(contact.id));
+  $: newChatRows = newChatContacts.filter((contact) => {
+    const needle = newChatSearch.trim().toLowerCase();
+    return !needle ||
+      contact.name.toLowerCase().includes(needle) ||
+      commsPlatformLabel(contact.platform).toLowerCase().includes(needle) ||
+      contact.accounts.some((account) => account.accountName.toLowerCase().includes(needle)) ||
+      contact.identifiers.some((identifier) => identifier.toLowerCase().includes(needle));
+  });
+
+  type NewChatRoute = {
+    accountId: string;
+    accountName: string;
+    contacts: CommsContactDto['accounts'];
+  };
+
+  /** Finds one linked account that can reach every selected person. A contact
+   * imported by two WhatsApp logins remains one row, and the second selection
+   * is free to move the prospective group onto whichever login they share. */
+  function newChatRouteFor(contacts: CommsContactDto[]): NewChatRoute | null {
+    if (contacts.length === 0) return null;
+    const platform = contacts[0]!.platform;
+    if (contacts.some((contact) => contact.platform !== platform)) return null;
+    const preferredAccount = source?.kind === 'platform' && source.platform === platform
+      ? source.account
+      : null;
+    const candidates = [...contacts[0]!.accounts].sort((left, right) =>
+      Number(right.accountId === preferredAccount) - Number(left.accountId === preferredAccount));
+    for (const candidate of candidates) {
+      const routes = contacts.map((contact) =>
+        contact.accounts.find((account) => account.accountId === candidate.accountId));
+      if (routes.some((route) => !route)) continue;
+      const resolved = routes as CommsContactDto['accounts'];
+      if (contacts.length === 1
+        ? !resolved[0]!.chatId && !resolved[0]!.remoteId
+        : resolved.some((route) => !route.remoteId)) continue;
+      return {
+        accountId: candidate.accountId,
+        accountName: candidate.accountName,
+        contacts: resolved,
+      };
+    }
+    return null;
+  }
+
+  $: selectedNewChatRoute = newChatRouteFor(selectedNewChatContacts);
+  $: canCreateNewChat = Boolean(selectedNewChatRoute) &&
+    (selectedNewChatContacts.length === 1 || Boolean(newChatGroupName.trim()));
+
+  /** A remote group belongs to one platform login. Once the first person is
+   * chosen, incompatible rows remain visible but cannot be mixed into it. */
+  function compatibleNewChatContact(contact: CommsContactDto): boolean {
+    if (newChatSelected.has(contact.id) || selectedNewChatContacts.length === 0) return true;
+    return Boolean(newChatRouteFor([...selectedNewChatContacts, contact]));
+  }
+
+  function toggleNewChatContact(contact: CommsContactDto): void {
+    if (!compatibleNewChatContact(contact)) return;
+    const next = new Set(newChatSelected);
+    if (next.has(contact.id)) next.delete(contact.id);
+    else next.add(contact.id);
+    newChatSelected = next;
+    newChatError = '';
+  }
+
+  async function openNewChatPicker(): Promise<void> {
+    newChatOpen = true;
+    newChatLoading = true;
+    newChatSearch = '';
+    newChatSelected = new Set();
+    newChatGroupName = '';
+    newChatError = '';
+    try {
+      await tick();
+      newChatSearchInput?.focus();
+      newChatContacts = await api.comms.chatContacts();
+    } catch (cause) {
+      newChatContacts = [];
+      newChatError = readableError(cause);
+    } finally {
+      newChatLoading = false;
+    }
+  }
+
+  function closeNewChatPicker(): void {
+    newChatOpen = false;
+    newChatSearch = '';
+    newChatSelected = new Set();
+    newChatGroupName = '';
+    newChatError = '';
+  }
+
+  async function createSelectedChat(): Promise<void> {
+    if (!canCreateNewChat || !selectedNewChatRoute || newChatCreating) return;
+    const selectedContacts = selectedNewChatContacts;
+    const first = selectedContacts[0]!;
+    const routes = selectedNewChatRoute.contacts;
+    newChatCreating = true;
+    newChatError = '';
+    try {
+      const roomId = selectedContacts.length === 1 && routes[0]!.chatId
+        ? routes[0]!.chatId
+        : await api.comms.chatCreate({
+            platform: first.platform,
+            accountId: selectedNewChatRoute.accountId,
+            participantIds: routes.map((route) => route.remoteId!),
+            ...(selectedContacts.length > 1 ? {name: newChatGroupName.trim()} : {}),
+          });
+      await refreshChats();
+      const opened = chats.find((chat) => chat.id === roomId) ?? {
+        id: roomId,
+        name: selectedContacts.length > 1 ? newChatGroupName.trim() : first.name,
+        platform: first.platform,
+        accountIds: [selectedNewChatRoute.accountId],
+        avatarUrl: selectedContacts.length === 1 ? first.avatarUrl : null,
+        unread: 0,
+        lastActivity: null,
+        preview: null,
+        group: selectedContacts.length > 1,
+      };
+      closeNewChatPicker();
+      await openChat(opened);
+    } catch (cause) {
+      newChatError = readableError(cause);
+    } finally {
+      newChatCreating = false;
+    }
+  }
+
+  /** A shared portal can have different read state on each linked account. */
+  function chatUnread(chat: ChatDto): number {
+    if (source?.kind === 'platform' && source.account) {
+      return chat.unreadByAccount?.[source.account] ?? chat.unread ?? 0;
+    }
+    return chat.unread ?? 0;
+  }
+
+  function clearChatUnread(chat: ChatDto): ChatDto {
+    if (
+      source?.kind === 'platform' &&
+      source.account &&
+      chat.unreadByAccount?.[source.account] !== undefined
+    ) {
+      const unreadByAccount = {...chat.unreadByAccount, [source.account]: 0};
+      return {...chat, unreadByAccount, unread: Math.max(0, ...Object.values(unreadByAccount))};
+    }
+    return {...chat, unread: 0};
   }
   $: mailAccount = source?.kind === 'mail' ? source.account : '';
   $: mailFolder = source?.kind === 'mail' ? source.folder : '';
@@ -876,6 +1248,13 @@
     return /^[A-Z]+$/.test(trimmed) ? trimmed.charAt(0) + trimmed.slice(1).toLowerCase() : trimmed;
   }
   $: currentAccount = accounts.find((account) => account.id === mailAccount) ?? null;
+  $: signatureOptions = [
+    {value: '', label: $t('hub.noSignature')},
+    ...(currentAccount?.signatures ?? []).map((signature) => ({
+      value: signature.id,
+      label: signature.name,
+    })),
+  ];
   $: readerLoading = !!openEnvelope && busy === `mail:${openEnvelope.id}`;
 
   /** Ragged widths, so the placeholder reads as prose rather than a block. */
@@ -917,16 +1296,101 @@
     );
   }
 
+  function mailComposerSnapshot(pending: boolean): MailComposerDraft | null {
+    if (!composing || !composeLocalId || !source || source.kind !== 'mail') return null;
+    const stored = loadMailDraft(source.account);
+    const remoteDraft =
+      mailDraftAutosave.reference(composeLocalId) ??
+      (stored?.localId === composeLocalId ? stored.remoteDraft : null) ??
+      composeDraft;
+    return {
+      localId: composeLocalId,
+      revision: composeRevision,
+      pending,
+      account: source.account,
+      folder: source.folder,
+      to: composeTo,
+      cc: composeCc,
+      bcc: composeBcc,
+      subject: composeSubject,
+      body: composeBody,
+      signatureId: composeSignatureId,
+      signatureBody: composeSignatureBody,
+      signatureHtml: composeSignatureHtml,
+      files: [...composeFiles],
+      importance: composeImportance,
+      reply: composeReply ? {...composeReply, references: [...composeReply.references]} : null,
+      remoteDraft,
+    };
+  }
+
+  /** Every edit is durable locally in the same event and reaches the mailbox
+   * after a short quiet period. */
+  function composeChanged(): void {
+    composeDirty = true;
+    composeRevision += 1;
+    const snapshot = mailComposerSnapshot(true);
+    if (snapshot) mailDraftAutosave.update(snapshot);
+  }
+
+  /** Svelte applies a bind after a user input listener. Wait one microtask so
+   * the snapshot contains the character that caused this event. */
+  function composeFieldChanged(): void {
+    void tick().then(() => {
+      if (composing) composeChanged();
+    });
+  }
+
+  function restoreMailComposer(account: string): boolean {
+    if (!mailDraftRestoreEligible) return false;
+    mailDraftRestoreEligible = false;
+    const saved = loadMailDraft(account);
+    if (!saved) return false;
+    composing = true;
+    composeLocalId = saved.localId;
+    composeRevision = saved.revision;
+    composeDirty = saved.pending;
+    composeTo = saved.to;
+    composeCc = saved.cc;
+    composeBcc = saved.bcc;
+    showCopies = Boolean(saved.cc || saved.bcc);
+    composeSubject = saved.subject;
+    composeBody = saved.body;
+    composeSignatureId = saved.signatureId;
+    composeSignatureBody = saved.signatureBody;
+    composeSignatureHtml = saved.signatureHtml;
+    composeFiles = [...saved.files];
+    composeImportance = saved.importance;
+    composeReply = saved.reply
+      ? {...saved.reply, references: [...saved.reply.references]}
+      : null;
+    composeDraft = saved.remoteDraft;
+    if (saved.pending) mailDraftAutosave.update(saved);
+    else mailDraftAutosave.seed(saved);
+    return true;
+  }
+
+  /** Leaving the pane never discards mail. The write continues through a Hub
+   * remount because its queue lives in the module above. */
+  function leaveMailComposer(): void {
+    if (!composing) return;
+    const localId = composeLocalId;
+    composing = false;
+    if (!composeDirty || !localId) return;
+    void mailDraftAutosave.flush(localId).catch((cause: unknown) => {
+      error = readableError(cause);
+    });
+  }
+
   onMount(() => {
     // What the last visit was looking at, back on screen before a single
     // request goes out. `load` corrects it behind this.
     restoreView();
     void load();
     const unsubscribe = api.comms.subscribe((next) => {
-      status = next;
       // Into the session cache as well, or the next mount paints the rail from
       // a snapshot older than the push that has already corrected it.
-      session.status = next;
+      acceptStatus(next);
     });
     // Pushed the moment a message lands, whichever platform it came from: the
     // homeserver is where every bridge delivers, so it knows before any poll
@@ -954,6 +1418,7 @@
       void goTo(waiting);
     }
     return () => {
+      leaveMailComposer();
       showTarget = null;
       unsubscribe();
       unsubscribeActivity();
@@ -1000,6 +1465,7 @@
         await tick();
         composerInput?.focus();
       }
+      persistChatComposer();
       return;
     }
     if (!target.mail) return;
@@ -1039,6 +1505,7 @@
       showCopies = Boolean(composeCc || composeBcc);
       if (compose.attachments?.length) composeFiles = [...compose.attachments];
       if (compose.importance) composeImportance = compose.importance;
+      composeChanged();
       return;
     }
     if (!found) return;
@@ -1062,6 +1529,7 @@
         page = warmed.page;
         moreToLoad = warmed.moreToLoad;
       }
+      restoreMailComposer(source.account);
     }
     const chat = restoringChatId ? chats.find((item) => item.id === restoringChatId) : null;
     if (!chat) return;
@@ -1069,13 +1537,13 @@
     activeChat = chat;
     chatMessages = known?.messages ?? [];
     chatBefore = known?.nextBefore ?? null;
+    restoreChatComposer(chat.id);
   }
 
   async function load(): Promise<void> {
     loading = !session.status;
     try {
-      status = await api.comms.status();
-      session.status = status;
+      acceptStatus(await api.comms.status());
       chats = await api.comms.chats().catch(() => session.chats);
       rememberChatPlatforms(chats);
       session.chats = chats;
@@ -1084,24 +1552,9 @@
         // rather than choosing somewhere else to be.
         await refreshOpen();
       } else {
-        // Open on whatever sits at the top of the rail. The rail is the user's
-        // own arrangement — they can drag a source to the top — so the first
-        // row is the answer to "where should this open", and picking a
-        // different one by rule would contradict the order they set.
-        //
-        // The rows are derived from `status`, which was only just assigned, so
-        // this waits a tick for that to be reflected rather than reading the
-        // arrangement the hub had a moment ago.
-        await tick();
-        const top = railRows[0];
-        const first = top?.accounts[0];
-        if (top?.platform === 'mail') {
-          if (first) await selectMail(first.id);
-        }
-        // A source with one account selects it; one with several opens on the
-        // platform as a whole and stays folded, because expanding it here would
-        // make a choice the user has not made yet.
-        else if (top) selectPlatform(top.platform, top.accounts.length === 1 ? first?.id : undefined);
+        // This fixed overview is the stable landing place; the rows beneath it
+        // remain in whatever order the user chose.
+        source = {kind: 'all'};
       }
       error = '';
       // Warms what the user is most likely to open next, behind whatever is on
@@ -1185,7 +1638,7 @@
   }
 
   async function prefetchChats(): Promise<void> {
-    for (const chat of chats.slice(0, PREFETCH_CHATS)) {
+    for (const chat of chats.filter((item) => !item.space).slice(0, PREFETCH_CHATS)) {
       if (session.messages.has(chat.id)) continue;
       if (activeChat) return;
       try {
@@ -1199,12 +1652,76 @@
   }
 
   function selectPlatform(platform: string, account?: string): void {
+    if (newChatOpen) closeNewChatPicker();
+    leaveMailComposer();
     source = {kind: 'platform', platform, account};
     activeChat = null;
     chatMessages = [];
     openMail = null;
     openEnvelope = null;
-    composing = false;
+  }
+
+  /** A Space is navigation, not a conversation: replace the platform's root
+   * list with its child chats and keep the reading pane empty until one opens. */
+  function openSpace(space: ChatDto): void {
+    leaveMailComposer();
+    const currentAccount = source?.kind === 'platform' && source.platform === space.platform
+      ? source.account
+      : space.accountIds?.length === 1
+        ? space.accountIds[0]
+        : undefined;
+    source = {kind: 'platform', platform: space.platform, account: currentAccount, space: space.id};
+    activeChat = null;
+    chatMessages = [];
+    openMail = null;
+    openEnvelope = null;
+    chatSearch = '';
+  }
+
+  function leaveSpace(): void {
+    if (source?.kind !== 'platform') return;
+    source = {kind: 'platform', platform: source.platform, account: source.account};
+    activeChat = null;
+    chatMessages = [];
+    chatSearch = '';
+  }
+
+  /** Count only the children available through the selected account. */
+  function spaceChildCount(space: ChatDto): number {
+    const available = source?.kind === 'platform' && source.platform === space.platform
+      ? platformChats
+      : chats;
+    return chatsInSpace(available, space.id).length;
+  }
+
+  function selectAll(): void {
+    if (newChatOpen) closeNewChatPicker();
+    leaveMailComposer();
+    source = {kind: 'all'};
+    activeChat = null;
+    chatMessages = [];
+    openMail = null;
+    openEnvelope = null;
+    chatSearch = '';
+    void refreshChats();
+    void prefetchMail();
+  }
+
+  function selectContacts(): void {
+    if (newChatOpen) closeNewChatPicker();
+    leaveMailComposer();
+    source = {kind: 'contacts'};
+    activeChat = null;
+    chatMessages = [];
+    openMail = null;
+    openEnvelope = null;
+    contactSearch = '';
+    void refreshChats();
+  }
+
+  async function openUnifiedMail(row: Extract<UnifiedRow, {kind: 'mail'}>): Promise<void> {
+    await selectMail(row.account, row.folder);
+    await readMail(envelopes.find((item) => item.id === row.envelope.id) ?? row.envelope);
   }
 
   function toggleGroup(key: string): void {
@@ -1233,12 +1750,22 @@
   }
 
   function pickPlatform(platform: string, ids: string[]): void {
-    if (ids.length > 1) toggleGroup(`platform:${platform}`);
+    if (ids.length > 1 && railCompact) {
+      const current = source?.kind === 'platform' && source.platform === platform
+        ? source.account
+        : undefined;
+      selectPlatform(platform, current && ids.includes(current) ? current : ids[0]);
+    }
+    else if (ids.length > 1) toggleGroup(`platform:${platform}`);
     else selectPlatform(platform, ids[0]);
   }
 
   function pickMail(): void {
-    if (accounts.length > 1) toggleGroup('mail');
+    if (accounts.length > 1 && railCompact) {
+      const current = source?.kind === 'mail' ? source.account : undefined;
+      void selectMail(current && accounts.some((account) => account.id === current) ? current : accounts[0].id);
+    }
+    else if (accounts.length > 1) toggleGroup('mail');
     else if (accounts[0]) void selectMail(accounts[0].id);
   }
 
@@ -1248,6 +1775,48 @@
    * accounts exist, and kept up to date by whatever the list loads afterwards.
    */
   const mailCache = session.mailboxes;
+  /** Map mutations are invisible to Svelte; this makes newly warmed inboxes
+   * participate in the combined list immediately. */
+  let mailCacheRevision = 0;
+
+  /** One recency-ordered overview assembled from the same chat rows and cached
+   * inbox pages the source-specific lists use. */
+  $: unifiedRows = mailCacheRevision >= 0 && source?.kind === 'all'
+    ? [
+        ...spaceRootChats(chats)
+          .filter((chat) => !chatPrefs.hidden.includes(chat.id) || activeChat?.id === chat.id)
+          .map((chat): UnifiedRow => ({kind: 'chat', at: chat.lastActivity ?? '', chat})),
+        ...[...mailCache.entries()].flatMap(([key, mailbox]) => {
+          const split = key.indexOf('|');
+          const account = key.slice(0, split);
+          const folder = key.slice(split + 1);
+          return mailbox.envelopes.map((envelope): UnifiedRow => ({
+            kind: 'mail', at: envelope.date, account, folder, envelope,
+          }));
+        }),
+      ]
+        .filter((row) => {
+          const needle = chatSearch.trim().toLowerCase();
+          if (!needle) return true;
+          return row.kind === 'chat'
+            ? row.chat.name.toLowerCase().includes(needle) || (row.chat.preview ?? '').toLowerCase().includes(needle)
+            : sender(row.envelope).toLowerCase().includes(needle) ||
+                row.envelope.subject.toLowerCase().includes(needle) ||
+                (row.envelope.preview ?? '').toLowerCase().includes(needle);
+        })
+        .sort(compareUnifiedRows)
+    : [];
+
+  function compareUnifiedRows(a: UnifiedRow, b: UnifiedRow): number {
+    const pinnedA = a.kind === 'chat' ? chatPrefs.pinned.indexOf(a.chat.id) : -1;
+    const pinnedB = b.kind === 'chat' ? chatPrefs.pinned.indexOf(b.chat.id) : -1;
+    if (pinnedA >= 0 || pinnedB >= 0) {
+      if (pinnedA < 0) return 1;
+      if (pinnedB < 0) return -1;
+      return pinnedA - pinnedB;
+    }
+    return (mailDate(b.at)?.getTime() ?? 0) - (mailDate(a.at)?.getTime() ?? 0);
+  }
 
   function cacheKey(account: string, folder: string): string {
     return `${account}|${folder}`;
@@ -1278,6 +1847,7 @@
           page: 1,
           moreToLoad: batch.length === PAGE_SIZE,
         });
+        mailCacheRevision += 1;
       } catch {
         // Nothing to report: the mailbox is simply not warmed.
       }
@@ -1285,9 +1855,10 @@
   }
 
   async function selectMail(account: string, folder?: string): Promise<void> {
+    if (newChatOpen) closeNewChatPicker();
+    leaveMailComposer();
     openMail = null;
     openEnvelope = null;
-    composing = false;
     activeChat = null;
     const switching = !source || source.kind !== 'mail' || source.account !== account;
     // Commit to the mailbox before fetching it, so the list keeps its header —
@@ -1313,6 +1884,7 @@
       // what changed, so the list does not blink back to empty.
       if (warmed) await refreshEnvelopes();
       else await loadEnvelopes();
+      restoreMailComposer(account);
       error = '';
     } catch (cause) {
       error = readableError(cause);
@@ -1441,8 +2013,12 @@
     if (typeof document !== 'undefined' && document.hidden) return;
     await refreshSources();
     if (activeChat) await refreshChat();
+    else if (source?.kind === 'all') {
+      await refreshChats();
+      await prefetchMail();
+    }
     else if (source?.kind === 'mail') await refreshEnvelopes();
-    else if (source?.kind === 'platform') await refreshChats();
+    else if (source?.kind === 'platform' || source?.kind === 'contacts') await refreshChats();
   }
 
   /**
@@ -1454,8 +2030,7 @@
    */
   async function refreshSources(): Promise<void> {
     try {
-      status = await api.comms.status();
-      session.status = status;
+      acceptStatus(await api.comms.status());
     } catch {
       // Quiet, for the same reason as the other polls.
     }
@@ -1538,6 +2113,10 @@
   }
 
   async function openChat(chat: ChatDto): Promise<void> {
+    if (chat.space) {
+      openSpace(chat);
+      return;
+    }
     activeChat = chat;
     awayFromLatest = false;
     // A conversation read earlier in this session opens on what it said then,
@@ -1546,12 +2125,14 @@
     const known = session.messages.get(chat.id);
     chatMessages = known?.messages ?? [];
     chatBefore = known?.nextBefore ?? null;
+    restoreChatComposer(chat.id);
     busy = known ? '' : `chat:${chat.id}`;
     try {
       const page = await api.comms.chatMessages(chat.id, CHAT_PAGE);
       if (activeChat?.id !== chat.id) return;
       chatMessages = known ? mergeChatPage(known.messages, page.messages) : page.messages;
       chatBefore = known ? known.nextBefore : page.nextBefore;
+      restoreChatReply(chat.id);
       rememberChat(chat.id);
       error = '';
       // Reading it is what makes it read — on the homeserver as well as here,
@@ -1559,10 +2140,10 @@
       // rather than re-listing every room for one number.
       // The page arrives newest first, so the read marker is the head of it.
       const newest = chatMessages[0];
-      if (newest && (chat.unread ?? 0) > 0) {
+      if (newest && chatUnread(chat) > 0) {
         const marked = await api.comms.chatMarkRead(chat.id, newest.id).catch(() => false);
         if (marked)
-          chats = chats.map((item) => (item.id === chat.id ? {...item, unread: 0} : item));
+          chats = chats.map((item) => (item.id === chat.id ? clearChatUnread(item) : item));
       }
     } catch (cause) {
       // A cached conversation stays on screen: it is what the room said a
@@ -1604,9 +2185,17 @@
    * something a person can tell apart rather than a full `@id:server`.
    */
   function senderLabel(message: ChatMessageDto): string {
+    // Cached pages can predate bridge ownership normalization. `mine` is the
+    // authoritative identity signal; no self quote or reply preview should
+    // fall through to a bridge profile such as "Unknown user".
+    if (message.mine) return 'You';
     const name = message.senderName?.trim();
-    if (name && name !== message.sender) return name;
-    return message.sender.replace(/^@/, '').split(':')[0];
+    const label = name && name !== message.sender
+      ? name
+      : message.sender.replace(/^@/, '').split(':')[0];
+    // A thread already in the renderer cache can predate the Hub's profile
+    // cleanup. Keep bridge-only Matrix metadata out of the visible label too.
+    return activeChat?.platform === 'whatsapp' ? label.replace(/ \(WA\)$/, '') : label;
   }
 
   /**
@@ -1637,10 +2226,69 @@
 
   /** Whether the thread has been scrolled up far enough to offer a way back. */
   let awayFromLatest = false;
+  /** The reply target currently receiving its short arrival pulse. */
+  let replyTargetHighlight = '';
+  let replyTargetHighlightTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Invalidates an older scroll watcher when another reply target is chosen. */
+  let replyScrollToken = 0;
 
   function scrollToLatest(): void {
     // `column-reverse` puts the newest message at offset zero.
     threadEl?.scrollTo({top: 0, behavior: 'smooth'});
+  }
+
+  /** Returns from the composer preview to the message being answered. */
+  function scrollToChatMessage(messageId: string): void {
+    if (!threadEl) return;
+    const target = [...threadEl.querySelectorAll<HTMLElement>('[data-message-id]')]
+      .find((item) => item.dataset.messageId === messageId);
+    if (!target) return;
+    const scroller = threadEl;
+    const token = ++replyScrollToken;
+    replyTargetHighlight = '';
+    if (replyTargetHighlightTimer) clearTimeout(replyTargetHighlightTimer);
+    target.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      block: 'center',
+    });
+    waitForReplyScroll(scroller, messageId, token);
+  }
+
+  /** Waits for the native smooth scroll to settle before identifying the
+   * destination. Watching the scroller works for both motion preferences and
+   * does not guess how long Chromium will make a particular journey. */
+  function waitForReplyScroll(scroller: HTMLElement, messageId: string, token: number): void {
+    let lastTop = scroller.scrollTop;
+    let stableFrames = 0;
+    const startedAt = performance.now();
+    const watch = (): void => {
+      if (token !== replyScrollToken || threadEl !== scroller || !scroller.isConnected) return;
+      const currentTop = scroller.scrollTop;
+      if (Math.abs(currentTop - lastTop) < 0.5) stableFrames += 1;
+      else {
+        lastTop = currentTop;
+        stableFrames = 0;
+      }
+      const elapsed = performance.now() - startedAt;
+      if ((elapsed >= 120 && stableFrames >= 4) || elapsed >= 1_500) {
+        void highlightReplyTarget(messageId, token);
+        return;
+      }
+      requestAnimationFrame(watch);
+    };
+    requestAnimationFrame(watch);
+  }
+
+  /** Restarts the pulse even when the same reply pill is clicked twice. */
+  async function highlightReplyTarget(messageId: string, token: number): Promise<void> {
+    replyTargetHighlight = '';
+    await tick();
+    if (token !== replyScrollToken) return;
+    replyTargetHighlight = messageId;
+    replyTargetHighlightTimer = setTimeout(() => {
+      if (replyTargetHighlight === messageId) replyTargetHighlight = '';
+      replyTargetHighlightTimer = null;
+    }, 1_300);
   }
 
   function onThreadScroll(): void {
@@ -1678,24 +2326,73 @@
     }
   }
 
+  function persistChatComposer(): void {
+    if (!activeChat) return;
+    saveChatDraft(activeChat.id, {
+      text: draft,
+      replyTo: replyTo?.id ?? null,
+      files: [...chatFiles],
+    });
+  }
+
+  function chatComposerChanged(): void {
+    // Returning to the draft is allowed while browsing emoji; entering the
+    // first character commits that return and clears every composer popover.
+    composerToolsOpen = false;
+    composerEmojiOpen = false;
+    void tick().then(persistChatComposer);
+  }
+
+  function restoreChatComposer(chatId: string): void {
+    const saved = loadChatDraft(chatId);
+    draft = saved.text;
+    chatFiles = [...saved.files];
+    replyTo = saved.replyTo
+      ? (chatMessages.find((message) => message.id === saved.replyTo) ?? null)
+      : null;
+  }
+
+  /** The first cached paint may not include the message being answered. Try
+   * again after the fresh page arrives without changing the recovered text. */
+  function restoreChatReply(chatId: string): void {
+    const saved = loadChatDraft(chatId);
+    replyTo = saved.replyTo
+      ? (chatMessages.find((message) => message.id === saved.replyTo) ?? null)
+      : null;
+  }
+
   async function sendChat(): Promise<void> {
     const text = draft.trim();
-    if (!activeChat || !text) return;
+    const files = [...chatFiles];
+    if (!activeChat || (!text && files.length === 0)) return;
+    composerToolsOpen = false;
+    composerEmojiOpen = false;
     busy = 'send-chat';
     const chatId = activeChat.id;
     const answering = replyTo?.id;
+    let sentFiles = false;
     try {
-      const sent = await api.comms.chatSend(chatId, text, answering);
-      chatMessages = [sent, ...chatMessages];
-      if (activeChat) rememberChat(activeChat.id);
-      draft = '';
-      replyTo = null;
+      if (files.length > 0) {
+        await api.comms.chatSendFiles(chatId, files);
+        chatFiles = [];
+        sentFiles = true;
+      }
+      if (text) {
+        const sent = await api.comms.chatSend(chatId, text, answering);
+        chatMessages = [sent, ...chatMessages];
+        if (activeChat) rememberChat(activeChat.id);
+        draft = '';
+        replyTo = null;
+      }
+      saveChatDraft(chatId, {text: draft, replyTo: replyTo?.id ?? null, files: [...chatFiles]});
       error = '';
     } catch (cause) {
+      saveChatDraft(chatId, {text: draft, replyTo: replyTo?.id ?? null, files: [...chatFiles]});
       error = readableError(cause);
     } finally {
       busy = '';
     }
+    if (sentFiles) await refreshChat();
   }
 
   // ---- message actions ----------------------------------------------------
@@ -1712,15 +2409,30 @@
   let replyTo: ChatMessageDto | null = null;
   /** Which message has its emoji row open. */
   let reactingTo = '';
+  /** Whether the quick strip has expanded into the compact searchable grid. */
+  let reactionPickerOpen = false;
+  /** The extension normally grows above the fixed quick strip, like the
+   * reference. Near the top edge it grows below the unchanged menu instead. */
+  let reactionPickerDirection: 'above' | 'below' = 'above';
   let copied = '';
   /**
    * The message actions, as a context menu rather than a row of icons under
    * every bubble: they are occasional, and a permanent row of them competes
-   * with the conversation it is attached to. `x`/`y` are viewport coordinates
-   * of the click, so the menu opens where the pointer already is.
+   * with the conversation it is attached to. The anchor stays at the click
+   * while `x`/`y` may move as an expanding menu is placed around it.
    */
-  let messageMenu: {message: ChatMessageDto; x: number; y: number; placed?: boolean} | null = null;
+  let messageMenu: {
+    message: ChatMessageDto;
+    anchorX: number;
+    anchorY: number;
+    x: number;
+    y: number;
+    placed?: boolean;
+  } | null = null;
   let messageMenuEl: HTMLDivElement | undefined;
+  /** When the picker grows upward, anchor the real menu by its bottom edge.
+   * Its contents then stay physically still while only its top edge moves. */
+  let messageMenuBottom: number | null = null;
 
   /**
    * The chat row's own actions, opened the same way and drawn from the same
@@ -1751,7 +2463,15 @@
   function openMessageMenu(event: MouseEvent, message: ChatMessageDto): void {
     event.preventDefault();
     reactingTo = '';
-    messageMenu = {message, x: event.clientX, y: event.clientY};
+    reactionPickerOpen = false;
+    messageMenuBottom = null;
+    messageMenu = {
+      message,
+      anchorX: event.clientX,
+      anchorY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+    };
     void tick().then(clampMessageMenu);
   }
 
@@ -1766,7 +2486,13 @@
    * what is left when neither side fits, which only happens on a window
    * shorter than the menu.
    */
-  function placeMenu(x: number, y: number, element: HTMLElement): {x: number; y: number} {
+  function placeMenu(
+    x: number,
+    y: number,
+    element: HTMLElement,
+    currentX = x,
+    currentY = y,
+  ): {x: number; y: number} {
     const rect = element.getBoundingClientRect();
     const margin = 8;
     // `position: fixed` is not always relative to the viewport: an ancestor
@@ -1777,8 +2503,8 @@
     // than name the ancestor, measure it: the gap between where the menu was
     // asked to sit and where it actually landed is that origin, whatever
     // produced it, and is zero when there is none.
-    const originX = rect.left - x;
-    const originY = rect.top - y;
+    const originX = rect.left - currentX;
+    const originY = rect.top - currentY;
     const flippedX = x + rect.width > window.innerWidth - margin ? x - rect.width : x;
     const flippedY = y + rect.height > window.innerHeight - margin ? y - rect.height : y;
     return {
@@ -1792,18 +2518,70 @@
    * pointer. */
   function clampMessageMenu(): void {
     if (!messageMenu || !messageMenuEl) return;
-    messageMenu = {...messageMenu, ...placeMenu(messageMenu.x, messageMenu.y, messageMenuEl), placed: true};
+    messageMenu = {
+      ...messageMenu,
+      ...placeMenu(
+        messageMenu.anchorX,
+        messageMenu.anchorY,
+        messageMenuEl,
+        messageMenu.x,
+        messageMenu.y,
+      ),
+      placed: true,
+    };
   }
 
   function closeMessageMenu(): void {
     messageMenu = null;
     reactingTo = '';
+    reactionPickerOpen = false;
+    messageMenuBottom = null;
+  }
+
+  function toggleReactionPicker(): void {
+    if (reactionPickerOpen) {
+      reactionPickerOpen = false;
+      return;
+    }
+    if (messageMenuEl) {
+      const rect = messageMenuEl.getBoundingClientRect();
+      const margin = 8;
+      const pickerHeight = 168;
+      const spaceAbove = rect.top - margin;
+      const spaceBelow = window.innerHeight - rect.bottom - margin;
+      reactionPickerDirection = spaceAbove >= pickerHeight || spaceAbove >= spaceBelow
+        ? 'above'
+        : 'below';
+      if (reactionPickerDirection === 'above') {
+        const containingBlock = messageMenuEl.closest<HTMLElement>('.hub-view');
+        messageMenuBottom = (containingBlock?.getBoundingClientRect().bottom ?? window.innerHeight)
+          - rect.bottom;
+      } else {
+        messageMenuBottom = null;
+      }
+    }
+    reactionPickerOpen = true;
+  }
+
+  function pickExpandedReaction(message: ChatMessageDto, key: string): void {
+    void react(message, key);
+    closeMessageMenu();
   }
 
   function startReply(message: ChatMessageDto): void {
     replyTo = message;
     reactingTo = '';
+    persistChatComposer();
     composerInput?.focus();
+  }
+
+  function jumpToChatReply(): void {
+    if (replyTo) scrollToChatMessage(replyTo.id);
+  }
+
+  function cancelChatReply(): void {
+    replyTo = null;
+    persistChatComposer();
   }
 
   async function copyMessage(message: ChatMessageDto): Promise<void> {
@@ -1822,7 +2600,10 @@
    * reaction lands under the pointer rather than a round trip later.
    */
   async function react(message: ChatMessageDto, key: string): Promise<void> {
-    if (!activeChat) return;
+    // WeChat exposes no reaction write route. A local-only reaction looks
+    // delivered while the other person never receives it, which is worse than
+    // leaving the unsupported action out of this platform's menu.
+    if (!activeChat || activeChat.platform === 'wechat') return;
     const chatId = activeChat.id;
     const existing = (message.reactions ?? []).find((item) => item.key === key);
     reactingTo = '';
@@ -1883,18 +2664,117 @@
 
   // ---- composer -----------------------------------------------------------
 
-  let composerInput: HTMLInputElement | null = null;
+  let composerInput: HTMLTextAreaElement | null = null;
+  let composerToolsMenu: HTMLDivElement | null = null;
+  /** The add menu and searchable emoji grid belong to the chat that opened
+   * them. Remembering that owner prevents either popover following the user
+   * into another chat. */
+  let composerToolsOpen = false;
+  let composerEmojiOpen = false;
+  let composerPopoverChatId = '';
+  $: if ((composerToolsOpen || composerEmojiOpen) && activeChat?.id !== composerPopoverChatId) {
+    composerToolsOpen = false;
+    composerEmojiOpen = false;
+  }
+
+  async function toggleComposerTools(): Promise<void> {
+    if (composerToolsOpen) {
+      composerToolsOpen = false;
+      return;
+    }
+    closeMessageMenu();
+    closeChatMenu();
+    composerPopoverChatId = activeChat?.id ?? '';
+    composerEmojiOpen = false;
+    composerToolsOpen = true;
+    await tick();
+    composerToolsMenu?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }
+
+  function openComposerEmojiPicker(): void {
+    composerToolsOpen = false;
+    composerEmojiOpen = true;
+  }
+
+  /** Inserts where typing would have continued, replacing a selected range and
+   * restoring the caret after the picker hands focus back to the composer. */
+  function insertComposerEmoji(emoji: string): void {
+    const input = composerInput;
+    const start = input?.selectionStart ?? draft.length;
+    const end = input?.selectionEnd ?? start;
+    draft = `${draft.slice(0, start)}${emoji}${draft.slice(end)}`;
+    composerToolsOpen = false;
+    composerEmojiOpen = false;
+    persistChatComposer();
+    void tick().then(() => {
+      input?.focus();
+      const caret = start + emoji.length;
+      input?.setSelectionRange(caret, caret);
+    });
+  }
+
+  function stageChatFiles(paths: string[]): void {
+    const next = paths.filter((path) => path && !chatFiles.includes(path));
+    if (next.length === 0) return;
+    chatFiles = [...chatFiles, ...next];
+    persistChatComposer();
+  }
+
+  function removeChatFile(path: string): void {
+    chatFiles = chatFiles.filter((item) => item !== path);
+    persistChatComposer();
+  }
+
+  function isChatFileDrag(event: DragEvent): boolean {
+    return Boolean(activeChat) && voiceState === 'idle' &&
+      (Array.from(event.dataTransfer?.types ?? []).includes('Files') || Boolean(event.dataTransfer?.files.length));
+  }
+
+  function chatDragEnter(event: DragEvent): void {
+    if (!isChatFileDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    chatFileDragActive = true;
+  }
+
+  function chatDragOver(event: DragEvent): void {
+    if (!isChatFileDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    chatFileDragActive = true;
+  }
+
+  function chatDragLeave(event: DragEvent): void {
+    const target = event.currentTarget as HTMLElement;
+    const related = event.relatedTarget;
+    if (related instanceof Node && target.contains(related)) return;
+    chatFileDragActive = false;
+  }
+
+  async function dropIntoChat(event: DragEvent): Promise<void> {
+    if (!isChatFileDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    chatFileDragActive = false;
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length === 0) return;
+    try {
+      stageChatFiles(await api.files.paths(files));
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    }
+  }
+
   /** The recorder, while a voice note is being taken. */
   async function attachToChat(): Promise<void> {
     if (!activeChat) return;
-    const chatId = activeChat.id;
-    const paths = await api.comms.chatPickFiles();
-    if (paths.length === 0) return;
+    composerToolsOpen = false;
+    composerEmojiOpen = false;
     busy = 'attach';
     try {
-      await api.comms.chatSendFiles(chatId, paths);
-      // The files come back as messages of their own on the next read.
-      await refreshChat();
+      stageChatFiles(await api.comms.chatPickFiles());
       error = '';
     } catch (cause) {
       error = readableError(cause);
@@ -1937,6 +2817,8 @@
 
   async function startVoice(): Promise<void> {
     if (!activeChat || voiceState !== 'idle') return;
+    composerToolsOpen = false;
+    composerEmojiOpen = false;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({audio: true});
       const capture = new MediaRecorder(stream);
@@ -2340,8 +3222,13 @@
   type ComposeMode = 'new' | 'reply' | 'reply-all' | 'forward';
 
   function startCompose(mode: ComposeMode = 'new'): void {
+    leaveMailComposer();
     const message = mode === 'new' ? null : openMail;
+    mailDraftRestoreEligible = false;
     composing = true;
+    composeLocalId = crypto.randomUUID();
+    composeRevision = 0;
+    composeDirty = false;
     composeTo = message && mode !== 'forward'
       ? replyRecipients(message, mode === 'reply-all').join(', ')
       : '';
@@ -2355,6 +3242,12 @@
     // Forwarding carries the message with it; replying quotes what is being
     // answered, the way every mail client does.
     composeBody = message && mode !== 'new' ? `\n\n${quote(message)}` : '';
+    const signature = currentAccount?.signatures.find(
+      (item) => item.id === currentAccount.defaultSignatureId,
+    );
+    composeSignatureId = signature?.id ?? '';
+    composeSignatureBody = signature?.body ?? '';
+    composeSignatureHtml = signature?.html ?? null;
     composeFiles = [];
     composeImportance = 'normal';
     composeDraft = null;
@@ -2371,10 +3264,15 @@
    */
   async function editDraft(envelope: MailEnvelopeDto): Promise<void> {
     if (!source || source.kind !== 'mail') return;
+    leaveMailComposer();
     busy = `mail:${envelope.id}`;
     try {
       const message = await api.comms.mailMessage(envelope.id, source.account, source.folder);
+      mailDraftRestoreEligible = false;
       composing = true;
+      composeLocalId = crypto.randomUUID();
+      composeRevision = 0;
+      composeDirty = false;
       openMail = null;
       openEnvelope = envelope;
       composeTo = message.to.map((item) => item.address).join(', ');
@@ -2383,9 +3281,17 @@
       showCopies = composeCc.length > 0;
       composeSubject = message.subject === '(no subject)' ? '' : message.subject;
       composeBody = message.body;
+      // A mailbox draft already has its signature folded into its body. It is
+      // ordinary editable text from here, so selecting another must be an
+      // explicit choice rather than silently adding the account default again.
+      composeSignatureId = '';
+      composeSignatureBody = '';
+      composeSignatureHtml = null;
       composeFiles = [];
       composeReply = null;
       composeDraft = {id: envelope.id, folder: source.folder};
+      const snapshot = mailComposerSnapshot(false);
+      if (snapshot) mailDraftAutosave.seed(snapshot);
       error = '';
     } catch (cause) {
       error = readableError(cause);
@@ -2400,6 +3306,25 @@
       return [] as string[];
     });
     composeFiles = [...composeFiles, ...picked.filter((file) => !composeFiles.includes(file))];
+    if (picked.length) composeChanged();
+  }
+
+  function removeComposeFile(file: string): void {
+    composeFiles = composeFiles.filter((item) => item !== file);
+    composeChanged();
+  }
+
+  function toggleComposeImportance(): void {
+    composeImportance = composeImportance === 'high' ? 'normal' : 'high';
+    composeChanged();
+  }
+
+  function chooseComposeSignature(id: string): void {
+    const signature = currentAccount?.signatures.find((item) => item.id === id);
+    composeSignatureId = signature?.id ?? '';
+    composeSignatureBody = signature?.body ?? '';
+    composeSignatureHtml = signature?.html ?? null;
+    composeChanged();
   }
 
   function fileName(pathname: string): string {
@@ -2459,29 +3384,46 @@
   }
 
   async function sendMail(draftOnly: boolean): Promise<void> {
-    if (!composeTo.trim()) return;
+    if (!draftOnly && !composeTo.trim()) return;
     busy = draftOnly ? 'save-draft' : 'send-mail';
+    const localId = composeLocalId;
+    const account = mailAccount;
     try {
-      await api.comms.mailSend({
-        account: mailAccount || undefined,
-        to: addressList(composeTo),
-        cc: addressList(composeCc),
-        bcc: addressList(composeBcc),
-        subject: composeSubject,
-        body: composeBody,
-        draft: draftOnly,
-        attachments: composeFiles,
-        importance: composeImportance,
-        inReplyTo: composeReply?.inReplyTo ?? undefined,
-        references: composeReply?.references,
-        replacesDraft: composeDraft,
-      });
+      if (draftOnly) {
+        const snapshot = mailComposerSnapshot(true);
+        if (snapshot) mailDraftAutosave.update(snapshot);
+        await mailDraftAutosave.flush(localId);
+      } else {
+        const saved = await mailDraftAutosave.referenceForSend(localId);
+        await api.comms.mailSend({
+          account: account || undefined,
+          to: addressList(composeTo),
+          cc: addressList(composeCc),
+          bcc: addressList(composeBcc),
+          subject: composeSubject,
+          body: mailBodyWithSignature(composeBody, composeSignatureBody),
+          html: mailHtmlWithSignature(composeBody, composeSignatureHtml),
+          draft: false,
+          attachments: composeFiles,
+          importance: composeImportance,
+          inReplyTo: composeReply?.inReplyTo ?? undefined,
+          references: composeReply?.references,
+          replacesDraft: saved ?? composeDraft,
+        });
+      }
+      mailDraftAutosave.complete(localId, account);
       composing = false;
+      composeLocalId = '';
+      composeRevision = 0;
+      composeDirty = false;
       composeTo = '';
       composeCc = '';
       composeBcc = '';
       composeSubject = '';
       composeBody = '';
+      composeSignatureId = '';
+      composeSignatureBody = '';
+      composeSignatureHtml = null;
       composeFiles = [];
       composeImportance = 'normal';
       composeReply = null;
@@ -2501,7 +3443,7 @@
     openMail = null;
     openEnvelope = null;
     activeChat = null;
-    composing = false;
+    leaveMailComposer();
   }
 
   /**
@@ -2582,29 +3524,79 @@
 <svelte:window
   onkeydown={(event) => {
     if (event.key !== 'Escape') return;
-    if (messageMenu) { event.stopPropagation(); closeMessageMenu(); }
+    if (composerEmojiOpen) {
+      event.stopPropagation();
+      composerEmojiOpen = false;
+      composerInput?.focus();
+    }
+    else if (composerToolsOpen) {
+      event.stopPropagation();
+      composerToolsOpen = false;
+    }
+    else if (reactionPickerOpen) {
+      event.stopPropagation();
+      reactionPickerOpen = false;
+    }
+    else if (messageMenu) { event.stopPropagation(); closeMessageMenu(); }
     else if (chatMenu) { event.stopPropagation(); closeChatMenu(); }
+    else if (newChatOpen) { event.stopPropagation(); closeNewChatPicker(); }
   }}
   onclick={(event) => {
     if (messageMenu && !(event.target as HTMLElement).closest('.hub-view-message-menu')) closeMessageMenu();
     if (chatMenu && !(event.target as HTMLElement).closest('.hub-view-chat-menu')) closeChatMenu();
+    const clickPath = event.composedPath();
+    const insideComposerRow = clickPath.some(
+      (target) => target instanceof HTMLElement && target.classList.contains('hub-view-composer-row'),
+    );
+    const insideComposerTools = clickPath.some(
+      (target) => target instanceof HTMLElement && (
+        target.classList.contains('hub-view-composer-add') ||
+        target.classList.contains('hub-view-composer-tools-menu')
+      ),
+    );
+    if (composerToolsOpen && !insideComposerTools) composerToolsOpen = false;
+    if (composerEmojiOpen && !insideComposerRow) composerEmojiOpen = false;
   }}
 />
 
 <div class="hub-view">
-  <div class="hub-view-grid" class:reading={!!openMail || !!openEnvelope || !!activeChat || composing}>
+  <div
+    class="hub-view-grid"
+    class:reading={!!openMail || !!openEnvelope || !!activeChat || composing}
+    class:rail-compact={railIconOnly}
+    class:rail-resizing={railResizeStart !== null}
+    style={`--hub-rail-width: ${railWidth}px`}
+  >
   <nav
     class="hub-view-rail"
-    class:at-top={railAtTop}
-    class:at-bottom={railAtBottom}
     aria-label={$t('hub.sources')}
     class:dragging={!!dragging}
-    bind:this={railElement}
-    onscroll={measureRailEdges}
-    onpointermove={dragRow}
-    onpointerup={releaseRow}
-    onpointercancel={releaseRow}
   >
+    <div
+      class="hub-view-rail-scroll"
+      role="group"
+      class:at-top={railAtTop}
+      class:at-bottom={railAtBottom}
+      bind:this={railElement}
+      onscroll={measureRailEdges}
+      onpointermove={dragRow}
+      onpointerup={releaseRow}
+      onpointercancel={releaseRow}
+    >
+    <!-- Fixed outside the draggable list: no pointer or keyboard reorder can
+         move a platform above the combined overview. -->
+    <div class="hub-view-source-row hub-view-source-fixed">
+      <button
+        type="button"
+        class="hub-view-source"
+        class:active={source?.kind === 'all'}
+        aria-label={$t('hub.allPlatforms')}
+        onclick={selectAll}
+      >
+        <Icon name="platforms" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        <span>{$t('hub.allPlatforms')}</span>
+      </button>
+    </div>
     <!-- Rows are draggable: the rail's order is the user's, kept in
          localStorage, and ⌥↑/⌥↓ on a focused row does the same thing without a
          pointer. A drag stays in its own list — sources past sources, accounts
@@ -2629,11 +3621,12 @@
       <button
         type="button"
         class="hub-view-source"
-        class:active={!grouped &&
+        class:active={(railIconOnly || !grouped) &&
           (row.id === 'mail'
             ? source?.kind === 'mail'
             : source?.kind === 'platform' && source.platform === row.platform)}
-        aria-expanded={grouped ? expanded : undefined}
+        aria-label={row.name}
+        aria-expanded={grouped && !railIconOnly ? expanded : undefined}
         onclick={() => {
           if (dragged) return;
           if (row.id === 'mail') pickMail();
@@ -2649,7 +3642,7 @@
         <PlatformLogo platform={row.platform} size={RAIL_TILE_SIZE} />
         <span>{row.name}</span>
       </button>
-      {#if grouped && expanded}
+      {#if grouped && expanded && !railIconOnly}
         <ul class="hub-view-accounts">
           {#each row.accounts as account (account.id)}
             <li
@@ -2692,10 +3685,144 @@
         {$t('hub.railEmpty')}
       </p>
     {/if}
+    </div>
+
+    <!-- Contacts is navigation over every platform rather than one more
+         platform, so it remains anchored beneath the scrollable source list. -->
+    <div class="hub-view-rail-footer">
+      <button
+        type="button"
+        class="hub-view-source"
+        class:active={source?.kind === 'contacts'}
+        aria-label={$t('hub.contacts')}
+        onclick={selectContacts}
+      >
+        <Icon name="contacts" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        <span>{$t('hub.contacts')}</span>
+      </button>
+    </div>
   </nav>
 
+  <!-- A wide hit area over the divider, matching the workspace drawer's
+       resize affordance. It stays at one endpoint until the pointer crosses
+       the midpoint, then snaps directly to the other endpoint. -->
+  <button
+    type="button"
+    class="hub-view-rail-resize-handle"
+    class:resizing={railResizeStart !== null}
+    aria-label={$t('hub.resizeRail')}
+    data-tooltip="none"
+    onpointerdown={startRailResize}
+    onpointermove={dragRailResize}
+    onpointerup={stopRailResize}
+    onpointercancel={stopRailResize}
+    onkeydown={resizeRailWithKeyboard}
+  ></button>
+
   <section class="hub-view-list" aria-label={$t('hub.messages')}>
-    {#if source?.kind === 'mail'}
+    {#if newChatOpen}
+      <div class="hub-view-list-head hub-view-new-chat-head">
+        <input
+          bind:this={newChatSearchInput}
+          bind:value={newChatSearch}
+          type="search"
+          placeholder={$t('hub.searchContacts')}
+          aria-label={$t('hub.searchContacts')}
+        />
+        <button
+          type="button"
+          class="hub-view-new-chat-icon"
+          aria-label={$t('hub.closeNewChat')}
+          onclick={closeNewChatPicker}
+        >
+          <Icon name="close" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        </button>
+      </div>
+      {#if selectedNewChatContacts.length > 0}
+        <div class="hub-view-new-chat-selection">
+          <div class="hub-view-new-chat-selection-row">
+            <div class="hub-view-new-chat-selected" aria-label={$t('hub.selectedPeople')}>
+              {#each selectedNewChatContacts as contact (contact.id)}
+                <button
+                  type="button"
+                  class="hub-view-new-chat-chip"
+                  aria-label={$t('hub.removePerson', {name: contact.name})}
+                  onclick={() => toggleNewChatContact(contact)}
+                >
+                  {@render chatAvatar(contact.name, contact.avatarUrl, `new-chat-chip:${contact.id}`, true)}
+                  <span>{contact.name}</span>
+                  <Icon name="close" size={10} />
+                </button>
+              {/each}
+            </div>
+            <div class="hub-view-new-chat-action">
+              <button
+                type="button"
+                disabled={!canCreateNewChat || newChatCreating}
+                onclick={() => void createSelectedChat()}
+              >
+                {newChatCreating
+                  ? $t('hub.creatingChat')
+                  : selectedNewChatContacts.length > 1
+                    ? $t('hub.createGroup')
+                    : $t('hub.newChat')}
+              </button>
+            </div>
+          </div>
+        {#if selectedNewChatContacts.length > 1}
+          <div class="hub-view-new-chat-group-name">
+            <input
+              bind:value={newChatGroupName}
+              placeholder={$t('hub.groupName')}
+              aria-label={$t('hub.groupName')}
+            />
+          </div>
+        {/if}
+        </div>
+      {/if}
+      {#if newChatError}<p class="hub-view-new-chat-error">{newChatError}</p>{/if}
+      <ul class="hub-view-rows hub-view-new-chat-rows">
+        {#if newChatLoading}
+          <li class="hub-view-empty" role="status">{$t('common.loading')}</li>
+        {:else}
+          {#each newChatRows as contact (contact.id)}
+            {@const compatible = compatibleNewChatContact(contact)}
+            {@const picked = newChatSelected.has(contact.id)}
+            <li>
+              <button
+                type="button"
+                class="hub-view-row hub-view-new-chat-contact"
+                class:picked
+                disabled={!compatible}
+                aria-pressed={picked}
+                onclick={() => toggleNewChatContact(contact)}
+              >
+                <span class="hub-view-chat-avatar-wrap" aria-hidden="true">
+                  {@render chatAvatar(contact.name, contact.avatarUrl, `new-chat:${contact.id}`)}
+                  <span class="hub-view-platform-badge">
+                    <PlatformLogo platform={contact.platform as Platform} size={12} />
+                  </span>
+                </span>
+                <span class="hub-view-chat-copy">
+                  <span class="hub-view-row-top"><strong>{contact.name}</strong></span>
+                  <span class="hub-view-chat-preview">
+                    {commsPlatformLabel(contact.platform)} ·
+                    {contact.accounts.length === 1
+                      ? contact.accounts[0]!.accountName
+                      : $t('hub.accountCount', {count: contact.accounts.length})}
+                  </span>
+                </span>
+                {#if picked}<Icon name="check" size={14} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />{/if}
+              </button>
+            </li>
+          {:else}
+            <li class="hub-view-empty">
+              {newChatSearch.trim() ? $t('common.noMatches') : $t('hub.noContacts')}
+            </li>
+          {/each}
+        {/if}
+      </ul>
+    {:else if source?.kind === 'mail'}
       <header class="hub-view-list-head">
         <!-- The mailbox picker lives with the list it filters, not in the
              rail: the rail picks the account, this picks what to show of it. -->
@@ -2752,6 +3879,16 @@
             <span class="hub-view-list-account">{currentAccount.email}</span>
           {/if}
         </div>
+        {#if railIconOnly && compactAccountOptions.length > 1}
+          <div class="hub-view-account-picker">
+            <Menu
+              options={compactAccountOptions}
+              value={currentRailAccount}
+              label={$t('hub.chooseAccount')}
+              onChange={chooseCompactAccount}
+            />
+          </div>
+        {/if}
         <input
           type="search"
           placeholder={$t('hub.searchFolder')}
@@ -2917,21 +4054,150 @@
           {/if}
         {/if}
       </ul>
+    {:else if source?.kind === 'all'}
+      <div class="hub-view-list-head">
+        <input bind:value={chatSearch} type="search" placeholder={$t('hub.searchAllPlatforms')} aria-label={$t('hub.searchAllPlatforms')} />
+        <button
+          type="button"
+          class="hub-view-new-chat-icon"
+          aria-label={$t('hub.newChat')}
+          onclick={() => void openNewChatPicker()}
+        >
+          <Icon name="new-chat" size={16} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        </button>
+      </div>
+      <ul class="hub-view-rows">
+        {#each unifiedRows as row (`${row.kind}:${row.kind === 'chat' ? row.chat.id : `${row.account}:${row.folder}:${row.envelope.id}`}`)}
+          <li>
+            {#if row.kind === 'chat'}
+              {#if row.chat.space}
+                {@render spaceRow(row.chat, true)}
+              {:else}
+                {@render chatRow(row.chat, false, true)}
+              {/if}
+            {:else}
+              <button type="button" class="hub-view-row" class:unread={!row.envelope.seen} onclick={() => void openUnifiedMail(row)}>
+                <span class="hub-view-chat-avatar-wrap" aria-hidden="true">
+                  <span class="hub-view-chat-avatar placeholder">{sender(row.envelope).trim().charAt(0).toUpperCase()}</span>
+                  <span class="hub-view-platform-badge"><PlatformLogo platform="mail" size={12} /></span>
+                </span>
+                <span class="hub-view-chat-copy">
+                  <span class="hub-view-row-top"><strong>{sender(row.envelope)}</strong><em>{when(row.envelope.date)}</em></span>
+                  <span class="hub-view-row-subject">{row.envelope.subject}</span>
+                  <span class="hub-view-chat-preview">{row.envelope.preview ?? ''}</span>
+                </span>
+              </button>
+            {/if}
+          </li>
+        {:else}
+          <li class="hub-view-empty">{chatSearch.trim() ? $t('common.noMatches') : $t('hub.noConversations')}</li>
+        {/each}
+      </ul>
+      {@render chatContextMenu()}
+    {:else if source?.kind === 'contacts'}
+      <div class="hub-view-list-head">
+        <input
+          bind:value={contactSearch}
+          type="search"
+          placeholder={$t('hub.searchContacts')}
+          aria-label={$t('hub.searchContacts')}
+        />
+        <button
+          type="button"
+          class="hub-view-new-chat-icon"
+          aria-label={$t('hub.newChat')}
+          onclick={() => void openNewChatPicker()}
+        >
+          <Icon name="new-chat" size={16} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        </button>
+      </div>
+      <ul class="hub-view-rows hub-view-contacts">
+        {#each contactRows as contact (contact.id)}
+          {@const platformName = commsPlatformLabel(contact.platform as CommsPlatform)}
+          <li>
+            <button
+              type="button"
+              class="hub-view-row hub-view-contact-row"
+              class:active={activeChat?.id === contact.id}
+              aria-label={$t('hub.openContact', {name: contact.name, platform: platformName})}
+              onclick={() => void openChat(contact)}
+            >
+              <span class="hub-view-chat-avatar-wrap" aria-hidden="true">
+                {@render chatAvatar(contact.name, contact.avatarUrl, contact.id)}
+                <span class="hub-view-platform-badge">
+                  <PlatformLogo platform={contact.platform as Platform} size={12} />
+                </span>
+              </span>
+              <span class="hub-view-chat-copy">
+                <span class="hub-view-row-top"><strong>{contact.name}</strong></span>
+                <span class="hub-view-chat-preview">{platformName}</span>
+              </span>
+            </button>
+          </li>
+        {:else}
+          <li class="hub-view-empty">
+            {contactSearch.trim() ? $t('common.noMatches') : $t('hub.noContacts')}
+          </li>
+        {/each}
+      </ul>
     {:else if source?.kind === 'platform'}
       <!-- The same head, and the same bare search field, the mailbox list
            above uses: the two halves of the hub are one list with different
            transports, and a second search treatment would say otherwise. -->
-      <div class="hub-view-list-head">
+      <div class="hub-view-list-head" class:space-focused={!!focusedSpace}>
+        {#if focusedSpace}
+          <div class="hub-view-space-heading">
+            <button
+              type="button"
+              class="hub-view-space-back"
+              aria-label={$t('hub.backToPlatform', {
+                platform: commsPlatformLabel(focusedSpace.platform as CommsPlatform),
+              })}
+              onclick={leaveSpace}
+            >
+              <Icon name="back" size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+            </button>
+            <strong>{focusedSpace.name}</strong>
+          </div>
+        {/if}
+        {#if railIconOnly && !focusedSpace && compactAccountOptions.length > 1}
+          <div class="hub-view-account-picker">
+            <Menu
+              options={compactAccountOptions}
+              value={currentRailAccount}
+              label={$t('hub.chooseAccount')}
+              onChange={chooseCompactAccount}
+            />
+          </div>
+        {/if}
         <input
           bind:value={chatSearch}
           type="search"
-          placeholder={$t('hub.searchConversations')}
-          aria-label={$t('hub.searchConversations')}
+          placeholder={focusedSpace
+            ? $t('hub.searchSpace', {space: focusedSpace.name})
+            : $t('hub.searchConversations')}
+          aria-label={focusedSpace
+            ? $t('hub.searchSpace', {space: focusedSpace.name})
+            : $t('hub.searchConversations')}
         />
+        <button
+          type="button"
+          class="hub-view-new-chat-icon"
+          aria-label={$t('hub.newChat')}
+          onclick={() => void openNewChatPicker()}
+        >
+          <Icon name="new-chat" size={16} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        </button>
       </div>
       <ul class="hub-view-rows">
         {#each visibleChats as chat (chat.id)}
-          <li>{@render chatRow(chat, false)}</li>
+          <li>
+            {#if chat.space}
+              {@render spaceRow(chat)}
+            {:else}
+              {@render chatRow(chat, false)}
+            {/if}
+          </li>
         {:else}
           {#if loading}
             <!-- The rows that are coming, in their own shape: a spinner in the
@@ -2947,7 +4213,11 @@
             {/each}
           {:else}
             <li class="hub-view-empty">
-              {chatSearch.trim() ? $t('common.noMatches') : $t('hub.noConversations')}
+              {chatSearch.trim()
+                ? $t('common.noMatches')
+                : focusedSpace
+                  ? $t('hub.emptySpace')
+                  : $t('hub.noConversations')}
             </li>
           {/if}
         {/each}
@@ -2978,41 +4248,18 @@
           </li>
           {#if hiddenOpen}
             {#each hiddenRows as chat (chat.id)}
-              <li>{@render chatRow(chat, true)}</li>
+              <li>
+                {#if chat.space}
+                  {@render spaceRow(chat)}
+                {:else}
+                  {@render chatRow(chat, true)}
+                {/if}
+              </li>
             {/each}
           {/if}
         {/if}
       </ul>
-      {#if chatMenu}
-        {@const target = chatMenu.chat}
-        {@const pinned = chatPrefs.pinned.includes(target.id)}
-        {@const hidden = chatPrefs.hidden.includes(target.id)}
-        <!-- Fixed to the viewport rather than to the list, which scrolls: a
-             menu that scrolled with it would drift off the row it belongs to. -->
-        <div
-          class="polymux-dropdown-menu hub-view-chat-menu"
-          role="menu"
-          bind:this={chatMenuEl}
-          style:left={`${chatMenu.x}px`}
-          style:top={`${chatMenu.y}px`}
-          style:visibility={chatMenu.placed ? 'visible' : 'hidden'}
-        >
-          <button
-            class="polymux-dropdown-item"
-            role="menuitem"
-            onclick={() => { chatPrefs = togglePinned(chatPrefs, target.id); closeChatMenu(); }}
-          ><Icon name={pinned ? 'pin-off' : 'pin'} size={14} /><span
-            >{pinned ? $t('hub.unpinChat') : $t('hub.pinChat')}</span
-          ></button>
-          <button
-            class="polymux-dropdown-item"
-            role="menuitem"
-            onclick={() => { chatPrefs = toggleHidden(chatPrefs, target.id); closeChatMenu(); }}
-          ><Icon name={hidden ? 'eye' : 'eye-off'} size={14} /><span
-            >{hidden ? $t('hub.unhideChat') : $t('hub.hideChat')}</span
-          ></button>
-        </div>
-      {/if}
+      {@render chatContextMenu()}
     {:else}
       <p class="hub-view-empty">
         {#if loading}
@@ -3024,7 +4271,17 @@
     {/if}
   </section>
 
-  <section class="hub-view-reader" aria-label={$t('hub.readingPane')}>
+  <section
+    class="hub-view-reader"
+    class:file-drag-active={chatFileDragActive}
+    aria-label={$t('hub.readingPane')}
+    data-file-drop-scope={activeChat && voiceState === 'idle' ? 'hub-chat' : undefined}
+    ondragenter={chatDragEnter}
+    ondragover={chatDragOver}
+    ondragleave={chatDragLeave}
+    ondrop={(event) => void dropIntoChat(event)}
+  >
+    <div class="hub-file-drop-pane-overlay" aria-hidden="true"></div>
     {#if error}
       <p class="hub-view-error" role="alert">{error}</p>
     {/if}
@@ -3043,7 +4300,7 @@
         <div class="hub-view-compose-row">
           <label>
             <span>{$t('hub.to')}</span>
-            <input bind:value={composeTo} spellcheck="false" placeholder="name@example.com" />
+            <input bind:value={composeTo} oninput={composeFieldChanged} spellcheck="false" placeholder="name@example.com" />
           </label>
           {#if !showCopies}
             <button type="button" class="hub-view-inline-link" onclick={() => (showCopies = true)}>
@@ -3054,16 +4311,16 @@
         {#if showCopies}
           <label>
             <span>{$t('hub.cc')}</span>
-            <input bind:value={composeCc} spellcheck="false" placeholder="name@example.com" />
+            <input bind:value={composeCc} oninput={composeFieldChanged} spellcheck="false" placeholder="name@example.com" />
           </label>
           <label>
             <span>{$t('hub.bcc')}</span>
-            <input bind:value={composeBcc} spellcheck="false" placeholder="name@example.com" />
+            <input bind:value={composeBcc} oninput={composeFieldChanged} spellcheck="false" placeholder="name@example.com" />
           </label>
         {/if}
         <label>
           <span>{$t('hub.subject')}</span>
-          <input bind:value={composeSubject} />
+          <input bind:value={composeSubject} oninput={composeFieldChanged} />
         </label>
         {#if composeFiles.length > 0}
           <div class="hub-view-attachments">
@@ -3073,7 +4330,7 @@
                 <button
                   type="button"
                   title={$t('hub.removeAttachment')}
-                  onclick={() => (composeFiles = composeFiles.filter((item) => item !== file))}
+                  onclick={() => removeComposeFile(file)}
                 >
                   <Icon name="close" size={11} />
                 </button>
@@ -3081,7 +4338,30 @@
             {/each}
           </div>
         {/if}
-        <textarea bind:value={composeBody} placeholder={$t('hub.writeMessage')}></textarea>
+        {#if (currentAccount?.signatures.length ?? 0) > 0}
+          <div class="hub-view-signature-control">
+            <span>{$t('hub.signature')}</span>
+            <Menu
+              options={signatureOptions}
+              value={composeSignatureId}
+              label={$t('hub.chooseSignature')}
+              icon="signature"
+              wide
+              onChange={chooseComposeSignature}
+            />
+          </div>
+        {/if}
+        <textarea bind:value={composeBody} oninput={composeFieldChanged} placeholder={$t('hub.writeMessage')}></textarea>
+        {#if composeSignatureBody || safeComposeSignatureHtml}
+          <div class="hub-view-signature-preview" role="region" aria-label={$t('hub.signaturePreview')}>
+            <span>{$t('hub.signature')}</span>
+            {#if safeComposeSignatureHtml}
+              <div class="hub-view-signature-html">{@html safeComposeSignatureHtml}</div>
+            {:else}
+              <pre>{composeSignatureBody}</pre>
+            {/if}
+          </div>
+        {/if}
         <footer>
           <div class="hub-view-compose-tools">
           <button type="button" onclick={() => void attachFiles()}>
@@ -3095,12 +4375,12 @@
             aria-checked={composeImportance === 'high'}
             aria-label={$t('hub.markImportant')}
             data-tooltip-label={$t('hub.markImportant')}
-            onclick={() => (composeImportance = composeImportance === 'high' ? 'normal' : 'high')}
+            onclick={toggleComposeImportance}
           >
             <Icon name="flag" size={13} />
           </button>
           </div>
-          <button type="button" onclick={() => (composing = false)}>{$t('common.cancel')}</button>
+          <button type="button" onclick={leaveMailComposer}>{$t('common.cancel')}</button>
           <button type="button" disabled={busy === 'save-draft'} onclick={() => void sendMail(true)}>
             {busy === 'save-draft' ? $t('hub.saving') : $t('hub.saveDraft')}
           </button>
@@ -3359,21 +4639,44 @@
       </header>
       <div class="hub-view-thread" bind:this={threadEl} onscroll={onThreadScroll}>
         {#each chatMessages as message, index (message.id)}
+          {#if message.notice}
+            <p class="hub-view-notice">{message.body}</p>
+          {:else}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="hub-view-bubble-row"
             class:mine={message.mine}
+            data-message-id={message.id}
             oncontextmenu={(event) => openMessageMenu(event, message)}
           >
-          <!-- Who sent it, above the bubble and aligned to its leading edge —
-               named in a group, where it is the only way to tell people apart,
-               and left out of a direct chat, where the header already says it.
-               A bridged sender id reads `@whatsapp_614…:server`, which names
-               nobody, so the name the bridge resolved is what shows. -->
-          {#if !message.mine && activeChat.group && startsSenderRun(index)}
-            <span class="hub-view-bubble-who">{senderLabel(message)}</span>
+          <!-- Who sent it, above the bubble and aligned to its leading edge.
+               Every platform and conversation type uses this same treatment;
+               groups identify each participant, while a direct chat keeps the
+               sender identity beside the message itself. A bridged sender id
+               reads `@whatsapp_614…:server`, which names nobody, so the name
+               the bridge resolved is what shows. -->
+          {#if startsSenderRun(index)}
+            {#if message.mine}
+              <!-- Keep the same start-of-run rhythm as an incoming message,
+                   while leaving the user's redundant identity out of sight. -->
+              <span class="hub-view-bubble-who-space" aria-hidden="true">{senderLabel(message)}</span>
+            {:else}
+              <span class="hub-view-bubble-who">
+                {@render chatAvatar(
+                  senderLabel(message),
+                  message.senderAvatarUrl ?? (!activeChat.group ? activeChat.avatarUrl : null),
+                  `sender:${activeChat.id}:${message.sender}`,
+                  true,
+                )}
+                <span>{senderLabel(message)}</span>
+              </span>
+            {/if}
           {/if}
-          <div class="hub-view-bubble" class:mine={message.mine}>
+          <div
+            class="hub-view-bubble"
+            class:mine={message.mine}
+            class:reply-target-highlight={replyTargetHighlight === message.id}
+          >
             {#if quoted(message)}
               <!-- What this answers, kept short: the point is recognition, and
                    the message it quotes is a scroll away. -->
@@ -3384,17 +4687,26 @@
             {:else if message.replyTo}
               <span class="hub-view-quote">{$t('hub.replyToEarlier')}</span>
             {/if}
-            {#each message.attachments ?? [] as attachment (attachment.url)}
-              {#if brokenMedia.has(attachment.url)}
+            {#each message.attachments ?? [] as attachment (`${attachment.kind}:${attachment.url ?? attachment.name}`)}
+              {@const attachmentKind = attachmentRenderKind(attachment)}
+              {#if !attachment.url}
+                <!-- The source network described this attachment but did not
+                     expose bytes. Keep its native shape; `viewIn` below is the
+                     route to the source app. -->
+                <span class="hub-view-bubble-file">
+                  <Icon name={attachmentKind === 'audio' ? 'mic' : attachmentKind === 'video' ? 'video' : 'attach'} size={13} />
+                  <span class="hub-view-bubble-file-name">{attachment.name}</span>
+                </span>
+              {:else if brokenMedia.has(attachment.url)}
                 <!-- The homeserver would not serve these bytes — a picture the
                      bridge referenced but never carried across. A named chip
                      says what was here; the blank full-size frame said
                      nothing, at length. -->
                 <span class="hub-view-bubble-file">
                   <Icon name="attach" size={13} />
-                  {attachment.name}
+                  <span class="hub-view-bubble-file-name">{attachment.name}</span>
                 </span>
-              {:else if attachment.kind === 'image'}
+              {:else if attachmentKind === 'image'}
                 <img
                   class="hub-view-bubble-image"
                   class:sticker={attachment.sticker}
@@ -3403,9 +4715,9 @@
                   width={attachment.width ?? undefined}
                   height={attachment.height ?? undefined}
                   loading="lazy"
-                  onerror={(event) => retryMedia(event, attachment.url)}
+                  onerror={(event) => retryMedia(event, attachment.url!)}
                 />
-              {:else if attachment.kind === 'audio'}
+              {:else if attachmentKind === 'audio'}
                 <!-- Voice notes are most of what arrives on these networks, so
                      they play in place rather than downloading first. -->
                 <audio
@@ -3413,27 +4725,75 @@
                   controls
                   preload="metadata"
                   src={attachment.url}
-                  onerror={(event) => retryMedia(event, attachment.url)}
+                  onerror={(event) => retryMedia(event, attachment.url!)}
                 ></audio>
-              {:else if attachment.kind === 'video'}
+              {:else if attachmentKind === 'video'}
                 <!-- svelte-ignore a11y_media_has_caption -->
                 <!-- A video someone sent over WhatsApp has no caption track to
                      offer; there is nothing to point this at. -->
                 <video
                   class="hub-view-bubble-video"
                   controls
+                  playsinline
                   preload="metadata"
                   src={attachment.url}
-                  onerror={(event) => retryMedia(event, attachment.url)}
+                  aria-label={attachment.name}
+                  onerror={(event) => retryMedia(event, attachment.url!)}
                 ></video>
               {:else}
                 <a class="hub-view-bubble-file" href={attachment.url} download={attachment.name}>
                   <Icon name="attach" size={13} />
-                  {attachment.name}
+                  <span class="hub-view-bubble-file-name">{attachment.name}</span>
                 </a>
               {/if}
             {/each}
-            {#if message.body}<p>{message.body}</p>{/if}
+            {#if message.body}
+              <p>
+                {#each messageParts(message.body) as part}
+                  {#if part.url}<a class="hub-view-message-link" href={part.url} onclick={openLink}>{part.text}</a>{:else}{part.text}{/if}
+                {/each}
+              </p>
+            {/if}
+            {#if message.linkPreview}
+              {@const preview = message.linkPreview}
+              {#if preview.url}
+                <a class="hub-view-link-card" class:with-image={!!preview.imageUrl} href={preview.url} onclick={openLink}>
+                  <span class="hub-view-link-copy">
+                    {#if preview.source}<small>{preview.source}</small>{/if}
+                    <strong>{preview.title}</strong>
+                    {#if preview.description}<span>{preview.description}</span>{/if}
+                  </span>
+                  {#if preview.imageUrl && !brokenMedia.has(preview.imageUrl)}
+                    <img
+                      src={preview.imageUrl}
+                      alt=""
+                      width={preview.imageWidth ?? undefined}
+                      height={preview.imageHeight ?? undefined}
+                      loading="lazy"
+                      onerror={(event) => retryMedia(event, preview.imageUrl!)}
+                    />
+                  {/if}
+                </a>
+              {:else}
+                <span class="hub-view-link-card" class:with-image={!!preview.imageUrl}>
+                  <span class="hub-view-link-copy">
+                    {#if preview.source}<small>{preview.source}</small>{/if}
+                    <strong>{preview.title}</strong>
+                    {#if preview.description}<span>{preview.description}</span>{/if}
+                  </span>
+                  {#if preview.imageUrl && !brokenMedia.has(preview.imageUrl)}
+                    <img
+                      src={preview.imageUrl}
+                      alt=""
+                      width={preview.imageWidth ?? undefined}
+                      height={preview.imageHeight ?? undefined}
+                      loading="lazy"
+                      onerror={(event) => retryMedia(event, preview.imageUrl!)}
+                    />
+                  {/if}
+                </span>
+              {/if}
+            {/if}
             {#if message.viewIn}
               <!-- Media the bridge could not carry across. The source app can
                    still show it, so the placeholder opens that app rather than
@@ -3465,6 +4825,7 @@
             <em>{messageTime(message.sentAt)}</em>
           </div>
           </div>
+          {/if}
           <!-- After the bubble in the DOM, which `column-reverse` paints above
                it: the stamp introduces the run that starts here. -->
           {#if startsRun(index)}
@@ -3497,17 +4858,35 @@
              message it was opened on. -->
         <div
           class="polymux-dropdown-menu hub-view-message-menu"
+          class:has-reactions={activeChat.platform !== 'wechat'}
           role="menu"
           bind:this={messageMenuEl}
           style:left={`${messageMenu.x}px`}
-          style:top={`${messageMenu.y}px`}
+          style:top={messageMenuBottom === null ? `${messageMenu.y}px` : 'auto'}
+          style:bottom={messageMenuBottom === null ? 'auto' : `${messageMenuBottom}px`}
           style:visibility={messageMenu.placed ? 'visible' : 'hidden'}
         >
-          <span class="hub-view-emoji-row">
-            {#each QUICK_REACTIONS as emoji (emoji)}
-              <button type="button" onclick={() => { void react(target, emoji); closeMessageMenu(); }}>{emoji}</button>
-            {/each}
-          </span>
+          {#if activeChat.platform !== 'wechat'}
+            <span class="hub-view-emoji-row">
+              {#each QUICK_REACTIONS as emoji (emoji)}
+                <button type="button" onclick={() => { void react(target, emoji); closeMessageMenu(); }}>{emoji}</button>
+              {/each}
+              <button
+                type="button"
+                class="hub-view-emoji-more"
+                class:active={reactionPickerOpen}
+                aria-label={$t('hub.react')}
+                aria-expanded={reactionPickerOpen}
+                onclick={toggleReactionPicker}
+              ><Icon name="plus" size={15} /></button>
+            </span>
+            {#if reactionPickerOpen}
+              <EmojiPicker
+                direction={reactionPickerDirection}
+                onpick={(emoji) => pickExpandedReaction(target, emoji)}
+              />
+            {/if}
+          {/if}
           <button
             class="polymux-dropdown-item"
             role="menuitem"
@@ -3521,52 +4900,120 @@
         </div>
       {/if}
 
-      {#if awayFromLatest}
-        <!-- Sits over the foot of the thread, above the composer: the way back
-             to the newest message once the reader has scrolled up from it. -->
-        <button type="button" class="hub-view-to-latest" onclick={scrollToLatest}>
-          <Icon name="arrow-down" size={13} />
-          {$t('chat.scrollToBottom')}
-        </button>
-      {/if}
-      {#if replyTo}
-        <!-- What the next message will answer, with a way out of it. -->
-        <div class="hub-view-replying">
-          <Icon name="back" size={12} />
-          <span><strong>{senderLabel(replyTo)}</strong> {replyTo.body || $t('hub.attachment')}</span>
-          <button type="button" aria-label={$t('common.cancel')} onclick={() => (replyTo = null)}>
-            <Icon name="close" size={12} />
+      <div class="hub-view-chat-footer" class:replying={!!replyTo}>
+        {#if awayFromLatest}
+          <!-- Sits over the foot of the thread, above the composer: the way back
+               to the newest message once the reader has scrolled up from it. -->
+          <button type="button" class="hub-view-to-latest" onclick={scrollToLatest}>
+            <Icon name="arrow-down" size={13} />
+            {$t('chat.scrollToBottom')}
           </button>
-        </div>
-      {/if}
-      <!-- One bar in three states. Nothing recorded: a text field with attach
-           beside it, and one primary button that is the microphone until there
-           is something to send. Recording: the field becomes the meter, and
-           attach and the microphone step aside — there is nothing to attach to
-           a take in progress. -->
-      <div class="hub-view-composer" class:capturing={voiceState !== 'idle'}>
+        {/if}
+        {#if replyTo}
+          <!-- Floats over the thread instead of occupying an opaque row of its
+               own; only the pill itself obscures the messages beneath it. -->
+          <div class="hub-view-replying">
+            <button
+              type="button"
+              class="hub-view-reply-jump"
+              onclick={jumpToChatReply}
+            >
+              <Icon name="reply" size={12} />
+              <span><strong>{senderLabel(replyTo)}</strong> {replyTo.body || $t('hub.attachment')}</span>
+            </button>
+            <button
+              type="button"
+              class="hub-view-reply-cancel"
+              aria-label={$t('common.cancel')}
+              onclick={cancelChatReply}
+            >
+              <Icon name="close" size={12} />
+            </button>
+          </div>
+        {/if}
+        {#if chatFiles.length > 0}
+          <div class="hub-view-chat-files" aria-label={$t('hub.attachFiles')}>
+            {#each chatFiles as file (file)}
+              <span class="hub-view-file">
+                <Icon name="attach" size={12} />
+                <span class="hub-view-chat-file-name" title={file}>{fileName(file)}</span>
+                <button
+                  type="button"
+                  aria-label={$t('hub.removeAttachment')}
+                  onclick={() => removeChatFile(file)}
+                >
+                  <Icon name="close" size={11} />
+                </button>
+              </span>
+            {/each}
+          </div>
+        {/if}
+      <!-- The circular add control is a peer of the rounded message field. Its
+           upward menu owns occasional tools; the field keeps only typing and
+           its contextual voice/send action. During recording the add control
+           steps aside because files and emoji do not belong to a voice take. -->
+        <div class="hub-view-composer-row">
         {#if voiceState === 'idle'}
-          <input
+          <button
+            type="button"
+            class="hub-view-composer-add"
+            class:active={composerToolsOpen || composerEmojiOpen}
+            title={$t('hub.moreActions')}
+            aria-label={$t('hub.moreActions')}
+            aria-haspopup="menu"
+            aria-expanded={composerToolsOpen || composerEmojiOpen}
+            onclick={() => void toggleComposerTools()}
+          >
+            <Icon name="plus" size={16} />
+          </button>
+          {#if composerToolsOpen}
+            <div
+              bind:this={composerToolsMenu}
+              class="hub-view-composer-tools-menu polymux-dropdown-menu"
+              role="menu"
+              aria-label={$t('hub.moreActions')}
+            >
+              <button
+                type="button"
+                class="polymux-dropdown-item"
+                role="menuitem"
+                disabled={busy === 'attach'}
+                onclick={() => void attachToChat()}
+              >
+                <Icon name="attach" size={14} />
+                <span>{$t('hub.attachFiles')}</span>
+              </button>
+              <button
+                type="button"
+                class="polymux-dropdown-item"
+                role="menuitem"
+                onclick={openComposerEmojiPicker}
+              >
+                <Icon name="smile" size={14} />
+                <span>{$t('hub.addEmoji')}</span>
+              </button>
+            </div>
+          {/if}
+          {#if composerEmojiOpen}
+            <EmojiPicker direction="above" ariaLabel={$t('hub.emoji')} onpick={insertComposerEmoji} />
+          {/if}
+        {/if}
+        <div class="hub-view-composer" class:capturing={voiceState !== 'idle'}>
+        {#if voiceState === 'idle'}
+          <textarea
             bind:this={composerInput}
             bind:value={draft}
+            rows="1"
+            oninput={chatComposerChanged}
             placeholder={$t('hub.messagePlaceholder', {name: activeChat.name})}
             onkeydown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
                 event.preventDefault();
                 void sendChat();
               }
             }}
-          />
-          <button
-            type="button"
-            title={$t('hub.attachFiles')}
-            aria-label={$t('hub.attachFiles')}
-            disabled={busy === 'attach'}
-            onclick={() => void attachToChat()}
-          >
-            <Icon name="attach" size={15} />
-          </button>
-          {#if draft.trim()}
+          ></textarea>
+          {#if draft.trim() || chatFiles.length > 0}
             <button
               type="button"
               class="hub-view-primary"
@@ -3651,6 +5098,8 @@
             <Icon name="send" size={15} />
           </button>
         {/if}
+        </div>
+        </div>
       </div>
     {:else}
       <div class="hub-view-blank">
@@ -3663,36 +5112,68 @@
 </div>
 </div>
 
-{#snippet chatRow(chat: ChatDto, nested: boolean)}
+{#snippet spaceRow(space: ChatDto, showPlatform = false)}
+{@const unread = chatUnread(space)}
+{@const childCount = spaceChildCount(space)}
+<button
+  type="button"
+  class="hub-view-row hub-view-space-row"
+  class:unread={unread > 0}
+  aria-label={$t('hub.openSpace', {name: space.name, count: childCount})}
+  onclick={() => openSpace(space)}
+>
+  <span class="hub-view-space-stack" aria-hidden="true">
+    <span class="hub-view-space-layer hub-view-space-layer-back"></span>
+    <span class="hub-view-space-layer hub-view-space-layer-middle"></span>
+    <span class="hub-view-space-front">
+      {@render chatAvatar(space.name, space.avatarUrl, space.id)}
+    </span>
+    {#if showPlatform}
+      <span class="hub-view-platform-badge">
+        <PlatformLogo platform={space.platform as Platform} size={12} />
+      </span>
+    {/if}
+  </span>
+  <span class="hub-view-chat-copy">
+    <span class="hub-view-row-top">
+      <strong>{space.name}</strong>
+      <span class="hub-view-chat-when hub-view-space-open-mark">
+        <Icon name="forward" size={12} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+      </span>
+    </span>
+    <span class="hub-view-chat-bottom">
+      <span class="hub-view-chat-preview">
+        {space.preview || $t('hub.spaceChats', {count: childCount})}
+      </span>
+      {#if unread > 0}
+        <span class="hub-view-chat-unread" aria-label={$t('hub.unreadCount', {count: unread})}
+          >{unread > 99 ? '99+' : unread}</span
+        >
+      {/if}
+    </span>
+  </span>
+</button>
+{/snippet}
+
+{#snippet chatRow(chat: ChatDto, nested: boolean, showPlatform = false)}
+{@const unread = chatUnread(chat)}
 <button
   type="button"
   class="hub-view-row"
   class:nested
   class:active={activeChat?.id === chat.id}
-  class:unread={(chat.unread ?? 0) > 0}
+  class:unread={unread > 0}
   onclick={() => void openChat(chat)}
   oncontextmenu={(event) => openChatMenu(event, chat)}
 >
-  {#if chat.avatarUrl && !brokenAvatars.has(chat.id)}
-    <!-- Bridged avatars are fetched from the homeserver's
-         authenticated media endpoint, which answers 404 for a
-         picture the bridge referenced but never uploaded. The
-         initial below is the fallback: a broken-image glyph is
-         worse than no picture at all. -->
-    <img
-      class="hub-view-chat-avatar"
-      src={chat.avatarUrl}
-      alt=""
-      loading="lazy"
-      onerror={() => markAvatarBroken(chat.id)}
-    />
-  {:else}
-    <!-- An initial, so a row without a picture still lines up with
-         the rows that have one. -->
-    <span class="hub-view-chat-avatar placeholder" aria-hidden="true"
-      >{chat.name.trim().charAt(0).toUpperCase()}</span
-    >
+  <span class="hub-view-chat-avatar-wrap">
+  {@render chatAvatar(chat.name, chat.avatarUrl, chat.id)}
+  {#if showPlatform}
+    <span class="hub-view-platform-badge" aria-hidden="true">
+      <PlatformLogo platform={chat.platform as Platform} size={12} />
+    </span>
   {/if}
+  </span>
   <!-- Two lines, each with its own right-hand element: the time
        sits against the name, the unread count against the preview,
        so both columns centre on the line they belong to. -->
@@ -3710,6 +5191,10 @@
           <span class="visually-hidden">{$t('hub.pinned')}</span>
           <Icon name="pin" size={11} />
         {/if}
+        {#if chatPrefs.muted.includes(chat.id)}
+          <span class="visually-hidden">{$t('hub.muted')}</span>
+          <Icon name="speaker-off" size={11} />
+        {/if}
         {#if chat.lastActivity}
           <time datetime={chat.lastActivity}>{chat.lastActivity ? when(chat.lastActivity) : ''}</time>
         {/if}
@@ -3717,12 +5202,70 @@
     </span>
     <span class="hub-view-chat-bottom">
       <span class="hub-view-chat-preview">{chat.preview ?? ''}</span>
-      {#if (chat.unread ?? 0) > 0}
-        <span class="hub-view-chat-unread" aria-label={$t('hub.unreadCount', {count: chat.unread ?? 0})}
-          >{chat.unread! > 99 ? '99+' : chat.unread}</span
+      {#if unread > 0}
+        <span class="hub-view-chat-unread" aria-label={$t('hub.unreadCount', {count: unread})}
+          >{unread > 99 ? '99+' : unread}</span
         >
       {/if}
     </span>
   </span>
 </button>
+{/snippet}
+
+<!-- One avatar renderer for every messaging platform and every place a chat
+     identity appears. The inline form only changes the scale; its rounded
+     square, crop, fallback, and failed-image handling stay identical to the
+     chat rail's. -->
+{#snippet chatAvatar(name: string, avatarUrl: string | null | undefined, key: string, inline = false)}
+  {@const initial = avatarInitial(name)}
+  {#if avatarUrl && !brokenAvatars.has(key)}
+    <!-- Bridged avatars are fetched from the homeserver's authenticated media
+         endpoint. A stable fallback replaces a source image that is absent or
+         fails, so no platform leaves a broken-image glyph behind. -->
+    <img
+      class="hub-view-chat-avatar"
+      class:inline
+      src={avatarUrl}
+      alt=""
+      loading="lazy"
+      onerror={() => markAvatarBroken(key)}
+    />
+  {:else}
+    <span class="hub-view-chat-avatar placeholder" class:inline aria-hidden="true">
+      {#if initial}
+        {initial}
+      {:else}
+        <Icon name="user" size={inline ? 7 : 14} />
+      {/if}
+    </span>
+  {/if}
+{/snippet}
+
+{#snippet chatContextMenu()}
+  {#if chatMenu}
+    {@const target = chatMenu.chat}
+    {@const pinned = chatPrefs.pinned.includes(target.id)}
+    {@const muted = chatPrefs.muted.includes(target.id)}
+    {@const hidden = chatPrefs.hidden.includes(target.id)}
+    <!-- Fixed to the viewport rather than to the list, which scrolls: a menu
+         stays attached to the row in both a platform list and All Platforms. -->
+    <div
+      class="polymux-dropdown-menu hub-view-chat-menu"
+      role="menu"
+      bind:this={chatMenuEl}
+      style:left={`${chatMenu.x}px`}
+      style:top={`${chatMenu.y}px`}
+      style:visibility={chatMenu.placed ? 'visible' : 'hidden'}
+    >
+      <button class="polymux-dropdown-item" role="menuitem" onclick={() => { chatPrefs = togglePinned(chatPrefs, target.id); closeChatMenu(); }}>
+        <Icon name={pinned ? 'pin-off' : 'pin'} size={14} /><span>{pinned ? $t('hub.unpinChat') : $t('hub.pinChat')}</span>
+      </button>
+      <button class="polymux-dropdown-item" role="menuitem" onclick={() => { chatPrefs = toggleMuted(chatPrefs, target.id); closeChatMenu(); }}>
+        <Icon name={muted ? 'speaker' : 'speaker-off'} size={14} /><span>{muted ? $t('hub.unmuteChat') : $t('hub.muteChat')}</span>
+      </button>
+      <button class="polymux-dropdown-item" role="menuitem" onclick={() => { chatPrefs = toggleHidden(chatPrefs, target.id); closeChatMenu(); }}>
+        <Icon name={hidden ? 'eye' : 'eye-off'} size={14} /><span>{hidden ? $t('hub.unhideChat') : $t('hub.hideChat')}</span>
+      </button>
+    </div>
+  {/if}
 {/snippet}

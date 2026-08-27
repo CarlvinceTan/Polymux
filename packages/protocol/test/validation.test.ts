@@ -7,6 +7,7 @@ import {
   driveSaveOrder,
   validateGoalCommand,
   validateStartRun,
+  validateSaveMailSignatures,
 } from "../src/index.js";
 
 test("validates renderer run requests at the Electron boundary", () => {
@@ -41,6 +42,37 @@ test("validates renderer run requests at the Electron boundary", () => {
   assert.throws(
     () => validateStartRun({ conversationId: "", text: "hello" }),
     /conversationId/,
+  );
+});
+
+test("validates account-scoped mail signatures without flattening their layout", () => {
+  assert.deepEqual(
+    validateSaveMailSignatures({
+      account: "work",
+      signatures: [{id: "usual", name: " Usual ", body: "Best,\r\n  Carlvince", html: "<b>Best,</b><br>  Carlvince"}],
+      defaultSignatureId: "usual",
+    }),
+    {
+      account: "work",
+      signatures: [{id: "usual", name: "Usual", body: "Best,\n  Carlvince", html: "<b>Best,</b><br>  Carlvince"}],
+      defaultSignatureId: "usual",
+    },
+  );
+  assert.throws(
+    () => validateSaveMailSignatures({
+      account: "work",
+      signatures: [{id: "one", name: "One", body: "x", html: null}],
+      defaultSignatureId: "missing",
+    }),
+    /default signature/i,
+  );
+  assert.throws(
+    () => validateSaveMailSignatures({
+      account: "work",
+      signatures: [{id: "one", name: "One", body: "x", html: '<img src=x onerror="alert(1)">'}],
+      defaultSignatureId: "one",
+    }),
+    /unsupported markup/i,
   );
 });
 

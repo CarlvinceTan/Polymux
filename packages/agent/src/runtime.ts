@@ -43,10 +43,6 @@ import {
   type MemoryConsolidationSettings,
 } from "./memory/consolidator.js";
 import type { ComputerHistoryAccess } from "./memory/computer-history-access.js";
-import {
-  ComputerHistoryDistiller,
-  type ComputerHistoryDistillationSettings,
-} from "./memory/computer-history-distiller.js";
 import { createComputerHistoryTools } from "./memory/computer-history-tools.js";
 import { createHistoryTools } from "./memory/history-tools.js";
 import { MemoryManager } from "./memory/manager.js";
@@ -117,9 +113,9 @@ function preloadSingleOfficialSkill(
 /**
  * Kept as the historical name for what the runtime asks of ComputerHistory. It is
  * now the wider reading surface in `ComputerHistoryAccess`: the prompt line the
- * runtime always used, plus the queries the retrieval tools and the distiller
- * run. Both additions are optional, so a host supplying only a prompt context
- * still satisfies it.
+ * runtime always used, plus the queries the retrieval tools run. The reading
+ * surface is optional, so a host supplying only a prompt context still
+ * satisfies it.
  */
 export type ComputerHistoryContextProvider = ComputerHistoryAccess;
 
@@ -211,7 +207,6 @@ export interface PolymuxAgentOptions {
   skills?: SkillLoaderOptions;
   compaction?: Partial<CompactionSettings>;
   memoryConsolidation?: Partial<MemoryConsolidationSettings>;
-  computerHistoryDistillation?: Partial<ComputerHistoryDistillationSettings>;
   maxTurns?: number;
   /** Host lifecycle hooks that can veto or observe every tool call. */
   hooks?: ToolHooks;
@@ -309,7 +304,6 @@ export class PolymuxAgent {
   readonly #options: PolymuxAgentOptions;
   readonly #compaction: CompactionManager;
   readonly #consolidator: MemoryConsolidator;
-  readonly #distiller?: ComputerHistoryDistiller;
   readonly #skillLoader: SkillLoader;
   readonly #goalWork = new Set<Promise<void>>();
   /** Bounded worker context available to the next user turn in
@@ -340,16 +334,6 @@ export class PolymuxAgent {
       options.memoryConsolidation,
       options.prompts?.consolidation,
     );
-    this.#distiller = options.computerHistory
-      ? new ComputerHistoryDistiller(
-          options.inference,
-          options.memory,
-          options.computerHistory,
-          options.computerHistoryDistillation,
-          undefined,
-          options.prompts?.distillation,
-        )
-      : undefined;
     this.#skillLoader = new SkillLoader(options.skills);
   }
 
@@ -1067,25 +1051,13 @@ export class PolymuxAgent {
     // each one as it completes. All that is left here is the bookkeeping a
     // finished turn earns, which a stopped or failed one does not.
     if (input.parentRunId || result.status !== "completed") return;
-    // Watermark-gated background work: it runs alongside the goal loop rather
+    // Watermark-gated memory consolidation runs alongside the goal loop rather
     // than before it, so it never delays the turn, but it is tracked so
     // shutdown and tests can wait for it. maybeConsolidate absorbs failures.
-    // Distillation runs before consolidation and is awaited by it, because
-    // what it writes is exactly what the summary should then fold in — the
-    // other order leaves a screen memory waiting a whole turn for its place in
-    // the briefing.
-    const memoryWork = (
-      this.#distiller
-        ? this.#distiller
-            .maybeDistill(this.#options.model, new AbortController().signal)
-            .then((): void => undefined)
-        : Promise.resolve()
-    )
-      .then(() =>
-        this.#consolidator.maybeConsolidate(
-          this.#options.model,
-          new AbortController().signal,
-        ),
+    const memoryWork = this.#consolidator
+      .maybeConsolidate(
+        this.#options.model,
+        new AbortController().signal,
       )
       .then((): void => undefined);
     this.#goalWork.add(memoryWork);

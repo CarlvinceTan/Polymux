@@ -64,7 +64,7 @@ function createHubStateTool(comms: Communications): AgentTool {
         const kinds = requireHubStateKinds(input.kinds);
         const wants = (kind: typeof HUB_STATE_KINDS[number]) => kinds.includes(kind);
         const status = wants("platforms") || wants("accounts") ? await comms.status() : null;
-        const chats = wants("chats") ? await comms.chats() : [];
+        const chats = wants("chats") ? (await comms.chats()).filter((chat) => !chat.space) : [];
         return ok({
           ...(wants("platforms") ? {
             platforms: status!.bridges.map((bridge) => ({
@@ -82,7 +82,6 @@ function createHubStateTool(comms: Communications): AgentTool {
               account: account.id,
               email: account.email,
               display_name: account.displayName,
-              default: account.isDefault,
               status: account.status,
             })),
           } : {}),
@@ -189,7 +188,7 @@ function createChatsTool(comms: Communications): AgentTool {
         const needle = requireString(input.query, "query").toLowerCase();
         const platform = typeof input.platform === "string" ? input.platform : "";
         const resolved = needle === "*"
-          ? {status: "explicit-inventory", identities: [], chats: await comms.chats()}
+          ? {status: "explicit-inventory", identities: [], chats: (await comms.chats()).filter((chat) => !chat.space)}
           : await comms.resolveChatAlias(needle);
         const rooms = resolved.chats.filter((room) => !platform || room.platform === platform);
         return ok({
@@ -353,7 +352,7 @@ function createEmailAccountsTool(comms: Communications): AgentTool {
   return {
     name: "email_accounts",
     description:
-      "List the user's configured mailboxes with their account ids, addresses, and which one is the default. Use the returned account id with the other email tools.",
+      "List the user's configured mailboxes with their account ids and addresses. Use the returned account id with the other email tools when more than one mailbox is configured.",
     parameters: {type: "object", properties: {}, additionalProperties: false},
     async execute() {
       try {
@@ -365,7 +364,6 @@ function createEmailAccountsTool(comms: Communications): AgentTool {
             account: account.id,
             email: account.email,
             display_name: account.displayName,
-            default: account.isDefault,
           })),
         );
       } catch (error) {
@@ -383,7 +381,7 @@ function createEmailListTool(comms: Communications): AgentTool {
     parameters: {
       type: "object",
       properties: {
-        account: {type: "string", description: "Account id from email_accounts; defaults to the default account"},
+        account: {type: "string", description: "Account id from email_accounts; required when more than one mailbox is configured"},
         folder: {type: "string", description: "Defaults to INBOX"},
         limit: {type: "number", description: "1-100, default 20"},
         query: {type: "string", description: "IMAP search query, e.g. 'from alice@example.com'"},
@@ -416,7 +414,7 @@ function createEmailReadTool(comms: Communications): AgentTool {
       type: "object",
       properties: {
         id: {type: "string"},
-        account: {type: "string"},
+        account: {type: "string", description: "Account id from email_accounts; required when more than one mailbox is configured"},
         folder: {type: "string", description: "Defaults to INBOX"},
       },
       required: ["id"],
@@ -451,7 +449,7 @@ function createEmailFoldersTool(comms: Communications): AgentTool {
     parameters: {
       type: "object",
       properties: {
-        account: {type: "string", description: "Account id from email_accounts; defaults to the default account"},
+        account: {type: "string", description: "Account id from email_accounts; required when more than one mailbox is configured"},
       },
       additionalProperties: false,
     },
@@ -479,7 +477,7 @@ function createEmailAttachmentsTool(comms: Communications): AgentTool {
       type: "object",
       properties: {
         id: {type: "string", description: "Message id, relative to the folder it was listed from"},
-        account: {type: "string"},
+        account: {type: "string", description: "Account id from email_accounts; required when more than one mailbox is configured"},
         folder: {type: "string", description: "Defaults to INBOX"},
       },
       required: ["id"],
@@ -512,7 +510,7 @@ function createEmailSendTool(comms: Communications): AgentTool {
     parameters: {
       type: "object",
       properties: {
-        account: {type: "string", description: "Account id to send from; defaults to the default account"},
+        account: {type: "string", description: "Account id to send from; required when more than one mailbox is configured"},
         to: {type: "array", items: {type: "string"}},
         cc: {type: "array", items: {type: "string"}},
         bcc: {type: "array", items: {type: "string"}},

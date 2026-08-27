@@ -31,16 +31,10 @@ export const defaultComputerHistorySettings: ComputerHistorySettings = {
   excludeSites: [],
   recordPrivateBrowsing: true,
   interactionEvents: true,
-  distillAfterHours: 6,
 };
 
 /** How much of a frame a search hit carries back. */
 const snippetLimit = 400;
-
-interface ComputerHistoryState {
-  /** Newest capture time already folded into durable memory. */
-  distilledThrough: string | null;
-}
 
 export class ComputerHistoryStore {
   readonly directory: string;
@@ -50,7 +44,6 @@ export class ComputerHistoryStore {
   readonly instructionsPath: string;
   readonly timelinePath: string;
   readonly #settingsPath: string;
-  readonly #statePath: string;
   #recent: ComputerHistoryEntry[] = [];
 
   constructor(directory: string) {
@@ -61,7 +54,6 @@ export class ComputerHistoryStore {
     this.instructionsPath = path.join(this.directory, "instructions.md");
     this.timelinePath = path.join(this.directory, "timeline.md");
     this.#settingsPath = path.join(this.directory, "settings.json");
-    this.#statePath = path.join(this.directory, "state.json");
     for (const item of [
       this.directory,
       this.framesDirectory,
@@ -92,22 +84,6 @@ export class ComputerHistoryStore {
       `${JSON.stringify(validateSettings(settings), null, 2)}\n`,
       "utf8",
     );
-  }
-
-  state(): ComputerHistoryState {
-    try {
-      const value = JSON.parse(readFileSync(this.#statePath, "utf8")) as Partial<ComputerHistoryState>;
-      return {
-        distilledThrough:
-          typeof value.distilledThrough === "string" ? value.distilledThrough : null,
-      };
-    } catch {
-      return { distilledThrough: null };
-    }
-  }
-
-  writeState(state: ComputerHistoryState): void {
-    writeFileSync(this.#statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   }
 
   save(
@@ -258,8 +234,7 @@ export class ComputerHistoryStore {
 
   /**
    * Deletes everything captured in a window, frames and events alike. This is
-   * the user's own "forget that hour", so it is unconditional: retention and
-   * the distillation watermark do not get a say.
+   * the user's own "forget that hour", so it is unconditional.
    */
   forget(since: Date, until: Date): { frames: number; events: number } {
     const frames = this.entries({ since, until, limit: Number.MAX_SAFE_INTEGER });
@@ -341,7 +316,6 @@ export class ComputerHistoryStore {
       excludeSites: settings.excludeSites,
       recordPrivateBrowsing: settings.recordPrivateBrowsing,
       interactionEvents: settings.interactionEvents,
-      distilledThrough: this.state().distilledThrough,
     };
   }
 
@@ -453,7 +427,6 @@ function validateSettings(value: Partial<ComputerHistorySettings>): ComputerHist
     // would be read as complete when it was not.
     recordPrivateBrowsing: value.recordPrivateBrowsing !== false,
     interactionEvents: value.interactionEvents !== false,
-    distillAfterHours: bounded(value.distillAfterHours, 0, 168, 6),
   };
 }
 

@@ -27,12 +27,6 @@ export interface ComputerHistorySettings {
   recordPrivateBrowsing: boolean;
   /** Whether the interaction stream (clicks, chords, app switches) is kept. */
   interactionEvents: boolean;
-  /**
-   * Frames and events older than this are distilled into durable memory
-   * before retention deletes them, so what was learnt outlives the raw
-   * capture. Zero disables distillation.
-   */
-  distillAfterHours: number;
 }
 
 export interface ComputerHistoryFrame {
@@ -125,7 +119,6 @@ export interface ComputerHistoryStatus {
   excludeSites: string[];
   recordPrivateBrowsing: boolean;
   interactionEvents: boolean;
-  distilledThrough: string | null;
 }
 
 export interface ComputerHistoryPromptContext {

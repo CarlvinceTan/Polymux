@@ -78,6 +78,10 @@
    * connected, so the state word stands alone there. */
   function accountLabel(provider: DriveProviderDto): string {
     if (provider.state !== 'connected') return '';
+    // Local and network storage expose folders as drive sources, not signed-in
+    // accounts. In particular, Local always has both the Polymux folder and
+    // the home folder; counting those made one Mac read as "2 accounts".
+    if (provider.kind === 'local' || provider.kind === 'network') return '';
     return provider.accounts.length > 1
       ? plural('drive.accounts', provider.accounts.length)
       : (provider.accounts[0]?.name ?? '');

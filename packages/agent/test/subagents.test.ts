@@ -1656,7 +1656,6 @@ test("the shipped agent prompts are the ones the internal agents run on", async 
   // The two that state a number carry it as a placeholder, not as prose that
   // has drifted from whatever the code actually passes.
   assert.match(prompts.consolidation ?? "", /\{budget\}/);
-  assert.match(prompts.distillation ?? "", /\{limit\}/);
   assert.equal(
     fillPrompt("under {budget} characters", { budget: "46,000" }),
     "under 46,000 characters",
