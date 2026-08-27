@@ -181,6 +181,21 @@ export interface GeneralSettingsUpdate {
 }
 export interface ProfileDto { id: string; name: string; isDefault: boolean; }
 export interface ProfilesDto { activeId: string; profiles: ProfileDto[]; }
+
+/** The agent implementation attached to the active configuration profile. */
+export type AgentRuntimeDto =
+  | {kind: "polymux"; name: "Polymux Agent"}
+  | {
+      kind: "acp";
+      name: string;
+      command: string;
+      args: string[];
+      cwd: string | null;
+    };
+
+export type UpdateAgentRuntimeRequest =
+  | {kind: "polymux"}
+  | {kind: "acp"; name: string; command: string; args?: string[]; cwd?: string | null};
 /**
  * An event worth interrupting the user for. Each one is a row in Settings and
  * a key in the map above, so adding a kind here is all it takes for the row
@@ -345,6 +360,16 @@ export interface McpRegistryEntryDto {
   repository?: string;
   requiredHeaders: string[];
 }
+export interface AcpRegistryEntryDto {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  icon: string;
+  /** Empty for binary-only entries, whose installed command is machine-specific. */
+  command: string;
+  args: string[];
+}
 /** One page of registry results. `nextCursor` is empty once the registry has
  * nothing further; entries can be empty while it is not, because remote-less
  * servers are dropped after the page arrives. */
@@ -428,6 +453,8 @@ export interface PluginContributionsDto {
   skills: string[];
   /** MCP server ids, connected but deliberately absent from the MCP tab. */
   mcpServers: string[];
+  /** Workspace tab views bundled under `views/<id>/view.json`. */
+  views: string[];
   /** Counted rather than named: Polymux has no surface for these yet. */
   commands: number;
   agents: number;
@@ -484,6 +511,16 @@ export interface PluginMarketplaceDto {
   /** True for the marketplace Polymux ships with, which cannot be removed. */
   builtin: boolean;
   error?: string;
+}
+/** A workspace tab supplied by an enabled plugin. */
+export interface PluginViewDto {
+  /** `<plugin id>/<view id>`, unique across installed plugins. */
+  id: string;
+  pluginId: string;
+  name: string;
+  description: string;
+  /** The local HTML entry point. The renderer exchanges this for a preview URL. */
+  entry: string;
 }
 export interface ModelDto {
   provider: string;
@@ -1268,8 +1305,12 @@ export interface ChatDto {
 /** An image, voice note, video, or file carried by a message. */
 export interface ChatAttachmentDto {
   kind: "image" | "audio" | "video" | "file";
-  /** Resolvable url for the bytes, already authenticated. */
-  url: string;
+  /**
+   * Resolvable url for the bytes, already authenticated. Null means the
+   * source network announced the attachment but could not expose its bytes;
+   * the message's `viewIn` route remains the way to open it.
+   */
+  url: string | null;
   name: string;
   mimeType: string | null;
   size: number | null;
@@ -1290,11 +1331,15 @@ export interface ChatMessageDto {
   senderName?: string;
   senderAvatarUrl?: string | null;
   body: string;
+  /** A conversation event, such as somebody joining, rather than authored text. */
+  notice?: boolean;
   sentAt: string;
   /** True when the signed-in account sent it. */
   mine: boolean;
   /** Media the message carries. Text messages have none. */
   attachments?: ChatAttachmentDto[];
+  /** Structured link/card metadata rendered consistently across bridges. */
+  linkPreview?: {title: string; description: string | null; url: string | null; source: string | null} | null;
   /**
    * Set when the message holds something Polymux cannot bring across — a
    * voice note on a network with no media API, a photo whose key the source
@@ -1721,6 +1766,11 @@ export interface TaskCardPatch {
 }
 
 export interface PolymuxApi {
+  agentRuntime: {
+    get(): Promise<AgentRuntimeDto>;
+    registry(): Promise<AcpRegistryEntryDto[]>;
+    update(request: UpdateAgentRuntimeRequest): Promise<AgentRuntimeDto>;
+  };
   profiles: {
     list(): Promise<ProfilesDto>;
     create(name: string): Promise<ProfilesDto>;
@@ -1949,6 +1999,8 @@ export interface PolymuxApi {
     removeMarketplace(id: string): Promise<PluginMarketplaceDto[]>;
     /** Every added marketplace's catalog, filtered by `query` when given. */
     browse(query?: string): Promise<MarketplacePluginDto[]>;
+    /** Workspace views contributed by enabled plugins. */
+    views(): Promise<PluginViewDto[]>;
     /**
      * Installs a plugin folder chosen on this machine — one holding a
      * `.claude-plugin/plugin.json` — under the local marketplace, which is

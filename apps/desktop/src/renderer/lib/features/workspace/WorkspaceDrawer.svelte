@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type WorkspaceTabKind = 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'hub' | 'subagent' | 'subagents' | 'tasks';
+  export type WorkspaceTabKind = 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'marketplace' | 'view';
   export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; section?: 'outputs' | 'references' | 'tasks'};
 
   /**
@@ -143,6 +143,7 @@
     hub: 'workspace-hub',
     subagents: 'workspace-subagents',
     tasks: 'workspace-tasks',
+    marketplace: 'workspace-marketplace',
   };
 </script>
 
@@ -172,6 +173,8 @@
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
   import ScheduleView, {type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './ScheduleView.svelte';
   import TasksView, {type TaskCard} from './TasksView.svelte';
+  import MarketplaceView from './MarketplaceView.svelte';
+  import type {PluginViewDto} from '@polymux/protocol';
   import {t, translate, type MessageKey} from '../../../i18n';
 
   export let tabs: WorkspaceTab[] = [];
@@ -242,6 +245,7 @@
   export let onSelect: (id: string) => void = () => {};
   export let onClose: (id: string) => void = () => {};
   export let onNew: (kind: WorkspaceTabKind) => void = () => {};
+  export let onOpenPluginView: (view: PluginViewDto) => void = () => {};
   export let onReorderTabs: (ids: string[]) => void = () => {};
   /** Opens a previously visited page in a browser tab. */
   export let onOpenUrl: (url: string, title: string) => void = () => {};
@@ -367,7 +371,7 @@
   $: taskTabStatus = (tab: WorkspaceTab): TaskStatus =>
     summaryData.tasks.find((task) => task.id === tab.id)?.status ?? 'active';
 
-  const tabIcons: Record<WorkspaceTabKind, 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'send' | 'task' | 'tasks'> = {
+  const tabIcons: Record<WorkspaceTabKind, 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'send' | 'task' | 'tasks' | 'storefront' | 'panel'> = {
     media: 'image',
     browser: 'globe',
     summary: 'summary',
@@ -377,6 +381,8 @@
     subagent: 'task',
     subagents: 'send',
     tasks: 'tasks',
+    marketplace: 'storefront',
+    view: 'panel',
   };
 
   /** Hides the embedded page only once the closing slide has finished. While
@@ -599,6 +605,9 @@
             {#if !openKinds.has('tasks')}
               <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('tasks'); }}><Icon name="tasks" size={14}/><span>{$t('workspace.tasks')}</span></button>
             {/if}
+            {#if !openKinds.has('marketplace')}
+              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('marketplace'); }}><Icon name="storefront" size={14}/><span>Marketplace</span></button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -628,6 +637,9 @@
           {#if !openKinds.has('tasks')}
             <button type="button" class="workspace-launcher-row" onclick={() => onNew('tasks')}><Icon name="tasks" size={16}/><span>{$t('workspace.tasks')}</span></button>
           {/if}
+          {#if !openKinds.has('marketplace')}
+            <button type="button" class="workspace-launcher-row" onclick={() => onNew('marketplace')}><Icon name="storefront" size={16}/><span>Marketplace</span></button>
+          {/if}
         </div>
         {#if historySuggestions.length}
           <p class="workspace-launcher-heading">{$t('workspace.recent')}</p>
@@ -650,7 +662,7 @@
     <!-- addOpen: the page is a native view that paints above all DOM, so while
          the new-tab menu hangs over it the page steps aside instead of
          covering the menu. -->
-    {:else if activeTab.kind === 'browser'}{#key activeTab.id}<BrowserView tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || browserHidden || addOpen} onState={(patch) => onTabState(activeTab.id, patch)}/>{/key}
+    {:else if activeTab.kind === 'browser' || activeTab.kind === 'view'}{#key activeTab.id}<BrowserView tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || browserHidden || addOpen} onState={(patch) => onTabState(activeTab.id, patch)}/>{/key}
     {:else if activeTab.kind === 'subagent'}<SubagentView
       title={activeTab.title}
       taskId={activeTab.id}
@@ -661,6 +673,7 @@
     />
     {:else if activeTab.kind === 'subagents'}<SubagentsView subagents={summaryData.tasks} onOpenSubagent={onOpenTask}/>
     {:else if activeTab.kind === 'hub'}<HubView {onOpenFilePath}/>
+    {:else if activeTab.kind === 'marketplace'}<MarketplaceView onOpenView={onOpenPluginView}/>
     {:else if activeTab.kind === 'drive'}<DriveView
       title={activeTab.title}
       root={driveRoot}

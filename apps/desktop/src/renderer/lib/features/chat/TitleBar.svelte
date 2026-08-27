@@ -212,13 +212,26 @@
   <!-- Sits ahead of the panel icons so it reads as a notice about the app
        rather than another panel toggle. It is a link with its own dismiss,
        not a toggle, so the two actions are separate controls. -->
-  {#if showExtensionPrompt}
+  {#if showUpdatePrompt}
+    <span class="extension-chip update-chip" transition:fade={iconFade}>
+      <button
+        type="button"
+        class="extension-chip-install"
+        aria-label="Restart to Update"
+        onclick={onInstallUpdate}
+      >
+        <Icon name="download" size={14}/>
+        Restart to Update
+      </button>
+    </span>
+  {:else if showExtensionPrompt}
     <span class="extension-chip" transition:fade={iconFade}>
       <button
         type="button"
         class="extension-chip-install"
         onclick={onInstallExtension}
       >
+        <Icon name="download" size={14}/>
         {$t('extension.install')}
       </button>
       <!-- No tooltip and no hover state: the divider and the glyph already say
@@ -235,18 +248,6 @@
         onclick={onDismissExtension}
       >
         <Icon name="close" size={14}/>
-      </button>
-    </span>
-  {/if}
-  {#if showUpdatePrompt}
-    <span class="extension-chip update-chip" transition:fade={iconFade}>
-      <button
-        type="button"
-        class="extension-chip-install"
-        aria-label="Install Update"
-        onclick={onInstallUpdate}
-      >
-        Install Update
       </button>
     </span>
   {/if}

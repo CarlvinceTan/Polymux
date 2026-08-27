@@ -6,6 +6,7 @@ import type {
   MarketplacePluginDto,
   PluginDto,
   PluginMarketplaceDto,
+  PluginViewDto,
 } from "@polymux/protocol";
 import {
   BUILTIN_MARKETPLACE_SOURCE,
@@ -18,7 +19,7 @@ import {
   type CatalogEntry,
   type MarketplaceRef,
 } from "./marketplace.js";
-import { readContributions, readManifest, pluginSkillDirectory, pluginMcpServers } from "./manifest.js";
+import { readContributions, readManifest, pluginSkillDirectory, pluginMcpServers, pluginViews } from "./manifest.js";
 import { polymuxHome } from "../system/paths.js";
 
 /** Where a plugin uploaded from this machine is filed. It has no repository,
@@ -126,7 +127,7 @@ export class PluginRegistry {
             ...base,
             description: "",
             version: plugin.version,
-            contributions: { skills: [], mcpServers: [], commands: 0, agents: 0, hooks: 0 },
+            contributions: { skills: [], mcpServers: [], views: [], commands: 0, agents: 0, hooks: 0 },
             conflicts: [],
             error: "This plugin's files are missing; remove it and install it again",
           };
@@ -157,7 +158,7 @@ export class PluginRegistry {
             ...base,
             description: "",
             version: plugin.version,
-            contributions: { skills: [], mcpServers: [], commands: 0, agents: 0, hooks: 0 },
+            contributions: { skills: [], mcpServers: [], views: [], commands: 0, agents: 0, hooks: 0 },
             conflicts: [],
             error: error instanceof Error ? error.message : String(error),
           };
@@ -184,6 +185,14 @@ export class PluginRegistry {
       });
     }
     return runtimes;
+  }
+
+  views(isEnabled: (id: string) => boolean): PluginViewDto[] {
+    return this.#state.plugins.flatMap((plugin) => {
+      if (!isEnabled(plugin.id)) return [];
+      const directory = this.directoryOf(plugin);
+      return existsSync(directory) ? pluginViews(directory, plugin.id) : [];
+    }).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** The marketplaces there is something to browse in. The local one holds

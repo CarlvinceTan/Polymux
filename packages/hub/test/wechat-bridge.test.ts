@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import {createServer, type Server, type ServerResponse} from "node:http";
-import {chmod, mkdtemp, writeFile} from "node:fs/promises";
-import {tmpdir} from "node:os";
+import { createServer, type Server, type ServerResponse } from "node:http";
+import { existsSync, readFileSync } from "node:fs";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {Homeserver} from "../src/server.js";
-import {WeChatBridge} from "../src/wechat-bridge.js";
-import {MatrixHub} from "../src/hub.js";
-import {setupHint} from "../src/wechat-relay.js";
+import { Homeserver } from "../src/server.js";
+import { WeChatBridge, type WeChatWriteRequest } from "../src/wechat-bridge.js";
+import { MatrixHub } from "../src/hub.js";
+import { setupHint } from "../src/wechat-relay.js";
 
 /**
  * The relay, stubbed. Everything the bridge needs from the WeChat side is
@@ -18,47 +19,53 @@ interface Relay {
   server: Server;
   url: string;
   /** Payloads the bridge asked the relay to send outward. */
-  sent: Array<{chatId?: string; message?: string}>;
+  sent: Array<{ chatId?: string; message?: string }>;
   /** What `/chats` answers, and the history each chat hands back on import. */
-  catalogue: {chats: unknown[]; history: Record<string, unknown[]>};
+  catalogue: { chats: unknown[]; history: Record<string, unknown[]> };
   /** How many times the bridge has opened the stream, reconnects included. */
   connections: number;
   /** Pushes one message down the stream, as a new WeChat message would arrive. */
   emit: (message: Record<string, unknown>) => void;
   /** Ends the stream as a network blip would, so the bridge reconnects. */
   dropStream: () => void;
+  /** Reports WeChat disconnected and ends the stream permanently. */
+  disconnect: () => void;
   /** Resolves once the bridge has actually subscribed to the stream. */
   connected: () => Promise<void>;
 }
 
 async function stubRelay(): Promise<Relay> {
   const sent: Relay["sent"] = [];
-  const catalogue: Relay["catalogue"] = {chats: [], history: {}};
+  const catalogue: Relay["catalogue"] = { chats: [], history: {} };
   let connections = 0;
   let stream: ServerResponse | null = null;
+  let health = "connected";
   const server = createServer((request, response) => {
     const reply = (body: unknown): void => {
-      response.writeHead(200, {"Content-Type": "application/json"});
+      response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(body));
     };
     const url = request.url ?? "/";
-    if (url.startsWith("/health")) return reply({status: "connected"});
+    if (url.startsWith("/health")) return reply({ status: health });
     if (url.startsWith("/chats")) return reply(catalogue.chats);
     if (url.startsWith("/sticker.gif")) {
-      response.writeHead(200, {"Content-Type": "application/octet-stream"});
+      response.writeHead(200, { "Content-Type": "application/octet-stream" });
       // A real GIF header: the CDN labels everything octet-stream, so the
       // bytes are what the bridge has to read the type from.
-      return response.end(Buffer.from("GIF89a" + "\u0000".repeat(20), "binary"));
+      return response.end(
+        Buffer.from("GIF89a" + "\u0000".repeat(20), "binary"),
+      );
     }
     if (url.startsWith("/face.jpg")) {
-      response.writeHead(200, {"Content-Type": "image/jpeg"});
+      response.writeHead(200, { "Content-Type": "image/jpeg" });
       return response.end(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
     }
     if (url.startsWith("/unread")) return reply([]);
     const history = /^\/chat\/([^/]+)\/history/.exec(url);
-    if (history) return reply(catalogue.history[decodeURIComponent(history[1])] ?? []);
+    if (history)
+      return reply(catalogue.history[decodeURIComponent(history[1])] ?? []);
     if (url.startsWith("/messages/stream")) {
-      response.writeHead(200, {"Content-Type": "text/event-stream"});
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
       connections += 1;
       stream = response;
       return;
@@ -67,8 +74,12 @@ async function stubRelay(): Promise<Relay> {
       const chunks: Buffer[] = [];
       request.on("data", (chunk) => chunks.push(chunk as Buffer));
       request.on("end", () => {
-        sent.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Relay["sent"][number]);
-        reply({success: true});
+        sent.push(
+          JSON.parse(
+            Buffer.concat(chunks).toString("utf8"),
+          ) as Relay["sent"][number],
+        );
+        reply({ success: true });
       });
       return;
     }
@@ -91,18 +102,30 @@ async function stubRelay(): Promise<Relay> {
       stream?.end();
       stream = null;
     },
+    disconnect: () => {
+      health = "disconnected";
+      stream?.end();
+      stream = null;
+    },
     // Emitting before the bridge has subscribed writes into nothing, so every
     // test waits for the subscription rather than for a guessed delay.
     connected: async () => {
       for (let attempt = 0; attempt < 100 && !stream; attempt += 1)
         await new Promise((resolve) => setTimeout(resolve, 20));
-      if (!stream) throw new Error("the bridge never subscribed to the relay stream");
+      if (!stream)
+        throw new Error("the bridge never subscribed to the relay stream");
     },
   };
 }
 
 async function withBridge(
-  body: (context: {bridge: WeChatBridge; hub: MatrixHub; relay: Relay}) => Promise<void>,
+  body: (context: {
+    bridge: WeChatBridge;
+    hub: MatrixHub;
+    relay: Relay;
+    homeserver: Homeserver;
+    accessToken: string;
+  }) => Promise<void>,
   /** Runs before the bridge starts, for state its initial import should find. */
   prepare?: (relay: Relay) => void,
   /** Bridge options a test needs to differ, e.g. the image-retry cadence. */
@@ -115,7 +138,10 @@ async function withBridge(
   // server. Counting up from a fixed base made two test files run at once
   // fight over the same numbers, which fails as a bridge error rather than as
   // anything to do with the bridge.
-  const homeserver = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
+  const homeserver = new Homeserver({
+    serverName: "polymux.local",
+    dataDirectory: directory,
+  });
   await homeserver.start();
   const owner = homeserver.createLocalUser("polymux-test");
   // No binary directories: these tests must never spawn the real relay or
@@ -125,7 +151,9 @@ async function withBridge(
     directory,
     relayUrl: relay.url,
     binaryDirectories: [],
-    log: (line) => { if (process.env.WECHAT_TEST_LOG) console.log(line); },
+    log: (line) => {
+      if (process.env.WECHAT_TEST_LOG) console.log(line);
+    },
     ...overrides,
   });
   await bridge.start(owner.userId);
@@ -133,11 +161,17 @@ async function withBridge(
     baseUrl: homeserver.baseUrl,
     homeserverUrl: homeserver.baseUrl,
     directory,
-    auth: () => ({matrixToken: owner.accessToken, userId: owner.userId}),
+    auth: () => ({ matrixToken: owner.accessToken, userId: owner.userId }),
   });
   try {
     await relay.connected();
-    await body({bridge, hub, relay});
+    await body({
+      bridge,
+      hub,
+      relay,
+      homeserver,
+      accessToken: owner.accessToken,
+    });
   } finally {
     await bridge.close();
     relay.server.close();
@@ -150,7 +184,11 @@ async function withBridge(
  * number comes from. Answers `history` with whatever the test asked for, in
  * the `{meta, rows}` shape the real tool uses with `--fields`.
  */
-async function stubCli(rows: Record<string, Array<{create_time: number; real_sender_id: string}>>): Promise<string> {
+async function stubCli(
+  rows: Record<string, Array<{ create_time: number; real_sender_id: string }>>,
+  sendLog?: string,
+  audio?: Uint8Array,
+): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-cli-"));
   const file = path.join(directory, "wechat-use");
   const table = JSON.stringify(rows).replace(/'/g, "'\\''");
@@ -158,7 +196,24 @@ async function stubCli(rows: Record<string, Array<{create_time: number; real_sen
     file,
     [
       "#!/usr/bin/env node",
-      `const table = JSON.parse(process.env.WECHAT_STUB_ROWS ?? '{}');`,
+      "const fs = require('node:fs');",
+      `const table = ${JSON.stringify(rows)};`,
+      "if (process.argv[2] === 'send') {",
+      "  const imageIndex = process.argv.indexOf('--image');",
+      "  const image = imageIndex >= 0 ? process.argv[imageIndex + 1] : '';",
+      `  const log = ${JSON.stringify(sendLog ?? "")};`,
+      "  if (log) fs.appendFileSync(log, JSON.stringify({args: process.argv.slice(2), bytes: image ? fs.readFileSync(image).toString('base64') : ''}) + '\\n');",
+      "  process.stdout.write(JSON.stringify({delivered_verified: true}));",
+      "  process.exit(0);",
+      "}",
+      "if (process.argv[2] === 'audio' && process.argv[3] === 'get') {",
+      "  const out = process.argv[process.argv.indexOf('--out') + 1];",
+      `  const bytes = Buffer.from(${JSON.stringify(audio ? Buffer.from(audio).toString("base64") : "")}, 'base64');`,
+      "  if (!bytes.length) { process.stdout.write(JSON.stringify({error: 'voice fixture missing'})); process.exit(0); }",
+      "  fs.writeFileSync(out, bytes);",
+      "  process.stdout.write(JSON.stringify({ok: true}));",
+      "  process.exit(0);",
+      "}",
       "const chat = process.argv[3];",
       "process.stdout.write(JSON.stringify({meta: {}, rows: table[chat] ?? []}));",
       "",
@@ -166,7 +221,6 @@ async function stubCli(rows: Record<string, Array<{create_time: number; real_sen
     "utf8",
   );
   await chmod(file, 0o755);
-  process.env.WECHAT_STUB_ROWS = JSON.stringify(rows);
   void table;
   return file;
 }
@@ -203,12 +257,18 @@ async function eventually<T>(
     if (ready(last)) return last;
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
-  throw new Error(`Timed out waiting for ${what}; last read was ${JSON.stringify(last)}`);
+  throw new Error(
+    `Timed out waiting for ${what}; last read was ${JSON.stringify(last)}`,
+  );
 }
 
 /** Polls a plain condition, for state that is not read out of the hub. */
 function until(check: () => boolean, what: string): Promise<unknown> {
-  return eventually(async () => check(), (ready) => ready, what);
+  return eventually(
+    async () => check(),
+    (ready) => ready,
+    what,
+  );
 }
 
 /** The hub's room list, once it satisfies what the test needs. */
@@ -230,13 +290,17 @@ type Thread = {
  * Both are read together because most of these tests assert across the pair —
  * a message in the thread and the preview the list draws from it.
  */
-async function threadWhen(hub: MatrixHub, ready: (thread: Thread) => boolean, what: string): Promise<Thread> {
+async function threadWhen(
+  hub: MatrixHub,
+  ready: (thread: Thread) => boolean,
+  what: string,
+): Promise<Thread> {
   const state = await eventually(
     async (): Promise<Thread | null> => {
       const rooms = await hub.rooms();
       if (rooms.length === 0) return null;
-      const {messages} = await hub.messages(rooms[0].roomId, 20);
-      return {room: rooms[0], messages};
+      const { messages } = await hub.messages(rooms[0].roomId, 20);
+      return { room: rooms[0], messages };
     },
     (thread) => thread !== null && ready(thread),
     what,
@@ -246,7 +310,7 @@ async function threadWhen(hub: MatrixHub, ready: (thread: Thread) => boolean, wh
 }
 
 test("an inbound message opens a portal room the hub files under WeChat", async () => {
-  await withBridge(async ({hub, relay}) => {
+  await withBridge(async ({ hub, relay }) => {
     relay.emit({
       messageId: "m1",
       chatId: "wxid_friend",
@@ -258,7 +322,10 @@ test("an inbound message opens a portal room the hub files under WeChat", async 
     });
     const rooms = await roomsWhen(
       hub,
-      (list) => list.length === 1 && list[0].preview !== null && (list[0].unread ?? 0) > 0,
+      (list) =>
+        list.length === 1 &&
+        list[0].preview !== null &&
+        (list[0].unread ?? 0) > 0,
       "the portal to carry the message and its unread count",
     );
     assert.equal(rooms.length, 1);
@@ -272,7 +339,7 @@ test("an inbound message opens a portal room the hub files under WeChat", async 
 });
 
 test("a group message is attributed to whoever sent it, in either case", async () => {
-  await withBridge(async ({hub, relay}) => {
+  await withBridge(async ({ hub, relay }) => {
     // The relay is not consistent about case, and a dropped sender name is
     // silent: every member of a group would come through as one nameless
     // contact, which is exactly what a group thread cannot afford.
@@ -293,9 +360,9 @@ test("a group message is attributed to whoever sent it, in either case", async (
       body: "see you there",
       timestamp: 2,
     });
-    const {messages} = await threadWhen(
+    const { messages } = await threadWhen(
       hub,
-      ({messages}) => messages.length >= 2,
+      ({ messages }) => messages.length >= 2,
       "both group messages to arrive",
     );
     const named = new Map(messages.map((item) => [item.body, item.senderName]));
@@ -306,9 +373,13 @@ test("a group message is attributed to whoever sent it, in either case", async (
 
 test("a conversation with nothing unread is imported too", async () => {
   await withBridge(
-    async ({hub}) => {
+    async ({ hub }) => {
       const names = (
-        await roomsWhen(hub, (rooms) => rooms.length === 2, "both conversations to be imported")
+        await roomsWhen(
+          hub,
+          (rooms) => rooms.length === 2,
+          "both conversations to be imported",
+        )
       )
         .map((room) => room.name)
         .sort();
@@ -318,15 +389,39 @@ test("a conversation with nothing unread is imported too", async () => {
     },
     (relay) => {
       relay.catalogue.chats = [
-        {username: "wxid_read", display_name: "Already Read", unread_count: 0},
-        {username: "wxid_unread", display_name: "Has Unread", unread_count: 2},
+        {
+          username: "wxid_read",
+          display_name: "Already Read",
+          unread_count: 0,
+        },
+        {
+          username: "wxid_unread",
+          display_name: "Has Unread",
+          unread_count: 2,
+        },
       ];
       relay.catalogue.history = {
         wxid_read: [
-          {message_id: "r1", chat_id: "wxid_read", chat_name: "Already Read", sender_id: "wxid_read", sender_name: "Already Read", body: "seen this", timestamp: 1},
+          {
+            message_id: "r1",
+            chat_id: "wxid_read",
+            chat_name: "Already Read",
+            sender_id: "wxid_read",
+            sender_name: "Already Read",
+            body: "seen this",
+            timestamp: 1,
+          },
         ],
         wxid_unread: [
-          {message_id: "u1", chat_id: "wxid_unread", chat_name: "Has Unread", sender_id: "wxid_unread", sender_name: "Has Unread", body: "new one", timestamp: 2},
+          {
+            message_id: "u1",
+            chat_id: "wxid_unread",
+            chat_name: "Has Unread",
+            sender_id: "wxid_unread",
+            sender_name: "Has Unread",
+            body: "new one",
+            timestamp: 2,
+          },
         ],
       };
     },
@@ -335,10 +430,12 @@ test("a conversation with nothing unread is imported too", async () => {
 
 test("WeChat's own unread counts decide what the hub calls unread", async () => {
   await withBridge(
-    async ({hub}) => {
+    async ({ hub }) => {
       const rooms = await eventually(
         () => hub.rooms(),
-        (rooms) => rooms.length === 2 && rooms.every((room) => room.name !== room.roomId),
+        (rooms) =>
+          rooms.length === 2 &&
+          rooms.every((room) => room.name !== room.roomId),
         "both conversations to be imported",
       );
       const unread = new Map(rooms.map((room) => [room.name, room.unread]));
@@ -346,7 +443,8 @@ test("WeChat's own unread counts decide what the hub calls unread", async () => 
       // count it arrives with is the one WeChat states, not one per message.
       await eventually(
         () => hub.rooms(),
-        (rooms) => rooms.find((room) => room.name === "Already Read")?.unread === 0,
+        (rooms) =>
+          rooms.find((room) => room.name === "Already Read")?.unread === 0,
         "the read conversation to stop counting as unread",
       );
       // And a chat that really does have one waiting keeps it.
@@ -354,17 +452,57 @@ test("WeChat's own unread counts decide what the hub calls unread", async () => 
     },
     (relay) => {
       relay.catalogue.chats = [
-        {username: "wxid_read", display_name: "Already Read", unread_count: 0},
-        {username: "wxid_unread", display_name: "Has Unread", unread_count: 1},
+        {
+          username: "wxid_read",
+          display_name: "Already Read",
+          unread_count: 0,
+        },
+        {
+          username: "wxid_unread",
+          display_name: "Has Unread",
+          unread_count: 1,
+        },
       ];
       relay.catalogue.history = {
         wxid_read: [
-          {message_id: "r1", chat_id: "wxid_read", chat_name: "Already Read", sender_id: "wxid_read", sender_name: "Already Read", body: "seen this", timestamp: 1},
-          {message_id: "r2", chat_id: "wxid_read", chat_name: "Already Read", sender_id: "wxid_read", sender_name: "Already Read", body: "and this", timestamp: 2},
+          {
+            message_id: "r1",
+            chat_id: "wxid_read",
+            chat_name: "Already Read",
+            sender_id: "wxid_read",
+            sender_name: "Already Read",
+            body: "seen this",
+            timestamp: 1,
+          },
+          {
+            message_id: "r2",
+            chat_id: "wxid_read",
+            chat_name: "Already Read",
+            sender_id: "wxid_read",
+            sender_name: "Already Read",
+            body: "and this",
+            timestamp: 2,
+          },
         ],
         wxid_unread: [
-          {message_id: "u1", chat_id: "wxid_unread", chat_name: "Has Unread", sender_id: "wxid_unread", sender_name: "Has Unread", body: "read one", timestamp: 1},
-          {message_id: "u2", chat_id: "wxid_unread", chat_name: "Has Unread", sender_id: "wxid_unread", sender_name: "Has Unread", body: "new one", timestamp: 2},
+          {
+            message_id: "u1",
+            chat_id: "wxid_unread",
+            chat_name: "Has Unread",
+            sender_id: "wxid_unread",
+            sender_name: "Has Unread",
+            body: "read one",
+            timestamp: 1,
+          },
+          {
+            message_id: "u2",
+            chat_id: "wxid_unread",
+            chat_name: "Has Unread",
+            sender_id: "wxid_unread",
+            sender_name: "Has Unread",
+            body: "new one",
+            timestamp: 2,
+          },
         ],
       };
     },
@@ -372,7 +510,7 @@ test("WeChat's own unread counts decide what the hub calls unread", async () => 
 });
 
 test("an imported message keeps the time WeChat sent it", async () => {
-  await withBridge(async ({hub, relay}) => {
+  await withBridge(async ({ hub, relay }) => {
     const sentAt = Math.floor(Date.parse("2026-08-10T02:30:00.000Z") / 1000);
     relay.emit({
       messageId: "m1",
@@ -381,9 +519,10 @@ test("an imported message keeps the time WeChat sent it", async () => {
       body: "last week",
       timestamp: sentAt,
     });
-    const {room, messages} = await threadWhen(
+    const { room, messages } = await threadWhen(
       hub,
-      ({room, messages}) => messages.length >= 1 && room.lastActivity !== null,
+      ({ room, messages }) =>
+        messages.length >= 1 && room.lastActivity !== null,
       "the imported message and the activity time taken from it",
     );
     // Stamped on import, a week of history all lands at the current moment:
@@ -394,7 +533,7 @@ test("an imported message keeps the time WeChat sent it", async () => {
 });
 
 test("a contact's picture becomes the chat's avatar when the relay sends one", async () => {
-  await withBridge(async ({hub, relay}) => {
+  await withBridge(async ({ hub, relay }) => {
     relay.emit({
       messageId: "m1",
       chatId: "wxid_friend",
@@ -407,9 +546,9 @@ test("a contact's picture becomes the chat's avatar when the relay sends one", a
       body: "ping",
       timestamp: 1,
     });
-    const {room, messages} = await threadWhen(
+    const { room, messages } = await threadWhen(
       hub,
-      ({room, messages}) => room.avatarUrl !== null && messages.length >= 1,
+      ({ room, messages }) => room.avatarUrl !== null && messages.length >= 1,
       "the portal to take the contact's picture",
     );
     assert.ok(room.avatarUrl, "the portal took the contact's picture");
@@ -418,7 +557,7 @@ test("a contact's picture becomes the chat's avatar when the relay sends one", a
 });
 
 test("a sticker arrives as the picture rather than as its markup", async () => {
-  await withBridge(async ({hub, relay}) => {
+  await withBridge(async ({ hub, relay }) => {
     relay.emit({
       messageId: "m1",
       chatId: "wxid_friend",
@@ -431,21 +570,25 @@ test("a sticker arrives as the picture rather than as its markup", async () => {
       body: `<msg><emoji fromusername="wxid_friend" type="2" md5="abc" cdnurl="${relay.url}/sticker.gif?m=abc&amp;bizid=1023" width="240" height="180"></emoji></msg>`,
       timestamp: 1,
     });
-    const {room, messages} = await threadWhen(
+    const { room, messages } = await threadWhen(
       hub,
-      ({messages}) => (messages[0]?.attachments.length ?? 0) > 0,
+      ({ messages }) => (messages[0]?.attachments.length ?? 0) > 0,
       "the sticker's picture to be carried across",
     );
     const [attachment] = messages[0].attachments;
     assert.equal(attachment?.kind, "image");
     assert.equal(attachment?.mimeType, "image/gif");
     assert.equal(attachment?.width, 240);
-    assert.equal(room.preview, "Sticker", "the list names it, rather than showing markup");
+    assert.equal(
+      room.preview,
+      "Sticker",
+      "the list names it, rather than showing markup",
+    );
   });
 });
 
 test("a sticker whose picture cannot be fetched still arrives as a message", async () => {
-  await withBridge(async ({hub, relay}) => {
+  await withBridge(async ({ hub, relay }) => {
     relay.emit({
       messageId: "m1",
       chatId: "wxid_friend",
@@ -457,79 +600,817 @@ test("a sticker whose picture cannot be fetched still arrives as a message", asy
       body: `<msg><emoji md5="abc" cdnurl="${relay.url}/nothing-here.gif"></emoji></msg>`,
       timestamp: 1,
     });
-    const {messages} = await threadWhen(
+    const { messages } = await threadWhen(
       hub,
-      ({messages}) => messages.length >= 1,
+      ({ messages }) => messages.length >= 1,
       "the sticker to arrive even though its picture could not be fetched",
     );
     assert.equal(messages.length, 1);
     assert.equal(messages[0].attachments.length, 0);
     assert.equal(messages[0].body, "[Sticker]");
-    assert.equal(messages[0].viewIn?.app, "WeChat", "and it says where it can be seen");
+    assert.equal(
+      messages[0].viewIn?.app,
+      "WeChat",
+      "and it says where it can be seen",
+    );
   });
+});
+
+test("a WeChat voice message carries its exact SILK bytes into Matrix", async () => {
+  const bytes = Buffer.from("#!SILK_V3\u0002polymux-voice-fixture", "binary");
+  const cli = await stubCli({}, undefined, bytes);
+  await withBridge(
+    async ({ hub, relay, homeserver, accessToken }) => {
+      relay.emit({
+        messageId: "voice-123",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "[Voice]",
+        messageKind: "voice",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const { messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.length === 1,
+        "the voice message to arrive",
+      );
+      assert.equal(messages[0].attachments[0]?.kind, "audio");
+      assert.equal(messages[0].attachments[0]?.mimeType, "audio/silk");
+      const match = /^polymux-media:\/\/([^/]+)\/(.+)$/.exec(
+        messages[0].attachments[0].url,
+      );
+      assert.ok(match);
+      const response = await fetch(
+        new URL(
+          `/_matrix/media/v3/download/${match[1]}/${match[2]}`,
+          homeserver.baseUrl,
+        ),
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      );
+      assert.equal(response.ok, true);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+    },
+    undefined,
+    { cliPaths: [cli] },
+  );
+});
+
+test("WeChat files and videos with resolved local media become real Matrix attachments", async () => {
+  const mediaRoot = await mkdtemp(
+    path.join(tmpdir(), "polymux-wechat-relay-media-"),
+  );
+  const fileBytes = new TextEncoder().encode("inbound File Transfer fixture\n");
+  const videoBytes = new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70]);
+  const filePath = path.join(mediaRoot, "inbound.txt");
+  const videoPath = path.join(mediaRoot, "inbound.mp4");
+  await writeFile(filePath, fileBytes);
+  await writeFile(videoPath, videoBytes);
+
+  await withBridge(
+    async ({ hub, relay, homeserver, accessToken }) => {
+      relay.emit({
+        messageId: "file-in",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "[File] inbound.txt",
+        messageKind: "file",
+        localPath: filePath,
+        media: { filename: "inbound.txt", mimeType: "text/plain" },
+        fromSelf: true,
+        timestamp: 1,
+      });
+      relay.emit({
+        messageId: "video-in",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "[Video]",
+        messageKind: "video",
+        local_path: videoPath,
+        media: { filename: "inbound.mp4", mime: "video/mp4" },
+        fromSelf: true,
+        timestamp: 2,
+      });
+      const { messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.length === 2,
+        "both resolved attachments to arrive",
+      );
+      const attachments = Object.fromEntries(
+        messages.map((item) => [
+          item.attachments[0]?.name,
+          item.attachments[0],
+        ]),
+      );
+      assert.equal(attachments["inbound.txt"]?.kind, "file");
+      assert.equal(attachments["inbound.txt"]?.mimeType, "text/plain");
+      assert.equal(attachments["inbound.mp4"]?.kind, "video");
+      assert.equal(attachments["inbound.mp4"]?.mimeType, "video/mp4");
+
+      const first = /^polymux-media:\/\/([^/]+)\/(.+)$/.exec(
+        attachments["inbound.txt"].url,
+      );
+      assert.ok(first);
+      const response = await fetch(
+        new URL(
+          `/_matrix/media/v3/download/${first[1]}/${first[2]}`,
+          homeserver.baseUrl,
+        ),
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      assert.equal(response.ok, true);
+      assert.deepEqual(new Uint8Array(await response.arrayBuffer()), fileBytes);
+    },
+    undefined,
+    { mediaRoots: [mediaRoot] },
+  );
 });
 
 test("a message the account sent in WeChat itself is shown as its own", async () => {
   const cli = await stubCli({
     // Every message in the file-transfer chat is one the account sent itself,
     // which is what says the account's own number is 2.
-    filehelper: [{create_time: 1, real_sender_id: "2"}],
+    filehelper: [{ create_time: 1, real_sender_id: "2" }],
     wxid_friend: [
-      {create_time: 100, real_sender_id: "2"},
-      {create_time: 101, real_sender_id: "50"},
+      { create_time: 100, real_sender_id: "2" },
+      { create_time: 101, real_sender_id: "50" },
     ],
   });
-  process.env.POLYMUX_WECHAT_CLI = cli;
-  try {
-    await withBridge(async ({hub, relay}) => {
+  await withBridge(
+    async ({ hub, relay }) => {
       // The relay reports both of these the same way — as the contact, with
       // `fromSelf` false — so without WeChat's own numbering the user's half
       // of the conversation appears as the other person's.
-      relay.emit({messageId: "m1", chatId: "wxid_friend", chatName: "A Friend", senderId: "wxid_friend", senderName: "A Friend", body: "mine", timestamp: 100});
-      relay.emit({messageId: "m2", chatId: "wxid_friend", senderId: "wxid_friend", senderName: "A Friend", body: "theirs", timestamp: 101});
-      const {messages} = await threadWhen(
+      relay.emit({
+        messageId: "m1",
+        chatId: "wxid_friend",
+        chatName: "A Friend",
+        senderId: "wxid_friend",
+        senderName: "A Friend",
+        body: "mine",
+        timestamp: 100,
+      });
+      relay.emit({
+        messageId: "m2",
+        chatId: "wxid_friend",
+        senderId: "wxid_friend",
+        senderName: "A Friend",
+        body: "theirs",
+        timestamp: 101,
+      });
+      const { messages } = await threadWhen(
         hub,
-        ({messages}) => messages.length >= 2,
+        ({ messages }) => messages.length >= 2,
         "both sides of the conversation to arrive",
       );
       const senders = new Map(messages.map((item) => [item.body, item.sender]));
-      assert.match(senders.get("mine") ?? "", /^@polymux-/, "the account's own message is its own");
-      assert.match(senders.get("theirs") ?? "", /^@wechat_/, "and the contact's is still theirs");
-    });
-  } finally {
-    delete process.env.POLYMUX_WECHAT_CLI;
-    delete process.env.WECHAT_STUB_ROWS;
-  }
+      assert.match(
+        senders.get("mine") ?? "",
+        /^@polymux-/,
+        "the account's own message is its own",
+      );
+      assert.match(
+        senders.get("theirs") ?? "",
+        /^@wechat_/,
+        "and the contact's is still theirs",
+      );
+    },
+    undefined,
+    { cliPaths: [cli] },
+  );
 });
 
-test("a reply is delivered to the relay for the right conversation", async () => {
-  await withBridge(async ({hub, relay}) => {
-    relay.emit({messageId: "m1", chatId: "wxid_friend", body: "ping", timestamp: 1});
-    const [room] = await roomsWhen(hub, (rooms) => rooms.length === 1, "the portal to open");
-    await hub.send(room.roomId, "pong");
-    await until(() => relay.sent.length > 0, "the reply to reach the relay");
-    assert.deepEqual(relay.sent, [{chatId: "wxid_friend", message: "pong"}]);
+test("a WeChat system item is a conversation notice, not the account's message", async () => {
+  await withBridge(async ({ hub, relay }) => {
+    relay.emit({
+      messageId: "system-1",
+      chatId: "group-1",
+      chatName: "A Group",
+      body: "Peter6C invited Percival to the group chat",
+      messageKind: "system",
+      fromSelf: true,
+      timestamp: 1,
+    });
+    const { messages } = await threadWhen(
+      hub,
+      ({ messages }) => messages.length === 1,
+      "the group event to arrive",
+    );
+    assert.equal(messages[0].notice, true);
+    assert.doesNotMatch(messages[0].sender, /^@polymux-/);
   });
 });
 
+test("a WeChat built-in emoji is displayed as the glyph its client paints", async () => {
+  await withBridge(async ({ hub, relay }) => {
+    relay.emit({
+      messageId: "emoji-1",
+      chatId: "wxid_friend",
+      body: "Hello [Salute] [Facepalm] [Coffee]",
+      messageKind: "text",
+      timestamp: 1,
+    });
+    const { messages } = await threadWhen(
+      hub,
+      ({ messages }) => messages.length === 1,
+      "the emoji to arrive",
+    );
+    assert.equal(messages[0].body, "Hello 🫡 🤦 ☕");
+  });
+});
+
+test("a reply reaches WeChat with the quoted context its API cannot encode", async () => {
+  await withBridge(async ({ hub, relay }) => {
+    relay.emit({
+      messageId: "m1",
+      chatId: "wxid_friend",
+      senderName: "Alex",
+      body: "ping",
+      timestamp: 1,
+    });
+    const [room] = await roomsWhen(
+      hub,
+      (rooms) => rooms.length === 1,
+      "the portal to open",
+    );
+    const { messages } = await threadWhen(
+      hub,
+      ({ messages }) => messages.length === 1,
+      "the quoted message to arrive",
+    );
+    await hub.send(room.roomId, "pong", messages[0].eventId);
+    await until(() => relay.sent.length > 0, "the reply to reach the relay");
+    assert.deepEqual(relay.sent, [
+      { chatId: "wxid_friend", message: "↳ Alex: ping\npong" },
+    ]);
+  });
+});
+
+test("an outbound Matrix location reaches File Transfer with its coordinates", async () => {
+  await withBridge(async ({ hub, relay, homeserver, accessToken }) => {
+    relay.emit({
+      messageId: "open",
+      chatId: "filehelper",
+      chatName: "File Transfer",
+      body: "ready",
+      fromSelf: true,
+      timestamp: 1,
+    });
+    const [room] = await roomsWhen(
+      hub,
+      (rooms) => rooms.length === 1,
+      "File Transfer to open",
+    );
+    const response = await fetch(
+      new URL(
+        `/_matrix/client/v3/rooms/${encodeURIComponent(room.roomId)}/send/m.room.message/location-parity`,
+        homeserver.baseUrl,
+      ),
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          msgtype: "m.location",
+          body: "NUS School of Computing",
+          geo_uri: "geo:1.2966,103.7764",
+        }),
+      },
+    );
+    assert.equal(response.ok, true);
+    await until(() => relay.sent.length === 1, "the location to reach WeChat");
+    assert.deepEqual(relay.sent, [
+      {
+        chatId: "filehelper",
+        message: "NUS School of Computing\ngeo:1.2966,103.7764",
+      },
+    ]);
+  });
+});
+
+test("a shared Hub image is sent to WeChat and its returned echo is not duplicated", async () => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "polymux-wechat-image-send-"),
+  );
+  const log = path.join(directory, "send.jsonl");
+  const cli = await stubCli({}, log);
+  await withBridge(
+    async ({ hub, relay }) => {
+      relay.emit({
+        messageId: "open",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(
+        hub,
+        (rooms) => rooms.length === 1,
+        "File Transfer to open",
+      );
+      const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+      const url = await hub.upload("parity.png", "image/png", bytes);
+      await hub.sendMedia(room.roomId, {
+        url,
+        name: "parity.png",
+        msgtype: "m.image",
+        mimetype: "image/png",
+        size: bytes.length,
+      });
+      await until(() => existsSync(log), "the image to reach WeChat");
+      const sent = JSON.parse((await readFile(log, "utf8")).trim()) as {
+        args: string[];
+        bytes: string;
+      };
+      assert.deepEqual(sent.args.slice(-3), ["--wxid", "filehelper", "--json"]);
+      assert.deepEqual(Buffer.from(sent.bytes, "base64"), Buffer.from(bytes));
+
+      relay.emit({
+        messageId: "image-echo",
+        chatId: "filehelper",
+        messageKind: "image",
+        body: "[Photo]",
+        fromSelf: true,
+        timestamp: 2,
+      });
+      relay.emit({
+        messageId: "after",
+        chatId: "filehelper",
+        body: "after image",
+        fromSelf: true,
+        timestamp: 3,
+      });
+      const { messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.some((item) => item.body === "after image"),
+        "the event after the image echo",
+      );
+      assert.equal(
+        messages.filter((item) =>
+          item.attachments.some((attachment) => attachment.kind === "image"),
+        ).length,
+        1,
+      );
+    },
+    undefined,
+    { cliPaths: [cli] },
+  );
+});
+
+test("a native Matrix sticker event reaches WeChat and its echo is suppressed", async () => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "polymux-wechat-sticker-send-"),
+  );
+  const log = path.join(directory, "send.jsonl");
+  const cli = await stubCli({}, log);
+  await withBridge(
+    async ({ hub, relay, homeserver, accessToken }) => {
+      relay.emit({
+        messageId: "open",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(
+        hub,
+        (rooms) => rooms.length === 1,
+        "File Transfer to open",
+      );
+      const bytes = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
+      const url = await hub.upload("parity.gif", "image/gif", bytes);
+      const sent = await fetch(
+        new URL(
+          `/_matrix/client/v3/rooms/${encodeURIComponent(room.roomId)}/send/m.sticker/sticker-parity`,
+          homeserver.baseUrl,
+        ),
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            body: "Sticker",
+            url,
+            info: { mimetype: "image/gif", size: bytes.length },
+          }),
+        },
+      );
+      assert.equal(sent.ok, true);
+      await until(
+        () => existsSync(log),
+        "the sticker to reach WeChat's sender",
+      );
+      const dispatched = JSON.parse((await readFile(log, "utf8")).trim()) as {
+        bytes: string;
+      };
+      assert.deepEqual(
+        Buffer.from(dispatched.bytes, "base64"),
+        Buffer.from(bytes),
+      );
+
+      relay.emit({
+        messageId: "sticker-echo",
+        chatId: "filehelper",
+        messageKind: "emoticon",
+        body: "[Sticker]",
+        fromSelf: true,
+        timestamp: 2,
+      });
+      relay.emit({
+        messageId: "after-sticker",
+        chatId: "filehelper",
+        body: "after sticker",
+        fromSelf: true,
+        timestamp: 3,
+      });
+      const { messages } = await threadWhen(
+        hub,
+        ({ messages }) =>
+          messages.some((item) => item.body === "after sticker"),
+        "the event after the sticker echo",
+      );
+      assert.equal(
+        messages.filter((item) =>
+          item.attachments.some((attachment) => attachment.sticker),
+        ).length,
+        1,
+      );
+    },
+    undefined,
+    { cliPaths: [cli] },
+  );
+});
+
+test("shared Hub files and videos use WeChat's generic file-url paste path", async () => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "polymux-wechat-file-send-"),
+  );
+  const log = path.join(directory, "send.jsonl");
+  const cli = await stubCli({}, log);
+  await withBridge(
+    async ({ hub, relay }) => {
+      relay.emit({
+        messageId: "open",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(
+        hub,
+        (rooms) => rooms.length === 1,
+        "File Transfer to open",
+      );
+      const fixtures = [
+        {
+          name: "parity.txt",
+          mimetype: "text/plain",
+          msgtype: "m.file",
+          bytes: new TextEncoder().encode(
+            "Polymux File Transfer parity fixture\n",
+          ),
+        },
+        {
+          name: "parity.mp4",
+          mimetype: "video/mp4",
+          msgtype: "m.video",
+          bytes: new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70]),
+        },
+      ] as const;
+      for (const fixture of fixtures) {
+        const url = await hub.upload(
+          fixture.name,
+          fixture.mimetype,
+          fixture.bytes,
+        );
+        await hub.sendMedia(room.roomId, {
+          ...fixture,
+          url,
+          size: fixture.bytes.length,
+        });
+      }
+
+      await until(
+        () =>
+          existsSync(log) &&
+          readFileSync(log, "utf8").trim().split("\n").length ===
+            fixtures.length,
+        "the attachments to reach WeChat's sender",
+      );
+      const sent = (await readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { args: string[]; bytes: string });
+      assert.deepEqual(
+        sent.map((item) => item.args.slice(0, 2)),
+        [
+          ["send", "--image"],
+          ["send", "--image"],
+        ],
+      );
+      assert.deepEqual(
+        sent.map((item) => item.args.slice(-3)),
+        [
+          ["--wxid", "filehelper", "--json"],
+          ["--wxid", "filehelper", "--json"],
+        ],
+      );
+      assert.deepEqual(
+        sent.map((item) => Buffer.from(item.bytes, "base64")),
+        fixtures.map((item) => Buffer.from(item.bytes)),
+      );
+    },
+    undefined,
+    { cliPaths: [cli] },
+  );
+});
+
+test("the native writer receives the operations WeChat permits in File Transfer", async () => {
+  const writes: WeChatWriteRequest[] = [];
+  await withBridge(
+    async ({ hub, relay }) => {
+      relay.emit({
+        messageId: "native-target",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "reply to me",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(
+        hub,
+        (rooms) => rooms.length === 1,
+        "File Transfer to open",
+      );
+      const { messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.length === 1,
+        "the target to arrive",
+      );
+
+      await hub.send(room.roomId, "native reply", messages[0].eventId);
+      for (const file of [
+        { name: "notes.pdf", msgtype: "m.file", mimetype: "application/pdf" },
+        { name: "clip.mp4", msgtype: "m.video", mimetype: "video/mp4" },
+        { name: "voice.silk", msgtype: "m.audio", mimetype: "audio/silk" },
+      ]) {
+        const bytes = new Uint8Array([1, 2, 3, writes.length]);
+        const url = await hub.upload(file.name, file.mimetype, bytes);
+        await hub.sendMedia(room.roomId, { ...file, url, size: bytes.length });
+      }
+      await hub.markRead(room.roomId, messages[0].eventId);
+
+      await until(
+        () => writes.length === 5,
+        "all native writes to be dispatched",
+      );
+      assert.deepEqual(
+        writes.map((item) => item.kind),
+        ["text", "media", "media", "media", "read"],
+      );
+      assert.deepEqual(writes[0], {
+        kind: "text",
+        chatId: "filehelper",
+        body: "native reply",
+        replyTo: "native-target",
+      });
+      assert.deepEqual(
+        writes
+          .filter((item) => item.kind === "media")
+          .map((item) => item.mediaType),
+        ["file", "video", "audio"],
+      );
+    },
+    undefined,
+    {
+      writer: {
+        write: async (request) => {
+          writes.push({ ...request });
+          return {
+            deliveredVerified: true,
+            messageId: request.kind === "text" ? "sent-native" : undefined,
+          };
+        },
+      },
+    },
+  );
+});
+
+test("a Matrix mention becomes a native WeChat group mention", async () => {
+  const writes: WeChatWriteRequest[] = [];
+  await withBridge(
+    async ({ hub, relay, homeserver, accessToken }) => {
+      relay.emit({
+        messageId: "mention-target",
+        chatId: "study@chatroom",
+        chatName: "Study Group",
+        senderId: "wxid_alex",
+        senderName: "Alex",
+        isGroup: true,
+        body: "hello",
+        timestamp: 1,
+      });
+      const { room, messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.length === 1,
+        "the mentioned contact to arrive",
+      );
+      const response = await fetch(
+        new URL(
+          `/_matrix/client/v3/rooms/${encodeURIComponent(room.roomId)}/send/m.room.message/native-mention`,
+          homeserver.baseUrl,
+        ),
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            msgtype: "m.text",
+            body: "@Alex are you coming?",
+            "m.mentions": { user_ids: [messages[0].sender] },
+          }),
+        },
+      );
+      assert.equal(response.ok, true);
+      await until(
+        () => writes.length === 1,
+        "the native mention to be dispatched",
+      );
+      assert.deepEqual(writes[0], {
+        kind: "text",
+        chatId: "study@chatroom",
+        body: "@Alex are you coming?",
+        mentions: ["wxid_alex"],
+      });
+    },
+    undefined,
+    {
+      writer: {
+        write: async (request) => {
+          writes.push({ ...request });
+          return { deliveredVerified: true };
+        },
+      },
+    },
+  );
+});
+
+test("native mentions use wechat-use when no custom writer is installed", async () => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "polymux-wechat-mention-"),
+  );
+  const log = path.join(directory, "send.jsonl");
+  const cli = await stubCli({}, log);
+  await withBridge(
+    async ({ hub, relay, homeserver, accessToken }) => {
+      relay.emit({
+        messageId: "mention-cli-target",
+        chatId: "study@chatroom",
+        chatName: "Study Group",
+        senderId: "wxid_alex",
+        senderName: "Alex",
+        isGroup: true,
+        body: "hello",
+        timestamp: 1,
+      });
+      const { room, messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.length === 1,
+        "the mentioned contact to arrive",
+      );
+      const response = await fetch(
+        new URL(
+          `/_matrix/client/v3/rooms/${encodeURIComponent(room.roomId)}/send/m.room.message/cli-mention`,
+          homeserver.baseUrl,
+        ),
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            msgtype: "m.text",
+            body: "@Alex are you coming?",
+            "m.mentions": { user_ids: [messages[0].sender] },
+          }),
+        },
+      );
+      assert.equal(response.ok, true);
+      await until(() => existsSync(log), "wechat-use to receive the mention");
+      const sent = JSON.parse((await readFile(log, "utf8")).trim()) as {
+        args: string[];
+      };
+      assert.deepEqual(sent.args, [
+        "send",
+        "@Alex are you coming?",
+        "--wxid",
+        "study@chatroom",
+        "--json",
+        "--mention",
+        "wxid_alex",
+      ]);
+    },
+    undefined,
+    { cliPaths: [cli] },
+  );
+});
+
+test("a Polymux message keeps the WeChat id needed for a later recall", async () => {
+  const writes: WeChatWriteRequest[] = [];
+  await withBridge(
+    async ({ hub, relay }) => {
+      relay.emit({
+        messageId: "filehelper-open",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(
+        hub,
+        (rooms) => rooms.length === 1,
+        "File Transfer to open",
+      );
+      const eventId = await hub.send(room.roomId, "recall this later");
+      await until(() => writes.length === 1, "the message to reach the writer");
+      await hub.redact(room.roomId, eventId);
+
+      await until(
+        () => writes.length === 2,
+        "the recall request to be dispatched",
+      );
+      assert.deepEqual(writes[1], {
+        kind: "recall",
+        chatId: "filehelper",
+        messageId: "wechat-sent-42",
+      });
+    },
+    undefined,
+    {
+      writer: {
+        write: async (request) => {
+          writes.push({ ...request });
+          return {
+            deliveredVerified: true,
+            messageId: request.kind === "text" ? "wechat-sent-42" : undefined,
+          };
+        },
+      },
+    },
+  );
+});
+
 test("our own message coming back from WeChat is not posted twice", async () => {
-  await withBridge(async ({hub, relay}) => {
-    relay.emit({messageId: "m1", chatId: "wxid_friend", body: "ping", timestamp: 1});
-    const [room] = await roomsWhen(hub, (rooms) => rooms.length === 1, "the portal to open");
+  await withBridge(async ({ hub, relay }) => {
+    relay.emit({
+      messageId: "m1",
+      chatId: "wxid_friend",
+      body: "ping",
+      timestamp: 1,
+    });
+    const [room] = await roomsWhen(
+      hub,
+      (rooms) => rooms.length === 1,
+      "the portal to open",
+    );
     await hub.send(room.roomId, "pong");
     await until(() => relay.sent.length > 0, "the reply to reach the relay");
     // WeChat echoes everything the account sends, including through us.
-    relay.emit({messageId: "m2", chatId: "wxid_friend", body: "pong", timestamp: 2, fromSelf: true});
+    relay.emit({
+      messageId: "m2",
+      chatId: "wxid_friend",
+      body: "pong",
+      timestamp: 2,
+      fromSelf: true,
+    });
     /**
      * The echo must produce nothing, and nothing cannot be waited for. A later
      * message on the same ordered stream can be: once the marker has arrived,
      * the echo ahead of it has already been handled, so a duplicate would be
      * here by now. Sleeping instead only guessed at how long that took.
      */
-    relay.emit({messageId: "m3", chatId: "wxid_friend", body: "after the echo", timestamp: 3});
-    const {messages} = await threadWhen(
+    relay.emit({
+      messageId: "m3",
+      chatId: "wxid_friend",
+      body: "after the echo",
+      timestamp: 3,
+    });
+    const { messages } = await threadWhen(
       hub,
-      ({messages}) => messages.some((item) => item.body === "after the echo"),
+      ({ messages }) => messages.some((item) => item.body === "after the echo"),
       "the message sent after the echo, by which point the echo has been handled",
     );
     assert.equal(messages.filter((item) => item.body === "pong").length, 1);
@@ -537,7 +1418,7 @@ test("our own message coming back from WeChat is not posted twice", async () => 
 });
 
 test("a sticker reads as one rather than as its markup", async () => {
-  await withBridge(async ({hub, relay}) => {
+  await withBridge(async ({ hub, relay }) => {
     relay.emit({
       messageId: "m1",
       chatId: "wxid_friend",
@@ -545,34 +1426,210 @@ test("a sticker reads as one rather than as its markup", async () => {
       body: '<msg><emoji fromusername="x" md5="abc" type="2"/></msg>',
       timestamp: 1,
     });
-    const {messages} = await threadWhen(
+    const { messages } = await threadWhen(
       hub,
-      ({messages}) => messages.length >= 1,
+      ({ messages }) => messages.length >= 1,
       "the sticker to arrive",
     );
     assert.equal(messages[0].body, "[Sticker]");
   });
 });
 
-test("media that cannot be carried across says where it can be seen", async () => {
-  await withBridge(async ({hub, relay}) => {
+test("remote-only media keeps its attachment shape and says where it can be seen", async () => {
+  await withBridge(async ({ hub, relay }) => {
     // No id the message store knows, so extraction cannot succeed.
-    relay.emit({messageId: "999999", chatId: "wxid_x", messageKind: "voice", hasMedia: true, timestamp: 1});
-    relay.emit({messageId: "999998", chatId: "wxid_x", body: "just text", timestamp: 2});
+    relay.emit({
+      messageId: "999999",
+      chatId: "wxid_x",
+      messageKind: "voice",
+      hasMedia: true,
+      timestamp: 1,
+    });
+    relay.emit({
+      messageId: "999998",
+      chatId: "wxid_x",
+      messageKind: "file",
+      hasMedia: true,
+      timestamp: 2,
+      body: "<msg><appmsg><title>notes &amp; links.pdf</title><type>6</type><appattach><totallen>1572864</totallen><aeskey>private</aeskey></appattach></appmsg></msg>",
+    });
+    relay.emit({
+      messageId: "999997",
+      chatId: "wxid_x",
+      body: "just text",
+      timestamp: 3,
+    });
     // The voice note is the slow one: extraction is attempted and fails before
     // the placeholder is written, which is why this wait used to be doubled.
-    const {messages} = await threadWhen(
+    const { messages } = await threadWhen(
       hub,
-      ({messages}) =>
-        messages.some((item) => item.body === "[Voice message]") &&
+      ({ messages }) =>
+        messages.some((item) => item.attachments[0]?.kind === "audio") &&
+        messages.some(
+          (item) => item.attachments[0]?.name === "notes & links.pdf",
+        ) &&
         messages.some((item) => item.body === "just text"),
-      "both the unextractable voice note and the ordinary message to arrive",
+      "the remote attachments and ordinary message to arrive",
     );
-    const voice = messages.find((item) => item.body === "[Voice message]");
+    const voice = messages.find(
+      (item) => item.attachments[0]?.kind === "audio",
+    );
+    const file = messages.find(
+      (item) => item.attachments[0]?.name === "notes & links.pdf",
+    );
     const text = messages.find((item) => item.body === "just text");
-    assert.deepEqual(voice?.viewIn, {app: "WeChat", url: "weixin://"});
+    assert.equal(voice?.body, "");
+    assert.deepEqual(voice?.attachments[0], {
+      kind: "audio",
+      url: null,
+      name: "Voice message",
+      mimeType: null,
+      size: null,
+      width: null,
+      height: null,
+      duration: null,
+    });
+    assert.deepEqual(voice?.viewIn, { app: "WeChat", url: "weixin://" });
+    assert.equal(file?.attachments[0]?.size, 1_572_864);
+    assert.deepEqual(file?.viewIn, { app: "WeChat", url: "weixin://" });
     // An ordinary message has nothing to go and look at elsewhere.
     assert.equal(text?.viewIn, null);
+  });
+});
+
+test("a WeChat rich reply keeps its readable title and quoted context", async () => {
+  await withBridge(async ({ hub, relay }) => {
+    relay.emit({
+      messageId: "rich-1",
+      chatId: "wxid_x",
+      messageKind: "appmsg",
+      timestamp: 1,
+      body: "<msg><appmsg><title>My answer</title><type>57</type><url>https://example.test/item</url><refermsg><displayname>Alice &amp; Bob</displayname><content>Earlier &lt;text&gt;</content></refermsg></appmsg></msg>",
+    });
+    const { messages } = await threadWhen(
+      hub,
+      ({ messages }) => messages.length === 1,
+      "the rich reply to arrive",
+    );
+    assert.equal(
+      messages[0].body,
+      "My answer\n↳ Alice & Bob: Earlier <text>\nhttps://example.test/item",
+    );
+    assert.deepEqual(messages[0].viewIn, { app: "WeChat", url: "weixin://" });
+  });
+});
+
+test("WeChat locations, contact cards, transfers, and red packets keep their semantics", async () => {
+  await withBridge(async ({ hub, relay, homeserver, accessToken }) => {
+    for (const message of [
+      {
+        messageId: "location-1",
+        messageKind: "location",
+        body: '<msg><location x="1.2966" y="103.7764" label="NUS School of Computing" /></msg>',
+      },
+      {
+        messageId: "card-1",
+        messageKind: "card",
+        body: '<msg username="wxid_percival" nickname="Percival" />',
+      },
+      {
+        messageId: "transfer-1",
+        messageKind: "transfer",
+        body: "<msg><appmsg><wcpayinfo><feedesc>S$8.50</feedesc><pay_memo>Lunch</pay_memo><receivertitle>Received</receivertitle></wcpayinfo></appmsg></msg>",
+      },
+      {
+        messageId: "redpacket-1",
+        messageKind: "redpacket",
+        body: "<msg><appmsg><wcpayinfo><sendertitle>Best wishes</sendertitle></wcpayinfo></appmsg></msg>",
+      },
+    ])
+      relay.emit({
+        ...message,
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        fromSelf: true,
+        timestamp: Number(message.messageId.match(/\d+/)?.[0] ?? 1),
+      });
+
+    const { room, messages } = await threadWhen(
+      hub,
+      ({ messages }) => messages.length === 4,
+      "the structured messages to arrive",
+    );
+    assert.ok(messages.some((item) => item.body === "NUS School of Computing"));
+    assert.ok(
+      messages.some(
+        (item) => item.body === "Contact: Percival (wxid_percival)",
+      ),
+    );
+    assert.ok(
+      messages.some(
+        (item) => item.body === "Transfer · S$8.50 · Lunch · Received",
+      ),
+    );
+    assert.ok(
+      messages.some((item) => item.body === "Red packet · Best wishes"),
+    );
+
+    const location = messages.find(
+      (item) => item.body === "NUS School of Computing",
+    );
+    assert.ok(location);
+    const response = await fetch(
+      new URL(
+        `/_matrix/client/v3/rooms/${encodeURIComponent(room.roomId)}/event/${encodeURIComponent(location.eventId)}`,
+        homeserver.baseUrl,
+      ),
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    assert.equal(response.ok, true);
+    const event = (await response.json()) as {
+      content?: Record<string, unknown>;
+    };
+    assert.equal(event.content?.msgtype, "m.location");
+    assert.equal(event.content?.geo_uri, "geo:1.2966,103.7764");
+  });
+});
+
+test("a WeChat link becomes a shared structured preview card", async () => {
+  await withBridge(async ({ hub, relay }) => {
+    relay.emit({
+      messageId: "card-1",
+      chatId: "wxid_x",
+      messageKind: "url",
+      timestamp: 1,
+      body: "<msg><appmsg><title>Useful article</title><des>A short description</des><type>5</type><url>https://example.test/article</url><aeskey>private</aeskey></appmsg></msg>",
+    });
+    const { messages } = await threadWhen(
+      hub,
+      ({ messages }) => messages.length === 1,
+      "the preview card to arrive",
+    );
+    assert.equal(messages[0].body, "");
+    assert.deepEqual(messages[0].linkPreview, {
+      title: "Useful article",
+      description: "A short description",
+      url: "https://example.test/article",
+      source: "example.test",
+    });
+  });
+});
+
+test("a recalled WeChat item is a conversation notice", async () => {
+  await withBridge(async ({ hub, relay }) => {
+    relay.emit({
+      messageId: "recall-1",
+      chatId: "wxid_x",
+      messageKind: "recalled",
+      body: "A message was recalled",
+      timestamp: 1,
+    });
+    const { messages } = await threadWhen(
+      hub,
+      ({ messages }) => messages.length === 1,
+      "the recall notice to arrive",
+    );
+    assert.equal(messages[0].notice, true);
   });
 });
 
@@ -609,48 +1666,46 @@ test("a picture WeChat would not decrypt yet becomes the picture once it will", 
     "utf8",
   );
   await chmod(cli, 0o755);
-  process.env.POLYMUX_WECHAT_CLI = cli;
-  try {
-    await withBridge(
-      async ({hub, relay}) => {
-        relay.emit({
-          messageId: "23971",
-          chatId: "wxid_friend",
-          chatName: "A Friend",
-          messageKind: "image",
-          hasMedia: true,
-          timestamp: 1,
-        });
-        const placeholder = await threadWhen(
-          hub,
-          ({messages}) => messages.length >= 1,
-          "the unreadable picture to arrive as a placeholder",
-        );
-        assert.equal(placeholder.messages[0].attachments.length, 0);
-        assert.ok(placeholder.messages[0].viewIn, "and it says where the picture can be seen");
+  await withBridge(
+    async ({ hub, relay }) => {
+      relay.emit({
+        messageId: "23971",
+        chatId: "wxid_friend",
+        chatName: "A Friend",
+        messageKind: "image",
+        hasMedia: true,
+        timestamp: 1,
+      });
+      const placeholder = await threadWhen(
+        hub,
+        ({ messages }) => messages.length >= 1,
+        "the unreadable picture to arrive as a placeholder",
+      );
+      assert.equal(placeholder.messages[0].attachments.length, 0);
+      assert.ok(
+        placeholder.messages[0].viewIn,
+        "and it says where the picture can be seen",
+      );
 
-        // The user opens it in WeChat, which is the only thing that makes it
-        // readable — and which nothing here can hurry along.
-        await writeFile(viewed, "", "utf8");
+      // The user opens it in WeChat, which is the only thing that makes it
+      // readable — and which nothing here can hurry along.
+      await writeFile(viewed, "", "utf8");
 
-        const {messages} = await threadWhen(
-          hub,
-          ({messages}) => messages.some((item) => item.attachments.length > 0),
-          "the retry to bring the picture across",
-        );
-        assert.equal(
-          messages.length,
-          1,
-          "the placeholder became the picture rather than the picture arriving as a second message",
-        );
-        assert.equal(messages[0].attachments[0].mimeType, "image/jpeg");
-      },
-      undefined,
-      {imageRetrySweepMs: 50, imageRetryDelaysMs: [10]},
-    );
-  } finally {
-    delete process.env.POLYMUX_WECHAT_CLI;
-  }
+      const { messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.some((item) => item.attachments.length > 0),
+        "the retry to bring the picture across",
+      );
+      assert.equal(
+        messages.length,
+        1,
+        "the placeholder became the picture rather than the picture arriving as a second message",
+      );
+      assert.equal(messages[0].attachments[0].mimeType, "image/jpeg");
+    },
+    undefined,
+    { imageRetrySweepMs: 50, imageRetryDelaysMs: [10], cliPaths: [cli] },
+  );
 });
 
 test("a relay that is not running leaves WeChat unlinked rather than failing", async () => {
@@ -659,7 +1714,10 @@ test("a relay that is not running leaves WeChat unlinked rather than failing", a
   // server. Counting up from a fixed base made two test files run at once
   // fight over the same numbers, which fails as a bridge error rather than as
   // anything to do with the bridge.
-  const homeserver = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
+  const homeserver = new Homeserver({
+    serverName: "polymux.local",
+    dataDirectory: directory,
+  });
   await homeserver.start();
   const owner = homeserver.createLocalUser("polymux-test");
   // Nothing is listening on this port, which is the ordinary case on a Mac
@@ -679,24 +1737,33 @@ test("setup names the missing piece, starting with WeChat itself", () => {
   // Order matters: someone with no WeChat at all must not be sent looking for
   // a relay they have never heard of, so the app is reported first.
   assert.match(
-    setupHint({wechat: false, relay: false}) ?? "",
+    setupHint({ wechat: false, relay: false }) ?? "",
     /WeChat for Mac is not installed/,
   );
-  assert.match(setupHint({wechat: false, relay: true}) ?? "", /WeChat for Mac is not installed/);
-  assert.match(setupHint({wechat: true, relay: false}) ?? "", /WeChat is open and signed in/);
+  assert.match(
+    setupHint({ wechat: false, relay: true }) ?? "",
+    /WeChat for Mac is not installed/,
+  );
+  assert.match(
+    setupHint({ wechat: true, relay: false }) ?? "",
+    /WeChat is open and signed in/,
+  );
   // How Polymux reaches WeChat is its own plumbing. Naming any of it hands the
   // user a task they cannot act on instead of the one they can.
   for (const hint of [
-    setupHint({wechat: false, relay: false}),
-    setupHint({wechat: true, relay: false}),
+    setupHint({ wechat: false, relay: false }),
+    setupHint({ wechat: true, relay: false }),
   ])
-    assert.doesNotMatch(hint ?? "", /relay|wechat-use|wechatd|daemon|loopback|port/i);
+    assert.doesNotMatch(
+      hint ?? "",
+      /relay|wechat-use|wechatd|daemon|loopback|port/i,
+    );
   // Both present is not a setup problem, so there is nothing to say.
-  assert.equal(setupHint({wechat: true, relay: true}), null);
+  assert.equal(setupHint({ wechat: true, relay: true }), null);
 });
 
 test("a reconnected stream does not re-post what the first one already carried", async () => {
-  await withBridge(async ({hub, relay}) => {
+  await withBridge(async ({ hub, relay }) => {
     // WeChat has not accepted this message yet, so it comes down without an id
     // and will come back down without one: a replay is indistinguishable from
     // a second delivery unless the bridge remembers it by what it is made of.
@@ -712,7 +1779,7 @@ test("a reconnected stream does not re-post what the first one already carried",
     relay.emit(message);
     const thread = await threadWhen(
       hub,
-      ({messages}) => messages.length === 1,
+      ({ messages }) => messages.length === 1,
       "the message to arrive",
     );
     // The stream dies and the bridge reconnects. The relay's tail is what it
@@ -723,7 +1790,34 @@ test("a reconnected stream does not re-post what the first one already carried",
     relay.emit(message);
     // Give the replay a moment to do what a broken bridge would do: post twice.
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const {messages} = await hub.messages(thread.room.roomId, 20);
+    const { messages } = await hub.messages(thread.room.roomId, 20);
     assert.equal(messages.length, 1);
   });
+});
+
+test("a disconnected relay stops the stream instead of retrying forever", async () => {
+  const logs: string[] = [];
+  await withBridge(
+    async ({ relay }) => {
+      assert.equal(relay.connections, 1);
+      relay.disconnect();
+      await until(
+        () =>
+          logs.some((line) =>
+            line.includes("stream stopped: relay is disconnected"),
+          ),
+        "the stream consumer to stop",
+      );
+      // The first old retry was one second, so crossing that boundary proves
+      // the consumer did not quietly schedule another connection.
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      assert.equal(relay.connections, 1);
+      assert.equal(
+        logs.some((line) => line.includes("retrying in")),
+        false,
+      );
+    },
+    undefined,
+    { log: (line) => logs.push(line) },
+  );
 });

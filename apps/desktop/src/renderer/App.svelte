@@ -190,8 +190,13 @@
   // Main marks the first window of a process as the cold start; a window
   // reopened while the app kept running gets `coldStart=0` and no splash.
   const coldStart = new URLSearchParams(window.location.search).get('coldStart') !== '0';
+  // The startup shell already played the animation in this same window and
+  // this document opened on its settled lockup (theme-boot). The cover is
+  // still up, so it must leave through the ordinary staged exit — not the
+  // immediate removal a warm reopen gets.
+  const settledSplash = new URLSearchParams(window.location.search).has('splashSettled');
   const requestedConversationId = new URLSearchParams(window.location.search).get('conversationId');
-  let startupVisible = coldStart && startupSplash !== null;
+  let startupVisible = (coldStart || settledSplash) && startupSplash !== null;
   if (!startupVisible) startupSplash?.remove();
   // The cover is click-through and the app under it is only held at opacity 0,
   // so the pointer still reaches the controls behind it — and a tooltip is
@@ -384,7 +389,10 @@
       // The cover waits for the mark's sequence to finish, which theme-boot
       // announces — it starts when the window reaches the screen, so waiting
       // for it rather than for a timer is what makes the whole of it visible.
-      if (document.documentElement.dataset.splash === 'done') startupMinimumElapsed = true;
+      const splashState = document.documentElement.dataset.splash;
+      // 'settled' is the handoff document: the sequence was watched through in
+      // the shell, so there is nothing left to wait for.
+      if (splashState === 'done' || splashState === 'settled') startupMinimumElapsed = true;
       else document.addEventListener('polymux:splash-done', () => {
         startupMinimumElapsed = true;
         finishStartupWhenReady();
@@ -1387,7 +1395,7 @@
   }
 
   /** Tab kinds a stored snapshot may re-create; anything else is stale data. */
-  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['media', 'browser', 'summary', 'drive', 'schedule', 'hub', 'subagents', 'tasks']);
+  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['media', 'browser', 'summary', 'drive', 'schedule', 'hub', 'subagents', 'tasks', 'marketplace']);
   /** True while a snapshot is being applied, so the auto-save sits out. */
   let workspaceRestoring = false;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1577,8 +1585,13 @@
     const singletonId = SINGLETON_TAB_IDS[kind];
     const named = singletonTitles[kind];
     claimWorkspaceSingleton(kind);
-    if (singletonId) openTab({id: singletonId, title: translate(named ?? 'workspace.newTab'), kind});
+    if (singletonId) openTab({id: singletonId, title: kind === 'marketplace' ? 'Marketplace' : translate(named ?? 'workspace.newTab'), kind});
     else openTab({id: crypto.randomUUID(), title: translate('workspace.newTab'), kind});
+  }
+
+  async function openPluginView(view: import('@polymux/protocol').PluginViewDto): Promise<void> {
+    const url = await api.workspace.preview(view.entry);
+    openTab({id: `plugin-view:${view.id}`, title: view.name, kind: 'view', url});
   }
 
   /**
@@ -2693,6 +2706,7 @@
     onSelect={(id) => activeTabId = id}
     onClose={closeTab}
     onNew={newTab}
+    onOpenPluginView={(view) => void openPluginView(view)}
     onReorderTabs={reorderWorkspaceTabs}
     onToggleExpand={() => { if (!requestedWorkspaceView) workspaceExpanded = !workspaceExpanded; }}
     onResize={(value) => { panelPriority = 'workspace'; workspaceWidth = value; }}

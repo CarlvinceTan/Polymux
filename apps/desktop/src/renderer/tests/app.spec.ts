@@ -90,6 +90,47 @@ test.describe('welcome view', () => {
     await expect(splash).toHaveCount(0, {timeout: 1600});
   });
 
+  /**
+   * The handoff document: main navigates the startup-shell window to the real
+   * renderer with `splashSettled=1` once the shell's animation has finished.
+   * This document must open on the settled lockup — no replay of the sequence
+   * — and still leave through the staged exit rather than being torn out.
+   */
+  test('opens the settled handoff document on the finished lockup', async ({page}) => {
+    await page.goto('/?coldStart=0&splashSettled=1');
+    const splash = page.getByRole('status', {name: 'Loading Polymux'});
+    await expect(splash).toBeVisible();
+    const pose = await splash.evaluate((node) => {
+      const brand = node.querySelector('.startup-brand')!;
+      const slide = node.querySelector('.startup-word-slide')!;
+      return {
+        state: document.documentElement.dataset.splash,
+        brandAnimation: getComputedStyle(brand).animationName,
+        slideAnimation: getComputedStyle(slide).animationName,
+        // Travel 0: the lockup holds its final centred position, so the only
+        // translation left is the sub-pixel snap — under a pixel. The opening
+        // pose would sit half the wordmark to the right of it.
+        settledTravel:
+          Math.abs(new DOMMatrixReadOnly(getComputedStyle(brand).transform).e) < 1,
+      };
+    });
+    expect(pose).toEqual({
+      state: 'settled',
+      brandAnimation: 'none',
+      slideAnimation: 'none',
+      settledTravel: true,
+    });
+    // The exit is the staged two-beat fade — lockup out, then the cover — and
+    // the brand-in replay a fresh document would otherwise start must not be
+    // in its animation list, or the lockup snaps to the opening pose mid-fade.
+    await expect(splash).toHaveClass(/leaving/);
+    const exit = await splash.evaluate((node) =>
+      getComputedStyle(node.querySelector('.startup-brand')!).animationName,
+    );
+    expect(exit).toBe('startup-brand-out');
+    await expect(splash).toHaveCount(0, {timeout: 2000});
+  });
+
   test('shows the Polymux mark, heading and composer, and nothing else', async ({page}) => {
     await page.goto('/');
     await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
@@ -710,6 +751,25 @@ test.describe('welcome view', () => {
     await expect(settings.getByRole('menu', {name: 'Profiles'})).toHaveCount(0);
   });
 
+  test('switches the active profile between Polymux and a custom ACP agent', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.getByRole('tab', {name: 'Agent'}).click();
+
+    const runtime = settings.getByRole('radiogroup', {name: 'Agent runtime'});
+    await expect(runtime.getByRole('radio', {name: /^Polymux Built in$/})).toHaveAttribute('aria-checked', 'true');
+    await expect(runtime.getByRole('radio', {name: /Codex/})).toBeVisible();
+    await runtime.getByRole('radio', {name: /Custom/}).click();
+    await settings.getByRole('textbox', {name: 'Name'}).fill('Codex');
+    await settings.getByRole('textbox', {name: 'Command'}).fill('codex-acp');
+    await settings.getByRole('textbox', {name: 'Arguments'}).fill('--profile\nwork');
+    await settings.getByRole('button', {name: 'Use agent'}).click();
+
+    await expect(settings.getByText('Codex is active')).toBeVisible();
+    await expect(runtime.getByRole('radio', {name: /Custom/})).toHaveAttribute('aria-checked', 'true');
+  });
+
   test('a local runtime sits with the other providers and needs only connecting', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
@@ -924,6 +984,47 @@ test.describe('welcome view', () => {
     await modal.getByRole('tab', {name: 'Provider'}).click();
     await expect(modal.getByRole('switch', {name: 'Enable auto API key rotation'})).toHaveCount(0);
     await expect(modal.getByText('rotates through them automatically')).toBeVisible();
+  });
+
+  test('manages profiles from each switcher row and labels the settings tab Agent', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+
+    await expect(settings.getByRole('tab', {name: 'Agent'})).toBeVisible();
+    await expect(settings.getByRole('tab', {name: 'Profile'})).toHaveCount(0);
+    await settings.getByRole('button', {name: 'Default Profile', exact: true}).click();
+    const profileOptions = settings.getByRole('button', {name: 'Options'});
+    await expect(profileOptions).toBeVisible();
+    await expect(profileOptions.locator('[data-icon="more"]')).toBeVisible();
+    await profileOptions.click();
+
+    const actions = settings.getByRole('menu', {name: 'Actions for Default Profile'});
+    await expect(actions.getByRole('menuitem', {name: 'Rename'})).toBeVisible();
+    await expect(actions.getByRole('menuitem', {name: 'Duplicate'})).toBeVisible();
+    await expect(actions.getByRole('menuitem', {name: 'Default profile'})).toBeDisabled();
+    await expect(actions.getByRole('menuitem', {name: 'Delete'})).toBeDisabled();
+    await expect(actions.locator('svg')).toHaveCount(4);
+    expect((await actions.boundingBox())!.width).toBeLessThan(180);
+    expect(await actions.evaluate((menu) => {
+      const box = menu.getBoundingClientRect();
+      return !!document.elementFromPoint(box.left + 12, box.top + 12)?.closest('.profile-actions-menu');
+    })).toBe(true);
+
+    await page.setViewportSize({width: 360, height: 260});
+    await expect(actions).toHaveCount(0);
+    await settings.getByRole('button', {name: 'Options'}).click();
+    const submenuBox = (await settings.getByRole('menu', {name: 'Actions for Default Profile'}).boundingBox())!;
+    expect(submenuBox.x).toBeGreaterThanOrEqual(8);
+    expect(submenuBox.y).toBeGreaterThanOrEqual(8);
+    expect(submenuBox.x + submenuBox.width).toBeLessThanOrEqual(352);
+    expect(submenuBox.y + submenuBox.height).toBeLessThanOrEqual(252);
+
+    await page.setViewportSize({width: 1280, height: 720});
+    await expect(settings.getByRole('menu', {name: 'Actions for Default Profile'})).toHaveCount(0);
+    await settings.getByRole('tab', {name: 'Agent'}).click();
+    await expect(settings.getByRole('heading', {name: 'Agent', exact: true})).toBeVisible();
+    await expect(settings.getByRole('heading', {name: 'Profile actions'})).toHaveCount(0);
   });
 
   test('the primary button offers speech until there is something to send', async ({page}) => {
@@ -1626,10 +1727,13 @@ test.describe('conversation', () => {
     // The run's mid-run narration nests inside the activity group as a
     // commentary row; the repeated reads still collapse to one tool row.
     await expect(page.locator('.agent-activity-list li.commentary')).toContainText('I’ll read the skill files first');
-    // Every row in the trail is finished, so none of them shimmers — the
-    // glimmer belongs to the step the agent is actually on.
+    // Every finished row uses the brief settled cross-fade, never the live
+    // shimmer that belongs to the step the agent is actually on.
     expect(await page.locator('.agent-activity-list li').evaluateAll(
-      (nodes) => nodes.map((node) => getComputedStyle(node).animationName))).toEqual(['none', 'none']);
+      (nodes) => nodes.map((node) => getComputedStyle(node).animationName))).toEqual([
+        'activity-settled-in',
+        'activity-settled-in',
+      ]);
     await expect(page.locator('.agent-activity-list .activity-copy')).toHaveCount(2);
     await expect(page.locator('.agent-activity')).toHaveCount(1);
     await expect(page.locator('.message.assistant')).toHaveCount(1);
@@ -2983,6 +3087,34 @@ test.describe('hub view', () => {
     await expect(page.locator('.hub-view')).toBeVisible();
   };
 
+  test('remote WeChat media and events keep their native conversation shape', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    // The demo intentionally keeps its WeChat bridge unavailable, so the
+    // platform source is absent; All Platforms still proves the shared row
+    // and thread implementation with the WeChat-shaped fixture.
+    await view.locator('.hub-view-row', {hasText: 'File Transfer'}).click();
+
+    await expect(view.locator('.hub-view-bubble-file', {hasText: 'Project notes.pdf'})).toBeVisible();
+    await expect(view.locator('.hub-view-bubble-file', {hasText: 'Voice message'})).toBeVisible();
+    await expect(view.locator('.hub-view-notice', {hasText: 'A message was recalled'})).toBeVisible();
+    const richReply = view.getByText('My answer\n↳ Alice: Earlier text', {exact: true});
+    await expect(richReply).toBeVisible();
+    const card = view.getByRole('link', {name: /Useful article/});
+    await expect(card).toContainText('A short description');
+    await expect(card).toContainText('example.test');
+    await expect(card).toHaveAttribute('href', 'https://example.test/article');
+    await expect(view.getByRole('button', {name: 'View in WeChat'})).toHaveCount(4);
+    await expect(view.getByText('[File]', {exact: true})).toHaveCount(0);
+    await expect(view.getByText('[Voice message]', {exact: true})).toHaveCount(0);
+    await expect(view.getByRole('button', {name: 'Record a voice message'})).toHaveCount(0);
+
+    await richReply.click({button: 'right'});
+    await expect(view.locator('.hub-view-emoji-row')).toHaveCount(0);
+    // Replies remain available: the adapter carries their context in text.
+    await expect(view.getByRole('menuitem', {name: 'Reply'})).toBeVisible();
+  });
+
   test('Hub incognito mode keeps a conversation unread when it is opened', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
@@ -3152,15 +3284,36 @@ test.describe('hub view', () => {
     await expect(rows.first()).not.toHaveClass(/unread/);
   });
 
-  test('opens on the source at the top of the rail', async ({page}) => {
+  test('keeps All Platforms fixed at the top and opens on its combined list', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
-    // The rail is the user's own arrangement, so its first row is where the hub
-    // opens — not a mailbox chosen by rule behind their ordering.
     const first = view.locator('.hub-view-source').first();
+    await expect(first).toHaveText('All Platforms');
     await expect(first).toHaveClass(/active/);
+    await expect(view.locator('.hub-view-row', {hasText: 'Jules Tan'})).toBeVisible();
+    await expect(view.locator('.hub-view-row', {hasText: 'Q3 numbers'}).first()).toBeVisible();
     // And nothing is expanded for them: every multi-account source starts folded.
     await expect(view.locator('.hub-view-accounts')).toHaveCount(0);
+  });
+
+  test('mutes chats from the context menu in All Platforms and every platform list', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const allChat = view.locator('.hub-view-row', {hasText: 'Jules Tan'});
+
+    await allChat.click({button: 'right'});
+    const menu = view.getByRole('menu');
+    await expect(menu.getByRole('menuitem')).toHaveText(['Pin to top', 'Mute', 'Hide']);
+    await menu.getByRole('menuitem', {name: 'Mute'}).click();
+    await expect(allChat.locator('.hub-view-chat-when [data-icon="speaker-off"]')).toBeVisible();
+
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    const platformChat = view.locator('.hub-view-row', {hasText: 'Jules Tan'});
+    await expect(platformChat.locator('.hub-view-chat-when [data-icon="speaker-off"]')).toBeVisible();
+    await platformChat.click({button: 'right'});
+    await expect(menu.getByRole('menuitem')).toHaveText(['Pin to top', 'Unmute', 'Hide']);
+    await menu.getByRole('menuitem', {name: 'Unmute'}).click();
+    await expect(platformChat.locator('.hub-view-chat-when [data-icon="speaker-off"]')).toHaveCount(0);
   });
 
   test('a dragged source is carried under the pointer and lands where it is let go', async ({
@@ -3168,11 +3321,12 @@ test.describe('hub view', () => {
   }) => {
     await openView(page);
     const view = page.locator('.hub-view');
-    const names = () => view.locator('.hub-view-source span').allInnerTexts();
+    const movable = view.locator('.hub-view-source-row:not(.hub-view-source-fixed) .hub-view-source');
+    const names = () => movable.locator('span').allInnerTexts();
     const before = await names();
 
-    const first = view.locator('.hub-view-source').first();
-    const second = view.locator('.hub-view-source').nth(1);
+    const first = movable.first();
+    const second = movable.nth(1);
     const from = (await first.boundingBox())!;
     const to = (await second.boundingBox())!;
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
@@ -3185,7 +3339,8 @@ test.describe('hub view', () => {
 
     expect(await names()).toEqual([before[1], before[0], ...before.slice(2)]);
     // And the click the drag ends with does not also select what was dragged.
-    await expect(view.locator('.hub-view-source').nth(1)).toHaveClass(/active/);
+    await expect(view.locator('.hub-view-source-fixed .hub-view-source')).toHaveClass(/active/);
+    await expect(view.locator('.hub-view-source').first()).toHaveText('All Platforms');
   });
 
   test('folds account lists under their platform row', async ({page}) => {
@@ -3301,11 +3456,27 @@ test.describe('hub view', () => {
     const names = view.locator('.hub-view-bubble-who');
     // Newest first: Dad's message, then the run of two from Mum named once.
     await expect(names).toHaveText(['Dad', 'Mum']);
+    const avatar = names.filter({hasText: 'Mum'}).locator('img');
+    await expect(avatar).toHaveCount(1);
+    await expect(avatar).toHaveCSS('width', '11px');
+    await expect(avatar).toHaveCSS('height', '11px');
 
     // A direct chat says who it is in the header, so the bubbles do not.
     await view.locator('.hub-view-back').click();
     await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
     await expect(view.locator('.hub-view-bubble-who')).toHaveCount(0);
+  });
+
+  test('a conversation notice is centred text rather than an outgoing bubble', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Family'}).click();
+
+    const notice = view.locator('.hub-view-notice');
+    await expect(notice).toHaveText('Peter6C invited Percival to the group chat');
+    await expect(notice).toHaveCSS('text-align', 'center');
+    await expect(view.locator('.hub-view-bubble', {hasText: 'Peter6C invited Percival'})).toHaveCount(0);
   });
 
   test('the composer offers the microphone until there is something to send', async ({page}) => {
@@ -3499,6 +3670,19 @@ test.describe('hub multi-account', () => {
   });
 });
 
+test.describe('drive provider summaries', () => {
+  test('does not present local folders as connected accounts', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.locator('.options-page');
+    await modal.getByRole('tab', {name: 'Drive'}).click();
+
+    const local = modal.getByRole('button', {name: /Local/});
+    await expect(local).toContainText('Connected');
+    await expect(local).not.toContainText(/accounts?/);
+  });
+});
+
 test.describe('workspace persistence', () => {
   // The history toggle's label is being reworked in a parallel branch; match
   // any of its recent names rather than chasing the churn. The drawer's
@@ -3567,15 +3751,25 @@ test.describe('interface language', () => {
 });
 
 test.describe('browser extension prompt', () => {
+  test('gives a ready update priority over the extension prompt', async ({page}) => {
+    await page.goto('/?extension=missing&update=ready');
+
+    const chip = page.locator('.extension-chip');
+    await expect(chip).toHaveCount(1);
+    await expect(chip.getByRole('button', {name: 'Restart to Update'})).toBeVisible();
+    await expect(chip.locator('[data-icon="download"]')).toBeVisible();
+    await expect(page.getByRole('button', {name: 'Install extension'})).toBeHidden();
+  });
+
   test('offers the extension in the title bar until it is dismissed', async ({page}) => {
     await page.goto('/?extension=missing');
 
-    // It sits ahead of the panel icons rather than among them, and is words
-    // alone — a mark on it read as a second logo in the chrome.
+    // It sits ahead of the panel icons rather than among them, with a compact
+    // install glyph leading the label.
     const chip = page.locator('.extension-chip');
     await expect(chip).toBeVisible();
     await expect(chip).toContainText('Install extension');
-    await expect(chip.locator('img')).toHaveCount(0);
+    await expect(chip.locator('[data-icon="download"]')).toBeVisible();
     // The dismiss is divided off by a rule drawn at the border's own weight,
     // sitting the same distance from the words as from the ×.
     const rule = await chip.locator('.extension-chip-dismiss').evaluate((node) => {
@@ -3931,7 +4125,7 @@ test.describe('notification settings', () => {
     await page.getByRole('button', {name: 'Settings'}).click();
     const modal = page.getByRole('region', {name: 'Settings'});
     await modal.getByRole('tab', {name: 'General'}).click();
-    await modal.getByRole('heading', {name: 'Notifications', exact: true}).scrollIntoViewIfNeeded();
+    await modal.getByRole('heading', {name: 'Notifications', exact: true, level: 3}).scrollIntoViewIfNeeded();
     return modal;
   }
 
@@ -3946,7 +4140,9 @@ test.describe('notification settings', () => {
 
   test('offers one row per event, all on to begin with', async ({page}) => {
     const modal = await openNotifications(page);
-    await expect(modal.getByRole('switch', {name: 'Enable system notifications'})).toHaveAttribute('aria-checked', 'true');
+    await expect(modal.getByRole('heading', {name: 'Notifications', exact: true, level: 4})).toBeVisible();
+    await expect(modal.getByRole('switch', {name: 'Enable notifications'})).toHaveAttribute('aria-checked', 'true');
+    await expect(modal.getByRole('button', {name: 'Send a test'})).toHaveCount(0);
     for (const name of KIND_ROWS)
       await expect(modal.getByRole('switch', {name, exact: true})).toHaveAttribute('aria-checked', 'true');
   });
@@ -3958,14 +4154,14 @@ test.describe('notification settings', () => {
     await expect(group).not.toHaveClass(/disabled/);
     await expect(first).toBeEnabled();
 
-    await modal.getByRole('switch', {name: 'Enable system notifications'}).click();
+    await modal.getByRole('switch', {name: 'Enable notifications'}).click();
 
     // Greyed, not hidden: the choice underneath stays readable.
     await expect(group).toHaveClass(/disabled/);
     await expect(group).toHaveCSS('opacity', '0.42');
     for (const name of KIND_ROWS)
       await expect(modal.getByRole('switch', {name, exact: true})).toBeDisabled();
-    await expect(modal.getByRole('button', {name: 'Send a test'})).toBeHidden();
+    await expect(modal.getByRole('button', {name: 'Send a test'})).toHaveCount(0);
   });
 
   test('a kind switched off is remembered across the master switch', async ({page}) => {
@@ -3977,21 +4173,12 @@ test.describe('notification settings', () => {
     // One switch moving leaves its neighbours alone.
     await expect(finished).toHaveAttribute('aria-checked', 'true');
 
-    const master = modal.getByRole('switch', {name: 'Enable system notifications'});
+    const master = modal.getByRole('switch', {name: 'Enable notifications'});
     await master.click();
     await master.click();
 
     // Silencing everything must not rewrite what the user chose underneath.
     await expect(failed).toHaveAttribute('aria-checked', 'false');
     await expect(finished).toHaveAttribute('aria-checked', 'true');
-  });
-
-  test('says so when the system will not show a notification at all', async ({page}) => {
-    const modal = await openNotifications(page);
-    await expect(modal.getByText('Let Polymux notify you outside the app')).toBeVisible();
-    await modal.getByRole('button', {name: 'Send a test'}).click();
-    // The browser demo has no notification centre behind it, so the row is
-    // expected to report exactly that rather than claim success.
-    await expect(modal.getByText('Your system is not showing notifications')).toBeVisible();
   });
 });

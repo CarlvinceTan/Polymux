@@ -1,6 +1,6 @@
-import type {AgentActivityItem, AgentActivityKind} from './AgentActivity.svelte';
+import type {AgentActivityItem, AgentActivityKind, AgentActivityStep} from './AgentActivity.svelte';
 import {platformForChat} from '../../shared/state/chatPlatforms';
-import {translate, type MessageKey} from '../../../i18n';
+import {plural, translate, type MessageKey, type PluralKey} from '../../../i18n';
 
 const INTERNAL_COMMENTARY_HEADING = /^(?:#{1,6}\s+|\*\*)?(?:searching|identifying|considering|planning|curating|reviewing|checking|thinking|clarifying|analysing|analyzing|filtering|listing|selecting|verifying|refining|summarising|summarizing|assessing|confirming|compiling|highlighting)\b[^\n]*(?:\*\*)?\s*$/i;
 
@@ -46,12 +46,15 @@ export function collapseActivities(activities: AgentActivityItem[] = []): AgentA
       && last.status === activity.status
     ) {
       // Merged rows keep every reported step, so repeated calls to the same
-      // tool read as one group with its combined sub-step trail.
+      // tool read as one group with its combined sub-step trail. The calls
+      // stay counted even though they share one row, so the settled trail can
+      // still say "Ran 2 commands" for two of them.
       const steps = [...(last.steps ?? []), ...(activity.steps ?? [])];
       collapsed[collapsed.length - 1] = {
         ...last,
         ...activity,
         id: last.id,
+        count: (last.count ?? 1) + (activity.count ?? 1),
         steps: steps.length ? steps : undefined,
       };
     } else {
@@ -82,6 +85,69 @@ function aggregateStatus(
   if (left === 'active' || right === 'active') return 'active';
   if (left === 'pending' || right === 'pending') return 'pending';
   return 'completed';
+}
+
+/** The kinds whose rows condense codex-style into one counted row in the
+ * settled trail: "Ran 2 commands" where two commands ran, "Read 3 files"
+ * where three reads happened. */
+const COUNT_SUMMARIES: Partial<Record<AgentActivityKind, PluralKey>> = {
+  running: 'activity.ranCommands',
+  reading: 'activity.readFiles',
+  editing: 'activity.editedFiles',
+};
+
+/**
+ * What the settled trail shows: one row per stretch of the same counted work,
+ * each call behind it kept as a step with whatever it came back with. That is
+ * the codex handoff — the live line disappears and "Ran 2 commands" takes its
+ * place. Narration (thinking, commentary, a successful detour) stays behind
+ * the heading; a failure is never dropped, so a failed row that is not one of
+ * the counted kinds still shows, in red.
+ */
+export function settledActivities(activities: AgentActivityItem[] = []): AgentActivityItem[] {
+  const summary: AgentActivityItem[] = [];
+  for (const activity of activities) {
+    const last = summary.at(-1);
+    const family = COUNT_SUMMARIES[activity.kind];
+    if (family && last && last.kind === activity.kind) {
+      const count = (last.count ?? 1) + (activity.count ?? 1);
+      summary[summary.length - 1] = {
+        ...last,
+        label: plural(family, count),
+        count,
+        status: aggregateStatus(last.status, activity.status),
+        steps: [...(last.steps ?? []), ...memberSteps(activity)],
+      };
+      continue;
+    }
+    summary.push(family ? countedRow(activity, family) : activity);
+  }
+  return summary.filter((row) => COUNT_SUMMARIES[row.kind] !== undefined || row.status === 'failed');
+}
+
+function countedRow(activity: AgentActivityItem, family: PluralKey): AgentActivityItem {
+  const count = activity.count ?? 1;
+  return {
+    ...activity,
+    label: plural(family, count),
+    count,
+    target: undefined,
+    result: undefined,
+    steps: memberSteps(activity),
+  };
+}
+
+/** Each call a row stands for becomes one step: the thing it did (its target,
+ * or its label when it has none) with whatever it came back with, and its own
+ * sub-steps trailing it so nothing reported is lost in the fold. */
+function memberSteps(member: AgentActivityItem): AgentActivityStep[] {
+  const step: AgentActivityStep = {
+    id: member.id,
+    label: member.target ?? member.label,
+    status: member.status,
+  };
+  if (member.result) step.result = member.result;
+  return [step, ...(member.steps ?? [])];
 }
 
 /** One thinking row belongs to the whole run. The optimistic row exists before
@@ -162,13 +228,19 @@ export function activityPresentation(
     return {kind: 'resource', label: translate('activity.using', {name: resource})};
   }
   if (normalized === 'read' || normalized.includes('read_file')) {
-    return {kind: 'reading', label: translate('activity.readingFiles')};
+    const path = typeof input.path === 'string' ? input.path : undefined;
+    return {kind: 'reading', label: translate('activity.readingFiles'), ...(path ? {target: path} : {})};
   }
   if (normalized === 'edit' || normalized === 'write' || normalized.includes('apply_patch') || normalized.includes('edit_file') || normalized.includes('write_file')) {
-    return {kind: 'editing', label: translate('activity.editingFiles')};
+    const path = typeof input.path === 'string' ? input.path : undefined;
+    return {kind: 'editing', label: translate('activity.editingFiles'), ...(path ? {target: path} : {})};
   }
   if (normalized === 'bash' || normalized.includes('command') || normalized.includes('terminal') || normalized.includes('exec') || normalized === 'sh') {
-    return {kind: 'running', label: translate('activity.runningCommand')};
+    // The row is the command itself, codex-style: while it runs the live line
+    // reads as the command, and a settled "Ran 2 commands" row expands to the
+    // commands behind it.
+    const command = typeof input.command === 'string' ? firstLine(input.command) : '';
+    return {kind: 'running', label: command || translate('activity.runningCommand')};
   }
   if (normalized.includes('search') || normalized.includes('web') || normalized === 'glob' || normalized === 'grep') {
     return {kind: 'searching', label: translate('activity.searching')};
@@ -281,6 +353,13 @@ function humanize(value: string): string {
     .replaceAll('_', ' ')
     .replaceAll('-', ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+/** The command's first line, trimmed and capped — it is the row's whole
+ * label, so a multi-line script still reads as one line. */
+function firstLine(value: string): string {
+  const line = value.split('\n').map((part) => part.trim()).find(Boolean) ?? '';
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
 const condensedLabels: Record<AgentActivityKind, MessageKey> = {

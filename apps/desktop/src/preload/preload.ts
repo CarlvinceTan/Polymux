@@ -3,6 +3,11 @@ import { channels } from "@polymux/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api: PolymuxApi = {
+  agentRuntime: {
+    get: () => ipcRenderer.invoke(channels.agentRuntimeGet),
+    registry: () => ipcRenderer.invoke(channels.agentRuntimeRegistry),
+    update: (request) => ipcRenderer.invoke(channels.agentRuntimeUpdate, request),
+  },
   profiles: {
     list: () => ipcRenderer.invoke(channels.profilesList),
     create: (name) => ipcRenderer.invoke(channels.profilesCreate, name),
@@ -339,6 +344,7 @@ const api: PolymuxApi = {
     addMarketplace: (source) => ipcRenderer.invoke(channels.pluginsAddMarketplace, source),
     removeMarketplace: (id) => ipcRenderer.invoke(channels.pluginsRemoveMarketplace, id),
     browse: (query) => ipcRenderer.invoke(channels.pluginsBrowse, query),
+    views: () => ipcRenderer.invoke(channels.pluginsViews),
     upload: (files) => ipcRenderer.invoke(channels.pluginsUpload, files.map((file) => ({
       path: webUtils.getPathForFile(file),
       relativePath: file.webkitRelativePath,

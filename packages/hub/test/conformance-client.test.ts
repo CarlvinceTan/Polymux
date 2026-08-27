@@ -829,12 +829,9 @@ test("a sync snapshot carries every joined room's state, newest messages oldest-
   }
 });
 
-test("a sync token buys nothing: the next sync is the same full snapshot", async () => {
-  // Pins the snapshot model as intended: bridges are pushed transactions and
-  // never call /sync, so this exists only to spare the hub four hundred round
-  // trips for a couple of hundred rooms. A client that assumed incremental
-  // semantics would drop everything it already had, so the omission is stated
-  // rather than left to be discovered.
+test("a sync token returns an empty delta until the stream advances", async () => {
+  // Initial sync is the full chat-list snapshot. Once the client has its token,
+  // unchanged rooms must not be shipped again or mistaken for new activity.
   const {hs, asToken, user, cleanup} = await startHarness();
   try {
     const roomId = await portalRoom(hs, asToken, user.userId, "Jules");
@@ -848,8 +845,8 @@ test("a sync token buys nothing: the next sync is the same full snapshot", async
     });
 
     assert.equal(second.status, 200);
-    assert.deepEqual(second.body.rooms, first.body.rooms, "a since token is ignored, not honoured");
-    assert.ok(bodiesOf(syncJoin(second)[roomId].timeline.events).includes("still here"));
+    assert.deepEqual(second.body.rooms, {join: {}});
+    assert.equal(second.body.next_batch, since, "an empty delta keeps the same stream position");
   } finally {
     await cleanup();
   }

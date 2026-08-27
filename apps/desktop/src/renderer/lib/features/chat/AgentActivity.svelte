@@ -25,6 +25,9 @@
     id: string;
     label: string;
     status: AgentActivityStatus;
+    /** The step's own outcome, shown under its label. Set when a counted row
+     * ("Ran 2 commands") folds each call it stands for in as one of its steps. */
+    result?: string;
   };
 
   export type AgentActivityItem = {
@@ -43,6 +46,9 @@
     target?: string;
     result?: string;
     steps?: AgentActivityStep[];
+    /** How many calls this row stands for. A collapsed stretch of identical
+     * calls stays counted so the settled trail can still say "Ran 2 commands". */
+    count?: number;
   };
 </script>
 
@@ -50,7 +56,7 @@
   import {onMount} from 'svelte';
   import {fade, fly} from 'svelte/transition';
   import {cubicOut} from 'svelte/easing';
-  import {activityDuration, collapseActivities, formatElapsedSeconds, nextDurationTickDelay} from './activities';
+  import {activityDuration, collapseActivities, formatElapsedSeconds, nextDurationTickDelay, settledActivities} from './activities';
   import Icon from '../../shared/components/Icon.svelte';
   import PlatformLogo from '../../shared/components/PlatformLogo.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
@@ -69,15 +75,24 @@
 
   $: elapsed = Math.max(1, activityDuration(startedAt, completedAt, now));
   $: collapsed = collapseActivities(activities);
+  $: settled = settledActivities(collapsed);
   $: latest = collapsed.at(-1);
-  // Collapsed and settled shows the heading alone — the whole trail waits
-  // behind the dropdown. While streaming, the latest activity doubles as the
-  // live status line.
-  $: visibleActivities = expanded ? collapsed : streaming && latest ? [latest] : [];
+  // Settled shows the codex-style summary: one counted row per stretch of the
+  // same work ("Ran 2 commands"), plus anything that failed. The full trail
+  // waits behind the heading. While streaming, the latest activity doubles as
+  // the live status line.
+  $: visibleActivities = expanded ? collapsed : streaming && latest ? [latest] : settled;
   // Collapsed streaming shows exactly one row, so a swap is a handoff: the
   // outgoing row fades out, then the incoming one slides up into its place.
   // Rows are stacked in a single grid cell so the two never push each other.
   $: solo = !expanded && streaming;
+
+  /** Live rows key on the activity's own id; settled ones key under a prefix
+   * of their own, so the handoff re-inserts the rows and they cross-fade in
+   * rather than the last live label hard-swapping into a summary row. */
+  function rowKey(activity: AgentActivityItem): string {
+    return streaming ? activity.id : `settled:${activity.id}`;
+  }
   const OUT_MS = 140;
   const IN_MS = 240;
 
@@ -190,17 +205,18 @@
 
   {#if visibleActivities.length}
     <ul class="agent-activity-list" class:solo aria-live="polite">
-      {#each visibleActivities as activity (activity.id)}
+      {#each visibleActivities as activity (rowKey(activity))}
         <li
           in:fly|local={{y: solo ? 9 : 0, duration: solo ? IN_MS : 0, delay: solo ? OUT_MS : 0, easing: cubicOut}}
           out:fade|local={{duration: solo ? OUT_MS : 0, easing: cubicOut}}
+          class:settled={!streaming}
           use:glint={activity.label} class:active={activity.status === 'active'} class:live={streaming && activity.status === 'active'} class:failed={activity.status === 'failed'} class:commentary={activity.kind === 'commentary'}>
           {#if activity.logo}
             <PlatformLogo platform={activity.logo} size={17}/>
           {:else}
             <Icon name={activity.icon ?? activityIcons[activity.kind]} size={17}/>
           {/if}
-          {#if expanded && activity.kind === 'commentary'}
+          {#if (expanded || !streaming) && activity.kind === 'commentary'}
             <!-- A commentary row carries the model's own prose, which runs to
                  paragraphs. Opening the trail should not dump all of it: the row
                  shows its opening line and holds the rest behind its own
@@ -219,7 +235,7 @@
                 <span class="activity-prose">{activity.label}</span>
               {/if}
             </button>
-          {:else if expanded && (activity.result || activity.steps?.length)}
+          {:else if (expanded || !streaming) && (activity.result || activity.steps?.length)}
             <button
               type="button"
               class="activity-copy activity-detail-toggle"
@@ -234,7 +250,9 @@
                 {#if activity.steps?.length}
                   <ul class="activity-steps">
                     {#each activity.steps as step (step.id)}
-                      <li class:active={step.status === 'active'} class:failed={step.status === 'failed'}>{step.label}</li>
+                      <li class:active={step.status === 'active'} class:failed={step.status === 'failed'}>
+                        {step.label}{#if step.result}<small>{step.result}</small>{/if}
+                      </li>
                     {/each}
                   </ul>
                 {/if}

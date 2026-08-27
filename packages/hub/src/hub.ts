@@ -1,7 +1,9 @@
 import {readFile} from "node:fs/promises";
 import {createHmac} from "node:crypto";
 import path from "node:path";
+import WebSocket from "ws";
 import {mediaUrl} from "./media-url.js";
+import {visibleWeChatText} from "./wechat-emoji.js";
 import {COMMS_PLATFORMS} from "@polymux/protocol";
 import type {
   CommsBridgeAccountDto,
@@ -57,6 +59,16 @@ interface RequestOptions {
   timeoutMs?: number;
 }
 
+export interface MatrixSyncActivity {
+  roomId: string;
+  sender: string;
+}
+
+export interface MatrixSyncDelta {
+  nextBatch: string;
+  activities: MatrixSyncActivity[];
+}
+
 export class ProvisioningError extends Error {
   readonly status: number;
   readonly errcode: string | null;
@@ -66,6 +78,51 @@ export class ProvisioningError extends Error {
     this.name = "ProvisioningError";
     this.status = status;
     this.errcode = errcode;
+  }
+}
+
+type LegacyQrMessage = {code?: string; success?: boolean; error?: string};
+
+/** Small queue around mautrix-discord's streaming QR provisioning socket. */
+class LegacyQrSession {
+  readonly #socket: WebSocket;
+  readonly #messages: LegacyQrMessage[] = [];
+  readonly #waiters: Array<{
+    resolve: (message: LegacyQrMessage) => void;
+    reject: (error: Error) => void;
+  }> = [];
+
+  constructor(socket: WebSocket) {
+    this.#socket = socket;
+    socket.on("message", (data) => {
+      try {
+        this.#push(JSON.parse(data.toString()) as LegacyQrMessage);
+      } catch {
+        this.#fail(new Error("Discord returned an unreadable QR response."));
+      }
+    });
+    socket.on("error", (error) => this.#fail(error));
+    socket.on("close", () => this.#fail(new Error("Discord QR sign-in closed before approval.")));
+  }
+
+  next(): Promise<LegacyQrMessage> {
+    const ready = this.#messages.shift();
+    if (ready) return Promise.resolve(ready);
+    return new Promise((resolve, reject) => this.#waiters.push({resolve, reject}));
+  }
+
+  close(): void {
+    this.#socket.close();
+  }
+
+  #push(message: LegacyQrMessage): void {
+    const waiter = this.#waiters.shift();
+    if (waiter) waiter.resolve(message);
+    else this.#messages.push(message);
+  }
+
+  #fail(error: Error): void {
+    for (const waiter of this.#waiters.splice(0)) waiter.reject(error);
   }
 }
 
@@ -89,6 +146,7 @@ export class MatrixHub {
   readonly #roomPlatforms = new Map<string, string>();
   /** Sender display names and avatars, keyed by Matrix id. */
   readonly #profiles = new Map<string, {name: string; avatarUrl: string | null}>();
+  readonly #legacyQrSessions = new Map<string, LegacyQrSession>();
   #registrationSecretCache: string | null | undefined;
 
   constructor(options: MatrixHubOptions) {
@@ -340,6 +398,30 @@ export class MatrixHub {
         // Recency, with the never-used rooms after everything that has traffic.
         .sort((a, b) => Date.parse(b.lastActivity ?? "0") - Date.parse(a.lastActivity ?? "0"))
     );
+  }
+
+  /**
+   * Follows Matrix's incremental sync stream. The first call establishes a
+   * position without replaying the snapshot as live activity; later calls
+   * long-poll and report each changed room once.
+   */
+  async sync(since: string | null, signal?: AbortSignal): Promise<MatrixSyncDelta> {
+    const params = new URLSearchParams({timeout: since ? "30000" : "0"});
+    if (since) params.set("since", since);
+    const result = await this.#client<SyncResponse>(`/_matrix/client/v3/sync?${params}`, {
+      timeoutMs: since ? 35_000 : REQUEST_TIMEOUT_MS,
+      signal,
+    });
+    const nextBatch = result.next_batch;
+    if (typeof nextBatch !== "string") throw new Error("The Matrix sync response has no next_batch token.");
+    if (!since) return {nextBatch, activities: []};
+
+    const activities: MatrixSyncActivity[] = [];
+    for (const [roomId, room] of Object.entries(result.rooms?.join ?? {})) {
+      const newest = room.timeline?.events?.at(-1);
+      activities.push({roomId, sender: newest?.sender ?? ""});
+    }
+    return {nextBatch, activities};
   }
 
   async messages(
@@ -627,7 +709,12 @@ export class MatrixHub {
 
   async #client<T>(
     endpoint: string,
-    options: {method?: "GET" | "POST" | "PUT"; body?: unknown} = {},
+    options: {
+      method?: "GET" | "POST" | "PUT";
+      body?: unknown;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<T> {
     const {matrixToken} = this.#auth();
     if (!matrixToken)
@@ -638,6 +725,8 @@ export class MatrixHub {
       method: options.method,
       body: options.body,
       headers: {Authorization: `Bearer ${matrixToken}`},
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
     });
   }
 
@@ -694,15 +783,28 @@ export class MatrixHub {
               },
             ]
           : [],
-        // The legacy API can take a token but cannot drive a QR scan over
-        // plain HTTP, so offer only what actually works from here.
         flows: legacy.loggedIn
           ? []
           : [
               {
-                id: "token",
-                name: "Access token",
-                description: `Paste a ${name} account token to link it`,
+                id: "qr",
+                name: "QR code",
+                description: "Recommended · Scan with the Discord mobile app; CAPTCHAs are not supported",
+              },
+              {
+                id: "user-token",
+                name: "User token",
+                description: "Full personal account access · Manual and sensitive; may carry account risk",
+              },
+              {
+                id: "bot-token",
+                name: "Bot token",
+                description: "Servers only · The bot sees only channels and permissions granted to it",
+              },
+              {
+                id: "oauth-token",
+                name: "OAuth token",
+                description: "Limited scopes · Standard Discord OAuth cannot provide all personal messages",
               },
             ],
         managementRoomHint: legacy.managementRoom,
@@ -725,7 +827,7 @@ export class MatrixHub {
       ...base,
       state: bridgeState(accounts),
       accounts,
-      flows: (whoami.login_flows ?? []).map(toFlow),
+      flows: (whoami.login_flows ?? []).map((flow) => toFlow(platform, flow)),
       managementRoomHint: whoami.management_room || null,
       error:
         accounts.find((account) => account.error)?.error ??
@@ -791,6 +893,53 @@ export class MatrixHub {
   /** Links a legacy bridge from a pasted account token. */
   async legacyTokenLogin(route: string, token: string): Promise<void> {
     await this.#legacy(route, "login/token", {method: "POST", body: {token}});
+  }
+
+  /** Starts mautrix-discord's websocket QR login and returns its first code. */
+  async legacyQrLoginStart(route: string, loginId: string): Promise<string> {
+    this.legacyQrLoginCancel(loginId);
+    const secret = await this.#sharedSecret(route);
+    if (!secret)
+      throw new ProvisioningError(
+        `Could not read ${route}'s provisioning secret from the hub, so its QR login cannot be driven from here.`,
+        0,
+        null,
+      );
+    const url = new URL(`${this.#baseUrl}/bridges/${route}/${LEGACY_PREFIX}/login/qr`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    const userId = this.#auth().userId;
+    if (userId) url.searchParams.set("user_id", userId);
+    const session = new LegacyQrSession(
+      new WebSocket(url, {headers: {Authorization: `Bearer ${secret}`}}),
+    );
+    this.#legacyQrSessions.set(loginId, session);
+    try {
+      const message = await session.next();
+      if (message.code) return message.code;
+      throw new Error(message.error || "Discord did not return a QR code.");
+    } catch (error) {
+      this.legacyQrLoginCancel(loginId);
+      throw error;
+    }
+  }
+
+  /** Waits for approval, or hands a refreshed QR code back to the renderer. */
+  async legacyQrLoginWait(loginId: string): Promise<{code: string | null; complete: boolean}> {
+    const session = this.#legacyQrSessions.get(loginId);
+    if (!session) throw new Error("This Discord QR sign-in expired. Start it again.");
+    const message = await session.next();
+    if (message.success) {
+      this.#legacyQrSessions.delete(loginId);
+      return {code: null, complete: true};
+    }
+    if (message.code) return {code: message.code, complete: false};
+    this.legacyQrLoginCancel(loginId);
+    throw new Error(message.error || "Discord QR sign-in failed.");
+  }
+
+  legacyQrLoginCancel(loginId: string): void {
+    this.#legacyQrSessions.get(loginId)?.close();
+    this.#legacyQrSessions.delete(loginId);
   }
 
   async #legacyPing(route: string): Promise<{
@@ -898,6 +1047,7 @@ export class MatrixHub {
       body?: unknown;
       headers?: Record<string, string>;
       timeoutMs?: number;
+      signal?: AbortSignal;
     } = {},
   ): Promise<T> {
     const auth = this.#auth();
@@ -914,7 +1064,9 @@ export class MatrixHub {
       method: options.method ?? "GET",
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
+      signal: options.signal
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS)])
+        : AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
     });
     const text = await response.text();
     let parsed: unknown;
@@ -948,7 +1100,8 @@ export interface MatrixRoom {
 
 export interface MatrixAttachment {
   kind: "image" | "audio" | "video" | "file";
-  url: string;
+  /** Null when a bridge can describe the media but cannot retrieve its bytes. */
+  url: string | null;
   name: string;
   mimeType: string | null;
   size: number | null;
@@ -973,8 +1126,11 @@ export interface MatrixMessage {
   senderName: string;
   senderAvatarUrl: string | null;
   body: string;
+  /** A conversation event, such as a group membership change, not authored text. */
+  notice: boolean;
   sentAt: string;
   attachments: MatrixAttachment[];
+  linkPreview: {title: string; description: string | null; url: string | null; source: string | null} | null;
   /** Where to go to see media that could not be carried across. */
   viewIn: {app: string; url: string} | null;
   /** One entry per distinct emoji on this message. */
@@ -1008,8 +1164,14 @@ interface RawEvent {
     avatar_url?: string;
     /** Written by a bridge onto media it could not fetch; see `viewIn`. */
     "co.polymux.view_in"?: {app?: string; url?: string};
+    /** Structured preview emitted by any bridge that can describe a rich item. */
+    "co.polymux.link_preview"?: {title?: string; description?: string; url?: string; source?: string};
     /** Set by the WeChat bridge on a sticker, which it sends as a picture. */
     "co.polymux.sticker"?: boolean;
+    /** Set on content imported by the WeChat bridge. */
+    "co.polymux.wechat.remote"?: boolean;
+    /** A bridge-originated conversation event rather than authored text. */
+    "co.polymux.notice"?: boolean;
     /** Set on `m.bridge`: which network the room is a portal for. */
     protocol?: {id?: string};
     /** mautrix marks direct chats "dm" here; groups carry their own type. */
@@ -1043,6 +1205,7 @@ interface RawEvent {
 }
 
 interface SyncResponse {
+  next_batch?: string;
   rooms?: {
     /** Rooms a bridge has invited us to but that we have not joined yet. */
     invite?: Record<string, unknown>;
@@ -1258,7 +1421,10 @@ function attachmentsOf(event: RawEvent): MatrixAttachment[] {
   const sticker = event.type === "m.sticker" || Boolean(event.content?.["co.polymux.sticker"]);
   const kind = sticker ? "image" : ATTACHMENT_KINDS[event.content?.msgtype ?? ""];
   const url = mediaUrl(event.content?.url);
-  if (!kind || !url) return [];
+  if (!kind) return [];
+  // Ordinary Matrix media must have an MXC url. A bridge may deliberately
+  // announce remote-only media, in which case `viewIn` is its usable route.
+  if (!url && !event.content?.["co.polymux.view_in"]?.url) return [];
   const info = event.content?.info ?? {};
   return [
     {
@@ -1281,6 +1447,15 @@ function toMessage(raw: RawEvent): MatrixMessage {
   // shown as what the message now says, not as its `* `-prefixed fallback.
   const event = {...raw, content: contentOf(raw)};
   const attachments = attachmentsOf(event);
+  const preview = event.content?.["co.polymux.link_preview"];
+  const linkPreview = preview?.title
+    ? {
+        title: preview.title,
+        description: preview.description ?? null,
+        url: /^https?:\/\//i.test(preview.url ?? "") ? preview.url! : null,
+        source: preview.source ?? null,
+      }
+    : null;
   return {
     eventId: event.event_id ?? "",
     roomId: event.room_id ?? "",
@@ -1291,9 +1466,11 @@ function toMessage(raw: RawEvent): MatrixMessage {
     senderAvatarUrl: null,
     // A media message's body is its filename; the attachment carries that
     // already, so repeating it above the image is just clutter.
-    body: attachments.length > 0 ? "" : (event.content?.body ?? ""),
+    body: attachments.length > 0 || linkPreview ? "" : visibleMessageBody(event),
+    notice: isNotice(event),
     sentAt: new Date(event.origin_server_ts ?? 0).toISOString(),
     attachments,
+    linkPreview,
     reactions: [],
     replyTo: event.content?.["m.relates_to"]?.["m.in_reply_to"]?.event_id ?? null,
     viewIn: event.content?.["co.polymux.view_in"]?.url
@@ -1303,6 +1480,25 @@ function toMessage(raw: RawEvent): MatrixMessage {
         }
       : null,
   };
+}
+
+/** Older imported WeChat rows predate bridge-side emoji normalization. */
+function visibleMessageBody(event: RawEvent): string {
+  const body = event.content?.body ?? "";
+  if (!event.content?.["co.polymux.wechat.remote"]) return body;
+  return visibleWeChatText(body);
+}
+
+/**
+ * New bridge events carry an explicit marker. The text fallback is only for
+ * older WeChat events already stored before that marker existed; scoping it to
+ * bridged WeChat content avoids reclassifying somebody's ordinary sentence.
+ */
+function isNotice(event: RawEvent): boolean {
+  if (event.content?.["co.polymux.notice"]) return true;
+  if (!event.content?.["co.polymux.wechat.remote"]) return false;
+  const body = event.content?.body?.trim() ?? "";
+  return /\b(?:invited .+ to the group chat|removed .+ from the group chat|joined the group chat|left the group chat|changed the group name to)\b/i.test(body);
 }
 
 /**
@@ -1374,13 +1570,23 @@ interface RawLoginStep {
   complete?: {user_login_id?: string; user_login_name?: string};
 }
 
-function toFlow(flow: RawFlow): CommsLoginFlowDto {
+function toFlow(platform: CommsPlatform, flow: RawFlow): CommsLoginFlowDto {
+  const id = flow.id ?? "";
+  const limitation = LOGIN_FLOW_LIMITATIONS[`${platform}:${id}`];
   return {
-    id: flow.id ?? "",
+    id,
     name: flow.name ?? flow.id ?? "Sign in",
-    description: flow.description ?? "",
+    description: limitation ?? flow.description ?? "",
   };
 }
+
+/** Brief caveats the upstream flow descriptions omit. Unlisted flows need none. */
+const LOGIN_FLOW_LIMITATIONS: Readonly<Record<string, string>> = {
+  "telegram:bot": "Bots only · Uses a token from BotFather and does not act as your personal account",
+  "telegram:manual": "Advanced · Existing session credentials; the bridge recommends not using this method",
+  "slack:token": "Personal account · Browser tokens require the matching cookie",
+  "slack:app": "Workspace app · Limited to channels and permissions granted to the app",
+};
 
 function toAccount(login: RawLogin): CommsBridgeAccountDto {
   const event = login.state?.state_event ?? login.state_event ?? null;

@@ -424,6 +424,73 @@ test("bridged messages flow to the user with massaged timestamps and land in unr
   }
 });
 
+test("sync advances incrementally and long-polls until a new event arrives", async () => {
+  const {hs, asToken, cleanup} = await startHarness();
+  try {
+    const user = hs.createLocalUser("polymux");
+    const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
+      token: asToken,
+      query: {user_id: "@whatsapp_1:polymux.test"},
+      body: {invite: [user.userId], name: "Incremental chat"},
+    });
+    const roomId = created.body.room_id as string;
+
+    const initial = await call(hs, "GET", "/_matrix/client/v3/sync", {
+      token: user.accessToken,
+    });
+    assert.equal(initial.status, 200);
+    assert.ok((initial.body.rooms as {join: Record<string, unknown>}).join[roomId]);
+    const since = initial.body.next_batch as string;
+
+    let settled = false;
+    const waiting = call(hs, "GET", "/_matrix/client/v3/sync", {
+      token: user.accessToken,
+      query: {since, timeout: "1000"},
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(settled, false, "an unchanged stream keeps the incremental sync open");
+
+    const sent = await call(
+      hs,
+      "PUT",
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/sync-1`,
+      {
+        token: asToken,
+        query: {user_id: "@whatsapp_1:polymux.test"},
+        body: {msgtype: "m.text", body: "wake the sync"},
+      },
+    );
+    const incremental = await waiting;
+    assert.equal(incremental.status, 200);
+    assert.notEqual(incremental.body.next_batch, since);
+    const room = (incremental.body.rooms as {join: Record<string, {timeline: {events: unknown[]}}>})
+      .join[roomId];
+    assert.ok(room, "only the changed joined room is returned");
+    assert.deepEqual(
+      room.timeline.events.map((event) => (event as {event_id: string}).event_id),
+      [sent.body.event_id],
+    );
+
+    const empty = await call(hs, "GET", "/_matrix/client/v3/sync", {
+      token: user.accessToken,
+      query: {since: incremental.body.next_batch as string, timeout: "1"},
+    });
+    assert.deepEqual(empty.body.rooms, {join: {}});
+
+    const invalid = await call(hs, "GET", "/_matrix/client/v3/sync", {
+      token: user.accessToken,
+      query: {since: "not-a-token"},
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.body.errcode, "M_UNKNOWN_POS");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("the user's reply is pushed to the bridge as an ordered transaction", async () => {
   const {hs, bridge, asToken, cleanup} = await startHarness();
   try {
@@ -434,7 +501,6 @@ test("the user's reply is pushed to the bridge as an ordered transaction", async
       body: {invite: [user.userId]},
     });
     const roomId = created.body.room_id as string;
-    await until(() => bridge.transactions.length > 0, "portal creation to reach the bridge");
     const before = bridge.transactions.length;
 
     const sent = await call(

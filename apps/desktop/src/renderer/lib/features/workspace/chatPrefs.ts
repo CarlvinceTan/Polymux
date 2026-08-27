@@ -2,7 +2,7 @@ import {applyOrder} from './hubRailOrder';
 
 /**
  * What the chat list has been told about individual conversations: which are
- * pinned to the top, and which have been hidden from it.
+ * pinned to the top, hidden from it, or muted.
  *
  * The list's natural order is whatever the platform reports — most recent
  * first — which is right until one conversation matters more than its last
@@ -25,9 +25,11 @@ export type ChatPrefs = {
   pinned: string[];
   /** Chat ids collected under the hidden row rather than shown in the list. */
   hidden: string[];
+  /** Chat ids whose notifications have been muted in the Hub. */
+  muted: string[];
 };
 
-const EMPTY: ChatPrefs = {pinned: [], hidden: []};
+const EMPTY: ChatPrefs = {pinned: [], hidden: [], muted: []};
 
 function ids(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
@@ -39,7 +41,7 @@ export function loadChatPrefs(): ChatPrefs {
     const raw: unknown = JSON.parse(localStorage.getItem(KEY) ?? '{}');
     if (!raw || typeof raw !== 'object') return EMPTY;
     const stored = raw as Partial<ChatPrefs>;
-    return {pinned: ids(stored.pinned), hidden: ids(stored.hidden)};
+    return {pinned: ids(stored.pinned), hidden: ids(stored.hidden), muted: ids(stored.muted)};
   } catch {
     return EMPTY;
   }
@@ -60,7 +62,7 @@ export function togglePinned(prefs: ChatPrefs, id: string): ChatPrefs {
   const pinned = prefs.pinned.includes(id)
     ? prefs.pinned.filter((item) => item !== id)
     : [...prefs.pinned, id];
-  return persist({pinned, hidden: prefs.hidden.filter((item) => item !== id)});
+  return persist({pinned, hidden: prefs.hidden.filter((item) => item !== id), muted: prefs.muted});
 }
 
 /** Hides a chat, or restores one already hidden. A hidden chat is never pinned. */
@@ -68,7 +70,15 @@ export function toggleHidden(prefs: ChatPrefs, id: string): ChatPrefs {
   const hidden = prefs.hidden.includes(id)
     ? prefs.hidden.filter((item) => item !== id)
     : [...prefs.hidden, id];
-  return persist({pinned: prefs.pinned.filter((item) => item !== id), hidden});
+  return persist({pinned: prefs.pinned.filter((item) => item !== id), hidden, muted: prefs.muted});
+}
+
+/** Mutes a chat, or restores notifications for one already muted. */
+export function toggleMuted(prefs: ChatPrefs, id: string): ChatPrefs {
+  const muted = prefs.muted.includes(id)
+    ? prefs.muted.filter((item) => item !== id)
+    : [...prefs.muted, id];
+  return persist({...prefs, muted});
 }
 
 /**

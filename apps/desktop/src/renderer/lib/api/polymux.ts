@@ -1,5 +1,6 @@
 import type {
   ArtifactDto,
+  AppUpdateDto,
   ChatDto,
   ChatMessageDto,
   ComputerHistoryStatusDto,
@@ -79,6 +80,11 @@ function createBrowserDemoApi(): PolymuxApi {
   const runConversations = new Map<string, string>();
   let demoProfiles = [{id: 'default', name: 'Default Profile', isDefault: true}];
   let demoActiveProfile = 'default';
+  const demoAcpRegistry = [
+    {id: 'codex-acp', name: 'Codex', description: "OpenAI's coding assistant", version: '1.6.2', icon: '', command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.6.2']},
+    {id: 'claude-acp', name: 'Claude Agent', description: "Anthropic's Claude agent", version: '0.70.0', icon: '', command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.70.0']},
+    {id: 'opencode', name: 'OpenCode', description: 'Open source coding agent', version: '1.0.0', icon: '', command: 'npx', args: ['-y', 'opencode-ai@1.0.0', 'acp']},
+  ];
   let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string; reasoning?: ReasoningEffort}>> = {};
   const demoRoles = (): ModelRolesDto => {
     const assignment = (ref?: {provider: string; id: string; reasoning?: ReasoningEffort}): ModelRoleAssignmentDto | null => {
@@ -148,7 +154,7 @@ function createBrowserDemoApi(): PolymuxApi {
       marketplaceName: 'claude-code-plugins',
       directory: '~/.polymux/plugins/claude-code/code-review',
       enabled: true,
-      contributions: {skills: ['review-diff'], mcpServers: [], commands: 1, agents: 3, hooks: 0},
+      contributions: {skills: ['review-diff'], mcpServers: [], views: [], commands: 1, agents: 3, hooks: 0},
       conflicts: [],
     },
     {
@@ -161,7 +167,7 @@ function createBrowserDemoApi(): PolymuxApi {
       marketplaceName: 'claude-code-plugins',
       directory: '~/.polymux/plugins/claude-code/pdf-tools',
       enabled: false,
-      contributions: {skills: ['pdf'], mcpServers: ['pdf-server'], commands: 0, agents: 0, hooks: 2},
+      contributions: {skills: ['pdf'], mcpServers: ['pdf-server'], views: [], commands: 0, agents: 0, hooks: 2},
       // A name the demo's own skills already carry, so the warning has
       // something true to point at.
       conflicts: [{kind: 'skill', name: 'pdf', existingSource: 'official'}],
@@ -213,18 +219,18 @@ function createBrowserDemoApi(): PolymuxApi {
     },
     bridges: [
       {platform: 'whatsapp', name: 'WhatsApp', api: 'bridgev2', state: onboardingPreview ? 'logged-out' : 'connected', accounts: onboardingPreview ? [] : [{id: 'wa1', name: '+61 400 000 000', state: 'connected', error: null}], flows: onboardingPreview ? [{id: 'qr', name: 'QR Code', description: 'Scan a QR code to pair the bridge to your WhatsApp account'}, {id: 'phone', name: 'Pairing code', description: 'Enter your phone number and type the code WhatsApp shows into your phone'}] : [], setup: null, managementRoomHint: null, error: null},
-      {platform: 'telegram', name: 'Telegram', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'phone', name: 'Phone Number', description: 'Login using your Telegram phone number'}, {id: 'qr', name: 'QR Code', description: 'Login by scanning a QR code from your phone'}], setup: {fields: [{id: 'api_id', name: 'API ID', description: 'The numeric ID of your Telegram application.', helpUrl: 'https://my.telegram.org/apps', secret: false}, {id: 'api_hash', name: 'API hash', description: 'The hash shown next to it.', helpUrl: 'https://my.telegram.org/apps', secret: true}], configured: false}, managementRoomHint: null, error: null},
+      {platform: 'telegram', name: 'Telegram', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'phone', name: 'Phone Number', description: 'Login using your Telegram phone number'}, {id: 'qr', name: 'QR Code', description: 'Login by scanning a QR code from your phone'}, {id: 'bot', name: 'Bot token', description: 'Bots only · Uses a token from BotFather and does not act as your personal account'}, {id: 'manual', name: 'Manual', description: 'Advanced · Existing session credentials; the bridge recommends not using this method'}], setup: {fields: [{id: 'api_id', name: 'API ID', description: 'The numeric ID of your Telegram application.', helpUrl: 'https://my.telegram.org/apps', secret: false}, {id: 'api_hash', name: 'API hash', description: 'The hash shown next to it.', helpUrl: 'https://my.telegram.org/apps', secret: true}], configured: false}, managementRoomHint: null, error: null},
       {platform: 'signal', name: 'Signal', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Link this Mac as a Signal device by scanning a QR code'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'slack', name: 'Slack', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'token', name: 'Token', description: 'Sign in with a Slack token pair'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'slack', name: 'Slack', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'token', name: 'Auth token & cookie', description: 'Personal account · Browser tokens require the matching cookie'}, {id: 'app', name: 'Slack app', description: 'Workspace app · Limited to channels and permissions granted to the app'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'googlechat', name: 'Google Chat', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Google login', description: 'Sign in to your Google account'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'gmessages', name: 'Google Messages', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Pair with Messages for web by scanning a QR code'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'gmessages', name: 'Google Messages', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'google', name: 'Google Account', description: 'Pair with your Google account by matching the emoji shown on your phone'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'twitter', name: 'X', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'x.com', description: 'Login using cookies from x.com'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'bluesky', name: 'Bluesky', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'password', name: 'App password', description: 'Sign in with a Bluesky app password'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'gvoice', name: 'Google Voice', api: 'bridgev2', state: 'unreachable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'mautrix-gvoice is not installed on this Mac.'},
       {platform: 'zulip', name: 'Zulip', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'apitoken', name: 'API token', description: 'Login with your Zulip email and API token'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'messenger', name: 'Messenger', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'messenger', name: 'messenger.com', description: 'Login using cookies from messenger.com'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'instagram', name: 'Instagram', api: 'bridgev2', state: 'connected', accounts: [{id: 'ig1', name: '@carl.builds', state: 'connected', error: null}, {id: 'ig2', name: '@polymux', state: 'connected', error: null}], flows: [{id: 'instagram', name: 'instagram.com', description: 'Login using cookies from instagram.com'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'discord', name: 'Discord', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR Code', description: 'Scan a QR code with the Discord app'}, {id: 'token', name: 'Token', description: 'Paste a Discord account token to link it'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'discord', name: 'Discord', api: 'legacy', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR code', description: 'Recommended · Scan with the Discord mobile app; CAPTCHAs are not supported'}, {id: 'user-token', name: 'User token', description: 'Full personal account access · Manual and sensitive; may carry account risk'}, {id: 'bot-token', name: 'Bot token', description: 'Servers only · The bot sees only channels and permissions granted to it'}, {id: 'oauth-token', name: 'OAuth token', description: 'Limited scopes · Standard Discord OAuth cannot provide all personal messages'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'linkedin', name: 'LinkedIn', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Cookies', description: 'Log in with your LinkedIn account using your cookies'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'imessage', name: 'iMessage', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'local', name: 'This Mac', description: 'Read the Messages database on this Mac'}], setup: null, managementRoomHint: null, error: null},
       // No bridge to log in to: a relay against the WeChat app on this Mac,
@@ -267,19 +273,26 @@ function createBrowserDemoApi(): PolymuxApi {
   (window as unknown as {polymuxDemoReveal?: (request: WorkspaceRevealDto) => void}).polymuxDemoReveal =
     (request) => demoRevealListeners.forEach((listener) => listener(request));
   let demoChats: ChatDto[] = [
+    {id: '!wx-filehelper:local', name: 'File Transfer', platform: 'wechat', unread: 0, lastActivity: new Date(now - 1_800_000).toISOString(), preview: 'Project notes.pdf', group: false, avatarUrl: null},
     {id: '!wa-jules:local', name: 'Jules Tan', platform: 'whatsapp', unread: 2, lastActivity: new Date(now - 3_500_000).toISOString(), preview: 'Yes — 2pm works.', group: false, avatarUrl: null},
     {id: '!tg-devs:local', name: 'Dev Chat', platform: 'telegram', unread: 0, lastActivity: new Date(now - 7_200_000).toISOString(), preview: 'Shipped the build, logs look clean.', group: true, avatarUrl: null},
     {id: '!wa-family:local', name: 'Family', platform: 'whatsapp', unread: 0, lastActivity: new Date(now - 86_400_000).toISOString(), preview: 'Dinner Sunday?', group: true, avatarUrl: null},
   ];
   let demoChatMessages: ChatMessageDto[] = [
+    {id: 'wx1', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 2_100_000).toISOString(), mine: true, attachments: [{kind: 'file', url: null, name: 'Project notes.pdf', mimeType: null, size: 1_572_864}], viewIn: {app: 'WeChat', url: 'weixin://'}},
+    {id: 'wx2', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 2_000_000).toISOString(), mine: true, attachments: [{kind: 'audio', url: null, name: 'Voice message', mimeType: null, size: null, duration: 8}], viewIn: {app: 'WeChat', url: 'weixin://'}},
+    {id: 'wx3', chatId: '!wx-filehelper:local', sender: 'WeChat', body: 'A message was recalled', notice: true, sentAt: new Date(now - 1_900_000).toISOString(), mine: false},
+    {id: 'wx4', chatId: '!wx-filehelper:local', sender: 'You', body: 'My answer\n↳ Alice: Earlier text', sentAt: new Date(now - 1_800_000).toISOString(), mine: true, viewIn: {app: 'WeChat', url: 'weixin://'}},
+    {id: 'wx5', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 1_700_000).toISOString(), mine: true, linkPreview: {title: 'Useful article', description: 'A short description', url: 'https://example.test/article', source: 'example.test'}, viewIn: {app: 'WeChat', url: 'weixin://'}},
     {id: 'c1', chatId: '!wa-jules:local', sender: 'Jules Tan', body: 'Are we still on for Thursday?', sentAt: new Date(now - 3_600_000).toISOString(), mine: false},
     {id: 'c2', chatId: '!wa-jules:local', sender: 'You', body: 'Yes — 2pm works.', sentAt: new Date(now - 3_500_000).toISOString(), mine: true},
-    {id: 'c3', chatId: '!wa-family:local', sender: 'Mum', body: 'Dinner Sunday?', sentAt: new Date(now - 86_400_000).toISOString(), mine: false},
+    {id: 'c3', chatId: '!wa-family:local', sender: 'Mum', senderAvatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', body: 'Dinner Sunday?', sentAt: new Date(now - 86_400_000).toISOString(), mine: false},
     {id: 'c4', chatId: '!tg-devs:local', sender: 'Priya', body: 'Shipped the build, logs look clean.', sentAt: new Date(now - 7_200_000).toISOString(), mine: false},
     // A second message from the same person, close behind: a group names the
     // first of someone's run and lets the rest follow it.
-    {id: 'c6', chatId: '!wa-family:local', sender: 'Mum', body: 'Roast if you can make it.', sentAt: new Date(now - 86_340_000).toISOString(), mine: false},
+    {id: 'c6', chatId: '!wa-family:local', sender: 'Mum', senderAvatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', body: 'Roast if you can make it.', sentAt: new Date(now - 86_340_000).toISOString(), mine: false},
     {id: 'c7', chatId: '!wa-family:local', sender: 'Dad', body: 'I can bring dessert.', sentAt: new Date(now - 86_280_000).toISOString(), mine: false},
+    {id: 'c8', chatId: '!wa-family:local', sender: 'WeChat', body: 'Peter6C invited Percival to the group chat', notice: true, sentAt: new Date(now - 86_220_000).toISOString(), mine: false},
     // A sticker, which is carried as an image but drawn at a sticker's size.
     // A real 1x1 GIF, terminator and all. The bytes have to decode: the thread
     // now swaps an image the homeserver would not serve for a named chip, and
@@ -342,8 +355,6 @@ function createBrowserDemoApi(): PolymuxApi {
     locationEnabled: true,
     hubIncognitoMode: false,
     reasoningLevel: 'medium',
-    // The demo is a returning user; the Playwright suite drives the main UI,
-    // not first-run setup. Flip to false to preview setup in the browser.
     onboardingCompleted: !onboardingPreview,
     permissions: {microphone: true, 'screen-recording': true, accessibility: true, 'full-disk-access': true, reminders: true, calendars: true, contacts: true, photos: true, automation: true},
     appPermissionsEnabled: true,
@@ -353,12 +364,15 @@ function createBrowserDemoApi(): PolymuxApi {
     location: null,
   };
 
-  const demoUpdate = {
-    status: 'unsupported' as const,
+  const demoUpdateReady =
+    typeof location !== 'undefined' &&
+    new URLSearchParams(location.search).get('update') === 'ready';
+  const demoUpdate: AppUpdateDto = {
+    status: demoUpdateReady ? 'ready' : 'unsupported',
     version: '0.1.0',
-    latest: null,
+    latest: demoUpdateReady ? '0.1.1' : null,
     checkedAt: '2026-08-14T00:00:00.000Z',
-    message: 'Updates are managed by the desktop app.',
+    message: demoUpdateReady ? null : 'Updates are managed by the desktop app.',
   };
 
   // The demo has no way to observe a real extension, so it reports installed
@@ -377,6 +391,13 @@ function createBrowserDemoApi(): PolymuxApi {
   });
 
   const api: PolymuxApi = {
+    agentRuntime: {
+      get: async () => ({kind: 'polymux', name: 'Polymux Agent'}),
+      registry: async () => demoAcpRegistry,
+      update: async (request) => request.kind === 'polymux'
+        ? {kind: 'polymux', name: 'Polymux Agent'}
+        : {kind: 'acp', name: request.name, command: request.command, args: request.args ?? [], cwd: request.cwd ?? null},
+    },
     profiles: {
       list: async () => ({activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}),
       create: async (name) => { demoProfiles.push({id: crypto.randomUUID(), name: name.trim() || 'New profile', isDefault: false}); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
@@ -427,8 +448,6 @@ function createBrowserDemoApi(): PolymuxApi {
     window: {openWorkspaceView: async () => {}, subscribeFullscreen: () => () => {}},
     permissions: {
       ensureFirstRun: async () => ({firstRun: false, microphone: 'granted', screenRecording: 'granted'}),
-      // The onboarding preview starts from a genuine first run, so the states
-      // setup actually has to handle are the ones on screen.
       status: async () => (onboardingPreview ? 'not-determined' : 'granted'),
       requestAll: async () => [],
       request: async () => {
@@ -1354,7 +1373,7 @@ function createBrowserDemoApi(): PolymuxApi {
           marketplaceName: 'claude-code-plugins',
           directory: `~/.polymux/plugins/claude-code/${entry.name}`,
           enabled: true,
-          contributions: {skills: [], mcpServers: [], commands: 1, agents: 0, hooks: 0},
+          contributions: {skills: [], mcpServers: [], views: [], commands: 1, agents: 0, hooks: 0},
           conflicts: [],
         });
         return demoPlugins;
@@ -1383,6 +1402,7 @@ function createBrowserDemoApi(): PolymuxApi {
         return demoCatalog.filter((entry) =>
           !text || `${entry.name} ${entry.description}`.toLowerCase().includes(text));
       },
+      views: async () => [],
       upload: async () => demoPlugins,
     },
     providers: {

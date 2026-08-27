@@ -49,8 +49,9 @@
   import {flip} from 'svelte/animate';
   import {onDestroy, onMount, tick, type ComponentProps} from 'svelte';
   import {readableError} from '../../shared/errors';
+  import type {AcpRegistryEntryDto} from '@polymux/protocol';
   import {scrollFade} from '../../shared/scrollFade';
-  import type {AppUpdateDto, AppVersionDto, BrowserExtensionDto, ComputerHistoryEntryDto, ComputerHistoryStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryEntryDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProfileDto, ProfilesDto, ProviderDto, ProviderOAuthEventDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, AppPermissionKind} from '@polymux/protocol';
+  import type {AgentRuntimeDto, AppUpdateDto, AppVersionDto, BrowserExtensionDto, ComputerHistoryEntryDto, ComputerHistoryStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, GeneralSettingsDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryEntryDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProfileDto, ProfilesDto, ProviderDto, ProviderOAuthEventDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, AppPermissionKind} from '@polymux/protocol';
   import {SUPPORTED_LANGUAGES} from '@polymux/protocol';
   import {polymuxApi} from '../../api/polymux';
   import {applyTheme, type ThemeMode} from '../../shared/theme';
@@ -117,10 +118,23 @@
   let mode: Mode = initialMode || 'general';
   let profiles: ProfilesDto = {activeId: 'default', profiles: [{id: 'default', name: 'Default Profile', isDefault: true}]};
   let profileMenuOpen = false;
+  let profileActionsId = '';
+  let profileActionsPosition = {left: 0, top: 0};
   let profileCreateOpen = false;
   let profileCreateName = 'New profile';
   let profileCreateInput: HTMLInputElement;
   let switchingToDefault = false;
+  let agentRuntime: AgentRuntimeDto = {kind: 'polymux', name: 'Polymux Agent'};
+  let runtimeKind: AgentRuntimeDto['kind'] = 'polymux';
+  let runtimeName = 'ACP Agent';
+  let runtimeCommand = '';
+  let runtimeArgs = '';
+  let runtimeCwd = '';
+  let runtimePresetId = 'polymux';
+  let acpRegistry: AcpRegistryEntryDto[] = [];
+  let acpRegistryLoading = true;
+  let acpRegistryError = '';
+  let savingRuntime = false;
   $: activeProfile = profiles.profiles.find(profile => profile.id === profiles.activeId);
   $: defaultProfile = profiles.profiles.find(profile => profile.isDefault) ?? profiles.profiles[0];
   let settled = false;
@@ -188,9 +202,6 @@
   let updatingAppPermissions = false;
   /** The kind whose switch is in flight, or 'all' for the master one. */
   let updatingNotifications: NotificationKind | 'all' | '' = '';
-  /** Set when a test notification found the OS will not show one, so the row
-   * can say why nothing appeared instead of looking broken. */
-  let notificationsUnsupported = false;
   let locating = false;
   let locationError = '';
   let selectedMcp = '';
@@ -367,7 +378,7 @@
   $: skillSortOptions = [{value: 'recommended', label: $t('hub.sortRecommended')}, {value: 'updated-desc', label: $t('settings.lastEdited')}, {value: 'name-asc', label: $t('settings.sortSkillAsc')}, {value: 'name-desc', label: $t('settings.sortSkillDesc')}];
   $: MODE_HEADERS = {
     general: {title: $t('settings.tabGeneral'), description: $t('settings.generalBlurb')},
-    profile: {title: 'Profile', description: 'Manage the active configuration profile.'},
+    profile: {title: 'Agent', description: 'Choose the agent used by this profile.'},
     hub: {title: $t('workspace.hub'), description: $t('settings.hubBlurb')},
     drive: {title: $t('workspace.drive'), description: $t('settings.driveBlurb')},
     browser: {title: $t('settings.tabBrowser'), description: $t('settings.browserBlurb')},
@@ -476,7 +487,7 @@
   /* One icon per tab, all from the shared set at one size, so the rail reads as
      a single strip rather than eight separately chosen marks. */
   $: navTabs = [
-    ...(advanced ? [{id: 'profile' as Mode, icon: 'user' as IconName, label: 'Profile'}] : []),
+    ...(advanced ? [{id: 'profile' as Mode, icon: 'bot' as IconName, label: 'Agent'}] : []),
     {id: 'general' as Mode, icon: 'settings' as IconName, label: $t('settings.tabGeneral')},
     {id: 'hub' as Mode, icon: 'chat' as IconName, label: $t('workspace.hub')},
     {id: 'drive' as Mode, icon: 'drive' as IconName, label: $t('workspace.drive')},
@@ -519,6 +530,8 @@
   });
 
   onMount(() => {
+    const dismissProfileActions = () => profileActionsId = '';
+    window.addEventListener('resize', dismissProfileActions);
     void api.profiles.list().then(value => profiles = value).catch(() => {});
     const stopProfiles = api.profiles.subscribe((value) => {
       profiles = value;
@@ -526,6 +539,11 @@
       void loadAll();
     });
     void loadAll();
+    void api.agentRuntime.registry().then((entries) => {
+      acpRegistry = entries;
+      acpRegistryError = '';
+      matchRuntimePreset();
+    }).catch((reason) => acpRegistryError = readableError(reason)).finally(() => acpRegistryLoading = false);
     void loadCurrencyRates();
     // Warm the marketplace while the user is still browsing Settings so its
     // first reveal does not wait on the registry network request.
@@ -548,6 +566,7 @@
       stopSkills();
       stopOAuth();
       stopProfiles();
+      window.removeEventListener('resize', dismissProfileActions);
     };
   });
 
@@ -597,6 +616,7 @@
       return;
     }
     profiles = await api.profiles.rename(profile.id, name);
+    profileActionsId = '';
   }
   function profileNameExists(name: string, excludedId = ''): boolean {
     const candidate = name.trim() || 'New profile';
@@ -604,13 +624,87 @@
   }
   async function duplicateProfile(profile: ProfileDto): Promise<void> {
     profiles = await api.profiles.duplicate(profile.id);
+    profileActionsId = '';
   }
   async function setDefaultProfile(profile: ProfileDto): Promise<void> {
     profiles = await api.profiles.setDefault(profile.id);
+    profileActionsId = '';
   }
   async function removeProfile(profile: ProfileDto): Promise<void> {
     if (!window.confirm(`Delete “${profile.name}”? This removes its model, provider, MCP and skill configuration.`)) return;
     profiles = await api.profiles.remove(profile.id);
+    profileActionsId = '';
+  }
+  function toggleProfileActions(event: MouseEvent, profileId: string): void {
+    if (profileActionsId === profileId) {
+      profileActionsId = '';
+      return;
+    }
+    const trigger = event.currentTarget as HTMLElement;
+    const parentMenu = trigger.closest('.profile-menu')?.getBoundingClientRect();
+    const triggerRect = trigger.getBoundingClientRect();
+    // The menu hugs its labels; this conservative bound is used only to decide
+    // whether it needs to flip before the menu is mounted and measurable.
+    const width = 180;
+    const height = 122;
+    const gap = 7;
+    const viewportGap = 8;
+    const preferredLeft = (parentMenu?.right ?? triggerRect.right) + gap;
+    const left = preferredLeft + width <= window.innerWidth - viewportGap
+      ? preferredLeft
+      : Math.max(viewportGap, (parentMenu?.left ?? triggerRect.left) - width - gap);
+    const centredTop = triggerRect.top + triggerRect.height / 2 - height / 2;
+    profileActionsPosition = {
+      left,
+      top: Math.max(viewportGap, Math.min(centredTop, window.innerHeight - height - viewportGap)),
+    };
+    profileActionsId = profileId;
+  }
+  async function saveAgentRuntime(): Promise<void> {
+    savingRuntime = true;
+    try {
+      agentRuntime = runtimeKind === 'polymux'
+        ? await api.agentRuntime.update({kind: 'polymux'})
+        : await api.agentRuntime.update({
+            kind: 'acp',
+            name: runtimeName.trim() || 'ACP Agent',
+            command: runtimeCommand.trim(),
+            args: runtimeArgs.split('\n').map((item) => item.trim()).filter(Boolean),
+            cwd: runtimeCwd.trim() || null,
+          });
+      error = '';
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      savingRuntime = false;
+    }
+  }
+  function selectRuntimePreset(entry: AcpRegistryEntryDto): void {
+    if (!entry.command) return;
+    runtimeKind = 'acp';
+    runtimePresetId = entry.id;
+    runtimeName = entry.name;
+    runtimeCommand = entry.command;
+    runtimeArgs = entry.args.join('\n');
+    runtimeCwd = '';
+  }
+  function selectCustomRuntime(): void {
+    runtimeKind = 'acp';
+    runtimePresetId = 'custom';
+    runtimeName = agentRuntime.kind === 'acp' ? agentRuntime.name : 'ACP Agent';
+    runtimeCommand = agentRuntime.kind === 'acp' ? agentRuntime.command : '';
+    runtimeArgs = agentRuntime.kind === 'acp' ? agentRuntime.args.join('\n') : '';
+    runtimeCwd = agentRuntime.kind === 'acp' ? agentRuntime.cwd ?? '' : '';
+  }
+  function matchRuntimePreset(): void {
+    if (agentRuntime.kind !== 'acp') {
+      runtimePresetId = 'polymux';
+      return;
+    }
+    const configured = agentRuntime;
+    const match = acpRegistry.find(entry => entry.command === configured.command
+      && entry.args.join('\n') === configured.args.join('\n'));
+    runtimePresetId = match?.id ?? 'custom';
   }
   /** Collapsing is per agent and reassigns the set, since Svelte tracks the
    * binding rather than the mutation. */
@@ -950,7 +1044,15 @@
   async function loadAll(): Promise<void> {
     loading = !settingsSnapshot.loaded;
     try {
-      [mcpServers, skills, plugins, models, providers, memory, computerHistory, general, extensionStatus] = await Promise.all([api.mcp.list(), api.skills.list(), api.plugins.list(), api.models.list(), api.providers.list(), api.memory.status(), api.computerHistory.status(), api.general.get(), api.extension.status()]);
+      [mcpServers, skills, plugins, models, providers, memory, computerHistory, general, extensionStatus, agentRuntime] = await Promise.all([api.mcp.list(), api.skills.list(), api.plugins.list(), api.models.list(), api.providers.list(), api.memory.status(), api.computerHistory.status(), api.general.get(), api.extension.status(), api.agentRuntime.get()]);
+      runtimeKind = agentRuntime.kind;
+      if (agentRuntime.kind === 'acp') {
+        runtimeName = agentRuntime.name;
+        runtimeCommand = agentRuntime.command;
+        runtimeArgs = agentRuntime.args.join('\n');
+        runtimeCwd = agentRuntime.cwd ?? '';
+      }
+      matchRuntimePreset();
       general = {...general, pinnedViews: currentPinnedViews};
       [computerHistoryEntries, memoryEntries] = await Promise.all([api.computerHistory.entries({limit: 120}), api.memory.entries()]);
       void loadSourceIcons(computerHistory);
@@ -1615,17 +1717,6 @@
       error = readableError(reason);
     } finally {
       updatingNotifications = '';
-    }
-  }
-
-  /** Proves the OS half of this works, which no switch here can promise on
-   * its own — the grant lives in System Settings, not in the app. */
-  async function sendTestNotification(): Promise<void> {
-    try {
-      notificationsUnsupported = (await api.general.testNotification()) === 'unsupported';
-      error = '';
-    } catch (reason) {
-      error = readableError(reason);
     }
   }
 
@@ -2818,7 +2909,10 @@
    * press lands outside it, not once the button is released. */
   function dismissRailMenu(event: Event): void {
     const insideProfileSwitcher = event.target instanceof Element && !!event.target.closest('.profile-switcher');
-    if (!insideProfileSwitcher) profileMenuOpen = false;
+    if (!insideProfileSwitcher) {
+      profileMenuOpen = false;
+      profileActionsId = '';
+    }
     if (pressKeepsRailMenu(event.target)) return;
     openRailMenu = null;
     skillAddMenuOpen = false;
@@ -2843,6 +2937,7 @@
       event.preventDefault();
       event.stopPropagation();
       profileMenuOpen = false;
+      profileActionsId = '';
       return;
     }
     if (openRailMenu) {
@@ -2956,13 +3051,24 @@
     <div class="profile-switcher">
       {#if advanced && profileMenuOpen}
         <div class="profile-menu" role="menu" aria-label="Profiles">
-          <div class="profile-list">
+          <div class="profile-list" onscroll={() => profileActionsId = ''}>
             {#each visibleProfiles as profile (profile.id)}
               <div class="profile-row" class:active={profile.id === profiles.activeId}>
                 <button type="button" class="profile-select" role="menuitemradio" aria-checked={profile.id === profiles.activeId} onclick={() => void selectProfile(profile.id)}>
                   <span>{profile.name}</span>
                   {#if profile.id === profiles.activeId}<Icon name="check" size={13}/>{/if}
                 </button>
+                <button type="button" class="profile-actions-trigger" class:open={profileActionsId === profile.id} aria-label="Options" aria-haspopup="menu" aria-expanded={profileActionsId === profile.id} onclick={(event) => toggleProfileActions(event, profile.id)}>
+                  <Icon name="more" size={15}/>
+                </button>
+                {#if profileActionsId === profile.id}
+                  <div class="polymux-dropdown-menu profile-actions-menu" role="menu" aria-label={`Actions for ${profile.name}`} style:left={`${profileActionsPosition.left}px`} style:top={`${profileActionsPosition.top}px`}>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => void renameProfile(profile)}><Icon name="edit" size={14}/><span>Rename</span></button>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => void duplicateProfile(profile)}><Icon name="copy" size={14}/><span>Duplicate</span></button>
+                    <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={profile.isDefault} onclick={() => void setDefaultProfile(profile)}><Icon name={profile.isDefault ? 'check' : 'pin'} size={14}/><span>{profile.isDefault ? 'Default profile' : 'Set as default profile'}</span></button>
+                    <button type="button" class="polymux-dropdown-item danger" role="menuitem" disabled={profile.isDefault || profile.id === 'default'} onclick={() => void removeProfile(profile)}><Icon name="trash" size={14}/><span>Delete</span></button>
+                  </div>
+                {/if}
               </div>
             {/each}
           </div>
@@ -2977,7 +3083,7 @@
         </div>
       {/if}
       {#if advanced}
-        <button type="button" class="profile-trigger" aria-expanded={profileMenuOpen} onclick={() => profileMenuOpen = !profileMenuOpen}>
+        <button type="button" class="profile-trigger" aria-expanded={profileMenuOpen} onclick={() => {profileMenuOpen = !profileMenuOpen; profileActionsId = '';}}>
           <span>{activeProfile?.name ?? defaultProfile?.name ?? 'Default Profile'}</span>
         </button>
       {:else}
@@ -2998,35 +3104,35 @@
     {#if mode === 'profile'}
       <div class="general-options profile-options" role="tabpanel">
         {#if activeProfile}
-          <section class="general-group">
-            <h3>Profile</h3>
-            <section class="general-setting-row profile-identity-row">
-              <span class="general-setting-copy"><h4>{activeProfile.name}</h4><small>Active profile</small></span>
-              <button type="button" class="profile-text-action" onclick={() => void renameProfile(activeProfile)}>Rename</button>
-            </section>
-          </section>
-          <section class="general-group">
-            <h3>Profile actions</h3>
-            <section class="general-setting-row">
-              <span class="general-setting-copy"><h4>Default Profile</h4><small>Used whenever advanced mode is off.</small></span>
-              {#if activeProfile.isDefault}
-                <span class="profile-default-status">Set</span>
-              {:else}
-                <button type="button" class="profile-text-action" onclick={() => void setDefaultProfile(activeProfile)}>Set</button>
-              {/if}
-            </section>
-            <section class="general-setting-row">
-              <span class="option-mark large"><Icon name="copy" size={18}/></span>
-              <span class="general-setting-copy"><h4>Duplicate profile</h4><small>Creates a separate copy of this profile’s configuration.</small></span>
-              <button type="button" class="profile-text-action" onclick={() => void duplicateProfile(activeProfile)}>Duplicate</button>
-            </section>
-            {#if !activeProfile.isDefault && activeProfile.id !== 'default'}
-              <section class="general-setting-row">
-                <span class="option-mark large"><Icon name="trash" size={18}/></span>
-                <span class="general-setting-copy"><h4>Delete profile</h4><small>Permanently removes this profile’s configuration.</small></span>
-                <button type="button" class="profile-text-action danger" onclick={() => void removeProfile(activeProfile)}>Delete</button>
-              </section>
+          <section class="general-group runtime-group">
+            <h3>Agent runtime</h3>
+            <div class="runtime-grid" role="radiogroup" aria-label="Agent runtime">
+              <button type="button" class="runtime-card" class:active={runtimePresetId === 'polymux'} role="radio" aria-checked={runtimePresetId === 'polymux'} onclick={() => { runtimeKind = 'polymux'; runtimePresetId = 'polymux'; }}>
+                <span class="runtime-card-icon polymux"><img src="polymux.svg" alt="" /></span><strong>Polymux</strong><small>Built in</small>
+              </button>
+              {#each acpRegistry as entry (entry.id)}
+                <button type="button" class="runtime-card" class:active={runtimePresetId === entry.id} class:unavailable={!entry.command} role="radio" aria-checked={runtimePresetId === entry.id} aria-disabled={!entry.command} title={!entry.command ? 'Choose Custom to set the installed command' : undefined} onclick={() => selectRuntimePreset(entry)}>
+                  <span class="runtime-card-icon">{#if entry.icon}<img src={entry.icon} alt="" />{:else}{entry.name.slice(0, 1)}{/if}</span>
+                  <strong>{entry.name}</strong><small>{entry.command ? `v${entry.version}` : 'Custom command'}</small>
+                </button>
+              {/each}
+              <button type="button" class="runtime-card" class:active={runtimePresetId === 'custom'} role="radio" aria-checked={runtimePresetId === 'custom'} onclick={selectCustomRuntime}>
+                <span class="runtime-card-icon custom">+</span><strong>Custom</strong><small>Name and command</small>
+              </button>
+            </div>
+            {#if acpRegistryLoading}<p class="runtime-registry-status">Loading ACP agents…</p>{/if}
+            {#if acpRegistryError}<p class="runtime-registry-status">{acpRegistryError}</p>{/if}
+            {#if runtimeKind === 'acp' && runtimePresetId === 'custom'}
+              <label class="runtime-field"><span>Name</span><input bind:value={runtimeName} placeholder="Codex" /></label>
+              <label class="runtime-field"><span>Command</span><input bind:value={runtimeCommand} placeholder="codex-acp" spellcheck="false" /></label>
+              <label class="runtime-field"><span>Arguments</span><textarea bind:value={runtimeArgs} placeholder="One argument per line" spellcheck="false"></textarea></label>
+              <label class="runtime-field"><span>Working folder</span><input bind:value={runtimeCwd} placeholder="Use Polymux folder" spellcheck="false" /></label>
+              <p class="runtime-note">Uses this profile’s enabled MCP connections.</p>
             {/if}
+            <div class="runtime-save-row">
+              <span>{agentRuntime.name} is active</span>
+              <button type="button" class="profile-text-action" disabled={savingRuntime || runtimeKind === 'acp' && !runtimeCommand.trim()} onclick={() => void saveAgentRuntime()}>{savingRuntime ? 'Saving…' : 'Use agent'}</button>
+            </div>
           </section>
         {/if}
       </div>
@@ -3174,10 +3280,7 @@
           <h3>{$t('settings.groupNotifications')}</h3>
           <section class="general-setting-row">
             <span class="option-mark large"><Icon name="bell" size={18}/></span>
-            <span class="general-setting-copy"><h4>{$t('settings.notifications')}</h4><small>{notificationsUnsupported ? $t('settings.notificationsUnsupported') : $t('settings.notificationsHint')}</small></span>
-            {#if general?.notificationsEnabled}
-              <button type="button" class="permission-retry" onclick={() => void sendTestNotification()}>{$t('settings.notificationTest')}</button>
-            {/if}
+            <span class="general-setting-copy"><h4>{$t('settings.notifications')}</h4><small>{$t('settings.notificationsHint')}</small></span>
             {#if general}<button type="button" class:enabled={general.notificationsEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableNotifications')} aria-checked={general.notificationsEnabled} disabled={updatingNotifications === 'all'} onclick={() => void setNotificationsEnabled(!general!.notificationsEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
           <!-- The master switch above owns these: with it off they are greyed
@@ -3435,7 +3538,7 @@
                 {/if}
               </div>
             {:else if mode === 'skills'}
-              <button type="button" class:active={installingSkill} class="rail-tool" aria-label={$t('settings.installFromVercel')} data-tooltip-label={$t('settings.vercelSkills')} onclick={beginInstallSkill}><Icon name="storefront" size={15}/></button>
+              <button type="button" class:active={installingSkill} class="rail-tool" aria-label={$t('settings.installFromVercel')} data-tooltip-label={$t('settings.marketplace')} onclick={beginInstallSkill}><Icon name="storefront" size={15}/></button>
               <div class="rail-tool-wrap">
                 <button type="button" class:active={adding === 'skills' || skillAddMenuOpen} class="rail-tool" aria-label={$t('settings.addSkills')} aria-haspopup="menu" aria-expanded={skillAddMenuOpen} data-tooltip-label={$t('settings.addSkills')} onclick={() => { openRailMenu = null; skillAddMenuOpen = !skillAddMenuOpen; }}><Icon name="plus" size={15}/></button>
                 {#if skillAddMenuOpen}
@@ -3546,6 +3649,7 @@
           <div class="options-resources">
             <section><header><h4>{$t('settings.tabSkills')}</h4><span>{plugin.contributions.skills.length}</span></header><ul use:scrollFade={plugin.contributions.skills}>{#each plugin.contributions.skills as name}<li><Icon name="sparkles" size={14}/>{name}</li>{:else}<li class="muted">{$t('settings.pluginNoSkills')}</li>{/each}</ul></section>
             <section><header><h4>MCP</h4><span>{plugin.contributions.mcpServers.length}</span></header><ul use:scrollFade={plugin.contributions.mcpServers}>{#each plugin.contributions.mcpServers as name}<li><Icon name="mcp" size={14}/>{name}</li>{:else}<li class="muted">{$t('settings.pluginNoMcp')}</li>{/each}</ul></section>
+            <section><header><h4>Views</h4><span>{plugin.contributions.views.length}</span></header><ul use:scrollFade={plugin.contributions.views}>{#each plugin.contributions.views as name}<li><Icon name="panel" size={14}/>{name}</li>{:else}<li class="muted">No views</li>{/each}</ul></section>
           </div>
           {#if plugin.contributions.commands || plugin.contributions.agents || plugin.contributions.hooks}
             <!-- Counted rather than listed: Polymux has no surface for these
@@ -3909,7 +4013,7 @@
   /* The window has no title bar of its own while this is up, so the top strip
      stays draggable. It sits under the controls, which opt back out. */
   .options-page-drag{position:absolute;z-index:0;top:0;right:0;left:0;height:var(--app-topbar-height);-webkit-app-region:drag}
-  .options-nav{position:relative;z-index:1;min-height:0;display:flex;flex-direction:column;gap:10px;padding:0 12px 14px;border-right:1px solid var(--neutral-200);-webkit-app-region:no-drag}
+  .options-nav{position:relative;z-index:2;min-height:0;display:flex;flex-direction:column;gap:10px;padding:0 12px 14px;border-right:1px solid var(--neutral-200);-webkit-app-region:no-drag}
   /* Clears the traffic lights instead of dropping below them; full screen zeroes
      --chrome-inset and the label slides to the window edge, exactly as the new
      chat and search controls do. */
@@ -3948,12 +4052,18 @@
   .profile-select{min-width:0;height:32px;display:flex;flex:1;align-items:center;gap:7px;border:0;padding:0 3px 0 6px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11.5px;text-align:left}
   .profile-select>span:first-child{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .profile-select>:global(svg){flex:none;margin-left:auto}
+  .profile-actions-trigger{width:25px;height:25px;display:grid;flex:none;place-items:center;border:0;padding:0;background:transparent;color:var(--neutral-400);cursor:pointer;transition:color .12s ease}
+  .profile-actions-trigger:hover,.profile-actions-trigger:focus-visible,.profile-actions-trigger.open{outline:0;color:var(--neutral-950)}
+  .profile-actions-menu{position:fixed;z-index:1100;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);display:flex;flex-direction:column;overflow-y:auto;box-sizing:border-box;scrollbar-width:none}
+  .profile-actions-menu::-webkit-scrollbar{display:none}
+  .profile-actions-menu :global(svg){flex:none}
+  .profile-actions-menu .polymux-dropdown-item span{white-space:nowrap}
+  .profile-actions-menu .danger{color:var(--danger-600,#c74848)}
   .profile-options{padding-top:2px}
-  .profile-text-action,.profile-default-status{height:28px;display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--app-surface);font:inherit;font-size:11px;font-weight:550}
-  .profile-text-action{color:var(--neutral-700);cursor:pointer}
-  .profile-default-status{color:var(--neutral-400)}
+  .profile-text-action{height:28px;display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11px;font-weight:550}
   .profile-text-action:hover,.profile-text-action:focus-visible{outline:0;border-color:var(--neutral-300);color:var(--neutral-950)}
-  .profile-text-action.danger{color:var(--danger-600,#c74848)}
+  .runtime-group{padding-bottom:12px}.runtime-field{display:grid;grid-template-columns:90px minmax(0,1fr);align-items:center;gap:10px;min-height:42px;border-bottom:1px solid var(--neutral-200);color:var(--neutral-600);font-size:10.5px}.runtime-field input,.runtime-field textarea{width:100%;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:8px;background:var(--app-surface);color:var(--neutral-900);font:inherit;font-size:10.5px}.runtime-field input{height:28px;padding:0 9px}.runtime-field textarea{min-height:54px;margin:6px 0;padding:7px 9px;resize:vertical}.runtime-field input:focus,.runtime-field textarea:focus{outline:0;border-color:var(--neutral-400)}.runtime-note{margin:8px 0 0;color:var(--neutral-500);font-size:10.5px}.runtime-save-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:10px;color:var(--neutral-500);font-size:10.5px}.profile-text-action:disabled{cursor:default;opacity:.45}
+  .runtime-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:7px;max-height:294px;overflow-y:auto;margin:10px 0 8px;padding:1px;scrollbar-width:none}.runtime-grid::-webkit-scrollbar{display:none}.runtime-card{min-width:0;height:82px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:3px;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:10px;padding:9px;background:var(--app-surface);color:var(--neutral-600);cursor:pointer;text-align:left;font:inherit;transition:border-color .15s ease,color .15s ease,background .15s ease}.runtime-card:hover,.runtime-card:focus-visible{outline:0;border-color:var(--neutral-400);color:var(--neutral-950)}.runtime-card.active{border-color:var(--neutral-700);background:var(--neutral-100);color:var(--neutral-950)}.runtime-card.unavailable{opacity:.5}.runtime-card-icon{width:18px;height:18px;display:grid;place-items:center;overflow:hidden;border-radius:5px;background:var(--neutral-200);color:var(--neutral-700);font-size:10px;font-weight:650}.runtime-card-icon img{width:14px;height:14px;object-fit:contain}.runtime-card-icon.polymux{overflow:visible;border-radius:0;background:transparent}.runtime-card-icon.polymux img{width:18px;height:18px}.runtime-card-icon.custom{background:transparent;color:var(--neutral-700);font-size:18px;font-weight:400}.runtime-card strong,.runtime-card small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runtime-card strong{font-size:11px;font-weight:570}.runtime-card small{color:var(--neutral-400);font-size:9.5px}.runtime-registry-status{margin:8px 0;color:var(--neutral-500);font-size:10.5px}:global(:root[data-theme="dark"]) .runtime-card-icon.polymux img{filter:invert(1)}
   .options-page-content{position:relative;z-index:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;-webkit-app-region:no-drag}
   /* A plain cross-fade: the page arrives over the app in place, and a fade that
      also scaled would read as a second, contradictory movement. */

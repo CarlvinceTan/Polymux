@@ -14,6 +14,7 @@
 
   /** Which source the rail has selected: a platform, or a mailbox folder. */
   export type Source =
+    | {kind: 'all'}
     | {kind: 'platform'; platform: string; account?: string}
     | {kind: 'mail'; account: string; folder: string};
 
@@ -270,11 +271,11 @@
   import {readableError} from '../../shared/errors';
   import {displayTime} from '../../shared/displayTime';
   import Icon from '../../shared/components/Icon.svelte';
-  import PlatformLogo from '../../shared/components/PlatformLogo.svelte';
+  import PlatformLogo, {type Platform} from '../../shared/components/PlatformLogo.svelte';
   import {MAIN_UI_ICON_STROKE_WIDTH, RAIL_TILE_SIZE} from '../../shared/layout/iconSizing';
   import {activeLocale, t, translate} from '../../../i18n';
   import {applyOrder, loadRailOrder, moveBy, saveAccountOrder, saveSourceOrder} from './hubRailOrder';
-  import {arrangeChats, hiddenChats, loadChatPrefs, toggleHidden, togglePinned} from './chatPrefs';
+  import {arrangeChats, hiddenChats, loadChatPrefs, toggleHidden, toggleMuted, togglePinned} from './chatPrefs';
   import FileAttachment from '../chat/FileAttachment.svelte';
 
   /**
@@ -510,6 +511,37 @@
     if (!anchor) return;
     event.preventDefault();
     if (/^https?:\/\//i.test(href)) void api.browser.openExternal(href);
+  }
+
+  /**
+   * Splits authored text without turning it into HTML. Linkification belongs
+   * to the shared renderer, while escaping remains Svelte's responsibility.
+   */
+  function messageParts(body: string): Array<{text: string; url: string | null}> {
+    const parts: Array<{text: string; url: string | null}> = [];
+    const links = /https?:\/\/[^\s<>]+/gi;
+    let from = 0;
+    for (const match of body.matchAll(links)) {
+      const index = match.index ?? 0;
+      if (index > from) parts.push({text: body.slice(from, index), url: null});
+      // Sentence punctuation is not part of the URL. Balanced `)` remains,
+      // while the common trailing one in prose stays ordinary text.
+      let url = match[0];
+      let trailing = '';
+      while (/[.,!?;:]$/.test(url)) {
+        trailing = url.slice(-1) + trailing;
+        url = url.slice(0, -1);
+      }
+      if (url.endsWith(')') && (url.match(/\(/g)?.length ?? 0) < (url.match(/\)/g)?.length ?? 0)) {
+        trailing = ')' + trailing;
+        url = url.slice(0, -1);
+      }
+      parts.push({text: url, url});
+      if (trailing) parts.push({text: trailing, url: null});
+      from = index + match[0].length;
+    }
+    if (from < body.length) parts.push({text: body.slice(from), url: null});
+    return parts.length > 0 ? parts : [{text: body, url: null}];
   }
 
   $: accounts = status?.email.accounts ?? [];
@@ -753,6 +785,9 @@
   $: platformChats = chatsFor(source, chats, chatSearch);
   $: visibleChats = arrangeChats(platformChats, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
   $: hiddenRows = hiddenChats(platformChats, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
+  type UnifiedRow =
+    | {kind: 'chat'; at: string; chat: ChatDto}
+    | {kind: 'mail'; at: string; account: string; folder: string; envelope: MailEnvelopeDto};
   // A group with nothing left in it takes its expanded state with it, so it
   // does not reappear open the next time something is hidden.
   $: if (hiddenRows.length === 0) hiddenOpen = false;
@@ -1084,24 +1119,9 @@
         // rather than choosing somewhere else to be.
         await refreshOpen();
       } else {
-        // Open on whatever sits at the top of the rail. The rail is the user's
-        // own arrangement — they can drag a source to the top — so the first
-        // row is the answer to "where should this open", and picking a
-        // different one by rule would contradict the order they set.
-        //
-        // The rows are derived from `status`, which was only just assigned, so
-        // this waits a tick for that to be reflected rather than reading the
-        // arrangement the hub had a moment ago.
-        await tick();
-        const top = railRows[0];
-        const first = top?.accounts[0];
-        if (top?.platform === 'mail') {
-          if (first) await selectMail(first.id);
-        }
-        // A source with one account selects it; one with several opens on the
-        // platform as a whole and stays folded, because expanding it here would
-        // make a choice the user has not made yet.
-        else if (top) selectPlatform(top.platform, top.accounts.length === 1 ? first?.id : undefined);
+        // This fixed overview is the stable landing place; the rows beneath it
+        // remain in whatever order the user chose.
+        source = {kind: 'all'};
       }
       error = '';
       // Warms what the user is most likely to open next, behind whatever is on
@@ -1207,6 +1227,23 @@
     composing = false;
   }
 
+  function selectAll(): void {
+    source = {kind: 'all'};
+    activeChat = null;
+    chatMessages = [];
+    openMail = null;
+    openEnvelope = null;
+    composing = false;
+    chatSearch = '';
+    void refreshChats();
+    void prefetchMail();
+  }
+
+  async function openUnifiedMail(row: Extract<UnifiedRow, {kind: 'mail'}>): Promise<void> {
+    await selectMail(row.account, row.folder);
+    await readMail(envelopes.find((item) => item.id === row.envelope.id) ?? row.envelope);
+  }
+
   function toggleGroup(key: string): void {
     openGroups = {...openGroups, [key]: !openGroups[key]};
   }
@@ -1248,6 +1285,48 @@
    * accounts exist, and kept up to date by whatever the list loads afterwards.
    */
   const mailCache = session.mailboxes;
+  /** Map mutations are invisible to Svelte; this makes newly warmed inboxes
+   * participate in the combined list immediately. */
+  let mailCacheRevision = 0;
+
+  /** One recency-ordered overview assembled from the same chat rows and cached
+   * inbox pages the source-specific lists use. */
+  $: unifiedRows = mailCacheRevision >= 0 && source?.kind === 'all'
+    ? [
+        ...chats
+          .filter((chat) => !chatPrefs.hidden.includes(chat.id) || activeChat?.id === chat.id)
+          .map((chat): UnifiedRow => ({kind: 'chat', at: chat.lastActivity ?? '', chat})),
+        ...[...mailCache.entries()].flatMap(([key, mailbox]) => {
+          const split = key.indexOf('|');
+          const account = key.slice(0, split);
+          const folder = key.slice(split + 1);
+          return mailbox.envelopes.map((envelope): UnifiedRow => ({
+            kind: 'mail', at: envelope.date, account, folder, envelope,
+          }));
+        }),
+      ]
+        .filter((row) => {
+          const needle = chatSearch.trim().toLowerCase();
+          if (!needle) return true;
+          return row.kind === 'chat'
+            ? row.chat.name.toLowerCase().includes(needle) || (row.chat.preview ?? '').toLowerCase().includes(needle)
+            : sender(row.envelope).toLowerCase().includes(needle) ||
+                row.envelope.subject.toLowerCase().includes(needle) ||
+                (row.envelope.preview ?? '').toLowerCase().includes(needle);
+        })
+        .sort(compareUnifiedRows)
+    : [];
+
+  function compareUnifiedRows(a: UnifiedRow, b: UnifiedRow): number {
+    const pinnedA = a.kind === 'chat' ? chatPrefs.pinned.indexOf(a.chat.id) : -1;
+    const pinnedB = b.kind === 'chat' ? chatPrefs.pinned.indexOf(b.chat.id) : -1;
+    if (pinnedA >= 0 || pinnedB >= 0) {
+      if (pinnedA < 0) return 1;
+      if (pinnedB < 0) return -1;
+      return pinnedA - pinnedB;
+    }
+    return (mailDate(b.at)?.getTime() ?? 0) - (mailDate(a.at)?.getTime() ?? 0);
+  }
 
   function cacheKey(account: string, folder: string): string {
     return `${account}|${folder}`;
@@ -1278,6 +1357,7 @@
           page: 1,
           moreToLoad: batch.length === PAGE_SIZE,
         });
+        mailCacheRevision += 1;
       } catch {
         // Nothing to report: the mailbox is simply not warmed.
       }
@@ -1441,6 +1521,10 @@
     if (typeof document !== 'undefined' && document.hidden) return;
     await refreshSources();
     if (activeChat) await refreshChat();
+    else if (source?.kind === 'all') {
+      await refreshChats();
+      await prefetchMail();
+    }
     else if (source?.kind === 'mail') await refreshEnvelopes();
     else if (source?.kind === 'platform') await refreshChats();
   }
@@ -1822,7 +1906,10 @@
    * reaction lands under the pointer rather than a round trip later.
    */
   async function react(message: ChatMessageDto, key: string): Promise<void> {
-    if (!activeChat) return;
+    // WeChat exposes no reaction write route. A local-only reaction looks
+    // delivered while the other person never receives it, which is worse than
+    // leaving the unsupported action out of this platform's menu.
+    if (!activeChat || activeChat.platform === 'wechat') return;
     const chatId = activeChat.id;
     const existing = (message.reactions ?? []).find((item) => item.key === key);
     reactingTo = '';
@@ -2605,6 +2692,14 @@
     onpointerup={releaseRow}
     onpointercancel={releaseRow}
   >
+    <!-- Fixed outside the draggable list: no pointer or keyboard reorder can
+         move a platform above the combined overview. -->
+    <div class="hub-view-source-row hub-view-source-fixed">
+      <button type="button" class="hub-view-source" class:active={source?.kind === 'all'} onclick={selectAll}>
+        <Icon name="platforms" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        <span>{$t('hub.allPlatforms')}</span>
+      </button>
+    </div>
     <!-- Rows are draggable: the rail's order is the user's, kept in
          localStorage, and ⌥↑/⌥↓ on a focused row does the same thing without a
          pointer. A drag stays in its own list — sources past sources, accounts
@@ -2917,6 +3012,34 @@
           {/if}
         {/if}
       </ul>
+    {:else if source?.kind === 'all'}
+      <div class="hub-view-list-head">
+        <input bind:value={chatSearch} type="search" placeholder={$t('hub.searchAllPlatforms')} aria-label={$t('hub.searchAllPlatforms')} />
+      </div>
+      <ul class="hub-view-rows">
+        {#each unifiedRows as row (`${row.kind}:${row.kind === 'chat' ? row.chat.id : `${row.account}:${row.folder}:${row.envelope.id}`}`)}
+          <li>
+            {#if row.kind === 'chat'}
+              {@render chatRow(row.chat, false, true)}
+            {:else}
+              <button type="button" class="hub-view-row" class:unread={!row.envelope.seen} onclick={() => void openUnifiedMail(row)}>
+                <span class="hub-view-chat-avatar-wrap" aria-hidden="true">
+                  <span class="hub-view-chat-avatar placeholder">{sender(row.envelope).trim().charAt(0).toUpperCase()}</span>
+                  <span class="hub-view-platform-badge"><PlatformLogo platform="mail" size={12} /></span>
+                </span>
+                <span class="hub-view-chat-copy">
+                  <span class="hub-view-row-top"><strong>{sender(row.envelope)}</strong><em>{when(row.envelope.date)}</em></span>
+                  <span class="hub-view-row-subject">{row.envelope.subject}</span>
+                  <span class="hub-view-chat-preview">{row.envelope.preview ?? ''}</span>
+                </span>
+              </button>
+            {/if}
+          </li>
+        {:else}
+          <li class="hub-view-empty">{chatSearch.trim() ? $t('common.noMatches') : $t('hub.noConversations')}</li>
+        {/each}
+      </ul>
+      {@render chatContextMenu()}
     {:else if source?.kind === 'platform'}
       <!-- The same head, and the same bare search field, the mailbox list
            above uses: the two halves of the hub are one list with different
@@ -2983,36 +3106,7 @@
           {/if}
         {/if}
       </ul>
-      {#if chatMenu}
-        {@const target = chatMenu.chat}
-        {@const pinned = chatPrefs.pinned.includes(target.id)}
-        {@const hidden = chatPrefs.hidden.includes(target.id)}
-        <!-- Fixed to the viewport rather than to the list, which scrolls: a
-             menu that scrolled with it would drift off the row it belongs to. -->
-        <div
-          class="polymux-dropdown-menu hub-view-chat-menu"
-          role="menu"
-          bind:this={chatMenuEl}
-          style:left={`${chatMenu.x}px`}
-          style:top={`${chatMenu.y}px`}
-          style:visibility={chatMenu.placed ? 'visible' : 'hidden'}
-        >
-          <button
-            class="polymux-dropdown-item"
-            role="menuitem"
-            onclick={() => { chatPrefs = togglePinned(chatPrefs, target.id); closeChatMenu(); }}
-          ><Icon name={pinned ? 'pin-off' : 'pin'} size={14} /><span
-            >{pinned ? $t('hub.unpinChat') : $t('hub.pinChat')}</span
-          ></button>
-          <button
-            class="polymux-dropdown-item"
-            role="menuitem"
-            onclick={() => { chatPrefs = toggleHidden(chatPrefs, target.id); closeChatMenu(); }}
-          ><Icon name={hidden ? 'eye' : 'eye-off'} size={14} /><span
-            >{hidden ? $t('hub.unhideChat') : $t('hub.hideChat')}</span
-          ></button>
-        </div>
-      {/if}
+      {@render chatContextMenu()}
     {:else}
       <p class="hub-view-empty">
         {#if loading}
@@ -3359,6 +3453,9 @@
       </header>
       <div class="hub-view-thread" bind:this={threadEl} onscroll={onThreadScroll}>
         {#each chatMessages as message, index (message.id)}
+          {#if message.notice}
+            <p class="hub-view-notice">{message.body}</p>
+          {:else}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="hub-view-bubble-row"
@@ -3371,7 +3468,12 @@
                A bridged sender id reads `@whatsapp_614…:server`, which names
                nobody, so the name the bridge resolved is what shows. -->
           {#if !message.mine && activeChat.group && startsSenderRun(index)}
-            <span class="hub-view-bubble-who">{senderLabel(message)}</span>
+            <span class="hub-view-bubble-who">
+              {#if message.senderAvatarUrl}
+                <img src={message.senderAvatarUrl} alt="" loading="lazy" />
+              {/if}
+              <span>{senderLabel(message)}</span>
+            </span>
           {/if}
           <div class="hub-view-bubble" class:mine={message.mine}>
             {#if quoted(message)}
@@ -3384,8 +3486,16 @@
             {:else if message.replyTo}
               <span class="hub-view-quote">{$t('hub.replyToEarlier')}</span>
             {/if}
-            {#each message.attachments ?? [] as attachment (attachment.url)}
-              {#if brokenMedia.has(attachment.url)}
+            {#each message.attachments ?? [] as attachment (`${attachment.kind}:${attachment.url ?? attachment.name}`)}
+              {#if !attachment.url}
+                <!-- The source network described this attachment but did not
+                     expose bytes. Keep its native shape; `viewIn` below is the
+                     route to the source app. -->
+                <span class="hub-view-bubble-file">
+                  <Icon name={attachment.kind === 'audio' ? 'mic' : attachment.kind === 'video' ? 'video' : 'attach'} size={13} />
+                  {attachment.name}
+                </span>
+              {:else if brokenMedia.has(attachment.url)}
                 <!-- The homeserver would not serve these bytes — a picture the
                      bridge referenced but never carried across. A named chip
                      says what was here; the blank full-size frame said
@@ -3403,7 +3513,7 @@
                   width={attachment.width ?? undefined}
                   height={attachment.height ?? undefined}
                   loading="lazy"
-                  onerror={(event) => retryMedia(event, attachment.url)}
+                  onerror={(event) => retryMedia(event, attachment.url!)}
                 />
               {:else if attachment.kind === 'audio'}
                 <!-- Voice notes are most of what arrives on these networks, so
@@ -3413,7 +3523,7 @@
                   controls
                   preload="metadata"
                   src={attachment.url}
-                  onerror={(event) => retryMedia(event, attachment.url)}
+                  onerror={(event) => retryMedia(event, attachment.url!)}
                 ></audio>
               {:else if attachment.kind === 'video'}
                 <!-- svelte-ignore a11y_media_has_caption -->
@@ -3424,7 +3534,7 @@
                   controls
                   preload="metadata"
                   src={attachment.url}
-                  onerror={(event) => retryMedia(event, attachment.url)}
+                  onerror={(event) => retryMedia(event, attachment.url!)}
                 ></video>
               {:else}
                 <a class="hub-view-bubble-file" href={attachment.url} download={attachment.name}>
@@ -3433,7 +3543,29 @@
                 </a>
               {/if}
             {/each}
-            {#if message.body}<p>{message.body}</p>{/if}
+            {#if message.linkPreview}
+              {@const preview = message.linkPreview}
+              {#if preview.url}
+                <a class="hub-view-link-card" href={preview.url} onclick={openLink}>
+                  <strong>{preview.title}</strong>
+                  {#if preview.description}<span>{preview.description}</span>{/if}
+                  {#if preview.source}<small>{preview.source}</small>{/if}
+                </a>
+              {:else}
+                <span class="hub-view-link-card">
+                  <strong>{preview.title}</strong>
+                  {#if preview.description}<span>{preview.description}</span>{/if}
+                  {#if preview.source}<small>{preview.source}</small>{/if}
+                </span>
+              {/if}
+            {/if}
+            {#if message.body}
+              <p>
+                {#each messageParts(message.body) as part}
+                  {#if part.url}<a class="hub-view-message-link" href={part.url} onclick={openLink}>{part.text}</a>{:else}{part.text}{/if}
+                {/each}
+              </p>
+            {/if}
             {#if message.viewIn}
               <!-- Media the bridge could not carry across. The source app can
                    still show it, so the placeholder opens that app rather than
@@ -3465,6 +3597,7 @@
             <em>{messageTime(message.sentAt)}</em>
           </div>
           </div>
+          {/if}
           <!-- After the bubble in the DOM, which `column-reverse` paints above
                it: the stamp introduces the run that starts here. -->
           {#if startsRun(index)}
@@ -3503,11 +3636,13 @@
           style:top={`${messageMenu.y}px`}
           style:visibility={messageMenu.placed ? 'visible' : 'hidden'}
         >
-          <span class="hub-view-emoji-row">
-            {#each QUICK_REACTIONS as emoji (emoji)}
-              <button type="button" onclick={() => { void react(target, emoji); closeMessageMenu(); }}>{emoji}</button>
-            {/each}
-          </span>
+          {#if activeChat.platform !== 'wechat'}
+            <span class="hub-view-emoji-row">
+              {#each QUICK_REACTIONS as emoji (emoji)}
+                <button type="button" onclick={() => { void react(target, emoji); closeMessageMenu(); }}>{emoji}</button>
+              {/each}
+            </span>
+          {/if}
           <button
             class="polymux-dropdown-item"
             role="menuitem"
@@ -3577,7 +3712,7 @@
             >
               <Icon name="send" size={15} />
             </button>
-          {:else}
+          {:else if activeChat.platform !== 'wechat'}
             <button
               type="button"
               class="hub-view-primary"
@@ -3663,7 +3798,7 @@
 </div>
 </div>
 
-{#snippet chatRow(chat: ChatDto, nested: boolean)}
+{#snippet chatRow(chat: ChatDto, nested: boolean, showPlatform = false)}
 <button
   type="button"
   class="hub-view-row"
@@ -3673,6 +3808,7 @@
   onclick={() => void openChat(chat)}
   oncontextmenu={(event) => openChatMenu(event, chat)}
 >
+  <span class="hub-view-chat-avatar-wrap">
   {#if chat.avatarUrl && !brokenAvatars.has(chat.id)}
     <!-- Bridged avatars are fetched from the homeserver's
          authenticated media endpoint, which answers 404 for a
@@ -3693,6 +3829,12 @@
       >{chat.name.trim().charAt(0).toUpperCase()}</span
     >
   {/if}
+  {#if showPlatform}
+    <span class="hub-view-platform-badge" aria-hidden="true">
+      <PlatformLogo platform={chat.platform as Platform} size={12} />
+    </span>
+  {/if}
+  </span>
   <!-- Two lines, each with its own right-hand element: the time
        sits against the name, the unread count against the preview,
        so both columns centre on the line they belong to. -->
@@ -3710,6 +3852,10 @@
           <span class="visually-hidden">{$t('hub.pinned')}</span>
           <Icon name="pin" size={11} />
         {/if}
+        {#if chatPrefs.muted.includes(chat.id)}
+          <span class="visually-hidden">{$t('hub.muted')}</span>
+          <Icon name="speaker-off" size={11} />
+        {/if}
         {#if chat.lastActivity}
           <time datetime={chat.lastActivity}>{chat.lastActivity ? when(chat.lastActivity) : ''}</time>
         {/if}
@@ -3725,4 +3871,33 @@
     </span>
   </span>
 </button>
+{/snippet}
+
+{#snippet chatContextMenu()}
+  {#if chatMenu}
+    {@const target = chatMenu.chat}
+    {@const pinned = chatPrefs.pinned.includes(target.id)}
+    {@const muted = chatPrefs.muted.includes(target.id)}
+    {@const hidden = chatPrefs.hidden.includes(target.id)}
+    <!-- Fixed to the viewport rather than to the list, which scrolls: a menu
+         stays attached to the row in both a platform list and All Platforms. -->
+    <div
+      class="polymux-dropdown-menu hub-view-chat-menu"
+      role="menu"
+      bind:this={chatMenuEl}
+      style:left={`${chatMenu.x}px`}
+      style:top={`${chatMenu.y}px`}
+      style:visibility={chatMenu.placed ? 'visible' : 'hidden'}
+    >
+      <button class="polymux-dropdown-item" role="menuitem" onclick={() => { chatPrefs = togglePinned(chatPrefs, target.id); closeChatMenu(); }}>
+        <Icon name={pinned ? 'pin-off' : 'pin'} size={14} /><span>{pinned ? $t('hub.unpinChat') : $t('hub.pinChat')}</span>
+      </button>
+      <button class="polymux-dropdown-item" role="menuitem" onclick={() => { chatPrefs = toggleMuted(chatPrefs, target.id); closeChatMenu(); }}>
+        <Icon name={muted ? 'speaker' : 'speaker-off'} size={14} /><span>{muted ? $t('hub.unmuteChat') : $t('hub.muteChat')}</span>
+      </button>
+      <button class="polymux-dropdown-item" role="menuitem" onclick={() => { chatPrefs = toggleHidden(chatPrefs, target.id); closeChatMenu(); }}>
+        <Icon name={hidden ? 'eye' : 'eye-off'} size={14} /><span>{hidden ? $t('hub.unhideChat') : $t('hub.hideChat')}</span>
+      </button>
+    </div>
+  {/if}
 {/snippet}

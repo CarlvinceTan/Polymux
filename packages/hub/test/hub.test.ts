@@ -69,6 +69,47 @@ async function withHub(
 
 const WA = "/bridges/whatsapp/_matrix/provision/v3";
 
+test("incremental sync establishes a token then reports changed rooms", async () => {
+  await withHub(
+    {
+      "GET /_matrix/client/v3/sync": {
+        body: {
+          next_batch: "42",
+          rooms: {
+            join: {
+              "!chat:local": {
+                timeline: {
+                  events: [
+                    {
+                      event_id: "$message",
+                      room_id: "!chat:local",
+                      sender: "@whatsapp_jules:local",
+                      type: "m.room.message",
+                      content: {body: "hello"},
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (hub, calls) => {
+      const initial = await hub.sync(null);
+      assert.deepEqual(initial, {nextBatch: "42", activities: []});
+
+      const incremental = await hub.sync("41");
+      assert.deepEqual(incremental, {
+        nextBatch: "42",
+        activities: [{roomId: "!chat:local", sender: "@whatsapp_jules:local"}],
+      });
+      assert.deepEqual(calls[0]?.query, {timeout: "0"});
+      assert.deepEqual(calls[1]?.query, {timeout: "30000", since: "41"});
+    },
+  );
+});
+
 test("reports a linked bridge account from whoami", async () => {
   await withHub(
     {
@@ -96,6 +137,12 @@ test("reports a linked bridge account from whoami", async () => {
       assert.equal(bridge.api, "bridgev2");
       assert.equal(bridge.state, "connected");
       assert.equal(bridge.accounts.length, 1);
+      // Do not collapse the bridge's choices to a preferred method, even when
+      // an account is already linked and this is an add-another-account flow.
+      assert.deepEqual(
+        bridge.flows.map((flow) => flow.id),
+        ["qr", "phone"],
+      );
       // The remote profile is a better label than the login's own name.
       assert.equal(bridge.accounts[0].name, "+61400000000");
       assert.equal(bridge.managementRoomHint, "!admin:local");
@@ -109,6 +156,31 @@ test("reports a linked bridge account from whoami", async () => {
       // Matrix-token auth is still validated against this user, so the query
       // parameter is mandatory in both auth modes.
       assert.equal(calls[0].query.user_id, "@me:local");
+    },
+  );
+});
+
+test("keeps every advertised method and adds known limitation notes", async () => {
+  await withHub(
+    {
+      [`GET ${WA}/whoami`]: {
+        body: {
+          login_flows: [
+            {id: "phone", name: "Phone Number", description: "Phone"},
+            {id: "qr", name: "QR Code", description: "QR"},
+            {id: "bot", name: "Bot token", description: "Bot"},
+            {id: "manual", name: "Manual", description: "Manual"},
+          ],
+          logins: [],
+        },
+      },
+    },
+    async (hub) => {
+      const bridge = await hub.bridge("telegram", "Telegram", "whatsapp");
+      assert.deepEqual(bridge.flows.map((flow) => flow.id), ["phone", "qr", "bot", "manual"]);
+      assert.equal(bridge.flows[0]!.description, "Phone");
+      assert.match(bridge.flows[2]!.description, /Bots only/);
+      assert.match(bridge.flows[3]!.description, /Advanced/);
     },
   );
 });
@@ -672,7 +744,7 @@ test("falls back to the legacy API when v3 is absent", async () => {
   );
 });
 
-test("offers a token flow for an unlinked legacy bridge", async () => {
+test("offers every supported login flow for an unlinked Discord bridge", async () => {
   const legacy = "/bridges/discord/_matrix/provision/v1";
   const directory = await legacyHubDirectory("another-secret-16-chars");
   await withHub(
@@ -688,8 +760,11 @@ test("offers a token flow for an unlinked legacy bridge", async () => {
       assert.equal(bridge.state, "logged-out");
       assert.deepEqual(
         bridge.flows.map((flow) => flow.id),
-        ["token"],
+        ["qr", "user-token", "bot-token", "oauth-token"],
       );
+      assert.match(bridge.flows[0]!.description, /CAPTCHA/);
+      assert.match(bridge.flows[2]!.description, /Servers only/);
+      assert.match(bridge.flows[3]!.description, /cannot provide all personal messages/);
     },
     {matrixToken: "syt_token", userId: "@me:local"},
     directory,

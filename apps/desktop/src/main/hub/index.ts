@@ -218,21 +218,30 @@ export interface EmbeddedHub {
 
 /**
  * OAuth client registrations for mail sign-in, read from the environment the
- * same way the drive providers' are. A provider with no id draws no button —
- * an unregistered client can only fail, and offering it would be a worse
- * answer than not offering it.
+ * same way the drive providers' are. A dedicated mail registration wins, but
+ * the provider's drive registration is a valid public desktop client too and
+ * is the useful default: users should not lose one-click mailbox sign-in just
+ * because the build did not duplicate the same client id under a second name.
+ *
+ * The shared registration still needs both loopback redirect URIs and the mail
+ * scopes enabled in the provider console. Those are registration concerns;
+ * asking for mail access remains a separate consent flow from Drive.
  */
-function mailOAuthClients(): Partial<
+export function mailOAuthClients(): Partial<
   Record<MailOAuthProvider, {clientId: string; clientSecret?: string}>
 > {
   const clients: Partial<Record<MailOAuthProvider, {clientId: string; clientSecret?: string}>> = {};
-  for (const [provider, prefix] of [
-    ["google", "POLYMUX_GOOGLE_MAIL"],
-    ["microsoft", "POLYMUX_MICROSOFT_MAIL"],
+  for (const [provider, mailPrefix, sharedPrefix] of [
+    ["google", "POLYMUX_GOOGLE_MAIL", "POLYMUX_GOOGLE_DRIVE"],
+    ["microsoft", "POLYMUX_MICROSOFT_MAIL", "POLYMUX_ONEDRIVE"],
   ] as const) {
-    const clientId = process.env[`${prefix}_CLIENT_ID`]?.trim();
+    const clientId =
+      process.env[`${mailPrefix}_CLIENT_ID`]?.trim() ||
+      process.env[`${sharedPrefix}_CLIENT_ID`]?.trim();
     if (!clientId) continue;
-    const clientSecret = process.env[`${prefix}_CLIENT_SECRET`]?.trim();
+    const clientSecret =
+      process.env[`${mailPrefix}_CLIENT_SECRET`]?.trim() ||
+      process.env[`${sharedPrefix}_CLIENT_SECRET`]?.trim();
     clients[provider] = {clientId, ...(clientSecret ? {clientSecret} : {})};
   }
   return clients;
@@ -242,6 +251,8 @@ export interface CommunicationsOptions {
   credentials: CredentialStore;
   storage: PreferenceStore;
   onChange: (status: CommsStatusDto) => void;
+  /** A Matrix room changed and any open Hub surface should refresh it. */
+  onActivity?: (activity: {roomId: string; sender: string}) => void;
   /** The in-process homeserver, used when no external hub is configured. */
   embedded?: EmbeddedHub;
   cookieLogin?: CookieLoginDriver;
@@ -294,6 +305,7 @@ export class Communications {
   readonly #credentials: CredentialStore;
   readonly #storage: PreferenceStore;
   readonly #onChange: (status: CommsStatusDto) => void;
+  readonly #onActivity?: CommunicationsOptions["onActivity"];
   readonly #cookieLogin?: CookieLoginDriver;
   readonly #cancelCookieLogin?: (platform: CommsPlatform) => void;
   readonly #email: EmailAccounts;
@@ -311,6 +323,9 @@ export class Communications {
   #matrixToken: string | null = null;
   #userId: string | null = null;
   #loaded = false;
+  #syncController: AbortController | null = null;
+  #syncTask: Promise<void> | null = null;
+  #syncGeneration = 0;
   /** Connection-test outcomes, which are too slow to redo on every status read. */
   readonly #emailStatus = new Map<string, {status: "ok" | "error"; error: string | null}>();
   /**
@@ -340,6 +355,7 @@ export class Communications {
     this.#credentials = options.credentials;
     this.#storage = options.storage;
     this.#onChange = options.onChange;
+    this.#onActivity = options.onActivity;
     this.#cookieLogin = options.cookieLogin;
     this.#cancelCookieLogin = options.cancelCookieLogin;
     this.#home = options.home ?? homedir();
@@ -619,6 +635,7 @@ export class Communications {
       throw new Error("The hub address must start with http:// or https://");
     // Naming an address is choosing an external hub — and the health probe
     // must follow it, not keep watching the embedded server.
+    this.#stopSync();
     this.#embeddedMode = false;
     this.#baseUrl = trimmed;
     const stored = hubPreference(this.#storage.getPreference("comms-hub")?.value);
@@ -630,6 +647,7 @@ export class Communications {
     this.#directory = stored.directory ?? defaultHubDirectory(this.#home);
     this.#persistHub();
     this.#hub = this.#createHub();
+    this.#ensureSync();
     return this.#publish();
   }
 
@@ -667,6 +685,9 @@ export class Communications {
   }
 
   async #store(userId: string, accessToken: string, password: string | null): Promise<void> {
+    // A replacement credential starts from a fresh sync position. Abort the
+    // old request first so it cannot publish a late delta under the new user.
+    this.#stopSync();
     this.#matrixToken = accessToken;
     this.#userId = userId;
     await this.#credentials.modify(HUB_CREDENTIAL_ID, async () => ({
@@ -678,9 +699,11 @@ export class Communications {
         ...(password ? {MATRIX_PROVISIONED_PASSWORD: password} : {}),
       },
     }));
+    this.#ensureSync();
   }
 
   async signOut(): Promise<CommsStatusDto> {
+    this.#stopSync();
     await this.#hub.signOut();
     this.#matrixToken = null;
     this.#userId = null;
@@ -699,19 +722,44 @@ export class Communications {
     }
     const {route, api} = await this.#target(platform);
     if (api === "legacy") {
-      // A legacy bridge has no step machine; present the one field it accepts
-      // and complete it on submit.
+      const loginId = `legacy:${platform}:${flowId}`;
+      if (flowId === "qr") {
+        const code = await this.#hub.legacyQrLoginStart(route, loginId);
+        return {
+          type: "display_and_wait",
+          loginId,
+          stepId: "qr",
+          display: "qr",
+          data: code,
+          imageUrl: "",
+          instructions: "In Discord mobile, open your profile, choose Scan QR Code, then approve this login.",
+        };
+      }
+      const labels: Record<string, {name: string; instructions: string}> = {
+        "user-token": {
+          name: "User token",
+          instructions: "Paste your Discord user token. Treat it like a password; Discord may flag unusual account automation.",
+        },
+        "bot-token": {
+          name: "Bot token",
+          instructions: "Paste a bot token. It can access only servers and channels where that bot was invited and granted permission.",
+        },
+        "oauth-token": {
+          name: "OAuth token",
+          instructions: "Paste a Discord OAuth token. Its access is limited to the scopes granted and usually cannot mirror personal messages.",
+        },
+      };
+      const copy = labels[flowId] ?? labels["user-token"]!;
       return {
         type: "user_input",
-        loginId: `legacy:${platform}`,
+        loginId,
         stepId: "token",
-        instructions:
-          "Paste an account token. This bridge is an older build with no in-app QR support.",
+        instructions: copy.instructions,
         fields: [
           {
             id: "token",
             type: "token",
-            name: "Account token",
+            name: copy.name,
             description: null,
             pattern: null,
           },
@@ -732,7 +780,9 @@ export class Communications {
     if (api === "legacy") {
       const token = values.token?.trim();
       if (!token) throw new Error("An account token is required");
-      await this.#hub.legacyTokenLogin(route, token);
+      const kind = loginId.split(":").at(-1);
+      const credential = kind === "bot-token" ? `Bot ${token}` : kind === "oauth-token" ? `Bearer ${token}` : token;
+      await this.#hub.legacyTokenLogin(route, credential);
       return {type: "complete", loginId, accountId: null, accountName: null};
     }
     const step = await this.#hub.loginSubmit(route, loginId, stepId, "user_input", values);
@@ -744,7 +794,21 @@ export class Communications {
     loginId: string,
     stepId: string,
   ): Promise<CommsLoginStepDto> {
-    const {route} = await this.#target(platform);
+    const {route, api} = await this.#target(platform);
+    if (api === "legacy") {
+      const result = await this.#hub.legacyQrLoginWait(loginId);
+      return result.complete
+        ? {type: "complete", loginId, accountId: null, accountName: null}
+        : {
+            type: "display_and_wait",
+            loginId,
+            stepId,
+            display: "qr",
+            data: result.code!,
+            imageUrl: "",
+            instructions: "The QR code refreshed. Scan it in Discord mobile, then approve this login.",
+          };
+    }
     const step = await this.#hub.loginWait(route, loginId, stepId);
     return this.#remember(platform, step);
   }
@@ -797,6 +861,7 @@ export class Communications {
     this.#cancelCookieLogin?.(platform);
     const target = await this.#target(platform).catch((): null => null);
     if (target?.api === "bridgev2") await this.#hub.loginCancel(target.route, loginId);
+    else if (target?.api === "legacy") this.#hub.legacyQrLoginCancel(loginId);
     return this.#publish();
   }
 
@@ -1234,7 +1299,10 @@ export class Communications {
   }
 
   async #load(): Promise<void> {
-    if (this.#loaded) return;
+    if (this.#loaded) {
+      this.#ensureSync();
+      return;
+    }
     this.#loaded = true;
     const stored = await this.#credentials
       .read(HUB_CREDENTIAL_ID)
@@ -1255,6 +1323,58 @@ export class Communications {
         // The homeserver may still be binding its port; the next status()
         // retries because #loaded only reflects the credential read.
         this.#loaded = false;
+      }
+    }
+    this.#ensureSync();
+  }
+
+  /** Stops background work owned by this backend/profile. */
+  close(): void {
+    this.#stopSync();
+  }
+
+  /** Starts one sync follower for the current homeserver and credential. */
+  #ensureSync(): void {
+    if (!this.#onActivity || !this.#matrixToken || this.#syncTask) return;
+    const controller = new AbortController();
+    const generation = ++this.#syncGeneration;
+    this.#syncController = controller;
+    this.#syncTask = this.#followSync(controller.signal).finally(() => {
+      if (generation !== this.#syncGeneration) return;
+      this.#syncController = null;
+      this.#syncTask = null;
+    });
+  }
+
+  #stopSync(): void {
+    this.#syncGeneration += 1;
+    this.#syncController?.abort();
+    this.#syncController = null;
+    this.#syncTask = null;
+  }
+
+  /**
+   * Keeps one Matrix long poll open. A failed request is retried with a small,
+   * bounded delay; the last confirmed token is retained so reconnecting cannot
+   * replay the whole room list as new activity or skip an event.
+   */
+  async #followSync(signal: AbortSignal): Promise<void> {
+    let since: string | null = null;
+    let failures = 0;
+    while (!signal.aborted) {
+      try {
+        const delta = await this.#hub.sync(since, signal);
+        since = delta.nextBatch;
+        failures = 0;
+        for (const activity of delta.activities) this.#onActivity?.(activity);
+      } catch (error) {
+        if (signal.aborted) return;
+        // Authentication recovery belongs to the next explicit read, where an
+        // embedded token can be safely reminted. A hot retry would only hammer
+        // the same rejected credential forever.
+        if (isUnknownMatrixToken(error)) return;
+        failures += 1;
+        await abortableDelay(Math.min(5_000, 250 * 2 ** Math.min(failures - 1, 5)), signal);
       }
     }
   }
@@ -1314,6 +1434,19 @@ function hubPreference(value: unknown): HubPreference {
 
 function isUnknownMatrixToken(error: unknown): boolean {
   return error instanceof Error && /(?:M_UNKNOWN_TOKEN|Unrecognised access token)/i.test(error.message);
+}
+
+function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(finish, milliseconds);
+    function finish(): void {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    }
+    signal.addEventListener("abort", finish, {once: true});
+  });
 }
 
 /**

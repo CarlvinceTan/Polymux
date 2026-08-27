@@ -26,8 +26,9 @@ drive, browser automation, and more built in.**
   </tr>
 </table>
 
-Polymux is a desktop agent built with Electron and TypeScript, designed around the
-idea that one agent should be able to work with you throughout a session. Its core
+Polymux is an agent-agnostic desktop workspace built with Electron and TypeScript.
+It bundles Polymux Agent by default, while profiles can instead connect an external
+agent over the open Agent Client Protocol (ACP). Its core
 capabilities include **Hub**, a central communication layer supporting around 17
 platforms, including email; **Drive**, a virtual filesystem backed by local and
 popular cloud storage; **Schedule**, for creating cron jobs; **Browser**, with both
@@ -52,6 +53,7 @@ therefore behave differently or remain unavailable outside macOS.
 
 ## Backend
 
+- `agent-runtime` is the host boundary shared by Polymux Agent and external ACP agents.
 - `core` owns the provider-neutral agent loop, streaming events, cancellation, steering, and tool execution.
 - `agent` adds Polymux policy: layered prompts, Pi-compatible skills, file-backed local memory, goals, compaction, and simple subagents.
 - `inference` is a thin adapter over `pi-ai`.
@@ -59,8 +61,12 @@ therefore behave differently or remain unavailable outside macOS.
 - `storage` persists chats, runs, replayable events, goals, compaction summaries, artifacts, and references in SQLite.
 - `protocol` defines and validates the secure Electron main/preload API.
 
-There is no project layer, team system, or approval UI in the backend, which is
-the intended design for simplicity of use.
+There is no project layer or team system in the backend, which is the intended
+design for simplicity of use.
+
+ACP runtimes are configured per profile in **Settings → Profile → Agent**. Polymux
+owns the conversation, run history, rendering, and permission decision; the selected
+runtime owns the agent session and streams its work through the same UI.
 
 ## Development
 

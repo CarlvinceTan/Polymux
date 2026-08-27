@@ -33,6 +33,7 @@ import { safeStorage } from "electron";
 import {
   BridgeHost,
   Homeserver,
+  ProcessWeChatWriter,
   WeChatBridge,
   WECHAT_FALLBACK_DIRECTORIES,
   loadShippedCredentials,
@@ -279,6 +280,50 @@ function loadStartupShell(window: BrowserWindow): void {
   }
 }
 
+/** Keeps the shell's document in place until its visible animation reaches the
+ * settled lockup. Navigating the same BrowserWindow earlier both cuts the
+ * sequence short and rejects the shell's in-flight `loadURL` with ERR_ABORTED. */
+async function waitForStartupShell(window: BrowserWindow): Promise<void> {
+  if (window.isDestroyed()) return;
+  const splashDocumentLoaded = (): boolean =>
+    window.webContents.getURL().includes("splashOnly=1");
+  if (!splashDocumentLoaded()) {
+    await new Promise<void>((resolve) => {
+      const settle = (): void => {
+        clearTimeout(deadline);
+        window.webContents.off("did-finish-load", finished);
+        resolve();
+      };
+      const finished = (): void => {
+        if (splashDocumentLoaded()) settle();
+      };
+      const deadline = setTimeout(settle, 4000);
+      window.webContents.on("did-finish-load", finished);
+      // Close the check/listener gap if the navigation completed between the
+      // initial URL read and registering `did-finish-load`.
+      finished();
+    });
+  }
+  if (window.isDestroyed() || !splashDocumentLoaded()) return;
+  await Promise.race([
+    window.webContents.executeJavaScript(
+      `new Promise((resolve) => {
+        if (document.documentElement.dataset.splash === "done") resolve(true);
+        else document.addEventListener("polymux:splash-done", () => resolve(true), { once: true });
+      })`,
+      true,
+    ),
+    // Past the worst honest path — reveal's own 4s deadline plus theme-boot's
+    // 3.4s watch — so this only cuts in on a shell that will never announce,
+    // not on one whose animation is still visibly running.
+    new Promise<void>((resolve) => setTimeout(resolve, 8000)),
+  ]).catch(() => {});
+  // Let the completed lockup sit as a distinct final pose. Without this hold,
+  // navigating on the animationend frame makes the following fade read as if
+  // it began while the wordmark was still arriving.
+  await new Promise<void>((resolve) => setTimeout(resolve, 500));
+}
+
 type SeparateWorkspaceView = "drive" | "schedule" | "hub" | "tasks";
 type WorkspaceWindowPlacement = {
   x: number;
@@ -322,52 +367,54 @@ function createWindow(
   workspaceView?: SeparateWorkspaceView,
   conversationId?: string,
   placement?: WorkspaceWindowPlacement,
+  existingWindow?: BrowserWindow,
 ): BrowserWindow {
   const bounds = detachedWindowBounds(placement);
-  const window = new BrowserWindow({
-    title: "Polymux",
-    width: bounds?.width ?? DETACHED_WINDOW_WIDTH,
-    height: bounds?.height ?? 618,
-    x: bounds?.x,
-    y: bounds?.y,
-    // The floor where the split layout still reads: history at its 180px
-    // minimum, the conversation at its 432px measure and the workspace at its
-    // 360px minimum, which is SPLIT_LAYOUT_MIN_WIDTH in the renderer's
-    // layoutSizing — keep the two in step.
-    minWidth: workspaceView ? 360 : 973,
-    // The welcome composer sits on the window's centre line, so its menus open
-    // downward into the lower half. 672px leaves the tallest of them (the model
-    // menu, five rows) 28px clear of the bottom edge, and pairs with the width
-    // at a 1.45 ratio rather than a letterbox.
-    minHeight: workspaceView ? 320 : 672,
-    // The window only appears once the renderer has its first frame — the
-    // startup splash — so there is never a blank window in either theme: the
-    // window opens already showing the loading screen. `ready-to-show` below
-    // pairs with this.
-    show: false,
-    // For paints after showing (resizes, reloads): follow the system so the
-    // brief native ground matches the splash. Which theme the app itself uses
-    // is the renderer's call (theme-boot) and is already painted by the time
-    // this is visible.
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff",
-    // `hiddenInset` places the traffic lights on its own line, which does not
-    // agree with the title bar's controls. `hidden` hands us the position, so
-    // they align optically with the renderer controls. Native lights rasterise
-    // around y=19 differently from SVG strokes, while the 28px app controls
-    // render at y=12; these measured positions share the same visual line.
-    titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
-    trafficLightPosition:
-      process.platform === "darwin"
-        ? POLYMUX_TRAFFIC_LIGHT_POSITION
-        : undefined,
-    webPreferences: {
-      preload: path.join(currentDirectory, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      backgroundThrottling: false,
-    },
-  });
+  const window = existingWindow ?? new BrowserWindow({
+      title: "Polymux",
+      width: bounds?.width ?? DETACHED_WINDOW_WIDTH,
+      height: bounds?.height ?? 618,
+      x: bounds?.x,
+      y: bounds?.y,
+      // The floor where the split layout still reads: history at its 180px
+      // minimum, the conversation at its 432px measure and the workspace at its
+      // 360px minimum, which is SPLIT_LAYOUT_MIN_WIDTH in the renderer's
+      // layoutSizing — keep the two in step.
+      minWidth: workspaceView ? 360 : 973,
+      // The welcome composer sits on the window's centre line, so its menus open
+      // downward into the lower half. 672px leaves the tallest of them (the model
+      // menu, five rows) 28px clear of the bottom edge, and pairs with the width
+      // at a 1.45 ratio rather than a letterbox.
+      minHeight: workspaceView ? 320 : 672,
+      // The window only appears once the renderer has its first frame — the
+      // startup splash — so there is never a blank window in either theme: the
+      // window opens already showing the loading screen. `ready-to-show` below
+      // pairs with this.
+      show: false,
+      // For paints after showing (resizes, reloads): follow the system so the
+      // brief native ground matches the splash. Which theme the app itself uses
+      // is the renderer's call (theme-boot) and is already painted by the time
+      // this is visible.
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff",
+      // `hiddenInset` places the traffic lights on its own line, which does not
+      // agree with the title bar's controls. `hidden` hands us the position, so
+      // they align optically with the renderer controls. Native lights rasterise
+      // around y=19 differently from SVG strokes, while the 28px app controls
+      // render at y=12; these measured positions share the same visual line.
+      titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
+      trafficLightPosition:
+        process.platform === "darwin"
+          ? POLYMUX_TRAFFIC_LIGHT_POSITION
+          : undefined,
+      webPreferences: {
+        preload: path.join(currentDirectory, "preload.js"),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        backgroundThrottling: false,
+      },
+    });
+  const reusingStartupShell = existingWindow === startupShellWindow;
 
   // First frame ready — the splash is painted — so the window can appear
   // showing it. The deadline covers a renderer that never reaches its first
@@ -408,6 +455,12 @@ function createWindow(
         });
       return;
     }
+    if (
+      startupShellWindow &&
+      startupShellWindow !== window &&
+      !startupShellWindow.isDestroyed()
+    )
+      window.setBounds(startupShellWindow.getBounds(), false);
     // A side instance is an agent's test run, opened beside the window the user
     // is working in. A packaged app launched with macOS' background/hidden
     // launch flag has the same contract: honour that launch request instead of
@@ -431,7 +484,11 @@ function createWindow(
       window.showInactive();
     } else if (devInstance) window.showInactive();
     else window.show();
-    if (startupShellWindow && !startupShellWindow.isDestroyed()) {
+    if (
+      startupShellWindow &&
+      startupShellWindow !== window &&
+      !startupShellWindow.isDestroyed()
+    ) {
       startupShellWindow.close();
       startupShellWindow = undefined;
     }
@@ -491,7 +548,7 @@ function createWindow(
         console.error(
           `[renderer] retrying the load (${retriesLeft} attempts left)`,
         );
-        loadRenderer(window, workspaceView, conversationId);
+        loadRenderer(window, workspaceView, conversationId, reusingStartupShell);
       }, 1000);
     },
   );
@@ -611,7 +668,8 @@ function createWindow(
     backend = createDesktopBackend(window, true, true);
   }
 
-  loadRenderer(window, workspaceView, conversationId);
+  loadRenderer(window, workspaceView, conversationId, reusingStartupShell);
+  if (reusingStartupShell) startupShellWindow = undefined;
   return window;
 }
 
@@ -747,6 +805,12 @@ function loadRenderer(
   window: BrowserWindow,
   workspaceView?: SeparateWorkspaceView,
   conversationId?: string,
+  // The window already ran the startup-shell animation to its settled lockup,
+  // and this navigation replaces that document. The flag has the new document
+  // paint the same lockup, already settled, from its very first frame — so the
+  // swap is invisible and the exit still gets its staged fade — instead of the
+  // splash markup flashing its opening pose and being torn out on mount.
+  settledSplash = false,
 ): void {
   const coldStart = !coldStartConsumed;
   coldStartConsumed = true;
@@ -754,6 +818,7 @@ function loadRenderer(
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
     url.searchParams.set("coldStart", coldStart ? "1" : "0");
+    if (settledSplash) url.searchParams.set("splashSettled", "1");
     if (workspaceView) url.searchParams.set("workspaceView", workspaceView);
     if (conversationId) url.searchParams.set("conversationId", conversationId);
     void window.loadURL(url.toString()).catch((error: unknown) => {
@@ -771,6 +836,7 @@ function loadRenderer(
         {
           query: {
             coldStart: coldStart ? "1" : "0",
+            ...(settledSplash ? { splashSettled: "1" } : {}),
             ...(workspaceView ? { workspaceView } : {}),
             ...(conversationId ? { conversationId } : {}),
           },
@@ -867,6 +933,9 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
       path.join(directory, "bin"),
       ...WECHAT_FALLBACK_DIRECTORIES,
     ],
+    ...(process.env.POLYMUX_WECHAT_WRITER
+      ? {writer: new ProcessWeChatWriter(process.env.POLYMUX_WECHAT_WRITER)}
+      : {}),
     log: (line) => console.warn(line),
   });
   return { homeserver, bridges, directory };
@@ -1003,9 +1072,9 @@ app.whenReady().then(async () => {
   // normal window with no semantic tree after a fullscreen/Space transition.
   app.setAccessibilitySupportEnabled(true);
   startupShellWindow = createStartupShellWindow();
-  // The shell owns the only cold-start animation. The real renderer mounts
-  // invisibly behind it and replaces it only after `ready-to-show`, avoiding a
-  // restarted animation or a blank handoff.
+  // The shell owns the only cold-start animation. The renderer then replaces
+  // its document inside this same native window, with no second splash or
+  // native-window swap.
   coldStartConsumed = true;
   // Bridged media is fetched by the main process, which holds the token the
   // renderer never sees. Read per request, so a later sign-in is picked up.
@@ -1046,7 +1115,9 @@ app.whenReady().then(async () => {
     );
   }
   if (quitting) return;
-  createWindow();
+  await waitForStartupShell(startupShellWindow);
+  if (quitting || startupShellWindow.isDestroyed()) return;
+  createWindow(undefined, undefined, undefined, startupShellWindow);
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

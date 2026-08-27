@@ -1198,7 +1198,7 @@
      Microsoft mailbox there is nothing below worth filling in. */
   .comms-signin{display:flex;max-width:440px;flex-direction:column;gap:7px;margin:0 0 14px}
   .comms-signin-button{display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:none;color:var(--ink);font-family:inherit;font-size:12.5px;font-weight:560;cursor:pointer;transition:border-color .16s,opacity .16s}
-  .comms-signin-button img{width:16px;height:16px;border-radius:50%;background:#fff;object-fit:contain;padding:1px}
+  .comms-signin-button img{width:18px;height:18px;display:block;flex:none;object-fit:contain}
   .comms-signin-button:hover:not(:disabled){border-color:var(--ink-soft)}
   .comms-signin-button:disabled{opacity:.55;cursor:default}
   .comms-signin-button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}

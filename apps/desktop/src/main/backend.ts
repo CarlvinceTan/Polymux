@@ -66,6 +66,7 @@ import type {
   DefaultAppDto,
   EnqueueManagerJobRequest,
   ManagerSnapshotDto,
+  AgentRuntimeDto,
 } from "@polymux/protocol";
 import { createAppleMailSearcher } from "./hub/apple-mail.js";
 import {
@@ -112,6 +113,10 @@ import {
 } from "electron";
 
 import { assistantText, eventDto, storedEventDto } from "./backend/dto.js";
+import {BuiltinAgentRuntime} from "./agent-runtime/builtin.js";
+import {AcpAgentRuntime} from "./agent-runtime/acp.js";
+import {listAcpRegistry} from "./agent-runtime/registry.js";
+import type {AgentRuntime, AgentRuntimeConfig} from "./agent-runtime/types.js";
 import { ChatPool, type JobPriority } from "./agent/chat-pool.js";
 import {
   shouldBoundGoalContinuation,
@@ -487,6 +492,7 @@ export class DesktopBackend {
   readonly #storage: SqliteStorage;
   readonly #profiles: ProfileManager;
   #agent?: PolymuxAgent;
+  #agentRuntime?: AgentRuntime;
   #model?: ModelRef;
   /** Per-role model overrides, each with the reasoning level it was assigned
    * at. An absent role follows the main model. */
@@ -868,14 +874,11 @@ export class DesktopBackend {
       },
       { debounceMs: 500 },
     );
-    // A message landing anywhere in the hub is pushed straight to the window,
-    // so a conversation on screen updates as it arrives.
+    // The in-process callback retains the richer metadata used by native
+    // notifications. UI freshness follows Matrix `/sync` below, which also
+    // works when Communications points at an external homeserver.
     options.hub?.onActivity?.((activity) => {
       if (this.#closing || this.#window.isDestroyed()) return;
-      this.#window.webContents.send(channels.commsActivity, {
-        chatId: activity.roomId,
-        sender: activity.sender,
-      });
       // Only what a person actually said, and never the user's own message
       // coming back down their own sync.
       if (activity.type !== "m.room.message") return;
@@ -937,6 +940,13 @@ export class DesktopBackend {
       onChange: (status) => {
         if (!this.#closing && !this.#window.isDestroyed())
           this.#window.webContents.send(channels.commsChanged, status);
+      },
+      onActivity: (activity) => {
+        if (this.#closing || this.#window.isDestroyed()) return;
+        this.#window.webContents.send(channels.commsActivity, {
+          chatId: activity.roomId,
+          sender: activity.sender,
+        });
       },
       // Parented, so the network's sign-in page opens as a sheet over Polymux
       // rather than as a window that can end up behind it.
@@ -1060,7 +1070,11 @@ export class DesktopBackend {
         cwd: (context) => this.#runDirectory(context.runId),
       }),
     );
-    for (const tool of createComputerTools(this.#computer))
+    for (const tool of createComputerTools(this.#computer, {
+      refreshState: async () => {
+        await this.#refreshOpenWindows();
+      },
+    }))
       this.#registry.register(tool);
     for (const tool of createRemindersTools(this.#reminders))
       this.#registry.register(tool);
@@ -1226,6 +1240,7 @@ export class DesktopBackend {
     // already built the agent with the effective roles, so this only settles
     // the speech-mode consequence of the current automatic picks.
     this.#reconcileAutoRoles(false);
+    this.#configureAgentRuntime();
   }
 
   /**
@@ -1363,6 +1378,17 @@ export class DesktopBackend {
     if (this.#firstRunPermissions.completed()) this.#startComputerObservation();
     this.#scheduler.start();
     this.#handle(channels.profilesList, () => this.#profiles.snapshot());
+    this.#handle(channels.agentRuntimeGet, () => this.#agentRuntimeDto());
+    this.#handle(channels.agentRuntimeRegistry, () => listAcpRegistry());
+    this.#handle(channels.agentRuntimeUpdate, async (_event, value: unknown) => {
+      if (this.#activeRuns.size)
+        throw new Error("Wait for the active agent run to finish before switching agents.");
+      const config = agentRuntimeRequest(value);
+      await this.#agentRuntime?.close?.();
+      this.#setProfilePreference("agent-runtime", config as unknown as JsonValue);
+      this.#configureAgentRuntime(config);
+      return this.#agentRuntimeDto();
+    });
     this.#handle(channels.profilesCreate, (_event, name: unknown) =>
       this.#profiles.create(required(name, "profile name")),
     );
@@ -1884,7 +1910,7 @@ export class DesktopBackend {
       return status;
     });
     this.#handle(channels.commsRefresh, () => this.#comms.refresh());
-    this.#handle(channels.commsEmailSignIn, (provider) =>
+    this.#handle(channels.commsEmailSignIn, (_event, provider: unknown) =>
       this.#comms.emailSignIn(mailProvider(provider)),
     );
     this.#handle(channels.commsWake, (_event, value: unknown) =>
@@ -2020,9 +2046,11 @@ export class DesktopBackend {
             senderName: message.senderName || message.sender,
             senderAvatarUrl: message.senderAvatarUrl,
             body: message.body,
+            notice: message.notice,
             sentAt: message.sentAt,
             mine: Boolean(me) && message.sender === me,
             attachments: message.attachments,
+            linkPreview: message.linkPreview,
             viewIn: message.viewIn,
             reactions: message.reactions,
             replyTo: message.replyTo,
@@ -2399,6 +2427,10 @@ export class DesktopBackend {
       // shorter list, and saying so would bury the plugins that did arrive.
       if (errors.length && !result.plugins.length) throw new Error(errors[0]!);
       return result.plugins;
+    });
+    this.#handle(channels.pluginsViews, async () => {
+      await this.#ensurePlugins();
+      return this.#plugins.views((id) => this.#integrationEnabled("plugin-enabled", id));
     });
     this.#handle(channels.pluginsUpload, async (_event, value: unknown) => {
       await this.#ensurePlugins();
@@ -3301,6 +3333,7 @@ export class DesktopBackend {
 
   async close(reason = "Polymux is closing"): Promise<void> {
     this.#closing = true;
+    this.#comms.close();
     if (this.#commsStatusTimer) clearInterval(this.#commsStatusTimer);
     stopUpdateChecks();
     this.#surfaceMenubar.close();
@@ -3329,6 +3362,7 @@ export class DesktopBackend {
     // quit it can still be in flight. Waiting for it is what makes a session's
     // memory survive the app closing rather than dying with the process.
     await this.#agent?.settleGoalWork();
+    await this.#agentRuntime?.close?.();
     await this.#mcp.close();
     this.#storage.close();
   }
@@ -3419,7 +3453,7 @@ export class DesktopBackend {
       desktopContext,
       locationContext,
     ]);
-    const agent = await this.#ensureConfiguredAgent();
+    const agent = await this.#ensureConfiguredRuntime();
     const pausedGoal = this.#storage.getGoal(request.conversationId);
     const maxTaskDispatches =
       pausedGoal &&
@@ -4583,6 +4617,85 @@ export class DesktopBackend {
         this.#trackGoalContinuation(conversationId, runId, run),
       onSubagentRun: ({ runId, run }) => this.#trackSubagentRun(runId, run),
     });
+    if (this.#runtimeConfig().kind === "polymux")
+      this.#agentRuntime = new BuiltinAgentRuntime(this.#agent);
+  }
+
+  #runtimeConfig(): AgentRuntimeConfig {
+    const stored = this.#profilePreference("agent-runtime")?.value;
+    if (!stored || typeof stored !== "object" || Array.isArray(stored) || stored.kind !== "acp")
+      return {kind: "polymux"};
+    if (typeof stored.name !== "string" || typeof stored.command !== "string")
+      return {kind: "polymux"};
+    return {
+      kind: "acp",
+      name: stored.name.trim() || "ACP Agent",
+      command: stored.command.trim(),
+      args: Array.isArray(stored.args) ? stored.args.filter((item): item is string => typeof item === "string") : [],
+      ...(typeof stored.cwd === "string" && stored.cwd.trim() ? {cwd: stored.cwd.trim()} : {}),
+    };
+  }
+
+  #configureAgentRuntime(config = this.#runtimeConfig()): void {
+    if (config.kind === "acp") {
+      this.#agentRuntime = new AcpAgentRuntime(
+        config,
+        this.#storage,
+        (request) => this.#requestAcpPermission(request),
+        () => this.#acpMcpServers(),
+      );
+      return;
+    }
+    this.#agentRuntime = this.#agent ? new BuiltinAgentRuntime(this.#agent) : undefined;
+  }
+
+  #agentRuntimeDto(): AgentRuntimeDto {
+    const config = this.#runtimeConfig();
+    return config.kind === "polymux"
+      ? {kind: "polymux", name: "Polymux Agent"}
+      : {kind: "acp", name: config.name, command: config.command, args: config.args, cwd: config.cwd ?? null};
+  }
+
+  #acpMcpServers(): import("@agentclientprotocol/sdk").McpServer[] {
+    return [...this.#mcpConfigs.values()]
+      .filter((config) => config.enabled !== false && this.#integrationEnabled("mcp-enabled", config.id))
+      .map((config) => config.transport === "stdio"
+        ? {
+            name: config.name ?? config.id,
+            command: resolveExecutable(config.command),
+            args: config.args ?? [],
+            env: Object.entries(config.env ?? {}).map(([name, value]) => ({name, value})),
+          }
+        : {
+            type: "http" as const,
+            name: config.name ?? config.id,
+            url: config.url,
+            headers: Object.entries(config.headers ?? {}).map(([name, value]) => ({name, value})),
+          });
+  }
+
+  async #requestAcpPermission(
+    request: import("@agentclientprotocol/sdk").RequestPermissionRequest,
+  ): Promise<import("@agentclientprotocol/sdk").RequestPermissionResponse> {
+    if (this.#closing || this.#window.isDestroyed())
+      return {outcome: {outcome: "cancelled"}};
+    const rejectIndex = request.options.findIndex(
+      (option) => option.kind === "reject_once" || option.kind === "reject_always",
+    );
+    const {response} = await dialog.showMessageBox(this.#window, {
+      type: "question",
+      title: "Agent permission",
+      message: request.toolCall.title || "The agent wants to use a tool",
+      detail: "Choose exactly what this agent may do.",
+      buttons: request.options.map((option) => option.name),
+      cancelId: rejectIndex >= 0 ? rejectIndex : -1,
+      defaultId: rejectIndex >= 0 ? rejectIndex : 0,
+      noLink: true,
+    });
+    const option = request.options[response];
+    return option
+      ? {outcome: {outcome: "selected", optionId: option.optionId}}
+      : {outcome: {outcome: "cancelled"}};
   }
 
   /** A stored override only counts while the model it names still exists. */
@@ -4946,6 +5059,18 @@ export class DesktopBackend {
     );
   }
 
+  async #ensureConfiguredRuntime(): Promise<AgentRuntime> {
+    const config = this.#runtimeConfig();
+    if (config.kind === "acp") {
+      if (!this.#agentRuntime || this.#agentRuntime.id !== `acp:${config.command}`)
+        this.#configureAgentRuntime(config);
+      return this.#agentRuntime!;
+    }
+    await this.#ensureConfiguredAgent();
+    if (!this.#agentRuntime) this.#configureAgentRuntime(config);
+    return this.#agentRuntime!;
+  }
+
   #messageDto(message: StoredMessage) {
     return {
       ...message,
@@ -5121,6 +5246,31 @@ function managerJobRequest(value: unknown): EnqueueManagerJobRequest {
     ...(priority ? { priority } : {}),
     dependencyIds: optionalStringArray(input.dependencyIds, "dependency ids"),
   };
+}
+
+function agentRuntimeRequest(value: unknown): AgentRuntimeConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Agent runtime must be an object");
+  const input = value as Record<string, unknown>;
+  if (input.kind === "polymux") return {kind: "polymux"};
+  if (input.kind !== "acp") throw new Error("Unknown agent runtime");
+  const command = required(input.command, "ACP command").trim();
+  if (!command) throw new Error("ACP command cannot be empty");
+  const name = typeof input.name === "string" && input.name.trim()
+    ? input.name.trim()
+    : "ACP Agent";
+  const args = optionalStringArray(input.args, "ACP arguments");
+  const cwd = input.cwd == null ? undefined : required(input.cwd, "ACP working directory").trim() || undefined;
+  return {kind: "acp", name, command, args, ...(cwd ? {cwd} : {})};
+}
+
+function resolveExecutable(command: string): string {
+  if (path.isAbsolute(command)) return command;
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
+    const candidate = path.join(directory, command);
+    if (existsSync(candidate)) return candidate;
+  }
+  return command;
 }
 
 function managerPriority(value: unknown): JobPriority {

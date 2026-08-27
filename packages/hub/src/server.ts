@@ -11,11 +11,11 @@ import {HomeserverStore, type AppserviceRecord, type StoredEvent} from "./storag
  * federates, and trusts its callers to the extent that a single-user local
  * server can: every token it has ever issued belongs to this machine.
  *
- * What is deliberately absent: /sync (bridges receive events as pushed
- * appservice transactions, and Polymux reads over the paginated endpoints),
- * end-to-end encryption and all device/key endpoints, federation, and
- * power-level enforcement (the only writers are the user and bridges the user
- * installed).
+ * What is deliberately absent: end-to-end encryption and all device/key
+ * endpoints, federation, and power-level enforcement (the only writers are the
+ * user and bridges the user installed). `/sync` covers the incremental,
+ * long-polling client contract Polymux needs; bridges receive events as pushed
+ * appservice transactions instead.
  */
 
 export interface HomeserverOptions {
@@ -78,6 +78,10 @@ const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const TRANSACTION_BATCH = 100;
 /** How many recent events each room carries in `/sync`; see `#sync`. */
 const SYNC_TIMELINE_LIMIT = 20;
+/** A local client should never be able to pin shutdown with an unbounded poll. */
+const MAX_SYNC_TIMEOUT_MS = 30_000;
+/** Bounds one incremental response; the returned token lets a client continue. */
+const SYNC_INCREMENT_LIMIT = 10_000;
 /** Retry schedule for pushing transactions to a bridge that is down. */
 const PUSH_RETRY_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
@@ -95,6 +99,8 @@ export class Homeserver {
   readonly #pushersActive = new Set<string>();
   /** Wakes that arrived while a pusher was mid-delivery, so none are lost. */
   readonly #pendingWakes = new Set<string>();
+  /** Long-polling `/sync` requests waiting for the event stream to advance. */
+  readonly #syncWakers = new Set<() => void>();
   /**
    * Timeline events the user's own client wrote this run — the only events a
    * bridge is ever handed to transmit. Delivery to a bridge is what makes it
@@ -181,6 +187,11 @@ export class Homeserver {
           stateKey: userId,
           content: {membership: "join"},
           ts: Date.now(),
+          // This is the local half of the bridge's invitation, not a request
+          // to change membership on the remote network. Attribute it to the
+          // inviting appservice so its transaction stream does not echo the
+          // synthetic join back as an outbound command.
+          origin: invite.origin,
         });
       }
     }
@@ -190,6 +201,7 @@ export class Homeserver {
     this.#closed = true;
     this.#closing.abort();
     for (const wake of this.#pushWakers.values()) wake();
+    for (const wake of this.#syncWakers) wake();
     await new Promise<void>((resolve) => {
       this.#server.close(() => resolve());
       // Undici keeps client connections pooled after their request finishes,
@@ -319,7 +331,7 @@ export class Homeserver {
       return this.#profile(response, auth, method, rest, body);
 
     if (method === "GET" && rest[0] === "v3" && rest[1] === "sync")
-      return this.#sync(response, auth);
+      return this.#sync(response, auth, query);
 
     if (method === "POST" && rest[0] === "v3" && rest[1] === "createRoom")
       return this.#createRoom(response, auth, body, query);
@@ -874,6 +886,22 @@ export class Homeserver {
     if (method === "POST" && rest[0] === "receipt" && rest[2]) {
       const event = this.#store.event(rest[2]);
       if (event) this.#store.setReceipt(auth.userId, roomId, event.streamOrder);
+      // Receipts are ephemeral in Matrix, but an embedded appservice still
+      // needs the owner's deliberate read action to mark the remote chat read.
+      // Represent it as a non-message event: clients ignore it in the timeline,
+      // while the same outbound-arming rule as sends prevents replay on restart.
+      if (event && !auth.appservice) {
+        const receipt = this.#append({
+          roomId,
+          sender: auth.userId,
+          type: "m.receipt",
+          stateKey: null,
+          content: {event_id: rest[2]},
+          ts: Date.now(),
+          origin: null,
+        });
+        this.#outboundArmed.add(receipt.eventId);
+      }
       return this.#json(response, 200, {});
     }
     if (method === "POST" && rest[0] === "read_markers") {
@@ -981,34 +1009,82 @@ export class Homeserver {
   }
 
   /**
-   * A deliberately partial `/sync`: one snapshot of every joined room, with the
-   * state, the newest message, the unread count and the member count. No
-   * streaming, no `since`, no long poll.
+   * Initial `/sync` is a snapshot of every joined room. Once a client supplies
+   * `since`, only rooms with newer events are returned; `timeout` holds an empty
+   * request until the stream advances or the bounded poll expires. This is the
+   * Matrix incremental long-poll contract, without sliding sync or federation.
    *
    * Bridges here are pushed their events as appservice transactions and never
-   * call this. It exists for Polymux's own chat list, which otherwise needs a
-   * name, a member list and a last message per room — four hundred round trips
-   * for a couple of hundred rooms, to assemble what one query already knows.
+   * call this. The initial snapshot exists for Polymux's chat list, which
+   * otherwise needs hundreds of round trips to assemble room metadata.
    */
-  #sync(response: ServerResponse, auth: AuthContext): void {
+  async #sync(
+    response: ServerResponse,
+    auth: AuthContext,
+    query: URLSearchParams,
+  ): Promise<void> {
+    const rawSince = query.get("since");
+    const incremental = rawSince !== null;
+    const since = rawSince === null ? 0 : Number(rawSince);
+    if (!Number.isSafeInteger(since) || since < 0 || since > this.#store.maxStreamOrder())
+      return this.#json(response, 400, {
+        errcode: "M_UNKNOWN_POS",
+        error: "Unknown sync position",
+      });
+
+    const timeout = boundedNumber(query.get("timeout"), 0, MAX_SYNC_TIMEOUT_MS);
+    if (incremental && this.#store.maxStreamOrder() <= since && timeout > 0)
+      await this.#waitForSync(since, timeout);
+    if (response.destroyed || this.#closed) return;
+
     const unread = this.#store.unreadCounts(auth.userId);
     const join: Record<string, unknown> = {};
-    for (const roomId of this.#store.roomsForUser(auth.userId)) {
+    const joinedRooms = new Set(this.#store.roomsForUser(auth.userId));
+    const changes = incremental
+      ? this.#store.eventsAfter(since, SYNC_INCREMENT_LIMIT)
+      : [];
+    const changedRooms = new Set(changes.map((event) => event.roomId));
+    for (const roomId of joinedRooms) {
+      if (incremental && !changedRooms.has(roomId)) continue;
       // A window rather than the single newest event: the last thing to happen
       // in a room is often a reaction, a join or a redaction, and a one-event
       // timeline then carries no message for the chat list to preview — the
       // row draws with no last line and no time. The reader takes the newest
       // message out of whatever this holds.
-      const timeline = this.#store.messages(roomId, {limit: SYNC_TIMELINE_LIMIT, dir: "b"});
+      const timeline = incremental
+        ? changes.filter((event) => event.roomId === roomId)
+        : this.#store.messages(roomId, {limit: SYNC_TIMELINE_LIMIT, dir: "b"}).events.reverse();
       join[roomId] = {
-        state: {events: this.#store.fullState(roomId).map(clientEvent)},
-        // `messages` reads backwards; a timeline runs oldest to newest.
-        timeline: {events: timeline.events.map(clientEvent).reverse()},
+        state: {
+          events: incremental
+            ? timeline.filter((event) => event.stateKey !== null).map(clientEvent)
+            : this.#store.fullState(roomId).map(clientEvent),
+        },
+        timeline: {events: timeline.map(clientEvent)},
         unread_notifications: {notification_count: unread.get(roomId) ?? 0},
         summary: {"m.joined_member_count": this.#store.members(roomId, "join").length},
       };
     }
-    this.#json(response, 200, {next_batch: String(this.#store.maxStreamOrder()), rooms: {join}});
+    const lastChange = changes.at(-1)?.streamOrder;
+    const nextBatch = incremental && lastChange !== undefined ? lastChange : this.#store.maxStreamOrder();
+    this.#json(response, 200, {next_batch: String(nextBatch), rooms: {join}});
+  }
+
+  /** Waits without polling SQLite; every appended event wakes all sync clients. */
+  async #waitForSync(since: number, timeout: number): Promise<void> {
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const wake = (): void => {
+        if (timer) clearTimeout(timer);
+        this.#syncWakers.delete(wake);
+        resolve();
+      };
+      this.#syncWakers.add(wake);
+      timer = setTimeout(wake, timeout);
+      // Close the check/register race: an append between the caller's check and
+      // this registration has already advanced the durable token.
+      if (this.#closed || this.#store.maxStreamOrder() > since) wake();
+    });
   }
 
   async #appservicePing(
@@ -1333,6 +1409,10 @@ export class Homeserver {
         stateKey: target,
         content: {membership: "join"},
         ts: Date.now(),
+        // Auto-accepting a bridge-created portal is local bookkeeping. If the
+        // join is sent back to the bridge, bridges without remote membership
+        // support try to execute it and log a misleading "not implemented".
+        origin,
       });
     // The invite itself, not the join that followed it.
     return written;
@@ -1462,6 +1542,7 @@ export class Homeserver {
     // that reads it back.
     if (input.redacts && event.redacts) this.#store.redactEvent(input.redacts, event.eventId);
     for (const appservice of this.#store.appservices()) this.#wakePusher(appservice.id);
+    for (const wake of [...this.#syncWakers]) wake();
     if (input.type === "m.room.message" || input.type === "m.sticker")
       this.#options.onActivity?.({
         roomId: input.roomId,

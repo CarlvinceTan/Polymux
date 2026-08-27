@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { SkillLoader } from "@polymux/agent";
 import { importMcpServers } from "@polymux/tools";
-import type { PluginContributionsDto } from "@polymux/protocol";
+import type { PluginContributionsDto, PluginViewDto } from "@polymux/protocol";
 
 /**
  * What a plugin says about itself. Everything is optional but the name, and
@@ -55,10 +55,43 @@ export function readContributions(directory: string): PluginContributionsDto {
   return {
     skills: pluginSkillNames(directory),
     mcpServers: pluginMcpServers(directory).map((server) => server.id),
+    views: pluginViews(directory, "").map((view) => view.name),
     commands: countMarkdown(path.join(directory, "commands")),
     agents: countMarkdown(path.join(directory, "agents")),
     hooks: countHooks(directory),
   };
+}
+
+/**
+ * Reads safe, local workspace views from `views/<id>/view.json`. A view is a
+ * small HTML app loaded through Polymux's existing file-preview boundary.
+ */
+export function pluginViews(directory: string, pluginId: string): PluginViewDto[] {
+  const viewsDirectory = path.join(directory, "views");
+  if (!isDirectory(viewsDirectory)) return [];
+  const views: PluginViewDto[] = [];
+  for (const folder of readdirSync(viewsDirectory, { withFileTypes: true })) {
+    if (!folder.isDirectory() || folder.name.startsWith(".")) continue;
+    const root = path.join(viewsDirectory, folder.name);
+    const source = read(path.join(root, "view.json"));
+    if (!source) continue;
+    try {
+      const manifest = JSON.parse(source) as Record<string, unknown>;
+      const relative = typeof manifest.entry === "string" ? manifest.entry : "index.html";
+      const entry = path.resolve(root, relative);
+      if (!entry.startsWith(`${path.resolve(root)}${path.sep}`) || !existsSync(entry) || !statSync(entry).isFile()) continue;
+      views.push({
+        id: `${pluginId}/${folder.name}`,
+        pluginId,
+        name: typeof manifest.name === "string" && manifest.name.trim() ? manifest.name.trim() : folder.name,
+        description: typeof manifest.description === "string" ? manifest.description.trim() : "",
+        entry,
+      });
+    } catch {
+      // One malformed view must not hide the plugin's other contributions.
+    }
+  }
+  return views.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** The plugin's skills directory, or undefined when it ships none. Passed to

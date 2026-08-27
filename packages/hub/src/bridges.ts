@@ -84,10 +84,10 @@ function accepting(port: number): Promise<boolean> {
  * One bridge instance: the platform it serves, the binary that serves it, and
  * the network settings that bind the two.
  *
- * The mapping is not one binary to one platform. mautrix-meta serves Messenger
- * and Instagram from the same executable, told apart only by `network.mode`,
- * so it is listed twice and runs twice — separate config, database, port and
- * appservice id, because they are separate accounts on separate networks.
+ * Messenger and Instagram share an upstream repository and configuration
+ * shape, but are separate executables. Instagram's old `mautrix-meta` mode was
+ * retired after v26.07; keeping it on that compatibility build leaves a login
+ * authenticated but unable to maintain Meta's realtime connection.
  */
 export interface BridgeSpec {
   /** Platform key, matching the protocol catalogue and the provisioning route. */
@@ -224,11 +224,9 @@ export const BRIDGE_FLEET: readonly BridgeSpec[] = [
   {platform: "signal", binary: "mautrix-signal"},
   {platform: "discord", binary: "mautrix-discord", legacy: true},
   {platform: "slack", binary: "mautrix-slack"},
-  // One binary, two networks. `messenger` talks to facebook.com/messenger.com;
-  // `instagram` to instagram.com. mautrix-instagram, which used to serve the
-  // latter, is retired upstream and is deliberately not listed.
+  // These use the same config shape but separate executables upstream.
   {platform: "messenger", binary: "mautrix-meta", network: {mode: "messenger"}},
-  {platform: "instagram", binary: "mautrix-meta", network: {mode: "instagram"}},
+  {platform: "instagram", binary: "mautrix-instagram", network: {mode: "instagram"}},
   {platform: "googlechat", binary: "mautrix-googlechat"},
   {platform: "gmessages", binary: "mautrix-gmessages"},
   {platform: "linkedin", binary: "mautrix-linkedin"},
@@ -886,19 +884,16 @@ export class BridgeHost {
       "            relayed: delete",
       "            shared_no_users: delete",
       "            shared_has_users: delete",
-      // Without this a bridge creates its portals, syncs their members, and
-      // brings across nothing that was said before it was linked: every
-      // conversation opens empty until someone sends the next message. The
-      // binaries default it off, so it has to be asked for.
+      // Import a small recent window immediately. The persistent queue below
+      // archives older ranges once and records its progress in the bridge DB.
       "backfill:",
       "    enabled: true",
-      // The defaults stop at the last page the network hands over on connect,
-      // which in a busy group is a few dozen messages — the rest is there in
-      // WhatsApp and missing here. The queue is what walks further back, and
-      // the binaries ship it off.
       `    max_initial_messages: ${INITIAL_BACKFILL}`,
       `    max_catchup_messages: ${CATCHUP_BACKFILL}`,
       "    queue:",
+      // Completed tasks stay complete across bridge restarts; only unfinished
+      // ranges resume. This may produce sync notifications while the one-time
+      // archive is still being built, but does not rebuild a finished archive.
       "        enabled: true",
       "        batch_size: 100",
       "        batch_delay: 20",
@@ -926,39 +921,34 @@ export class BridgeHost {
  * binary added when it upgraded the config in place — is left alone.
  */
 /**
- * How much history a bridge is asked for. The first number is what it fetches
- * when it creates a portal, the second what it collects for a portal it
- * already had; both binaries default them low enough that a group chat opens
- * showing a fraction of what the phone shows. The backfill queue walks the
- * rest in the background, so these only have to cover the first look.
+ * Conservative recent-history budgets. These match Mautrix's messaging-first
+ * defaults: enough context for a new or reconnected portal without asking a
+ * phone-backed network for thousands of messages after every desktop restart.
  */
-const INITIAL_BACKFILL = 500;
-const CATCHUP_BACKFILL = 5000;
+const INITIAL_BACKFILL = 50;
+const CATCHUP_BACKFILL = 500;
 
 /**
- * Brings a config's `backfill:` block up to what the seed asks for: backfill
- * and its queue switched on, and history limits no lower than ours. The
- * binaries write their own defaults back over all four when they upgrade a
- * config in place.
+ * Restores a config's `backfill:` block to Polymux's archive policy: bounded
+ * recent backfill and the persistent backwards queue stay on, while old
+ * aggressive immediate budgets are reduced. Queue progress lives in the
+ * bridge database, so restarting resumes unfinished work rather than starting
+ * completed tasks again.
  *
  * Walked line by line; see {@link withinBlock}.
  */
 function repairBackfill(source: string): string {
-  return withinBlock(source, "backfill", (line) =>
-    line
-      // `enabled:` at any depth — the block's own and the queue's, both of
-      // which the binaries default off.
-      .replace(/^([ \t]+enabled:[ \t]*)false\b/, "$1true")
-      // The limits, only as a direct child of `backfill:`. The same key nested
-      // under `threads:` is a per-thread budget, and multiplying it by every
-      // thread in a chat is not what raising the chat's own limit means.
-      .replace(/^([ \t]{1,4}max_initial_messages:[ \t]*)(\d+)\b/, (all, head, value) =>
-        Number(value) < INITIAL_BACKFILL ? `${head}${INITIAL_BACKFILL}` : all,
-      )
-      .replace(/^([ \t]{1,4}max_catchup_messages:[ \t]*)(\d+)\b/, (all, head, value) =>
-        Number(value) < CATCHUP_BACKFILL ? `${head}${CATCHUP_BACKFILL}` : all,
-      ),
-  );
+  let inQueue = false;
+  return withinBlock(source, "backfill", (line) => {
+    const directChild = line.match(/^[ \t]{1,4}([A-Za-z_][\w-]*):/);
+    if (directChild) inQueue = directChild[1] === "queue";
+    if (inQueue)
+      return line.replace(/^([ \t]+enabled:[ \t]*)false\b/, "$1true");
+    return line
+      .replace(/^([ \t]{1,4}enabled:[ \t]*)false\b/, "$1true")
+      .replace(/^([ \t]{1,4}max_initial_messages:[ \t]*)\d+\b/, `$1${INITIAL_BACKFILL}`)
+      .replace(/^([ \t]{1,4}max_catchup_messages:[ \t]*)\d+\b/, `$1${CATCHUP_BACKFILL}`);
+  });
 }
 
 /**
@@ -967,8 +957,9 @@ function repairBackfill(source: string): string {
  * `request_full_sync` is sent to the phone when the bridge logs in. Polymux
  * used to force it on with a ten-year, five-gigabyte budget. A desktop restart
  * could therefore make the phone announce another linked-device sync. Normal
- * incremental sync and the backfill queue are enough after pairing, and do not
- * repeatedly ask the phone to export its archive.
+ * incremental live sync handles new messages after pairing. The separate
+ * persistent queue may finish archiving older ranges, but this login-time full
+ * export request remains off so each restart does not request the archive anew.
  */
 function repairHistorySync(source: string): string {
   return withinBlock(source, "network", (line) =>

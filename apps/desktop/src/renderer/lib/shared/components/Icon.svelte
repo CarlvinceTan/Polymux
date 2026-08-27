@@ -15,7 +15,7 @@
     | 'mail' | 'inbox' | 'spam' | 'storefront' | 'settings' | 'cloud'
     | 'reply' | 'reply-all' | 'mail-forward' | 'flag'
     | 'key' | 'shield' | 'prohibited' | 'eye' | 'eye-off' | 'incognito' | 'external' | 'import' | 'cookie'
-    | 'pin' | 'pin-off' | 'bell' | 'tasks';
+    | 'pin' | 'pin-off' | 'bell' | 'tasks' | 'platforms';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -50,6 +50,10 @@
   {:else if name === 'apps'}
     <!-- One application window for the aggregate app-access permission. -->
     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 8.5h17"/><circle cx="6.5" cy="6.5" r=".7" fill="currentColor" stroke="none"/><circle cx="9" cy="6.5" r=".7" fill="currentColor" stroke="none"/>
+  {:else if name === 'platforms'}
+    <!-- Four equal service tiles: an aggregate of platforms, without the
+         network-node meaning carried by the Connections icon. -->
+    <rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>
   {:else if name === 'plus'}
     <path d="M12 5v14M5 12h14"/>
   {:else if name === 'close'}

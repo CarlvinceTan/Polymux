@@ -12,7 +12,7 @@ const REGISTRY_KEY = "profiles.registry";
 const ACTIVE_KEY = "profiles.active";
 const DEFAULT_KEY = "profiles.default";
 const PROFILE_PREFERENCE_KEYS = new Set([
-  "model", "model-roles", "custom-providers", "mcp-enabled",
+  "model", "model-roles", "agent-runtime", "custom-providers", "mcp-enabled",
   "mcp-capabilities", "skill-enabled", "plugin-enabled",
 ]);
 
