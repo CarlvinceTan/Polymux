@@ -1,0 +1,11 @@
+#!/bin/sh
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "Push blocked: direct pushes to main are protected in this checkout." >&2
+    echo "Push dev or a feature branch and merge through the normal review path." >&2
+    exit 1
+  fi
+done
+
+exit 0
