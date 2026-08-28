@@ -408,7 +408,7 @@ test("a bridge missing from the package has a platform-neutral message", async (
       (bridge) => bridge.platform === "instagram",
     );
     assert.equal(instagram?.state, "unavailable");
-    assert.equal(instagram?.error, "The Instagram bridge can’t be installed.");
+    assert.equal(instagram?.error, "The Instagram bridge is not installed.");
     assert.doesNotMatch(instagram?.error ?? "", /Mac|Windows|mautrix/i);
   } finally {
     await hs.close();

@@ -99,7 +99,10 @@ export function discoverAgentSkills(
     // Parsed by the loader itself, so a folder counts as a skill here exactly
     // when Polymux would treat it as one — no second frontmatter reader that
     // can drift from the first.
-    const skills = new SkillLoader({configured: [candidate.directory]}).load().skills.map((skill) => ({
+    const skills = new SkillLoader({
+      configured: [candidate.directory],
+      includeUserLocations: false,
+    }).load().skills.map((skill) => ({
       name: skill.name,
       description: skill.description,
       path: displayPath(path.dirname(skill.filePath), home),

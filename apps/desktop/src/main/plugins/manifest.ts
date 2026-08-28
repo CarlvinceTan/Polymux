@@ -105,7 +105,7 @@ export function pluginSkillDirectory(directory: string): string | undefined {
 export function pluginSkillNames(directory: string): string[] {
   const skills = pluginSkillDirectory(directory);
   if (!skills) return [];
-  return new SkillLoader({ configured: [skills] })
+  return new SkillLoader({ configured: [skills], includeUserLocations: false })
     .load()
     .skills.map((skill) => skill.name)
     .sort();

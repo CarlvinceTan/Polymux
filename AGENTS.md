@@ -50,6 +50,9 @@ explicitly asked; report conflicts instead.
 ## Repository safety
 
 - Preserve unrelated worktree changes. Never run `git stash`.
+- Never create, switch, or move work onto another Git branch unless the user
+  explicitly instructs you to do so in the current task. Remain on the current
+  branch by default.
 - Polymux is pre-release with no external users. Do not add compatibility for
   obsolete formats; reset disposable state or use a bounded one-time migration
   for valuable local data.

@@ -1,5 +1,5 @@
-import {marked} from 'marked';
 import {parse as parseYaml} from 'yaml';
+import {renderSafeMarkdown} from './markdown.js';
 
 export type DocsTocItem = {
   id: string;
@@ -42,7 +42,7 @@ function slugify(value: string): string {
 }
 
 function renderMarkdown(body: string): {html: string; toc: DocsTocItem[]} {
-  const rendered = marked.parse(body, {gfm: true}) as string;
+  const rendered = renderSafeMarkdown(body);
   const toc: DocsTocItem[] = [];
   const usedIds = new Set<string>();
   const html = rendered.replace(/<h([23])>([\s\S]*?)<\/h\1>/g, (_match, levelValue: string, inner: string) => {
