@@ -41,8 +41,8 @@ if (baseArgument) {
   const previous = JSON.parse(
     execFileSync("git", ["show", `${base}:package.json`], {encoding: "utf8"}),
   ).version;
-  if (compare(root.version, previous) <= 0)
-    fail(`version ${root.version} must be newer than main's ${previous}.`);
+  if (compare(root.version, previous) < 0)
+    fail(`version ${root.version} cannot be older than main's ${previous}.`);
 }
 
 const latest = tags
