@@ -15,8 +15,9 @@ test("native WeChat addresses are enabled only for an exact dylib digest", () =>
     sessionRegister: "x26",
     recipientOffset: 0x2c0,
   });
-  assert.equal(profile?.entryPoints.revokeTaskRva, 0x4f115d4);
-  assert.equal(profile?.entryPoints.revokeTaskCallerRva, 0x503fe48);
+  // 0x4f115d4 is mars::cdn RevokeTask, not WeChat's revokemsg entry. Message
+  // recall stays intentionally unprofiled rather than calling the wrong ABI.
+  assert.equal("revokeTaskRva" in (profile?.entryPoints ?? {}), false);
   assert.match(
     profile?.methodEncodings?.weTypeStickerSend ?? "",
     /basic_string<char/,

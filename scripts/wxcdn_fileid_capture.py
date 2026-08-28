@@ -18,10 +18,10 @@ import lldb
 
 _requests = {}
 _capture_path = None
-_detach_after_capture = False
 _lock = threading.Lock()
+_MAX_FILE_BODY = 64 * 1024 * 1024
 _UPLOAD_PATH = re.compile(
-    r"(?:uploadappattach|uploadvideo|uploadmsgimg|cdn[^/]*upload|upload[^/]*file)",
+    r"(?:uploadappattach|uploadvideo|uploadvoice|uploadmsgimg|cdn[^/]*upload|upload[^/]*file)",
     re.IGNORECASE,
 )
 
@@ -34,6 +34,22 @@ def _read(process, address, size):
     error = lldb.SBError()
     data = process.ReadMemory(address, size, error)
     return data if error.Success() else b""
+
+
+def _append_json(path, record):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        os.write(
+            descriptor,
+            (json.dumps(record, separators=(",", ":")) + "\n").encode("utf-8"),
+        )
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _std_string_bytes(frame, register_name):
@@ -93,8 +109,8 @@ def _set_body(frame, _bp, _dict):
 
 def _set_upload_form(frame, _bp, _dict):
     state = _state(frame)
-    state["upload_prefix"] = _std_string(frame, "x1")
-    state["upload_suffix"] = _std_string(frame, "x2")
+    state["upload_prefix"] = _std_string_bytes(frame, "x1")
+    state["upload_suffix"] = _std_string_bytes(frame, "x2")
     return False
 
 
@@ -103,19 +119,58 @@ def _set_upload_path(frame, _bp, _dict):
     return False
 
 
+def _materialize_upload_body(state):
+    body = state.get("body", b"")
+    if body:
+        return body
+    if os.environ.get("WECHAT_CDN_CAPTURE_ALLOW_FILE_PATH_ONLY") != "1":
+        return b""
+    file_path = state.get("file_path", "")
+    if not file_path:
+        return b""
+    try:
+        size = os.path.getsize(file_path)
+        if not 0 <= size <= _MAX_FILE_BODY:
+            return b""
+        with open(file_path, "rb") as stream:
+            file_bytes = stream.read(_MAX_FILE_BODY + 1)
+    except OSError:
+        return b""
+    if len(file_bytes) != size:
+        return b""
+    return (
+        state.get("upload_prefix", b"")
+        + file_bytes
+        + state.get("upload_suffix", b"")
+    )
+
+
 def _start_request(frame, _bp, _dict):
-    global _detach_after_capture
+    process = frame.GetThread().GetProcess()
     key = frame.FindRegister("x0").GetValueAsUnsigned()
     with _lock:
         state = dict(_requests.pop(key, {}))
     url = state.get("url", "")
     parsed = urlsplit(url)
-    body = state.get("body", b"")
+    body = _materialize_upload_body(state)
+    file_path = state.get("file_path", "")
+    upload_prefix = state.get("upload_prefix", b"")
+    upload_suffix = state.get("upload_suffix", b"")
+    allow_file_path_only = (
+        os.environ.get("WECHAT_CDN_CAPTURE_ALLOW_FILE_PATH_ONLY") == "1"
+    )
+    has_upload_state = bool(
+        file_path or upload_prefix or _UPLOAD_PATH.search(parsed.path)
+    )
     if (
         not parsed.hostname
-        or not body
         or not _capture_path
-        or not _UPLOAD_PATH.search(parsed.path)
+        or not has_upload_state
+        or (
+            not body
+            and not upload_prefix
+            and not (allow_file_path_only and file_path)
+        )
     ):
         return False
 
@@ -125,14 +180,19 @@ def _start_request(frame, _bp, _dict):
         "method": state.get("method") or "POST",
         "headers": state.get("headers", {}),
         "body_b64": base64.b64encode(body).decode("ascii"),
+        "file_path": file_path,
+        "upload_prefix_b64": base64.b64encode(upload_prefix).decode("ascii"),
+        "upload_suffix_b64": base64.b64encode(upload_suffix).decode("ascii"),
         "transport": "HttpWithCronet",
         "url": url,
     }
-    with open(_capture_path, "a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record, separators=(",", ":")) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    _detach_after_capture = True
+    _append_json(_capture_path, record)
+    # Detach while the target is already stopped in this callback. Killing an
+    # LLDB process that is still attached can leave debugserver holding WeChat
+    # stopped (or terminate the app when debugserver is reaped). A native
+    # detach resumes WeChat first; the daemon may then reap the idle LLDB child
+    # without owning the target anymore.
+    process.Detach()
     return False
 
 
@@ -168,8 +228,9 @@ def _install(debugger, command, result, _dict):
 
 
 def _auto_detach(_debugger, _command, result, _dict):
-    # wechatd owns the LLDB child and terminates it after capture/timeout.  The
-    # command is retained for compatibility with its generated command file.
+    # The daemon owns the LLDB child's outer timeout. Successful captures
+    # detach natively in `_start_request`; this command remains for compatibility
+    # with the command file generated by released wechatd builds.
     result.AppendMessage("cdn capture auto-detach armed")
 
 

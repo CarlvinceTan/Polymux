@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -81,6 +81,36 @@ test("does not mistake a sibling folder with a shared prefix for a child", async
     const sibling = `${root}-old`;
     await mkdir(sibling, {recursive: true});
     await assert.rejects(() => drive.list(sibling), /outside the drive folder/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("refuses to follow a symlink outside the drive folder", async () => {
+  const {root, drive, cleanup} = await fixture();
+  try {
+    const outside = path.join(path.dirname(root), "outside");
+    const linked = path.join(root, "linked");
+    const source = path.join(path.dirname(root), "payload.txt");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "keep.txt"), "not yours");
+    await writeFile(source, "escaped");
+    await symlink(outside, linked, "dir");
+
+    await assert.rejects(
+      () => drive.upload(linked, source),
+      /outside the drive folder/,
+    );
+    await assert.rejects(
+      () => drive.createFolder(linked, "escaped"),
+      /outside the drive folder/,
+    );
+    await assert.rejects(
+      () => drive.remove(path.join(linked, "keep.txt")),
+      /outside the drive folder/,
+    );
+    assert.equal(await readFile(path.join(outside, "keep.txt"), "utf8"), "not yours");
+    await assert.rejects(readFile(path.join(outside, "payload.txt")), {code: "ENOENT"});
   } finally {
     await cleanup();
   }

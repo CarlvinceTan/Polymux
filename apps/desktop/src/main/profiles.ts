@@ -11,6 +11,7 @@ const DEFAULT_PROFILE: ProfileRecord = {id: "default", name: "Default Profile", 
 const REGISTRY_KEY = "profiles.registry";
 const ACTIVE_KEY = "profiles.active";
 const DEFAULT_KEY = "profiles.default";
+const CONFIG_LAYOUT_MIGRATION_KEY = "profiles.config-layout-v1";
 const PROFILE_PREFERENCE_KEYS = new Set([
   "model", "model-roles", "agent-runtime", "custom-providers", "mcp-enabled",
   "mcp-capabilities", "skill-enabled", "plugin-enabled",
@@ -23,7 +24,14 @@ export class ProfileManager {
     private readonly defaultConfigDirectory = dataDirectory,
     private readonly profilesDirectory = path.join(defaultConfigDirectory, "profiles"),
   ) {
-    this.migrateProfileDirectories();
+    mkdirSync(this.profilesDirectory, {recursive: true});
+    mkdirSync(this.directory(DEFAULT_PROFILE.id), {recursive: true});
+    if (this.storage.getPreference(CONFIG_LAYOUT_MIGRATION_KEY)?.value !== true) {
+      this.migrateProfileDirectories();
+      this.storage.setPreference(CONFIG_LAYOUT_MIGRATION_KEY, true);
+    } else if (!existsSync(path.join(this.profilesDirectory, "index.json"))) {
+      this.writeIndex(this.snapshot());
+    }
   }
 
   snapshot(): ProfilesSnapshot {
@@ -182,9 +190,7 @@ export class ProfileManager {
    * once, preserving the old default files as a recoverable fallback.
    */
   private migrateProfileDirectories(): void {
-    mkdirSync(this.profilesDirectory, {recursive: true});
     const defaultDirectory = this.directory(DEFAULT_PROFILE.id);
-    mkdirSync(defaultDirectory, {recursive: true});
     for (const file of ["credentials.json", "api-keys.json"]) {
       const source = path.join(this.dataDirectory, file);
       const destination = path.join(defaultDirectory, file);
@@ -197,6 +203,14 @@ export class ProfileManager {
       if (!existsSync(destination) && existsSync(source))
         cpSync(source, destination, {recursive: true, errorOnExist: false});
     }
+    // Some early builds kept MCP configuration in Electron userData rather
+    // than ~/.polymux. That global configuration belonged to the only profile
+    // those builds had: the default. Never seed it into whichever named
+    // profile happens to be active during a later launch.
+    const legacyMcp = path.join(this.dataDirectory, "mcp.json");
+    const defaultMcp = path.join(defaultDirectory, "mcp.json");
+    if (!existsSync(defaultMcp) && existsSync(legacyMcp))
+      cpSync(legacyMcp, defaultMcp, {errorOnExist: false});
     const legacyRoot = path.join(this.dataDirectory, "profiles");
     if (path.resolve(legacyRoot) !== path.resolve(this.profilesDirectory) && existsSync(legacyRoot)) {
       for (const profile of this.snapshot().profiles) {

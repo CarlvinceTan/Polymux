@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtemp, rm} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -52,5 +52,47 @@ test("duplicate copies scoped preferences and delete cannot remove default", asy
   } finally {
     storage.close();
     await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test("legacy MCP configuration migrates once into the default profile only", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-profile-migration-"));
+  const dataDirectory = path.join(root, "user-data");
+  const configDirectory = path.join(root, "config");
+  const profilesDirectory = path.join(configDirectory, "profiles");
+  await mkdir(dataDirectory, {recursive: true});
+  await writeFile(path.join(dataDirectory, "mcp.json"), '{"mcpServers":{"legacy":{}}}\n');
+  const storage = new SqliteStorage(path.join(dataDirectory, "polymux.sqlite"));
+  try {
+    const profiles = new ProfileManager(
+      storage,
+      dataDirectory,
+      configDirectory,
+      profilesDirectory,
+    );
+    assert.equal(
+      await readFile(path.join(profiles.directory("default"), "mcp.json"), "utf8"),
+      '{"mcpServers":{"legacy":{}}}\n',
+    );
+
+    const created = profiles.create("Clean");
+    const clean = created.profiles.find((profile) => profile.name === "Clean")!;
+    profiles.select(clean.id);
+    await assert.rejects(
+      readFile(path.join(profiles.directory(clean.id), "mcp.json"), "utf8"),
+      {code: "ENOENT"},
+    );
+
+    const index = path.join(profilesDirectory, "index.json");
+    await writeFile(index, "migration already completed\n");
+    new ProfileManager(storage, dataDirectory, configDirectory, profilesDirectory);
+    assert.equal(await readFile(index, "utf8"), "migration already completed\n");
+    await assert.rejects(
+      readFile(path.join(profiles.directory(clean.id), "mcp.json"), "utf8"),
+      {code: "ENOENT"},
+    );
+  } finally {
+    storage.close();
+    await rm(root, {recursive: true, force: true});
   }
 });

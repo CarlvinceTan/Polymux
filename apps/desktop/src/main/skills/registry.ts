@@ -1,14 +1,11 @@
-import { execFile } from "node:child_process";
 import { createWriteStream, existsSync } from "node:fs";
 import { mkdtemp, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { SkillLoader } from "@polymux/agent";
-
-const run = promisify(execFile);
+import {extractTarGzip} from "../system/archive.js";
 
 export interface SkillPackageRef {
   owner: string;
@@ -74,7 +71,10 @@ export async function installSkillPackage(
       );
     const installed: InstalledSkillSummary[] = [];
     for (const candidate of candidates) {
-      const loaded = new SkillLoader({ configured: [candidate] }).load();
+      const loaded = new SkillLoader({
+        configured: [candidate],
+        includeUserLocations: false,
+      }).load();
       const skill = loaded.skills.find((item) => item.filePath === path.join(candidate, "SKILL.md"));
       if (!skill) {
         const problem = loaded.diagnostics.find((item) => item.severity === "error");
@@ -104,7 +104,7 @@ async function downloadRepository(reference: SkillPackageRef, staging: string): 
   await pipeline(Readable.fromWeb(response.body as import("node:stream/web").ReadableStream), createWriteStream(archive));
   const extracted = path.join(staging, "extracted");
   await mkdir(extracted, { recursive: true });
-  await run("tar", ["-xzf", archive, "-C", extracted], { timeout: 60_000 });
+  await extractTarGzip(archive, extracted);
   const [root] = await readdir(extracted);
   if (!root) throw new Error("The downloaded package was empty");
   return path.join(extracted, root);

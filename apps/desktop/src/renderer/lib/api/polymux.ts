@@ -7,10 +7,12 @@ import type {
   CalendarListDto,
   ChatDto,
   ChatMessageDto,
+  ContactLinkDto,
   ComputerHistoryActivityDto,
   ComputerHistoryEntryDto,
   ComputerHistoryStatusDto,
   CommsEmailAccountDto,
+  CommsPlatform,
   CommsStatusDto,
   DiscoveredMcpGroupDto,
   DiscoveredSkillGroupDto,
@@ -303,7 +305,7 @@ function createBrowserDemoApi(): PolymuxApi {
       {platform: 'gvoice', name: 'Google Voice', api: 'bridgev2', state: 'unreachable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'The Google Voice bridge can’t be installed.'},
       {platform: 'zulip', name: 'Zulip', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'apitoken', name: 'API token', description: 'Login with your Zulip email and API token'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'messenger', name: 'Messenger', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'messenger', name: 'messenger.com', description: 'Login using cookies from messenger.com'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'instagram', name: 'Instagram', api: 'bridgev2', state: 'connected', accounts: [{id: 'ig1', name: '@carl.builds', state: 'connected', error: null}, {id: 'ig2', name: '@polymux', state: 'connected', error: null}], flows: [{id: 'instagram', name: 'instagram.com', description: 'Login using cookies from instagram.com'}], setup: null, managementRoomHint: null, error: null},
+      {platform: 'instagram', name: 'Instagram', api: 'bridgev2', state: 'connected', accounts: [{id: 'ig1', name: '@carl.builds', avatarUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', state: 'connected', error: null}, {id: 'ig2', name: '@polymux', avatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', state: 'connected', error: null}], flows: [{id: 'instagram', name: 'instagram.com', description: 'Login using cookies from instagram.com'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'discord', name: 'Discord', api: 'legacy', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR code', description: 'Recommended · Scan with the Discord mobile app; CAPTCHAs are not supported'}, {id: 'user-token', name: 'User token', description: 'Full personal account access · Manual and sensitive; may carry account risk'}, {id: 'bot-token', name: 'Bot token', description: 'Servers only · The bot sees only channels and permissions granted to it'}, {id: 'oauth-token', name: 'OAuth token', description: 'Limited scopes · Standard Discord OAuth cannot provide all personal messages'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'linkedin', name: 'LinkedIn', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Cookies', description: 'Log in with your LinkedIn account using your cookies'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'imessage', name: 'iMessage', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'local', name: 'This Mac', description: 'Read the Messages database on this Mac'}], setup: null, managementRoomHint: null, error: null},
@@ -341,6 +343,26 @@ function createBrowserDemoApi(): PolymuxApi {
           }
         : bridge,
     );
+  };
+  const demoCommsListeners = new Set<(status: CommsStatusDto) => void>();
+  /** Test-only status push: it follows the same subscription seam used when a
+   * second Polymux window changes an account in Settings. */
+  (window as unknown as {
+    polymuxDemoSetPlatformLinked?: (platform: CommsPlatform, linked: boolean) => void;
+  }).polymuxDemoSetPlatformLinked = (platform, linked) => {
+    demoCommsStatus.bridges = demoCommsStatus.bridges.map((bridge) => {
+      if (bridge.platform !== platform) return bridge;
+      return linked
+        ? {
+            ...bridge,
+            state: 'connected',
+            accounts: bridge.accounts.length > 0
+              ? bridge.accounts
+              : [{id: `demo-${platform}`, name: 'Demo account', state: 'connected', error: null}],
+          }
+        : {...bridge, state: 'logged-out', accounts: []};
+    });
+    for (const listener of demoCommsListeners) listener(structuredClone(demoCommsStatus));
   };
   // Newest first with unread counts, the way the hub now returns them.
   const demoRevealListeners = new Set<(request: WorkspaceRevealDto) => void>();
@@ -469,6 +491,7 @@ function createBrowserDemoApi(): PolymuxApi {
     null,
   );
   let demoBroadcasts: BroadcastDto[] = [];
+  let demoContactLinks: ContactLinkDto[] = [];
   const demoBroadcastMessages = new Map<string, BroadcastMessageDto[]>();
   const demoMailFolders: MailFolderDto[] = [
     {name: 'INBOX', label: 'Inbox', role: 'inbox'},
@@ -576,6 +599,10 @@ function createBrowserDemoApi(): PolymuxApi {
   const demoExtensionStatus = () => ({
     installed: !demoExtensionMissing,
     lastReportedAt: demoExtensionMissing ? null : new Date().toISOString(),
+    version: demoExtensionMissing ? null : '0.2.2',
+    protocolVersion: demoExtensionMissing ? null : 1,
+    compatible: demoExtensionMissing ? null : true,
+    capabilities: demoExtensionMissing ? [] : ['surface-commands-v1', 'tab-snapshots-v1'],
     promptToInstall: demoExtensionMissing && !demoExtensionDismissed,
   });
 
@@ -653,7 +680,7 @@ function createBrowserDemoApi(): PolymuxApi {
       },
       locate: async () => ({latitude: -33.8688, longitude: 151.2093, accuracy: 25_000, updatedAt: '2026-08-14T00:00:00.000Z'}),
       version: async () => ({
-        version: releaseNotesPreview ? '0.2.2' : '0.1.0',
+        version: releaseNotesPreview ? __POLYMUX_VERSION__ : '0.1.0',
         electron: '',
         platform: 'browser',
         packaged: releaseNotesPreview,
@@ -873,16 +900,25 @@ function createBrowserDemoApi(): PolymuxApi {
         {id: 'demo-event-3', calendarId: 'demo-personal', title: 'Exchange planning', start: new Date(today.getTime() + 4 * day).toISOString(), end: new Date(today.getTime() + 5 * day).toISOString(), allDay: true, availability: 'free', attendees: [], editable: true},
         {id: 'demo-event-4', calendarId: 'demo-birthdays', title: 'Percival’s Birthday', start: new Date(today.getTime() + 7 * day).toISOString(), end: new Date(today.getTime() + 8 * day).toISOString(), allDay: true, recurrence: {frequency: 'yearly', interval: 1}, availability: 'free', attendees: [], editable: false},
       ];
+      const listeners = new Set<() => void>();
+      const publish = () => { for (const listener of listeners) listener(); };
+      const eventsInRange = (start: string, end: string, ids?: string[]) => {
+        const from = Date.parse(start);
+        const until = Date.parse(end);
+        return events.filter((event) => Date.parse(event.start) < until && Date.parse(event.end) > from && (!ids || ids.includes(event.calendarId)));
+      };
       return {
+        snapshot: async (start, end) => ({
+          calendars: structuredClone(calendars),
+          events: structuredClone(eventsInRange(start, end)),
+          fetchedAt: new Date().toISOString(),
+        }),
         calendars: async () => structuredClone(calendars),
-        events: async (start, end, ids) => {
-          const from = Date.parse(start);
-          const until = Date.parse(end);
-          return structuredClone(events.filter((event) => Date.parse(event.start) < until && Date.parse(event.end) > from && (!ids || ids.includes(event.calendarId))));
-        },
+        events: async (start, end, ids) => structuredClone(eventsInRange(start, end, ids)),
         create: async (input) => {
           const created: CalendarEventDto = {...input, id: crypto.randomUUID(), recurrence: input.recurrence ?? undefined, alarmMinutes: input.alarmMinutes ?? undefined, availability: input.availability ?? 'busy', attendees: [], editable: true};
           events = [...events, created];
+          publish();
           return structuredClone(created);
         },
         update: async (id, change) => {
@@ -897,12 +933,17 @@ function createBrowserDemoApi(): PolymuxApi {
           } : event);
           const found = events.find((event) => event.id === id);
           if (!found) throw new Error(`Event not found: ${id}`);
+          publish();
           return structuredClone(found);
         },
-        remove: async (id) => { events = events.filter((event) => event.id !== id); },
+        remove: async (id) => { events = events.filter((event) => event.id !== id); publish(); },
         importFile: async () => ({imported: 0, skipped: 0, fileName: null}),
         exportFile: async () => null,
         openAccounts: async () => {},
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
       };
     })(),
     tasks: (() => {
@@ -1051,7 +1092,7 @@ function createBrowserDemoApi(): PolymuxApi {
           return {type: 'display_and_wait', loginId: 'demo', stepId: 'qr', instructions: 'Scan this from your phone.', display: 'qr', data: `https://example.com/pair/${platform}`, imageUrl: null};
         if (flowId === 'phone')
           return {type: 'user_input', loginId: 'demo', stepId: `phone:${platform}`, instructions: null, fields: [{id: 'phone', type: 'phone_number', name: 'Phone number', description: 'With country code, e.g. +61 400 000 000.', pattern: '^\\+?[0-9 ]{6,}$'}]};
-        if (flowId === 'token')
+        if (flowId === 'token' || flowId === 'bot')
           return {type: 'user_input', loginId: 'demo', stepId: 'token', instructions: null, fields: [{id: 'token', type: 'token', name: 'Token', description: null, pattern: null}]};
         if (flowId === 'password')
           return {type: 'user_input', loginId: 'demo', stepId: 'password', instructions: null, fields: [{id: 'username', type: 'username', name: 'Handle', description: 'e.g. you.bsky.social', pattern: null}, {id: 'password', type: 'password', name: 'App password', description: null, pattern: null}]};
@@ -1130,6 +1171,39 @@ function createBrowserDemoApi(): PolymuxApi {
             chatId: chat.id,
           }],
         })),
+      chatMembers: async (chatId) => chatId === '!tg-devs:local'
+        ? [
+            {userId: '@telegram_priya:local', name: 'Priya', avatarUrl: null},
+            {userId: '@telegram_manny:local', name: 'Manny Asbanu', avatarUrl: null},
+            {userId: '@telegram_pp_ll:local', name: 'Pp Ll', avatarUrl: null},
+          ]
+        : chatId === '!wa-family:local'
+          ? [
+              {userId: '@whatsapp_mum:local', name: 'Mum', avatarUrl: null},
+              {userId: '@whatsapp_dad:local', name: 'Dad', avatarUrl: null},
+            ]
+          : [],
+      contactLinks: async () => structuredClone(demoContactLinks),
+      contactLinkMerge: async (request) => {
+        const overlapping = demoContactLinks.filter((link) => link.members.some((member) =>
+          request.members.some((candidate) => candidate.platform === member.platform &&
+            ((candidate.remoteId && member.remoteId && candidate.remoteId === member.remoteId) ||
+              candidate.chatId === member.chatId))));
+        const at = new Date().toISOString();
+        const link: ContactLinkDto = {
+          id: overlapping[0]?.id ?? `contact-${crypto.randomUUID()}`,
+          name: request.name,
+          members: request.members,
+          createdAt: overlapping[0]?.createdAt ?? at,
+          updatedAt: at,
+        };
+        const removed = new Set(overlapping.map((item) => item.id));
+        demoContactLinks = [link, ...demoContactLinks.filter((item) => !removed.has(item.id))];
+        return structuredClone(link);
+      },
+      contactLinkRemove: async (id) => {
+        demoContactLinks = demoContactLinks.filter((link) => link.id !== id);
+      },
       chatCreate: async (request) => {
         const existing = request.participantIds.length === 1
           ? demoChats.find((chat) => chat.id === request.participantIds[0])
@@ -1325,7 +1399,10 @@ function createBrowserDemoApi(): PolymuxApi {
         if (!account) throw new Error(`No email account named ${id}`);
         return {...account, status: 'ok', error: null};
       },
-      subscribe: () => () => {},
+      subscribe(listener) {
+        demoCommsListeners.add(listener);
+        return () => demoCommsListeners.delete(listener);
+      },
       subscribeActivity: (listener) => {
         demoActivityListeners.add(listener);
         return () => demoActivityListeners.delete(listener);

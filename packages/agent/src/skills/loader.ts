@@ -1,5 +1,11 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import type { Skill, SkillDiagnostic, SkillLoadResult } from "./types.js";
 
@@ -10,6 +16,12 @@ export interface SkillLocation {
 }
 export interface SkillLoaderOptions {
   home?: string;
+  /**
+   * Include the shared ~/.agents and personal Polymux skill stores. Disable
+   * this when an explicit configured directory is being inspected in
+   * isolation, such as a plugin or import candidate.
+   */
+  includeUserLocations?: boolean;
   /**
    * The user's own skills directory. Defaults to `~/.polymux/skills`; the
    * desktop app passes it explicitly so a side instance loads from the home
@@ -27,6 +39,20 @@ export class SkillLoader {
   readonly #isEnabled: (skill: Skill) => boolean;
   constructor(options: SkillLoaderOptions = {}) {
     const home = options.home ?? homedir();
+    const userLocations: SkillLocation[] = options.includeUserLocations === false
+      ? []
+      : [
+          {
+            path: join(home, ".agents", "skills"),
+            source: "agents",
+            includeRootMarkdown: false,
+          },
+          {
+            path: options.personal ?? join(home, ".polymux", "skills"),
+            source: "polymux",
+            includeRootMarkdown: true,
+          },
+        ];
     this.#locations = [
       ...(options.official ?? []).map((path): SkillLocation => ({
         path,
@@ -39,16 +65,7 @@ export class SkillLoader {
       // ~/.codex/skills stay unsourced: a personal skill becomes Polymux's by
       // being copied into ~/.polymux/skills, which also wins name clashes so
       // in-app edits keep authority.
-      {
-        path: join(home, ".agents", "skills"),
-        source: "agents",
-        includeRootMarkdown: false,
-      },
-      {
-        path: options.personal ?? join(home, ".polymux", "skills"),
-        source: "polymux",
-        includeRootMarkdown: true,
-      },
+      ...userLocations,
       ...(options.bundled ?? []).map((path): SkillLocation => ({
         path,
         source: "bundled",
@@ -99,10 +116,20 @@ function loadLocation(location: SkillLocation): SkillLoadResult {
   const diagnostics: SkillDiagnostic[] = [];
   const root = resolve(location.path);
   if (!existsSync(root)) return { skills, diagnostics };
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return { skills, diagnostics };
+  }
+  const visited = new Set<string>();
   const visit = (directory: string, rootLevel: boolean): void => {
+    const realDirectory = realpathSync(directory);
+    if (visited.has(realDirectory)) return;
+    visited.add(realDirectory);
     const skillFile = join(directory, "SKILL.md");
-    if (existsSync(skillFile) && statSync(skillFile).isFile()) {
-      loadFile(skillFile, location.source, skills, diagnostics);
+    if (existsSync(skillFile) && safeFile(skillFile, realRoot)) {
+      loadFile(skillFile, location.source, skills, diagnostics, realRoot);
       return;
     }
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -110,7 +137,7 @@ function loadLocation(location: SkillLocation): SkillLoadResult {
       const path = join(directory, entry.name);
       if (
         entry.isDirectory() ||
-        (entry.isSymbolicLink() && safeDirectory(path))
+        (entry.isSymbolicLink() && safeDirectory(path, realRoot))
       )
         visit(path, false);
       else if (
@@ -119,7 +146,7 @@ function loadLocation(location: SkillLocation): SkillLoadResult {
         entry.isFile() &&
         entry.name.endsWith(".md")
       )
-        loadFile(path, location.source, skills, diagnostics);
+        loadFile(path, location.source, skills, diagnostics, realRoot);
     }
   };
   visit(root, true);
@@ -131,6 +158,7 @@ function loadFile(
   source: Skill["source"],
   skills: Skill[],
   diagnostics: SkillDiagnostic[],
+  realRoot: string,
 ): void {
   const content = readFileSync(filePath, "utf8");
   const frontmatter = parseFrontmatter(content);
@@ -158,7 +186,7 @@ function loadFile(
       message: "description exceeds 1024 characters",
       path: filePath,
     });
-  const manifest = skillManifest(dirname(filePath));
+  const manifest = skillManifest(dirname(filePath), realRoot);
   skills.push({
     name,
     description,
@@ -192,9 +220,9 @@ interface SkillManifest {
  * defined — `display_name` — and a skill without the file falls back to its
  * name, so the manifest is optional by design.
  */
-function skillManifest(baseDir: string): SkillManifest {
+function skillManifest(baseDir: string, realRoot: string): SkillManifest {
   const metadataPath = join(baseDir, "polymux.yaml");
-  if (!existsSync(metadataPath) || !statSync(metadataPath).isFile()) return {};
+  if (!existsSync(metadataPath) || !safeFile(metadataPath, realRoot)) return {};
   const metadata = readFileSync(metadataPath, "utf8");
   return {
     displayName: metadata.match(
@@ -240,9 +268,24 @@ function validateName(name: string): string[] {
     errors.push("name has invalid hyphen placement");
   return errors;
 }
-function safeDirectory(path: string): boolean {
+function safeDirectory(path: string, realRoot: string): boolean {
   try {
-    return statSync(path).isDirectory();
+    // A symlink is only followed when its real target stays inside the
+    // location root; otherwise a link into ~/.agents or ~/.polymux could
+    // reintroduce user skills a caller asked to exclude.
+    const real = realpathSync(path);
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) return false;
+    return statSync(real).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function safeFile(path: string, realRoot: string): boolean {
+  try {
+    const real = realpathSync(path);
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) return false;
+    return statSync(real).isFile();
   } catch {
     return false;
   }

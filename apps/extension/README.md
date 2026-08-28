@@ -99,6 +99,14 @@ Changes to the packaged extension on `main` trigger
 into it, uploads the package through Chrome Web Store API v2, and submits it for
 review with automatic publication after approval.
 
+The desktop and extension keep independent product versions. Runtime requests
+negotiate the browser-surface protocol and capabilities from
+`packages/browser/src/protocol.js`; extension 0.2.1 is the explicit legacy
+protocol-1 fallback. A desktop release is blocked only when that contract's
+`minimumPublishedExtension` is newer than the version currently live in
+the Store. When the packaged extension changes, its own manifest version must
+increase even if the desktop version does not.
+
 Configure the GitHub `chrome-web-store` environment with:
 
 - variable `CWS_PUBLISHER_ID`: the publisher ID shown under Developer Dashboard

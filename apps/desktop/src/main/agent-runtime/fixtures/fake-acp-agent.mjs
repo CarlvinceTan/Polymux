@@ -5,6 +5,10 @@ const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 let model = "fast";
 let brave = false;
 const requiresAuth = process.argv.includes("--require-auth");
+const hangsDuringInitialize = process.argv.includes("--hang-initialize");
+const expectedClientVersion = process.argv
+  .find((argument) => argument.startsWith("--expect-client-version="))
+  ?.slice("--expect-client-version=".length);
 let authenticated = !requiresAuth;
 const configOptions = () => [
   {id: "model", name: "Model", category: "model", type: "select", currentValue: model, options: [
@@ -17,6 +21,14 @@ const configOptions = () => [
 input.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
+    if (hangsDuringInitialize) return;
+    if (expectedClientVersion && message.params.clientInfo?.version !== expectedClientVersion) {
+      send({jsonrpc: "2.0", id: message.id, error: {
+        code: -32602,
+        message: `Expected client version ${expectedClientVersion}, received ${message.params.clientInfo?.version ?? "none"}`,
+      }});
+      return;
+    }
     send({jsonrpc: "2.0", id: message.id, result: {
       protocolVersion: message.params.protocolVersion,
       agentCapabilities: requiresAuth ? {auth: {logout: {}}} : {},

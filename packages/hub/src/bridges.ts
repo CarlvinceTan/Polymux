@@ -334,18 +334,61 @@ const HEALTHY_UPTIME_MS = 60_000;
  * linked account is down. Keeping them out here also prevents one of these
  * routine EOFs becoming the "reason" shown if the process later fails for an
  * unrelated cause.
+ *
+ * The bridges are seeded with mautrix's `pretty-colored` writer, which wraps
+ * timestamps, levels, and every `key=` in ANSI colour sequences — so the raw
+ * stream never contains the plain `key=value` text these patterns look for,
+ * and the escapes would otherwise be quoted verbatim into stored failure
+ * reasons. Lines are stripped once, and the stripped form is what gets
+ * matched, logged, and quoted.
  */
+const ANSI_COLOURS = /\x1b\[[0-9;]*m/g;
+
 function routineBridgeOutput(platform: string, line: string): boolean {
-  if (platform === "whatsapp" && line.includes("component=whatsmeow"))
+  // Both WhatsApp and Messenger use whatsmeow's websocket transport. These
+  // failures are the reconnect trigger itself, not a terminal bridge error.
+  if (line.includes("component=whatsmeow"))
     return (
       line.includes("Received stream end frame") ||
       line.includes(
         "Got 503 stream error, assuming automatic reconnect will handle it",
       ) ||
+      line.includes("Keepalive timed out") ||
       line.includes(
         "Error reading from websocket: failed to get reader: failed to read frame header: EOF",
-      )
+      ) ||
+      (line.includes(
+        "Error reading from websocket: failed to get reader: failed to read frame header:",
+      ) &&
+        (line.includes("read: connection reset by peer") ||
+          line.includes("read: can't assign requested address")))
     );
+
+  // A receipt older than the locally bridged history has no Matrix event it
+  // can point at. bridgev2 returns Ignored here; it is not a failed receipt.
+  if (
+    line.includes("No target message found for read receipt") &&
+    line.includes("bridge_evt_type=RemoteEventReadReceipt")
+  )
+    return true;
+
+  if (platform === "instagram")
+    return (
+      (line.includes("Ignoring event with no portal") &&
+        (line.includes("typename=SlideUQPPCreate1To1Thread") ||
+          line.includes("typename=SlideUQPPUserReachabilityStatus"))) ||
+      (line.includes("Failed to reupload room avatar") &&
+        line.includes('error="no Get function provided for avatar"') &&
+        line.includes('action="create matrix room"') &&
+        line.includes("bridge_evt_type=RemoteEventChatResync"))
+    );
+
+  if (platform === "telegram")
+    return (
+      line.includes("ignoring unknown action type") &&
+      line.includes("action_type=*tg.MessageActionChatJoinedByRequest")
+    );
+
   if (platform === "messenger") {
     if (line.includes("component=messagix"))
       return (
@@ -368,15 +411,11 @@ function routineBridgeOutput(platform: string, line: string): boolean {
           line.includes("struct_name=LSInsertXmaAttachment") &&
           line.includes("val_type=string")) ||
         (line.includes("Skipping dependency with no reference") &&
-          line.includes("reference_name=applyAdminMessageCTAV2"))
+          (line.includes("reference_name=applyAdminMessageCTAV2") ||
+            line.includes("reference_name=setRegionHint"))) ||
+        (line.includes("Unknown dependency in sp") &&
+          line.includes("dependency=setRegionHint"))
       );
-
-    // A receipt older than the locally bridged history has no Matrix event it
-    // can point at. bridgev2 returns Ignored here; it is not a failed receipt.
-    return (
-      line.includes("No target message found for read receipt") &&
-      line.includes("bridge_evt_type=RemoteEventReadReceipt")
-    );
   }
   return false;
 }
@@ -999,7 +1038,7 @@ export class BridgeHost {
         "utf8",
       ).catch((): undefined => undefined);
     const emit = (line: string): void => {
-      const text = line.trimEnd();
+      const text = line.replace(ANSI_COLOURS, "").trimEnd();
       if (!text || routineBridgeOutput(bridge.name, text)) return;
       this.#lastOutput.set(bridge.name, text);
       this.#options.log?.(`[${bridge.name}] ${text}`);
@@ -1437,7 +1476,7 @@ export function repairConfig(
     // `example.com: as_token:foobar`, and a servers map naming
     // anotherserver.example.org — which is a filled-in block that double
     // puppets nobody, and is what a check for "has any secret" reads as done.
-    if (repaired.includes(`${serverName}: as_token:`)) return repaired;
+    if (repaired.includes(`${serverName}: as_token:${asToken}`)) return repaired;
     // The trailing newline replaces the blank line the match swallowed, so the
     // sections after it stay separated the way the rest of the file is.
     return repaired.replace(DOUBLE_PUPPET_BLOCK, `${block}\n`);

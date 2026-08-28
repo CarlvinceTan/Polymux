@@ -1,4 +1,4 @@
-import {copyFile, cp, mkdir, readdir, rename, rm, stat, statfs} from "node:fs/promises";
+import {copyFile, cp, lstat, mkdir, readdir, realpath, rename, rm, stat, statfs} from "node:fs/promises";
 import path from "node:path";
 import type {DriveEntryDto} from "@polymux/protocol";
 import {
@@ -70,7 +70,7 @@ export class LocalDrive implements DriveAdapter {
   }
 
   async describe(target: string): Promise<DriveEntryDto> {
-    const full = this.#resolve(target);
+    const full = await this.#resolve(target);
     const info = await stat(full);
     return {
       id: full,
@@ -86,7 +86,7 @@ export class LocalDrive implements DriveAdapter {
 
   async list(target: string): Promise<DriveEntryDto[]> {
     await this.#ensureRoot();
-    const directory = this.#resolve(target);
+    const directory = await this.#resolve(target);
     const names = await readdir(directory, {withFileTypes: true});
     const entries = await Promise.all(
       names
@@ -113,7 +113,8 @@ export class LocalDrive implements DriveAdapter {
 
   async createFolder(parentPath: string, name: string): Promise<DriveEntryDto> {
     await this.#ensureRoot();
-    const full = this.#resolve(path.join(this.#resolve(parentPath), name));
+    const parent = await this.#resolve(parentPath);
+    const full = await this.#resolve(path.join(parent, name));
     await mkdir(full, {recursive: false});
     const info = await stat(full);
     return {
@@ -138,17 +139,21 @@ export class LocalDrive implements DriveAdapter {
    * put them in order.
    */
   async version(target: string): Promise<string | null> {
+    const full = await this.#resolve(target);
     try {
-      const info = await stat(this.#resolve(target));
+      const info = await stat(full);
       return `${info.mtimeMs}:${info.size}`;
-    } catch {
+    } catch (cause) {
+      if (!isMissing(cause)) throw cause;
       // No file is a real answer: it means nothing is being replaced.
       return null;
     }
   }
 
   childPath(parentPath: string, name: string): string {
-    return this.#resolve(path.join(this.#resolve(parentPath), name));
+    return this.#resolveLexical(
+      path.join(this.#resolveLexical(parentPath), name),
+    );
   }
 
   async upload(
@@ -158,7 +163,8 @@ export class LocalDrive implements DriveAdapter {
   ): Promise<DriveEntryDto> {
     await this.#ensureRoot();
     const name = path.basename(localPath);
-    const full = this.#resolve(path.join(this.#resolve(parentPath), name));
+    const parent = await this.#resolve(parentPath);
+    const full = await this.#resolve(path.join(parent, name));
     if (options?.ifMatch !== undefined && options.ifMatch !== null) {
       const found = await this.version(full);
       if (found !== options.ifMatch)
@@ -185,16 +191,16 @@ export class LocalDrive implements DriveAdapter {
   }
 
   async download(target: string, destination: string): Promise<void> {
-    await copyFile(this.#resolve(target), destination);
+    await copyFile(await this.#resolve(target), destination);
   }
 
   async remove(target: string): Promise<void> {
-    await rm(this.#resolve(target), {recursive: true, force: true});
+    await rm(await this.#resolve(target), {recursive: true, force: true});
   }
 
   async rename(target: string, name: string): Promise<DriveEntryDto> {
-    const from = this.#resolve(target);
-    const to = this.#resolve(path.join(path.dirname(from), name));
+    const from = await this.#resolve(target);
+    const to = await this.#resolve(path.join(path.dirname(from), name));
     await rename(from, to);
     const info = await stat(to);
     return {
@@ -210,17 +216,18 @@ export class LocalDrive implements DriveAdapter {
   }
 
   async move(target: string, destinationFolder: string): Promise<DriveEntryDto> {
-    const from = this.#resolve(target);
-    const to = this.#resolve(
-      path.join(this.#resolve(destinationFolder), path.basename(from)),
+    const from = await this.#resolve(target);
+    const destination = await this.#resolve(destinationFolder);
+    const to = await this.#resolve(
+      path.join(destination, path.basename(from)),
     );
     await rename(from, to);
     return this.#describe(to);
   }
 
   async copy(target: string): Promise<DriveEntryDto> {
-    const from = this.#resolve(target);
-    const to = this.#resolve(
+    const from = await this.#resolve(target);
+    const to = await this.#resolve(
       path.join(path.dirname(from), copyName(path.basename(from))),
     );
     const info = await stat(from);
@@ -249,7 +256,42 @@ export class LocalDrive implements DriveAdapter {
    * anything that escapes. The empty path is the root itself, which is how a
    * caller opens a drive it knows nothing about.
    */
-  #resolve(target: string): string {
+  async #resolve(target: string): Promise<string> {
+    await this.#ensureRoot();
+    const absolute = this.#resolveLexical(target);
+    const root = path.resolve(this.#root);
+    const canonicalRoot = await realpath(root);
+    const relative = path.relative(root, absolute);
+    let current = root;
+
+    // Validate every component that already exists. Checking only the final
+    // path misses a dangling symlink, while checking only the parent misses an
+    // existing final symlink that points outside the selected folder.
+    for (const segment of relative.split(path.sep).filter(Boolean)) {
+      current = path.join(current, segment);
+      let symbolicLink = false;
+      try {
+        symbolicLink = (await lstat(current)).isSymbolicLink();
+      } catch (cause) {
+        if (isMissing(cause)) break;
+        throw cause;
+      }
+      let canonical: string;
+      try {
+        canonical = await realpath(current);
+      } catch (cause) {
+        // A dangling symlink could be followed by a later create operation, so
+        // it cannot be treated like an ordinary missing destination.
+        if (symbolicLink)
+          throw new Error("That path is outside the drive folder.");
+        throw cause;
+      }
+      this.#assertCanonicalPath(canonicalRoot, canonical);
+    }
+    return absolute;
+  }
+
+  #resolveLexical(target: string): string {
     const absolute = target
       ? path.resolve(this.#root, target)
       : path.resolve(this.#root);
@@ -260,4 +302,18 @@ export class LocalDrive implements DriveAdapter {
       throw new Error("That path is outside the drive folder.");
     return absolute;
   }
+
+  #assertCanonicalPath(root: string, target: string): void {
+    const relative = path.relative(root, target);
+    if (
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    )
+      throw new Error("That path is outside the drive folder.");
+  }
+}
+
+function isMissing(cause: unknown): cause is NodeJS.ErrnoException {
+  return cause instanceof Error && "code" in cause && cause.code === "ENOENT";
 }

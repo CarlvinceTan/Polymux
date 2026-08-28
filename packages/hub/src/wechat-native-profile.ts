@@ -11,10 +11,6 @@ export interface WeChatNativeProfile {
     sessionSendHandlerRva?: number;
     /** Text-send routing slot observed while delivering to File Transfer. */
     slotSendRva?: number;
-    /** Constructor/dispatcher anchor recovered for the native revoke task. */
-    revokeTaskRva?: number;
-    /** Sole direct call site, used to recover the task's three arguments. */
-    revokeTaskCallerRva?: number;
     /**
      * WeType synchronization entry point. It publishes encoded sticker data
      * to WeType; it is deliberately not an outbound chat-sticker handler.
@@ -43,8 +39,6 @@ export const WECHAT_NATIVE_PROFILES: readonly WeChatNativeProfile[] = [
     entryPoints: {
       sessionSendHandlerRva: 0x6f7abc,
       slotSendRva: 0x6f9e74,
-      revokeTaskRva: 0x4f115d4,
-      revokeTaskCallerRva: 0x503fe48,
       weTypeStickerSendRva: 0x39b89b0,
     },
     sendRouting: {

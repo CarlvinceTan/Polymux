@@ -2,6 +2,7 @@
   import type {
     ChatDto as CachedChatDto,
     ChatMessageDto as CachedMessageDto,
+    ContactLinkDto as CachedContactLinkDto,
     BroadcastDto as CachedBroadcastDto,
     BroadcastMessageDto as CachedBroadcastMessageDto,
     CommsStatusDto as CachedStatusDto,
@@ -41,6 +42,7 @@
     status: CachedStatusDto | null;
     chats: CachedChatDto[];
     broadcasts: CachedBroadcastDto[];
+    contactLinks: CachedContactLinkDto[];
     broadcastMessages: Map<string, CachedBroadcastMessageDto[]>;
     messages: Map<string, {messages: CachedMessageDto[]; nextBefore: string | null}>;
     mailboxes: Map<
@@ -62,6 +64,7 @@
     status: null,
     chats: [],
     broadcasts: [],
+    contactLinks: [],
     broadcastMessages: new Map(),
     messages: new Map(),
     mailboxes: new Map(),
@@ -150,6 +153,7 @@
     session.chats = [];
     session.messages.clear();
     session.broadcasts = [];
+    session.contactLinks = [];
     session.broadcastMessages.clear();
     session.mailboxes.clear();
     session.mail.clear();
@@ -278,8 +282,10 @@
     type BroadcastMessageDto,
     type BroadcastRecipientDto,
     type ChatDto,
+    type ChatMemberDto,
     type ChatMessageDto,
     type ChatReactionDto,
+    type ContactLinkDto,
     type CommsContactDto,
     type CommsPlatform,
     type CommsStatusDto,
@@ -293,6 +299,7 @@
   import DOMPurify from 'dompurify';
   import {readableError} from '../../shared/errors';
   import {displayTime} from '../../shared/displayTime';
+  import {scrollFade} from '../../shared/scrollFade';
   import Icon from '../../shared/components/Icon.svelte';
   import Menu from '../../shared/components/Menu.svelte';
   import PlatformLogo, {type Platform} from '../../shared/components/PlatformLogo.svelte';
@@ -301,13 +308,34 @@
   import {chatClipboardContent} from './chatClipboard';
   import {dedupeContactChats} from './chatContacts';
   import {
+    contactIdentityRows,
+    contactLinkForChat,
+    memberForChat,
+    type ContactIdentityRow,
+  } from './contactLinks';
+  import {
     compareConversationActivity,
     matchesConversationFilter,
     type ConversationListFilter,
     type ConversationListSort,
   } from './chatListFilters';
   import {chatSenderLabel} from './chatSenderLabel';
+  import {
+    searchChatMessages,
+    type ChatSearchFilter,
+    type ChatSearchResult,
+  } from './chatSearch';
   import {mergeChatPage} from './chatMessagePages';
+  import {
+    activeComposerToken,
+    mentionSuggestions,
+    mentionsInDraft,
+    mergeComposerMembers,
+    replaceComposerToken,
+    telegramCommandSuggestions,
+    type ComposerSuggestion,
+    type ComposerToken,
+  } from './composerAutocomplete';
   import {chatsInSpace, spaceRootChats} from './chatSpaces';
   import {mailBodyWithSignature, mailHtmlWithSignature} from './mailSignatures';
   import MessageReactions from './MessageReactions.svelte';
@@ -382,6 +410,7 @@
   }
   let chats: ChatDto[] = session.chats;
   let broadcasts: BroadcastDto[] = session.broadcasts;
+  let contactLinks: ContactLinkDto[] = session.contactLinks;
   let source: Source | null = session.source;
   /**
    * Captured here, at the top of the instance, because the statements that
@@ -398,6 +427,17 @@
   // Messaging
   let activeChat: ChatDto | null = null;
   let chatMessages: ChatMessageDto[] = [];
+  let chatMembers: ChatMemberDto[] = [];
+  /** A person's identity sheet sits over their conversation. It is also the
+   * Contacts view's destination, so a profile is useful before a thread is
+   * opened, not only after. */
+  let profileOpen = false;
+  let profileReturnsToChat = false;
+  let profileContacts: CommsContactDto[] = [];
+  let profileLoading = false;
+  let profileMergeOpen = false;
+  let profileMergeSelected = new Set<string>();
+  let profileMergeName = '';
   let activeBroadcast: BroadcastDto | null = null;
   let broadcastMessages: BroadcastMessageDto[] = [];
   let broadcastDraft = '';
@@ -411,6 +451,24 @@
   /** The thread's scroller, so reaching its top can pull the page before. */
   let threadEl: HTMLDivElement | null = null;
   const CHAT_PAGE = 40;
+  /** Search owns a separate history copy while it walks backwards through the
+   * room. Closing it leaves the ordinary thread at its previous scroll depth;
+   * choosing a result promotes that history into the thread and jumps there. */
+  let chatSearchOpen = false;
+  let chatSearchQuery = '';
+  let chatSearchFilter: ChatSearchFilter = 'all';
+  let chatSearchMessages: ChatMessageDto[] = [];
+  let chatSearchBefore: string | null = null;
+  let chatSearchLoading = false;
+  let chatSearchInput: HTMLInputElement | null = null;
+  let chatSearchToken = 0;
+  let chatHeaderMenuOpen = false;
+  let chatHeaderMenu: HTMLUListElement | null = null;
+  const CHAT_SEARCH_PAGE = 100;
+  const CHAT_SEARCH_FILTERS: ChatSearchFilter[] = ['all', 'messages', 'media', 'files', 'links'];
+  $: chatSearchResults = chatSearchOpen
+    ? searchChatMessages(chatSearchMessages, chatSearchQuery, chatSearchFilter)
+    : [];
 
   // Mail
   let folders: MailFolderDto[] = [];
@@ -693,8 +751,8 @@
     id: string;
     platform: CommsPlatform | 'mail';
     name: string;
-    /** `id` selects, `label` is what the account row reads. */
-    accounts: {id: string; label: string}[];
+    /** `id` selects, `label` and `avatarUrl` identify the account row. */
+    accounts: {id: string; label: string; avatarUrl?: string | null}[];
   };
   $: railRows = applyOrder<RailRow>(
     [
@@ -702,7 +760,11 @@
         id: `platform:${bridge.platform}`,
         platform: bridge.platform,
         name: bridge.name,
-        accounts: bridge.accounts.map((account) => ({id: account.id, label: account.name})),
+        accounts: bridge.accounts.map((account) => ({
+          id: account.id,
+          label: account.name,
+          avatarUrl: account.avatarUrl,
+        })),
       })),
       ...(accounts.length > 0
         ? [
@@ -738,8 +800,45 @@
   // re-read whenever its content does.
   $: if (railRows.length || openGroups) void tick().then(measureRailEdges);
 
-  /** How long a row takes to slide to the place a drag has made for it. */
-  const RAIL_SHUFFLE_MS = 160;
+  /** Opening Hub is a paint, not a reveal: its already-known sources arrive
+   * with no entrance motion. Once that first rail has painted, a real account
+   * change cross-fades and gives the surrounding rows enough time to settle
+   * into their new positions without snapping. */
+  const RAIL_LIVE_FADE_MS = 220;
+  const RAIL_LIVE_REFLOW_MS = 260;
+  /** How long a row takes to slide to the place a drag has made for it. A drag
+   * remains more direct than a background settings change. */
+  const RAIL_DRAG_SHUFFLE_MS = 160;
+  let railMotionReady = false;
+  let railMotionArming = false;
+  let railMotionFrame = 0;
+  let railMotionDisposed = false;
+  let initialRailHydrated = false;
+
+  function armRailMotionAfterPaint(): void {
+    if (railMotionReady || railMotionArming || railMotionDisposed) return;
+    railMotionArming = true;
+    void tick().then(() => {
+      if (railMotionDisposed) return;
+      if (typeof requestAnimationFrame !== 'function') {
+        railMotionReady = true;
+        return;
+      }
+      railMotionFrame = requestAnimationFrame(() => {
+        railMotionFrame = 0;
+        if (!railMotionDisposed) railMotionReady = true;
+      });
+    });
+  }
+
+  function railFadeDuration(): number {
+    return railMotionReady ? RAIL_LIVE_FADE_MS : 0;
+  }
+
+  function railReflowDuration(carried: boolean): number {
+    if (!railMotionReady || carried) return 0;
+    return dragging ? RAIL_DRAG_SHUFFLE_MS : RAIL_LIVE_REFLOW_MS;
+  }
   /** How far the pointer travels before a press becomes a drag. */
   const RAIL_DRAG_SLOP = 4;
   /** How near an edge the pointer has to come before the rail scrolls under it,
@@ -970,7 +1069,7 @@
     dragging = null;
     setTimeout(() => {
       if (settling === landed) settling = null;
-    }, RAIL_SHUFFLE_MS);
+    }, RAIL_DRAG_SHUFFLE_MS);
   }
 
   /** The ids of a scope as the rail currently shows them, which is what a move
@@ -1129,26 +1228,49 @@
     );
   }
 
-  /** Direct conversations are the identities the linked platforms have made
-   * available to the Hub. Names are not merged across services: two matching
-   * labels are not enough evidence that they are the same person. */
-  function contactsFor(list: ChatDto[], query: string): ChatDto[] {
+  /** Direct conversations become one row only through a saved identity link.
+   * Matching names still remain separate: a label is not identity evidence. */
+  function contactsFor(list: ChatDto[], links: ContactLinkDto[], query: string): ContactIdentityRow[] {
     const needle = query.trim().toLowerCase();
-    return dedupeContactChats(list)
-      .filter((chat) =>
+    return contactIdentityRows(list, links)
+      .filter((contact) =>
         !needle ||
-        chat.name.toLowerCase().includes(needle) ||
-        commsPlatformLabel(chat.platform as CommsPlatform).toLowerCase().includes(needle),
+        contact.name.toLowerCase().includes(needle) ||
+        contact.chats.some((chat) =>
+          chat.name.toLowerCase().includes(needle) ||
+          commsPlatformLabel(chat.platform as CommsPlatform).toLowerCase().includes(needle)),
       )
       .sort((a, b) =>
         a.name.localeCompare(b.name) ||
-        commsPlatformLabel(a.platform as CommsPlatform).localeCompare(
-          commsPlatformLabel(b.platform as CommsPlatform),
+        commsPlatformLabel(a.primary.platform as CommsPlatform).localeCompare(
+          commsPlatformLabel(b.primary.platform as CommsPlatform),
         ),
       );
   }
 
-  $: contactRows = contactsFor(chats, contactSearch);
+  $: contactRows = contactsFor(chats, contactLinks, contactSearch);
+  $: activeProfileLink = activeChat ? contactLinkForChat(activeChat, contactLinks) : null;
+  $: activeProfileChats = activeChat
+    ? activeProfileLink
+      ? dedupeContactChats(chats).filter((chat) =>
+          activeProfileLink!.members.some((member) =>
+            member.platform === chat.platform &&
+            (member.remoteId && chat.remoteId
+              ? member.remoteId.trim().normalize('NFKC').toLowerCase() === chat.remoteId.trim().normalize('NFKC').toLowerCase()
+              : member.chatId === chat.id)))
+      : [activeChat]
+    : [];
+  $: profileName = activeProfileLink?.name ?? activeChat?.name ?? '';
+  $: activeProfilePlatformCount = new Set(activeProfileChats.map((chat) => chat.platform)).size;
+  $: profileIdentifiers = [...new Set(activeProfileChats.flatMap((chat) => {
+    const remote = chat.remoteId?.trim().normalize('NFKC').toLowerCase();
+    return profileContacts
+      .filter((contact) => contact.platform === chat.platform && contact.accounts.some((account) =>
+        account.chatId === chat.id ||
+        (remote && account.remoteId?.trim().normalize('NFKC').toLowerCase() === remote)))
+      .flatMap((contact) => contact.identifiers);
+  }))];
+  $: profileMergeCandidates = dedupeContactChats(chats).filter((chat) => !chat.group && !chat.space);
   $: selectedNewChatContacts = newChatContacts.filter((contact) => newChatSelected.has(contact.id));
   $: selectedBroadcastContacts = broadcastContacts.filter((contact) => broadcastSelected.has(contact.id));
   $: broadcastRows = broadcasts.filter((broadcast) => {
@@ -1570,6 +1692,9 @@
       // Into the session cache as well, or the next mount paints the rail from
       // a snapshot older than the push that has already corrected it.
       acceptStatus(next);
+      // With no cached status, the first push is hydration too. It paints
+      // still, then arms motion for the next actual configuration change.
+      if (initialRailHydrated) armRailMotionAfterPaint();
     });
     // Pushed the moment a message lands, whichever platform it came from: the
     // homeserver is where every bridge delivers, so it knows before any poll
@@ -1580,7 +1705,9 @@
       if (activeChat && activity.chatId === activeChat.id) void refreshChat();
       else void refreshChats();
     });
-    const timer = setInterval(() => void refreshOpen(), REFRESH_MS);
+    const timer = setInterval(() => {
+      if (!document.hidden) void refreshOpen();
+    }, REFRESH_MS);
     // Coming back to the window is when stale content is most obvious, so it
     // does not wait out the rest of the interval.
     const onVisible = (): void => {
@@ -1597,6 +1724,8 @@
       void goTo(waiting);
     }
     return () => {
+      railMotionDisposed = true;
+      if (railMotionFrame) cancelAnimationFrame(railMotionFrame);
       leaveMailComposer();
       showTarget = null;
       unsubscribe();
@@ -1733,9 +1862,11 @@
       acceptStatus(await api.comms.status());
       chats = await api.comms.chats().catch(() => session.chats);
       broadcasts = await api.comms.broadcasts().catch(() => session.broadcasts);
+      contactLinks = await api.comms.contactLinks().catch(() => session.contactLinks);
       rememberChatPlatforms(chats);
       session.chats = chats;
       session.broadcasts = broadcasts;
+      session.contactLinks = contactLinks;
       if (source) {
         // Already looking at something, restored above: bring it up to date
         // rather than choosing somewhere else to be.
@@ -1756,6 +1887,10 @@
       error = readableError(cause);
     } finally {
       loading = false;
+      // Both the cached paint and its first authoritative correction belong to
+      // opening Hub. Only changes after that complete initial read may move.
+      initialRailHydrated = true;
+      if (status) armRailMotionAfterPaint();
     }
   }
 
@@ -2381,6 +2516,10 @@
       openSpace(chat);
       return;
     }
+    closeChatSearch();
+    closeChatHeaderMenu();
+    profileOpen = false;
+    profileMergeOpen = false;
     activeChat = chat;
     activeBroadcast = null;
     broadcastMessages = [];
@@ -2392,6 +2531,12 @@
     chatMessages = known?.messages ?? [];
     chatBefore = known?.nextBefore ?? null;
     restoreChatComposer(chat.id);
+    chatMembers = [];
+    void api.comms.chatMembers(chat.id).then((members) => {
+      if (activeChat?.id === chat.id) chatMembers = members;
+    }).catch(() => {
+      // Already-loaded messages remain a useful fallback for known Matrix ids.
+    });
     busy = known ? '' : `chat:${chat.id}`;
     try {
       const page = await api.comms.chatMessages(chat.id, CHAT_PAGE);
@@ -2419,6 +2564,90 @@
     } finally {
       busy = '';
     }
+  }
+
+  /** Opens the identity sheet without pretending that reading a profile also
+   * reads the conversation. From a thread, back returns to the thread; from
+   * Contacts, back returns to the contact list. */
+  async function openProfile(chat: ChatDto, returnsToChat: boolean): Promise<void> {
+    if (chat.group || chat.space) return;
+    activeChat = chat;
+    activeBroadcast = null;
+    profileOpen = true;
+    profileReturnsToChat = returnsToChat;
+    profileMergeOpen = false;
+    profileMergeSelected = new Set();
+    profileLoading = profileContacts.length === 0;
+    try {
+      profileContacts = await api.comms.chatContacts();
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      profileLoading = false;
+    }
+  }
+
+  function closeProfile(): void {
+    profileMergeOpen = false;
+    profileOpen = false;
+    if (profileReturnsToChat) return;
+    activeChat = null;
+    chatMessages = [];
+  }
+
+  function startProfileMerge(): void {
+    profileMergeName = profileName;
+    profileMergeSelected = new Set(activeProfileChats.map((chat) => chat.id));
+    profileMergeOpen = true;
+  }
+
+  function toggleProfileMergeChat(chat: ChatDto): void {
+    const selected = new Set(profileMergeSelected);
+    if (selected.has(chat.id)) selected.delete(chat.id);
+    else selected.add(chat.id);
+    profileMergeSelected = selected;
+  }
+
+  async function saveProfileMerge(): Promise<void> {
+    const selected = profileMergeCandidates.filter((chat) => profileMergeSelected.has(chat.id));
+    if (selected.length < 2) return;
+    busy = 'contact-merge';
+    try {
+      await api.comms.contactLinkMerge({
+        name: profileMergeName.trim() || profileName,
+        members: selected.map(memberForChat),
+      });
+      contactLinks = await api.comms.contactLinks();
+      session.contactLinks = contactLinks;
+      profileMergeOpen = false;
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function removeProfileLink(): Promise<void> {
+    if (!activeProfileLink) return;
+    busy = 'contact-unmerge';
+    try {
+      await api.comms.contactLinkRemove(activeProfileLink.id);
+      contactLinks = await api.comms.contactLinks();
+      session.contactLinks = contactLinks;
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function messageProfileChat(chat: ChatDto): Promise<void> {
+    profileOpen = false;
+    profileMergeOpen = false;
+    await openChat(chat);
   }
 
   async function openBroadcast(broadcast: BroadcastDto): Promise<void> {
@@ -2593,12 +2822,99 @@
       const known = new Set(chatMessages.map((item) => item.id));
       const fresh = page.messages.filter((item) => !known.has(item.id));
       chatMessages = mergeChatPage(chatMessages, page.messages);
+      if (chatSearchOpen) chatSearchMessages = mergeChatPage(chatSearchMessages, page.messages);
       if (activeChat) rememberChat(activeChat.id);
       const newest = fresh[0];
       if (newest) await api.comms.chatMarkRead(chatId, newest.id).catch(() => {});
     } catch {
       // A failed poll is not worth a banner; the next one takes its place.
     }
+  }
+
+  /** Opens a conversation-local content browser. The first paint uses the
+   * messages already on screen, then older pages join it quietly until the
+   * bridge says the room's start has been reached. */
+  async function openChatSearch(): Promise<void> {
+    if (!activeChat || busy.startsWith('chat:')) return;
+    closeChatHeaderMenu();
+    const chatId = activeChat.id;
+    chatSearchOpen = true;
+    chatSearchQuery = '';
+    chatSearchFilter = 'all';
+    chatSearchMessages = [...chatMessages];
+    chatSearchBefore = chatBefore;
+    const token = ++chatSearchToken;
+    await tick();
+    chatSearchInput?.focus();
+    void loadChatSearchHistory(chatId, token);
+  }
+
+  function closeChatSearch(): void {
+    chatSearchOpen = false;
+    chatSearchQuery = '';
+    chatSearchFilter = 'all';
+    chatSearchLoading = false;
+    chatSearchToken += 1;
+  }
+
+  async function toggleChatHeaderMenu(): Promise<void> {
+    if (chatHeaderMenuOpen) {
+      closeChatHeaderMenu();
+      return;
+    }
+    closeMessageMenu();
+    closeChatMenu();
+    composerToolsOpen = false;
+    composerEmojiOpen = false;
+    chatHeaderMenuOpen = true;
+    await tick();
+    chatHeaderMenu?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }
+
+  function closeChatHeaderMenu(): void {
+    chatHeaderMenuOpen = false;
+  }
+
+  async function loadChatSearchHistory(chatId: string, token: number): Promise<void> {
+    if (!chatSearchBefore || token !== chatSearchToken || activeChat?.id !== chatId || !chatSearchOpen) return;
+    chatSearchLoading = true;
+    try {
+      while (chatSearchBefore && token === chatSearchToken && activeChat?.id === chatId) {
+        const before: string = chatSearchBefore;
+        const page = await api.comms.chatMessages(chatId, CHAT_SEARCH_PAGE, before);
+        if (token !== chatSearchToken || activeChat?.id !== chatId) return;
+        const known = new Set(chatSearchMessages.map((item) => item.id));
+        const older = page.messages.filter((item) => !known.has(item.id));
+        chatSearchMessages = [...chatSearchMessages, ...older];
+        chatSearchBefore = page.messages.length === 0 || !page.nextBefore || page.nextBefore === before
+          ? null
+          : page.nextBefore;
+      }
+    } catch (cause) {
+      if (token === chatSearchToken && activeChat?.id === chatId) error = readableError(cause);
+    } finally {
+      if (token === chatSearchToken) chatSearchLoading = false;
+    }
+  }
+
+  /** A result is useful in context. Keep everything search fetched, return to
+   * the thread, then identify the exact bubble after Svelte has painted it. */
+  async function revealChatSearchResult(result: ChatSearchResult): Promise<void> {
+    if (!activeChat) return;
+    chatMessages = [...chatSearchMessages];
+    chatBefore = chatSearchBefore;
+    rememberChat(activeChat.id);
+    closeChatSearch();
+    await tick();
+    scrollToChatMessage(result.message.id);
+  }
+
+  function chatSearchResultIcon(result: ChatSearchResult): IconName {
+    if (result.kind === 'message') return 'chat';
+    if (result.kind === 'link') return 'link';
+    if (result.kind === 'file') return 'file';
+    const kind = result.attachment ? attachmentRenderKind(result.attachment) : 'image';
+    return kind === 'audio' ? 'audio' : kind === 'video' ? 'video' : 'image';
   }
 
   function persistChatComposer(): void {
@@ -2610,7 +2926,8 @@
     });
   }
 
-  function chatComposerChanged(): void {
+  function chatComposerChanged(event: Event): void {
+    updateComposerCursor(event);
     // Returning to the draft is allowed while browsing emoji; entering the
     // first character commits that return and clears every composer popover.
     composerToolsOpen = false;
@@ -2622,6 +2939,7 @@
     const saved = loadChatDraft(chatId);
     draft = saved.text;
     chatFiles = [...saved.files];
+    composerCursor = draft.length;
     replyTo = saved.replyTo
       ? (chatMessages.find((message) => message.id === saved.replyTo) ?? null)
       : null;
@@ -2653,10 +2971,12 @@
         sentFiles = true;
       }
       if (text) {
-        const sent = await api.comms.chatSend(chatId, text, answering);
+        const mentions = mentionsInDraft(text, composerMembers, activeChat.group === true);
+        const sent = await api.comms.chatSend(chatId, text, answering, mentions);
         chatMessages = [sent, ...chatMessages];
         if (activeChat) rememberChat(activeChat.id);
         draft = '';
+        composerCursor = 0;
         replyTo = null;
       }
       saveChatDraft(chatId, {text: draft, replyTo: replyTo?.id ?? null, files: [...chatFiles]});
@@ -2980,6 +3300,15 @@
   // ---- composer -----------------------------------------------------------
 
   let composerInput: HTMLTextAreaElement | null = null;
+  let composerCursor = 0;
+  let composerMembers: ChatMemberDto[] = [];
+  let composerToken: ComposerToken | null = null;
+  let composerSuggestions: ComposerSuggestion[] = [];
+  let composerAutocompleteIndex = 0;
+  let composerAutocompleteKey = '';
+  let composerAutocompletePreviousKey = '';
+  let composerAutocompleteDismissed = '';
+  let composerAutocompleteOpen = false;
   let composerToolsMenu: HTMLDivElement | null = null;
   /** The add menu and searchable emoji grid belong to the chat that opened
    * them. Remembering that owner prevents either popover following the user
@@ -2990,6 +3319,78 @@
   $: if ((composerToolsOpen || composerEmojiOpen) && activeChat?.id !== composerPopoverChatId) {
     composerToolsOpen = false;
     composerEmojiOpen = false;
+  }
+  $: composerMembers = mergeComposerMembers(chatMembers, chatMessages);
+  $: composerToken = activeComposerToken(draft, composerCursor, activeChat?.platform ?? '');
+  $: composerSuggestions = composerToken?.kind === 'mention'
+    ? mentionSuggestions(composerToken, composerMembers, activeChat?.group === true)
+    : composerToken?.kind === 'command'
+      ? telegramCommandSuggestions(composerToken, chatMessages)
+      : [];
+  $: composerAutocompleteKey = composerToken
+    ? `${activeChat?.id ?? ''}:${composerToken.kind}:${composerToken.start}:${composerToken.query}`
+    : '';
+  $: if (composerAutocompleteKey !== composerAutocompletePreviousKey) {
+    composerAutocompletePreviousKey = composerAutocompleteKey;
+    composerAutocompleteIndex = 0;
+  }
+  $: composerAutocompleteOpen = Boolean(
+    composerAutocompleteKey &&
+    composerAutocompleteKey !== composerAutocompleteDismissed &&
+    composerSuggestions.length > 0,
+  );
+
+  function updateComposerCursor(event: Event): void {
+    const input = event.currentTarget as HTMLTextAreaElement | null;
+    composerCursor = input?.selectionStart ?? draft.length;
+  }
+
+  function chatComposerKeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
+    if (composerAutocompleteOpen && composerSuggestions.length > 0) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        composerAutocompleteIndex = (
+          composerAutocompleteIndex + direction + composerSuggestions.length
+        ) % composerSuggestions.length;
+        void tick().then(() => {
+          document
+            .getElementById(`hub-composer-suggestion-${composerAutocompleteIndex}`)
+            ?.scrollIntoView({block: 'nearest'});
+        });
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        chooseComposerSuggestion(composerSuggestions[composerAutocompleteIndex]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        composerAutocompleteDismissed = composerAutocompleteKey;
+        return;
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void sendChat();
+    }
+  }
+
+  function chooseComposerSuggestion(suggestion: ComposerSuggestion | undefined): void {
+    if (!suggestion || !composerToken) return;
+    const replacement = replaceComposerToken(draft, composerToken, suggestion.value);
+    draft = replacement.text;
+    composerCursor = replacement.caret;
+    composerAutocompleteDismissed = '';
+    composerToolsOpen = false;
+    composerEmojiOpen = false;
+    persistChatComposer();
+    void tick().then(() => {
+      composerInput?.focus();
+      composerInput?.setSelectionRange(replacement.caret, replacement.caret);
+    });
   }
 
   async function toggleComposerTools(): Promise<void> {
@@ -3755,10 +4156,14 @@
   /** Returns to the list, which is what the back affordance does when the
    * drawer is too narrow to show both at once. */
   function closeReader(): void {
+    closeChatSearch();
+    closeChatHeaderMenu();
     openMail = null;
     openEnvelope = null;
     activeChat = null;
     activeBroadcast = null;
+    profileOpen = false;
+    profileMergeOpen = false;
     broadcastMessages = [];
     leaveMailComposer();
   }
@@ -3841,7 +4246,11 @@
 <svelte:window
   onkeydown={(event) => {
     if (event.key !== 'Escape') return;
-    if (composerEmojiOpen) {
+    if (chatHeaderMenuOpen) {
+      event.stopPropagation();
+      closeChatHeaderMenu();
+    }
+    else if (composerEmojiOpen) {
       event.stopPropagation();
       composerEmojiOpen = false;
       composerInput?.focus();
@@ -3876,6 +4285,10 @@
     const insideConversationFilter = clickPath.some(
       (target) => target instanceof HTMLElement && target.classList.contains('hub-view-conversation-filter'),
     );
+    const insideChatHeaderMenu = clickPath.some(
+      (target) => target instanceof HTMLElement && target.classList.contains('hub-view-chat-actions'),
+    );
+    if (chatHeaderMenuOpen && !insideChatHeaderMenu) closeChatHeaderMenu();
     if (composerToolsOpen && !insideComposerTools) composerToolsOpen = false;
     if (composerEmojiOpen && !insideComposerRow) composerEmojiOpen = false;
     if (conversationFilterMenu && !insideConversationFilter) conversationFilterMenu = false;
@@ -3951,8 +4364,9 @@
         style={dragging?.scope === 'sources' && dragging.id === row.id
           ? `transform: translateY(${dragging.offset}px)`
           : undefined}
+        transition:fade={{duration: railFadeDuration()}}
         animate:flip={{
-          duration: dragging?.scope === 'sources' && dragging.id === row.id ? 0 : RAIL_SHUFFLE_MS,
+          duration: railReflowDuration(dragging?.scope === 'sources' && dragging.id === row.id),
         }}
       >
       <button
@@ -3989,8 +4403,9 @@
               style={dragging?.scope === row.id && dragging.id === account.id
                 ? `transform: translateY(${dragging.offset}px)`
                 : undefined}
+              transition:fade={{duration: railFadeDuration()}}
               animate:flip={{
-                duration: dragging?.scope === row.id && dragging.id === account.id ? 0 : RAIL_SHUFFLE_MS,
+                duration: railReflowDuration(dragging?.scope === row.id && dragging.id === account.id),
               }}
             >
               <button
@@ -4008,7 +4423,15 @@
                 onkeydown={(event) => nudge(event, row.id, account.id)}
                 onpointerdown={(event) => pressRow(event, row.id, account.id)}
               >
-                {account.label}
+                {#if row.id !== 'mail'}
+                  {@render chatAvatar(
+                    account.label,
+                    account.avatarUrl,
+                    `account:${row.platform}:${account.id}`,
+                    true,
+                  )}
+                {/if}
+                <span>{account.label}</span>
               </button>
             </li>
           {/each}
@@ -4405,15 +4828,19 @@
           <button type="button" onclick={() => (selected = new Set())}>{$t('common.cancel')}</button>
         </div>
       {/if}
-      {#if rowsScrolled}
-        <!-- Rides over the top of the list once the reader is well down it,
-             which is the only point at which getting back matters. -->
-        <button type="button" class="hub-view-to-top" onclick={scrollRowsToTop}>
-          <Icon name="arrow-up" size={13} />
-          {$t('hub.scrollToTop')}
-        </button>
-      {/if}
-      <ul class="hub-view-rows" bind:this={rowsEl} onscroll={onRowsScroll}>
+      <!-- This wrapper is the list's positioning context. The header can wrap
+           to different heights, so anchoring the floating control to the whole
+           pane would put it over the folder and search controls instead. -->
+      <div class="hub-view-rows-wrap">
+        {#if rowsScrolled}
+          <!-- Rides over the top of the list once the reader is well down it,
+               which is the only point at which getting back matters. -->
+          <button type="button" class="hub-view-to-top" onclick={scrollRowsToTop}>
+            <Icon name="arrow-up" size={13} />
+            {$t('hub.scrollToTop')}
+          </button>
+        {/if}
+        <ul class="hub-view-rows" bind:this={rowsEl} onscroll={onRowsScroll}>
         {#each visibleEnvelopes as envelope (envelope.id)}
           <li>
             <button
@@ -4484,7 +4911,8 @@
             </li>
           {/if}
         {/if}
-      </ul>
+        </ul>
+      </div>
     {:else if source?.kind === 'broadcasts'}
       <div class="hub-view-list-head">
         <input
@@ -4609,23 +5037,32 @@
       </div>
       <ul class="hub-view-rows hub-view-contacts">
         {#each contactRows as contact (contact.id)}
-          {@const platformName = commsPlatformLabel(contact.platform as CommsPlatform)}
+          {@const platformName = contact.platforms.length === 1
+            ? commsPlatformLabel(contact.platforms[0]!)
+            : $t('hub.platformCount', {count: contact.platforms.length})}
           <li>
             <button
               type="button"
               class="hub-view-row hub-view-contact-row"
-              class:active={activeChat?.id === contact.id}
+              class:active={contact.chats.some((chat) => activeChat?.id === chat.id)}
               aria-label={$t('hub.openContact', {name: contact.name, platform: platformName})}
-              onclick={() => void openChat(contact)}
+              onclick={() => void openProfile(contact.primary, false)}
             >
               <span class="hub-view-chat-avatar-wrap" aria-hidden="true">
-                {@render chatAvatar(contact.name, contact.avatarUrl, contact.id)}
-                <span class="hub-view-platform-badge">
-                  <PlatformLogo platform={contact.platform as Platform} size={12} />
+                {@render chatAvatar(contact.name, contact.primary.avatarUrl, contact.id)}
+                <span class="hub-view-platform-badge hub-view-platform-badge-stack">
+                  {#each contact.platforms.slice(0, 3) as platform (platform)}
+                    <span><PlatformLogo platform={platform as Platform} size={12} /></span>
+                  {/each}
                 </span>
               </span>
               <span class="hub-view-chat-copy">
-                <span class="hub-view-row-top"><strong>{contact.name}</strong></span>
+                <span class="hub-view-row-top">
+                  <strong class="hub-view-name-with-badge">
+                    <span>{contact.name}</span>
+                    {#if contact.official}{@render officialBadge()}{/if}
+                  </strong>
+                </span>
                 <span class="hub-view-chat-preview">{platformName}</span>
               </span>
             </button>
@@ -4774,7 +5211,7 @@
     class="hub-view-reader"
     class:file-drag-active={chatFileDragActive}
     aria-label={$t('hub.readingPane')}
-    data-file-drop-scope={activeChat && voiceState === 'idle' ? 'hub-chat' : undefined}
+    data-file-drop-scope={activeChat && !chatSearchOpen && voiceState === 'idle' ? 'hub-chat' : undefined}
     ondragenter={chatDragEnter}
     ondragover={chatDragOver}
     ondragleave={chatDragLeave}
@@ -5183,21 +5620,327 @@
           </button>
         </div>
       </div>
-    {:else if activeChat}
-      <header class="hub-view-reader-head hub-view-chat-head">
-        <!-- The chevron sits beside the name rather than above it: in a
-             conversation the name is the title, and a labelled row of its own
-             costs a line that the thread would rather have. -->
+    {:else if profileOpen && activeChat}
+      <header class="hub-view-reader-head hub-view-profile-head">
         <button
           type="button"
           class="hub-view-back hub-view-back-icon"
           aria-label={$t('browser.back')}
-          onclick={closeReader}
+          onclick={closeProfile}
         >
           <Icon name="back" size={15} />
         </button>
-        <h2>{activeChat.name}</h2>
+        <h2>{$t('hub.profile')}</h2>
       </header>
+      <div class="hub-view-profile">
+        <section class="hub-view-profile-hero">
+          <span class="hub-view-profile-avatar">
+            {@render chatAvatar(profileName, activeProfileChats[0]?.avatarUrl ?? activeChat.avatarUrl, `profile:${activeChat.id}`)}
+          </span>
+          <h2 class="hub-view-profile-name">
+            <span>{profileName}</span>
+            {#if activeProfileChats.some((chat) => chat.official)}{@render officialBadge()}{/if}
+          </h2>
+          <p>
+            {activeProfilePlatformCount > 1
+              ? $t('hub.platformCount', {count: activeProfilePlatformCount})
+              : commsPlatformLabel(activeChat.platform as CommsPlatform)}
+          </p>
+          <div class="hub-view-profile-actions">
+            <button type="button" onclick={() => void messageProfileChat(activeProfileChats[0] ?? activeChat)}>
+              <Icon name="new-chat" size={15} />
+              <span>{$t('hub.message')}</span>
+            </button>
+            <button type="button" onclick={startProfileMerge}>
+              <Icon name="platforms" size={15} />
+              <span>{$t('hub.mergeChats')}</span>
+            </button>
+          </div>
+        </section>
+
+        {#if profileMergeOpen}
+          <section class="hub-view-profile-section hub-view-profile-merge">
+            <h3>{$t('hub.mergeChats')}</h3>
+            <label>
+              <span>{$t('hub.contactName')}</span>
+              <input bind:value={profileMergeName} maxlength="80" />
+            </label>
+            <div class="hub-view-profile-merge-list">
+              {#each profileMergeCandidates as chat (chat.id)}
+                <button
+                  type="button"
+                  class:selected={profileMergeSelected.has(chat.id)}
+                  aria-pressed={profileMergeSelected.has(chat.id)}
+                  onclick={() => toggleProfileMergeChat(chat)}
+                >
+                  <span class="hub-view-profile-check">
+                    {#if profileMergeSelected.has(chat.id)}<Icon name="check" size={11} />{/if}
+                  </span>
+                  <PlatformLogo platform={chat.platform as Platform} size={16} />
+                  <span><strong>{chat.name}</strong><small>{commsPlatformLabel(chat.platform as CommsPlatform)}</small></span>
+                </button>
+              {/each}
+            </div>
+            <footer>
+              <button type="button" onclick={() => (profileMergeOpen = false)}>{$t('common.cancel')}</button>
+              <button
+                type="button"
+                class="hub-view-primary"
+                disabled={profileMergeSelected.size < 2 || busy === 'contact-merge'}
+                onclick={() => void saveProfileMerge()}
+              >
+                {busy === 'contact-merge' ? $t('hub.saving') : $t('common.save')}
+              </button>
+            </footer>
+          </section>
+        {/if}
+
+        <section class="hub-view-profile-section">
+          <h3>{$t('hub.chatAccounts')}</h3>
+          <div class="hub-view-profile-routes">
+            {#each activeProfileChats as chat (chat.id)}
+              <button type="button" onclick={() => void messageProfileChat(chat)}>
+                <PlatformLogo platform={chat.platform as Platform} size={18} />
+                <span>
+                  <strong class="hub-view-name-with-badge">
+                    <span>{chat.name}</span>
+                    {#if chat.official}{@render officialBadge()}{/if}
+                  </strong>
+                  <small>{commsPlatformLabel(chat.platform as CommsPlatform)}</small>
+                </span>
+                <Icon name="forward" size={13} />
+              </button>
+            {/each}
+          </div>
+        </section>
+
+        {#if profileIdentifiers.length > 0 || profileLoading}
+          <section class="hub-view-profile-section">
+            <h3>{$t('hub.info')}</h3>
+            {#if profileLoading}
+              <p class="hub-view-profile-loading">{$t('common.loading')}</p>
+            {:else}
+              <div class="hub-view-profile-identifiers">
+                {#each profileIdentifiers as identifier (identifier)}<span>{identifier}</span>{/each}
+              </div>
+            {/if}
+          </section>
+        {/if}
+
+        {#if activeProfileLink}
+          <button
+            type="button"
+            class="hub-view-profile-unmerge"
+            disabled={busy === 'contact-unmerge'}
+            onclick={() => void removeProfileLink()}
+          >
+            {$t('hub.separateChats')}
+          </button>
+        {/if}
+      </div>
+    {:else if activeChat}
+      <header class="hub-view-reader-head hub-view-chat-head" class:searching={chatSearchOpen}>
+        {#if chatSearchOpen}
+          <label class="hub-view-chat-search-field">
+            <Icon name="search" size={14} />
+            <input
+              bind:this={chatSearchInput}
+              bind:value={chatSearchQuery}
+              type="search"
+              placeholder={$t('hub.searchChatPlaceholder', {name: activeChat.name})}
+              aria-label={$t('hub.searchChatPlaceholder', {name: activeChat.name})}
+              onkeydown={(event) => {
+                if (event.key === 'Escape') closeChatSearch();
+              }}
+            />
+            {#if chatSearchQuery}
+              <button
+                type="button"
+                aria-label={$t('common.clearSearch')}
+                onclick={() => {
+                  chatSearchQuery = '';
+                  chatSearchInput?.focus();
+                }}
+              >
+                <Icon name="close" size={11} />
+              </button>
+            {/if}
+          </label>
+          <button
+            type="button"
+            class="hub-view-chat-search-close"
+            aria-label={$t('hub.closeChatSearch')}
+            onclick={closeChatSearch}
+          >
+            <Icon name="close" size={14} />
+          </button>
+        {:else}
+          <!-- The chevron sits beside the name rather than above it: in a
+               conversation the name is the title, and a labelled row of its own
+               costs a line that the thread would rather have. -->
+          <button
+            type="button"
+            class="hub-view-back hub-view-back-icon"
+            aria-label={$t('browser.back')}
+            onclick={closeReader}
+          >
+            <Icon name="back" size={15} />
+          </button>
+          {#if activeChat.group}
+            <h2>{activeChat.name}</h2>
+          {:else}
+            <button
+              type="button"
+              class="hub-view-chat-profile-trigger"
+              aria-label={$t('hub.viewProfile', {name: activeChat.name})}
+              onclick={() => void openProfile(activeChat!, true)}
+            >
+              <span>{activeChat.name}</span>
+              {#if activeChat.official}{@render officialBadge()}{/if}
+            </button>
+          {/if}
+          <div
+            class="hub-view-chat-actions"
+            onfocusout={(event) => {
+              const next = event.relatedTarget;
+              if (!(next instanceof Node) || !event.currentTarget.contains(next)) closeChatHeaderMenu();
+            }}
+          >
+            <button
+              type="button"
+              class="hub-view-chat-more"
+              aria-label={$t('hub.moreActions')}
+              aria-haspopup="menu"
+              aria-expanded={chatHeaderMenuOpen}
+              onclick={() => void toggleChatHeaderMenu()}
+            >
+              <Icon name="more" size={15} />
+            </button>
+            {#if chatHeaderMenuOpen}
+              <ul
+                bind:this={chatHeaderMenu}
+                class="hub-view-folder-menu hub-view-chat-actions-menu"
+                role="menu"
+                aria-label={$t('hub.moreActions')}
+                transition:fade={{duration: 100}}
+              >
+                {#if !activeChat.group}
+                  <li role="presentation">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onclick={() => {
+                        const chat = activeChat!;
+                        closeChatHeaderMenu();
+                        void openProfile(chat, true);
+                      }}
+                    >
+                      <Icon name="user" size={14} />
+                      <span>{$t('hub.viewProfileAction')}</span>
+                    </button>
+                  </li>
+                {/if}
+                <li role="presentation">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={busy.startsWith('chat:')}
+                    onclick={() => void openChatSearch()}
+                  >
+                    <Icon name="search" size={14} />
+                    <span>{$t('hub.searchChat')}</span>
+                  </button>
+                </li>
+                <li role="presentation">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => {
+                      chatPrefs = togglePinned(chatPrefs, activeChat!.id);
+                      closeChatHeaderMenu();
+                    }}
+                  >
+                    <Icon name={chatPrefs.pinned.includes(activeChat.id) ? 'pin-off' : 'pin'} size={14} />
+                    <span>{chatPrefs.pinned.includes(activeChat.id) ? $t('hub.unpinChat') : $t('hub.pinChat')}</span>
+                  </button>
+                </li>
+                <li role="presentation">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => {
+                      chatPrefs = toggleMuted(chatPrefs, activeChat!.id);
+                      closeChatHeaderMenu();
+                    }}
+                  >
+                    <Icon name={chatPrefs.muted.includes(activeChat.id) ? 'speaker' : 'speaker-off'} size={14} />
+                    <span>{chatPrefs.muted.includes(activeChat.id) ? $t('hub.unmuteChat') : $t('hub.muteChat')}</span>
+                  </button>
+                </li>
+              </ul>
+            {/if}
+          </div>
+        {/if}
+      </header>
+      {#if chatSearchOpen}
+        <nav class="hub-view-chat-search-tabs" aria-label={$t('hub.searchFilters')}>
+          {#each CHAT_SEARCH_FILTERS as filter (filter)}
+            <button
+              type="button"
+              class:active={chatSearchFilter === filter}
+              aria-pressed={chatSearchFilter === filter}
+              onclick={() => (chatSearchFilter = filter)}
+            >
+              {filter === 'all'
+                ? $t('hub.searchAll')
+                : filter === 'messages'
+                  ? $t('hub.messages')
+                  : filter === 'media'
+                    ? $t('hub.media')
+                    : filter === 'files'
+                      ? $t('hub.files')
+                      : $t('hub.links')}
+            </button>
+          {/each}
+        </nav>
+        <div class="hub-view-chat-search-results" use:scrollFade={chatSearchResults.length}>
+          {#each chatSearchResults as result (result.key)}
+            <button
+              type="button"
+              class="hub-view-chat-search-result"
+              onclick={() => void revealChatSearchResult(result)}
+            >
+              <span class="hub-view-chat-search-preview" aria-hidden="true">
+                {#if result.kind === 'media' && result.attachment?.url && attachmentRenderKind(result.attachment) === 'image' && !brokenMedia.has(result.attachment.url)}
+                  <img
+                    src={result.attachment.url}
+                    alt=""
+                    loading="lazy"
+                    onerror={(event) => retryMedia(event, result.attachment!.url!)}
+                  />
+                {:else}
+                  <Icon name={chatSearchResultIcon(result)} size={15} />
+                {/if}
+              </span>
+              <span class="hub-view-chat-search-copy">
+                <strong>{result.title}</strong>
+                {#if result.detail}<small>{result.detail}</small>{/if}
+                <em>{senderLabel(result.message)} · {displayTime(result.message.sentAt, {compact: true})}</em>
+              </span>
+            </button>
+          {:else}
+            {#if !chatSearchLoading}
+              <p class="hub-view-empty">{$t('hub.noChatSearchResults')}</p>
+            {/if}
+          {/each}
+          {#if chatSearchLoading}
+            <p class="hub-view-chat-search-loading">
+              <span class="loading-dots" role="status" aria-label={$t('common.loading')}><i></i><i></i><i></i></span>
+              <span>{$t('hub.searchingChatHistory')}</span>
+            </p>
+          {/if}
+        </div>
+      {:else}
       <div class="hub-view-thread" bind:this={threadEl} onscroll={onThreadScroll}>
         {#each chatMessages as message, index (message.id)}
           {#if message.notice}
@@ -5552,18 +6295,54 @@
         {/if}
         <div class="hub-view-composer" class:capturing={voiceState !== 'idle'}>
         {#if voiceState === 'idle'}
+          {#if composerAutocompleteOpen}
+            <div
+              class="hub-view-composer-autocomplete"
+              id="hub-composer-autocomplete"
+              role="listbox"
+              aria-label={$t('hub.composerSuggestions')}
+              use:scrollFade={composerSuggestions.length}
+            >
+              {#each composerSuggestions as suggestion, index (suggestion.id)}
+                <button
+                  type="button"
+                  id={`hub-composer-suggestion-${index}`}
+                  class:active={index === composerAutocompleteIndex}
+                  role="option"
+                  aria-selected={index === composerAutocompleteIndex}
+                  aria-label={suggestion.userId
+                    ? `${suggestion.value}, ${suggestion.label}`
+                    : suggestion.value}
+                  onmouseenter={() => composerAutocompleteIndex = index}
+                  onmousedown={(event) => event.preventDefault()}
+                  onclick={() => chooseComposerSuggestion(suggestion)}
+                >
+                  {#if suggestion.avatarUrl}
+                    <img class="hub-view-composer-autocomplete-avatar" src={suggestion.avatarUrl} alt="" />
+                  {:else}
+                    <span class="hub-view-composer-autocomplete-avatar placeholder" aria-hidden="true">
+                      <Icon name={suggestion.kind === 'command' ? 'bot' : suggestion.userId ? 'user' : 'users'} size={10} />
+                    </span>
+                  {/if}
+                  <strong>{suggestion.value}</strong>
+                </button>
+              {/each}
+            </div>
+          {/if}
           <textarea
             bind:this={composerInput}
             bind:value={draft}
             rows="1"
             oninput={chatComposerChanged}
+            onclick={updateComposerCursor}
+            onkeyup={updateComposerCursor}
             placeholder={$t('hub.messagePlaceholder', {name: activeChat.name})}
-            onkeydown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-                event.preventDefault();
-                void sendChat();
-              }
-            }}
+            aria-autocomplete="list"
+            aria-controls={composerAutocompleteOpen ? 'hub-composer-autocomplete' : undefined}
+            aria-activedescendant={composerAutocompleteOpen
+              ? `hub-composer-suggestion-${composerAutocompleteIndex}`
+              : undefined}
+            onkeydown={chatComposerKeydown}
           ></textarea>
           {#if draft.trim() || chatFiles.length > 0}
             <button
@@ -5653,6 +6432,7 @@
         </div>
         </div>
       </div>
+      {/if}
     {:else}
       <div class="hub-view-blank">
         <Icon name="chat" size={30} />
@@ -5731,6 +6511,12 @@
   </div>
 {/snippet}
 
+{#snippet officialBadge()}
+  <span class="hub-view-official" aria-label={$t('settings.official')} title={$t('settings.official')}>
+    <Icon name="verified" size={12} strokeWidth={1.8} />
+  </span>
+{/snippet}
+
 {#snippet spaceRow(space: ChatDto, showPlatform = false)}
 {@const unread = chatUnread(space)}
 {@const childCount = spaceChildCount(space)}
@@ -5798,7 +6584,10 @@
        so both columns centre on the line they belong to. -->
   <span class="hub-view-chat-copy">
     <span class="hub-view-row-top">
-      <strong>{chat.name}</strong>
+      <strong class="hub-view-name-with-badge">
+        <span>{chat.name}</span>
+        {#if chat.official}{@render officialBadge()}{/if}
+      </strong>
       <!-- The pin and the time are one trailing group, so the pin
            reads as a mark on the row's own corner rather than
            something floating between the two columns, and the two

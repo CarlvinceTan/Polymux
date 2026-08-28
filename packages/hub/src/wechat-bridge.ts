@@ -36,7 +36,7 @@ import { visibleWeChatText } from "./wechat-emoji.js";
 const run: (
   file: string,
   args: string[],
-  options: { timeout: number },
+  options: { timeout: number; env?: NodeJS.ProcessEnv },
 ) => Promise<{ stdout: string; stderr: string }> = promisify(execFile);
 
 /**
@@ -185,6 +185,14 @@ export interface WeChatBridgeOptions {
   binaryDirectories?: string[];
   /** Exact CLI candidates; tests can inject one without changing global environment. */
   cliPaths?: string[];
+  /**
+   * The LLDB helper `wechatd` uses to capture WeChat's next CDN request. The
+   * released daemon references this script but does not package it, and its
+   * built-in fallback is a path on the machine it was compiled on — so unless
+   * the daemon is told where the shipped copy lives, its CDN fallback for
+   * media WeChat has not decrypted can never arm.
+   */
+  cdnCaptureScript?: string;
   /** Local roots from which relay-advertised media may be read. */
   mediaRoots?: string[];
   /**
@@ -212,6 +220,8 @@ export type WeChatWriteRequest =
       chatId: string;
       body: string;
       replyTo?: string;
+      /** Painted reply used when the writer cannot emit a native refermsg. */
+      fallbackBody?: string;
       /** WeChat ids to encode as real @ mentions rather than painted text. */
       mentions?: string[];
     }
@@ -222,6 +232,8 @@ export type WeChatWriteRequest =
       path: string;
       name: string;
       mimeType?: string;
+      /** Exact WeChat `<emoji>` reference for a store-backed native sticker. */
+      emojiXml?: string;
     }
   | { kind: "recall"; chatId: string; messageId: string }
   | { kind: "read"; chatId: string };
@@ -342,6 +354,24 @@ function numberAttribute(xml: string, name: string): number | null {
   return Number.isFinite(raw) && raw > 0 ? raw : null;
 }
 
+/** The reusable native sticker element inside WeChat's message wrapper. */
+function emojiElement(value: string): string | null {
+  return (
+    value.match(/<emoji\b[\s\S]*?<\/emoji>/i)?.[0] ??
+    value.match(/<emoji\b[^>]*\/>/i)?.[0] ??
+    null
+  );
+}
+
+function emojiMd5(value: string): string | null {
+  const element = emojiElement(value);
+  return (
+    element
+      ?.match(/\bmd5\s*=\s*["']([a-f0-9]{32})["']/i)?.[1]
+      ?.toLowerCase() ?? null
+  );
+}
+
 /**
  * What a picture is, from its first bytes. WeChat's sticker CDN labels
  * everything `application/octet-stream`, and most stickers are animated GIFs,
@@ -422,13 +452,24 @@ interface BridgeState {
    * Messages this bridge sent outward, waiting to be recognised when WeChat
    * streams them back. Without this every sent message appears twice.
    */
-  outboundEchoes: Array<{ chatId: string; body: string; timestamp: number }>;
+  outboundEchoes: Array<{
+    chatId: string;
+    body: string;
+    timestamp: number;
+    operationId?: string;
+  }>;
   /** Media sends awaiting WeChat's own accepted copy of the message. */
   outboundMediaEchoes?: Array<{
     chatId: string;
-    kind: "image" | "sticker" | "video" | "audio" | "file";
+    kind: "image" | "sticker" | "video" | "audio" | "file" | "reply";
     timestamp: number;
+    /** For `reply`, the authored text so its echo is matched on content, not
+     * just kind — an unrelated `<refermsg>` message must not consume it. */
+    body?: string;
+    operationId?: string;
   }>;
+  /** Verified sticker bytes -> WeChat's reusable native emoji reference. */
+  stickerReferences?: Record<string, { xml: string; seenAt: number }>;
   lastRemoteTimestamp: number;
   /** Contact pictures already uploaded, by WeChat id, so each is sent once. */
   avatarUris?: Record<string, string>;
@@ -494,6 +535,7 @@ function emptyState(): BridgeState {
     seenTransactions: {},
     outboundEchoes: [],
     outboundMediaEchoes: [],
+    stickerReferences: {},
     avatarUris: {},
     avatarsApplied: {},
     recentEvents: {},
@@ -501,6 +543,42 @@ function emptyState(): BridgeState {
     remoteMessageIds: {},
     lastRemoteTimestamp: Math.floor(Date.now() / 1000) - 60,
   };
+}
+
+/**
+ * The environment the relay's processes are started with. The daemon looks up
+ * its CDN-capture helper by `WECHAT_CDN_CAPTURE_SCRIPT`, and a value the
+ * operator already exported wins over the shipped copy — it is the documented
+ * way to point the daemon at a helper of their own.
+ */
+export function relayEnvironment(
+  base: NodeJS.ProcessEnv,
+  cdnCaptureScript?: string,
+): NodeJS.ProcessEnv {
+  return cdnCaptureScript && !base.WECHAT_CDN_CAPTURE_SCRIPT
+    ? { ...base, WECHAT_CDN_CAPTURE_SCRIPT: cdnCaptureScript }
+    : base;
+}
+
+/** PID reported by `wechat-use daemon status`, or null when it is not running. */
+export function weChatDaemonPid(status: string): number | null {
+  const pid = Number(/\brunning\b[^\n]*\bpid=(\d+)\b/i.exec(status)?.[1]);
+  return Number.isInteger(pid) && pid > 1 ? pid : null;
+}
+
+/** Whether a running daemon inherited the capture helper chosen for this run. */
+export function daemonUsesCaptureScript(
+  processEnvironment: string,
+  captureScript: string,
+): boolean {
+  const assignment = `WECHAT_CDN_CAPTURE_SCRIPT=${captureScript}`;
+  const index = processEnvironment.indexOf(assignment);
+  if (index < 0) return false;
+  const end = index + assignment.length;
+  return (
+    (index === 0 || /\s/.test(processEnvironment[index - 1] ?? "")) &&
+    (end === processEnvironment.length || /\s/.test(processEnvironment[end] ?? ""))
+  );
 }
 
 export class WeChatBridge {
@@ -705,13 +783,51 @@ export class WeChatBridge {
       this.#log("[wechat] no relay binary on this Mac; WeChat stays unlinked.");
       return false;
     }
+    // The daemon reads the capture-script variable from its own environment
+    // when it arms a CDN capture, so it has to be present at `daemon start`.
+    const environment = relayEnvironment(
+      process.env,
+      this.#options.cdnCaptureScript,
+    );
     // The daemon underneath it has to be up first, and it is the piece that
     // actually attaches to WeChat, so a failure here is usually WeChat itself
     // being closed or signed out.
-    if (cli)
+    if (cli) {
+      const captureScript = environment.WECHAT_CDN_CAPTURE_SCRIPT;
+      if (captureScript) {
+        const status = await run(cli, ["daemon", "status"], {
+          timeout: RELAY_START_TIMEOUT_MS,
+          env: environment,
+        }).catch((): null => null);
+        const pid = weChatDaemonPid(
+          `${status?.stdout ?? ""}\n${status?.stderr ?? ""}`,
+        );
+        if (pid) {
+          const processEnvironment = await run(
+            "/bin/ps",
+            ["eww", "-p", String(pid), "-o", "command="],
+            { timeout: RELAY_START_TIMEOUT_MS, env: environment },
+          ).catch((): null => null);
+          if (
+            !processEnvironment?.stdout ||
+            !daemonUsesCaptureScript(processEnvironment.stdout, captureScript)
+          ) {
+            const stopped = await run(cli, ["daemon", "stop"], {
+              timeout: RELAY_START_TIMEOUT_MS,
+              env: environment,
+            }).catch((): null => null);
+            if (!stopped)
+              this.#log(
+                "[wechat] the existing daemon could not be restarted with the CDN capture helper.",
+              );
+          }
+        }
+      }
       await run(cli, ["daemon", "start"], {
         timeout: RELAY_START_TIMEOUT_MS,
+        env: environment,
       }).catch((): null => null);
+    }
     // Our own token when we are the one starting it: an unauthenticated
     // loopback port is one any process on this Mac could read messages from.
     this.#token ??= randomBytes(24).toString("base64url");
@@ -719,7 +835,7 @@ export class WeChatBridge {
       bridge,
       ["--shape", "hermes", "--port", String(this.#relayPort())],
       {
-        env: { ...process.env, WECHAT_BRIDGE_BEARER: this.#token },
+        env: { ...environment, WECHAT_BRIDGE_BEARER: this.#token },
         stdio: "ignore",
         detached: false,
       },
@@ -1059,16 +1175,27 @@ export class WeChatBridge {
     // Media sent through the shared Hub composer already exists in Matrix.
     // WeChat streams its accepted copy back afterward; consume that echo rather
     // than drawing the same attachment twice.
-    const echoedMedia = relayMediaType(item.messageKind);
+    const echoedMedia =
+      relayMediaType(item.messageKind) ??
+      (String(item.body ?? "").includes("<refermsg>") ? "reply" : null);
     if (mine && echoedMedia) {
+      // A reply echo carries its authored text in the appmsg <title>; match on
+      // it so an unrelated self message that merely contains "<refermsg>" (a
+      // phone-typed quote, a forwarded card) cannot consume the pending echo.
+      const decodedReplyBody =
+        echoedMedia === "reply" ? unescapeXml(String(item.body ?? "")) : "";
       const index = (this.#state.outboundMediaEchoes ?? []).findIndex(
         (echo) =>
           echo.chatId === chatId &&
           echo.kind === echoedMedia &&
-          Date.now() - echo.timestamp < ECHO_TTL_MS,
+          Date.now() - echo.timestamp < ECHO_TTL_MS &&
+          (echoedMedia !== "reply" ||
+            echo.body === undefined ||
+            decodedReplyBody.includes(echo.body)),
       );
       if (index >= 0) {
-        this.#state.outboundMediaEchoes?.splice(index, 1);
+        const [echo] = this.#state.outboundMediaEchoes?.splice(index, 1) ?? [];
+        this.#consumeOutboundOperation(echo?.operationId);
         this.#carried(remoteId, fields);
         return;
       }
@@ -1085,7 +1212,8 @@ export class WeChatBridge {
           Date.now() - echo.timestamp < ECHO_TTL_MS,
       );
       if (index >= 0) {
-        this.#state.outboundEchoes.splice(index, 1);
+        const [echo] = this.#state.outboundEchoes.splice(index, 1);
+        this.#consumeOutboundOperation(echo.operationId);
         this.#carried(remoteId, fields);
         return;
       }
@@ -1433,6 +1561,15 @@ export class WeChatBridge {
     // the bytes themselves have to say.
     const mimeType = imageTypeOf(bytes);
     if (!mimeType) return null;
+    const md5 = createHash("md5").update(bytes).digest("hex");
+    const reference = emojiElement(body);
+    if (reference && emojiMd5(reference) === md5) {
+      this.#state.stickerReferences = {
+        ...(this.#state.stickerReferences ?? {}),
+        [md5]: { xml: reference, seenAt: Date.now() },
+      };
+      this.#save();
+    }
     const registration = await this.#registration_();
     const upload = await this.#fetch(
       new URL(
@@ -2023,7 +2160,7 @@ export class WeChatBridge {
       return;
 
     const mediaType =
-      event.type === "m.sticker"
+      event.type === "m.sticker" || event.content?.["co.polymux.sticker"] === true
         ? "sticker"
         : matrixMediaType(event.content?.msgtype);
     if (mediaType && typeof event.content?.url === "string") {
@@ -2038,13 +2175,6 @@ export class WeChatBridge {
         ),
       );
       this.#rememberOutboundMessageId(event.event_id, remoteMessageId);
-      this.#state.outboundMediaEchoes ??= [];
-      this.#state.outboundMediaEchoes.push({
-        chatId,
-        kind: mediaType,
-        timestamp: Date.now(),
-      });
-      this.#save();
       return;
     }
     if (event.content?.msgtype === "m.location") {
@@ -2069,10 +2199,8 @@ export class WeChatBridge {
     const replyTo = replyEventId
       ? this.#state.remoteMessageIds?.[replyEventId]
       : undefined;
-    const body =
-      this.#options.writer && replyTo
-        ? authored
-        : await this.#outboundText(event, authored);
+    const renderedBody = await this.#outboundText(event, authored);
+    const body = this.#options.writer && replyTo ? authored : renderedBody;
     const mentions = matrixMentionIds(event)
       .map((userId) => this.#state.puppetRemoteIds?.[userId])
       .filter((userId): userId is string => Boolean(userId));
@@ -2081,6 +2209,7 @@ export class WeChatBridge {
       body,
       replyTo,
       mentions,
+      this.#options.writer && replyTo ? renderedBody : undefined,
     );
     this.#rememberOutboundMessageId(event.event_id, remoteMessageId);
   }
@@ -2090,18 +2219,46 @@ export class WeChatBridge {
     body: string,
     replyTo?: string,
     mentions: string[] = [],
+    fallbackBody?: string,
   ): Promise<string | undefined> {
     if (this.#options.writer) {
-      const result = await this.#write({
-        kind: "text",
+      const operationId = randomUUID();
+      const pendingReply = replyTo
+        ? {
+            chatId,
+            kind: "reply" as const,
+            timestamp: Date.now(),
+            body,
+            operationId,
+          }
+        : undefined;
+      const pendingText = {
         chatId,
-        body,
-        ...(replyTo ? { replyTo } : {}),
-        ...(mentions.length ? { mentions: [...new Set(mentions)] } : {}),
-      });
-      this.#state.outboundEchoes.push({ chatId, body, timestamp: Date.now() });
+        body: fallbackBody ?? body,
+        timestamp: Date.now(),
+        operationId,
+      };
+      if (pendingReply) {
+        this.#state.outboundMediaEchoes ??= [];
+        this.#state.outboundMediaEchoes.push(pendingReply);
+      }
+      this.#state.outboundEchoes.push(pendingText);
       this.#save();
-      return result.messageId;
+      try {
+        const result = await this.#write({
+          kind: "text",
+          chatId,
+          body,
+          ...(replyTo ? { replyTo } : {}),
+          ...(replyTo && fallbackBody ? { fallbackBody } : {}),
+          ...(mentions.length ? { mentions: [...new Set(mentions)] } : {}),
+        });
+        return result.messageId;
+      } catch (error) {
+        this.#consumeOutboundOperation(operationId);
+        this.#save();
+        throw error;
+      }
     }
     if (mentions.length) {
       const args = ["send", body, "--wxid", chatId, "--json"];
@@ -2144,6 +2301,17 @@ export class WeChatBridge {
     return undefined;
   }
 
+  /** Removes both possible echoes for one writer call once either arrives. */
+  #consumeOutboundOperation(operationId?: string): void {
+    if (!operationId) return;
+    this.#state.outboundEchoes = this.#state.outboundEchoes.filter(
+      (echo) => echo.operationId !== operationId,
+    );
+    this.#state.outboundMediaEchoes = (
+      this.#state.outboundMediaEchoes ?? []
+    ).filter((echo) => echo.operationId !== operationId);
+  }
+
   #rememberOutboundMessageId(
     eventId: string | undefined,
     remoteMessageId: string | undefined,
@@ -2156,11 +2324,7 @@ export class WeChatBridge {
     this.#save();
   }
 
-  /**
-   * The helper cannot emit WeChat's native refermsg packet. Preserve the
-   * meaning of a shared reply relation in the delivered text instead of
-   * silently sending an answer with no context at all.
-   */
+  /** Painted fallback when no native writer can emit a refermsg packet. */
   async #outboundText(event: MatrixEvent, authored: string): Promise<string> {
     const relation = event.content?.["m.relates_to"] as
       { "m.in_reply_to"?: { event_id?: string } } | undefined;
@@ -2215,8 +2379,22 @@ export class WeChatBridge {
       `polymux-wechat-send-${randomBytes(8).toString("hex")}${safeSuffix}`,
     );
     await writeFile(target, bytes, { mode: 0o600 });
+    const pendingEcho = { chatId, kind: mediaType, timestamp: Date.now() };
+    this.#state.outboundMediaEchoes ??= [];
+    this.#state.outboundMediaEchoes.push(pendingEcho);
+    this.#save();
     try {
       if (this.#options.writer) {
+        const stickerReference =
+          mediaType === "sticker"
+            ? this.#state.stickerReferences?.[
+                createHash("md5").update(bytes).digest("hex")
+              ]?.xml
+            : undefined;
+        if (mediaType === "sticker" && !stickerReference)
+          throw new Error(
+            "this sticker is not in WeChat's native sticker catalog",
+          );
         const result = await this.#write({
           kind: "media",
           chatId,
@@ -2224,19 +2402,19 @@ export class WeChatBridge {
           path: target,
           name,
           ...(mimeType ? { mimeType } : {}),
+          ...(stickerReference ? { emojiXml: stickerReference } : {}),
         });
         return result.messageId;
       }
       // The helper's --image route decodes the input as an image. It does not
       // paste arbitrary file URLs despite earlier assumptions; live File
       // Transfer verification showed a text attachment produced no message.
-      // Stickers may intentionally use the established image fallback.
-      if (mediaType !== "image" && mediaType !== "sticker")
+      if (mediaType !== "image")
         throw new Error(`WeChat ${mediaType} sending needs the native writer`);
       for (const cli of this.#cliPaths()) {
         const result = await run(
           cli,
-          ["send", "--image", target, "--wxid", chatId, "--json"],
+          ["send", name, "--image", target, "--wxid", chatId, "--json"],
           { timeout: MEDIA_SEND_TIMEOUT_MS },
         ).catch((): null => null);
         if (!result) continue;
@@ -2252,6 +2430,11 @@ export class WeChatBridge {
         return undefined;
       }
       throw new Error(`WeChat ${mediaType} sending is unavailable`);
+    } catch (error) {
+      const index = this.#state.outboundMediaEchoes.indexOf(pendingEcho);
+      if (index >= 0) this.#state.outboundMediaEchoes.splice(index, 1);
+      this.#save();
+      throw error;
     } finally {
       await rm(target, { force: true }).catch((): undefined => undefined);
     }
@@ -2507,6 +2690,14 @@ export class WeChatBridge {
     );
     this.#state.outboundEchoes = this.#state.outboundEchoes.filter(
       (echo) => now - echo.timestamp < ECHO_TTL_MS,
+    );
+    this.#state.outboundMediaEchoes = (
+      this.#state.outboundMediaEchoes ?? []
+    ).filter((echo) => now - echo.timestamp < ECHO_TTL_MS);
+    this.#state.stickerReferences = Object.fromEntries(
+      Object.entries(this.#state.stickerReferences ?? {})
+        .sort(([, a], [, b]) => b.seenAt - a.seenAt)
+        .slice(0, 512),
     );
     const file = path.join(this.#options.directory, "wechat", "state.json");
     // Unique per write: the debounced save and the flush `close` does can

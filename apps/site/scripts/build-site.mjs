@@ -9,5 +9,5 @@ generateBlogPages();
 generateDocsPages();
 generateReleasePages();
 generateProductPages();
-await build();
 generateSitemap();
+await build();

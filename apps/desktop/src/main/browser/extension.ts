@@ -1,6 +1,10 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import {
+  SURFACE_PROTOCOL,
+  negotiateSurfaceProtocol,
+} from "@polymux/browser";
 
 export { EXTENSION_INSTALL_URL } from "../../shared/extension.js";
 
@@ -95,6 +99,14 @@ export interface BrowserExtensionStatus {
   installed: boolean;
   /** When the extension last reported, or null if it never has. */
   lastReportedAt: string | null;
+  /** Store package version, independent from the desktop app version. */
+  version: string | null;
+  /** Highest mutually supported surface protocol, when compatible. */
+  protocolVersion: number | null;
+  /** Null until an extension has reported, otherwise the negotiated result. */
+  compatible: boolean | null;
+  /** Explicit extension features available to the desktop. */
+  capabilities: string[];
 }
 
 export function readExtensionStatus(
@@ -105,10 +117,56 @@ export function readExtensionStatus(
   try {
     modified = statSync(snapshotPath).mtimeMs;
   } catch {
-    return { installed: false, lastReportedAt: null };
+    return {
+      installed: false,
+      lastReportedAt: null,
+      version: null,
+      protocolVersion: null,
+      compatible: null,
+      capabilities: [],
+    };
   }
+  const report = readExtensionProtocol(snapshotPath);
   return {
     installed: now - modified < SNAPSHOT_STALE_AFTER_MS,
     lastReportedAt: new Date(modified).toISOString(),
+    ...report,
+  };
+}
+
+function readExtensionProtocol(snapshotPath: string): Pick<
+  BrowserExtensionStatus,
+  "version" | "protocolVersion" | "compatible" | "capabilities"
+> {
+  let payload: Record<string, unknown> = {};
+  try {
+    const value = JSON.parse(readFileSync(snapshotPath, "utf8"));
+    if (value && typeof value === "object" && !Array.isArray(value))
+      payload = value as Record<string, unknown>;
+  } catch {
+    // A pre-negotiation snapshot has no contract fields and speaks protocol 1.
+  }
+  const explicit = payload.surface_protocol_min !== undefined ||
+    payload.surface_protocol_max !== undefined ||
+    payload.surface_capabilities !== undefined;
+  const extension = explicit
+    ? {
+        minVersion: Number(payload.surface_protocol_min),
+        maxVersion: Number(payload.surface_protocol_max),
+        capabilities: Array.isArray(payload.surface_capabilities)
+          ? payload.surface_capabilities.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [],
+      }
+    : SURFACE_PROTOCOL.legacyExtension;
+  const result = negotiateSurfaceProtocol(extension);
+  return {
+    version: typeof payload.extension_version === "string"
+      ? payload.extension_version
+      : null,
+    protocolVersion: result.negotiatedVersion,
+    compatible: result.compatible,
+    capabilities: [...extension.capabilities],
   };
 }

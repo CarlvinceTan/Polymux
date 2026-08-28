@@ -793,6 +793,14 @@ export interface BrowserExtensionDto {
   installed: boolean;
   /** ISO timestamp of the last snapshot, or null if it has never reported. */
   lastReportedAt: string | null;
+  /** Chrome Web Store package version, independent from the desktop version. */
+  version: string | null;
+  /** Highest mutually supported browser-surface protocol. */
+  protocolVersion: number | null;
+  /** Null before first contact; false prevents unsafe command exchange. */
+  compatible: boolean | null;
+  /** Negotiated extension features available to this desktop build. */
+  capabilities: string[];
   /**
    * True when the title-bar chip should be shown: not installed, and not
    * dismissed since the last time it was seen installed.
@@ -1120,8 +1128,13 @@ export interface CommsBridgeAccountDto {
   id: string;
   /** Remote-side label: a phone number, handle, or display name. */
   name: string;
+  /** Remote profile picture, when the bridge exposes one. */
+  avatarUrl?: string | null;
   state: "connected" | "connecting" | "bad-credentials" | "error" | "unknown";
   error: string | null;
+  /** Remote account kind when the connector reports it. Telegram bot-token
+   * logins use this so the UI does not present a bot as a personal account. */
+  kind?: "user" | "bot";
 }
 
 /** A way to link an account, as advertised by the bridge itself. */
@@ -1441,6 +1454,31 @@ export interface ChatDto {
   preview?: string | null;
   /** Whether this is a group, which is drawn and named differently. */
   group?: boolean;
+  /** The source platform attests that this is an official or verified account.
+   * Absent is deliberately different from false: many bridges do not expose
+   * the platform's trust metadata, and Polymux must not guess from a name. */
+  official?: boolean;
+}
+
+/** A person who can be mentioned in one messaging conversation. */
+export interface ChatMemberDto {
+  /** Matrix identity used by bridges to turn a pill into a native mention. */
+  userId: string;
+  name: string;
+  avatarUrl: string | null;
+}
+
+/** The structured identity behind visible mention text in an outbound message. */
+export interface ChatMentionDto {
+  userId: string;
+  /** Exact text inserted into the composer, including the leading `@`. */
+  label: string;
+}
+
+export interface ChatMentionsDto {
+  users: ChatMentionDto[];
+  /** Encodes the composer's `@everyone` as Matrix's room-wide mention. */
+  everyone?: boolean;
 }
 
 /** A person a linked messaging account can start a conversation with. */
@@ -1467,6 +1505,30 @@ export interface CommsContactDto {
     remoteId: string | null;
     chatId: string | null;
   }>;
+}
+
+/** One stable route to a person inside a linked cross-platform contact. The
+ * remote id survives a bridge reconnect that replaces the Matrix room; the
+ * chat id keeps older bridges without one useful. */
+export interface ContactLinkMemberDto {
+  platform: CommsPlatform;
+  remoteId: string | null;
+  chatId: string;
+}
+
+/** A local identity that says several platform conversations are one person.
+ * It never sends the grouping to any source network. */
+export interface ContactLinkDto {
+  id: string;
+  name: string;
+  members: ContactLinkMemberDto[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MergeContactLinkRequest {
+  name: string;
+  members: ContactLinkMemberDto[];
 }
 
 /** Starts one direct conversation or a remote group on one linked account. */
@@ -2011,6 +2073,15 @@ export interface CalendarListDto {
   source: CalendarSourceDto;
 }
 
+/** One coherent EventKit read for the visible range. Keeping the calendar list
+ * and its events together avoids two helper launches and prevents a source
+ * change landing between otherwise separate reads. */
+export interface CalendarSnapshotDto {
+  calendars: CalendarListDto[];
+  events: CalendarEventDto[];
+  fetchedAt: string;
+}
+
 export type CalendarRecurrenceFrequency = "daily" | "weekly" | "monthly" | "yearly";
 
 export interface CalendarRecurrenceDto {
@@ -2446,6 +2517,14 @@ export interface PolymuxApi {
     chats(): Promise<ChatDto[]>;
     /** People exposed by linked accounts, including DMs already in the Hub. */
     chatContacts(): Promise<CommsContactDto[]>;
+    /** Current participants available to the chat composer's mention menu. */
+    chatMembers(chatId: string): Promise<ChatMemberDto[]>;
+    /** User-approved identities shared by conversations on different platforms. */
+    contactLinks(): Promise<ContactLinkDto[]>;
+    /** Creates or extends one cross-platform identity. Overlapping links fold together. */
+    contactLinkMerge(request: MergeContactLinkRequest): Promise<ContactLinkDto>;
+    /** Separates every route in one linked identity again. */
+    contactLinkRemove(id: string): Promise<void>;
     /** Opens a DM or creates a real remote group, returning its Matrix room id. */
     chatCreate(request: CreateChatRequest): Promise<string>;
     /** Named local recipient sets whose messages are delivered as private DMs. */
@@ -2461,8 +2540,13 @@ export interface PolymuxApi {
      * token until it comes back null.
      */
     chatMessages(chatId: string, limit?: number, before?: string): Promise<ChatPageDto>;
-    /** `replyTo` quotes an earlier message, the way every network does it. */
-    chatSend(chatId: string, text: string, replyTo?: string): Promise<ChatMessageDto>;
+    /** `replyTo` quotes an earlier message; mentions remain structured for bridges. */
+    chatSend(
+      chatId: string,
+      text: string,
+      replyTo?: string,
+      mentions?: ChatMentionsDto,
+    ): Promise<ChatMessageDto>;
     /** Sends files into a conversation, one message each. */
     chatSendFiles(chatId: string, paths: string[]): Promise<void>;
     /** Opens the file picker for the composer's attach button. */
@@ -2742,6 +2826,7 @@ export interface PolymuxApi {
    * to iCloud, Google, Exchange or CalDAV stay synced by the system; Polymux
    * reads and writes the same event store Apple Calendar uses. */
   calendar: {
+    snapshot(start: string, end: string): Promise<CalendarSnapshotDto>;
     calendars(): Promise<CalendarListDto[]>;
     events(start: string, end: string, calendarIds?: string[]): Promise<CalendarEventDto[]>;
     create(input: CalendarEventInput): Promise<CalendarEventDto>;
@@ -2753,6 +2838,8 @@ export interface PolymuxApi {
     exportFile(request: CalendarExportRequest): Promise<string | null>;
     /** Opens the system account pane where Google, Exchange and CalDAV accounts are added. */
     openAccounts(): Promise<void>;
+    /** EventKit invalidation signal. The next read supplies the changed data. */
+    subscribe(listener: () => void): () => void;
   };
   tasks: {
     list(chatId: string): Promise<TaskCardDto[]>;

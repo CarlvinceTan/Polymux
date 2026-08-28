@@ -1,12 +1,9 @@
 import { createWriteStream } from "node:fs";
-import { execFile } from "node:child_process";
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
-import { promisify } from "node:util";
-
-const run = promisify(execFile);
+import {extractTarGzip} from "../system/archive.js";
 
 /**
  * A marketplace is a git repository with `.claude-plugin/marketplace.json` at
@@ -33,9 +30,15 @@ export function parseMarketplaceSource(spec: string): MarketplaceRef {
         if (parts.length !== 2) throw new Error("Enter a marketplace like owner/repo");
         return [parts[0]!, parts[1]!] as const;
       })();
-  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo))
+  const repository = repo.replace(/\.git$/i, "");
+  if (
+    !/^[\w.-]+$/.test(owner) ||
+    !/^[\w.-]+$/.test(repo) ||
+    !isSafePluginName(owner) ||
+    !isSafePluginName(repository)
+  )
     throw new Error("Enter a marketplace like owner/repo");
-  return { owner, repo: repo.replace(/\.git$/i, "") };
+  return { owner, repo: repository };
 }
 
 /** The id a source is filed under: the repository name, which is what the
@@ -102,6 +105,7 @@ export function parseCatalog(source: string, reference: MarketplaceRef): Catalog
     const entry = row as Record<string, unknown>;
     if (typeof entry.name !== "string" || !entry.name.trim()) continue;
     const pluginName = entry.name.trim();
+    if (!isSafePluginName(pluginName)) continue;
     if (seen.has(pluginName)) continue;
     const source = pluginSource(entry.source, pluginName);
     // A source shape we cannot resolve would install nothing, so the entry is
@@ -118,6 +122,17 @@ export function parseCatalog(source: string, reference: MarketplaceRef): Catalog
     });
   }
   return { name, plugins };
+}
+
+/** A marketplace and plugin each occupy exactly one folder below the registry
+ * root. Check both separator styles so catalogs stay safe across platforms. */
+export function isSafePluginName(value: string): boolean {
+  return value !== "" &&
+    value !== "." &&
+    value !== ".." &&
+    !value.includes("/") &&
+    !value.includes("\\") &&
+    !value.includes("\0");
 }
 
 /**
@@ -200,7 +215,7 @@ export async function downloadRepository(
   );
   const extracted = path.join(staging, "extracted");
   await mkdir(extracted, { recursive: true });
-  await run("tar", ["-xzf", archive, "-C", extracted], { timeout: 120_000 });
+  await extractTarGzip(archive, extracted);
   const [root] = await readdir(extracted);
   if (!root) throw new Error("The downloaded package was empty");
   return path.join(extracted, root);

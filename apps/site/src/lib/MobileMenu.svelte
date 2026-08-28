@@ -3,7 +3,7 @@
   import github from 'simple-icons/icons/github.svg?url';
   import DownloadIcon from './DownloadIcon.svelte';
 
-  type Section = 'home' | 'product' | 'docs' | 'blog' | 'releases';
+  type Section = 'home' | 'docs' | 'releases';
 
   let {active, downloadHref = '/#download'}: {active?: Section; downloadHref?: string} = $props();
   let open = $state(false);
@@ -11,9 +11,7 @@
 
   const links: {id: Section; label: string; href: string}[] = [
     {id: 'home', label: 'Home', href: '/'},
-    {id: 'product', label: 'Product', href: '/product/'},
     {id: 'docs', label: 'Docs', href: '/docs/'},
-    {id: 'blog', label: 'Blog', href: '/blog/'},
     {id: 'releases', label: 'Releases', href: '/releases/'},
   ];
 

@@ -65,6 +65,7 @@ interface ConnectedAgent {
 }
 
 const SETTINGS_SESSION = "__polymux_agent_settings__";
+const ACP_STARTUP_TIMEOUT_MS = 15_000;
 
 /** Runs any stdio ACP v1 agent behind Polymux's existing run/event contract. */
 export class AcpAgentRuntime implements AgentRuntime {
@@ -72,18 +73,23 @@ export class AcpAgentRuntime implements AgentRuntime {
   readonly name: string;
   readonly #storage: Storage;
   readonly #config: AcpRuntimeConfig;
+  readonly #clientVersion: string;
   readonly #requestPermission?: (request: acp.RequestPermissionRequest) => Promise<acp.RequestPermissionResponse>;
   readonly #mcpServers: () => acp.McpServer[];
   #connected?: Promise<ConnectedAgent>;
+  #connecting?: Pick<ConnectedAgent, "child" | "connection">;
+  #connectionWaiters = 0;
 
   constructor(
     config: AcpRuntimeConfig,
     storage: Storage,
+    clientVersion: string,
     requestPermission?: (request: acp.RequestPermissionRequest) => Promise<acp.RequestPermissionResponse>,
     mcpServers: () => acp.McpServer[] = () => [],
   ) {
     this.#config = config;
     this.#storage = storage;
+    this.#clientVersion = clientVersion;
     this.#requestPermission = requestPermission;
     this.#mcpServers = mcpServers;
     this.id = `acp:${config.command}`;
@@ -98,12 +104,13 @@ export class AcpAgentRuntime implements AgentRuntime {
   }
 
   async close(): Promise<void> {
-    const connected = await this.#connected?.catch((): undefined => undefined);
+    const pending = this.#connected;
     this.#connected = undefined;
+    if (this.#connecting) closeTransport(this.#connecting);
+    const connected = await pending?.catch((): undefined => undefined);
     if (!connected) return;
     for (const session of connected.sessions.values()) session.dispose();
-    connected.connection.close();
-    if (!connected.child.killed) connected.child.kill();
+    closeTransport(connected);
   }
 
   /** Reads the controls this agent actually exposes instead of guessing from
@@ -186,9 +193,9 @@ export class AcpAgentRuntime implements AgentRuntime {
     return this.settings();
   }
 
-  async #connect(): Promise<ConnectedAgent> {
+  #connect(): Promise<ConnectedAgent> {
     if (this.#connected) return this.#connected;
-    this.#connected = (async () => {
+    const pending = (async () => {
       const child = spawn(this.#config.command, this.#config.args, {
         cwd: this.#config.cwd || process.cwd(),
         stdio: ["pipe", "pipe", "pipe"],
@@ -222,43 +229,98 @@ export class AcpAgentRuntime implements AgentRuntime {
         },
       );
       const connection = app.connect(stream);
-      const info = await Promise.race([
-        connection.agent.request(acp.methods.agent.initialize, {
-          protocolVersion: acp.PROTOCOL_VERSION,
-          clientCapabilities: {session: {configOptions: {boolean: {}}}},
-          clientInfo: {name: "Polymux", version: "0.2.1"},
-        }),
-        exited,
-      ]);
-      if (info.protocolVersion !== acp.PROTOCOL_VERSION) {
-        connection.close();
-        child.kill();
-        throw new Error(
-          `${this.name} negotiated unsupported ACP version ${info.protocolVersion}`,
+      const transport = {child, connection};
+      this.#connecting = transport;
+      try {
+        const info = await withTimeout(
+          Promise.race([
+            connection.agent.request(acp.methods.agent.initialize, {
+              protocolVersion: acp.PROTOCOL_VERSION,
+              clientCapabilities: {session: {configOptions: {boolean: {}}}},
+              clientInfo: {name: "Polymux", version: this.#clientVersion},
+            }),
+            exited,
+          ]),
+          ACP_STARTUP_TIMEOUT_MS,
+          `${this.name} did not answer ACP initialization within 15 seconds`,
         );
+        if (info.protocolVersion !== acp.PROTOCOL_VERSION)
+          throw new Error(
+            `${this.name} negotiated unsupported ACP version ${info.protocolVersion}`,
+          );
+        return {child, connection, sessions: new Map(), configOptions: new Map(), info};
+      } catch (error) {
+        closeTransport(transport);
+        throw error;
+      } finally {
+        if (this.#connecting === transport) this.#connecting = undefined;
       }
-      return {child, connection, sessions: new Map(), configOptions: new Map(), info};
-    })().catch((error) => {
-      this.#connected = undefined;
-      throw error;
+    })();
+    this.#connected = pending;
+    void pending.catch(() => {
+      if (this.#connected === pending) this.#connected = undefined;
     });
-    return this.#connected;
+    return pending;
   }
 
-  async #session(conversationId: string): Promise<{connected: ConnectedAgent; session: acp.ActiveSession}> {
-    const connected = await this.#connect();
+  async #session(
+    conversationId: string,
+    signal?: AbortSignal,
+  ): Promise<{connected: ConnectedAgent; session: acp.ActiveSession}> {
+    const connected = await this.#waitForConnection(signal);
     const existing = connected.sessions.get(conversationId);
     if (existing) return {connected, session: existing};
-    const session = await connected.connection.agent
+    const starting = connected.connection.agent
       .buildSession({
         cwd: path.resolve(this.#config.cwd || process.cwd()),
         mcpServers: this.#mcpServers(),
       })
       .start();
+    let session: acp.ActiveSession;
+    try {
+      session = await withAbort(
+        withTimeout(
+          starting,
+          ACP_STARTUP_TIMEOUT_MS,
+          `${this.name} did not create an ACP session within 15 seconds`,
+        ),
+        signal,
+      );
+    } catch (error) {
+      // Cancellation wins immediately, but the protocol request may still
+      // resolve later. Dispose that abandoned session instead of leaking it.
+      void starting.then((created) => created.dispose(), (): void => {});
+      throw error;
+    }
     connected.sessions.set(conversationId, session);
     connected.configOptions.set(session.sessionId, session.newSessionResponse.configOptions ?? []);
     await this.#applyPreferredConfig(connected, session);
     return {connected, session};
+  }
+
+  async #waitForConnection(signal?: AbortSignal): Promise<ConnectedAgent> {
+    if (signal?.aborted) throw abortReason(signal);
+    const pending = this.#connect();
+    this.#connectionWaiters++;
+    try {
+      return await withAbort(pending, signal);
+    } catch (error) {
+      // A cancelled first caller should not leave a mute child occupying every
+      // later run until the startup timeout. Preserve a shared connection when
+      // another settings request or run is still waiting for it.
+      if (
+        signal?.aborted &&
+        this.#connectionWaiters === 1 &&
+        this.#connected === pending &&
+        this.#connecting
+      ) {
+        closeTransport(this.#connecting);
+        this.#connected = undefined;
+      }
+      throw error;
+    } finally {
+      this.#connectionWaiters--;
+    }
   }
 
   #disposeSettingsSession(connected: ConnectedAgent): void {
@@ -383,7 +445,10 @@ export class AcpAgentRuntime implements AgentRuntime {
     emit({type: "model.started", turn, model});
 
     try {
-      const {connected, session} = await this.#session(input.conversationId);
+      const {connected, session} = await this.#session(
+        input.conversationId,
+        control.signal,
+      );
       const cancel = (): void => {
         void connected.connection.agent.notify(
           acp.methods.agent.session.cancel,
@@ -391,63 +456,69 @@ export class AcpAgentRuntime implements AgentRuntime {
         ).catch((): void => {});
       };
       control.signal.addEventListener("abort", cancel, {once: true});
-      const prompt = session.prompt([
-        {type: "text", text: input.text},
-        ...(input.attachments ?? []).map((file): acp.ContentBlock => ({
-          type: "resource_link",
-          name: path.basename(file),
-          uri: `file://${path.resolve(file)}`,
-        })),
-      ]);
-      for (;;) {
-        const message = await session.nextUpdate();
-        if (message.kind === "stop") {
-          if (message.response.usage) {
-            usage = {
-              ...EMPTY_USAGE,
-              inputTokens: message.response.usage.inputTokens,
-              outputTokens: message.response.usage.outputTokens,
-              totalTokens: message.response.usage.totalTokens,
-            };
+      try {
+        const prompt = session.prompt([
+          {type: "text", text: input.text},
+          ...(input.attachments ?? []).map((file): acp.ContentBlock => ({
+            type: "resource_link",
+            name: path.basename(file),
+            uri: `file://${path.resolve(file)}`,
+          })),
+        ]);
+        // If cancellation wins the race, retain a rejection handler on the
+        // protocol request while the remote agent processes the notification.
+        void prompt.catch((): void => {});
+        for (;;) {
+          const message = await withAbort(session.nextUpdate(), control.signal);
+          if (message.kind === "stop") {
+            if (message.response.usage) {
+              usage = {
+                ...EMPTY_USAGE,
+                inputTokens: message.response.usage.inputTokens,
+                outputTokens: message.response.usage.outputTokens,
+                totalTokens: message.response.usage.totalTokens,
+              };
+            }
+            break;
           }
-          break;
-        }
-        const update = message.update;
-        if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
-          text += update.content.text;
-          emit({type: "message.text.delta", turn, index: 0, delta: update.content.text});
-        } else if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text") {
-          reasoning += update.content.text;
-          emit({type: "message.reasoning.delta", turn, index: 0, delta: update.content.text});
-        } else if (update.sessionUpdate === "tool_call") {
-          hadWorkActivity = true;
-          const call: ToolCallBlock = {
-            type: "toolCall",
-            id: update.toolCallId,
-            name: update.name || update.kind || "acp_tool",
-            arguments: objectJson(update.rawInput),
-          };
-          toolCalls.set(update.toolCallId, {call, startedAt: Date.now()});
-          emit({type: "tool.started", turn, toolCall: call});
-        } else if (update.sessionUpdate === "tool_call_update") {
-          const current = toolCalls.get(update.toolCallId);
-          if (!current) continue;
-          if (update.status === "completed" || update.status === "failed") {
-            const result = {
-              content: toolContent(update.content, update.rawOutput),
-              isError: update.status === "failed",
+          const update = message.update;
+          if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
+            text += update.content.text;
+            emit({type: "message.text.delta", turn, index: 0, delta: update.content.text});
+          } else if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text") {
+            reasoning += update.content.text;
+            emit({type: "message.reasoning.delta", turn, index: 0, delta: update.content.text});
+          } else if (update.sessionUpdate === "tool_call") {
+            hadWorkActivity = true;
+            const call: ToolCallBlock = {
+              type: "toolCall",
+              id: update.toolCallId,
+              name: update.name || update.kind || "acp_tool",
+              arguments: objectJson(update.rawInput),
             };
-            emit(update.status === "failed"
-              ? {type: "tool.failed", turn, toolCall: current.call, error: {code: "internal", message: String(update.rawOutput ?? "ACP tool failed"), retryable: false}, durationMs: Date.now() - current.startedAt}
-              : {type: "tool.completed", turn, toolCall: current.call, result, durationMs: Date.now() - current.startedAt});
-            toolCalls.delete(update.toolCallId);
+            toolCalls.set(update.toolCallId, {call, startedAt: Date.now()});
+            emit({type: "tool.started", turn, toolCall: call});
+          } else if (update.sessionUpdate === "tool_call_update") {
+            const current = toolCalls.get(update.toolCallId);
+            if (!current) continue;
+            if (update.status === "completed" || update.status === "failed") {
+              const result = {
+                content: toolContent(update.content, update.rawOutput),
+                isError: update.status === "failed",
+              };
+              emit(update.status === "failed"
+                ? {type: "tool.failed", turn, toolCall: current.call, error: {code: "internal", message: String(update.rawOutput ?? "ACP tool failed"), retryable: false}, durationMs: Date.now() - current.startedAt}
+                : {type: "tool.completed", turn, toolCall: current.call, result, durationMs: Date.now() - current.startedAt});
+              toolCalls.delete(update.toolCallId);
+            }
+          } else if (update.sessionUpdate === "config_option_update") {
+            connected.configOptions.set(session.sessionId, update.configOptions);
           }
-        } else if (update.sessionUpdate === "config_option_update") {
-          connected.configOptions.set(session.sessionId, update.configOptions);
         }
+        await withAbort(prompt, control.signal);
+      } finally {
+        control.signal.removeEventListener("abort", cancel);
       }
-      await prompt;
-      control.signal.removeEventListener("abort", cancel);
       if (control.aborted) return this.#finish(input, emit, startedAt, text, reasoning, usage, hadWorkActivity, "cancelled");
       return this.#finish(input, emit, startedAt, text, reasoning, usage, hadWorkActivity, "completed");
     } catch (error) {
@@ -523,6 +594,57 @@ export class AcpAgentRuntime implements AgentRuntime {
 
 function json(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
+}
+
+function closeTransport(
+  transport: Pick<ConnectedAgent, "child" | "connection">,
+): void {
+  try { transport.connection.close(); } catch {}
+  if (!transport.child.killed) transport.child.kill();
+}
+
+function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const aborted = (): void => reject(abortReason(signal));
+    signal.addEventListener("abort", aborted, {once: true});
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", aborted);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", aborted);
+        reject(error);
+      },
+    );
+  });
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Run cancelled");
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  milliseconds: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), milliseconds);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function objectJson(value: unknown): Record<string, JsonValue> {

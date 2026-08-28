@@ -5,6 +5,8 @@ import {fileURLToPath} from "node:url";
 import {SqliteStorage} from "@polymux/storage/sqlite";
 import {AcpAgentRuntime} from "./acp.js";
 
+const CLIENT_VERSION = "9.8.7";
+
 test("ACP runtime negotiates, streams, and persists a completed turn", async () => {
   const storage = new SqliteStorage(":memory:");
   storage.createConversation({id: "chat-1", title: "ACP"});
@@ -13,8 +15,8 @@ test("ACP runtime negotiates, streams, and persists a completed turn", async () 
     kind: "acp",
     name: "Fake ACP Agent",
     command: process.execPath,
-    args: [fixture],
-  }, storage);
+    args: [fixture, `--expect-client-version=${CLIENT_VERSION}`],
+  }, storage, CLIENT_VERSION);
 
   try {
     const active = runtime.start({conversationId: "chat-1", runId: "run-1", text: "Hello"});
@@ -45,7 +47,7 @@ test("ACP runtime discovers, updates, and reapplies advertised session options",
     command: process.execPath,
     args: [fixture],
     config: {model: "capable", brave: true},
-  }, storage);
+  }, storage, CLIENT_VERSION);
 
   try {
     const settings = await runtime.settings();
@@ -76,7 +78,7 @@ test("ACP runtime exposes agent-managed authentication before session settings",
     name: "Authenticated ACP Agent",
     command: process.execPath,
     args: [fixture, "--require-auth"],
-  }, storage);
+  }, storage, CLIENT_VERSION);
 
   try {
     const required = await runtime.settings();
@@ -103,3 +105,44 @@ test("ACP runtime exposes agent-managed authentication before session settings",
     storage.close();
   }
 });
+
+test("ACP runtime cancellation does not wait for a hung initialization", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({id: "chat-1", title: "ACP"});
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const config = {
+    kind: "acp" as const,
+    name: "Hung ACP Agent",
+    command: process.execPath,
+    args: [fixture, "--hang-initialize"],
+  };
+  const runtime = new AcpAgentRuntime(config, storage, CLIENT_VERSION);
+
+  try {
+    const active = runtime.start({conversationId: "chat-1", runId: "run-1", text: "Hello"});
+    active.control.cancel();
+    const result = await deadline(active.result, 1_000);
+    assert.equal(result.status, "cancelled");
+    assert.equal(storage.getRun("run-1")?.status, "cancelled");
+    // A fresh caller must not inherit the cancelled run's hung connection.
+    config.args = [fixture];
+    assert.equal((await deadline(runtime.settings(), 1_000)).authRequired, false);
+  } finally {
+    await deadline(runtime.close(), 1_000);
+    storage.close();
+  }
+});
+
+async function deadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Timed out waiting for ACP runtime")), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

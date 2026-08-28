@@ -6,7 +6,10 @@ import type {
   CalendarImportResultDto,
   CalendarListDto,
   CalendarRecurrenceDto,
+  CalendarSnapshotDto,
 } from "@polymux/protocol";
+import {spawn, type ChildProcess} from "node:child_process";
+import {createInterface} from "node:readline";
 import { permissionUsagePlist } from "../system/permission-usage.js";
 import { SwiftHelper } from "../system/swift-helper.js";
 import { parseIcsEvents } from "./ics.js";
@@ -30,6 +33,10 @@ export interface NativeCalendarOptions {
 export class NativeCalendar {
   readonly #helper: SwiftHelper;
   readonly #access: CalendarAccess;
+  readonly #listeners = new Set<() => void>();
+  #watcher?: ChildProcess;
+  #changeTimer?: NodeJS.Timeout;
+  #closed = false;
 
   constructor(options: NativeCalendarOptions) {
     this.#access = options.access;
@@ -46,6 +53,17 @@ export class NativeCalendar {
 
   calendars(): Promise<CalendarListDto[]> {
     return this.#run<CalendarListDto[]>("calendars", {});
+  }
+
+  async snapshot(start: string, end: string): Promise<CalendarSnapshotDto> {
+    const from = instant(start, "calendar range start");
+    const until = instant(end, "calendar range end");
+    if (Date.parse(from) >= Date.parse(until)) throw new Error("Calendar range end must follow its start");
+    const result = await this.#run<Omit<CalendarSnapshotDto, "fetchedAt">>("snapshot", {
+      start: from,
+      end: until,
+    });
+    return {...result, fetchedAt: new Date().toISOString()};
   }
 
   async events(start: string, end: string, calendarIds?: string[]): Promise<CalendarEventDto[]> {
@@ -76,29 +94,41 @@ export class NativeCalendar {
 
   async importIcs(source: string, calendarId: string, fileName: string | null): Promise<CalendarImportResultDto> {
     const parsed = parseIcsEvents(source, required(calendarId, "calendar id"));
-    let imported = 0;
-    let skipped = parsed.skipped;
-    for (const event of parsed.events) {
-      try {
-        await this.create(event);
-        imported += 1;
-      } catch {
-        skipped += 1;
-      }
-    }
-    return {imported, skipped, fileName};
+    const result = parsed.events.length
+      ? await this.#run<{imported: number; skipped: number}>("import", {events: parsed.events})
+      : {imported: 0, skipped: 0};
+    return {imported: result.imported, skipped: parsed.skipped + result.skipped, fileName};
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  close(): void {
+    this.#closed = true;
+    clearTimeout(this.#changeTimer);
+    this.#watcher?.kill();
+    this.#watcher = undefined;
+    this.#listeners.clear();
   }
 
   async #run<T>(action: string, payload: object): Promise<T> {
     const refused = await this.#access.ensure();
     if (refused) throw new Error(refused);
     const first = await this.#invoke<T>(action, payload);
-    if (!first.error) return first.result as T;
+    if (!first.error) {
+      void this.#ensureWatcher();
+      return first.result as T;
+    }
     if (first.error !== NOT_AUTHORIZED) throw new Error(first.error);
     const refusedAgain = await this.#access.ensure();
     if (refusedAgain) throw new Error(refusedAgain);
     const second = await this.#invoke<T>(action, payload);
-    if (!second.error) return second.result as T;
+    if (!second.error) {
+      void this.#ensureWatcher();
+      return second.result as T;
+    }
     throw new Error(
       second.error === NOT_AUTHORIZED
         ? "Polymux has not been given access to Calendars. Allow it in System Settings → Privacy & Security → Calendars."
@@ -113,6 +143,37 @@ export class NativeCalendar {
     const line = await this.#helper.run([action, JSON.stringify(payload)], 30_000);
     const parsed = JSON.parse(line) as {ok?: boolean; result?: T; error?: string};
     return parsed.ok ? {result: parsed.result} : {error: parsed.error ?? "Calendar reported no reason"};
+  }
+
+  /** EventKit's notification carries no diff; it is deliberately only an
+   * invalidation signal. The renderer decides which visible range to reread. */
+  async #ensureWatcher(): Promise<void> {
+    if (this.#closed || this.#watcher || this.#listeners.size === 0) return;
+    const binary = await this.#helper.binary();
+    if (this.#closed || this.#watcher || this.#listeners.size === 0) return;
+    const watcher = spawn(binary, ["watch", "{}"], {stdio: ["ignore", "pipe", "ignore"]});
+    this.#watcher = watcher;
+    const lines = watcher.stdout
+      ? createInterface({input: watcher.stdout})
+      : undefined;
+    lines?.on("line", (line) => {
+      try {
+        const event = JSON.parse(line) as {type?: string};
+        if (event.type !== "changed") return;
+        clearTimeout(this.#changeTimer);
+        this.#changeTimer = setTimeout(() => {
+          for (const listener of this.#listeners) listener();
+        }, 200);
+      } catch {
+        // A malformed diagnostic line is not a calendar change.
+      }
+    });
+    const stopped = (): void => {
+      lines?.close();
+      if (this.#watcher === watcher) this.#watcher = undefined;
+    };
+    watcher.once("error", stopped);
+    watcher.once("exit", stopped);
   }
 }
 

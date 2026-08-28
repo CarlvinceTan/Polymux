@@ -25,6 +25,13 @@ export {
 export { describeLocator, findByLocator, LOCATOR_KINDS, locatorOf } from "./locators.js";
 export { PageObservers } from "./observers.js";
 export {
+  SURFACE_PROTOCOL,
+  SURFACE_PROTOCOL_HEADERS,
+  desktopSupportsExtension,
+  extensionProtocolHeaders,
+  negotiateSurfaceProtocol,
+} from "./protocol.js";
+export {
   callOnElement,
   ControlError,
   coveringElement,

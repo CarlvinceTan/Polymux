@@ -133,7 +133,6 @@ export class AgentRunner {
     queue: AsyncEventQueue<AgentRunEvent>,
   ): Promise<AgentRunResult> {
     let sequence = 0;
-    let status: RunStatus = "idle";
     let turns = 0;
     let context = cloneContext(request.context);
     let usage = emptyUsage();
@@ -167,7 +166,6 @@ export class AgentRunner {
     };
 
     const setStatus = async (next: RunStatus): Promise<void> => {
-      status = next;
       await emit({ type: "run.state", status: next });
     };
 

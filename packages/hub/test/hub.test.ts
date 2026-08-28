@@ -199,8 +199,8 @@ test("reports a linked bridge account from whoami", async () => {
             {
               id: "wa-1",
               name: "fallback",
-              profile: {phone: "+61400000000"},
-              state: {state_event: "CONNECTED"},
+              profile: {phone: "+61400000000", avatar: "mxc://local/my-profile"},
+              state: {state_event: "CONNECTED", info: {is_bot: true}},
             },
           ],
         },
@@ -219,6 +219,8 @@ test("reports a linked bridge account from whoami", async () => {
       );
       // The remote profile is a better label than the login's own name.
       assert.equal(bridge.accounts[0].name, "+61400000000");
+      assert.equal(bridge.accounts[0].avatarUrl, "polymux-media://local/my-profile");
+      assert.equal(bridge.accounts[0].kind, "bot");
       assert.equal(bridge.managementRoomHint, "!admin:local");
       assert.deepEqual(
         bridge.flows.map((flow) => flow.id),
@@ -490,6 +492,70 @@ test("rooms expose Matrix Space containers and both forms of current parent link
         ["!community:local", "!default:local"],
       );
       assert.deepEqual(byId.get("!running:local")?.parentIds, ["!community:local"]);
+    },
+  );
+});
+
+test("rooms expose official badges only from bridge-attested trust metadata", async () => {
+  const embeddedDirectory = await mkdtemp(path.join(tmpdir(), "polymux-official-badge-"));
+  const room = (platform: string, trust: Record<string, unknown>, memberTrust: Record<string, unknown> = {}) => ({
+    state: {events: [
+      {type: "m.room.name", state_key: "", content: {name: `${platform} support`}},
+      {
+        type: "m.bridge",
+        state_key: platform,
+        content: {protocol: {id: platform}, "com.beeper.room_type": "dm", ...trust},
+      },
+      {
+        type: "m.room.member",
+        state_key: `@${platform}_support:local`,
+        content: {membership: "join", displayname: `${platform} support`, ...memberTrust},
+      },
+      {type: "m.room.member", state_key: "@me:local", content: {membership: "join"}},
+    ]},
+    timeline: {events: [] as Array<Record<string, unknown>>},
+  });
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!telegram:local": room("telegram", {"com.beeper.is_verified": true}),
+      "!whatsapp:local": room("whatsapp", {}, {is_official: true}),
+      "!ordinary:local": room("signal", {}),
+      "!named:local": room("slack", {}, {displayname: "Official support"}),
+    }}}}},
+    async (hub) => {
+      const byId = new Map((await hub.rooms()).map((item) => [item.roomId, item]));
+      assert.equal(byId.get("!telegram:local")?.official, true);
+      assert.equal(byId.get("!whatsapp:local")?.official, true);
+      assert.equal(byId.get("!ordinary:local")?.official, undefined);
+      assert.equal(byId.get("!named:local")?.official, undefined);
+    },
+    undefined,
+    embeddedDirectory,
+  );
+});
+
+test("remote Matrix room state cannot forge official badges", async () => {
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!remote:local": {
+        state: {events: [
+          {type: "m.room.name", state_key: "", content: {name: "Support"}},
+          {type: "m.bridge", state_key: "signal", content: {
+            protocol: {id: "signal"},
+            "com.beeper.room_type": "dm",
+            "com.beeper.is_verified": true,
+          }},
+          {type: "m.room.member", state_key: "@support:local", content: {
+            membership: "join",
+            is_official: true,
+          }},
+          {type: "m.room.member", state_key: "@me:local", content: {membership: "join"}},
+        ]},
+        timeline: {events: []},
+      },
+    }}}}},
+    async (hub) => {
+      assert.equal((await hub.rooms())[0]?.official, undefined);
     },
   );
 });
@@ -2280,13 +2346,16 @@ test("signs in and returns the token the homeserver issued", async () => {
   );
 });
 
-test("sends a message with an idempotent transaction id", async () => {
-  const sent: string[] = [];
+test("sends structured mentions with an idempotent transaction id", async () => {
+  const sent: Array<{path: string; body: Record<string, unknown>}> = [];
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk) => chunks.push(chunk as Buffer));
     request.on("end", () => {
-      sent.push(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
+      sent.push({
+        path: new URL(request.url ?? "/", "http://127.0.0.1").pathname,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>,
+      });
       response.writeHead(200, {"Content-Type": "application/json"});
       response.end(JSON.stringify({event_id: "$evt"}));
     });
@@ -2300,11 +2369,53 @@ test("sends a message with an idempotent transaction id", async () => {
       directory: null,
       auth: () => ({matrixToken: "syt_token", userId: "@me:local"}),
     });
-    assert.equal(await hub.send("!room:local", "hello"), "$evt");
-    assert.match(sent[0], /^\/_matrix\/client\/v3\/rooms\/!room%3Alocal\/send\/m\.room\.message\/polymux-/);
+    assert.equal(await hub.send(
+      "!room:local",
+      "Hello @alice & @everyone",
+      undefined,
+      {
+        users: [{userId: "@telegram_alice:local", label: "@alice"}],
+        everyone: true,
+      },
+    ), "$evt");
+    assert.match(sent[0].path, /^\/_matrix\/client\/v3\/rooms\/!room%3Alocal\/send\/m\.room\.message\/polymux-/);
+    assert.deepEqual(sent[0].body["m.mentions"], {
+      user_ids: ["@telegram_alice:local"],
+      room: true,
+    });
+    assert.equal(
+      sent[0].body.formatted_body,
+      'Hello <a href="https://matrix.to/#/@telegram_alice:local">@alice</a> &amp; @everyone',
+    );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test("lists mentionable joined members without the signed-in user or bridge bot", async () => {
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/!group%3Alocal/joined_members": {
+        body: {
+          joined: {
+            "@me:local": {display_name: "Me"},
+            "@telegrambot:local": {display_name: "Telegram bridge"},
+            "@telegram_alice:local": {
+              display_name: "Alice",
+              avatar_url: "mxc://local/alice",
+            },
+          },
+        },
+      },
+    },
+    async (hub) => {
+      assert.deepEqual(await hub.members("!group:local"), [{
+        userId: "@telegram_alice:local",
+        name: "Alice",
+        avatarUrl: "polymux-media://local/alice",
+      }]);
+    },
+  );
 });
 
 test("refuses Matrix calls when the app holds no token", async () => {

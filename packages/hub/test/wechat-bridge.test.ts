@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Homeserver } from "../src/server.js";
-import { WeChatBridge, type WeChatWriteRequest } from "../src/wechat-bridge.js";
+import {
+  daemonUsesCaptureScript,
+  WeChatBridge,
+  relayEnvironment,
+  weChatDaemonPid,
+  type WeChatWriteRequest,
+} from "../src/wechat-bridge.js";
 import { MatrixHub } from "../src/hub.js";
 import { setupHint } from "../src/wechat-relay.js";
 
@@ -1036,27 +1042,44 @@ test("a shared Hub image is sent to WeChat and its returned echo is not duplicat
 });
 
 test("a native Matrix sticker event reaches WeChat and its echo is suppressed", async () => {
-  const directory = await mkdtemp(
-    path.join(tmpdir(), "polymux-wechat-sticker-send-"),
-  );
-  const log = path.join(directory, "send.jsonl");
-  const cli = await stubCli({}, log);
+  const writes: Array<{
+    request: WeChatWriteRequest;
+    bytes?: Buffer;
+  }> = [];
   await withBridge(
     async ({ hub, relay, homeserver, accessToken }) => {
+      const bytes = Buffer.from("GIF89a" + "\u0000".repeat(20), "binary");
+      const md5 = createHash("md5").update(bytes).digest("hex");
+      relay.emit({
+        messageId: "catalog-sticker",
+        chatId: "wxid_friend",
+        chatName: "A Friend",
+        senderId: "wxid_friend",
+        messageKind: "emoticon",
+        body: `<msg><emoji fromusername="wxid_friend" type="2" md5="${md5}" cdnurl="${relay.url}/sticker.gif" width="240" height="180"></emoji></msg>`,
+        timestamp: 1,
+      });
+      await threadWhen(
+        hub,
+        ({ messages }) => (messages[0]?.attachments.length ?? 0) > 0,
+        "the native sticker reference to be catalogued",
+      );
+
       relay.emit({
         messageId: "open",
         chatId: "filehelper",
         chatName: "File Transfer",
         body: "ready",
         fromSelf: true,
-        timestamp: 1,
+        timestamp: 2,
       });
-      const [room] = await roomsWhen(
+      const rooms = await roomsWhen(
         hub,
-        (rooms) => rooms.length === 1,
+        (rooms) => rooms.length === 2,
         "File Transfer to open",
       );
-      const bytes = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
+      const room = rooms.find((item) => item.name === "File Transfer");
+      assert.ok(room);
       const url = await hub.upload("parity.gif", "image/gif", bytes);
       const sent = await fetch(
         new URL(
@@ -1078,16 +1101,15 @@ test("a native Matrix sticker event reaches WeChat and its echo is suppressed", 
       );
       assert.equal(sent.ok, true);
       await until(
-        () => existsSync(log),
+        () => writes.length === 1,
         "the sticker to reach WeChat's sender",
       );
-      const dispatched = JSON.parse((await readFile(log, "utf8")).trim()) as {
-        bytes: string;
-      };
-      assert.deepEqual(
-        Buffer.from(dispatched.bytes, "base64"),
-        Buffer.from(bytes),
-      );
+      assert.deepEqual(writes[0].bytes, Buffer.from(bytes));
+      assert.equal(writes[0].request.kind, "media");
+      if (writes[0].request.kind === "media") {
+        assert.equal(writes[0].request.mediaType, "sticker");
+        assert.match(writes[0].request.emojiXml ?? "", new RegExp(md5));
+      }
 
       relay.emit({
         messageId: "sticker-echo",
@@ -1095,14 +1117,14 @@ test("a native Matrix sticker event reaches WeChat and its echo is suppressed", 
         messageKind: "emoticon",
         body: "[Sticker]",
         fromSelf: true,
-        timestamp: 2,
+        timestamp: 3,
       });
       relay.emit({
         messageId: "after-sticker",
         chatId: "filehelper",
         body: "after sticker",
         fromSelf: true,
-        timestamp: 3,
+        timestamp: 4,
       });
       const { messages } = await threadWhen(
         hub,
@@ -1118,7 +1140,19 @@ test("a native Matrix sticker event reaches WeChat and its echo is suppressed", 
       );
     },
     undefined,
-    { cliPaths: [cli] },
+    {
+      writer: {
+        write: async (request) => {
+          writes.push({
+            request: { ...request },
+            ...(request.kind === "media"
+              ? { bytes: await readFile(request.path) }
+              : {}),
+          });
+          return { deliveredVerified: true, messageId: "sticker-native" };
+        },
+      },
+    },
   );
 });
 
@@ -1228,6 +1262,7 @@ test("the native writer receives the operations WeChat permits in File Transfer"
         chatId: "filehelper",
         body: "native reply",
         replyTo: "native-target",
+        fallbackBody: "↳ Earlier message: reply to me\nnative reply",
       });
       assert.deepEqual(
         writes
@@ -1245,6 +1280,128 @@ test("the native writer receives the operations WeChat permits in File Transfer"
             deliveredVerified: true,
             messageId: request.kind === "text" ? "sent-native" : undefined,
           };
+        },
+      },
+    },
+  );
+});
+
+test("a native refermsg echo is consumed exactly once", async () => {
+  const writes: WeChatWriteRequest[] = [];
+  let emitReplyEcho: (() => void) | undefined;
+  await withBridge(
+    async ({ hub, relay }) => {
+      relay.emit({
+        messageId: "reply-target",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "reply to this",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const { room, messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.length === 1,
+        "the reply target to arrive",
+      );
+      emitReplyEcho = () =>
+        relay.emit({
+          messageId: "reply-echo",
+          chatId: "filehelper",
+          messageKind: "text",
+          body: "<msg><appmsg><title>native reply</title><type>57</type><refermsg><svrid>reply-target</svrid><content>reply to this</content></refermsg></appmsg></msg>",
+          fromSelf: true,
+          timestamp: 2,
+        });
+      await hub.send(room.roomId, "native reply", messages[0].eventId);
+      await until(() => writes.length === 1, "the native reply to be dispatched");
+      relay.emit({
+        messageId: "after-reply",
+        chatId: "filehelper",
+        body: "after native reply",
+        fromSelf: true,
+        timestamp: 3,
+      });
+      const thread = await threadWhen(
+        hub,
+        ({ messages }) =>
+          messages.some((item) => item.body === "after native reply"),
+        "the event after the native reply echo",
+      );
+      assert.equal(
+        thread.messages.filter((item) => item.body === "native reply").length,
+        1,
+      );
+    },
+    undefined,
+    {
+      writer: {
+        write: async (request) => {
+          writes.push({ ...request });
+          emitReplyEcho?.();
+          return { deliveredVerified: true, messageId: "native-reply-remote" };
+        },
+      },
+    },
+  );
+});
+
+test("a painted reply echo is consumed when the writer falls back", async () => {
+  const writes: WeChatWriteRequest[] = [];
+  await withBridge(
+    async ({ hub, relay }) => {
+      relay.emit({
+        messageId: "painted-target",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "reply to this",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const { room, messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.length === 1,
+        "the painted reply target to arrive",
+      );
+      await hub.send(room.roomId, "painted reply", messages[0].eventId);
+      await until(() => writes.length === 1, "the fallback reply to be dispatched");
+      assert.equal(
+        writes[0].kind === "text" ? writes[0].fallbackBody : undefined,
+        "↳ Earlier message: reply to this\npainted reply",
+      );
+      relay.emit({
+        messageId: "painted-reply-echo",
+        chatId: "filehelper",
+        messageKind: "text",
+        body:
+          writes[0].kind === "text" ? writes[0].fallbackBody : "unexpected",
+        fromSelf: true,
+        timestamp: 2,
+      });
+      relay.emit({
+        messageId: "after-painted-reply",
+        chatId: "filehelper",
+        body: "after painted reply",
+        fromSelf: true,
+        timestamp: 3,
+      });
+      const thread = await threadWhen(
+        hub,
+        ({ messages }) =>
+          messages.some((item) => item.body === "after painted reply"),
+        "the event after the painted reply echo",
+      );
+      assert.equal(
+        thread.messages.filter((item) => item.body === "painted reply").length,
+        1,
+      );
+    },
+    undefined,
+    {
+      writer: {
+        write: async (request) => {
+          writes.push({ ...request });
+          return { deliveredVerified: true, messageId: "painted-reply-remote" };
         },
       },
     },
@@ -1810,6 +1967,55 @@ test("setup names the missing piece, starting with WeChat itself", () => {
     );
   // Both present is not a setup problem, so there is nothing to say.
   assert.equal(setupHint({ wechat: true, relay: true }), null);
+});
+
+test("the daemon is told where the shipped CDN-capture helper lives", () => {
+  // The released wechatd falls back to a helper path on the machine it was
+  // built on, so without this variable its CDN fallback for media WeChat has
+  // not decrypted can never arm.
+  const shipped = "/bundle/wechat/wxcdn_fileid_capture.py";
+  assert.equal(
+    relayEnvironment({ PATH: "/usr/bin" }, shipped).WECHAT_CDN_CAPTURE_SCRIPT,
+    shipped,
+  );
+  // An operator who exported a helper of their own keeps it: the variable is
+  // the documented way to swap the script out.
+  assert.equal(
+    relayEnvironment({ WECHAT_CDN_CAPTURE_SCRIPT: "/their/copy.py" }, shipped)
+      .WECHAT_CDN_CAPTURE_SCRIPT,
+    "/their/copy.py",
+  );
+  // No shipped copy resolved: the environment passes through untouched rather
+  // than gaining a variable that points at nothing.
+  const base = { PATH: "/usr/bin" };
+  assert.equal(relayEnvironment(base), base);
+
+  assert.equal(
+    weChatDaemonPid("wechatd is running pid=64610 socket=/tmp/wechatd.sock"),
+    64610,
+  );
+  assert.equal(weChatDaemonPid("wechatd is not running"), null);
+  assert.equal(
+    daemonUsesCaptureScript(
+      "wechatd WECHAT_CDN_CAPTURE_SCRIPT=/bundle/wxcdn_fileid_capture.py PATH=/usr/bin",
+      "/bundle/wxcdn_fileid_capture.py",
+    ),
+    true,
+  );
+  assert.equal(
+    daemonUsesCaptureScript(
+      "wechatd WECHAT_CDN_CAPTURE_SCRIPT=/old/copy.py PATH=/usr/bin",
+      "/bundle/wxcdn_fileid_capture.py",
+    ),
+    false,
+  );
+  assert.equal(
+    daemonUsesCaptureScript(
+      "wechatd WECHAT_CDN_CAPTURE_SCRIPT=/bundle/wxcdn_fileid_capture.py.old PATH=/usr/bin",
+      "/bundle/wxcdn_fileid_capture.py",
+    ),
+    false,
+  );
 });
 
 test("a reconnected stream does not re-post what the first one already carried", async () => {

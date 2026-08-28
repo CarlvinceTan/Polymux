@@ -11,6 +11,15 @@
   import Menu from '../../shared/components/Menu.svelte';
   import {polymuxApi} from '../../api/polymux';
   import {activeLocale} from '../../../i18n';
+  import {
+    cacheCalendarEvent,
+    cachedCalendarRange,
+    calendarLists,
+    calendarRangeIsFresh,
+    refreshCalendarRange,
+    removeCachedCalendarEvent,
+    subscribeCalendarInvalidations,
+  } from './calendar-session';
 
   type CalendarViewMode = 'day' | 'week' | 'month' | 'year';
   type EditorState = {
@@ -36,12 +45,13 @@
   const HOURS = Array.from({length: 24}, (_, hour) => hour);
   const WEEKDAY_REFERENCE = new Date(2021, 0, 4);
 
-  let calendars: CalendarListDto[] = [];
-  let events: CalendarEventDto[] = [];
-  let hiddenCalendarIds: string[] = [];
-  let cursor = startOfDay(new Date());
   let mode: CalendarViewMode = storedMode();
-  let loading = true;
+  let cursor = startOfDay(new Date());
+  const initiallyCached = cachedCalendarRange(rangeFor(cursor, mode));
+  let calendars: CalendarListDto[] = calendarLists();
+  let events: CalendarEventDto[] = initiallyCached?.events ?? [];
+  let hiddenCalendarIds: string[] = [];
+  let loading = !initiallyCached;
   let saving = false;
   let error = '';
   let search = '';
@@ -51,6 +61,7 @@
   let notice = '';
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let timeScroll: HTMLDivElement;
+  let loadSequence = 0;
 
   $: shownEvents = events.filter((event) => {
     if (hiddenCalendarIds.includes(event.calendarId)) return false;
@@ -67,6 +78,8 @@
   $: miniDays = daysFrom(startOfWeek(new Date(cursor.getFullYear(), cursor.getMonth(), 1)), 42);
   $: range = rangeFor(cursor, mode);
   $: heading = headingFor(cursor, mode);
+  $: calendarColors = new Map(calendars.map((calendar) => [calendar.id, calendar.color]));
+  $: eventsByDay = indexEventsByDay(shownEvents, range);
 
   onMount(() => {
     try {
@@ -75,38 +88,60 @@
     } catch {
       hiddenCalendarIds = [];
     }
-    void refresh(true);
-    const timer = setInterval(() => void loadEvents(false), 60_000);
+    void loadEvents(!initiallyCached);
+    const refreshIfStale = () => {
+      if (!document.hidden && !calendarRangeIsFresh(rangeFor(cursor, mode)))
+        void loadEvents(false);
+    };
+    const stopChanges = subscribeCalendarInvalidations(() => {
+      if (!document.hidden) void loadEvents(false, true);
+    });
+    document.addEventListener('visibilitychange', refreshIfStale);
+    window.addEventListener('focus', refreshIfStale);
     return () => {
-      clearInterval(timer);
+      stopChanges();
+      document.removeEventListener('visibilitychange', refreshIfStale);
+      window.removeEventListener('focus', refreshIfStale);
       clearTimeout(noticeTimer);
     };
   });
 
   async function refresh(initial = false): Promise<void> {
-    if (initial) loading = true;
-    error = '';
-    try {
-      calendars = await api.calendar.calendars();
-      await loadEvents(false);
-    } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
-    } finally {
-      loading = false;
-    }
+    await loadEvents(initial, true);
   }
 
-  async function loadEvents(showSpinner = true): Promise<void> {
-    if (showSpinner) loading = true;
+  async function loadEvents(showSpinner = true, force = false): Promise<void> {
+    const request = ++loadSequence;
     error = '';
     const requested = rangeFor(cursor, mode);
-    try {
-      events = await api.calendar.events(requested.start.toISOString(), requested.end.toISOString());
-    } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
-    } finally {
+    const cached = cachedCalendarRange(requested);
+    if (cached) {
+      calendars = cached.calendars;
+      events = cached.events;
       loading = false;
+    } else if (showSpinner) {
+      events = [];
+      loading = true;
+    }
+    if (!force && calendarRangeIsFresh(requested)) {
       queueMicrotask(scrollToWorkingDay);
+      return;
+    }
+    try {
+      const snapshot = await refreshCalendarRange(requested);
+      if (request !== loadSequence) return;
+      calendars = snapshot.calendars;
+      events = snapshot.events;
+    } catch (cause) {
+      if (request !== loadSequence) return;
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (cached) showNotice(message);
+      else error = message;
+    } finally {
+      if (request === loadSequence) {
+        loading = false;
+        queueMicrotask(scrollToWorkingDay);
+      }
     }
   }
 
@@ -242,15 +277,17 @@
     };
     saving = true;
     try {
-      if (editor.id) await api.calendar.update(editor.id, {
-        ...input,
-        location: editor.location.trim() || null,
-        notes: editor.notes.trim() || null,
-        url: editor.url.trim() || null,
-      });
-      else await api.calendar.create(input);
+      const saved = editor.id
+        ? await api.calendar.update(editor.id, {
+            ...input,
+            location: editor.location.trim() || null,
+            notes: editor.notes.trim() || null,
+            url: editor.url.trim() || null,
+          })
+        : await api.calendar.create(input);
+      cacheCalendarEvent(saved);
+      events = cachedCalendarRange(rangeFor(cursor, mode))?.events ?? events;
       editor = null;
-      await loadEvents(false);
       showNotice('Event saved.');
     } catch (cause) {
       showNotice(cause instanceof Error ? cause.message : String(cause));
@@ -261,11 +298,13 @@
 
   async function deleteEvent(): Promise<void> {
     if (!editor?.id || !editor.editable || saving) return;
+    const id = editor.id;
     saving = true;
     try {
-      await api.calendar.remove(editor.id);
+      await api.calendar.remove(id);
+      removeCachedCalendarEvent(id);
+      events = cachedCalendarRange(rangeFor(cursor, mode))?.events ?? events.filter((event) => event.id !== id);
       editor = null;
-      await loadEvents(false);
       showNotice('Event deleted.');
     } catch (cause) {
       showNotice(cause instanceof Error ? cause.message : String(cause));
@@ -281,7 +320,7 @@
     try {
       const result = await api.calendar.importFile(writable.id);
       if (!result.fileName) return;
-      await loadEvents(false);
+      await loadEvents(false, true);
       showNotice(`Imported ${result.imported} event${result.imported === 1 ? '' : 's'}${result.skipped ? ` · ${result.skipped} skipped` : ''}.`);
     } catch (cause) {
       showNotice(cause instanceof Error ? cause.message : String(cause));
@@ -309,16 +348,12 @@
   }
 
   function calendarColor(id: string): string {
-    return calendars.find((calendar) => calendar.id === id)?.color ?? '#6f7e91';
+    return calendarColors.get(id) ?? '#6f7e91';
   }
 
-  function eventsOnDay(day: Date, allDay: boolean | undefined, items: CalendarEventDto[]): CalendarEventDto[] {
-    const start = startOfDay(day).getTime();
-    const end = addDays(startOfDay(day), 1).getTime();
-    return items.filter((event) => {
-      if (allDay !== undefined && event.allDay !== allDay) return false;
-      return Date.parse(event.start) < end && Date.parse(event.end) > start;
-    });
+  function eventsOnDay(day: Date, indexed: Map<string, CalendarEventDto[]>, allDay?: boolean): CalendarEventDto[] {
+    const items = indexed.get(dateInput(day)) ?? [];
+    return allDay === undefined ? items : items.filter((event) => event.allDay === allDay);
   }
 
   function eventTop(event: CalendarEventDto, day: Date): number {
@@ -338,8 +373,23 @@
     return new Date(event.start).toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit'});
   }
 
-  function moreCount(day: Date, items: CalendarEventDto[]): number {
-    return Math.max(0, eventsOnDay(day, undefined, items).length - 4);
+  function indexEventsByDay(items: CalendarEventDto[], visibleRange: {start: Date; end: Date}): Map<string, CalendarEventDto[]> {
+    const indexed = new Map<string, CalendarEventDto[]>();
+    const visibleStart = visibleRange.start.getTime();
+    const visibleEnd = visibleRange.end.getTime();
+    for (const event of items) {
+      const eventStart = Math.max(Date.parse(event.start), visibleStart);
+      const eventEnd = Math.min(Date.parse(event.end), visibleEnd);
+      if (!Number.isFinite(eventStart) || !Number.isFinite(eventEnd) || eventEnd <= eventStart) continue;
+      const lastDay = startOfDay(new Date(eventEnd - 1)).getTime();
+      for (let day = startOfDay(new Date(eventStart)); day.getTime() <= lastDay; day = addDays(day, 1)) {
+        const key = dateInput(day);
+        const bucket = indexed.get(key) ?? [];
+        bucket.push(event);
+        indexed.set(key, bucket);
+      }
+    }
+    return indexed;
   }
 
   function keydown(event: KeyboardEvent): void {
@@ -525,16 +575,18 @@
         <div class="month-weekdays">{#each HOURS.slice(0, 7) as index}<span>{weekdayName(index)}</span>{/each}</div>
         <div class="month-grid">
           {#each monthDays as day}
+            {@const dayEvents = eventsOnDay(day, eventsByDay)}
+            {@const hiddenCount = Math.max(0, dayEvents.length - 4)}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="month-day" class:outside={day.getMonth() !== cursor.getMonth()} class:today={sameDay(day, new Date())} ondblclick={() => openCreate(day)}>
               <button type="button" class="month-date" onclick={() => selectDate(day, 'day')}>{day.getDate()}</button>
               <div class="month-events">
-                {#each eventsOnDay(day, undefined, shownEvents).slice(0, 4) as item (item.id)}
+                {#each dayEvents.slice(0, 4) as item (item.id)}
                   <button type="button" class="month-event" class:all-day={item.allDay} style:--event-color={calendarColor(item.calendarId)} onclick={() => openEvent(item)} ondblclick={(event) => event.stopPropagation()}>
                     <span class="event-dot"></span>{#if !item.allDay}<time>{timeLabel(item)}</time>{/if}<strong>{item.title}</strong>
                   </button>
                 {/each}
-                {#if moreCount(day, shownEvents)}<button type="button" class="more-events" onclick={() => selectDate(day, 'day')}>+{moreCount(day, shownEvents)} more</button>{/if}
+                {#if hiddenCount}<button type="button" class="more-events" onclick={() => selectDate(day, 'day')}>+{hiddenCount} more</button>{/if}
               </div>
             </div>
           {/each}
@@ -550,7 +602,8 @@
             <div class="year-weekdays">{#each HOURS.slice(0, 7) as index}<span>{weekdayName(index, 'narrow')}</span>{/each}</div>
             <div class="year-days">
               {#each days as day}
-                <button type="button" class:outside={day.getMonth() !== month} class:today={sameDay(day, new Date())} class:has-events={eventsOnDay(day, undefined, shownEvents).length > 0} style:--day-color={eventsOnDay(day, undefined, shownEvents)[0] ? calendarColor(eventsOnDay(day, undefined, shownEvents)[0].calendarId) : '#6f7e91'} onclick={() => selectDate(day, 'day')}>{day.getDate()}</button>
+                {@const dayEvents = eventsOnDay(day, eventsByDay)}
+                <button type="button" class:outside={day.getMonth() !== month} class:today={sameDay(day, new Date())} class:has-events={dayEvents.length > 0} style:--day-color={dayEvents[0] ? calendarColor(dayEvents[0].calendarId) : '#6f7e91'} onclick={() => selectDate(day, 'day')}>{day.getDate()}</button>
               {/each}
             </div>
           </section>
@@ -571,7 +624,7 @@
           {#each mode === 'day' ? [cursor] : weekDays as day}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="all-day-cell" ondblclick={() => openCreate(day, 0)}>
-              {#each eventsOnDay(day, true, shownEvents) as item (item.id)}
+              {#each eventsOnDay(day, eventsByDay, true) as item (item.id)}
                 <button type="button" style:--event-color={calendarColor(item.calendarId)} onclick={() => openEvent(item)}>{item.title}</button>
               {/each}
             </div>
@@ -583,7 +636,7 @@
             {#each mode === 'day' ? [cursor] : weekDays as day}
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="time-day-column" ondblclick={(event) => { const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect(); openCreate(day, Math.max(0, Math.min(23, Math.floor((event.clientY - bounds.top) / HOUR_HEIGHT)))); }}>
-                {#each eventsOnDay(day, false, shownEvents) as item (item.id)}
+                {#each eventsOnDay(day, eventsByDay, false) as item (item.id)}
                   <button type="button" class="time-event" style:--event-color={calendarColor(item.calendarId)} style:top={`${eventTop(item, day)}px`} style:height={`${eventHeight(item, day)}px`} onclick={() => openEvent(item)} ondblclick={(event) => event.stopPropagation()}>
                     <strong>{item.title}</strong><span>{timeLabel(item)}{item.location ? ` · ${item.location}` : ''}</span>
                   </button>

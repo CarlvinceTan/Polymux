@@ -28,6 +28,7 @@ test("refuses a name that would resolve outside the plugins directory", () => {
       plugins: [
         { id: "m/..", marketplace: "m", name: ".." },
         { id: "m/a/b", marketplace: "m", name: "a/b" },
+        { id: "m/a\\b", marketplace: "m", name: "a\\b" },
         { id: "m/fine", marketplace: "m", name: "fine" },
       ],
     }),

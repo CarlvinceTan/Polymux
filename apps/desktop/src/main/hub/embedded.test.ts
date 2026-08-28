@@ -408,7 +408,7 @@ test("a bridge missing from the package has a platform-neutral message", async (
       (bridge) => bridge.platform === "instagram",
     );
     assert.equal(instagram?.state, "unavailable");
-    assert.equal(instagram?.error, "The Instagram bridge can’t be installed.");
+    assert.equal(instagram?.error, "The Instagram bridge is not installed.");
     assert.doesNotMatch(instagram?.error ?? "", /Mac|Windows|mautrix/i);
   } finally {
     await hs.close();
@@ -515,12 +515,12 @@ test("Linux offers its native bridge fleet without Mac-only rows", async () => {
 });
 
 test("connected account replacement is a Hub-visible bridge change", () => {
-  const bridge = (id: string, name: string): CommsBridgeDto => ({
+  const bridge = (id: string, name: string, avatarUrl: string | null = null): CommsBridgeDto => ({
     platform: "whatsapp" as const,
     name: "WhatsApp",
     api: "bridgev2" as const,
     state: "connected" as const,
-    accounts: [{id, name, state: "connected" as const, error: null}],
+    accounts: [{id, name, avatarUrl, state: "connected" as const, error: null}],
     flows: [],
     setup: null,
     managementRoomHint: null,
@@ -529,6 +529,10 @@ test("connected account replacement is a Hub-visible bridge change", () => {
   const australia = bridge("61426982339", "Carlvince Tan");
   const singapore = bridge("6591222011", "+6591222011");
   assert.notEqual(bridgeStatusFingerprint(australia), bridgeStatusFingerprint(singapore));
+  assert.notEqual(
+    bridgeStatusFingerprint(australia),
+    bridgeStatusFingerprint(bridge("61426982339", "Carlvince Tan", "polymux-media://local/me")),
+  );
   assert.equal(bridgeStatusFingerprint(australia), bridgeStatusFingerprint(structuredClone(australia)));
 });
 

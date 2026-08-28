@@ -8,7 +8,7 @@ import {
   type StoredAccount,
   type StoredEndpoint,
 } from "./email-config.js";
-import {EmailSecrets, keychainService, type CommandRunner} from "./email-secrets.js";
+import {EmailSecrets, type CommandRunner} from "./email-secrets.js";
 import {mimeMessage, mimeType, newMessageId} from "./email-mime.js";
 import {
   MAIL_OAUTH_PROVIDERS,

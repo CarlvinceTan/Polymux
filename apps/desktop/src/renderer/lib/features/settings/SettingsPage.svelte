@@ -458,7 +458,7 @@
     {value: 'off', label: $t('settings.never')},
   ];
   $: buildDetailText = appVersion
-    ? `${appVersion.platform}${appVersion.electron ? ` · Electron ${appVersion.electron}` : ''}${appVersion.packaged ? '' : ' · development build'}`
+    ? `${appVersion.platform}${appVersion.packaged ? '' : ' · development build'}`
     : $t('settings.readingBuild');
   $: versionDetailText = update?.status === 'error' && update.message
     ? `${buildDetailText} · ${update.message}`

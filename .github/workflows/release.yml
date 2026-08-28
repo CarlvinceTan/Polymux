@@ -7,13 +7,49 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm ci --prefix apps/site
+      - run: npm run check
+      - run: npm test
+      - run: npm run check --prefix apps/site
+
+  browser-compatibility:
+    name: Require compatible published browser extension
+    runs-on: ubuntu-24.04
+    environment: chrome-web-store
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        id: google-auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+      - name: Verify the minimum compatible extension is published
+        env:
+          ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CWS_EXTENSION_ID: abcoknklbjpjkchpejlfpkjlajmifgnk
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+        run: node scripts/verify-published-extension.mjs
+
   macos:
+    needs: verify
     runs-on: macos-14
     env:
       # Temporary until a Developer ID Application certificate is available.
@@ -43,7 +79,7 @@ jobs:
         run: |
           npx tsc --noEmit
           npm run build
-          node --test apps/site/test/*.test.js
+          npm --prefix apps/site test
           npm run check --prefix apps/site
           npm run build --prefix apps/site
 
@@ -52,7 +88,9 @@ jobs:
           path: |
             resources/bridges
             resources/node
-          key: polymux-runtime-${{ runner.os }}-arm64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs') }}
+            resources/whisper
+            resources/native/bin
+          key: polymux-runtime-${{ runner.os }}-arm64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/fetch-whisper.mjs', 'scripts/build-native-helpers.ts', 'resources/native/*.swift', 'apps/desktop/src/main/system/permission-usage.ts') }}
 
       - name: Require release credentials
         if: startsWith(github.ref, 'refs/tags/') && env.UNSIGNED_PRERELEASE != 'true'
@@ -116,6 +154,19 @@ jobs:
           test -d "$APP_PATH"
           plutil -lint "$APP_PATH/Contents/Info.plist"
           file "$APP_PATH/Contents/MacOS/Polymux" | grep -q 'arm64'
+          WHISPER="$APP_PATH/Contents/Resources/resources/whisper"
+          for binary in whisper-cli whisper-server; do
+            test -x "$WHISPER/$binary"
+            file "$WHISPER/$binary" | grep -q 'arm64'
+            ! otool -L "$WHISPER/$binary" | grep -E '/opt/homebrew|/usr/local'
+          done
+          "$WHISPER/whisper-cli" --version
+          "$WHISPER/whisper-server" --help >/dev/null
+          NATIVE="$APP_PATH/Contents/Resources/resources/native/bin"
+          for helper in app-permissions ax-events ax-reader calendar contacts pill-image reminders; do
+            test -x "$NATIVE/$helper"
+            file "$NATIVE/$helper" | grep -q 'arm64'
+          done
           DMG="$(find out/make -type f -name '*.dmg' -print -quit)"
           ZIP="$(find out/make -type f -name '*.zip' -print -quit)"
           test -n "$DMG" && test -n "$ZIP"
@@ -136,6 +187,7 @@ jobs:
           if-no-files-found: error
 
   windows:
+    needs: verify
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
@@ -165,6 +217,10 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run test:tools
+      - uses: actions/cache@v4
+        with:
+          path: resources/whisper
+          key: polymux-whisper-${{ runner.os }}-x64-${{ hashFiles('scripts/fetch-whisper.mjs') }}
       - name: Build installers
         shell: pwsh
         env:
@@ -217,6 +273,26 @@ jobs:
           }
           & 'out/Polymux-win32-x64/resources/resources/node/node.exe' -e `
             "if(process.platform!=='win32'||process.arch!=='x64')process.exit(1)"
+          $whisper = 'out/Polymux-win32-x64/resources/resources/whisper'
+          $expectedWhisper = @(
+            'ggml-base.dll',
+            'ggml.dll',
+            'LICENSE.whisper.cpp.txt',
+            'MANIFEST.json',
+            'VERSION',
+            'whisper-cli.exe',
+            'whisper-server.exe',
+            'whisper.dll'
+          )
+          foreach ($name in $expectedWhisper) {
+            if (-not (Test-Path (Join-Path $whisper $name))) {
+              throw "The Windows package is missing $name from its dictation runtime."
+            }
+          }
+          & (Join-Path $whisper 'whisper-cli.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'The packaged whisper-cli could not run on Windows.' }
+          & (Join-Path $whisper 'whisper-server.exe') --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'The packaged whisper-server could not run on Windows.' }
       - uses: actions/upload-artifact@v4
         with:
           name: Polymux-Windows-x64
@@ -227,6 +303,7 @@ jobs:
           if-no-files-found: error
 
   linux:
+    needs: verify
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -239,7 +316,8 @@ jobs:
           path: |
             resources/bridges
             resources/node
-          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs') }}
+            resources/whisper
+          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/fetch-whisper.mjs') }}
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run test:tools
@@ -300,6 +378,15 @@ jobs:
           test ! -e "$BRIDGES/mautrix-imessage"
           "$EXTRACTED/squashfs-root/resources/resources/node/node" -e \
             "if(process.platform!=='linux'||process.arch!=='x64')process.exit(1)"
+          WHISPER="$EXTRACTED/squashfs-root/resources/resources/whisper"
+          test -x "$WHISPER/whisper-cli"
+          test -x "$WHISPER/whisper-server"
+          file "$WHISPER/whisper-cli" | grep -q 'ELF 64-bit.*x86-64'
+          file "$WHISPER/whisper-server" | grep -q 'ELF 64-bit.*x86-64'
+          ! ldd "$WHISPER/whisper-cli" | grep -q 'not found'
+          ! ldd "$WHISPER/whisper-server" | grep -q 'not found'
+          "$WHISPER/whisper-cli" --version
+          "$WHISPER/whisper-server" --help >/dev/null
           rm -rf "$EXTRACTED"
       - uses: actions/upload-artifact@v4
         with:
@@ -311,7 +398,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [macos, windows, linux]
+    needs: [browser-compatibility, macos, windows, linux]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

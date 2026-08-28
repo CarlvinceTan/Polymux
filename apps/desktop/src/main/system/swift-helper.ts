@@ -30,11 +30,16 @@ export interface SwiftHelperOptions {
   missingSourceMessage?: (path: string) => string;
 }
 
+/** Forge places signed, precompiled helpers beside their source. Development
+ * checkouts without that directory retain the source-compilation fallback. */
+export function bundledSwiftHelperPath(name: string, sourcePath: string): string {
+  return path.join(path.dirname(sourcePath), "bin", name);
+}
+
 /**
- * A Swift source bundled with the app, compiled once per revision and cached
- * under the app's data directory. Packaged installs need no build step of
- * their own, and a helper whose source changed is rebuilt rather than served
- * stale from the cache.
+ * A precompiled helper bundled with packaged macOS apps, with source
+ * compilation retained for development. A checkout rebuilds once per source
+ * revision and caches the result under the app's data directory.
  *
  * Running it as a child of the app is not incidental: macOS attributes a
  * privacy request to the responsible process, so a helper the app spawns asks
@@ -76,6 +81,12 @@ export class SwiftHelper {
 
   async #compile(): Promise<string> {
     const {name, sourcePath, cacheDirectory, infoPlist} = this.#options;
+    const bundled = bundledSwiftHelperPath(name, sourcePath);
+    // Packaging deliberately leaves precompiled helpers beside their source.
+    // A development checkout can also have that ignored directory left behind
+    // by an earlier package build; using it there would silently run stale
+    // native code after the Swift source changes.
+    if (!process.defaultApp && existsSync(bundled)) return bundled;
     if (!existsSync(sourcePath))
       throw new Error(
         this.#options.missingSourceMessage?.(sourcePath) ??

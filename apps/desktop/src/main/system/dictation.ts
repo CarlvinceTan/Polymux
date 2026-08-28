@@ -1,10 +1,11 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 
@@ -24,22 +25,14 @@ const MODEL_NAMES = [
  * `ggml-small.en.bin` still wins if someone drops it in by hand.
  */
 const DEFAULT_MODEL_NAME = "ggml-base.en.bin";
+export const DEFAULT_MODEL_REVISION =
+  "5359861c739e955e79d9a303bcbc70fb988958b1";
+export const DEFAULT_MODEL_SHA256 =
+  "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
+const DEFAULT_MODEL_BYTES = 147_964_211;
 const MODEL_BASE_URL =
-  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
+  `https://huggingface.co/ggerganov/whisper.cpp/resolve/${DEFAULT_MODEL_REVISION}/`;
 const MODEL_DOWNLOAD_TIMEOUT = 10 * 60_000;
-
-/** Absolute candidates cover Dock launches, where Homebrew is not on PATH. */
-const BINARY_CANDIDATES = [
-  "/opt/homebrew/bin/whisper-cli",
-  "/usr/local/bin/whisper-cli",
-  "whisper-cli",
-];
-
-const SERVER_CANDIDATES = [
-  "/opt/homebrew/bin/whisper-server",
-  "/usr/local/bin/whisper-server",
-  "whisper-server",
-];
 
 /** Loading the model takes about half a second; well short of this. */
 const SERVER_READY_TIMEOUT = 20_000;
@@ -50,6 +43,39 @@ const SERVER_IDLE_TIMEOUT = 180_000;
 export interface WhisperDictationOptions {
   /** Directory holding ggml Whisper models, e.g. `<userData>/whisper`. */
   modelDirectory: string;
+  /** Packaged whisper.cpp executables and their adjacent dynamic libraries. */
+  binaryDirectory?: string;
+  /** Test seam for platform-specific executable names and guidance. */
+  platform?: NodeJS.Platform;
+}
+
+/** The packaged engine wins, while PATH remains useful for development. Dock
+ * launches also need Homebrew's absolute paths because macOS omits them. */
+export function dictationBinaryCandidates(
+  tool: "whisper-cli" | "whisper-server",
+  options: Pick<WhisperDictationOptions, "binaryDirectory" | "platform"> = {},
+): string[] {
+  const platform = options.platform ?? process.platform;
+  const name = `${tool}${platform === "win32" ? ".exe" : ""}`;
+  return [
+    ...(options.binaryDirectory ? [path.join(options.binaryDirectory, name)] : []),
+    ...(platform === "darwin"
+      ? [`/opt/homebrew/bin/${tool}`, `/usr/local/bin/${tool}`]
+      : []),
+    name,
+  ];
+}
+
+export function dictationUnavailableMessage(
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32")
+    return "The Windows dictation engine is missing from this Polymux build. Reinstall Polymux to restore voice input.";
+  if (platform === "darwin")
+    return "The macOS dictation engine is missing from this Polymux build. Reinstall Polymux to restore voice input.";
+  if (platform === "linux")
+    return "The Linux dictation engine is missing from this Polymux build. Reinstall Polymux to restore voice input.";
+  return "The local dictation engine is unavailable.";
 }
 
 /**
@@ -76,9 +102,15 @@ export class WhisperDictation {
   #idleTimer: NodeJS.Timeout | null = null;
   /** Shared so overlapping passes wait on one download rather than racing. */
   #downloading: Promise<string> | null = null;
+  readonly #binaryCandidates: string[];
+  readonly #serverCandidates: string[];
+  readonly #platform: NodeJS.Platform;
 
   constructor(options: WhisperDictationOptions) {
     this.#modelDirectory = options.modelDirectory;
+    this.#platform = options.platform ?? process.platform;
+    this.#binaryCandidates = dictationBinaryCandidates("whisper-cli", options);
+    this.#serverCandidates = dictationBinaryCandidates("whisper-server", options);
   }
 
   /**
@@ -181,7 +213,7 @@ export class WhisperDictation {
   }
 
   async #startServer(): Promise<string | null> {
-    const binary = SERVER_CANDIDATES.find(
+    const binary = this.#serverCandidates.find(
       (candidate) => !path.isAbsolute(candidate) || existsSync(candidate),
     );
     if (!binary) {
@@ -257,10 +289,25 @@ export class WhisperDictation {
       });
       if (!response.ok || !response.body)
         throw new Error(`the download returned ${response.status}`);
+      const hash = createHash("sha256");
+      let bytes = 0;
+      const verifying = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          bytes += chunk.byteLength;
+          hash.update(chunk);
+          callback(null, chunk);
+        },
+      });
       await pipeline(
         Readable.fromWeb(response.body as import("node:stream/web").ReadableStream),
+        verifying,
         createWriteStream(partial),
       );
+      const actual = hash.digest("hex");
+      if (bytes !== DEFAULT_MODEL_BYTES || actual !== DEFAULT_MODEL_SHA256)
+        throw new Error(
+          `the model checksum did not match (expected ${DEFAULT_MODEL_SHA256}, got ${actual})`,
+        );
       await rename(partial, destination);
       return destination;
     } catch (error) {
@@ -274,7 +321,7 @@ export class WhisperDictation {
 
   async #runBinary(args: string[]): Promise<{ stdout: string }> {
     let missing: unknown;
-    for (const binary of BINARY_CANDIDATES) {
+    for (const binary of this.#binaryCandidates) {
       if (path.isAbsolute(binary) && !existsSync(binary)) continue;
       try {
         return await run(binary, args, { maxBuffer: 8 * 1024 * 1024 });
@@ -287,7 +334,7 @@ export class WhisperDictation {
       }
     }
     throw missing instanceof Error
-      ? new Error("Local dictation needs whisper-cpp. Install it with: brew install whisper-cpp")
+      ? new Error(dictationUnavailableMessage(this.#platform))
       : new Error("Local dictation is unavailable");
   }
 }

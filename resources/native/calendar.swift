@@ -10,10 +10,19 @@
 //   delete     {"id":"..."}
 
 import AppKit
+import Darwin
 import EventKit
 import Foundation
 
 let store = EKEventStore()
+
+func writeLine(_ payload: [String: Any]) {
+  guard let data = try? JSONSerialization.data(withJSONObject: payload),
+    let line = String(data: data, encoding: .utf8)
+  else { return }
+  print(line)
+  fflush(stdout)
+}
 
 func write(_ payload: [String: Any]) -> Never {
   guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
@@ -139,6 +148,24 @@ func describe(_ event: EKEvent) -> [String: Any] {
   return value
 }
 
+func describedCalendars() -> [[String: Any]] {
+  store.calendars(for: .event).map(describe).sorted {
+    let left = (($0["source"] as? [String: Any])?["title"] as? String ?? "") + ($0["title"] as? String ?? "")
+    let right = (($1["source"] as? [String: Any])?["title"] as? String ?? "") + ($1["title"] as? String ?? "")
+    return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
+  }
+}
+
+func describedEvents(_ payload: [String: Any]) -> [[String: Any]] {
+  guard let start = date(payload["start"]), let end = date(payload["end"]), start < end else {
+    fail("A valid start and end are required")
+  }
+  let ids = payload["calendars"] as? [String]
+  let calendars = ids?.compactMap(store.calendar(withIdentifier:))
+  let predicate = store.predicateForEvents(withStart: start, end: end, calendars: calendars)
+  return store.events(matching: predicate).sorted { $0.startDate < $1.startDate }.map(describe)
+}
+
 func calendar(_ identifier: String?) -> EKCalendar {
   guard let identifier, !identifier.isEmpty else {
     guard let fallback = store.defaultCalendarForNewEvents else {
@@ -233,20 +260,44 @@ default: fail("not-authorized")
 
 switch action {
 case "calendars":
-  emit(store.calendars(for: .event).map(describe).sorted {
-    let left = (($0["source"] as? [String: Any])?["title"] as? String ?? "") + ($0["title"] as? String ?? "")
-    let right = (($1["source"] as? [String: Any])?["title"] as? String ?? "") + ($1["title"] as? String ?? "")
-    return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
-  })
+  emit(describedCalendars())
+
+case "snapshot":
+  emit(["calendars": describedCalendars(), "events": describedEvents(payload)])
 
 case "list":
-  guard let start = date(payload["start"]), let end = date(payload["end"]), start < end else {
-    fail("A valid start and end are required")
+  emit(describedEvents(payload))
+
+case "watch":
+  let observer = NotificationCenter.default.addObserver(
+    forName: .EKEventStoreChanged,
+    object: store,
+    queue: .main
+  ) { _ in writeLine(["type": "changed"]) }
+  writeLine(["type": "ready"])
+  withExtendedLifetime(observer) { RunLoop.main.run() }
+  fail("Calendar change watcher stopped")
+
+case "import":
+  let records = payload["events"] as? [[String: Any]] ?? []
+  var imported = 0
+  var skipped = 0
+  for record in records {
+    guard let title = (record["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !title.isEmpty, date(record["start"]) != nil, date(record["end"]) != nil
+    else { skipped += 1; continue }
+    let item = EKEvent(eventStore: store)
+    apply(record, to: item, creating: true)
+    if item.endDate <= item.startDate { skipped += 1; continue }
+    do {
+      try store.save(item, span: .thisEvent, commit: false)
+      imported += 1
+    } catch {
+      skipped += 1
+    }
   }
-  let ids = payload["calendars"] as? [String]
-  let calendars = ids?.compactMap(store.calendar(withIdentifier:))
-  let predicate = store.predicateForEvents(withStart: start, end: end, calendars: calendars)
-  emit(store.events(matching: predicate).sorted { $0.startDate < $1.startDate }.map(describe))
+  do { try store.commit() } catch { fail(error.localizedDescription) }
+  emit(["imported": imported, "skipped": skipped])
 
 case "create":
   guard let title = (payload["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),

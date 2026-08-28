@@ -31,6 +31,7 @@ export {
 export {
   WeChatBridge,
   WECHAT_FALLBACK_DIRECTORIES,
+  relayEnvironment,
   type WeChatBridgeOptions,
   type WeChatWriter,
   type WeChatWriteRequest,

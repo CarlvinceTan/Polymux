@@ -2396,6 +2396,40 @@ test.describe('conversation', () => {
     await expect(summaryCard(page)).toBeVisible();
     await expect.poll(centreOffset).toBe(0);
   });
+
+  test('keeps the conversation scroll control centred above its composer', async ({page}) => {
+    await page.goto('/');
+    await send(page, 'scroll control placement');
+    const column = page.locator('.conversation-column');
+
+    await column.locator('.message-list').evaluate((node) => {
+      const filler = document.createElement('div');
+      filler.style.height = '1200px';
+      node.append(filler);
+      node.parentElement!.scrollTop = 0;
+      node.parentElement!.dispatchEvent(new Event('scroll'));
+    });
+
+    const control = page.getByRole('button', {name: 'Scroll to bottom'});
+    await expect(control).toBeVisible();
+    const layout = await control.evaluate((node) => {
+      const button = node.getBoundingClientRect();
+      const conversation = document.querySelector('.conversation-column')!.getBoundingClientRect();
+      const prompt = document.querySelector('.sticky-composer .polymux-prompt-shell')!.getBoundingClientRect();
+      return {
+        buttonCentre: button.left + button.width / 2,
+        conversationCentre: conversation.left + conversation.width / 2,
+        insideConversation: button.left >= conversation.left && button.right <= conversation.right,
+        abovePrompt: button.bottom < prompt.top,
+      };
+    });
+    expect(layout.insideConversation).toBe(true);
+    expect(layout.abovePrompt).toBe(true);
+    expect(Math.abs(layout.buttonCentre - layout.conversationCentre)).toBeLessThanOrEqual(1);
+
+    await control.click();
+    await expect.poll(() => column.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(1);
+  });
 });
 
 test.describe('panels', () => {
@@ -3796,6 +3830,39 @@ test.describe('hub view', () => {
     await expect(page.locator('.hub-view')).toBeVisible();
   };
 
+  test('paints known platforms still, then fades a live platform change', async ({page}) => {
+    await page.goto('/?workspaceView=hub&coldStart=0');
+    const rows = page.locator('.hub-view-source-row[data-rail-source]');
+    await expect(rows).not.toHaveCount(0);
+
+    // The first complete rail is a settled paint, even though the demo status
+    // reaches the component asynchronously just as the real disk seed does.
+    expect(await rows.evaluateAll((nodes) => nodes.flatMap((node) => node.getAnimations()).length)).toBe(0);
+
+    const whatsapp = page.locator('[data-rail-source="platform:whatsapp"]');
+    await expect(whatsapp).toBeVisible();
+    await page.evaluate(() => {
+      (window as unknown as {
+        polymuxDemoSetPlatformLinked: (platform: 'whatsapp', linked: boolean) => void;
+      }).polymuxDemoSetPlatformLinked('whatsapp', false);
+    });
+
+    await expect.poll(async () => whatsapp.evaluate((node) =>
+      node.getAnimations().some((animation) => animation.effect?.getTiming().duration === 220),
+    )).toBe(true);
+    await expect(whatsapp).toHaveCount(0);
+
+    await page.evaluate(() => {
+      (window as unknown as {
+        polymuxDemoSetPlatformLinked: (platform: 'whatsapp', linked: boolean) => void;
+      }).polymuxDemoSetPlatformLinked('whatsapp', true);
+    });
+    await expect(whatsapp).toBeVisible();
+    await expect.poll(async () => whatsapp.evaluate((node) =>
+      node.getAnimations().some((animation) => animation.effect?.getTiming().duration === 220),
+    )).toBe(true);
+  });
+
   test('gives Hub search fields a subtle hover highlight', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
@@ -3807,6 +3874,77 @@ test.describe('hub view', () => {
     await search.hover();
     await expect(search).toHaveCSS('background-color', 'rgb(243, 243, 243)');
     await expect(search).toHaveCSS('border-color', 'rgb(217, 217, 217)');
+  });
+
+  test('keeps the mail scroll-to-top control inside the message list', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await openMailbox(view);
+    const rows = view.locator('.hub-view-rows');
+
+    await rows.evaluate((node) => {
+      const filler = document.createElement('li');
+      filler.style.height = '1200px';
+      node.append(filler);
+      node.scrollTop = 450;
+      node.dispatchEvent(new Event('scroll'));
+    });
+
+    const control = view.getByRole('button', {name: 'Scroll to top'});
+    await expect(control).toBeVisible();
+    const layout = await control.evaluate((node) => {
+      const button = node.getBoundingClientRect();
+      const wrapper = node.parentElement?.getBoundingClientRect();
+      const header = node.closest('.hub-view-list')?.querySelector('.hub-view-list-head')?.getBoundingClientRect();
+      return {
+        inRowsWrapper: node.parentElement?.classList.contains('hub-view-rows-wrap') ?? false,
+        buttonTop: button.top,
+        wrapperTop: wrapper?.top ?? 0,
+        headerBottom: header?.bottom ?? 0,
+      };
+    });
+    expect(layout.inRowsWrapper).toBe(true);
+    expect(layout.buttonTop).toBeGreaterThanOrEqual(layout.wrapperTop);
+    expect(layout.buttonTop).toBeGreaterThanOrEqual(layout.headerBottom);
+
+    await control.click();
+    await expect.poll(() => rows.evaluate((node) => node.scrollTop)).toBeLessThan(1);
+  });
+
+  test('keeps the Hub chat scroll control attached above its composer', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-row', {hasText: 'File Transfer'}).click();
+    const thread = view.locator('.hub-view-thread');
+
+    await thread.evaluate((node) => {
+      const filler = document.createElement('div');
+      filler.style.height = '1200px';
+      filler.style.flex = 'none';
+      node.append(filler);
+      node.style.flex = '0 0 100px';
+      node.scrollTop = -400;
+      node.dispatchEvent(new Event('scroll'));
+    });
+
+    const control = view.getByRole('button', {name: 'Scroll to bottom'});
+    await expect(control).toBeVisible();
+    const layout = await control.evaluate((node) => {
+      const button = node.getBoundingClientRect();
+      const footer = node.parentElement?.getBoundingClientRect();
+      const reader = node.closest('.hub-view-reader')?.getBoundingClientRect();
+      return {
+        inChatFooter: node.parentElement?.classList.contains('hub-view-chat-footer') ?? false,
+        aboveFooter: button.bottom <= (footer?.top ?? 0),
+        insideReader: button.left >= (reader?.left ?? 0) && button.right <= (reader?.right ?? 0),
+      };
+    });
+    expect(layout.inChatFooter).toBe(true);
+    expect(layout.aboveFooter).toBe(true);
+    expect(layout.insideReader).toBe(true);
+
+    await control.click();
+    await expect.poll(() => thread.evaluate((node) => Math.abs(node.scrollTop))).toBeLessThan(1);
   });
 
   test('new mail starts with the mailbox default and can swap it', async ({page}) => {
@@ -4599,6 +4737,47 @@ test.describe('hub view', () => {
     // One with a single account has nothing to fold, so its row selects it.
     await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
     await expect(view.locator('.hub-view-source', {hasText: 'WhatsApp'})).toHaveClass(/active/);
+  });
+
+  test('aligns expanded messaging accounts beneath their platform', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const source = view.locator('.hub-view-source', {hasText: 'Instagram'});
+    await source.click();
+
+    const account = view.locator('.hub-view-accounts button', {hasText: '@carl.builds'});
+    const avatar = account.locator('img.hub-view-chat-avatar.inline');
+    await expect(avatar).toBeVisible();
+    expect(await source.evaluate((button) => {
+      const row = button.parentElement!;
+      const list = row.querySelector<HTMLElement>('.hub-view-accounts')!;
+      const item = list.querySelector<HTMLElement>('li')!;
+      const accountButton = item.querySelector<HTMLButtonElement>('button')!;
+      const image = accountButton.querySelector<HTMLImageElement>('img')!;
+      const platformIcon = button.firstElementChild!.getBoundingClientRect();
+      const platformLabel = button.lastElementChild!.getBoundingClientRect();
+      const accountLabel = accountButton.lastElementChild!.getBoundingClientRect();
+      const imageBox = image.getBoundingClientRect();
+      return {
+        avatarHeight: imageBox.height,
+        textHeight: Number.parseFloat(getComputedStyle(accountButton).fontSize),
+        guideContent: getComputedStyle(list, '::before').content,
+        branchContent: getComputedStyle(item, '::before').content,
+        avatarOffsetFromIconCentre: Number(Math.abs(
+          imageBox.left - (platformIcon.left + platformIcon.width / 2),
+        ).toFixed(2)),
+        labelOffsetFromPlatformLabel: Number(Math.abs(
+          accountLabel.left - platformLabel.left,
+        ).toFixed(2)),
+      };
+    })).toEqual({
+      avatarHeight: 11,
+      textHeight: 11,
+      guideContent: 'none',
+      branchContent: 'none',
+      avatarOffsetFromIconCentre: 0,
+      labelOffsetFromPlatformLabel: 0.5,
+    });
   });
 
   test('snaps the platform rail to icons and switches accounts beside search', async ({page}) => {
@@ -5457,6 +5636,57 @@ test.describe('hub view', () => {
     await expect(rows).toHaveCount(1);
     await view.locator('.hub-view-list-head input[type="search"]').fill('');
     await expect(rows).toHaveCount(all);
+  });
+
+  test('searches one chat across messages, media, files, and links', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-row', {hasText: 'File Transfer'}).click();
+
+    await expect(view.getByRole('button', {name: 'Search this chat'})).toHaveCount(0);
+    const more = view.locator('.hub-view-chat-more');
+    await expect(more).toHaveAttribute('aria-label', 'More actions');
+    expect(await more.evaluate((button) => {
+      const header = button.closest('.hub-view-chat-head')!.getBoundingClientRect();
+      return Math.round(header.right - button.getBoundingClientRect().right);
+    })).toBe(18);
+    await more.click();
+    const menu = view.locator('.hub-view-chat-actions-menu');
+    await expect(menu.getByRole('menuitem')).toHaveText([
+      'View profile',
+      'Search this chat',
+      'Pin to top',
+      'Mute',
+    ]);
+    await menu.getByRole('menuitem', {name: 'Search this chat'}).click();
+    const search = view.getByRole('searchbox', {name: 'Search File Transfer'});
+    await expect(search).toBeFocused();
+    const results = view.locator('.hub-view-chat-search-result');
+    await expect(results).toHaveCount(5);
+
+    await view.getByRole('button', {name: 'Media', exact: true}).click();
+    await expect(results).toHaveCount(2);
+    await expect(results).toContainText([/\.mp4/, 'Voice message']);
+
+    await view.getByRole('button', {name: 'Files', exact: true}).click();
+    await expect(results).toHaveCount(1);
+    await expect(results).toContainText('Project notes.pdf');
+
+    await view.getByRole('button', {name: 'Links', exact: true}).click();
+    await expect(results).toHaveCount(1);
+    await expect(results).toContainText('Useful article');
+
+    await view.getByRole('button', {name: 'Messages', exact: true}).click();
+    await search.fill('answer');
+    await expect(results).toHaveCount(1);
+    await results.click();
+
+    await expect(view.getByRole('searchbox', {name: 'Search File Transfer'})).toHaveCount(0);
+    await expect(view.locator('[data-message-id="wx4"]')).toBeVisible();
+
+    await more.click();
+    await menu.getByRole('menuitem', {name: 'View profile'}).click();
+    await expect(view.locator('.hub-view-profile-name')).toContainText('File Transfer');
   });
 
   test('aligns the chat list and conversation header rules', async ({page}) => {

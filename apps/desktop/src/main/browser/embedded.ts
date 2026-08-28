@@ -362,14 +362,6 @@ export class EmbeddedBrowser {
     return contents && !contents.isDestroyed() ? contents : null;
   }
 
-  /** Evaluated in the page's own main world, so whatever comes back is page
-   * content: untrusted data for the agent to read, never instructions. */
-  async #run<T>(tabId: string, script: string): Promise<T> {
-    const contents = this.#contents(tabId);
-    if (!contents) throw new Error(`No such browser tab: ${tabId}`);
-    return contents.executeJavaScript(script, true) as Promise<T>;
-  }
-
   find(tabId: string, text: string, forward: boolean): void {
     if (!text) return;
     this.#views.get(tabId)?.webContents.findInPage(text, { forward, findNext: false });

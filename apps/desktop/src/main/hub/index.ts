@@ -21,6 +21,8 @@ import {
   COMMS_PLATFORMS,
   type CommsBridgeDto,
   type CommsBridgeSetupDto,
+  type ChatMemberDto,
+  type ChatMentionsDto,
   type CommsContactDto,
   type CommsEmailAccountDto,
   type CommsLoginStepDto,
@@ -106,6 +108,7 @@ export function bridgeStatusFingerprint(bridge: CommsBridgeDto): string {
     accounts: bridge.accounts.map((account) => ({
       id: account.id,
       name: account.name,
+      avatarUrl: account.avatarUrl,
       state: account.state,
       error: account.error,
     })),
@@ -610,7 +613,7 @@ export class Communications {
         managementRoomHint: null,
         error: known.installed
           ? known.blocked!.reason
-          : `The ${entry.label} bridge can’t be installed.`,
+          : `The ${entry.label} bridge is not installed.`,
         // Carried through so the tab can offer the grant as a button. A binary
         // that was never installed has no grant to offer.
         permission: known.installed ? (known.blocked!.permission ?? null) : null,
@@ -1248,9 +1251,18 @@ export class Communications {
     return this.#hub.markRead(chatId, messageId);
   }
 
-  async sendChat(chatId: string, text: string, replyTo?: string): Promise<string> {
+  async chatMembers(chatId: string): Promise<ChatMemberDto[]> {
+    return this.#readWithEmbeddedAuthRecovery(() => this.#hub.members(chatId));
+  }
+
+  async sendChat(
+    chatId: string,
+    text: string,
+    replyTo?: string,
+    mentions?: ChatMentionsDto,
+  ): Promise<string> {
     await this.#load();
-    return this.#hub.send(chatId, text, replyTo);
+    return this.#hub.send(chatId, text, replyTo, mentions);
   }
 
   /**

@@ -14,7 +14,6 @@
     "imapflow": "^1.7.1",
     "nodemailer": "^9.0.5",
     "openid-client": "^6.8.6",
-    "smol-toml": "^1.8.0",
     "ws": "^8.18.0"
   }
 }

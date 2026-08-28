@@ -1,6 +1,5 @@
 import type {
   ComputerHistoryEntry,
-  ComputerHistoryFrame,
   ComputerHistoryFrameSource,
   ComputerHistoryPromptContext,
   ComputerHistorySettings,

@@ -14,6 +14,8 @@ import type {
   CommsLoginFlowDto,
   CommsLoginStepDto,
   CommsPlatform,
+  ChatMemberDto,
+  ChatMentionsDto,
 } from "@polymux/protocol";
 
 /** Provisioning route prefix every bridgev2 bridge serves its login API under. */
@@ -470,6 +472,11 @@ export class MatrixHub {
         ? roomType !== "dm"
         : (room.summary?.["m.joined_member_count"] ?? 0) > 4;
       const rawName = named ?? counterpart?.content?.displayname ?? others[0] ?? roomId;
+      // Only the embedded homeserver is bridge-attested. A remote Matrix room
+      // can write these state keys itself, so it must not gain an official
+      // badge from untrusted room state.
+      const official = this.#embedded &&
+        officialAccountFromState(state, counterpart?.state_key);
       return {
         roomId,
         name: contactDisplayName(rawName, platform, group),
@@ -491,6 +498,7 @@ export class MatrixHub {
          * no room type are the blind spot, and they read as direct chats.
          */
         group,
+        ...(official ? {official: true} : {}),
         // A bridge's own admin room is a control surface, not a conversation.
         management: !space && !bridged && others.length === 0 && members.some(
           (event) => event.state_key && isBridgeBot(event.state_key),
@@ -1764,7 +1772,31 @@ export class MatrixHub {
     );
   }
 
-  async send(roomId: string, body: string, replyTo?: string): Promise<string> {
+  async send(
+    roomId: string,
+    body: string,
+    replyTo?: string,
+    mentions?: ChatMentionsDto,
+  ): Promise<string> {
+    const presentMentions = (mentions?.users ?? []).filter(
+      (mention) =>
+        mention.userId.startsWith("@") &&
+        mention.label.startsWith("@") &&
+        mentionOccurrences(body, mention.label).length > 0,
+    );
+    const userIds = [...new Set(presentMentions.map((mention) => mention.userId))];
+    const everyone = mentions?.everyone === true &&
+      mentionOccurrences(body, "@everyone").length > 0;
+    const mentionContent = userIds.length > 0 || everyone
+      ? {
+          format: "org.matrix.custom.html",
+          formatted_body: mentionHtml(body, presentMentions),
+          "m.mentions": {
+            ...(userIds.length > 0 ? {user_ids: userIds} : {}),
+            ...(everyone ? {room: true} : {}),
+          },
+        }
+      : {};
     const result = await this.#client<{event_id?: string}>(
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${this.#txnId()}`,
       {
@@ -1772,6 +1804,7 @@ export class MatrixHub {
         body: {
           msgtype: "m.text",
           body,
+          ...mentionContent,
           ...(replyTo
             ? {"m.relates_to": {"m.in_reply_to": {event_id: replyTo}}}
             : {}),
@@ -1779,6 +1812,28 @@ export class MatrixHub {
       },
     );
     return result.event_id ?? "";
+  }
+
+  /** Current joined members are the authoritative mention targets. Profile
+   * text is presentation only; the Matrix id is what lets each bridge create
+   * a real native mention instead of painted `@name` text. */
+  async members(roomId: string): Promise<ChatMemberDto[]> {
+    const result = await this.#client<{
+      joined?: Record<string, {display_name?: string; avatar_url?: string}>;
+    }>(`/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/joined_members`);
+    const joined = result.joined ?? {};
+    const platform = this.#roomPlatforms.get(roomId) ??
+      Object.keys(joined).map(platformFromSender).find(Boolean) ??
+      "matrix";
+    this.#roomPlatforms.set(roomId, platform);
+    return Object.entries(joined)
+      .filter(([userId]) => !isBridgeBot(userId) && !this.senderIsMine(roomId, userId))
+      .map(([userId, profile]) => ({
+        userId,
+        name: bridgeDisplayName(profile.display_name?.trim() || userId, platform),
+        avatarUrl: mediaUrl(profile.avatar_url),
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
   }
 
   /**
@@ -2359,6 +2414,9 @@ export interface MatrixRoom {
   lastActivity: string | null;
   preview: string | null;
   group: boolean;
+  /** True only when bridge-provided remote metadata attests that the account
+   * is official or verified. A missing signal is never inferred from a name. */
+  official?: boolean;
 }
 
 export interface MatrixContact {
@@ -2477,6 +2535,16 @@ interface RawEvent {
     "co.polymux.sticker"?: boolean;
     /** Set on content imported by the WeChat bridge. */
     "co.polymux.wechat.remote"?: boolean;
+    /** Trust metadata forwarded by current or future bridge connectors. */
+    "co.polymux.official"?: boolean;
+    "com.beeper.is_verified"?: boolean;
+    "com.beeper.verified"?: boolean;
+    "com.beeper.official"?: boolean;
+    "fi.mau.is_verified"?: boolean;
+    verified?: boolean;
+    official?: boolean;
+    is_verified?: boolean;
+    is_official?: boolean;
     /** A bridge-originated conversation event rather than authored text. */
     "co.polymux.notice"?: boolean;
     /** Set on `m.bridge`: which network the room is a portal for. */
@@ -2680,6 +2748,87 @@ function latestStateEvents(events: RawEvent[], type: string): RawEvent[] {
 /** Bridge bots sit in every room they serve and are not people. */
 function isBridgeBot(userId: string): boolean {
   return /^@[a-z]+bot:/.test(userId);
+}
+
+/** Finds visible, standalone uses of one mention label. A substring inside an
+ * email address or a longer handle is not a mention and must not notify. */
+function mentionOccurrences(body: string, label: string): number[] {
+  if (!label) return [];
+  const found: number[] = [];
+  let from = 0;
+  while (from < body.length) {
+    const start = body.indexOf(label, from);
+    if (start < 0) break;
+    if (mentionBoundary(body, start, label.length)) found.push(start);
+    from = start + label.length;
+  }
+  return found;
+}
+
+function mentionBoundary(body: string, start: number, length: number): boolean {
+  if (start < 0) return false;
+  const before = body[start - 1] ?? "";
+  const after = body[start + length] ?? "";
+  const mentionCharacter = /[\p{L}\p{N}_.-]/u;
+  return (!before || !mentionCharacter.test(before)) &&
+    (!after || !mentionCharacter.test(after));
+}
+
+/** Produces Matrix's safe rich-text representation, linking only the labels
+ * whose identities accompanied this send. All authored HTML stays text. */
+function mentionHtml(body: string, mentions: ChatMentionsDto["users"]): string {
+  const occurrences = mentions
+    .flatMap((mention) => mentionOccurrences(body, mention.label).map((start) => ({
+      start,
+      end: start + mention.label.length,
+      mention,
+    })))
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  let cursor = 0;
+  let html = "";
+  for (const occurrence of occurrences) {
+    if (occurrence.start < cursor) continue;
+    html += textAsHtml(body.slice(cursor, occurrence.start));
+    const href = `https://matrix.to/#/${escapeHtml(occurrence.mention.userId)}`;
+    html += `<a href="${href}">${escapeHtml(occurrence.mention.label)}</a>`;
+    cursor = occurrence.end;
+  }
+  return `${html}${textAsHtml(body.slice(cursor))}`;
+}
+
+function textAsHtml(value: string): string {
+  return escapeHtml(value).replaceAll("\n", "<br>");
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+/** Accepts trust only from the bridge room descriptor or the direct-chat
+ * counterpart's membership. This intentionally does not scan arbitrary
+ * message bodies or infer status from business names: an official badge is a
+ * trust claim, so silence from a connector stays silence in the UI. */
+function officialAccountFromState(state: RawEvent[], counterpartId?: string): boolean {
+  return state.some((event) => {
+    if (event.type !== "m.bridge" &&
+        !(event.type === "m.room.member" && counterpartId && event.state_key === counterpartId))
+      return false;
+    const content = event.content;
+    return content?.["co.polymux.official"] === true ||
+      content?.["com.beeper.is_verified"] === true ||
+      content?.["com.beeper.verified"] === true ||
+      content?.["com.beeper.official"] === true ||
+      content?.["fi.mau.is_verified"] === true ||
+      content?.verified === true ||
+      content?.official === true ||
+      content?.is_verified === true ||
+      content?.is_official === true;
+  });
 }
 
 /**
@@ -3119,13 +3268,23 @@ interface WhoamiResponse {
 interface RawLogin {
   id?: string;
   name?: string;
-  profile?: {name?: string; username?: string; phone?: string; email?: string};
+  profile?: {
+    name?: string;
+    username?: string;
+    phone?: string;
+    email?: string;
+    /** Bridge v2 calls this `avatar`; tolerate the older url-shaped spelling
+     * used by a few connectors as well. */
+    avatar?: string;
+    avatar_url?: string;
+  };
   /** Superseded by `state`, but still sent by older bridge builds. */
   state_event?: string;
   state?: {
     state_event?: string;
     error?: string;
     message?: string;
+    info?: {is_bot?: boolean};
   };
 }
 
@@ -3188,9 +3347,11 @@ function toAccount(login: RawLogin): CommsBridgeAccountDto {
       login.name ??
       login.id ??
       "Linked account",
+    avatarUrl: mediaUrl(login.profile?.avatar ?? login.profile?.avatar_url),
     state: accountState(event),
     // `message` is written for a human; the error code is a fallback.
     error: login.state?.message ?? login.state?.error ?? null,
+    ...(login.state?.info?.is_bot === true ? {kind: "bot" as const} : {}),
   };
 }
 
