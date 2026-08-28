@@ -74,7 +74,10 @@ export async function installSkillPackage(
       );
     const installed: InstalledSkillSummary[] = [];
     for (const candidate of candidates) {
-      const loaded = new SkillLoader({ configured: [candidate] }).load();
+      const loaded = new SkillLoader({
+        configured: [candidate],
+        includeUserLocations: false,
+      }).load();
       const skill = loaded.skills.find((item) => item.filePath === path.join(candidate, "SKILL.md"));
       if (!skill) {
         const problem = loaded.diagnostics.find((item) => item.severity === "error");

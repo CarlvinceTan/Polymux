@@ -4407,7 +4407,10 @@ export class DesktopBackend {
    */
   async #adoptSkill(displayed: string): Promise<string> {
     const source = resolveDiscoveredSkill(displayed);
-    const result = new SkillLoader({ configured: [source] }).load();
+    const result = new SkillLoader({
+      configured: [source],
+      includeUserLocations: false,
+    }).load();
     const skill = result.skills.find(
       (item) => item.filePath === path.join(source, "SKILL.md"),
     );
@@ -4456,7 +4459,10 @@ export class DesktopBackend {
         await mkdir(path.dirname(destination), { recursive: true });
         await copyFile(file.path, destination);
       }
-      const result = new SkillLoader({ configured: [temporary] }).load();
+      const result = new SkillLoader({
+        configured: [temporary],
+        includeUserLocations: false,
+      }).load();
       const skill = result.skills.find(
         (item) => item.filePath === path.join(temporary, "SKILL.md"),
       );

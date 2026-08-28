@@ -1,5 +1,5 @@
-import {marked} from 'marked';
 import {parse as parseYaml} from 'yaml';
+import {renderSafeMarkdown} from './markdown.js';
 
 export type BlogPost = {
   title: string;
@@ -54,7 +54,7 @@ function readDocument(path: string, source: string): BlogPost | null {
     coverImage,
     readingMinutes: Math.max(1, Math.ceil(wordCount / 220)),
     body,
-    html: marked.parse(body, {gfm: true}) as string,
+    html: renderSafeMarkdown(body),
   };
 }
 

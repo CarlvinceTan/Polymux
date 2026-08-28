@@ -610,7 +610,7 @@ export class Communications {
         managementRoomHint: null,
         error: known.installed
           ? known.blocked!.reason
-          : `The ${entry.label} bridge can’t be installed.`,
+          : `The ${entry.label} bridge is not installed.`,
         // Carried through so the tab can offer the grant as a button. A binary
         // that was never installed has no grant to offer.
         permission: known.installed ? (known.blocked!.permission ?? null) : null,

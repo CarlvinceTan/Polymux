@@ -1,5 +1,5 @@
-import {marked} from 'marked';
 import {parse as parseYaml} from 'yaml';
+import {renderSafeMarkdown} from './markdown.js';
 
 export type ReleaseEntry = {
   version: string;
@@ -33,7 +33,7 @@ function readDocument(path: string, source: string): ReleaseEntry | null {
     throw new Error(`Release ${path} requires version, title, date, and summary fields.`);
   }
 
-  return {version, title, date, summary, body, html: marked.parse(body, {gfm: true}) as string};
+  return {version, title, date, summary, body, html: renderSafeMarkdown(body)};
 }
 
 export const releases = Object.entries(sources)

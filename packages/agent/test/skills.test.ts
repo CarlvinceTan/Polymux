@@ -52,6 +52,36 @@ test("sources the cross-agent ~/.agents store but not agent-specific ones", asyn
   }
 });
 
+test("can inspect a configured skill directory without mixing in user skills", async () => {
+  const root = await mkdtemp(join(tmpdir(), "polymux-configured-skill-"));
+  const home = join(root, "home");
+  const configured = join(root, "configured");
+  try {
+    await mkdir(join(home, ".agents", "skills", "shared"), {recursive: true});
+    await writeFile(
+      join(home, ".agents", "skills", "shared", "SKILL.md"),
+      "---\nname: shared\ndescription: Shared workflow.\n---\n",
+    );
+    await mkdir(join(configured, "focused"), {recursive: true});
+    await writeFile(
+      join(configured, "focused", "SKILL.md"),
+      "---\nname: focused\ndescription: Focused workflow.\n---\n",
+    );
+
+    const loaded = new SkillLoader({
+      home,
+      configured: [configured],
+      includeUserLocations: false,
+    }).load();
+    assert.deepEqual(
+      loaded.skills.map((skill) => `${skill.name}:${skill.source}`),
+      ["focused:configured"],
+    );
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
 test("excludes skills disabled by the host application", async () => {
   const home = await mkdtemp(join(tmpdir(), "polymux-disabled-skill-"));
   try {

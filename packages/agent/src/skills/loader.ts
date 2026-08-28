@@ -11,6 +11,12 @@ export interface SkillLocation {
 export interface SkillLoaderOptions {
   home?: string;
   /**
+   * Include the shared ~/.agents and personal Polymux skill stores. Disable
+   * this when an explicit configured directory is being inspected in
+   * isolation, such as a plugin or import candidate.
+   */
+  includeUserLocations?: boolean;
+  /**
    * The user's own skills directory. Defaults to `~/.polymux/skills`; the
    * desktop app passes it explicitly so a side instance loads from the home
    * its own configuration lives in rather than the user's.
@@ -27,6 +33,20 @@ export class SkillLoader {
   readonly #isEnabled: (skill: Skill) => boolean;
   constructor(options: SkillLoaderOptions = {}) {
     const home = options.home ?? homedir();
+    const userLocations: SkillLocation[] = options.includeUserLocations === false
+      ? []
+      : [
+          {
+            path: join(home, ".agents", "skills"),
+            source: "agents",
+            includeRootMarkdown: false,
+          },
+          {
+            path: options.personal ?? join(home, ".polymux", "skills"),
+            source: "polymux",
+            includeRootMarkdown: true,
+          },
+        ];
     this.#locations = [
       ...(options.official ?? []).map((path): SkillLocation => ({
         path,
@@ -39,16 +59,7 @@ export class SkillLoader {
       // ~/.codex/skills stay unsourced: a personal skill becomes Polymux's by
       // being copied into ~/.polymux/skills, which also wins name clashes so
       // in-app edits keep authority.
-      {
-        path: join(home, ".agents", "skills"),
-        source: "agents",
-        includeRootMarkdown: false,
-      },
-      {
-        path: options.personal ?? join(home, ".polymux", "skills"),
-        source: "polymux",
-        includeRootMarkdown: true,
-      },
+      ...userLocations,
       ...(options.bundled ?? []).map((path): SkillLocation => ({
         path,
         source: "bundled",
