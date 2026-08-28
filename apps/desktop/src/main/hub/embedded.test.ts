@@ -551,6 +551,7 @@ test("unlinking WeChat stops the relay and is remembered across status reads", a
     credentials: memoryCredentials(),
     storage: memoryPreferences(),
     onChange: () => {},
+    platform: "darwin",
     embedded: {
       baseUrl: hs.baseUrl,
       directory,

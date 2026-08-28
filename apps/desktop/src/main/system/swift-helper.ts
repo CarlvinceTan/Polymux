@@ -104,7 +104,9 @@ export class SwiftHelper {
     await mkdir(cacheDirectory, { recursive: true });
     const building = `${binary}.build`;
     const linkPlist: string[] = [];
-    if (infoPlist) {
+    // Mach-O section embedding is a macOS linker feature. Keeping it out of
+    // other hosts also lets the portable Swift test helpers run in Linux CI.
+    if (infoPlist && process.platform === "darwin") {
       const plistPath = `${binary}.plist`;
       await writeFile(plistPath, infoPlist, "utf8");
       linkPlist.push(
