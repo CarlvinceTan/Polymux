@@ -1,6 +1,4 @@
 <script lang="ts">
-  import type {SimpleIcon} from 'simple-icons';
-  import {siDropbox} from 'simple-icons';
   import type {DriveProviderId} from '@polymux/protocol';
 
   interface Props {
@@ -14,7 +12,7 @@
     plain?: boolean;
   }
 
-  type Mark = Pick<SimpleIcon, 'hex' | 'path'> & {rule?: 'evenodd'};
+  type Mark = {hex: string; path: string; rule?: 'evenodd'};
   /**
    * A brand whose mark is its colours, not a silhouette. Google Drive's logo
    * has been six coloured segments since 2020, and a white knockout of it is
@@ -31,6 +29,10 @@
 
   let {provider, size = 20, plain = false}: Props = $props();
 
+  const dropbox: Mark = {
+    hex: '0061FF',
+    path: 'M6 1.807L0 5.629l6 3.822 6.001-3.822L6 1.807zM18 1.807l-6 3.822 6 3.822 6-3.822-6-3.822zM0 13.274l6 3.822 6.001-3.822L6 9.452l-6 3.822zM18 9.452l-6 3.822 6 3.822 6-3.822-6-3.822zM6 18.371l6.001 3.822 6-3.822-6-3.822L6 18.371z',
+  };
   // OneDrive and S3 are absent from simple-icons v16 — both were pulled over
   // trademark, the same reason LinkedIn and Slack are hand-authored in
   // PlatformLogo. They are drawn here on the same full-bleed 24x24 grid.
@@ -110,7 +112,7 @@
     all,
     network,
     'google-drive': googleDrive,
-    dropbox: siDropbox,
+    dropbox,
     onedrive,
     s3,
     local,
