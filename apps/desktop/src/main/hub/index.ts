@@ -185,6 +185,7 @@ export interface EmbeddedHub {
     {
       platform: string;
       binary: string;
+      supported?: boolean;
       installed: boolean;
       blocked?: {reason: string; permission?: SystemPermissionKind} | null;
       running?: boolean;
@@ -266,6 +267,8 @@ export interface CommunicationsOptions {
   cancelCookieLogin?: (platform: CommsPlatform) => void;
   /** Overridable for tests. */
   home?: string;
+  /** Host operating system. Overridable for cross-platform tests. */
+  platform?: NodeJS.Platform;
   run?: CommandRunner;
   fetch?: typeof globalThis.fetch;
   /** Polymux's own account file; defaults to one under its home. */
@@ -413,6 +416,7 @@ export class Communications {
   readonly #run: CommandRunner;
   readonly #fetch?: typeof globalThis.fetch;
   readonly #home: string;
+  readonly #hostPlatform: NodeJS.Platform;
   readonly #embedded: EmbeddedHub | null;
   #embeddedMode: boolean;
   #hub: MatrixHub;
@@ -458,6 +462,7 @@ export class Communications {
     this.#cookieLogin = options.cookieLogin;
     this.#cancelCookieLogin = options.cancelCookieLogin;
     this.#home = options.home ?? homedir();
+    this.#hostPlatform = options.platform ?? process.platform;
     this.#run = options.run ?? runCommand;
     this.#fetch = options.fetch;
     const preference = hubPreference(this.#storage.getPreference("comms-hub")?.value);
@@ -531,13 +536,20 @@ export class Communications {
   async status(): Promise<CommsStatusDto> {
     await this.#load();
     const probe = await this.#hub.probe();
-    const platforms = COMMS_PLATFORMS.filter((entry) => entry.value !== "matrix");
     // Which binaries exist decides whether "not answering" means broken or
-    // simply never installed, so it is read before anything is probed.
-    const inventory = await this.#embedded?.inventory
-      ?.()
-      .catch((): NonNullable<Awaited<ReturnType<NonNullable<EmbeddedHub["inventory"]>>>> => []);
+    // simply never installed. It also carries the host support boundary, so a
+    // Windows install never offers a bridge whose dependencies cannot run
+    // there and then blames the user for being unable to install it.
+    const inventory = this.#embeddedMode
+      ? await this.#embedded?.inventory
+        ?.()
+        .catch((): NonNullable<Awaited<ReturnType<NonNullable<EmbeddedHub["inventory"]>>>> => [])
+      : undefined;
     const installed = new Map((inventory ?? []).map((entry) => [entry.platform, entry] as const));
+    const platforms = COMMS_PLATFORMS.filter((entry) =>
+      entry.value !== "matrix" &&
+      (entry.value !== "wechat" || this.#hostPlatform === "darwin") &&
+      installed.get(entry.value)?.supported !== false);
     /**
      * What a bridge still needs before it can run. Read from the config the
      * host actually wrote, so a value recorded on a previous launch counts and
@@ -598,7 +610,7 @@ export class Communications {
         managementRoomHint: null,
         error: known.installed
           ? known.blocked!.reason
-          : `${known.binary} is not installed on this Mac, so ${entry.label} cannot be brought in yet.`,
+          : `The ${entry.label} bridge can’t be installed.`,
         // Carried through so the tab can offer the grant as a button. A binary
         // that was never installed has no grant to offer.
         permission: known.installed ? (known.blocked!.permission ?? null) : null,

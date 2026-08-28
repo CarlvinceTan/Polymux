@@ -1,4 +1,9 @@
-import type {SystemPermissionKind, SystemPermissionStatus} from "@polymux/protocol";
+import {
+  BUILT_IN_PERMISSION_KINDS,
+  type BuiltInPermissionKind,
+  type SystemPermissionKind,
+  type SystemPermissionStatus,
+} from "@polymux/protocol";
 
 export interface PermissionPreferenceStore {
   getPreference(key: string): {value: unknown} | null;
@@ -13,22 +18,21 @@ export interface FirstRunPermissionResult {
 
 export interface FirstRunPermissionOptions {
   store: PermissionPreferenceStore;
+  enabled: (permission: BuiltInPermissionKind) => boolean;
   status: (permission: SystemPermissionKind) => SystemPermissionStatus;
+  request: (permission: BuiltInPermissionKind) => Promise<SystemPermissionStatus>;
   onReady: () => void;
 }
 
-const preferenceKey = "first-run-permissions-requested";
+// A new key deliberately gives installs which completed the old, silent flow
+// one pass through the immediate request policy.
+const preferenceKey = "first-run-permissions-requested-immediately";
 
 /**
- * Marks first run as done and starts what waits on it. It asks macOS for
- * nothing, and that is the whole point: this runs at launch, and a consent
- * dialog nobody pressed anything to get — arriving before there is a window to
- * explain it — is the surest way to a permanent "Don't Allow". The grants are
- * asked for where a person is looking at a reason: the onboarding permissions
- * step, the button on each row in Settings, or the moment something needs one.
- *
- * The statuses are still reported, because what a caller wants to know here is
- * what it may do, not what it just asked for.
+ * Immediately asks for every enabled built-in grant on the first app launch.
+ * Requests are issued in sequence, with Full Disk Access last. macOS has no
+ * grant dialog for that permission, so its request opens the exact Privacy &
+ * Security pane instead.
  */
 export class FirstRunPermissions {
   readonly #options: FirstRunPermissionOptions;
@@ -50,7 +54,12 @@ export class FirstRunPermissions {
 
   async #ensure(): Promise<FirstRunPermissionResult> {
     const firstRun = !this.completed();
-    if (firstRun) this.#options.store.setPreference(preferenceKey, true);
+    if (firstRun) {
+      for (const permission of BUILT_IN_PERMISSION_KINDS)
+        if (this.#options.enabled(permission))
+          await this.#options.request(permission);
+      this.#options.store.setPreference(preferenceKey, true);
+    }
     this.#options.onReady();
     return {
       firstRun,

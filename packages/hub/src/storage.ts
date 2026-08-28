@@ -41,6 +41,9 @@ export interface AppserviceRecord {
   hsToken: string;
   url: string;
   senderLocalpart: string;
+  /** Whether receipts and typing are delivered in the transaction's
+   * spec-standard `ephemeral` section (MSC2409 / Matrix v1.13). */
+  receiveEphemeral?: boolean;
   /** Regexes over full user ids, from the registration's user namespaces. */
   userNamespaces: string[];
 }
@@ -74,6 +77,7 @@ CREATE TABLE IF NOT EXISTS appservices (
   hs_token TEXT NOT NULL,
   url TEXT NOT NULL,
   sender_localpart TEXT NOT NULL,
+  receive_ephemeral INTEGER NOT NULL DEFAULT 0,
   user_namespaces_json TEXT NOT NULL
 ) STRICT;
 
@@ -168,6 +172,13 @@ export class HomeserverStore {
       this.#db.exec("ALTER TABLE events ADD COLUMN origin TEXT;");
     if (!columns.some((column) => column.name === "redacted_by"))
       this.#db.exec("ALTER TABLE events ADD COLUMN redacted_by TEXT;");
+    const appserviceColumns = this.#db
+      .prepare("SELECT name FROM pragma_table_info('appservices')")
+      .all() as Array<{name: string}>;
+    if (!appserviceColumns.some((column) => column.name === "receive_ephemeral"))
+      this.#db.exec(
+        "ALTER TABLE appservices ADD COLUMN receive_ephemeral INTEGER NOT NULL DEFAULT 0;",
+      );
   }
 
   close(): void {
@@ -244,10 +255,11 @@ export class HomeserverStore {
       .run(record.id, this.maxStreamOrder());
     this.#db
       .prepare(
-        `INSERT INTO appservices (id, as_token, hs_token, url, sender_localpart, user_namespaces_json)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO appservices (id, as_token, hs_token, url, sender_localpart, receive_ephemeral, user_namespaces_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET as_token = excluded.as_token, hs_token = excluded.hs_token,
            url = excluded.url, sender_localpart = excluded.sender_localpart,
+           receive_ephemeral = excluded.receive_ephemeral,
            user_namespaces_json = excluded.user_namespaces_json`,
       )
       .run(
@@ -256,6 +268,7 @@ export class HomeserverStore {
         record.hsToken,
         record.url,
         record.senderLocalpart,
+        record.receiveEphemeral ? 1 : 0,
         JSON.stringify(record.userNamespaces),
       );
   }
@@ -268,6 +281,7 @@ export class HomeserverStore {
         hsToken: row.hs_token,
         url: row.url,
         senderLocalpart: row.sender_localpart,
+        receiveEphemeral: Number(row.receive_ephemeral) === 1,
         userNamespaces: JSON.parse(row.user_namespaces_json) as string[],
       }),
     );
@@ -284,6 +298,7 @@ export class HomeserverStore {
       hsToken: row.hs_token,
       url: row.url,
       senderLocalpart: row.sender_localpart,
+      receiveEphemeral: Number(row.receive_ephemeral) === 1,
       userNamespaces: JSON.parse(row.user_namespaces_json) as string[],
     };
   }

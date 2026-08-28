@@ -15,18 +15,25 @@ function store(initial: Record<string, unknown> = {}) {
 function permissions(backing: ReturnType<typeof store>) {
   return new FirstRunPermissions({
     store: backing,
+    enabled: () => true,
     status: () => "granted",
+    request: async () => "granted",
     onReady: () => {},
   });
 }
 
 test("an install that has run before reports its first run as done", async () => {
-  const backing = store({"first-run-permissions-requested": true});
+  const backing = store({"first-run-permissions-requested-immediately": true});
   assert.equal(permissions(backing).completed(), true);
 });
 
 test("a fresh install reports its first run as pending", () => {
   assert.equal(permissions(store()).completed(), false);
+});
+
+test("an install that completed the old silent flow gets the immediate flow once", () => {
+  const backing = store({"first-run-permissions-requested": true});
+  assert.equal(permissions(backing).completed(), false);
 });
 
 test("completing the first run records it for later launches", async () => {
@@ -35,5 +42,5 @@ test("completing the first run records it for later launches", async () => {
   assert.equal(subject.completed(), false);
   await subject.ensure();
   assert.equal(subject.completed(), true);
-  assert.equal(backing.values.get("first-run-permissions-requested"), true);
+  assert.equal(backing.values.get("first-run-permissions-requested-immediately"), true);
 });

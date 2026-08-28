@@ -371,7 +371,15 @@ export class Homeserver {
       const roomId = rest[2].startsWith("#") ? this.#store.roomForAlias(rest[2]) : rest[2];
       if (!roomId || !this.#store.roomExists(roomId))
         return this.#json(response, 404, {errcode: "M_NOT_FOUND", error: "Unknown room"});
-      this.#membershipEvent(roomId, auth.userId, auth.userId, "join", query, {}, auth.appservice?.id ?? null);
+      this.#membershipEvent(
+        roomId,
+        auth.userId,
+        auth.userId,
+        "join",
+        query,
+        timelineExclusion(body),
+        auth.appservice?.id ?? null,
+      );
       return this.#json(response, 200, {room_id: roomId});
     }
 
@@ -690,7 +698,12 @@ export class Homeserver {
       return this.#json(response, 403, {errcode: "M_FORBIDDEN", error: "Unknown room"});
 
     if (method === "POST" && ["invite", "kick", "ban"].includes(rest[0] ?? "")) {
-      const target = (body as {user_id?: string}).user_id ?? "";
+      const input = body as {
+        user_id?: string;
+        is_direct?: boolean;
+        "com.beeper.exclude_from_timeline"?: boolean;
+      };
+      const target = input.user_id ?? "";
       // A ban is not a departure. Recording leave for both meant a banned user
       // could be invited straight back, which is the one thing a ban is for.
       const membership = rest[0] === "invite" ? "invite" : rest[0] === "ban" ? "ban" : "leave";
@@ -700,14 +713,25 @@ export class Homeserver {
         target,
         membership,
         query,
-        {...(rest[0] === "invite" && (body as {is_direct?: boolean}).is_direct ? {is_direct: true} : {})},
+        {
+          ...(rest[0] === "invite" && input.is_direct ? {is_direct: true} : {}),
+          ...timelineExclusion(input),
+        },
         auth.appservice?.id ?? null,
       );
       if ("errcode" in written) return this.#json(response, 403, written);
       return this.#json(response, 200, {});
     }
     if (method === "POST" && rest[0] === "join") {
-      this.#membershipEvent(roomId, auth.userId, auth.userId, "join", query, {}, auth.appservice?.id ?? null);
+      this.#membershipEvent(
+        roomId,
+        auth.userId,
+        auth.userId,
+        "join",
+        query,
+        timelineExclusion(body),
+        auth.appservice?.id ?? null,
+      );
       return this.#json(response, 200, {room_id: roomId});
     }
     if (method === "POST" && rest[0] === "leave") {
@@ -1395,11 +1419,11 @@ export class Homeserver {
      * a stranger minted an account for them and filed a departure they never
      * made.
      */
-    const current = (
-      this.#store.stateEvent(roomId, "m.room.member", target)?.content as
-        | {membership?: string}
-        | undefined
-    )?.membership;
+    const currentEvent = this.#store.stateEvent(roomId, "m.room.member", target);
+    const currentContent = currentEvent?.content as Record<string, unknown> | undefined;
+    const current = typeof currentContent?.membership === "string"
+      ? currentContent.membership
+      : undefined;
     if (membership === "invite") {
       if (current === "join")
         return {errcode: "M_FORBIDDEN", error: `${target} is already in the room`};
@@ -1410,6 +1434,12 @@ export class Homeserver {
     }
     if (membership === "leave" && sender !== target && current !== "join" && current !== "invite")
       return {errcode: "M_FORBIDDEN", error: `${target} is not in the room`};
+    // mautrix builds a portal by inviting each transport puppet with an
+    // auto-accept marker and immediately joining it. Neither half happened on
+    // the remote network, so keep the setup provenance across that transition.
+    const bridgeSetup =
+      invisibleBridgeMembership(extra) ||
+      (membership === "join" && current === "invite" && invisibleBridgeMembership(currentContent));
     this.#store.ensureUser(target);
     const profile = this.#store.profile(target);
     const written = this.#append({
@@ -1422,6 +1452,7 @@ export class Homeserver {
         ...(profile?.displayname ? {displayname: profile.displayname} : {}),
         ...(profile?.avatarUrl ? {avatar_url: profile.avatarUrl} : {}),
         ...extra,
+        ...(bridgeSetup ? {"com.beeper.exclude_from_timeline": true} : {}),
       },
       ts: Date.now(),
       origin,
@@ -1473,6 +1504,9 @@ export class Homeserver {
           membership: content.membership,
           ...(profile?.displayname ? {displayname: profile.displayname} : {}),
           ...(profile?.avatarUrl ? {avatar_url: profile.avatarUrl} : {}),
+          // A bridge profile refresh keeps room identity current; it is not
+          // conversation activity on the native platform.
+          "com.beeper.exclude_from_timeline": true,
         },
         ts: Date.now(),
         origin: this.#store.appservices().find((item) => this.#inNamespace(item, userId))?.id ?? null,
@@ -1637,6 +1671,15 @@ export class Homeserver {
 
   async #deliver(appservice: AppserviceRecord, events: StoredEvent[]): Promise<boolean> {
     const txnId = `polymux-${events[0].streamOrder}`;
+    const ephemeral = appservice.receiveEphemeral
+      ? events.flatMap((event) => {
+          const shaped = appserviceEphemeral(event);
+          return shaped ? [shaped] : [];
+        })
+      : [];
+    const timeline = appservice.receiveEphemeral
+      ? events.filter((event) => event.type !== "m.receipt")
+      : events;
     for (const delay of [...PUSH_RETRY_MS, null]) {
       if (this.#closed) return false;
       try {
@@ -1648,7 +1691,10 @@ export class Homeserver {
               Authorization: `Bearer ${appservice.hsToken}`,
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({events: events.map(clientEvent)}),
+            body: JSON.stringify({
+              events: timeline.map(clientEvent),
+              ...(ephemeral.length > 0 ? {ephemeral} : {}),
+            }),
             signal: AbortSignal.any([this.#closing.signal, AbortSignal.timeout(30_000)]),
           },
         );
@@ -1758,6 +1804,24 @@ export class Homeserver {
   }
 }
 
+/** Preserve only the standard bridge marker that declares invisible state. */
+function timelineExclusion(body: unknown): Record<string, true> {
+  return (body as {"com.beeper.exclude_from_timeline"?: unknown} | null)
+    ?.["com.beeper.exclude_from_timeline"] === true
+    ? {"com.beeper.exclude_from_timeline": true}
+    : {};
+}
+
+/** A bridge-created puppet membership, not a native conversation event. */
+function invisibleBridgeMembership(body: unknown): boolean {
+  const content = body as {
+    "com.beeper.exclude_from_timeline"?: unknown;
+    "fi.mau.will_auto_accept"?: unknown;
+  } | null;
+  return content?.["com.beeper.exclude_from_timeline"] === true ||
+    content?.["fi.mau.will_auto_accept"] === true;
+}
+
 function clientEvent(event: StoredEvent): Record<string, unknown> {
   return {
     event_id: event.eventId,
@@ -1768,6 +1832,28 @@ function clientEvent(event: StoredEvent): Record<string, unknown> {
     content: event.content,
     ...(event.stateKey === null ? {} : {state_key: event.stateKey}),
     ...(event.redacts === null ? {} : {redacts: event.redacts}),
+  };
+}
+
+/**
+ * Receipts are not room timeline events. Mautrix registers for Matrix's
+ * appservice ephemeral extension and only forwards a read to the remote
+ * network when the receipt arrives in this shape.
+ */
+function appserviceEphemeral(event: StoredEvent): Record<string, unknown> | null {
+  if (event.type !== "m.receipt") return null;
+  const target = (event.content as {event_id?: unknown} | null)?.event_id;
+  if (typeof target !== "string" || !target) return null;
+  return {
+    type: "m.receipt",
+    room_id: event.roomId,
+    content: {
+      [target]: {
+        "m.read": {
+          [event.sender]: {ts: event.originServerTs},
+        },
+      },
+    },
   };
 }
 

@@ -12,7 +12,8 @@ type SaveDraft = (request: SendMailRequest) => Promise<SendMailResult>;
 type AutosaveState = {
   account: string;
   latest: MailComposerDraft | null;
-  remoteDraft: {id: string; folder: string} | null;
+  /** IMAP draft identities are mailbox-scoped, even for one composer. */
+  remoteDrafts: Map<string, {id: string; folder: string} | null>;
   timer: ReturnType<typeof setTimeout> | null;
   running: Promise<{id: string; folder: string} | null> | null;
 };
@@ -69,6 +70,7 @@ export class MailDraftAutosave {
         state.latest = null;
         let result: SendMailResult;
         try {
+          const replaced = state.remoteDrafts.get(draft.account) ?? draft.remoteDraft;
           result = await this.save({
             account: draft.account,
             to: addresses(draft.to),
@@ -82,27 +84,29 @@ export class MailDraftAutosave {
             importance: draft.importance,
             inReplyTo: draft.reply?.inReplyTo ?? undefined,
             references: draft.reply?.references,
-            replacesDraft: state.remoteDraft,
+            replacesDraft: replaced,
           });
         } catch (cause) {
           failed = true;
           state.latest ??= draft;
           throw cause;
         }
-        state.remoteDraft = result.draft ?? state.remoteDraft;
+        const remoteDraft =
+          result.draft ?? state.remoteDrafts.get(draft.account) ?? draft.remoteDraft;
+        state.remoteDrafts.set(draft.account, remoteDraft);
 
         // A newer keystroke may already have replaced this snapshot locally.
         // Give that newer copy the new UID without putting old text over it.
-        const current = loadMailDraft(state.account);
+        const current = loadMailDraft(draft.account);
         if (current?.localId === localId) {
           saveMailDraft({
             ...current,
-            remoteDraft: state.remoteDraft,
+            remoteDraft,
             pending: current.revision === draft.revision ? false : current.pending,
           });
         }
       }
-      return state.remoteDraft;
+      return state.remoteDrafts.get(state.account) ?? null;
     })();
 
     try {
@@ -130,7 +134,7 @@ export class MailDraftAutosave {
     // trying the real delivery. Send can still succeed through SMTP, and will
     // replace whichever earlier remote draft we do know about.
     if (state.running) await state.running.catch(() => null);
-    return state.remoteDraft;
+    return state.remoteDrafts.get(state.account) ?? null;
   }
 
   complete(localId: string, account: string): void {
@@ -140,17 +144,25 @@ export class MailDraftAutosave {
     clearMailDraft(account, localId);
   }
 
-  reference(localId: string): {id: string; folder: string} | null {
-    return this.#states.get(localId)?.remoteDraft ?? null;
+  reference(localId: string, account?: string): {id: string; folder: string} | null {
+    const state = this.#states.get(localId);
+    if (!state) return null;
+    return state.remoteDrafts.get(account ?? state.account) ?? null;
   }
 
   #state(draft: MailComposerDraft): AutosaveState {
     const existing = this.#states.get(draft.localId);
-    if (existing) return existing;
+    if (existing) {
+      existing.account = draft.account;
+      if (!existing.remoteDrafts.has(draft.account)) {
+        existing.remoteDrafts.set(draft.account, draft.remoteDraft);
+      }
+      return existing;
+    }
     const created: AutosaveState = {
       account: draft.account,
       latest: null,
-      remoteDraft: draft.remoteDraft,
+      remoteDrafts: new Map([[draft.account, draft.remoteDraft]]),
       timer: null,
       running: null,
     };

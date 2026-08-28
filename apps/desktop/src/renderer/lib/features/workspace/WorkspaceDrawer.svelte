@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type WorkspaceTabKind = 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'calendar' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'view';
+  export type WorkspaceTabKind = 'new' | 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'calendar' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'view';
   export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; section?: 'outputs' | 'references' | 'tasks'};
 
   /**
@@ -163,6 +163,7 @@
   import {SPLIT_LAYOUT_MIN_WIDTH, clampPanelWidth, workspaceResizeBounds} from '../../shared/layout/layoutSizing';
   import MediaView from './MediaView.svelte';
   import BrowserView from './BrowserView.svelte';
+  import NewView from './NewView.svelte';
   import SubagentView from './SubagentView.svelte';
   import SubagentsView from './SubagentsView.svelte';
   import TaskGlyph from '../../shared/components/TaskGlyph.svelte';
@@ -185,6 +186,10 @@
   export let resizing = false;
   /** True while App drives the expand/minimise width frame by frame. */
   export let motion = false;
+  /** Zero at the docked width and one at the expanded width, in either
+   * direction. Hub uses it to hand its panes over without a breakpoint jump. */
+  export let motionProgress = 0;
+  export let dockedWidth = 420;
   export let reservedWidth = 0;
   export let summaryData: SummaryViewData = {outputs: [], references: [], tasks: []};
   /** Subagent transcripts, keyed by the task id the tab carries. */
@@ -262,9 +267,6 @@
   ) => void = () => {};
 
   let panel: HTMLElement;
-  let newTabWrapper: HTMLDivElement;
-  let addOpen = false;
-
   let contextMenu: {x: number; y: number; tab: WorkspaceTab} | null = null;
   let draggedTabId: string | null = null;
   let dragOverTabId: string | null = null;
@@ -370,7 +372,8 @@
   $: taskTabStatus = (tab: WorkspaceTab): TaskStatus =>
     summaryData.tasks.find((task) => task.id === tab.id)?.status ?? 'active';
 
-  const tabIcons: Record<WorkspaceTabKind, 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'calendar' | 'send' | 'task' | 'tasks' | 'panel'> = {
+  const tabIcons: Record<WorkspaceTabKind, 'plus' | 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'calendar' | 'send' | 'task' | 'tasks' | 'panel'> = {
+    new: 'plus',
     media: 'image',
     browser: 'globe',
     summary: 'summary',
@@ -533,12 +536,10 @@
 
   function dismissMenus(event: MouseEvent | KeyboardEvent): void {
     if (event instanceof KeyboardEvent) {
-      if (event.key === 'Escape') { addOpen = false; contextMenu = null; }
+      if (event.key === 'Escape') contextMenu = null;
       return;
     }
     contextMenu = null;
-    if (newTabWrapper?.contains(event.target as Node)) return;
-    addOpen = false;
   }
 </script>
 
@@ -625,31 +626,11 @@
         </div>
       {/each}
     </div>
-    <!-- With nothing open the launcher below already offers these, so the
-         header would only repeat them. -->
+    <!-- With nothing open the launcher below already offers a first choice,
+         so the header would only repeat it. Once a tab exists, + creates a
+         selected New tab whose content is that same launcher. -->
     {#if tabs.length || standalone}
-      <div bind:this={newTabWrapper} class="new-tab-wrap">
-        <button type="button" class="title-bar-icon-button workspace-header-action" aria-label={$t('workspace.newTab')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={addOpen} onclick={() => addOpen = !addOpen}><Icon name="plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
-        {#if addOpen}
-          <div class="polymux-dropdown-menu new-tab-menu" role="menu">
-            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('browser'); }}><Icon name="globe" size={14}/><span>{$t('workspace.browser')}</span></button>
-            <!-- Drive and Schedule leave the title bar while the drawer is
-                 open, so this menu is where they live instead. -->
-            {#if !openKinds.has('drive')}
-              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('drive'); }}><Icon name="drive" size={14}/><span>{$t('workspace.drive')}</span></button>
-            {/if}
-            {#if !openKinds.has('calendar')}
-              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('calendar'); }}><Icon name="calendar" size={14}/><span>{$t('workspace.calendar')}</span></button>
-            {/if}
-            {#if !openKinds.has('hub')}
-              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('hub'); }}><Icon name="chat" size={14}/><span>{$t('workspace.hub')}</span></button>
-            {/if}
-            {#if !openKinds.has('tasks')}
-              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { addOpen = false; onNew('tasks'); }}><Icon name="tasks" size={14}/><span>{$t('workspace.tasks')}</span></button>
-            {/if}
-          </div>
-        {/if}
-      </div>
+      <button type="button" class="title-bar-icon-button workspace-header-action" aria-label={$t('workspace.newTab')} data-tooltip-align="end" onclick={() => onNew('new')}><Icon name="plus" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
     {/if}
     {#if !standalone}<button
       type="button"
@@ -665,47 +646,22 @@
 
   <div
     class="workspace-content"
-    class:empty={!activeTab}
+    class:empty={!activeTab || activeTab.kind === 'new'}
     class:browser={activeTab?.kind === 'browser' || activeTab?.kind === 'view'}
   >
-    {#if !activeTab}
-      <div class="workspace-launcher">
-        <p class="workspace-launcher-heading">{$t('workspace.open')}</p>
-        <div class="workspace-launcher-rows">
-          <button type="button" class="workspace-launcher-row" onclick={() => onNew('browser')}><Icon name="globe" size={16}/><span>{$t('workspace.browser')}</span></button>
-          {#if !openKinds.has('drive')}
-            <button type="button" class="workspace-launcher-row" onclick={() => onNew('drive')}><Icon name="drive" size={16}/><span>{$t('workspace.drive')}</span></button>
-          {/if}
-          {#if !openKinds.has('calendar')}
-            <button type="button" class="workspace-launcher-row" onclick={() => onNew('calendar')}><Icon name="calendar" size={16}/><span>{$t('workspace.calendar')}</span></button>
-          {/if}
-          <button type="button" class="workspace-launcher-row" onclick={() => onNew('hub')}><Icon name="chat" size={16}/><span>{$t('workspace.hub')}</span></button>
-          {#if !openKinds.has('tasks')}
-            <button type="button" class="workspace-launcher-row" onclick={() => onNew('tasks')}><Icon name="tasks" size={16}/><span>{$t('workspace.tasks')}</span></button>
-          {/if}
-        </div>
-        {#if historySuggestions.length}
-          <p class="workspace-launcher-heading">{$t('workspace.recent')}</p>
-          <div class="workspace-launcher-rows">
-            {#each historySuggestions as visit (visit.url)}
-              <button type="button" class="workspace-launcher-row" onclick={() => onOpenUrl(visit.url, visit.title)}>
-                <span class="tab-favicon">
-                  {#if usableFavicon(visit.favicon, faviconsSettled + themeRevision)}<img src={visit.favicon} alt="" draggable="false"/>{:else}<Icon name="globe" size={16}/>{/if}
-                </span>
-                <span>{visit.title}</span>
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
+    {#if !activeTab || activeTab.kind === 'new'}
+      <NewView
+        {openKinds}
+        {historySuggestions}
+        onChoose={onNew}
+        {onOpenUrl}
+        usableFavicon={(favicon) => usableFavicon(favicon, faviconsSettled + themeRevision)}
+      />
     {:else if activeTab.kind === 'media'}<MediaView title={activeTab.title} src={activeTab.url ?? ''}/>
     <!-- Keyed by tab: switching between two browser tabs must destroy the old
          BrowserView (which hides its native page) and mount the new one, not
          retarget one instance and leave the old page painted on screen. -->
-    <!-- addOpen: the page is a native view that paints above all DOM, so while
-         the new-tab menu hangs over it the page steps aside instead of
-         covering the menu. -->
-    {:else if activeTab.kind === 'browser' || activeTab.kind === 'view'}{#key activeTab.id}<BrowserView tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || browserHidden || addOpen} onState={(patch) => onTabState(activeTab.id, patch)}/>{/key}
+    {:else if activeTab.kind === 'browser' || activeTab.kind === 'view'}{#key activeTab.id}<BrowserView tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || browserHidden} onState={(patch) => onTabState(activeTab.id, patch)}/>{/key}
     {:else if activeTab.kind === 'subagent'}<SubagentView
       title={activeTab.title}
       taskId={activeTab.id}
@@ -715,7 +671,11 @@
       {onOpenFilePath}
     />
     {:else if activeTab.kind === 'subagents'}<SubagentsView subagents={summaryData.tasks} onOpenSubagent={onOpenTask}/>
-    {:else if activeTab.kind === 'hub'}<HubView {onOpenFilePath}/>
+    {:else if activeTab.kind === 'hub'}<HubView
+      {onOpenFilePath}
+      drawerMotionProgress={motionProgress}
+      dockedDrawerWidth={dockedWidth}
+    />
     {:else if activeTab.kind === 'calendar'}<CalendarView/>
     {:else if activeTab.kind === 'drive'}<DriveView
       title={activeTab.title}

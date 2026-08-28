@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -336,6 +337,12 @@ test("an inbound message opens a portal room the hub files under WeChat", async 
     assert.equal(rooms[0].name, "A Friend");
     assert.equal(rooms[0].preview, "ping");
     assert.equal(rooms[0].unread, 1);
+    const {messages} = await hub.messages(rooms[0].roomId, 20);
+    assert.deepEqual(
+      messages.map((message) => message.body),
+      ["ping"],
+      "the puppet's connection membership is not native conversation activity",
+    );
   });
 });
 
@@ -370,6 +377,71 @@ test("a group message is attributed to whoever sent it, in either case", async (
     assert.equal(named.get("court is booked"), "Ann");
     assert.equal(named.get("see you there"), "Bo");
   });
+});
+
+test("a direct history message inherits the contact name from the chat directory", async () => {
+  await withBridge(
+    async ({ hub }) => {
+      const { room, messages } = await threadWhen(
+        hub,
+        ({ messages }) => messages.some((item) => item.body === "hello from history"),
+        "the nameless history message to be imported",
+      );
+      assert.equal(room.name, "·W·");
+      assert.equal(
+        messages.find((item) => item.body === "hello from history")?.senderName,
+        "·W·",
+      );
+    },
+    (relay) => {
+      relay.catalogue.chats = [{
+        username: "wxid_friend",
+        display_name: "·W·",
+        unread_count: 0,
+      }];
+      // Some relay builds omit sender_name from direct-chat history even
+      // though /chats already resolved the same person's display name.
+      relay.catalogue.history.wxid_friend = [{
+        message_id: "history-1",
+        chat_id: "wxid_friend",
+        sender_id: "wxid_friend",
+        body: "hello from history",
+        timestamp: 1,
+      }];
+    },
+  );
+});
+
+test("the chat directory repairs a direct contact profile without reimporting history", async () => {
+  await withBridge(
+    async ({ homeserver, accessToken }) => {
+      const digest = createHash("sha256")
+        .update("wxid_friend")
+        .digest("hex")
+        .slice(0, 24);
+      const userId = `@wechat_${digest}:polymux.local`;
+      const response = await fetch(
+        new URL(
+          `/_matrix/client/v3/profile/${encodeURIComponent(userId)}`,
+          homeserver.baseUrl,
+        ),
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      assert.equal(response.ok, true);
+      assert.equal(
+        ((await response.json()) as { displayname?: string }).displayname,
+        "·W·",
+      );
+    },
+    (relay) => {
+      relay.catalogue.chats = [{
+        username: "wxid_friend",
+        display_name: "·W·",
+        unread_count: 0,
+      }];
+      relay.catalogue.history.wxid_friend = [];
+    },
+  );
 });
 
 test("a conversation with nothing unread is imported too", async () => {

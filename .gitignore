@@ -18,6 +18,10 @@ test-results
 /out/
 .DS_Store
 /dist/
+/apps/site/blog/*/
+/apps/site/docs/*/
+/apps/site/releases/*/
+/apps/site/product/*/
 
 # Claude Code local settings (shared project settings stay tracked)
 .claude/settings.local.json

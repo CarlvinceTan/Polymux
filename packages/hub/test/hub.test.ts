@@ -5,6 +5,7 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 import {DatabaseSync} from "node:sqlite";
 import test from "node:test";
+import {COMMS_PLATFORMS} from "@polymux/protocol";
 import {MatrixHub, provisioningSecret} from "../src/hub.js";
 
 interface Recorded {
@@ -527,6 +528,46 @@ test("WhatsApp contact and group names hide bridge metadata", async () => {
   );
 });
 
+test("WeChat rooms expose one stable contact identity and the current writable portal", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-portals-"));
+  const bridgeDirectory = path.join(directory, "bridges", "wechat");
+  await mkdir(bridgeDirectory, {recursive: true});
+  await writeFile(
+    path.join(bridgeDirectory, "state.json"),
+    JSON.stringify({rooms: {wxid_person: {roomId: "!current:local", isGroup: false}}}),
+  );
+  const room = () => ({
+    state: {events: [
+      {type: "m.room.name", state_key: "", content: {name: "·W·"}},
+      {
+        type: "m.bridge",
+        state_key: "wechat",
+        content: {
+          protocol: {id: "wechat"},
+          "com.beeper.room_type": "dm",
+          channel: {id: "8f53f833f8a8e7a08946b1ec"},
+        },
+      },
+    ]},
+    timeline: {events: [] as Array<Record<string, unknown>>},
+  });
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!old:local": room(),
+      "!current:local": room(),
+    }}}}},
+    async (hub) => {
+      const byId = new Map((await hub.rooms()).map((item) => [item.roomId, item]));
+      assert.equal(byId.get("!old:local")?.remoteId, "8f53f833f8a8e7a08946b1ec");
+      assert.equal(byId.get("!old:local")?.currentPortal, undefined);
+      assert.equal(byId.get("!current:local")?.remoteId, "8f53f833f8a8e7a08946b1ec");
+      assert.equal(byId.get("!current:local")?.currentPortal, true);
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
 test("WhatsApp sender names hide bridge metadata above messages", async () => {
   await withHub(
     {
@@ -800,6 +841,93 @@ test("WhatsApp unread counts follow remote reads and recognise both self identit
       assert.equal(byId.get("!read:local")?.unread, 0, "a later remote read watermark clears the chat");
       assert.equal(byId.get("!waiting:local")?.unread, 4, "native unread plus later inbound messages remains unread");
       assert.deepEqual(byId.get("!waiting:local")?.unreadByAccount, {61400000000: 4});
+    },
+    {matrixToken: "syt_token", userId: "@me:local"},
+    directory,
+  );
+});
+
+test("Bridge v2 unread counts follow read markers changed outside Polymux", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-remote-unread-"));
+  const bridgeDirectory = path.join(directory, "bridges", "instagram");
+  await mkdir(bridgeDirectory, {recursive: true});
+  const database = new DatabaseSync(path.join(bridgeDirectory, "bridge.db"));
+  database.exec(`
+    CREATE TABLE portal (
+      bridge_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      receiver TEXT NOT NULL,
+      mxid TEXT
+    );
+    CREATE TABLE user_portal (
+      bridge_id TEXT NOT NULL,
+      login_id TEXT NOT NULL,
+      portal_id TEXT NOT NULL,
+      portal_receiver TEXT NOT NULL,
+      last_read BIGINT
+    );
+    CREATE TABLE message (
+      bridge_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      room_receiver TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      timestamp BIGINT NOT NULL
+    );
+
+    INSERT INTO portal VALUES
+      ('instagram', 'read-elsewhere', 'account', '!read-elsewhere:local'),
+      ('instagram', 'marked-unread', 'account', '!marked-unread:local'),
+      ('instagram', 'local-only', 'account', '!local-only:local'),
+      ('instagram', 'no-marker', 'account', '!no-marker:local');
+    INSERT INTO user_portal VALUES
+      ('instagram', 'account', 'read-elsewhere', 'account', 3000000000),
+      -- The native app moved its marker behind the newest message again.
+      ('instagram', 'account', 'marked-unread', 'account', 1000000000),
+      ('instagram', 'account', 'local-only', 'account', NULL),
+      ('instagram', 'account', 'no-marker', 'account', NULL);
+    INSERT INTO message VALUES
+      ('instagram', 'read-message', 'read-elsewhere', 'account', 'friend', 2000000000),
+      ('instagram', 'unread-message', 'marked-unread', 'account', 'friend', 2000000000),
+      ('instagram', 'local-message', 'local-only', 'account', 'friend', 2000000000),
+      ('instagram', 'fallback-message', 'no-marker', 'account', 'friend', 2000000000);
+  `);
+  database.close();
+
+  const homeserver = new DatabaseSync(path.join(directory, "homeserver.sqlite"));
+  homeserver.exec(`
+    CREATE TABLE receipts (user_id TEXT, room_id TEXT, stream_order INTEGER);
+    CREATE TABLE events (stream_order INTEGER, origin_server_ts INTEGER);
+    INSERT INTO receipts VALUES
+      ('@me:local', '!marked-unread:local', 1),
+      ('@me:local', '!local-only:local', 2);
+    INSERT INTO events VALUES (1, 3000), (2, 3000);
+  `);
+  homeserver.close();
+
+  const room = (name: string, unread: number) => ({
+    state: {events: [
+      {type: "m.room.name", state_key: "", content: {name}},
+      {type: "m.bridge", state_key: "instagram", content: {protocol: {id: "instagram"}}},
+    ]},
+    timeline: {events: [] as Array<Record<string, unknown>>},
+    unread_notifications: {notification_count: unread},
+  });
+  await withHub(
+    {"GET /_matrix/client/v3/sync": {body: {rooms: {join: {
+      "!read-elsewhere:local": room("Read elsewhere", 9),
+      "!marked-unread:local": room("Marked unread elsewhere", 0),
+      "!local-only:local": room("Read in Polymux", 9),
+      "!no-marker:local": room("Matrix fallback", 7),
+    }}}}},
+    async (hub) => {
+      const byId = new Map((await hub.rooms()).map((item) => [item.roomId, item]));
+      assert.equal(byId.get("!read-elsewhere:local")?.unread, 0);
+      assert.equal(byId.get("!marked-unread:local")?.unread, 1);
+      assert.equal(byId.get("!local-only:local")?.unread, 0);
+      assert.equal(byId.get("!no-marker:local")?.unread, 7);
+      assert.deepEqual(byId.get("!marked-unread:local")?.unreadByAccount, {account: 1});
+      assert.equal(byId.get("!no-marker:local")?.unreadByAccount, undefined);
     },
     {matrixToken: "syt_token", userId: "@me:local"},
     directory,
@@ -1135,7 +1263,7 @@ test("embedded Telegram pages keep visible events ahead of room setup noise", as
     JSON.stringify({
       membership: "invite",
       displayname: "Kaiwen",
-      "com.beeper.exclude_from_timeline": true,
+      "fi.mau.will_auto_accept": true,
     }),
     1_200,
   );
@@ -1166,11 +1294,9 @@ test("embedded Telegram pages keep visible events ahead of room setup noise", as
       assert.equal(page.nextBefore, null, "invisible setup rows do not create a phantom older page");
       assert.deepEqual(page.messages.map((message) => message.body), [
         "today's slides",
-        "Kaiwen joined the group",
         "https://docs.google.com/presentation/d/tutorial/edit?usp=sharing",
       ]);
-      assert.equal(page.messages[1].notice, true);
-      const preview = page.messages[2].linkPreview;
+      const preview = page.messages[1].linkPreview;
       assert.equal(preview?.title, "CS3210 Tutorial 1");
       assert.equal(preview?.source, "docs.google.com");
       assert.equal(preview?.imageUrl, "polymux-media://local/tutorial");
@@ -1244,7 +1370,119 @@ test("membership notices are platform-neutral once bridge setup is excluded", as
   );
 });
 
-test("embedded rooms hide setup joins but retain later cross-platform membership changes", async () => {
+test("the signed-in user's membership activity stays out of the conversation", async () => {
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/room1/messages": {
+        body: {
+          end: null,
+          chunk: [
+            {
+              type: "m.room.member",
+              event_id: "$self-join",
+              room_id: "room1",
+              sender: "@me:local",
+              state_key: "@me:local",
+              origin_server_ts: 1_000,
+              content: {membership: "join", displayname: "Unknown user"},
+            },
+            {
+              type: "m.room.member",
+              event_id: "$self-rename",
+              room_id: "room1",
+              sender: "@me:local",
+              state_key: "@me:local",
+              origin_server_ts: 2_000,
+              unsigned: {prev_content: {membership: "join", displayname: "Unknown user"}},
+              content: {membership: "join", displayname: "Carlvince Tan"},
+            },
+            {
+              type: "m.room.member",
+              event_id: "$alice-join",
+              room_id: "room1",
+              sender: "@whatsapp_alice:local",
+              state_key: "@whatsapp_alice:local",
+              origin_server_ts: 3_000,
+              content: {membership: "join", displayname: "Alice"},
+            },
+          ],
+        },
+      },
+    },
+    async (hub) => {
+      const {messages} = await hub.messages("room1", 50);
+      assert.deepEqual(messages.map((message) => message.body), ["Alice joined the group"]);
+    },
+  );
+});
+
+test("profile-only membership refreshes stay out of every platform conversation", async () => {
+  const profileRefreshes = COMMS_PLATFORMS.map((platform, index) => ({
+    type: "m.room.member",
+    event_id: `$${platform.value}-profile`,
+    room_id: "room1",
+    sender: `@${platform.value}_contact:local`,
+    state_key: `@${platform.value}_contact:local`,
+    origin_server_ts: index + 1,
+    unsigned: {
+      prev_content: {membership: "join", displayname: `${platform.label} contact`},
+    },
+    content: {membership: "join", displayname: `Real ${platform.label} contact`},
+  }));
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/room1/messages": {
+        body: {end: null, chunk: profileRefreshes},
+      },
+    },
+    async (hub) => {
+      const {messages} = await hub.messages("room1", 50);
+      assert.deepEqual(messages, []);
+    },
+  );
+});
+
+test("bridge auto-accept membership setup stays out of every platform conversation", async () => {
+  const setup = COMMS_PLATFORMS.flatMap((platform, index) => {
+    const stateKey = `@${platform.value}_contact:local`;
+    const invite = {
+      type: "m.room.member",
+      event_id: `$${platform.value}-setup-invite`,
+      room_id: "room1",
+      sender: `@${platform.value}bot:local`,
+      state_key: stateKey,
+      origin_server_ts: index * 2 + 1,
+      content: {
+        membership: "invite",
+        displayname: `${platform.label} contact`,
+        "fi.mau.will_auto_accept": true,
+      },
+    };
+    return [invite, {
+      type: "m.room.member",
+      event_id: `$${platform.value}-setup-join`,
+      room_id: "room1",
+      sender: stateKey,
+      state_key: stateKey,
+      origin_server_ts: index * 2 + 2,
+      unsigned: {prev_content: invite.content},
+      content: {membership: "join", displayname: `${platform.label} contact`},
+    }];
+  });
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/room1/messages": {
+        body: {end: null, chunk: setup},
+      },
+    },
+    async (hub) => {
+      const {messages} = await hub.messages("room1", 100);
+      assert.deepEqual(messages, []);
+    },
+  );
+});
+
+test("embedded rooms hide setup and profile sync but retain real membership changes", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "polymux-membership-timeline-"));
   const database = new DatabaseSync(path.join(directory, "homeserver.sqlite"));
   database.exec(`
@@ -1264,8 +1502,13 @@ test("embedded rooms hide setup joins but retain later cross-platform membership
       (1, '$create', '!whatsapp:local', '@whatsappbot:local', 'm.room.create', '', '{}', 1000, NULL, NULL),
       (2, '$setup', '!whatsapp:local', '@whatsapp_alice:local', 'm.room.member', '@whatsapp_alice:local', '{"membership":"join","displayname":"Setup Alice"}', 2000, NULL, NULL),
       (3, '$rename', '!whatsapp:local', '@whatsapp_alice:local', 'm.room.member', '@whatsapp_alice:local', '{"membership":"join","displayname":"Alice"}', 400000, NULL, NULL),
-      (4, '$leave', '!whatsapp:local', '@whatsapp_bob:local', 'm.room.member', '@whatsapp_bob:local', '{"membership":"leave","displayname":"Bob"}', 401000, NULL, NULL),
-      (5, '$message', '!whatsapp:local', '@whatsapp_alice:local', 'm.room.message', NULL, '{"msgtype":"m.text","body":"See you"}', 402000, NULL, NULL);
+      (4, '$bob-invite', '!whatsapp:local', '@whatsappbot:local', 'm.room.member', '@whatsapp_bob:local', '{"membership":"invite","displayname":"Bob","fi.mau.will_auto_accept":true}', 2001, NULL, NULL),
+      (5, '$bob-setup-join', '!whatsapp:local', '@whatsapp_bob:local', 'm.room.member', '@whatsapp_bob:local', '{"membership":"join","displayname":"Bob","com.beeper.exclude_from_timeline":true}', 2002, NULL, NULL),
+      -- The hidden setup join must not hide Bob's real later departure.
+      (6, '$leave', '!whatsapp:local', '@whatsapp_bob:local', 'm.room.member', '@whatsapp_bob:local', '{"membership":"leave","displayname":"Bob"}', 401000, NULL, NULL),
+      (7, '$self-join', '!whatsapp:local', '@me:local', 'm.room.member', '@me:local', '{"membership":"join","displayname":"Unknown user"}', 402000, NULL, NULL),
+      (8, '$self-rename', '!whatsapp:local', '@me:local', 'm.room.member', '@me:local', '{"membership":"join","displayname":"Carlvince Tan"}', 403000, NULL, NULL),
+      (9, '$message', '!whatsapp:local', '@whatsapp_alice:local', 'm.room.message', NULL, '{"msgtype":"m.text","body":"See you"}', 404000, NULL, NULL);
   `);
   database.close();
 
@@ -1276,9 +1519,8 @@ test("embedded rooms hide setup joins but retain later cross-platform membership
       assert.deepEqual(messages.map((message) => message.body), [
         "See you",
         "Bob left the group",
-        "Setup Alice changed their name to Alice",
       ]);
-      assert.deepEqual(messages.map((message) => message.notice), [false, true, true]);
+      assert.deepEqual(messages.map((message) => message.notice), [false, true]);
     },
     {matrixToken: "syt_token", userId: "@me:local"},
     directory,
@@ -1344,7 +1586,10 @@ test("embedded room rows keep new messages ahead of later-inserted backfill", as
       (1, '$today', '!instagram:local', '@meta_friend:local', 'm.room.message', NULL, '{"body":"today"}', 3000, NULL, NULL),
       -- Imported afterward, but authored first: it must not replace the row's
       -- current preview, timestamp, or position.
-      (2, '$old-backfill', '!instagram:local', '@meta_friend:local', 'm.room.message', NULL, '{"body":"old"}', 1000, NULL, NULL);
+      (2, '$old-backfill', '!instagram:local', '@meta_friend:local', 'm.room.message', NULL, '{"body":"old"}', 1000, NULL, NULL),
+      -- The signed-in account's own profile rewrite is Matrix bookkeeping,
+      -- not newer conversation activity.
+      (3, '$self-profile', '!instagram:local', '@me:local', 'm.room.member', '@me:local', '{"membership":"join","displayname":"Carlvince Tan"}', 4000, NULL, NULL);
   `);
   database.close();
 
@@ -1443,6 +1688,146 @@ test("a sticker is carried into the thread rather than dropped", async () => {
       assert.match(attachment?.url ?? "", /parrot/);
     },
   );
+});
+
+test("reactions carry each reactor's resolved profile and deduplicate one person's emoji", async () => {
+  await withHub(
+    {
+      "GET /_matrix/client/v3/rooms/room1/messages": {
+        body: {
+          end: null,
+          state: [
+            {type: "m.room.member", state_key: "@whatsapp_jules:local", content: {displayname: "Jules (WA)"}},
+            {type: "m.room.member", state_key: "@whatsapp_amy:local", content: {displayname: "Amy (WA)", avatar_url: "mxc://local/amy"}},
+            {type: "m.room.member", state_key: "@whatsapp_ben:local", content: {displayname: "Ben (WA)"}},
+            {type: "m.room.member", state_key: "@me:local", content: {displayname: "Carlvince", avatar_url: "mxc://local/me"}},
+          ],
+          chunk: [
+            {
+              type: "m.room.message",
+              event_id: "$message",
+              room_id: "room1",
+              sender: "@whatsapp_jules:local",
+              origin_server_ts: 1_000,
+              content: {body: "Hello"},
+            },
+            {
+              type: "m.reaction",
+              event_id: "$mine",
+              sender: "@me:local",
+              content: {"m.relates_to": {event_id: "$message", key: "👍"}},
+            },
+            {
+              type: "m.reaction",
+              event_id: "$amy",
+              sender: "@whatsapp_amy:local",
+              content: {"m.relates_to": {event_id: "$message", key: "👍"}},
+            },
+            {
+              type: "m.reaction",
+              event_id: "$amy-duplicate",
+              sender: "@whatsapp_amy:local",
+              content: {"m.relates_to": {event_id: "$message", key: "👍"}},
+            },
+            {
+              type: "m.reaction",
+              event_id: "$ben",
+              sender: "@whatsapp_ben:local",
+              content: {"m.relates_to": {event_id: "$message", key: "👍"}},
+            },
+          ],
+        },
+      },
+    },
+    async (hub) => {
+      const {messages} = await hub.messages("room1", 20);
+      assert.deepEqual(messages[0]?.reactions, [{
+        key: "👍",
+        count: 3,
+        mineEventId: "$mine",
+        reactors: [
+          {id: "@me:local", name: "You", avatarUrl: "polymux-media://local/me", mine: true},
+          {id: "@whatsapp_amy:local", name: "Amy", avatarUrl: "polymux-media://local/amy", mine: false},
+          {id: "@whatsapp_ben:local", name: "Ben", avatarUrl: null, mine: false},
+        ],
+      }]);
+    },
+  );
+});
+
+test("late reactions follow historical message ids across bridge platforms and pages", async () => {
+  for (const platform of ["telegram", "instagram", "whatsapp", "messenger"]) {
+    const directory = await mkdtemp(path.join(tmpdir(), `polymux-${platform}-reaction-alias-`));
+    const bridgeDirectory = path.join(directory, "bridges", platform);
+    await mkdir(bridgeDirectory, {recursive: true});
+    const homeserver = new DatabaseSync(path.join(directory, "homeserver.sqlite"));
+    homeserver.exec(`
+      CREATE TABLE events (
+        stream_order INTEGER PRIMARY KEY,
+        event_id TEXT NOT NULL,
+        room_id TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        type TEXT NOT NULL,
+        state_key TEXT,
+        content_json TEXT NOT NULL,
+        origin_server_ts INTEGER NOT NULL,
+        redacts TEXT,
+        redacted_by TEXT
+      );
+      INSERT INTO events VALUES
+        (1, '$local-old', '!chat:local', '@${platform}_alice:local', 'm.room.message', NULL, '{"body":"old"}', 1700000000000, NULL, NULL),
+        (2, '$local-new', '!chat:local', '@${platform}_alice:local', 'm.room.message', NULL, '{"body":"new"}', 1700000001000, NULL, NULL),
+        (3, '$late-reaction', '!chat:local', '@${platform}_bob:local', 'm.reaction', NULL, '{"m.relates_to":{"rel_type":"m.annotation","event_id":"$old-server-id:example.org","key":"🔥"}}', 1700000002000, NULL, NULL);
+    `);
+    homeserver.close();
+
+    const bridge = new DatabaseSync(path.join(bridgeDirectory, "bridge.db"));
+    bridge.exec(`
+      CREATE TABLE portal (
+        bridge_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        receiver TEXT NOT NULL,
+        mxid TEXT
+      );
+      CREATE TABLE message (
+        rowid INTEGER PRIMARY KEY,
+        bridge_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        part_id TEXT NOT NULL,
+        mxid TEXT NOT NULL,
+        room_id TEXT NOT NULL,
+        room_receiver TEXT NOT NULL,
+        sender_mxid TEXT NOT NULL,
+        timestamp INTEGER NOT NULL
+      );
+      INSERT INTO portal VALUES ('${platform}', 'remote-chat', 'account', '!chat:local');
+      INSERT INTO message VALUES (
+        1, '${platform}', 'remote-message', '', '$old-server-id:example.org',
+        'remote-chat', 'account', '@${platform}_alice:local', 1700000000000000000
+      );
+    `);
+    bridge.close();
+
+    await withHub(
+      {},
+      async (hub) => {
+        const first = await hub.messages("!chat:local", 1);
+        assert.deepEqual(first.messages.map((message) => message.eventId), ["$local-new"]);
+        assert.match(first.nextBefore ?? "", /^local:/);
+
+        const second = await hub.messages("!chat:local", 1, first.nextBefore!);
+        assert.equal(second.messages[0]?.eventId, "$local-old");
+        assert.equal(second.messages[0]?.reactions[0]?.key, "🔥");
+        assert.equal(second.messages[0]?.reactions[0]?.count, 1);
+        assert.equal(
+          second.messages[0]?.reactions[0]?.reactors[0]?.id,
+          `@${platform}_bob:local`,
+        );
+      },
+      {matrixToken: "syt_token", userId: "@me:local"},
+      directory,
+    );
+  }
 });
 
 test("an Instagram reel cover keeps a route to the original post", async () => {

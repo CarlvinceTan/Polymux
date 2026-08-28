@@ -291,7 +291,7 @@ test.describe('welcome view', () => {
     expect(modalBounds!.width).toBe(viewport!.width);
     await expect(modal).toHaveCSS('border-style', 'none');
     await expect(page.getByRole('menu')).toHaveCount(0);
-    await expect(modal.getByRole('tab')).toHaveText(['Agent', 'General', 'Hub', 'Drive', 'Browser', 'Plugins', 'MCP', 'Skills', 'Memory']);
+    await expect(modal.getByRole('tab')).toHaveText(['General', 'Agent', 'Hub', 'Drive', 'Browser', 'Plugins', 'MCP', 'Skills', 'Memory']);
     const tabMetrics = await modal.getByRole('tab').first().evaluate((node) => {
       const style = getComputedStyle(node);
       return {fontSize: style.fontSize, height: style.height, radius: style.borderRadius, icons: node.querySelectorAll('svg').length};
@@ -798,7 +798,6 @@ test.describe('welcome view', () => {
     await expect(computerHistoryMetrics.getByText('0 captures', {exact: true})).toBeVisible();
     await expect(computerHistoryMetrics.getByText('0 B', {exact: true})).toBeVisible();
     await expect(computerHistoryMetrics.getByText('Latest:', {exact: false})).toBeVisible();
-    await expect(computerHistoryMetrics.getByText('Distilled:', {exact: false})).toBeVisible();
     await expect(computerHistoryMetrics.getByText('0 interactions', {exact: true})).toBeVisible();
     const computerHistoryToggle = modal.getByRole('switch', {name: 'Enable ComputerHistory'});
     await memoryToggle.click();
@@ -818,9 +817,7 @@ test.describe('welcome view', () => {
       return Math.round(memoryTitle.left - pageTitle.left);
     });
     expect(sharedLeftEdge).toBe(0);
-    await expect(modal.getByText('Durable memories are added or removed only when you explicitly ask.')).toBeVisible();
     await expect(computerHistoryToggle).toHaveAttribute('aria-checked', 'true');
-    await expect(modal.getByText('adaptive sampling', {exact: false})).toBeVisible();
     await expect(modal.getByRole('radiogroup', {name: 'ComputerHistory capture mode'})).toHaveCount(0);
     await computerHistoryToggle.click();
     await expect(computerHistoryToggle).toHaveAttribute('aria-checked', 'false');
@@ -1045,14 +1042,7 @@ test.describe('welcome view', () => {
     await settings.getByRole('tab', {name: 'Agent'}).click();
     const pi = settings.getByRole('radio', {name: /pi ACP/});
     await pi.click();
-    await expect(pi).toContainText('Click again to install');
-    const installHint = pi.locator('small');
-    await expect(installHint).toHaveText('Click again to install');
-    await expect.poll(() => installHint.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
-    await expect(settings.getByRole('button', {name: /Models.*Configure/})).toBeVisible();
-    await expect(settings.locator('button.agent-option-open')).toHaveCount(0);
-
-    await pi.click();
+    await expect(pi).not.toContainText('Click again to install');
 
     const model = settings.locator('button.agent-option-open');
     await expect(model).toContainText('Claude Sonnet 4');
@@ -1113,6 +1103,20 @@ test.describe('welcome view', () => {
     });
     expect(agentLayout.gridHeight).toBeGreaterThanOrEqual(294);
     expect(agentLayout.overlap).toBeLessThanOrEqual(0);
+  });
+
+  test('preconfigures registry binary agents instead of labelling them custom', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const settings = page.getByRole('region', {name: 'Settings'});
+    await settings.getByRole('tab', {name: 'Agent'}).click();
+
+    for (const [name, version] of [['Junie', 'v3032.2.0'], ['Poolside', 'v1.0.16']] as const) {
+      const card = settings.getByRole('radio', {name: new RegExp(name)});
+      await expect(card).toBeEnabled();
+      await expect(card.locator('small')).toHaveText(version);
+      await expect(card).not.toContainText('Custom command');
+    }
   });
 
   test('uses authentication methods advertised by the selected ACP agent', async ({page}) => {
@@ -1569,26 +1573,18 @@ test.describe('design system', () => {
     await expect(page.locator('.shared-tooltip')).toHaveText('Workspace');
   });
 
-  test('a control holding its menu open shows no tooltip, even under the pointer', async ({page}) => {
+  test('the new-tab control creates a selected launcher tab without opening a menu', async ({page}) => {
     await page.goto('/');
-    await send(page, 'menu tooltips');
+    await send(page, 'new tab launcher');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     const newTab = page.getByLabel('New tab', {exact: true});
 
-    // Hovering first puts the pill up, which is the state the click has to
-    // clear: the menu opens directly under it, over its own first item.
     await newTab.hover();
     await expect(page.locator('.shared-tooltip')).toHaveText('New tab');
     await newTab.click();
-    await expect(page.getByRole('menuitem', {name: 'Browser'})).toBeVisible();
-    await expect(page.locator('.shared-tooltip')).toHaveCount(0);
-
-    // Still nothing while the pointer sits on the trigger, and it comes back
-    // once the menu is closed.
-    await newTab.hover();
-    await expect(page.locator('.shared-tooltip')).toHaveCount(0);
-    await newTab.click();
-    await expect(page.locator('.shared-tooltip')).toHaveText('New tab');
+    await expect(workspaceDrawer(page).locator('.tab.active')).toContainText('New tab');
+    await expect(workspaceDrawer(page).locator('.workspace-launcher')).toBeVisible();
+    await expect(page.getByRole('menu')).toHaveCount(0);
   });
 
   test('model rows reveal a rich tooltip only after a deliberate pause', async ({page}) => {
@@ -1874,6 +1870,42 @@ test.describe('design system', () => {
     // Closing the drawer takes its search affordance with it.
     await page.getByRole('button', {name: 'Toggle Chats'}).click();
     await expect(search).toHaveCount(0);
+  });
+
+  test('keeps chat actions visible over an expanded workspace and minimises only after acting', async ({page}) => {
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    await page.getByRole('button', {name: 'Expand Workspace'}).click();
+
+    const workspace = page.locator('main');
+    const toggleChats = page.getByRole('button', {name: 'Toggle Chats'});
+    const newChat = page.getByRole('button', {name: 'New Chat'});
+    const search = page.getByRole('button', {name: 'Search Chats'});
+    await expect(page.locator('.left-controls button')).toHaveCount(1);
+    await expect(toggleChats).toBeVisible();
+    await expect(newChat).toHaveCount(0);
+    await expect(search).toHaveCount(0);
+
+    await toggleChats.click();
+    await expect(workspace).toHaveClass(/workspace-expanded/);
+    await expect(newChat).toBeVisible();
+    await expect(search).toBeVisible();
+
+    await search.click();
+    const dialog = page.getByRole('dialog', {name: 'Search chats'});
+    await expect(dialog).toBeVisible();
+    await expect(workspace).toHaveClass(/workspace-expanded/);
+
+    await dialog.getByRole('option').first().click();
+    await expect(dialog).toHaveCount(0);
+    await expect(workspace).not.toHaveClass(/workspace-expanded/);
+    await expect(workspace).toHaveClass(/workspace-open/);
+
+    await page.getByRole('button', {name: 'Expand Workspace'}).click();
+    await expect(workspace).toHaveClass(/workspace-expanded/);
+    await newChat.click();
+    await expect(workspace).not.toHaveClass(/workspace-expanded/);
+    await expect(workspace).toHaveClass(/workspace-open/);
   });
 
   test('right-side controls use the same aligned icon-button treatment', async ({page}) => {
@@ -2335,9 +2367,12 @@ test.describe('conversation', () => {
     const titleInput = page.getByRole('textbox', {name: 'Rename conversation'});
     await expect(titleInput).toHaveCSS('min-width', '96px');
     expect((await titleInput.boundingBox())!.width).toBeLessThan(300);
-    await titleInput.fill('Renamed thread');
+    await titleInput.fill('hi');
     await page.keyboard.press('Enter');
-    await expect(page.locator('.conversation-title-bar button')).toHaveText('Renamed thread');
+    const renamedTitle = page.locator('.conversation-title-bar button');
+    await expect(renamedTitle).toHaveText('hi');
+    await expect(renamedTitle).toHaveCSS('min-width', '200px');
+    expect((await renamedTitle.boundingBox())!.width).toBeGreaterThanOrEqual(200);
   });
 
   test('centres the title within the available titlebar when panels toggle', async ({page}) => {
@@ -2386,18 +2421,21 @@ test.describe('panels', () => {
     await expect(summaryCard(page)).toBeVisible();
   });
 
-  test('the new-tab menu opens the Hub, and stops offering it once it is open', async ({page}) => {
+  test('a New tab becomes the Hub in place, and another New tab stops offering it', async ({page}) => {
     await page.goto('/');
-    await send(page, 'hub from the menu');
+    await send(page, 'hub from a new tab');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
-    await page.getByLabel('New tab', {exact: true}).click();
-    // Drive and Schedule leave the title bar while the drawer is open and live
-    // in this menu instead; the Hub sits beside them and was missing from it.
-    await page.getByRole('menuitem', {name: 'Hub'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByLabel('New tab', {exact: true}).click();
+    await expect(drawer.locator('.tab.active')).toContainText('New tab');
+    const tabCount = await drawer.locator('.tab').count();
+    await drawer.locator('.workspace-launcher').getByRole('button', {name: 'Hub'}).click();
+    await expect(drawer.locator('.tab')).toHaveCount(tabCount);
+    await expect(drawer.locator('.tab.active')).toContainText('Hub');
     await expect(page.locator('.hub-view')).toBeVisible();
 
-    await page.getByLabel('New tab', {exact: true}).click();
-    await expect(page.getByRole('menuitem', {name: 'Hub'})).toHaveCount(0);
+    await drawer.getByLabel('New tab', {exact: true}).click();
+    await expect(drawer.locator('.workspace-launcher').getByRole('button', {name: 'Hub'})).toHaveCount(0);
   });
 
   test('clicking away from the address bar drops the caret and keeps the typed text', async ({page}) => {
@@ -2405,7 +2443,7 @@ test.describe('panels', () => {
     await send(page, 'address focus');
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
     await page.getByLabel('New tab', {exact: true}).click();
-    await page.getByRole('menuitem', {name: 'Browser'}).click();
+    await workspaceDrawer(page).locator('.workspace-launcher').getByRole('button', {name: 'Browser'}).click();
 
     const address = page.getByLabel('Address').last();
     await address.click();
@@ -2873,10 +2911,75 @@ test.describe('workspace drawer', () => {
     await expect(drawer.locator('.browser-bar')).toHaveCSS('border-bottom-width', '1px');
 
     await drawer.getByLabel('New tab', {exact: true}).click();
-    await drawer.getByRole('menuitem', {name: 'Drive'}).click();
+    await drawer.locator('.workspace-launcher').getByRole('button', {name: 'Drive'}).click();
     await expect(content).not.toHaveClass(/browser/);
     await expect(content).toHaveCSS('border-top-width', '1px');
     await expect(drawer.locator('.fb')).toHaveCSS('border-top-width', '0px');
+  });
+
+  test('fits the browser page below its chrome without clipping the bottom', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Browser'}).click();
+
+    const fit = await drawer.locator('.workspace-content').evaluate((content) => {
+      const chrome = content.querySelector('.browser-bar')!.getBoundingClientRect();
+      const frame = content.querySelector('.browser-frame')!.getBoundingClientRect();
+      const bounds = content.getBoundingClientRect();
+      return {
+        top: Math.abs(frame.top - chrome.bottom),
+        bottom: Math.abs(frame.bottom - bounds.bottom),
+      };
+    });
+    expect(fit.top).toBeLessThanOrEqual(1);
+    expect(fit.bottom).toBeLessThanOrEqual(1);
+  });
+
+  test('offers recent pages and search suggestions from the address bar with keyboard navigation', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+    const drawer = workspaceDrawer(page);
+    await drawer.getByRole('button', {name: 'Browser'}).click();
+
+    const address = drawer.getByRole('combobox', {name: 'Address'});
+    const suggestions = drawer.getByRole('listbox', {name: 'Address suggestions'});
+    await address.focus();
+    await expect(suggestions).toBeVisible();
+    await expect(suggestions.getByText('Recently visited', {exact: true})).toBeVisible();
+
+    await suggestions.getByRole('option').filter({hasText: 'Anthropic · GitHub'}).click();
+    await expect(drawer.locator('iframe.browser-frame')).toHaveAttribute('src', 'https://github.com/anthropics');
+    await expect(suggestions).toHaveCount(0);
+
+    await address.fill('notion');
+    await expect(suggestions).toBeVisible();
+    await expect(suggestions.getByText('Search suggestions', {exact: true})).toBeVisible();
+    await expect(suggestions.getByRole('option').filter({hasText: 'notion login'})).toBeVisible();
+    await expect(suggestions.getByRole('option')).toHaveCount(7);
+
+    for (let index = 0; index < 7; index += 1) await address.press('ArrowDown');
+    const selectedAtBottom = suggestions.locator('[role="option"][aria-selected="true"]');
+    const visibility = await Promise.all([suggestions.boundingBox(), selectedAtBottom.boundingBox()]);
+    expect(visibility[0]).not.toBeNull();
+    expect(visibility[1]).not.toBeNull();
+    expect(visibility[1]!.y).toBeGreaterThanOrEqual(visibility[0]!.y);
+    expect(visibility[1]!.y + visibility[1]!.height).toBeLessThanOrEqual(visibility[0]!.y + visibility[0]!.height + 1);
+
+    await address.press('Escape');
+    await expect(suggestions).toHaveCount(0);
+    await address.fill('notion');
+    await expect(suggestions.getByRole('option')).toHaveCount(7);
+
+    await address.press('ArrowDown');
+    await expect(suggestions.getByRole('option').filter({hasText: 'Roadmap'})).toHaveAttribute('aria-selected', 'true');
+    await address.press('ArrowDown');
+    const firstSearch = suggestions.locator('.address-suggestion:has(svg[data-icon="search"])').first();
+    await expect(firstSearch).toContainText('notion');
+    await expect(firstSearch).toHaveAttribute('aria-selected', 'true');
+    await address.press('Enter');
+    await expect(drawer.locator('iframe.browser-frame')).toHaveAttribute('src', 'https://www.google.com/search?q=notion');
+    await expect(suggestions).toHaveCount(0);
   });
 
   test('separate workspace opens directly with only its tabs and new-tab control', async ({page}) => {
@@ -2897,11 +3000,9 @@ test.describe('workspace drawer', () => {
     const newTab = drawer.getByRole('button', {name: 'New Tab'});
     await expect(newTab).toBeVisible();
     await newTab.click();
-    const menu = drawer.getByRole('menu');
-    await expect(menu).toBeVisible();
-    const [buttonBox, menuBox] = await Promise.all([newTab.boundingBox(), menu.boundingBox()]);
-    expect(Math.abs((buttonBox!.x + buttonBox!.width) - (menuBox!.x + menuBox!.width))).toBeLessThan(1);
-    expect(menuBox!.x).toBeGreaterThanOrEqual(0);
+    await expect(drawer.locator('.tab.active')).toContainText('New tab');
+    await expect(drawer.locator('.workspace-launcher')).toBeVisible();
+    await expect(drawer.getByRole('menu')).toHaveCount(0);
   });
 
   test('releases global tab availability when its separate window closes', async ({page, context}) => {
@@ -2920,21 +3021,22 @@ test.describe('workspace drawer', () => {
     const drawer = workspaceDrawer(main);
     await drawer.getByRole('button', {name: 'Browser'}).click();
     await drawer.getByLabel('New tab', {exact: true}).click();
-    await expect(drawer.getByRole('menuitem', {name: 'Drive'})).toHaveCount(0);
-    await expect(drawer.getByRole('menuitem', {name: 'Hub'})).toHaveCount(0);
-    await expect(drawer.getByRole('menuitem', {name: 'Tasks'})).toHaveCount(0);
+    const launcher = drawer.locator('.workspace-launcher');
+    await expect(launcher.getByRole('button', {name: 'Drive'})).toHaveCount(0);
+    await expect(launcher.getByRole('button', {name: 'Hub'})).toHaveCount(0);
+    await expect(launcher.getByRole('button', {name: 'Tasks'})).toHaveCount(0);
 
     await page.close();
-    await expect(drawer.getByRole('menuitem', {name: 'Drive'})).toBeVisible();
-    await expect(drawer.getByRole('menuitem', {name: 'Hub'})).toHaveCount(0);
-    await expect(drawer.getByRole('menuitem', {name: 'Tasks'})).toHaveCount(0);
+    await expect(launcher.getByRole('button', {name: 'Drive'})).toBeVisible();
+    await expect(launcher.getByRole('button', {name: 'Hub'})).toHaveCount(0);
+    await expect(launcher.getByRole('button', {name: 'Tasks'})).toHaveCount(0);
 
     await hubWindow.close();
-    await expect(drawer.getByRole('menuitem', {name: 'Hub'})).toBeVisible();
-    await expect(drawer.getByRole('menuitem', {name: 'Tasks'})).toHaveCount(0);
+    await expect(launcher.getByRole('button', {name: 'Hub'})).toBeVisible();
+    await expect(launcher.getByRole('button', {name: 'Tasks'})).toHaveCount(0);
 
     await tasksWindow.close();
-    await expect(drawer.getByRole('menuitem', {name: 'Tasks'})).toBeVisible();
+    await expect(launcher.getByRole('button', {name: 'Tasks'})).toBeVisible();
   });
 
   test('reorders workspace tabs by dragging them across the strip', async ({page}) => {
@@ -2943,7 +3045,7 @@ test.describe('workspace drawer', () => {
     const drawer = workspaceDrawer(page);
     await drawer.getByRole('button', {name: 'Drive'}).click();
     await drawer.getByRole('button', {name: 'New Tab'}).click();
-    await drawer.getByRole('menuitem', {name: 'Hub'}).click();
+    await drawer.locator('.workspace-launcher').getByRole('button', {name: 'Hub'}).click();
 
     const tabs = drawer.locator('.tab');
     await expect(tabs.locator('.tab-main')).toHaveText(['Drive', 'Hub']);
@@ -3487,161 +3589,6 @@ test.describe('dictation', () => {
   });
 });
 
-test.describe('first-run setup', () => {
-  /** `?onboarding` puts the demo API into a genuine first-run state. */
-  const start = async (page: import('@playwright/test').Page) => {
-    await page.goto('/?onboarding');
-    await expect(page.getByRole('region', {name: 'Set up Polymux'})).toBeVisible({timeout: 15000});
-  };
-
-  /**
-   * The welcome screen is the brand lockup and one button; every other screen
-   * is reached through it, so each test starts by opening the deck.
-   */
-  const begin = async (page: import('@playwright/test').Page) => {
-    await start(page);
-    const setup = page.getByRole('region', {name: 'Set up Polymux'});
-    await expect(setup.getByRole('heading', {name: 'Polymux'})).toBeVisible();
-    // Nothing is behind the welcome screen, so it offers no way back — and
-    // nothing has been asked of you yet, so there is nothing to skip either.
-    await expect(setup.getByRole('button', {name: 'Back'})).toHaveCount(0);
-    await expect(setup.getByRole('button', {name: 'Skip setup'})).toBeHidden();
-    await setup.getByRole('button', {name: 'Start'}).click();
-    // From the first real screen on, the way out rides the window's corner. It
-    // arrives once the pan has landed rather than during it.
-    await expect(setup.getByRole('button', {name: 'Skip setup'})).toBeVisible();
-    return setup;
-  };
-
-  test('walks every step and ends in the app', async ({page}) => {
-    const setup = await begin(page);
-
-    // The Hub comes first, and starting it is the one thing to decide: Polymux
-    // makes its own account on it, so there are no fields.
-    await expect(setup.getByRole('heading')).toContainText(
-      'One place for everything you talk on',
-    );
-    await setup.getByRole('button', {name: 'Start the Hub'}).click();
-    await setup.getByRole('button', {name: 'Continue'}).click();
-
-    // Model: a provider is preselected, and connecting needs a key.
-    await expect(setup.getByRole('heading')).toContainText('Choose who Polymux thinks with');
-    // Every provider is in the one scrolling grid, and the search above it
-    // narrows that grid rather than opening a list of its own.
-    // Hosted providers and the local runtimes share one list.
-    await expect(setup.getByRole('radio')).toHaveCount(7);
-    await expect(setup.getByRole('radio', {name: /Ollama/})).toBeVisible();
-    const providerSearch = setup.getByLabel('Search providers');
-    await providerSearch.fill('router');
-    await expect(setup.getByRole('radio')).toHaveCount(1);
-    await expect(setup.getByRole('radio', {name: /OpenRouter/})).toBeVisible();
-    await providerSearch.fill('nothing-here');
-    await expect(setup.getByText('No provider matches that search.')).toBeVisible();
-    await providerSearch.fill('');
-    await expect(setup.getByRole('radio')).toHaveCount(7);
-    await setup.getByRole('radio', {name: /OpenAI/}).click();
-    const set = setup.getByRole('button', {name: 'Set', exact: true});
-    await expect(set).toBeDisabled();
-    await setup.locator('input[type="password"]').fill('sk-test-key');
-    await expect(set).toBeEnabled();
-    await set.click();
-
-    // Setting the provider does not leave the step: the same grid comes back
-    // carrying that provider's models, and Continue is what moves on.
-    await expect(setup.getByRole('heading')).toContainText('Now pick the model');
-    await expect(setup.getByRole('radio')).toHaveCount(2);
-    const modelSearch = setup.getByLabel('Search models');
-    await modelSearch.fill('sol');
-    await expect(setup.getByRole('radio')).toHaveCount(1);
-    await modelSearch.fill('');
-    await setup.getByRole('radio', {name: /GPT-5.6 Sol/}).click();
-    await setup.getByRole('button', {name: 'Continue'}).click();
-
-    // Import is optional and precedes permissions in the current flow.
-    await expect(setup.getByRole('heading')).toContainText('Bring your tools along');
-    await setup.getByRole('button', {name: 'Skip', exact: true}).click();
-
-    // Permissions are requested one at a time, each from its own button.
-    await expect(setup.getByRole('heading')).toContainText('only what you want');
-    const allow = setup.getByRole('button', {name: 'Allow'});
-    // Microphone, screen reading and screen recording — every grant macOS
-    // raises a dialog for. Setup is where they are asked for, so a grant that
-    // had no row here would have nowhere left to be offered except the moment
-    // something needed it.
-    await expect(allow).toHaveCount(3);
-    await allow.first().click();
-    await expect(setup.getByText('Allowed').first()).toBeVisible();
-    // Full Disk Access is the one macOS never prompts for, so its row offers
-    // the pane it is switched on in rather than an Allow that does nothing.
-    await expect(setup.getByRole('button', {name: 'Open Settings'})).toBeVisible();
-    // Continue means "all of them are settled", so it stays out of reach while
-    // any of them is not — here, the one macOS only grants from its own pane.
-    await expect(setup.getByRole('button', {name: 'Continue'})).toBeDisabled();
-    // Every step carries its own way back, beside the way forward.
-    await expect(setup.getByRole('button', {name: 'Back'})).toBeVisible();
-    await setup.getByRole('button', {name: 'Skip setup'}).click();
-
-    // The closing screen is one line and the way in.
-    await expect(setup.getByRole('heading')).toContainText("You're ready to go");
-    // Setup is over, so there is nothing left to skip — the corner that carried
-    // the way out now carries the way back, and the disc is left holding the
-    // one button that ends setup.
-    await expect(setup.getByRole('button', {name: 'Skip setup'})).toBeHidden();
-    await expect(setup.getByRole('button', {name: 'Back'})).toBeVisible();
-    await expect(setup.locator('.onb-corner').getByRole('button', {name: 'Back'})).toBeVisible();
-    await expect(setup.locator('.onb-slide.disc .onb-actions').getByRole('button')).toHaveCount(1);
-
-    // The closing disc breathes for as long as it is on screen, so the button
-    // riding it never holds still for a pointer. Keyboard activation is the
-    // same path and does not wait on a bounding box that keeps moving.
-    await setup.getByRole('button', {name: 'Get started'}).press('Enter');
-    await expect(setup).toHaveCount(0, {timeout: 5000});
-    await expect(page.getByText('What can I help with?')).toBeVisible();
-  });
-
-  test('renders a scannable pairing code inline', async ({page}) => {
-    const setup = await begin(page);
-    await setup.getByRole('button', {name: 'Start the Hub'}).click();
-
-    // A platform is opened from its seat on the ring, and one offering more
-    // than one way in shows them all rather than picking for you. The seats are
-    // positioned per frame by the ring's own loop, so they are never stable
-    // enough for a pointer — the keyboard reaches them the same way.
-    await setup.getByRole('button', {name: 'WhatsApp'}).press('Enter');
-    await setup.getByRole('button', {name: /QR Code/}).click();
-
-    // The choice is taken immediately: the methods go, and the box the code
-    // will fill is already on screen while the bridge is still producing it.
-    await expect(setup.getByRole('button', {name: /Pairing code/})).toHaveCount(0);
-    await expect(setup.getByText('Getting QR Code ready…')).toBeVisible();
-
-    const qr = setup.getByRole('img', {name: 'Pairing QR code'});
-    await expect(qr).toBeVisible();
-    // The quiet zone is part of the symbol, and the ground stays light in both
-    // themes — a dark-inverted QR does not scan.
-    await expect(qr).toHaveAttribute('viewBox', /^-4 -4 /);
-    await expect(qr.locator('rect')).toHaveAttribute('fill', '#fff');
-
-    // Picking a method is not a commitment: the code on screen is no use if the
-    // phone is in another room, so the other ways in stay one click away.
-    await setup.getByRole('button', {name: 'Other verification methods'}).click();
-    await expect(qr).toHaveCount(0);
-    await expect(setup.getByRole('button', {name: /QR Code/})).toBeVisible();
-    await expect(setup.getByRole('button', {name: /Pairing code/})).toBeVisible();
-  });
-
-  test('leaving setup goes straight to the app', async ({page}) => {
-    const setup = await begin(page);
-    // Skip setup passes every remaining screen at once, landing on the closing
-    // one rather than on the next step.
-    await setup.getByRole('button', {name: 'Skip setup'}).click();
-    await expect(setup.getByRole('heading')).toContainText("You're ready to go");
-    await setup.getByRole('button', {name: 'Get started'}).press('Enter');
-    await expect(setup).toHaveCount(0);
-    await expect(page.getByText('What can I help with?')).toBeVisible();
-  });
-});
-
 test.describe('hub settings mail', () => {
   test('the rail carries one Mail entry and the pane lists every mailbox', async ({page}) => {
     await page.goto('/');
@@ -3848,6 +3795,19 @@ test.describe('hub view', () => {
     await page.locator('.workspace-launcher-row', {hasText: 'Hub'}).click();
     await expect(page.locator('.hub-view')).toBeVisible();
   };
+
+  test('gives Hub search fields a subtle hover highlight', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await openMailbox(view);
+    const search = view.getByPlaceholder('Search this folder');
+
+    await expect(search).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+    await expect(search).toHaveCSS('border-color', 'rgb(236, 236, 236)');
+    await search.hover();
+    await expect(search).toHaveCSS('background-color', 'rgb(243, 243, 243)');
+    await expect(search).toHaveCSS('border-color', 'rgb(217, 217, 217)');
+  });
 
   test('new mail starts with the mailbox default and can swap it', async ({page}) => {
     await openView(page);
@@ -4076,6 +4036,43 @@ test.describe('hub view', () => {
 
     await expect(prompt.locator('[data-chip][data-name="agent-note.txt"]')).toHaveCount(1);
     await expect(view.locator('.hub-view-chat-files')).toHaveCount(0);
+  });
+
+  test('normal Hub mode marks a conversation read when it is opened', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    const chat = view.locator('.hub-view-row', {hasText: 'Family'});
+    const unread = chat.locator('.hub-view-chat-unread');
+    await expect(unread).toHaveText('2');
+    await chat.click();
+    await expect(unread).toHaveCount(0);
+  });
+
+  test('refreshes native read and unread changes while another chat is open', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    const family = view.locator('.hub-view-row', {hasText: 'Family'});
+    const unread = family.locator('.hub-view-chat-unread');
+    await expect(unread).toHaveText('2');
+
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+    await page.evaluate(() => {
+      (window as unknown as {
+        polymuxDemoSetChatUnread: (chatId: string, unread: number) => void;
+      }).polymuxDemoSetChatUnread('!wa-family:local', 0);
+      window.dispatchEvent(new Event('focus'));
+    });
+    await expect(unread).toHaveCount(0);
+
+    await page.evaluate(() => {
+      (window as unknown as {
+        polymuxDemoSetChatUnread: (chatId: string, unread: number) => void;
+      }).polymuxDemoSetChatUnread('!wa-family:local', 1);
+      window.dispatchEvent(new Event('focus'));
+    });
+    await expect(unread).toHaveText('1');
   });
 
   test('Hub incognito mode keeps a conversation unread when it is opened', async ({page}) => {
@@ -4330,6 +4327,85 @@ test.describe('hub view', () => {
     await expect(view.locator('.hub-view-accounts')).toHaveCount(0);
   });
 
+  test('creates a cross-platform broadcast and sends separate private messages', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const fixedSources = view.locator('.hub-view-source-fixed .hub-view-source');
+    await expect(fixedSources).toHaveText(['All Platforms', 'Broadcasts']);
+
+    await fixedSources.filter({hasText: 'Broadcasts'}).click();
+    const empty = view.locator('.hub-view-broadcast-empty');
+    await expect(empty.getByRole('heading', {name: 'No broadcasts yet'})).toBeVisible();
+    await expect(empty).toContainText('Recipients can’t see anyone else in the broadcast.');
+    await empty.getByRole('button', {name: 'Create broadcast'}).click();
+
+    await expect(view.getByText('Each person receives a separate message and can’t see the other recipients.')).toBeVisible();
+    const contacts = view.locator('.hub-view-new-chat-contact');
+    await contacts.filter({hasText: 'Jules Tan'}).click();
+    await contacts.filter({hasText: 'Carl’s chat'}).click();
+    await view.getByRole('textbox', {name: 'Broadcast name'}).fill('Launch update');
+    await view.getByRole('button', {name: 'Create broadcast', exact: true}).click();
+
+    await expect(view.getByRole('heading', {name: 'Launch update'})).toBeVisible();
+    await expect(view.locator('.hub-view-broadcast-head')).toContainText('2 people · sent separately and privately');
+    const composer = view.locator('.hub-view-broadcast-composer-row textarea');
+    await composer.fill('We ship tomorrow.');
+    await view.getByRole('button', {name: 'Send broadcast privately'}).click();
+    await expect(view.locator('.hub-view-bubble.mine').first()).toContainText('We ship tomorrow.');
+    await expect(view.locator('.hub-view-broadcast-delivery')).toContainText('Delivered privately to 2');
+
+    await view.locator('.hub-view-back').click();
+    const row = view.locator('.hub-view-broadcast-rows .hub-view-row', {hasText: 'Launch update'});
+    await expect(row).toContainText('2 people');
+    await expect(row).toContainText('We ship tomorrow.');
+  });
+
+  test('filters and sorts Hub conversations beside the new-chat control', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    const header = view.locator('.hub-view-list-head').first();
+    const filter = header.getByRole('button', {name: 'Filter and Sort'});
+
+    await expect(filter).toBeVisible();
+    await expect(filter).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    const placement = await header.evaluate((node) => {
+      const filterBox = node.querySelector<HTMLElement>('.hub-view-chat-filter-button')!.getBoundingClientRect();
+      const newChatBox = node.querySelector<HTMLElement>('.hub-view-new-chat-icon')!.getBoundingClientRect();
+      return {filterRight: filterBox.right, newChatLeft: newChatBox.left};
+    });
+    expect(placement.filterRight).toBeLessThanOrEqual(placement.newChatLeft);
+
+    await filter.click();
+    const menu = view.getByRole('menu', {name: 'Filter and Sort'});
+    await expect(menu).toBeVisible();
+    await expect(filter).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    const menuPlacement = await menu.evaluate((node) => {
+      const menuBox = node.getBoundingClientRect();
+      const filterBox = document.querySelector<HTMLElement>('.hub-view-chat-filter-button')!.getBoundingClientRect();
+      return {top: menuBox.top, filterBottom: filterBox.bottom};
+    });
+    expect(menuPlacement.top).toBeGreaterThan(menuPlacement.filterBottom);
+
+    await menu.getByRole('menuitemradio', {name: 'Unread'}).click();
+    await expect(filter).toHaveClass(/on/);
+    await expect(filter).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(view.locator('.hub-view-row', {hasText: 'Family'})).toBeVisible();
+    await expect(view.locator('.hub-view-row', {hasText: 'Jules Tan'})).toHaveCount(0);
+    await expect(view.locator('.hub-view-row', {hasText: 'Q3 numbers'}).first()).toBeVisible();
+
+    await filter.click();
+    await menu.getByRole('menuitemradio', {name: 'All messages'}).click();
+    const rowLabels = view.locator('.hub-view-rows > li .hub-view-row strong');
+    const latestFirst = await rowLabels.allInnerTexts();
+    await filter.click();
+    await menu.getByRole('menuitemradio', {name: 'Earliest message first'}).click();
+    const earliestFirst = await rowLabels.allInnerTexts();
+    expect(earliestFirst[0]).not.toBe(latestFirst[0]);
+
+    await view.locator('.hub-view-source', {hasText: 'Contacts'}).click();
+    await expect(view.getByRole('button', {name: 'Filter and Sort'})).toHaveCount(0);
+  });
+
   test('opens a bridged Space stack into its child chats and returns to the platform', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
@@ -4414,6 +4490,28 @@ test.describe('hub view', () => {
     await expect(view.getByRole('heading', {name: 'Jules Tan'})).toBeVisible();
   });
 
+  test('limits the new-chat picker to the currently selected platform', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.getByRole('button', {name: 'New chat'}).click();
+    const pickerRows = view.locator('.hub-view-new-chat-contact');
+    await expect(pickerRows.locator('strong')).toHaveText(['Jules Tan', '+12262184662']);
+    await expect(pickerRows.locator('.hub-view-platform-badge')).toHaveCount(2);
+
+    await view.getByRole('button', {name: 'Close new chat'}).click();
+    await view.locator('.hub-view-source', {hasText: 'All Platforms'}).click();
+    await view.getByRole('button', {name: 'New chat'}).click();
+    await expect(pickerRows.locator('strong')).toHaveText([
+      'File Transfer',
+      'Jules Tan',
+      '+12262184662',
+      'Carl’s chat',
+      'Polymux chat',
+    ]);
+  });
+
   test('uses a profile glyph when a bare phone number has no avatar initial', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
@@ -4476,7 +4574,7 @@ test.describe('hub view', () => {
 
     expect(await names()).toEqual([before[1], before[0], ...before.slice(2)]);
     // And the click the drag ends with does not also select what was dragged.
-    await expect(view.locator('.hub-view-source-fixed .hub-view-source')).toHaveClass(/active/);
+    await expect(view.locator('.hub-view-source-fixed .hub-view-source').first()).toHaveClass(/active/);
     await expect(view.locator('.hub-view-source').first()).toHaveText('All Platforms');
   });
 
@@ -4686,7 +4784,7 @@ test.describe('hub view', () => {
     // at has to survive that, or coming back starts from a default source and
     // rebuilds the pane the user was already in.
     await page.getByRole('button', {name: 'New tab', exact: true}).click();
-    await page.getByRole('menuitem', {name: 'Browser'}).click();
+    await page.locator('.workspace-launcher').getByRole('button', {name: 'Browser'}).click();
     await page.locator('.tab', {hasText: 'Hub'}).locator('.tab-main').click();
 
     await expect(page.locator('.hub-view .hub-view-bubble').first()).toBeVisible();
@@ -4708,7 +4806,7 @@ test.describe('hub view', () => {
     await expect(view.locator('.hub-view-composer textarea')).toHaveValue('Draft for Jules');
 
     await page.getByRole('button', {name: 'New tab', exact: true}).click();
-    await page.getByRole('menuitem', {name: 'Browser'}).click();
+    await page.locator('.workspace-launcher').getByRole('button', {name: 'Browser'}).click();
     await page.locator('.tab', {hasText: 'Hub'}).locator('.tab-main').click();
     await expect(page.locator('.hub-view-composer textarea')).toHaveValue('Draft for Jules');
   });
@@ -4724,7 +4822,7 @@ test.describe('hub view', () => {
     await compose.locator('textarea').fill('Are we still on?');
 
     await page.getByRole('button', {name: 'New tab', exact: true}).click();
-    await page.getByRole('menuitem', {name: 'Browser'}).click();
+    await page.locator('.workspace-launcher').getByRole('button', {name: 'Browser'}).click();
     await page.locator('.tab', {hasText: 'Hub'}).locator('.tab-main').click();
 
     const restored = page.locator('.hub-view-compose-form');
@@ -4743,21 +4841,24 @@ test.describe('hub view', () => {
     await expect(view.locator('.hub-view-bubble .hub-view-bubble-who')).toHaveCount(0);
     const identities = view.locator('.hub-view-bubble-who');
     const names = identities.locator(':scope > span:last-child');
-    // Newest first: Dad's message, then the run of two from Mum named once.
-    await expect(names).toHaveText(['Dad', 'Mum']);
+    // Newest first: Dad, then Mum on each side of the group notice. A notice
+    // deliberately starts a new sender run just like a date stamp does.
+    await expect(names).toHaveText(['Dad', 'Mum', 'Mum']);
     const avatar = identities.filter({hasText: 'Mum'}).locator('img');
-    await expect(avatar).toHaveCount(1);
-    await expect(avatar).toHaveCSS('width', '11px');
-    await expect(avatar).toHaveCSS('height', '11px');
-    await expect(avatar).toHaveCSS('border-radius', '3px');
+    await expect(avatar).toHaveCount(2);
+    for (const image of await avatar.all()) {
+      await expect(image).toHaveCSS('width', '11px');
+      await expect(image).toHaveCSS('height', '11px');
+      await expect(image).toHaveCSS('border-radius', '3px');
+    }
 
     // Direct conversations use the same sender identity treatment. With no
     // source image in this fixture, the shared fallback supplies the initial.
     await view.locator('.hub-view-back').click();
     await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
     const directSender = view.locator('.hub-view-bubble-who');
-    // The bridge's raw profile still carries its Matrix compatibility suffix;
-    // the visible identity above both message runs does not.
+    // One raw profile carries Matrix compatibility metadata and the other is
+    // unresolved; both visible identities use the direct contact's real name.
     await expect(directSender.locator(':scope > span:last-child')).toHaveText(['Jules Tan', 'Jules Tan']);
     await expect(view.getByText('Jules Tan (WA)', {exact: true})).toHaveCount(0);
     const fallback = directSender.locator('.hub-view-chat-avatar.placeholder');
@@ -4782,6 +4883,18 @@ test.describe('hub view', () => {
       outgoing: node.querySelector('.hub-view-bubble-who-space')!.getBoundingClientRect().height,
     }));
     expect(heights.outgoing).toBe(heights.incoming);
+  });
+
+  test('a direct chat replaces a generic bridge profile with the contact name', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    await expect(
+      view.locator('.hub-view-bubble-who > span:last-child'),
+    ).toHaveText(['Jules Tan', 'Jules Tan']);
+    await expect(view.getByText('Unknown user', {exact: true})).toHaveCount(0);
   });
 
   test('a conversation notice is centred text rather than an outgoing bubble', async ({page}) => {
@@ -5193,6 +5306,52 @@ test.describe('hub view', () => {
     await expect(view.locator('.hub-view-bubble.mine').first()).toContainText('Works for me.');
   });
 
+  test('shows reactor profiles until separate reactions need a compact emoji stack', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const profiled = view.locator('[data-message-id="c1"] .hub-view-reactions');
+    await expect(profiled).toBeVisible();
+    await expect(profiled).not.toHaveClass(/compact/);
+    const separate = profiled.locator('.hub-view-reactions-normal .hub-view-reaction');
+    await expect(separate).toHaveCount(2);
+    await expect(separate.nth(0).locator('.hub-view-reaction-avatar')).toHaveCount(3);
+    await expect(separate.nth(0).locator('img.hub-view-reaction-avatar')).toHaveCount(1);
+    await expect(separate.nth(1).locator('.hub-view-reaction-avatar')).toHaveCount(0);
+    await expect(separate.nth(1).locator('.hub-view-reaction-count')).toHaveText('4');
+    await expect(profiled.locator('.hub-view-reactions-compact')).toHaveCount(0);
+
+    await view.locator('.hub-view-source', {hasText: 'All Platforms'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Dev Chat'}).click();
+    const overflowed = view.locator('[data-message-id="c4"] .hub-view-reactions');
+    await expect(overflowed).toHaveClass(/compact/);
+    const compact = overflowed.locator('.hub-view-reactions-compact');
+    await expect(compact).toBeVisible();
+    await expect(compact.locator('.hub-view-reaction-emoji-button')).toHaveCount(3);
+    await expect(compact.locator('.hub-view-reaction-avatar')).toHaveCount(0);
+    await expect(compact.locator('.hub-view-reaction-count')).toHaveText('99+');
+  });
+
+  test('refreshes a late reaction on an already loaded past message', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const message = view.locator('[data-message-id="c1"]');
+    await expect(message.getByRole('button', {name: /🔥/})).toHaveCount(0);
+    await page.evaluate(() => {
+      const demo = window as unknown as {
+        polymuxDemoIncomingReaction: (chatId: string, messageId: string, key: string) => void;
+      };
+      demo.polymuxDemoIncomingReaction('!wa-jules:local', 'c1', '🔥');
+    });
+
+    await expect(message.getByRole('button', {name: /🔥, 1 reaction/})).toBeVisible();
+  });
+
   test('reveals the reaction picker below without a final search-field shift', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
@@ -5298,6 +5457,172 @@ test.describe('hub view', () => {
     await expect(rows).toHaveCount(1);
     await view.locator('.hub-view-list-head input[type="search"]').fill('');
     await expect(rows).toHaveCount(all);
+  });
+
+  test('aligns the chat list and conversation header rules', async ({page}) => {
+    await openView(page);
+    await page.getByRole('button', {name: 'Expand Workspace'}).click();
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const geometry = await view.evaluate((hub) => {
+      const list = hub.querySelector<HTMLElement>('.hub-view-list-head');
+      const conversation = hub.querySelector<HTMLElement>('.hub-view-chat-head');
+      if (!list || !conversation) throw new Error('Hub chat headers are missing');
+      const listBox = list.getBoundingClientRect();
+      const conversationBox = conversation.getBoundingClientRect();
+      return {
+        listHeight: listBox.height,
+        conversationHeight: conversationBox.height,
+        listBottom: listBox.bottom,
+        conversationBottom: conversationBox.bottom,
+      };
+    });
+
+    expect(geometry.conversationHeight).toBe(geometry.listHeight);
+    expect(geometry.conversationBottom).toBe(geometry.listBottom);
+  });
+
+  test('hands Hub panes over continuously while the workspace expands and minimises', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+
+    const sampleMotion = (label: 'Expand Workspace' | 'Minimise Workspace') =>
+      page.evaluate(async (buttonLabel) => {
+        const drawer = document.querySelector<HTMLElement>('.workspace-drawer');
+        const list = document.querySelector<HTMLElement>('.hub-view-list');
+        const reader = document.querySelector<HTMLElement>('.hub-view-reader');
+        const button = [...document.querySelectorAll<HTMLButtonElement>('button')]
+          .find((candidate) => candidate.getAttribute('aria-label') === buttonLabel);
+        if (!drawer || !list || !reader || !button) throw new Error('Hub motion surface is incomplete');
+
+        const frames: Array<{
+          drawerWidth: number;
+          listWidth: number;
+          readerWidth: number;
+          listDisplay: string;
+          readerDisplay: string;
+        }> = [];
+        button.click();
+        const started = performance.now();
+        await new Promise<void>((resolve) => {
+          const sample = (now: number) => {
+            if (drawer.classList.contains('motion')) {
+              frames.push({
+                drawerWidth: drawer.getBoundingClientRect().width,
+                listWidth: list.getBoundingClientRect().width,
+                readerWidth: reader.getBoundingClientRect().width,
+                listDisplay: getComputedStyle(list).display,
+                readerDisplay: getComputedStyle(reader).display,
+              });
+            }
+            if (now - started < 520) requestAnimationFrame(sample);
+            else resolve();
+          };
+          requestAnimationFrame(sample);
+        });
+        return frames;
+      }, label);
+
+    const expanding = await sampleMotion('Expand Workspace');
+    const minimising = await sampleMotion('Minimise Workspace');
+    expect(expanding.length).toBeGreaterThan(10);
+    expect(minimising.length).toBeGreaterThan(10);
+
+    for (const frames of [expanding, minimising]) {
+      expect(frames.every((frame) => frame.listDisplay === 'flex' && frame.readerDisplay === 'flex')).toBe(true);
+      // One 60 Hz frame can move the whole drawer by roughly 60px at the
+      // easing's midpoint. A larger internal jump means a pane swapped at a
+      // breakpoint rather than travelling with that drawer frame.
+      for (let index = 1; index < frames.length; index++) {
+        expect(Math.abs(frames[index].listWidth - frames[index - 1].listWidth)).toBeLessThan(80);
+        expect(Math.abs(frames[index].readerWidth - frames[index - 1].readerWidth)).toBeLessThan(80);
+      }
+    }
+    for (let index = 1; index < expanding.length; index++) {
+      expect(expanding[index].drawerWidth).toBeGreaterThanOrEqual(expanding[index - 1].drawerWidth);
+      expect(expanding[index].listWidth).toBeGreaterThanOrEqual(expanding[index - 1].listWidth);
+      expect(expanding[index].readerWidth).toBeGreaterThanOrEqual(expanding[index - 1].readerWidth);
+    }
+    for (let index = 1; index < minimising.length; index++) {
+      expect(minimising[index].drawerWidth).toBeLessThanOrEqual(minimising[index - 1].drawerWidth);
+      expect(minimising[index].listWidth).toBeLessThanOrEqual(minimising[index - 1].listWidth);
+      expect(minimising[index].readerWidth).toBeLessThanOrEqual(minimising[index - 1].readerWidth);
+    }
+  });
+
+  test('keeps the main conversation smooth when the workspace icon toggles a populated Hub', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
+    await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
+    await expect(page.locator('.tab')).toHaveCount(1);
+    await expect(page.locator('.tab')).toContainText('Hub');
+
+    const sampleMotion = () => page.evaluate(async () => {
+      const drawer = document.querySelector<HTMLElement>('.workspace-drawer');
+      const hub = document.querySelector<HTMLElement>('.hub-view');
+      const conversation = document.querySelector<HTMLElement>('.conversation-column');
+      const toggle = [...document.querySelectorAll<HTMLButtonElement>('button')]
+        .find((candidate) => candidate.getAttribute('aria-label') === 'Toggle Workspace');
+      if (!drawer || !hub || !conversation || !toggle)
+        throw new Error('Workspace toggle motion surface is incomplete');
+
+      const frames: Array<{
+        drawerLeft: number;
+        drawerWidth: number;
+        conversationWidth: number;
+        conversationRight: number;
+        hubRightColumn: string;
+        hubComposerColumn: string;
+      }> = [];
+      toggle.click();
+      const started = performance.now();
+      await new Promise<void>((resolve) => {
+        const sample = (now: number) => {
+          const drawerBox = drawer.getBoundingClientRect();
+          const conversationBox = conversation.getBoundingClientRect();
+          const hubStyle = getComputedStyle(hub);
+          frames.push({
+            drawerLeft: drawerBox.left,
+            drawerWidth: drawerBox.width,
+            conversationWidth: conversationBox.width,
+            conversationRight: conversationBox.right,
+            hubRightColumn: hubStyle.getPropertyValue('--content-right-column').trim(),
+            hubComposerColumn: hubStyle.getPropertyValue('--content-composer-column').trim(),
+          });
+          if (now - started < 520) requestAnimationFrame(sample);
+          else resolve();
+        };
+        requestAnimationFrame(sample);
+      });
+      return frames;
+    });
+
+    const closing = await sampleMotion();
+    const opening = await sampleMotion();
+    expect(closing.length).toBeGreaterThan(10);
+    expect(opening.length).toBeGreaterThan(10);
+
+    for (const frames of [closing, opening]) {
+      const drawerWidths = frames.map((frame) => frame.drawerWidth);
+      expect(Math.max(...drawerWidths) - Math.min(...drawerWidths)).toBeLessThan(1);
+      expect(frames.every((frame) => frame.hubRightColumn === '0px')).toBe(true);
+      expect(frames.every((frame) => frame.hubComposerColumn === '0px')).toBe(true);
+      for (let index = 1; index < frames.length; index++) {
+        expect(Math.abs(frames[index].drawerLeft - frames[index - 1].drawerLeft)).toBeLessThan(80);
+        expect(Math.abs(frames[index].conversationWidth - frames[index - 1].conversationWidth)).toBeLessThan(80);
+        expect(Math.abs(frames[index].conversationRight - frames[index - 1].conversationRight)).toBeLessThan(80);
+      }
+    }
+
+    expect(closing[0].drawerLeft).toBeLessThan(closing.at(-1)!.drawerLeft);
+    expect(closing[0].conversationRight).toBeLessThan(closing.at(-1)!.conversationRight);
+    expect(opening[0].drawerLeft).toBeGreaterThan(opening.at(-1)!.drawerLeft);
+    expect(opening[0].conversationRight).toBeGreaterThan(opening.at(-1)!.conversationRight);
   });
 
   test('a sticker is drawn at a sticker\'s size, not the width of the thread', async ({page}) => {
@@ -5469,7 +5794,7 @@ test.describe('workspace persistence', () => {
     // A different chat starts from its own (empty) workspace, not this one's.
     // New Chat rather than a second chat row: which older groups the
     // drawer surfaces by default is being reworked in a parallel branch.
-    await page.getByRole('button', {name: 'New Chat'}).click();
+    await page.getByRole('button', {name: 'New Chat', exact: true}).click();
     await expect(page.locator('.hub-view')).toHaveCount(0);
 
     // Returning restores the first chat's layout: tab back, drawer open.
@@ -5515,12 +5840,19 @@ test.describe('interface language', () => {
 test.describe('browser extension prompt', () => {
   test('gives a ready update priority over the extension prompt', async ({page}) => {
     await page.goto('/?extension=missing&update=ready');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    await page
+      .getByRole('region', {name: 'Settings'})
+      .getByRole('button', {name: 'Language'})
+      .click();
+    await page.getByRole('menuitemradio', {name: 'Español'}).click();
+    await page.getByRole('button', {name: 'Volver a la app'}).click();
 
     const chip = page.locator('.extension-chip');
     await expect(chip).toHaveCount(1);
-    await expect(chip.getByRole('button', {name: 'Restart to Update'})).toBeVisible();
+    await expect(chip.getByRole('button', {name: 'Reiniciar para actualizar'})).toBeVisible();
     await expect(chip.locator('[data-icon="download"]')).toBeVisible();
-    await expect(page.getByRole('button', {name: 'Install extension'})).toBeHidden();
+    await expect(page.getByRole('button', {name: 'Instalar extensión'})).toBeHidden();
   });
 
   test('offers the extension in the title bar until it is dismissed', async ({page}) => {

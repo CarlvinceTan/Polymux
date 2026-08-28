@@ -467,7 +467,7 @@ main.chat-drawer-resizing .conversation-title-bar, main.workspace-resizing .conv
    same line is visible wherever both are on screen. */
 main.has-conversation::after { content: ''; pointer-events: none; position: fixed; z-index: 29; top: var(--app-topbar-height); right: 0; left: 0; height: 1px; background: var(--neutral-200); }
 .conversation-title-bar > button, .conversation-title-bar > input { pointer-events: auto; width: auto; max-width: min(520px,calc(100% - 190px)); height: 28px; overflow: hidden; appearance: none; border: 1px solid transparent; border-radius: 7px; margin: 0; padding: 0 7px; background: transparent; color: var(--neutral-800); font-size: 13px; font-weight: 550; line-height: 26px; text-align: center; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
-.conversation-title-bar > button { cursor: text; transition: background-color .15s ease, color .15s ease; }
+.conversation-title-bar > button { min-width: 200px; cursor: text; transition: background-color .15s ease, color .15s ease; }
 .conversation-title-bar > button:hover, .conversation-title-bar > button:focus-visible { outline: none; background: var(--neutral-100); color: var(--neutral-950); }
 .conversation-title-bar > input { width: auto; min-width: 96px; max-width: min(520px,calc(100% - 190px)); border-color: var(--neutral-300); outline: none; background: var(--app-surface); color: var(--neutral-950); box-shadow: 0 0 0 1px color-mix(in srgb,var(--neutral-300) 30%,transparent); text-align: center; }
 .title-bar-icon-button, .icon-button { position: relative; width: var(--titlebar-control-size); height: var(--titlebar-control-size); display: grid; place-items: center; border: 0; border-radius: 10px; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; transition: color .15s, background .15s; }
@@ -866,7 +866,11 @@ main.workspace-expanded .sticky-composer { pointer-events: none; }
 .reference-action-menu .polymux-dropdown-item > svg:last-child { margin-left: auto; }
 .reference-action-menu .polymux-dropdown-item.active { background: var(--neutral-100); color: var(--neutral-950); }
 
-.workspace-drawer { grid-column: 3; position: relative; z-index: 40; top: 0; justify-self: end; width: var(--workspace-panel-width,var(--content-docked-column)); height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--app-bg); pointer-events: none; transform: translateX(100%); visibility: hidden; will-change: width,transform; transition: width var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s linear var(--drawer-motion-duration); }
+/* The two animated conversation insets are inherited so fixed conversation
+   chrome can follow them. The workspace never reads either value; letting
+   them cascade through a populated Hub needlessly restyles its whole tree on
+   every drawer frame, which makes the otherwise-composited slide stutter. */
+.workspace-drawer { --content-right-column: 0px; --content-composer-column: 0px; grid-column: 3; position: relative; z-index: 40; top: 0; justify-self: end; width: var(--workspace-panel-width,var(--content-docked-column)); height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--app-bg); pointer-events: none; transform: translateX(100%); visibility: hidden; will-change: width,transform; transition: width var(--drawer-motion-duration) var(--drawer-motion-ease), transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s linear var(--drawer-motion-duration); }
 .workspace-drawer.open { pointer-events: auto; transform: translateX(0); visibility: visible; transition-delay: 0s; }
 .workspace-drawer.resizing { transition: none; }
 /* Expanding and minimising step the width in whole pixels from the app (see
@@ -897,13 +901,14 @@ main.workspace-expanded .sticky-composer { pointer-events: none; }
 .workspace-drawer.standalone .tab-strip { -webkit-app-region: drag; }
 .workspace-drawer.standalone .tab-strip { padding-right: 8px; }
 .workspace-drawer.standalone .tab,
-.workspace-drawer.standalone .new-tab-wrap { -webkit-app-region: no-drag; }
+.workspace-drawer.standalone .workspace-header-action { -webkit-app-region: no-drag; }
 .tab[draggable="true"] { cursor: grab; }
 .tab.dragging { opacity: .42; }
 /* Expanded, the strip reaches the window's left edge, so it must clear the
-   window chrome and the lone chat-drawer control itself (new chat is hidden while
-   expanded), trailing it by the same gap the traffic lights leave in front of
-   it — unless the chat drawer already sits under them. */
+   window chrome and the lone chat-drawer control itself (new chat is hidden
+   while expanded with the chat drawer closed), trailing it by the same gap
+   the traffic lights leave in front of it — unless the chat drawer already
+   sits under them. */
 .workspace-drawer.expanded .tab-strip { padding-left: var(--workspace-expanded-tab-left); }
 /* The detached window has no chat control between the traffic lights and its
    first tab, so it keeps only the ordinary chrome clearance. */
@@ -932,16 +937,11 @@ main.workspace-expanded .sticky-composer { pointer-events: none; }
 .tab-close { flex: none; display: grid; place-items: center; padding: 7px 8px 7px 3px; border: 0; background: transparent; color: var(--neutral-500); opacity: 0; transform: scale(.9); pointer-events: none; cursor: pointer; transition: opacity .14s ease, transform .14s ease, color .14s ease; }
 .tab:hover .tab-close, .tab:focus-within .tab-close, .tab.active .tab-close { opacity: 1; transform: scale(1); pointer-events: auto; }
 .tab-close:hover, .tab-close:focus-visible { color: var(--neutral-900); }
-.new-tab-wrap { position: relative; flex: none; } .workspace-header-action { flex: none; }
+.workspace-header-action { flex: none; }
 /* Header actions ride the panel's own motion curve so the plus and expand
    controls slide in with the panel instead of popping in after it lands. */
 .workspace-drawer:not(.open) .workspace-header-action { opacity: 0; visibility: hidden; pointer-events: none; transform: translateX(12px); transition: opacity var(--drawer-fade-duration) ease, transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s linear var(--drawer-fade-duration); }
 .workspace-drawer.open .workspace-header-action { opacity: 1; visibility: visible; pointer-events: auto; transform: none; transition: opacity var(--drawer-fade-duration) ease, transform var(--drawer-motion-duration) var(--drawer-motion-ease), visibility 0s; }
-/* Sized to its longest label rather than a fixed column, so the menu stays a
-   small tag beside the + instead of a panel. */
-.new-tab-menu { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; max-width: 200px; }
-.workspace-drawer.standalone .new-tab-menu { right: 0; left: auto; }
-
 .browser-bar { height: 39px; flex: none; display: flex; align-items: center; gap: 7px; padding: 5px 12px; border-bottom: 1px solid var(--neutral-200); }
 .browser-bar > button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; padding: 0; border-radius: 8px; background: none; color: var(--neutral-500); cursor: pointer; }
 .browser-bar > button:hover:not(:disabled) { background: var(--neutral-100); color: var(--neutral-900); }
@@ -961,6 +961,19 @@ main.workspace-expanded .sticky-composer { pointer-events: none; }
 .address-form:hover .address-submit, .address-form:focus-within .address-submit { opacity: 1; pointer-events: auto; transform: translate(0,-50%); }
 .address-submit:hover, .address-submit:focus-visible { color: var(--neutral-900); }
 .address-submit:focus-visible { outline: 1px solid var(--neutral-400); outline-offset: 1px; }
+.address-suggestions { position: absolute; z-index: 90; top: calc(100% + 5px); right: -1px; left: -1px; max-height: min(340px,calc(100vh - 112px)); overflow-y: auto; border: 1px solid var(--neutral-200); border-radius: 12px; padding: 5px; background: var(--neutral-50); box-shadow: 0 8px 24px rgba(0,0,0,.1); text-align: left; scrollbar-width: none; animation: address-suggestions-in 120ms ease-out; }
+.address-suggestions::-webkit-scrollbar { display: none; }
+.address-suggestions-label { padding: 5px 9px 3px; color: var(--neutral-500); font-size: 10.5px; font-weight: 560; letter-spacing: .01em; }
+.address-suggestions-label:not(:first-child) { margin-top: 3px; padding-top: 7px; border-top: 1px solid var(--neutral-200); }
+.address-suggestion { width: 100%; min-width: 0; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 9px; padding: 7px 9px; background: transparent; color: var(--neutral-800); cursor: pointer; font-family: inherit; text-align: left; }
+.address-suggestion:hover, .address-suggestion.selected { background: var(--neutral-100); color: var(--neutral-950); }
+.address-suggestion-icon { width: 17px; display: grid; flex: none; place-items: center; color: var(--neutral-500); }
+.address-suggestion-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 1px; }
+.address-suggestion-copy strong, .address-suggestion-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.address-suggestion-copy strong { font-size: 12.5px; font-weight: 540; line-height: 1.25; }
+.address-suggestion-copy small { color: var(--neutral-500); font-size: 10.5px; line-height: 1.2; }
+@keyframes address-suggestions-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .address-suggestions { animation: none; } }
 .refresh-button.refreshing svg { animation: refresh-turn .42s ease-out; }
 @keyframes refresh-turn { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .refresh-button.refreshing svg { animation: none; } }
@@ -991,12 +1004,15 @@ main.workspace-expanded .sticky-composer { pointer-events: none; }
 .downloads-empty { margin: 8px 5px 10px; color: var(--neutral-500); font-size: 12px; }
 /* Every workspace view meets the tab strip at the same boundary. */
 .workspace-content { flex: 1; min-height: 0; overflow: hidden; border-top: 1px solid var(--neutral-200); background: var(--main-panel-background); }
-/* With no tabs, the launcher is the whole workspace rather than tab content. */
+/* The launcher is a destination chooser rather than ordinary tab content. */
 .workspace-content.empty { border-top: 0; }
 /* Browser chrome belongs to the tab content, so its divider sits under the
-   navigation row, immediately above the page, instead of above the controls. */
-.workspace-content.browser { border-top: 0; }
+   navigation row, immediately above the page, instead of above the controls.
+   The column layout also gives the native page only the height left below the
+   chrome; a 100%-height page after the bar would be clipped at the bottom. */
+.workspace-content.browser { display: flex; flex-direction: column; border-top: 0; }
 .browser-surface { position: relative; }
+.browser-page-preview { width: 100%; height: 100%; display: block; object-fit: fill; pointer-events: none; user-select: none; }
 /* The page is a WebContentsView, a native layer that paints above every DOM
    element whatever its z-index — including the drawer's one-pixel left
    divider. Nothing can be drawn back over it, so the surface gives the divider
@@ -1024,7 +1040,7 @@ main.workspace-expanded .sticky-composer { pointer-events: none; }
 .new-tab-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--neutral-400); }
 .new-tab-empty h2 { margin: 18px 0 6px; color: var(--neutral-950); font-size: 16px; font-weight: 550; }
 .new-tab-empty p { margin: 0; max-width: 36ch; color: var(--neutral-500); font-size: 14px; line-height: 1.45; text-wrap: balance; }
-.browser-frame { width: 100%; height: 100%; display: block; border: 0; background: var(--main-panel-background); }
+.browser-frame { width: 100%; min-height: 0; flex: 1 1 0; display: block; border: 0; background: var(--main-panel-background); }
 .media-preview { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 24px; background: var(--main-panel-background); }
 .media-preview img, .media-preview video { max-width: 100%; max-height: 100%; object-fit: contain; }
 .image-preview { align-items: flex-start; justify-content: flex-start; overflow: auto; }
@@ -1645,7 +1661,7 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 /* The shared workspace rule crosses the whole top, so the rail and list begin
    at one edge without this view drawing another divider. */
 .hub-view { height: 100%; min-height: 0; container-type: inline-size; background: var(--main-panel-background); }
-.hub-view-grid { --hub-rail-width: 156px; position: relative; height: 100%; min-height: 0; display: grid; grid-template-columns: var(--hub-rail-width) minmax(0, 1fr); transition: grid-template-columns 160ms cubic-bezier(.2,.7,.3,1); }
+.hub-view-grid { --hub-rail-width: 156px; --hub-chat-header-height: 47px; position: relative; height: 100%; min-height: 0; display: grid; grid-template-columns: var(--hub-rail-width) minmax(0, 1fr); transition: grid-template-columns 160ms cubic-bezier(.2,.7,.3,1); }
 .hub-view-grid.rail-resizing { cursor: col-resize; user-select: none; }
 .hub-view-back { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 8px; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; font-family: inherit; font-size: 11.5px; }
 .hub-view-back:hover { color: var(--neutral-950); }
@@ -1693,7 +1709,7 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-accounts button.active { background: var(--neutral-200); color: var(--neutral-950); font-weight: 540; }
 
 .hub-view-list { position: relative; flex-direction: column; overflow: hidden; border-right: 1px solid var(--neutral-200); }
-.hub-view-list-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; flex: none; padding: 10px 10px 8px; border-bottom: 1px solid var(--neutral-200); }
+.hub-view-list-head { min-height: var(--hub-chat-header-height); display: flex; flex-wrap: wrap; align-items: center; gap: 7px; flex: none; padding: 10px 10px 8px; border-bottom: 1px solid var(--neutral-200); }
 .hub-view-folder-picker { position: relative; display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1 0 100%; }
 .hub-view-list-account { min-width: 0; overflow: hidden; color: var(--neutral-500); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .hub-view-folder-button { flex: none; max-width: 60%; display: inline-flex; align-items: center; gap: 6px; height: 26px; border: 0; border-radius: 8px; padding: 0 8px; background: transparent; color: var(--neutral-950); cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 560; }
@@ -1705,12 +1721,18 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-folder-menu button { width: 100%; display: grid; grid-template-columns: 15px minmax(0,1fr); align-items: center; gap: 8px; border: 0; border-radius: 7px; padding: 6px 8px; background: transparent; color: var(--neutral-700); cursor: pointer; font-family: inherit; font-size: 11.5px; text-align: left; }
 .hub-view-folder-menu button:hover { background: var(--neutral-100); color: var(--neutral-950); }
 .hub-view-folder-menu button.active { color: var(--neutral-950); font-weight: 560; }
-.hub-view-list-head input { min-width: 0; flex: 1; height: 28px; border: 1px solid var(--neutral-200); border-radius: 8px; padding: 0 9px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 11.5px; }
+.hub-view-list-head input { min-width: 0; flex: 1; height: 28px; border: 1px solid var(--neutral-200); border-radius: 8px; padding: 0 9px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 11.5px; transition: border-color .14s ease, background-color .14s ease; }
+.hub-view-list-head input:hover:not(:focus) { border-color: var(--neutral-300); background: var(--neutral-100); }
 .hub-view-list-head input:focus-visible { border-color: var(--neutral-500); outline: 0; }
 /* The compose glyph sits directly beside search, matching the app's title-bar
    new-chat control: bare icon, no hover plate. */
 .hub-view-new-chat-icon { width: 24px; height: 28px; display: grid; flex: none; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
 .hub-view-new-chat-icon:hover, .hub-view-new-chat-icon:focus-visible { outline: none; color: var(--neutral-950); }
+.hub-view-conversation-filter { position: relative; flex: none; }
+.hub-view-chat-filter-button { appearance: none; -webkit-appearance: none; width: 24px; height: 28px; display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
+.hub-view-chat-filter-button:hover, .hub-view-chat-filter-button:focus-visible, .hub-view-chat-filter-button:active, .hub-view-chat-filter-button.on, .hub-view-chat-filter-button[aria-expanded='true'] { outline: none; background: transparent; color: var(--neutral-950); }
+.hub-view-conversation-filter-menu { top: calc(100% + 6px); right: -31px; left: auto; width: 174px; max-height: min(238px, calc(100vh - 64px)); overflow-y: auto; scrollbar-width: none; }
+.hub-view-conversation-filter-menu::-webkit-scrollbar { display: none; }
 /* Selected people occupy one quiet horizontal strip. The chips scroll under
    the fixed action instead of wrapping it onto a second line. */
 .hub-view-new-chat-selection { flex: none; border-bottom: 1px solid var(--neutral-200); }
@@ -1732,6 +1754,16 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-new-chat-contact > svg { flex: none; margin-inline-start: auto; color: var(--neutral-800); }
 .hub-view-new-chat-contact:disabled { cursor: default; opacity: .38; }
 .hub-view-new-chat-contact:disabled:hover { background: transparent; }
+.hub-view-broadcast-create-meta { display: flex; flex-direction: column; gap: 6px; flex: none; padding: 8px 10px; border-bottom: 1px solid var(--neutral-200); }
+.hub-view-broadcast-create-meta > input { box-sizing: border-box; width: 100%; height: 28px; border: 1px solid var(--neutral-200); border-radius: 8px; padding: 0 9px; background: var(--app-surface); color: var(--neutral-950); font-family: inherit; font-size: 11.5px; }
+.hub-view-broadcast-create-meta > input:focus-visible { border-color: var(--neutral-500); outline: 0; }
+.hub-view-broadcast-create-meta p { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--neutral-500); font-size: 10.5px; line-height: 1.4; }
+.hub-view-broadcast-create-meta p > svg { flex: none; }
+.hub-view-broadcast-empty { max-width: 230px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.hub-view-broadcast-empty h2 { margin: 4px 0 0; color: var(--neutral-700); font-size: 13.5px; font-weight: 560; }
+.hub-view-broadcast-empty p { margin: 0; line-height: 1.5; }
+.hub-view-broadcast-empty button { margin-top: 3px; border: 0; padding: 0; background: transparent; color: var(--neutral-700); cursor: pointer; font: inherit; font-weight: 570; }
+.hub-view-broadcast-empty button:hover, .hub-view-broadcast-empty button:focus-visible { outline: none; color: var(--neutral-950); }
 .hub-view-space-heading { min-width: 0; flex: 1 0 100%; display: flex; align-items: center; gap: 8px; height: 22px; }
 .hub-view-space-heading strong { min-width: 0; overflow: hidden; color: var(--neutral-950); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 580; }
 .hub-view-space-back { width: 18px; height: 22px; display: grid; flex: none; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
@@ -1868,9 +1900,13 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-chat-footer.replying .hub-view-to-latest { top: -63px; }
 .hub-view-to-latest:hover { color: var(--neutral-950); }
 .hub-view-reader-head { flex: none; padding: 14px 18px 12px; border-bottom: 1px solid var(--neutral-200); }
-/* The chevron reads as part of the title rather than a step above it. */
-.hub-view-chat-head { display: flex; align-items: center; gap: 8px; }
+/* The chevron reads as part of the title rather than a step above it. The
+   single-line chat head shares the list head's minimum height so their bottom
+   rules meet at the column boundary. */
+.hub-view-chat-head { min-height: var(--hub-chat-header-height); display: flex; align-items: center; gap: 8px; }
 .hub-view-chat-head h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-view-broadcast-head > div { min-width: 0; }
+.hub-view-broadcast-head > div p { overflow: hidden; margin-top: 2px; text-overflow: ellipsis; white-space: nowrap; }
 .hub-view-back-icon { margin-bottom: 0; margin-left: -4px; flex: none; }
 .hub-view-reader-title { display: flex; align-items: center; gap: 8px; }
 .hub-view-reader-title h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2050,12 +2086,31 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
    widened the bubble to fit the chips and pushed the timestamp down. Pinned to
    the bubble instead, a fixed distance in from its trailing edge and centred on
    its bottom edge, so it reads as sitting on the message rather than in it. */
-.hub-view-reactions { position: absolute; right: 10px; bottom: 0; z-index: 2; display: flex; gap: 3px; transform: translateY(50%); }
+.hub-view-reactions { position: absolute; right: 10px; bottom: 0; z-index: 2; display: flex; justify-content: flex-end; transform: translateY(50%); pointer-events: none; }
 /* The half that hangs below needs somewhere to hang, or it lands on whatever
    message comes next. */
 .hub-view-bubble-row:has(.hub-view-reactions) { margin-bottom: 9px; }
-.hub-view-reaction { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--neutral-200); border-radius: 999px; padding: 1px 6px; background: var(--app-surface); color: var(--neutral-700); font-size: 11px; line-height: 1.5; white-space: nowrap; cursor: pointer; }
+.hub-view-reactions-normal { width: max-content; display: inline-flex; flex: none; align-items: center; gap: 3px; pointer-events: auto; }
+/* The full strip stays measurable while the compact stack is visible. It
+   therefore remains responsive to a widening drawer without flashing back
+   into the pointer or accessibility path for one frame. */
+.hub-view-reactions-normal.measure-only { position: absolute; right: 0; visibility: hidden; pointer-events: none; }
+.hub-view-reaction { min-width: 0; display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--neutral-200); border-radius: 999px; padding: 1px 5px; background: var(--app-surface); color: var(--neutral-700); font-family: inherit; font-size: 11px; line-height: 1.5; white-space: nowrap; cursor: pointer; }
 .hub-view-reaction.mine { border-color: var(--neutral-500); }
+.hub-view-reaction-emoji { flex: none; font-size: 12px; line-height: 1; }
+.hub-view-reaction-avatars { display: inline-flex; flex: none; align-items: center; padding-right: 1px; }
+.hub-view-reaction-avatar { position: relative; width: 14px; height: 14px; flex: none; border-radius: 5px; object-fit: cover; background: var(--neutral-100); box-shadow: 0 0 0 1px var(--app-surface); }
+.hub-view-reaction-avatar + .hub-view-reaction-avatar { margin-left: -4px; }
+.hub-view-reaction-avatar.placeholder { display: grid; place-items: center; color: var(--neutral-500); font-size: 7px; font-weight: 560; line-height: 1; }
+.hub-view-reaction-count { position: relative; top: -.2px; flex: none; color: var(--neutral-600); font-size: 10.5px; line-height: 1; }
+/* Once separate reaction-and-profile chips cannot fit, identity gives way to
+   a single stack of at most three emoji. The total still describes everything
+   behind the stack and is capped in the same way as unread badges. */
+.hub-view-reactions-compact { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--neutral-200); border-radius: 999px; padding: 1px 5px; background: var(--app-surface); color: var(--neutral-700); pointer-events: auto; }
+.hub-view-reactions-compact:has(.mine) { border-color: var(--neutral-500); }
+.hub-view-reaction-emoji-stack { display: inline-flex; align-items: center; }
+.hub-view-reaction-emoji-button { position: relative; width: 17px; height: 17px; display: grid; flex: none; place-items: center; border: 0; border-radius: 999px; padding: 0; background: var(--app-surface); cursor: pointer; font-family: inherit; font-size: 12px; line-height: 1; }
+.hub-view-reaction-emoji-button + .hub-view-reaction-emoji-button { margin-left: -4px; }
 .hub-view-quote { display: block; margin-bottom: 4px; border-left: 2px solid currentColor; padding-left: 6px; opacity: .7; font-size: 11px; line-height: 1.35; }
 .hub-view-quote strong { display: block; font-weight: 560; }
 /* Arrives only after the reply-pill scroll settles. The fill briefly gains
@@ -2083,6 +2138,9 @@ main.empty-voice-chat .speech-orb.in-chat .speech-orb-content { height: 300px; j
 .hub-view-reply-cancel [data-icon] { display: block; }
 .hub-view-bubble.mine { align-self: flex-end; background: var(--neutral-950); color: var(--app-bg); }
 .hub-view-bubble p { margin: 0; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.hub-view-broadcast-delivery { color: var(--neutral-400); font-size: 10.5px; }
+.hub-view-broadcast-delivery.failed { color: #a05a5a; }
+.hub-view-broadcast-composer-row { margin-inline-start: 52px; }
 .hub-view-message-link { color: inherit; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
 .hub-view-link-card { width: min(280px,100%); min-width: 0; box-sizing: border-box; display: grid; grid-template-columns: minmax(0,1fr); overflow: hidden; margin-top: 7px; border-left: 3px solid currentColor; border-radius: 7px; background: color-mix(in srgb,currentColor 8%,transparent); color: inherit; text-decoration: none; }
 .hub-view-link-card.with-image { grid-template-columns: minmax(0,1fr) 64px; }
@@ -2211,6 +2269,18 @@ a.hub-view-bubble-file:hover { text-decoration: underline; }
   .hub-view-grid.reading > .hub-view-reader { display: flex; }
   .hub-view-back { display: none; }
 }
+/* Hub is the only workspace view that changes from one content pane to two as
+   the drawer widens. Letting the container query make that swap in the middle
+   of the outer slide moved the list/reader boundary hundreds of pixels in one
+   frame. During expand/minimise, keep all three tracks mounted and interpolate
+   the list track from the exact docked geometry to its 280px split geometry.
+   The remaining reader track then grows or shrinks continuously, and both end
+   states match the settled container-query layout with no final handoff jump. */
+.workspace-drawer.motion .hub-view-grid { grid-template-columns: var(--hub-rail-width) minmax(0, var(--hub-motion-list-width)) minmax(0, 1fr); transition: none; }
+.workspace-drawer.motion .hub-view-grid > .hub-view-list,
+.workspace-drawer.motion .hub-view-grid.reading > .hub-view-list,
+.workspace-drawer.motion .hub-view-grid > .hub-view-reader,
+.workspace-drawer.motion .hub-view-grid.reading > .hub-view-reader { display: flex; }
 
 /* Placeholder copy sits in the middle of whatever space it stands in, the
    same as the reading pane's blank state, rather than clinging to the top. */

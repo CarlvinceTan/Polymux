@@ -56,6 +56,7 @@ const messages: Catalog = {
   'extension.install': 'Instalar extensión',
   'extension.installed': 'Instalada',
   'extension.dismiss': 'Descartar',
+  'update.restart': 'Reiniciar para actualizar',
   'titlebar.toggleSummary': 'Mostrar u ocultar el resumen',
   'titlebar.summary': 'Resumen',
   'titlebar.toggleWorkspace': 'Mostrar u ocultar el espacio de trabajo',

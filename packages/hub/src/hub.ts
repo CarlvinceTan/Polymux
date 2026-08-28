@@ -168,6 +168,13 @@ export class MatrixHub {
   readonly #profiles = new Map<string, {name: string; avatarUrl: string | null}>();
   /** Homeserver URL previews are stable for the life of one Hub session. */
   readonly #linkPreviews = new Map<string, Promise<MatrixLinkPreview | null>>();
+  /**
+   * Older bridge databases can retain the Matrix id a remote message had
+   * before its history was copied into Polymux's embedded homeserver. Keep the
+   * lossless old-id aliases beside each current local event once resolved, so
+   * later reaction refreshes do not repeat the bridge-database join.
+   */
+  readonly #reactionTargetAliases = new Map<string, Map<string, string[]>>();
   readonly #legacyQrSessions = new Map<string, LegacyQrSession>();
   #registrationSecretCache: string | null | undefined;
 
@@ -359,6 +366,7 @@ export class MatrixHub {
       );
     }
     const joined = Object.entries(sync.rooms?.join ?? {});
+    const currentPortalRooms = await currentWeChatPortalRooms(this.#directory);
     // A Space relationship can be advertised from either side. Some bridges
     // write `m.space.parent` into each child, while others only write
     // `m.space.child` into the Space. Turn the latter into the same parent
@@ -382,18 +390,24 @@ export class MatrixHub {
     // the event store, so use its chronological head for the row just as the
     // open conversation does. Otherwise an imported 2025 batch can replace a
     // 2026 message's preview, timestamp and sort position in the chat list.
-    const localLatest = this.#localLatestMessages(joined.map(([roomId]) => roomId));
     const userId = this.#auth().userId;
+    const localLatest = this.#localLatestMessages(joined.map(([roomId]) => roomId));
     const rooms = joined.map(([roomId, room]) => {
       const state = [...(room.state?.events ?? []), ...(room.timeline?.events ?? [])];
       const named = lastStateEvent(state, "m.room.name")?.content?.name;
       const avatar = lastStateEvent(state, "m.room.avatar")?.content?.url;
       const members = state.filter((event) => event.type === "m.room.member");
       const timeline = room.timeline?.events ?? [];
-      const last = localLatest.get(roomId) ?? timeline.filter(isTimelineItem).at(-1);
+      const last = localLatest.get(roomId) ?? timeline
+        .filter((event): event is RawEvent => isTimelineItem(event, userId))
+        .at(-1);
       // Ordering falls back to whatever did happen last, so a room whose
-      // window holds no message still sits where its activity puts it.
-      const activityTs = last?.origin_server_ts ?? timeline.at(-1)?.origin_server_ts;
+      // window holds no message still sits where its activity puts it. The
+      // signed-in account joining is local bookkeeping, not chat activity.
+      const latestNonSelfEvent = timeline
+        .filter((event) => event.type !== "m.room.member" || event.state_key !== userId)
+        .at(-1);
+      const activityTs = last?.origin_server_ts ?? latestNonSelfEvent?.origin_server_ts;
       /**
        * A direct chat is a room with one other human in it. The bridges name
        * those rooms after the contact and leave groups with their own title,
@@ -425,6 +439,7 @@ export class MatrixHub {
        */
       const bridged = lastStateEvent(state, "m.bridge")?.content?.protocol?.id;
       const bridgeContent = lastStateEvent(state, "m.bridge")?.content;
+      const remoteId = bridgeContent?.channel?.id?.trim();
       // Bridge v2 distinguishes the account-wide filtering container from a
       // real remote community. Older bridges used the unsuffixed key.
       const roomType =
@@ -462,10 +477,12 @@ export class MatrixHub {
         space,
         defaultSpace,
         parentIds,
+        ...(remoteId ? {remoteId} : {}),
+        ...(currentPortalRooms.has(roomId) ? {currentPortal: true} : {}),
         avatarUrl: mediaUrl(avatar ?? (!group ? counterpart?.content?.avatar_url : undefined)),
         unread: room.unread_notifications?.notification_count ?? 0,
         lastActivity: activityTs ? new Date(activityTs).toISOString() : null,
-        preview: last ? previewOf(last) : null,
+        preview: last ? previewOf(last, userId) : null,
         /**
          * mautrix marks direct chats outright, and that answer is taken when
          * it is there. Otherwise the member count decides: a bridged direct
@@ -509,7 +526,7 @@ export class MatrixHub {
             // counterpart. Prefer the portal avatar so a contact row never
             // borrows the signed-in account's portrait.
             avatarUrl: mediaUrl(state?.avatarMxc ?? undefined) ?? room.avatarUrl,
-            ...(state?.remoteId ? {remoteId: state.remoteId} : {}),
+            ...(state?.remoteId ? {remoteId: state.remoteId, currentPortal: true} : {}),
             ...(state?.accountIds.size ? {accountIds: [...state.accountIds]} : {}),
             ...(unreadByAccount ? {unreadByAccount} : {}),
             // Remote bridge state knows which imported messages were already
@@ -650,6 +667,87 @@ export class MatrixHub {
         }
       } catch {
         // Older portal schemas retain Matrix's room/member avatar fallback.
+      }
+      if (platform !== "whatsapp") {
+        try {
+          const roomIds = new Set(
+            rooms.filter((room) => room.platform === platform).map((room) => room.roomId),
+          );
+          const localReads = [...localReadThrough].filter(([roomId]) => roomIds.has(roomId));
+          const localReadRows = localReads.length
+            ? `VALUES ${localReads.map(() => "(?, ?)").join(", ")}`
+            : "SELECT NULL, 0 WHERE 0";
+          const unread = database.prepare(`
+            WITH matrix_read(room_id, read_ts) AS (${localReadRows}), portal_state AS (
+              SELECT
+                p.mxid AS room_id,
+                p.bridge_id,
+                p.id AS portal_id,
+                p.receiver AS portal_receiver,
+                up.login_id AS account_id,
+                up.last_read AS bridge_read,
+                COALESCE(mr.read_ts * 1000000, 0) AS matrix_read
+              FROM portal p
+              JOIN user_portal up
+                ON up.bridge_id = p.bridge_id
+               AND up.portal_id = p.id
+               AND up.portal_receiver = p.receiver
+              LEFT JOIN matrix_read mr ON mr.room_id = p.mxid
+              WHERE p.mxid IS NOT NULL AND up.login_id <> ''
+            )
+            SELECT
+              room_id,
+              account_id,
+              CASE
+                -- No bridge watermark means this bridge has not exposed
+                -- remote read state for the portal. Keep Matrix's answer
+                -- unless Polymux itself has established a local marker.
+                WHEN bridge_read IS NULL AND matrix_read = 0 THEN NULL
+                -- A reply from the linked account proves it saw everything
+                -- before the reply even if the bridge's receipt is delayed.
+                WHEN (
+                  SELECT m.sender_id
+                  FROM message m
+                  WHERE m.bridge_id = portal_state.bridge_id
+                    AND m.room_id = portal_state.portal_id
+                    AND m.room_receiver = portal_state.portal_receiver
+                  ORDER BY m.timestamp DESC
+                  LIMIT 1
+                ) = account_id THEN 0
+                ELSE (
+                  SELECT COUNT(DISTINCT m.id)
+                  FROM message m
+                  WHERE m.bridge_id = portal_state.bridge_id
+                    AND m.room_id = portal_state.portal_id
+                    AND m.room_receiver = portal_state.portal_receiver
+                    -- Once a bridge has a remote watermark it is the
+                    -- authority: it can move forward after a read elsewhere,
+                    -- or back when the native app marks the chat unread.
+                    AND m.timestamp > COALESCE(bridge_read, matrix_read)
+                    AND m.sender_id <> portal_state.account_id
+                )
+              END AS unread
+            FROM portal_state
+          `).all(...localReads.flatMap(([roomId, readTs]) => [roomId, readTs])) as Array<{
+            room_id: string;
+            account_id: string;
+            unread: number | null;
+          }>;
+          for (const row of unread) {
+            if (!row.room_id || !row.account_id || row.unread === null) continue;
+            const state = found.get(row.room_id) ?? {
+              accountIds: new Set<string>(),
+              unreadByAccount: new Map<string, number>(),
+              avatarMxc: null,
+              remoteId: null,
+            };
+            state.accountIds.add(row.account_id);
+            state.unreadByAccount.set(row.account_id, Math.max(0, Number(row.unread)));
+            found.set(row.room_id, state);
+          }
+        } catch {
+          // Legacy bridges without Bridge v2 read markers retain Matrix's count.
+        }
       }
       if (platform === "whatsapp") {
         try {
@@ -813,10 +911,21 @@ export class MatrixHub {
     const local = this.#localTimeline(roomId, limit, before);
     const result = local ?? await this.#matrixTimeline(roomId, limit, before);
     const chunk = withEdits(result.chunk ?? []);
+    const userId = this.#auth().userId;
+    const plain = chunk
+      .filter((event): event is RawEvent => isTimelineItem(event, userId))
+      .map((event) => toMessage(event, userId));
+    // A reaction may be written hours after its target and therefore live on
+    // a completely different history page. The embedded store can resolve
+    // every active annotation for the messages actually being returned.
+    const reactionEvents = this.#localReactionEvents(
+      roomId,
+      plain.map((message) => message.eventId),
+    ) ?? chunk;
     const messages = withReactions(
-      chunk.filter(isTimelineItem).map((event) => toMessage(event, this.#auth().userId)),
-      chunk,
-      this.#auth().userId,
+      plain,
+      reactionEvents,
+      userId,
     );
     const owned = this.#withBridgeOwnership(roomId, messages);
     const named = await this.#withSenders(owned, result.state ?? [], roomId);
@@ -915,17 +1024,45 @@ export class MatrixHub {
               (
                 e.type = 'm.room.member' AND
                 e.state_key NOT GLOB '@*bot:*' AND
+                e.state_key != ? AND
                 json_type(e.content_json, '$.displayname') = 'text' AND
                 json_extract(e.content_json, '$.membership') IN ('invite', 'join', 'leave', 'ban') AND
                 COALESCE(json_extract(e.content_json, '$."com.beeper.exclude_from_timeline"'), 0) != 1 AND
-                (
-                  e.state_key GLOB '@telegram_*' OR
-                  e.origin_server_ts >= COALESCE((
-                    SELECT MIN(created.origin_server_ts) + ${PORTAL_SETUP_WINDOW_MS}
-                    FROM events created
-                    WHERE created.room_id = e.room_id AND created.type = 'm.room.create'
-                  ), 0)
-                )
+                COALESCE(json_extract(e.content_json, '$."fi.mau.will_auto_accept"'), 0) != 1 AND
+                NOT (
+                  json_extract(e.content_json, '$.membership') = 'join' AND
+                  COALESCE((
+                    SELECT CASE
+                      WHEN json_extract(previous.content_json, '$.membership') = 'invite' AND (
+                        COALESCE(json_extract(previous.content_json, '$."com.beeper.exclude_from_timeline"'), 0) = 1 OR
+                        COALESCE(json_extract(previous.content_json, '$."fi.mau.will_auto_accept"'), 0) = 1
+                      ) THEN 1 ELSE 0 END
+                    FROM events previous
+                    WHERE previous.room_id = e.room_id
+                      AND previous.type = 'm.room.member'
+                      AND previous.state_key = e.state_key
+                      AND previous.stream_order < e.stream_order
+                      AND previous.redacted_by IS NULL
+                    ORDER BY previous.stream_order DESC
+                    LIMIT 1
+                  ), 0) = 1
+                ) AND
+                COALESCE((
+                  SELECT json_extract(previous.content_json, '$.membership')
+                  FROM events previous
+                  WHERE previous.room_id = e.room_id
+                    AND previous.type = 'm.room.member'
+                    AND previous.state_key = e.state_key
+                    AND previous.stream_order < e.stream_order
+                    AND previous.redacted_by IS NULL
+                  ORDER BY previous.stream_order DESC
+                  LIMIT 1
+                ), '') != json_extract(e.content_json, '$.membership') AND
+                e.origin_server_ts >= COALESCE((
+                  SELECT MIN(created.origin_server_ts) + ${PORTAL_SETUP_WINDOW_MS}
+                  FROM events created
+                  WHERE created.room_id = e.room_id AND created.type = 'm.room.create'
+                ), 0)
               )
             )
         )
@@ -933,7 +1070,7 @@ export class MatrixHub {
                origin_server_ts, redacts, redacted_by, stream_order
         FROM ranked
         WHERE chronological_rank = 1
-      `).all(...roomIds) as Array<Record<string, unknown>>;
+      `).all(...roomIds, this.#auth().userId ?? "") as Array<Record<string, unknown>>;
       return new Map(
         rows.map((row) => [String(row.room_id), rawEventFromDatabase(row)]),
       );
@@ -993,24 +1130,39 @@ export class MatrixHub {
           FROM events
           WHERE room_id = ?
             AND redacted_by IS NULL
-            AND type IN ('m.room.message', 'm.sticker', 'm.reaction')
+            -- An annotation is state *about* a message, not another row in
+            -- the conversation. Counting it as a page slot could return a
+            -- short or even empty page when an old message got many reactions.
+            AND type IN ('m.room.message', 'm.sticker')
           UNION ALL
           SELECT event_id, room_id, sender, type, state_key, content_json,
                  origin_server_ts, redacts, redacted_by, stream_order,
                  prev_content_json
           FROM member_history member
           WHERE member.state_key NOT GLOB '@*bot:*'
+            AND member.state_key != ?
             AND json_type(member.content_json, '$.displayname') = 'text'
             AND json_extract(member.content_json, '$.membership') IN ('invite', 'join', 'leave', 'ban')
             AND COALESCE(json_extract(member.content_json, '$."com.beeper.exclude_from_timeline"'), 0) != 1
-            AND (
-              member.state_key GLOB '@telegram_*' OR
-              member.origin_server_ts >= COALESCE((
-                SELECT MIN(created.origin_server_ts) + ${PORTAL_SETUP_WINDOW_MS}
-                FROM events created
-                WHERE created.room_id = ? AND created.type = 'm.room.create'
-              ), 0)
+            AND COALESCE(json_extract(member.content_json, '$."fi.mau.will_auto_accept"'), 0) != 1
+            AND NOT (
+              json_extract(member.content_json, '$.membership') = 'join' AND
+              COALESCE(json_extract(member.prev_content_json, '$.membership'), '') = 'invite' AND
+              (
+                COALESCE(json_extract(member.prev_content_json, '$."com.beeper.exclude_from_timeline"'), 0) = 1 OR
+                COALESCE(json_extract(member.prev_content_json, '$."fi.mau.will_auto_accept"'), 0) = 1
+              )
             )
+            AND (
+              member.prev_content_json IS NULL OR
+              json_extract(member.prev_content_json, '$.membership') IS NOT
+                json_extract(member.content_json, '$.membership')
+            )
+            AND member.origin_server_ts >= COALESCE((
+              SELECT MIN(created.origin_server_ts) + ${PORTAL_SETUP_WINDOW_MS}
+              FROM events created
+              WHERE created.room_id = ? AND created.type = 'm.room.create'
+            ), 0)
         )
         SELECT event_id, room_id, sender, type, state_key, content_json,
                origin_server_ts, redacts, redacted_by, stream_order,
@@ -1025,6 +1177,7 @@ export class MatrixHub {
       `).all(
         roomId,
         roomId,
+        this.#auth().userId ?? "",
         roomId,
         ...(cursor ? [cursor.timestamp, cursor.timestamp, cursor.streamOrder] : []),
         pageSize + 1,
@@ -1046,6 +1199,173 @@ export class MatrixHub {
     } finally {
       database.close();
     }
+  }
+
+  /**
+   * Every active reaction for the local message ids on one history page.
+   *
+   * Some bridge databases predate the embedded homeserver and still point at
+   * the event id from the previous Matrix server. Their remote message row and
+   * the local copy retain the same room, sender and millisecond timestamp. A
+   * unique match is exact; multipart rows with the same timestamp are paired
+   * by the bridge's insertion order and the homeserver's stream order, which
+   * are the two sides of the same backfill batch.
+   */
+  #localReactionEvents(roomId: string, messageIds: string[]): RawEvent[] | null {
+    if (!this.#embedded || !this.#directory) return null;
+    if (messageIds.length === 0) return [];
+    let database: DatabaseSync;
+    try {
+      database = new DatabaseSync(path.join(this.#directory, "homeserver.sqlite"), {readOnly: true});
+    } catch {
+      return null;
+    }
+    try {
+      const aliases = this.#bridgeReactionAliases(database, roomId, messageIds);
+      const targets = [...new Set([
+        ...messageIds,
+        ...messageIds.flatMap((eventId) => aliases.get(eventId) ?? []),
+      ])];
+      const placeholders = targets.map(() => "?").join(", ");
+      const rows = database.prepare(`
+        SELECT event_id, room_id, sender, type, state_key, content_json,
+               origin_server_ts, redacts, redacted_by, stream_order
+        FROM events
+        WHERE room_id = ?
+          AND type = 'm.reaction'
+          AND redacted_by IS NULL
+          AND json_extract(content_json, '$."m.relates_to".event_id') IN (${placeholders})
+          AND json_type(content_json, '$."m.relates_to".key') = 'text'
+        ORDER BY origin_server_ts ASC, stream_order ASC
+      `).all(roomId, ...targets) as Array<Record<string, unknown>>;
+      const currentByAlias = new Map<string, string>();
+      for (const [current, previous] of aliases)
+        for (const oldId of previous) currentByAlias.set(oldId, current);
+      return rows.map((row) => {
+        const event = rawEventFromDatabase(row);
+        const relation = event.content?.["m.relates_to"];
+        const current = relation?.event_id ? currentByAlias.get(relation.event_id) : undefined;
+        if (!current || !event.content || !relation) return event;
+        return {
+          ...event,
+          content: {
+            ...event.content,
+            "m.relates_to": {...relation, event_id: current},
+          },
+        };
+      });
+    } catch {
+      // A disposable store with an older schema keeps the page-local fallback.
+      return null;
+    } finally {
+      database.close();
+    }
+  }
+
+  /** Current local event id -> historical Matrix ids retained by a bridge. */
+  #bridgeReactionAliases(
+    database: DatabaseSync,
+    roomId: string,
+    messageIds: string[],
+  ): Map<string, string[]> {
+    const roomCache = this.#reactionTargetAliases.get(roomId) ?? new Map<string, string[]>();
+    this.#reactionTargetAliases.set(roomId, roomCache);
+    const missing = messageIds.filter((eventId) => !roomCache.has(eventId));
+    if (missing.length === 0 || !this.#directory) return roomCache;
+
+    const placeholders = missing.map(() => "?").join(", ");
+    const selected = database.prepare(`
+      SELECT event_id, sender, origin_server_ts
+      FROM events
+      WHERE room_id = ?
+        AND event_id IN (${placeholders})
+        AND type IN ('m.room.message', 'm.sticker')
+        AND redacted_by IS NULL
+    `).all(roomId, ...missing) as Array<{
+      event_id: string;
+      sender: string;
+      origin_server_ts: number;
+    }>;
+    const groups = new Map<string, {sender: string; timestamp: number}>();
+    for (const event of selected) {
+      const key = `${event.sender}\u0000${event.origin_server_ts}`;
+      groups.set(key, {sender: event.sender, timestamp: event.origin_server_ts});
+    }
+
+    const cachedPlatform = this.#roomPlatforms.get(roomId);
+    const platforms = COMMS_PLATFORMS.map((entry) => entry.value).filter(
+      (platform) => platform !== "matrix" && platform !== "wechat",
+    );
+    const candidates = cachedPlatform && platforms.includes(cachedPlatform as typeof platforms[number])
+      ? [cachedPlatform, ...platforms.filter((platform) => platform !== cachedPlatform)]
+      : platforms;
+
+    for (const platform of candidates) {
+      let bridge: DatabaseSync;
+      try {
+        bridge = new DatabaseSync(
+          path.join(this.#directory, "bridges", platform, "bridge.db"),
+          {readOnly: true},
+        );
+      } catch {
+        continue;
+      }
+      try {
+        if (!bridge.prepare("SELECT 1 FROM portal WHERE mxid = ? LIMIT 1").get(roomId)) continue;
+        const localGroup = database.prepare(`
+          SELECT event_id, stream_order
+          FROM events
+          WHERE room_id = ?
+            AND sender = ?
+            AND origin_server_ts = ?
+            AND type IN ('m.room.message', 'm.sticker')
+            AND redacted_by IS NULL
+          ORDER BY stream_order ASC
+        `);
+        // Bridge v2 stores nanoseconds. The other branches keep this reader
+        // safe for older millisecond- or second-based schemas.
+        const bridgeGroup = bridge.prepare(`
+          SELECT m.mxid
+          FROM message m
+          JOIN portal p
+            ON p.bridge_id = m.bridge_id
+           AND p.id = m.room_id
+           AND p.receiver = m.room_receiver
+          WHERE p.mxid = ?
+            AND m.sender_mxid = ?
+            AND CASE
+              WHEN m.timestamp > 1000000000000000 THEN CAST(m.timestamp / 1000000 AS INTEGER)
+              WHEN m.timestamp > 1000000000000 THEN CAST(m.timestamp AS INTEGER)
+              ELSE CAST(m.timestamp * 1000 AS INTEGER)
+            END = ?
+          ORDER BY m.rowid ASC
+        `);
+        for (const {sender, timestamp} of groups.values()) {
+          const local = localGroup.all(roomId, sender, timestamp) as Array<{
+            event_id: string;
+            stream_order: number;
+          }>;
+          const previous = bridgeGroup.all(roomId, sender, timestamp) as Array<{mxid: string}>;
+          if (local.length === 0 || local.length !== previous.length) continue;
+          for (let index = 0; index < local.length; index += 1) {
+            const currentId = local[index]?.event_id;
+            const oldId = previous[index]?.mxid;
+            if (!currentId || !oldId || currentId === oldId) continue;
+            const known = roomCache.get(currentId) ?? [];
+            if (!known.includes(oldId)) roomCache.set(currentId, [...known, oldId]);
+          }
+        }
+        break;
+      } catch {
+        // Bridge schemas that do not carry the lossless message relation are
+        // simply not eligible for alias recovery.
+      } finally {
+        bridge.close();
+      }
+    }
+    for (const eventId of missing)
+      if (!roomCache.has(eventId)) roomCache.set(eventId, []);
+    return roomCache;
   }
 
   /** Current member state gives the local page names and avatars without HTTP. */
@@ -1270,7 +1590,10 @@ export class MatrixHub {
         avatarUrl: mediaUrl(event.content?.avatar_url),
       });
     }
-    const unknown = [...new Set(messages.map((message) => message.sender))].filter(
+    const unknown = [...new Set(messages.flatMap((message) => [
+      message.sender,
+      ...message.reactions.flatMap((reaction) => reaction.reactors.map((reactor) => reactor.id)),
+    ]))].filter(
       (sender) => sender && !this.#profiles.has(sender),
     );
     await Promise.all(
@@ -1289,12 +1612,24 @@ export class MatrixHub {
       this.#roomPlatforms.get(roomId) ||
       messages.map((message) => platformFromSender(message.sender)).find(Boolean) ||
       "matrix";
+    const userId = this.#auth().userId;
     return messages.map((message) => ({
       ...message,
       senderName: message.mine
         ? SELF_SENDER_NAME
         : bridgeDisplayName(this.#profiles.get(message.sender)?.name ?? message.sender, platform),
       senderAvatarUrl: this.#profiles.get(message.sender)?.avatarUrl ?? null,
+      reactions: message.reactions.map((reaction) => ({
+        ...reaction,
+        reactors: reaction.reactors.map((reactor) => ({
+          id: reactor.id,
+          name: reactor.id === userId
+            ? SELF_SENDER_NAME
+            : bridgeDisplayName(this.#profiles.get(reactor.id)?.name ?? reactor.id, platform),
+          avatarUrl: this.#profiles.get(reactor.id)?.avatarUrl ?? null,
+          mine: reactor.mine,
+        })),
+      })),
     }));
   }
 
@@ -2014,6 +2349,8 @@ export interface MatrixRoom {
   parentIds?: string[];
   /** Remote portal id, used to match an existing DM to a directory contact. */
   remoteId?: string;
+  /** This is the portal the bridge currently routes outbound traffic through. */
+  currentPortal?: boolean;
   accountIds?: string[];
   /** Remote unread counts, kept separate when one portal belongs to two logins. */
   unreadByAccount?: Record<string, number>;
@@ -2089,8 +2426,16 @@ export interface MatrixMessage {
 export interface MatrixReaction {
   key: string;
   count: number;
+  reactors: MatrixReactionActor[];
   /** The signed-in account's own reaction event, so it can be taken back. */
   mineEventId: string | null;
+}
+
+export interface MatrixReactionActor {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  mine: boolean;
 }
 
 interface RawEvent {
@@ -2118,8 +2463,10 @@ interface RawEvent {
     displayname?: string;
     avatar_url?: string;
     membership?: string;
-    /** Bridge-owned setup state, intentionally absent from chat timelines. */
+    /** Bridge-owned setup or profile-sync state, intentionally absent from chat timelines. */
     "com.beeper.exclude_from_timeline"?: boolean;
+    /** mautrix portal setup invite; its immediate join is transport bookkeeping too. */
+    "fi.mau.will_auto_accept"?: boolean;
     /** MSC4095 preview bundles emitted by the mautrix bridge family. */
     "com.beeper.linkpreviews"?: RawLinkPreview[];
     /** Written by a bridge onto media it could not fetch; see `viewIn`. */
@@ -2134,6 +2481,8 @@ interface RawEvent {
     "co.polymux.notice"?: boolean;
     /** Set on `m.bridge`: which network the room is a portal for. */
     protocol?: {id?: string};
+    /** A bridge-safe remote conversation identity, not the raw contact id. */
+    channel?: {id?: string};
     /** mautrix marks direct chats "dm" here; groups carry their own type. */
     "com.beeper.room_type"?: string;
     /** Bridge v2 also identifies account-wide personal filtering Spaces. */
@@ -2252,12 +2601,7 @@ interface SyncResponse {
   };
 }
 
-/**
- * Folds the page's `m.reaction` events onto the messages they annotate. Only
- * the reactions in the same page can be seen, which is what a page of history
- * carries: a reaction added long after the message is on a later page and
- * shows up when that part of the room is read.
- */
+/** Folds the resolved active `m.reaction` events onto their target messages. */
 function withReactions(
   messages: MatrixMessage[],
   chunk: RawEvent[],
@@ -2273,11 +2617,20 @@ function withReactions(
     const list = byTarget.get(target) ?? [];
     const existing = list.find((item) => item.key === key);
     const mine = Boolean(userId) && event.sender === userId ? (event.event_id ?? null) : null;
+    const reactor: MatrixReactionActor | null = event.sender
+      ? {id: event.sender, name: event.sender, avatarUrl: null, mine: event.sender === userId}
+      : null;
     if (existing) {
-      existing.count += 1;
+      // A reaction represents a person, even if a misbehaving bridge wrote
+      // the same annotation twice. Keep its most recent event id for undo but
+      // do not draw the same profile twice or inflate the visible total.
+      if (!reactor || !existing.reactors.some((item) => item.id === reactor.id)) {
+        existing.count += 1;
+        if (reactor) existing.reactors.push(reactor);
+      }
       existing.mineEventId = existing.mineEventId ?? mine;
     } else {
-      list.push({key, count: 1, mineEventId: mine});
+      list.push({key, count: 1, reactors: reactor ? [reactor] : [], mineEventId: mine});
     }
     byTarget.set(target, list);
   }
@@ -2300,11 +2653,14 @@ function isMessage(event: RawEvent | undefined): event is RawEvent {
 }
 
 /** Authored messages plus the state changes a person sees inside the thread. */
-function isTimelineItem(event: RawEvent | undefined): event is RawEvent {
+function isTimelineItem(
+  event: RawEvent | undefined,
+  userId: string | null,
+): event is RawEvent {
   if (!event) return false;
   if (event.type === "m.sticker") return true;
   if (event.type === "m.room.message" && typeof event.content?.body === "string") return true;
-  return event.type === "m.room.member" && Boolean(membershipNotice(event));
+  return event.type === "m.room.member" && Boolean(membershipNotice(event, userId));
 }
 
 /** The newest event of a state type, since `/sync` gives them in order. */
@@ -2366,6 +2722,28 @@ function normalisePlatform(value: string): string | null {
   const trimmed = name.replace(/go$/, "");
   if (BRIDGE_ALIASES[trimmed]) return BRIDGE_ALIASES[trimmed];
   return KNOWN_PLATFORMS.has(trimmed) ? trimmed : null;
+}
+
+/** The custom WeChat relay keeps the one writable portal per remote chat in
+ * its own state file. Older rooms stay joined so their history remains
+ * readable, but a Contacts row must prefer the current room when both carry
+ * the same stable `m.bridge` channel id. */
+async function currentWeChatPortalRooms(directory: string | null): Promise<Set<string>> {
+  if (!directory) return new Set();
+  try {
+    const source = await readFile(
+      path.join(directory, "bridges", "wechat", "state.json"),
+      "utf8",
+    );
+    const stored = JSON.parse(source) as {rooms?: Record<string, {roomId?: unknown}>};
+    return new Set(
+      Object.values(stored.rooms ?? {})
+        .map((room) => room?.roomId)
+        .filter((roomId): roomId is string => typeof roomId === "string" && roomId.length > 0),
+    );
+  } catch {
+    return new Set();
+  }
 }
 
 function platformOfRoom(members: string[]): string {
@@ -2457,8 +2835,8 @@ function withEdits(chunk: RawEvent[]): RawEvent[] {
  * One line for the chat list. A media message's body is its filename, which
  * reads as noise in a list, so it is named by what it is instead.
  */
-function previewOf(event: RawEvent): string {
-  const membership = membershipNotice(event);
+function previewOf(event: RawEvent, userId: string | null): string {
+  const membership = membershipNotice(event, userId);
   if (membership) return membership;
   // Either shape of sticker: its own event type, or a picture a bridge marked
   // as one because it sends stickers as images.
@@ -2516,7 +2894,7 @@ function toMessage(raw: RawEvent, userId?: string | null): MatrixMessage {
   const event = {...raw, content: contentOf(raw)};
   const attachments = attachmentsOf(event);
   const linkPreview = linkPreviewOf(event);
-  const visibleBody = visibleMessageBody(event);
+  const visibleBody = visibleMessageBody(event, userId ?? null);
   const viewIn = viewInOf(event);
   return {
     eventId: event.event_id ?? "",
@@ -2575,8 +2953,8 @@ function weChatUrl(value?: string): string | null {
 }
 
 /** Older imported WeChat rows predate bridge-side emoji normalization. */
-function visibleMessageBody(event: RawEvent): string {
-  const membership = membershipNotice(event);
+function visibleMessageBody(event: RawEvent, userId: string | null): string {
+  const membership = membershipNotice(event, userId);
   if (membership) return membership;
   const body = event.content?.body ?? "";
   if (!event.content?.["co.polymux.wechat.remote"]) return body;
@@ -2596,26 +2974,30 @@ function isNotice(event: RawEvent): boolean {
   return /\b(?:invited .+ to the group chat|removed .+ from the group chat|joined the group chat|left the group chat|changed the group name to)\b/i.test(body);
 }
 
-function membershipNotice(event: RawEvent): string | null {
+function membershipNotice(event: RawEvent, userId: string | null): string | null {
+  const previous = event.unsigned?.prev_content;
+  const setupJoin =
+    event.content?.membership === "join" &&
+    previous?.membership === "invite" &&
+    invisibleBridgeMembership(previous);
   if (
     event.type !== "m.room.member" ||
-    event.content?.["com.beeper.exclude_from_timeline"] ||
+    invisibleBridgeMembership(event.content) ||
+    setupJoin ||
     !event.state_key ||
+    event.state_key === userId ||
     isBridgeBot(event.state_key)
   ) return null;
-  const previous = event.unsigned?.prev_content;
   const platform = platformFromSender(event.state_key) ?? "";
   const rawName = event.content?.displayname?.trim() || previous?.displayname?.trim();
   if (!rawName) return null;
   const name = bridgeDisplayName(rawName, platform);
   const membership = event.content?.membership;
+  // Bridges republish member state when they learn a contact's real name or
+  // avatar. That keeps sender identity current, but it is connection/profile
+  // bookkeeping rather than an event the native conversation would show.
+  if (previous?.membership === membership) return null;
   if (membership === "join") {
-    if (previous?.membership === "join") {
-      const oldName = previous.displayname?.trim()
-        ? bridgeDisplayName(previous.displayname.trim(), platform)
-        : null;
-      return oldName && oldName !== name ? `${oldName} changed their name to ${name}` : null;
-    }
     return `${name} joined the group`;
   }
   if (membership === "invite") return `${name} was invited to the group`;
@@ -2625,6 +3007,12 @@ function membershipNotice(event: RawEvent): string | null {
       ? `${name} left the group`
       : `${name} was removed from the group`;
   return null;
+}
+
+/** A Matrix membership used to assemble a bridge portal, not remote activity. */
+function invisibleBridgeMembership(content: RawEvent["content"] | undefined): boolean {
+  return content?.["com.beeper.exclude_from_timeline"] === true ||
+    content?.["fi.mau.will_auto_accept"] === true;
 }
 
 function linkPreviewOf(event: RawEvent): MatrixLinkPreview | null {

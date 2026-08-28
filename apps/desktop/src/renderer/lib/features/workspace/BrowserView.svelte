@@ -7,7 +7,15 @@
   import Icon from '../../shared/components/Icon.svelte';
   import {polymuxApi} from '../../api/polymux';
   import {t, type MessageKey} from '../../../i18n';
-  import type {BrowserPermissionDto, BrowserPermissionPromptDto} from '@polymux/protocol';
+  import type {BrowserHistoryEntryDto, BrowserPermissionDto, BrowserPermissionPromptDto} from '@polymux/protocol';
+
+  type AddressRow = {
+    id: string;
+    kind: 'history' | 'search';
+    title: string;
+    detail: string;
+    value: string;
+  };
 
   export let tabId = '';
   export let title = '';
@@ -67,11 +75,23 @@
   let refreshing = false;
   let downloadsOpen = false;
   let moreOpen = false;
+  let addressSuggestionsOpen = false;
+  let addressRows: AddressRow[] = [];
+  let selectedAddressRow = -1;
+  let addressLookupRevision = 0;
+  let addressLookupTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The native page must hide while a renderer menu sits above it. Its last
+   * frame stays here for that short handoff so the browser never turns blank. */
+  let pagePreview: string | null = null;
+  let popoverRevision = 0;
+  let visibilityRevision = 0;
+  let visibilityChange: Promise<void> = Promise.resolve();
   let findOpen = false;
   let findQuery = '';
   let findMatches: {matches: number; activeMatch: number} | null = null;
   let addressForm: HTMLElement;
   let addressInput: HTMLInputElement;
+  let addressList: HTMLElement;
   /** Set once the user edits the address by hand: their text outlives both the
    * blur and any page-state update, and is only dropped once they navigate. */
   let addressDirty = false;
@@ -86,8 +106,196 @@
 
   $: if (!embedded) draft = url ?? '';
   // The bar's own popovers hang over the page too, so it steps aside for them
-  // the same way it does for surfaces that cover the whole drawer.
-  $: if (embedded) void api.browser.setVisible(tabId, !obscured && !downloadsOpen && !moreOpen);
+  // the same way it does for surfaces that cover the whole drawer. A captured
+  // frame remains in the DOM beneath a popover while the native view is away.
+  $: if (embedded) updatePageVisibility(!obscured && !downloadsOpen && !moreOpen && !addressSuggestionsOpen);
+
+  function updatePageVisibility(visible: boolean): void {
+    const revision = ++visibilityRevision;
+    visibilityChange = api.browser.setVisible(tabId, visible).catch(() => {});
+    void visibilityChange.then(() => {
+      if (visible && revision === visibilityRevision) pagePreview = null;
+    });
+  }
+
+  async function togglePopover(target: 'downloads' | 'more'): Promise<void> {
+    const alreadyOpen = target === 'downloads' ? downloadsOpen : moreOpen;
+    if (alreadyOpen) {
+      popoverRevision += 1;
+      if (target === 'downloads') downloadsOpen = false;
+      else moreOpen = false;
+      return;
+    }
+
+    const revision = ++popoverRevision;
+    downloadsOpen = false;
+    moreOpen = false;
+    let preview = pagePreview;
+    if (!preview && embedded && pageLoaded) {
+      try {
+        preview = await api.browser.preview(tabId);
+      } catch {
+        preview = null;
+      }
+    }
+    if (revision !== popoverRevision) return;
+    pagePreview = preview;
+    if (target === 'downloads') downloadsOpen = true;
+    else moreOpen = true;
+  }
+
+  function addressRowId(index: number): string {
+    return `browser-address-option-${tabId || 'preview'}-${index}`;
+  }
+
+  function displayUrl(value: string): string {
+    try {
+      const parsed = new URL(value);
+      return `${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}${parsed.search}`;
+    } catch {
+      return value;
+    }
+  }
+
+  function historyRows(history: BrowserHistoryEntryDto[]): AddressRow[] {
+    return history.slice(0, 5).map((entry, index) => ({
+      id: `history-${index}-${entry.url}`,
+      kind: 'history',
+      title: entry.title || displayUrl(entry.url),
+      detail: displayUrl(entry.url),
+      value: entry.url,
+    }));
+  }
+
+  function searchRows(query: string, suggestions: string[]): AddressRow[] {
+    if (!query || looksLikeAddress(query)) return [];
+    const seen = new Set<string>();
+    return [query, ...suggestions].flatMap((suggestion) => {
+      const value = suggestion.trim();
+      const key = value.toLocaleLowerCase();
+      if (!value || seen.has(key)) return [];
+      seen.add(key);
+      return [{
+        id: `search-${key}`,
+        kind: 'search' as const,
+        title: value,
+        detail: $t('browser.searchWithGoogle'),
+        value,
+      }];
+    }).slice(0, 6);
+  }
+
+  function looksLikeAddress(value: string): boolean {
+    if (/^[a-z][a-z\d+.-]*:\/\//i.test(value)) return true;
+    return !/\s/.test(value) && /^[\w.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(value);
+  }
+
+  async function showAddressRows(rows: AddressRow[], revision: number): Promise<void> {
+    if (revision !== addressLookupRevision || document.activeElement !== addressInput) return;
+    const selectedId = selectedAddressRow >= 0 ? addressRows[selectedAddressRow]?.id : null;
+    addressRows = rows;
+    selectedAddressRow = selectedId ? rows.findIndex((row) => row.id === selectedId) : -1;
+    if (!rows.length) {
+      addressSuggestionsOpen = false;
+      return;
+    }
+    if (!addressSuggestionsOpen) {
+      let preview = pagePreview;
+      if (!preview && embedded && pageLoaded) {
+        try {
+          preview = await api.browser.preview(tabId);
+        } catch {
+          preview = null;
+        }
+      }
+      if (revision !== addressLookupRevision || document.activeElement !== addressInput) return;
+      pagePreview = preview;
+      addressSuggestionsOpen = true;
+    }
+  }
+
+  async function loadAddressRows(query: string, revision: number): Promise<void> {
+    const text = query.trim().slice(0, 200);
+    const history = await api.browser.browsingHistory({query: text || undefined, limit: 5}).catch(() => []);
+    if (revision !== addressLookupRevision) return;
+
+    const local = historyRows(history);
+    const immediate = text ? [...local, ...searchRows(text, [])] : local;
+    await showAddressRows(immediate, revision);
+    if (!text || looksLikeAddress(text)) return;
+
+    const suggestions = await api.browser.suggestions(text).catch(() => []);
+    if (revision !== addressLookupRevision) return;
+    await showAddressRows([...local, ...searchRows(text, suggestions)], revision);
+  }
+
+  function scheduleAddressRows(query: string, delay = 140): void {
+    clearTimeout(addressLookupTimer);
+    const revision = ++addressLookupRevision;
+    addressLookupTimer = setTimeout(() => void loadAddressRows(query, revision), delay);
+  }
+
+  function closeAddressSuggestions(): void {
+    clearTimeout(addressLookupTimer);
+    addressLookupRevision += 1;
+    addressSuggestionsOpen = false;
+    addressRows = [];
+    selectedAddressRow = -1;
+  }
+
+  function focusAddress(): void {
+    watchDocumentFocus();
+    addressInput.select();
+    scheduleAddressRows('', 0);
+  }
+
+  function inputAddress(): void {
+    addressDirty = true;
+    scheduleAddressRows(draft);
+  }
+
+  function blurAddress(): void {
+    stopWatchingFocus();
+    closeAddressSuggestions();
+  }
+
+  function chooseAddressRow(row: AddressRow): void {
+    const value = row.kind === 'history' ? row.value : resolveInput(row.value);
+    draft = value;
+    navigateAddress(value);
+  }
+
+  function handleAddressKey(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && addressSuggestionsOpen) {
+      event.preventDefault();
+      closeAddressSuggestions();
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+      if (event.key === 'Enter' && addressSuggestionsOpen && selectedAddressRow >= 0) {
+        event.preventDefault();
+        const row = addressRows[selectedAddressRow];
+        if (row) chooseAddressRow(row);
+      }
+      return;
+    }
+    if (!addressRows.length) return;
+    event.preventDefault();
+    addressSuggestionsOpen = true;
+    const direction = event.key === 'ArrowDown' ? 1 : -1;
+    selectedAddressRow = selectedAddressRow < 0
+      ? (direction > 0 ? 0 : addressRows.length - 1)
+      : (selectedAddressRow + direction + addressRows.length) % addressRows.length;
+    void tick().then(() => {
+      const row = document.getElementById(addressRowId(selectedAddressRow));
+      if (!row || !addressList) return;
+      const top = row.offsetTop;
+      const bottom = top + row.offsetHeight;
+      if (top < addressList.scrollTop) addressList.scrollTop = top;
+      else if (bottom > addressList.scrollTop + addressList.clientHeight)
+        addressList.scrollTop = bottom - addressList.clientHeight;
+    });
+  }
 
   /** "Search or enter address" semantics: URLs load, anything else searches. */
   function resolveInput(value: string): string {
@@ -97,14 +305,19 @@
     return `https://www.google.com/search?q=${encodeURIComponent(text)}`;
   }
 
+  function navigateAddress(target: string): void {
+    closeAddressSuggestions();
+    addressDirty = false;
+    addressInput?.blur();
+    if (embedded) void api.browser.navigate(tabId, target);
+    else if (url = target) onState({url});
+  }
+
   function submit(event: SubmitEvent): void {
     event.preventDefault();
     const next = draft.trim();
     if (!next) return;
-    addressDirty = false;
-    addressInput?.blur();
-    if (embedded) void api.browser.navigate(tabId, resolveInput(next));
-    else if (url = resolveInput(next)) onState({url});
+    navigateAddress(resolveInput(next));
   }
 
   function goHistory(delta: -1 | 1): void {
@@ -144,9 +357,10 @@
 
   async function takeScreenshot(): Promise<void> {
     moreOpen = false;
-    // Closing the menu is what un-hides the page, and that ride runs through a
-    // reactive flush; capture only after it, or the shot is of a hidden view.
+    // Closing the menu is what un-hides the page. Wait for both the reactive
+    // flush and the native visibility handoff, or the shot is of a hidden view.
     await tick();
+    await visibilityChange;
     const entry = await api.browser.screenshot(tabId);
     if (entry) downloads = [entry, ...downloads.filter((existing) => existing.id !== entry.id)];
   }
@@ -154,8 +368,17 @@
   /** One popover at a time, and a click anywhere else closes them both. */
   function dismiss(event: MouseEvent): void {
     const target = event.target as Node;
-    if (downloadsOpen && !downloadsWrapper?.contains(target)) downloadsOpen = false;
-    if (moreOpen && !moreWrapper?.contains(target)) moreOpen = false;
+    let closed = false;
+    if (downloadsOpen && !downloadsWrapper?.contains(target)) {
+      downloadsOpen = false;
+      closed = true;
+    }
+    if (moreOpen && !moreWrapper?.contains(target)) {
+      moreOpen = false;
+      closed = true;
+    }
+    if (addressSuggestionsOpen && !addressForm?.contains(target)) closeAddressSuggestions();
+    if (closed) popoverRevision += 1;
   }
 
   /** Clicking the embedded page moves OS focus to the web contents without
@@ -222,7 +445,11 @@
     // loading before this pane existed, so its state events are already spent:
     // asking is the only way to learn there is a page behind the view, and
     // without it the empty state sits over a loaded page for good.
-    void api.browser.open(tabId, url || undefined).then((page) => {
+    const initialSurface = surface.getBoundingClientRect();
+    void api.browser.open(tabId, url || undefined, {
+      width: initialSurface.width,
+      height: initialSurface.height,
+    }).then((page) => {
       if (!page.url) return;
       pageLoaded = true;
       currentUrl = page.url;
@@ -268,6 +495,10 @@
   });
 
   onDestroy(() => {
+    popoverRevision += 1;
+    visibilityRevision += 1;
+    addressLookupRevision += 1;
+    clearTimeout(addressLookupTimer);
     stopWatchingFocus();
     clearTimeout(refreshingTimer);
     if (boundsFrame !== undefined) cancelAnimationFrame(boundsFrame);
@@ -288,13 +519,63 @@
   </div>
 
   <form bind:this={addressForm} class="address-form" onsubmit={submit}>
-    <input bind:this={addressInput} bind:value={draft} oninput={() => addressDirty = true} onfocus={watchDocumentFocus} onblur={stopWatchingFocus} aria-label={$t('browser.address')} placeholder={$t('browser.addressPlaceholder')} spellcheck="false" autocomplete="off"/>
+    <input
+      bind:this={addressInput}
+      bind:value={draft}
+      oninput={inputAddress}
+      onfocus={focusAddress}
+      onblur={blurAddress}
+      onkeydown={handleAddressKey}
+      role="combobox"
+      aria-autocomplete="list"
+      aria-controls={addressSuggestionsOpen ? `browser-address-suggestions-${tabId || 'preview'}` : undefined}
+      aria-expanded={addressSuggestionsOpen}
+      aria-activedescendant={selectedAddressRow >= 0 ? addressRowId(selectedAddressRow) : undefined}
+      aria-label={$t('browser.address')}
+      placeholder={$t('browser.addressPlaceholder')}
+      spellcheck="false"
+      autocomplete="off"
+    />
     <button type="submit" class="address-submit" aria-label={$t('browser.navigate')} data-tooltip="none"><Icon name="send" size={16}/></button>
+    {#if addressSuggestionsOpen}
+      <div
+        bind:this={addressList}
+        id={`browser-address-suggestions-${tabId || 'preview'}`}
+        class="address-suggestions"
+        role="listbox"
+        aria-label={$t('browser.addressSuggestions')}
+      >
+        {#each addressRows as row, index (row.id)}
+          {#if index === 0 || addressRows[index - 1]?.kind !== row.kind}
+            <div class="address-suggestions-label">
+              {$t(row.kind === 'history' ? 'browser.recentlyVisited' : 'browser.searchSuggestions')}
+            </div>
+          {/if}
+          <button
+            id={addressRowId(index)}
+            type="button"
+            class="address-suggestion"
+            class:selected={selectedAddressRow === index}
+            role="option"
+            aria-selected={selectedAddressRow === index}
+            onmousedown={(event) => event.preventDefault()}
+            onmousemove={() => selectedAddressRow = index}
+            onclick={() => chooseAddressRow(row)}
+          >
+            <span class="address-suggestion-icon"><Icon name={row.kind === 'history' ? 'history' : 'search'} size={15}/></span>
+            <span class="address-suggestion-copy">
+              <strong>{row.title}</strong>
+              <small>{row.detail}</small>
+            </span>
+          </button>
+        {/each}
+      </div>
+    {/if}
   </form>
 
   <div class="browser-actions browser-page-actions">
     <div bind:this={downloadsWrapper} class="workspace-downloads-wrap">
-      <button type="button" class:active={downloadsOpen} aria-label={$t('browser.downloads')} aria-haspopup="dialog" aria-expanded={downloadsOpen} onclick={() => { moreOpen = false; downloadsOpen = !downloadsOpen; }}><Icon name="download" size={16}/></button>
+      <button type="button" class:active={downloadsOpen} aria-label={$t('browser.downloads')} aria-haspopup="dialog" aria-expanded={downloadsOpen} onclick={() => void togglePopover('downloads')}><Icon name="download" size={16}/></button>
       {#if downloadsOpen}
         <div class="downloads-popover" role="dialog" aria-labelledby="downloads-title">
           <header>
@@ -316,7 +597,7 @@
     </div>
 
     <div bind:this={moreWrapper} class="workspace-more-wrap">
-      <button type="button" aria-label={$t('browser.more')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={moreOpen} onclick={() => { downloadsOpen = false; moreOpen = !moreOpen; }}><Icon name="more" size={16}/></button>
+      <button type="button" aria-label={$t('browser.more')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={moreOpen} onclick={() => void togglePopover('more')}><Icon name="more" size={16}/></button>
       {#if moreOpen}
         <div class="polymux-dropdown-menu workspace-more-menu" role="menu">
           <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={openFind}><span>{$t('browser.findInPage')}</span></button>
@@ -361,7 +642,9 @@
   <!-- The page renders in a WebContentsView the main process pins to this
        surface's rectangle. Nothing is drawn here: a tab with no page yet shows
        the pane's own background, never a card over the page. -->
-  <div bind:this={surface} class="browser-frame browser-surface"></div>
+  <div bind:this={surface} class="browser-frame browser-surface">
+    {#if pagePreview}<img class="browser-page-preview" src={pagePreview} alt="" aria-hidden="true" draggable="false"/>{/if}
+  </div>
 {:else if url}
   <iframe class="browser-frame" src={url} title={title || $t('browser.title')} sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
 {:else}

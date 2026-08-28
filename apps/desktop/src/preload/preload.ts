@@ -42,6 +42,9 @@ const api: PolymuxApi = {
     installUpdate: () => ipcRenderer.invoke(channels.generalInstallUpdate),
     testNotification: () => ipcRenderer.invoke(channels.generalTestNotification),
   },
+  clipboard: {
+    write: (content) => ipcRenderer.invoke(channels.clipboardWrite, content),
+  },
   window: {
     openWorkspaceView: (kind, conversationId, placement) =>
       ipcRenderer.invoke(channels.windowOpenWorkspaceView, kind, conversationId, placement),
@@ -242,6 +245,12 @@ const api: PolymuxApi = {
     chats: () => ipcRenderer.invoke(channels.commsChats),
     chatContacts: () => ipcRenderer.invoke(channels.commsChatContacts),
     chatCreate: (request) => ipcRenderer.invoke(channels.commsChatCreate, request),
+    broadcasts: () => ipcRenderer.invoke(channels.commsBroadcasts),
+    broadcastCreate: (request) => ipcRenderer.invoke(channels.commsBroadcastCreate, request),
+    broadcastMessages: (broadcastId) =>
+      ipcRenderer.invoke(channels.commsBroadcastMessages, broadcastId),
+    broadcastSend: (broadcastId, text) =>
+      ipcRenderer.invoke(channels.commsBroadcastSend, broadcastId, text),
     chatMessages: (chatId, limit, before) =>
       ipcRenderer.invoke(channels.commsChatMessages, chatId, limit, before),
     chatSend: (chatId, text, replyTo) =>
@@ -385,7 +394,7 @@ const api: PolymuxApi = {
   },
   browser: {
     embedded: true,
-    open: (tabId, url) => ipcRenderer.invoke(channels.browserOpen, tabId, url),
+    open: (tabId, url, viewport) => ipcRenderer.invoke(channels.browserOpen, tabId, url, viewport),
     navigate: (tabId, url) => ipcRenderer.invoke(channels.browserNavigate, tabId, url),
     history: (tabId, delta) => ipcRenderer.invoke(channels.browserHistory, tabId, delta),
     reload: (tabId) => ipcRenderer.invoke(channels.browserReload, tabId),
@@ -398,6 +407,7 @@ const api: PolymuxApi = {
     find: (tabId, text, forward) => ipcRenderer.invoke(channels.browserFind, tabId, text, forward),
     stopFind: (tabId) => ipcRenderer.invoke(channels.browserStopFind, tabId),
     print: (tabId) => ipcRenderer.invoke(channels.browserPrint, tabId),
+    preview: (tabId) => ipcRenderer.invoke(channels.browserPreview, tabId),
     screenshot: (tabId) => ipcRenderer.invoke(channels.browserScreenshot, tabId),
     favicon: (url) => ipcRenderer.invoke(channels.browserFavicon, url),
     downloads: () => ipcRenderer.invoke(channels.browserDownloadsList),
@@ -425,6 +435,7 @@ const api: PolymuxApi = {
     revealLogin: (id) => ipcRenderer.invoke(channels.browserLoginReveal, id),
     deleteLogin: (id) => ipcRenderer.invoke(channels.browserLoginDelete, id),
     browsingHistory: (options) => ipcRenderer.invoke(channels.browserHistoryList, options),
+    suggestions: (query) => ipcRenderer.invoke(channels.browserSuggestions, query),
     forgetHistoryEntry: (url) => ipcRenderer.invoke(channels.browserHistoryForget, url),
     clearHistory: (options) => ipcRenderer.invoke(channels.browserHistoryClear, options),
     importSources: () => ipcRenderer.invoke(channels.browserImportSources),

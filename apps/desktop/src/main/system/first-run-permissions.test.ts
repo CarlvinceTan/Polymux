@@ -3,7 +3,7 @@ import test from "node:test";
 import type {SystemPermissionKind, SystemPermissionStatus} from "@polymux/protocol";
 import {FirstRunPermissions, type PermissionPreferenceStore} from "./first-run-permissions.js";
 
-test("marks first run done, starts what waits on it, and asks macOS for nothing", async () => {
+test("immediately requests every enabled built-in permission in sequence", async () => {
   const preferences = new Map<string, unknown>();
   const events: string[] = [];
   const store: PermissionPreferenceStore = {
@@ -16,18 +16,29 @@ test("marks first run done, starts what waits on it, and asks macOS for nothing"
   ]);
   const manager = new FirstRunPermissions({
     store,
+    enabled: () => true,
     status: (permission) => statuses.get(permission)!,
+    request: async (permission) => {
+      events.push(permission);
+      statuses.set(permission, "granted");
+      return "granted";
+    },
     onReady: () => events.push("ready"),
   });
 
   const first = await manager.ensure();
-  // No permission name among the events: this runs at launch, and a consent
-  // dialog raised here is one the user did nothing to invite.
-  assert.deepEqual(events, ["saved", "ready"]);
+  assert.deepEqual(events, [
+    "microphone",
+    "screen-recording",
+    "accessibility",
+    "full-disk-access",
+    "saved",
+    "ready",
+  ]);
   assert.deepEqual(first, {
     firstRun: true,
-    microphone: "not-determined",
-    screenRecording: "not-determined",
+    microphone: "granted",
+    screenRecording: "granted",
   });
 
   events.length = 0;
@@ -38,16 +49,44 @@ test("marks first run done, starts what waits on it, and asks macOS for nothing"
 
 test("reports what is granted rather than what it just asked for", async () => {
   const store: PermissionPreferenceStore = {
-    getPreference: () => null,
+    getPreference: () => ({value: true}),
     setPreference: () => undefined,
   };
   const manager = new FirstRunPermissions({
     store,
+    enabled: () => true,
     status: (permission) => permission === "microphone" ? "granted" : "denied",
+    request: async () => {
+      throw new Error("a completed first run must not ask again");
+    },
     onReady: () => undefined,
   });
 
   const result = await manager.ensure();
   assert.equal(result.microphone, "granted");
   assert.equal(result.screenRecording, "denied");
+});
+
+test("does not request a built-in capability switched off in Polymux", async () => {
+  const requested: SystemPermissionKind[] = [];
+  const manager = new FirstRunPermissions({
+    store: {
+      getPreference: () => null,
+      setPreference: () => undefined,
+    },
+    enabled: (permission) => permission !== "screen-recording",
+    status: () => "denied",
+    request: async (permission) => {
+      requested.push(permission);
+      return "denied";
+    },
+    onReady: () => undefined,
+  });
+
+  await manager.ensure();
+  assert.deepEqual(requested, [
+    "microphone",
+    "accessibility",
+    "full-disk-access",
+  ]);
 });

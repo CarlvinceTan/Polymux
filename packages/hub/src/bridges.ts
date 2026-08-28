@@ -1,13 +1,20 @@
-import {spawn, type ChildProcess} from "node:child_process";
-import {connect} from "node:net";
-import {mkdir, open, readFile, readdir, rm, writeFile} from "node:fs/promises";
-import {randomBytes} from "node:crypto";
-import {homedir} from "node:os";
+import { spawn, type ChildProcess } from "node:child_process";
+import { connect } from "node:net";
+import {
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { homedir } from "node:os";
 import path from "node:path";
-import {DatabaseSync} from "node:sqlite";
-import type {SystemPermissionKind} from "@polymux/protocol";
-import type {Homeserver} from "./server.js";
-import {shippedNetworkConfig} from "./shipped-credentials.js";
+import { DatabaseSync } from "node:sqlite";
+import type { SystemPermissionKind } from "@polymux/protocol";
+import type { Homeserver } from "./server.js";
+import { shippedNetworkConfig } from "./shipped-credentials.js";
 
 /**
  * Runs mautrix bridge binaries as supervised children of Polymux, against the
@@ -50,6 +57,10 @@ export interface BridgeHostOptions {
   log?: (message: string) => void;
   /** The home directory a bridge's preflight looks in. Overridable for tests. */
   home?: string;
+  /** Host operating system. Overridable for cross-platform tests. */
+  platform?: NodeJS.Platform;
+  /** Host CPU architecture. Overridable for cross-platform tests. */
+  arch?: NodeJS.Architecture;
   /**
    * Application credentials shipped with the build, by platform, standing in
    * for ones the user would otherwise register themselves. Overridable so a
@@ -69,7 +80,7 @@ export interface BridgeHostOptions {
 /** Whether anything is accepting connections on a bridge's provisioning port. */
 function accepting(port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = connect({host: "127.0.0.1", port});
+    const socket = connect({ host: "127.0.0.1", port });
     const settle = (answer: boolean): void => {
       socket.destroy();
       resolve(answer);
@@ -94,6 +105,12 @@ export interface BridgeSpec {
   platform: string;
   /** Executable name inside the binaries directory. */
   binary: string;
+  /** Operating systems upstream can actually run on. A user-supplied native
+   * binary still overrides this, but the packaged app must not advertise a
+   * bridge that cannot be built for the current host. */
+  platforms?: readonly NodeJS.Platform[];
+  /** Exact packaged targets when support differs by architecture. */
+  targets?: readonly string[];
   /** Keys written under `network:` in the seed config. */
   network?: Record<string, string>;
   /**
@@ -118,7 +135,7 @@ export interface BridgeSpec {
    * must be able to read, a service that must be present. Returns what is
    * holding the bridge back, or null when nothing is.
    */
-  preflight?: (context: {home: string}) => Promise<BridgeBlock | null>;
+  preflight?: (context: { home: string }) => Promise<BridgeBlock | null>;
 }
 
 /** Why a bridge is not running, and whether a button could fix it. */
@@ -157,7 +174,9 @@ export async function messagesDatabaseAccess({
   const database = path.join(home, "Library", "Messages", "chat.db");
   // Opening it is the check: TCC denies the read itself, so anything short of
   // actually opening the file reports access this process does not have.
-  const handle = await open(database, "r").catch((error: NodeJS.ErrnoException) => error);
+  const handle = await open(database, "r").catch(
+    (error: NodeJS.ErrnoException) => error,
+  );
   if (!(handle instanceof Error)) {
     await handle.close().catch((): undefined => undefined);
     // The bridge is a separate executable. TCC normally attributes a child to
@@ -191,7 +210,9 @@ export async function messagesDatabaseAccess({
 
 function childCanRead(database: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn("/usr/bin/head", ["-c", "1", database], {stdio: "ignore"});
+    const child = spawn("/usr/bin/head", ["-c", "1", database], {
+      stdio: "ignore",
+    });
     let settled = false;
     const finish = (readable: boolean): void => {
       if (settled) return;
@@ -210,7 +231,7 @@ function childCanRead(database: string): Promise<boolean> {
  * than pretending it does not exist.
  */
 export const BRIDGE_FLEET: readonly BridgeSpec[] = [
-  {platform: "whatsapp", binary: "mautrix-whatsapp"},
+  { platform: "whatsapp", binary: "mautrix-whatsapp" },
   // Telegram will not talk to an application it does not know about, so this
   // binary needs a pair before it can start: the one the build ships, or the
   // user's own. The values below are the example pair the binary itself writes
@@ -219,13 +240,26 @@ export const BRIDGE_FLEET: readonly BridgeSpec[] = [
   {
     platform: "telegram",
     binary: "mautrix-telegram",
-    requires: {api_id: "12345", api_hash: "tjyd5yge35lbodk1xwzw2jstp90k55qz"},
+    requires: { api_id: "12345", api_hash: "tjyd5yge35lbodk1xwzw2jstp90k55qz" },
   },
-  {platform: "signal", binary: "mautrix-signal"},
-  {platform: "discord", binary: "mautrix-discord", legacy: true},
-  {platform: "slack", binary: "mautrix-slack"},
+  {
+    platform: "signal",
+    binary: "mautrix-signal",
+    platforms: ["darwin", "linux"],
+  },
+  {
+    platform: "discord",
+    binary: "mautrix-discord",
+    legacy: true,
+    platforms: ["darwin", "linux"],
+  },
+  { platform: "slack", binary: "mautrix-slack" },
   // These use the same config shape but separate executables upstream.
-  {platform: "messenger", binary: "mautrix-meta", network: {mode: "messenger"}},
+  {
+    platform: "messenger",
+    binary: "mautrix-meta",
+    network: { mode: "messenger" },
+  },
   {
     platform: "instagram",
     binary: "mautrix-instagram",
@@ -238,17 +272,26 @@ export const BRIDGE_FLEET: readonly BridgeSpec[] = [
       disable_xma_always: "false",
     },
   },
-  {platform: "googlechat", binary: "mautrix-googlechat"},
-  {platform: "gmessages", binary: "mautrix-gmessages"},
-  {platform: "linkedin", binary: "mautrix-linkedin"},
-  {platform: "twitter", binary: "mautrix-twitter"},
-  {platform: "bluesky", binary: "mautrix-bluesky"},
-  {platform: "gvoice", binary: "mautrix-gvoice"},
+  {
+    platform: "googlechat",
+    binary: "mautrix-googlechat",
+    targets: ["darwin-arm64", "linux-x64", "win32-x64"],
+  },
+  { platform: "gmessages", binary: "mautrix-gmessages" },
+  { platform: "linkedin", binary: "mautrix-linkedin" },
+  { platform: "twitter", binary: "mautrix-twitter" },
+  { platform: "bluesky", binary: "mautrix-bluesky" },
+  { platform: "gvoice", binary: "mautrix-gvoice" },
   // Self-hosted and cloud Zulip both work: the organisation's own URL is part
   // of the login rather than the config, so nothing here has to name a server.
-  {platform: "zulip", binary: "mautrix-zulip"},
+  { platform: "zulip", binary: "mautrix-zulip" },
   // Reads the Messages database on this Mac rather than a remote network.
-  {platform: "imessage", binary: "mautrix-imessage", preflight: messagesDatabaseAccess},
+  {
+    platform: "imessage",
+    binary: "mautrix-imessage",
+    platforms: ["darwin"],
+    preflight: messagesDatabaseAccess,
+  },
 ];
 
 /**
@@ -284,6 +327,59 @@ const READY_TIMEOUT_MS = 5_000;
  * rather than inheriting a count from the morning.
  */
 const HEALTHY_UPTIME_MS = 60_000;
+
+/**
+ * Lines emitted at warning/error level for connection churn the bridge itself
+ * handles. They are not actionable and do not mean the bridge process or its
+ * linked account is down. Keeping them out here also prevents one of these
+ * routine EOFs becoming the "reason" shown if the process later fails for an
+ * unrelated cause.
+ */
+function routineBridgeOutput(platform: string, line: string): boolean {
+  if (platform === "whatsapp" && line.includes("component=whatsmeow"))
+    return (
+      line.includes("Received stream end frame") ||
+      line.includes(
+        "Got 503 stream error, assuming automatic reconnect will handle it",
+      ) ||
+      line.includes(
+        "Error reading from websocket: failed to get reader: failed to read frame header: EOF",
+      )
+    );
+  if (platform === "messenger") {
+    if (line.includes("component=messagix"))
+      return (
+        line.includes(
+          'Error reading message from socket error="failed to get reader: failed to read frame header: EOF"',
+        ) ||
+        line.includes(
+          'Error in connection, reconnecting error="error in read loop: failed to read message: failed to get reader: failed to read frame header: EOF"',
+        ) ||
+        line.includes("No transactions found")
+      );
+
+    // Meta's Lightspeed schema includes optional, server-controlled data that
+    // the bridge deliberately skips when it cannot decode or use it. These
+    // exact fields are logging/admin-button metadata, not message content.
+    if (line.includes("global_log=true"))
+      return (
+        (line.includes("Failed to set int64") &&
+          line.includes("field_name=AttachmentLoggingType") &&
+          line.includes("struct_name=LSInsertXmaAttachment") &&
+          line.includes("val_type=string")) ||
+        (line.includes("Skipping dependency with no reference") &&
+          line.includes("reference_name=applyAdminMessageCTAV2"))
+      );
+
+    // A receipt older than the locally bridged history has no Matrix event it
+    // can point at. bridgev2 returns Ignored here; it is not a failed receipt.
+    return (
+      line.includes("No target message found for read receipt") &&
+      line.includes("bridge_evt_type=RemoteEventReadReceipt")
+    );
+  }
+  return false;
+}
 
 export class BridgeHost {
   readonly #options: BridgeHostOptions;
@@ -322,8 +418,18 @@ export class BridgeHost {
     const found = new Map<string, string>();
     for (const directory of directories) {
       const entries = await readdir(directory).catch((): string[] => []);
-      for (const entry of entries)
-        if (!found.has(entry)) found.set(entry, path.join(directory, entry));
+      for (const entry of entries) {
+        const installed = path.join(directory, entry);
+        if (!found.has(entry)) found.set(entry, installed);
+        // Windows executables need their native suffix, while the bridge
+        // catalogue deliberately stays platform-neutral. Index the native
+        // filename under the catalogue name too so discovery, inventory and
+        // port assignment remain identical on every OS.
+        if (entry.toLowerCase().endsWith(".exe")) {
+          const portableName = entry.slice(0, -4);
+          if (!found.has(portableName)) found.set(portableName, installed);
+        }
+      }
     }
     return found;
   }
@@ -331,17 +437,19 @@ export class BridgeHost {
   /** Bridge binaries present on disk, with their assigned ports. */
   async discover(): Promise<BridgeDefinition[]> {
     const found = await this.#locate();
-    return BRIDGE_FLEET.filter((spec) => found.has(spec.binary)).map((spec) => ({
-      name: spec.platform,
-      binary: found.get(spec.binary)!,
-      port: this.#port(spec.platform),
-      // A shipped pair joins the keys the spec pins, so it is seeded into the
-      // config like any other `network:` value and the bridge starts on it.
-      // Anything the user recorded still wins: every writer here merges the
-      // config's own values over these.
-      network: this.#withShipped(spec.platform, spec.network),
-      legacy: spec.legacy,
-    }));
+    return BRIDGE_FLEET.filter((spec) => found.has(spec.binary)).map(
+      (spec) => ({
+        name: spec.platform,
+        binary: found.get(spec.binary)!,
+        port: this.#port(spec.platform),
+        // A shipped pair joins the keys the spec pins, so it is seeded into the
+        // config like any other `network:` value and the bridge starts on it.
+        // Anything the user recorded still wins: every writer here merges the
+        // config's own values over these.
+        network: this.#withShipped(spec.platform, spec.network),
+        legacy: spec.legacy,
+      }),
+    );
   }
 
   /** What Polymux supplies for a platform in place of the user's own pair. */
@@ -355,7 +463,7 @@ export class BridgeHost {
   ): Record<string, string> | undefined {
     const shipped = this.#shipped(platform);
     if (Object.keys(shipped).length === 0) return network;
-    return {...network, ...shipped};
+    return { ...network, ...shipped };
   }
 
   /**
@@ -369,24 +477,36 @@ export class BridgeHost {
     {
       platform: string;
       binary: string;
+      supported: boolean;
       installed: boolean;
       blocked: BridgeBlock | null;
       running: boolean;
     }[]
   > {
     const found = await this.#locate();
-    return BRIDGE_FLEET.map((spec) => ({
-      platform: spec.platform,
-      binary: spec.binary,
-      installed: found.has(spec.binary),
-      blocked: this.#blocked.get(spec.platform) ?? null,
-      // Installed but not running is a bridge waiting to be asked for, which
-      // has to read differently from one that was asked for and did not answer.
-      // One still coming up counts as the former: it has a child process but no
-      // open port yet, and probing it in that window is how a bridge starting
-      // normally got reported as broken.
-      running: this.#children.has(spec.platform) && !this.#starting.has(spec.platform),
-    }));
+    const hostPlatform = this.#options.platform ?? process.platform;
+    const hostArch = this.#options.arch ?? process.arch;
+    const hostTarget = `${hostPlatform}-${hostArch}`;
+    return BRIDGE_FLEET.map((spec) => {
+      const installed = found.has(spec.binary);
+      return {
+        platform: spec.platform,
+        binary: spec.binary,
+        supported:
+          installed ||
+          ((!spec.platforms || spec.platforms.includes(hostPlatform)) &&
+            (!spec.targets || spec.targets.includes(hostTarget))),
+        installed,
+        blocked: this.#blocked.get(spec.platform) ?? null,
+        // Installed but not running is a bridge waiting to be asked for, which
+        // has to read differently from one that was asked for and did not answer.
+        // One still coming up counts as the former: it has a child process but no
+        // open port yet, and probing it in that window is how a bridge starting
+        // normally got reported as broken.
+        running:
+          this.#children.has(spec.platform) && !this.#starting.has(spec.platform),
+      };
+    });
   }
 
   async startAll(): Promise<BridgeDefinition[]> {
@@ -405,16 +525,20 @@ export class BridgeHost {
     let database: DatabaseSync;
     try {
       // A bridge that has never run has no database, and so no account.
-      database = new DatabaseSync(path.join(this.#options.directory, platform, "bridge.db"), {
-        readOnly: true,
-      });
+      database = new DatabaseSync(
+        path.join(this.#options.directory, platform, "bridge.db"),
+        {
+          readOnly: true,
+        },
+      );
     } catch {
       return false;
     }
     try {
       for (const query of LINKED_ACCOUNT_QUERIES) {
         try {
-          const row = database.prepare(query).get() as {linked: number} | undefined;
+          const row = database.prepare(query).get() as
+            { linked: number } | undefined;
           if (row) return Number(row.linked) > 0;
         } catch {
           // Not this generation's schema; try the next one.
@@ -452,7 +576,9 @@ export class BridgeHost {
     if (inFlight) return inFlight;
 
     const attempt = (async () => {
-      const bridge = (await this.discover()).find((entry) => entry.name === platform);
+      const bridge = (await this.discover()).find(
+        (entry) => entry.name === platform,
+      );
       if (!bridge) return;
       await this.#start(bridge);
       await this.#waitUntilAnswering(bridge);
@@ -471,20 +597,26 @@ export class BridgeHost {
    * and a value still equal to the seed placeholder counts as unset.
    */
   async networkConfig(platform: string): Promise<Record<string, string>> {
-    const configPath = path.join(this.#options.directory, platform, "config.yaml");
+    const configPath = path.join(
+      this.#options.directory,
+      platform,
+      "config.yaml",
+    );
     const source = await readFile(configPath, "utf8").catch((): string => "");
     const block = source.match(/^network:\n((?:[ \t]+.*\n?)*)/m)?.[1];
     if (!block) return {};
     // Upstream's own example values are as unset as an empty string: the binary
     // writes them itself and then refuses to start on them, so reading them
     // back as answers is how a bridge nobody configured looks configured.
-    const placeholders = BRIDGE_FLEET.find((entry) => entry.platform === platform)?.requires ?? {};
+    const placeholders =
+      BRIDGE_FLEET.find((entry) => entry.platform === platform)?.requires ?? {};
     const values: Record<string, string> = {};
     for (const line of block.split("\n")) {
       const match = line.match(/^\s+([A-Za-z0-9_]+):\s*(.*?)\s*$/);
       if (!match) continue;
       const [, key, value] = match;
-      if (value === "" || value === '""' || value === placeholders[key]) continue;
+      if (value === "" || value === '""' || value === placeholders[key])
+        continue;
       values[key] = value;
     }
     return values;
@@ -496,17 +628,22 @@ export class BridgeHost {
    * first run is seeded here — and a running child is stopped first so the
    * replacement reads the new file rather than racing it.
    */
-  async configureNetwork(platform: string, values: Record<string, string>): Promise<void> {
+  async configureNetwork(
+    platform: string,
+    values: Record<string, string>,
+  ): Promise<void> {
     const spec = BRIDGE_FLEET.find((entry) => entry.platform === platform);
     if (!spec) throw new Error(`${platform} is not a bridge this host runs.`);
 
     const directory = path.join(this.#options.directory, platform);
-    await mkdir(directory, {recursive: true});
+    await mkdir(directory, { recursive: true });
     const configPath = path.join(directory, "config.yaml");
-    const existing = await readFile(configPath, "utf8").catch((): string | null => null);
+    const existing = await readFile(configPath, "utf8").catch(
+      (): string | null => null,
+    );
     // The user's own values last: supplying a pair is how you override the one
     // Polymux ships, and a partial answer must not strip the rest of the block.
-    const merged = {...spec.network, ...this.#shipped(platform), ...values};
+    const merged = { ...spec.network, ...this.#shipped(platform), ...values };
     const bridge: BridgeDefinition = {
       name: platform,
       binary: "",
@@ -515,7 +652,9 @@ export class BridgeHost {
     };
     await writeFile(
       configPath,
-      existing === null ? this.#seedConfig(bridge) : withNetwork(existing, merged),
+      existing === null
+        ? this.#seedConfig(bridge)
+        : withNetwork(existing, merged),
       "utf8",
     );
 
@@ -534,7 +673,9 @@ export class BridgeHost {
     // than thrown — the configuration is saved either way, and reporting the
     // save as failed would send the user back to retype it.
     this.#blocked.delete(platform);
-    const definition = (await this.discover()).find((entry) => entry.name === platform);
+    const definition = (await this.discover()).find(
+      (entry) => entry.name === platform,
+    );
     if (!definition) return;
     await this.#start(definition).catch((error: unknown) => {
       this.#options.log?.(
@@ -559,7 +700,10 @@ export class BridgeHost {
   async retryBlocked(): Promise<void> {
     const waiting = new Set(
       [...this.#blocked]
-        .filter(([platform, block]) => block.retryable && !this.#children.has(platform))
+        .filter(
+          ([platform, block]) =>
+            block.retryable && !this.#children.has(platform),
+        )
         .map(([platform]) => platform),
     );
     if (waiting.size === 0) return;
@@ -605,11 +749,13 @@ export class BridgeHost {
 
   async #start(bridge: BridgeDefinition): Promise<void> {
     const directory = path.join(this.#options.directory, bridge.name);
-    await mkdir(directory, {recursive: true});
+    await mkdir(directory, { recursive: true });
     const configPath = path.join(directory, "config.yaml");
     const registrationPath = path.join(directory, "registration.yaml");
 
-    const existing = await readFile(configPath, "utf8").catch((): string | null => null);
+    const existing = await readFile(configPath, "utf8").catch(
+      (): string | null => null,
+    );
     if (existing === null) {
       await writeFile(configPath, this.#seedConfig(bridge), "utf8");
     } else if (bridge.legacy && /^database:/m.test(existing)) {
@@ -625,22 +771,29 @@ export class BridgeHost {
       // accept and write back when they upgrade the config in place: that
       // matched a config this branch had just written, so every launch threw
       // away working tokens and minted a new registration, forever.
-      this.#options.log?.(`[${bridge.name}] config was seeded in a layout this bridge rejects; reseeding`);
+      this.#options.log?.(
+        `[${bridge.name}] config was seeded in a layout this bridge rejects; reseeding`,
+      );
       await writeFile(configPath, this.#seedConfig(bridge), "utf8");
-      await rm(registrationPath, {force: true});
+      await rm(registrationPath, { force: true });
     } else if (bridge.network) {
       // A shared binary that predates its `network:` block (or gained new
       // required keys) exits at startup. Merge in what the spec requires,
       // keeping every value already recorded — the user's own entries win.
       const recorded = await this.networkConfig(bridge.name);
-      const missing = Object.entries(bridge.network).filter(([key]) => !(key in recorded));
+      const missing = Object.entries(bridge.network).filter(
+        ([key]) => !(key in recorded),
+      );
       if (missing.length > 0) {
         this.#options.log?.(
           `[${bridge.name}] config was missing ${missing.map(([key]) => key).join(", ")}; repaired`,
         );
         await writeFile(
           configPath,
-          withNetwork(existing, {...Object.fromEntries(missing), ...recorded}),
+          withNetwork(existing, {
+            ...Object.fromEntries(missing),
+            ...recorded,
+          }),
           "utf8",
         );
       }
@@ -665,8 +818,21 @@ export class BridgeHost {
     if (!hasRegistration) {
       // The bridge writes its own registration, deriving the ghost namespaces
       // from its username template so they are never out of sync.
-      await this.#run(bridge.binary, ["-c", configPath, "-r", registrationPath, "-g"], directory);
+      await this.#run(
+        bridge.binary,
+        ["-c", configPath, "-r", registrationPath, "-g"],
+        directory,
+      );
     }
+
+    const registration = parseRegistration(
+      await readFile(registrationPath, "utf8"),
+    );
+    await this.#reconcileWindowsConfig(
+      directory,
+      configPath,
+      registration,
+    );
 
     /**
      * Last, because a binary writes its own defaults over the whole config
@@ -680,7 +846,9 @@ export class BridgeHost {
      * history. Each one is a conversation that opens empty or reads as if the
      * other person sent everything in it.
      */
-    const onDisk = await readFile(configPath, "utf8").catch((): string | null => null);
+    const onDisk = await readFile(configPath, "utf8").catch(
+      (): string | null => null,
+    );
     if (onDisk !== null) {
       const repaired = repairConfig(onDisk, {
         serverName: this.#options.homeserver.serverName,
@@ -689,7 +857,9 @@ export class BridgeHost {
         platform: bridge.name,
       });
       if (repaired !== onDisk) {
-        this.#options.log?.(`[${bridge.name}] config was missing history, logout cleanup or double puppeting; repaired`);
+        this.#options.log?.(
+          `[${bridge.name}] config was missing history, logout cleanup or double puppeting; repaired`,
+        );
         await writeFile(configPath, repaired, "utf8");
       }
     }
@@ -699,7 +869,6 @@ export class BridgeHost {
     // previous incumbent before spawning a new one.
     await reapStalePid(path.join(directory, "bridge.pid"));
 
-    const registration = parseRegistration(await readFile(registrationPath, "utf8"));
     this.#options.homeserver.registerAppservice({
       id: registration.id ?? bridge.name,
       asToken: registration.asToken,
@@ -709,10 +878,65 @@ export class BridgeHost {
       // random string there and then acts as its configured bot username, so
       // the bot binding has to follow the config this host generated.
       senderLocalpart: `${bridge.name}bot`,
+      receiveEphemeral: registration.receiveEphemeral,
       userNamespaces: registration.userNamespaces,
     });
-    this.#options.homeserver.setProvisioningTarget(bridge.name, `http://127.0.0.1:${bridge.port}`);
+    this.#options.homeserver.setProvisioningTarget(
+      bridge.name,
+      `http://127.0.0.1:${bridge.port}`,
+    );
     this.#supervise(bridge, configPath, directory);
+  }
+
+  /**
+   * mautrix writes config updates through an atomic temporary file. Windows
+   * cannot rename that file over an existing destination, so the completed
+   * config is left beside `config.yaml` as `mautrix-config-<number>.yaml`.
+   * During registration generation this is fatal: the registration receives
+   * fresh tokens while the config keeps the previous pair, and the bridge is
+   * then rejected by the homeserver.
+   *
+   * Adopt the completed config whose tokens match the registration before the
+   * bridge starts. If an older install has already lost that temporary file,
+   * aligning the two token fields still repairs it without requiring the user
+   * to reinstall anything.
+   */
+  async #reconcileWindowsConfig(
+    directory: string,
+    configPath: string,
+    registration: ParsedRegistration,
+  ): Promise<void> {
+    if ((this.#options.platform ?? process.platform) !== "win32") return;
+    const names = await readdir(directory).catch((): string[] => []);
+    const temporary = names.filter((name) =>
+      /^mautrix-config-\d+\.yaml$/.test(name),
+    );
+    let source = await readFile(configPath, "utf8");
+    for (const name of temporary) {
+      const candidate = await readFile(path.join(directory, name), "utf8").catch(
+        (): string => "",
+      );
+      if (
+        nestedScalar(candidate, "as_token") === registration.asToken &&
+        nestedScalar(candidate, "hs_token") === registration.hsToken
+      ) {
+        source = candidate;
+        this.#options.log?.(
+          `[${path.basename(directory)}] completed the config update left pending by Windows`,
+        );
+        break;
+      }
+    }
+    const reconciled = withRegistrationTokens(source, registration);
+    if (reconciled !== (await readFile(configPath, "utf8")))
+      await writeFile(configPath, reconciled, "utf8");
+    await Promise.all(
+      temporary.map((name) =>
+        rm(path.join(directory, name), { force: true }).catch(
+          (): undefined => undefined,
+        ),
+      ),
+    );
   }
 
   /**
@@ -729,39 +953,72 @@ export class BridgeHost {
       // carry it has been written: the block is checked on the way to the
       // first start, and the seed happens during it. Without this the bridge
       // would be held back waiting for a credential it already has.
-      const recorded = {...(await this.networkConfig(bridge.name)), ...this.#shipped(bridge.name)};
-      const missing = Object.keys(spec.requires).filter((key) => !recorded[key]);
+      const recorded = {
+        ...(await this.networkConfig(bridge.name)),
+        ...this.#shipped(bridge.name),
+      };
+      const missing = Object.keys(spec.requires).filter(
+        (key) => !recorded[key],
+      );
       if (missing.length > 0)
         return {
           reason: `This bridge needs ${missing.join(" and ")} of your own before it can connect, so it has not been started.`,
           retryable: true,
         };
     }
-    return (await spec.preflight?.({home: this.#options.home ?? homedir()})) ?? null;
+    return (
+      (await spec.preflight?.({ home: this.#options.home ?? homedir() })) ??
+      null
+    );
   }
 
-  #supervise(bridge: BridgeDefinition, configPath: string, directory: string): void {
+  #supervise(
+    bridge: BridgeDefinition,
+    configPath: string,
+    directory: string,
+  ): void {
     if (this.#closed) return;
     // Both streams: the seed config points mautrix's logger at stdout, so a
     // bridge that dies on startup explains itself there — an exit code alone
     // (the only thing visible before this) says nothing anyone can act on.
-    const child = (this.#options.spawn ?? spawn)(bridge.binary, ["-c", configPath], {
-      cwd: directory,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = (this.#options.spawn ?? spawn)(
+      bridge.binary,
+      ["-c", configPath],
+      {
+        cwd: directory,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
     const startedAt = Date.now();
     this.#children.set(bridge.name, child);
     if (child.pid !== undefined)
-      void writeFile(path.join(directory, "bridge.pid"), String(child.pid), "utf8").catch(
-        (): undefined => undefined,
-      );
-    const relay = (chunk: Buffer): void => {
-      const text = chunk.toString("utf8").trimEnd();
-      if (text) this.#lastOutput.set(bridge.name, text.split("\n").at(-1)!.trim());
+      void writeFile(
+        path.join(directory, "bridge.pid"),
+        String(child.pid),
+        "utf8",
+      ).catch((): undefined => undefined);
+    const emit = (line: string): void => {
+      const text = line.trimEnd();
+      if (!text || routineBridgeOutput(bridge.name, text)) return;
+      this.#lastOutput.set(bridge.name, text);
       this.#options.log?.(`[${bridge.name}] ${text}`);
     };
-    child.stdout?.on("data", relay);
-    child.stderr?.on("data", relay);
+    const relay = (stream: ChildProcess["stdout"]): void => {
+      if (!stream) return;
+      let pending = "";
+      stream.on("data", (chunk: Buffer | string) => {
+        const lines = (pending + chunk.toString()).split(/\r?\n/);
+        pending = lines.pop() ?? "";
+        for (const line of lines) emit(line);
+      });
+      stream.on("end", () => {
+        if (pending) emit(pending);
+        pending = "";
+      });
+    };
+    relay(child.stdout);
+    relay(child.stderr);
     child.on("exit", (code) => {
       this.#children.delete(bridge.name);
       if (this.#closed) return;
@@ -799,13 +1056,25 @@ export class BridgeHost {
 
   #run(binary: string, args: string[], cwd: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const child = (this.#options.spawn ?? spawn)(binary, args, {cwd, stdio: ["ignore", "ignore", "pipe"]});
+      const child = (this.#options.spawn ?? spawn)(binary, args, {
+        cwd,
+        stdio: ["ignore", "ignore", "pipe"],
+        windowsHide: true,
+      });
       let stderr = "";
-      child.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
+      child.stderr?.on(
+        "data",
+        (chunk: Buffer) => (stderr += chunk.toString("utf8")),
+      );
       child.on("error", reject);
       child.on("exit", (code) => {
         if (code === 0) resolve();
-        else reject(new Error(`${path.basename(binary)} ${args.join(" ")} failed: ${stderr.trim()}`));
+        else
+          reject(
+            new Error(
+              `${path.basename(binary)} ${args.join(" ")} failed: ${stderr.trim()}`,
+            ),
+          );
       });
     });
   }
@@ -864,7 +1133,12 @@ export class BridgeHost {
     // Written before `appservice:` only for readability; the binary upgrades
     // the file in place and key order carries no meaning.
     const network = bridge.network
-      ? ["network:", ...Object.entries(bridge.network).map(([key, value]) => `    ${key}: ${value}`)]
+      ? [
+          "network:",
+          ...Object.entries(bridge.network).map(
+            ([key, value]) => `    ${key}: ${value}`,
+          ),
+        ]
       : [];
     return [
       "homeserver:",
@@ -958,8 +1232,14 @@ function repairBackfill(source: string): string {
       return line.replace(/^([ \t]+enabled:[ \t]*)false\b/, "$1true");
     return line
       .replace(/^([ \t]{1,4}enabled:[ \t]*)false\b/, "$1true")
-      .replace(/^([ \t]{1,4}max_initial_messages:[ \t]*)\d+\b/, `$1${INITIAL_BACKFILL}`)
-      .replace(/^([ \t]{1,4}max_catchup_messages:[ \t]*)\d+\b/, `$1${CATCHUP_BACKFILL}`);
+      .replace(
+        /^([ \t]{1,4}max_initial_messages:[ \t]*)\d+\b/,
+        `$1${INITIAL_BACKFILL}`,
+      )
+      .replace(
+        /^([ \t]{1,4}max_catchup_messages:[ \t]*)\d+\b/,
+        `$1${CATCHUP_BACKFILL}`,
+      );
   });
 }
 
@@ -992,9 +1272,15 @@ function repairHistorySync(source: string): string {
  * that backtracks catastrophically on the shape it has to reject. An earlier
  * pair of them wedged the main process for minutes at startup.
  */
-function withinBlock(source: string, block: string, rewrite: (line: string) => string): string {
+function withinBlock(
+  source: string,
+  block: string,
+  rewrite: (line: string) => string,
+): string {
   const lines = source.split("\n");
-  const start = lines.findIndex((line) => new RegExp(`^${block}:[ \t]*$`).test(line));
+  const start = lines.findIndex((line) =>
+    new RegExp(`^${block}:[ \t]*$`).test(line),
+  );
   if (start < 0) return source;
   for (let index = start + 1; index < lines.length; index += 1) {
     // A blank line inside a block is legal; an unindented one ends it.
@@ -1024,7 +1310,9 @@ function withinBlock(source: string, block: string, rewrite: (line: string) => s
  */
 function repairCleanupOnLogout(source: string): string {
   const lines = source.split("\n");
-  const start = lines.findIndex((line) => /^[ \t]+cleanup_on_logout:[ \t]*$/.test(line));
+  const start = lines.findIndex((line) =>
+    /^[ \t]+cleanup_on_logout:[ \t]*$/.test(line),
+  );
   if (start < 0) return source;
   const depth = indentWidth(lines[start]);
   let section: string | null = null;
@@ -1064,6 +1352,34 @@ const DOUBLE_PUPPET_BLOCK = /^double_puppet:\n(?:[ \t][^\n]*\n|\n)*/m;
 /** The appservice token a config was seeded with, so a repair can reuse it. */
 const AS_TOKEN = /^[ \t]+as_token:[ \t]*(\S+)/m;
 
+/** One scalar nested below `appservice:` in a machine-generated config. */
+function nestedScalar(source: string, key: "as_token" | "hs_token"): string | null {
+  const match = source.match(
+    new RegExp(`^[ \\t]+${key}:\\s*(?:"([^"]*)"|'([^']*)'|(\\S+))\\s*$`, "m"),
+  );
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
+/** Makes the bridge config authenticate with the registration installed in the homeserver. */
+function withRegistrationTokens(
+  source: string,
+  registration: Pick<ParsedRegistration, "asToken" | "hsToken">,
+): string {
+  const previousAsToken = nestedScalar(source, "as_token");
+  const replace = (input: string, key: "as_token" | "hs_token", value: string) =>
+    input.replace(
+      new RegExp(`^([ \\t]+${key}:[ \\t]*)(?:"[^"]*"|'[^']*'|\\S+)([ \\t]*)$`, "m"),
+      (_line, prefix: string, suffix: string) => `${prefix}${value}${suffix}`,
+    );
+  let reconciled = replace(source, "as_token", registration.asToken);
+  reconciled = replace(reconciled, "hs_token", registration.hsToken);
+  if (previousAsToken && previousAsToken !== registration.asToken)
+    reconciled = reconciled
+      .split(`as_token:${previousAsToken}`)
+      .join(`as_token:${registration.asToken}`);
+  return reconciled;
+}
+
 /**
  * What lets a bridge write a message as the user rather than as a ghost.
  *
@@ -1074,7 +1390,11 @@ const AS_TOKEN = /^[ \t]+as_token:[ \t]*(\S+)/m;
  * single user and never federates, and it accepts an appservice speaking as
  * the human it was installed for (see `Homeserver#authenticate`).
  */
-function doublePuppet(serverName: string, baseUrl: string, asToken: string): string[] {
+function doublePuppet(
+  serverName: string,
+  baseUrl: string,
+  asToken: string,
+): string[] {
   return [
     "double_puppet:",
     "    servers:",
@@ -1092,9 +1412,14 @@ function doublePuppet(serverName: string, baseUrl: string, asToken: string): str
  */
 export function repairConfig(
   source: string,
-  options: {serverName: string; baseUrl: string; legacy?: boolean; platform?: string},
+  options: {
+    serverName: string;
+    baseUrl: string;
+    legacy?: boolean;
+    platform?: string;
+  },
 ): string {
-  const {serverName, baseUrl, legacy, platform} = options;
+  const { serverName, baseUrl, legacy, platform } = options;
   let repaired = repairHistorySync(repairBackfill(source));
   if (platform === "instagram") repaired = repairInstagramMediaFetch(repaired);
   // A legacy config keeps double puppeting as two maps nested under `bridge:`,
@@ -1129,13 +1454,21 @@ function repairInstagramMediaFetch(source: string): string {
     /^([ \t]+disable_xma_(?:backfill|always):[ \t]*)true([ \t]*(?:#.*)?)$/gm,
     "$1false$2",
   );
-  return source.slice(0, match.index) + network + source.slice(match.index + match[0].length);
+  return (
+    source.slice(0, match.index) +
+    network +
+    source.slice(match.index + match[0].length)
+  );
 }
 
-export function withNetwork(source: string, values: Record<string, string>): string {
-  const block = ["network:", ...Object.entries(values).map(([key, value]) => `    ${key}: ${value}`)].join(
-    "\n",
-  );
+export function withNetwork(
+  source: string,
+  values: Record<string, string>,
+): string {
+  const block = [
+    "network:",
+    ...Object.entries(values).map(([key, value]) => `    ${key}: ${value}`),
+  ].join("\n");
   const existing = /^network:\n(?:[ \t]+.*\n?)*/m;
   if (existing.test(source)) return source.replace(existing, `${block}\n`);
   return `${source.replace(/\n*$/, "\n")}${block}\n`;
@@ -1167,7 +1500,7 @@ export async function reapStalePid(pidPath: string): Promise<void> {
       // Already gone.
     }
   }
-  await rm(pidPath, {force: true}).catch((): undefined => undefined);
+  await rm(pidPath, { force: true }).catch((): undefined => undefined);
 }
 
 interface ParsedRegistration {
@@ -1176,6 +1509,7 @@ interface ParsedRegistration {
   asToken: string;
   hsToken: string;
   senderLocalpart: string | null;
+  receiveEphemeral: boolean;
   userNamespaces: string[];
 }
 
@@ -1186,18 +1520,25 @@ interface ParsedRegistration {
  */
 export function parseRegistration(source: string): ParsedRegistration {
   const scalar = (key: string): string | null => {
-    const match = source.match(new RegExp(`^${key}:\\s*(?:"([^"]*)"|'([^']*)'|(\\S+))\\s*$`, "m"));
+    const match = source.match(
+      new RegExp(`^${key}:\\s*(?:"([^"]*)"|'([^']*)'|(\\S+))\\s*$`, "m"),
+    );
     return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
   };
   const asToken = scalar("as_token");
   const hsToken = scalar("hs_token");
   if (!asToken || !hsToken)
-    throw new Error("The bridge registration is missing its tokens; delete it and restart to regenerate.");
+    throw new Error(
+      "The bridge registration is missing its tokens; delete it and restart to regenerate.",
+    );
   const userNamespaces: string[] = [];
-  for (const match of source.matchAll(/regex:\s*(?:"([^"]*)"|'([^']*)'|(\S+))/g)) {
+  for (const match of source.matchAll(
+    /regex:\s*(?:"([^"]*)"|'([^']*)'|(\S+))/g,
+  )) {
     const pattern = match[1] ?? match[2] ?? match[3];
     // Only user namespaces matter here; alias/room regexes never match a user id.
-    if (pattern && pattern.includes("@")) userNamespaces.push(pattern.replace(/^\^|\$$/g, ""));
+    if (pattern && pattern.includes("@"))
+      userNamespaces.push(pattern.replace(/^\^|\$$/g, ""));
   }
   return {
     id: scalar("id"),
@@ -1205,6 +1546,11 @@ export function parseRegistration(source: string): ParsedRegistration {
     asToken,
     hsToken,
     senderLocalpart: scalar("sender_localpart"),
+    // Stable since Matrix v1.13. Keep the MSC2409 spelling for registrations
+    // generated by older bridge binaries already installed on this Mac.
+    receiveEphemeral:
+      scalar("receive_ephemeral") === "true" ||
+      /^de\.sorunome\.msc2409\.push_ephemeral:\s*true\s*$/m.test(source),
     userNamespaces,
   };
 }

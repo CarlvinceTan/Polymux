@@ -4,9 +4,7 @@
 
 ```sh
 npm install
-POLYMUX_MODEL=openai/gpt-5.6-luna npm run isolate
-npm start                 # ordinary user profile
-npm run new:start         # temporary empty profile
+POLYMUX_DEV_INSTANCE=review POLYMUX_MODEL=openai/gpt-5.6-luna npm run isolate
 
 npm run check
 npm run test
@@ -14,6 +12,9 @@ npm run test:ui
 npm run package
 npm run make
 ```
+
+Use an isolate for development so test runs cannot touch the ordinary profile,
+session, or Hub port. Reuse a named `POLYMUX_DEV_INSTANCE` when useful.
 
 ## Bridge binaries
 

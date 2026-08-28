@@ -189,22 +189,22 @@
     >
       <Icon name="new-chat" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
     </button>
-    <!-- Searching past chats only makes sense while their list is on screen,
-         so this rides the drawer rather than living in the resting chrome. -->
-    {#if chatDrawerOpen}
-      <button
-        type="button"
-        class="title-bar-icon-button"
-        aria-label={$t('titlebar.searchChats')}
-        in:fade={searchFadeIn}
-        out:fade={iconFade}
-        data-tooltip-label={$t('titlebar.searchChats')}
-        data-tooltip-align="start"
-        onclick={onSearchChats}
-      >
-        <Icon name="search" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
-      </button>
-    {/if}
+  {/if}
+  <!-- Searching past chats only makes sense while their list is on screen,
+       so this rides the drawer rather than living in the resting chrome. -->
+  {#if chatDrawerOpen}
+    <button
+      type="button"
+      class="title-bar-icon-button"
+      aria-label={$t('titlebar.searchChats')}
+      in:fade={searchFadeIn}
+      out:fade={iconFade}
+      data-tooltip-label={$t('titlebar.searchChats')}
+      data-tooltip-align="start"
+      onclick={onSearchChats}
+    >
+      <Icon name="search" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
+    </button>
   {/if}
 </div>
 
@@ -217,11 +217,11 @@
       <button
         type="button"
         class="extension-chip-install"
-        aria-label="Restart to Update"
+        aria-label={$t('update.restart')}
         onclick={onInstallUpdate}
       >
         <Icon name="download" size={14}/>
-        Restart to Update
+        {$t('update.restart')}
       </button>
     </span>
   {:else if showExtensionPrompt}

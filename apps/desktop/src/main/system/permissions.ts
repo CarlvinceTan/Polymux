@@ -9,6 +9,10 @@ import type {
 } from "@polymux/protocol";
 import { isAppPermissionKind } from "@polymux/protocol";
 import type { AppPermissions } from "./app-permissions.js";
+import {
+  builtInPermissionRequestsUser,
+  resolvedMediaPermissionStatus,
+} from "./permission-platform.js";
 
 /** Where each grant lives in System Settings. */
 const SETTINGS_PANE: Record<SystemPermissionKind | "location", string> = {
@@ -22,6 +26,15 @@ const SETTINGS_PANE: Record<SystemPermissionKind | "location", string> = {
   contacts: "Privacy_Contacts",
   photos: "Privacy_Photos",
   automation: "Privacy_Automation",
+};
+
+/** Windows privacy pages with a real equivalent to a Polymux capability. */
+const WINDOWS_SETTINGS_PANE: Partial<
+  Record<SystemPermissionKind | "location", string>
+> = {
+  microphone: "ms-settings:privacy-microphone",
+  "screen-recording": "ms-settings:privacy-graphicscaptureprogrammatic",
+  location: "ms-settings:privacy-location",
 };
 
 /**
@@ -41,6 +54,15 @@ let helper: AppPermissions | undefined;
  */
 const lastAppStatus = new Map<AppPermissionKind, SystemPermissionStatus>();
 
+/** Linux has no Electron status API for its media portals, so remember the
+ * answer from the real request for the lifetime of this process. */
+const lastLinuxStatus = new Map<SystemPermissionKind, SystemPermissionStatus>();
+
+export interface SystemPermissionRequestOptions {
+  requestMicrophone?: () => Promise<SystemPermissionStatus>;
+  requestScreen?: () => Promise<SystemPermissionStatus>;
+}
+
 export function useAppPermissions(instance: AppPermissions): void {
   helper = instance;
 }
@@ -52,7 +74,8 @@ export function useAppPermissions(instance: AppPermissions): void {
 export async function permissionStatus(
   permission: SystemPermissionKind,
 ): Promise<SystemPermissionStatus> {
-  if (process.platform !== "darwin") return "granted";
+  if (process.platform !== "darwin" && isAppPermissionKind(permission))
+    return "granted";
   if (!isAppPermissionKind(permission)) return systemPermissionStatus(permission);
   if (!helper) return "unknown";
   const status = await helper.status(permission);
@@ -95,6 +118,19 @@ export function fullDiskAccessStatus(home = homedir()): SystemPermissionStatus {
 export function systemPermissionStatus(
   permission: SystemPermissionKind,
 ): SystemPermissionStatus {
+  if (process.platform === "win32") {
+    if (permission === "microphone")
+      return systemPreferences.getMediaAccessStatus("microphone");
+    return "granted";
+  }
+  if (process.platform === "linux") {
+    if (
+      permission === "microphone" ||
+      permission === "screen-recording"
+    )
+      return lastLinuxStatus.get(permission) ?? "not-determined";
+    return "granted";
+  }
   if (process.platform !== "darwin") return "granted";
   if (isAppPermissionKind(permission))
     return lastAppStatus.get(permission) ?? "unknown";
@@ -110,8 +146,39 @@ export function systemPermissionStatus(
 
 export async function requestSystemPermission(
   permission: SystemPermissionKind,
+  options: SystemPermissionRequestOptions = {},
 ): Promise<SystemPermissionStatus> {
-  if (process.platform !== "darwin") return "granted";
+  if (process.platform !== "darwin") {
+    if (isAppPermissionKind(permission)) return "granted";
+    if (!builtInPermissionRequestsUser(permission)) return "granted";
+
+    if (permission === "microphone") {
+      const attempted = await permissionAttempt(options.requestMicrophone);
+      if (process.platform === "linux") {
+        lastLinuxStatus.set(permission, attempted);
+        return attempted;
+      }
+      const status = resolvedMediaPermissionStatus(
+        systemPermissionStatus(permission),
+        attempted,
+      );
+      // Windows owns this as a global Win32 privacy control. An actual media
+      // request is the closest equivalent to a native prompt; when Windows has
+      // already denied it, the only actionable response is its exact page.
+      if (status === "denied" || status === "restricted")
+        await openSystemPermissionSettings(permission);
+      return status;
+    }
+
+    // On a Wayland desktop this source request is routed through the
+    // PipeWire/XDG ScreenCast portal, whose picker is the operating-system
+    // consent UI. X11 has no equivalent permission gate and simply succeeds.
+    const attempted = options.requestScreen
+      ? await permissionAttempt(options.requestScreen)
+      : await requestScreenAccess();
+    lastLinuxStatus.set(permission, attempted);
+    return attempted;
+  }
 
   if (isAppPermissionKind(permission)) {
     // The framework call *is* the prompt, so there is nothing to raise
@@ -160,8 +227,37 @@ export async function requestSystemPermission(
 export async function openSystemPermissionSettings(
   permission: SystemPermissionKind | "location",
 ): Promise<void> {
+  if (process.platform === "win32") {
+    const pane = WINDOWS_SETTINGS_PANE[permission];
+    if (pane) await shell.openExternal(pane);
+    return;
+  }
   if (process.platform !== "darwin") return;
   await shell.openExternal(
     `x-apple.systempreferences:com.apple.preference.security?${SETTINGS_PANE[permission]}`,
   );
+}
+
+async function requestScreenAccess(): Promise<SystemPermissionStatus> {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: { width: 1, height: 1 },
+      fetchWindowIcons: false,
+    });
+    return sources.length ? "granted" : "unknown";
+  } catch {
+    return "denied";
+  }
+}
+
+async function permissionAttempt(
+  request: (() => Promise<SystemPermissionStatus>) | undefined,
+): Promise<SystemPermissionStatus> {
+  if (!request) return "unknown";
+  try {
+    return await request();
+  } catch {
+    return "unknown";
+  }
 }

@@ -36,6 +36,7 @@ import type {
 import { PiInference } from "@polymux/inference/pi";
 import type {
   ChatDto,
+  BroadcastRecipientDto,
   MailFolderDto,
   ChatMessageDto,
   SetupLocalRuntimeRequest,
@@ -105,8 +106,11 @@ import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
   app,
+  clipboard,
   dialog,
+  nativeImage,
   nativeTheme,
+  net,
   Notification,
   safeStorage,
   session,
@@ -117,6 +121,7 @@ import {
 } from "electron";
 
 import { assistantText, eventDto, storedEventDto } from "./backend/dto.js";
+import {writeClipboardContent} from "./system/clipboard.js";
 import {ComputerHistoryActivities} from "./agent/computer-history-activities.js";
 import {BuiltinAgentRuntime} from "./agent-runtime/builtin.js";
 import {AcpAgentRuntime} from "./agent-runtime/acp.js";
@@ -175,6 +180,7 @@ import {
   reasoningEffort,
 } from "./backend/settings.js";
 import { generalSettingsStorage } from "./backend/general-settings-storage.js";
+import {searchSuggestions} from "./browser/suggestions.js";
 import type { CustomProviderConfig } from "./backend/models.js";
 import type { RoleSelection } from "./backend/models.js";
 import {
@@ -307,6 +313,7 @@ import { TaskBoard } from "./tasks/index.js";
 import { createTasksTool } from "./tasks/tools.js";
 import { Communications } from "./hub/index.js";
 import { HubCache } from "./hub/cache.js";
+import { Broadcasts } from "./hub/broadcasts.js";
 import { Drive, createDriveTools } from "@polymux/drive";
 import { electronConsent } from "./system/drive-consent.js";
 import { sessionScopedSnapshot } from "./workspace/snapshot.js";
@@ -331,6 +338,7 @@ interface BridgeInventory {
     {
       platform: string;
       binary: string;
+      supported: boolean;
       installed: boolean;
       blocked: { reason: string; permission?: SystemPermissionKind } | null;
     }[]
@@ -360,6 +368,7 @@ import {
   systemPermissionStatus,
   useAppPermissions,
 } from "./system/permissions.js";
+import {builtInPermissionRequestsUser} from "./system/permission-platform.js";
 
 export interface DesktopBackendOptions {
   dataDirectory: string;
@@ -601,6 +610,8 @@ export class DesktopBackend {
   readonly #autofill: Autofill;
   readonly #browsingData: BrowsingData;
   readonly #comms: Communications;
+  /** Polymux-local recipient sets whose sends fan out into private DMs. */
+  readonly #broadcasts: Broadcasts;
   #commsStatusTimer?: NodeJS.Timeout;
   #commsStatusRefresh?: Promise<void>;
   /** The hub's first screen, kept across quitting. */
@@ -780,7 +791,11 @@ export class DesktopBackend {
     });
     this.#firstRunPermissions = new FirstRunPermissions({
       store: this.#storage,
+      enabled: (permission) =>
+        builtInPermissionRequestsUser(permission) &&
+        this.#generalSettings().permissions[permission],
       status: systemPermissionStatus,
+      request: (permission) => this.#requestSystemPermission(permission),
       onReady: () => this.#startComputerObservation(),
     });
     this.#modelCatalog = new ModelCatalog({ cacheDir: options.dataDirectory });
@@ -964,6 +979,20 @@ export class DesktopBackend {
         () => (this.#window.isDestroyed() ? undefined : this.#window),
         "mail",
       ),
+    });
+    this.#broadcasts = new Broadcasts(this.#storage, {
+      openDirect: (recipient) => {
+        if (!recipient.remoteId)
+          throw new Error(`${recipient.name} is not available for a new direct chat.`);
+        return this.#comms.createChat({
+          platform: recipient.platform,
+          accountId: recipient.accountId,
+          participantIds: [recipient.remoteId],
+        });
+      },
+      send: async (chatId, body) => {
+        await this.#comms.sendChat(chatId, body);
+      },
     });
     this.#drive = new Drive({
       storage: {
@@ -1538,6 +1567,13 @@ export class DesktopBackend {
     this.#handle(channels.generalVersion, () => appVersion());
     this.#handle(channels.generalCheckUpdates, () => checkForUpdates());
     this.#handle(channels.generalInstallUpdate, () => installUpdate());
+    this.#handle(channels.clipboardWrite, (_event, value: unknown) =>
+      writeClipboardContent(value, {
+        clipboard,
+        fetch: (url) => net.fetch(url),
+        imageFromBuffer: (buffer) => nativeImage.createFromBuffer(buffer),
+      }),
+    );
     if (!this.#suppressAutomaticUpdateChecks) startUpdateChecks();
     this.#handle(channels.permissionsStatus, (_event, value: unknown) =>
       permissionStatus(systemPermission(value)),
@@ -1546,7 +1582,7 @@ export class DesktopBackend {
       this.#firstRunPermissions.ensure(),
     );
     this.#handle(channels.permissionsRequest, (_event, value: unknown) =>
-      requestSystemPermission(systemPermission(value)),
+      this.#requestSystemPermission(systemPermission(value)),
     );
     this.#handle(channels.permissionsRequestAll, () =>
       this.#ensurePermissions(),
@@ -1861,7 +1897,7 @@ export class DesktopBackend {
       async (_event, enabled: boolean) => {
         if (typeof enabled !== "boolean")
           throw new Error("enabled must be a boolean");
-        if (enabled) await requestSystemPermission("accessibility");
+        if (enabled) await this.#requestSystemPermission("accessibility");
         const status = this.#computerHistory.setEnabled(enabled);
         if (enabled) {
           await this.#computerHistory.captureOnce();
@@ -2132,6 +2168,8 @@ export class DesktopBackend {
         id: room.roomId,
         name: room.name,
         platform: room.platform,
+        ...(room.remoteId ? {remoteId: room.remoteId} : {}),
+        ...(room.currentPortal ? {currentPortal: true} : {}),
         ...(room.space ? {space: true} : {}),
         ...(room.defaultSpace ? {defaultSpace: true} : {}),
         ...(room.parentIds?.length ? {parentIds: room.parentIds} : {}),
@@ -2168,6 +2206,49 @@ export class DesktopBackend {
       this.#hubCache.clear();
       return roomId;
     });
+    this.#handle(channels.commsBroadcasts, () => this.#broadcasts.list());
+    this.#handle(channels.commsBroadcastCreate, (_event, input: unknown) => {
+      const value = (input ?? {}) as {name?: unknown; recipients?: unknown};
+      const recipients = Array.isArray(value.recipients)
+        ? value.recipients.flatMap((raw): BroadcastRecipientDto[] => {
+            if (!raw || typeof raw !== "object") return [];
+            const recipient = raw as Record<string, unknown>;
+            const chatId = typeof recipient.chatId === "string" && recipient.chatId.trim()
+              ? recipient.chatId.trim()
+              : null;
+            const remoteId = typeof recipient.remoteId === "string" && recipient.remoteId.trim()
+              ? recipient.remoteId.trim()
+              : null;
+            if (!chatId && !remoteId) return [];
+            return [{
+              id: required(recipient.id, "contact id"),
+              name: required(recipient.name, "contact name"),
+              platform: commsPlatform(recipient.platform),
+              accountId: required(recipient.accountId, "account id"),
+              accountName: typeof recipient.accountName === "string"
+                ? recipient.accountName
+                : required(recipient.accountId, "account id"),
+              remoteId,
+              chatId,
+              avatarUrl: typeof recipient.avatarUrl === "string" ? recipient.avatarUrl : null,
+            }];
+          })
+        : [];
+      return this.#broadcasts.create({
+        name: required(value.name, "broadcast name"),
+        recipients,
+      });
+    });
+    this.#handle(channels.commsBroadcastMessages, (_event, broadcastId: unknown) =>
+      this.#broadcasts.messages(required(broadcastId, "broadcast id")));
+    this.#handle(
+      channels.commsBroadcastSend,
+      (_event, broadcastId: unknown, text: unknown) =>
+        this.#broadcasts.send(
+          required(broadcastId, "broadcast id"),
+          required(text, "message"),
+        ),
+    );
     this.#handle(
       channels.commsChatMessages,
       async (_event, chatId: unknown, limit: unknown, before: unknown) => {
@@ -2650,8 +2731,14 @@ export class DesktopBackend {
       if (!stats.isFile()) throw new Error(`Not a file: ${resolved}`);
       return this.previewGrants.url(resolved);
     });
-    this.#handle(channels.browserOpen, (_event, tabId: string, url?: string) =>
-      this.#embeddedBrowser.open(required(tabId, "tab id"), url),
+    this.#handle(
+      channels.browserOpen,
+      (
+        _event,
+        tabId: string,
+        url?: string,
+        viewport?: {width: number; height: number},
+      ) => this.#embeddedBrowser.open(required(tabId, "tab id"), url, viewport),
     );
     this.#handle(
       channels.browserNavigate,
@@ -2733,6 +2820,9 @@ export class DesktopBackend {
     );
     this.#handle(channels.browserHistoryList, (_event, options: unknown) =>
       this.#storage.listHistory(browserHistoryQuery(options)),
+    );
+    this.#handle(channels.browserSuggestions, (_event, query: unknown) =>
+      searchSuggestions(required(query, "search query")),
     );
     this.#handle(channels.browserHistoryForget, (_event, url: unknown) => {
       this.#storage.deleteHistoryEntry(required(url, "url"));
@@ -2893,6 +2983,9 @@ export class DesktopBackend {
     );
     this.#handle(channels.browserPrint, (_event, tabId: string) =>
       this.#embeddedBrowser.print(required(tabId, "tab id")),
+    );
+    this.#handle(channels.browserPreview, (_event, tabId: string) =>
+      this.#embeddedBrowser.preview(required(tabId, "tab id")),
     );
     this.#handle(channels.browserScreenshot, (_event, tabId: string) =>
       this.#embeddedBrowser.screenshot(required(tabId, "tab id")),
@@ -4076,7 +4169,7 @@ export class DesktopBackend {
     );
     for (const kind of kinds) {
       this.#permissionsSettled.add(kind);
-      if ((await requestSystemPermission(kind)) !== "granted")
+      if ((await this.#requestSystemPermission(kind)) !== "granted")
         withheld.push(kind);
     }
     // A grant that was already decided against is reported too. macOS will not
@@ -4503,7 +4596,7 @@ export class DesktopBackend {
     if (!settings.permissions[kind])
       return `${kind} access is switched off in Settings → General → Permissions.`;
     if ((await permissionStatus(kind)) === "granted") return null;
-    if ((await requestSystemPermission(kind)) === "granted") return null;
+    if ((await this.#requestSystemPermission(kind)) === "granted") return null;
     // macOS raises its dialog once. Past that the only thing that changes the
     // answer is the pane, so say where rather than asking again next turn.
     return `Polymux has not been given access to ${kind}. Allow it in System Settings → Privacy & Security.`;
@@ -4515,8 +4608,44 @@ export class DesktopBackend {
     if (!this.#generalSettings().permissions.calendars)
       return "Calendar access is switched off in Settings → General → Permissions.";
     if ((await permissionStatus("calendars")) === "granted") return null;
-    if ((await requestSystemPermission("calendars")) === "granted") return null;
+    if ((await this.#requestSystemPermission("calendars")) === "granted") return null;
     return "Polymux has not been given access to Calendars. Allow it in System Settings → Privacy & Security → Calendars.";
+  }
+
+  /**
+   * Uses the app renderer for cross-platform microphone consent. Electron only
+   * exposes a main-process request method on macOS; Windows and Linux raise
+   * their privacy UI, where one exists, from a real media request instead.
+   * The stream is stopped immediately because this is consent setup, not a
+   * recording.
+   */
+  async #requestSystemPermission(
+    kind: SystemPermissionKind,
+  ): Promise<SystemPermissionStatus> {
+    return requestSystemPermission(kind, {
+      requestMicrophone: async () => {
+        if (this.#window.isDestroyed()) return "unknown";
+        const status = await this.#window.webContents.executeJavaScript(`(async () => {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+            return "unknown";
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+            for (const track of stream.getTracks()) track.stop();
+            return "granted";
+          } catch (error) {
+            const name = error && typeof error === "object" && "name" in error
+              ? String(error.name)
+              : "";
+            return name === "NotAllowedError" || name === "SecurityError"
+              ? "denied"
+              : "unknown";
+          }
+        })()`, true);
+        return status === "granted" || status === "denied"
+          ? status
+          : "unknown";
+      },
+    });
   }
 
   #permissionAvailable(kind: SystemPermissionKind): boolean {

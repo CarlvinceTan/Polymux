@@ -40,6 +40,9 @@
     role: MessageRole;
     text: string;
     files?: string[];
+    /** Native paths for `files`, retained separately so the UI keeps its short
+     * labels while Copy can place the actual attachment on the clipboard. */
+    filePaths?: string[];
     feedback?: MessageFeedback;
     sentAt?: string;
     asGoal?: boolean;
@@ -164,7 +167,12 @@
 
   async function copyMessage(): Promise<void> {
     // The label only flips to Copied once the text is actually on the clipboard.
-    if (!await copyText(message.text)) return;
+    const succeeded = message.text
+      ? await copyText(message.text)
+      : message.filePaths?.[0]
+        ? await polymuxApi().clipboard.write({kind: 'file', path: message.filePaths[0]})
+        : await copyText(message.files?.join('\n') ?? '');
+    if (!succeeded) return;
     copied = true;
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => copied = false, 1400);
