@@ -145,14 +145,21 @@ jobs:
           cache: npm
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.6'
+          go-version: "1.26.6"
           cache: false
       - name: Configure Windows bridge compiler
         shell: pwsh
         run: |
-          $directory = 'C:\msys64\mingw64\bin'
-          $compiler = Join-Path $directory 'gcc.exe'
+          $compiler = (Get-Command gcc.exe -ErrorAction SilentlyContinue).Source
+          if (-not $compiler) {
+            $compiler = @(
+              'C:\mingw64\bin\gcc.exe',
+              'C:\msys64\ucrt64\bin\gcc.exe',
+              'C:\msys64\mingw64\bin\gcc.exe'
+            ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
           if (-not (Test-Path $compiler)) { throw 'The Windows bridge compiler is missing.' }
+          $directory = Split-Path -Parent $compiler
           $directory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "CC=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: npm ci
