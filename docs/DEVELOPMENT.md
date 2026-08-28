@@ -4,6 +4,7 @@
 
 ```sh
 npm install
+npm install --prefix apps/site
 POLYMUX_DEV_INSTANCE=review POLYMUX_MODEL=openai/gpt-5.6-luna npm run isolate
 
 npm run check

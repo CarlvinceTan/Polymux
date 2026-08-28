@@ -1,10 +1,7 @@
 import path from "node:path";
 import type {GeneralSettingsDto} from "@polymux/protocol";
-import {app} from "electron";
-import {copyFileSync, existsSync, mkdirSync, readFileSync} from "node:fs";
+import {readFileSync} from "node:fs";
 import {homedir} from "node:os";
-import {parse as parseToml} from "smol-toml";
-import {json} from "./requests.js";
 
 /** Facts read from the host rather than from storage or the renderer. */
 export async function approximateLocation(): Promise<NonNullable<GeneralSettingsDto["location"]>> {
@@ -69,18 +66,6 @@ export function browserAppName(): string {
 
 export function browserBundleId(): string | undefined {
   return tabContextBrowser()?.bundleId;
-}
-
-/** Whether a stored settings record predates the first-run setup flag. */
-
-export function adoptLegacyMcpConfig(legacy: string, current: string): void {
-  try {
-    if (existsSync(current) || !existsSync(legacy)) return;
-    mkdirSync(path.dirname(current), {recursive: true});
-    copyFileSync(legacy, current);
-  } catch {
-    // A migration is a convenience; the app still starts with no MCP servers.
-  }
 }
 
 export function skillInstructions(contents: string): string {

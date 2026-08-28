@@ -1,6 +1,6 @@
 import type {ModelRef} from "@polymux/inference";
 import type {CreateCustomProviderRequest, DiscoverModelsRequest, ModelRole, ReasoningEffort, SetupLocalRuntimeRequest, UpdateCustomProviderRequest} from "@polymux/protocol";
-import {json, required, validProviderLogo} from "./requests.js";
+import {required, validProviderLogo} from "./requests.js";
 import {reasoningEffort} from "./settings.js";
 
 /** A role's model, plus how hard that model is asked to think in the role.

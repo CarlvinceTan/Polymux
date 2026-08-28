@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {extensionProtocolHeaders} from "@polymux/browser";
 import {AgentSurfaceServer} from "./surface.js";
 
 async function withServer(run: (server: AgentSurfaceServer, base: string) => Promise<void>): Promise<void> {
@@ -17,12 +18,61 @@ test("snapshot exposes leases and revisions move on changes", async () => {
   await withServer(async (server, base) => {
     const empty = await (await fetch(`${base}/v1/snapshot`)).json();
     assert.deepEqual(empty.leases, []);
+    assert.equal(empty.surface.compatible, true);
+    assert.equal(empty.surface.negotiatedVersion, 1);
     const lease = server.createLease({url: "https://example.com/", title: "Example"});
     const snapshot = await (await fetch(`${base}/v1/snapshot`)).json();
     assert.equal(snapshot.leases.length, 1);
     assert.equal(snapshot.leases[0].id, lease.id);
     assert.equal(snapshot.leases[0].tab.url, "https://example.com/");
     assert.ok(snapshot.revision > empty.revision);
+  });
+});
+
+test("explicit extension negotiation reports the independent extension version", async () => {
+  await withServer(async (_server, base) => {
+    const response = await fetch(`${base}/v1/snapshot`, {
+      headers: extensionProtocolHeaders("7.4.2"),
+    });
+    assert.equal(response.ok, true);
+    const snapshot = await response.json();
+    assert.equal(snapshot.surface.extensionVersion, "7.4.2");
+    assert.equal(snapshot.surface.negotiatedVersion, 1);
+    assert.deepEqual(snapshot.surface.capabilities, ["surface-feed-v1"]);
+  });
+});
+
+test("an incompatible request cannot poison later extension commands", async () => {
+  await withServer(async (server, base) => {
+    const lease = server.createLease({url: "https://example.com/", title: ""});
+    const response = await fetch(`${base}/v1/snapshot`, {
+      headers: {
+        "X-Polymux-Surface-Protocol-Min": "9",
+        "X-Polymux-Surface-Protocol-Max": "9",
+        "X-Polymux-Surface-Capabilities": "surface-commands-v1",
+      },
+    });
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.surface.compatible, false);
+    assert.match(body.surface.reason, /do not overlap/);
+    const pending = server.runCommand(lease.id, {kind: "read"});
+    const compatible = await (await fetch(`${base}/v1/snapshot`, {
+      headers: extensionProtocolHeaders("7.4.2"),
+    })).json();
+    const command = compatible.leases[0].command;
+    const posted = await fetch(`${base}/v1/results`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        leaseId: lease.id,
+        commandId: command.id,
+        ok: true,
+        content: "safe",
+      }),
+    });
+    assert.equal(posted.ok, true);
+    assert.equal((await pending).ok, true);
   });
 });
 

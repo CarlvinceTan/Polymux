@@ -12,6 +12,7 @@ import {
   BUILTIN_MARKETPLACE_SOURCE,
   downloadRepository,
   fetchCatalog,
+  isSafePluginName,
   marketplaceId,
   parseMarketplaceSource,
   readCatalogFrom,
@@ -95,7 +96,13 @@ export class PluginRegistry {
   }
 
   directoryOf(plugin: StoredPlugin): string {
-    return path.join(this.#root, plugin.marketplace, plugin.name);
+    if (!isSafePluginName(plugin.marketplace) || !isSafePluginName(plugin.name))
+      throw new Error("That plugin's name cannot be used as a folder");
+    const marketplaceRoot = path.resolve(this.#root, plugin.marketplace);
+    const directory = path.resolve(marketplaceRoot, plugin.name);
+    if (path.dirname(directory) !== marketplaceRoot)
+      throw new Error("That plugin's name cannot be used as a folder");
+    return directory;
   }
 
   /**
@@ -285,6 +292,8 @@ export class PluginRegistry {
     const separator = id.indexOf("/");
     const marketplace = separator < 0 ? "" : id.slice(0, separator);
     const name = separator < 0 ? "" : id.slice(separator + 1);
+    if (!isSafePluginName(marketplace) || !isSafePluginName(name))
+      throw new Error("That plugin's name cannot be used as a folder");
     const entry = this.#state.marketplaces.find((item) => item.id === marketplace);
     if (!entry || !name) throw new Error(`${id} is not a plugin in an added marketplace`);
     const reference = parseMarketplaceSource(entry.source);
@@ -295,7 +304,7 @@ export class PluginRegistry {
       const plugin = catalog.plugins.find((item) => item.name === name);
       if (!plugin) throw new Error(`${name} is no longer listed in ${entry.source}`);
       const folder = await this.#stagePluginFolder(plugin, root, staging, reference);
-      const destination = path.join(this.#root, marketplace, name);
+      const destination = this.directoryOf({id, marketplace, name});
       if (existsSync(destination)) throw new Error(`${name} is already installed`);
       const manifest = readManifest(folder);
       await mkdir(path.dirname(destination), { recursive: true });
@@ -318,13 +327,13 @@ export class PluginRegistry {
    * put a row in Browse that cannot be installed again.
    */
   async installLocal(source: string, name: string): Promise<string> {
-    if (!name || name.includes("..") || name.includes("/") || name.includes(path.sep))
+    if (!isSafePluginName(name))
       throw new Error("That plugin's name cannot be used as a folder");
     this.#ensureLocalMarketplace();
     const id = `${LOCAL_MARKETPLACE}/${name}`;
     if (this.#state.plugins.some((plugin) => plugin.id === id))
       throw new Error(`A plugin named ${name} is already installed`);
-    const destination = path.join(this.#root, LOCAL_MARKETPLACE, name);
+    const destination = this.directoryOf({id, marketplace: LOCAL_MARKETPLACE, name});
     if (existsSync(destination)) throw new Error(`A plugin named ${name} is already installed`);
     const manifest = readManifest(source);
     await mkdir(path.dirname(destination), { recursive: true });
@@ -424,6 +433,7 @@ export function parseState(source: string): StoredState {
       if (!row || typeof row !== "object") return [];
       const entry = row as Record<string, unknown>;
       if (typeof entry.id !== "string" || typeof entry.source !== "string") return [];
+      if (!isSafePluginName(entry.id)) return [];
       return [{
         id: entry.id,
         source: entry.source,
@@ -442,7 +452,7 @@ export function parseState(source: string): StoredState {
       // makes removing a marketplace a complete operation.
       if (!known.has(entry.marketplace)) return [];
       const name = typeof entry.name === "string" ? entry.name : entry.id.split("/").slice(1).join("/");
-      if (!name || name.includes("..") || name.includes(path.sep)) return [];
+      if (!isSafePluginName(entry.marketplace) || !isSafePluginName(name)) return [];
       return [{
         id: entry.id,
         marketplace: entry.marketplace,

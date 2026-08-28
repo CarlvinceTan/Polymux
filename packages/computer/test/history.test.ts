@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
   ComputerHistoryManager,
-  ComputerHistoryStore,
   type ComputerHistoryFrame,
   type ComputerHistorySettings,
   type ComputerHistorySystemState,

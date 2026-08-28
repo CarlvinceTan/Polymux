@@ -32,13 +32,53 @@ test("the install action targets the Polymux Chrome Web Store listing", () => {
 
 test("a missing snapshot means the extension has never reported", () => {
   const status = readExtensionStatus(Date.now(), "/nonexistent/tabs.json");
-  assert.deepEqual(status, { installed: false, lastReportedAt: null });
+  assert.deepEqual(status, {
+    installed: false,
+    lastReportedAt: null,
+    version: null,
+    protocolVersion: null,
+    compatible: null,
+    capabilities: [],
+  });
 });
 
 test("a recent snapshot counts as installed", () => {
   const status = readExtensionStatus(Date.now(), snapshot(60_000));
   assert.equal(status.installed, true);
   assert.ok(status.lastReportedAt);
+  assert.equal(status.version, null);
+  assert.equal(status.protocolVersion, 1);
+  assert.equal(status.compatible, true);
+});
+
+test("a reporting extension exposes its independent version and protocol", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-ext-protocol-"));
+  const file = path.join(directory, "tabs.json");
+  writeFileSync(file, JSON.stringify({
+    extension_version: "3.8.4",
+    surface_protocol_min: 1,
+    surface_protocol_max: 1,
+    surface_capabilities: ["surface-commands-v1", "tab-snapshots-v1"],
+  }));
+  const status = readExtensionStatus(Date.now(), file);
+  assert.equal(status.version, "3.8.4");
+  assert.equal(status.protocolVersion, 1);
+  assert.equal(status.compatible, true);
+});
+
+test("an incompatible reporting extension is detected", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "polymux-ext-protocol-"));
+  const file = path.join(directory, "tabs.json");
+  writeFileSync(file, JSON.stringify({
+    extension_version: "9.0.0",
+    surface_protocol_min: 9,
+    surface_protocol_max: 9,
+    surface_capabilities: ["surface-commands-v1"],
+  }));
+  const status = readExtensionStatus(Date.now(), file);
+  assert.equal(status.installed, true);
+  assert.equal(status.protocolVersion, null);
+  assert.equal(status.compatible, false);
 });
 
 test("a snapshot older than the window counts as gone", () => {

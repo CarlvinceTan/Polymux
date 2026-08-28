@@ -2,14 +2,13 @@
   import logo from '../../desktop/src/renderer/public/polymux.svg';
   import {blogPosts, formatBlogDate} from './lib/blog';
   import MobileMenu from './lib/MobileMenu.svelte';
-  import ProductMenu from './lib/ProductMenu.svelte';
 
   const featured = blogPosts[0];
   const remaining = blogPosts.slice(1);
 </script>
 
 <svelte:head>
-  <link rel="icon" type="image/svg+xml" href={logo} />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
 </svelte:head>
 
 <header class="blog-header">
@@ -17,13 +16,11 @@
     <a class="blog-brand" href="/" aria-label="Polymux home"><img src={logo} alt="" /><span>Polymux</span></a>
     <nav aria-label="Main navigation">
       <a href="/">Home</a>
-      <ProductMenu />
       <a href="/docs/">Docs</a>
-      <a class="active" href="/blog/">Blog</a>
       <a href="/releases/">Releases</a>
     </nav>
     <a class="blog-download" href="/#download">Download</a>
-    <MobileMenu active="blog" />
+    <MobileMenu />
   </div>
 </header>
 
@@ -37,9 +34,9 @@
   {#if featured}
     <section class="post-list" aria-label="Blog posts">
       <a class="featured-post" href={`/blog/${featured.slug}/`}>
-        {#if featured.coverImage}<img src={featured.coverImage} alt="" />{/if}
+        <div class="post-meta"><time datetime={featured.date}>{formatBlogDate(featured.date)}</time><span>{featured.readingMinutes} min read</span></div>
         <article>
-          <div class="post-meta"><time datetime={featured.date}>{formatBlogDate(featured.date)}</time><span>{featured.readingMinutes} min read</span></div>
+          {#if featured.coverImage}<img src={featured.coverImage} alt="" />{/if}
           <h2>{featured.title}</h2>
           <p>{featured.excerpt}</p>
           <span class="read-more">Read article <span aria-hidden="true">→</span></span>
@@ -50,8 +47,8 @@
         <div class="post-rows">
           {#each remaining as post (post.slug)}
             <a href={`/blog/${post.slug}/`}>
+              <div class="post-meta"><time datetime={post.date}>{formatBlogDate(post.date)}</time><span>{post.readingMinutes} min read</span></div>
               <article>
-                <div class="post-meta"><time datetime={post.date}>{formatBlogDate(post.date)}</time><span>{post.readingMinutes} min read</span></div>
                 <h2>{post.title}</h2>
                 <p>{post.excerpt}</p>
               </article>

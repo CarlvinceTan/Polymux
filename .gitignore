@@ -11,6 +11,13 @@ test-results
 # Bundled Node runtime for skill scripts, fetched by scripts/fetch-node.mjs
 /resources/node/
 
+# Bundled speech-to-text runtime, fetched or built by scripts/fetch-whisper.mjs
+/resources/whisper/
+/resources/wechat-writer/
+
+# Signed macOS helper binaries, built from resources/native/*.swift by Forge
+/resources/native/bin/
+
 # Stray root copy of the built main process (real output is .vite/build/main.js)
 /main.js
 

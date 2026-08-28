@@ -1,7 +1,6 @@
 import {ImapFlow, type FetchMessageObject, type ListResponse} from "imapflow";
 import type {
   MailAddressDto,
-  MailAttachmentDto,
   MailEnvelopeDto,
   MailFolderDto,
   MailMessageDto,

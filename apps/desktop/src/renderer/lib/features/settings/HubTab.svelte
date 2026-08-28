@@ -148,15 +148,20 @@
     });
     void load().then(() => checkEmailConnections());
     const healthTimer = window.setInterval(() => void checkEmailConnections(), 60_000);
+    const onVisible = () => {
+      if (!document.hidden) void checkEmailConnections();
+    };
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.clearInterval(healthTimer);
+      document.removeEventListener('visibilitychange', onVisible);
       unsubscribe();
     };
   });
 
   /** Keep mailbox state current while reconnection remains background work. */
   async function checkEmailConnections(): Promise<void> {
-    if (emailHealthChecking || !status?.email.accounts.length) return;
+    if (document.hidden || emailHealthChecking || !status?.email.accounts.length) return;
     emailHealthChecking = true;
     try {
       const results = await Promise.allSettled(status.email.accounts.map((account) => api.comms.emailTest(account.id)));
@@ -1262,7 +1267,7 @@
                 <h4>{activeBridge.accounts.length === 1 ? $t('hub.linkedAccount') : $t('hub.linkedAccounts')}</h4>
                 {#each activeBridge.accounts as account (account.id)}
                   <p class="comms-value">
-                    <code>{account.name}</code>
+                    <code>{account.name}{account.kind === 'bot' ? ` · ${$t('hub.botAccount')}` : ''}</code>
                     <!-- A relay account belongs to the app on this Mac, so
                          unlinking it stops Polymux carrying its messages
                          rather than signing anything out — but it is still the
@@ -1334,7 +1339,11 @@
                       disabled={!signedIn || busy === `link:${activeBridge.platform}`}
                       onclick={() => void startLink(activeBridge.platform, flow.id)}
                     >
-                      {flow.id === 'qr' ? $t('hub.showQr') : $t('hub.start')}
+                      {flow.id === 'qr'
+                        ? $t('hub.showQr')
+                        : activeBridge.platform === 'telegram' && flow.id === 'bot'
+                          ? $t('hub.connectBot')
+                          : $t('hub.start')}
                     </button>
                   </li>
                 {/each}

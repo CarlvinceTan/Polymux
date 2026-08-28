@@ -422,6 +422,25 @@ test("a bridge is told to write the user's own messages as the user", async () =
   assert.ok(repaired.includes(`polymux.local: as_token:${asToken}`));
   assert.ok(!repaired.includes("example.com: as_token:foobar"));
   assert.match(repaired, /^encryption:/m, "and the sections after it survive");
+
+  // Rotating the appservice registration used to leave the old double-puppet
+  // secret in place merely because a secret for this server already existed.
+  // That makes every bridge fail the shared user intent with M_UNKNOWN_TOKEN.
+  const rotatedToken = "rotated-appservice-token";
+  const rotated = repaired.replace(
+    /^([ \t]+as_token:[ \t]*)\S+/m,
+    `$1${rotatedToken}`,
+  );
+  const repairedRotation = repairConfig(rotated, {
+    serverName: "polymux.local",
+    baseUrl: "http://127.0.0.1:47664",
+  });
+  assert.ok(
+    repairedRotation.includes(
+      `polymux.local: as_token:${rotatedToken}`,
+    ),
+  );
+  assert.ok(!repairedRotation.includes(`polymux.local: as_token:${asToken}`));
 });
 
 test("a bridge archives history once with persistent queue progress", async () => {
@@ -992,19 +1011,33 @@ test("a bridge that keeps dying is left down rather than looping forever", async
   );
 });
 
-test("bridge logs omit handled reconnect chatter and prefix every diagnostic line", async () => {
+test("bridge logs omit handled transport and protocol chatter and prefix diagnostics", async () => {
   const logs: string[] = [];
   const children = new Map<string, ReturnType<typeof outputChild>>();
-  const { host, root } = await hostWith(["mautrix-whatsapp", "mautrix-meta"], {
-    log: (line) => logs.push(line),
-    spawn: ((binary: string) => {
-      const child = outputChild();
-      children.set(path.basename(binary), child);
-      return child;
-    }) as unknown as typeof spawnFn,
-  });
+  const { host, root } = await hostWith(
+    [
+      "mautrix-whatsapp",
+      "mautrix-meta",
+      "mautrix-instagram",
+      "mautrix-telegram",
+    ],
+    {
+      log: (line) => logs.push(line),
+      spawn: ((binary: string) => {
+        const child = outputChild();
+        children.set(path.basename(binary), child);
+        return child;
+      }) as unknown as typeof spawnFn,
+    },
+  );
   await seedRegistration(root, "whatsapp");
   await seedRegistration(root, "messenger");
+  await seedRegistration(root, "instagram");
+  await seedRegistration(root, "telegram");
+  await host.configureNetwork("telegram", {
+    api_id: "2040",
+    api_hash: "b18441a1ff607e10",
+  });
   await host.startAll();
 
   const whatsapp = children.get("mautrix-whatsapp")!;
@@ -1017,6 +1050,8 @@ test("bridge logs omit handled reconnect chatter and prefix every diagnostic lin
   );
   whatsapp.stderr.write(
     "failed to read frame header: EOF component=whatsmeow\n" +
+      "2026-08-28T16:47:32.057+08:00 ERR Error reading from websocket: failed to get reader: failed to read frame header: read tcp 10.0.0.1:1->10.0.0.2:443: read: connection reset by peer component=whatsmeow\n" +
+      '2026-08-28T17:13:13.414+08:00 WRN No target message found for read receipt action="handle remote event" bridge_evt_type=RemoteEventReadReceipt portal_id=919870303667@s.whatsapp.net\n' +
       "2026-08-28T05:42:41.000+08:00 INF Connection restored component=whatsmeow\n" +
       "2026-08-28T05:42:42.000+08:00 ERR Database write failed component=database\n",
   );
@@ -1028,10 +1063,34 @@ test("bridge logs omit handled reconnect chatter and prefix every diagnostic lin
       '2026-08-28T06:03:03.372+08:00 WRN No transactions found component=messagix payload="{}"\n' +
       '2026-08-28T10:16:36.326+08:00 WRN decode.go:282:handleStoredProcedure() > Failed to set int64 field_index=112 field_name=AttachmentLoggingType global_log=true struct_name=LSInsertXmaAttachment val="<redacted string>" val_type=string\n' +
       '2026-08-28T10:16:36.326+08:00 WRN decode.go:217:handleStoredProcedure() > Skipping dependency with no reference global_log=true reference_name=applyAdminMessageCTAV2\n' +
+      '2026-08-28T16:56:35.378+08:00 WRN table.go:342:SPToDepMap() > Unknown dependency in sp dependency=setRegionHint global_log=true\n' +
+      '2026-08-28T16:56:35.378+08:00 WRN decode.go:217:handleStoredProcedure() > Skipping dependency with no reference global_log=true reference_name=setRegionHint\n' +
+      '2026-08-28T16:47:55.944+08:00 WRN Keepalive timed out component=whatsmeow\n' +
+      "2026-08-28T16:48:21.332+08:00 ERR Error reading from websocket: failed to get reader: failed to read frame header: read tcp 10.0.0.1:1->10.0.0.2:443: read: can't assign requested address component=whatsmeow\n" +
       '2026-08-28T10:16:36.349+08:00 WRN No target message found for read receipt action="handle remote event" bridge_evt_type=RemoteEventReadReceipt portal_id=10069664666446875 read_up_to=1786651625404\n' +
       '2026-08-28T10:16:37.000+08:00 WRN decode.go:282:handleStoredProcedure() > Failed to set int64 field_name=MessageId global_log=true struct_name=LSInsertMessage val="bad" val_type=string\n' +
       '2026-08-28T10:16:38.000+08:00 WRN decode.go:217:handleStoredProcedure() > Skipping dependency with no reference global_log=true reference_name=insertMessageV3\n' +
       "2026-08-28T06:03:04.000+08:00 INF Sync resumed component=messagix\n",
+  );
+  // What the stream actually carries: the seeded `pretty-colored` writer wraps
+  // timestamps, levels, and every `key=` in colour sequences, so none of the
+  // plain `key=value` text above appears contiguously in the raw bytes.
+  messenger.stdout.write(
+    "\x1b[90m2026-08-28T15:34:25.179+08:00\x1b[0m \x1b[33mWRN\x1b[0m \x1b[1mdecode.go:217:handleStoredProcedure()\x1b[0m\x1b[36m >\x1b[0m Skipping dependency with no reference \x1b[36mglobal_log=\x1b[0mtrue \x1b[36mreference_name=\x1b[0mapplyAdminMessageCTAV2\n" +
+      '\x1b[90m2026-08-28T15:34:25.179+08:00\x1b[0m \x1b[33mWRN\x1b[0m \x1b[1mdecode.go:282:handleStoredProcedure()\x1b[0m\x1b[36m >\x1b[0m Failed to set int64 \x1b[36mfield_index=\x1b[0m112 \x1b[36mfield_name=\x1b[0mAttachmentLoggingType \x1b[36mglobal_log=\x1b[0mtrue \x1b[36mstruct_name=\x1b[0mLSInsertXmaAttachment \x1b[36mval=\x1b[0m"<redacted string>" \x1b[36mval_type=\x1b[0mstring\n' +
+      '\x1b[90m2026-08-28T15:34:25.193+08:00\x1b[0m \x1b[33mWRN\x1b[0m No target message found for read receipt \x1b[36maction=\x1b[0m"handle remote event" \x1b[36mbridge_evt_type=\x1b[0mRemoteEventReadReceipt \x1b[36mread_up_to=\x1b[0m1786651625404\n' +
+      "\x1b[90m2026-08-28T06:03:05.000+08:00\x1b[0m \x1b[32mINF\x1b[0m Backfill finished \x1b[36mcomponent=\x1b[0mmessagix\n",
+  );
+
+  children.get("mautrix-instagram")!.stderr.write(
+    '2026-08-28T16:47:49.340+08:00 WRN Ignoring event with no portal component=instameow typename=SlideUQPPCreate1To1Thread\n' +
+      '2026-08-28T16:47:49.842+08:00 ERR Failed to reupload room avatar error="no Get function provided for avatar" action="create matrix room" bridge_evt_type=RemoteEventChatResync portal_id=103362634397335\n' +
+      '2026-08-28T16:47:49.915+08:00 WRN Ignoring event with no portal component=instameow typename=SlideUQPPUserReachabilityStatus\n' +
+      '2026-08-28T16:47:50.000+08:00 ERR Failed to create portal component=instameow\n',
+  );
+  children.get("mautrix-telegram")!.stderr.write(
+    '2026-08-28T17:08:56.028+08:00 WRN ignoring unknown action type action_type=*tg.MessageActionChatJoinedByRequest\n' +
+      '2026-08-28T17:08:57.000+08:00 ERR Failed to bridge message component=telegram\n',
   );
 
   assert.deepEqual(logs, [
@@ -1040,6 +1099,11 @@ test("bridge logs omit handled reconnect chatter and prefix every diagnostic lin
     '[messenger] 2026-08-28T10:16:37.000+08:00 WRN decode.go:282:handleStoredProcedure() > Failed to set int64 field_name=MessageId global_log=true struct_name=LSInsertMessage val="bad" val_type=string',
     "[messenger] 2026-08-28T10:16:38.000+08:00 WRN decode.go:217:handleStoredProcedure() > Skipping dependency with no reference global_log=true reference_name=insertMessageV3",
     "[messenger] 2026-08-28T06:03:04.000+08:00 INF Sync resumed component=messagix",
+    // The colour sequences are stripped rather than logged, so the one line
+    // that was not routine chatter reads cleanly.
+    "[messenger] 2026-08-28T06:03:05.000+08:00 INF Backfill finished component=messagix",
+    "[instagram] 2026-08-28T16:47:50.000+08:00 ERR Failed to create portal component=instameow",
+    "[telegram] 2026-08-28T17:08:57.000+08:00 ERR Failed to bridge message component=telegram",
   ]);
   await host.close();
 });

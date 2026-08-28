@@ -11,6 +11,8 @@ on:
       - "apps/extension/manifest.json"
       - "packages/browser/src/**"
       - "scripts/package-chrome-extension.sh"
+      - "scripts/browser-compatibility.mjs"
+      - "scripts/validate-browser-compatibility.mjs"
       - "scripts/validate-extension-version.mjs"
   workflow_dispatch:
 
@@ -31,6 +33,8 @@ jobs:
     environment: chrome-web-store
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -38,6 +42,11 @@ jobs:
 
       - name: Validate extension manifest
         run: node scripts/validate-extension-version.mjs
+
+      - name: Validate desktop compatibility contract
+        env:
+          BASE_REVISION: ${{ github.event_name == 'push' && github.event.before || 'origin/main' }}
+        run: node scripts/validate-browser-compatibility.mjs --base="$BASE_REVISION"
 
       - name: Package extension
         run: scripts/package-chrome-extension.sh dist/polymux-agent-surface.zip

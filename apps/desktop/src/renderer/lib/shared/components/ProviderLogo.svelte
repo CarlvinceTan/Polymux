@@ -1,9 +1,10 @@
 <script lang="ts">
   import {providerMark, providerName} from '../options/providerBrands';
-  import {providerLogoUrl} from '../options/providerLogoAssets';
   export let provider: string;
   export let size = 18;
   export let logoDataUrl: string | undefined = undefined;
+  let logoUrl: string | undefined;
+  let logoLoad = 0;
 
   // Avatar convention: initials while we still know what the thing is called,
   // and the neutral glyph only for something genuinely unnamed — pseudo-initials
@@ -16,8 +17,23 @@
     return (words[0] ?? '').slice(0, 2);
   }
 
+  function resolveLogo(providerId: string, explicit: string | undefined): void {
+    const request = ++logoLoad;
+    if (explicit) {
+      logoUrl = explicit;
+      return;
+    }
+    logoUrl = undefined;
+    // The complete provider catalogue contains hundreds of possible icon file
+    // names. Keep that lookup out of the first UI bundle; the synchronous brand
+    // mark below is a stable placeholder while this cached module loads.
+    void import('../options/providerLogoAssets').then(({providerLogoUrl}) => {
+      if (request === logoLoad) logoUrl = providerLogoUrl(providerId);
+    }).catch(() => {});
+  }
+
   $: mark = providerMark(provider);
-  $: logoUrl = logoDataUrl || providerLogoUrl(provider);
+  $: resolveLogo(provider, logoDataUrl);
   $: label = providerName(provider);
   $: initialsText = label === 'xAI' ? 'xAI' : initials(label);
 </script>

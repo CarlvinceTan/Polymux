@@ -6,6 +6,7 @@ export type ReleaseEntry = {
   title: string;
   date: string;
   summary: string;
+  downloadable: boolean;
   body: string;
   html: string;
 };
@@ -27,13 +28,14 @@ function readDocument(path: string, source: string): ReleaseEntry | null {
   const title = String(metadata.title ?? '').trim();
   const date = String(metadata.date ?? '').trim();
   const summary = String(metadata.summary ?? '').trim();
+  const downloadable = metadata.downloadable !== false;
   const body = match[2].trim();
 
   if (!version || !title || !date || !summary) {
     throw new Error(`Release ${path} requires version, title, date, and summary fields.`);
   }
 
-  return {version, title, date, summary, body, html: renderSafeMarkdown(body)};
+  return {version, title, date, summary, downloadable, body, html: renderSafeMarkdown(body)};
 }
 
 export const releases = Object.entries(sources)

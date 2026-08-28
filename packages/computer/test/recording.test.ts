@@ -149,7 +149,7 @@ describe("ComputerHistoryRecorder", () => {
 describe("digestRecording", () => {
   function build(lines: RecordingLine[]) {
     const harness = recorder();
-    const session = harness.instance.start({ label: "Book parking" });
+    harness.instance.start({ label: "Book parking" });
     for (const line of lines)
       if (line.type === "window") {
         const { type, at, ...window } = line;
@@ -197,7 +197,7 @@ describe("digestRecording", () => {
 
   it("carries the window an action landed in onto the step", () => {
     const harness = recorder();
-    const session = harness.instance.start();
+    harness.instance.start();
     harness.instance.window({ app: "Safari", title: "Parking", url: "https://parking.example" });
     harness.instance.record({ at: "2026-08-18T10:00:01.000Z", kind: "click", app: "Safari", target: "Book" });
     const stopped = harness.instance.stop();

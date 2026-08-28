@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -79,6 +79,53 @@ test("can inspect a configured skill directory without mixing in user skills", a
     );
   } finally {
     await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("configured skills cannot escape their root or recurse through symlinks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "polymux-confined-skills-"));
+  const configured = join(root, "configured");
+  const outside = join(root, "outside");
+  try {
+    await mkdir(join(configured, "file-link"), { recursive: true });
+    await mkdir(join(configured, "safe"), { recursive: true });
+    await mkdir(join(outside, "external"), { recursive: true });
+    await writeFile(
+      join(outside, "external", "SKILL.md"),
+      "---\nname: escaped\ndescription: Must stay outside.\n---\n",
+    );
+    await writeFile(
+      join(configured, "safe", "SKILL.md"),
+      "---\nname: safe\ndescription: Stays inside.\n---\n",
+    );
+    await writeFile(
+      join(outside, "polymux.yaml"),
+      'display_name: "Escaped metadata"\n',
+    );
+    await symlink(join(outside, "external"), join(configured, "directory-link"));
+    await symlink(
+      join(outside, "external", "SKILL.md"),
+      join(configured, "file-link", "SKILL.md"),
+    );
+    await symlink(
+      join(outside, "polymux.yaml"),
+      join(configured, "safe", "polymux.yaml"),
+    );
+    await symlink(configured, join(configured, "recursive-link"));
+
+    const loaded = new SkillLoader({
+      configured: [configured],
+      includeUserLocations: false,
+    }).load();
+    assert.deepEqual(
+      loaded.skills.map((skill) => ({
+        name: skill.name,
+        displayName: skill.displayName,
+      })),
+      [{ name: "safe", displayName: undefined }],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -6,7 +6,7 @@ import {VitePlugin} from '@electron-forge/plugin-vite';
 import {FusesPlugin} from '@electron-forge/plugin-fuses';
 import {FuseV1Options, FuseVersion} from '@electron/fuses';
 import {execFileSync} from 'node:child_process';
-import {readFileSync} from 'node:fs';
+import {readFileSync, rmSync} from 'node:fs';
 import {PERMISSION_USAGE_DESCRIPTIONS} from './src/main/system/permission-usage.js';
 
 // Forge runs from the repo root (package.json's `config.forge` points here),
@@ -73,7 +73,7 @@ const config: ForgeConfig = {
     // mautrix binaries under `resources/bridges`. Those binaries are not in git
     // (half a gigabyte of build output); run `npm run bridges` before
     // packaging, which the prepackage hook does.
-    extraResource: ['resources'],
+    extraResource: ['resources', 'scripts/wxcdn_fileid_capture.py'],
     extendInfo: {
       NSLocationUsageDescription: 'Polymux uses your location only when Location access is enabled in General settings.',
       NSLocationWhenInUseUsageDescription: 'Polymux uses your location only when Location access is enabled in General settings.',
@@ -183,6 +183,28 @@ const config: ForgeConfig = {
       execFileSync(
         process.execPath,
         ['scripts/fetch-bridges.mjs', `--platform=${platform}`, `--arch=${arch}`],
+        {stdio: 'inherit'},
+      );
+      if (platform === 'darwin')
+        {
+          execFileSync(
+            process.execPath,
+            ['--import', 'tsx', 'scripts/build-native-helpers.ts'],
+            {stdio: 'inherit'},
+          );
+          execFileSync(
+            process.execPath,
+            ['scripts/build-wechat-writer.mjs'],
+            {stdio: 'inherit'},
+          );
+        }
+      else {
+        rmSync('resources/native/bin', {recursive: true, force: true});
+        rmSync('resources/wechat-writer', {recursive: true, force: true});
+      }
+      execFileSync(
+        process.execPath,
+        ['scripts/fetch-whisper.mjs', `--platform=${platform}`, `--arch=${arch}`],
         {stdio: 'inherit'},
       );
       // The skill scripts' interpreter. The RunAsNode fuse below is off, so a

@@ -46,25 +46,6 @@ while genuinely distinct matching windows or controls remain ambiguous.
 Capture uses ScreenCaptureKit's desktop-independent exact-window filter,
 including for hidden and off-screen windows.
 
-## Showing the user where an action happens
-
-`inspect` returns a `frame` for every control it can measure — its position and
-size in screen coordinates. Use it, together with the target window's frame
-from `list`, to show the agent's cursor travelling to a control before acting
-on it.
-
-The controller presses controls through accessibility and never moves the real
-pointer, which is what keeps it out of the user's way — but it also means a
-window otherwise changes by itself, with nothing on screen to say why. Polymux
-draws the same cursor its browsers use in a transparent click-through window
-over the target (`system/native-cursor.ts`): `cover` it with the window frame,
-`moveToControl` with the control's frame, wait for it to arrive, then press.
-
-The overlay never takes focus, never accepts a click, and never blocks the
-action. Show it only while the target window is actually visible to the user —
-there is nobody to inform about a hidden window, and waiting on an animation
-would only slow the work down.
-
 ## Actions
 
 Use stable semantic attributes and require exactly one match:

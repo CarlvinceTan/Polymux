@@ -2,8 +2,6 @@ import {clearFaviconCache} from "../browser/favicon.js";
 import {SUPPORTED_LANGUAGES, supportedLanguage} from "@polymux/protocol";
 import type {BrowserSettingsDto, GeneralSettingsDto, ReasoningEffort} from "@polymux/protocol";
 import {app, nativeTheme} from "electron";
-import {rename} from "node:fs/promises";
-import {parse as parseToml} from "smol-toml";
 import {
   DEFAULT_PERMISSION_SWITCHES,
   permissionSwitches,
@@ -14,7 +12,6 @@ import {
   notificationSwitches,
   notificationSwitchesUpdate,
 } from "./notification-settings.js";
-import {number} from "./requests.js";
 
 /**
  * Puts Chromium's colour scheme on the app's theme rather than the system's.

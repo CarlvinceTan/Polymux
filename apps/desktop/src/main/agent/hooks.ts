@@ -1,5 +1,4 @@
 import { readFileSync, statSync } from "node:fs";
-import path from "node:path";
 import { spawn } from "node:child_process";
 import { polymuxPath } from "../system/paths.js";
 import type {

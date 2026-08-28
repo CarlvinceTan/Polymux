@@ -13,12 +13,13 @@
   import WorkspaceDrawer, {SINGLETON_TAB_IDS, type WorkspaceTab, type WorkspaceTabKind} from './lib/features/workspace/WorkspaceDrawer.svelte';
   import {seedHub, warmHub, revealInHub} from './lib/features/workspace/HubView.svelte';
   import {driveEntryKind, type DriveEntry} from './lib/features/workspace/DriveView.svelte';
+  import {warmCurrentCalendar} from './lib/features/workspace/calendar-session';
   import OpenMenu, {type OpenAnchor, type OpenChoice} from './lib/shared/components/OpenMenu.svelte';
   import {unreadScheduleCount, type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './lib/features/workspace/ScheduleView.svelte';
   import {unreadTasksCount, type TaskCard} from './lib/features/workspace/TasksView.svelte';
   import {recordVisit} from './lib/features/workspace/visitHistory';
   import Tooltip from './lib/shared/components/Tooltip.svelte';
-  import SettingsPage from './lib/features/settings/SettingsPage.svelte';
+  import type SettingsPageComponent from './lib/features/settings/SettingsPage.svelte';
   import {polymuxApi} from './lib/api/polymux';
   import {applyTheme, startThemeSync} from './lib/shared/theme';
   import {applyLanguage, locale, startLanguageSync, t, translate, withLocale, type MessageKey} from './i18n';
@@ -180,13 +181,17 @@
   let outputMuted = false;
   let voicePaused = false;
   let settingsOpen = false;
+  let SettingsPage: typeof SettingsPageComponent | null = null;
   /** The tab Settings opens on, set by whatever asked for it. Cleared on close
    * so the next plain open lands where it always has. */
-  let settingsMode: ComponentProps<SettingsPage>['initialMode'] = '';
+  let settingsMode: ComponentProps<typeof SettingsPageComponent>['initialMode'] = '';
 
-  function openSettings(mode: ComponentProps<SettingsPage>['initialMode'] = ''): void {
+  function openSettings(mode: ComponentProps<typeof SettingsPageComponent>['initialMode'] = ''): void {
     settingsMode = mode;
     settingsOpen = true;
+    void import('./lib/features/settings/SettingsPage.svelte').then((module) => {
+      SettingsPage = module.default;
+    });
   }
   // index.html paints the splash before this bundle even loads, so startup is
   // driven by taking that element over rather than by rendering one here.
@@ -365,6 +370,7 @@
     cancelAnimationFrame(workspaceMotionFrame);
     clearTimeout(resourceRefreshTimer);
     clearTimeout(windowResizeSettle);
+    clearTimeout(calendarWarmTimer);
     stopThemeSync?.();
     stopLanguageSync?.();
   });
@@ -382,6 +388,7 @@
   let chromeShiftFrame = 0;
   let stopThemeSync: (() => void) | undefined;
   let stopLanguageSync: (() => void) | undefined;
+  let calendarWarmTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
     agentInspectionListener = (event: Event) => {
@@ -421,6 +428,15 @@
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       reasoningLevel = settings.reasoningLevel;
       void api.permissions.ensureFirstRun().catch(() => {});
+      // Calendar data is stable enough to prepare after first paint, but only
+      // after macOS has already granted access. A warm must never become a
+      // surprise permission prompt.
+      if (settings.permissions.calendars) {
+        void api.permissions.status('calendars').then((status) => {
+          if (status !== 'granted') return;
+          calendarWarmTimer = setTimeout(() => void warmCurrentCalendar().catch(() => {}), 2_500);
+        }).catch(() => {});
+      }
       return settings;
     }).catch(() => null);
     refreshExtensionStatus();
@@ -2769,7 +2785,7 @@
     }}
   />
 
-  {#if settingsOpen}<SettingsPage
+  {#if settingsOpen && SettingsPage}<SettingsPage
     initialMode={settingsMode}
     currentPinnedViews={pinnedViews}
     onClose={() => { settingsOpen = false; settingsMode = ''; refreshExtensionStatus(); }}

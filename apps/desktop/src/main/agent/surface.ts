@@ -1,5 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import {
+  SURFACE_PROTOCOL,
+  SURFACE_PROTOCOL_HEADERS,
+  negotiateSurfaceProtocol,
+} from "@polymux/browser";
 
 /**
  * Loopback agent-surface feed and command channel for the Polymux browser
@@ -171,6 +176,16 @@ export interface SurfaceLease {
   updatedAtMs: number;
 }
 
+export interface SurfaceCompatibility {
+  compatible: boolean;
+  negotiatedVersion: number | null;
+  minVersion: number;
+  maxVersion: number;
+  capabilities: string[];
+  extensionVersion: string | null;
+  reason: string | null;
+}
+
 const LEASE_TTL_MS = 120_000;
 // 47652 is the Agent Surface presentation service and 47653 its
 // browser-host CDP port; Polymux takes the next port up.
@@ -339,6 +354,19 @@ export class AgentSurfaceServer {
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (request.method === "OPTIONS") {
+      response.writeHead(204, corsHeaders());
+      response.end();
+      return;
+    }
+    const compatibility = compatibilityForRequest(request);
+    if (!compatibility.compatible) {
+      json(response, 409, {
+        error: "incompatible browser extension",
+        surface: compatibility,
+      });
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/v1/snapshot") {
       const after = Number(url.searchParams.get("after"));
       const waitMs = Math.max(
@@ -347,14 +375,14 @@ export class AgentSurfaceServer {
       );
       if (Number.isInteger(after) && this.#revision <= after && waitMs > 0)
         await this.#waitForChange(waitMs);
-      json(response, 200, this.snapshot());
+      json(response, 200, {...this.snapshot(), surface: compatibility});
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/cursor-arrivals") {
       // Acknowledged but otherwise unused: nothing blocks on cursor arrival
       // today, and the extension only needs a 200 to stop retrying.
       await readBody(request);
-      json(response, 200, { ok: true });
+      json(response, 200, { ok: true, surface: compatibility });
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/results") {
@@ -380,7 +408,7 @@ export class AgentSurfaceServer {
           image: parseImage(body.image),
         });
       }
-      json(response, 200, { ok: true });
+      json(response, 200, { ok: true, surface: compatibility });
       return;
     }
     json(response, 404, { error: "not found" });
@@ -415,9 +443,60 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(body),
-    "Access-Control-Allow-Origin": "*",
+    ...corsHeaders(),
   });
   response.end(body);
+}
+
+function corsHeaders(): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": [
+      "Content-Type",
+      ...Object.values(SURFACE_PROTOCOL_HEADERS),
+    ].join(", "),
+  };
+}
+
+function compatibilityForRequest(request: IncomingMessage): SurfaceCompatibility {
+  const header = (name: string): string | undefined => {
+    const value = request.headers[name.toLowerCase()];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const minValue = header(SURFACE_PROTOCOL_HEADERS.minVersion);
+  const maxValue = header(SURFACE_PROTOCOL_HEADERS.maxVersion);
+  const capabilitiesValue = header(SURFACE_PROTOCOL_HEADERS.capabilities);
+  const explicit = hasExplicitExtensionProtocol(request);
+  const extension = explicit
+    ? {
+        minVersion: Number(minValue),
+        maxVersion: Number(maxValue),
+        capabilities: (capabilitiesValue ?? "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      }
+    : SURFACE_PROTOCOL.legacyExtension;
+  const result = negotiateSurfaceProtocol(extension);
+  return {
+    compatible: result.compatible,
+    negotiatedVersion: result.negotiatedVersion,
+    minVersion: SURFACE_PROTOCOL.desktop.minVersion,
+    maxVersion: SURFACE_PROTOCOL.desktop.maxVersion,
+    capabilities: [...SURFACE_PROTOCOL.desktop.capabilities],
+    extensionVersion:
+      header(SURFACE_PROTOCOL_HEADERS.extensionVersion) ?? null,
+    reason: result.reason,
+  };
+}
+
+function hasExplicitExtensionProtocol(request: IncomingMessage): boolean {
+  return [
+    SURFACE_PROTOCOL_HEADERS.minVersion,
+    SURFACE_PROTOCOL_HEADERS.maxVersion,
+    SURFACE_PROTOCOL_HEADERS.capabilities,
+  ].some((name) => request.headers[name.toLowerCase()] !== undefined);
 }
 
 async function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {

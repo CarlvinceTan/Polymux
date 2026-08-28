@@ -933,10 +933,6 @@ function multiCall() {
   };
 }
 
-function occurrences(text: string, needle: string): number {
-  return text.split(needle).length - 1;
-}
-
 /** Every notification a transcript carries, parsed. */
 function notifications(text: string): Array<Record<string, unknown>> {
   return [

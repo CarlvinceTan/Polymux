@@ -3,7 +3,6 @@
   import DownloadIcon from './lib/DownloadIcon.svelte';
   import FeatureIcon from './lib/FeatureIcon.svelte';
   import MobileMenu from './lib/MobileMenu.svelte';
-  import ProductMenu from './lib/ProductMenu.svelte';
   import {agentFeatures, appFeatures, getProductFeature, productFeaturePath, type ProductFeature} from './lib/productFeatures';
 
   const parts = location.pathname.split('/').filter(Boolean);
@@ -21,7 +20,7 @@
 </script>
 
 <svelte:head>
-  <link rel="icon" type="image/svg+xml" href={logo} />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   {#if feature}
     <title>{feature.name} — Polymux</title>
     <meta name="description" content={feature.description} />
@@ -36,13 +35,11 @@
     <a class="product-brand" href="/" aria-label="Polymux home"><img src={logo} alt="" /><span>Polymux</span></a>
     <nav aria-label="Main navigation">
       <a href="/">Home</a>
-      <ProductMenu active />
       <a href="/docs/">Docs</a>
-      <a href="/blog/">Blog</a>
       <a href="/releases/">Releases</a>
     </nav>
     <a class="product-download" href="/#download"><DownloadIcon />Download</a>
-    <MobileMenu active="product" />
+    <MobileMenu />
   </div>
 </header>
 
@@ -144,7 +141,6 @@
   <a class="product-brand" href="/"><img src={logo} alt="" /><span>Polymux</span></a>
   <span>Personal software, thoughtfully built.</span>
   <a href="/docs/">Docs</a>
-  <a href="/blog/">Blog</a>
   <a href="/releases/">Releases</a>
   <a href="/privacy-policy/">Privacy</a>
 </footer>

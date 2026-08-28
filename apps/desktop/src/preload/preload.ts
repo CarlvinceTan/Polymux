@@ -122,6 +122,8 @@ const api: PolymuxApi = {
     },
   },
   calendar: {
+    snapshot: (start, end) =>
+      ipcRenderer.invoke(channels.calendarSnapshot, start, end),
     calendars: () => ipcRenderer.invoke(channels.calendarCalendars),
     events: (start, end, calendarIds) =>
       ipcRenderer.invoke(channels.calendarEvents, start, end, calendarIds),
@@ -131,6 +133,11 @@ const api: PolymuxApi = {
     importFile: (calendarId) => ipcRenderer.invoke(channels.calendarImport, calendarId),
     exportFile: (request) => ipcRenderer.invoke(channels.calendarExport, request),
     openAccounts: () => ipcRenderer.invoke(channels.calendarOpenAccounts),
+    subscribe(listener) {
+      const receive = () => listener();
+      ipcRenderer.on(channels.calendarChanged, receive);
+      return () => ipcRenderer.removeListener(channels.calendarChanged, receive);
+    },
   },
   tasks: {
     list: (chatId) => ipcRenderer.invoke(channels.tasksList, chatId),
@@ -244,6 +251,10 @@ const api: PolymuxApi = {
       ipcRenderer.invoke(channels.commsBridgeSetup, platform, values),
     chats: () => ipcRenderer.invoke(channels.commsChats),
     chatContacts: () => ipcRenderer.invoke(channels.commsChatContacts),
+    chatMembers: (chatId) => ipcRenderer.invoke(channels.commsChatMembers, chatId),
+    contactLinks: () => ipcRenderer.invoke(channels.commsContactLinks),
+    contactLinkMerge: (request) => ipcRenderer.invoke(channels.commsContactLinkMerge, request),
+    contactLinkRemove: (id) => ipcRenderer.invoke(channels.commsContactLinkRemove, id),
     chatCreate: (request) => ipcRenderer.invoke(channels.commsChatCreate, request),
     broadcasts: () => ipcRenderer.invoke(channels.commsBroadcasts),
     broadcastCreate: (request) => ipcRenderer.invoke(channels.commsBroadcastCreate, request),
@@ -253,8 +264,8 @@ const api: PolymuxApi = {
       ipcRenderer.invoke(channels.commsBroadcastSend, broadcastId, text),
     chatMessages: (chatId, limit, before) =>
       ipcRenderer.invoke(channels.commsChatMessages, chatId, limit, before),
-    chatSend: (chatId, text, replyTo) =>
-      ipcRenderer.invoke(channels.commsChatSend, chatId, text, replyTo),
+    chatSend: (chatId, text, replyTo, mentions) =>
+      ipcRenderer.invoke(channels.commsChatSend, chatId, text, replyTo, mentions),
     chatSendFiles: (chatId, paths) =>
       ipcRenderer.invoke(channels.commsChatSendFiles, chatId, paths),
     chatPickFiles: () => ipcRenderer.invoke(channels.commsChatPickFiles),

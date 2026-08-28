@@ -1,11 +1,7 @@
 import {parse as parseYaml} from 'yaml';
-import {renderSafeMarkdown} from './markdown.js';
+import {renderMarkdownWithToc, type TocItem} from './toc';
 
-export type DocsTocItem = {
-  id: string;
-  text: string;
-  level: 2 | 3;
-};
+export type DocsTocItem = TocItem;
 
 export type DocsPage = {
   title: string;
@@ -31,34 +27,6 @@ const sources = import.meta.glob<string>('../content/docs/*.md', {
   query: '?raw',
 });
 
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/&(?:amp|quot|apos|lt|gt);/g, '')
-    .replace(/[^a-z0-9\s-]/g, '')
-    .trim()
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-');
-}
-
-function renderMarkdown(body: string): {html: string; toc: DocsTocItem[]} {
-  const rendered = renderSafeMarkdown(body);
-  const toc: DocsTocItem[] = [];
-  const usedIds = new Set<string>();
-  const html = rendered.replace(/<h([23])>([\s\S]*?)<\/h\1>/g, (_match, levelValue: string, inner: string) => {
-    const level = Number(levelValue) as 2 | 3;
-    const text = inner.replace(/<[^>]*>/g, '').trim();
-    const baseId = slugify(text) || 'section';
-    let id = baseId;
-    let suffix = 2;
-    while (usedIds.has(id)) id = `${baseId}-${suffix++}`;
-    usedIds.add(id);
-    toc.push({id, text, level});
-    return `<h${level} id="${id}">${inner}</h${level}>`;
-  });
-  return {html, toc};
-}
-
 function readDocument(sourcePath: string, source: string): DocsPage | null {
   const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
   if (!match) throw new Error(`Documentation page ${sourcePath} is missing YAML front matter.`);
@@ -80,7 +48,7 @@ function readDocument(sourcePath: string, source: string): DocsPage | null {
     throw new Error(`Documentation page ${sourcePath} has incomplete front matter.`);
   }
 
-  return {title, slug, description, section, sectionOrder, order, body, ...renderMarkdown(body)};
+  return {title, slug, description, section, sectionOrder, order, body, ...renderMarkdownWithToc(body)};
 }
 
 export const docsPages = Object.entries(sources)

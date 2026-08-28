@@ -37,6 +37,7 @@ import {
   WeChatBridge,
   WECHAT_FALLBACK_DIRECTORIES,
   loadShippedCredentials,
+  relayEnvironment,
 } from "@polymux/hub";
 import { serveMedia } from "./hub/media.js";
 import { PREVIEW_SCHEME, previewResponse } from "./workspace/preview.js";
@@ -693,6 +694,7 @@ function desktopBackendOptions(
 ): Omit<DesktopBackendOptions, "reloadForProfileChange"> {
   return {
     dataDirectory: app.getPath("userData"),
+    dictationBinaryDirectory: bundledResource("whisper"),
     officialSkillDirectories: [officialSkillDirectory()],
     coreSkills: coreSkillNames(bundledResource("skills", "core")),
     // Polymux's own prompts travel as files beside the skills — same bundle,
@@ -939,6 +941,33 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   // No binary to supervise for WeChat, and no account to log into: it is a
   // relay against the desktop app. Started on demand rather than here, because
   // portal rooms belong to Polymux's Matrix user and that does not exist yet.
+  //
+  // The daemon's CDN fallback needs the LLDB helper its released build
+  // references but did not package; without being told where the shipped copy
+  // lives it looks for one on the machine it was compiled on. A checkout
+  // carries it under scripts/; Forge copies that file beside app.asar in a
+  // package so Python and LLDB can read it without crossing the ASAR boundary.
+  const cdnCaptureScript = [
+    path.join(process.resourcesPath, "wxcdn_fileid_capture.py"),
+    path.join(app.getAppPath(), "scripts", "wxcdn_fileid_capture.py"),
+  ].find((candidate) => existsSync(candidate));
+  const bundledWeChatWriter = [
+    bundledResource("wechat-writer", "polymux-wechat-driver.mjs"),
+    path.join(app.getAppPath(), "scripts", "polymux-wechat-driver.mjs"),
+  ].find((candidate) => existsSync(candidate));
+  const configuredWriter = process.env.POLYMUX_WECHAT_WRITER;
+  const writer = configuredWriter
+    ? new ProcessWeChatWriter(configuredWriter)
+    : bundledWeChatWriter && process.env.POLYMUX_NODE
+      ? new ProcessWeChatWriter(process.env.POLYMUX_NODE, {
+          prefixArgs: [bundledWeChatWriter],
+          environment: relayEnvironment({
+            ...process.env,
+            POLYMUX_WECHAT_WIRE_NATIVE: "1",
+            POLYMUX_WECHAT_LLDB_EXPERIMENTAL: "1",
+          }, cdnCaptureScript),
+        })
+      : undefined;
   wechat = new WeChatBridge({
     homeserver,
     directory: path.join(directory, "bridges"),
@@ -950,9 +979,8 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
       path.join(directory, "bin"),
       ...WECHAT_FALLBACK_DIRECTORIES,
     ],
-    ...(process.env.POLYMUX_WECHAT_WRITER
-      ? {writer: new ProcessWeChatWriter(process.env.POLYMUX_WECHAT_WRITER)}
-      : {}),
+    ...(writer ? {writer} : {}),
+    ...(cdnCaptureScript ? {cdnCaptureScript} : {}),
     log: (line) => console.warn(line),
   });
   return { homeserver, bridges, directory };

@@ -57,7 +57,7 @@ explicitly asked; report conflicts instead.
   obsolete formats; reset disposable state or use a bounded one-time migration
   for valuable local data.
 
-## Commits and release notes
+## Commits, pull requests, and release notes
 
 - Never create, amend, squash, rebase, tag, or push a commit unless the user
   explicitly asks for that Git action in the current task. Permission to edit
@@ -66,7 +66,8 @@ explicitly asked; report conflicts instead.
   72 characters, with no trailing punctuation. Do not use conventional-commit
   prefixes such as `feat:`, `fix:`, or `docs:`. When one area is the clear
   scope, an informative prefix is allowed, for example `Hub: Add chat search`.
-- End the commit message with this exact, machine-readable section:
+- Use the same title style for pull requests. End the pull request body with
+  this exact, machine-readable section:
 
   ```text
   Release Notes:
@@ -77,8 +78,11 @@ explicitly asked; report conflicts instead.
 - Use exactly one concise, user-facing bullet in the form
   `- <Area>: <Added|Fixed|Improved> <outcome>.` Reuse stable, title-cased area
   names such as `AI`, `Git`, `Hub`, `Drive`, `Browser`, `Desktop`, and `Site`.
-  The area supplies release-note subsections such as **AI** and **Git**, while
-  the verb supplies **Features**, **Bug Fixes**, or **Improvements**. Describe
-  the outcome rather than implementation details so the pages under
-  `apps/site/releases/` can display it directly. Use `- N/A` for changes with
-  no user-facing release note. Keep `Release Notes:` as the final section.
+  Describe the outcome rather than implementation details. Use `- N/A` for
+  changes with no user-facing release note. Keep `Release Notes:` as the final
+  section of the pull request body.
+- Release pages collect the merged pull request notes since the previous
+  version. Group `Added`, `Fixed`, and `Improved` entries under **Features**,
+  **Bug Fixes**, and **Improvements**, then group them again by their area as
+  third-level headings. Deduplicate and lightly edit the collected notes for a
+  cohesive customer-facing release; do not publish a raw Git log.

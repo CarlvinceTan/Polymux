@@ -1,5 +1,3 @@
-import type {StoredAccount} from "./email-config.js";
-
 /** Runs a command with no shell. `input` is written to stdin and closed. */
 export type CommandRunner = (
   command: string,

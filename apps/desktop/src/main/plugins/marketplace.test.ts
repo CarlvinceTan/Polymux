@@ -13,6 +13,8 @@ test("accepts the shapes a marketplace is pasted as", () => {
   );
   assert.deepEqual(parseMarketplaceSource("https://github.com/anthropics/claude-code.git"), reference);
   assert.throws(() => parseMarketplaceSource(""), /Enter a marketplace/);
+  assert.throws(() => parseMarketplaceSource("owner/.."), /Enter a marketplace/);
+  assert.throws(() => parseMarketplaceSource("owner/.git"), /Enter a marketplace/);
   assert.throws(() => parseMarketplaceSource("claude-code"), /owner\/repo/);
   assert.throws(() => parseMarketplaceSource("an owner/repo"), /owner\/repo/);
 });
@@ -63,6 +65,9 @@ test("drops entries that would install nothing or install twice", () => {
         { name: "one", source: "./a" },
         { name: "one", source: "./b" },
         { name: "escaping", source: "../../etc" },
+        { name: "../outside", source: "./safe" },
+        { name: "nested/plugin", source: "./safe" },
+        { name: "windows\\plugin", source: "./safe" },
         { name: "unresolvable", source: { source: "svn", url: "svn://example" } },
         { description: "nameless" },
       ],

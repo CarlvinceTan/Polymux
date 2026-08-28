@@ -1,5 +1,5 @@
 import {parse as parseYaml} from 'yaml';
-import {renderSafeMarkdown} from './markdown.js';
+import {renderMarkdownWithToc, type TocItem} from './toc';
 
 export type BlogPost = {
   title: string;
@@ -12,6 +12,7 @@ export type BlogPost = {
   readingMinutes: number;
   body: string;
   html: string;
+  toc: TocItem[];
 };
 
 const sources = import.meta.glob<string>('../content/blog/*.md', {
@@ -54,7 +55,7 @@ function readDocument(path: string, source: string): BlogPost | null {
     coverImage,
     readingMinutes: Math.max(1, Math.ceil(wordCount / 220)),
     body,
-    html: renderSafeMarkdown(body),
+    ...renderMarkdownWithToc(body),
   };
 }
 
@@ -65,6 +66,12 @@ export const blogPosts = Object.entries(sources)
 
 export function getBlogPost(slug: string): BlogPost | undefined {
   return blogPosts.find((post) => post.slug === slug);
+}
+
+export function nextPosts(slug: string, count = 2): BlogPost[] {
+  const index = blogPosts.findIndex((post) => post.slug === slug);
+  if (index === -1) return blogPosts.slice(0, count);
+  return [...blogPosts.slice(index + 1), ...blogPosts.slice(0, index)].slice(0, count);
 }
 
 export function formatBlogDate(date: string): string {

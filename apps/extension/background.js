@@ -18,9 +18,12 @@
 import { attach, chromeTransport, detach, detachAll, isAttached } from "./lib/cdp.js";
 import {
   createSession,
+  desktopSupportsExtension,
+  extensionProtocolHeaders,
   handlers,
   pacer,
   pageInfo,
+  SURFACE_PROTOCOL,
   startSession,
   stopSession,
 } from "./shared/index.js";
@@ -35,6 +38,15 @@ const ARRIVAL_URL = `${SURFACE_ORIGIN}/v1/cursor-arrivals`;
 const RESULTS_URL = `${SURFACE_ORIGIN}/v1/results`;
 const POLL_WAIT_MS = 25_000;
 const CURSOR_TIMEOUT_MS = 4_000;
+const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+const SURFACE_HEADERS = extensionProtocolHeaders(EXTENSION_VERSION);
+
+function surfaceFetch(input, init = {}) {
+  const headers = new Headers(init.headers);
+  for (const [name, value] of Object.entries(SURFACE_HEADERS))
+    headers.set(name, value);
+  return fetch(input, {...init, headers});
+}
 
 // --- Tab context ----------------------------------------------------------
 
@@ -62,6 +74,10 @@ async function sendSnapshot() {
   const payload = {
     captured_at: new Date().toISOString(),
     browser: "chrome",
+    extension_version: EXTENSION_VERSION,
+    surface_protocol_min: SURFACE_PROTOCOL.extension.minVersion,
+    surface_protocol_max: SURFACE_PROTOCOL.extension.maxVersion,
+    surface_capabilities: SURFACE_PROTOCOL.extension.capabilities,
     focused_window_id: focusedWindow?.id ?? null,
     tabs: tabs
       .filter((tab) => tab.url && !tab.url.startsWith("chrome://"))
@@ -331,7 +347,7 @@ async function executeLeaseCommand(lease) {
     };
   }
 
-  await fetch(RESULTS_URL, {
+  await surfaceFetch(RESULTS_URL, {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json" },
@@ -362,7 +378,7 @@ async function pump() {
       }
       let snapshot;
       try {
-        const response = await fetch(url.href, { cache: "no-store" });
+        const response = await surfaceFetch(url.href, { cache: "no-store" });
         if (!response.ok) throw new Error(String(response.status));
         snapshot = await response.json();
       } catch {
@@ -370,6 +386,12 @@ async function pump() {
         // wearing the debugging infobar for a session that no longer exists.
         await releaseAll();
         await new Promise((resolve) => setTimeout(resolve, 2_000));
+        revision = -1;
+        continue;
+      }
+      if (!desktopSupportsExtension(snapshot.surface)) {
+        await releaseAll();
+        await new Promise((resolve) => setTimeout(resolve, 30_000));
         revision = -1;
         continue;
       }
@@ -400,7 +422,7 @@ async function releaseAll() {
 // cursor state), and cannot fetch 127.0.0.1 from an arbitrary origin.
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "polymux:cursor-arrived") {
-    fetch(ARRIVAL_URL, {
+    surfaceFetch(ARRIVAL_URL, {
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
@@ -426,11 +448,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         String(Math.max(0, Math.min(POLL_WAIT_MS, Number(message.waitMs) || 0))),
       );
     }
-    fetch(url.href, { cache: "no-store" })
+    surfaceFetch(url.href, { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok)
           throw new Error(`Polymux agent surface returned ${response.status}`);
-        sendResponse({ ok: true, snapshot: await response.json() });
+        const snapshot = await response.json();
+        if (!desktopSupportsExtension(snapshot.surface))
+          throw new Error("The Polymux desktop app is not compatible with this extension.");
+        sendResponse({ ok: true, snapshot });
       })
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;

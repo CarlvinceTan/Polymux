@@ -1,7 +1,6 @@
 import type {AgentRunEvent} from "@polymux/core";
 import type {RunEventDto} from "@polymux/protocol";
-import {parse as parseToml} from "smol-toml";
-import {json, number} from "./requests.js";
+import {json} from "./requests.js";
 
 /** Agent run events, as the renderer receives them. */
 export function eventDto(

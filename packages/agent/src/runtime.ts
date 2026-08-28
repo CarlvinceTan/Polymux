@@ -2,7 +2,6 @@ import type {
   AgentRunEvent,
   AgentRunResult,
   ActiveAgentRun,
-  AgentTool,
 } from "@polymux/core";
 import { AgentRunControl, AgentRunner, type ToolHooks } from "@polymux/core";
 import { readFileSync } from "node:fs";

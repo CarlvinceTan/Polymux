@@ -8,7 +8,6 @@ import {
   randomState,
   refreshTokenGrant,
   customFetch,
-  type Configuration,
 } from "openid-client";
 
 /**

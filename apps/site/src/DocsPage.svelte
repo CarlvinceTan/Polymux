@@ -1,7 +1,9 @@
 <script lang="ts">
   import {onMount} from 'svelte';
+  import github from 'simple-icons/icons/github.svg?url';
   import logo from '../../desktop/src/renderer/public/polymux.svg';
   import {docsNeighbours, docsPages, docsPath, docsSections, getDocsPage} from './lib/docs';
+  import MobileMenu from './lib/MobileMenu.svelte';
 
   const parts = location.pathname.split('/').filter(Boolean);
   const slug = parts[0] === 'docs' && parts[1] ? decodeURIComponent(parts[1]) : 'introduction';
@@ -62,53 +64,57 @@
 </script>
 
 <svelte:head>
-  <link rel="icon" type="image/svg+xml" href={logo} />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   {#if page}
     <title>{page.title} — Polymux Docs</title>
     <meta name="description" content={page.description} />
   {/if}
 </svelte:head>
 
-<header class="docs-header">
-  <div class="docs-header-left">
-    <button class="docs-menu-button" type="button" aria-label={mobileNavigationOpen ? 'Close documentation navigation' : 'Open documentation navigation'} aria-expanded={mobileNavigationOpen} onclick={() => mobileNavigationOpen = !mobileNavigationOpen}>
-      {#if mobileNavigationOpen}
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4l12 12M16 4L4 16" /></svg>
-      {:else}
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" /></svg>
-      {/if}
-    </button>
-    <a class="docs-brand" href="/" aria-label="Polymux home">
-      <img src={logo} alt="" /><strong>Polymux</strong><span>/</span><span>Docs</span>
-    </a>
-  </div>
-
-  <div class="docs-search-wrap">
-    <label class="docs-search" for="docs-search">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
-      <input bind:this={searchInput} bind:value={searchQuery} id="docs-search" type="search" placeholder="Search documentation" autocomplete="off" />
-      <kbd>⌘K</kbd>
-    </label>
-    {#if searchQuery.trim().length >= 2}
-      <div class="docs-search-results">
-        {#if searchResults.length}
-          {#each searchResults as result (result.slug)}
-            <a href={docsPath(result.slug)}>
-              <span><strong>{result.title}</strong><small>{result.description}</small></span>
-              <em>{result.section}</em>
-            </a>
-          {/each}
+<header class="site-shell-header">
+  <div class="site-shell-inner docs-site-shell-inner">
+    <div class="site-shell-primary">
+      <a class="site-shell-brand docs-brand" href="/" aria-label="Polymux home">
+        <img src={logo} alt="" /><strong>Polymux</strong>
+      </a>
+      <button class="docs-menu-button" type="button" aria-label={mobileNavigationOpen ? 'Close documentation navigation' : 'Open documentation navigation'} aria-expanded={mobileNavigationOpen} onclick={() => mobileNavigationOpen = !mobileNavigationOpen}>
+        {#if mobileNavigationOpen}
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4l12 12M16 4L4 16" /></svg>
         {:else}
-          <p>No matching documentation.</p>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" /></svg>
         {/if}
-      </div>
-    {/if}
-  </div>
+      </button>
+    </div>
 
-  <div class="docs-header-right">
-    <a href="/releases/">Releases</a>
-    <a href="https://github.com/CarlvinceTan/Polymux">GitHub</a>
-    <a class="docs-download" href="/#download">Download</a>
+    <div class="docs-search-wrap">
+      <label class="docs-search" for="docs-search">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
+        <input bind:this={searchInput} bind:value={searchQuery} id="docs-search" type="search" placeholder="Search documentation" autocomplete="off" />
+        <kbd>⌘K</kbd>
+      </label>
+      {#if searchQuery.trim().length >= 2}
+        <div class="docs-search-results">
+          {#if searchResults.length}
+            {#each searchResults as result (result.slug)}
+              <a href={docsPath(result.slug)}>
+                <span><strong>{result.title}</strong><small>{result.description}</small></span>
+                <em>{result.section}</em>
+              </a>
+            {/each}
+          {:else}
+            <p>No matching documentation.</p>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    <div class="site-shell-actions docs-header-actions">
+      <a class="site-shell-github" href="https://github.com/CarlvinceTan/Polymux" aria-label="Polymux on GitHub">
+        <img src={github} alt="" />
+      </a>
+      <a class="site-shell-download" href="/#download">Download</a>
+      <MobileMenu active="docs" />
+    </div>
   </div>
 </header>
 
@@ -155,7 +161,7 @@
 
         <footer class="docs-footer">
           <span>© {new Date().getFullYear()} Polymux</span>
-          <div><a href="/blog/">Blog</a><a href="/releases/">Releases</a><a href="/privacy-policy/">Privacy</a></div>
+          <div><a href="/">Home</a><a href="/releases/">Releases</a><a href="/privacy-policy/">Privacy</a></div>
         </footer>
       </div>
     {:else}

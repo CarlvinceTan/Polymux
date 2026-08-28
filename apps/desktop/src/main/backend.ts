@@ -36,6 +36,7 @@ import type {
 import { PiInference } from "@polymux/inference/pi";
 import type {
   ChatDto,
+  ChatMentionsDto,
   BroadcastRecipientDto,
   MailFolderDto,
   ChatMessageDto,
@@ -70,6 +71,7 @@ import type {
   ManagerSnapshotDto,
   AgentRuntimeDto,
   CreateChatRequest,
+  MergeContactLinkRequest,
   SetAgentProviderRequest,
 } from "@polymux/protocol";
 import { createAppleMailSearcher } from "./hub/apple-mail.js";
@@ -189,7 +191,6 @@ import {
   discoverModels,
   discoverModelsRequest,
   MODEL_ROLES,
-  modelFromEnvironment,
   modelPreference,
   modelRole,
   modelRolesPreference,
@@ -197,7 +198,6 @@ import {
   updateCustomProviderRequest,
 } from "./backend/models.js";
 import {
-  adoptLegacyMcpConfig,
   approximateLocation,
   browserAppName,
   browserBundleId,
@@ -314,6 +314,7 @@ import { createTasksTool } from "./tasks/tools.js";
 import { Communications } from "./hub/index.js";
 import { HubCache } from "./hub/cache.js";
 import { Broadcasts } from "./hub/broadcasts.js";
+import { ContactLinks } from "./hub/contact-links.js";
 import { Drive, createDriveTools } from "@polymux/drive";
 import { electronConsent } from "./system/drive-consent.js";
 import { sessionScopedSnapshot } from "./workspace/snapshot.js";
@@ -372,6 +373,8 @@ import {builtInPermissionRequestsUser} from "./system/permission-platform.js";
 
 export interface DesktopBackendOptions {
   dataDirectory: string;
+  /** Directory containing the packaged whisper.cpp runtime, when bundled. */
+  dictationBinaryDirectory?: string;
   window: BrowserWindow;
   ipcMain: IpcMain;
   model?: ModelRef;
@@ -541,6 +544,7 @@ export class DesktopBackend {
   readonly #firstRunPermissions: FirstRunPermissions;
   readonly #reminders: Reminders;
   readonly #calendar: NativeCalendar;
+  readonly #stopCalendarChanges: () => void;
   /**
    * App grants macOS has given a final answer for this session, so the sweep
    * before each run costs nothing once every answer is in. Deliberately not
@@ -612,6 +616,7 @@ export class DesktopBackend {
   readonly #comms: Communications;
   /** Polymux-local recipient sets whose sends fan out into private DMs. */
   readonly #broadcasts: Broadcasts;
+  readonly #contactLinks: ContactLinks;
   #commsStatusTimer?: NodeJS.Timeout;
   #commsStatusRefresh?: Promise<void>;
   /** The hub's first screen, kept across quitting. */
@@ -719,6 +724,9 @@ export class DesktopBackend {
       cacheDirectory: path.join(options.dataDirectory, "bin"),
       access: { ensure: () => this.#requireCalendarPermission() },
     });
+    this.#stopCalendarChanges = this.#calendar.subscribe(() => {
+      if (!this.#closing) this.#sendToTrustedWindows(channels.calendarChanged);
+    });
     this.#interactionEvents = new NativeInteractionEvents({
       sourcePath: options.axEventsSourcePath ?? "",
       cacheDirectory: path.join(options.dataDirectory, "bin"),
@@ -788,6 +796,7 @@ export class DesktopBackend {
     });
     this.#dictation = new WhisperDictation({
       modelDirectory: path.join(options.dataDirectory, "whisper"),
+      binaryDirectory: options.dictationBinaryDirectory,
     });
     this.#firstRunPermissions = new FirstRunPermissions({
       store: this.#storage,
@@ -882,10 +891,6 @@ export class DesktopBackend {
     // buried in the platform's application-support directory: it is a file the
     // user is meant to be able to open, and a skill or script may be asked to.
     this.#mcpConfigPath = path.join(profileDirectory, "mcp.json");
-    adoptLegacyMcpConfig(
-      path.join(options.dataDirectory, "mcp.json"),
-      this.#mcpConfigPath,
-    );
     this.#customSkillDirectory = path.join(profileDirectory, "skills");
     this.#codexMcpConfigPath =
       options.codexConfigPath ?? path.join(homedir(), ".codex", "config.toml");
@@ -959,8 +964,12 @@ export class DesktopBackend {
         setPreference: (key, value) => this.#storage.setPreference(key, value),
       },
       onChange: (status) => {
-        if (!this.#closing && !this.#window.isDestroyed())
-          this.#window.webContents.send(channels.commsChanged, status);
+        if (this.#closing) return;
+        // The configured rail is local, durable state. Keep the next Hub
+        // mount's first paint current and notify detached workspace windows as
+        // well as the primary window where Settings usually lives.
+        this.#hubCache.putStatus(status);
+        this.#sendToTrustedWindows(channels.commsChanged, status);
       },
       onActivity: (activity) => {
         if (this.#closing || this.#window.isDestroyed()) return;
@@ -994,6 +1003,7 @@ export class DesktopBackend {
         await this.#comms.sendChat(chatId, body);
       },
     });
+    this.#contactLinks = new ContactLinks(this.#storage);
     this.#drive = new Drive({
       storage: {
         getPreference: (key) => this.#storage.getPreference(key),
@@ -1395,6 +1405,23 @@ export class DesktopBackend {
     this.#trustedWindows.delete(
       typeof window === "number" ? window : window.webContents.id,
     );
+  }
+
+  /** Sends app-scoped state to every renderer that shares this backend. A
+   * detached Hub is still a live Hub even while Settings is in the primary
+   * window. */
+  #sendToTrustedWindows(channel: string, ...args: unknown[]): void {
+    for (const [id, window] of this.#trustedWindows) {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) {
+        this.#trustedWindows.delete(id);
+        continue;
+      }
+      try {
+        window.webContents.send(channel, ...args);
+      } catch {
+        // One window tearing down must not keep the others stale.
+      }
+    }
   }
 
   /** Rescues the embedded browser's pages before their window is destroyed. */
@@ -1811,6 +1838,14 @@ export class DesktopBackend {
     );
     this.#handle(channels.calendarCalendars, () => this.#calendar.calendars());
     this.#handle(
+      channels.calendarSnapshot,
+      (_event, start: unknown, end: unknown) =>
+        this.#calendar.snapshot(
+          required(start, "calendar range start"),
+          required(end, "calendar range end"),
+        ),
+    );
+    this.#handle(
       channels.calendarEvents,
       (_event, start: unknown, end: unknown, calendarIds: unknown) =>
         this.#calendar.events(
@@ -2180,11 +2215,52 @@ export class DesktopBackend {
         lastActivity: room.lastActivity,
         preview: room.preview,
         group: room.group,
+        official: room.official,
       }));
       this.#hubCache.putChats(chats);
       return chats;
     });
     this.#handle(channels.commsChatContacts, () => this.#comms.contacts());
+    this.#handle(channels.commsChatMembers, (_event, chatId: unknown) =>
+      this.#comms.chatMembers(required(chatId, "chat id")),
+    );
+    this.#handle(channels.commsContactLinks, () => this.#contactLinks.list());
+    this.#handle(channels.commsContactLinkMerge, async (_event, input: unknown) => {
+      const value = (input ?? {}) as Partial<MergeContactLinkRequest>;
+      const requested = Array.isArray(value.members)
+        ? value.members.flatMap((raw) => {
+            if (!raw || typeof raw !== "object") return [];
+            const member = raw as unknown as Record<string, unknown>;
+            const chatId = required(member.chatId, "chat id");
+            const remoteId = typeof member.remoteId === "string" && member.remoteId.trim()
+              ? member.remoteId.trim()
+              : null;
+            return [{platform: commsPlatform(member.platform), remoteId, chatId}];
+          })
+        : [];
+      const rooms = await this.#comms.chats();
+      const members = requested.map((requestedMember) => {
+        const normalizedRemote = requestedMember.remoteId?.normalize("NFKC").toLowerCase();
+        const room = rooms.find((candidate) =>
+          candidate.platform === requestedMember.platform &&
+          (candidate.roomId === requestedMember.chatId ||
+            (normalizedRemote && candidate.remoteId?.normalize("NFKC").toLowerCase() === normalizedRemote)));
+        if (!room || room.group || room.space)
+          throw new Error("Only current direct conversations can be linked.");
+        return {
+          platform: commsPlatform(room.platform),
+          remoteId: room.remoteId ?? null,
+          chatId: room.roomId,
+        };
+      });
+      return this.#contactLinks.merge({
+        name: required(value.name, "contact name"),
+        members,
+      });
+    });
+    this.#handle(channels.commsContactLinkRemove, (_event, id: unknown) => {
+      this.#contactLinks.remove(required(id, "contact link id"));
+    });
     this.#handle(channels.commsChatCreate, async (_event, input: unknown) => {
       const value = (input ?? {}) as Partial<CreateChatRequest>;
       const participantIds = Array.isArray(value.participantIds)
@@ -2321,11 +2397,17 @@ export class DesktopBackend {
         chatId: unknown,
         text: unknown,
         replyTo: unknown,
+        mentions: unknown,
       ): Promise<ChatMessageDto> => {
         const room = required(chatId, "chat id");
         const body = required(text, "message");
         const answering = typeof replyTo === "string" ? replyTo : undefined;
-        const eventId = await this.#comms.sendChat(room, body, answering);
+        const eventId = await this.#comms.sendChat(
+          room,
+          body,
+          answering,
+          chatMentions(mentions),
+        );
         return {
           id: eventId,
           chatId: room,
@@ -3599,6 +3681,8 @@ export class DesktopBackend {
     this.#recording.stop("interrupted");
     this.#scheduler.stop();
     this.#dictation.close();
+    this.#stopCalendarChanges();
+    this.#calendar.close();
     const activeRuns = [...this.#activeRuns.values()];
     for (const run of activeRuns) run.control.cancel(new Error(reason));
     for (const channel of this.#registeredChannels)
@@ -4952,6 +5036,7 @@ export class DesktopBackend {
       this.#agentRuntime = new AcpAgentRuntime(
         config,
         this.#storage,
+        appVersion().version,
         (request) => this.#requestAcpPermission(request),
         () => this.#acpMcpServers(),
       );
@@ -5526,6 +5611,37 @@ export class DesktopBackend {
           );
     });
   }
+}
+
+/** Mentions cross an IPC boundary and ultimately become notifications on
+ * remote services. Keep that surface deliberately narrow: joined Matrix ids
+ * and the exact single-token labels the composer can insert. */
+function chatMentions(value: unknown): ChatMentionsDto | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const users = Array.isArray(input.users)
+    ? input.users.slice(0, 100).flatMap((raw) => {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+        const mention = raw as Record<string, unknown>;
+        const userId = typeof mention.userId === "string" ? mention.userId.trim() : "";
+        const label = typeof mention.label === "string" ? mention.label.trim() : "";
+        if (
+          !/^@[^:\s]+:[^\s]+$/u.test(userId) ||
+          userId.length > 255 ||
+          !/^@[^@\s]+$/u.test(label) ||
+          label.length > 128
+        ) return [];
+        return [{userId, label}];
+      })
+    : [];
+  const deduplicated = [...new Map(users.map((mention) => [
+    `${mention.userId}\0${mention.label}`,
+    mention,
+  ])).values()];
+  const everyone = input.everyone === true;
+  return deduplicated.length > 0 || everyone
+    ? {users: deduplicated, ...(everyone ? {everyone: true} : {})}
+    : undefined;
 }
 
 function calendarExportRequest(value: unknown): CalendarExportRequest {

@@ -1,3 +1,4 @@
+import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {defineConfig} from 'vite';
@@ -7,6 +8,9 @@ const appRoot = path.dirname(fileURLToPath(import.meta.url));
 // node_modules, the shared packages and the .vite output all live at the repo
 // root, two levels up from apps/desktop.
 const projectRoot = path.join(appRoot, '..', '..');
+const packageVersion = (JSON.parse(
+  readFileSync(path.join(projectRoot, 'package.json'), 'utf8'),
+) as {version: string}).version;
 
 // This config is served two ways: by Electron Forge for the app itself, and by
 // a bare `vite` for working on the renderer in a browser. Forge merges its own
@@ -28,6 +32,9 @@ export default defineConfig({
   root: path.join(appRoot, 'src/renderer'),
   cacheDir: path.join(projectRoot, 'node_modules', forgeDriven ? '.vite-app' : '.vite-web'),
   plugins: [svelte()],
+  define: {
+    __POLYMUX_VERSION__: JSON.stringify(packageVersion),
+  },
   // Forge merges `resolve.preserveSymlinks: true`, which makes the workspace's
   // own packages resolve through node_modules. Vite serves anything under
   // node_modules with a `?v=<hash>` query and `Cache-Control: immutable`, and
