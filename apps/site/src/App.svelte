@@ -14,7 +14,7 @@
   import githubCopilotLogo from '@lobehub/icons-static-svg/icons/githubcopilot.svg?url';
   import openCodeLogo from '@lobehub/icons-static-svg/icons/opencode.svg?url';
   import github from 'simple-icons/icons/github.svg?url';
-  import DriveProviderLogo from '../../desktop/src/renderer/lib/shared/components/DriveProviderLogo.svelte';
+  import DriveProviderLogo from './lib/DriveProviderLogo.svelte';
   import DownloadIcon from './lib/DownloadIcon.svelte';
   import MobileMenu from './lib/MobileMenu.svelte';
   import {detectPlatform, PLATFORM_DETAILS, type Platform, type ReleaseDownloads} from './lib/platform';
