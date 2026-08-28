@@ -6,7 +6,7 @@
   import browserScreenshot from '../../../docs/assets/polymux-browser-expanded.png';
   import {COMMS_EMAIL_PRESETS, COMMS_PLATFORMS} from '../../../packages/protocol/src/validation';
   import logo from '../../desktop/src/renderer/public/polymux.svg';
-  import {bridgeLogo, mailLogo} from '../../desktop/src/renderer/lib/shared/options/platformBrands';
+  import {bridgeLogo, mailLogo} from './lib/platformBrands';
   import github from 'simple-icons/icons/github.svg?url';
   import DownloadIcon from './lib/DownloadIcon.svelte';
   import MobileMenu from './lib/MobileMenu.svelte';
