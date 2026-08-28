@@ -14,6 +14,7 @@ on:
       - "scripts/browser-compatibility.mjs"
       - "scripts/validate-browser-compatibility.mjs"
       - "scripts/validate-extension-version.mjs"
+      - ".github/workflows/extension.yml"
   workflow_dispatch:
 
 permissions:
@@ -102,21 +103,24 @@ jobs:
           ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
         run: |
-          response="$(curl --fail-with-body --silent --show-error \
+          status_code="$(curl --silent --show-error \
+            --output "$RUNNER_TEMP/cws-upload.json" \
+            --write-out '%{http_code}' \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
-            -H "Content-Type: application/zip" \
             -X POST \
-            --data-binary @dist/polymux-agent-surface.zip \
+            --upload-file dist/polymux-agent-surface.zip \
             "https://chromewebstore.googleapis.com/upload/v2/publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID:upload")"
-          printf '%s' "$response" > "$RUNNER_TEMP/cws-upload.json"
           node -e '
             const fs = require("node:fs");
             const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const status = Number(process.argv[2]);
+            if (status < 200 || status >= 300)
+              throw new Error(`Chrome Web Store upload returned HTTP ${status}: ${JSON.stringify(value)}`);
             if (!value.itemId || !["SUCCEEDED", "IN_PROGRESS", "UPLOAD_SUCCESS", "UPLOAD_IN_PROGRESS"].includes(value.uploadState)) {
               throw new Error(`Chrome Web Store upload failed: ${JSON.stringify(value)}`);
             }
             console.log(`Uploaded ${value.crxVersion ?? "extension package"} (${value.uploadState}).`);
-          ' "$RUNNER_TEMP/cws-upload.json"
+          ' "$RUNNER_TEMP/cws-upload.json" "$status_code"
 
       - name: Submit update for review and automatic publication
         env:
