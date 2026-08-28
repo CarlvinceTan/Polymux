@@ -72,6 +72,33 @@ test('overlapping edits are serialised and replace one mailbox draft', async () 
   autosave.complete('compose-1', 'work');
 });
 
+test('switching accounts keeps each mailbox draft state in sync', async () => {
+  Object.defineProperty(globalThis, 'localStorage', {value: new MemoryStorage(), configurable: true});
+  const requests: SendMailRequest[] = [];
+  const replies = [deferred<SendMailResult>(), deferred<SendMailResult>()];
+  const autosave = new MailDraftAutosave(async (request) => {
+    requests.push(request);
+    return replies[requests.length - 1].promise;
+  }, 60_000);
+
+  autosave.update(draft(1, 'work copy'));
+  const flushed = autosave.flush('compose-1');
+  autosave.update({...draft(2, 'personal copy'), account: 'personal'});
+
+  replies[0].resolve({draft: {id: '10', folder: 'Drafts'}});
+  while (requests.length < 2) await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(requests[1].account, 'personal');
+  assert.equal(requests[1].replacesDraft, null);
+
+  replies[1].resolve({draft: {id: '20', folder: 'Drafts'}});
+  assert.deepEqual(await flushed, {id: '20', folder: 'Drafts'});
+  assert.deepEqual(loadMailDraft('work')?.remoteDraft, {id: '10', folder: 'Drafts'});
+  assert.equal(loadMailDraft('work')?.pending, false);
+  assert.deepEqual(loadMailDraft('personal')?.remoteDraft, {id: '20', folder: 'Drafts'});
+  assert.equal(loadMailDraft('personal')?.pending, false);
+  autosave.complete('compose-1', 'personal');
+});
+
 test('autosaved drafts carry the selected signature without folding it into local text', async () => {
   Object.defineProperty(globalThis, 'localStorage', {value: new MemoryStorage(), configurable: true});
   const requests: SendMailRequest[] = [];

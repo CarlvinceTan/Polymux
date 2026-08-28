@@ -19,6 +19,9 @@ import type {
   BrowserSettingsDto,
   BrowserSiteDto,
   BrowserSourceDto,
+  BroadcastDto,
+  BroadcastMessageDto,
+  ChatActivityDto,
   DriveEntryDto,
   DriveProviderId,
   DriveStatusDto,
@@ -68,6 +71,7 @@ export function polymuxApi(): PolymuxApi {
 function createBrowserDemoApi(): PolymuxApi {
   // The dev branch always represents an already-configured profile.
   const onboardingPreview = false;
+  const releaseNotesPreview = new URLSearchParams(window.location.search).get('releaseNotesPreview') === '1';
   const now = Date.now();
   let conversations: ConversationDto[] = [
     conversation('welcome', 'Planning a product launch', now - 86_400_000),
@@ -152,6 +156,8 @@ function createBrowserDemoApi(): PolymuxApi {
     {id: 'claude-acp', name: 'Claude Agent', description: "Anthropic's Claude agent", version: '0.70.0', icon: '', installed: true, command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.70.0']},
     {id: 'pi-acp', name: 'pi ACP', description: 'Run pi through Agent Client Protocol', version: '0.0.33', icon: '', installed: false, command: 'npx', args: ['-y', 'pi-acp@0.0.33']},
     {id: 'opencode', name: 'OpenCode', description: 'Open source coding agent', version: '1.0.0', icon: '', installed: false, command: 'npx', args: ['-y', 'opencode-ai@1.0.0', 'acp']},
+    {id: 'junie', name: 'Junie', description: 'AI Coding Agent by JetBrains', version: '3032.2.0', icon: '', installed: false, command: 'junie', args: ['--acp=true']},
+    {id: 'poolside', name: 'Poolside', description: "Poolside's coding agent", version: '1.0.16', icon: '', installed: false, command: 'pool', args: ['acp']},
   ];
   let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string; reasoning?: ReasoningEffort}>> = {};
   const demoRoles = (): ModelRolesDto => {
@@ -294,7 +300,7 @@ function createBrowserDemoApi(): PolymuxApi {
       {platform: 'gmessages', name: 'Google Messages', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'google', name: 'Google Account', description: 'Pair with your Google account by matching the emoji shown on your phone'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'twitter', name: 'X', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'x.com', description: 'Login using cookies from x.com'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'bluesky', name: 'Bluesky', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'password', name: 'App password', description: 'Sign in with a Bluesky app password'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'gvoice', name: 'Google Voice', api: 'bridgev2', state: 'unreachable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'mautrix-gvoice is not installed on this Mac.'},
+      {platform: 'gvoice', name: 'Google Voice', api: 'bridgev2', state: 'unreachable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'The Google Voice bridge can’t be installed.'},
       {platform: 'zulip', name: 'Zulip', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'apitoken', name: 'API token', description: 'Login with your Zulip email and API token'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'messenger', name: 'Messenger', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'messenger', name: 'messenger.com', description: 'Login using cookies from messenger.com'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'instagram', name: 'Instagram', api: 'bridgev2', state: 'connected', accounts: [{id: 'ig1', name: '@carl.builds', state: 'connected', error: null}, {id: 'ig2', name: '@polymux', state: 'connected', error: null}], flows: [{id: 'instagram', name: 'instagram.com', description: 'Login using cookies from instagram.com'}], setup: null, managementRoomHint: null, error: null},
@@ -356,6 +362,20 @@ function createBrowserDemoApi(): PolymuxApi {
     {id: '!wa-nus-soc:local', name: 'School of Computing', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 10_800_000).toISOString(), preview: 'Tutorial group list', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
     {id: '!wa-nus-running:local', name: 'Running 👟', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 14_400_000).toISOString(), preview: 'Saturday, 8am at UTown', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
   ];
+  /** Test-only stand-in for a read marker changed by a native platform. It
+   * deliberately emits no Hub activity: remote reads have no new message to
+   * push, so the ordinary focused refresh has to discover them. */
+  (window as unknown as {
+    polymuxDemoSetChatUnread?: (chatId: string, unread: number) => void;
+  }).polymuxDemoSetChatUnread = (chatId, unread) => {
+    demoChats = demoChats.map((chat) => {
+      if (chat.id !== chatId) return chat;
+      const unreadByAccount = chat.unreadByAccount
+        ? Object.fromEntries(Object.keys(chat.unreadByAccount).map((account) => [account, unread]))
+        : undefined;
+      return {...chat, unread, ...(unreadByAccount ? {unreadByAccount} : {})};
+    });
+  };
   // A real, short vertical WebM behind an .mp4 name. That mismatch reproduces
   // the generic-file route used by some reel shares while still letting the
   // headless browser prove the inline player receives playable bytes.
@@ -367,11 +387,33 @@ function createBrowserDemoApi(): PolymuxApi {
     {id: 'wx4', chatId: '!wx-filehelper:local', sender: 'You', body: 'My answer\n↳ Alice: Earlier text', sentAt: new Date(now - 1_800_000).toISOString(), mine: true, viewIn: {app: 'WeChat', url: 'weixin://'}},
     {id: 'wx5', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 1_700_000).toISOString(), mine: true, linkPreview: {title: 'Useful article', description: 'A short description', url: 'https://example.test/article', source: 'example.test'}, viewIn: {app: 'WeChat', url: 'weixin://'}},
     {id: 'wx6', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 1_600_000).toISOString(), mine: true, attachments: [{kind: 'file', url: demoReelUrl, name: 'AQO35LDKTG5E80mb8IC1UxBCatqRtz5e1UfSQbW_6TuswMo_IDXhnFdRLTK0IsjSS6YM4A.mp4', mimeType: null, size: 654, width: 16, height: 28, duration: .2}]},
-    {id: 'c1', chatId: '!wa-jules:local', sender: '@whatsapp_jules:local', senderName: 'Jules Tan (WA)', body: 'Are we still on for Thursday?', sentAt: new Date(now - 3_600_000).toISOString(), mine: false},
+    {id: 'c1', chatId: '!wa-jules:local', sender: '@whatsapp_jules:local', senderName: 'Jules Tan (WA)', body: 'Are we still on for Thursday?', sentAt: new Date(now - 3_600_000).toISOString(), mine: false, reactions: [
+      {key: '👍', count: 3, reactors: [
+        {id: '@whatsapp_amy:local', name: 'Amy', avatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'},
+        {id: '@whatsapp_ben:local', name: 'Ben', avatarUrl: null},
+        {id: '@whatsapp_chen:local', name: 'Chen', avatarUrl: null},
+      ]},
+      {key: '❤️', count: 4, reactors: [
+        {id: '@whatsapp_amy:local', name: 'Amy', avatarUrl: null},
+        {id: '@whatsapp_ben:local', name: 'Ben', avatarUrl: null},
+        {id: '@whatsapp_chen:local', name: 'Chen', avatarUrl: null},
+        {id: '@whatsapp_dee:local', name: 'Dee', avatarUrl: null},
+      ]},
+    ]},
     {id: 'c2', chatId: '!wa-jules:local', sender: '@meta_demo-account:local', senderName: 'Unknown user', body: 'Yes — 2pm works.', sentAt: new Date(now - 3_500_000).toISOString(), mine: true},
     {id: 'c3', chatId: '!wa-family:local', sender: 'Mum', senderAvatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', body: 'Dinner Sunday?', sentAt: new Date(now - 86_400_000).toISOString(), mine: false},
     {id: 'wa-notice', chatId: '!wa-family:local', sender: '@whatsapp_aaron:local', body: 'Áron joined the group', notice: true, sentAt: new Date(now - 86_370_000).toISOString(), mine: false},
-    {id: 'c4', chatId: '!tg-devs:local', sender: 'Priya', body: 'Shipped the build, logs look clean.', sentAt: new Date(now - 7_200_000).toISOString(), mine: false},
+    {id: 'c4', chatId: '!tg-devs:local', sender: 'Priya', body: 'Shipped the build, logs look clean.', sentAt: new Date(now - 7_200_000).toISOString(), mine: false, reactions: [
+      ...['👍', '❤️', '😂', '🔥', '🎉', '👏', '💯', '👀', '🤯', '🙏'].map((key, index) => ({
+        key,
+        count: 10,
+        reactors: Array.from({length: 10}, (_, reactor) => ({
+          id: `@telegram_reactor_${index}_${reactor}:local`,
+          name: `Reactor ${index + 1}-${reactor + 1}`,
+          avatarUrl: null,
+        })),
+      })),
+    ]},
     {id: 'tg-notice', chatId: '!tg-devs:local', sender: '@telegrambot:local', body: 'Manny Asbanu joined the group', notice: true, sentAt: new Date(now - 7_260_000).toISOString(), mine: false},
     {id: 'tg-link', chatId: '!tg-devs:local', sender: 'Pp Ll', body: 'https://docs.google.com/presentation/d/tutorial/edit?usp=sharing', sentAt: new Date(now - 7_230_000).toISOString(), mine: false, linkPreview: {title: 'CS3210 Tutorial 1', description: 'Instrumentation, Profiling, Slurm, and Report Writing', url: 'https://docs.google.com/presentation/d/tutorial/edit?usp=sharing', source: 'docs.google.com', imageUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', imageMimeType: 'image/gif', imageWidth: 1200, imageHeight: 630}},
     {id: 'nus1', chatId: '!wa-nus-social:local', sender: 'Amelia', body: 'Dinner after class?', sentAt: new Date(now - 5_400_000).toISOString(), mine: false},
@@ -387,8 +429,47 @@ function createBrowserDemoApi(): PolymuxApi {
     // now swaps an image the homeserver would not serve for a named chip, and
     // a truncated fixture is indistinguishable from one, so a placeholder that
     // merely looked like a GIF made the sticker vanish from the demo.
-    {id: 'c5', chatId: '!wa-jules:local', sender: '@whatsapp_jules:local', senderName: 'Jules Tan (WA)', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, replyTo: 'c2', attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
+    {id: 'c5', chatId: '!wa-jules:local', sender: '@whatsapp_jules:local', senderName: 'Unknown user', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, replyTo: 'c2', attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
   ];
+  const demoActivityListeners = new Set<(activity: ChatActivityDto) => void>();
+  const demoAddReaction = (
+    chatId: string,
+    messageId: string,
+    key: string,
+    reactor: NonNullable<NonNullable<ChatMessageDto['reactions']>[number]['reactors']>[number],
+    mineEventId: string | null,
+  ) => {
+    demoChatMessages = demoChatMessages.map((item) => {
+      if (item.chatId !== chatId || item.id !== messageId) return item;
+      const reactions = item.reactions ?? [];
+      const existing = reactions.find((reaction) => reaction.key === key);
+      return {
+        ...item,
+        reactions: existing
+          ? reactions.map((reaction) => reaction.key === key
+            ? {
+                ...reaction,
+                count: reaction.count + 1,
+                reactors: [...(reaction.reactors ?? []), reactor],
+                mineEventId: mineEventId ?? reaction.mineEventId,
+              }
+            : reaction)
+          : [...reactions, {key, count: 1, reactors: [reactor], mineEventId}],
+      };
+    });
+    queueMicrotask(() => demoActivityListeners.forEach((listener) => listener({chatId, sender: reactor.id})));
+  };
+  (window as unknown as {
+    polymuxDemoIncomingReaction?: (chatId: string, messageId: string, key: string) => void;
+  }).polymuxDemoIncomingReaction = (chatId, messageId, key) => demoAddReaction(
+    chatId,
+    messageId,
+    key,
+    {id: '@whatsapp_late-reactor:local', name: 'Late reactor', avatarUrl: null},
+    null,
+  );
+  let demoBroadcasts: BroadcastDto[] = [];
+  const demoBroadcastMessages = new Map<string, BroadcastMessageDto[]>();
   const demoMailFolders: MailFolderDto[] = [
     {name: 'INBOX', label: 'Inbox', role: 'inbox'},
     {name: '[Gmail]/Drafts', label: 'Drafts', role: 'drafts'},
@@ -571,12 +652,28 @@ function createBrowserDemoApi(): PolymuxApi {
         return structuredClone(demoGeneral);
       },
       locate: async () => ({latitude: -33.8688, longitude: 151.2093, accuracy: 25_000, updatedAt: '2026-08-14T00:00:00.000Z'}),
-      version: async () => ({version: '0.1.0', electron: '', platform: 'browser', packaged: false}),
+      version: async () => ({
+        version: releaseNotesPreview ? '0.2.2' : '0.1.0',
+        electron: '',
+        platform: 'browser',
+        packaged: releaseNotesPreview,
+      }),
       checkForUpdates: async () => demoUpdate,
       installUpdate: async () => demoUpdate,
       // The browser demo has no OS notification centre behind it, so it says
       // so rather than claiming a notification the user will never see.
       testNotification: async () => 'unsupported' as const,
+    },
+    clipboard: {
+      write: async (content) => {
+        if (content.kind !== 'text') return false;
+        try {
+          await navigator.clipboard.writeText(content.text);
+          return true;
+        } catch {
+          return false;
+        }
+      },
     },
     // A browser tab has no traffic lights to move out of, so the state never
     // changes and the subscription has nothing to tear down.
@@ -1051,6 +1148,49 @@ function createBrowserDemoApi(): PolymuxApi {
         }, ...demoChats];
         return id;
       },
+      broadcasts: async () => demoBroadcasts,
+      broadcastCreate: async (request) => {
+        const at = new Date().toISOString();
+        const broadcast: BroadcastDto = {
+          id: `broadcast-${crypto.randomUUID()}`,
+          name: request.name.trim(),
+          recipients: structuredClone(request.recipients),
+          createdAt: at,
+          updatedAt: at,
+          lastActivity: null,
+          preview: null,
+        };
+        demoBroadcasts = [broadcast, ...demoBroadcasts];
+        demoBroadcastMessages.set(broadcast.id, []);
+        return broadcast;
+      },
+      broadcastMessages: async (broadcastId) => demoBroadcastMessages.get(broadcastId) ?? [],
+      broadcastSend: async (broadcastId, text) => {
+        const broadcast = demoBroadcasts.find((item) => item.id === broadcastId);
+        if (!broadcast) throw new Error('This broadcast no longer exists.');
+        const sentAt = new Date().toISOString();
+        const recipients = broadcast.recipients.map((recipient) => ({
+          ...recipient,
+          chatId: recipient.chatId ?? `demo-direct-${recipient.id}`,
+        }));
+        const message: BroadcastMessageDto = {
+          id: `broadcast-message-${crypto.randomUUID()}`,
+          broadcastId,
+          body: text,
+          sentAt,
+          deliveries: recipients.map((recipient) => ({
+            recipientId: recipient.id,
+            recipientName: recipient.name,
+            platform: recipient.platform,
+            chatId: recipient.chatId,
+            status: 'sent',
+          })),
+        };
+        const updated = {...broadcast, recipients, updatedAt: sentAt, lastActivity: sentAt, preview: text};
+        demoBroadcasts = demoBroadcasts.map((item) => item.id === broadcastId ? updated : item);
+        demoBroadcastMessages.set(broadcastId, [message, ...(demoBroadcastMessages.get(broadcastId) ?? [])]);
+        return {broadcast: updated, message};
+      },
       chatMarkRead: async (chatId) => {
         if (demoGeneral.hubIncognitoMode) return false;
         demoChats = demoChats.map((chat) => (chat.id === chatId ? {...chat, unread: 0} : chat));
@@ -1076,18 +1216,30 @@ function createBrowserDemoApi(): PolymuxApi {
       chatSendFiles: async () => {},
       chatPickFiles: async () => [],
       chatSendAudio: async () => {},
-      chatReact: async (_chatId, messageId, key) => {
-        demoChatMessages = demoChatMessages.map((item) =>
-          item.id === messageId
-            ? {...item, reactions: [...(item.reactions ?? []), {key, count: 1, mineEventId: `demo-${key}`}]}
-            : item,
+      chatReact: async (chatId, messageId, key) => {
+        const eventId = `demo-${key}`;
+        demoAddReaction(
+          chatId,
+          messageId,
+          key,
+          {id: '@polymux-demo:local', name: 'You', avatarUrl: null, mine: true},
+          eventId,
         );
-        return `demo-${key}`;
+        return eventId;
       },
       chatUnreact: async (_chatId, reactionId) => {
         demoChatMessages = demoChatMessages.map((item) => ({
           ...item,
-          reactions: (item.reactions ?? []).filter((entry) => entry.mineEventId !== reactionId),
+          reactions: (item.reactions ?? []).flatMap((entry) => {
+            if (entry.mineEventId !== reactionId) return [entry];
+            if (entry.count <= 1) return [];
+            return [{
+              ...entry,
+              count: entry.count - 1,
+              reactors: entry.reactors?.filter((reactor) => !reactor.mine),
+              mineEventId: null,
+            }];
+          }),
         }));
       },
       mailFolders: async () => demoMailFolders,
@@ -1174,8 +1326,10 @@ function createBrowserDemoApi(): PolymuxApi {
         return {...account, status: 'ok', error: null};
       },
       subscribe: () => () => {},
-      // The demo has no homeserver delivering anything, so nothing ever fires.
-      subscribeActivity: () => () => {},
+      subscribeActivity: (listener) => {
+        demoActivityListeners.add(listener);
+        return () => demoActivityListeners.delete(listener);
+      },
     },
     mcp: {
       list: async () => demoMcpServers,
@@ -1473,6 +1627,7 @@ function createBrowserDemoApi(): PolymuxApi {
       find: async () => {},
       stopFind: async () => {},
       print: async () => {},
+      preview: async () => null,
       screenshot: async () => null,
       // In a plain browser tab the page's own CSP is what it is, so a link's
       // icon falls back to the globe rather than being fetched for it.
@@ -1560,6 +1715,10 @@ function createBrowserDemoApi(): PolymuxApi {
         return rows
           .sort((a, b) => b.visitedAt.localeCompare(a.visitedAt))
           .slice(0, options?.limit ?? 200);
+      },
+      suggestions: async (query) => {
+        const text = query.trim();
+        return text ? [text, `${text} login`, `${text} templates`, `${text} app`, `${text} ai`, `${text} download`, `${text} meaning`] : [];
       },
       forgetHistoryEntry: async (url) => {
         const at = demoBrowserHistory.findIndex((row) => row.url === url);

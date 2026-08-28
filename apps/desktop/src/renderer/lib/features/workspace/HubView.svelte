@@ -2,6 +2,8 @@
   import type {
     ChatDto as CachedChatDto,
     ChatMessageDto as CachedMessageDto,
+    BroadcastDto as CachedBroadcastDto,
+    BroadcastMessageDto as CachedBroadcastMessageDto,
     CommsStatusDto as CachedStatusDto,
     MailEnvelopeDto as CachedEnvelopeDto,
     MailFolderDto as CachedFolderDto,
@@ -16,6 +18,7 @@
   /** Which source the rail has selected: a platform, or a mailbox folder. */
   export type Source =
     | {kind: 'all'}
+    | {kind: 'broadcasts'}
     | {kind: 'contacts'}
     | {kind: 'platform'; platform: string; account?: string; space?: string}
     | {kind: 'mail'; account: string; folder: string};
@@ -37,6 +40,8 @@
   const session: {
     status: CachedStatusDto | null;
     chats: CachedChatDto[];
+    broadcasts: CachedBroadcastDto[];
+    broadcastMessages: Map<string, CachedBroadcastMessageDto[]>;
     messages: Map<string, {messages: CachedMessageDto[]; nextBefore: string | null}>;
     mailboxes: Map<
       string,
@@ -51,15 +56,19 @@
      */
     source: Source | null;
     activeChatId: string | null;
+    activeBroadcastId: string | null;
     openGroups: Record<string, boolean>;
   } = {
     status: null,
     chats: [],
+    broadcasts: [],
+    broadcastMessages: new Map(),
     messages: new Map(),
     mailboxes: new Map(),
     mail: new Map(),
     source: null,
     activeChatId: null,
+    activeBroadcastId: null,
     openGroups: {},
   };
 
@@ -140,9 +149,12 @@
     session.status = null;
     session.chats = [];
     session.messages.clear();
+    session.broadcasts = [];
+    session.broadcastMessages.clear();
     session.mailboxes.clear();
     session.mail.clear();
     session.activeChatId = null;
+    session.activeBroadcastId = null;
     seeded = null;
   });
 
@@ -259,8 +271,12 @@
 <script lang="ts">
   import {onMount, tick, type ComponentProps} from 'svelte';
   import {flip} from 'svelte/animate';
+  import {fade} from 'svelte/transition';
   import {
     commsPlatformLabel,
+    type BroadcastDto,
+    type BroadcastMessageDto,
+    type BroadcastRecipientDto,
     type ChatDto,
     type ChatMessageDto,
     type ChatReactionDto,
@@ -282,8 +298,19 @@
   import PlatformLogo, {type Platform} from '../../shared/components/PlatformLogo.svelte';
   import {avatarInitial} from './avatarFallback';
   import {attachmentRenderKind} from './chatAttachments';
+  import {chatClipboardContent} from './chatClipboard';
+  import {dedupeContactChats} from './chatContacts';
+  import {
+    compareConversationActivity,
+    matchesConversationFilter,
+    type ConversationListFilter,
+    type ConversationListSort,
+  } from './chatListFilters';
+  import {chatSenderLabel} from './chatSenderLabel';
+  import {mergeChatPage} from './chatMessagePages';
   import {chatsInSpace, spaceRootChats} from './chatSpaces';
   import {mailBodyWithSignature, mailHtmlWithSignature} from './mailSignatures';
+  import MessageReactions from './MessageReactions.svelte';
   import {MAIN_UI_ICON_STROKE_WIDTH, RAIL_TILE_SIZE} from '../../shared/layout/iconSizing';
   import {activeLocale, t, translate} from '../../../i18n';
   import {
@@ -311,6 +338,11 @@
    * other file, under the pill that was clicked.
    */
   export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
+  /** The workspace drawer changes width continuously while expanding. These
+   * two values keep the Hub's list and reader on the same continuous motion
+   * instead of letting its responsive breakpoint swap them mid-slide. */
+  export let drawerMotionProgress = 0;
+  export let dockedDrawerWidth = 420;
 
   type IconName = ComponentProps<typeof Icon>['name'];
 
@@ -349,6 +381,7 @@
     railOrder = rememberRailOrder(railOrder, observedRailRows(next));
   }
   let chats: ChatDto[] = session.chats;
+  let broadcasts: BroadcastDto[] = session.broadcasts;
   let source: Source | null = session.source;
   /**
    * Captured here, at the top of the instance, because the statements that
@@ -356,6 +389,7 @@
    * would write `null` over the very thing the mount is about to restore.
    */
   const restoringChatId = session.activeChatId;
+  const restoringBroadcastId = session.activeBroadcastId;
   /** Only the first visit has nothing to show; later ones refresh in place. */
   let loading = !session.status;
   let error = '';
@@ -364,6 +398,9 @@
   // Messaging
   let activeChat: ChatDto | null = null;
   let chatMessages: ChatMessageDto[] = [];
+  let activeBroadcast: BroadcastDto | null = null;
+  let broadcastMessages: BroadcastMessageDto[] = [];
+  let broadcastDraft = '';
   let draft = '';
   /** Files waiting beside the active chat draft. Unlike the native picker,
    * dragging into Hub stages them here rather than sending on drop. */
@@ -478,12 +515,22 @@
   const RAIL_DEFAULT_WIDTH = 156;
   const RAIL_COMPACT_WIDTH = 52;
   const RAIL_SNAP_AT = (RAIL_DEFAULT_WIDTH + RAIL_COMPACT_WIDTH) / 2;
+  const HUB_SPLIT_MIN_WIDTH = 720;
+  const HUB_SPLIT_LIST_WIDTH = 280;
   const RAIL_COMPACT_KEY = 'polymuxHubRailCompact';
   let railCompact = loadRailCompact();
   let railDragWidth: number | null = null;
   let railResizeStart: {x: number; width: number; direction: 1 | -1} | null = null;
   $: railWidth = railDragWidth ?? (railCompact ? RAIL_COMPACT_WIDTH : RAIL_DEFAULT_WIDTH);
   $: railIconOnly = railWidth < RAIL_SNAP_AT;
+  $: hubReading = !!openMail || !!openEnvelope || !!activeChat || !!activeBroadcast || composing;
+  $: settledListWidth = dockedDrawerWidth >= HUB_SPLIT_MIN_WIDTH
+    ? HUB_SPLIT_LIST_WIDTH
+    : hubReading ? 0 : Math.max(0, dockedDrawerWidth - railWidth);
+  $: motionListWidth = Math.round(
+    settledListWidth +
+    (HUB_SPLIT_LIST_WIDTH - settledListWidth) * Math.max(0, Math.min(1, drawerMotionProgress)),
+  );
   /** Whether the mailbox dropdown over the message list is showing. */
   let folderMenu = false;
   /** Which slice of the folder the list shows. Applied here rather than in the
@@ -505,6 +552,18 @@
   let filter: Filter = 'all';
   let sort: Sort = 'date-desc';
   let filterMenu = false;
+  $: CONVERSATION_FILTERS = [
+    {id: 'all' as ConversationListFilter, label: $t('hub.filterAll'), icon: 'platforms' as IconName},
+    {id: 'unread' as ConversationListFilter, label: $t('hub.filterUnread'), icon: 'bolt' as IconName},
+    {id: 'read' as ConversationListFilter, label: $t('hub.filterRead'), icon: 'check' as IconName},
+  ];
+  $: CONVERSATION_SORTS = [
+    {id: 'latest' as ConversationListSort, label: $t('hub.sortLatestMessage'), icon: 'arrow-down' as IconName},
+    {id: 'earliest' as ConversationListSort, label: $t('hub.sortEarliestMessage'), icon: 'arrow-up' as IconName},
+  ];
+  let conversationFilter: ConversationListFilter = 'all';
+  let conversationSort: ConversationListSort = 'latest';
+  let conversationFilterMenu = false;
   let moveMenu = false;
   let selectionBusy = false;
 
@@ -940,8 +999,12 @@
   $: currentChatRows = focusedSpace
     ? chatsInSpace(platformChats, focusedSpace.id, chatSearch)
     : spaceRootChats(platformChats, chatSearch);
-  $: visibleChats = arrangeChats(currentChatRows, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
-  $: hiddenRows = hiddenChats(currentChatRows, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
+  $: filteredChatRows = currentChatRows.filter((chat) =>
+    matchesConversationFilter(chatUnread(chat), conversationFilter));
+  $: orderedChatRows = [...filteredChatRows].sort((left, right) =>
+    compareConversationActivity(left.lastActivity, right.lastActivity, conversationSort));
+  $: visibleChats = arrangeChats(orderedChatRows, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
+  $: hiddenRows = hiddenChats(orderedChatRows, (chat) => chat.id, chatPrefs, activeChat?.id ?? null);
   type UnifiedRow =
     | {kind: 'chat'; at: string; chat: ChatDto}
     | {kind: 'mail'; at: string; account: string; folder: string; envelope: MailEnvelopeDto};
@@ -1043,6 +1106,18 @@
   let newChatSelected = new Set<string>();
   let newChatGroupName = '';
   let newChatError = '';
+  /** Broadcast creation resembles the contact picker, but deliberately has no
+   * compatibility gate: every person retains their own platform and account. */
+  let broadcastCreateOpen = false;
+  let broadcastLoading = false;
+  let broadcastCreating = false;
+  let broadcastSearch = '';
+  let broadcastListSearch = '';
+  let broadcastName = '';
+  let broadcastSearchInput: HTMLInputElement | null = null;
+  let broadcastContacts: CommsContactDto[] = [];
+  let broadcastSelected = new Set<string>();
+  let broadcastError = '';
 
   function chatsFor(current: Source | null, list: ChatDto[]): ChatDto[] {
     if (current?.kind !== 'platform') return [];
@@ -1059,8 +1134,7 @@
    * labels are not enough evidence that they are the same person. */
   function contactsFor(list: ChatDto[], query: string): ChatDto[] {
     const needle = query.trim().toLowerCase();
-    return list
-      .filter((chat) => !chat.group && !chat.space)
+    return dedupeContactChats(list)
       .filter((chat) =>
         !needle ||
         chat.name.toLowerCase().includes(needle) ||
@@ -1076,7 +1150,35 @@
 
   $: contactRows = contactsFor(chats, contactSearch);
   $: selectedNewChatContacts = newChatContacts.filter((contact) => newChatSelected.has(contact.id));
-  $: newChatRows = newChatContacts.filter((contact) => {
+  $: selectedBroadcastContacts = broadcastContacts.filter((contact) => broadcastSelected.has(contact.id));
+  $: broadcastRows = broadcasts.filter((broadcast) => {
+    const needle = broadcastListSearch.trim().toLowerCase();
+    return !needle ||
+      broadcast.name.toLowerCase().includes(needle) ||
+      broadcast.recipients.some((recipient) =>
+        recipient.name.toLowerCase().includes(needle) ||
+        commsPlatformLabel(recipient.platform).toLowerCase().includes(needle));
+  });
+  $: broadcastContactRows = broadcastContacts.filter((contact) => {
+    const needle = broadcastSearch.trim().toLowerCase();
+    return !needle ||
+      contact.name.toLowerCase().includes(needle) ||
+      commsPlatformLabel(contact.platform).toLowerCase().includes(needle) ||
+      contact.accounts.some((account) => account.accountName.toLowerCase().includes(needle)) ||
+      contact.identifiers.some((identifier) => identifier.toLowerCase().includes(needle));
+  });
+  $: canCreateBroadcast = Boolean(broadcastName.trim()) &&
+    selectedBroadcastContacts.length > 0 &&
+    selectedBroadcastContacts.every((contact) => Boolean(broadcastRoute(contact)));
+  /** A picker opened from one platform stays in that platform. The combined
+   * and Contacts sources are deliberately cross-platform address books. */
+  function newChatContactsFor(current: Source | null, contacts: CommsContactDto[]): CommsContactDto[] {
+    if (current?.kind !== 'platform') return contacts;
+    return contacts.filter((contact) => contact.platform === current.platform);
+  }
+
+  $: availableNewChatContacts = newChatContactsFor(source, newChatContacts);
+  $: newChatRows = availableNewChatContacts.filter((contact) => {
     const needle = newChatSearch.trim().toLowerCase();
     return !needle ||
       contact.name.toLowerCase().includes(needle) ||
@@ -1204,6 +1306,83 @@
     }
   }
 
+  /** Prefer an existing DM, then the contact's primary linked account. Each
+   * contact is resolved alone because a broadcast does not need a shared route. */
+  function broadcastRoute(contact: CommsContactDto): CommsContactDto['accounts'][number] | null {
+    return contact.accounts.find((route) => Boolean(route.chatId)) ??
+      contact.accounts.find((route) => route.accountId === contact.accountId && Boolean(route.remoteId)) ??
+      contact.accounts.find((route) => Boolean(route.remoteId)) ??
+      null;
+  }
+
+  function toggleBroadcastContact(contact: CommsContactDto): void {
+    if (!broadcastRoute(contact)) return;
+    const next = new Set(broadcastSelected);
+    if (next.has(contact.id)) next.delete(contact.id);
+    else next.add(contact.id);
+    broadcastSelected = next;
+    broadcastError = '';
+  }
+
+  async function openBroadcastPicker(): Promise<void> {
+    if (newChatOpen) closeNewChatPicker();
+    broadcastCreateOpen = true;
+    broadcastLoading = true;
+    broadcastSearch = '';
+    broadcastName = '';
+    broadcastSelected = new Set();
+    broadcastError = '';
+    try {
+      await tick();
+      broadcastSearchInput?.focus();
+      broadcastContacts = await api.comms.chatContacts();
+    } catch (cause) {
+      broadcastContacts = [];
+      broadcastError = readableError(cause);
+    } finally {
+      broadcastLoading = false;
+    }
+  }
+
+  function closeBroadcastPicker(): void {
+    broadcastCreateOpen = false;
+    broadcastSearch = '';
+    broadcastName = '';
+    broadcastSelected = new Set();
+    broadcastError = '';
+  }
+
+  async function createBroadcast(): Promise<void> {
+    if (!canCreateBroadcast || broadcastCreating) return;
+    const recipients = selectedBroadcastContacts.flatMap((contact): BroadcastRecipientDto[] => {
+      const route = broadcastRoute(contact);
+      if (!route) return [];
+      return [{
+        id: contact.id,
+        name: contact.name,
+        platform: contact.platform,
+        accountId: route.accountId,
+        accountName: route.accountName,
+        remoteId: route.remoteId,
+        chatId: route.chatId,
+        avatarUrl: contact.avatarUrl,
+      }];
+    });
+    broadcastCreating = true;
+    broadcastError = '';
+    try {
+      const created = await api.comms.broadcastCreate({name: broadcastName.trim(), recipients});
+      broadcasts = [created, ...broadcasts.filter((item) => item.id !== created.id)];
+      session.broadcasts = broadcasts;
+      closeBroadcastPicker();
+      await openBroadcast(created);
+    } catch (cause) {
+      broadcastError = readableError(cause);
+    } finally {
+      broadcastCreating = false;
+    }
+  }
+
   /** A shared portal can have different read state on each linked account. */
   function chatUnread(chat: ChatDto): number {
     if (source?.kind === 'platform' && source.account) {
@@ -1300,7 +1479,7 @@
     if (!composing || !composeLocalId || !source || source.kind !== 'mail') return null;
     const stored = loadMailDraft(source.account);
     const remoteDraft =
-      mailDraftAutosave.reference(composeLocalId) ??
+      mailDraftAutosave.reference(composeLocalId, source.account) ??
       (stored?.localId === composeLocalId ? stored.remoteDraft : null) ??
       composeDraft;
     return {
@@ -1531,6 +1710,14 @@
       }
       restoreMailComposer(source.account);
     }
+    if (source.kind === 'broadcasts' && restoringBroadcastId) {
+      const broadcast = broadcasts.find((item) => item.id === restoringBroadcastId);
+      if (broadcast) {
+        activeBroadcast = broadcast;
+        broadcastMessages = session.broadcastMessages.get(broadcast.id) ?? [];
+        broadcastDraft = loadChatDraft(`broadcast:${broadcast.id}`).text;
+      }
+    }
     const chat = restoringChatId ? chats.find((item) => item.id === restoringChatId) : null;
     if (!chat) return;
     const known = session.messages.get(chat.id);
@@ -1545,8 +1732,10 @@
     try {
       acceptStatus(await api.comms.status());
       chats = await api.comms.chats().catch(() => session.chats);
+      broadcasts = await api.comms.broadcasts().catch(() => session.broadcasts);
       rememberChatPlatforms(chats);
       session.chats = chats;
+      session.broadcasts = broadcasts;
       if (source) {
         // Already looking at something, restored above: bring it up to date
         // rather than choosing somewhere else to be.
@@ -1653,9 +1842,12 @@
 
   function selectPlatform(platform: string, account?: string): void {
     if (newChatOpen) closeNewChatPicker();
+    if (broadcastCreateOpen) closeBroadcastPicker();
     leaveMailComposer();
     source = {kind: 'platform', platform, account};
     activeChat = null;
+    activeBroadcast = null;
+    broadcastMessages = [];
     chatMessages = [];
     openMail = null;
     openEnvelope = null;
@@ -1664,6 +1856,7 @@
   /** A Space is navigation, not a conversation: replace the platform's root
    * list with its child chats and keep the reading pane empty until one opens. */
   function openSpace(space: ChatDto): void {
+    if (broadcastCreateOpen) closeBroadcastPicker();
     leaveMailComposer();
     const currentAccount = source?.kind === 'platform' && source.platform === space.platform
       ? source.account
@@ -1672,6 +1865,8 @@
         : undefined;
     source = {kind: 'platform', platform: space.platform, account: currentAccount, space: space.id};
     activeChat = null;
+    activeBroadcast = null;
+    broadcastMessages = [];
     chatMessages = [];
     openMail = null;
     openEnvelope = null;
@@ -1682,6 +1877,8 @@
     if (source?.kind !== 'platform') return;
     source = {kind: 'platform', platform: source.platform, account: source.account};
     activeChat = null;
+    activeBroadcast = null;
+    broadcastMessages = [];
     chatMessages = [];
     chatSearch = '';
   }
@@ -1696,9 +1893,12 @@
 
   function selectAll(): void {
     if (newChatOpen) closeNewChatPicker();
+    if (broadcastCreateOpen) closeBroadcastPicker();
     leaveMailComposer();
     source = {kind: 'all'};
     activeChat = null;
+    activeBroadcast = null;
+    broadcastMessages = [];
     chatMessages = [];
     openMail = null;
     openEnvelope = null;
@@ -1709,14 +1909,32 @@
 
   function selectContacts(): void {
     if (newChatOpen) closeNewChatPicker();
+    if (broadcastCreateOpen) closeBroadcastPicker();
     leaveMailComposer();
     source = {kind: 'contacts'};
     activeChat = null;
+    activeBroadcast = null;
+    broadcastMessages = [];
     chatMessages = [];
     openMail = null;
     openEnvelope = null;
     contactSearch = '';
     void refreshChats();
+  }
+
+  function selectBroadcasts(): void {
+    if (newChatOpen) closeNewChatPicker();
+    if (broadcastCreateOpen) closeBroadcastPicker();
+    leaveMailComposer();
+    source = {kind: 'broadcasts'};
+    activeChat = null;
+    chatMessages = [];
+    activeBroadcast = null;
+    broadcastMessages = [];
+    openMail = null;
+    openEnvelope = null;
+    broadcastListSearch = '';
+    void refreshBroadcasts();
   }
 
   async function openUnifiedMail(row: Extract<UnifiedRow, {kind: 'mail'}>): Promise<void> {
@@ -1731,6 +1949,7 @@
   // Whatever the pane is showing is what a return should show.
   $: session.source = source;
   $: session.activeChatId = activeChat?.id ?? null;
+  $: session.activeBroadcastId = activeBroadcast?.id ?? null;
   $: session.openGroups = openGroups;
 
   /**
@@ -1750,6 +1969,7 @@
   }
 
   function pickPlatform(platform: string, ids: string[]): void {
+    if (broadcastCreateOpen) closeBroadcastPicker();
     if (ids.length > 1 && railCompact) {
       const current = source?.kind === 'platform' && source.platform === platform
         ? source.account
@@ -1761,6 +1981,7 @@
   }
 
   function pickMail(): void {
+    if (broadcastCreateOpen) closeBroadcastPicker();
     if (accounts.length > 1 && railCompact) {
       const current = source?.kind === 'mail' ? source.account : undefined;
       void selectMail(current && accounts.some((account) => account.id === current) ? current : accounts[0].id);
@@ -1804,10 +2025,18 @@
                 row.envelope.subject.toLowerCase().includes(needle) ||
                 (row.envelope.preview ?? '').toLowerCase().includes(needle);
         })
-        .sort(compareUnifiedRows)
+        .filter((row) => matchesConversationFilter(
+          row.kind === 'chat' ? chatUnread(row.chat) : Number(!row.envelope.seen),
+          conversationFilter,
+        ))
+        .sort((left, right) => compareUnifiedRows(left, right, conversationSort))
     : [];
 
-  function compareUnifiedRows(a: UnifiedRow, b: UnifiedRow): number {
+  function compareUnifiedRows(
+    a: UnifiedRow,
+    b: UnifiedRow,
+    activitySort: ConversationListSort,
+  ): number {
     const pinnedA = a.kind === 'chat' ? chatPrefs.pinned.indexOf(a.chat.id) : -1;
     const pinnedB = b.kind === 'chat' ? chatPrefs.pinned.indexOf(b.chat.id) : -1;
     if (pinnedA >= 0 || pinnedB >= 0) {
@@ -1815,7 +2044,7 @@
       if (pinnedB < 0) return -1;
       return pinnedA - pinnedB;
     }
-    return (mailDate(b.at)?.getTime() ?? 0) - (mailDate(a.at)?.getTime() ?? 0);
+    return compareConversationActivity(a.at, b.at, activitySort);
   }
 
   function cacheKey(account: string, folder: string): string {
@@ -1856,10 +2085,13 @@
 
   async function selectMail(account: string, folder?: string): Promise<void> {
     if (newChatOpen) closeNewChatPicker();
+    if (broadcastCreateOpen) closeBroadcastPicker();
     leaveMailComposer();
     openMail = null;
     openEnvelope = null;
     activeChat = null;
+    activeBroadcast = null;
+    broadcastMessages = [];
     const switching = !source || source.kind !== 'mail' || source.account !== account;
     // Commit to the mailbox before fetching it, so the list keeps its header —
     // picker, search, compose — while the folders load rather than dropping
@@ -2012,12 +2244,21 @@
   async function refreshOpen(): Promise<void> {
     if (typeof document !== 'undefined' && document.hidden) return;
     await refreshSources();
-    if (activeChat) await refreshChat();
+    if (activeChat) {
+      // A read or "mark unread" performed in the native app changes bridge
+      // state without adding a Matrix timeline event. Keep the list polling
+      // while its reader is open, or the visible badge can stay stale forever.
+      await Promise.all([refreshChats(), refreshChat()]);
+    }
     else if (source?.kind === 'all') {
       await refreshChats();
       await prefetchMail();
     }
     else if (source?.kind === 'mail') await refreshEnvelopes();
+    else if (source?.kind === 'broadcasts') {
+      await refreshBroadcasts();
+      if (activeBroadcast) await refreshBroadcastMessages(activeBroadcast.id);
+    }
     else if (source?.kind === 'platform' || source?.kind === 'contacts') await refreshChats();
   }
 
@@ -2044,6 +2285,29 @@
       session.chats = chats;
     } catch {
       // Quiet, for the same reason as the other polls.
+    }
+  }
+
+  async function refreshBroadcasts(): Promise<void> {
+    try {
+      broadcasts = await api.comms.broadcasts();
+      session.broadcasts = broadcasts;
+      if (activeBroadcast) {
+        activeBroadcast = broadcasts.find((item) => item.id === activeBroadcast?.id) ?? null;
+      }
+    } catch {
+      // Local storage will be asked again on the next refresh.
+    }
+  }
+
+  async function refreshBroadcastMessages(id: string): Promise<void> {
+    try {
+      const messages = await api.comms.broadcastMessages(id);
+      if (activeBroadcast?.id !== id) return;
+      broadcastMessages = messages;
+      session.broadcastMessages.set(id, messages);
+    } catch {
+      // Keep the last local copy on screen.
     }
   }
 
@@ -2118,6 +2382,8 @@
       return;
     }
     activeChat = chat;
+    activeBroadcast = null;
+    broadcastMessages = [];
     awayFromLatest = false;
     // A conversation read earlier in this session opens on what it said then,
     // including however far back it had been scrolled, and is corrected by the
@@ -2155,10 +2421,27 @@
     }
   }
 
-  /** Newest first, with the fresh page's copies winning on the overlap. */
-  function mergeChatPage(known: ChatMessageDto[], fresh: ChatMessageDto[]): ChatMessageDto[] {
-    const byId = new Map(fresh.map((item) => [item.id, item]));
-    return [...fresh, ...known.filter((item) => !byId.has(item.id))];
+  async function openBroadcast(broadcast: BroadcastDto): Promise<void> {
+    activeBroadcast = broadcast;
+    activeChat = null;
+    chatMessages = [];
+    awayFromLatest = false;
+    const known = session.broadcastMessages.get(broadcast.id);
+    broadcastMessages = known ?? [];
+    broadcastDraft = loadChatDraft(`broadcast:${broadcast.id}`).text;
+    busy = known ? '' : `broadcast:${broadcast.id}`;
+    try {
+      const messages = await api.comms.broadcastMessages(broadcast.id);
+      if (activeBroadcast?.id !== broadcast.id) return;
+      broadcastMessages = messages;
+      session.broadcastMessages.set(broadcast.id, messages);
+      error = '';
+    } catch (cause) {
+      if (!known) broadcastMessages = [];
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
   }
 
   function rememberChat(chatId: string): void {
@@ -2185,17 +2468,7 @@
    * something a person can tell apart rather than a full `@id:server`.
    */
   function senderLabel(message: ChatMessageDto): string {
-    // Cached pages can predate bridge ownership normalization. `mine` is the
-    // authoritative identity signal; no self quote or reply preview should
-    // fall through to a bridge profile such as "Unknown user".
-    if (message.mine) return 'You';
-    const name = message.senderName?.trim();
-    const label = name && name !== message.sender
-      ? name
-      : message.sender.replace(/^@/, '').split(':')[0];
-    // A thread already in the renderer cache can predate the Hub's profile
-    // cleanup. Keep bridge-only Matrix metadata out of the visible label too.
-    return activeChat?.platform === 'whatsapp' ? label.replace(/ \(WA\)$/, '') : label;
+    return chatSenderLabel(message, activeChat);
   }
 
   /**
@@ -2304,20 +2577,22 @@
     if (fromTop < 240) void loadOlderChat();
   }
 
-  /**
-   * Newly arrived messages in the open conversation. Only the head of the room
-   * is re-read and merged, so a long scrolled-back history is left alone.
-   */
+  /** Newly arrived messages and relation changes in the open conversation. */
   async function refreshChat(): Promise<void> {
     if (!activeChat || busy) return;
     const chatId = activeChat.id;
     try {
-      const page = await api.comms.chatMessages(chatId, 20);
+      // Refresh the whole span already on screen. Reactions and redactions are
+      // room activity even when their target is far behind the newest twenty
+      // messages, so a head-only merge leaves an old visible bubble stale.
+      const page = await api.comms.chatMessages(
+        chatId,
+        Math.max(20, Math.min(1_000, chatMessages.length)),
+      );
       if (activeChat?.id !== chatId) return;
       const known = new Set(chatMessages.map((item) => item.id));
       const fresh = page.messages.filter((item) => !known.has(item.id));
-      if (fresh.length === 0) return;
-      chatMessages = [...fresh, ...chatMessages];
+      chatMessages = mergeChatPage(chatMessages, page.messages);
       if (activeChat) rememberChat(activeChat.id);
       const newest = fresh[0];
       if (newest) await api.comms.chatMarkRead(chatId, newest.id).catch(() => {});
@@ -2395,6 +2670,40 @@
     if (sentFiles) await refreshChat();
   }
 
+  function broadcastComposerChanged(): void {
+    if (!activeBroadcast) return;
+    saveChatDraft(`broadcast:${activeBroadcast.id}`, {
+      text: broadcastDraft,
+      replyTo: null,
+      files: [],
+    });
+  }
+
+  async function sendBroadcast(): Promise<void> {
+    const text = broadcastDraft.trim();
+    if (!activeBroadcast || !text || busy === 'send-broadcast') return;
+    const broadcastId = activeBroadcast.id;
+    busy = 'send-broadcast';
+    try {
+      const result = await api.comms.broadcastSend(broadcastId, text);
+      activeBroadcast = result.broadcast;
+      broadcasts = [result.broadcast, ...broadcasts.filter((item) => item.id !== broadcastId)];
+      broadcastMessages = [result.message, ...broadcastMessages];
+      session.broadcasts = broadcasts;
+      session.broadcastMessages.set(broadcastId, broadcastMessages);
+      broadcastDraft = '';
+      broadcastComposerChanged();
+      const failed = result.message.deliveries.filter((delivery) => delivery.status === 'failed');
+      error = failed.length > 0
+        ? $t('hub.broadcastPartialFailure', {count: failed.length})
+        : '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
   // ---- message actions ----------------------------------------------------
 
   /**
@@ -2414,7 +2723,6 @@
   /** The extension normally grows above the fixed quick strip, like the
    * reference. Near the top edge it grows below the unchanged menu instead. */
   let reactionPickerDirection: 'above' | 'below' = 'above';
-  let copied = '';
   /**
    * The message actions, as a context menu rather than a row of icons under
    * every bubble: they are occasional, and a permanent row of them competes
@@ -2585,13 +2893,9 @@
   }
 
   async function copyMessage(message: ChatMessageDto): Promise<void> {
-    const text = message.body || message.attachments?.[0]?.name || '';
-    if (!text) return;
-    await navigator.clipboard.writeText(text).catch(() => {});
-    copied = message.id;
-    setTimeout(() => {
-      if (copied === message.id) copied = '';
-    }, 1_200);
+    const content = chatClipboardContent(message);
+    if (!content) return;
+    if (!await api.clipboard.write(content)) error = translate('common.copyFailed');
   }
 
   /**
@@ -2605,7 +2909,8 @@
     // leaving the unsupported action out of this platform's menu.
     if (!activeChat || activeChat.platform === 'wechat') return;
     const chatId = activeChat.id;
-    const existing = (message.reactions ?? []).find((item) => item.key === key);
+    const previousReactions = message.reactions ?? [];
+    const existing = previousReactions.find((item) => item.key === key);
     reactingTo = '';
     const mineEventId = existing?.mineEventId ?? null;
     updateMessage(message.id, (item) => ({
@@ -2630,7 +2935,7 @@
       // only exists here.
       updateMessage(message.id, (item) => ({
         ...item,
-        reactions: applyReaction(item.reactions ?? [], key, mineEventId),
+        reactions: previousReactions,
       }));
     }
   }
@@ -2642,13 +2947,23 @@
     mineEventId: string | null,
   ): ChatReactionDto[] {
     const existing = reactions.find((item) => item.key === key);
-    if (!existing) return [...reactions, {key, count: 1, mineEventId}];
+    const self = {id: '@polymux-self', name: 'You', avatarUrl: null, mine: true};
+    if (!existing) return [...reactions, {key, count: 1, reactors: [self], mineEventId}];
     // Adding when it is already ours is the undo, and vice versa.
     const adding = !existing.mineEventId;
     const count = existing.count + (adding ? 1 : -1);
     if (count <= 0) return reactions.filter((item) => item.key !== key);
     return reactions.map((item) =>
-      item.key === key ? {...item, count, mineEventId: adding ? mineEventId : null} : item,
+      item.key === key
+        ? {
+            ...item,
+            count,
+            reactors: adding
+              ? [...(item.reactors ?? []), self]
+              : item.reactors?.filter((reactor) => !reactor.mine),
+            mineEventId: adding ? mineEventId : null,
+          }
+        : item,
     );
   }
 
@@ -3443,6 +3758,8 @@
     openMail = null;
     openEnvelope = null;
     activeChat = null;
+    activeBroadcast = null;
+    broadcastMessages = [];
     leaveMailComposer();
   }
 
@@ -3539,6 +3856,8 @@
     }
     else if (messageMenu) { event.stopPropagation(); closeMessageMenu(); }
     else if (chatMenu) { event.stopPropagation(); closeChatMenu(); }
+    else if (conversationFilterMenu) { event.stopPropagation(); conversationFilterMenu = false; }
+    else if (broadcastCreateOpen) { event.stopPropagation(); closeBroadcastPicker(); }
     else if (newChatOpen) { event.stopPropagation(); closeNewChatPicker(); }
   }}
   onclick={(event) => {
@@ -3554,18 +3873,22 @@
         target.classList.contains('hub-view-composer-tools-menu')
       ),
     );
+    const insideConversationFilter = clickPath.some(
+      (target) => target instanceof HTMLElement && target.classList.contains('hub-view-conversation-filter'),
+    );
     if (composerToolsOpen && !insideComposerTools) composerToolsOpen = false;
     if (composerEmojiOpen && !insideComposerRow) composerEmojiOpen = false;
+    if (conversationFilterMenu && !insideConversationFilter) conversationFilterMenu = false;
   }}
 />
 
 <div class="hub-view">
   <div
     class="hub-view-grid"
-    class:reading={!!openMail || !!openEnvelope || !!activeChat || composing}
+    class:reading={hubReading}
     class:rail-compact={railIconOnly}
     class:rail-resizing={railResizeStart !== null}
-    style={`--hub-rail-width: ${railWidth}px`}
+    style={`--hub-rail-width: ${railWidth}px; --hub-motion-list-width: ${motionListWidth}px`}
   >
   <nav
     class="hub-view-rail"
@@ -3595,6 +3918,20 @@
       >
         <Icon name="platforms" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
         <span>{$t('hub.allPlatforms')}</span>
+      </button>
+    </div>
+    <!-- Broadcasts stay directly beneath the combined overview. They are a
+         local delivery mode across platforms, not another remote platform. -->
+    <div class="hub-view-source-row hub-view-source-fixed">
+      <button
+        type="button"
+        class="hub-view-source"
+        class:active={source?.kind === 'broadcasts'}
+        aria-label={$t('hub.broadcasts')}
+        onclick={selectBroadcasts}
+      >
+        <Icon name="broadcast" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        <span>{$t('hub.broadcasts')}</span>
       </button>
     </div>
     <!-- Rows are draggable: the rail's order is the user's, kept in
@@ -3720,7 +4057,101 @@
   ></button>
 
   <section class="hub-view-list" aria-label={$t('hub.messages')}>
-    {#if newChatOpen}
+    {#if broadcastCreateOpen}
+      <div class="hub-view-list-head hub-view-new-chat-head">
+        <input
+          bind:this={broadcastSearchInput}
+          bind:value={broadcastSearch}
+          type="search"
+          placeholder={$t('hub.searchContacts')}
+          aria-label={$t('hub.searchContacts')}
+        />
+        <button
+          type="button"
+          class="hub-view-new-chat-icon"
+          aria-label={$t('hub.closeBroadcast')}
+          onclick={closeBroadcastPicker}
+        >
+          <Icon name="close" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        </button>
+      </div>
+      <div class="hub-view-broadcast-create-meta">
+        <input
+          bind:value={broadcastName}
+          placeholder={$t('hub.broadcastName')}
+          aria-label={$t('hub.broadcastName')}
+        />
+        <p><Icon name="info" size={13} />{$t('hub.broadcastPrivacy')}</p>
+      </div>
+      {#if selectedBroadcastContacts.length > 0}
+        <div class="hub-view-new-chat-selection">
+          <div class="hub-view-new-chat-selection-row">
+            <div class="hub-view-new-chat-selected" aria-label={$t('hub.selectedPeople')}>
+              {#each selectedBroadcastContacts as contact (contact.id)}
+                <button
+                  type="button"
+                  class="hub-view-new-chat-chip"
+                  aria-label={$t('hub.removePerson', {name: contact.name})}
+                  onclick={() => toggleBroadcastContact(contact)}
+                >
+                  {@render chatAvatar(contact.name, contact.avatarUrl, `broadcast-chip:${contact.id}`, true)}
+                  <span>{contact.name}</span>
+                  <Icon name="close" size={10} />
+                </button>
+              {/each}
+            </div>
+            <div class="hub-view-new-chat-action">
+              <button
+                type="button"
+                disabled={!canCreateBroadcast || broadcastCreating}
+                onclick={() => void createBroadcast()}
+              >
+                {broadcastCreating ? $t('hub.creatingBroadcast') : $t('hub.createBroadcast')}
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
+      {#if broadcastError}<p class="hub-view-new-chat-error">{broadcastError}</p>{/if}
+      <ul class="hub-view-rows hub-view-new-chat-rows">
+        {#if broadcastLoading}
+          <li class="hub-view-empty" role="status">{$t('common.loading')}</li>
+        {:else}
+          {#each broadcastContactRows as contact (contact.id)}
+            {@const route = broadcastRoute(contact)}
+            {@const picked = broadcastSelected.has(contact.id)}
+            <li>
+              <button
+                type="button"
+                class="hub-view-row hub-view-new-chat-contact"
+                class:picked
+                disabled={!route}
+                aria-pressed={picked}
+                onclick={() => toggleBroadcastContact(contact)}
+              >
+                <span class="hub-view-chat-avatar-wrap" aria-hidden="true">
+                  {@render chatAvatar(contact.name, contact.avatarUrl, `broadcast-contact:${contact.id}`)}
+                  <span class="hub-view-platform-badge">
+                    <PlatformLogo platform={contact.platform as Platform} size={12} />
+                  </span>
+                </span>
+                <span class="hub-view-chat-copy">
+                  <span class="hub-view-row-top"><strong>{contact.name}</strong></span>
+                  <span class="hub-view-chat-preview">
+                    {commsPlatformLabel(contact.platform)} · {route?.accountName ?? $t('hub.unavailable')}
+                  </span>
+                </span>
+                {#if picked}<Icon name="check" size={14} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />{/if}
+              </button>
+            </li>
+          {:else}
+            <li class="hub-view-empty">
+              {broadcastSearch.trim() ? $t('common.noMatches') : $t('hub.noContacts')}
+            </li>
+          {/each}
+        {/if}
+      </ul>
+    {:else if newChatOpen}
       <div class="hub-view-list-head hub-view-new-chat-head">
         <input
           bind:this={newChatSearchInput}
@@ -4054,9 +4485,68 @@
           {/if}
         {/if}
       </ul>
+    {:else if source?.kind === 'broadcasts'}
+      <div class="hub-view-list-head">
+        <input
+          bind:value={broadcastListSearch}
+          type="search"
+          placeholder={$t('hub.searchBroadcasts')}
+          aria-label={$t('hub.searchBroadcasts')}
+        />
+        <button
+          type="button"
+          class="hub-view-new-chat-icon"
+          aria-label={$t('hub.createBroadcast')}
+          onclick={() => void openBroadcastPicker()}
+        >
+          <Icon name="plus" size={16} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+        </button>
+      </div>
+      <ul class="hub-view-rows hub-view-broadcast-rows">
+        {#each broadcastRows as broadcast (broadcast.id)}
+          <li>
+            <button
+              type="button"
+              class="hub-view-row"
+              class:active={activeBroadcast?.id === broadcast.id}
+              onclick={() => void openBroadcast(broadcast)}
+            >
+              <span class="hub-view-chat-avatar placeholder" aria-hidden="true">
+                <Icon name="broadcast" size={14} />
+              </span>
+              <span class="hub-view-chat-copy">
+                <span class="hub-view-row-top">
+                  <strong>{broadcast.name}</strong>
+                  {#if broadcast.lastActivity}<em>{when(broadcast.lastActivity)}</em>{/if}
+                </span>
+                <span class="hub-view-chat-preview">
+                  {$t('hub.broadcastRecipientCount', {count: broadcast.recipients.length})}
+                </span>
+                {#if broadcast.preview}<span class="hub-view-chat-preview">{broadcast.preview}</span>{/if}
+              </span>
+            </button>
+          </li>
+        {:else}
+          <li class="hub-view-empty">
+            {#if broadcastListSearch.trim()}
+              {$t('common.noMatches')}
+            {:else}
+              <div class="hub-view-broadcast-empty">
+                <Icon name="broadcast" size={28} />
+                <h2>{$t('hub.noBroadcasts')}</h2>
+                <p>{$t('hub.noBroadcastsBody')}</p>
+                <button type="button" onclick={() => void openBroadcastPicker()}>
+                  {$t('hub.createBroadcast')}
+                </button>
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
     {:else if source?.kind === 'all'}
       <div class="hub-view-list-head">
         <input bind:value={chatSearch} type="search" placeholder={$t('hub.searchAllPlatforms')} aria-label={$t('hub.searchAllPlatforms')} />
+        {@render conversationFilterControl()}
         <button
           type="button"
           class="hub-view-new-chat-icon"
@@ -4090,7 +4580,13 @@
             {/if}
           </li>
         {:else}
-          <li class="hub-view-empty">{chatSearch.trim() ? $t('common.noMatches') : $t('hub.noConversations')}</li>
+          <li class="hub-view-empty">
+            {conversationFilter !== 'all'
+              ? $t('hub.noneMatchFilter')
+              : chatSearch.trim()
+                ? $t('common.noMatches')
+                : $t('hub.noConversations')}
+          </li>
         {/each}
       </ul>
       {@render chatContextMenu()}
@@ -4180,6 +4676,7 @@
             ? $t('hub.searchSpace', {space: focusedSpace.name})
             : $t('hub.searchConversations')}
         />
+        {@render conversationFilterControl()}
         <button
           type="button"
           class="hub-view-new-chat-icon"
@@ -4213,11 +4710,13 @@
             {/each}
           {:else}
             <li class="hub-view-empty">
-              {chatSearch.trim()
-                ? $t('common.noMatches')
-                : focusedSpace
-                  ? $t('hub.emptySpace')
-                  : $t('hub.noConversations')}
+              {conversationFilter !== 'all'
+                ? $t('hub.noneMatchFilter')
+                : chatSearch.trim()
+                  ? $t('common.noMatches')
+                  : focusedSpace
+                    ? $t('hub.emptySpace')
+                    : $t('hub.noConversations')}
             </li>
           {/if}
         {/each}
@@ -4622,6 +5121,68 @@
       {:else}
         <p class="hub-view-empty">{$t('hub.messageFailed')}</p>
       {/if}
+    {:else if activeBroadcast}
+      <header class="hub-view-reader-head hub-view-chat-head hub-view-broadcast-head">
+        <button
+          type="button"
+          class="hub-view-back hub-view-back-icon"
+          aria-label={$t('browser.back')}
+          onclick={closeReader}
+        >
+          <Icon name="back" size={15} />
+        </button>
+        <div>
+          <h2>{activeBroadcast.name}</h2>
+          <p>
+            {$t('hub.broadcastPrivateCount', {count: activeBroadcast.recipients.length})}
+          </p>
+        </div>
+      </header>
+      <div class="hub-view-thread hub-view-broadcast-thread">
+        {#each broadcastMessages as message (message.id)}
+          {@const failed = message.deliveries.filter((delivery) => delivery.status === 'failed')}
+          {@const sent = message.deliveries.length - failed.length}
+          <div class="hub-view-bubble-row mine">
+            <div class="hub-view-bubble mine"><p>{message.body}</p></div>
+            <span class="hub-view-broadcast-delivery" class:failed={failed.length > 0}>
+              {failed.length > 0
+                ? $t('hub.broadcastDeliveryPartial', {sent, total: message.deliveries.length})
+                : $t('hub.broadcastDeliveryComplete', {count: sent})}
+              · {messageTime(message.sentAt)}
+            </span>
+          </div>
+        {:else}
+          <p class="hub-view-empty">
+            {busy === `broadcast:${activeBroadcast.id}` ? $t('common.loading') : $t('hub.noBroadcastMessages')}
+          </p>
+        {/each}
+      </div>
+      <div class="hub-view-composer-row hub-view-broadcast-composer-row">
+        <div class="hub-view-composer">
+          <textarea
+            bind:value={broadcastDraft}
+            rows="1"
+            oninput={broadcastComposerChanged}
+            placeholder={$t('hub.broadcastPlaceholder', {name: activeBroadcast.name})}
+            onkeydown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+                event.preventDefault();
+                void sendBroadcast();
+              }
+            }}
+          ></textarea>
+          <button
+            type="button"
+            class="hub-view-primary"
+            title={$t('hub.broadcastSend')}
+            aria-label={$t('hub.broadcastSend')}
+            disabled={!broadcastDraft.trim() || busy === 'send-broadcast'}
+            onclick={() => void sendBroadcast()}
+          >
+            <Icon name="send" size={15} />
+          </button>
+        </div>
+      </div>
     {:else if activeChat}
       <header class="hub-view-reader-head hub-view-chat-head">
         <!-- The chevron sits beside the name rather than above it: in a
@@ -4808,19 +5369,10 @@
               </button>
             {/if}
             {#if (message.reactions ?? []).length > 0}
-              <span class="hub-view-reactions">
-                {#each message.reactions ?? [] as reaction (reaction.key)}
-                  <button
-                    type="button"
-                    class="hub-view-reaction"
-                    class:mine={Boolean(reaction.mineEventId)}
-                    onclick={() => void react(message, reaction.key)}
-                  >
-                    {reaction.key}
-                    {#if reaction.count > 1}<span>{reaction.count}</span>{/if}
-                  </button>
-                {/each}
-              </span>
+              <MessageReactions
+                reactions={message.reactions ?? []}
+                onreact={(key) => void react(message, key)}
+              />
             {/if}
             <em>{messageTime(message.sentAt)}</em>
           </div>
@@ -5111,6 +5663,73 @@
   </section>
 </div>
 </div>
+
+{#snippet conversationFilterControl()}
+  <div
+    class="hub-view-conversation-filter"
+    onfocusout={(event) => {
+      const next = event.relatedTarget;
+      if (!(next instanceof Node) || !event.currentTarget.contains(next)) conversationFilterMenu = false;
+    }}
+  >
+    <button
+      type="button"
+      class="hub-view-chat-filter-button"
+      class:on={conversationFilter !== 'all' || conversationSort !== 'latest'}
+      aria-label={$t('hub.filterConversations')}
+      aria-haspopup="menu"
+      aria-expanded={conversationFilterMenu}
+      onclick={() => (conversationFilterMenu = !conversationFilterMenu)}
+    >
+      <Icon name="filter" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+    </button>
+    {#if conversationFilterMenu}
+      <ul
+        class="hub-view-folder-menu hub-view-conversation-filter-menu"
+        role="menu"
+        aria-label={$t('hub.filterConversations')}
+        transition:fade={{duration: 100}}
+      >
+        <li class="hub-view-menu-heading" role="presentation">{$t('hub.filter')}</li>
+        {#each CONVERSATION_FILTERS as option (option.id)}
+          <li role="presentation">
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={conversationFilter === option.id}
+              class:active={conversationFilter === option.id}
+              onclick={() => {
+                conversationFilter = option.id;
+                conversationFilterMenu = false;
+              }}
+            >
+              <Icon name={option.icon} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+              {option.label}
+            </button>
+          </li>
+        {/each}
+        <li class="hub-view-menu-heading" role="presentation">{$t('hub.sort')}</li>
+        {#each CONVERSATION_SORTS as option (option.id)}
+          <li role="presentation">
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={conversationSort === option.id}
+              class:active={conversationSort === option.id}
+              onclick={() => {
+                conversationSort = option.id;
+                conversationFilterMenu = false;
+              }}
+            >
+              <Icon name={option.icon} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+              {option.label}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+{/snippet}
 
 {#snippet spaceRow(space: ChatDto, showPlatform = false)}
 {@const unread = chatUnread(space)}

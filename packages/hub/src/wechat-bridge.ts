@@ -363,14 +363,15 @@ function imageTypeOf(bytes: Uint8Array): string | null {
 
 /** Every field under the camelCase name the rest of the bridge reads. */
 function normalise(item: RelayMessage): RelayMessage {
+  const chatId = item.chatId ?? item.chat_id;
   return {
     ...item,
     messageId: item.messageId ?? item.message_id,
-    chatId: item.chatId ?? item.chat_id,
+    chatId,
     chatName: item.chatName ?? item.chat_name,
     senderId: item.senderId ?? item.sender_id,
     senderName: item.senderName ?? item.sender_name,
-    isGroup: item.isGroup ?? item.is_group,
+    isGroup: item.isGroup ?? item.is_group ?? /@chatroom$/i.test(chatId ?? ""),
     fromSelf: item.fromSelf ?? item.from_self,
     hasMedia: item.hasMedia ?? item.has_media,
     mediaType: item.mediaType ?? item.media_type,
@@ -380,9 +381,34 @@ function normalise(item: RelayMessage): RelayMessage {
   };
 }
 
+function named(value: unknown): string | null {
+  const result = typeof value === "string" ? value.trim() : "";
+  return result && result !== UNKNOWN_SENDER ? result : null;
+}
+
+/** The conversation name the relay or its chat directory already resolved. */
+function conversationName(item: RelayMessage): string | null {
+  return named(item.chatName) ?? named(item.display_name) ?? named(item.senderName);
+}
+
+/**
+ * Direct messages have one remote participant, so the conversation name is
+ * also the sender name when the message payload omitted it. Group titles must
+ * never be used this way: they identify the room, not the person speaking.
+ */
+function senderDisplayName(item: RelayMessage, rememberedChatName?: string): string {
+  const sender = named(item.senderName);
+  if (sender) return sender;
+  if (!item.isGroup) {
+    const direct = conversationName(item) ?? named(rememberedChatName);
+    if (direct && direct !== "WeChat") return direct;
+  }
+  return UNKNOWN_SENDER;
+}
+
 interface BridgeState {
   /** Portal room per WeChat conversation, and the reverse for outbound. */
-  rooms: Record<string, { roomId: string; isGroup: boolean }>;
+  rooms: Record<string, { roomId: string; isGroup: boolean; name?: string }>;
   roomToChat: Record<string, string>;
   joinedVirtual: Record<string, Record<string, boolean>>;
   seenRemote: Record<string, number>;
@@ -829,6 +855,22 @@ export class WeChatBridge {
       for (const chat of chats) {
         const chatId = String(chat.username ?? chat.chatId ?? "");
         if (!chatId) continue;
+        const chatIsGroup =
+          chat.isGroup ?? chat.is_group ?? /@chatroom$/i.test(chatId);
+        const chatName = named(chat.display_name);
+        // Repair old generic puppet profiles from the chat directory even
+        // when every history event is already deduplicated before ingestion.
+        if (!chatIsGroup && chatName) {
+          const puppet = this.#puppet(chatId);
+          if (this.#state.puppetRemoteIds?.[puppet] !== chatId) {
+            this.#state.puppetRemoteIds = {
+              ...(this.#state.puppetRemoteIds ?? {}),
+              [puppet]: chatId,
+            };
+            this.#save();
+          }
+          await this.#ensureVirtualUser(puppet, chatName);
+        }
         const count = Math.max(
           0,
           Number(chat.unread_count ?? chat.unreadCount ?? 0),
@@ -847,6 +889,12 @@ export class WeChatBridge {
         for (const item of messages)
           await this.#ingest({
             ...item,
+            chatId: item.chatId ?? item.chat_id ?? chatId,
+            chatName: item.chatName ?? item.chat_name ?? chat.display_name,
+            isGroup:
+              item.isGroup ??
+              item.is_group ??
+              chatIsGroup,
             display_name: chat.display_name,
             // The chat list knows the conversation's picture even when a single
             // message does not carry one.
@@ -1055,7 +1103,10 @@ export class WeChatBridge {
         [sender]: remoteSender,
       };
       this.#save();
-      await this.#ensureVirtualUser(sender, item.senderName || UNKNOWN_SENDER);
+      await this.#ensureVirtualUser(
+        sender,
+        senderDisplayName(item, this.#state.rooms[chatId]?.name),
+      );
       const face = avatarUrlOf(item);
       if (face) await this.#setPuppetAvatar(sender, face);
       // Otherwise the picture WeChat itself holds for them, which is the only
@@ -1820,10 +1871,15 @@ export class WeChatBridge {
   /** The portal room for a conversation, created on first sight of it. */
   async #portal(chatId: string, item: RelayMessage): Promise<string> {
     const known = this.#state.rooms[chatId];
-    if (known) return known.roomId;
-    const name = String(
-      item.chatName || item.display_name || item.senderName || "WeChat",
-    ).slice(0, 80);
+    const resolvedName = conversationName(item);
+    const name = String(resolvedName ?? "WeChat").slice(0, 80);
+    if (known) {
+      if (resolvedName && known.name !== name) {
+        known.name = name;
+        this.#save();
+      }
+      return known.roomId;
+    }
     const created = await this.#matrix<{ room_id: string }>(
       "/_matrix/client/v3/createRoom",
       {
@@ -1872,6 +1928,7 @@ export class WeChatBridge {
     this.#state.rooms[chatId] = {
       roomId: created.room_id,
       isGroup: Boolean(item.isGroup),
+      ...(resolvedName ? { name } : {}),
     };
     this.#state.roomToChat[created.room_id] = chatId;
     this.#save();
@@ -1896,10 +1953,12 @@ export class WeChatBridge {
     const known = await this.#matrix<{ displayname?: string }>(profile).catch(
       (): null => null,
     );
+    const wanted = displayName.slice(0, 100);
+    if (known?.displayname === wanted) return;
     // A message that arrived without a sender name must not rename someone the
     // bridge has already learned: one anonymous line would turn a whole group
     // conversation back into "WeChat contact".
-    if (known?.displayname && displayName === UNKNOWN_SENDER) return;
+    if (known?.displayname && wanted === UNKNOWN_SENDER) return;
     if (!known)
       await this.#matrix("/_matrix/client/v3/register", {
         method: "POST",
@@ -1911,7 +1970,7 @@ export class WeChatBridge {
     await this.#matrix(`${profile}/displayname`, {
       method: "PUT",
       as: userId,
-      body: { displayname: displayName.slice(0, 100) },
+      body: { displayname: wanted },
     }).catch((): undefined => undefined);
   }
 
@@ -1922,12 +1981,17 @@ export class WeChatBridge {
     await this.#matrix(`/_matrix/client/v3/rooms/${room}/invite`, {
       method: "POST",
       as: this.botId,
-      body: { user_id: userId },
+      body: {
+        user_id: userId,
+        // This puppet joins only so Polymux can attribute WeChat messages.
+        // Native WeChat join notices arrive separately as conversation events.
+        "com.beeper.exclude_from_timeline": true,
+      },
     }).catch((): undefined => undefined);
     await this.#matrix(`/_matrix/client/v3/join/${room}`, {
       method: "POST",
       as: userId,
-      body: {},
+      body: {"com.beeper.exclude_from_timeline": true},
     }).catch((): undefined => undefined);
     this.#state.joinedVirtual[roomId][userId] = true;
     this.#save();
@@ -2463,6 +2527,8 @@ interface RelayChat {
   username?: string;
   chatId?: string;
   display_name?: string;
+  isGroup?: boolean;
+  is_group?: boolean;
   unread_count?: number;
   unreadCount?: number;
   avatar?: string;

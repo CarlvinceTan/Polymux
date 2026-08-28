@@ -383,6 +383,137 @@ test("a bridge that changes state on its own is pushed to open windows", async (
   }
 });
 
+test("a bridge missing from the package has a platform-neutral message", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-missing-bridge-"));
+  const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
+  await hs.start();
+  const comms = new Communications({
+    credentials: memoryCredentials(),
+    storage: memoryPreferences(),
+    onChange: () => {},
+    embedded: {
+      baseUrl: hs.baseUrl,
+      directory,
+      provision: (localpart) => hs.createLocalUser(localpart),
+      inventory: async () => [
+        {platform: "instagram", binary: "mautrix-instagram", installed: false},
+      ],
+    },
+    emailStorePath: path.join(directory, "email-accounts.json"),
+    run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
+  });
+
+  try {
+    const instagram = (await comms.status()).bridges.find(
+      (bridge) => bridge.platform === "instagram",
+    );
+    assert.equal(instagram?.state, "unavailable");
+    assert.equal(instagram?.error, "The Instagram bridge can’t be installed.");
+    assert.doesNotMatch(instagram?.error ?? "", /Mac|Windows|mautrix/i);
+  } finally {
+    await hs.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test("Windows omits bridges that cannot run instead of offering a broken install", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-windows-bridges-"));
+  const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
+  await hs.start();
+  const comms = new Communications({
+    credentials: memoryCredentials(),
+    storage: memoryPreferences(),
+    onChange: () => {},
+    platform: "win32",
+    embedded: {
+      baseUrl: hs.baseUrl,
+      directory,
+      provision: (localpart) => hs.createLocalUser(localpart),
+      inventory: async () => [
+        {
+          platform: "instagram",
+          binary: "mautrix-instagram",
+          supported: true,
+          installed: true,
+          running: false,
+        },
+        {platform: "signal", binary: "mautrix-signal", supported: false, installed: false},
+        {platform: "discord", binary: "mautrix-discord", supported: false, installed: false},
+        {platform: "imessage", binary: "mautrix-imessage", supported: false, installed: false},
+      ],
+    },
+    emailStorePath: path.join(directory, "email-accounts.json"),
+    run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
+  });
+
+  try {
+    const platforms = (await comms.status()).bridges.map((bridge) => bridge.platform);
+    assert.ok(platforms.includes("instagram"));
+    assert.ok(!platforms.includes("signal"));
+    assert.ok(!platforms.includes("discord"));
+    assert.ok(!platforms.includes("imessage"));
+    assert.ok(!platforms.includes("wechat"));
+  } finally {
+    await hs.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test("Linux offers its native bridge fleet without Mac-only rows", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-linux-bridges-"));
+  const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
+  await hs.start();
+  const comms = new Communications({
+    credentials: memoryCredentials(),
+    storage: memoryPreferences(),
+    onChange: () => {},
+    platform: "linux",
+    embedded: {
+      baseUrl: hs.baseUrl,
+      directory,
+      provision: (localpart) => hs.createLocalUser(localpart),
+      inventory: async () => [
+        {
+          platform: "instagram",
+          binary: "mautrix-instagram",
+          supported: true,
+          installed: true,
+          running: false,
+        },
+        {
+          platform: "signal",
+          binary: "mautrix-signal",
+          supported: true,
+          installed: true,
+          running: false,
+        },
+        {
+          platform: "discord",
+          binary: "mautrix-discord",
+          supported: true,
+          installed: true,
+          running: false,
+        },
+        {platform: "imessage", binary: "mautrix-imessage", supported: false, installed: false},
+      ],
+    },
+    emailStorePath: path.join(directory, "email-accounts.json"),
+    run: async () => ({code: 1, stdout: "", stderr: "not installed"}),
+  });
+
+  try {
+    const platforms = (await comms.status()).bridges.map((bridge) => bridge.platform);
+    assert.ok(platforms.includes("instagram"));
+    assert.ok(platforms.includes("signal"));
+    assert.ok(platforms.includes("discord"));
+    assert.ok(!platforms.includes("imessage"));
+    assert.ok(!platforms.includes("wechat"));
+  } finally {
+    await hs.close();
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test("connected account replacement is a Hub-visible bridge change", () => {
   const bridge = (id: string, name: string): CommsBridgeDto => ({
     platform: "whatsapp" as const,

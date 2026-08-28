@@ -4,34 +4,24 @@
   import driveScreenshot from '../../../docs/assets/polymux-drive-expanded.png';
   import hubScreenshot from '../../../docs/assets/polymux-hub-expanded.png';
   import browserScreenshot from '../../../docs/assets/polymux-browser-expanded.png';
+  import {COMMS_EMAIL_PRESETS, COMMS_PLATFORMS} from '../../../packages/protocol/src/validation';
   import logo from '../../desktop/src/renderer/public/polymux.svg';
-  import whatsapp from '../../desktop/src/renderer/assets/platforms/whatsapp.svg';
-  import telegram from '../../desktop/src/renderer/assets/platforms/telegram.svg';
-  import slack from '../../desktop/src/renderer/assets/platforms/slack.svg';
-  import discord from '../../desktop/src/renderer/assets/platforms/discord.svg';
-  import instagram from '../../desktop/src/renderer/assets/platforms/instagram.svg';
-  import messenger from '../../desktop/src/renderer/assets/platforms/messenger.svg';
-  import gmail from '../../desktop/src/renderer/assets/platforms/gmail.svg';
-  import outlook from '../../desktop/src/renderer/assets/platforms/outlook.svg';
-  import googleDrive from '../../../resources/skills/core/drive-use/assets/drive.svg';
-  import dropbox from 'simple-icons/icons/dropbox.svg?url';
+  import {bridgeLogo, mailLogo} from '../../desktop/src/renderer/lib/shared/options/platformBrands';
   import github from 'simple-icons/icons/github.svg?url';
-  import openai from '@lobehub/icons-static-svg/icons/openai.svg?url';
-  import anthropic from '@lobehub/icons-static-svg/icons/anthropic.svg?url';
-  import openrouter from '@lobehub/icons-static-svg/icons/openrouter-color.svg?url';
-  import ollama from '@lobehub/icons-static-svg/icons/ollama.svg?url';
-  import oneDrive from './assets/onedrive.svg';
-  import localFiles from './assets/local-files.svg';
+  import DownloadIcon from './lib/DownloadIcon.svelte';
+  import MobileMenu from './lib/MobileMenu.svelte';
+  import ProductMenu from './lib/ProductMenu.svelte';
 
   type SupportedPlatform = 'macos' | 'windows' | 'linux';
   type Platform = SupportedPlatform | 'other';
   type DownloadAsset = {name: string; url: string; size: number};
   type Release = {version: string | null; releaseUrl: string; platforms: Record<SupportedPlatform, DownloadAsset | null>};
-  type ConnectedApp = {name: string; icon: string};
+  type ConnectedApp = {id: string; name: string; icon: string};
+  type ConnectionGroup = {name: string; detail: string; apps: ConnectedApp[]};
 
   const releaseUrl = 'https://github.com/CarlvinceTan/Polymux/releases/latest';
   const platformCopy: Record<Platform, {action: string; detail: string}> = {
-    macos: {action: 'Download for macOS', detail: 'Apple silicon'},
+    macos: {action: 'Download', detail: 'Apple silicon'},
     windows: {action: 'Download for Windows', detail: 'Windows 10 or later · x64'},
     linux: {action: 'Download for Linux', detail: 'AppImage · x64'},
     other: {action: 'View desktop releases', detail: 'macOS · Windows · Linux'},
@@ -41,20 +31,40 @@
     {name: 'Hub', description: 'Messages and email in one place.', image: hubScreenshot},
     {name: 'Browser', description: 'Research without leaving the task.', image: browserScreenshot},
   ];
-  const connections: {name: string; apps: ConnectedApp[]}[] = [
+  const messagingPlatforms: ConnectedApp[] = COMMS_PLATFORMS
+    .filter(({value}) => value !== 'matrix')
+    .map(({value, label}) => ({id: value, name: label, icon: bridgeLogo(value) ?? ''}));
+  const emailNames: Record<string, string> = {
+    gmail: 'Gmail',
+    outlook: 'Outlook',
+    icloud: 'iCloud Mail',
+    lark: 'Lark',
+    fastmail: 'Fastmail',
+    custom: 'Any IMAP',
+  };
+  const emailProviders: ConnectedApp[] = COMMS_EMAIL_PRESETS.map(({value, label}) => ({
+    id: value,
+    name: emailNames[value] ?? label,
+    icon: mailLogo(value) ?? '',
+  }));
+  const featuredMessagingIds = new Set([
+    'whatsapp', 'telegram', 'signal', 'messenger',
+    'instagram', 'discord', 'slack', 'imessage',
+  ]);
+  const featuredEmailIds = new Set(['gmail', 'outlook', 'icloud', 'fastmail']);
+  const platformCountFloor = Math.floor((messagingPlatforms.length + emailProviders.length) / 10) * 10;
+  const connections: ConnectionGroup[] = [
     {
-      name: 'Messages & email',
-      apps: [
-        {name: 'WhatsApp', icon: whatsapp}, {name: 'Telegram', icon: telegram},
-        {name: 'Slack', icon: slack}, {name: 'Discord', icon: discord},
-        {name: 'Instagram', icon: instagram}, {name: 'Messenger', icon: messenger},
-        {name: 'Gmail', icon: gmail}, {name: 'Outlook', icon: outlook},
-      ],
+      name: 'Messaging',
+      detail: `${messagingPlatforms.length} services`,
+      apps: messagingPlatforms.filter(({id}) => featuredMessagingIds.has(id)),
     },
-    {name: 'Files', apps: [{name: 'Google Drive', icon: googleDrive}, {name: 'Dropbox', icon: dropbox}, {name: 'OneDrive', icon: oneDrive}, {name: 'Local files', icon: localFiles}]},
-    {name: 'AI models', apps: [{name: 'OpenAI', icon: openai}, {name: 'Anthropic', icon: anthropic}, {name: 'OpenRouter', icon: openrouter}, {name: 'Ollama', icon: ollama}]},
+    {
+      name: 'Email',
+      detail: 'Any IMAP',
+      apps: emailProviders.filter(({id}) => featuredEmailIds.has(id)),
+    },
   ];
-  const connectionCount = connections.reduce((total, group) => total + group.apps.length, 0);
 
   let platform = $state<Platform>('macos');
   let release = $state<Release | null>(null);
@@ -93,15 +103,19 @@
       <a class="brand" href="#top" aria-label="Polymux home"><img src={logo} alt="" /><span>Polymux</span></a>
       <nav aria-label="Main navigation">
         <a class="active" href="#top">Home</a>
-        <a href="#workspace">Workspace</a>
+        <ProductMenu />
+        <a href="/docs/">Docs</a>
+        <a href="/blog/">Blog</a>
+        <a href="/releases/">Releases</a>
       </nav>
     </div>
     <div class="header-actions">
       <a class="github-link" href={releaseUrl} aria-label="Polymux on GitHub">
         <img src={github} alt="" />
       </a>
-      <a class="download-link" href={downloadUrl}>{copy.action}</a>
+      <a class="download-link" href={downloadUrl}><DownloadIcon />{copy.action}</a>
     </div>
+    <MobileMenu active="home" downloadHref={downloadUrl} />
   </div>
 </header>
 
@@ -112,7 +126,7 @@
       <h1>Ready to help.<br />Right from the start.</h1>
       <p class="lede">Chats, email, files, browsing, and your choice of AI models are built in—so you can get things done with almost no setup.</p>
       <div class="actions">
-        <a class="primary" href={downloadUrl}>{copy.action}</a>
+        <a class="primary download-cta" href={downloadUrl}><DownloadIcon />{copy.action}</a>
         <a class="secondary" href="#workspace">See how it works <span>↓</span></a>
       </div>
       <p class="availability">{copy.detail} · {versionLabel}</p>
@@ -125,15 +139,14 @@
   <section class="connections" aria-labelledby="connections-title">
     <div class="connections-heading">
       <p class="eyebrow">Built in, not bolted on</p>
-      <h2 id="connections-title">{connectionCount} platforms.<br />Ready when you are.</h2>
-      <p>Your assistant can work across the services you already use, without making you assemble the pieces first.</p>
+      <h2 id="connections-title">{platformCountFloor}+ platforms.<br />All in one Hub.</h2>
     </div>
     <div class="connection-map">
-      <div class="connection-core"><img src={logo} alt="" /><strong>Polymux</strong></div>
+      <div class="connection-core"><img src={logo} alt="" /><strong>Polymux Hub</strong></div>
       <div class="connection-groups">
         {#each connections as group (group.name)}
           <article>
-            <h3><span>{group.name}</span><strong>{group.apps.length}</strong></h3>
+            <h3><span>{group.name}</span><strong>{group.detail}</strong></h3>
             <div class="app-grid">
               {#each group.apps as app (app.name)}
                 <div class="app-node">
@@ -170,13 +183,17 @@
 
   <section class="download" id="download">
     <div><p class="eyebrow">Get Polymux</p><h2>Your personal assistant.<br />Ready in minutes.</h2></div>
-    <div class="download-action"><a class="primary" href={downloadUrl}>{copy.action}</a><span>{copy.detail} · {versionLabel}</span></div>
+    <div class="download-action"><a class="primary download-cta" href={downloadUrl}><DownloadIcon />{copy.action}</a><span>{copy.detail} · {versionLabel}</span></div>
   </section>
 </main>
 
 <footer>
   <a class="brand" href="#top"><img src={logo} alt="" /><span>Polymux</span></a>
   <p>Your personal assistant for chats, files, and the web.</p>
+  <a href="/product/">Product</a>
+  <a href="/docs/">Docs</a>
+  <a href="/blog/">Blog</a>
+  <a href="/releases/">Releases</a>
   <a href="/privacy-policy/">Privacy</a>
   <a href={releaseUrl}>GitHub</a>
 </footer>

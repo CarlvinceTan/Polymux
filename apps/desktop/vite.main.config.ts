@@ -48,13 +48,23 @@ export default defineConfig({
   },
   /**
    * Application credentials Polymux ships on the user's behalf, baked in here
-   * rather than committed. Unset in a normal checkout, which is the point: a
-   * build without them falls back to asking the user for their own pair, so
-   * nothing breaks, it just asks. Release builds set them in the environment.
+   * rather than committed. They identify the app, not the signed-in user, and
+   * release builds are required to provide them. A local build may omit them;
+   * its affected provider is then shown honestly as unavailable.
    */
   define: {
     __POLYMUX_TELEGRAM_API_ID__: JSON.stringify(process.env.POLYMUX_TELEGRAM_API_ID ?? ''),
     __POLYMUX_TELEGRAM_API_HASH__: JSON.stringify(process.env.POLYMUX_TELEGRAM_API_HASH ?? ''),
+    __POLYMUX_GOOGLE_DRIVE_CLIENT_ID__: JSON.stringify(process.env.POLYMUX_GOOGLE_DRIVE_CLIENT_ID ?? ''),
+    __POLYMUX_GOOGLE_DRIVE_CLIENT_SECRET__: JSON.stringify(process.env.POLYMUX_GOOGLE_DRIVE_CLIENT_SECRET ?? ''),
+    __POLYMUX_DROPBOX_CLIENT_ID__: JSON.stringify(process.env.POLYMUX_DROPBOX_CLIENT_ID ?? ''),
+    __POLYMUX_DROPBOX_CLIENT_SECRET__: JSON.stringify(process.env.POLYMUX_DROPBOX_CLIENT_SECRET ?? ''),
+    __POLYMUX_ONEDRIVE_CLIENT_ID__: JSON.stringify(process.env.POLYMUX_ONEDRIVE_CLIENT_ID ?? ''),
+    __POLYMUX_ONEDRIVE_CLIENT_SECRET__: JSON.stringify(process.env.POLYMUX_ONEDRIVE_CLIENT_SECRET ?? ''),
+    __POLYMUX_GOOGLE_MAIL_CLIENT_ID__: JSON.stringify(process.env.POLYMUX_GOOGLE_MAIL_CLIENT_ID ?? ''),
+    __POLYMUX_GOOGLE_MAIL_CLIENT_SECRET__: JSON.stringify(process.env.POLYMUX_GOOGLE_MAIL_CLIENT_SECRET ?? ''),
+    __POLYMUX_MICROSOFT_MAIL_CLIENT_ID__: JSON.stringify(process.env.POLYMUX_MICROSOFT_MAIL_CLIENT_ID ?? ''),
+    __POLYMUX_MICROSOFT_MAIL_CLIENT_SECRET__: JSON.stringify(process.env.POLYMUX_MICROSOFT_MAIL_CLIENT_SECRET ?? ''),
   },
   build: {
     rolldownOptions: {

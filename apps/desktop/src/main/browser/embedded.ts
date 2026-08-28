@@ -13,6 +13,12 @@ import { PageCursor } from "./cursor.js";
 import { availablePath, type Downloads } from "./downloads.js";
 import {selectPromptTabs} from "./tab-context.js";
 import { clearFaviconCache, tabFaviconDataUrl } from "./favicon.js";
+import {
+  browserViewportMode,
+  mobileBrowserUserAgent,
+  type BrowserViewportMode,
+  type BrowserViewportSize,
+} from "./viewport.js";
 
 /**
  * The workspace browser: one WebContentsView per browser tab, attached to the
@@ -39,6 +45,8 @@ export class EmbeddedBrowser {
   readonly #faviconRefreshers = new Map<string, () => void>();
   /** One per live tab, re-sending that tab's current page state. */
   readonly #stateEmitters = new Map<string, () => void>();
+  readonly #viewportModes = new Map<string, BrowserViewportMode>();
+  readonly #desktopUserAgents = new Map<string, string>();
   readonly #onTabReset: (tabId: string) => void;
   readonly #onVisit: (visit: {url: string; title: string}) => void;
 
@@ -79,7 +87,11 @@ export class EmbeddedBrowser {
   attachWindow(window: BrowserWindow): void {
     this.#window = window;
     for (const [tabId, view] of [...this.#views]) {
-      if (view.webContents.isDestroyed()) this.#views.delete(tabId);
+      if (view.webContents.isDestroyed()) {
+        this.#views.delete(tabId);
+        this.#viewportModes.delete(tabId);
+        this.#desktopUserAgents.delete(tabId);
+      }
       else window.contentView.addChildView(view);
     }
   }
@@ -94,9 +106,10 @@ export class EmbeddedBrowser {
     for (const view of this.#views.values()) this.#window.contentView.removeChildView(view);
   }
 
-  open(tabId: string, url?: string): { url: string; title: string } {
+  open(tabId: string, url?: string, viewport?: BrowserViewportSize): { url: string; title: string } {
     const existing = this.#views.get(tabId);
     if (existing) {
+      if (viewport) this.#applyViewport(tabId, existing.webContents, viewport);
       // A remount re-opens tabs it already knows about. Navigating again would
       // discard the live page state the detach/attach cycle just preserved,
       // so only a view with nothing loaded takes the url.
@@ -119,11 +132,14 @@ export class EmbeddedBrowser {
         preload: path.join(path.dirname(fileURLToPath(import.meta.url)), "autofill.js"),
       },
     });
+    this.#viewportModes.delete(tabId);
     this.#views.set(tabId, view);
+    this.#desktopUserAgents.set(tabId, view.webContents.getUserAgent());
     this.#window.contentView.addChildView(view);
     // Zero-sized until the renderer reports where the tab's surface sits, so a
     // newly opened view never flashes over unrelated UI.
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    if (viewport) this.#applyViewport(tabId, view.webContents, viewport);
     this.#downloads.wire(view.webContents.session);
     this.#wireState(tabId, view.webContents);
     if (url) this.navigate(tabId, url);
@@ -161,7 +177,10 @@ export class EmbeddedBrowser {
   }
 
   setBounds(tabId: string, bounds: { x: number; y: number; width: number; height: number }): void {
-    this.#views.get(tabId)?.setBounds({
+    const view = this.#views.get(tabId);
+    if (!view) return;
+    this.#applyViewport(tabId, view.webContents, bounds);
+    view.setBounds({
       x: Math.round(bounds.x),
       y: Math.round(bounds.y),
       width: Math.max(0, Math.round(bounds.width)),
@@ -178,6 +197,8 @@ export class EmbeddedBrowser {
   close(tabId: string): void {
     this.#releaseSession(tabId);
     const view = this.#views.get(tabId);
+    this.#viewportModes.delete(tabId);
+    this.#desktopUserAgents.delete(tabId);
     if (!view) return;
     this.#views.delete(tabId);
     this.#faviconRefreshers.delete(tabId);
@@ -186,6 +207,28 @@ export class EmbeddedBrowser {
     if (!this.#window.isDestroyed()) this.#window.contentView.removeChildView(view);
     if (!view.webContents.isDestroyed()) view.webContents.close();
     this.#send({ type: "closed", tabId });
+  }
+
+  #applyViewport(tabId: string, contents: WebContents, viewport: BrowserViewportSize): void {
+    const width = Math.max(0, Math.round(viewport.width));
+    const height = Math.max(0, Math.round(viewport.height));
+    if (!width || !height || contents.isDestroyed()) return;
+
+    const previous = this.#viewportModes.get(tabId) ?? "desktop";
+    const mode = browserViewportMode({width, height}, previous);
+    if (mode === previous) return;
+
+    this.#viewportModes.set(tabId, mode);
+    contents.setUserAgent(
+      mode === "mobile"
+        ? mobileBrowserUserAgent(process.versions.chrome)
+        : (this.#desktopUserAgents.get(tabId) ?? contents.session.getUserAgent()),
+    );
+    // The WebContentsView already has the drawer's true narrow dimensions.
+    // Sites such as Notion additionally choose their application shell from
+    // the user agent during initial navigation, so reload once when that
+    // identity crosses modes; ordinary resizes keep the live page intact.
+    if (contents.getURL()) contents.reload();
   }
 
   closeAll(): void {
@@ -338,6 +381,13 @@ export class EmbeddedBrowser {
 
   print(tabId: string): void {
     this.#views.get(tabId)?.webContents.print();
+  }
+
+  async preview(tabId: string): Promise<string | null> {
+    const contents = this.#views.get(tabId)?.webContents;
+    if (!contents || contents.isDestroyed()) return null;
+    const image = await contents.capturePage();
+    return image.isEmpty() ? null : image.toDataURL();
   }
 
   async screenshot(tabId: string): Promise<BrowserDownloadDto | null> {

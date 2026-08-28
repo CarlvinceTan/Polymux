@@ -53,3 +53,29 @@ explicitly asked; report conflicts instead.
 - Polymux is pre-release with no external users. Do not add compatibility for
   obsolete formats; reset disposable state or use a bounded one-time migration
   for valuable local data.
+
+## Commits and release notes
+
+- Never create, amend, squash, rebase, tag, or push a commit unless the user
+  explicitly asks for that Git action in the current task. Permission to edit
+  or test files does not include permission to commit them.
+- When asked to commit, use a clear, capitalized, imperative subject of at most
+  72 characters, with no trailing punctuation. Do not use conventional-commit
+  prefixes such as `feat:`, `fix:`, or `docs:`. When one area is the clear
+  scope, an informative prefix is allowed, for example `Hub: Add chat search`.
+- End the commit message with this exact, machine-readable section:
+
+  ```text
+  Release Notes:
+
+  - Hub: Added chat search to conversations.
+  ```
+
+- Use exactly one concise, user-facing bullet in the form
+  `- <Area>: <Added|Fixed|Improved> <outcome>.` Reuse stable, title-cased area
+  names such as `AI`, `Git`, `Hub`, `Drive`, `Browser`, `Desktop`, and `Site`.
+  The area supplies release-note subsections such as **AI** and **Git**, while
+  the verb supplies **Features**, **Bug Fixes**, or **Improvements**. Describe
+  the outcome rather than implementation details so the pages under
+  `apps/site/releases/` can display it directly. Use `- N/A` for changes with
+  no user-facing release note. Keep `Release Notes:` as the final section.

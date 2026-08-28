@@ -55,6 +55,7 @@ export {
   type MatrixHubOptions,
   type MatrixMessage,
   type MatrixReaction,
+  type MatrixReactionActor,
   type MatrixRoom,
 } from "./hub.js";
 export {

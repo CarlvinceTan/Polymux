@@ -15,7 +15,12 @@ import {parseRegistration} from "../src/bridges.js";
  */
 interface FakeBridge {
   base: string;
-  transactions: Array<{txnId: string; auth: string | null; events: Array<Record<string, unknown>>}>;
+  transactions: Array<{
+    txnId: string;
+    auth: string | null;
+    events: Array<Record<string, unknown>>;
+    ephemeral: Array<Record<string, unknown>>;
+  }>;
   pings: Array<{auth: string | null; transactionId: string}>;
   close: () => Promise<void>;
 }
@@ -34,7 +39,8 @@ async function startFakeBridge(): Promise<FakeBridge> {
         state.transactions.push({
           txnId: decodeURIComponent(txnMatch[1]),
           auth,
-          events: (body as {events: Array<Record<string, unknown>>}).events,
+          events: (body as {events?: Array<Record<string, unknown>>}).events ?? [],
+          ephemeral: (body as {ephemeral?: Array<Record<string, unknown>>}).ephemeral ?? [],
         });
         response.writeHead(200, {"Content-Type": "application/json"});
         response.end("{}");
@@ -84,6 +90,7 @@ async function startHarness(): Promise<Harness> {
     hsToken: "hs-token-test",
     url: bridge.base,
     senderLocalpart: "whatsappbot",
+    receiveEphemeral: true,
     userNamespaces: ["@whatsapp_.*:polymux\\.test"],
   });
   return {
@@ -328,6 +335,41 @@ test("an invite written as plain state still reaches the local user", async () =
   }
 });
 
+test("an auto-accepted puppet join retains its bridge-setup marker", async () => {
+  const {hs, asToken, cleanup} = await startHarness();
+  try {
+    const user = hs.createLocalUser("polymux");
+    const ghost = "@whatsapp_61400000000:polymux.test";
+    const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
+      token: asToken,
+      body: {invite: [user.userId]},
+    });
+    const roomId = created.body.room_id as string;
+    const memberPath = `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent(ghost)}`;
+
+    const invited = await call(hs, "PUT", memberPath, {
+      token: asToken,
+      body: {
+        membership: "invite",
+        displayname: "Carlvince Tan",
+        "fi.mau.will_auto_accept": true,
+      },
+    });
+    assert.equal(invited.status, 200);
+    const joined = await call(hs, "POST", `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/join`, {
+      token: asToken,
+      query: {user_id: ghost},
+    });
+    assert.equal(joined.status, 200);
+
+    const current = await call(hs, "GET", memberPath, {token: user.accessToken});
+    assert.equal(current.body.membership, "join");
+    assert.equal(current.body["com.beeper.exclude_from_timeline"], true);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("a portal room reaches the local user without an autojoin daemon", async () => {
   const {hs, asToken, cleanup} = await startHarness();
   try {
@@ -359,7 +401,7 @@ test("a portal room reaches the local user without an autojoin daemon", async ()
 });
 
 test("bridged messages flow to the user with massaged timestamps and land in unread", async () => {
-  const {hs, asToken, cleanup} = await startHarness();
+  const {hs, bridge, asToken, cleanup} = await startHarness();
   try {
     const user = hs.createLocalUser("polymux");
     const created = await call(hs, "POST", "/_matrix/client/v3/createRoom", {
@@ -419,6 +461,27 @@ test("bridged messages flow to the user with massaged timestamps and land in unr
     );
     const after = await call(hs, "GET", "/_matrix/client/v3/notifications", {token: user.accessToken});
     assert.equal((after.body.notifications as unknown[]).length, 0);
+
+    await until(
+      () => bridge.transactions.some((txn) => txn.ephemeral.some((event) => event.type === "m.receipt")),
+      "the read receipt to reach the bridge",
+    );
+    const receipt = bridge.transactions
+      .flatMap((txn) => txn.ephemeral)
+      .find((event) => event.type === "m.receipt")!;
+    assert.equal(receipt.room_id, roomId);
+    const receiptContent = receipt.content as Record<
+      string,
+      {"m.read": Record<string, {ts: number}>}
+    >;
+    assert.deepEqual(Object.keys(receiptContent), [String(sent.body.event_id)]);
+    const read = receiptContent[String(sent.body.event_id)]["m.read"];
+    assert.deepEqual(Object.keys(read), [user.userId]);
+    assert.equal(typeof read[user.userId].ts, "number");
+    assert.ok(
+      bridge.transactions.every((txn) => txn.events.every((event) => event.type !== "m.receipt")),
+      "receipts are ephemeral data, not made-up timeline events",
+    );
   } finally {
     await cleanup();
   }
@@ -821,6 +884,7 @@ test("parseRegistration extracts tokens and user namespaces", () => {
       "as_token: abc123",
       "hs_token: def456",
       "sender_localpart: whatsappbot",
+      "receive_ephemeral: true",
       "rate_limited: false",
       "namespaces:",
       "    users:",
@@ -836,6 +900,7 @@ test("parseRegistration extracts tokens and user namespaces", () => {
   assert.equal(parsed.asToken, "abc123");
   assert.equal(parsed.hsToken, "def456");
   assert.equal(parsed.senderLocalpart, "whatsappbot");
+  assert.equal(parsed.receiveEphemeral, true);
   assert.deepEqual(parsed.userNamespaces, [
     "@whatsappbot:polymux\\.test",
     "@whatsapp_.*:polymux\\.test",

@@ -144,7 +144,6 @@
   let acpRegistryLoading = true;
   let acpRegistryError = '';
   let savingRuntime = false;
-  let armedAgentInstallId = '';
   let installingAgentId = '';
   let agentPane: 'agents' | 'auth' | 'option' | 'providers' = 'agents';
   let agentSettings: AgentSettingsDto | null = null;
@@ -804,15 +803,9 @@
   async function useRuntimePreset(entry: AcpRegistryEntryDto): Promise<void> {
     if (!entry.command || savingRuntime) return;
     const installed = registryEntryIsInstalled(entry);
-    if (!installed && armedAgentInstallId !== entry.id) {
-      selectRuntimePreset(entry);
-      armedAgentInstallId = entry.id;
-      return;
-    }
-    armedAgentInstallId = '';
     selectRuntimePreset(entry);
     if (runtimeDraftIsActive()) return;
-    installingAgentId = installed ? '' : entry.id;
+    installingAgentId = !installed && (entry.command === 'npx' || entry.command === 'uvx') ? entry.id : '';
     const saved = await saveAgentRuntime(true);
     installingAgentId = '';
     if (saved && !installed)
@@ -832,7 +825,6 @@
   }
   async function usePolymuxRuntime(): Promise<void> {
     if (savingRuntime) return;
-    armedAgentInstallId = '';
     selectPolymuxRuntime();
     if (!runtimeDraftIsActive()) await saveAgentRuntime(true);
   }
@@ -859,7 +851,6 @@
     agentSettingsError = '';
   }
   function selectCustomRuntime(): void {
-    armedAgentInstallId = '';
     runtimeKind = 'acp';
     runtimePresetId = 'custom';
     runtimeName = agentRuntime.kind === 'acp' ? agentRuntime.name : 'ACP Agent';
@@ -3530,7 +3521,7 @@
               {#each acpRegistry as entry (entry.id)}
                 <button type="button" class="runtime-card" class:active={runtimePresetId === entry.id} class:unavailable={!entry.command} role="radio" aria-checked={runtimePresetId === entry.id} disabled={savingRuntime || !entry.command} title={!entry.command ? 'Choose Custom to set the installed command' : undefined} onclick={() => void useRuntimePreset(entry)}>
                   <span class="runtime-card-icon">{#if entry.icon}<img src={entry.icon} alt="" />{:else}{entry.name.slice(0, 1)}{/if}</span>
-                  <strong>{entry.name}</strong><small>{savingRuntime && runtimePresetId === entry.id ? installingAgentId === entry.id ? 'Installing…' : 'Connecting…' : armedAgentInstallId === entry.id && !registryEntryIsInstalled(entry) ? 'Click again to install' : entry.command ? `v${entry.version}` : 'Custom command'}</small>
+                  <strong>{entry.name}</strong><small>{savingRuntime && runtimePresetId === entry.id ? installingAgentId === entry.id ? 'Installing…' : 'Connecting…' : entry.command ? entry.version ? `v${entry.version}` : 'Preconfigured' : 'Unavailable'}</small>
                 </button>
               {/each}
               <button type="button" class="runtime-card" class:active={runtimePresetId === 'custom'} role="radio" aria-checked={runtimePresetId === 'custom'} disabled={savingRuntime} onclick={selectCustomRuntime}>

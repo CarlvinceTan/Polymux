@@ -20,6 +20,21 @@ export interface AttachmentDto {
   sha256: string | null;
   createdAt: string;
 }
+
+/** Content the desktop host can place on the system clipboard. File and
+ * attachment variants stay out of the renderer because browser clipboard APIs
+ * can only copy their labels, not an OS-pasteable file. */
+export type ClipboardContentDto =
+  | {kind: "text"; text: string; title?: string}
+  | {kind: "file"; path: string}
+  | {
+      kind: "attachment";
+      url: string;
+      name: string;
+      mimeType: string | null;
+      copyAs: "image" | "file";
+    };
+
 export interface MessageDto {
   id: string;
   conversationId: ConversationId;
@@ -449,9 +464,9 @@ export interface AcpRegistryEntryDto {
   description: string;
   version: string;
   icon: string;
-  /** Whether this exact registry package is already available locally. */
+  /** Whether this registry launch target is already available locally. */
   installed: boolean;
-  /** Empty for binary-only entries, whose installed command is machine-specific. */
+  /** Empty only when the registry has no distribution for this platform. */
   command: string;
   args: string[];
 }
@@ -1398,6 +1413,10 @@ export interface ChatDto {
   id: string;
   name: string;
   platform: string;
+  /** Stable remote conversation identity shared by duplicate Matrix portals. */
+  remoteId?: string;
+  /** This is the portal the bridge currently routes outbound traffic through. */
+  currentPortal?: boolean;
   /** A Matrix Space: a navigational container whose child rooms are chats. */
   space?: boolean;
   /** A bridge's account-wide container, flattened into the platform rail. */
@@ -1457,6 +1476,62 @@ export interface CreateChatRequest {
   participantIds: string[];
   /** Required by group-capable platforms once more than one person is chosen. */
   name?: string;
+}
+
+/** One private destination inside a local broadcast. Broadcasts never create a
+ * remote group: each recipient keeps the route to their own direct chat. */
+export interface BroadcastRecipientDto {
+  /** Stable contact identity, used to keep delivery results attached to rows. */
+  id: string;
+  name: string;
+  platform: CommsPlatform;
+  accountId: string;
+  accountName: string;
+  remoteId: string | null;
+  /** Filled immediately for an existing DM, or after the first delivery. */
+  chatId: string | null;
+  avatarUrl: string | null;
+}
+
+/** A named, Polymux-local collection of private direct-message destinations. */
+export interface BroadcastDto {
+  id: string;
+  name: string;
+  recipients: BroadcastRecipientDto[];
+  createdAt: string;
+  updatedAt: string;
+  lastActivity: string | null;
+  preview: string | null;
+}
+
+export interface CreateBroadcastRequest {
+  name: string;
+  recipients: BroadcastRecipientDto[];
+}
+
+/** What happened for one person when a broadcast message fanned out. */
+export interface BroadcastDeliveryDto {
+  recipientId: string;
+  recipientName: string;
+  platform: CommsPlatform;
+  chatId: string | null;
+  status: "sent" | "failed";
+  error?: string;
+}
+
+/** One authored broadcast, retained locally so its outbound history can be
+ * read without merging the unrelated direct conversations it delivered to. */
+export interface BroadcastMessageDto {
+  id: string;
+  broadcastId: string;
+  body: string;
+  sentAt: string;
+  deliveries: BroadcastDeliveryDto[];
+}
+
+export interface BroadcastSendResultDto {
+  broadcast: BroadcastDto;
+  message: BroadcastMessageDto;
 }
 
 /** An image, voice note, video, or file carried by a message. */
@@ -1526,8 +1601,18 @@ export interface ChatMessageDto {
 export interface ChatReactionDto {
   key: string;
   count: number;
+  /** People represented by this reaction, in the order their events arrived. */
+  reactors?: ChatReactionActorDto[];
   /** Set when the signed-in account is one of the reactors, so it can undo it. */
   mineEventId?: string | null;
+}
+
+export interface ChatReactionActorDto {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  /** The signed-in person's profile. */
+  mine?: boolean;
 }
 
 export interface ChatActivityDto {
@@ -2076,6 +2161,10 @@ export interface PolymuxApi {
      */
     locate(): Promise<NonNullable<GeneralSettingsDto["location"]>>;
   };
+  clipboard: {
+    /** Writes real text, image pixels, or a file reference to the OS clipboard. */
+    write(content: ClipboardContentDto): Promise<boolean>;
+  };
   window: {
     /** Opens a built-in workspace view in its own app window. */
     openWorkspaceView(
@@ -2359,6 +2448,13 @@ export interface PolymuxApi {
     chatContacts(): Promise<CommsContactDto[]>;
     /** Opens a DM or creates a real remote group, returning its Matrix room id. */
     chatCreate(request: CreateChatRequest): Promise<string>;
+    /** Named local recipient sets whose messages are delivered as private DMs. */
+    broadcasts(): Promise<BroadcastDto[]>;
+    broadcastCreate(request: CreateBroadcastRequest): Promise<BroadcastDto>;
+    /** Outbound-only local history, newest first. */
+    broadcastMessages(broadcastId: string): Promise<BroadcastMessageDto[]>;
+    /** Delivers the same text separately to every recipient. */
+    broadcastSend(broadcastId: string, text: string): Promise<BroadcastSendResultDto>;
     /**
      * One page of a conversation, newest first, with the token that reaches
      * the page before it. Scrolling back up a long history is walking that
@@ -2452,7 +2548,11 @@ export interface PolymuxApi {
     /** Answers with the tab's live page, so a pane mounting over a tab that
      * already loaded — every tab the agent opens — knows there is a page there
      * without waiting on a state event that is not coming. */
-    open(tabId: string, url?: string): Promise<{url: string; title: string}>;
+    open(
+      tabId: string,
+      url?: string,
+      viewport?: {width: number; height: number},
+    ): Promise<{url: string; title: string}>;
     navigate(tabId: string, url: string): Promise<void>;
     history(tabId: string, delta: -1 | 1): Promise<void>;
     reload(tabId: string): Promise<void>;
@@ -2480,6 +2580,8 @@ export interface PolymuxApi {
     find(tabId: string, text: string, forward: boolean): Promise<void>;
     stopFind(tabId: string): Promise<void>;
     print(tabId: string): Promise<void>;
+    /** A transient image of the live page used behind renderer popovers. */
+    preview(tabId: string): Promise<string | null>;
     screenshot(tabId: string): Promise<BrowserDownloadDto | null>;
     /**
      * A site icon as a `data:` url, or null when the site has none. Fetched by
@@ -2547,6 +2649,8 @@ export interface PolymuxApi {
     /** Pages visited, newest first. `query` matches url or title. Named apart
      * from `history` above, which is this tab's back/forward navigation. */
     browsingHistory(options?: {query?: string; limit?: number}): Promise<BrowserHistoryEntryDto[]>;
+    /** Search-provider completions for text typed into the address bar. */
+    suggestions(query: string): Promise<string[]>;
     forgetHistoryEntry(url: string): Promise<BrowserHistoryEntryDto[]>;
     /** Everything, or just what an import brought in. */
     clearHistory(options?: {source?: "import"}): Promise<BrowserHistoryEntryDto[]>;

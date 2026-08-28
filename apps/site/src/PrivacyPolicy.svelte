@@ -175,7 +175,7 @@
   header { height: 68px; border-bottom: 1px solid #deded9; }
   footer { min-height: 100px; border-top: 1px solid #deded9; color: #6f6f6b; font-size: 12px; }
 
-  .brand { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; letter-spacing: -.02em; }
+  .brand { display: inline-flex; align-items: center; gap: 4.3125px; font-size: 17.25px; font-weight: 750; letter-spacing: -.045em; text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
   .brand img { width: 23px; height: 23px; object-fit: contain; }
   .home-link { color: #6f6f6b; font-size: 13px; }
   .home-link:hover, article a:hover { color: #171717; }

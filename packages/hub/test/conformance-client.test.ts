@@ -317,10 +317,19 @@ test("renaming a ghost reaches the rooms it is already in", async () => {
       .body.chunk as Array<Record<string, unknown>>;
     const member = members.find((event) => event.state_key === SECOND_GHOST);
     assert.ok(member, "the ghost is a member of the portal");
+    const memberContent = member.content as {
+      displayname?: string;
+      "com.beeper.exclude_from_timeline"?: boolean;
+    };
     assert.equal(
-      (member.content as {displayname?: string}).displayname,
+      memberContent.displayname,
       "Jules Tan",
       "the member event carries the current name, so both member views agree",
+    );
+    assert.equal(
+      memberContent["com.beeper.exclude_from_timeline"],
+      true,
+      "profile propagation is state bookkeeping, not conversation activity",
     );
   } finally {
     await cleanup();

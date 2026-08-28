@@ -1,7 +1,13 @@
 """Inject a typed WeChat payload at the authenticated protobuf compressor.
 
 The caller arms one exact sentinel in a JSON file.  Only the matching outbound
-message is rewritten; all unrelated compression calls auto-continue unchanged.
+message is rewritten; all unrelated compression calls — heartbeats, syncs,
+other accounts of the same process — auto-continue unchanged and never touch
+the status protocol.
+
+The hook is libz's exported ``compress`` symbol, so it survives WeChat build
+changes: every CGI body is zlib-deflated through it before encryption, and the
+plaintext protobuf (the ``newsendmsg`` request) is readable at that boundary.
 """
 
 import base64
@@ -52,7 +58,8 @@ def _fields(data):
             end = offset + length
             if end > len(data):
                 raise ValueError("truncated protobuf field")
-            value, offset = data[offset:end], end
+            value = data[offset:end], end
+            value, offset = value
         else:
             raise ValueError(f"unsupported protobuf wire type {wire}")
         output.append((number, wire, value))
@@ -71,6 +78,7 @@ def _encode(fields):
 
 
 def rewrite_message(raw, sentinel, message_type, content):
+    """Swap the content and type of the armed newsendmsg entry."""
     outer = _fields(raw)
     changed = False
     rewritten = []
@@ -108,18 +116,43 @@ def _consume_arm():
     os.replace(temporary, ARM_PATH)
 
 
-def _capture(frame, _location, _dict):
+def _armed():
+    """The armed request, or None when nothing is armed for this fire.
+
+    A consumed or missing arm file is the ordinary idle state, not an error:
+    the breakpoint stays installed for the whole session and most fires are
+    unrelated traffic. Only a genuinely malformed arm file is reported, and
+    only once, because it means the arming side wrote something it should not
+    have and silence would hide that forever.
+    """
     try:
         with open(ARM_PATH, encoding="utf-8") as stream:
-            arm = json.load(stream)
+            raw = stream.read()
+    except FileNotFoundError:
+        return None
+    if not raw.strip():
+        return None
+    try:
+        arm = json.loads(raw)
         if int(arm["expiryNs"]) < time.time_ns():
-            return False
-        sentinel = arm["sentinel"].encode("utf-8")
+            return None
+        sentinel = arm["sentinel"]
         content = base64.b64decode(arm["contentBase64"], validate=True)
         message_type = int(arm["messageType"])
-        if not 0 < message_type < 10000 or not content:
-            return False
+        if not isinstance(sentinel, str) or not 0 < message_type < 10000 or not content:
+            raise ValueError("arm file fields are out of range")
+        return sentinel.encode("utf-8"), content, message_type
+    except Exception as error:
+        _status({"ok": False, "reason": f"arm file is invalid: {error!r}"})
+        return None
 
+
+def _capture(frame, _location, _dict):
+    try:
+        armed = _armed()
+        if armed is None:
+            return False
+        sentinel, content, message_type = armed
         process = frame.GetThread().GetProcess()
         source = frame.FindRegister("x2").GetValueAsUnsigned()
         old_length = frame.FindRegister("x3").GetValueAsUnsigned()
@@ -144,8 +177,6 @@ def _capture(frame, _location, _dict):
             return False
         _consume_arm()
         _status({"ok": True, "messageType": message_type, "length": len(rewritten)})
-    except FileNotFoundError:
-        pass
     except Exception as error:
         _status({"ok": False, "reason": repr(error)})
     return False

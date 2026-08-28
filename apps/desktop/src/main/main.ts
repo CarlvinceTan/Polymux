@@ -48,6 +48,13 @@ import {
   POLYMUX_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
 } from "./system/window-buttons.js";
+import {applyShippedOAuthCredentials} from "./system/shipped-oauth.js";
+
+// Drive and mailbox providers read their application registrations from the
+// environment. Populate it from the values compiled into a release before any
+// backend service is constructed. This is platform-neutral and keeps packaged
+// installs from depending on a developer's .env file.
+applyShippedOAuthCredentials();
 
 // `npm start` runs the app as a child of the CLI, so its stdout and stderr are
 // pipes. Kill the terminal (or let the launcher exit) and the read end goes
@@ -206,6 +213,11 @@ let backend: DesktopBackend | undefined;
 let coldStartConsumed = false;
 let startupShellWindow: BrowserWindow | undefined;
 
+// Match the roomy desktop footprint in the ChatGPT reference while leaving
+// enough space for the menu bar and Dock on a 14-inch MacBook display.
+const DEFAULT_MAIN_WINDOW_WIDTH = 1340;
+const DEFAULT_MAIN_WINDOW_HEIGHT = 860;
+
 /** Paints the real startup animation before app-scoped services are ready.
  * The document deliberately does not mount Svelte or call IPC; it simply
  * settles on the animation's end pose and stays there until the real window
@@ -213,8 +225,8 @@ let startupShellWindow: BrowserWindow | undefined;
 function createStartupShellWindow(): BrowserWindow {
   const window = new BrowserWindow({
     title: "Polymux",
-    width: 1000,
-    height: 618,
+    width: DEFAULT_MAIN_WINDOW_WIDTH,
+    height: DEFAULT_MAIN_WINDOW_HEIGHT,
     minWidth: 973,
     minHeight: 672,
     show: false,
@@ -372,8 +384,11 @@ function createWindow(
   const bounds = detachedWindowBounds(placement);
   const window = existingWindow ?? new BrowserWindow({
       title: "Polymux",
-      width: bounds?.width ?? DETACHED_WINDOW_WIDTH,
-      height: bounds?.height ?? 618,
+      width:
+        bounds?.width ??
+        (workspaceView ? DETACHED_WINDOW_WIDTH : DEFAULT_MAIN_WINDOW_WIDTH),
+      height:
+        bounds?.height ?? (workspaceView ? 618 : DEFAULT_MAIN_WINDOW_HEIGHT),
       x: bounds?.x,
       y: bounds?.y,
       // The floor where the split layout still reads: history at its 180px

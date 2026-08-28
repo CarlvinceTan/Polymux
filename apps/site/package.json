@@ -4,8 +4,9 @@
   "version": "0.2.1",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/generate-blog-pages.mjs && node scripts/generate-doc-pages.mjs && node scripts/generate-release-pages.mjs && node scripts/generate-product-pages.mjs",
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/build-site.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "preview": "vite preview"
   },
@@ -21,6 +22,8 @@
   },
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.94.0",
-    "simple-icons": "^16.28.0"
+    "marked": "^18.0.11",
+    "simple-icons": "^16.28.0",
+    "yaml": "^2.9.0"
   }
 }

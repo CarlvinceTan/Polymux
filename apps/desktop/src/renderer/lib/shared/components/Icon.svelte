@@ -15,7 +15,7 @@
     | 'mail' | 'inbox' | 'spam' | 'storefront' | 'settings' | 'cloud'
     | 'reply' | 'reply-all' | 'mail-forward' | 'flag'
     | 'key' | 'shield' | 'prohibited' | 'eye' | 'eye-off' | 'incognito' | 'external' | 'import' | 'cookie'
-    | 'pin' | 'pin-off' | 'bell' | 'tasks' | 'platforms' | 'align-left' | 'align-center' | 'align-right';
+    | 'pin' | 'pin-off' | 'bell' | 'tasks' | 'platforms' | 'broadcast' | 'align-left' | 'align-center' | 'align-right';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -54,6 +54,13 @@
     <!-- Four equal service tiles: an aggregate of platforms, without the
          network-node meaning carried by the Connections icon. -->
     <rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>
+  {:else if name === 'broadcast'}
+    <!-- A compact bullhorn: rear body and handle, flared cone, then three
+         separate sound marks. It keeps the reference silhouette while using
+         the same monochrome outline language as the rest of Polymux. -->
+    <path d="M4.5 9h4.25l7.75-4.5v15L8.75 15H4.5A1.5 1.5 0 0 1 3 13.5v-3A1.5 1.5 0 0 1 4.5 9z"/>
+    <path d="M6 15v4.5h3V15M16.5 8.5h1.25A1.25 1.25 0 0 1 19 9.75v4.5a1.25 1.25 0 0 1-1.25 1.25H16.5"/>
+    <path d="m20 8 1.5-1M20.5 12h1.75M20 16l1.5 1"/>
   {:else if name === 'plus'}
     <path d="M12 5v14M5 12h14"/>
   {:else if name === 'align-left'}

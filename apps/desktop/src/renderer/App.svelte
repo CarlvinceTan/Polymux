@@ -41,6 +41,7 @@
   import {inferQueuePriority, shouldSteerLiveTurn} from './lib/features/chat/queuePolicy';
   import {addConversationRun as withConversationRun, bindPendingRun, latestConversationRun, removeConversationRun as withoutConversationRun} from './lib/features/chat/runAttribution';
   import {platformForChat, primeChatPlatforms} from './lib/shared/state/chatPlatforms';
+  import {startupReleaseNotes} from './lib/shared/state/startupReleaseNotes';
   import {applyTaskEvent, emptyTranscript, type TaskTranscript} from './lib/features/workspace/taskTranscript';
   import type {AgentActivityItem} from './lib/features/chat/AgentActivity.svelte';
 
@@ -126,6 +127,8 @@
   let workspaceMotionWidth: number | null = null;
   let workspaceMotionFrame = 0;
   let workspaceMotionState: boolean | null = null;
+  let workspaceExpandedWidth = viewportWidth - (chatDrawerOpen ? chatDrawerWidth : 0);
+  let workspaceMotionProgress = workspaceExpanded ? 1 : 0;
 
   /** `cubic-bezier(.45,0,.55,1)`, the shared drawer easing, solved for x. */
   function drawerEase(t: number): number {
@@ -145,6 +148,10 @@
     const from = workspaceMotionWidth ?? (panel ? panel.getBoundingClientRect().width : to);
     cancelAnimationFrame(workspaceMotionFrame);
     if (Math.round(from) === Math.round(to)) { workspaceMotionWidth = null; return; }
+    // Enter motion at the width already on screen. Leaving this null until the
+    // first animation frame gives the reactive target width one paint in which
+    // to flash through before the stepped motion takes over.
+    workspaceMotionWidth = Math.round(from);
     const started = performance.now();
     const step = (now: number) => {
       const progress = Math.min(1, (now - started) / WORKSPACE_MOTION_MS);
@@ -314,6 +321,12 @@
     : workspaceExpanded
       ? `calc(100vw - ${chatDrawerOpen ? chatDrawerWidth : 0}px)`
       : `${workspaceWidth}px`;
+  $: workspaceExpandedWidth = viewportWidth - (chatDrawerOpen ? chatDrawerWidth : 0);
+  $: workspaceMotionProgress = workspaceMotionWidth === null
+    ? (workspaceExpanded ? 1 : 0)
+    : Math.max(0, Math.min(1,
+      (workspaceMotionWidth - workspaceWidth) /
+      Math.max(1, workspaceExpandedWidth - workspaceWidth)));
   $: contentRightColumn = mode === 'summary' ? `${SUMMARY_RESERVED_COLUMN}px` : workspaceColumn;
   /**
    * What the composer reserves on its right. It follows the panel docking in
@@ -408,7 +421,8 @@
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       reasoningLevel = settings.reasoningLevel;
       void api.permissions.ensureFirstRun().catch(() => {});
-    }).catch(() => {});
+      return settings;
+    }).catch(() => null);
     refreshExtensionStatus();
     // What the hub knew when the app last quit, read from disk. It is local
     // and it is what the hub paints from, so it happens now rather than on the
@@ -488,9 +502,16 @@
       };
       chromeShiftFrame = requestAnimationFrame(step);
     });
-    void Promise.all([settingsLoad, loadChats()]).then(async () => {
+    void Promise.all([settingsLoad, loadChats()]).then(async ([settings]) => {
       if (requestedConversationId && conversations.some((chat) => chat.id === requestedConversationId))
         await openChat(requestedConversationId);
+      if (requestedWorkspaceView === null && settings) {
+        const appInfo = await api.general.version().catch(() => null);
+        const releaseNotes = appInfo?.packaged
+          ? startupReleaseNotes(window.localStorage, appInfo.version, settings.onboardingCompleted)
+          : null;
+        if (releaseNotes) openVisit(releaseNotes.url, releaseNotes.title);
+      }
     }).finally(() => {
       startupReady = true;
       document.documentElement.dataset.appReady = 'true';
@@ -633,6 +654,11 @@
     }
     if (openingId !== id) return;
     await drainQueue(id);
+  }
+
+  function openChatFromSearch(id: string): void {
+    workspaceExpanded = false;
+    void openChat(id);
   }
 
   async function send(text: string, files: File[], asGoal = false, immediate = false): Promise<void> {
@@ -1386,7 +1412,7 @@
   }
 
   /** Tab kinds a stored snapshot may re-create; anything else is stale data. */
-  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['media', 'browser', 'summary', 'drive', 'schedule', 'calendar', 'hub', 'subagents', 'tasks']);
+  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['new', 'media', 'browser', 'summary', 'drive', 'schedule', 'calendar', 'hub', 'subagents', 'tasks']);
   /** True while a snapshot is being applied, so the auto-save sits out. */
   let workspaceRestoring = false;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1457,7 +1483,7 @@
     outputs = artifacts.map(({id, name}) => ({id, name}));
     references = storedReferences.map(({id, title, kind, uri}) => ({id, title, kind, uri}));
     const resourceTabs = artifacts.map(artifactTab);
-    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'calendar' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'subagent' || tab.kind === 'subagents' || tab.kind === 'tasks'), ...resourceTabs];
+    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'new' || tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'calendar' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'subagent' || tab.kind === 'subagents' || tab.kind === 'tasks'), ...resourceTabs];
     if (activeTabId && !workspaceTabs.some((tab) => tab.id === activeTabId)) activeTabId = workspaceTabs[0]?.id ?? null;
   }
 
@@ -1465,6 +1491,25 @@
     if (!workspaceTabs.some((current) => current.id === tab.id)) workspaceTabs = [...workspaceTabs, tab];
     activeTabId = tab.id;
     openWorkspace();
+  }
+
+  /**
+   * A choice made from NewView changes that tab in place. Singleton views keep
+   * their stable ids so cross-window ownership and reopening continue to work;
+   * a destination that is already open simply wins focus and removes the
+   * redundant New tab.
+   */
+  function replaceActiveNewTab(tab: WorkspaceTab): boolean {
+    const newIndex = workspaceTabs.findIndex((current) => current.id === activeTabId && current.kind === 'new');
+    if (newIndex < 0) return false;
+    const existingIndex = workspaceTabs.findIndex((current) => current.id === tab.id);
+    if (existingIndex >= 0 && existingIndex !== newIndex)
+      workspaceTabs = workspaceTabs.filter((_, index) => index !== newIndex);
+    else
+      workspaceTabs = workspaceTabs.map((current, index) => index === newIndex ? tab : current);
+    activeTabId = tab.id;
+    openWorkspace();
+    return true;
   }
 
   /**
@@ -1573,11 +1618,20 @@
   }
 
   function newTab(kind: WorkspaceTabKind = 'media'): void {
+    if (kind === 'new') {
+      openTab({id: crypto.randomUUID(), title: translate('workspace.newTab'), kind});
+      return;
+    }
     const singletonId = SINGLETON_TAB_IDS[kind];
     const named = singletonTitles[kind];
     claimWorkspaceSingleton(kind);
-    if (singletonId) openTab({id: singletonId, title: translate(named ?? 'workspace.newTab'), kind});
-    else openTab({id: crypto.randomUUID(), title: translate('workspace.newTab'), kind});
+    const activeNew = workspaceTabs.find((tab) => tab.id === activeTabId && tab.kind === 'new');
+    const tab = {
+      id: singletonId ?? activeNew?.id ?? crypto.randomUUID(),
+      title: translate(named ?? 'workspace.newTab'),
+      kind,
+    };
+    if (!replaceActiveNewTab(tab)) openTab(tab);
   }
 
   /**
@@ -2005,7 +2059,9 @@
   }
 
   function openVisit(url: string, title: string): void {
-    openTab({id: crypto.randomUUID(), title, kind: 'browser', url});
+    const activeNew = workspaceTabs.find((tab) => tab.id === activeTabId && tab.kind === 'new');
+    const tab: WorkspaceTab = {id: activeNew?.id ?? crypto.randomUUID(), title, kind: 'browser', url};
+    if (!replaceActiveNewTab(tab)) openTab(tab);
   }
 
   function saveSchedule(
@@ -2418,6 +2474,7 @@
       role: message.role === 'assistant' ? 'assistant' : 'user',
       text: contentText(message.content),
       files: message.attachments.map((attachment) => attachment.name),
+      filePaths: message.attachments.map((attachment) => attachment.path),
       sentAt: message.createdAt,
       asGoal: metadata.asGoal === true,
       feedback,
@@ -2539,7 +2596,7 @@
     title={active.title || $t('chat.untitled')}
     showTitle={active.messages.length > 0}
     showSummary={mode === 'summary' || active.messages.length > 0}
-    hideNewChat={workspaceExpanded}
+    hideNewChat={workspaceExpanded && !chatDrawerOpen}
     showChatToggle={requestedWorkspaceView === null}
     {chatDrawerOpen}
     {mode}
@@ -2576,7 +2633,7 @@
 
   {#if chatSearchOpen}<ChatSearchModal
     chats={chatEntries}
-    onOpen={openChat}
+    onOpen={openChatFromSearch}
     onClose={() => chatSearchOpen = false}
   />{/if}
 
@@ -2656,6 +2713,8 @@
     standalone={requestedWorkspaceView !== null}
     resizing={workspaceResizing}
     motion={workspaceMotionWidth !== null}
+    motionProgress={workspaceMotionProgress}
+    dockedWidth={workspaceWidth}
     reservedWidth={chatDrawerOpen ? MIN_CHAT_DRAWER_WIDTH : 0}
     summaryData={{outputs, references, tasks}}
     {taskTranscripts}
