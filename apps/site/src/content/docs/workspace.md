@@ -28,6 +28,6 @@ Closing a view removes it from the visible workspace. It does not automatically 
 
 Frequently used views can appear in the top bar. Configure this under **Settings → General → Top bar**. Keep the set small so the controls you use most remain easy to recognise.
 
-## Basic and Advanced mode
+## Settings
 
-Basic mode keeps the common controls visible. Advanced mode exposes additional provider, model, memory, and configuration surfaces. Turn it on under **Settings → General** when you need those controls; the core workspace behaves the same in either mode.
+Provider, model, memory, MCP, skill, plugin, profile, and workspace controls are always available in **Settings**.

@@ -22,7 +22,7 @@ If your operating system asks for permission, only enable the access needed for 
 
 Select a model provider and model during setup. Depending on the provider, you may sign in, paste an API key, or select a compatible local runtime already running on your computer.
 
-You can change this later under **Settings → Providers** and **Settings → Models**. Advanced mode exposes the full model and role configuration.
+You can change this later under **Settings → Providers** and **Settings → Models**, including the full model and role configuration.
 
 ## 3. Start a conversation
 

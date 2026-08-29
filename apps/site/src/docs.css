@@ -22,7 +22,7 @@
 @media(max-width:900px){.docs-sidebar{top:68px}.docs-overlay{inset:68px 0 0}}
 @media(max-width:760px){.docs-header-actions .docs-search-wrap{display:none}}
 .docs-sidebar ul{display:flex;flex-direction:column;gap:2px}
-.docs-site-shell-inner{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,480px) minmax(0,1fr);gap:24px}
+.site-shell-inner.docs-site-shell-inner{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,480px) minmax(0,1fr);gap:24px}
 .docs-site-shell-inner>.docs-search-wrap{width:100%}
 .docs-site-shell-inner .docs-header-actions{justify-self:end;margin-left:0}
 @media(max-width:1050px){.docs-site-shell-inner{grid-template-columns:minmax(0,1fr) minmax(280px,430px) minmax(0,1fr)}}
