@@ -73,7 +73,9 @@ const config: ForgeConfig = {
     // mautrix binaries under `resources/bridges`. Those binaries are not in git
     // (half a gigabyte of build output); run `npm run bridges` before
     // packaging, which the prepackage hook does.
-    extraResource: ['resources', 'scripts/wxcdn_fileid_capture.py'],
+    extraResource: process.platform === 'darwin'
+      ? ['resources', 'scripts/wxcdn_fileid_capture.py']
+      : ['resources'],
     extendInfo: {
       NSLocationUsageDescription: 'Polymux uses your location only when Location access is enabled in General settings.',
       NSLocationWhenInUseUsageDescription: 'Polymux uses your location only when Location access is enabled in General settings.',

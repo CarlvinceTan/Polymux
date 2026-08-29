@@ -30,6 +30,9 @@ export const channels = {
    * full screen, where macOS takes its traffic lights away. */
   windowFullscreen: "polymux:window:fullscreen",
   windowOpenWorkspaceView: "polymux:window:open-workspace-view",
+  /** Pushed after the user clicks a system notification, carrying the exact
+   * conversation or workspace destination that notification came from. */
+  windowOpenNotificationTarget: "polymux:window:open-notification-target",
   permissionsEnsureFirstRun: "polymux:permissions:ensure-first-run",
   permissionsStatus: "polymux:permissions:status",
   permissionsRequest: "polymux:permissions:request",
@@ -135,6 +138,8 @@ export const channels = {
   commsChatSendFiles: "polymux:comms:chat:send-files",
   commsChatPickFiles: "polymux:comms:chat:pick-files",
   commsChatSendAudio: "polymux:comms:chat:send-audio",
+  commsChatSendSticker: "polymux:comms:chat:send-sticker",
+  commsChatRecall: "polymux:comms:chat:recall",
   commsChatReact: "polymux:comms:chat:react",
   commsChatUnreact: "polymux:comms:chat:unreact",
   commsChatMarkRead: "polymux:comms:chat:mark-read",

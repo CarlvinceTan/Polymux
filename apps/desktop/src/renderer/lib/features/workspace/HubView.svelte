@@ -306,7 +306,7 @@
   import {avatarInitial} from './avatarFallback';
   import {attachmentRenderKind} from './chatAttachments';
   import {chatClipboardContent} from './chatClipboard';
-  import {dedupeContactChats} from './chatContacts';
+  import {dedupeContactChats, dedupePortalChats} from './chatContacts';
   import {
     contactIdentityRows,
     contactLinkForChat,
@@ -352,6 +352,7 @@
   } from './hubRailOrder';
   import {arrangeChats, hiddenChats, loadChatPrefs, toggleHidden, toggleMuted, togglePinned} from './chatPrefs';
   import FileAttachment from '../chat/FileAttachment.svelte';
+  import {recordedVoiceWav} from './voiceWav';
   import EmojiPicker from './EmojiPicker.svelte';
   import {
     loadChatDraft,
@@ -427,6 +428,10 @@
   // Messaging
   let activeChat: ChatDto | null = null;
   let chatMessages: ChatMessageDto[] = [];
+  type ChatTimelineEntry = {message: ChatMessageDto; index: number};
+  type ChatTimelineItem =
+    | {kind: 'notice'; key: string; entry: ChatTimelineEntry}
+    | {kind: 'sender-run'; key: string; entries: ChatTimelineEntry[]; oldestIndex: number};
   let chatMembers: ChatMemberDto[] = [];
   /** A person's identity sheet sits over their conversation. It is also the
    * Contacts view's destination, so a profile is useful before a thread is
@@ -1098,7 +1103,8 @@
   $: currentChatRows = focusedSpace
     ? chatsInSpace(platformChats, focusedSpace.id, chatSearch)
     : spaceRootChats(platformChats, chatSearch);
-  $: filteredChatRows = currentChatRows.filter((chat) =>
+  $: uniqueChatRows = dedupePortalChats(currentChatRows);
+  $: filteredChatRows = uniqueChatRows.filter((chat) =>
     matchesConversationFilter(chatUnread(chat), conversationFilter));
   $: orderedChatRows = [...filteredChatRows].sort((left, right) =>
     compareConversationActivity(left.lastActivity, right.lastActivity, conversationSort));
@@ -1751,11 +1757,19 @@
     if (target.chat) {
       const wanted = target.chat;
       if (chats.length === 0) await refreshChats();
-      const found = chats.find(
+      const findChat = (): ChatDto | undefined => chats.find(
         (item) =>
           (wanted.id && item.id === wanted.id) ||
           (wanted.name && item.name.toLowerCase() === wanted.name.toLowerCase()),
       );
+      let found = findChat();
+      // An incoming message can name a room that was created while the app
+      // was hidden, before the session cache has seen it. Refresh once rather
+      // than letting that notification open Hub on the wrong conversation.
+      if (!found) {
+        await refreshChats();
+        found = findChat();
+      }
       if (!found) return;
       await openChat(found);
       // A draft is written into the box, never sent: the user reads it where
@@ -2378,7 +2392,7 @@
 
   async function refreshOpen(): Promise<void> {
     if (typeof document !== 'undefined' && document.hidden) return;
-    await refreshSources();
+    await Promise.all([refreshSources(), refreshContactLinks()]);
     if (activeChat) {
       // A read or "mark unread" performed in the native app changes bridge
       // state without adding a Matrix timeline event. Keep the list polling
@@ -2409,6 +2423,17 @@
       acceptStatus(await api.comms.status());
     } catch {
       // Quiet, for the same reason as the other polls.
+    }
+  }
+
+  /** Contact identities are local shared state, so a merge in another Hub
+   * window must reach this one without requiring a remount. */
+  async function refreshContactLinks(): Promise<void> {
+    try {
+      contactLinks = await api.comms.contactLinks();
+      session.contactLinks = contactLinks;
+    } catch {
+      // Keep the last complete identity map during a transient IPC failure.
     }
   }
 
@@ -2690,6 +2715,45 @@
     // A stamp between them starts a new run whoever sent it.
     return !above || above.sender !== message.sender || startsRun(index);
   }
+
+  /**
+   * Consecutive messages from one sender share one hover target and one header.
+   * The source list is newest first, matching the thread's column-reverse
+   * layout; each run keeps that order and records its oldest, visually first
+   * message for the identity and time above it.
+   */
+  function messageTimeline(messages: ChatMessageDto[]): ChatTimelineItem[] {
+    const items: ChatTimelineItem[] = [];
+    let index = 0;
+    while (index < messages.length) {
+      const message = messages[index]!;
+      if (message.notice) {
+        items.push({kind: 'notice', key: `notice:${message.id}`, entry: {message, index}});
+        index += 1;
+        continue;
+      }
+
+      const entries: ChatTimelineEntry[] = [];
+      while (index < messages.length) {
+        const current = messages[index]!;
+        if (current.notice || (entries.length > 0 && current.sender !== message.sender)) break;
+        entries.push({message: current, index});
+        const closesRun = startsSenderRun(index) || messages[index + 1]?.notice;
+        index += 1;
+        if (closesRun) break;
+      }
+      const oldestIndex = entries[entries.length - 1]!.index;
+      items.push({
+        kind: 'sender-run',
+        key: `sender-run:${entries[entries.length - 1]!.message.id}`,
+        entries,
+        oldestIndex,
+      });
+    }
+    return items;
+  }
+
+  $: chatTimeline = messageTimeline(chatMessages);
 
   /**
    * The name to put over a message. Falls back to the local part of the
@@ -3218,6 +3282,23 @@
     if (!await api.clipboard.write(content)) error = translate('common.copyFailed');
   }
 
+  async function recallMessage(message: ChatMessageDto): Promise<void> {
+    if (!activeChat || activeChat.platform !== 'wechat' || !message.mine) return;
+    const chatId = activeChat.id;
+    closeMessageMenu();
+    busy = `recall:${message.id}`;
+    try {
+      await api.comms.chatRecall(chatId, message.id);
+      chatMessages = chatMessages.filter((item) => item.id !== message.id);
+      session.messages.set(chatId, {messages: chatMessages, nextBefore: chatBefore});
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
   /**
    * Adds the emoji, or takes it back when it is already ours — the same tap
    * doing both, as every messenger behaves. The bubble is updated first so the
@@ -3499,6 +3580,24 @@
     }
   }
 
+  async function sendSticker(): Promise<void> {
+    if (!activeChat || activeChat.platform !== 'wechat') return;
+    const chatId = activeChat.id;
+    composerToolsOpen = false;
+    busy = 'sticker';
+    try {
+      const [file] = await api.comms.chatPickFiles();
+      if (!file) return;
+      await api.comms.chatSendSticker(chatId, file);
+      await refreshChat();
+      error = '';
+    } catch (cause) {
+      error = readableError(cause);
+    } finally {
+      busy = '';
+    }
+  }
+
   /**
    * A voice note, recorded in place.
    *
@@ -3668,6 +3767,7 @@
   async function sendVoice(): Promise<void> {
     if (!activeChat || voiceState === 'idle' || !recorder) return;
     const chatId = activeChat.id;
+    const platform = activeChat.platform;
     const capture = recorder;
     const type = capture.mimeType || 'audio/webm';
     stopClock();
@@ -3690,7 +3790,14 @@
     if (blob.size === 0) return;
     busy = 'voice';
     try {
-      await api.comms.chatSendAudio(chatId, new Uint8Array(await blob.arrayBuffer()), blob.type);
+      const bytes = platform === 'wechat'
+        ? await recordedVoiceWav(blob)
+        : await blob.arrayBuffer();
+      await api.comms.chatSendAudio(
+        chatId,
+        new Uint8Array(bytes),
+        platform === 'wechat' ? 'audio/wav' : blob.type,
+      );
       await refreshChat();
       error = '';
     } catch (cause) {
@@ -5942,10 +6049,15 @@
         </div>
       {:else}
       <div class="hub-view-thread" bind:this={threadEl} onscroll={onThreadScroll}>
-        {#each chatMessages as message, index (message.id)}
-          {#if message.notice}
-            <p class="hub-view-notice">{message.body}</p>
+        {#each chatTimeline as item (item.key)}
+          {@const stampEntry = item.kind === 'notice' ? item.entry : item.entries[item.entries.length - 1]!}
+          {#if item.kind === 'notice'}
+            <p class="hub-view-notice">{item.entry.message.body}</p>
           {:else}
+          <div class="hub-view-message-run">
+          {#each item.entries as entry (entry.message.id)}
+          {@const message = entry.message}
+          {@const index = entry.index}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="hub-view-bubble-row"
@@ -5959,11 +6071,9 @@
                sender identity beside the message itself. A bridged sender id
                reads `@whatsapp_614…:server`, which names nobody, so the name
                the bridge resolved is what shows. -->
-          {#if startsSenderRun(index)}
+          {#if index === item.oldestIndex}
             {#if message.mine}
-              <!-- Keep the same start-of-run rhythm as an incoming message,
-                   while leaving the user's redundant identity out of sight. -->
-              <span class="hub-view-bubble-who-space" aria-hidden="true">{senderLabel(message)}</span>
+              <span class="hub-view-bubble-who-space" aria-hidden="true">You</span>
             {:else}
               <span class="hub-view-bubble-who">
                 {@render chatAvatar(
@@ -5972,9 +6082,13 @@
                   `sender:${activeChat.id}:${message.sender}`,
                   true,
                 )}
-                <span>{senderLabel(message)}</span>
+                <span class="hub-view-bubble-sender">{senderLabel(message)}</span>
               </span>
             {/if}
+          {/if}
+          <div class="hub-view-bubble-line" class:mine={message.mine}>
+          {#if message.mine}
+            <time class="hub-view-bubble-time" datetime={message.sentAt}>{messageTime(message.sentAt)}</time>
           {/if}
           <div
             class="hub-view-bubble"
@@ -6117,14 +6231,19 @@
                 onreact={(key) => void react(message, key)}
               />
             {/if}
-            <em>{messageTime(message.sentAt)}</em>
           </div>
+          {#if !message.mine}
+            <time class="hub-view-bubble-time" datetime={message.sentAt}>{messageTime(message.sentAt)}</time>
+          {/if}
+          </div>
+          </div>
+          {/each}
           </div>
           {/if}
-          <!-- After the bubble in the DOM, which `column-reverse` paints above
-               it: the stamp introduces the run that starts here. -->
-          {#if startsRun(index)}
-            <p class="hub-view-stamp">{displayTime(message.sentAt)}</p>
+          <!-- After the run in the DOM, which `column-reverse` paints above it:
+               the stamp introduces the run that starts here. -->
+          {#if startsRun(stampEntry.index)}
+            <p class="hub-view-stamp">{displayTime(stampEntry.message.sentAt)}</p>
           {/if}
         {:else}
           {#if busy.startsWith('chat:')}
@@ -6192,6 +6311,14 @@
             role="menuitem"
             onclick={() => { void copyMessage(target); closeMessageMenu(); }}
           ><Icon name="copy" size={14} /><span>{$t('common.copy')}</span></button>
+          {#if activeChat.platform === 'wechat' && target.mine}
+            <button
+              class="polymux-dropdown-item"
+              role="menuitem"
+              disabled={busy === `recall:${target.id}`}
+              onclick={() => void recallMessage(target)}
+            ><Icon name="trash" size={14} /><span>{$t('common.delete')}</span></button>
+          {/if}
         </div>
       {/if}
 
@@ -6201,7 +6328,7 @@
                to the newest message once the reader has scrolled up from it. -->
           <button type="button" class="hub-view-to-latest" onclick={scrollToLatest}>
             <Icon name="arrow-down" size={13} />
-            {$t('chat.scrollToBottom')}
+            <span>{$t('chat.scrollToBottom')}</span>
           </button>
         {/if}
         {#if replyTo}
@@ -6287,6 +6414,18 @@
                 <Icon name="smile" size={14} />
                 <span>{$t('hub.addEmoji')}</span>
               </button>
+              {#if activeChat.platform === 'wechat'}
+                <button
+                  type="button"
+                  class="polymux-dropdown-item"
+                  role="menuitem"
+                  disabled={busy === 'sticker'}
+                  onclick={() => void sendSticker()}
+                >
+                  <Icon name="image" size={14} />
+                  <span>{$t('hub.sendSticker')}</span>
+                </button>
+              {/if}
             </div>
           {/if}
           {#if composerEmojiOpen}
@@ -6329,6 +6468,11 @@
               {/each}
             </div>
           {/if}
+          {#if !draft}
+            <span class="hub-view-composer-hint" aria-hidden="true">
+              {$t('hub.messagePlaceholder', {name: activeChat.name})}
+            </span>
+          {/if}
           <textarea
             bind:this={composerInput}
             bind:value={draft}
@@ -6337,6 +6481,7 @@
             onclick={updateComposerCursor}
             onkeyup={updateComposerCursor}
             placeholder={$t('hub.messagePlaceholder', {name: activeChat.name})}
+            aria-label={$t('hub.messagePlaceholder', {name: activeChat.name})}
             aria-autocomplete="list"
             aria-controls={composerAutocompleteOpen ? 'hub-composer-autocomplete' : undefined}
             aria-activedescendant={composerAutocompleteOpen

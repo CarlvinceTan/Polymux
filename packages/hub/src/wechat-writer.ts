@@ -78,11 +78,16 @@ export class ProcessWeChatWriter implements WeChatWriter {
             delivered_verified?: boolean;
             messageId?: string;
             message_id?: string;
+            clientMessageId?: string;
+            client_message_id?: string;
             reason?: string;
           };
           finish(undefined, {
             deliveredVerified: answer.deliveredVerified === true || answer.delivered_verified === true,
             ...(answer.messageId || answer.message_id ? {messageId: answer.messageId ?? answer.message_id} : {}),
+            ...(answer.clientMessageId || answer.client_message_id
+              ? {clientMessageId: answer.clientMessageId ?? answer.client_message_id}
+              : {}),
             ...(answer.reason ? {reason: answer.reason} : {}),
           });
         } catch {

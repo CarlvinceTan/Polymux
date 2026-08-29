@@ -9,13 +9,71 @@ import test from "node:test";
 import { Homeserver } from "../src/server.js";
 import {
   daemonUsesCaptureScript,
+  childProcessIsRunning,
   WeChatBridge,
   relayEnvironment,
+  settleWeChatWrite,
+  weChatWriterFailureMessage,
   weChatDaemonPid,
+  weChatRelayListenerPid,
   type WeChatWriteRequest,
 } from "../src/wechat-bridge.js";
 import { MatrixHub } from "../src/hub.js";
-import { setupHint } from "../src/wechat-relay.js";
+import {
+  setupGuidance,
+  setupHint,
+  WECHAT_DOWNLOAD_URL,
+  WECHAT_DOWNLOAD_URLS,
+  weChatDownloadUrl,
+} from "../src/wechat-relay.js";
+
+test("native WeChat failure codes become actionable messages", () => {
+  assert.equal(
+    weChatWriterFailureMessage("wechat_not_running", "media"),
+    "Open WeChat and make sure you are signed in, then try again.",
+  );
+  assert.equal(
+    weChatWriterFailureMessage("native delivery rejected", "media"),
+    "native delivery rejected",
+  );
+  assert.equal(
+    weChatWriterFailureMessage(undefined, "media"),
+    "WeChat did not verify the media operation",
+  );
+});
+
+test("a verified write stays successful when relay recovery is delayed", () => {
+  const result = {deliveredVerified: true, messageId: "server-ack"};
+  assert.deepEqual(
+    settleWeChatWrite(result, undefined, new Error("relay restart failed")),
+    {result, retryRelay: true},
+  );
+  assert.throws(
+    () => settleWeChatWrite(undefined, new Error("send failed"), undefined),
+    /send failed/,
+  );
+});
+
+test("a signal-terminated relay is not treated as a running child", () => {
+  assert.equal(
+    childProcessIsRunning({exitCode: null, signalCode: null}),
+    true,
+  );
+  assert.equal(
+    childProcessIsRunning({exitCode: 1, signalCode: null}),
+    false,
+  );
+  assert.equal(
+    childProcessIsRunning({exitCode: null, signalCode: "SIGTERM"}),
+    false,
+  );
+});
+
+test("the loopback relay listener is accepted only when it is unambiguous", () => {
+  assert.equal(weChatRelayListenerPid("15019\n"), 15019);
+  assert.equal(weChatRelayListenerPid("15019\n15020\n"), null);
+  assert.equal(weChatRelayListenerPid("not a pid"), null);
+});
 
 /**
  * The relay, stubbed. Everything the bridge needs from the WeChat side is
@@ -27,6 +85,10 @@ interface Relay {
   url: string;
   /** Payloads the bridge asked the relay to send outward. */
   sent: Array<{ chatId?: string; message?: string }>;
+  /** Optional queued `/send` answers; success is the default. */
+  sendResults: Array<Record<string, unknown>>;
+  /** Controls whether `/health` advertises a warmed outbound signal chain. */
+  setHijackArmed: (armed: boolean | undefined) => void;
   /** What `/chats` answers, and the history each chat hands back on import. */
   catalogue: { chats: unknown[]; history: Record<string, unknown[]> };
   /** How many times the bridge has opened the stream, reconnects included. */
@@ -37,6 +99,8 @@ interface Relay {
   dropStream: () => void;
   /** Reports WeChat disconnected and ends the stream permanently. */
   disconnect: () => void;
+  /** Makes the relay report connected again after a hidden app relaunch. */
+  reconnect: () => void;
   /** Resolves once the bridge has actually subscribed to the stream. */
   connected: () => Promise<void>;
 }
@@ -47,13 +111,19 @@ async function stubRelay(): Promise<Relay> {
   let connections = 0;
   let stream: ServerResponse | null = null;
   let health = "connected";
+  let hijackArmed: boolean | undefined;
+  const sendResults: Array<Record<string, unknown>> = [];
   const server = createServer((request, response) => {
     const reply = (body: unknown): void => {
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(body));
     };
     const url = request.url ?? "/";
-    if (url.startsWith("/health")) return reply({ status: health });
+    if (url.startsWith("/health"))
+      return reply({
+        status: health,
+        ...(hijackArmed === undefined ? {} : {hijackArmed}),
+      });
     if (url.startsWith("/chats")) return reply(catalogue.chats);
     if (url.startsWith("/sticker.gif")) {
       response.writeHead(200, { "Content-Type": "application/octet-stream" });
@@ -86,7 +156,7 @@ async function stubRelay(): Promise<Relay> {
             Buffer.concat(chunks).toString("utf8"),
           ) as Relay["sent"][number],
         );
-        reply({ success: true });
+        reply(sendResults.shift() ?? { success: true });
       });
       return;
     }
@@ -100,6 +170,10 @@ async function stubRelay(): Promise<Relay> {
     server,
     url: `http://127.0.0.1:${port}`,
     sent,
+    sendResults,
+    setHijackArmed: (armed) => {
+      hijackArmed = armed;
+    },
     catalogue,
     get connections() {
       return connections;
@@ -113,6 +187,9 @@ async function stubRelay(): Promise<Relay> {
       health = "disconnected";
       stream?.end();
       stream = null;
+    },
+    reconnect: () => {
+      health = "connected";
     },
     // Emitting before the bridge has subscribed writes into nothing, so every
     // test waits for the subscription rather than for a guessed delay.
@@ -350,6 +427,210 @@ test("an inbound message opens a portal room the hub files under WeChat", async 
       "the puppet's connection membership is not native conversation activity",
     );
   });
+});
+
+test("a missing routing map recovers the existing portal instead of duplicating it", async () => {
+  const relay = await stubRelay();
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-recovery-"));
+  const bridgeDirectory = path.join(directory, "bridges");
+  const homeserver = new Homeserver({
+    serverName: "polymux.local",
+    dataDirectory: directory,
+  });
+  await homeserver.start();
+  const owner = homeserver.createLocalUser("polymux-recovery");
+  const makeBridge = (): WeChatBridge => new WeChatBridge({
+    homeserver,
+    directory: bridgeDirectory,
+    relayUrl: relay.url,
+    binaryDirectories: [],
+  });
+  const hub = new MatrixHub({
+    baseUrl: homeserver.baseUrl,
+    homeserverUrl: homeserver.baseUrl,
+    directory,
+    embedded: true,
+    auth: () => ({matrixToken: owner.accessToken, userId: owner.userId}),
+  });
+  let bridge = makeBridge();
+  try {
+    await bridge.start(owner.userId);
+    await relay.connected();
+    relay.emit({
+      messageId: "before-reset",
+      chatId: "wxid_same_chat",
+      chatName: "Same chat",
+      senderId: "wxid_same_chat",
+      senderName: "Same chat",
+      body: "before",
+      timestamp: 1,
+    });
+    const [original] = await roomsWhen(
+      hub,
+      (rooms) => rooms.length === 1 && rooms[0].preview === "before",
+      "the original portal",
+    );
+    await bridge.close();
+
+    const statePath = path.join(bridgeDirectory, "wechat", "state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8")) as {
+      rooms: Record<string, unknown>;
+      roomToChat: Record<string, unknown>;
+    };
+    state.rooms = {};
+    state.roomToChat = {};
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+
+    bridge = makeBridge();
+    await bridge.start(owner.userId);
+    await until(() => relay.connections >= 2, "the restarted relay subscription");
+    relay.emit({
+      messageId: "after-reset",
+      chatId: "wxid_same_chat",
+      chatName: "Same chat",
+      senderId: "wxid_same_chat",
+      senderName: "Same chat",
+      body: "after",
+      timestamp: 2,
+    });
+    const rooms = await roomsWhen(
+      hub,
+      (list) =>
+        list.length === 1 &&
+        list[0].preview === "after" &&
+        list[0].currentPortal === true,
+      "the existing portal to be recovered as current",
+    );
+    assert.equal(rooms[0].roomId, original.roomId);
+  } finally {
+    await bridge.close();
+    relay.server.close();
+    await homeserver.close();
+  }
+});
+
+test("startup history and the live stream share one portal creation", async () => {
+  const realFetch = globalThis.fetch;
+  let createRoomCalls = 0;
+  let releaseCreate!: () => void;
+  let firstCreateStarted!: () => void;
+  const createStarted = new Promise<void>((resolve) => {
+    firstCreateStarted = resolve;
+  });
+  const createReleased = new Promise<void>((resolve) => {
+    releaseCreate = resolve;
+  });
+  const guardedFetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname.endsWith("/_matrix/client/v3/createRoom")) {
+      createRoomCalls += 1;
+      firstCreateStarted();
+      await createReleased;
+    }
+    return await realFetch(input, init);
+  };
+
+  try {
+    await withBridge(
+      async ({hub, relay}) => {
+        await createStarted;
+        relay.emit({
+          messageId: "live-race",
+          chatId: "wxid_portal_race",
+          chatName: "Portal Race",
+          senderId: "wxid_portal_race",
+          senderName: "Portal Race",
+          body: "from live stream",
+          timestamp: 2,
+        });
+        // Give the stream consumer a chance to reach the same in-flight portal
+        // while the startup import is held at Matrix room creation.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        releaseCreate();
+        const rooms = await roomsWhen(
+          hub,
+          (items) => items.length === 1 && items[0].preview === "from live stream",
+          "both deliveries to converge on one portal",
+        );
+        assert.equal(rooms.length, 1);
+        assert.equal(createRoomCalls, 1);
+      },
+      (relay) => {
+        relay.catalogue.chats = [{
+          username: "wxid_portal_race",
+          display_name: "Portal Race",
+          unread_count: 1,
+        }];
+        relay.catalogue.history.wxid_portal_race = [{
+          message_id: "history-race",
+          chat_id: "wxid_portal_race",
+          chat_name: "Portal Race",
+          sender_id: "wxid_portal_race",
+          sender_name: "Portal Race",
+          body: "from startup history",
+          timestamp: 1,
+        }];
+      },
+      {fetch: guardedFetch},
+    );
+  } finally {
+    releaseCreate();
+  }
+});
+
+test("relinking cannot let an old stream clear the new consumer", async () => {
+  const relay = await stubRelay();
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-stream-owner-"));
+  const homeserver = new Homeserver({
+    serverName: "polymux.local",
+    dataDirectory: directory,
+  });
+  await homeserver.start();
+  const owner = homeserver.createLocalUser("polymux-stream-owner");
+  const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const realFetch = globalThis.fetch;
+  const heldStreamFetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === "/messages/stream")
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.push(controller);
+        },
+      }), {
+        status: 200,
+        headers: {"Content-Type": "text/event-stream"},
+      });
+    return await realFetch(input, init);
+  };
+  const bridge = new WeChatBridge({
+    homeserver,
+    directory,
+    relayUrl: relay.url,
+    binaryDirectories: [],
+    fetch: heldStreamFetch,
+  });
+  try {
+    await bridge.start(owner.userId);
+    await until(() => streams.length === 1, "the first stream consumer");
+    await bridge.close();
+    await bridge.start(owner.userId);
+    await until(() => streams.length === 2, "the replacement stream consumer");
+
+    streams[0].close();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(streams.length, 2, "the retired consumer cannot reconnect");
+  } finally {
+    await bridge.close();
+    for (const stream of streams) {
+      try {
+        stream.close();
+      } catch {
+        // It may already have been closed by the assertion path.
+      }
+    }
+    relay.server.close();
+    await homeserver.close();
+  }
 });
 
 test("a group message is attributed to whoever sent it, in either case", async () => {
@@ -971,6 +1252,130 @@ test("an outbound Matrix location reaches File Transfer with its coordinates", a
   });
 });
 
+test("an unwarmed relay is primed in the background and retried once", async () => {
+  let primes = 0;
+  await withBridge(
+    async ({hub, relay}) => {
+      relay.emit({
+        messageId: "prime-open",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(
+        hub,
+        (rooms) => rooms.length === 1,
+        "File Transfer to open",
+      );
+      relay.sendResults.push(
+        {
+          success: false,
+          error: "slot_send_bp_armed_no_fire",
+          diagnostic: {reason: "slot_send_bp_armed_no_fire"},
+        },
+        {success: true, messageId: "primed-send"},
+      );
+      await hub.send(room.roomId, "retry after hidden prime");
+      await until(() => relay.sent.length === 2, "the primed send retry");
+      assert.equal(primes, 1);
+      assert.deepEqual(relay.sent, [
+        {chatId: "filehelper", message: "retry after hidden prime"},
+        {chatId: "filehelper", message: "retry after hidden prime"},
+      ]);
+    },
+    undefined,
+    {
+      primeApp: async () => {
+        primes += 1;
+        return true;
+      },
+    },
+  );
+});
+
+test("the native writer primes a relay that advertises an unarmed daemon", async () => {
+  let primes = 0;
+  const writes: WeChatWriteRequest[] = [];
+  await withBridge(
+    async ({hub, relay}) => {
+      relay.emit({
+        messageId: "writer-prime-open",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(
+        hub,
+        (rooms) => rooms.length === 1,
+        "File Transfer to open",
+      );
+      relay.sendResults.push(
+        {
+          success: false,
+          error: "slot_send_bp_armed_no_fire",
+          diagnostic: {reason: "slot_send_bp_armed_no_fire"},
+        },
+      );
+      await hub.send(room.roomId, "writer after hidden prime");
+      await until(() => writes.length === 1, "the primed writer call");
+      assert.equal(primes, 1);
+    },
+    (relay) => relay.setHijackArmed(false),
+    {
+      primeApp: async () => {
+        primes += 1;
+        return true;
+      },
+      writer: {
+        write: async (request) => {
+          writes.push({...request});
+          return {deliveredVerified: true};
+        },
+      },
+    },
+  );
+});
+
+test("an active daemon sends plain text without pausing the native app", async () => {
+  let nativeWrites = 0;
+  await withBridge(
+    async ({bridge, hub, relay}) => {
+      relay.emit({
+        messageId: "active-daemon-open",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(
+        hub,
+        (rooms) => rooms.length === 1,
+        "File Transfer to open",
+      );
+      const eventId = await hub.send(room.roomId, "daemon stays active");
+      await bridge.waitForOutbound(eventId, 5_000);
+      assert.deepEqual(relay.sent, [
+        {chatId: "filehelper", message: "daemon stays active"},
+      ]);
+      assert.equal(nativeWrites, 0);
+    },
+    undefined,
+    {
+      writer: {
+        write: async () => {
+          nativeWrites += 1;
+          return {deliveredVerified: true};
+        },
+      },
+    },
+  );
+});
+
 test("a shared Hub image is sent to WeChat and its returned echo is not duplicated", async () => {
   const directory = await mkdtemp(
     path.join(tmpdir(), "polymux-wechat-image-send-"),
@@ -1263,6 +1668,11 @@ test("the native writer receives the operations WeChat permits in File Transfer"
         body: "native reply",
         replyTo: "native-target",
         fallbackBody: "↳ Earlier message: reply to me\nnative reply",
+        replyContext: {
+          body: "reply to me",
+          sender: "Earlier message",
+          createTime: 1,
+        },
       });
       assert.deepEqual(
         writes
@@ -1280,6 +1690,92 @@ test("the native writer receives the operations WeChat permits in File Transfer"
             deliveredVerified: true,
             messageId: request.kind === "text" ? "sent-native" : undefined,
           };
+        },
+      },
+    },
+  );
+});
+
+test("native delivery results reach the caller and failed local sends can be discarded", async () => {
+  await withBridge(
+    async ({bridge, hub, relay, homeserver}) => {
+      relay.emit({
+        messageId: "open-ack",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(hub, (rooms) => rooms.length === 1, "File Transfer to open");
+      relay.sendResults.push({
+        success: false,
+        error: "slot_send_bp_armed_no_fire",
+        diagnostic: {reason: "slot_send_bp_armed_no_fire"},
+      });
+      const eventId = await hub.send(room.roomId, "must fail remotely");
+      await assert.rejects(
+        bridge.waitForOutbound(eventId, 5_000),
+        /native delivery rejected/,
+      );
+      homeserver.discardOutbound(eventId);
+      const {messages} = await hub.messages(room.roomId, 20);
+      assert.equal(messages.some((item) => item.eventId === eventId), false);
+    },
+    undefined,
+    {
+      writer: {
+        write: async () => ({
+          deliveredVerified: false,
+          reason: "native delivery rejected",
+        }),
+      },
+    },
+  );
+});
+
+test("a verified native send is immediately recallable by its client id", async () => {
+  const writes: WeChatWriteRequest[] = [];
+  await withBridge(
+    async ({bridge, hub, relay}) => {
+      relay.emit({
+        messageId: "open-recall",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(hub, (rooms) => rooms.length === 1, "File Transfer to open");
+      relay.sendResults.push({
+        success: false,
+        error: "slot_send_bp_armed_no_fire",
+        diagnostic: {reason: "slot_send_bp_armed_no_fire"},
+      });
+      const eventId = await hub.send(room.roomId, "recall me");
+      await bridge.waitForOutbound(eventId, 5_000);
+      await bridge.recall(room.roomId, eventId);
+      assert.deepEqual(writes[1], {
+        kind: "recall",
+        chatId: "filehelper",
+        messageId: "server-fresh",
+        clientMessageId: "client-fresh",
+      });
+      const {messages} = await hub.messages(room.roomId, 20);
+      assert.equal(messages.some((item) => item.eventId === eventId), false);
+    },
+    undefined,
+    {
+      writer: {
+        write: async (request) => {
+          writes.push({...request});
+          return request.kind === "text"
+            ? {
+                deliveredVerified: true,
+                messageId: "server-fresh",
+                clientMessageId: "client-fresh",
+              }
+            : {deliveredVerified: true};
         },
       },
     },
@@ -1408,8 +1904,13 @@ test("a painted reply echo is consumed when the writer falls back", async () => 
   );
 });
 
-test("a Matrix mention becomes a native WeChat group mention", async () => {
+test("an installed native writer leaves mentions on the daemon-owned path", async () => {
   const writes: WeChatWriteRequest[] = [];
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "polymux-wechat-native-mention-"),
+  );
+  const log = path.join(directory, "send.jsonl");
+  const cli = await stubCli({}, log);
   await withBridge(
     async ({ hub, relay, homeserver, accessToken }) => {
       relay.emit({
@@ -1446,16 +1947,20 @@ test("a Matrix mention becomes a native WeChat group mention", async () => {
         },
       );
       assert.equal(response.ok, true);
-      await until(
-        () => writes.length === 1,
-        "the native mention to be dispatched",
-      );
-      assert.deepEqual(writes[0], {
-        kind: "text",
-        chatId: "study@chatroom",
-        body: "@Alex are you coming?",
-        mentions: ["wxid_alex"],
-      });
+      await until(() => existsSync(log), "the daemon-owned mention to be dispatched");
+      const sent = JSON.parse((await readFile(log, "utf8")).trim()) as {
+        args: string[];
+      };
+      assert.deepEqual(sent.args, [
+        "send",
+        "@Alex are you coming?",
+        "--wxid",
+        "study@chatroom",
+        "--json",
+        "--mention",
+        "wxid_alex",
+      ]);
+      assert.equal(writes.length, 0);
     },
     undefined,
     {
@@ -1465,6 +1970,7 @@ test("a Matrix mention becomes a native WeChat group mention", async () => {
           return { deliveredVerified: true };
         },
       },
+      cliPaths: [cli],
     },
   );
 });
@@ -1547,6 +2053,11 @@ test("a Polymux message keeps the WeChat id needed for a later recall", async ()
         (rooms) => rooms.length === 1,
         "File Transfer to open",
       );
+      relay.sendResults.push({
+        success: false,
+        error: "slot_send_bp_armed_no_fire",
+        diagnostic: {reason: "slot_send_bp_armed_no_fire"},
+      });
       const eventId = await hub.send(room.roomId, "recall this later");
       await until(() => writes.length === 1, "the message to reach the writer");
       await hub.redact(room.roomId, eventId);
@@ -1849,12 +2360,14 @@ test("a picture WeChat would not decrypt yet becomes the picture once it will", 
    */
   const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-cli-"));
   const viewed = path.join(directory, "viewed-in-wechat");
+  const calls = path.join(directory, "calls.log");
   const cli = path.join(directory, "wechat-use");
   await writeFile(
     cli,
     [
       "#!/usr/bin/env node",
       "const fs = require('node:fs');",
+      `fs.appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');`,
       "if (process.argv[2] !== 'image') {",
       "  process.stdout.write(JSON.stringify({meta: {}, rows: []}));",
       "  process.exit(0);",
@@ -1894,8 +2407,8 @@ test("a picture WeChat would not decrypt yet becomes the picture once it will", 
         "and it says where the picture can be seen",
       );
 
-      // The user opens it in WeChat, which is the only thing that makes it
-      // readable — and which nothing here can hurry along.
+      // The user opens it in WeChat. The long CDN backoff below is deliberate:
+      // the cheap heap sweep must notice this promptly on its own.
       await writeFile(viewed, "", "utf8");
 
       const { messages } = await threadWhen(
@@ -1909,9 +2422,18 @@ test("a picture WeChat would not decrypt yet becomes the picture once it will", 
         "the placeholder became the picture rather than the picture arriving as a second message",
       );
       assert.equal(messages[0].attachments[0].mimeType, "image/jpeg");
+      assert.match(
+        await readFile(calls, "utf8"),
+        /--from heap --variant mid/,
+        "the quick heap path recovered it without waiting for another CDN capture",
+      );
     },
     undefined,
-    { imageRetrySweepMs: 50, imageRetryDelaysMs: [10], cliPaths: [cli] },
+    {
+      imageRetrySweepMs: 50,
+      imageRetryDelaysMs: [60_000],
+      cliPaths: [cli],
+    },
   );
 });
 
@@ -1967,6 +2489,30 @@ test("setup names the missing piece, starting with WeChat itself", () => {
     );
   // Both present is not a setup problem, so there is nothing to say.
   assert.equal(setupHint({ wechat: true, relay: true }), null);
+});
+
+test("setup offers the official installer only when WeChat itself is missing", () => {
+  assert.deepEqual(setupGuidance({wechat: false, relay: false}), {
+    error: "WeChat for Mac is not installed. Install it and sign in — Polymux reads WeChat from the desktop app on this Mac rather than through a sign-in of its own.",
+    installUrl: WECHAT_DOWNLOAD_URL,
+  });
+  assert.equal(WECHAT_DOWNLOAD_URL, "https://mac.weixin.qq.com/en");
+  assert.equal(weChatDownloadUrl("win32"), "https://pc.weixin.qq.com/");
+  assert.equal(weChatDownloadUrl("linux"), "https://linux.weixin.qq.com/");
+  assert.deepEqual(
+    setupGuidance({wechat: false, relay: false}, "win32"),
+    {
+      error:
+        "WeChat for Windows is not installed. Install it and sign in — Polymux reads WeChat from the desktop app on this PC rather than through a sign-in of its own.",
+      installUrl: WECHAT_DOWNLOAD_URLS.win32,
+    },
+  );
+  assert.equal(
+    setupGuidance({wechat: false, relay: false}, "linux").installUrl,
+    WECHAT_DOWNLOAD_URLS.linux,
+  );
+  assert.equal(setupGuidance({wechat: true, relay: false}).installUrl, null);
+  assert.equal(setupGuidance({wechat: true, relay: true}).installUrl, null);
 });
 
 test("the daemon is told where the shipped CDN-capture helper lives", () => {
@@ -2075,5 +2621,102 @@ test("a disconnected relay stops the stream instead of retrying forever", async 
     },
     undefined,
     { log: (line) => logs.push(line) },
+  );
+});
+
+test("a linked bridge quietly relaunches WeChat and resumes its stream", async () => {
+  let controlled: Relay | undefined;
+  let launches = 0;
+  await withBridge(
+    async ({hub, relay}) => {
+      relay.disconnect();
+      await until(() => relay.connections >= 2, "the stream after WeChat relaunches");
+      relay.emit({
+        messageId: "after-hidden-relaunch",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        senderId: "filehelper",
+        senderName: "File Transfer",
+        body: "back after hidden launch",
+        timestamp: Math.floor(Date.now() / 1000),
+      });
+      const [room] = await roomsWhen(
+        hub,
+        (rooms) => rooms.some((item) => item.preview === "back after hidden launch"),
+        "the resumed stream to carry a message",
+      );
+      assert.equal(room.preview, "back after hidden launch");
+      assert.equal(launches, 1, "one disconnect requests one quiet relaunch");
+    },
+    (relay) => {
+      controlled = relay;
+    },
+    {
+      ensureAppRunning: async () => {
+        launches += 1;
+        controlled?.reconnect();
+        return true;
+      },
+    },
+  );
+});
+
+test("a status refresh cannot restart the relay during a native write", async () => {
+  let releaseWriter!: () => void;
+  let writerStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    writerStarted = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    releaseWriter = resolve;
+  });
+  let appChecks = 0;
+  await withBridge(
+    async ({bridge, hub, relay}) => {
+      relay.emit({
+        messageId: "open-writer-race",
+        chatId: "filehelper",
+        chatName: "File Transfer",
+        body: "ready",
+        fromSelf: true,
+        timestamp: 1,
+      });
+      const [room] = await roomsWhen(hub, (rooms) => rooms.length === 1, "File Transfer to open");
+      relay.sendResults.push({
+        success: false,
+        error: "slot_send_bp_armed_no_fire",
+        diagnostic: {reason: "slot_send_bp_armed_no_fire"},
+      });
+      const eventId = await hub.send(room.roomId, "hold the native writer");
+      await started;
+      assert.equal(appChecks, 1, "the writer checks the native app once");
+
+      // This is the intentional relay gap that a live Hub status poll used to
+      // misread as a crash, starting media recovery against the same process.
+      relay.disconnect();
+      assert.equal(
+        await bridge.start("@polymux-test:polymux.local"),
+        true,
+        "the still-running appservice remains linked during the write",
+      );
+      assert.equal(appChecks, 1, "no app or relay recovery starts inside the native critical section");
+
+      releaseWriter();
+      await bridge.waitForOutbound(eventId, 5_000);
+    },
+    undefined,
+    {
+      ensureAppRunning: async () => {
+        appChecks += 1;
+        return true;
+      },
+      writer: {
+        write: async () => {
+          writerStarted();
+          await released;
+          return {deliveredVerified: true};
+        },
+      },
+    },
   );
 });

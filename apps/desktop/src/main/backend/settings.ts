@@ -48,7 +48,6 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
     locationEnabled: true,
     hubIncognitoMode: false,
     reasoningLevel: reasoningEffort(process.env.POLYMUX_REASONING, "medium") ?? "medium",
-    advancedMode: false,
     onboardingCompleted: false,
     // Every capability is on by default: the OS grant is the real gate, and
     // this switch exists to turn one off without giving the grant back.
@@ -75,10 +74,6 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
         : defaults.theme,
     language: supportedLanguage(record.language) ?? defaults.language,
     currency: supportedCurrency(record.currency),
-    advancedMode:
-      typeof record.advancedMode === "boolean"
-        ? record.advancedMode
-        : defaults.advancedMode,
     speechModeEnabled:
       typeof record.speechModeEnabled === "boolean"
         ? record.speechModeEnabled
@@ -159,8 +154,6 @@ export function generalSettingsUpdate(
     typeof record.onboardingCompleted !== "boolean"
   )
     throw new Error("onboardingCompleted must be a boolean");
-  if (record.advancedMode !== undefined && typeof record.advancedMode !== "boolean")
-    throw new Error("advancedMode must be a boolean");
   if (
     record.speechModeEnabled !== undefined &&
     typeof record.speechModeEnabled !== "boolean"
@@ -232,10 +225,6 @@ export function generalSettingsUpdate(
         : record.currency === null
           ? null
           : supportedCurrency(record.currency),
-    advancedMode:
-      typeof record.advancedMode === "boolean"
-        ? record.advancedMode
-        : current.advancedMode,
     speechModeEnabled:
       typeof record.speechModeEnabled === "boolean"
         ? record.speechModeEnabled

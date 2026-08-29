@@ -1859,6 +1859,27 @@ export class MatrixHub {
     return result.event_id ?? "";
   }
 
+  /** Sends uploaded image bytes as a native sticker event rather than a photo. */
+  async sendSticker(
+    roomId: string,
+    file: {url: string; name: string; mimetype: string; size: number},
+  ): Promise<string> {
+    const result = await this.#client<{event_id?: string}>(
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.sticker/${this.#txnId()}`,
+      {
+        method: "PUT",
+        body: {
+          msgtype: "m.image",
+          body: file.name,
+          url: file.url,
+          info: {mimetype: file.mimetype, size: file.size},
+          "co.polymux.sticker": true,
+        },
+      },
+    );
+    return result.event_id ?? "";
+  }
+
   /** Uploads bytes to the media repository and returns their `mxc://` id. */
   async upload(name: string, mimetype: string, bytes: Uint8Array): Promise<string> {
     const {matrixToken} = this.#auth();
@@ -1894,6 +1915,10 @@ export class MatrixHub {
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/redact/${encodeURIComponent(eventId)}/${this.#txnId()}`,
       {method: "PUT", body: {}},
     );
+  }
+
+  async roomPlatform(roomId: string): Promise<string> {
+    return this.#roomPlatform(roomId);
   }
 
   /** A transaction id makes a send idempotent if the request is retried. */
@@ -1951,6 +1976,16 @@ export class MatrixHub {
         platform = found;
         break;
       }
+    }
+    if (platform === "matrix") {
+      const state = await this.#client<
+        Array<{type?: string; content?: {protocol?: {id?: string}}}>
+      >(`/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state`).catch(
+        (): Array<{type?: string; content?: {protocol?: {id?: string}}}> => [],
+      );
+      const bridged = state.find((event) => event.type === "m.bridge")
+        ?.content?.protocol?.id;
+      if (bridged) platform = normalisePlatform(bridged);
     }
     this.#roomPlatforms.set(roomId, platform);
     return platform;

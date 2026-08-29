@@ -205,7 +205,6 @@ import {
   skillInstructions,
 } from "./backend/host.js";
 import { speechModeAfterRoleChange } from "./backend/speech-mode.js";
-import { autoRolePicks } from "./backend/role-advisor.js";
 import {
   EncryptedCredentialStore,
   OpenCodeCredentialFallback,
@@ -303,6 +302,7 @@ import { FileReloadWatcher } from "./system/file-reload-watcher.js";
 import { DirectoryWatcher } from "./system/directory-watcher.js";
 import { polymuxPath } from "./system/paths.js";
 import {
+  activateNotification,
   Notifier,
   notificationBody,
   type NotificationRequest,
@@ -433,6 +433,9 @@ export interface DesktopBackendOptions {
     startWeChat?: (owner: string) => Promise<boolean>;
     /** Takes it back down again, when WeChat is unlinked from the Hub tab. */
     stopWeChat?: () => Promise<void>;
+    waitForWeChatOutbound?: (eventId: string) => Promise<void>;
+    discardOutbound?: (eventId: string) => void;
+    recallWeChat?: (roomId: string, eventId: string) => Promise<void>;
     /**
      * Registers who to tell when a conversation moves. The homeserver is built
      * before the window, so it reports into the host and the host hands the
@@ -884,6 +887,7 @@ export class DesktopBackend {
           body: notificationBody(
             `${prompt.origin || "A page"} is asking for ${prompt.permission}.`,
           ),
+          target: {kind: "browser", tabId: prompt.tabId},
         });
       },
     });
@@ -957,6 +961,9 @@ export class DesktopBackend {
               : undefined,
             startWeChat: options.hub.startWeChat,
             stopWeChat: options.hub.stopWeChat,
+            waitForWeChatOutbound: options.hub.waitForWeChatOutbound,
+            discardOutbound: options.hub.discardOutbound,
+            recallWeChat: options.hub.recallWeChat,
           }
         : undefined,
       storage: {
@@ -1088,6 +1095,10 @@ export class DesktopBackend {
           body: notificationBody(
             result.summary ?? "This scheduled task finished.",
           ),
+          target: {
+            kind: "conversation",
+            conversationId: result.conversationId,
+          },
         });
         return result;
       } catch (error) {
@@ -1097,6 +1108,10 @@ export class DesktopBackend {
           body: notificationBody(
             error instanceof Error ? error.message : String(error),
           ),
+          target: {
+            kind: "workspace",
+            request: { surface: "schedule" },
+          },
         });
         throw error;
       }
@@ -1282,9 +1297,9 @@ export class DesktopBackend {
     else if (storedModel && this.#inference.getModel(storedModel))
       this.#selectModel(storedModel, false);
     // Providers may have changed while the app was closed; selection above
-    // already built the agent with the effective roles, so this only settles
-    // the speech-mode consequence of the current automatic picks.
-    this.#reconcileAutoRoles(false);
+    // already built the agent with the assigned roles, so this only settles
+    // the speech-mode consequence of any assignment that disappeared.
+    this.#reconcileRoles(false);
     this.#configureAgentRuntime();
   }
 
@@ -1557,24 +1572,12 @@ export class DesktopBackend {
     // actually needs it. ComputerHistory without the grant captures nothing and says
     // so on its own row, which is the honest state rather than a surprise.
     applyThemeSource(this.#generalSettings().theme);
-    // Basic mode owns no memory switches, so it holds them all on.
-    if (!this.#generalSettings().advancedMode) this.#enableAllMemory();
     this.#handle(channels.generalGet, () => this.#generalSettings());
     this.#handle(channels.generalUpdate, (_event, value: unknown) => {
       const previous = this.#generalSettings();
       const next = generalSettingsUpdate(value, previous);
       applyThemeSource(next.theme);
-      // Basic mode has no Memory tab, so it cannot be the mode that leaves
-      // memory switched off with nowhere to switch it back on.
-      if (!next.advancedMode && previous.advancedMode !== next.advancedMode)
-        this.#enableAllMemory();
       this.#storeGeneralSettings(next);
-      // Flipping advanced mode changes which layer answers for the roles, so
-      // the automatic consequences are re-derived under the new flag — which
-      // can itself store a speech-mode change, so the settings are re-read
-      // rather than answered from the pre-reconcile snapshot.
-      if (previous.advancedMode !== next.advancedMode)
-        this.#reconcileAutoRoles();
       return this.#generalSettings();
     });
     // Deliberately past every switch, including the focus check: this is sent
@@ -1976,7 +1979,7 @@ export class DesktopBackend {
       const options = computerHistoryQuery(value);
       return this.#computerHistoryActivities.list({
         ...options,
-        model: this.#effectiveRole("compaction") ?? this.#model,
+        model: this.#usableRole("compaction") ?? this.#model,
       });
     });
     // Parented like the other pickers, so it opens as a sheet over the app.
@@ -2454,12 +2457,38 @@ export class DesktopBackend {
           typeof mimetype === "string" && mimetype ? mimetype : "audio/webm";
         // Named for when it was taken, which is all a voice note has to go on.
         const name = `voice-${new Date().toISOString().replace(/[:.]/g, "-")}.${
-          type.includes("ogg") ? "ogg" : type.includes("mp4") ? "m4a" : "webm"
+          type.includes("wav")
+            ? "wav"
+            : type.includes("ogg")
+              ? "ogg"
+              : type.includes("mp4")
+                ? "m4a"
+                : "webm"
         }`;
         await this.#comms.sendChatFiles(required(chatId, "chat id"), [
           { name, mimetype: type, bytes },
         ]);
       },
+    );
+    this.#handle(
+      channels.commsChatSendSticker,
+      async (_event, chatId: unknown, filePath: unknown) => {
+        const {readFile} = await import("node:fs/promises");
+        const file = required(filePath, "sticker path");
+        await this.#comms.sendChatSticker(required(chatId, "chat id"), {
+          name: path.basename(file),
+          mimetype: mimetypeOf(file),
+          bytes: new Uint8Array(await readFile(file)),
+        });
+      },
+    );
+    this.#handle(
+      channels.commsChatRecall,
+      (_event, chatId: unknown, messageId: unknown) =>
+        this.#comms.recallChat(
+          required(chatId, "chat id"),
+          required(messageId, "message id"),
+        ),
     );
     this.#handle(
       channels.commsChatReact,
@@ -3319,7 +3348,7 @@ export class DesktopBackend {
           if (model)
             this.#selectModel({ provider: model.provider, id: model.id });
         }
-        this.#reconcileAutoRoles();
+        this.#reconcileRoles();
         return updated;
       },
     );
@@ -3330,7 +3359,7 @@ export class DesktopBackend {
         if (!this.#models.getProvider(id))
           throw new Error(`Unknown provider: ${id}`);
         await this.#apiKeys.remove(id, required(keyId, "API key id"));
-        this.#reconcileAutoRoles();
+        this.#reconcileRoles();
         return this.#providerDto(id);
       },
     );
@@ -3381,7 +3410,7 @@ export class DesktopBackend {
           this.#selectModel(ref);
           this.#setReasoningLevel("low");
         }
-        this.#reconcileAutoRoles();
+        this.#reconcileRoles();
         return updated;
       },
     );
@@ -3408,7 +3437,7 @@ export class DesktopBackend {
           ),
         );
         this.#persistRoles();
-        this.#reconcileAutoRoles(false);
+        this.#reconcileRoles(false);
         return this.#providerDto(id);
       },
     );
@@ -3430,7 +3459,7 @@ export class DesktopBackend {
         this.#registerCustomProvider(config);
         this.#persistCustomProviders();
         if (request.apiKey) await this.#apiKeys.add(id, request.apiKey);
-        this.#reconcileAutoRoles();
+        this.#reconcileRoles();
         return this.#providerDto(id);
       },
     );
@@ -3464,7 +3493,7 @@ export class DesktopBackend {
             !current,
           );
         }
-        this.#reconcileAutoRoles();
+        this.#reconcileRoles();
         return this.#providerDto(request.id);
       },
     );
@@ -3982,13 +4011,17 @@ export class DesktopBackend {
       kind: "message-received",
       title: activity.senderName || activity.sender || "New message",
       body: "Sent you a message.",
+      target: {
+        kind: "workspace",
+        request: { surface: "hub", chat: { id: activity.roomId } },
+      },
     });
   }
 
   /**
-   * Hands a notification to the OS. Clicking it brings the app back, which is
-   * the only thing every one of these notifications is asking the user to do —
-   * a notification that does nothing when clicked reads as broken.
+   * Hands a notification to the OS. Clicking it brings the app back and, when
+   * the event names one, opens the exact conversation or workspace surface it
+   * came from.
    */
   #presentNotification(request: NotificationRequest): void {
     const notification = new Notification({
@@ -3997,10 +4030,19 @@ export class DesktopBackend {
     });
     notification.on("click", () => {
       if (this.#closing || this.#window.isDestroyed()) return;
-      if (this.#window.isMinimized()) this.#window.restore();
-      this.#window.show();
-      this.#window.focus();
-      app.focus({ steal: true });
+      activateNotification(request, {
+        restore: () => {
+          if (this.#window.isMinimized()) this.#window.restore();
+        },
+        show: () => this.#window.show(),
+        focusWindow: () => this.#window.focus(),
+        focusApp: () => app.focus({steal: true}),
+        open: (target) =>
+          this.#window.webContents.send(
+            channels.windowOpenNotificationTarget,
+            target,
+          ),
+      });
     });
     notification.show();
   }
@@ -4028,6 +4070,9 @@ export class DesktopBackend {
             ? run.error
             : "The run failed.",
         ),
+        target: run.conversationId
+          ? {kind: "conversation", conversationId: run.conversationId}
+          : undefined,
       });
       return;
     }
@@ -4038,6 +4083,9 @@ export class DesktopBackend {
       kind: "agent-completed",
       title,
       body: notificationBody(summary ?? "The agent finished."),
+      target: run.conversationId
+        ? {kind: "conversation", conversationId: run.conversationId}
+        : undefined,
     });
   }
 
@@ -4956,16 +5004,6 @@ export class DesktopBackend {
       });
   }
 
-  /** Switch every memory surface on, for the mode that offers no way to. */
-  #enableAllMemory(): void {
-    if (!this.#memory.status().enabled) this.#memory.setEnabled(true);
-    if (this.#computerHistory.settings().enabled) return;
-    // Switched on, never asked for: this runs at launch in basic mode, and a
-    // dialog raised from here is one the user did nothing to invite.
-    this.#computerHistory.setEnabled(true);
-    void this.#computerHistory.captureOnce().catch(() => {});
-  }
-
   #selectModel(ref: ModelRef, persist = true): ModelDto {
     const model = this.#inference.getModel(ref);
     if (!model) throw new Error(`Unknown model: ${ref.provider}/${ref.id}`);
@@ -4991,14 +5029,14 @@ export class DesktopBackend {
       model: ref,
       // Both fall back to the main model inside the agent when undefined, so
       // an override that no longer resolves simply stops applying.
-      subagentModel: this.#effectiveRole("subagent"),
-      judgeModel: this.#effectiveRole("judge"),
-      compactionModel: this.#effectiveRole("compaction"),
+      subagentModel: this.#usableRole("subagent"),
+      judgeModel: this.#usableRole("judge"),
+      compactionModel: this.#usableRole("compaction"),
       // The level chosen with a role's model applies wherever that model runs;
       // undefined leaves the run on the level it was started at.
-      subagentReasoning: this.#effectiveRole("subagent")?.reasoning,
-      judgeReasoning: this.#effectiveRole("judge")?.reasoning,
-      compactionReasoning: this.#effectiveRole("compaction")?.reasoning,
+      subagentReasoning: this.#usableRole("subagent")?.reasoning,
+      judgeReasoning: this.#usableRole("judge")?.reasoning,
+      compactionReasoning: this.#usableRole("compaction")?.reasoning,
       skills: this.#agentSkillOptions,
       prompts: this.#agentPrompts,
       // The guard runs first so a built-in skill stays read-only even when the
@@ -5100,23 +5138,11 @@ export class DesktopBackend {
     return ref && this.#inference.getModel(ref) ? ref : undefined;
   }
 
-  /** What a role actually runs with: the stored override, or — while basic
-   * mode hides the roles UI — the automatic pick for the available models.
-   * The picks are computed, never persisted, so they track provider changes
-   * on their own and step aside the moment advanced mode returns control. */
-  #effectiveRole(role: ModelRole): RoleSelection | undefined {
-    const override = this.#usableRole(role);
-    if (override || role === "main") return override;
-    if (this.#generalSettings().advancedMode) return undefined;
-    return autoRolePicks(this.#inference.listModels(), this.#model)[role];
-  }
-
-  /** Re-derives what follows from the automatic picks after anything that can
-   * change them: provider changes, the main model, or the advanced-mode flag.
-   * Speech mode flips only when the effective speech assignment transitions,
+  /** Re-derives what follows from role assignments after provider or model
+   * changes. Speech mode flips only when its usable assignment transitions,
    * so a user who switched it off stays off until the assignment changes. */
-  #reconcileAutoRoles(rebuild = true): void {
-    const assigned = Boolean(this.#effectiveRole("speech"));
+  #reconcileRoles(rebuild = true): void {
+    const assigned = Boolean(this.#usableRole("speech"));
     const marker =
       this.#profilePreference("speech-role-assigned")?.value === true;
     if (assigned !== marker) {
@@ -5157,12 +5183,12 @@ export class DesktopBackend {
             }
           : undefined,
       ),
-      subagent: assignment(this.#effectiveRole("subagent")),
-      judge: assignment(this.#effectiveRole("judge")),
-      compaction: assignment(this.#effectiveRole("compaction")),
-      speech: assignment(this.#effectiveRole("speech")),
-      image: assignment(this.#effectiveRole("image")),
-      video: assignment(this.#effectiveRole("video")),
+      subagent: assignment(this.#usableRole("subagent")),
+      judge: assignment(this.#usableRole("judge")),
+      compaction: assignment(this.#usableRole("compaction")),
+      speech: assignment(this.#usableRole("speech")),
+      image: assignment(this.#usableRole("image")),
+      video: assignment(this.#usableRole("video")),
     };
   }
 
@@ -5185,7 +5211,7 @@ export class DesktopBackend {
     // A deliberate assignment always turns speech mode on; the transition
     // logic in the reconcile then only aligns its marker.
     this.#setSpeechModeForRoleChange(role, true);
-    this.#reconcileAutoRoles(false);
+    this.#reconcileRoles(false);
     return this.#modelRoles();
   }
 
@@ -5196,10 +5222,10 @@ export class DesktopBackend {
     const { [role]: _removed, ...rest } = this.#roleOverrides;
     this.#roleOverrides = rest;
     this.#persistRoles();
-    // Deliberately clearing speech switches speech mode off even when an
-    // automatic pick still stands; the reconcile only aligns its marker.
+    // Deliberately clearing speech switches speech mode off; the reconcile
+    // then aligns its assignment marker.
     this.#setSpeechModeForRoleChange(role, false);
-    this.#reconcileAutoRoles(false);
+    this.#reconcileRoles(false);
     return this.#modelRoles();
   }
 
@@ -5378,7 +5404,7 @@ export class DesktopBackend {
       })),
     });
     this.#persistCustomProviders();
-    this.#reconcileAutoRoles();
+    this.#reconcileRoles();
     return this.#providerDto(runtime.id);
   }
 

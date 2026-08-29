@@ -21,7 +21,6 @@ import {
   hasExactTextHistory,
   hasTextHistoryFragment,
   hasTypedMessageHistory,
-  nativeCdnWarmupProfilePath,
   NATIVE_TASK_ROUTES,
   parseNativeUploadAppAttachResponse,
   parseNativeNewSendMessageResponse,
@@ -31,6 +30,14 @@ import {
   stickerMd5,
   WECHAT_NATIVE_PROFILE_SHA256,
 } from "./wechat-wire.mjs";
+import {
+  daemonStatusRunning,
+  hasWeChatDaemonCaptureProcess,
+  recognisesDaemonStatus,
+  settlePausedDaemonOperation,
+  usesNativeTextTransport,
+  weChatDaemonCaptureProcessIds,
+} from "./wechat-daemon-coordination.mjs";
 
 const driver = new URL("./polymux-wechat-driver.mjs", import.meta.url).pathname;
 const wireInjector = new URL("./wechat_wire_inject.py", import.meta.url)
@@ -49,17 +56,90 @@ const writerBuilder = new URL(
 ).pathname;
 const exec = promisify(execFile);
 
-async function invoke(request, helperSource, environment = {}) {
+test("recognises daemon startup and capture-debugger processes", () => {
+  assert.equal(daemonStatusRunning("running pid=1234"), true);
+  assert.equal(daemonStatusRunning("not running"), false);
+  assert.equal(recognisesDaemonStatus("not running"), true);
+  assert.equal(recognisesDaemonStatus('{"delivered_verified":true}'), false);
+  assert.equal(
+    hasWeChatDaemonCaptureProcess(
+      "/opt/homebrew/bin/wechatd run\n/usr/bin/lldb -p 42 -s /tmp/wx-cdn-capture-daemon-a/cmd.lldb\n",
+    ),
+    true,
+  );
+  assert.equal(
+    hasWeChatDaemonCaptureProcess("/opt/homebrew/bin/wechatd run\n"),
+    false,
+  );
+  assert.equal(
+    hasWeChatDaemonCaptureProcess(
+      "59735 1 /usr/bin/lldb -p 16213 -s /tmp/wx-hijack-daemon-1788022614588164000/cmd.lldb\n",
+    ),
+    true,
+  );
+  assert.equal(
+    hasWeChatDaemonCaptureProcess("node scripts/polymux-wechat-driver.mjs write --json\n"),
+    false,
+  );
+  assert.deepEqual(
+    weChatDaemonCaptureProcessIds(
+      " 10507     1 /opt/homebrew/bin/wechatd run\n" +
+        " 11494 10507 /usr/bin/lldb -p 95810 -s /tmp/wx-cdn-capture-daemon-10507/cmd.lldb\n" +
+        " 11495 11494 /usr/libexec/debugserver --fd=12\n" +
+        " 22000     1 /usr/bin/lldb -p 16213 -s /tmp/wx-hijack-daemon-22000/cmd.lldb\n" +
+        " 22001 22000 /usr/libexec/debugserver --fd=13\n" +
+        " 21000     1 /usr/bin/lldb -p 99\n",
+    ),
+    [11494, 22000, 11495, 22001],
+  );
+});
+
+test("native text transport requires both exact-build runtime gates", () => {
+  assert.equal(
+    usesNativeTextTransport({
+      POLYMUX_WECHAT_WIRE_NATIVE: "1",
+      POLYMUX_WECHAT_LLDB_EXPERIMENTAL: "1",
+    }),
+    true,
+  );
+  assert.equal(
+    usesNativeTextTransport({
+      POLYMUX_WECHAT_WIRE_NATIVE: "1",
+    }),
+    false,
+  );
+});
+
+test("preserves a verified native result when daemon recovery is delayed", () => {
+  const result = {messageId: "verified-server-id"};
+  const restartFailure = new Error("daemon start failed");
+  assert.deepEqual(
+    settlePausedDaemonOperation({result, restartFailure}),
+    {result, restartFailure},
+  );
+  assert.throws(
+    () => settlePausedDaemonOperation({
+      actionFailure: new Error("send failed"),
+      restartFailure,
+    }),
+    AggregateError,
+  );
+});
+
+async function invoke(request, helperSource, environment = {}, primerSource) {
   const directory = await mkdtemp(
     path.join(tmpdir(), "polymux-wechat-driver-"),
   );
   const helper = path.join(directory, "wechat-use");
   await writeFile(helper, helperSource, { mode: 0o700 });
+  const primer = path.join(directory, "wechat-prime");
+  if (primerSource) await writeFile(primer, primerSource, {mode: 0o700});
   return await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [driver, "write", "--json"], {
       env: {
         ...process.env,
         POLYMUX_WECHAT_CLI: helper,
+        ...(primerSource ? {POLYMUX_WECHAT_PRIMER: primer} : {}),
         POLYMUX_WECHAT_TEST_ONLY_FILEHELPER: "1",
         ...environment,
       },
@@ -289,7 +369,7 @@ test("keeps the driver's exact-build gate aligned with the native profile", asyn
   assert.match(profile, new RegExp(WECHAT_NATIVE_PROFILE_SHA256));
 });
 
-test("refuses typed sends before attach without the separate LLDB opt-in", async () => {
+test("keeps ordinary text on the verified CLI path when native wire is enabled", async () => {
   const result = await invoke(
     { kind: "text", chatId: "filehelper", body: "must not be sent" },
     `#!/bin/sh
@@ -302,7 +382,40 @@ printf '%s\\n' '{"delivered_verified":true,"message_id":"unexpected"}'
     { POLYMUX_WECHAT_WIRE_NATIVE: "1" },
   );
   assert.equal(result.code, 0);
-  assert.match(result.body.reason, /LLDB task sending is experimental/);
+  assert.deepEqual(result.body, {
+    deliveredVerified: true,
+    messageId: "unexpected",
+  });
+});
+
+test("an unarmed CLI send is primed in the background and retried once", async () => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "polymux-wechat-prime-test-"),
+  );
+  const counter = path.join(directory, "count");
+  const result = await invoke(
+    {kind: "text", chatId: "filehelper", body: "retry me"},
+    `#!/bin/sh
+count=0
+[ -f "$POLYMUX_TEST_COUNTER" ] && count=$(cat "$POLYMUX_TEST_COUNTER")
+count=$((count + 1))
+printf '%s' "$count" > "$POLYMUX_TEST_COUNTER"
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' '{"delivered_verified":false,"diagnostic":{"reason":"slot_send_bp_armed_no_fire"}}'
+else
+  printf '%s\n' '{"delivered_verified":true,"message_id":"primed"}'
+fi
+`,
+    {POLYMUX_TEST_COUNTER: counter},
+    `#!/bin/sh
+printf '%s\n' '{"ok":true,"primed":true}'
+`,
+  );
+  assert.deepEqual(result.body, {
+    deliveredVerified: true,
+    messageId: "primed",
+  });
+  assert.equal(await readFile(counter, "utf8"), "2");
 });
 
 test("the native wire helper stays disabled without an explicit opt-in", async () => {
@@ -495,30 +608,20 @@ test("builds the CDN-backed native video send request", () => {
   assert.equal(request.includes(Buffer.from("b00200", "hex")), true);
 });
 
-test("binds CDN warmup state to one WeChat process", async () => {
-  const configured = process.env.POLYMUX_WECHAT_CDN_PROFILE;
-  delete process.env.POLYMUX_WECHAT_CDN_PROFILE;
-  try {
-    assert.match(
-      nativeCdnWarmupProfilePath(95_810),
-      /polymux-wechat-cdn-profile-95810\.json$/,
-    );
-    assert.throws(() => nativeCdnWarmupProfilePath(0), /pid is invalid/);
-  } finally {
-    if (configured === undefined)
-      delete process.env.POLYMUX_WECHAT_CDN_PROFILE;
-    else process.env.POLYMUX_WECHAT_CDN_PROFILE = configured;
-  }
+test("uses a pointer-free exact-build CDN video payload", async () => {
   const source = await readFile(nativeCdnInjector, "utf8");
   assert.match(source, /recipient != "filehelper"/);
+  assert.match(source, /def _video_payload_template\(\)/);
+  assert.match(source, /START_UPLOAD_WRAPPER_OFFSET = 0x4E6D714/);
   assert.match(source, /callback_one = _allocate/);
   assert.match(source, /callback_two = _allocate/);
+  assert.doesNotMatch(source, /payloadHex|uploadController|capture_warmup/);
 });
 
-test("packages the CDN uploader and warmup entrypoint with the writer", async () => {
+test("packages the self-contained CDN uploader with the writer", async () => {
   const source = await readFile(writerBuilder, "utf8");
   assert.match(source, /"wechat_native_cdn_upload_lldb\.py"/);
-  assert.match(source, /"polymux-wechat-cdn-warmup\.mjs"/);
+  assert.doesNotMatch(source, /cdn-warmup/);
 });
 
 test("builds a lossless native recall request", () => {
@@ -536,10 +639,11 @@ test("builds a lossless native recall request", () => {
   assert.equal(request.includes(Buffer.from("8180808080808010", "hex")), true);
 });
 
-test("recall uses the local id and waits for history confirmation", async () => {
+test("recall uses a fresh native client id or confirms an older history target", async () => {
   const source = await readFile(driver, "utf8");
-  assert.match(source, /clientMessageId:\s*requireString\(String\(target\.local_id/);
-  assert.match(source, /if \(!\(await waitForRecallHistory\(cli, chatId, messageId\)\)\)/);
+  assert.match(source, /request\.clientMessageId/);
+  assert.match(source, /target\?\.local_id/);
+  assert.match(source, /!suppliedClientMessageId && !\(await waitForRecallHistory/);
   assert.doesNotMatch(source, /target\.client_message_id/);
 });
 

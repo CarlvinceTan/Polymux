@@ -51,9 +51,6 @@ jobs:
   macos:
     needs: verify
     runs-on: macos-14
-    env:
-      # Temporary until a Developer ID Application certificate is available.
-      UNSIGNED_PRERELEASE: true
     steps:
       - uses: actions/checkout@v4
 
@@ -93,7 +90,6 @@ jobs:
           key: polymux-runtime-${{ runner.os }}-arm64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/fetch-whisper.mjs', 'scripts/build-native-helpers.ts', 'resources/native/*.swift', 'apps/desktop/src/main/system/permission-usage.ts') }}
 
       - name: Require release credentials
-        if: startsWith(github.ref, 'refs/tags/') && env.UNSIGNED_PRERELEASE != 'true'
         env:
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -108,7 +104,6 @@ jobs:
             }
 
       - name: Import Developer ID certificate
-        if: startsWith(github.ref, 'refs/tags/') && env.UNSIGNED_PRERELEASE != 'true'
         env:
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -149,6 +144,10 @@ jobs:
           npm run make -- --arch=arm64
 
       - name: Verify packaged artifacts
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           APP_PATH="out/Polymux-darwin-arm64/Polymux.app"
           test -d "$APP_PATH"
@@ -163,20 +162,30 @@ jobs:
           "$WHISPER/whisper-cli" --version
           "$WHISPER/whisper-server" --help >/dev/null
           NATIVE="$APP_PATH/Contents/Resources/resources/native/bin"
-          for helper in app-permissions ax-events ax-reader calendar contacts pill-image reminders; do
+          for helper in app-permissions ax-events ax-reader calendar contacts pill-image reminders wechat-media-prepare wechat-paste-send wechat-prime; do
             test -x "$NATIVE/$helper"
             file "$NATIVE/$helper" | grep -q 'arm64'
           done
+          WECHAT_WRITER="$APP_PATH/Contents/Resources/resources/wechat-writer"
+          test -x "$WECHAT_WRITER/polymux-wechat-driver.mjs"
+          for file in wechat-daemon-coordination.mjs wechat-wire.mjs wechat_native_cdn_upload_lldb.py wechat_native_task_lldb.py; do
+            test -f "$WECHAT_WRITER/$file"
+          done
+          test -d "$WECHAT_WRITER/node_modules/silk-wasm/lib"
           DMG="$(find out/make -type f -name '*.dmg' -print -quit)"
           ZIP="$(find out/make -type f -name '*.zip' -print -quit)"
           test -n "$DMG" && test -n "$ZIP"
           hdiutil verify "$DMG"
           unzip -tq "$ZIP"
-          if [[ "$GITHUB_REF" == refs/tags/* && "$UNSIGNED_PRERELEASE" != "true" ]]; then
-            codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-            spctl --assess --type execute --verbose=2 "$APP_PATH"
-            xcrun stapler validate "$DMG"
-          fi
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl --assess --type execute --verbose=2 "$APP_PATH"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -245,6 +254,16 @@ jobs:
           $setup = Get-ChildItem out/make -Recurse -Filter '*Setup.exe' | Select-Object -First 1
           $package = Get-ChildItem out/make -Recurse -Filter '*.nupkg' | Select-Object -First 1
           if (-not $setup -or -not $package) { throw 'Windows installer artifacts are missing.' }
+          $resources = 'out/Polymux-win32-x64/resources'
+          foreach ($macOnly in @(
+            'wxcdn_fileid_capture.py',
+            'resources/native/bin',
+            'resources/wechat-writer'
+          )) {
+            if (Test-Path (Join-Path $resources $macOnly)) {
+              throw "The Windows package contains macOS-only WeChat runtime: $macOnly"
+            }
+          }
           $bridges = 'out/Polymux-win32-x64/resources/resources/bridges'
           $expected = @(
             'mautrix-bluesky.exe',
@@ -376,6 +395,9 @@ jobs:
             "$BRIDGES/$bridge" -v
           done
           test ! -e "$BRIDGES/mautrix-imessage"
+          test ! -e "$EXTRACTED/squashfs-root/resources/wxcdn_fileid_capture.py"
+          test ! -e "$EXTRACTED/squashfs-root/resources/resources/native/bin"
+          test ! -e "$EXTRACTED/squashfs-root/resources/resources/wechat-writer"
           "$EXTRACTED/squashfs-root/resources/resources/node/node" -e \
             "if(process.platform!=='linux'||process.arch!=='x64')process.exit(1)"
           WHISPER="$EXTRACTED/squashfs-root/resources/resources/whisper"
@@ -408,18 +430,11 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          UNSIGNED_PRERELEASE: true
         run: |
           mapfile -t ASSETS < <(find release-assets -type f \
             \( -name '*.dmg' -o -name '*.zip' -o -name '*Setup.exe' -o -name '*.nupkg' -o -name 'RELEASES' -o -name '*.AppImage' -o -name 'latest-linux.yml' \) \
             -print)
           test "${#ASSETS[@]}" -ge 7
-          FLAGS=()
-          if [[ "$UNSIGNED_PRERELEASE" == "true" ]]; then
-            FLAGS+=(--prerelease --notes "Temporary unsigned preview. macOS users must approve Polymux in System Settings > Privacy & Security after the first blocked launch.")
-          else
-            FLAGS+=(--generate-notes)
-          fi
-          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" "${FLAGS[@]}" \
+          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" --generate-notes \
             --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "Polymux ${GITHUB_REF_NAME#v}"

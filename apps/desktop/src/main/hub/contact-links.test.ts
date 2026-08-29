@@ -19,9 +19,10 @@ function member(platform: "whatsapp" | "telegram" | "signal", id: string): Conta
 
 test("cross-platform contact links persist and survive a replaced portal room", () => {
   const store = new Preferences();
+  const ids = ["pranav", "pranav-v2"];
   const links = new ContactLinks(store, {
     now: () => new Date("2026-08-28T08:00:00.000Z"),
-    id: () => "pranav",
+    id: () => ids.shift() ?? "unexpected",
   });
   const created = links.merge({
     name: "Pranav",
@@ -29,7 +30,10 @@ test("cross-platform contact links persist and survive a replaced portal room", 
   });
   assert.equal(created.id, "contact-pranav");
 
-  const reopened = new ContactLinks(store);
+  const reopened = new ContactLinks(store, {
+    now: () => new Date("2026-08-28T08:01:00.000Z"),
+    id: () => ids.shift() ?? "unexpected",
+  });
   const extended = reopened.merge({
     name: "Pranav",
     members: [
@@ -37,9 +41,12 @@ test("cross-platform contact links persist and survive a replaced portal room", 
       member("signal", "signal-42"),
     ],
   });
-  assert.equal(extended.id, created.id);
+  assert.equal(extended.id, "contact-pranav-v2");
+  assert.notEqual(extended.id, created.id);
   assert.equal(extended.members.length, 3);
   assert.equal(extended.members.find((item) => item.platform === "telegram")?.chatId, "!replacement:local");
+  reopened.remove(created.id);
+  assert.equal(reopened.list().length, 1, "a stale view cannot remove the extended identity");
 });
 
 test("a contact link requires distinct platforms", () => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import {onDestroy, onMount, type ComponentProps} from 'svelte';
   import {readableError} from './lib/shared/errors';
-  import type {AppUpdateDto, ArtifactDto, BrowserExtensionDto, ConversationDto, DefaultAppDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, ManagerJobDto, ManagerSnapshotDto, MessageDto, ReasoningEffort, ReferenceDto, RunEventDto, WorkspaceRevealDto} from '@polymux/protocol';
+  import type {AppUpdateDto, ArtifactDto, BrowserExtensionDto, ConversationDto, DefaultAppDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, ManagerJobDto, ManagerSnapshotDto, MessageDto, NotificationTargetDto, ReasoningEffort, ReferenceDto, RunEventDto, WorkspaceRevealDto} from '@polymux/protocol';
   import TitleBar from './lib/features/chat/TitleBar.svelte';
   import ChatPane, {type ChatMessage} from './lib/features/chat/ChatPane.svelte';
   import TimelineRail, {TIMELINE_RAIL_MINIMUM} from './lib/features/chat/TimelineRail.svelte';
@@ -94,7 +94,7 @@
   let panelPriority: 'chatDrawer' | 'workspace' = 'workspace';
   let trackedPanels = {chatDrawer: false, workspace: false};
   let chatDrawerResizing = false;
-  let workspaceWidth = 420;
+  let workspaceWidth = MIN_WORKSPACE_WIDTH;
   let workspaceResizing = false;
   let workspaceExpanded = requestedWorkspaceView !== null;
   let viewportWidth = typeof window === 'undefined' ? 1280 : window.innerWidth;
@@ -228,8 +228,6 @@
   let startupDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
   let startupRemovalTimer: ReturnType<typeof setTimeout> | undefined;
   let speechModeEnabled = true;
-  /** Off by default, matching the stored setting: basic mode until asked for. */
-  let advancedMode = false;
   let pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'> = [];
   let dictationAutoStopSeconds: number | null = 6;
   let reasoningLevel: ReasoningEffort = 'medium';
@@ -363,6 +361,7 @@
     unsubscribeEvents?.();
     unsubscribeBrowser?.();
     unsubscribeFullscreen?.();
+    unsubscribeNotificationTarget?.();
     unsubscribeReveal?.();
     unsubscribeManager?.();
     if (agentInspectionListener) window.removeEventListener('polymux:agent-inspect-settings', agentInspectionListener);
@@ -382,6 +381,7 @@
   let unsubscribeEvents: (() => void) | undefined;
   let unsubscribeBrowser: (() => void) | undefined;
   let unsubscribeFullscreen: (() => void) | undefined;
+  let unsubscribeNotificationTarget: (() => void) | undefined;
   let unsubscribeReveal: (() => void) | undefined;
   let unsubscribeManager: (() => void) | undefined;
   let agentInspectionListener: ((event: Event) => void) | undefined;
@@ -423,7 +423,6 @@
       applyTheme(settings.theme);
       applyLanguage(settings.language);
       speechModeEnabled = settings.speechModeEnabled;
-      advancedMode = settings.advancedMode;
       pinnedViews = settings.pinnedViews;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       reasoningLevel = settings.reasoningLevel;
@@ -479,6 +478,7 @@
     // room reserved for them off this attribute, so the controls close the gap.
     // "Show me the draft you wrote": the agent naming a surface to put up.
     unsubscribeReveal = api.workspace.subscribeReveal(revealSurface);
+    unsubscribeNotificationTarget = api.window.subscribeNotificationTarget(openNotificationTarget);
     unsubscribeFullscreen = api.window.subscribeFullscreen((fullscreen) => {
       const root = document.documentElement;
       // Main sends this as the window starts travelling, which is the last
@@ -611,6 +611,28 @@
       void loadDriveFolder(request.drive?.path ?? '');
     }
     if (!quiet) newTab(kind);
+  }
+
+  /** A system notification is already an explicit navigation gesture, so its
+   * source comes forward rather than merely focusing the app shell. */
+  function openNotificationTarget(target: NotificationTargetDto): void {
+    if (target.kind === 'conversation') {
+      workspaceExpanded = false;
+      void openChat(target.conversationId);
+      return;
+    }
+    if (target.kind === 'workspace') {
+      revealSurface(target.request);
+      return;
+    }
+    const existing = workspaceTabs.find((tab) => tab.id === target.tabId && tab.kind === 'browser');
+    if (existing) {
+      openTab(existing);
+      return;
+    }
+    void api.browser.open(target.tabId).then((page) => {
+      openTab({id: target.tabId, title: page.title || page.url, kind: 'browser', url: page.url});
+    }).catch(() => {});
   }
 
   function openWorkspace(): void {
@@ -2662,8 +2684,6 @@
     goal={active.goal ?? null}
     speechMode={voiceOpen && voiceInChat}
     {speechModeEnabled}
-    {advancedMode}
-    onOpenPlugins={() => openSettings('plugins')}
     {dictationAutoStopSeconds}
     {showJumpToLatest}
     onSend={send}
@@ -2791,7 +2811,6 @@
     onClose={() => { settingsOpen = false; settingsMode = ''; refreshExtensionStatus(); }}
     onGeneralChange={(settings) => {
       speechModeEnabled = settings.speechModeEnabled;
-      advancedMode = settings.advancedMode;
       pinnedViews = settings.pinnedViews;
       dictationAutoStopSeconds = settings.dictationAutoStopSeconds;
       if (!speechModeEnabled) closeVoice();

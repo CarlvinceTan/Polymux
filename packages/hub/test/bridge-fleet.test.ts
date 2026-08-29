@@ -1065,6 +1065,11 @@ test("bridge logs omit handled transport and protocol chatter and prefix diagnos
       '2026-08-28T10:16:36.326+08:00 WRN decode.go:217:handleStoredProcedure() > Skipping dependency with no reference global_log=true reference_name=applyAdminMessageCTAV2\n' +
       '2026-08-28T16:56:35.378+08:00 WRN table.go:342:SPToDepMap() > Unknown dependency in sp dependency=setRegionHint global_log=true\n' +
       '2026-08-28T16:56:35.378+08:00 WRN decode.go:217:handleStoredProcedure() > Skipping dependency with no reference global_log=true reference_name=setRegionHint\n' +
+      '2026-08-29T11:20:23.687+08:00 WRN table.go:342:SPToDepMap() > Unknown dependency in sp dependency=updateOrInsertCommunitySurfaceRange global_log=true\n' +
+      '2026-08-29T11:20:23.687+08:00 WRN decode.go:217:handleStoredProcedure() > Skipping dependency with no reference global_log=true reference_name=updateOrInsertCommunitySurfaceRange\n' +
+      '2026-08-29T11:20:26.121+08:00 WRN table.go:342:SPToDepMap() > Unknown dependency in sp dependency=fetchBanners global_log=true\n' +
+      '2026-08-29T11:20:26.121+08:00 WRN table.go:342:SPToDepMap() > Unknown dependency in sp dependency=applyAdminMessageCTAV2 global_log=true\n' +
+      '2026-08-29T11:20:26.121+08:00 WRN decode.go:217:handleStoredProcedure() > Skipping dependency with no reference global_log=true reference_name=fetchBanners\n' +
       '2026-08-28T16:47:55.944+08:00 WRN Keepalive timed out component=whatsmeow\n' +
       "2026-08-28T16:48:21.332+08:00 ERR Error reading from websocket: failed to get reader: failed to read frame header: read tcp 10.0.0.1:1->10.0.0.2:443: read: can't assign requested address component=whatsmeow\n" +
       '2026-08-28T10:16:36.349+08:00 WRN No target message found for read receipt action="handle remote event" bridge_evt_type=RemoteEventReadReceipt portal_id=10069664666446875 read_up_to=1786651625404\n' +

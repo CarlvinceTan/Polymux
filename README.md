@@ -1,7 +1,11 @@
-# Polymux
+<p align="center">
+  <img src="docs/assets/polymux-lockup.svg" alt="Polymux" width="320">
+</p>
 
-**The open-source ChatGPT desktop app—with messaging, social media, a virtual
-drive, browser automation, and more built in.**
+<p align="center">
+  <strong>The open-source ChatGPT desktop app—with messaging, social media, a virtual<br>
+  drive, browser automation, and more built in.</strong>
+</p>
 
 <p align="center">
   <img src="docs/assets/polymux-chat.png" alt="Polymux main chat with the chat and workspace drawers open" width="100%">
@@ -9,20 +13,28 @@ drive, browser automation, and more built in.**
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/polymux-drive-expanded.png" alt="Polymux Drive workspace"></td>
-    <td width="50%"><img src="docs/assets/polymux-hub-expanded.png" alt="Polymux Hub workspace with an email open"></td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/assets/polymux-drive-expanded.png" alt="Polymux Drive workspace"><br>
+      <strong>Drive</strong><br>
+      <sub>Work across local files and connected cloud storage.</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/assets/polymux-hub-expanded.png" alt="Polymux Hub workspace with an email open"><br>
+      <strong>Hub</strong><br>
+      <sub>Bring messages, email, and social platforms together.</sub>
+    </td>
   </tr>
   <tr>
-    <td align="center"><sub>Drive</sub></td>
-    <td align="center"><sub>Hub</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/assets/polymux-browser-expanded.png" alt="Polymux Browser workspace showing GitHub"></td>
-    <td width="50%"><img src="docs/assets/polymux-tasks-expanded.png" alt="Polymux Tasks workspace with a populated board"></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Browser</sub></td>
-    <td align="center"><sub>Tasks</sub></td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/assets/polymux-browser-expanded.png" alt="Polymux Browser workspace showing the FIFA website"><br>
+      <strong>Browser</strong><br>
+      <sub>Browse and automate the web without leaving Polymux.</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/assets/polymux-tasks-expanded.png" alt="Polymux Tasks workspace with a populated board"><br>
+      <strong>Tasks</strong><br>
+      <sub>Track delegated work and anything needing attention.</sub>
+    </td>
   </tr>
 </table>
 
@@ -72,3 +84,9 @@ runtime owns the agent session and streams its work through the same UI.
 
 See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for setup instructions, development commands,
 bridge binaries, storage providers, skills, MCP, and memory details.
+
+## Sponsors
+
+<p align="left">
+  <img src="docs/assets/flarehq-sponsor.svg" alt="FlareHQ" width="240">
+</p>

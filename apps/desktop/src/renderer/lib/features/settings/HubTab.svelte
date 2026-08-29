@@ -482,6 +482,13 @@
     }
   }
 
+  /** Installer links come from the trusted bridge catalogue, but keep the
+   * renderer from handing any non-web scheme to the operating system. */
+  function openInstall(url: string): void {
+    if (!/^https?:\/\//i.test(url)) return;
+    void api.browser.openExternal(url);
+  }
+
   // Versions the login flow so a cancelled attempt's pending waits cannot
   // write their stale steps over a newer flow (loginWait blocks for minutes).
   let linkAttempt = 0;
@@ -1184,6 +1191,20 @@
                     ? $t('hub.allowAccess')
                     : $t('hub.openSettings')}
               </button>
+            </section>
+          {/if}
+
+          {#if activeBridge.installUrl}
+            <section class="comms-block">
+              <footer class="comms-actions">
+                <button
+                  type="button"
+                  class="primary"
+                  onclick={() => openInstall(activeBridge.installUrl!)}
+                >
+                  {$t('hub.downloadPlatform', {platform: activeBridge.name})}
+                </button>
+              </footer>
             </section>
           {/if}
 

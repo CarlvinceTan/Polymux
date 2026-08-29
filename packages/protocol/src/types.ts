@@ -146,13 +146,6 @@ export interface GeneralSettingsDto {
    * unread state. */
   hubIncognitoMode: boolean;
   reasoningLevel: ReasoningEffort;
-  /**
-   * Whether the full settings surface is on offer. Off by default: basic mode
-   * hides the composer's model picker and the Model and Memory tabs, leaving
-   * the model to be chosen from whichever provider is configured and every
-   * memory option switched on.
-   */
-  advancedMode: boolean;
   /** False until the first-run setup has been finished or dismissed. */
   onboardingCompleted: boolean;
   /**
@@ -197,7 +190,6 @@ export interface GeneralSettingsUpdate {
   locationEnabled?: boolean;
   hubIncognitoMode?: boolean;
   reasoningLevel?: ReasoningEffort;
-  advancedMode?: boolean;
   onboardingCompleted?: boolean;
   permissions?: Partial<Record<SystemPermissionKind, boolean>>;
   notificationsEnabled?: boolean;
@@ -313,6 +305,12 @@ export const NOTIFICATION_KINDS: NotificationKind[] = [
   "agent-attention",
   "message-received",
 ];
+
+/** Where a system notification lands after the user clicks it. */
+export type NotificationTargetDto =
+  | {kind: "conversation"; conversationId: string}
+  | {kind: "workspace"; request: WorkspaceRevealDto}
+  | {kind: "browser"; tabId: string};
 
 /** How much the model is asked to reason before answering. Mirrors the
  * inference package's effort levels so the renderer can persist the choice
@@ -643,8 +641,7 @@ export interface ModelDto {
  * The jobs a model can be assigned to. `main` is the model the agent answers
  * with; `subagent`, `judge` and `compaction` are overrides that fall back to `main`
  * when unset. `speech`, `image` and `video` are recorded preferences for the
- * generation surfaces; a speech assignment also switches speech mode on. In
- * basic mode unassigned roles are filled by the automatic picker.
+ * generation surfaces; a speech assignment also switches speech mode on.
  */
 export type ModelRole =
   | "main"
@@ -1174,6 +1171,8 @@ export interface CommsBridgeDto {
   /** Management room to fall back to when the flow cannot be driven here. */
   managementRoomHint: string | null;
   error: string | null;
+  /** Official installer page when the platform's required desktop app is absent. */
+  installUrl?: string | null;
   /**
    * A macOS grant this bridge is held back by, when `error` describes one. It
    * is the difference between telling someone where the switch is and putting
@@ -2243,6 +2242,10 @@ export interface PolymuxApi {
       conversationId?: string,
       placement?: {x: number; y: number; width?: number; height?: number},
     ): Promise<void>;
+    /** Opens the exact destination attached to a clicked system notification. */
+    subscribeNotificationTarget(
+      listener: (target: NotificationTargetDto) => void,
+    ): () => void;
     /**
      * Full-screen state of the app window, pushed on every change and once on
      * subscribe. The renderer only reserves room for the macOS traffic lights
@@ -2553,6 +2556,10 @@ export interface PolymuxApi {
     chatPickFiles(): Promise<string[]>;
     /** Sends a recorded voice note, as bytes rather than a file on disk. */
     chatSendAudio(chatId: string, bytes: Uint8Array, mimetype: string): Promise<void>;
+    /** Sends one selected image as a native sticker where supported. */
+    chatSendSticker(chatId: string, path: string): Promise<void>;
+    /** Recalls one of the signed-in account's own messages. */
+    chatRecall(chatId: string, messageId: string): Promise<void>;
     /** Puts an emoji on a message. */
     chatReact(chatId: string, messageId: string, key: string): Promise<string>;
     /** Takes a reaction back, given the id `chatReact` returned. */

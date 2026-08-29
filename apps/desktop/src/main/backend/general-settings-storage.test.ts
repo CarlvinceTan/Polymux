@@ -14,7 +14,6 @@ test("general settings storage keeps pinned views and every other field", () => 
     locationEnabled: true,
     hubIncognitoMode: true,
     reasoningLevel: "high",
-    advancedMode: true,
     onboardingCompleted: true,
     permissions: {
       microphone: true,

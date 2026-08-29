@@ -1059,7 +1059,7 @@ test.describe('welcome view', () => {
     await expect(settings.locator('button.agent-option-open')).toContainText('GPT-5.2');
   });
 
-  test('uses a bare aligned chevron on Agent configuration pages', async ({page}) => {
+  test('uses a bare, title-proportioned chevron on Agent configuration pages', async ({page}) => {
     await page.goto('/');
     await page.getByRole('button', {name: 'Settings'}).click();
     const settings = page.getByRole('region', {name: 'Settings'});
@@ -1071,14 +1071,17 @@ test.describe('welcome view', () => {
       await expect(agentBack.locator('svg')).toHaveCount(1);
       const alignment = await settings.locator('.options-header').evaluate((header) => {
         const back = header.querySelector('.agent-back')!.getBoundingClientRect();
+        const icon = header.querySelector<SVGElement>('.agent-back svg')!.getBoundingClientRect();
         const titleElement = header.querySelector<HTMLElement>('h2')!;
         const title = titleElement.getBoundingClientRect();
         return {
           horizontalGap: Math.round(title.left + Number.parseFloat(getComputedStyle(titleElement).paddingLeft) - back.right),
           centreOffset: Math.round((title.top + title.bottom - back.top - back.bottom) / 2),
+          iconSize: Math.round(icon.width),
+          titleFontSize: Math.round(Number.parseFloat(getComputedStyle(titleElement).fontSize)),
         };
       });
-      expect(alignment).toEqual({horizontalGap: 8, centreOffset: 1});
+      expect(alignment).toEqual({horizontalGap: 8, centreOffset: 1, iconSize: 28, titleFontSize: 28});
     }
   });
 
@@ -2876,15 +2879,16 @@ test.describe('chat drawer', () => {
   });
 
   test('drawers yield to the conversation floor instead of squeezing the composer', async ({page}) => {
-    // 1000px leaves less room than both drawers' preferred widths plus the
-    // conversation floor, so opening both must trigger the readjustment.
-    await page.setViewportSize({width: 1000, height: 640});
+    // This is the renderer's split-layout threshold: both drawer floors, the
+    // conversation floor and its 1px handover boundary.
+    await page.setViewportSize({width: 1096, height: 640});
     await page.goto('/');
     await page.getByRole('button', {name: 'Toggle Chats'}).click();
     await page.getByRole('button', {name: 'Toggle Workspace'}).click();
-    // Workspace opened last, so the chat drawer gives way — exactly to its own minimum.
+    // Workspace opened last, so the chat drawer gives way to the single spare
+    // pixel above its floor while the workspace holds its readable minimum.
     const drawer = chatDrawer(page);
-    await expect(drawer).toHaveCSS('width', '183px');
+    await expect(drawer).toHaveCSS('width', '184px');
     await expect.poll(async () => {
       const [searchBox, folderBox] = await Promise.all([
         page.getByRole('button', {name: 'Search Chats'}).boundingBox(),
@@ -2895,23 +2899,38 @@ test.describe('chat drawer', () => {
         (searchBox.x + searchBox.width / 2) -
         (folderBox.x + folderBox.width / 2)
       );
-    }).toBeLessThanOrEqual(.5);
+    }).toBeLessThanOrEqual(1.5);
     // One row of these buttons is under 20px tall; a wrap doubles it.
     const toolbarOnOneLine = () => page.locator('.polymux-prompt-toolbar').evaluate((bar) =>
       bar.getBoundingClientRect().height < 24);
     expect(await toolbarOnOneLine()).toBe(true);
-    // Growing the chat drawer now pushes the workspace back toward its own minimum
-    // rather than compressing the conversation below its floor.
+    // The workspace is already at its floor, so the chat drawer cannot grow by
+    // taking space from the conversation.
     const handle = page.getByRole('button', {name: 'Resize Chats'});
     await handle.focus();
     for (let step = 0; step < 4; step += 1) await page.keyboard.press('ArrowRight');
-    await expect(chatDrawer(page)).toHaveCSS('width', '208px');
-    await expect(workspaceDrawer(page)).toHaveCSS('width', '360px');
+    await expect(chatDrawer(page)).toHaveCSS('width', '184px');
+    await expect(workspaceDrawer(page)).toHaveCSS('width', '480px');
     expect(await toolbarOnOneLine()).toBe(true);
   });
 });
 
 test.describe('workspace drawer', () => {
+  test('does not resize narrower than its 480px floor', async ({page}) => {
+    await page.setViewportSize({width: 1300, height: 800});
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+
+    const handle = page.getByRole('button', {name: 'Resize Workspace'});
+    await handle.focus();
+    await page.keyboard.press('ArrowLeft');
+    await expect(workspaceDrawer(page)).toHaveCSS('width', '496px');
+    await page.keyboard.press('ArrowRight');
+    await expect(workspaceDrawer(page)).toHaveCSS('width', '480px');
+    await page.keyboard.press('ArrowRight');
+    await expect(workspaceDrawer(page)).toHaveCSS('width', '480px');
+  });
+
   test('keeps its divider and adjacent content on the pointer while dragging', async ({page}) => {
     await page.setViewportSize({width: 1300, height: 800});
     await page.goto('/');
@@ -3915,6 +3934,7 @@ test.describe('hub view', () => {
     await openView(page);
     const view = page.locator('.hub-view');
     await view.locator('.hub-view-row', {hasText: 'File Transfer'}).click();
+    await expect(workspaceDrawer(page)).toHaveCSS('width', '480px');
     const thread = view.locator('.hub-view-thread');
 
     await thread.evaluate((node) => {
@@ -3933,18 +3953,55 @@ test.describe('hub view', () => {
       const button = node.getBoundingClientRect();
       const footer = node.parentElement?.getBoundingClientRect();
       const reader = node.closest('.hub-view-reader')?.getBoundingClientRect();
+      const label = node.querySelector('span')?.getBoundingClientRect();
       return {
         inChatFooter: node.parentElement?.classList.contains('hub-view-chat-footer') ?? false,
         aboveFooter: button.bottom <= (footer?.top ?? 0),
         insideReader: button.left >= (reader?.left ?? 0) && button.right <= (reader?.right ?? 0),
+        whiteSpace: getComputedStyle(node).whiteSpace,
+        buttonHeight: button.height,
+        labelHeight: label?.height ?? 0,
       };
     });
     expect(layout.inChatFooter).toBe(true);
     expect(layout.aboveFooter).toBe(true);
     expect(layout.insideReader).toBe(true);
+    expect(layout.whiteSpace).toBe('nowrap');
+    expect(layout.buttonHeight).toBeLessThan(30);
+    expect(layout.labelHeight).toBeLessThan(16);
 
     await control.click();
     await expect.poll(() => thread.evaluate((node) => Math.abs(node.scrollTop))).toBeLessThan(1);
+  });
+
+  test('keeps the minimum-width Hub composer hint on one ellipsized line', async ({page}) => {
+    await openView(page);
+    const view = page.locator('.hub-view');
+    await view.locator('.hub-view-row', {hasText: 'File Transfer'}).click();
+    await expect(workspaceDrawer(page)).toHaveCSS('width', '480px');
+
+    const hint = view.locator('.hub-view-composer-hint');
+    await expect(hint).toHaveText('Message File Transfer');
+    const layout = await hint.evaluate((node) => {
+      node.textContent = 'Message a conversation name that is intentionally much wider than the composer';
+      const style = getComputedStyle(node);
+      const box = node.getBoundingClientRect();
+      return {
+        overflow: style.overflow,
+        textOverflow: style.textOverflow,
+        whiteSpace: style.whiteSpace,
+        height: box.height,
+        lineHeight: Number.parseFloat(style.lineHeight),
+        clipped: node.scrollWidth > node.clientWidth,
+      };
+    });
+    expect(layout).toMatchObject({
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      clipped: true,
+    });
+    expect(Math.abs(layout.height - layout.lineHeight)).toBeLessThanOrEqual(1);
   });
 
   test('new mail starts with the mailbox default and can swap it', async ({page}) => {
@@ -4924,7 +4981,7 @@ test.describe('hub view', () => {
     await expect(view.locator('.hub-view-bubble.mine').first()).toContainText('See you then.');
   });
 
-  test('keeps the back chevron accessible without showing a hover tooltip', async ({page}) => {
+  test('keeps the Hub back chevron accessible and title-proportioned without a tooltip', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
     await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
@@ -4933,6 +4990,15 @@ test.describe('hub view', () => {
 
     const back = view.getByRole('button', {name: 'Back', exact: true});
     await expect(back.locator(':scope > [data-icon="back"]')).toBeVisible();
+    const proportions = await view.locator('.hub-view-chat-head').evaluate((header) => {
+      const icon = header.querySelector<SVGElement>('.hub-view-back-icon svg')!.getBoundingClientRect();
+      const title = header.querySelector<HTMLElement>('.hub-view-chat-profile-trigger, h2')!;
+      return {
+        iconSize: Math.round(icon.width),
+        titleFontSize: Math.round(Number.parseFloat(getComputedStyle(title).fontSize)),
+      };
+    });
+    expect(proportions).toEqual({iconSize: 15, titleFontSize: 15});
     await back.hover();
     await expect(page.locator('.shared-tooltip')).toHaveCount(0);
   });
@@ -5019,7 +5085,7 @@ test.describe('hub view', () => {
     // The label belongs to the row, outside the bubble, not inside it.
     await expect(view.locator('.hub-view-bubble .hub-view-bubble-who')).toHaveCount(0);
     const identities = view.locator('.hub-view-bubble-who');
-    const names = identities.locator(':scope > span:last-child');
+    const names = identities.locator('.hub-view-bubble-sender');
     // Newest first: Dad, then Mum on each side of the group notice. A notice
     // deliberately starts a new sender run just like a date stamp does.
     await expect(names).toHaveText(['Dad', 'Mum', 'Mum']);
@@ -5038,30 +5104,84 @@ test.describe('hub view', () => {
     const directSender = view.locator('.hub-view-bubble-who');
     // One raw profile carries Matrix compatibility metadata and the other is
     // unresolved; both visible identities use the direct contact's real name.
-    await expect(directSender.locator(':scope > span:last-child')).toHaveText(['Jules Tan', 'Jules Tan']);
+    await expect(directSender.locator('.hub-view-bubble-sender')).toHaveText(['Jules Tan', 'Jules Tan']);
     await expect(view.getByText('Jules Tan (WA)', {exact: true})).toHaveCount(0);
     const fallback = directSender.locator('.hub-view-chat-avatar.placeholder');
     await expect(fallback).toHaveText(['J', 'J']);
     await expect(fallback.first()).toHaveCSS('border-radius', '3px');
   });
 
-  test('outgoing sender runs reserve the same identity-line spacing without showing You', async ({page}) => {
+  test('each message row reveals its own vertically centred time on the outside edge', async ({page}) => {
     await openView(page);
     const view = page.locator('.hub-view');
     await view.locator('.hub-view-source', {hasText: 'WhatsApp'}).click();
     await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
 
-    const incomingIdentity = view.locator('.hub-view-bubble-who').first();
-    const outgoingRun = view.locator('.hub-view-bubble-row.mine').first();
-    const reservedIdentity = outgoingRun.locator('.hub-view-bubble-who-space');
-    await expect(outgoingRun.locator('.hub-view-bubble-who')).toHaveCount(0);
-    await expect(reservedIdentity).toHaveCSS('visibility', 'hidden');
+    await expect(view.locator('.hub-view-bubble em')).toHaveCount(0);
+    const incomingRow = view.locator('[data-message-id="c1"]');
+    const incomingLine = incomingRow.locator('.hub-view-bubble-line');
+    const incomingTime = incomingRow.locator('.hub-view-bubble-time');
+    await expect(incomingTime).toHaveCSS('opacity', '0');
+    const incomingLineBox = await incomingLine.boundingBox();
+    if (!incomingLineBox) throw new Error('Incoming message row is missing');
+    await incomingLine.hover({position: {x: incomingLineBox.width - 1, y: incomingLineBox.height / 2}});
+    await expect(incomingTime).toHaveCSS('opacity', '1');
 
-    const heights = await view.evaluate((node) => ({
+    const incomingPosition = await incomingRow.evaluate((node) => {
+      const bubble = node.querySelector<HTMLElement>('.hub-view-bubble')!.getBoundingClientRect();
+      const time = node.querySelector<HTMLElement>('.hub-view-bubble-time')!.getBoundingClientRect();
+      return {
+        outside: time.left >= bubble.right,
+        gap: time.left - bubble.right,
+        centreOffset: Math.abs((time.top + time.bottom - bubble.top - bubble.bottom) / 2),
+      };
+    });
+    expect(incomingPosition.outside).toBe(true);
+    expect(incomingPosition.gap).toBe(10);
+    expect(incomingPosition.centreOffset).toBeLessThanOrEqual(0.5);
+
+    const outgoingRow = view.locator('[data-message-id="c2"]');
+    const outgoingSpacer = outgoingRow.locator('.hub-view-bubble-who-space');
+    await expect(outgoingSpacer).toHaveCSS('visibility', 'hidden');
+    const headerHeights = await view.evaluate((node) => ({
       incoming: node.querySelector('.hub-view-bubble-who')!.getBoundingClientRect().height,
       outgoing: node.querySelector('.hub-view-bubble-who-space')!.getBoundingClientRect().height,
     }));
-    expect(heights.outgoing).toBe(heights.incoming);
+    expect(headerHeights.outgoing).toBe(headerHeights.incoming);
+    const outgoingLine = outgoingRow.locator('.hub-view-bubble-line');
+    const outgoingTime = outgoingRow.locator('.hub-view-bubble-time');
+    await expect(outgoingTime).toHaveCSS('opacity', '0');
+    const outgoingLineBox = await outgoingLine.boundingBox();
+    if (!outgoingLineBox) throw new Error('Outgoing message row is missing');
+    await outgoingLine.hover({position: {x: 1, y: outgoingLineBox.height / 2}});
+    await expect(outgoingTime).toHaveCSS('opacity', '1');
+    await expect(incomingTime).toHaveCSS('opacity', '0');
+
+    const outgoingPosition = await outgoingRow.evaluate((node) => {
+      const bubble = node.querySelector<HTMLElement>('.hub-view-bubble')!.getBoundingClientRect();
+      const time = node.querySelector<HTMLElement>('.hub-view-bubble-time')!.getBoundingClientRect();
+      return {
+        outside: time.right <= bubble.left,
+        gap: bubble.left - time.right,
+        centreOffset: Math.abs((time.top + time.bottom - bubble.top - bubble.bottom) / 2),
+      };
+    });
+    expect(outgoingPosition.outside).toBe(true);
+    expect(outgoingPosition.gap).toBe(10);
+    expect(outgoingPosition.centreOffset).toBeLessThanOrEqual(0.5);
+
+    await view.locator('.hub-view-back').click();
+    await view.locator('.hub-view-source', {hasText: 'All Platforms'}).click();
+    await view.locator('.hub-view-row', {hasText: 'File Transfer'}).click();
+    const outgoingRun = view.locator('[data-message-id="wx4"]').locator('xpath=..');
+    await expect(outgoingRun.locator('.hub-view-bubble-row')).toHaveCount(3);
+    await expect(outgoingRun.locator('.hub-view-bubble-time')).toHaveCount(3);
+    const olderTime = outgoingRun.locator('[data-message-id="wx4"] .hub-view-bubble-time');
+    const newestLine = outgoingRun.locator('[data-message-id="wx6"] .hub-view-bubble-line');
+    const newestTime = outgoingRun.locator('[data-message-id="wx6"] .hub-view-bubble-time');
+    await newestLine.hover({position: {x: 1, y: 1}});
+    await expect(newestTime).toHaveCSS('opacity', '1');
+    await expect(olderTime).toHaveCSS('opacity', '0');
   });
 
   test('a direct chat replaces a generic bridge profile with the contact name', async ({page}) => {
@@ -5071,7 +5191,7 @@ test.describe('hub view', () => {
     await view.locator('.hub-view-row', {hasText: 'Jules Tan'}).click();
 
     await expect(
-      view.locator('.hub-view-bubble-who > span:last-child'),
+      view.locator('.hub-view-bubble-sender'),
     ).toHaveText(['Jules Tan', 'Jules Tan']);
     await expect(view.getByText('Unknown user', {exact: true})).toHaveCount(0);
   });
@@ -5956,6 +6076,29 @@ test.describe('hub view', () => {
     const attachments = view.locator('.hub-view-mail-files');
     await expect(attachments).toContainText('q3-report.pdf');
     await attachments.getByRole('button').click();
+  });
+});
+
+test.describe('hub platform setup', () => {
+  test('offers the official download when the WeChat desktop app is missing', async ({page}) => {
+    await page.goto('/?wechat=missing');
+    await page.getByRole('button', {name: 'Settings'}).click();
+    const modal = page.locator('.options-page');
+    await modal.getByRole('tab', {name: 'Hub'}).click();
+    await modal.getByRole('button', {name: /^WeChat/}).click();
+
+    const download = modal.getByRole('button', {name: 'Download WeChat'});
+    await expect(download).toBeVisible();
+    await page.evaluate(() => {
+      window.open = ((url?: string | URL) => {
+        (window as unknown as {polymuxOpenedUrl?: string}).polymuxOpenedUrl = String(url ?? '');
+        return null;
+      }) as typeof window.open;
+    });
+    await download.click();
+    await expect.poll(() => page.evaluate(
+      () => (window as unknown as {polymuxOpenedUrl?: string}).polymuxOpenedUrl,
+    )).toBe('https://mac.weixin.qq.com/en');
   });
 });
 

@@ -533,6 +533,11 @@ test("connected account replacement is a Hub-visible bridge change", () => {
     bridgeStatusFingerprint(australia),
     bridgeStatusFingerprint(bridge("61426982339", "Carlvince Tan", "polymux-media://local/me")),
   );
+  assert.notEqual(
+    bridgeStatusFingerprint(australia),
+    bridgeStatusFingerprint({...australia, installUrl: "https://mac.weixin.qq.com/en"}),
+    "an installer becoming available refreshes an open Hub pane",
+  );
   assert.equal(bridgeStatusFingerprint(australia), bridgeStatusFingerprint(structuredClone(australia)));
 });
 

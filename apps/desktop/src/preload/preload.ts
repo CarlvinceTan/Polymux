@@ -48,6 +48,13 @@ const api: PolymuxApi = {
   window: {
     openWorkspaceView: (kind, conversationId, placement) =>
       ipcRenderer.invoke(channels.windowOpenWorkspaceView, kind, conversationId, placement),
+    subscribeNotificationTarget(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: Parameters<typeof listener>[0]) =>
+        listener(value);
+      ipcRenderer.on(channels.windowOpenNotificationTarget, receive);
+      return () =>
+        ipcRenderer.removeListener(channels.windowOpenNotificationTarget, receive);
+    },
     subscribeFullscreen(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: boolean) =>
         listener(value);
@@ -271,6 +278,10 @@ const api: PolymuxApi = {
     chatPickFiles: () => ipcRenderer.invoke(channels.commsChatPickFiles),
     chatSendAudio: (chatId, bytes, mimetype) =>
       ipcRenderer.invoke(channels.commsChatSendAudio, chatId, bytes, mimetype),
+    chatSendSticker: (chatId, path) =>
+      ipcRenderer.invoke(channels.commsChatSendSticker, chatId, path),
+    chatRecall: (chatId, messageId) =>
+      ipcRenderer.invoke(channels.commsChatRecall, chatId, messageId),
     chatReact: (chatId, messageId, key) =>
       ipcRenderer.invoke(channels.commsChatReact, chatId, messageId, key),
     chatUnreact: (chatId, reactionId) =>

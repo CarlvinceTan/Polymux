@@ -6,7 +6,9 @@ export const MIN_MAIN_PANE_WIDTH = 432;
 // Search centres at x=161px and the folder centre is drawer width - 22px.
 export const MIN_CHAT_DRAWER_WIDTH = 183;
 export const MAX_CHAT_DRAWER_WIDTH = 480;
-export const MIN_WORKSPACE_WIDTH = 360;
+// Keeps split workspace views, especially Hub's rail and reader, from being
+// compressed into two impractically narrow columns.
+export const MIN_WORKSPACE_WIDTH = 480;
 export const MAX_WORKSPACE_WIDTH = 720;
 export const SPLIT_LAYOUT_MIN_WIDTH = MIN_CHAT_DRAWER_WIDTH + MIN_MAIN_PANE_WIDTH + MIN_WORKSPACE_WIDTH + 1;
 // Space reserved for the Summary card and its horizontal insets. Keep the

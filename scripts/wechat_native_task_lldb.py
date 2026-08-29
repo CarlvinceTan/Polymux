@@ -26,8 +26,14 @@ START_RETURN_GADGET_OFFSET = 0x4D2ABE0
 REQ2BUF_INSERT_OFFSET = 0x3AFC954
 REQ2BUF_CALL_OFFSET = 0x3AFC9D4
 REQ2BUF_AFTER_CALL_OFFSET = 0x3AFC9DC
+MAP_ERASE_FOUND_OFFSET = 0x3AFE228
+MAP_ERASE_SKIP_OFFSET = 0x3AFE294
 AUTOBUFFER_WRITE_OFFSET = 0x3B239E4
 APP_ENCODE_OFFSET = 0x50D6FD4
+RUN_ON_START_TASK_OFFSET = 0x50DB494
+RUN_ON_START_AUTH_OFFSET = 0x50DB708
+RUN_ON_START_LONGLINK_OFFSET = 0x50DB744
+RUN_ON_START_REQ2BUF_OFFSET = 0x50DBF04
 BUF2RESP_OFFSET = 0x3B225C8
 RET_ONE_STUB_OFFSET = 0x430C4
 
@@ -72,6 +78,7 @@ def _load_request():
     if int(raw["expiryNs"]) < time.time_ns():
         raise ValueError("arm file expired")
     recipient = str(raw["recipient"])
+    user_id = str(raw.get("userId", "")).strip()
     if (
         os.environ.get("POLYMUX_WECHAT_TEST_ONLY_FILEHELPER") == "1"
         and recipient != "filehelper"
@@ -88,10 +95,12 @@ def _load_request():
         or not 0 < command_id <= 0xFFFFFFFF
     ):
         raise ValueError("native task CGI or command id is out of range")
+    if not user_id or len(user_id.encode("utf-8")) > 255 or "\x00" in user_id:
+        raise ValueError("native task WeChat account id is out of range")
     task_id = int(raw.get("taskId", 0))
     if task_id and not 0 < task_id <= 0xFFFFFFFF:
         raise ValueError("native task id is out of range")
-    return request, cgi, command_id, task_id
+    return request, cgi, command_id, task_id, user_id
 
 
 def _module_base(target):
@@ -142,6 +151,21 @@ def _read_pointer(process, address):
     if error.Fail() or len(raw) != 8:
         raise RuntimeError(f"target pointer read failed: {error}")
     return struct.unpack("<Q", raw)[0]
+
+
+def _find_map_node(process, root, task_id):
+    node = root
+    visited = set()
+    while node and node not in visited and len(visited) < 256:
+        visited.add(node)
+        raw = _read_memory(process, node + 0x20, 4)
+        if len(raw) != 4:
+            raise RuntimeError("WeChat request map key is unreadable")
+        key = struct.unpack("<I", raw)[0]
+        if task_id == key:
+            return node
+        node = _read_pointer(process, node + (0x00 if task_id < key else 0x08))
+    return 0
 
 
 def _register(frame, name):
@@ -196,12 +220,32 @@ def _install_breakpoint(target, address, callback):
     _STATE.setdefault("breakpoints", []).append(breakpoint.GetID())
 
 
-def _make_task(process, task_id, command_id, cgi_path):
+def _cpp_string(process, value):
+    encoded = value.encode("utf-8")
+    if len(encoded) <= 22:
+        result = bytearray(24)
+        result[: len(encoded)] = encoded
+        result[23] = len(encoded)
+        return bytes(result)
+    storage = _allocate(process, len(encoded) + 1)
+    _write(process, storage, encoded + b"\x00")
+    capacity = ((len(encoded) + 16) // 16) * 16
+    return struct.pack(
+        "<QQQ",
+        storage,
+        len(encoded),
+        0x8000000000000000 | capacity,
+    )
+
+
+def _make_task(process, task_id, command_id, cgi_path, user_id):
     cgi_bytes = cgi_path.encode("utf-8") + b"\x00"
     cgi = _allocate(process, len(cgi_bytes))
     _write(process, cgi, cgi_bytes)
 
-    task = bytearray(0x1A0)
+    # WeChat 4.1.11's Task copy constructor reads the final std::map sentinel
+    # at +0x1A0, so the source object is 0x1A8 bytes rather than 0x1A0.
+    task = bytearray(0x1A8)
     struct.pack_into("<I", task, 0x00, task_id)
     struct.pack_into("<I", task, 0x04, command_id)
     struct.pack_into("<I", task, 0x10, 3)
@@ -211,7 +255,10 @@ def _make_task(process, task_id, command_id, cgi_path):
     struct.pack_into("<Q", task, 0x28, 0x8000000000000030)
     task[0x30:0x58] = bytes(
         [
-            0x00, 0x01, 0x01, 0x01, 0x00, 0xAA, 0xAA, 0xAA,
+            # This exact-account task already carries the linked wxid below.
+            # Avoid Mars's UI-driven MakeSureAuth precheck, which otherwise
+            # defers forever for a correctly signed-in background session.
+            0x00, 0x00, 0x01, 0x01, 0x00, 0xAA, 0xAA, 0xAA,
             0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
             0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
             0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xAA, 0xAA, 0xAA,
@@ -227,6 +274,7 @@ def _make_task(process, task_id, command_id, cgi_path):
         ]
     )
     struct.pack_into("<I", task, 0x60, command_id)
+    task[0x98:0xB0] = _cpp_string(process, user_id)
     struct.pack_into("<I", task, 0x148, 1)
     struct.pack_into("<Q", task, 0x180, 3)
 
@@ -260,12 +308,23 @@ def _make_message(process, task_id, command_id, cgi, cgi_length, ret_one):
     return wrapper_address
 
 
-def _restore_root(process):
-    root = _STATE.get("root")
-    original_root = _STATE.get("original_root")
-    if root and original_root is not None:
-        _write(process, root, struct.pack("<Q", original_root))
-        _STATE["root"] = None
+def _restore_map(process):
+    if _STATE.get("map_restored"):
+        return
+    begin = _STATE.get("map_begin")
+    root = _STATE.get("map_root")
+    size = _STATE.get("map_size")
+    wrapper = _STATE.get("wrapper")
+    if not (begin and root and size and wrapper):
+        return
+    current_root = _read_pointer(process, root)
+    if current_root != wrapper:
+        raise RuntimeError("native task map no longer owns the injected entry")
+    _write(process, begin, struct.pack("<Q", _STATE["original_begin"]))
+    _write(process, root, struct.pack("<Q", _STATE["original_root"]))
+    _write(process, size, struct.pack("<Q", _STATE["original_size"]))
+    _STATE["map_restored"] = True
+    _trace({"stage": "map_restore"})
 
 
 def _restore_start_thread(process):
@@ -283,7 +342,7 @@ def _restore_start_thread(process):
 
 
 def _cleanup(process):
-    _restore_root(process)
+    _restore_map(process)
     _restore_start_thread(process)
     _STATE["start_pending"] = False
 
@@ -295,13 +354,98 @@ def _req2buf_insert(frame, _location, _dict):
         if observed_task_id != _STATE.get("task_id"):
             return False
         process = frame.GetThread().GetProcess()
-        root = _register_value(frame, "x24") + 0x60
-        _STATE["root"] = root
-        _STATE["original_root"] = _read_pointer(process, root)
-        _write(process, root, struct.pack("<Q", _STATE["wrapper"]))
+        manager = _register_value(frame, "x24")
+        begin = manager + 0x58
+        root = manager + 0x60
+        size = manager + 0x68
+        original_begin = _read_pointer(process, begin)
+        original_root = _read_pointer(process, root)
+        original_size = _read_pointer(process, size)
+        existing = _find_map_node(process, original_root, observed_task_id)
+        _trace(
+            {
+                "stage": "req2buf_map",
+                "beginIsSentinel": original_begin == root,
+                "empty": original_root == 0 and original_size == 0,
+                "matchedExisting": existing != 0,
+                "size": original_size,
+            }
+        )
+        if existing:
+            _STATE["active_node"] = existing
+            _STATE["borrowed_node"] = True
+            _STATE["inserted"] = True
+            return False
+        if original_root != 0 or original_size != 0 or original_begin != root:
+            raise RuntimeError("WeChat request map is busy")
+
+        wrapper = _STATE["wrapper"]
+        # libc++'s tree node stores its parent sentinel at +0x10. Install a
+        # complete one-node tree and intercept the matching erase so WeChat
+        # never frees memory that LLDB allocated.
+        _write(process, wrapper + 0x10, struct.pack("<Q", root))
+        _STATE.update(
+            {
+                "map_begin": begin,
+                "map_root": root,
+                "map_size": size,
+                "original_begin": original_begin,
+                "original_root": original_root,
+                "original_size": original_size,
+                "map_restored": False,
+                "active_node": wrapper,
+                "borrowed_node": False,
+            }
+        )
+        _write(process, begin, struct.pack("<Q", wrapper))
+        _write(process, root, struct.pack("<Q", wrapper))
+        _write(process, size, struct.pack("<Q", 1))
         _STATE["inserted"] = True
     except Exception as error:
         _STATE["failure"] = f"Req2Buf insert failed: {error}"
+        _finish(
+            {
+                "ok": False,
+                "reason": _STATE["failure"],
+                "taskId": _STATE.get("task_id"),
+            }
+        )
+    return False
+
+
+def _map_erase_found(frame, _location, _dict):
+    try:
+        process = frame.GetThread().GetProcess()
+        node = _register_value(frame, "x23")
+        raw = _read_memory(process, node + 0x20, 4)
+        if len(raw) != 4 or struct.unpack("<I", raw)[0] != _STATE.get("task_id"):
+            return False
+        if node != _STATE.get("active_node"):
+            raise RuntimeError("WeChat selected an unexpected request map node")
+        if _STATE.get("borrowed_node"):
+            _trace({"stage": "map_erase_native", "taskId": _STATE.get("task_id")})
+            return False
+        message = _read_pointer(process, node + 0x28)
+        if not message:
+            raise RuntimeError("native request map message is missing")
+        _restore_map(process)
+        _set_register(frame, "x20", message)
+        _set_register(frame, "pc", _STATE["map_erase_skip"])
+        _trace({"stage": "map_erase_skip", "taskId": _STATE.get("task_id")})
+    except Exception as error:
+        _STATE["failure"] = f"native request map erase failed: {error}"
+        try:
+            process = frame.GetThread().GetProcess()
+            _cleanup(process)
+        except Exception:
+            pass
+        _finish(
+            {
+                "ok": False,
+                "reason": _STATE["failure"],
+                "taskId": _STATE.get("task_id"),
+            }
+        )
     return False
 
 
@@ -319,10 +463,87 @@ def _app_encode(frame, _location, _dict):
                 "stage": "app_encode",
                 "taskId": task_id,
                 "commandId": command_id,
+                "channelMode": _register_value(frame, "x2") & 0xFFFFFFFF,
             }
         )
     except Exception as error:
         _trace({"stage": "app_encode_error", "reason": str(error)})
+    return False
+
+
+def _run_on_start_task(frame, _location, _dict):
+    try:
+        process = frame.GetThread().GetProcess()
+        profile = _register_value(frame, "x25")
+        raw = _read_memory(process, profile + 0x10, 0x50)
+        if len(raw) != 0x50:
+            return False
+        task_id, command_id = struct.unpack_from("<II", raw)
+        if task_id != _STATE.get("task_id"):
+            return False
+        _trace(
+            {
+                "stage": "run_on_start_task",
+                "taskId": task_id,
+                "commandId": command_id,
+                "sendOnly": raw[0x30],
+                "needAuthed": raw[0x31],
+                "limitFlow": raw[0x32],
+                "limitFrequency": raw[0x33],
+                "retryCount": struct.unpack_from("<i", raw, 0x40)[0],
+                "totalTimeout": struct.unpack_from("<i", raw, 0x48)[0],
+            }
+        )
+    except Exception as error:
+        _trace({"stage": "run_on_start_task_error", "reason": str(error)})
+    return False
+
+
+def _run_on_start_auth(frame, _location, _dict):
+    try:
+        process = frame.GetThread().GetProcess()
+        profile = _register_value(frame, "x25")
+        task_id = struct.unpack("<I", _read_memory(process, profile + 0x10, 4))[0]
+        if task_id == _STATE.get("task_id"):
+            _trace(
+                {
+                    "stage": "run_on_start_auth",
+                    "taskId": task_id,
+                    "authenticated": bool(_register_value(frame, "x27") & 1),
+                }
+            )
+    except Exception as error:
+        _trace({"stage": "run_on_start_auth_error", "reason": str(error)})
+    return False
+
+
+def _run_on_start_longlink(frame, _location, _dict):
+    try:
+        process = frame.GetThread().GetProcess()
+        profile = _register_value(frame, "x25")
+        task_id = struct.unpack("<I", _read_memory(process, profile + 0x10, 4))[0]
+        if task_id == _STATE.get("task_id"):
+            _trace(
+                {
+                    "stage": "run_on_start_longlink",
+                    "taskId": task_id,
+                    "found": _register_value(frame, "x28") != 0,
+                }
+            )
+    except Exception as error:
+        _trace({"stage": "run_on_start_longlink_error", "reason": str(error)})
+    return False
+
+
+def _run_on_start_req2buf(frame, _location, _dict):
+    try:
+        process = frame.GetThread().GetProcess()
+        profile = _register_value(frame, "x25")
+        task_id = struct.unpack("<I", _read_memory(process, profile + 0x10, 4))[0]
+        if task_id == _STATE.get("task_id"):
+            _trace({"stage": "run_on_start_req2buf", "taskId": task_id})
+    except Exception as error:
+        _trace({"stage": "run_on_start_req2buf_error", "reason": str(error)})
     return False
 
 
@@ -452,7 +673,7 @@ def cleanup_native(debugger, _command, result, _dict):
 
 def send_native(debugger, _command, result, _dict):
     try:
-        request, cgi_path, command_id, requested_task_id = _load_request()
+        request, cgi_path, command_id, requested_task_id, user_id = _load_request()
         target = debugger.GetSelectedTarget()
         process = target.GetProcess()
         if not process.IsValid() or process.GetState() != lldb.eStateStopped:
@@ -471,7 +692,7 @@ def send_native(debugger, _command, result, _dict):
         _STATE["cgi"] = cgi_path
 
         task, cgi = _make_task(
-            process, _STATE["task_id"], command_id, cgi_path
+            process, _STATE["task_id"], command_id, cgi_path, user_id
         )
         _STATE["wrapper"] = _make_message(
             process,
@@ -484,6 +705,7 @@ def send_native(debugger, _command, result, _dict):
         _STATE["protobuf"] = _allocate(process, len(request))
         _STATE["protobuf_length"] = len(request)
         _STATE["after_call"] = module_base + REQ2BUF_AFTER_CALL_OFFSET
+        _STATE["map_erase_skip"] = module_base + MAP_ERASE_SKIP_OFFSET
         _write(process, _STATE["protobuf"], request)
 
         _install_breakpoint(
@@ -498,8 +720,33 @@ def send_native(debugger, _command, result, _dict):
         )
         _install_breakpoint(
             target,
+            module_base + MAP_ERASE_FOUND_OFFSET,
+            "_map_erase_found",
+        )
+        _install_breakpoint(
+            target,
             module_base + APP_ENCODE_OFFSET,
             "_app_encode",
+        )
+        _install_breakpoint(
+            target,
+            module_base + RUN_ON_START_TASK_OFFSET,
+            "_run_on_start_task",
+        )
+        _install_breakpoint(
+            target,
+            module_base + RUN_ON_START_AUTH_OFFSET,
+            "_run_on_start_auth",
+        )
+        _install_breakpoint(
+            target,
+            module_base + RUN_ON_START_LONGLINK_OFFSET,
+            "_run_on_start_longlink",
+        )
+        _install_breakpoint(
+            target,
+            module_base + RUN_ON_START_REQ2BUF_OFFSET,
+            "_run_on_start_req2buf",
         )
         _install_breakpoint(
             target,
@@ -558,7 +805,7 @@ def send_native(debugger, _command, result, _dict):
             target = debugger.GetSelectedTarget()
             process = target.GetProcess()
             if process.IsValid():
-                _restore_root(process)
+                _restore_map(process)
         except Exception:
             pass
         _finish({"ok": False, "reason": f"native task setup failed: {error}"})

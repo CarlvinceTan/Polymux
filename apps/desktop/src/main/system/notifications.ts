@@ -1,13 +1,37 @@
-import type {NotificationKind} from "@polymux/protocol";
+import type {NotificationKind, NotificationTargetDto} from "@polymux/protocol";
 
 /** What the user is told, once the switches have agreed it is worth telling. */
 export interface NotificationRequest {
   kind: NotificationKind;
   title: string;
   body: string;
+  /** The exact app surface this event came from. A test notification has none
+   * and simply brings Polymux forward. */
+  target?: NotificationTargetDto;
   /** Posted even when the window is focused. Reserved for the test
    * notification, whose whole job is to appear on demand. */
   force?: boolean;
+}
+
+/** Platform-specific effects of clicking a notification, kept injectable so
+ * the click contract can be verified without opening an Electron window. */
+export interface NotificationActivation {
+  restore(): void;
+  show(): void;
+  focusWindow(): void;
+  focusApp(): void;
+  open(target: NotificationTargetDto): void;
+}
+
+export function activateNotification(
+  request: NotificationRequest,
+  activation: NotificationActivation,
+): void {
+  activation.restore();
+  activation.show();
+  activation.focusWindow();
+  activation.focusApp();
+  if (request.target) activation.open(request.target);
 }
 
 /** The half of the decision the switches make. */

@@ -34,6 +34,8 @@ import {
   BridgeHost,
   Homeserver,
   ProcessWeChatWriter,
+  ensureWeChatAppRunningHidden,
+  primeWeChatAppHidden,
   WeChatBridge,
   WECHAT_FALLBACK_DIRECTORIES,
   loadShippedCredentials,
@@ -218,6 +220,9 @@ let startupShellWindow: BrowserWindow | undefined;
 // enough space for the menu bar and Dock on a 14-inch MacBook display.
 const DEFAULT_MAIN_WINDOW_WIDTH = 1340;
 const DEFAULT_MAIN_WINDOW_HEIGHT = 860;
+// Renderer split floor: 183px chat drawer + 432px conversation + 480px
+// workspace + the 1px handover boundary.
+const MIN_MAIN_WINDOW_WIDTH = 1096;
 
 /** Paints the real startup animation before app-scoped services are ready.
  * The document deliberately does not mount Svelte or call IPC; it simply
@@ -228,7 +233,7 @@ function createStartupShellWindow(): BrowserWindow {
     title: "Polymux",
     width: DEFAULT_MAIN_WINDOW_WIDTH,
     height: DEFAULT_MAIN_WINDOW_HEIGHT,
-    minWidth: 973,
+    minWidth: MIN_MAIN_WINDOW_WIDTH,
     minHeight: 672,
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff",
@@ -347,6 +352,7 @@ type WorkspaceWindowPlacement = {
 
 const DETACHED_WINDOW_WIDTH = 1000;
 const DETACHED_WINDOW_HEIGHT = 672;
+const MIN_DETACHED_WORKSPACE_WINDOW_WIDTH = 480;
 
 function detachedWindowBounds(
   placement?: WorkspaceWindowPlacement,
@@ -355,7 +361,10 @@ function detachedWindowBounds(
   const point = { x: Math.round(placement.x), y: Math.round(placement.y) };
   const { workArea } = screen.getDisplayNearestPoint(point);
   const width = Math.min(
-    Math.max(Math.round(placement.width ?? DETACHED_WINDOW_WIDTH), 360),
+    Math.max(
+      Math.round(placement.width ?? DETACHED_WINDOW_WIDTH),
+      MIN_DETACHED_WORKSPACE_WINDOW_WIDTH,
+    ),
     workArea.width,
   );
   const height = Math.min(
@@ -392,11 +401,10 @@ function createWindow(
         bounds?.height ?? (workspaceView ? 618 : DEFAULT_MAIN_WINDOW_HEIGHT),
       x: bounds?.x,
       y: bounds?.y,
-      // The floor where the split layout still reads: history at its 180px
-      // minimum, the conversation at its 432px measure and the workspace at its
-      // 360px minimum, which is SPLIT_LAYOUT_MIN_WIDTH in the renderer's
-      // layoutSizing — keep the two in step.
-      minWidth: workspaceView ? 360 : 973,
+      // Keep native resizing aligned with the renderer's two layout floors.
+      minWidth: workspaceView
+        ? MIN_DETACHED_WORKSPACE_WINDOW_WIDTH
+        : MIN_MAIN_WINDOW_WIDTH,
       // The welcome composer sits on the window's centre line, so its menus open
       // downward into the lower half. 672px leaves the tallest of them (the model
       // menu, five rows) 28px clear of the bottom edge, and pairs with the width
@@ -719,6 +727,12 @@ function desktopBackendOptions(
           bridges: hub.bridges,
           startWeChat: (owner: string) => wechat!.start(owner),
           stopWeChat: () => wechat!.close(),
+          waitForWeChatOutbound: (eventId: string) =>
+            wechat!.waitForOutbound(eventId),
+          discardOutbound: (eventId: string) =>
+            hub!.homeserver.discardOutbound(eventId),
+          recallWeChat: (roomId: string, eventId: string) =>
+            wechat!.recall(roomId, eventId),
           onActivity: (listener) => {
             onHubActivity = listener;
           },
@@ -951,10 +965,21 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
     path.join(process.resourcesPath, "wxcdn_fileid_capture.py"),
     path.join(app.getAppPath(), "scripts", "wxcdn_fileid_capture.py"),
   ].find((candidate) => existsSync(candidate));
-  const bundledWeChatWriter = [
-    bundledResource("wechat-writer", "polymux-wechat-driver.mjs"),
-    path.join(app.getAppPath(), "scripts", "polymux-wechat-driver.mjs"),
-  ].find((candidate) => existsSync(candidate));
+  const bundledWeChatWriter = process.platform === "darwin"
+    ? [
+        bundledResource("wechat-writer", "polymux-wechat-driver.mjs"),
+        path.join(app.getAppPath(), "scripts", "polymux-wechat-driver.mjs"),
+      ].find((candidate) => existsSync(candidate))
+    : undefined;
+  const weChatCli = process.platform === "darwin"
+    ? [
+        bundledResource("wechat", "wechat-use"),
+        ...WECHAT_FALLBACK_DIRECTORIES.map((directory) =>
+          path.join(directory, "wechat-use"),
+        ),
+      ].find((candidate) => existsSync(candidate))
+    : undefined;
+  const weChatPrimer = bundledResource("native", "bin", "wechat-prime");
   const configuredWriter = process.env.POLYMUX_WECHAT_WRITER;
   const writer = configuredWriter
     ? new ProcessWeChatWriter(configuredWriter)
@@ -965,6 +990,10 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
             ...process.env,
             POLYMUX_WECHAT_WIRE_NATIVE: "1",
             POLYMUX_WECHAT_LLDB_EXPERIMENTAL: "1",
+            ...(weChatCli ? {POLYMUX_WECHAT_CLI: weChatCli} : {}),
+            ...(existsSync(weChatPrimer)
+              ? {POLYMUX_WECHAT_PRIMER: weChatPrimer}
+              : {}),
           }, cdnCaptureScript),
         })
       : undefined;
@@ -980,6 +1009,11 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
       ...WECHAT_FALLBACK_DIRECTORIES,
     ],
     ...(writer ? {writer} : {}),
+    ensureAppRunning: () => ensureWeChatAppRunningHidden(),
+    primeApp: () =>
+      primeWeChatAppHidden({
+        ...(existsSync(weChatPrimer) ? {helperPath: weChatPrimer} : {}),
+      }),
     ...(cdnCaptureScript ? {cdnCaptureScript} : {}),
     log: (line) => console.warn(line),
   });

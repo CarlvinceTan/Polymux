@@ -344,6 +344,18 @@ const HEALTHY_UPTIME_MS = 60_000;
  */
 const ANSI_COLOURS = /\x1b\[[0-9;]*m/g;
 
+const ROUTINE_MESSENGER_SCHEMA_DEPENDENCIES = new Set([
+  "applyAdminMessageCTAV2",
+  "fetchBanners",
+  "setRegionHint",
+  "updateOrInsertCommunitySurfaceRange",
+]);
+
+function routineMessengerSchemaDependency(line: string, field: string): boolean {
+  const match = new RegExp(`(?:^|\\s)${field}=([^\\s]+)`).exec(line);
+  return Boolean(match && ROUTINE_MESSENGER_SCHEMA_DEPENDENCIES.has(match[1]));
+}
+
 function routineBridgeOutput(platform: string, line: string): boolean {
   // Both WhatsApp and Messenger use whatsmeow's websocket transport. These
   // failures are the reconnect trigger itself, not a terminal bridge error.
@@ -411,10 +423,9 @@ function routineBridgeOutput(platform: string, line: string): boolean {
           line.includes("struct_name=LSInsertXmaAttachment") &&
           line.includes("val_type=string")) ||
         (line.includes("Skipping dependency with no reference") &&
-          (line.includes("reference_name=applyAdminMessageCTAV2") ||
-            line.includes("reference_name=setRegionHint"))) ||
+          routineMessengerSchemaDependency(line, "reference_name")) ||
         (line.includes("Unknown dependency in sp") &&
-          line.includes("dependency=setRegionHint"))
+          routineMessengerSchemaDependency(line, "dependency"))
       );
   }
   return false;

@@ -21,6 +21,10 @@ export function readableError(reason: unknown): string {
   if (!message) return FALLBACK;
   // A bare error code says nothing on its own; anything that reads as a
   // sentence is kept exactly as the thrower wrote it.
-  if (/^[A-Z][A-Z0-9_]+$/.test(message)) return FALLBACK;
+  if (
+    /^[A-Z][A-Z0-9_]+$/.test(message) ||
+    /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(message)
+  )
+    return FALLBACK;
   return message;
 }

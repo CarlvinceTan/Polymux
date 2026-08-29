@@ -8,6 +8,7 @@ import type {
   ChatDto,
   ChatMessageDto,
   ContactLinkDto,
+  ContactLinkMemberDto,
   ComputerHistoryActivityDto,
   ComputerHistoryEntryDto,
   ComputerHistoryStatusDto,
@@ -68,12 +69,45 @@ export function polymuxApi(): PolymuxApi {
   throw new Error('The Polymux desktop bridge is unavailable. Open this build through the desktop app.');
 }
 
+/** Demo mode follows the desktop contact-link contract: extending an
+ * overlapping identity retains every route that was already linked. */
+export function mergeDemoContactLinkMembers(
+  overlapping: readonly ContactLinkDto[],
+  requested: readonly ContactLinkMemberDto[],
+): ContactLinkMemberDto[] {
+  const members: ContactLinkMemberDto[] = [];
+  for (const member of [
+    ...overlapping.flatMap((link) => link.members),
+    ...requested,
+  ]) {
+    const existing = members.findIndex((candidate) =>
+      sameDemoContactMember(candidate, member),
+    );
+    if (existing < 0) members.push(member);
+    else members[existing] = member;
+  }
+  return members;
+}
+
+function sameDemoContactMember(
+  left: ContactLinkMemberDto,
+  right: ContactLinkMemberDto,
+): boolean {
+  if (left.platform !== right.platform) return false;
+  const leftRemote = left.remoteId?.trim().normalize('NFKC').toLowerCase();
+  const rightRemote = right.remoteId?.trim().normalize('NFKC').toLowerCase();
+  return leftRemote && rightRemote
+    ? leftRemote === rightRemote
+    : left.chatId.trim() === right.chatId.trim();
+}
+
 /** A development-only adapter keeps browser-based component tests useful. The
  * packaged desktop never selects it because preload supplies `window.polymux`. */
 function createBrowserDemoApi(): PolymuxApi {
   // The dev branch always represents an already-configured profile.
   const onboardingPreview = false;
   const releaseNotesPreview = new URLSearchParams(window.location.search).get('releaseNotesPreview') === '1';
+  const weChatMissingPreview = new URLSearchParams(window.location.search).get('wechat') === 'missing';
   const now = Date.now();
   let conversations: ConversationDto[] = [
     conversation('welcome', 'Planning a product launch', now - 86_400_000),
@@ -312,7 +346,7 @@ function createBrowserDemoApi(): PolymuxApi {
       // No bridge to log in to: a relay against the WeChat app on this Mac,
       // reporting whichever account that app is already signed in as — and
       // only once it is delivering into Polymux's own hub.
-      {platform: 'wechat', name: 'WeChat', api: 'none', state: 'unavailable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: 'The WeChat relay on this Mac is running, but it is not connected to Polymux’s own hub, so nothing it carries reaches here.'},
+      {platform: 'wechat', name: 'WeChat', api: 'none', state: 'unavailable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: weChatMissingPreview ? 'WeChat for Mac is not installed. Install it and sign in.' : 'The WeChat relay on this Mac is running, but it is not connected to Polymux’s own hub, so nothing it carries reaches here.', installUrl: weChatMissingPreview ? 'https://mac.weixin.qq.com/en' : null},
     ],
     email: {
       // The demo shows the buttons: it stands in for a build with clients
@@ -559,9 +593,6 @@ function createBrowserDemoApi(): PolymuxApi {
     // machine's timezone (this machine resolves to SGD).
     currency: 'USD',
     speechModeEnabled: true,
-    // On, unlike the app's default: the Playwright suite drives the whole
-    // settings surface, and basic mode hides half of it.
-    advancedMode: true,
     dictationAutoStopSeconds: 6,
     timeEnabled: true,
     locationEnabled: true,
@@ -706,6 +737,7 @@ function createBrowserDemoApi(): PolymuxApi {
     // changes and the subscription has nothing to tear down.
     window: {
       openWorkspaceView: async () => {},
+      subscribeNotificationTarget: () => () => {},
       subscribeFullscreen: () => () => {},
     },
     permissions: {
@@ -1191,9 +1223,9 @@ function createBrowserDemoApi(): PolymuxApi {
               candidate.chatId === member.chatId))));
         const at = new Date().toISOString();
         const link: ContactLinkDto = {
-          id: overlapping[0]?.id ?? `contact-${crypto.randomUUID()}`,
+          id: `contact-${crypto.randomUUID()}`,
           name: request.name,
-          members: request.members,
+          members: mergeDemoContactLinkMembers(overlapping, request.members),
           createdAt: overlapping[0]?.createdAt ?? at,
           updatedAt: at,
         };
@@ -1290,6 +1322,12 @@ function createBrowserDemoApi(): PolymuxApi {
       chatSendFiles: async () => {},
       chatPickFiles: async () => [],
       chatSendAudio: async () => {},
+      chatSendSticker: async () => {},
+      chatRecall: async (chatId, messageId) => {
+        demoChatMessages = demoChatMessages.filter(
+          (item) => item.chatId !== chatId || item.id !== messageId,
+        );
+      },
       chatReact: async (chatId, messageId, key) => {
         const eventId = `demo-${key}`;
         demoAddReaction(

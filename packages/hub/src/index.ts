@@ -39,6 +39,13 @@ export {
 } from "./wechat-bridge.js";
 export {ProcessWeChatWriter} from "./wechat-writer.js";
 export {
+  ensureWeChatAppRunningHidden,
+  primeWeChatAppHidden,
+  weChatAppIsRunning,
+  type EnsureWeChatAppOptions,
+  type PrimeWeChatAppOptions,
+} from "./wechat-app.js";
+export {
   WECHAT_NATIVE_PROFILES,
   findWeChatNativeProfile,
   type WeChatNativeProfile,
@@ -69,7 +76,11 @@ export {
 } from "./email.js";
 export {
   probeWeChatRelay,
+  setupGuidance,
   setupHint,
+  WECHAT_DOWNLOAD_URL,
+  WECHAT_DOWNLOAD_URLS,
+  weChatDownloadUrl,
   type WeChatRelayStatus,
 } from "./wechat-relay.js";
 export {MEDIA_SCHEME, mediaUrl} from "./media-url.js";

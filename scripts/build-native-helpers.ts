@@ -32,6 +32,7 @@ export const NATIVE_HELPERS = [
   {name: "reminders", privacy: true},
   {name: "wechat-media-prepare", privacy: false},
   {name: "wechat-paste-send", privacy: false},
+  {name: "wechat-prime", privacy: false},
 ] as const;
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");

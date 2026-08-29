@@ -132,7 +132,6 @@
   let profileCreateOpen = false;
   let profileCreateName = 'New profile';
   let profileCreateInput: HTMLInputElement;
-  let switchingToDefault = false;
   let agentRuntime: AgentRuntimeDto = {kind: 'polymux', name: 'Polymux Agent'};
   let runtimeKind: AgentRuntimeDto['kind'] = 'polymux';
   let runtimeName = 'ACP Agent';
@@ -221,7 +220,6 @@
   let deletingHistoryEntry = '';
   let updatingTheme = false;
   let updatingSpeechMode = false;
-  let updatingAdvancedMode = false;
   let updatingAutoStop = false;
   let updatingTime = false;
   let updatingLocation = false;
@@ -519,18 +517,6 @@
   $: activeRailFilterOptions = mode === 'mcp' ? mcpFilterOptions : mode === 'skills' ? skillFilterOptions : mode === 'plugins' ? pluginFilterOptions : mode === 'model' ? modelFilterOptions : providerFilterOptions;
   $: activeRailSortOptions = mode === 'mcp' ? mcpSortOptions : mode === 'skills' ? skillSortOptions : mode === 'plugins' ? pluginSortOptions : mode === 'model' ? modelSortOptions : providerSortOptions;
   $: modeHeader = MODE_HEADERS[mode];
-  /** Basic mode until the setting says otherwise, including while it loads —
-   * a tab that appears and then vanishes is worse than one that arrives. */
-  $: advanced = general?.advancedMode ?? false;
-  $: visibleProfiles = advanced ? profiles.profiles : defaultProfile ? [defaultProfile] : [];
-  $: if (general && !advanced && defaultProfile && profiles.activeId !== defaultProfile.id && !switchingToDefault)
-    void selectDefaultForBasicMode(defaultProfile.id);
-  /* Basic mode drops the Profile, Model, Memory, MCP and Skills tabs; a page left parked
-     on one that no longer exists would read as Settings having gone blank.
-     Plugins is the surface that stays: what MCP and Skills configure piecemeal,
-     a plugin brings as one thing, and that is the whole of the simple view. */
-  $: if (!advanced && (mode === 'computer-history' || mode === 'mcp' || mode === 'skills'))
-    mode = 'plugins';
   /* One icon per tab, all from the shared set at one size, so the rail reads as
      a single strip rather than eight separately chosen marks. */
   $: navTabs = [
@@ -540,11 +526,9 @@
     {id: 'drive' as Mode, icon: 'drive' as IconName, label: $t('workspace.drive')},
     {id: 'browser' as Mode, icon: 'globe' as IconName, label: $t('settings.tabBrowser')},
     {id: 'plugins' as Mode, icon: 'puzzle' as IconName, label: $t('settings.tabPlugins')},
-    /* The pieces a plugin is made of. Basic mode installs plugins whole and
-       never sees them; advanced mode manages them one by one as well. */
-    ...(advanced ? [{id: 'mcp' as Mode, icon: 'mcp' as IconName, label: 'MCP'}] : []),
-    ...(advanced ? [{id: 'skills' as Mode, icon: 'sparkles' as IconName, label: $t('settings.tabSkills')}] : []),
-    ...(advanced ? [{id: 'computer-history' as Mode, icon: 'clock' as IconName, label: $t('settings.tabMemory')}] : []),
+    {id: 'mcp' as Mode, icon: 'mcp' as IconName, label: 'MCP'},
+    {id: 'skills' as Mode, icon: 'sparkles' as IconName, label: $t('settings.tabSkills')},
+    {id: 'computer-history' as Mode, icon: 'clock' as IconName, label: $t('settings.tabMemory')},
   ];
   /* The rail's own search narrows the tab list. It never hides the tab you are
      on: a filter that emptied the page out from under you would read as the
@@ -642,14 +626,6 @@
   async function selectProfile(id: string): Promise<void> {
     if (id === profiles.activeId) return;
     profiles = await api.profiles.select(id);
-  }
-  async function selectDefaultForBasicMode(id: string): Promise<void> {
-    switchingToDefault = true;
-    try {
-      profiles = await api.profiles.select(id);
-    } finally {
-      switchingToDefault = false;
-    }
   }
   async function startProfileRename(profile: ProfileDto, surface: 'menu' | 'rail'): Promise<void> {
     profileActionsId = '';
@@ -1410,23 +1386,6 @@
       error = readableError(reason);
     } finally {
       updatingTime = false;
-    }
-  }
-
-  async function setAdvancedMode(enabled: boolean): Promise<void> {
-    updatingAdvancedMode = true;
-    try {
-      general = await api.general.update({advancedMode: enabled});
-      onGeneralChange(general);
-      if (!enabled)
-        void Promise.all([api.memory.status(), api.computerHistory.status()])
-          .then(([nextMemory, nextComputerHistory]) => { memory = nextMemory; computerHistory = nextComputerHistory; void loadSourceIcons(computerHistory); })
-          .catch(() => {});
-      error = '';
-    } catch (reason) {
-      error = readableError(reason);
-    } finally {
-      updatingAdvancedMode = false;
     }
   }
 
@@ -3441,10 +3400,10 @@
     </div>
 
     <div class="profile-switcher">
-      {#if advanced && profileMenuOpen}
+      {#if profileMenuOpen}
         <div class="profile-menu" role="menu" aria-label="Profiles">
           <div class="profile-list" onscroll={() => profileActionsId = ''}>
-            {#each visibleProfiles as profile (profile.id)}
+            {#each profiles.profiles as profile (profile.id)}
               <div class="profile-row" class:active={profile.id === profiles.activeId}>
                 {#if profileRenameId === profile.id && profileRenameSurface === 'menu'}
                   <form class="profile-rename" onsubmit={(event) => {event.preventDefault(); void saveProfileRename(profile);}}>
@@ -3480,18 +3439,14 @@
           <button type="button" class="polymux-dropdown-item danger" role="menuitem" disabled={profileActionsProfile.isDefault || profileActionsProfile.id === 'default'} onclick={() => void removeProfile(profileActionsProfile)}><Icon name="trash" size={14}/><span>Delete</span></button>
         </div>
       {/if}
-      {#if advanced}
-        {#if railProfile && profileRenameId === railProfile.id && profileRenameSurface === 'rail'}
-          <form class="profile-trigger profile-rename rail" onsubmit={(event) => {event.preventDefault(); void saveProfileRename(railProfile);}}>
-            <input bind:this={profileRenameInput} bind:value={profileRenameDraft} aria-label={`Rename ${railProfile.name}`} disabled={profileRenameSaving} onkeydown={(event) => profileRenameKeydown(event, railProfile)} onblur={() => void saveProfileRename(railProfile)}/>
-          </form>
-        {:else}
-          <button type="button" class="profile-trigger" aria-expanded={profileMenuOpen} onclick={() => {profileMenuOpen = !profileMenuOpen; profileActionsId = '';}} ondblclick={(event) => {event.preventDefault(); event.stopPropagation(); if (railProfile) void startProfileRename(railProfile, 'rail');}} oncontextmenu={(event) => {if (railProfile) void openProfileActionsAtPoint(event, railProfile.id, 'rail');}}>
-            <span>{railProfile?.name ?? 'Default Profile'}</span>
-          </button>
-        {/if}
+      {#if railProfile && profileRenameId === railProfile.id && profileRenameSurface === 'rail'}
+        <form class="profile-trigger profile-rename rail" onsubmit={(event) => {event.preventDefault(); void saveProfileRename(railProfile);}}>
+          <input bind:this={profileRenameInput} bind:value={profileRenameDraft} aria-label={`Rename ${railProfile.name}`} disabled={profileRenameSaving} onkeydown={(event) => profileRenameKeydown(event, railProfile)} onblur={() => void saveProfileRename(railProfile)}/>
+        </form>
       {:else}
-        <div class="profile-trigger basic"><span>{defaultProfile?.name ?? 'Default Profile'}</span></div>
+        <button type="button" class="profile-trigger" aria-expanded={profileMenuOpen} onclick={() => {profileMenuOpen = !profileMenuOpen; profileActionsId = '';}} ondblclick={(event) => {event.preventDefault(); event.stopPropagation(); if (railProfile) void startProfileRename(railProfile, 'rail');}} oncontextmenu={(event) => {if (railProfile) void openProfileActionsAtPoint(event, railProfile.id, 'rail');}}>
+          <span>{railProfile?.name ?? 'Default Profile'}</span>
+        </button>
       {/if}
     </div>
 
@@ -3500,7 +3455,7 @@
   <div class="options-page-content" class:whole-page-scroll={mode === 'general' || mode === 'computer-history'} use:scrollFade={mode}>
     <header class="options-header">
       {#if mode === 'model' || mode === 'provider' || mode === 'profile' && agentPane !== 'agents'}
-        <button type="button" class="agent-back" aria-label="Back to Agent" onclick={backToAgent}><Icon name="back" size={14}/></button>
+        <button type="button" class="agent-back" aria-label="Back to Agent" onclick={backToAgent}><Icon name="back" size={28}/></button>
       {/if}
       <h2>{modeHeader.title}</h2>
       <p>{modeHeader.description}</p>
@@ -3717,11 +3672,6 @@
             <div class="setting-menu language" class:busy={updatingLanguage || !general}>
               <Menu options={languageOptions} value={general?.language ?? 'system'} label={$t('settings.language')} wide onChange={(value) => void setLanguage(value)}/>
             </div>
-          </section>
-          <section class="general-setting-row">
-            <span class="option-mark large"><Icon name="wrench" size={18}/></span>
-            <span class="general-setting-copy"><h4>{$t('settings.advancedMode')}</h4><small>{$t('settings.advancedModeHint')}</small></span>
-            {#if general}<button type="button" class:enabled={general.advancedMode} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableAdvancedMode')} aria-checked={general.advancedMode} disabled={updatingAdvancedMode} onclick={() => void setAdvancedMode(!general!.advancedMode)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
           <button type="button" class="general-setting-row pinned-views-row" class:expanded={pinnedViewsExpanded} aria-expanded={pinnedViewsExpanded} aria-controls="pinned-views-config" onclick={() => pinnedViewsExpanded = !pinnedViewsExpanded}>
             <span class="option-mark large"><Icon name="pin" size={18}/></span>
@@ -4620,8 +4570,6 @@
   .profile-switcher{position:relative;flex:none;padding-top:10px;border-top:1px solid var(--neutral-200)}
   .profile-trigger{width:100%;height:34px;display:flex;align-items:center;justify-content:flex-start;box-sizing:border-box;border:0;border-radius:9px;padding:0 8px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:12px;line-height:14px;text-align:left}
   .profile-trigger:hover,.profile-trigger:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
-  .profile-trigger.basic{cursor:default}
-  .profile-trigger.basic:hover{background:transparent;color:var(--neutral-700)}
   .profile-trigger>span:first-child{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .profile-menu{position:absolute;z-index:20;right:0;bottom:42px;left:0;max-height:248px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--neutral-200);border-radius:11px;padding:5px;background:var(--app-surface);box-shadow:0 10px 30px rgba(0,0,0,.14);animation:options-page-in .12s ease-out}
   .profile-new{position:relative;width:100%;height:32px;display:flex;flex:none;align-items:center;gap:8px;margin-top:4px;border:0;border-radius:8px;padding:0 7px;background:transparent;color:var(--neutral-700);cursor:pointer;font:inherit;font-size:11.5px;text-align:left}
@@ -4667,7 +4615,9 @@
   /* A plain cross-fade: the page arrives over the app in place, and a fade that
      also scaled would read as a second, contradictory movement. */
   @keyframes options-page-in{from{opacity:0}}
-  .options-header{position:relative;flex:none;min-width:0;padding:calc(var(--app-topbar-height) - 4px) var(--options-detail-edge) 18px calc(var(--options-content-edge) + var(--options-tab-inline))}.options-header h2{margin:0;color:var(--neutral-950);font-size:28px;font-weight:570;letter-spacing:-.025em}.options-header:has(.agent-back) h2{padding-left:22px}.agent-back{position:absolute;top:calc(var(--app-topbar-height) - 1px);left:calc(var(--options-content-edge) + var(--options-tab-inline));height:28px;display:flex;align-items:center;border:0;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer;line-height:0}.agent-back:hover,.agent-back:focus-visible{outline:0;color:var(--neutral-950)}
+  /* The Hub message header pairs a 15px back chevron with its 15px title. Keep
+     the same one-to-one proportion here, where the page title is 28px. */
+  .options-header{position:relative;flex:none;min-width:0;padding:calc(var(--app-topbar-height) - 4px) var(--options-detail-edge) 18px calc(var(--options-content-edge) + var(--options-tab-inline))}.options-header h2{margin:0;color:var(--neutral-950);font-size:28px;font-weight:570;letter-spacing:-.025em}.options-header:has(.agent-back) h2{padding-left:36px}.agent-back{position:absolute;top:calc(var(--app-topbar-height) - 1px);left:calc(var(--options-content-edge) + var(--options-tab-inline));height:28px;display:flex;align-items:center;border:0;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer;line-height:0}.agent-back:hover,.agent-back:focus-visible{outline:0;color:var(--neutral-950)}
   /* Explicit line boxes, not glyph-driven ones: scripts with taller ascenders
      (CJK, Thai, Devanagari) would otherwise grow the header and shift the tab
      row down as you switch tabs. Both lines are short by design, so clipping

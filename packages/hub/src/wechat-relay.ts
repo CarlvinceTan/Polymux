@@ -45,14 +45,55 @@ export interface WeChatRelayStatus {
   account: {id: string; name: string} | null;
   /** Why it is not usable, written for the person reading the tab. */
   error: string | null;
+  /** Official installer page when WeChat itself is the missing dependency. */
+  installUrl: string | null;
+}
+
+/** Official desktop download pages. The Mac constant remains exported for
+ * existing callers; setup guidance chooses the current operating system. */
+export const WECHAT_DOWNLOAD_URL = "https://mac.weixin.qq.com/en";
+export const WECHAT_DOWNLOAD_URLS = Object.freeze({
+  darwin: WECHAT_DOWNLOAD_URL,
+  win32: "https://pc.weixin.qq.com/",
+  linux: "https://linux.weixin.qq.com/",
+  other: "https://www.wechat.com/",
+});
+
+export function weChatDownloadUrl(platform: NodeJS.Platform): string {
+  if (platform === "darwin") return WECHAT_DOWNLOAD_URLS.darwin;
+  if (platform === "win32") return WECHAT_DOWNLOAD_URLS.win32;
+  if (platform === "linux") return WECHAT_DOWNLOAD_URLS.linux;
+  return WECHAT_DOWNLOAD_URLS.other;
 }
 
 /** Where WeChat for Mac installs. Checked rather than assumed, because the
  * first thing to tell someone setting this up is which piece is missing. */
-const WECHAT_APP_PATHS = [
-  "/Applications/WeChat.app",
-  `${homedir()}/Applications/WeChat.app`,
-];
+function weChatAppPaths(
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+): string[] {
+  if (platform === "darwin")
+    return [
+      "/Applications/WeChat.app",
+      `${homedir()}/Applications/WeChat.app`,
+    ];
+  if (platform === "win32")
+    return [
+      environment.LOCALAPPDATA && `${environment.LOCALAPPDATA}/Tencent/WeChat/WeChat.exe`,
+      environment.LOCALAPPDATA && `${environment.LOCALAPPDATA}/Tencent/Weixin/Weixin.exe`,
+      environment.ProgramFiles && `${environment.ProgramFiles}/Tencent/WeChat/WeChat.exe`,
+      environment["ProgramFiles(x86)"] &&
+        `${environment["ProgramFiles(x86)"]}/Tencent/WeChat/WeChat.exe`,
+    ].filter((entry): entry is string => Boolean(entry));
+  if (platform === "linux")
+    return [
+      "/usr/bin/wechat",
+      "/usr/bin/weixin",
+      "/opt/wechat/wechat",
+      "/opt/weixin/weixin",
+    ];
+  return [];
+}
 
 /**
  * What is missing, in the order a person has to fix it. WeChat itself comes
@@ -65,17 +106,51 @@ const WECHAT_APP_PATHS = [
  * is the app's own plumbing, and naming it hands the user a chore they cannot
  * act on in place of the one thing they can.
  */
-export function setupHint(present: {wechat: boolean; relay: boolean}): string | null {
-  if (!present.wechat)
-    return "WeChat for Mac is not installed. Install it from wechat.com and sign in — Polymux reads WeChat from the desktop app on this Mac rather than through a sign-in of its own.";
-  if (!present.relay)
-    return "Polymux cannot reach WeChat on this Mac yet. Make sure WeChat is open and signed in.";
-  return null;
+export function setupHint(
+  present: {wechat: boolean; relay: boolean},
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  return setupGuidance(present, platform).error;
 }
 
-async function missingPiece(): Promise<string | null> {
+/** Keeps the visible explanation and its action derived from the same check. */
+export function setupGuidance(
+  present: {wechat: boolean; relay: boolean},
+  platform: NodeJS.Platform = process.platform,
+): {
+  error: string | null;
+  installUrl: string | null;
+} {
+  const edition =
+    platform === "darwin"
+      ? "WeChat for Mac"
+      : platform === "win32"
+        ? "WeChat for Windows"
+        : platform === "linux"
+          ? "WeChat for Linux"
+          : "WeChat";
+  const device =
+    platform === "darwin"
+      ? "this Mac"
+      : platform === "win32"
+        ? "this PC"
+        : "this computer";
+  if (!present.wechat)
+    return {
+      error: `${edition} is not installed. Install it and sign in — Polymux reads WeChat from the desktop app on ${device} rather than through a sign-in of its own.`,
+      installUrl: weChatDownloadUrl(platform),
+    };
+  if (!present.relay)
+    return {
+      error: `Polymux cannot reach WeChat on ${device} yet. Make sure WeChat is open and signed in.`,
+      installUrl: null,
+    };
+  return {error: null, installUrl: null};
+}
+
+async function missingPiece(): Promise<{error: string | null; installUrl: string | null}> {
   const installed = await Promise.all(
-    WECHAT_APP_PATHS.map((entry) =>
+    weChatAppPaths().map((entry) =>
       access(entry)
         .then(() => true)
         .catch(() => false),
@@ -88,7 +163,7 @@ async function missingPiece(): Promise<string | null> {
         .catch(() => false),
     ),
   );
-  return setupHint({wechat: installed.some(Boolean), relay: cli.some(Boolean)});
+  return setupGuidance({wechat: installed.some(Boolean), relay: cli.some(Boolean)});
 }
 
 /**
@@ -97,8 +172,19 @@ async function missingPiece(): Promise<string | null> {
  * take the rest of the platform list down with it.
  */
 export async function probeWeChatRelay(): Promise<WeChatRelayStatus> {
+  // Installation is the source of truth even if an orphaned relay process is
+  // still answering from an earlier run. Otherwise that stale health response
+  // would hide the one action that can make WeChat usable again.
+  const missing = await missingPiece();
+  if (missing.installUrl)
+    return {
+      running: false,
+      account: null,
+      error: missing.error,
+      installUrl: missing.installUrl,
+    };
   const health = await fetchHealth();
-  if (!health)
+  if (!health) {
     return {
       running: false,
       account: null,
@@ -106,16 +192,19 @@ export async function probeWeChatRelay(): Promise<WeChatRelayStatus> {
       // last thing that failed. Someone with no WeChat at all does not need to
       // hear about a relay they have never installed.
       error:
-        (await missingPiece()) ??
+        missing.error ??
         "Polymux cannot reach WeChat yet. Open WeChat and sign in, then try again.",
+      installUrl: missing.installUrl,
     };
+  }
   if (health.status !== "connected")
     return {
       running: false,
       account: null,
       error: "Polymux cannot reach WeChat yet. Open WeChat and sign in, then try again.",
+      installUrl: null,
     };
-  return {running: true, account: await defaultAccount(), error: null};
+  return {running: true, account: await defaultAccount(), error: null, installUrl: null};
 }
 
 async function fetchHealth(): Promise<{status: string} | null> {

@@ -61,8 +61,11 @@ export class ContactLinks {
 
     const now = this.#now().toISOString();
     const name = request.name.trim() || overlapping[0]?.name || "Linked contact";
+    // Extending or collapsing an existing identity creates a new revision id.
+    // A detached Hub window may still hold the previous id; letting that stale
+    // view remove the reused id would also delete routes it never displayed.
     const link: ContactLinkDto = {
-      id: overlapping[0]?.id ?? `contact-${this.#id()}`,
+      id: `contact-${this.#id()}`,
       name,
       members,
       createdAt: overlapping[0]?.createdAt ?? now,

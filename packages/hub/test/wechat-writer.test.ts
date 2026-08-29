@@ -16,13 +16,21 @@ async function helper(response: object): Promise<string> {
   return executable;
 }
 
-test("preserves a driver's verified message id", async () => {
+test("preserves a driver's verified server and client message ids", async () => {
   const writer = new ProcessWeChatWriter(
-    await helper({deliveredVerified: true, messageId: "remote-42"}),
+    await helper({
+      deliveredVerified: true,
+      messageId: "remote-42",
+      clientMessageId: "local-42",
+    }),
   );
   assert.deepEqual(
     await writer.write({kind: "text", chatId: "filehelper", body: "test"}),
-    {deliveredVerified: true, messageId: "remote-42"},
+    {
+      deliveredVerified: true,
+      messageId: "remote-42",
+      clientMessageId: "local-42",
+    },
   );
 });
 
@@ -75,11 +83,15 @@ while :; do sleep 0.05; done
   );
   const writer = new ProcessWeChatWriter(executable, {
     environment: {...process.env, POLYMUX_CLEANUP_MARKER: marker},
-    timeoutMs: 500,
+    // The full Hub suite runs many child-process tests in parallel. Leave
+    // enough time for this helper to be scheduled and install its TERM trap;
+    // the behaviour under test is the cleanup window after timeout, not a
+    // sub-second process-start benchmark.
+    timeoutMs: 3_000,
   });
   await assert.rejects(
     writer.write({kind: "read", chatId: "filehelper"}),
-    /timed out after 500ms/,
+    /timed out after 3000ms/,
   );
   assert.equal(await readFile(marker, "utf8"), "cleaned");
 });

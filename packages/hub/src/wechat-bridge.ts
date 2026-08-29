@@ -162,6 +162,91 @@ const UNKNOWN_SENDER = "WeChat contact";
 /** How long an outbound message may wait for its own echo to come back. */
 const ECHO_TTL_MS = 5 * 60 * 1_000;
 
+/** Native writer reasons are stable machine codes, not UI copy. Translate the
+ * ones a person can act on before they cross IPC into the composer. */
+const WECHAT_WRITER_FAILURES: Readonly<Record<string, string>> = {
+  wechat_not_running:
+    "Open WeChat and make sure you are signed in, then try again.",
+  wechat_no_chat_selected:
+    "Open this conversation in WeChat once, then try again.",
+  tcc_accessibility_denied:
+    "Allow WeChat bridge access in System Settings → Privacy & Security → Accessibility, then try again.",
+  tcc_input_monitoring_denied:
+    "Allow WeChat bridge access in System Settings → Privacy & Security → Input Monitoring, then try again.",
+  delivery_verify_timeout:
+    "WeChat did not confirm delivery. Check that WeChat is connected, then try again.",
+  delivery_misrouted:
+    "WeChat selected a different conversation, so Polymux stopped the send. Open the intended conversation and try again.",
+  verify_account_mismatch:
+    "Polymux and WeChat are connected to different accounts. Reconnect WeChat, then try again.",
+  profile_missing:
+    "This WeChat version is not supported by the installed bridge yet.",
+  profile_expired:
+    "The installed WeChat compatibility data has expired. Update the bridge, then try again.",
+  dylib_sha_mismatch:
+    "This WeChat build is not supported by the installed bridge yet.",
+};
+
+export function weChatWriterFailureMessage(
+  reason: string | undefined,
+  operation: WeChatWriteRequest["kind"],
+): string {
+  const raw = String(reason ?? "").trim();
+  return (
+    WECHAT_WRITER_FAILURES[raw.toLowerCase()] ||
+    raw ||
+    `WeChat did not verify the ${operation} operation`
+  );
+}
+
+/** Keeps remote delivery truth separate from recovery of the inbound relay.
+ * A verified write must not be reported as failed only because the relay did
+ * not come back immediately; the caller would discard its local echo and a
+ * retry could send the same message twice. */
+export function settleWeChatWrite(
+  result: WeChatWriteResult | undefined,
+  operationError: unknown,
+  restartError: unknown,
+): {result: WeChatWriteResult; retryRelay: boolean} {
+  if (operationError && restartError)
+    throw new AggregateError(
+      [operationError, restartError],
+      "WeChat delivery failed and its relay did not restart",
+    );
+  if (operationError) throw operationError;
+  if (!result?.deliveredVerified)
+    throw new Error("WeChat writer returned no verified delivery result");
+  return {result, retryRelay: Boolean(restartError)};
+}
+
+interface RelaySendResult {
+  success?: boolean;
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  messageId?: string;
+  diagnostic?: {reason?: string};
+}
+
+function relayNeedsBackgroundPrime(result: RelaySendResult): boolean {
+  const reason = String(result.diagnostic?.reason ?? result.error ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    reason === "slot_send_bp_armed_no_fire" ||
+    reason === "wechat_no_chat_selected"
+  );
+}
+
+function relayNeedsAppRelaunch(result: RelaySendResult): boolean {
+  const reason = String(
+    result.diagnostic?.reason ?? result.error ?? result.message ?? "",
+  )
+    .trim()
+    .toLowerCase();
+  return reason === "wechat_not_running";
+}
+
 export interface WeChatBridgeOptions {
   homeserver: Homeserver;
   /** Where registration and state are kept, i.e. the hub's bridges directory. */
@@ -206,6 +291,18 @@ export interface WeChatBridgeOptions {
    * homeserver. Overridable for the same reason. */
   readSyncSweepMs?: number;
   /**
+   * Makes the native desktop app available without activating it. The desktop
+   * host supplies the platform-specific launch; tests omit it so they can
+   * never start a person's WeChat session.
+   */
+  ensureAppRunning?: () => Promise<boolean>;
+  /**
+   * Reconnects WeChat's current chat signal chain without activating the app.
+   * The desktop host supplies the bounded macOS accessibility helper; other
+   * platforms and tests normally omit it.
+   */
+  primeApp?: () => Promise<boolean>;
+  /**
    * Optional full-fidelity writer. The shipping relay currently verifies text
    * and the CLI verifies images; a native driver can supply the remaining
    * WeChat operations without teaching the Matrix bridge about WeChat ABI/UI
@@ -222,6 +319,12 @@ export type WeChatWriteRequest =
       replyTo?: string;
       /** Painted reply used when the writer cannot emit a native refermsg. */
       fallbackBody?: string;
+      /** Matrix-side quote data for a freshly sent target not indexed yet. */
+      replyContext?: {
+        body: string;
+        sender: string;
+        createTime: number;
+      };
       /** WeChat ids to encode as real @ mentions rather than painted text. */
       mentions?: string[];
     }
@@ -235,18 +338,37 @@ export type WeChatWriteRequest =
       /** Exact WeChat `<emoji>` reference for a store-backed native sticker. */
       emojiXml?: string;
     }
-  | { kind: "recall"; chatId: string; messageId: string }
+  | {
+      kind: "recall";
+      chatId: string;
+      messageId: string;
+      /** Native client id returned by the original send, when Polymux sent it. */
+      clientMessageId?: string;
+    }
   | { kind: "read"; chatId: string };
 
 export interface WeChatWriteResult {
   /** True only after WeChat itself accepted and echoed the operation. */
   deliveredVerified: boolean;
   messageId?: string;
+  /** Native client id needed to recall a freshly injected message. */
+  clientMessageId?: string;
   reason?: string;
 }
 
 export interface WeChatWriter {
   write(request: WeChatWriteRequest): Promise<WeChatWriteResult>;
+}
+
+/** A child stopped by a signal keeps `exitCode === null`; checking both
+ * fields prevents a dead supervised relay from being mistaken for a live
+ * process after SIGTERM or a crash signal. */
+export function childProcessIsRunning(
+  child: Pick<ChildProcess, "exitCode" | "signalCode"> | null | undefined,
+): boolean {
+  return Boolean(
+    child && child.exitCode === null && child.signalCode === null,
+  );
 }
 
 /**
@@ -501,6 +623,8 @@ interface BridgeState {
   readReceipts?: Record<string, string>;
   /** Matrix event -> WeChat server message id, needed for native reply/recall. */
   remoteMessageIds?: Record<string, string>;
+  /** Matrix event -> WeChat client message id, needed for immediate recall. */
+  remoteMessageClientIds?: Record<string, string>;
   /** Hashed Matrix puppet id -> original WeChat id, needed for native mentions. */
   puppetRemoteIds?: Record<string, string>;
 }
@@ -516,7 +640,16 @@ interface PendingImage {
   sentAt: number;
   attempts: number;
   nextAttemptAt: number;
+  /** Last cheap heap probe, so a large queue is retried fairly. */
+  lastHeapAttemptAt?: number;
   firstFailedAt: number;
+}
+
+interface UploadedWeChatImage {
+  uri: string;
+  name: string;
+  mimeType: string;
+  size: number;
 }
 
 interface Registration {
@@ -541,6 +674,7 @@ function emptyState(): BridgeState {
     recentEvents: {},
     readReceipts: {},
     remoteMessageIds: {},
+    remoteMessageClientIds: {},
     lastRemoteTimestamp: Math.floor(Date.now() / 1000) - 60,
   };
 }
@@ -564,6 +698,15 @@ export function relayEnvironment(
 export function weChatDaemonPid(status: string): number | null {
   const pid = Number(/\brunning\b[^\n]*\bpid=(\d+)\b/i.exec(status)?.[1]);
   return Number.isInteger(pid) && pid > 1 ? pid : null;
+}
+
+/** The single process holding WeChat's loopback relay port, from `lsof -t`. */
+export function weChatRelayListenerPid(output: string): number | null {
+  const pids = output
+    .split(/\s+/)
+    .map(Number)
+    .filter((pid) => Number.isInteger(pid) && pid > 1);
+  return pids.length === 1 ? pids[0] : null;
 }
 
 /** Whether a running daemon inherited the capture helper chosen for this run. */
@@ -613,11 +756,15 @@ export class WeChatBridge {
   #streaming: AbortController | null = null;
   /** The image-retry sweep, so closing the bridge stops it. */
   #imageSweep: ReturnType<typeof setInterval> | null = null;
+  /** A reconnect and the timer can ask at once; only one may attach to WeChat. */
+  #retryingImages = false;
   /** The read-state sweep, likewise. */
   #readSweep: ReturnType<typeof setInterval> | null = null;
   #token: string | null = null;
   /** The relay we started, if we were the one to start it. */
   #relayProcess: ChildProcess | null = null;
+  /** Most recent daemon send readiness advertised by `/health`. */
+  #relayHijackArmed: boolean | null = null;
   /** Whose portal rooms these are. Known only once Polymux has its account. */
   #owner = "";
   /** When the event stream last answered, so its replay is told from live. */
@@ -627,6 +774,34 @@ export class WeChatBridge {
   /** Changes since the last flush, so a burst does not sit out a crash alone. */
   #unsaved = 0;
   #saving: NodeJS.Timeout | null = null;
+  /** Completed native writes that may have beaten the IPC caller to its wait. */
+  readonly #outboundResults = new Map<
+    string,
+    {error: string | null; completedAt: number}
+  >();
+  /** IPC callers waiting for the appservice transaction carrying their event. */
+  readonly #outboundWaiters = new Map<
+    string,
+    {
+      resolve: () => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  /** Native writes and relay suspension are one critical section. */
+  #writerQueue: Promise<void> = Promise.resolve();
+  /** Expected stream interruption while a native writer owns WeChat. */
+  #writerPaused = false;
+  /** One stream follower at a time, including after WeChat is relaunched. */
+  #consumeTask: Promise<void> | null = null;
+  /** Invalidates an older follower when the same bridge is closed and linked
+   * again before its aborted stream has finished unwinding. */
+  #consumeGeneration = 0;
+  /** Existing Matrix portals indexed once if the local routing map is absent. */
+  #portalRecovery: Promise<Map<string, string>> | null = null;
+  /** One Matrix-room creation per WeChat chat, even when startup history and
+   * the live relay discover that chat at the same time. */
+  readonly #portalTasks = new Map<string, Promise<string>>();
 
   constructor(options: WeChatBridgeOptions) {
     this.#options = {
@@ -649,19 +824,33 @@ export class WeChatBridge {
   async start(owner: string): Promise<boolean> {
     // Asked for every time the platform's status is read, so it has to be
     // cheap and repeatable: already up is the answer, not a second bridge.
-    if (this.#server) return true;
     if (!owner) return false;
     // A bridge that was unlinked and is being linked again comes back through
     // here; the flag that ended its loops must not outlive the stop.
     this.#stopped = false;
     this.#owner = owner;
     await this.#resolveToken();
+    // A native write deliberately removes the relay because both it and the
+    // writer attach to the same WeChat process. Status is polled while the Hub
+    // is open; treating that intentional gap as a crash restarts the relay in
+    // the middle of the write and lets media recovery attach a second
+    // debugger. The appservice is still live, so report the bridge as started
+    // until the writer has restored its relay.
+    if (this.#writerPaused && this.#server) return true;
+    if (!(await this.#relayHealthy())) await this.#ensureAppRunning();
     // Start the relay ourselves if it is not already up. Its absence is a
     // detail of how WeChat is reached, not something to hand back to the user
     // as a chore — the only thing they can actually fix is WeChat itself.
     if (!(await this.#relayHealthy()) && !(await this.#startRelay())) {
       this.#log("[wechat] no local relay on this Mac; WeChat stays unlinked.");
       return false;
+    }
+    // A prior stream can end when WeChat quits while the appservice server
+    // remains registered. Relaunching WeChat must revive that same bridge,
+    // not create another server or another set of portal rooms.
+    if (this.#server) {
+      this.#ensureConsume();
+      return true;
     }
     await this.#load();
     const registration = await this.#registration_();
@@ -690,7 +879,7 @@ export class WeChatBridge {
     void this.#syncRoomAvatars().catch((error: unknown) =>
       this.#log(`[wechat] contact pictures delayed: ${message(error)}`),
     );
-    void this.#consume();
+    this.#ensureConsume();
     /**
      * Unref'd: a timer that keeps asking about pictures must never be the
      * reason a process stays alive, and this one would otherwise hold the app
@@ -719,7 +908,15 @@ export class WeChatBridge {
     this.#imageSweep = null;
     if (this.#readSweep) clearInterval(this.#readSweep);
     this.#readSweep = null;
+    this.#consumeGeneration += 1;
     this.#streaming?.abort();
+    this.#consumeTask = null;
+    for (const [eventId, waiter] of this.#outboundWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error(`WeChat stopped before it delivered ${eventId}`));
+    }
+    this.#outboundWaiters.clear();
+    this.#outboundResults.clear();
     // Only the relay we started; one that was already running belongs to
     // whoever started it and outlives us.
     this.#relayProcess?.kill();
@@ -735,6 +932,47 @@ export class WeChatBridge {
     });
   }
 
+  /** Waits until WeChat itself has accepted the Matrix event, not merely until
+   * the embedded homeserver has recorded it. Results are retained briefly so
+   * a very fast appservice transaction cannot race ahead of the caller. */
+  async waitForOutbound(eventId: string, timeoutMs = 320_000): Promise<void> {
+    const completed = this.#outboundResults.get(eventId);
+    if (completed) {
+      this.#outboundResults.delete(eventId);
+      if (completed.error) throw new Error(completed.error);
+      return;
+    }
+    return await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#outboundWaiters.delete(eventId);
+        reject(new Error("WeChat did not finish delivering the message in time"));
+      }, timeoutMs);
+      timer.unref?.();
+      this.#outboundWaiters.set(eventId, {resolve, reject, timer});
+    });
+  }
+
+  /** Recalls an event only after the native operation succeeds, then writes a
+   * bridge-owned Matrix redaction so it cannot loop back out as a second recall. */
+  async recall(roomId: string, eventId: string): Promise<void> {
+    const chatId = this.#state.roomToChat[roomId];
+    const messageId = this.#state.remoteMessageIds?.[eventId];
+    if (!chatId || !messageId)
+      throw new Error("This WeChat message is not available to recall");
+    await this.#write({
+      kind: "recall",
+      chatId,
+      messageId,
+      ...(this.#state.remoteMessageClientIds?.[eventId]
+        ? {clientMessageId: this.#state.remoteMessageClientIds[eventId]}
+        : {}),
+    });
+    await this.#matrix(
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/redact/${encodeURIComponent(eventId)}/${encodeURIComponent(`wechat-recall-${randomUUID()}`)}`,
+      {method: "PUT", as: this.#owner, body: {}},
+    );
+  }
+
   #escapedServer(): string {
     return this.#options.homeserver.serverName.replace(/\./g, "\\.");
   }
@@ -745,16 +983,48 @@ export class WeChatBridge {
    * platform claiming to be linked while every read came back 401.
    */
   async #relayHealthy(): Promise<boolean> {
-    const health = await this.#relay<{ status?: string }>("/health").catch(
-      (): null => null,
-    );
-    if (health?.status !== "connected") return false;
+    if ((await this.#relayStatus()) !== "connected") return false;
     const authorized = await this.#relay("/unread").catch((): null => null);
     if (authorized === null) {
       this.#log("[wechat] the relay is running but refused this token.");
       return false;
     }
     return true;
+  }
+
+  async #relayStatus(): Promise<string | null> {
+    const health = await this.#relay<{
+      status?: string;
+      hijackArmed?: boolean;
+    }>("/health").catch((): null => null);
+    this.#relayHijackArmed =
+      typeof health?.hijackArmed === "boolean" ? health.hijackArmed : null;
+    return typeof health?.status === "string" ? health.status : null;
+  }
+
+  async #ensureAppRunning(): Promise<boolean> {
+    if (!this.#options.ensureAppRunning) return false;
+    return await this.#options.ensureAppRunning().catch((error: unknown) => {
+      this.#log(`[wechat] WeChat could not be started quietly: ${message(error)}`);
+      return false;
+    });
+  }
+
+  async #primeApp(): Promise<boolean> {
+    if (!this.#options.primeApp) return false;
+    return await this.#options.primeApp().catch((error: unknown) => {
+      this.#log(`[wechat] background send warm-up failed: ${message(error)}`);
+      return false;
+    });
+  }
+
+  async #waitForRelay(): Promise<boolean> {
+    const deadline = Date.now() + RELAY_START_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (await this.#relayHealthy()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    return false;
   }
 
   /** The first of a set of binaries that exists on this Mac. */
@@ -768,6 +1038,74 @@ export class WeChatBridge {
       if (found) return candidate;
     }
     return null;
+  }
+
+  /** Exact known relay on this bridge's own port. This covers a relay restored
+   * by a previous app instance, while refusing to signal an unrelated listener. */
+  async #relayListenerPid(): Promise<number | null> {
+    if (process.platform !== "darwin") return null;
+    const found = await run(
+      "/usr/sbin/lsof",
+      ["-nP", `-iTCP:${this.#relayPort()}`, "-sTCP:LISTEN", "-t"],
+      {timeout: PROBE_TIMEOUT_MS, env: process.env},
+    ).catch((): null => null);
+    const pid = weChatRelayListenerPid(found?.stdout ?? "");
+    if (!pid) return null;
+    const executable = await run(
+      "/bin/ps",
+      ["-p", String(pid), "-o", "comm="],
+      {timeout: PROBE_TIMEOUT_MS, env: process.env},
+    ).catch((): null => null);
+    const actual = executable?.stdout.trim();
+    if (!actual || path.basename(actual) !== "wechat-bridge") return null;
+    const resolved = await realpath(actual).catch((): null => null);
+    if (!resolved) return null;
+    for (const directory of this.#options.binaryDirectories ?? WECHAT_FALLBACK_DIRECTORIES) {
+      const known = await realpath(path.join(directory, "wechat-bridge")).catch(
+        (): null => null,
+      );
+      if (known === resolved) return pid;
+    }
+    return null;
+  }
+
+  async #pauseRelayForWriter(): Promise<boolean> {
+    const child = this.#relayProcess;
+    const childRunning = childProcessIsRunning(child);
+    const pid = childRunning ? child?.pid : await this.#relayListenerPid();
+    if (!pid) return false;
+    this.#writerPaused = true;
+    this.#streaming?.abort();
+    this.#relayProcess = null;
+    if (childRunning && child) {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve, reject) => {
+        if (!childProcessIsRunning(child)) return resolve();
+        const timer = setTimeout(
+          () => reject(new Error("WeChat relay did not stop before the native operation")),
+          5_000,
+        );
+        timer.unref?.();
+        child.once("exit", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      return true;
+    } else {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const stillKnown = await this.#relayListenerPid();
+      if (stillKnown !== pid) return true;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error("WeChat relay did not stop before the native operation");
   }
 
   /**
@@ -831,28 +1169,39 @@ export class WeChatBridge {
     // Our own token when we are the one starting it: an unauthenticated
     // loopback port is one any process on this Mac could read messages from.
     this.#token ??= randomBytes(24).toString("base64url");
-    const child = spawn(
-      bridge,
-      ["--shape", "hermes", "--port", String(this.#relayPort())],
-      {
-        env: { ...environment, WECHAT_BRIDGE_BEARER: this.#token },
-        stdio: "ignore",
-        detached: false,
-      },
-    );
-    child.on("error", (error) =>
-      this.#log(`[wechat] relay failed to start: ${error.message}`),
-    );
-    this.#relayProcess = child;
-    const deadline = Date.now() + RELAY_START_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      if (await this.#relayHealthy()) return true;
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    // A disconnected relay may already own the port while it waits for WeChat
+    // to return. Reuse it; spawning a competitor here creates a false restart
+    // failure and leaves the original process as the only possible recovery.
+    const relayAlive = childProcessIsRunning(this.#relayProcess);
+    if ((await this.#relayStatus()) === null && !relayAlive) {
+      const child = spawn(
+        bridge,
+        ["--shape", "hermes", "--port", String(this.#relayPort())],
+        {
+          env: {...environment, WECHAT_BRIDGE_BEARER: this.#token},
+          stdio: "ignore",
+          detached: false,
+        },
+      );
+      child.on("error", (error) =>
+        this.#log(`[wechat] relay failed to start: ${error.message}`),
+      );
+      this.#relayProcess = child;
     }
+    if (await this.#waitForRelay()) return true;
     this.#log(
       "[wechat] the relay did not come up; is WeChat open and signed in?",
     );
     return false;
+  }
+
+  #ensureConsume(): void {
+    if (this.#consumeTask || this.#stopped) return;
+    const generation = ++this.#consumeGeneration;
+    const task = this.#consume(generation).finally(() => {
+      if (this.#consumeTask === task) this.#consumeTask = null;
+    });
+    this.#consumeTask = task;
   }
 
   #relayPort(): number {
@@ -928,10 +1277,15 @@ export class WeChatBridge {
         const body = await readBody(request).catch(
           (): { events?: unknown[] } => ({}),
         );
-        for (const event of (body.events ?? []) as MatrixEvent[])
-          await this.#relayOutbound(event).catch((error: unknown) =>
-            this.#log(`[wechat] outbound failed: ${message(error)}`),
-          );
+        for (const event of (body.events ?? []) as MatrixEvent[]) {
+          try {
+            await this.#relayOutbound(event);
+            this.#settleOutbound(event.event_id, null);
+          } catch (error) {
+            this.#settleOutbound(event.event_id, message(error));
+            this.#log(`[wechat] outbound failed: ${message(error)}`);
+          }
+        }
       }
       return reply(200, {});
     }
@@ -940,6 +1294,23 @@ export class WeChatBridge {
       return reply(200, {});
     if (/\/ping$/.test(url.pathname)) return reply(200, {});
     return reply(404, { errcode: "M_UNRECOGNIZED" });
+  }
+
+  #settleOutbound(eventId: string | undefined, error: string | null): void {
+    if (!eventId) return;
+    const waiter = this.#outboundWaiters.get(eventId);
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      this.#outboundWaiters.delete(eventId);
+      if (error) waiter.reject(new Error(error));
+      else waiter.resolve();
+      return;
+    }
+    const now = Date.now();
+    this.#outboundResults.set(eventId, {error, completedAt: now});
+    for (const [id, result] of this.#outboundResults)
+      if (now - result.completedAt > 5 * 60_000)
+        this.#outboundResults.delete(id);
   }
 
   // ---- inbound: WeChat to Matrix ------------------------------------------
@@ -1095,9 +1466,9 @@ export class WeChatBridge {
    * reconnecting is useful. Once the relay itself reports that WeChat is
    * disconnected, retrying cannot recover anything and only floods the log.
    */
-  async #consume(): Promise<void> {
+  async #consume(generation: number): Promise<void> {
     let attempt = 0;
-    while (!this.#stopped) {
+    while (!this.#stopped && generation === this.#consumeGeneration) {
       try {
         const url = new URL("/messages/stream", this.#options.relayUrl);
         // Without `since` the relay replays its entire history on connect.
@@ -1111,6 +1482,13 @@ export class WeChatBridge {
           throw new Error(`stream returned ${response.status}`);
         attempt = 0;
         this.#streamConnectAt = Date.now();
+        // A photo may have become readable while the relay was disconnected.
+        // Probe immediately rather than making it wait for its old CDN
+        // backoff. The retry path starts heap-only, so this does not block the
+        // stream on another long CDN-capture window.
+        void this.#retryPendingImages().catch((error: unknown) =>
+          this.#log(`[wechat] image reconnect retry failed: ${message(error)}`),
+        );
         for await (const payload of serverSentEvents(response.body))
           await this.#ingest(JSON.parse(payload) as RelayMessage).catch(
             (error: unknown) =>
@@ -1118,15 +1496,39 @@ export class WeChatBridge {
           );
         throw new Error("stream ended");
       } catch (error) {
-        if (this.#stopped) return;
-        const health = await this.#relay<{ status?: string }>("/health").catch(
-          (): null => null,
-        );
-        if (health && health.status !== "connected") {
+        if (this.#stopped || generation !== this.#consumeGeneration) return;
+        if (this.#writerPaused) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
+        }
+        const health = await this.#relayStatus();
+        if (health && health !== "connected") {
           this.#log(
-            `[wechat] stream stopped: relay is ${health.status ?? "disconnected"}`,
+            `[wechat] stream stopped: relay is ${health}`,
           );
+          // A remembered WeChat session can be relaunched hidden. If login
+          // needs attention, the Hub reports that instead of stealing focus.
+          if (await this.#ensureAppRunning()) {
+            if (await this.#waitForRelay()) {
+              attempt = 0;
+              continue;
+            }
+          }
           return;
+        }
+        const ownedRelayStopped =
+          this.#relayProcess !== null && !childProcessIsRunning(this.#relayProcess);
+        // A crash or a native-writer interruption can remove the loopback
+        // relay entirely. Network backoff cannot revive a process, so restart
+        // the exact supervised child and then reopen the stream. An external
+        // relay gets one normal retry before Polymux takes over supervision.
+        if (health === null && (ownedRelayStopped || (!this.#relayProcess && attempt > 0))) {
+          this.#log("[wechat] local relay stopped; restarting it.");
+          await this.#ensureAppRunning();
+          if (await this.#startRelay()) {
+            attempt = 0;
+            continue;
+          }
         }
         const wait = RECONNECT_MS[Math.min(attempt, RECONNECT_MS.length - 1)];
         attempt += 1;
@@ -1347,7 +1749,7 @@ export class WeChatBridge {
     }
     if (item.messageKind === "image" && item.messageId) {
       const messageId = String(item.messageId);
-      const media = await this.#image(chatId, messageId).catch(
+      const media = await this.#imageOrThumbnail(chatId, messageId).catch(
         (error: unknown): null => {
           // Once per picture, not once per attempt: the retries below are quiet,
           // and this line is worth reading because it carries WeChat's own advice.
@@ -1606,12 +2008,9 @@ export class WeChatBridge {
   async #image(
     chatId: string,
     messageId: string,
-  ): Promise<{
-    uri: string;
-    name: string;
-    mimeType: string;
-    size: number;
-  } | null> {
+    from: "auto" | "heap" = "auto",
+    variant: "mid" | "thumb" = "mid",
+  ): Promise<UploadedWeChatImage | null> {
     const target = path.join(
       tmpdir(),
       `polymux-wechat-${randomBytes(8).toString("hex")}.bin`,
@@ -1632,6 +2031,10 @@ export class WeChatBridge {
           chatId,
           "--out",
           target,
+          "--from",
+          from,
+          "--variant",
+          variant,
           "--json",
         ],
         { timeout: MEDIA_TIMEOUT_MS },
@@ -1685,6 +2088,30 @@ export class WeChatBridge {
       mimeType,
       size: bytes.length,
     };
+  }
+
+  /**
+   * Prefer the normal-size photo, but accept WeChat's thumbnail when that is
+   * all the running client has decrypted. A real picture is materially better
+   * than a permanent `[Photo]` placeholder; the heap-only thumbnail attempt is
+   * bounded and never opens another CDN-capture window.
+   */
+  async #imageOrThumbnail(
+    chatId: string,
+    messageId: string,
+    from: "auto" | "heap" = "auto",
+  ): Promise<UploadedWeChatImage | null> {
+    let originalError: unknown;
+    try {
+      return await this.#image(chatId, messageId, from, "mid");
+    } catch (error) {
+      originalError = error;
+    }
+    try {
+      return await this.#image(chatId, messageId, "heap", "thumb");
+    } catch {
+      throw originalError;
+    }
   }
 
   /** Carries the exact SILK_V3 payload WeChat stores for a voice message. */
@@ -2017,6 +2444,36 @@ export class WeChatBridge {
       }
       return known.roomId;
     }
+    const pending = this.#portalTasks.get(chatId);
+    if (pending) return await pending;
+    const task = this.#createPortal(chatId, item);
+    this.#portalTasks.set(chatId, task);
+    try {
+      return await task;
+    } finally {
+      if (this.#portalTasks.get(chatId) === task)
+        this.#portalTasks.delete(chatId);
+    }
+  }
+
+  async #createPortal(chatId: string, item: RelayMessage): Promise<string> {
+    const resolvedName = conversationName(item);
+    const name = String(resolvedName ?? "WeChat").slice(0, 80);
+    const channelId = createHash("sha256")
+      .update(chatId)
+      .digest("hex")
+      .slice(0, 24);
+    const recovered = (await this.#existingPortals()).get(channelId);
+    if (recovered) {
+      this.#state.rooms[chatId] = {
+        roomId: recovered,
+        isGroup: Boolean(item.isGroup),
+        ...(resolvedName ? {name} : {}),
+      };
+      this.#state.roomToChat[recovered] = chatId;
+      this.#save();
+      return recovered;
+    }
     const created = await this.#matrix<{ room_id: string }>(
       "/_matrix/client/v3/createRoom",
       {
@@ -2040,10 +2497,7 @@ export class WeChatBridge {
                 protocol: { id: "wechat", displayname: "WeChat" },
                 "com.beeper.room_type": item.isGroup ? "group" : "dm",
                 channel: {
-                  id: createHash("sha256")
-                    .update(chatId)
-                    .digest("hex")
-                    .slice(0, 24),
+                  id: channelId,
                 },
               },
             },
@@ -2070,6 +2524,50 @@ export class WeChatBridge {
     this.#state.roomToChat[created.room_id] = chatId;
     this.#save();
     return created.room_id;
+  }
+
+  /**
+   * Rebuilds the disposable chat-id routing map from bridge-attested Matrix
+   * state. Losing or resetting state.json must not create a second room for
+   * every WeChat conversation. If an older run already left duplicates, the
+   * newest portal wins and the older history remains readable.
+   */
+  async #existingPortals(): Promise<Map<string, string>> {
+    if (!this.#portalRecovery)
+      this.#portalRecovery = (async () => {
+        type PortalStateEvent = {
+          type?: string;
+          origin_server_ts?: number;
+          content?: {
+            protocol?: {id?: string};
+            channel?: {id?: string};
+          };
+        };
+        const joined = await this.#matrix<{joined_rooms?: string[]}>(
+          "/_matrix/client/v3/joined_rooms",
+          {as: this.#owner},
+        ).catch((): {joined_rooms: string[]} => ({joined_rooms: []}));
+        const portals = new Map<string, {roomId: string; createdAt: number}>();
+        for (const roomId of joined.joined_rooms ?? []) {
+          const state = await this.#matrix<PortalStateEvent[]>(
+            `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state`,
+            {as: this.#owner},
+          ).catch((): PortalStateEvent[] => []);
+          const bridge = state.find((event) => event.type === "m.bridge")?.content;
+          const channelId = bridge?.channel?.id;
+          if (bridge?.protocol?.id !== "wechat" || !channelId) continue;
+          const createdAt =
+            state.find((event) => event.type === "m.room.create")
+              ?.origin_server_ts ?? 0;
+          const previous = portals.get(channelId);
+          if (!previous || createdAt >= previous.createdAt)
+            portals.set(channelId, {roomId, createdAt});
+        }
+        return new Map(
+          [...portals].map(([channelId, portal]) => [channelId, portal.roomId]),
+        );
+      })();
+    return await this.#portalRecovery;
   }
 
   /**
@@ -2145,7 +2643,15 @@ export class WeChatBridge {
       const target =
         event.redacts && this.#state.remoteMessageIds?.[event.redacts];
       if (!target) return;
-      await this.#write({ kind: "recall", chatId, messageId: target });
+      const clientMessageId = event.redacts
+        ? this.#state.remoteMessageClientIds?.[event.redacts]
+        : undefined;
+      await this.#write({
+        kind: "recall",
+        chatId,
+        messageId: target,
+        ...(clientMessageId ? {clientMessageId} : {}),
+      });
       return;
     }
     if (event.type === "m.receipt") {
@@ -2164,7 +2670,7 @@ export class WeChatBridge {
         ? "sticker"
         : matrixMediaType(event.content?.msgtype);
     if (mediaType && typeof event.content?.url === "string") {
-      const remoteMessageId = await this.#sendMedia(
+      const delivery = await this.#sendMedia(
         chatId,
         event.content.url,
         String(event.content.body ?? mediaType),
@@ -2174,7 +2680,7 @@ export class WeChatBridge {
             "",
         ),
       );
-      this.#rememberOutboundMessageId(event.event_id, remoteMessageId);
+      this.#rememberOutboundMessageId(event.event_id, delivery);
       return;
     }
     if (event.content?.msgtype === "m.location") {
@@ -2185,11 +2691,11 @@ export class WeChatBridge {
           (event.content["m.location"] as { uri?: string } | undefined)?.uri ??
           "",
       ).trim();
-      const remoteMessageId = await this.#sendOutboundText(
+      const delivery = await this.#sendOutboundText(
         chatId,
         geo && geo !== label ? `${label}\n${geo}` : label,
       );
-      this.#rememberOutboundMessageId(event.event_id, remoteMessageId);
+      this.#rememberOutboundMessageId(event.event_id, delivery);
       return;
     }
     if (event.content?.msgtype !== "m.text") return;
@@ -2199,19 +2705,26 @@ export class WeChatBridge {
     const replyTo = replyEventId
       ? this.#state.remoteMessageIds?.[replyEventId]
       : undefined;
-    const renderedBody = await this.#outboundText(event, authored);
-    const body = this.#options.writer && replyTo ? authored : renderedBody;
+    const rendered = await this.#outboundText(event, authored);
     const mentions = matrixMentionIds(event)
       .map((userId) => this.#state.puppetRemoteIds?.[userId])
       .filter((userId): userId is string => Boolean(userId));
-    const remoteMessageId = await this.#sendOutboundText(
+    // A native refermsg can preserve an exact reply only when it does not also
+    // need WeChat's at-user list. Mentions stay on the daemon-owned route so a
+    // person actively using WeChat is never paused by an LLDB writer.
+    const nativeReply = Boolean(
+      this.#options.writer && replyTo && mentions.length === 0,
+    );
+    const body = nativeReply ? authored : rendered.body;
+    const delivery = await this.#sendOutboundText(
       chatId,
       body,
       replyTo,
       mentions,
-      this.#options.writer && replyTo ? renderedBody : undefined,
+      nativeReply ? rendered.body : undefined,
+      nativeReply ? rendered.replyContext : undefined,
     );
-    this.#rememberOutboundMessageId(event.event_id, remoteMessageId);
+    this.#rememberOutboundMessageId(event.event_id, delivery);
   }
 
   async #sendOutboundText(
@@ -2220,8 +2733,11 @@ export class WeChatBridge {
     replyTo?: string,
     mentions: string[] = [],
     fallbackBody?: string,
-  ): Promise<string | undefined> {
-    if (this.#options.writer) {
+    replyContext?: {body: string; sender: string; createTime: number},
+  ): Promise<WeChatWriteResult> {
+    const writeWithNative = async (): Promise<WeChatWriteResult> => {
+      if (!this.#options.writer)
+        throw new Error("WeChat native text writing is unavailable");
       const operationId = randomUUID();
       const pendingReply = replyTo
         ? {
@@ -2251,15 +2767,23 @@ export class WeChatBridge {
           body,
           ...(replyTo ? { replyTo } : {}),
           ...(replyTo && fallbackBody ? { fallbackBody } : {}),
+          ...(replyTo && replyContext ? {replyContext} : {}),
           ...(mentions.length ? { mentions: [...new Set(mentions)] } : {}),
         });
-        return result.messageId;
+        return result;
       } catch (error) {
         this.#consumeOutboundOperation(operationId);
         this.#save();
         throw error;
       }
-    }
+    };
+
+    // Replies without mentions need the exact native refermsg packet. Plain
+    // text first uses the daemon below and falls back to this writer only when
+    // WeChat says its hidden UI signal chain is cold.
+    if (this.#options.writer && replyTo && mentions.length === 0)
+      return await writeWithNative();
+
     if (mentions.length) {
       const args = ["send", body, "--wxid", chatId, "--json"];
       for (const mention of new Set(mentions)) args.push("--mention", mention);
@@ -2283,22 +2807,50 @@ export class WeChatBridge {
           timestamp: Date.now(),
         });
         this.#save();
-        return undefined;
+        return {deliveredVerified: true};
       }
       throw new Error("WeChat native mentions are unavailable");
     }
-    const result = await this.#relay<{ success?: boolean; ok?: boolean }>(
-      "/send",
-      {
+    const send = (): Promise<RelaySendResult> =>
+      this.#relay<RelaySendResult>("/send", {
         method: "POST",
-        body: { chatId, message: body },
-      },
-    );
+        body: {chatId, message: body},
+      });
+    let result = await send();
+    if (
+      result.success !== true &&
+      result.ok !== true &&
+      relayNeedsAppRelaunch(result) &&
+      (await this.#ensureAppRunning())
+    ) {
+      await this.#waitForRelay();
+      result = await send();
+    }
+    if (
+      result.success !== true &&
+      result.ok !== true &&
+      relayNeedsBackgroundPrime(result) &&
+      !this.#options.writer &&
+      (await this.#primeApp())
+    )
+      result = await send();
+    if (
+      result.success !== true &&
+      result.ok !== true &&
+      relayNeedsBackgroundPrime(result) &&
+      this.#options.writer
+    )
+      return await writeWithNative();
     if (result.success !== true && result.ok !== true)
-      throw new Error("the relay did not confirm delivery");
+      throw new Error(
+        result.message || result.error || "the relay did not confirm delivery",
+      );
     this.#state.outboundEchoes.push({ chatId, body, timestamp: Date.now() });
     this.#save();
-    return undefined;
+    return {
+      deliveredVerified: true,
+      ...(result.messageId ? {messageId: result.messageId} : {}),
+    };
   }
 
   /** Removes both possible echoes for one writer call once either arrives. */
@@ -2314,36 +2866,59 @@ export class WeChatBridge {
 
   #rememberOutboundMessageId(
     eventId: string | undefined,
-    remoteMessageId: string | undefined,
+    delivery: WeChatWriteResult,
   ): void {
-    if (!eventId || !remoteMessageId) return;
-    this.#state.remoteMessageIds = {
-      ...(this.#state.remoteMessageIds ?? {}),
-      [eventId]: remoteMessageId,
-    };
+    if (!eventId) return;
+    if (delivery.messageId)
+      this.#state.remoteMessageIds = {
+        ...(this.#state.remoteMessageIds ?? {}),
+        [eventId]: delivery.messageId,
+      };
+    if (delivery.clientMessageId)
+      this.#state.remoteMessageClientIds = {
+        ...(this.#state.remoteMessageClientIds ?? {}),
+        [eventId]: delivery.clientMessageId,
+      };
+    if (!delivery.messageId && !delivery.clientMessageId) return;
     this.#save();
   }
 
   /** Painted fallback when no native writer can emit a refermsg packet. */
-  async #outboundText(event: MatrixEvent, authored: string): Promise<string> {
+  async #outboundText(
+    event: MatrixEvent,
+    authored: string,
+  ): Promise<{
+    body: string;
+    replyContext?: {body: string; sender: string; createTime: number};
+  }> {
     const relation = event.content?.["m.relates_to"] as
       { "m.in_reply_to"?: { event_id?: string } } | undefined;
     const eventId = relation?.["m.in_reply_to"]?.event_id;
-    if (!eventId || !event.room_id) return authored;
+    if (!eventId || !event.room_id) return {body: authored};
     const quoted = await this.#matrix<MatrixEvent>(
       `/_matrix/client/v3/rooms/${encodeURIComponent(event.room_id)}/event/${encodeURIComponent(eventId)}`,
     ).catch((): null => null);
     const quotedBody = String(quoted?.content?.body ?? "")
       .trim()
       .replace(/\s+/g, " ");
-    if (!quotedBody) return authored;
+    if (!quotedBody) return {body: authored};
     const profile = quoted?.sender
       ? await this.#matrix<{ displayname?: string }>(
           `/_matrix/client/v3/profile/${encodeURIComponent(quoted.sender)}`,
         ).catch((): null => null)
       : null;
     const sender = profile?.displayname?.trim() || "Earlier message";
-    return `↳ ${sender}: ${quotedBody}\n${authored}`;
+    return {
+      body: `↳ ${sender}: ${quotedBody}\n${authored}`,
+      replyContext: {
+        body: quotedBody,
+        sender,
+        createTime: Math.max(
+          1,
+          Math.floor(Number(quoted?.origin_server_ts ?? Date.now()) / 1_000),
+        ),
+      },
+    };
   }
 
   /** Downloads shared Matrix media and hands the same bytes to WeChat. */
@@ -2353,7 +2928,7 @@ export class WeChatBridge {
     name: string,
     mediaType: "image" | "sticker" | "video" | "audio" | "file",
     mimeType = "",
-  ): Promise<string | undefined> {
+  ): Promise<WeChatWriteResult> {
     const match = /^mxc:\/\/([^/]+)\/(.+)$/.exec(mxc);
     if (!match)
       throw new Error("the attachment has no downloadable Matrix media id");
@@ -2404,7 +2979,7 @@ export class WeChatBridge {
           ...(mimeType ? { mimeType } : {}),
           ...(stickerReference ? { emojiXml: stickerReference } : {}),
         });
-        return result.messageId;
+        return result;
       }
       // The helper's --image route decodes the input as an image. It does not
       // paste arbitrary file URLs despite earlier assumptions; live File
@@ -2427,7 +3002,7 @@ export class WeChatBridge {
           throw new Error(
             `WeChat did not verify that it delivered the ${mediaType}`,
           );
-        return undefined;
+        return {deliveredVerified: true};
       }
       throw new Error(`WeChat ${mediaType} sending is unavailable`);
     } catch (error) {
@@ -2441,14 +3016,85 @@ export class WeChatBridge {
   }
 
   async #write(request: WeChatWriteRequest): Promise<WeChatWriteResult> {
+    let release!: () => void;
+    const previous = this.#writerQueue;
+    this.#writerQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.#writeExclusive(request);
+    } finally {
+      release();
+    }
+  }
+
+  async #writeExclusive(request: WeChatWriteRequest): Promise<WeChatWriteResult> {
     if (!this.#options.writer)
       throw new Error(`WeChat ${request.kind} writing is unavailable`);
-    const result = await this.#options.writer.write(request);
-    if (result.deliveredVerified !== true)
-      throw new Error(
-        result.reason || `WeChat did not verify the ${request.kind} operation`,
-      );
-    return result;
+    // This covers the whole native critical section, including its readiness
+    // probe. `start()` is also called by status refreshes, and must see the
+    // guard before the relay disappears rather than racing to replace it.
+    this.#writerPaused = true;
+    let retryRelay = false;
+    try {
+      // Relay health can stay green after WeChat itself exits because the
+      // loopback service is still alive. Check the actual app on every native
+      // write so a remembered session is relaunched hidden before delivery.
+      if (
+        this.#options.ensureAppRunning &&
+        !(await this.#ensureAppRunning())
+      )
+        throw new Error(WECHAT_WRITER_FAILURES.wechat_not_running);
+      // Recover a closed/crashed WeChat before pausing the relay for the native
+      // writer. Start the relay here as well as from status(): an outbound
+      // event can arrive before the Hub tab has performed its next status
+      // refresh, and a prior native diagnostic may have intentionally stopped
+      // the listener.
+      if (!(await this.#relayHealthy())) {
+        if (!(await this.#startRelay()))
+          throw new Error(WECHAT_WRITER_FAILURES.wechat_not_running);
+      }
+      if (this.#relayHijackArmed === false) await this.#primeApp();
+      const pausedRelay = await this.#pauseRelayForWriter();
+      let result: WeChatWriteResult | undefined;
+      let operationError: unknown;
+      try {
+        result = await this.#options.writer.write(request);
+        if (result.deliveredVerified !== true)
+          throw new Error(
+            weChatWriterFailureMessage(result.reason, request.kind),
+          );
+      } catch (error) {
+        operationError = error;
+      }
+      let restartError: unknown;
+      if (pausedRelay && !this.#stopped) {
+        try {
+          if (!(await this.#startRelay()))
+            throw new Error("WeChat relay did not restart after the native operation");
+        } catch (error) {
+          restartError = error;
+        }
+      }
+      const settled = settleWeChatWrite(result, operationError, restartError);
+      retryRelay = settled.retryRelay;
+      if (retryRelay) {
+        this.#log(
+          `[wechat] outbound delivered, but relay recovery was delayed: ${message(restartError)}`,
+        );
+      }
+      return settled.result;
+    } finally {
+      this.#writerPaused = false;
+      if (!this.#stopped && retryRelay) {
+        void this.start(this.#owner).catch((error: unknown) =>
+          this.#log(`[wechat] relay recovery after outbound failed: ${message(error)}`),
+        );
+      } else if (!this.#stopped) {
+        this.#ensureConsume();
+      }
+    }
   }
 
   #cliPaths(): string[] {
@@ -2548,73 +3194,100 @@ export class WeChatBridge {
    * Asks again for the images WeChat would not decrypt, and edits the
    * placeholder into the picture when one finally comes through.
    *
-   * Backing off rather than hammering: each attempt spawns the CLI, which scans
-   * the running app's heap, and nothing here can make an image become readable
-   * — only the user opening it in WeChat does that, at a moment nobody can
-   * predict. A handful per sweep keeps a chat full of unviewed photos from
-   * costing more than it is worth.
+   * Heap probes stay frequent because they are local and are what notices the
+   * moment a user opens the photo. The authenticated CDN fallback keeps its
+   * widening backoff because it arms a debugger-backed capture and may occupy
+   * the full media timeout. A handful per sweep keeps a chat full of unviewed
+   * photos from monopolising the bridge.
    */
   async #retryPendingImages(): Promise<void> {
+    if (this.#retryingImages) return;
     const pending = this.#state.pendingImages;
     if (!pending) return;
-    const now = Date.now();
-    const due = Object.entries(pending)
-      .filter(([, item]) => item.nextAttemptAt <= now)
-      .sort(([, a], [, b]) => a.nextAttemptAt - b.nextAttemptAt)
-      .slice(0, IMAGE_RETRIES_PER_SWEEP);
-    for (const [key, item] of due) {
-      if (this.#stopped) return;
-      // Given up on: WeChat's CDN copy is long gone and the picture was never
-      // opened, so there is nothing left to ask for. The placeholder stays,
-      // and it still says where the picture can be seen.
-      if (now - item.firstFailedAt > IMAGE_RETRY_WINDOW_MS) {
+    this.#retryingImages = true;
+    try {
+      const now = Date.now();
+      for (const [key, item] of Object.entries(pending)) {
+        if (now - item.firstFailedAt <= IMAGE_RETRY_WINDOW_MS) continue;
         delete pending[key];
         this.#save();
-        continue;
       }
-      const media = await this.#image(item.chatId, item.messageId).catch(
-        (): null => null,
-      );
-      if (!media) {
-        item.attempts += 1;
-        const delays = this.#retryDelays();
-        item.nextAttemptAt =
-          now + delays[Math.min(item.attempts, delays.length - 1)];
-        this.#save();
-        continue;
-      }
-      const picture = {
-        msgtype: "m.image",
-        body: media.name,
-        url: media.uri,
-        info: { mimetype: media.mimeType, size: media.size },
-      };
-      await this.#matrix(
-        `/_matrix/client/v3/rooms/${encodeURIComponent(item.roomId)}/send/m.room.message/${encodeURIComponent(`wechat-${randomUUID()}`)}?ts=${item.sentAt}`,
-        {
-          method: "PUT",
-          as: item.sender,
-          body: {
-            // An edit, so the placeholder already in the thread becomes the
-            // picture in place rather than the same message arriving twice —
-            // once as text, once, much later, as an image out of order.
-            ...picture,
-            body: `* ${picture.body}`,
-            "m.new_content": picture,
-            "m.relates_to": { rel_type: "m.replace", event_id: item.eventId },
-            "co.polymux.wechat.remote": true,
-          },
-        },
-      ).catch((error: unknown) => {
+      const candidates = Object.entries(pending)
+        .sort(
+          ([, a], [, b]) =>
+            (a.lastHeapAttemptAt ?? 0) - (b.lastHeapAttemptAt ?? 0),
+        )
+        .slice(0, IMAGE_RETRIES_PER_SWEEP);
+      for (const [key, item] of candidates) {
+        if (this.#stopped) return;
+        item.lastHeapAttemptAt = Date.now();
+        let media = await this.#imageOrThumbnail(
+          item.chatId,
+          item.messageId,
+          "heap",
+        ).catch((): null => null);
+        if (!media && item.nextAttemptAt <= now) {
+          media = await this.#imageOrThumbnail(
+            item.chatId,
+            item.messageId,
+          ).catch((): null => null);
+          if (!media) {
+            item.attempts += 1;
+            const delays = this.#retryDelays();
+            item.nextAttemptAt =
+              now + delays[Math.min(item.attempts, delays.length - 1)];
+          }
+        }
+        if (!media) {
+          this.#save();
+          continue;
+        }
+        const picture = {
+          msgtype: "m.image",
+          body: media.name,
+          url: media.uri,
+          info: { mimetype: media.mimeType, size: media.size },
+        };
+        try {
+          await this.#matrix(
+            `/_matrix/client/v3/rooms/${encodeURIComponent(item.roomId)}/send/m.room.message/${encodeURIComponent(`wechat-${randomUUID()}`)}?ts=${item.sentAt}`,
+            {
+              method: "PUT",
+              as: item.sender,
+              body: {
+                // An edit, so the placeholder already in the thread becomes the
+                // picture in place rather than the same message arriving twice —
+                // once as text, once, much later, as an image out of order.
+                ...picture,
+                body: `* ${picture.body}`,
+                "m.new_content": picture,
+                "m.relates_to": {
+                  rel_type: "m.replace",
+                  event_id: item.eventId,
+                },
+                "co.polymux.wechat.remote": true,
+              },
+            },
+          );
+        } catch (error) {
+          this.#log(
+            `[wechat] image ${item.messageId} arrived but could not be shown: ${message(error)}`,
+          );
+          // The bytes were real, but the placeholder is not upgraded until
+          // Matrix accepts the edit. Keep it pending rather than reporting a
+          // success the user still cannot see.
+          item.nextAttemptAt = Date.now() + this.#retryDelays()[0];
+          this.#save();
+          continue;
+        }
         this.#log(
-          `[wechat] image ${item.messageId} arrived but could not be shown: ${message(error)}`,
+          `[wechat] image ${item.messageId} came through after ${item.attempts + 1} attempts`,
         );
-      });
-      this.#log(
-        `[wechat] image ${item.messageId} came through after ${item.attempts + 1} attempts`,
-      );
-      delete pending[key];
-      this.#save();
+        delete pending[key];
+        this.#save();
+      }
+    } finally {
+      this.#retryingImages = false;
     }
   }
 
@@ -2736,6 +3409,7 @@ interface MatrixEvent {
   type?: string;
   sender?: string;
   room_id?: string;
+  origin_server_ts?: number;
   redacts?: string;
   content?: { msgtype?: string; body?: string; [key: string]: unknown };
 }

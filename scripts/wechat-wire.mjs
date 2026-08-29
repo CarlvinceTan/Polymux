@@ -442,6 +442,7 @@ export async function sendNativeFile({
       ...NATIVE_UPLOAD_APP_ATTACH,
       recipient,
       taskId,
+      userId: fromWxid,
       request: buildNativeUploadAppAttachRequest({
         chunk,
         clientAppDataId,
@@ -457,13 +458,15 @@ export async function sendNativeFile({
   }
   const taskId = nativeTaskId();
   const extension = path.extname(fileName).replace(/^\./, "");
+  const clientMessageId = `${clientAppDataId}_xwechat_1`;
   const sent = await sendNativeTask({
     ...NATIVE_SEND_APP_MESSAGE,
     recipient,
     taskId,
+    userId: fromWxid,
     request: buildNativeFileMessageRequest({
       attachmentId,
-      clientMessageId: `${clientAppDataId}_xwechat_1`,
+      clientMessageId,
       extension,
       fileName,
       fileSize: bytes.length,
@@ -475,6 +478,7 @@ export async function sendNativeFile({
   });
   return {
     attachmentId,
+    clientMessageId,
     fileMd5,
     messageId: parseNativeSendAppMessageResponse(sent.response),
   };
@@ -541,6 +545,7 @@ export async function sendNativeVoice({
       ...NATIVE_UPLOAD_VOICE,
       recipient,
       taskId,
+      userId: fromWxid,
       request: buildNativeVoiceRequest({
         chunk,
         clientMessageId,
@@ -578,6 +583,7 @@ export async function sendNativeVideo({
     ...NATIVE_UPLOAD_VIDEO,
     recipient,
     taskId,
+    userId: fromWxid,
     request: buildNativeCdnVideoRequest({
       aesKey: upload.aesKey,
       cdnKey: upload.cdnKey,
@@ -697,12 +703,13 @@ export function buildNativeSendEmojiRequest({
   ]);
 }
 
-export async function sendNativeSticker({ md5, recipient }) {
+export async function sendNativeSticker({ md5, recipient, userId }) {
   const taskId = nativeTaskId();
   const sent = await sendNativeTask({
     ...NATIVE_SEND_EMOJI,
     recipient,
     taskId,
+    userId,
     request: buildNativeSendEmojiRequest({
       animationId: md5,
       recipient,
@@ -760,6 +767,7 @@ export async function recallNativeMessage({
     ...NATIVE_REVOKE_MESSAGE,
     recipient,
     taskId,
+    userId: fromWxid,
     request: buildNativeRevokeRequest({
       clientMessageId,
       fromWxid,
@@ -868,12 +876,16 @@ function waitForNativeReady(child) {
       clearTimeout(timer);
       reject(error);
     });
-    child.once("close", (code) => {
+    child.once("close", (code, signal) => {
       clearTimeout(timer);
       reject(
         new Error(
-          output.trim() ||
-            `WeChat native task injector exited before ready (${code})`,
+          [
+            `WeChat native task injector exited before ready (code=${code}, signal=${signal ?? "none"})`,
+            output.trim(),
+          ]
+            .filter(Boolean)
+            .join("\n"),
         ),
       );
     });
@@ -907,11 +919,7 @@ async function stopInjector(child, alreadyDetached = false) {
   child.stdin.on("error", () => undefined);
   if (alreadyDetached) {
     if (child.stdin.writable) child.stdin.write("quit\n");
-    await Promise.race([
-      new Promise((resolve) => child.once("close", resolve)),
-      new Promise((resolve) => setTimeout(resolve, 2_000)),
-    ]);
-    if (child.exitCode == null && child.signalCode == null) child.kill("SIGTERM");
+    await terminateInjectorProcess(child);
     return;
   }
   let stopped = false;
@@ -927,13 +935,18 @@ async function stopInjector(child, alreadyDetached = false) {
   }
   if (child.exitCode != null || child.signalCode != null) return;
   if (!stopped) {
-    const closed = await Promise.race([
-      new Promise((resolve) => child.once("close", () => resolve(true))),
-      new Promise((resolve) => setTimeout(() => resolve(false), 2_000)),
-    ]);
-    if (closed || child.exitCode != null || child.signalCode != null) return;
+    const detached = waitForDebuggerOutput(
+      child,
+      (output) => /Process \d+ detached/.test(output),
+      5_000,
+    );
+    if (child.stdin.writable)
+      child.stdin.write("polymux-native-cleanup\nprocess detach\nquit\n");
+    const confirmed = await detached;
+    await terminateInjectorProcess(child);
+    if (confirmed) return;
     throw new Error(
-      "WeChat debugger did not stop for a clean detach; the injector was left running",
+      "WeChat debugger was shut down but did not confirm a clean detach",
     );
   }
   const detached = waitForDebuggerOutput(
@@ -943,12 +956,32 @@ async function stopInjector(child, alreadyDetached = false) {
   );
   if (child.stdin.writable)
     child.stdin.write("polymux-native-cleanup\nprocess detach\nquit\n");
-  if (!(await detached))
+  const confirmed = await detached;
+  await terminateInjectorProcess(child);
+  if (!confirmed)
     throw new Error("WeChat debugger did not confirm a clean detach");
-  await Promise.race([
-    new Promise((resolve) => child.once("close", resolve)),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ]);
+}
+
+async function terminateInjectorProcess(child) {
+  if (await waitForInjectorClose(child, 2_000)) return;
+  child.kill("SIGTERM");
+  if (await waitForInjectorClose(child, 2_000)) return;
+  child.kill("SIGKILL");
+  await waitForInjectorClose(child, 2_000);
+}
+
+async function waitForInjectorClose(child, timeoutMs) {
+  if (child.exitCode != null || child.signalCode != null) return true;
+  return await new Promise((resolve) => {
+    const finish = (closed) => {
+      clearTimeout(timer);
+      child.off("close", onClose);
+      resolve(closed);
+    };
+    const onClose = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once("close", onClose);
+  });
 }
 
 async function atomicJson(filePath, value) {
@@ -971,106 +1004,6 @@ async function waitForStatus(filePath, timeoutMs = STATUS_TIMEOUT_MS) {
   throw new Error("WeChat wire injector did not report a rewrite");
 }
 
-export function nativeCdnWarmupProfilePath(pid) {
-  if (!Number.isInteger(pid) || pid <= 0)
-    throw new Error("native WeChat warmup pid is invalid");
-  return (
-    process.env.POLYMUX_WECHAT_CDN_PROFILE ||
-    path.join(tmpdir(), `polymux-wechat-cdn-profile-${pid}.json`)
-  );
-}
-
-export async function captureNativeCdnWarmup({
-  onReady,
-  timeoutMs = 120_000,
-} = {}) {
-  if (process.env.POLYMUX_WECHAT_WIRE_NATIVE !== "1")
-    throw new Error(
-      "native WeChat wire sending is disabled; set POLYMUX_WECHAT_WIRE_NATIVE=1",
-    );
-  if (process.env.POLYMUX_WECHAT_LLDB_EXPERIMENTAL !== "1")
-    throw new Error(
-      "native WeChat LLDB task sending is experimental and disabled",
-    );
-  await assertProfile();
-  const pid = await wechatPid();
-  const nonce = `${process.pid}-${randomBytes(8).toString("hex")}`;
-  const statusPath = path.join(
-    tmpdir(),
-    `polymux-wechat-cdn-capture-${nonce}.json`,
-  );
-  const injector = fileURLToPath(
-    new URL("./wechat_native_cdn_upload_lldb.py", import.meta.url),
-  );
-  const executable = process.env.POLYMUX_WECHAT_LLDB || "/usr/bin/lldb";
-  const importCommand = `command script import "${injector.replaceAll('"', '\\"')}"`;
-  const child = spawn(
-    executable,
-    [
-      "-p",
-      String(pid),
-      "-o",
-      importCommand,
-      "-o",
-      "polymux-native-cdn-capture",
-      "-o",
-      "process continue",
-    ],
-    {
-      env: {
-        ...process.env,
-        POLYMUX_WECHAT_CDN_STATUS: statusPath,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    },
-  );
-  let operationError;
-  let status;
-  try {
-    const ready = await interruptionAware(waitForDebuggerOutput(
-      child,
-      (output) => output.includes("native CDN warmup capture ready"),
-      READY_TIMEOUT_MS,
-    ));
-    if (!ready)
-      throw new Error("WeChat native CDN warmup capture did not become ready");
-    if (typeof onReady === "function") await onReady();
-    status = await interruptionAware(waitForStatus(statusPath, timeoutMs));
-    if (status?.ok !== true)
-      throw new Error(status?.reason || "WeChat native CDN warmup failed");
-    if (
-      status.recipient !== "filehelper" &&
-      process.env.POLYMUX_WECHAT_TEST_ONLY_FILEHELPER === "1"
-    )
-      throw new Error("native WeChat warmup captured a non-File Transfer chat");
-    const profile = {
-      dylibSha256: PROFILE_SHA256,
-      payloadHex: String(status.payloadHex || ""),
-      pid,
-      uploadController: String(status.uploadController || ""),
-    };
-    if (
-      !/^0x[0-9a-f]+$/i.test(profile.uploadController) ||
-      !/^[0-9a-f]{1536,}$/i.test(profile.payloadHex)
-    )
-      throw new Error("native WeChat warmup capture was incomplete");
-    const profilePath = nativeCdnWarmupProfilePath(pid);
-    await atomicJson(profilePath, profile);
-    return { ...profile, profilePath };
-  } catch (error) {
-    operationError = error;
-    throw error;
-  } finally {
-    try {
-      await stopInjector(child, status?.detached === true);
-    } catch (detachError) {
-      if (!operationError) throw detachError;
-    }
-    await rm(statusPath, { force: true });
-  }
-}
-
 async function uploadNativeVideoCdn({ bytes, recipient, videoMd5 }) {
   if (process.env.POLYMUX_WECHAT_WIRE_NATIVE !== "1")
     throw new Error(
@@ -1082,27 +1015,6 @@ async function uploadNativeVideoCdn({ bytes, recipient, videoMd5 }) {
     );
   await assertProfile();
   const pid = await wechatPid();
-  const profilePath = nativeCdnWarmupProfilePath(pid);
-  let profile;
-  try {
-    profile = JSON.parse(await readFile(profilePath, "utf8"));
-  } catch (error) {
-    if (error?.code === "ENOENT")
-      throw new Error(
-        "native WeChat video needs one File Transfer media warmup for this WeChat process",
-      );
-    throw new Error(`native WeChat CDN warmup profile is invalid: ${error}`);
-  }
-  if (
-    Number(profile.pid) !== pid ||
-    profile.dylibSha256 !== PROFILE_SHA256 ||
-    !/^0x[0-9a-f]+$/i.test(String(profile.uploadController)) ||
-    !/^[0-9a-f]{1536,}$/i.test(String(profile.payloadHex))
-  )
-    throw new Error(
-      "native WeChat CDN warmup profile is stale; warm up this WeChat process again",
-    );
-
   const nonce = `${process.pid}-${randomBytes(8).toString("hex")}`;
   const videoPath = path.join(tmpdir(), `polymux-wechat-video-${nonce}.mp4`);
   const armPath = path.join(tmpdir(), `polymux-wechat-cdn-arm-${nonce}.json`);
@@ -1123,9 +1035,7 @@ async function uploadNativeVideoCdn({ bytes, recipient, videoMd5 }) {
     aesKey: randomBytes(16).toString("hex"),
     expiryNs: String(BigInt(Date.now() + 60_000) * 1_000_000n),
     fileId,
-    payloadHex: profile.payloadHex,
     recipient,
-    uploadController: profile.uploadController,
     videoMd5,
     videoPath,
   });
@@ -1255,6 +1165,7 @@ export async function sendNativeTask({
   recipient,
   request,
   taskId = (randomBytes(4).readUInt32LE() & 0x0fffffff) | 0x20000000,
+  userId,
 }) {
   if (process.env.POLYMUX_WECHAT_WIRE_NATIVE !== "1")
     throw new Error(
@@ -1276,6 +1187,13 @@ export async function sendNativeTask({
     throw new Error("native WeChat task command id is invalid");
   if (!Buffer.isBuffer(request) || request.length === 0)
     throw new Error("native WeChat task request is empty");
+  if (
+    typeof userId !== "string" ||
+    !userId.trim() ||
+    Buffer.byteLength(userId, "utf8") > 255 ||
+    userId.includes("\0")
+  )
+    throw new Error("native WeChat task account id is invalid");
 
   const nonce = `${process.pid}-${randomBytes(8).toString("hex")}`;
   const armPath = path.join(tmpdir(), `polymux-wechat-wire-arm-${nonce}.json`);
@@ -1306,6 +1224,7 @@ export async function sendNativeTask({
     recipient,
     requestBase64: request.toString("base64"),
     taskId,
+    userId: userId.trim(),
   });
   const child = spawn(
     executable,
@@ -1367,14 +1286,22 @@ export async function sendNativeTask({
   }
 }
 
-export async function sendTypedMessage({ content, messageType, recipient }) {
+export async function sendTypedMessage({ content, messageType, recipient, userId }) {
+  const clientMessageId = randomBytes(4).readUInt32LE() & 0x7fffffff;
   const sent = await sendNativeTask({
     ...NATIVE_NEW_SEND_MESSAGE,
     recipient,
-    request: buildNativeMessageRequest({ content, messageType, recipient }),
+    userId,
+    request: buildNativeMessageRequest({
+      clientMessageId,
+      content,
+      messageType,
+      recipient,
+    }),
   });
   return {
     ...sent,
+    clientMessageId: String(clientMessageId),
     messageId: parseNativeNewSendMessageResponse(sent.response),
   };
 }

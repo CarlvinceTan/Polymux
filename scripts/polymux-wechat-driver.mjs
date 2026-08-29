@@ -17,9 +17,18 @@ import {
   sendTypedMessage,
   stickerMd5,
 } from "./wechat-wire.mjs";
+import {
+  daemonStatusRunning,
+  hasWeChatDaemonCaptureProcess,
+  recognisesDaemonStatus,
+  settlePausedDaemonOperation,
+  usesNativeTextTransport,
+  weChatDaemonCaptureProcessIds,
+} from "./wechat-daemon-coordination.mjs";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const TIMEOUT_MS = 130_000;
+const DAEMON_DETACH_QUIET_MS = 1_000;
 const activeCommands = new Set();
 let shutdownSignal;
 
@@ -188,18 +197,44 @@ async function run(executable, args) {
 
 async function withPausedDaemon(cli, action) {
   const status = await run(cli, ["daemon", "status"]);
-  const wasRunning = status.code === 0 && /\brunning\s+pid=\d+/.test(status.stdout);
+  const processes = await daemonProcesses();
+  const wasRunning =
+    (status.code === 0 && daemonStatusRunning(status.stdout)) ||
+    (status.code === 0 &&
+      recognisesDaemonStatus(status.stdout) &&
+      processes.code === 0 &&
+      hasWeChatDaemonCaptureProcess(processes.stdout));
   if (wasRunning) {
     const stopped = await run(cli, ["daemon", "stop"]);
     if (stopped.code !== 0)
       throw new Error(stopped.stderr || "WeChat daemon did not stop");
   }
+  // A supervised relay may have begun stopping its daemon just before this
+  // process asked for status. In that window status already says "stopped"
+  // while LLDB/debugserver is still attached to WeChat; starting the native
+  // task then makes one debugger kill the other. Always wait for the capture
+  // tree to disappear, even when this writer was not the process that stopped
+  // it.
+  await waitForDaemonCaptureState(false);
   let result;
   let actionFailure;
   try {
     result = await action();
   } catch (error) {
-    actionFailure = error;
+    if (nativeInjectorFailedBeforeReady(error)) {
+      // No request can have been submitted before the injector's ready
+      // barrier, so one retry cannot duplicate a message. Keep the daemon
+      // paused, wait for the failed debugger to release WeChat, and retry the
+      // same native operation once inside this exclusive writer process.
+      try {
+        await waitForDaemonCaptureState(false);
+        result = await action();
+      } catch (retryError) {
+        actionFailure = retryError;
+      }
+    } else {
+      actionFailure = error;
+    }
   }
   let restartFailure;
   if (wasRunning) {
@@ -207,18 +242,80 @@ async function withPausedDaemon(cli, action) {
       const restarted = await run(cli, ["daemon", "start"]);
       if (restarted.code !== 0)
         restartFailure = new Error(restarted.stderr || "WeChat daemon did not restart");
+      else
+        await waitForDaemonCaptureState(true);
     } catch (error) {
       restartFailure = error;
     }
   }
-  if (actionFailure && restartFailure)
-    throw new AggregateError(
-      [actionFailure, restartFailure],
-      "WeChat operation failed and the daemon did not restart",
+  const settled = settlePausedDaemonOperation({
+    actionFailure,
+    restartFailure,
+    result,
+  });
+  if (settled.restartFailure)
+    process.stderr.write(
+      `[wechat] delivery succeeded but daemon recovery is pending: ${settled.restartFailure.message}\n`,
     );
-  if (actionFailure) throw actionFailure;
-  if (restartFailure) throw restartFailure;
-  return result;
+  return settled.result;
+}
+
+function nativeInjectorFailedBeforeReady(error) {
+  const detail = String(error?.message ?? error ?? "").toLowerCase();
+  return (
+    detail.includes("native task injector exited before ready") ||
+    detail.includes("native task injector did not become ready")
+  );
+}
+
+async function waitForDaemonCaptureState(running, timeoutMs = 15_000) {
+  const started = Date.now();
+  let sentTerm = false;
+  let sentKill = false;
+  let absentSince;
+  while (Date.now() - started < timeoutMs) {
+    const processes = await daemonProcesses();
+    const present =
+      processes.code === 0 && hasWeChatDaemonCaptureProcess(processes.stdout);
+    if (running && present) return;
+    if (!running && !present) {
+      absentSince ??= Date.now();
+      // LLDB can disappear from the process table just before macOS releases
+      // the task port. Reattaching in that gap makes debugserver kill the new
+      // injector. A continuous quiet interval is the observable detach gate.
+      if (Date.now() - absentSince >= DAEMON_DETACH_QUIET_MS) return;
+    } else {
+      absentSince = undefined;
+    }
+    const elapsed = Date.now() - started;
+    if (!running && !sentTerm && elapsed >= 2_000) {
+      terminateDaemonCaptureProcesses(processes.stdout, "SIGTERM");
+      sentTerm = true;
+    } else if (!running && !sentKill && elapsed >= 8_000) {
+      terminateDaemonCaptureProcesses(processes.stdout, "SIGKILL");
+      sentKill = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    running
+      ? "WeChat daemon did not finish restarting"
+      : "WeChat daemon debugger did not finish detaching",
+  );
+}
+
+function daemonProcesses() {
+  return run("/bin/ps", ["-ax", "-o", "pid=,ppid=,command="]);
+}
+
+function terminateDaemonCaptureProcesses(processTable, signal) {
+  for (const pid of weChatDaemonCaptureProcessIds(processTable)) {
+    try {
+      process.kill(pid, signal);
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+  }
 }
 
 function requireString(value, name) {
@@ -279,6 +376,43 @@ function parseCliResult(result) {
     result.stderr ||
     `WeChat helper exited with ${result.code}`;
   return { deliveredVerified: false, reason: String(reason) };
+}
+
+function cliNeedsBackgroundPrime(result) {
+  try {
+    const payload = JSON.parse(result.stdout || "{}");
+    const reason = String(
+      payload.diagnostic?.reason ?? payload.reason ?? payload.error ?? "",
+    )
+      .trim()
+      .toLowerCase();
+    return (
+      reason === "slot_send_bp_armed_no_fire" ||
+      reason === "wechat_no_chat_selected"
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function primeWeChatInBackground() {
+  const helper = String(process.env.POLYMUX_WECHAT_PRIMER ?? "").trim();
+  if (!helper) return false;
+  const result = await run(helper, []);
+  if (result.code !== 0) return false;
+  try {
+    const payload = JSON.parse(result.stdout || "{}");
+    return payload.ok === true && payload.primed === true;
+  } catch {
+    return false;
+  }
+}
+
+async function runCliSend(cli, args) {
+  let result = await run(cli, args);
+  if (cliNeedsBackgroundPrime(result) && (await primeWeChatInBackground()))
+    result = await run(cli, args);
+  return result;
 }
 
 async function requireNonDebuggerPlaceholderTransport(cli) {
@@ -343,6 +477,16 @@ async function findSentTextMessageId(cli, chatId, body) {
   } catch {
     return undefined;
   }
+}
+
+async function waitForSentTextMessageId(cli, chatId, body, timeoutMs = 15_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const messageId = await findSentTextMessageId(cli, chatId, body);
+    if (messageId) return messageId;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return undefined;
 }
 
 async function replyTarget(cli, chatId, messageId) {
@@ -669,7 +813,7 @@ async function main() {
           ).trim();
           painted = `↳ ${sender || "Earlier message"}: ${target.quoted}\n${authored}`;
         }
-        const delivery = parseCliResult(await run(cli, argsFor(painted)));
+        const delivery = parseCliResult(await runCliSend(cli, argsFor(painted)));
         if (delivery.deliveredVerified && !delivery.messageId) {
           const messageId = await findSentTextMessageId(cli, chatId, painted);
           answer(messageId ? { ...delivery, messageId } : delivery);
@@ -678,10 +822,24 @@ async function main() {
         }
         return;
       }
-      const [target, identity] = await Promise.all([
-        replyTarget(cli, chatId, request.replyTo),
+      const [historyTarget, identity] = await Promise.all([
+        replyTarget(cli, chatId, request.replyTo).catch(() => null),
         accountIdentity(cli),
       ]);
+      const context = request.replyContext;
+      const target = historyTarget ??
+        (context &&
+        typeof context === "object" &&
+        String(context.body ?? "").trim()
+          ? {
+              create_time: Math.max(1, Number(context.createTime) || Math.floor(Date.now() / 1000)),
+              sender_name: String(context.sender ?? "").trim() || "Earlier message",
+              quoted: String(context.body).trim(),
+              message_kind: "text",
+            }
+          : null);
+      if (!target)
+        throw new Error("WeChat reply target was not found in history");
       const content = buildReplyXml({
         body: authored,
         chatId,
@@ -694,7 +852,12 @@ async function main() {
         quotedType: quotedType(target.message_kind),
       });
       const delivery = await withPausedDaemon(cli, () =>
-        sendTypedMessage({ content, messageType: 49, recipient: chatId }),
+        sendTypedMessage({
+          content,
+          messageType: 49,
+          recipient: chatId,
+          userId: identity.wxid,
+        }),
       );
       const messageId =
         delivery.messageId ??
@@ -704,25 +867,47 @@ async function main() {
           authored,
           request.replyTo,
         ));
-      answer({ deliveredVerified: true, messageId });
+      answer({
+        deliveredVerified: true,
+        messageId,
+        clientMessageId: String(delivery.clientMessageId ?? "") || undefined,
+      });
       return;
     }
 
-    if (
-      process.env.POLYMUX_WECHAT_WIRE_NATIVE === "1" &&
-      mentions.length === 0
-    ) {
+    // A hidden WeChat restart leaves the daemon's Qt slot chain cold until a
+    // person interacts with the native UI. The exact-build task route does not
+    // depend on that UI state, and it owns daemon pause/detach itself. Mentions
+    // stay on the CLI because the native route cannot encode at-user metadata.
+    if (mentions.length === 0 && usesNativeTextTransport()) {
+      const identity = await accountIdentity(cli);
       const delivery = await withPausedDaemon(cli, () =>
-        sendTypedMessage({ content: authored, messageType: 1, recipient: chatId }),
+        sendTypedMessage({
+          content: authored,
+          messageType: 1,
+          recipient: chatId,
+          userId: identity.wxid,
+        }),
       );
+      // The profiled new-send task returns success only with WeChat's server
+      // message id. Some desktop builds do not mirror low-level task sends
+      // into their local SQLCipher history, so prefer an immediate local echo
+      // when present and otherwise retain that server acknowledgement.
       const messageId =
-        delivery.messageId ??
-        (await findSentTextMessageId(cli, chatId, authored));
-      answer({ deliveredVerified: true, messageId });
+        (await waitForSentTextMessageId(cli, chatId, authored, 2_000)) ??
+        delivery.messageId;
+      if (!messageId)
+        throw new Error("WeChat did not acknowledge the native text message");
+      answer({
+        deliveredVerified: true,
+        messageId,
+        clientMessageId: String(delivery.clientMessageId ?? "") || undefined,
+      });
       return;
     }
 
-    const delivery = parseCliResult(await run(cli, argsFor(authored)));
+    // Portable fallback for installations without the exact-build task route.
+    const delivery = parseCliResult(await runCliSend(cli, argsFor(authored)));
     if (delivery.deliveredVerified && !delivery.messageId) {
       const messageId = await findSentTextMessageId(cli, chatId, authored);
       answer(messageId ? { ...delivery, messageId } : delivery);
@@ -767,7 +952,11 @@ async function main() {
           voice.bytes,
           sinceEpoch,
         ));
-      answer({ deliveredVerified: true, messageId });
+      answer({
+        deliveredVerified: true,
+        messageId,
+        clientMessageId: String(delivery.clientMessageId ?? "") || undefined,
+      });
       return;
     }
 
@@ -795,7 +984,11 @@ async function main() {
           bytes,
           sinceEpoch,
         ));
-      answer({ deliveredVerified: true, messageId });
+      answer({
+        deliveredVerified: true,
+        messageId,
+        clientMessageId: String(delivery.clientMessageId ?? "") || undefined,
+      });
       return;
     }
 
@@ -819,7 +1012,11 @@ async function main() {
           bytes,
           sinceEpoch,
         ));
-      answer({ deliveredVerified: true, messageId });
+      answer({
+        deliveredVerified: true,
+        messageId,
+        clientMessageId: String(delivery.clientMessageId ?? "") || undefined,
+      });
       return;
     }
 
@@ -831,8 +1028,13 @@ async function main() {
         throw new Error(
           "WeChat sticker bytes do not match the native sticker reference",
         );
+      const identity = await accountIdentity(cli);
       const delivery = await withPausedDaemon(cli, () =>
-        sendNativeSticker({ md5: actualMd5, recipient: chatId }),
+        sendNativeSticker({
+          md5: actualMd5,
+          recipient: chatId,
+          userId: identity.wxid,
+        }),
       );
       const messageId =
         delivery.messageId ??
@@ -849,7 +1051,7 @@ async function main() {
         "live File Transfer image sending requires POLYMUX_WECHAT_ALLOW_FOCUSED_IMAGE_SEND=1 after the chat is focused",
       );
     const sinceEpoch = Math.floor(Date.now() / 1000) - 2;
-    const helper = await run(cli, [
+    const helper = await runCliSend(cli, [
       "send",
       requireString(request.name, "name"),
       "--image",
@@ -873,19 +1075,31 @@ async function main() {
   if (request.kind === "recall") {
     requireNativeWire("recall");
     const messageId = requireString(request.messageId, "messageId");
+    const suppliedClientMessageId = String(
+      request.clientMessageId ?? request.client_message_id ?? "",
+    ).trim();
     const [target, identity] = await Promise.all([
-      recallTarget(cli, chatId, messageId),
+      suppliedClientMessageId
+        ? Promise.resolve(null)
+        : recallTarget(cli, chatId, messageId),
       accountIdentity(cli),
     ]);
+    const clientMessageId = suppliedClientMessageId ||
+      requireString(String(target?.local_id ?? ""), "local message id");
     await withPausedDaemon(cli, () =>
       recallNativeMessage({
-        clientMessageId: requireString(String(target.local_id ?? ""), "local message id"),
+        clientMessageId,
         fromWxid: identity.wxid,
         recipient: chatId,
         serverMessageId: messageId,
       }),
     );
-    if (!(await waitForRecallHistory(cli, chatId, messageId)))
+    // A freshly injected native message can be recalled before WeChat has
+    // indexed it into the queryable history database. Its native client id is
+    // the exact target, and recallNativeMessage has already validated WeChat's
+    // own success response. Older messages still use history for both ids and
+    // the post-operation confirmation.
+    if (!suppliedClientMessageId && !(await waitForRecallHistory(cli, chatId, messageId)))
       throw new Error("WeChat recall was not confirmed in history");
     answer({ deliveredVerified: true, messageId });
     return;

@@ -229,6 +229,25 @@ export class Homeserver {
     this.#store.close();
   }
 
+  /** Removes a locally recorded outbound event after its bridge rejects it.
+   * The redaction is intentionally unarmed and bridge-originated, so cleanup
+   * cannot become a remote recall command. */
+  discardOutbound(eventId: string): void {
+    const target = this.#store.event(eventId);
+    if (!target || target.redactedBy) return;
+    this.#outboundArmed.delete(eventId);
+    this.#append({
+      roomId: target.roomId,
+      sender: target.sender,
+      type: "m.room.redaction",
+      stateKey: null,
+      content: {redacts: eventId},
+      ts: Date.now(),
+      redacts: eventId,
+      origin: "polymux.local-delivery-cleanup",
+    });
+  }
+
   /**
    * Registers a bridge from its registration data and starts its pusher. The
    * bot user is NOT created here: the bridge registers it itself and expects

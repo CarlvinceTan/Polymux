@@ -104,6 +104,7 @@ export function bridgeStatusFingerprint(bridge: CommsBridgeDto): string {
     state: bridge.state,
     error: bridge.error,
     permission: bridge.permission,
+    installUrl: bridge.installUrl,
     managementRoomHint: bridge.managementRoomHint,
     accounts: bridge.accounts.map((account) => ({
       id: account.id,
@@ -217,6 +218,12 @@ export interface EmbeddedHub {
    * app's messages into the hub.
    */
   stopWeChat?: () => Promise<void>;
+  /** Resolves only after the native bridge verifies this Matrix event. */
+  waitForWeChatOutbound?: (eventId: string) => Promise<void>;
+  /** Removes a local event whose remote delivery failed. */
+  discardOutbound?: (eventId: string) => void;
+  /** Recalls a verified WeChat send before redacting it locally. */
+  recallWeChat?: (roomId: string, eventId: string) => Promise<void>;
   /** Values already recorded for a bridge's own configuration. */
   networkConfig?: (platform: string) => Promise<Record<string, string>>;
   /**
@@ -671,6 +678,7 @@ export class Communications {
           relay.running && !delivers
             ? `Polymux has reached ${entry.label} on this Mac but has not finished connecting it. Reopen this in a moment.`
             : relay.error,
+        installUrl: relay.installUrl,
       };
     };
     // One slow bridge should not serialize behind the others.
@@ -1262,7 +1270,9 @@ export class Communications {
     mentions?: ChatMentionsDto,
   ): Promise<string> {
     await this.#load();
-    return this.#hub.send(chatId, text, replyTo, mentions);
+    const eventId = await this.#hub.send(chatId, text, replyTo, mentions);
+    await this.#confirmOutbound(chatId, eventId);
+    return eventId;
   }
 
   /**
@@ -1276,13 +1286,57 @@ export class Communications {
     await this.#load();
     for (const file of files) {
       const url = await this.#hub.upload(file.name, file.mimetype, file.bytes);
-      await this.#hub.sendMedia(chatId, {
+      const eventId = await this.#hub.sendMedia(chatId, {
         url,
         name: file.name,
         mimetype: file.mimetype,
         size: file.bytes.byteLength,
         msgtype: msgtypeOf(file.mimetype),
       });
+      await this.#confirmOutbound(chatId, eventId);
+    }
+  }
+
+  async sendChatSticker(
+    chatId: string,
+    file: {name: string; mimetype: string; bytes: Uint8Array},
+  ): Promise<void> {
+    await this.#load();
+    if (!file.mimetype.startsWith("image/"))
+      throw new Error("A WeChat sticker must be an image");
+    const url = await this.#hub.upload(file.name, file.mimetype, file.bytes);
+    const eventId = await this.#hub.sendSticker(chatId, {
+      url,
+      name: file.name,
+      mimetype: file.mimetype,
+      size: file.bytes.byteLength,
+    });
+    await this.#confirmOutbound(chatId, eventId);
+  }
+
+  async recallChat(chatId: string, eventId: string): Promise<void> {
+    await this.#load();
+    if (
+      this.#embedded?.recallWeChat &&
+      (await this.#hub.roomPlatform(chatId)) === "wechat"
+    ) {
+      await this.#embedded.recallWeChat(chatId, eventId);
+      return;
+    }
+    await this.#hub.redact(chatId, eventId);
+  }
+
+  async #confirmOutbound(chatId: string, eventId: string): Promise<void> {
+    if (
+      !this.#embedded?.waitForWeChatOutbound ||
+      (await this.#hub.roomPlatform(chatId)) !== "wechat"
+    )
+      return;
+    try {
+      await this.#embedded.waitForWeChatOutbound(eventId);
+    } catch (error) {
+      this.#embedded.discardOutbound?.(eventId);
+      throw error;
     }
   }
 
