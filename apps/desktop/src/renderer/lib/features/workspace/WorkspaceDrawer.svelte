@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type WorkspaceTabKind = 'new' | 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'calendar' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'view';
+  export type WorkspaceTabKind = 'new' | 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'calendar' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'phone' | 'view';
   export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; section?: 'outputs' | 'references' | 'tasks'};
 
   /**
@@ -144,6 +144,7 @@
     hub: 'workspace-hub',
     subagents: 'workspace-subagents',
     tasks: 'workspace-tasks',
+    phone: 'workspace-phone',
   };
 </script>
 
@@ -175,6 +176,7 @@
   import ScheduleView, {type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './ScheduleView.svelte';
   import CalendarView from './CalendarView.svelte';
   import TasksView, {type TaskCard} from './TasksView.svelte';
+  import PhoneView from './PhoneView.svelte';
   import {t, translate, type MessageKey} from '../../../i18n';
 
   export let tabs: WorkspaceTab[] = [];
@@ -259,8 +261,9 @@
    * native view must hide under it. */
   export let browserObscured = false;
   export let onTabState: (id: string, patch: {title?: string; url?: string; favicon?: string | null}) => void = () => {};
-  export let pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'> = [];
-  export let onTogglePin: (kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') => void = () => {};
+  type PinnedView = 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' | 'phone';
+  export let pinnedViews: PinnedView[] = [];
+  export let onTogglePin: (kind: PinnedView) => void = () => {};
   export let onOpenSeparateWindow: (
     kind: WorkspaceTabKind,
     placement?: {x: number; y: number; width?: number; height?: number},
@@ -334,8 +337,8 @@
     });
   }
 
-  $: isSingletonKind = (kind: WorkspaceTabKind): kind is 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' =>
-    kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks';
+  $: isSingletonKind = (kind: WorkspaceTabKind): kind is PinnedView =>
+    kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'phone';
 
   $: activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   /** A task tab is named by its row in Summary and takes its status from it, so
@@ -357,6 +360,7 @@
     hub: 'workspace.hub',
     subagents: 'workspace.subagents',
     tasks: 'workspace.tasks',
+    phone: 'workspace.phone',
   };
   $: tabTitle = (tab: WorkspaceTab): string => {
     const key = SINGLETON_TAB_IDS[tab.kind] === tab.id ? singletonTitles[tab.kind] : undefined;
@@ -372,7 +376,7 @@
   $: taskTabStatus = (tab: WorkspaceTab): TaskStatus =>
     summaryData.tasks.find((task) => task.id === tab.id)?.status ?? 'active';
 
-  const tabIcons: Record<WorkspaceTabKind, 'plus' | 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'calendar' | 'send' | 'task' | 'tasks' | 'panel'> = {
+  const tabIcons: Record<WorkspaceTabKind, 'plus' | 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'calendar' | 'send' | 'task' | 'tasks' | 'phone' | 'panel'> = {
     new: 'plus',
     media: 'image',
     browser: 'globe',
@@ -384,6 +388,7 @@
     subagent: 'task',
     subagents: 'send',
     tasks: 'tasks',
+    phone: 'phone',
     view: 'panel',
   };
 
@@ -677,6 +682,7 @@
       dockedDrawerWidth={dockedWidth}
     />
     {:else if activeTab.kind === 'calendar'}<CalendarView/>
+    {:else if activeTab.kind === 'phone'}<PhoneView/>
     {:else if activeTab.kind === 'drive'}<DriveView
       title={activeTab.title}
       root={driveRoot}
@@ -707,9 +713,9 @@
 {#if contextMenu}
   <div class="polymux-dropdown-menu tab-context-menu" role="menu" style="position: fixed; left: {contextMenu.x}px; top: {contextMenu.y}px; z-index: 200;">
     {#if isSingletonKind(contextMenu.tab.kind)}
-      <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { const kind = contextMenu?.tab.kind as 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'; closeContextMenu(); onTogglePin(kind); }}>
-        <Icon name={pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') ? 'pin-off' : 'pin'} size={14}/>
-        <span>{pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') ? $t('titlebar.unpinView') : $t('titlebar.pinView')}</span>
+      <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { const kind = contextMenu?.tab.kind as PinnedView; closeContextMenu(); onTogglePin(kind); }}>
+        <Icon name={pinnedViews.includes(contextMenu.tab.kind as PinnedView) ? 'pin-off' : 'pin'} size={14}/>
+        <span>{pinnedViews.includes(contextMenu.tab.kind as PinnedView) ? $t('titlebar.unpinView') : $t('titlebar.pinView')}</span>
       </button>
       <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { if (contextMenu) openTabInSeparateWindow(contextMenu.tab); }}>
         <Icon name="send" size={14}/>

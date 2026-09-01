@@ -44,6 +44,10 @@
     "test": "npm run test:scripts && npm run test:inference && npm run test:core && npm run test:storage && npm run test:computer && npm run test:tools && npm run test:agent && npm run test:protocol && npm run test:hub && npm run test:drive && npm run test:browser && npm run test:main && npm run test:renderer && npm run test:site",
     "icons": "node scripts/build-icons.mjs",
     "bridges": "node scripts/fetch-bridges.mjs",
+    "phone-tools": "node scripts/fetch-phone-tools.mjs && node scripts/fetch-phone-ios-tools.mjs && node scripts/build-phone-ios-signer-runtime.mjs && node scripts/build-phone-ios-device.mjs",
+    "phone:signer": "node scripts/build-phone-ios-signer-runtime.mjs",
+    "phone:device": "node scripts/build-phone-ios-device.mjs",
+    "phone:wda": "node scripts/build-phone-wda.mjs",
     "whisper": "node scripts/fetch-whisper.mjs",
     "updates": "node scripts/publish-updates.mjs"
   },

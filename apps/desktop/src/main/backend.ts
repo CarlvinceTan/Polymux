@@ -73,6 +73,7 @@ import type {
   CreateChatRequest,
   MergeContactLinkRequest,
   SetAgentProviderRequest,
+  PhonePointDto,
 } from "@polymux/protocol";
 import { createAppleMailSearcher } from "./hub/apple-mail.js";
 import {
@@ -360,6 +361,8 @@ import { AppPermissions } from "./system/app-permissions.js";
 import { ContactLookup } from "./hub/contacts.js";
 import { Reminders } from "./reminders/index.js";
 import { createRemindersTools } from "./reminders/tools.js";
+import { PhoneController } from "./phone/controller.js";
+import { createPhoneTool } from "./phone/tools.js";
 import { NativeCalendar } from "./calendar/index.js";
 import { serializeIcsEvents } from "./calendar/ics.js";
 import {
@@ -515,6 +518,7 @@ export class DesktopBackend {
   readonly #trustedWindows = new Map<number, BrowserWindow>();
   readonly #ipcMain: IpcMain;
   readonly #storage: SqliteStorage;
+  readonly #phone: PhoneController;
   readonly #profiles: ProfileManager;
   #agent?: PolymuxAgent;
   #agentRuntime?: AgentRuntime;
@@ -635,6 +639,9 @@ export class DesktopBackend {
   readonly #reloadForProfileChange?: () => void;
 
   constructor(options: DesktopBackendOptions) {
+    this.#phone = new PhoneController({
+      ios: { dataDirectory: options.dataDirectory },
+    });
     this.#window = options.window;
     this.#trustedWindows.set(options.window.webContents.id, options.window);
     this.#ipcMain = options.ipcMain;
@@ -1188,6 +1195,7 @@ export class DesktopBackend {
     // from delegated runs.
     this.#registry.register(createWorkspaceTool(this.#workspaceRevealer()));
     this.#registry.register(createHubDraftTool(this.#workspaceRevealer()));
+    this.#registry.register(createPhoneTool(this.#phone));
     this.#registry.register(
         createPolymuxUiInspectionTool({
           openSettings: async (mode) => {
@@ -1454,6 +1462,56 @@ export class DesktopBackend {
     this.#registerAutofill();
     if (this.#firstRunPermissions.completed()) this.#startComputerObservation();
     this.#scheduler.start();
+    this.#handle(channels.phoneStatus, () => this.#phone.status());
+    this.#handle(channels.phoneConnect, () => this.#phone.connect());
+    this.#handle(
+      channels.phonePairAndroid,
+      (_event, pairingAddress: unknown, pairingCode: unknown, connectAddress: unknown) =>
+        this.#phone.pairAndroid(
+          required(pairingAddress, "Android pairing address"),
+          required(pairingCode, "Android pairing code"),
+          typeof connectAddress === "string" && connectAddress.trim()
+            ? connectAddress.trim()
+            : undefined,
+        ),
+    );
+    this.#handle(channels.phoneIosSigningStatus, () =>
+      this.#phone.iosSigningStatus(),
+    );
+    this.#handle(
+      channels.phoneIosSigningBegin,
+      (_event, email: unknown, password: unknown) =>
+        this.#phone.iosSigningBegin(
+          required(email, "Apple Account email"),
+          required(password, "Apple Account password"),
+        ),
+    );
+    this.#handle(
+      channels.phoneIosSigningComplete,
+      (_event, code: unknown) =>
+        this.#phone.iosSigningComplete(required(code, "Apple verification code")),
+    );
+    this.#handle(channels.phoneIosSigningLogout, () =>
+      this.#phone.iosSigningLogout(),
+    );
+    this.#handle(channels.phoneStop, () => this.#phone.stop());
+    this.#handle(channels.phoneFrame, () => this.#phone.frame());
+    this.#handle(channels.phoneTap, (_event, point: unknown) =>
+      this.#phone.tap(point as PhonePointDto),
+    );
+    this.#handle(
+      channels.phoneSwipe,
+      (_event, from: unknown, to: unknown, durationMs: unknown) =>
+        this.#phone.swipe(
+          from as PhonePointDto,
+          to as PhonePointDto,
+          typeof durationMs === "number" ? durationMs : undefined,
+        ),
+    );
+    this.#handle(channels.phoneType, (_event, value: unknown) =>
+      this.#phone.type(required(value, "phone text")),
+    );
+    this.#handle(channels.phoneHome, () => this.#phone.home());
     this.#handle(channels.profilesList, () => this.#profiles.snapshot());
     this.#handle(channels.agentRuntimeGet, () => this.#agentRuntimeDto());
     this.#handle(channels.agentRuntimeRegistry, () => listAcpRegistry());
@@ -3710,6 +3768,7 @@ export class DesktopBackend {
     this.#recording.stop("interrupted");
     this.#scheduler.stop();
     this.#dictation.close();
+    await this.#phone.close();
     this.#stopCalendarChanges();
     this.#calendar.close();
     const activeRuns = [...this.#activeRuns.values()];

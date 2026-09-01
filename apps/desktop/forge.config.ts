@@ -6,7 +6,7 @@ import {VitePlugin} from '@electron-forge/plugin-vite';
 import {FusesPlugin} from '@electron-forge/plugin-fuses';
 import {FuseV1Options, FuseVersion} from '@electron/fuses';
 import {execFileSync} from 'node:child_process';
-import {readFileSync, rmSync} from 'node:fs';
+import {existsSync, readFileSync, rmSync} from 'node:fs';
 import {PERMISSION_USAGE_DESCRIPTIONS} from './src/main/system/permission-usage.js';
 
 // Forge runs from the repo root (package.json's `config.forge` points here),
@@ -209,6 +209,34 @@ const config: ForgeConfig = {
         ['scripts/fetch-whisper.mjs', `--platform=${platform}`, `--arch=${arch}`],
         {stdio: 'inherit'},
       );
+      execFileSync(
+        process.execPath,
+        ['scripts/fetch-phone-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
+        {stdio: 'inherit'},
+      );
+      execFileSync(
+        process.execPath,
+        ['scripts/fetch-phone-ios-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
+        {stdio: 'inherit'},
+      );
+      execFileSync(
+        process.execPath,
+        ['scripts/build-phone-ios-signer-runtime.mjs'],
+        {stdio: 'inherit'},
+      );
+      execFileSync(
+        process.execPath,
+        ['scripts/build-phone-ios-device.mjs'],
+        {stdio: 'inherit'},
+      );
+      if (platform === 'darwin') {
+        execFileSync(process.execPath, ['scripts/build-phone-wda.mjs'], {stdio: 'inherit'});
+      } else if (!existsSync('resources/phone/ios/WebDriverAgentRunner-Runner.app')) {
+        throw new Error(
+          'The cross-platform package is missing the unsigned WebDriverAgent artifact. ' +
+            'Build it on macOS with `npm run phone:wda` and copy resources/phone/ios before packaging.',
+        );
+      }
       // The skill scripts' interpreter. The RunAsNode fuse below is off, so a
       // packaged Polymux cannot lend itself out as Node the way a dev run
       // does — it ships a real one instead.

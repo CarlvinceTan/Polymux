@@ -77,6 +77,7 @@
     {kind: 'calendar', icon: 'calendar', label: 'workspace.calendar'},
     {kind: 'hub', icon: 'chat', label: 'workspace.hub'},
     {kind: 'tasks', icon: 'tasks', label: 'workspace.tasks'},
+    {kind: 'phone', icon: 'phone', label: 'workspace.phone'},
   ];
   type ProviderGroup = {
     id: string;
@@ -3707,10 +3708,10 @@
                         class:dragging={pinnedViewDragKind === view}
                         data-pinned-view={view}
                         disabled={updatingPinnedViews}
-                        aria-label={$t(view === 'drive' ? 'workspace.drive' : view === 'schedule' ? 'workspace.schedule' : view === 'calendar' ? 'workspace.calendar' : view === 'hub' ? 'workspace.hub' : 'workspace.tasks')}
+                        aria-label={$t(view === 'drive' ? 'workspace.drive' : view === 'schedule' ? 'workspace.schedule' : view === 'calendar' ? 'workspace.calendar' : view === 'hub' ? 'workspace.hub' : view === 'phone' ? 'workspace.phone' : 'workspace.tasks')}
                         onpointerdown={(event) => startPinnedViewDrag(event, view)}
                         animate:flip={{duration: 140}}
-                      ><Icon name={view === 'drive' ? 'drive' : view === 'schedule' ? 'clock' : view === 'calendar' ? 'calendar' : view === 'hub' ? 'chat' : 'tasks'} size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
+                      ><Icon name={view === 'drive' ? 'drive' : view === 'schedule' ? 'clock' : view === 'calendar' ? 'calendar' : view === 'hub' ? 'chat' : view === 'phone' ? 'phone' : 'tasks'} size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></button>
                     {/each}
                     <span class="title-bar-icon-button top-bar-mock-fixed" aria-hidden="true"><Icon name="settings" size={SETTINGS_ICON_SIZE} strokeWidth={SETTINGS_ICON_STROKE_WIDTH}/></span>
                     <span class="title-bar-icon-button top-bar-mock-fixed" aria-hidden="true"><Icon name="panel" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/></span>

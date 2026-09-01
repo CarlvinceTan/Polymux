@@ -7,7 +7,7 @@
   import type {PanelMode} from '../../shared/state/panels';
   import {t, type MessageKey} from '../../../i18n';
 
-  type PinnedView = 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks';
+  type PinnedView = 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' | 'phone';
   type IconName = ComponentProps<typeof Icon>['name'];
 
   export let title = '';
@@ -23,10 +23,10 @@
   export let onSearchChats: () => void = () => {};
   export let onTogglePanel: (mode: 'summary' | 'workspace') => void = () => {};
   export let onOpenSettings: () => void = () => {};
-  export let pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'> = [];
-  export let onOpenView: (kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') => void = () => {};
-  export let onOpenViewInNewWindow: (kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') => void = () => {};
-  export let onReorderPinnedViews: (views: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'>) => void = () => {};
+  export let pinnedViews: PinnedView[] = [];
+  export let onOpenView: (kind: PinnedView) => void = () => {};
+  export let onOpenViewInNewWindow: (kind: PinnedView) => void = () => {};
+  export let onReorderPinnedViews: (views: PinnedView[]) => void = () => {};
   export let showExtensionPrompt = false;
   export let onInstallExtension: () => void = () => {};
   export let onDismissExtension: () => void = () => {};
@@ -102,8 +102,8 @@
     }
   }
 
-  const pinnedViewIcons: Record<PinnedView, IconName> = {drive: 'drive', schedule: 'clock', calendar: 'calendar', hub: 'chat', tasks: 'tasks'};
-  const pinnedViewLabels: Record<PinnedView, MessageKey> = {drive: 'workspace.drive', schedule: 'workspace.schedule', calendar: 'workspace.calendar', hub: 'workspace.hub', tasks: 'workspace.tasks'};
+  const pinnedViewIcons: Record<PinnedView, IconName> = {drive: 'drive', schedule: 'clock', calendar: 'calendar', hub: 'chat', tasks: 'tasks', phone: 'phone'};
+  const pinnedViewLabels: Record<PinnedView, MessageKey> = {drive: 'workspace.drive', schedule: 'workspace.schedule', calendar: 'workspace.calendar', hub: 'workspace.hub', tasks: 'workspace.tasks', phone: 'workspace.phone'};
   let pinnedMenu: {view: PinnedView; anchor: OpenAnchor} | null = null;
   let pinnedMenuChoices: OpenChoice[];
   $: pinnedMenuChoices = [

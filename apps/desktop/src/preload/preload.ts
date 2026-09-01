@@ -3,6 +3,24 @@ import { channels } from "@polymux/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api: PolymuxApi = {
+  phone: {
+    status: () => ipcRenderer.invoke(channels.phoneStatus),
+    connect: () => ipcRenderer.invoke(channels.phoneConnect),
+    pairAndroid: (pairingAddress, pairingCode, connectAddress) =>
+      ipcRenderer.invoke(channels.phonePairAndroid, pairingAddress, pairingCode, connectAddress),
+    iosSigningStatus: () => ipcRenderer.invoke(channels.phoneIosSigningStatus),
+    iosSigningBegin: (email, password) =>
+      ipcRenderer.invoke(channels.phoneIosSigningBegin, email, password),
+    iosSigningComplete: (code) => ipcRenderer.invoke(channels.phoneIosSigningComplete, code),
+    iosSigningLogout: () => ipcRenderer.invoke(channels.phoneIosSigningLogout),
+    stop: () => ipcRenderer.invoke(channels.phoneStop),
+    frame: () => ipcRenderer.invoke(channels.phoneFrame),
+    tap: (point) => ipcRenderer.invoke(channels.phoneTap, point),
+    swipe: (from, to, durationMs) =>
+      ipcRenderer.invoke(channels.phoneSwipe, from, to, durationMs),
+    type: (value) => ipcRenderer.invoke(channels.phoneType, value),
+    home: () => ipcRenderer.invoke(channels.phoneHome),
+  },
   agentRuntime: {
     get: () => ipcRenderer.invoke(channels.agentRuntimeGet),
     registry: () => ipcRenderer.invoke(channels.agentRuntimeRegistry),

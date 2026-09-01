@@ -54,6 +54,8 @@ import type {
   MarketplacePluginDto,
   PluginDto,
   PluginMarketplaceDto,
+  PhoneIosSigningStatusDto,
+  PhoneStatusDto,
   SkillDto,
   StartRunRequest,
 } from '@polymux/protocol';
@@ -637,7 +639,110 @@ function createBrowserDemoApi(): PolymuxApi {
     promptToInstall: demoExtensionMissing && !demoExtensionDismissed,
   });
 
+  let demoPhoneConnected = false;
+  const demoPhoneMode = typeof location !== 'undefined'
+    ? new URLSearchParams(location.search).get('phone')
+    : null;
+  let demoPhonePlatform: 'ios' | 'android' =
+    demoPhoneMode === 'android-pair' ? 'android' : 'ios';
+  let demoIosSigningStage: PhoneIosSigningStatusDto['stage'] =
+    demoPhoneMode === 'ios-signing' ? 'signed-out' : 'authenticated';
+  const demoIosProfileAvailable = () =>
+    demoPhoneMode !== 'ios-signing' || demoPhoneConnected;
+  const demoPhoneStatus = (): PhoneStatusDto => ({
+    supported: true,
+    stage: demoPhoneConnected
+      ? 'connected'
+      : demoPhoneMode === 'android-pair'
+        ? 'disconnected'
+        : demoIosProfileAvailable()
+          ? 'ready'
+          : 'needs-signing',
+    device: demoPhoneMode === 'android-pair' && !demoPhoneConnected
+      ? null
+      : demoPhonePlatform === 'android'
+        ? {platform: 'android', id: 'demo-phone', udid: 'demo', name: 'Pixel 9', model: 'Pixel 9', osVersion: '16', transport: 'wireless', pairingState: 'paired', developerMode: true, tunnelAddress: null}
+        : {platform: 'ios', id: 'demo-phone', udid: 'demo', name: 'Demo iPhone', model: 'iPhone 16 Pro', osVersion: '26.6', transport: 'wireless', pairingState: 'paired', developerMode: true, tunnelAddress: null},
+    signing: {
+      available: demoPhonePlatform === 'ios' && demoIosProfileAvailable(),
+      source: demoPhonePlatform === 'ios' && demoIosProfileAvailable()
+        ? 'existing-profile'
+        : 'none',
+      expiresAt: demoPhonePlatform === 'ios' && demoIosProfileAvailable()
+        ? new Date(Date.now() + 6 * 86_400_000).toISOString()
+        : null,
+      teamId: null,
+      message: null,
+    },
+    wda: {
+      available: demoPhonePlatform === 'ios',
+      installed: demoPhonePlatform === 'ios',
+      running: demoPhoneConnected && demoPhonePlatform === 'ios',
+      bundleId: demoPhonePlatform === 'ios' ? 'com.polymux.phone.wda' : null,
+    },
+    controller: {
+      kind: demoPhonePlatform === 'ios' ? 'wda' : 'adb',
+      available: true,
+      installed: true,
+      running: demoPhoneConnected,
+    },
+    message: demoPhoneConnected
+      ? null
+      : demoPhoneMode === 'android-pair'
+        ? 'Connect with USB, or pair Android wirelessly.'
+        : 'Ready to connect.',
+  });
+  const demoIosSigningStatus = (): PhoneIosSigningStatusDto => ({
+    supported: true,
+    stage: demoIosSigningStage,
+    email: demoIosSigningStage === 'signed-out' ? null : 'owner@example.com',
+    teamId: null,
+    verificationMethod:
+      demoIosSigningStage === 'verification-required' ? 'trusted-device' : null,
+    message: null,
+  });
+
   const api: PolymuxApi = {
+    phone: {
+      status: async () => demoPhoneStatus(),
+      connect: async () => {
+        demoPhoneConnected = true;
+        return demoPhoneStatus();
+      },
+      pairAndroid: async () => {
+        demoPhonePlatform = 'android';
+        demoPhoneConnected = true;
+        return demoPhoneStatus();
+      },
+      iosSigningStatus: async () => demoIosSigningStatus(),
+      iosSigningBegin: async () => {
+        demoIosSigningStage = 'verification-required';
+        return demoIosSigningStatus();
+      },
+      iosSigningComplete: async () => {
+        demoIosSigningStage = 'authenticated';
+        return demoIosSigningStatus();
+      },
+      iosSigningLogout: async () => {
+        demoIosSigningStage = 'signed-out';
+        return demoIosSigningStatus();
+      },
+      stop: async () => {
+        demoPhoneConnected = false;
+        return demoPhoneStatus();
+      },
+      frame: async () => ({
+        deviceId: 'demo-phone',
+        dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        width: 402,
+        height: 874,
+        capturedAt: new Date().toISOString(),
+      }),
+      tap: async () => {},
+      swipe: async () => {},
+      type: async () => {},
+      home: async () => {},
+    },
     agentRuntime: {
       get: async () => structuredClone(demoAgentRuntime),
       registry: async () => demoAcpRegistry,

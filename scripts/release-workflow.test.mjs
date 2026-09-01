@@ -16,8 +16,9 @@ test("release packaging waits for the complete application verification", () => 
   assert.match(verify, /- run: npm test\n/);
   assert.match(verify, /- run: npm run check --prefix apps\/site\n/);
 
+  assert.match(job("phone-ios-runtime"), /\n    needs: verify\n/);
   for (const platform of ["macos", "windows", "linux"])
-    assert.match(job(platform), /\n    needs: verify\n/);
+    assert.match(job(platform), /\n    needs: \[verify, phone-ios-runtime\]\n/);
 
   assert.match(
     job("browser-compatibility"),

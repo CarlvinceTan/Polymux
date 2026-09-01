@@ -15,6 +15,10 @@ test-results
 /resources/whisper/
 /resources/wechat-writer/
 
+# Phone-control runtimes fetched or built for the current platform
+/resources/phone/android/
+/resources/phone/ios/
+
 # Signed macOS helper binaries, built from resources/native/*.swift by Forge
 /resources/native/bin/
 

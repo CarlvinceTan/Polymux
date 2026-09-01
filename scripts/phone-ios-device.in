@@ -1,0 +1,2 @@
+# The GPL companion runtime is isolated from Polymux's Electron process.
+pymobiledevice3==11.3.0

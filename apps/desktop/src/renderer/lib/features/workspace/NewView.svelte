@@ -3,7 +3,7 @@
   import {t} from '../../../i18n';
   import type {Visit} from './visitHistory';
 
-  type NewViewKind = 'browser' | 'drive' | 'calendar' | 'hub' | 'tasks';
+  type NewViewKind = 'browser' | 'drive' | 'calendar' | 'hub' | 'tasks' | 'phone';
 
   export let openKinds: ReadonlySet<string> = new Set();
   export let historySuggestions: Visit[] = [];
@@ -27,6 +27,9 @@
     {/if}
     {#if !openKinds.has('tasks')}
       <button type="button" class="workspace-launcher-row" onclick={() => onChoose('tasks')}><Icon name="tasks" size={16}/><span>{$t('workspace.tasks')}</span></button>
+    {/if}
+    {#if !openKinds.has('phone')}
+      <button type="button" class="workspace-launcher-row" onclick={() => onChoose('phone')}><Icon name="phone" size={16}/><span>{$t('workspace.phone')}</span></button>
     {/if}
   </div>
   {#if historySuggestions.length}

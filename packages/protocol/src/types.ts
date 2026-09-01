@@ -172,7 +172,7 @@ export interface GeneralSettingsDto {
    */
   appPermissionsEnabled: boolean;
   /** Workspace views pinned to the title bar, in display order. */
-  pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'>;
+  pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' | 'phone'>;
   location: {
     latitude: number;
     longitude: number;
@@ -620,6 +620,67 @@ export interface PluginViewDto {
   /** The local HTML entry point. The renderer exchanges this for a preview URL. */
   entry: string;
 }
+export interface PhoneDeviceDto {
+  platform: "ios" | "android";
+  id: string;
+  udid: string;
+  name: string;
+  model: string;
+  osVersion: string;
+  transport: "wired" | "wireless";
+  pairingState: "paired" | "unpaired";
+  developerMode: boolean;
+  tunnelAddress: string | null;
+}
+
+export interface PhoneStatusDto {
+  supported: boolean;
+  stage: "unsupported" | "disconnected" | "needs-signing" | "ready" | "connected" | "error";
+  device: PhoneDeviceDto | null;
+  signing: {
+    available: boolean;
+    source: "existing-profile" | "none";
+    expiresAt: string | null;
+    teamId: string | null;
+    message: string | null;
+  };
+  wda: {
+    available: boolean;
+    installed: boolean;
+    running: boolean;
+    bundleId: string | null;
+  };
+  controller: {
+    kind: "wda" | "adb" | "iphone-mirroring" | "coredevice";
+    available: boolean;
+    installed: boolean;
+    running: boolean;
+  };
+  message: string | null;
+}
+
+export interface PhoneIosSigningStatusDto {
+  supported: boolean;
+  stage: "unavailable" | "signed-out" | "verification-required" | "authenticated";
+  email: string | null;
+  teamId: string | null;
+  verificationMethod: "trusted-device" | "sms" | null;
+  message: string | null;
+}
+
+export interface PhoneFrameDto {
+  deviceId: string;
+  dataUrl: string;
+  width: number;
+  height: number;
+  capturedAt: string;
+}
+
+export interface PhonePointDto {
+  x: number;
+  y: number;
+}
+
 export interface ModelDto {
   provider: string;
   id: string;
@@ -1788,7 +1849,7 @@ export interface WorkspaceRevealDto {
 }
 
 /** The workspace surfaces the agent can ask for by name. */
-export type WorkspaceSurface = "hub" | "drive" | "schedule" | "summary";
+export type WorkspaceSurface = "hub" | "drive" | "schedule" | "summary" | "phone";
 
 /**
  * What the workspace looked like for one conversation: which tabs were open,
@@ -2181,6 +2242,21 @@ export interface TaskCardPatch {
 }
 
 export interface PolymuxApi {
+  phone: {
+    status(): Promise<PhoneStatusDto>;
+    connect(): Promise<PhoneStatusDto>;
+    pairAndroid(pairingAddress: string, pairingCode: string, connectAddress?: string): Promise<PhoneStatusDto>;
+    iosSigningStatus(): Promise<PhoneIosSigningStatusDto>;
+    iosSigningBegin(email: string, password: string): Promise<PhoneIosSigningStatusDto>;
+    iosSigningComplete(code: string): Promise<PhoneIosSigningStatusDto>;
+    iosSigningLogout(): Promise<PhoneIosSigningStatusDto>;
+    stop(): Promise<PhoneStatusDto>;
+    frame(): Promise<PhoneFrameDto>;
+    tap(point: PhonePointDto): Promise<void>;
+    swipe(from: PhonePointDto, to: PhonePointDto, durationMs?: number): Promise<void>;
+    type(text: string): Promise<void>;
+    home(): Promise<void>;
+  };
   agentRuntime: {
     get(): Promise<AgentRuntimeDto>;
     registry(): Promise<AcpRegistryEntryDto[]>;
@@ -2238,7 +2314,7 @@ export interface PolymuxApi {
   window: {
     /** Opens a built-in workspace view in its own app window. */
     openWorkspaceView(
-      kind: "drive" | "schedule" | "calendar" | "hub" | "tasks",
+      kind: "drive" | "schedule" | "calendar" | "hub" | "tasks" | "phone",
       conversationId?: string,
       placement?: {x: number; y: number; width?: number; height?: number},
     ): Promise<void>;

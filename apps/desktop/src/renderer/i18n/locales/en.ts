@@ -35,7 +35,8 @@ export default {
   'workspace.schedule': 'Schedule',
   'workspace.calendar': 'Calendar',
   'workspace.hub': 'Hub',
- 'workspace.tasks': 'Tasks',
+  'workspace.tasks': 'Tasks',
+  'workspace.phone': 'Phone',
   'workspace.subagents': 'Subagents',
   'workspace.newTab': 'New tab',
 

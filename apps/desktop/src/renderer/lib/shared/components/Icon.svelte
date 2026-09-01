@@ -2,7 +2,7 @@
   import languagesIcon from '../../../assets/icons/languages.png';
 
   export let name:
-    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'computer' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'smile' | 'waveform' | 'stop' | 'cursor'
+    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'computer' | 'phone' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'smile' | 'waveform' | 'stop' | 'cursor'
     | 'attach' | 'options' | 'verified' | 'globe' | 'file' | 'task' | 'back'
     | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down' | 'arrow-up'
     | 'bolt' | 'document-text' | 'paper-airplane' | 'history' | 'archive' | 'drive' | 'new-chat'
@@ -47,6 +47,8 @@
     <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.6" fill="currentColor" stroke="none"/>
   {:else if name === 'computer'}
     <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M12 17v4M8 21h8"/>
+  {:else if name === 'phone'}
+    <rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 5h3"/><circle cx="12" cy="18.6" r=".8" fill="currentColor" stroke="none"/>
   {:else if name === 'apps'}
     <!-- One application window for the aggregate app-access permission. -->
     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 8.5h17"/><circle cx="6.5" cy="6.5" r=".7" fill="currentColor" stroke="none"/><circle cx="9" cy="6.5" r=".7" fill="currentColor" stroke="none"/>

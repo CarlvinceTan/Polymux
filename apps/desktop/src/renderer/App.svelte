@@ -55,7 +55,7 @@
   const api = polymuxApi();
   const requestedWorkspaceView = (() => {
     const value = new URLSearchParams(window.location.search).get('workspaceView');
-    return value === 'drive' || value === 'schedule' || value === 'calendar' || value === 'hub' || value === 'tasks' ? value : null;
+    return value === 'drive' || value === 'schedule' || value === 'calendar' || value === 'hub' || value === 'tasks' || value === 'phone' ? value : null;
   })();
   let conversations: Conversation[] = [];
   let activeId = '';
@@ -228,7 +228,7 @@
   let startupDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
   let startupRemovalTimer: ReturnType<typeof setTimeout> | undefined;
   let speechModeEnabled = true;
-  let pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'> = [];
+  let pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' | 'phone'> = [];
   let dictationAutoStopSeconds: number | null = 6;
   let reasoningLevel: ReasoningEffort = 'medium';
   let windowActive = true;
@@ -1450,7 +1450,7 @@
   }
 
   /** Tab kinds a stored snapshot may re-create; anything else is stale data. */
-  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['new', 'media', 'browser', 'summary', 'drive', 'schedule', 'calendar', 'hub', 'subagents', 'tasks']);
+  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['new', 'media', 'browser', 'summary', 'drive', 'schedule', 'calendar', 'hub', 'subagents', 'tasks', 'phone']);
   /** True while a snapshot is being applied, so the auto-save sits out. */
   let workspaceRestoring = false;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1521,7 +1521,7 @@
     outputs = artifacts.map(({id, name}) => ({id, name}));
     references = storedReferences.map(({id, title, kind, uri}) => ({id, title, kind, uri}));
     const resourceTabs = artifacts.map(artifactTab);
-    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'new' || tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'calendar' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'subagent' || tab.kind === 'subagents' || tab.kind === 'tasks'), ...resourceTabs];
+    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'new' || tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'schedule' || tab.kind === 'calendar' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'subagent' || tab.kind === 'subagents' || tab.kind === 'tasks' || tab.kind === 'phone'), ...resourceTabs];
     if (activeTabId && !workspaceTabs.some((tab) => tab.id === activeTabId)) activeTabId = workspaceTabs[0]?.id ?? null;
   }
 
@@ -1573,8 +1573,8 @@
     if (reordered.length === workspaceTabs.length) workspaceTabs = reordered;
   }
 
-  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', schedule: 'workspace.schedule', calendar: 'workspace.calendar', hub: 'workspace.hub', subagents: 'workspace.subagents', tasks: 'workspace.tasks'};
-  type SharedWorkspaceSingleton = 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks';
+  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', schedule: 'workspace.schedule', calendar: 'workspace.calendar', hub: 'workspace.hub', subagents: 'workspace.subagents', tasks: 'workspace.tasks', phone: 'workspace.phone'};
+  type SharedWorkspaceSingleton = 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' | 'phone';
   type WorkspaceSingletonMessage =
     | {type: 'query'; owner: string}
     | {type: 'opened' | 'closed'; kind: SharedWorkspaceSingleton; owner: string};
@@ -1585,7 +1585,7 @@
     : new BroadcastChannel('polymux-workspace-singletons');
 
   function isSharedWorkspaceSingleton(kind: WorkspaceTabKind): kind is SharedWorkspaceSingleton {
-    return kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks';
+    return kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'phone';
   }
 
   function localWorkspaceSingletons(): SharedWorkspaceSingleton[] {
@@ -1633,12 +1633,12 @@
     };
   });
 
-  function reorderPinnedViews(views: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'>): void {
+  function reorderPinnedViews(views: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' | 'phone'>): void {
     pinnedViews = views;
     void api.general.update({pinnedViews: views}).catch(() => {});
   }
 
-  function togglePinView(kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'): void {
+  function togglePinView(kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' | 'phone'): void {
     const next = pinnedViews.includes(kind)
       ? pinnedViews.filter((v) => v !== kind)
       : [...pinnedViews, kind];
@@ -1647,7 +1647,7 @@
   }
 
   function openSeparateWorkspaceView(
-    kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks',
+    kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' | 'phone',
     placement?: {x: number; y: number; width?: number; height?: number},
   ): void {
     const tabId = SINGLETON_TAB_IDS[kind];
@@ -2800,7 +2800,7 @@
     {pinnedViews}
     onTogglePin={togglePinView}
     onOpenSeparateWindow={(kind, placement) => {
-      if (kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks')
+      if (kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'phone')
         openSeparateWorkspaceView(kind, placement);
     }}
   />

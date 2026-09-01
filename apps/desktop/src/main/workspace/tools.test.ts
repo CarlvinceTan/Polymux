@@ -34,6 +34,10 @@ test("fields belonging to another surface are left out", () => {
   });
 });
 
+test("Phone is a first-class revealable workspace surface", async () => {
+  assert.deepEqual(await shown({surface: "phone"}), {surface: "phone"});
+});
+
 test("an unknown surface is refused rather than guessed at", async () => {
   assert.equal(await shown({ surface: "settings" }), null);
 });
