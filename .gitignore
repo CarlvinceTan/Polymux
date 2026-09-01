@@ -38,7 +38,8 @@ test-results
 !.env.example
 
 # Local experimentation workspace
-/experiments/
+/experiments/*
+!/experiments/wechat-standalone/
 *.sqlite.local
 *.sqlite.incomplete.local
 *.sqlite-wal
