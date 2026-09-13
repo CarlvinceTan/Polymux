@@ -198,8 +198,8 @@ test("an unambiguous official workflow is preloaded without a skill-read round t
     );
     writeTestSkill(
       official,
-      "computer-use",
-      "Browse and research live websites.",
+      "online-events",
+      "Find the latest events online.",
       "VERIFY-FIRST-PARTY-EVIDENCE",
     );
     const inference = new FakeInference();
@@ -219,7 +219,7 @@ test("an unambiguous official workflow is preloaded without a skill-read round t
       text: "Find the latest events online",
     }).result;
     const prompt = inference.requests[0]?.systemPrompt ?? "";
-    assert.match(prompt, /<active_skill name="computer-use"/);
+    assert.match(prompt, /<active_skill name="online-events"/);
     assert.match(prompt, /VERIFY-FIRST-PARTY-EVIDENCE/);
     assert.match(prompt, /do not call read for its SKILL\.md again/i);
     assert.doesNotMatch(prompt, /<available_skills>/);
@@ -237,8 +237,8 @@ test("official skill preloading remains inert without its independent experiment
     );
     writeTestSkill(
       official,
-      "computer-use",
-      "Browse and research live websites.",
+      "online-events",
+      "Find the latest events online.",
       "SHOULD-NOT-BE-INLINED",
     );
     const inference = new FakeInference();
@@ -277,8 +277,8 @@ test("multiple or personal matching skills remain catalogue entries instead of g
     );
     writeTestSkill(
       official,
-      "computer-use",
-      "Browse live websites.",
+      "online-events",
+      "Find events online.",
       "OFFICIAL-BROWSER",
     );
     writeTestSkill(
@@ -343,8 +343,8 @@ test("one official workflow can preload while matching personal skills stay in t
     );
     writeTestSkill(
       official,
-      "computer-use",
-      "Browse live websites and find places.",
+      "nearby-finder",
+      "Find a place nearby.",
       "OFFICIAL-BROWSER",
     );
     writeTestSkill(
@@ -370,7 +370,7 @@ test("one official workflow can preload while matching personal skills stay in t
       text: "Find a place nearby online",
     }).result;
     const prompt = inference.requests[0]?.systemPrompt ?? "";
-    assert.match(prompt, /<active_skill name="computer-use"/);
+    assert.match(prompt, /<active_skill name="nearby-finder"/);
     assert.match(prompt, /OFFICIAL-BROWSER/);
     assert.match(prompt, /<name>local-preferences<\/name>/);
     assert.doesNotMatch(prompt, /PERSONAL-PLACES/);
@@ -443,6 +443,61 @@ test("a recovered durable job reuses its stored user prompt", async () => {
       storage
         .listMessages("conversation")
         .filter((message) => message.role === "user").length,
+      1,
+    );
+  } finally {
+    storage.close();
+  }
+});
+
+test("an edited resent user message does not include later turns", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const first = storage.appendMessage({
+      id: "user-1",
+      conversationId: "conversation",
+      role: "user",
+      content: "Original question",
+    });
+    storage.appendMessage({
+      id: "assistant-1",
+      conversationId: "conversation",
+      role: "assistant",
+      content: [{ type: "text", text: "Original answer" }],
+    });
+    storage.appendMessage({
+      id: "user-2",
+      conversationId: "conversation",
+      role: "user",
+      content: "A later question that must not be sent",
+    });
+    storage.updateMessage(first.id, { content: "Revised question" });
+    storage.deleteMessagesAfter("conversation", first.sequence);
+    const inference = new FakeInference();
+    inference.responses.push([answer("new answer")]);
+    const agent = new PolymuxAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry(),
+      model,
+      compaction: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Revised question",
+      userMessageId: first.id,
+      reuseUserMessage: true,
+      includeSubagents: false,
+    }).result;
+
+    assert.deepEqual(inference.requests[0]?.messages, [
+      { role: "user", content: "Revised question" },
+    ]);
+    assert.equal(
+      storage.listMessages("conversation").filter((message) => message.role === "user").length,
       1,
     );
   } finally {
@@ -836,6 +891,7 @@ test("compaction reuses its summary while the compacted context still fits", asy
       { role: "user" as const, content: "recent" },
     ];
     let compactionReports = 0;
+    let compactionTelemetry: unknown;
     const first = await manager.transform(
       "conversation",
       model,
@@ -843,6 +899,11 @@ test("compaction reuses its summary while the compacted context still fits", asy
       new AbortController().signal,
       async () => {
         compactionReports += 1;
+      },
+      undefined,
+      undefined,
+      async (telemetry) => {
+        compactionTelemetry = telemetry;
       },
     );
     const second = await manager.transform(
@@ -854,6 +915,15 @@ test("compaction reuses its summary while the compacted context still fits", asy
 
     assert.equal(inference.requests.length, 1);
     assert.equal(compactionReports, 1);
+    const telemetry = compactionTelemetry as {
+      originalTokens: number;
+      compactedTokens: number;
+      summarizedMessages?: number;
+      retainedMessages?: number;
+    };
+    assert.equal(telemetry.summarizedMessages, 1);
+    assert.equal(telemetry.retainedMessages, 1);
+    assert.ok(telemetry.originalTokens > telemetry.compactedTokens);
     assert.match(first.systemPrompt ?? "", /durable summary/);
     assert.match(second.systemPrompt ?? "", /durable summary/);
     // The summary is prior context, never a turn attributed to the user.
@@ -1149,7 +1219,7 @@ test("a saved summary is discarded when the turns it described have changed", as
       model,
       {
         messages: [
-          { role: "user", content: "b".repeat(800) },
+          { role: "user", content: "b".repeat(400) },
           { role: "user", content: "recent" },
         ],
       },
@@ -1382,13 +1452,13 @@ test("compaction re-summarizes when the compacted history changed underneath it"
       },
       signal,
     );
-    // Same message count, different content in the compacted prefix.
+    // Same count and token size, different content in the compacted prefix.
     const edited = await manager.transform(
       "conversation",
       model,
       {
         messages: [
-          { role: "user", content: "b".repeat(800) },
+          { role: "user", content: "b".repeat(400) },
           { role: "user", content: "recent" },
           { role: "user", content: "newer" },
         ],
@@ -1481,7 +1551,7 @@ test("the task tool reaches the model with its delegation guidance", async () =>
     assert.match(task.description, /## When to use/);
     assert.match(task.description, /run in parallel/);
     assert.match(task.description, /Do the work yourself only/);
-    // The policy itself is not in the system prompt: it is `agents/main.md`,
+    // The policy itself is not in the system prompt: it is `resources/prompts/main.md`,
     // loaded into the run, so a delegated run never carries the instructions
     // for a job it cannot do.
     const system = inference.requests[0]?.systemPrompt ?? "";
@@ -1817,6 +1887,49 @@ test("an exact current-page explanation stays on the main agent with read-only b
     assert.ok(!names.includes("email_read"));
     assert.match(request.systemPrompt ?? "", /Current policy/);
     assert.doesNotMatch(request.systemPrompt ?? "", /## ComputerHistory/);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a Team identity keeps only host-certified leased environment context", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "team", title: "Maya"});
+    const inference = new FakeInference();
+    inference.responses.push([answer("done")]);
+    const agent = new PolymuxAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools: new ToolRegistry([]),
+      model,
+      compaction: {enabled: false},
+      environment: {
+        promptContext: () => ({
+          identityScoped: true,
+          locationEnabled: true,
+          location: {latitude: 1.3, longitude: 103.8, accuracy: 5, updatedAt: "now"},
+          browserTabs: [{tabId: "leased", url: "https://example.com/brief", title: "Leased brief"}],
+          windows: [{app: "Browser", title: "Leased brief", frontmost: true}],
+        }),
+      },
+    });
+
+    await agent.start({
+      conversationId: "team",
+      text: "Summarise the leased brief I have open.",
+      identity: {
+        name: "Maya",
+        role: "Research lead",
+        bots: [],
+      },
+    }).result;
+
+    const prompt = inference.requests[0]?.systemPrompt ?? "";
+    assert.match(prompt, /Leased brief/);
+    assert.match(prompt, /https:\/\/example\.com\/brief/);
+    assert.doesNotMatch(prompt, /103\.8|1\.3|fresh current-location/);
   } finally {
     storage.close();
   }
@@ -2207,6 +2320,272 @@ test("what is on screen belongs to the run the user is talking to", async () => 
     // user is looking at while several of them finish at once.
     assert.ok(!delegated.includes("workspace_show"));
     assert.ok(delegated.includes("hub_draft"));
+  } finally {
+    storage.close();
+  }
+});
+
+test("native Hub contact, chat draft, and email turns retain the correct affordances", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const official = mkdtempSync(path.join(tmpdir(), "polymux-hub-skills-"));
+    writeTestSkill(
+      official,
+      "hub-use",
+      "Use Hub contacts, email, and personal messaging across connected platforms.",
+      "RESOLVE-EXACT-HUB-RECIPIENT",
+    );
+    writeTestSkill(
+      official,
+      "chat-style",
+      "Draft personal chat replies in the user's style.",
+      "WRITE-NATURAL-CHAT-COPY",
+    );
+    const inference = new FakeInference();
+    inference.responses.push(
+      [answer("contacts")],
+      [answer("whatsapp")],
+      [answer("drafted")],
+      [answer("email")],
+    );
+    const stub = {
+      description: "",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { content: "" };
+      },
+    };
+    const tools = new ToolRegistry([
+      { ...stub, name: "hub_state" },
+      { ...stub, name: "message_contacts" },
+      { ...stub, name: "message_read" },
+      { ...stub, name: "message_send" },
+      { ...stub, name: "email_accounts" },
+      { ...stub, name: "email_send" },
+      { ...stub, name: "workspace_show", mainAgentOnly: true },
+      { ...stub, name: "hub_draft" },
+    ]);
+    const agent = new PolymuxAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools,
+      model,
+      skills: { official: [official] },
+      compaction: { enabled: false },
+    });
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Can you tell me what Luke's phone number is?",
+    }).result;
+    const contacts = inference.requests[0];
+    const contactTools = contacts?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(contactTools.includes("hub_state"));
+    assert.ok(contactTools.includes("message_contacts"));
+    assert.ok(contactTools.includes("workspace_show"));
+    assert.ok(!contactTools.includes("hub_draft"));
+    assert.ok(!contactTools.includes("message_send"));
+    assert.ok(!contactTools.includes("subagent"));
+    assert.match(contacts?.systemPrompt ?? "", /hub-use/);
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "even in whatsapp?",
+    }).result;
+    const whatsapp = inference.requests[1];
+    const whatsappTools = whatsapp?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(whatsappTools.includes("hub_state"));
+    assert.ok(whatsappTools.includes("message_contacts"));
+    assert.ok(!whatsappTools.includes("message_send"));
+    assert.ok(!whatsappTools.includes("hub_draft"));
+    assert.ok(!whatsappTools.includes("subagent"));
+    assert.match(whatsapp?.systemPrompt ?? "", /hub-use/);
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Draft a reply to Luke saying I will arrive at 7",
+    }).result;
+    const draft = inference.requests[2];
+    const draftTools = draft?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(draftTools.includes("hub_state"));
+    assert.ok(draftTools.includes("message_contacts"));
+    assert.ok(draftTools.includes("hub_draft"));
+    assert.ok(draftTools.includes("workspace_show"));
+    assert.ok(!draftTools.includes("subagent"));
+    assert.match(draft?.systemPrompt ?? "", /hub-use/);
+    assert.match(draft?.systemPrompt ?? "", /chat-style/);
+
+    await agent.start({
+      conversationId: "conversation",
+      text: "Send an email to luke@example.com saying I will arrive at 7",
+    }).result;
+    const email = inference.requests[3];
+    const emailTools = email?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(emailTools.includes("hub_state"));
+    assert.ok(emailTools.includes("email_accounts"));
+    assert.ok(emailTools.includes("email_send"));
+    assert.ok(emailTools.includes("workspace_show"));
+    assert.ok(!emailTools.includes("message_send"));
+    assert.ok(!emailTools.includes("hub_draft"));
+    assert.ok(!emailTools.includes("subagent"));
+    assert.match(email?.systemPrompt ?? "", /hub-use/);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a real Contacts-style prompt can execute lookup without exposing a send tool", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({ id: "conversation", title: "Chat" });
+    const inference = new FakeInference();
+    inference.responses.push(
+      [{
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [{
+            type: "toolCall",
+            id: "contacts-1",
+            name: "message_contacts",
+            arguments: {query: "Luke", platform: "whatsapp"},
+          }],
+          usage,
+          stopReason: "toolUse",
+        },
+      }],
+      [answer("Luke's WhatsApp contact was found.")],
+    );
+    const calls: unknown[] = [];
+    const tools = new ToolRegistry([
+      {
+        name: "message_contacts",
+        description: "Search Hub Contacts",
+        parameters: {type: "object", properties: {}},
+        async execute(input) {
+          calls.push(input);
+          return {content: JSON.stringify({contacts: [{name: "Luke", platform: "whatsapp"}]})};
+        },
+      },
+      {
+        name: "message_send",
+        description: "Send immediately",
+        parameters: {type: "object", properties: {}},
+        async execute() {
+          throw new Error("send must not be reachable on a contact lookup");
+        },
+      },
+    ]);
+    const agent = new PolymuxAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools,
+      model,
+      compaction: {enabled: false},
+    });
+
+    const result = await agent.start({
+      conversationId: "conversation",
+      text: "what's luke's phone number on whatsapp",
+    }).result;
+
+    assert.deepEqual(calls, [{query: "Luke", platform: "whatsapp"}]);
+    assert.equal(result.lastAgentMessage, "Luke's WhatsApp contact was found.");
+    assert.ok(inference.requests[0]?.tools?.some((tool) => tool.name === "message_contacts"));
+    assert.ok(!inference.requests[0]?.tools?.some((tool) => tool.name === "message_send"));
+    assert.match(JSON.stringify(inference.requests[1]?.messages), /Luke/);
+    assert.match(JSON.stringify(inference.requests[1]?.messages), /whatsapp/);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a real Drive show prompt can retrieve and reveal without exposing writes", async () => {
+  const storage = new SqliteStorage(":memory:");
+  try {
+    storage.createConversation({id: "conversation", title: "Chat"});
+    const inference = new FakeInference();
+    inference.responses.push(
+      [{
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [{
+            type: "toolCall",
+            id: "drive-list-1",
+            name: "drive_list",
+            arguments: {source: "google-drive#default", path: ""},
+          }],
+          usage,
+          stopReason: "toolUse",
+        },
+      }],
+      [{
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [{
+            type: "toolCall",
+            id: "drive-show-1",
+            name: "workspace_show",
+            arguments: {surface: "drive", source: "google-drive#default", path: ""},
+          }],
+          usage,
+          stopReason: "toolUse",
+        },
+      }],
+      [answer("I opened Google Drive with Launch brief.docx visible.")],
+    );
+    const calls: Array<{name: string; input: unknown}> = [];
+    const stub = (name: string, content = "ok", mainAgentOnly = false) => ({
+      name,
+      description: name,
+      parameters: {type: "object", properties: {}},
+      ...(mainAgentOnly ? {mainAgentOnly: true} : {}),
+      async execute(input: unknown) {
+        calls.push({name, input});
+        return {content};
+      },
+    });
+    const tools = new ToolRegistry([
+      stub("drive_sources"),
+      stub("drive_list", JSON.stringify([{name: "Launch brief.docx", path: "file-1", kind: "file"}])),
+      stub("drive_read"),
+      stub("drive_write"),
+      stub("workspace_show", JSON.stringify({shown: {surface: "drive"}}), true),
+    ]);
+    const agent = new PolymuxAgent({
+      inference,
+      storage,
+      memory: testMemory(),
+      tools,
+      model,
+      compaction: {enabled: false},
+    });
+
+    const result = await agent.start({
+      conversationId: "conversation",
+      text: "Show me Launch brief.docx in Google Drive",
+    }).result;
+
+    assert.deepEqual(calls, [
+      {name: "drive_list", input: {source: "google-drive#default", path: ""}},
+      {name: "workspace_show", input: {surface: "drive", source: "google-drive#default", path: ""}},
+    ]);
+    assert.equal(result.lastAgentMessage, "I opened Google Drive with Launch brief.docx visible.");
+    const offered = inference.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(offered.includes("drive_sources"));
+    assert.ok(offered.includes("drive_list"));
+    assert.ok(offered.includes("drive_read"));
+    assert.ok(offered.includes("workspace_show"));
+    assert.ok(!offered.includes("drive_write"));
+    assert.ok(!offered.includes("subagent"));
   } finally {
     storage.close();
   }

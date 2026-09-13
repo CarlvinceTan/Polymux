@@ -34,7 +34,6 @@ test("general settings storage keeps pinned views and every other field", () => 
       "agent-attention": false,
       "message-received": true,
     },
-    appPermissionsEnabled: false,
     pinnedViews: ["drive", "calendar", "tasks"],
     location: {
       latitude: 1.3521,

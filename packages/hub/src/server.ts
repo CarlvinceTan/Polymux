@@ -248,6 +248,23 @@ export class Homeserver {
     });
   }
 
+  outboundDeliveryStatus(eventId: string): "unconfirmed" | null {
+    const content = this.#store.event(eventId)?.content;
+    return content && typeof content === "object" && "co.polymux.delivery" in content &&
+      content["co.polymux.delivery"] === "unconfirmed" ? "unconfirmed" : null;
+  }
+
+  setOutboundDeliveryStatus(eventId: string, status: "unconfirmed" | null): void {
+    if (!this.#store.setOutboundDeliveryStatus(eventId, status)) return;
+    const event = this.#store.event(eventId)!;
+    // Wake sync readers with a non-message, unarmed local event. This cannot
+    // dispatch a second send or generate an incoming-message notification.
+    this.#append({roomId: event.roomId, sender: event.sender,
+      type: "co.polymux.delivery", stateKey: null,
+      content: {event_id: eventId, status}, ts: Date.now(),
+      origin: "polymux.local-delivery-status"});
+  }
+
   /**
    * Registers a bridge from its registration data and starts its pusher. The
    * bot user is NOT created here: the bridge registers it itself and expects

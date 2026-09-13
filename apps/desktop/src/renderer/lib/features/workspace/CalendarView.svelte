@@ -370,7 +370,7 @@
 
   function timeLabel(event: CalendarEventDto): string {
     if (event.allDay) return 'all-day';
-    return new Date(event.start).toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit'});
+    return new Date(event.start).toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit', hour12: true});
   }
 
   function indexEventsByDay(items: CalendarEventDto[], visibleRange: {start: Date; end: Date}): Map<string, CalendarEventDto[]> {
@@ -488,8 +488,10 @@
     return new Date(year, month - 1, day, hour, minute);
   }
 
+  /** A gutter label, always on the 12-hour clock — `12 AM`, `1 PM` — so the
+   * column reads the same whatever the machine's regional setting is. */
   function hourLabel(hour: number): string {
-    return new Date(2020, 0, 1, hour).toLocaleTimeString(activeLocale(), {hour: 'numeric'});
+    return new Date(2020, 0, 1, hour).toLocaleTimeString(activeLocale(), {hour: 'numeric', hour12: true});
   }
 
   function weekdayName(index: number, width: 'short' | 'narrow' = 'short'): string {
@@ -735,7 +737,7 @@
   .error-state { flex-direction: column; text-align: center; }
   .error-state strong { color: var(--neutral-800); font-size: 13px; }
   .error-state span { max-width: 360px; line-height: 1.5; }
-  .error-state button { border: 0; padding: 0; background: transparent; color: #4b75ad; cursor: pointer; }
+  .error-state button { border: 0; padding: 0; background: transparent; color: var(--link-text); cursor: pointer; }
   .month-view { min-height: 0; flex: 1; display: flex; flex-direction: column; }
   .month-weekdays, .month-grid { grid-template-columns: repeat(7,minmax(0,1fr)); }
   .month-weekdays { height: 25px; display: grid; align-items: center; border-bottom: 1px solid var(--neutral-200); color: var(--neutral-400); font-size: 9.5px; font-weight: 600; text-align: left; text-transform: uppercase; }
@@ -761,7 +763,7 @@
   .year-view::-webkit-scrollbar { display: none; }
   .year-month { min-width: 0; }
   .year-month-title { border: 0; padding: 0; background: transparent; cursor: pointer; font-size: 13px; font-weight: 620; }
-  .year-month-title:hover { color: #c94b43; }
+  .year-month-title:hover { color: var(--danger-500); }
   .year-weekdays, .year-days { display: grid; grid-template-columns: repeat(7,1fr); text-align: center; }
   .year-weekdays { margin-top: 8px; color: var(--neutral-400); font-size: 8px; }
   .year-days { margin-top: 3px; row-gap: 2px; }
@@ -825,8 +827,8 @@
   .event-editor footer button:hover { background: var(--neutral-100); }
   .event-editor footer .save-event { background: #df554b; color: white; }
   .event-editor footer .save-event:hover { background: #c94b43; }
-  .event-editor footer .delete-event { display: flex; align-items: center; gap: 6px; padding-left: 0; color: #c14c46; }
-  .event-editor footer .delete-event:hover { background: transparent; color: #a63e39; }
+  .event-editor footer .delete-event { display: flex; align-items: center; gap: 6px; padding-left: 0; color: var(--danger-500); }
+  .event-editor footer .delete-event:hover { background: transparent; color: var(--danger-600); }
   .calendar-notice { position: absolute; z-index: 150; left: 50%; bottom: 17px; max-width: calc(100% - 40px); padding: 8px 12px; border: 1px solid var(--neutral-250, var(--neutral-200)); border-radius: 9px; background: var(--neutral-900); color: var(--neutral-50); box-shadow: 0 8px 24px rgba(0,0,0,.18); font-size: 10.5px; transform: translateX(-50%); animation: calendar-fade .15s ease; }
   @container (max-width: 900px) { .calendar-sidebar { visibility: hidden; width: 0; min-width: 0; padding-right: 0; padding-left: 0; border-right-color: transparent; opacity: 0; pointer-events: none; } .wide-calendar-toggle { display: none; } .compact-calendar-menu { display: block; } }
   @container (max-width: 760px) { .calendar-toolbar { grid-template-columns: minmax(160px,1fr) auto auto; } .calendar-toolbar-actions .bare-icon, .calendar-toolbar-actions .calendar-search { display: none; } .view-switcher button { min-width: 40px; padding: 0 5px; } .year-view { grid-template-columns: repeat(3,minmax(130px,1fr)); } }

@@ -1,5 +1,4 @@
 import bluesky from '../../../assets/platforms/bluesky.svg?url';
-import discord from '../../../assets/platforms/discord.svg?url';
 import fastmail from '../../../assets/platforms/fastmail.svg?url';
 import gmail from '../../../assets/platforms/gmail.svg?url';
 import gmessages from '../../../assets/platforms/gmessages.svg?url';
@@ -34,7 +33,6 @@ const bridgeLogos: Record<string, string> = {
   whatsapp,
   telegram,
   signal,
-  discord,
   slack,
   messenger,
   instagram,

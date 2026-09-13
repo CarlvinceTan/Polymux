@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Installs the Polymux Tab Context native messaging host for Chrome on macOS.
+# Installs the Polymux native messaging host for Chromium or Firefox on macOS.
 #
 # Usage:
 #   1. Load the extension: chrome://extensions → Developer mode →
@@ -8,8 +8,12 @@
 set -euo pipefail
 
 extension_id="${1:-}"
-if [[ ! "$extension_id" =~ ^[a-p]{32}$ ]]; then
-  print -u2 "Usage: install.sh <extension-id>  (32-character ID from chrome://extensions)"
+native_browser="chromium"
+if [[ "$extension_id" == "firefox" ]]; then
+  native_browser="firefox"
+  extension_id="extension@polymux.com"
+elif [[ ! "$extension_id" =~ ^[a-p]{32}$ ]]; then
+  print -u2 "Usage: install.sh <32-character Chromium extension-id> | firefox"
   exit 1
 fi
 
@@ -37,15 +41,33 @@ fi
 
 host_dir="$HOME/Library/Application Support/polymux-tab-context"
 host_script="$host_dir/polymux_tab_context_host.mjs"
-host_path="$host_dir/polymux_tab_context_host"
+host_path="$host_dir/polymux_tab_context_host-$native_browser"
 mkdir -p "$host_dir"
 cp "$host_source" "$host_script"
 cat > "$host_path" <<WRAPPER
 #!/bin/sh
 # Written by install.sh: Chrome's spawn environment has no PATH worth trusting.
-exec "$node_bin" "$host_script" "\$@"
+POLYMUX_NATIVE_BROWSER="$native_browser" POLYMUX_EXTENSION_ID="$extension_id" exec "$node_bin" "$host_script" "\$@"
 WRAPPER
 chmod +x "$host_path" "$host_script"
+
+if [[ "$native_browser" == "firefox" ]]; then
+  target_dir="$HOME/Library/Application Support/Mozilla/NativeMessagingHosts"
+  mkdir -p "$target_dir"
+  "$node_bin" --input-type=module - "$host_path" "$target_dir/com.polymux.tab_context.json" <<'JS'
+import {writeFileSync} from "node:fs";
+writeFileSync(process.argv[3], JSON.stringify({
+  name: "com.polymux.tab_context",
+  description: "Polymux tab context and authenticated Locker connection",
+  path: process.argv[2],
+  type: "stdio",
+  allowed_extensions: ["extension@polymux.com"],
+}, null, 2) + "\n");
+JS
+  print "Installed Firefox host manifest: $target_dir/com.polymux.tab_context.json"
+  print "Done. Reload the Polymux add-on and open Polymux to connect Locker."
+  exit 0
+fi
 
 installed=0
 for browser_dir in \

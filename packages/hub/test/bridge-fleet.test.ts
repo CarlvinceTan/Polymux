@@ -163,15 +163,15 @@ test("Messenger and Instagram are discovered from their dedicated binaries", asy
 });
 
 test("a platform keeps its port when other bridges come and go", async () => {
-  const alone = await hostWith(["mautrix-discord"]);
+  const alone = await hostWith(["mautrix-slack"]);
   const crowded = await hostWith([
     "mautrix-whatsapp",
-    "mautrix-discord",
+    "mautrix-slack",
     "mautrix-signal",
   ]);
 
   const port = async (host: BridgeHost) =>
-    (await host.discover()).find((bridge) => bridge.name === "discord")?.port;
+    (await host.discover()).find((bridge) => bridge.name === "slack")?.port;
 
   assert.equal(
     await port(alone.host),
@@ -219,7 +219,11 @@ test("Windows advertises only bridges with a working native build", async () => 
 
   assert.equal(supported("instagram"), true);
   assert.equal(supported("signal"), false);
-  assert.equal(supported("discord"), false);
+  assert.equal(
+    inventory.find((entry) => entry.platform === "discord"),
+    undefined,
+    "a retired platform is not inventoried at all",
+  );
   assert.equal(supported("imessage"), false);
 
   const custom = await hostWith(["mautrix-signal.exe"], {
@@ -242,7 +246,7 @@ test("Linux advertises every packaged bridge except iMessage", async () => {
     .map((entry) => entry.platform);
 
   assert.deepEqual(unsupported, ["imessage"]);
-  assert.equal(inventory.filter((entry) => entry.supported).length, 14);
+  assert.equal(inventory.filter((entry) => entry.supported).length, 13);
 });
 
 test("Linux arm64 omits the bridge with no native artifact", async () => {
@@ -578,86 +582,6 @@ test("a config with no network block yet gains one", () => {
   });
   assert.match(updated, /^homeserver:/);
   assert.match(updated, /network:\n {4}mode: instagram/);
-});
-
-test("a legacy bridge crash-looping on a modern seed is healed at startup", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
-  const binariesDirectory = path.join(root, "bin");
-  await mkdir(binariesDirectory, { recursive: true });
-  await writeFile(path.join(binariesDirectory, "mautrix-discord"), "", "utf8");
-
-  // What an earlier Polymux seeded: the modern layout, which mautrix-discord
-  // rejects at startup — plus the registration minted alongside it.
-  const home = path.join(root, "bridges", "discord");
-  await mkdir(home, { recursive: true });
-  await writeFile(
-    path.join(home, "config.yaml"),
-    [
-      "homeserver:",
-      "    address: http://x",
-      "    domain: polymux.local",
-      "    software: standard",
-      "database:",
-      "    type: sqlite3-fk-wal",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await writeFile(
-    path.join(home, "registration.yaml"),
-    ["id: discord", "as_token: old", "hs_token: old", ""].join("\n"),
-    "utf8",
-  );
-
-  const spawned: string[][] = [];
-  const host = new BridgeHost({
-    directory: path.join(root, "bridges"),
-    binariesDirectory,
-    homeserver: fakeHomeserver(),
-    spawn: ((binary: string, args: string[]) => {
-      spawned.push([binary, ...args]);
-      // `-g` regenerates the registration the heal deleted.
-      if (args.includes("-g")) {
-        const child = fakeChild();
-        void writeFile(
-          path.join(home, "registration.yaml"),
-          ["id: discord", "as_token: new", "hs_token: new", ""].join("\n"),
-          "utf8",
-        ).then(() => child.emit("exit", 0));
-        return child;
-      }
-      return fakeChild();
-    }) as unknown as typeof import("node:child_process").spawn,
-  });
-
-  await host.startAll();
-  await host.close();
-
-  const config = await readFile(path.join(home, "config.yaml"), "utf8");
-  assert.doesNotMatch(
-    config,
-    /software: standard/,
-    "the modern-only key is gone",
-  );
-  assert.match(
-    config,
-    /appservice:\n(?:.*\n)*? {4}database:/,
-    "database now lives under appservice",
-  );
-  assert.match(
-    config,
-    /bridge:\n(?:.*\n)*? {4}provisioning:/,
-    "provisioning now lives under bridge",
-  );
-  const registration = await readFile(
-    path.join(home, "registration.yaml"),
-    "utf8",
-  );
-  assert.match(
-    registration,
-    /as_token: new/,
-    "the stale registration was regenerated",
-  );
 });
 
 test("Windows adopts the config update that matches a generated registration", async () => {
@@ -1245,75 +1169,6 @@ test("looking again leaves a bridge that burned its restart budget down", async 
 });
 
 /**
- * The heal above has to be a one-shot. These binaries accept `software:` under
- * `homeserver:` and write it back when they upgrade the config in place, so a
- * detector keyed on it matched the very config the heal had just written —
- * and every launch threw away working tokens, deleted the registration and
- * minted new ones. The marker has to be something only the modern seed writes.
- */
-test("a healed legacy bridge is left alone on the next launch", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "polymux-fleet-"));
-  const binariesDirectory = path.join(root, "bin");
-  await mkdir(binariesDirectory, { recursive: true });
-  await writeFile(path.join(binariesDirectory, "mautrix-discord"), "", "utf8");
-
-  // The legacy layout Polymux seeds — database under `appservice:` — after the
-  // binary has upgraded it in place and added its own `software:` default.
-  const home = path.join(root, "bridges", "discord");
-  await mkdir(home, { recursive: true });
-  const seeded = [
-    "homeserver:",
-    "    address: http://x",
-    "    domain: polymux.local",
-    "    software: standard",
-    "appservice:",
-    "    id: discord",
-    "    as_token: keep-me",
-    "    hs_token: keep-me",
-    "    database:",
-    "        type: sqlite3-fk-wal",
-    "",
-  ].join("\n");
-  await writeFile(path.join(home, "config.yaml"), seeded, "utf8");
-  await writeFile(
-    path.join(home, "registration.yaml"),
-    ["id: discord", "as_token: keep-me", "hs_token: keep-me", ""].join("\n"),
-    "utf8",
-  );
-
-  const { host } = await hostWith([], {
-    directory: path.join(root, "bridges"),
-    binariesDirectory,
-    // A reseed deletes the registration and regenerates it with `-g`. Answering
-    // that here keeps a regression failing on the assertions below rather than
-    // hanging on a `-g` pass that never finishes.
-    spawn: ((_binary: string, args: string[]) => {
-      const child = fakeChild();
-      if (args.includes("-g"))
-        void writeFile(
-          path.join(home, "registration.yaml"),
-          ["id: discord", "as_token: fresh", "hs_token: fresh", ""].join("\n"),
-          "utf8",
-        ).then(() => child.emit("exit", 0));
-      return child;
-    }) as unknown as typeof spawnFn,
-  });
-  await host.startAll();
-  await host.close();
-
-  assert.equal(
-    await readFile(path.join(home, "config.yaml"), "utf8"),
-    seeded,
-    "a config already in the shape this bridge accepts is not rewritten",
-  );
-  assert.match(
-    await readFile(path.join(home, "registration.yaml"), "utf8"),
-    /as_token: keep-me/,
-    "and its tokens survive, so the bridge keeps the account it was linked to",
-  );
-});
-
-/**
  * Which bridges come up at launch. Starting the whole installed fleet cost a
  * dozen Go processes and their databases on a machine that had signed into
  * nothing — so a bridge now has to be carrying an account, or be asked for.
@@ -1514,12 +1369,4 @@ test("Instagram reel media is fetched during live sync and backfill", () => {
     repairConfig(repaired, { ...HOMESERVER, platform: "instagram" }),
     repaired,
   );
-});
-
-test("a legacy config is not touched by the cleanup repair", () => {
-  const repaired = repairConfig(CLEANUP_DEFAULTS, {
-    ...HOMESERVER,
-    legacy: true,
-  });
-  assert.ok(repaired.includes("enabled: false"));
 });

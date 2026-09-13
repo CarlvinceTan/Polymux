@@ -15,6 +15,23 @@ function event(type: RunEventDto['type'], payload: unknown, sequence: number): R
   } as RunEventDto;
 }
 
+test('keeps streamed task reasoning when the first tool starts', () => {
+  const reasoning = applyTaskEvent(
+    emptyTranscript('task-run'),
+    event('message.reasoning.delta', {delta: 'Checking the source'}, 1),
+  );
+  const withTool = applyTaskEvent(
+    reasoning,
+    event('tool.started', {toolCall: {id: 'read-1', name: 'read', arguments: {path: '/source.ts'}}}, 2),
+  );
+
+  const thinking = withTool.activities.find((item) => item.kind === 'thinking');
+  assert.deepEqual(thinking && {status: thinking.status, result: thinking.result}, {
+    status: 'completed',
+    result: 'Checking the source',
+  });
+});
+
 test('a rejected task draft is removed before the repair streams', () => {
   const streamed = applyTaskEvent(
     emptyTranscript('task-run'),

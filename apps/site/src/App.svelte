@@ -22,7 +22,8 @@
   type ConnectedApp = {id: string; name: string; icon: string};
   type ConnectionGroup = {name: string; detail: string; apps: ConnectedApp[]};
 
-  const releaseUrl = 'https://github.com/CarlvinceTan/Polymux/releases/latest';
+  const githubUrl = 'https://github.com/CarlvinceTan/Polymux';
+  const releaseUrl = `${githubUrl}/releases/latest`;
   const platformCopy: Record<Platform, {action: string; detail: string}> = {
     macos: {action: 'Download', detail: PLATFORM_DETAILS.macos},
     windows: {action: 'Download for Windows', detail: PLATFORM_DETAILS.windows},
@@ -52,7 +53,7 @@
   }));
   const featuredMessagingIds = new Set([
     'whatsapp', 'telegram', 'signal', 'messenger',
-    'instagram', 'discord', 'slack', 'imessage',
+    'instagram', 'slack', 'imessage',
   ]);
   const featuredEmailIds = new Set(['gmail', 'outlook', 'icloud', 'fastmail']);
   const featuredStorage = [
@@ -120,7 +121,7 @@
       </nav>
     </div>
     <div class="site-shell-actions">
-      <a class="site-shell-github" href={releaseUrl} aria-label="Polymux on GitHub">
+      <a class="site-shell-github" href={githubUrl} aria-label="Polymux on GitHub">
         <img src={github} alt="" />
       </a>
       <a class="site-shell-download" href={downloadUrl}><DownloadIcon />{copy.action}</a>
@@ -228,5 +229,5 @@
   <a href="/docs/">Docs</a>
   <a href="/releases/">Releases</a>
   <a href="/privacy-policy/">Privacy</a>
-  <a href={releaseUrl}>GitHub</a>
+  <a href={githubUrl}>GitHub</a>
 </footer>

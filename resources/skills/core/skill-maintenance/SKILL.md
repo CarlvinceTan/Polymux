@@ -155,7 +155,7 @@ the same maintenance run. Preserve recovery through the isolated Git history,
 not through a live duplicate skill.
 
 When the old identifier appears in protected dependency policy or a registered
-update-source registry, use `scripts/migrate_skill_rename.mjs` after the
+update-source registry, use `scripts/migrate_skill_rename.py` after the
 replacement and dependent candidates are promoted but before checking the
 deletion candidate. Pass only exact old/new identifiers and exact registered
 text replacements. Run it with `--dry-run` first; the applied migration creates
@@ -197,8 +197,8 @@ protected dependency policy and public-update registration with the atomic
 migration helper before rechecking the deletion candidate:
 
 ```bash
-"${POLYMUX_NODE:-node}" scripts/migrate_skill_delete.mjs <skill-name> --dry-run
-"${POLYMUX_NODE:-node}" scripts/migrate_skill_delete.mjs <skill-name>
+python3 scripts/migrate_skill_delete.py <skill-name> --dry-run
+python3 scripts/migrate_skill_delete.py <skill-name>
 ```
 
 The helper backs up every affected metadata file, removes only the exact skill
@@ -247,6 +247,6 @@ When validation needs a real fresh Polymux task outside the sealed probe runner:
   referenced source task unless the user separately asks.
 
 If real GUI work is ever required outside an isolated probe, load and follow
-`computer-use`; this skill does not duplicate or override that policy.
+`control`; this skill does not duplicate or override that policy.
 
 Read [references/protocol.md](references/protocol.md) when repairing the gate, interpreting artifacts, or handling a deliberate behavior change.

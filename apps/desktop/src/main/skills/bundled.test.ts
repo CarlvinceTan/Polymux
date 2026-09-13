@@ -56,12 +56,14 @@ test("core membership is the core folder, so the Skills tab hides exactly those"
   assert.deepEqual(
     [...core].sort(),
     [
-      "computer-use",
+      "computer-history",
+      "control",
       "drive-use",
       "hub-use",
       "skill-creator",
       "skill-maintenance",
       "skill-record",
+      "window-control",
     ],
   );
 });

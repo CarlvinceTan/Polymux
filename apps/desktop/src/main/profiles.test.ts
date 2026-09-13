@@ -13,7 +13,7 @@ test("profiles begin with a selected default and keep configuration isolated", a
     const profiles = new ProfileManager(storage, directory);
     assert.deepEqual(profiles.snapshot(), {
       activeId: "default",
-      profiles: [{id: "default", name: "Default Profile", isDefault: true}],
+      profiles: [{id: "default", name: "Default Profile", isDefault: true, source: null}],
     });
     storage.setPreference(profiles.key("model"), {provider: "openai", id: "one"});
     const created = profiles.create("Work");
@@ -45,6 +45,7 @@ test("duplicate copies scoped preferences and delete cannot remove default", asy
     const duplicated = await profiles.duplicate("default");
     const copy = duplicated.profiles.find(profile => profile.id !== "default")!;
     assert.deepEqual(profiles.preference("skill-enabled", copy.id)?.value, {documents: false});
+    assert.equal(copy.source, null);
     assert.equal(profiles.rename("default", "Other").profiles[0].name, "Other");
     await assert.rejects(profiles.remove("default"), /cannot be deleted/);
     const removed = await profiles.remove(copy.id);
@@ -94,5 +95,35 @@ test("legacy MCP configuration migrates once into the default profile only", asy
   } finally {
     storage.close();
     await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("external source linkage persists and follows duplication", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "polymux-profile-source-"));
+  const storage = new SqliteStorage(path.join(directory, "polymux.sqlite"));
+  try {
+    const profiles = new ProfileManager(storage, directory);
+    const created = profiles.create("Claude");
+    const profile = created.profiles.find((candidate) => candidate.name === "Claude")!;
+    const source = {
+      kind: "external" as const,
+      agentId: "claude",
+      agentName: "Claude Agent",
+      directory: path.join(directory, ".claude-work"),
+    };
+    profiles.setSource(profile.id, source);
+    const duplicate = (await profiles.duplicate(profile.id)).profiles.find(
+      (candidate) => candidate.id !== profile.id && candidate.name.startsWith("Claude copy"),
+    )!;
+    assert.deepEqual(duplicate.source, source);
+    assert.deepEqual(new ProfileManager(storage, directory).snapshot().profiles.find(
+      (candidate) => candidate.id === profile.id,
+    )?.source, source);
+    assert.equal(profiles.setSource(profile.id, null).profiles.find(
+      (candidate) => candidate.id === profile.id,
+    )?.source, null);
+  } finally {
+    storage.close();
+    await rm(directory, {recursive: true, force: true});
   }
 });

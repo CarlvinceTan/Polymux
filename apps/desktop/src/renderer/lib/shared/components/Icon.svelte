@@ -2,20 +2,20 @@
   import languagesIcon from '../../../assets/icons/languages.png';
 
   export let name:
-    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'computer' | 'phone' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'smile' | 'waveform' | 'stop' | 'cursor'
+    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'computer' | 'devices' | 'tablet' | 'laptop' | 'server' | 'phone' | 'call' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'smile' | 'waveform' | 'stop' | 'cursor'
     | 'attach' | 'options' | 'verified' | 'globe' | 'file' | 'task' | 'back'
-    | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down' | 'arrow-up'
+    | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down' | 'arrow-up' | 'arrow-up-right' | 'switch'
     | 'bolt' | 'document-text' | 'paper-airplane' | 'history' | 'archive' | 'drive' | 'new-chat'
-    | 'copy' | 'check' | 'circle-check' | 'circle-question' | 'edit' | 'signature' | 'thumb-up' | 'thumb-down' | 'search' | 'terminal' | 'wrench' | 'book-open' | 'languages'
-    | 'brain' | 'compact' | 'compress' | 'sparkles' | 'bot'
+    | 'copy' | 'check' | 'circle-check' | 'circle-question' | 'bug' | 'edit' | 'signature' | 'thumb-up' | 'thumb-down' | 'search' | 'zoom-in' | 'zoom-out' | 'picture-in-picture' | 'terminal' | 'wrench' | 'book-open' | 'languages'
+    | 'memory-cited' | 'brain' | 'compact' | 'compress' | 'sparkles' | 'bot'
     | 'connections' | 'mcp' | 'link' | 'puzzle' | 'grip' | 'steer' | 'play' | 'pause' | 'speaker' | 'speaker-off' | 'mic-off' | 'chat'
     | 'document' | 'presentation' | 'folder' | 'folder-open' | 'pdf' | 'spreadsheet' | 'image' | 'audio' | 'video' | 'code'
-    | 'calendar' | 'calendar-error' | 'clock' | 'sun' | 'sun-moon' | 'goal' | 'user' | 'users' | 'contacts' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
-    | 'folder-plus' | 'upload' | 'home' | 'folder-move' | 'info'
+    | 'calendar' | 'calendar-error' | 'clock' | 'sun' | 'sun-moon' | 'palette' | 'goal' | 'user' | 'user-plus' | 'users' | 'contacts' | 'briefcase' | 'banknote' | 'workflow' | 'survey' | 'chart' | 'filter' | 'sort'
+    | 'fork' | 'copy-plus' | 'share' | 'folder-plus' | 'upload' | 'home' | 'folder-move' | 'info' | 'warning' | 'error'
     | 'mail' | 'inbox' | 'spam' | 'storefront' | 'settings' | 'cloud'
     | 'reply' | 'reply-all' | 'mail-forward' | 'flag'
     | 'key' | 'shield' | 'prohibited' | 'eye' | 'eye-off' | 'incognito' | 'external' | 'import' | 'cookie'
-    | 'pin' | 'pin-off' | 'bell' | 'tasks' | 'platforms' | 'broadcast' | 'align-left' | 'align-center' | 'align-right';
+    | 'pin' | 'pin-filled' | 'bell' | 'tasks' | 'platforms' | 'broadcast' | 'align-left' | 'align-center' | 'align-right' | 'logout' | 'google' | 'apple' | 'lock' | 'qr';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -47,6 +47,16 @@
     <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.6" fill="currentColor" stroke="none"/>
   {:else if name === 'computer'}
     <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M12 17v4M8 21h8"/>
+  {:else if name === 'devices'}
+    <path d="M12 17H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2M9 17v4M6 21h6"/><rect x="15" y="10" width="7" height="12" rx="1.5"/><path d="M18 19h1"/>
+  {:else if name === 'tablet'}
+    <rect x="4" y="2" width="16" height="20" rx="2"/><path d="M11 19h2"/>
+  {:else if name === 'laptop'}
+    <rect x="5" y="3" width="14" height="13" rx="1.5"/><path d="m5 16-3 4h20l-3-4M10 18h4"/>
+  {:else if name === 'server'}
+    <rect x="4" y="3" width="16" height="7" rx="1.5"/><rect x="4" y="14" width="16" height="7" rx="1.5"/><path d="M7 6.5h.01M7 17.5h.01M12 6.5h5M12 17.5h5"/>
+  {:else if name === 'call'}
+    <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3.1-8.7A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.8 2.1Z"/>
   {:else if name === 'phone'}
     <rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 5h3"/><circle cx="12" cy="18.6" r=".8" fill="currentColor" stroke="none"/>
   {:else if name === 'apps'}
@@ -54,7 +64,7 @@
     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 8.5h17"/><circle cx="6.5" cy="6.5" r=".7" fill="currentColor" stroke="none"/><circle cx="9" cy="6.5" r=".7" fill="currentColor" stroke="none"/>
   {:else if name === 'platforms'}
     <!-- Four equal service tiles: an aggregate of platforms, without the
-         network-node meaning carried by the Connections icon. -->
+         joined-L meaning carried by the Connections icon. -->
     <rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>
   {:else if name === 'broadcast'}
     <!-- A compact bullhorn: rear body and handle, flared cone, then three
@@ -71,6 +81,26 @@
     <path d="M5 7h14M7 11h10M5 15h14M8 19h8"/>
   {:else if name === 'align-right'}
     <path d="M5 7h14M9 11h10M5 15h14M11 19h8"/>
+  {:else if name === 'logout'}
+    <!-- Sign-out: a bracket door with an arrow leaving through it. -->
+    <path d="M10 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3"/><path d="m15 8 4 4-4 4M19 12h-9"/>
+  {:else if name === 'bug'}
+    <!-- Report-bug: a beetle in the same outline weight as the row marks beside it. -->
+    <path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/>
+    <path d="M9 7.13v-1a3 3 0 1 1 6 0v1"/>
+    <path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/>
+    <path d="M12 20v-9"/>
+    <path d="M6.53 9C4.6 8.8 3 7.1 3 5"/><path d="M6 13H2"/>
+    <path d="M3 21c0-2.1 1.7-3.9 3.8-4"/>
+    <path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"/><path d="M22 13h-4"/>
+    <path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"/>
+  {:else if name === 'google'}
+    <!-- The Google G reduced to its stroke skeleton: an open ring and bar,
+         matching the monochrome outline language at small sizes. -->
+    <path d="M21 12h-9"/><path d="M21 12A9 9 0 1 1 15.2 3.7"/>
+  {:else if name === 'apple'}
+    <!-- The Apple mark: body with a bite implied by the leaf notch above. -->
+    <path d="M12 7.5c-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06S14.75 22 16 22c3 0 6-8 6-11.72A4.91 4.91 0 0 0 17 5.5c-2.22 0-4 1.44-5 2z"/><path d="M10 2c1 .5 2 2 2 5"/>
   {:else if name === 'close'}
     <path d="m7 7 10 10M17 7 7 17"/>
   {:else if name === 'send'}
@@ -82,7 +112,7 @@
   {:else if name === 'mic-off'}
     <path d="m4 4 16 16M9 6v5a3 3 0 0 0 4.7 2.5M15 10V6a3 3 0 0 0-5.7-1.3M5.5 11a6.5 6.5 0 0 0 10.7 5M12 17.5V21M9 21h6"/>
   {:else if name === 'play'}
-    <path d="m9 6 9 6-9 6z" fill="currentColor" stroke="none"/>
+    <path d="M9 7.4Q9 6 10.2 6.8l6.6 4.4q1.2.8 0 1.6l-6.6 4.4Q9 18 9 16.6Z" fill="currentColor" stroke="none"/>
   {:else if name === 'pause'}
     <path d="M8 6v12M16 6v12" stroke-width="2.4"/>
   {:else if name === 'speaker'}
@@ -149,7 +179,7 @@
     <!-- Reply, mirrored: the message carries on past where it stopped. -->
     <path d="m15 8 4.5 4L15 16"/><path d="M19.5 12h-9a6 6 0 0 0-6 6v1"/>
   {:else if name === 'reload'}
-    <path d="M20 11a8 8 0 1 1-2.34-5.66L20 7.7M20 3v4.7h-4.7"/>
+    <path d="M20 11a8 8 0 1 1-2.34-5.66L20 7.7M20 3v3.2q0 1.5-1.5 1.5h-3.2"/>
   {:else if name === 'download'}
     <path d="M12 3v12M7 10l5 5 5-5M5 20h14"/>
   {:else if name === 'more'}
@@ -161,15 +191,19 @@
   {:else if name === 'trash'}
     <path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/>
   {:else if name === 'expand'}
-    <path d="M14 4h6v6M10 20H4v-6"/>
+    <path d="M14 4h4.5A1.5 1.5 0 0 1 20 5.5V10M10 20H5.5A1.5 1.5 0 0 1 4 18.5V14"/>
   {:else if name === 'collapse'}
-    <path d="M20 14h-6v6M4 10h6V4"/>
+    <path d="M20 14h-4.5a1.5 1.5 0 0 0-1.5 1.5V20M4 10h4.5A1.5 1.5 0 0 0 10 8.5V4"/>
   {:else if name === 'chevron'}
     <path d="m8 10 4 4 4-4"/>
   {:else if name === 'arrow-down'}
     <path d="M12 4v16M6 14l6 6 6-6"/>
   {:else if name === 'arrow-up'}
     <path d="M12 20V4M6 10l6-6 6 6"/>
+  {:else if name === 'switch'}
+    <path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4"/>
+  {:else if name === 'arrow-up-right'}
+    <path d="M7 17 17 7M9 7h8v8"/>
   {:else if name === 'bolt'}
     <path d="M13 2 4.5 13h7L11 22l8.5-12h-7z"/>
   {:else if name === 'document-text'}
@@ -209,6 +243,12 @@
     <path d="M17 14V3h4v11h-4Zm0-9H7.8a2 2 0 0 0-1.9 1.4l-2.2 7A2 2 0 0 0 5.6 16H10l-.7 3.1a2.4 2.4 0 0 0 4.5 1.9L17 14Z"/>
   {:else if name === 'search'}
     <circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>
+  {:else if name === 'zoom-in'}
+    <circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M11 8v6M8 11h6"/>
+  {:else if name === 'zoom-out'}
+    <circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11h6"/>
+  {:else if name === 'picture-in-picture'}
+    <path d="M21 9.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h5"/><rect x="12" y="12.5" width="9.5" height="7" rx="1.8"/>
   {:else if name === 'terminal'}
     <rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3M13 15h4"/>
   {:else if name === 'wrench'}
@@ -217,9 +257,12 @@
     <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
   {:else if name === 'languages'}
     <!-- Use the supplied artwork as an alpha mask so its exact silhouette
-         still inherits the same colour as every other shared icon. -->
+         still inherits the same colour as every other shared icon. The mark
+         fills its 24 box, so at a shared size it reads larger than the padded
+         outline glyphs beside it — it draws inset to land on the same optical
+         size, the same trade the gear and rail tiles make. -->
     <mask id="languages-icon-mask" style="mask-type: alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
-      <image href={languagesIcon} width="24" height="24" preserveAspectRatio="xMidYMid meet"/>
+      <image href={languagesIcon} x="2.4" y="2.4" width="19.2" height="19.2" preserveAspectRatio="xMidYMid meet"/>
     </mask>
     <rect width="24" height="24" fill="currentColor" stroke="none" mask="url(#languages-icon-mask)"/>
   {:else if name === 'brain'}
@@ -246,7 +289,12 @@
   {:else if name === 'bot'}
     <path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>
   {:else if name === 'connections'}
-    <path d="m10 13 4-4M7.5 15.5l-1 1a3.5 3.5 0 0 1-5-5l3-3a3.5 3.5 0 0 1 5 0M16.5 8.5l1-1a3.5 3.5 0 0 1 5 5l-3 3a3.5 3.5 0 0 1-5 0"/>
+    <!-- Three tiles joined as an L — one outline, shared internal walls —
+         and a fourth tile detached toward the top-right on the same 2×2,
+         with a 2.6-unit gutter so the float reads at 16px. -->
+    <path d="M4.3 3.8h4.9Q11 3.8 11 5.6v4.9Q11 12.3 12.8 12.3h4.9Q19.5 12.3 19.5 14.1v4.9Q19.5 20.8 17.7 20.8H4.3Q2.5 20.8 2.5 19V5.6Q2.5 3.8 4.3 3.8Z"/>
+    <path d="M2.5 12.3H11V20.8"/>
+    <rect x="13.6" y="1.2" width="8.5" height="8.5" rx="1.8"/>
   {:else if name === 'mcp'}
     <!-- The Model Context Protocol mark exactly as its owners draw it, lifted
          from `@lobehub/icons-static-svg/icons/mcp.svg` — already a dependency,
@@ -279,12 +327,27 @@
     <path d="m6 14 1.5-2.4A2 2 0 0 1 9.24 11H20a2 2 0 0 1 1.94 2l-1.54 5a2 2 0 0 1-1.95 1.2H4a2 2 0 0 1-2-1.7V7a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.75l.81 1a2 2 0 0 0 1.67.75H18a2 2 0 0 1 2 2V11"/>
   {:else if name === 'folder-plus'}
     <path d="M14.5 7.5H12l-2-2H5a2 2 0 0 0-2 2v9.75a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V10.5"/><path d="M18.5 2v5M16 4.5h5"/>
+  {:else if name === 'memory-cited'}
+    <path d="M9 20H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v5M8 3v17"/><path d="m13 17 6-6a1.4 1.4 0 0 1 2 2l-6 6-3 1z"/>
+  {:else if name === 'fork'}
+    <path d="M3 12h6l11-9M13 3h7v7M9 12l11 9M14 21h6v-6"/>
+  {:else if name === 'copy-plus'}
+    <rect x="3" y="7" width="14" height="14" rx="3"/><path d="M7 7V6a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-1M7 14h6M10 11v6"/>
+  {:else if name === 'share'}
+    <path d="M12 16V3m-4 4 4-4 4 4M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/>
   {:else if name === 'upload'}
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/>
   {:else if name === 'folder-move'}
     <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 13h6M13 11l2 2-2 2"/>
   {:else if name === 'info'}
     <circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.75" r=".9" fill="currentColor" stroke="none"/>
+  {:else if name === 'warning'}
+    <!-- The triangle's broad base carries more visual weight than its point.
+         Lift the complete mark by one rendered pixel at toast size so it
+         reads centred beside text rather than only measuring centred. -->
+    <g transform="translate(0 -0.8)"><path d="M10.3 4.2 2.9 18.1A2 2 0 0 0 4.7 21h14.6a2 2 0 0 0 1.8-2.9L13.7 4.2a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4.5"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></g>
+  {:else if name === 'error'}
+    <g transform="translate(0 .75)"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v6"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></g>
   {:else if name === 'home'}
     <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>
   {:else if name === 'pdf'}
@@ -307,6 +370,12 @@
     <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
   {:else if name === 'sun'}
     <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/>
+  {:else if name === 'palette'}
+    <path d="M12 3a9 9 0 1 0 0 18h1.2a2.3 2.3 0 0 0 1.6-3.9 1.4 1.4 0 0 1 1-2.4H18a3 3 0 0 0 3-3C21 6.9 17 3 12 3Z"/>
+    <circle cx="7.5" cy="10" r=".8" fill="currentColor" stroke="none"/>
+    <circle cx="10.5" cy="7" r=".8" fill="currentColor" stroke="none"/>
+    <circle cx="15" cy="7.5" r=".8" fill="currentColor" stroke="none"/>
+    <circle cx="7.5" cy="14.5" r=".8" fill="currentColor" stroke="none"/>
   {:else if name === 'sun-moon'}
     <!-- Light and dark as one mark: the sun sits back, the moon overlaps it from
          the right. The mask knocks a clear halo out of the sun where the moon
@@ -325,6 +394,8 @@
     <path d="M20.9 10.5a9 9 0 1 1-7.4-7.4"/><path d="M16.4 11.1a4.5 4.5 0 1 1-3.6-3.6"/><circle cx="12" cy="12" r="1.4"/><path d="m12 12 5-5"/><path d="M17 7V3.5L20.5 7H17Z" fill="currentColor"/>
   {:else if name === 'user'}
     <circle cx="12" cy="8" r="3.5"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>
+  {:else if name === 'user-plus'}
+    <circle cx="10" cy="8" r="3.5"/><path d="M2.5 21a7.5 7.5 0 0 1 15 0"/><path d="M18.5 2v5M16 4.5h5"/>
   {:else if name === 'users'}
     <circle cx="9" cy="8" r="3"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0M15 5.5a3 3 0 0 1 0 5.8M16 15a5 5 0 0 1 4.5 5"/>
   {:else if name === 'contacts'}
@@ -357,6 +428,8 @@
     <path d="M8 6h10M8 12h7M8 18h4M4 5v14M2 17l2 2 2-2"/>
   {:else if name === 'key'}
     <circle cx="8" cy="15" r="3.5"/><path d="m10.6 12.4 7.4-7.4M15.5 7.5l2 2M18 5l2 2"/>
+  {:else if name === 'lock'}
+    <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>
   {:else if name === 'shield'}
     <path d="M12 3.5 5.5 6v5.6c0 3.9 2.7 6.9 6.5 8.4 3.8-1.5 6.5-4.5 6.5-8.4V6z"/>
   {:else if name === 'prohibited'}
@@ -367,28 +440,18 @@
     <!-- The same eye, struck through: the shown and hidden states are one
          stroke apart, so the button does not appear to change icon families. -->
     <path d="M10.7 6.7A10 10 0 0 1 12 6.5c6 0 9.5 5.5 9.5 5.5a17.4 17.4 0 0 1-3.5 3.9M7.1 8.4A17.2 17.2 0 0 0 2.5 12S6 17.5 12 17.5c1 0 2-.2 2.9-.5"/><path d="M9.9 9.9a2.8 2.8 0 0 0 4.2 4.2"/><path d="m4 4 16 16"/>
-  {:else if name === 'pin'}
-    <!-- Leaning rather than upright: a pin pushed into a board sits at an
-         angle, handle up and to the right, needle down and to the left. The
-         whole glyph is drawn straight and turned as one, so the head stays
-         square to the needle instead of being redrawn skewed. -->
+  {:else if name === 'pin' || name === 'pin-filled'}
+    <!-- Both states share the same silhouette; a solid head marks a pinned item. -->
     <g transform="rotate(45 12 12)">
-      <path d="M9 3.5h6l-.7 5.2 3.2 3.1H6.5l3.2-3.1z"/><path d="M12 11.8V20.5"/>
+      <path d="M9 3.5h6l-.7 5.2 3.2 3.1H6.5l3.2-3.1z" fill={name === 'pin-filled' || filled ? 'currentColor' : 'none'}/><path d="M12 11.8V20.5"/>
     </g>
-  {:else if name === 'pin-off'}
-    <!-- The same pin at the same angle, struck through: pinned and unpinned are
-         one stroke apart, the way the eye pair is. The stroke keeps its own
-         diagonal rather than turning with the pin, so it reads as a strike
-         rather than as part of the glyph. -->
-    <g transform="rotate(45 12 12)">
-      <path d="M9.6 3.5H15l-.7 5.2 3.2 3.1h-4.1M9.4 11.8H6.5l3.2-3.1-.2-1.6"/><path d="M12 13.6v6.9"/>
-    </g>
-    <path d="m4 4 16 16"/>
   {:else if name === 'import'}
     <path d="M12 4v9M12 13l3.5-3.5M12 13 8.5 9.5"/><path d="M5 15.5V18a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2.5"/>
   {:else if name === 'external'}
     <!-- The arrow leaving a frame, matching the 'link' pair beside it. -->
     <path d="M14 4.5h5.5V10M19.5 4.5 11 13"/><path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5"/>
+  {:else if name === 'qr'}
+    <rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><path d="M15 15h3v3h3M15 21h3M21 12v3M12 3v3M3 12h3M12 9v6"/>
   {:else if name === 'tasks'}
     <rect x="4" y="3" width="16" height="18" rx="2.5"/><rect x="7.5" y="1.5" width="9" height="3" rx="1.5"/><path d="m9.5 11.5 2 2 3.5-4"/>
   {/if}

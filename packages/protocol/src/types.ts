@@ -129,6 +129,19 @@ export interface ComputerHistoryActivityDto {
   events: number;
   summarized: boolean;
 }
+/** Built-in workspace surfaces that can be pinned to the title bar. */
+export type PinnableWorkspaceView =
+  | "drive"
+  | "calendar"
+  | "hub"
+  | "tasks"
+  | "phone"
+  | "locker"
+  | "media"
+  | "terminal"
+  | "ide"
+  | "usage"
+  | "finance";
 export interface GeneralSettingsDto {
   theme: "light" | "dark" | "system";
   /** BCP 47 tag the interface is drawn in, or "system" to follow the host
@@ -164,15 +177,8 @@ export interface GeneralSettingsDto {
    */
   notificationsEnabled: boolean;
   notifications: Record<NotificationKind, boolean>;
-  /**
-   * The master switch over every app grant a skill can declare. Off means the
-   * app refuses to use them and never asks for one, and — the point of keeping
-   * it separate from the grants themselves — it takes nothing back from macOS,
-   * so switching it on again costs no second trip through System Settings.
-   */
-  appPermissionsEnabled: boolean;
   /** Workspace views pinned to the title bar, in display order. */
-  pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' | 'phone'>;
+  pinnedViews: PinnableWorkspaceView[];
   location: {
     latitude: number;
     longitude: number;
@@ -194,12 +200,308 @@ export interface GeneralSettingsUpdate {
   permissions?: Partial<Record<SystemPermissionKind, boolean>>;
   notificationsEnabled?: boolean;
   notifications?: Partial<Record<NotificationKind, boolean>>;
-  appPermissionsEnabled?: boolean;
   pinnedViews?: GeneralSettingsDto['pinnedViews'];
   location?: GeneralSettingsDto["location"];
 }
-export interface ProfileDto { id: string; name: string; isDefault: boolean; }
+export interface ExternalProfileSourceDto {
+  kind: "external";
+  agentId: string;
+  agentName: string;
+  /** Absolute directory read and written by the external agent. */
+  directory: string;
+}
+export interface ProfileAgentDto {
+  kind: "polymux" | "acp";
+  /** Stable ACP registry/family id, or `polymux` for the built-in agent. */
+  id: string;
+  name: string;
+}
+export interface ProfileDto {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  /** Present only while this profile follows another agent's live files. */
+  source: ExternalProfileSourceDto | null;
+  /** Agent implementation configured for this profile. Older Hosts may omit it. */
+  agent?: ProfileAgentDto;
+  /** Team only accepts runtimes whose execution boundary is known to be safe. */
+  teamEligible?: boolean;
+  teamBlockedReason?: string;
+}
 export interface ProfilesDto { activeId: string; profiles: ProfileDto[]; }
+
+/**
+ * The durable identity choices exposed by Bloub's customizer. Geometry and
+ * labels live in the renderer, while these stable ids travel between Desktop
+ * and Host. Expressions are deliberately presentation-only: the renderer
+ * selects one from live UI context without storing it in agent state.
+ */
+export const TEAM_AVATAR_SHAPES = [
+  "circle",
+  "pebble",
+  "squircle",
+  "capsule",
+  "triangle",
+  "hexagon",
+  "cube",
+  "cloud",
+  "droplet",
+] as const;
+export type TeamAvatarShape = typeof TEAM_AVATAR_SHAPES[number];
+
+/**
+ * Metadata marker for the host-authored first-run cue that opens a newly
+ * created Team bot's conversation. The stored row is a real user turn so the
+ * model acts on it, but it is Polymux's wording rather than the user's, so
+ * every surface that lists messages hides it. Desktop and Host share this one
+ * definition rather than repeating the key.
+ */
+export const TEAM_BOT_SETUP_KEY = "setupCue";
+
+export function isTeamBotSetupCue(metadata: JsonValue | null | undefined): boolean {
+  return Boolean(
+    metadata &&
+    typeof metadata === "object" &&
+    !Array.isArray(metadata) &&
+    (metadata as Record<string, JsonValue>)[TEAM_BOT_SETUP_KEY] === true,
+  );
+}
+
+export const TEAM_AVATAR_EXPRESSIONS = [
+  "neutral",
+  "attentive",
+  "surprised",
+  "excited",
+  "happy",
+  "laughing",
+  "angry",
+  "sad",
+  "frightened",
+  "suspicious",
+  "confused",
+  "curious",
+  "proud",
+  "shy",
+  "unimpressed",
+  "sleepy",
+] as const;
+export type TeamAvatarExpression = typeof TEAM_AVATAR_EXPRESSIONS[number];
+export interface TeamAvatarDto {
+  shape: TeamAvatarShape;
+  /** Six-digit CSS colour, including the leading #. */
+  color: string;
+  /** Optional paired colours for avatars that adapt to the applied theme. */
+  colorPair?: {
+    light: string;
+    dark: string;
+  };
+}
+
+export type BotStatus =
+  | "idle"
+  | "working"
+  | "waiting-for-device"
+  | "computer-offline"
+  | "error";
+export type TeamComputerProvider = "podman" | "docker" | "remote" | "unavailable";
+export interface TeamComputerDto {
+  provider: TeamComputerProvider;
+  state: "stopped" | "starting" | "running" | "unavailable" | "error";
+  detail: string | null;
+  persistent: true;
+  /** Team computers start without network access; a later capability may open it. */
+  network: "none" | "restricted";
+}
+
+/** One row in Team is one persistent agent and one private conversation. */
+export interface BotDto {
+  id: string;
+  conversationId: ConversationId;
+  name: string;
+  role: string;
+  profileId: string;
+  profileName: string;
+  /** Computer that owns this bot's conversation, runtime, and workspace. */
+  hostId: string;
+  hostName: string;
+  /** Device kind of that computer, for the glyph shown beside its name. */
+  deviceType?: import('./device-pairing.js').DeviceType;
+  avatar: TeamAvatarDto;
+  /** Peer tools may contact other members without asking the user each time. */
+  /** Device-side tools remain behind a short-lived lease even when this is on. */
+  laptopAccess: "off" | "ask";
+  status: BotStatus;
+  preview: string;
+  updatedAt: string;
+  unread: boolean;
+  /** Number of unseen Team messages. Older Hosts may expose only `unread`. */
+  unreadCount?: number;
+  computer: TeamComputerDto;
+  /** Skills enabled for this bot from the connections pool. */
+  skills?: string[];
+  /** MCP server ids connected to this bot from the connections pool. */
+  mcpServers?: string[];
+  /** Plugin ids enabled for this bot from the connections pool. */
+  plugins?: string[];
+}
+
+/** A Desktop-owned conversation that fans a message out to named Team agents. */
+export interface TeamGroupDto {
+  id: string;
+  conversationId: ConversationId;
+  name: string;
+  memberIds: string[];
+  preview: string;
+  updatedAt: string;
+  unread: boolean;
+  unreadCount: number;
+}
+
+export interface CreateTeamGroupRequest {
+  name: string;
+  memberIds: string[];
+}
+
+export interface UpdateTeamGroupRequest {
+  name?: string;
+  memberIds?: string[];
+}
+
+export interface SendTeamGroupMessageRequest {
+  id: string;
+  text: string;
+}
+
+export interface CreateBotRequest {
+  name: string;
+  role: string;
+  profileId: string;
+  avatar: TeamAvatarDto;
+  /** Defaults to the Desktop's preferred Host. */
+  hostId?: string;
+  laptopAccess?: "off" | "ask";
+  skills?: string[];
+  mcpServers?: string[];
+  plugins?: string[];
+}
+export interface UpdateBotRequest {
+  name?: string;
+  role?: string;
+  profileId?: string;
+  avatar?: TeamAvatarDto;
+  /** Moving this value transfers the bot and conversation to that Host. */
+  hostId?: string;
+  laptopAccess?: "off" | "ask";
+  skills?: string[];
+  mcpServers?: string[];
+  plugins?: string[];
+}
+
+/** Durable provenance for a message sent by another Polymux agent. */
+export interface AgentMessageOriginDto {
+  kind: "team" | "assistant";
+  memberId: string | null;
+  conversationId: ConversationId;
+  name: string;
+  role: string | null;
+  avatar: TeamAvatarDto | null;
+  traceId: string;
+  hop: number;
+  automatic: boolean;
+}
+export interface SendAgentMessageRequest {
+  to: string;
+  text: string;
+  fromConversationId?: ConversationId;
+  fromMemberId?: string;
+  attachments?: string[];
+  automatic?: boolean;
+}
+
+export interface LaptopCapabilityLeaseDto {
+  id: string;
+  memberId: string;
+  capabilities: Array<"browser" | "computer" | "files">;
+  createdAt: string;
+  expiresAt: string;
+}
+
+/**
+ * Polymux Host is deliberately personal: exactly one Desktop may be paired to
+ * one Host. There are no organisations, shared admin panels, or second users.
+ */
+export interface TeamHostDto {
+  deviceType?: import('./device-pairing.js').DeviceType;
+  mode: "local" | "remote";
+  state: "local" | "connecting" | "connected" | "disconnected" | "error";
+  endpoint: string | null;
+  hostId: string;
+  desktopId: string;
+  deviceName: string;
+  fingerprint: string;
+  pairedAt: string | null;
+  detail: string | null;
+  /** New bots use this Host unless another one is selected. */
+  isDefault?: boolean;
+  /** Present on the computer currently acting as Host. */
+  listeningEndpoint?: string | null;
+  /** Short-lived and shown only before this Host is paired. */
+  pairingCode?: string | null;
+  /** Exact expiry of the current pairing window. */
+  pairingExpiresAt?: string | null;
+  /** The sole Desktop identity paired to this Host. */
+  pairedDesktopName?: string | null;
+}
+export interface PairTeamHostRequest {
+  endpoint: string;
+  code: string;
+}
+
+export type ExternalConfigurationSection =
+  | "settings"
+  | "skills"
+  | "plugins"
+  | "mcp"
+  | "memory";
+
+export interface ExternalConfigurationSummaryDto {
+  kind: ExternalConfigurationSection;
+  count: number;
+  /** Human-readable names only. Secrets and file contents never cross IPC. */
+  items: string[];
+  /** False when Polymux can report an agent-native asset but cannot merge it safely. */
+  importable: boolean;
+  detail: string | null;
+}
+
+/** One user configuration directory an installed ACP agent can run against. */
+export interface ExternalAgentProfileDto {
+  id: string;
+  agentId: string;
+  agentName: string;
+  name: string;
+  directory: string;
+  exists: boolean;
+  supportsImport: boolean;
+  supportsSync: boolean;
+  importUnavailableReason: string | null;
+  syncUnavailableReason: string | null;
+  summaries: ExternalConfigurationSummaryDto[];
+}
+
+export type ExternalProfileConnectionMode = "clean" | "merge" | "import" | "sync";
+
+export interface ConnectExternalProfileRequest {
+  runtime: Extract<UpdateAgentRuntimeRequest, {kind: "acp"}>;
+  mode: ExternalProfileConnectionMode;
+  /** Existing configuration to copy from or keep following. */
+  sourceDirectory?: string;
+  sections?: ExternalConfigurationSection[];
+  /** New-profile name for import/sync, or an edited existing profile name. */
+  profileName?: string;
+  /** Updating an existing external profile keeps its identity. */
+  profileId?: string;
+}
 
 /** The agent implementation attached to the active configuration profile. */
 export type AgentRuntimeDto =
@@ -212,11 +514,28 @@ export type AgentRuntimeDto =
       cwd: string | null;
       /** Session options remembered for new ACP sessions. */
       config: Record<string, string | boolean>;
+      /** Stable family used to choose its isolated configuration directory. */
+      agentId: string;
+      /** Profile-local slot holding imported or clean external configuration. */
+      configId: string;
+      /** Sanitized, non-secret launch defaults remembered from the registry. */
+      registryEnvironment?: Record<string, string>;
     };
 
 export type UpdateAgentRuntimeRequest =
   | {kind: "polymux"}
-  | {kind: "acp"; name: string; command: string; args?: string[]; cwd?: string | null; config?: Record<string, string | boolean>};
+  | {
+      kind: "acp";
+      name: string;
+      command: string;
+      args?: string[];
+      cwd?: string | null;
+      config?: Record<string, string | boolean>;
+      agentId?: string;
+      configId?: string;
+      /** Non-secret launch defaults supplied by the official ACP registry. */
+      registryEnvironment?: Record<string, string>;
+    };
 
 export interface AgentConfigValueDto {
   value: string;
@@ -426,7 +745,7 @@ export interface DiscoveredMcpDto {
   transport: "stdio" | "streamable-http";
   /** The command or url the server runs on, shown as its one-line detail. */
   target: string;
-  /** The agent whose configuration it was found in, e.g. "codex". */
+  /** The configuration it was found in, e.g. "pi". */
   source: string;
   /** The scanned file, with the home directory shortened to "~". */
   path: string;
@@ -436,10 +755,10 @@ export interface DiscoveredMcpDto {
    */
   state: "loaded" | "available";
 }
-/** Servers found in one agent's configuration file. */
+/** Servers found in an external MCP configuration file. */
 export interface DiscoveredMcpGroupDto {
   id: string;
-  /** The agent the file belongs to, e.g. "Codex". */
+  /** The configuration group the file belongs to, e.g. "Pi". */
   label: string;
   path: string;
   servers: DiscoveredMcpDto[];
@@ -467,6 +786,8 @@ export interface AcpRegistryEntryDto {
   /** Empty only when the registry has no distribution for this platform. */
   command: string;
   args: string[];
+  /** Non-secret launch defaults declared by the official registry distribution. */
+  environment?: Record<string, string>;
 }
 /** One page of registry results. `nextCursor` is empty once the registry has
  * nothing further; entries can be empty while it is not, because remote-less
@@ -620,6 +941,298 @@ export interface PluginViewDto {
   /** The local HTML entry point. The renderer exchanges this for a preview URL. */
   entry: string;
 }
+
+/**
+ * A workspace surface installed for the active profile. Browser deliberately
+ * does not appear here: it is the one core workspace surface and cannot be
+ * disabled. Official apps ship with Polymux; marketplace Apps are installed
+ * and managed independently from plugins.
+ */
+export interface WorkspaceAppDto {
+  id: string;
+  name: string;
+  description: string;
+  official: boolean;
+  enabled: boolean;
+  /** Built-in component to open, `view` for a marketplace HTML app, or null
+   * when the app only contributes a Settings surface. */
+  workspaceKind: PinnableWorkspaceView | "view" | null;
+  settingsKind: "hub" | "drive" | null;
+  /** Local entry point for a marketplace App. Never present for official apps. */
+  entry: string | null;
+  pinnable: boolean;
+}
+
+/** One entry in the dedicated App marketplace, installed or not. */
+export interface MarketplaceAppDto {
+  id: string;
+  name: string;
+  description: string;
+  version?: string;
+  author?: string;
+  official: boolean;
+  installed: boolean;
+}
+
+export interface WorkspaceAppsDto {
+  apps: WorkspaceAppDto[];
+  /** New Tab pins in display order. The backend caps this to four. */
+  pinnedIds: string[];
+}
+
+/** Who the Usage app is about: signed-in account, else this machine. */
+export interface UsageIdentityDto {
+  name: string;
+  handle: string | null;
+  avatarUrl: string | null;
+  badge: string | null;
+}
+
+export interface UsageDayDto {
+  date: string;
+  tokens: number;
+  costUsd: number;
+  runs: number;
+}
+
+export interface UsageNamedCountDto {
+  name: string;
+  count: number;
+}
+
+export interface UsageModelSpendDto {
+  model: string;
+  tokens: number;
+  costUsd: number;
+  runs: number;
+}
+
+export interface UsageAgentDto {
+  id: string;
+  name: string;
+  kind: "polymux" | "acp";
+  tokens: number;
+  costUsd: number;
+  runs: number;
+  chats: number;
+}
+
+export type UsageScope = "all" | "assistant" | "team";
+export interface UsageFilterDto {
+  scope?: UsageScope;
+  agentId?: string | null;
+}
+
+/**
+ * Lifetime activity for the Usage app. Token spend is API-equivalent USD from
+ * each run's stored model rates — the same mapping CodeBurn uses on local logs.
+ * Totals are this installation's SQLite run log, including parent and child
+ * runs. Scope separates Assistant and Team; agentId selects the runtime used
+ * for those runs, independently of team member or current profile settings.
+ */
+export interface UsageStatsDto {
+  identity: UsageIdentityDto;
+  lifetimeTokens: number;
+  peakTokens: number;
+  costUsd: number;
+  longestChatMs: number;
+  currentStreakDays: number;
+  longestStreakDays: number;
+  days: UsageDayDto[];
+  fastModePercent: number | null;
+  reasoningPercent: number | null;
+  skillsExplored: number;
+  skillsUsed: number;
+  totalChats: number;
+  plugins: UsageNamedCountDto[];
+  connections: UsageNamedCountDto[];
+  models: UsageModelSpendDto[];
+  agents: UsageAgentDto[];
+  agentId: string | null;
+  scope: UsageScope;
+  spendIncomplete: boolean;
+}
+
+/** A newly allocated PTY. Attach to start painting it. */
+export interface TerminalCreateDto {
+  id: string;
+}
+
+/** Bytes the Terminal view missed while it was unmounted, plus a sequence so
+ * events that race the attach reply are not painted twice. */
+export interface TerminalAttachDto {
+  id: string;
+  seq: number;
+  /** PTY output since the shell started, or the retained tail, as base64. */
+  replay: string;
+}
+
+/** One name in the IDE project tree. `path` is relative to the chosen root. */
+export interface IdeEntryDto {
+  name: string;
+  path: string;
+  kind: "folder" | "file";
+}
+
+/** A file opened in the IDE. `content` is omitted when the bytes are not text. */
+export interface IdeFileDto {
+  name: string;
+  path: string;
+  language: string;
+  binary: boolean;
+  content: string | null;
+}
+
+export type TerminalEventDto =
+  | {type: "data"; id: string; seq: number; data: string}
+  /** The PTY process ended, including a shell `exit`. The session is gone;
+   * further `close` calls are a no-op. */
+  | {type: "exit"; id: string; seq: number; code: number | null};
+
+export type LockerSyncState = "offline" | "local" | "syncing" | "synced" | "pending" | "error";
+
+/** Where this device keeps the locker. Account is the default. */
+export type LockerStorageMode = "local" | "account";
+
+/** Which copy to keep when linking a local locker to an existing account vault. */
+export type LockerStorageResolve = "keep-local" | "keep-cloud";
+
+/** Cloud sync of the encrypted vault blob. Never includes secrets. */
+export interface LockerSyncDto {
+  signedIn: boolean;
+  available: boolean;
+  state: LockerSyncState;
+  storage: LockerStorageMode;
+  revision: number;
+  lastSyncedAt: string | null;
+  conflict?: "cloud-exists";
+  error?: string;
+}
+
+export interface LockerStatusDto {
+  exists: boolean;
+  unlocked: boolean;
+  itemCount: number;
+  idleLockSeconds: number;
+  sync: LockerSyncDto;
+}
+
+/** Username, password, and current TOTP for one fill. Secrets only after a user click. */
+export interface LockerFillFieldsDto {
+  username: string;
+  password: string;
+  totp: string | null;
+}
+
+export interface LockerGroupDto {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+
+export interface LockerItemDto {
+  id: string;
+  title: string;
+  username: string;
+  url: string;
+  notes: string;
+  groupId: string;
+  groupName: string;
+  hasPassword: boolean;
+  hasTotp: boolean;
+  hasRecoveryCodes: boolean;
+  hasPasskey: boolean;
+  pinned?: boolean;
+  sortIndex?: number;
+  updatedAt: string | null;
+}
+
+export interface LockerListDto {
+  groups: LockerGroupDto[];
+  items: LockerItemDto[];
+  trash: LockerItemDto[];
+}
+
+export interface LockerTotpDto {
+  code: string;
+  next: string;
+  period: number;
+  remaining: number;
+  issuer: string;
+  account: string;
+}
+
+export interface LockerCodesDto {
+  id: string;
+  code: string;
+  next: string;
+  period: number;
+  remaining: number;
+}
+
+export interface LockerPasskeyDto {
+  relyingParty: string;
+  username: string;
+  credentialId: string;
+  userHandle: string;
+}
+
+export interface LockerSecretsDto {
+  password: string;
+  totp: LockerTotpDto | null;
+  recoveryCodes: string[];
+  passkey: LockerPasskeyDto | null;
+}
+
+export interface LockerPasskeyInputDto {
+  relyingParty: string;
+  username: string;
+  credentialId: string;
+  userHandle?: string;
+  privateKeyPem?: string;
+}
+
+export interface LockerItemInputDto {
+  id?: string;
+  title: string;
+  username?: string;
+  url?: string;
+  notes?: string;
+  groupName?: string;
+  password?: string;
+  totpSecret?: string;
+  recoveryCodes?: string[];
+  passkey?: LockerPasskeyInputDto | null;
+}
+
+export interface LockerImportResultDto {
+  imported: number;
+  skipped: number;
+  problems: string[];
+}
+
+export type LockerImportStartDto =
+  | { status: "cancelled" }
+  | ({ status: "imported" } & LockerImportResultDto)
+  | { status: "needs-password"; name: string };
+
+export type LockerCopyField = "password" | "username" | "url" | "totp" | "notes" | "recovery";
+
+/** Encrypted kdbx plus revision metadata. Never includes plaintext secrets. */
+export interface LockerVaultMetaDto {
+  revision: number;
+  updatedAt: string;
+  checksum: string;
+  dirty: boolean;
+  lastSyncedAt: string | null;
+  storage: LockerStorageMode;
+}
+
+export interface LockerVaultBlobDto {
+  bytes: string;
+  meta: LockerVaultMetaDto;
+}
+
 export interface PhoneDeviceDto {
   platform: "ios" | "android";
   id: string;
@@ -820,6 +1433,11 @@ export type RunEventDto = {
   payload: JsonValue;
 };
 
+/** The one live surface an activity row can disclose beneath its label. */
+export type ActivityPreviewRequestDto =
+  | {kind: "browser"; tabId: string}
+  | {kind: "computer"; runId: string};
+
 export interface ArtifactDto {
   id: string;
   conversationId: ConversationId | null;
@@ -867,6 +1485,8 @@ export interface BrowserExtensionDto {
 }
 
 export interface StartRunRequest {
+  /** Execution device for a new Assistant conversation. */
+  deviceId?: string;
   conversationId: ConversationId;
   text: string;
   messageId?: string;
@@ -879,6 +1499,16 @@ export interface StartRunRequest {
    * agent cannot tell the two apart and cannot shape replies for listening.
    */
   speechMode?: boolean;
+  /**
+   * The user prompt is already stored (an edited message, or a durable job
+   * recovered after exit). The run must not append a second copy of it.
+   */
+  reuseUserMessage?: boolean;
+  /**
+   * Drop every stored turn after `messageId` and resend from there. Requires
+   * `messageId`. Implies `reuseUserMessage`.
+   */
+  rewind?: boolean;
 }
 export interface StartRunResponse {
   runId: RunId;
@@ -1062,6 +1692,45 @@ export interface BrowserPermissionPromptDto {
   origin: string;
   permission: BrowserPermissionDto;
 }
+
+/** One discoverable passkey account Electron is waiting for the user to
+ * choose. Credential ids are opaque selection tokens; user handles stay in
+ * the main process because the UI has no reason to receive them. */
+export interface BrowserWebAuthnAccountDto {
+  credentialId: string;
+  displayName?: string;
+  name?: string;
+}
+
+/** A WebAuthn request with more than one discoverable account. Chromium keeps
+ * the underlying request pending until `browser.respondToWebAuthn` answers. */
+export interface BrowserWebAuthnPromptDto {
+  id: string;
+  tabId: string;
+  relyingPartyId: string;
+  accounts: BrowserWebAuthnAccountDto[];
+}
+export type BrowserAutofillFocus = "login" | "otp";
+
+export interface BrowserAutofillItemDto {
+  id: string;
+  source: "locker" | "browser";
+  title: string;
+  username: string;
+  hasPassword: boolean;
+  hasTotp: boolean;
+}
+
+/** What Browser chrome may show for the current page. No secrets. */
+export interface BrowserAutofillOfferDto {
+  tabId: string;
+  origin: string;
+  /** Whether a Locker vault exists on this device. */
+  locker: "missing" | "locked" | "unlocked";
+  focus: BrowserAutofillFocus | null;
+  items: BrowserAutofillItemDto[];
+}
+
 export interface BrowserFoundDto {
   tabId: string;
   matches: number;
@@ -1086,9 +1755,16 @@ export type BrowserEventDto =
   /** A page asked for a capability and nothing is stored for it yet. The
    * renderer prompts; `browser.respondToPermission` settles it. */
   | { type: "permission"; prompt: BrowserPermissionPromptDto }
+  /** A passkey sign-in needs the person at the keyboard to choose the account.
+   * This is separate from a permission: choosing is the authentication act,
+   * not a remembered allow/deny decision. */
+  | { type: "webauthn"; prompt: BrowserWebAuthnPromptDto }
   /** A login was saved, imported or removed. Sent so an open Settings tab
    * reflects a password captured in a browser tab without being reopened. */
-  | { type: "logins" };
+  | { type: "logins" }
+  /** A sign-in or OTP form is on the page. Metadata only — secrets stay in
+   * the main process until the user picks an item in the browser chrome. */
+  | { type: "autofill"; tabId: string; offer: BrowserAutofillOfferDto | null };
 
 export interface AppVersionDto {
   version: string;
@@ -1121,7 +1797,6 @@ export type CommsPlatform =
   | "whatsapp"
   | "telegram"
   | "signal"
-  | "discord"
   | "slack"
   | "messenger"
   | "instagram"
@@ -1206,11 +1881,10 @@ export interface CommsBridgeDto {
   platform: CommsPlatform;
   name: string;
   /**
-   * Which provisioning dialect the bridge speaks. `legacy` bridges predate the
-   * step-based login API and can only be linked from their management room, so
-   * the tab points the user there instead of driving the flow itself.
+   * Which provisioning dialect the bridge speaks. Every bridge speaks the
+   * step-based login API; `none` is a platform with no bridge to link.
    */
-  api: "bridgev2" | "legacy" | "none";
+  api: "bridgev2" | "none";
   state:
     | "unknown"
     | "unavailable"
@@ -1234,6 +1908,8 @@ export interface CommsBridgeDto {
   error: string | null;
   /** Official installer page when the platform's required desktop app is absent. */
   installUrl?: string | null;
+  /** A confirmed condition requiring the user, independent of cached reads. */
+  attention?: {title: string; detail: string; installUrl?: string; retry?: boolean} | null;
   /**
    * A macOS grant this bridge is held back by, when `error` describes one. It
    * is the difference between telling someone where the switch is and putting
@@ -1401,6 +2077,8 @@ export interface MailEnvelopeDto {
   answered: boolean;
   draft: boolean;
   hasAttachment: boolean;
+  /** Sender-defined priority, separate from the recipient's mailbox flag. */
+  importance?: MailImportance;
   /**
    * The first line or so of the message, for the list row to show under the
    * subject. Empty when the body could not be peeked at cheaply.
@@ -1410,8 +2088,22 @@ export interface MailEnvelopeDto {
 
 /** A file carried by a message, as announced by its MIME part. */
 export interface MailAttachmentDto {
+  /** IMAP body section used to fetch just this part. */
+  id: string;
   name: string;
   mime: string | null;
+  /** Content-ID referenced by `cid:` URLs in the authored HTML. */
+  contentId: string | null;
+  disposition: "inline" | "attachment" | null;
+  size: number;
+}
+
+/** One attachment's bytes, fetched lazily only when the reader displays it. */
+export interface MailAttachmentContentDto {
+  id: string;
+  name: string;
+  mime: string | null;
+  content: ArrayBuffer;
 }
 
 export interface MailMessageDto {
@@ -1430,6 +2122,8 @@ export interface MailMessageDto {
    * Whatever displays it is responsible for sanitising it first. */
   html: string | null;
   attachments: MailAttachmentDto[];
+  /** Sender-defined priority, separate from the recipient's mailbox flag. */
+  importance?: MailImportance;
   /** RFC 5322 Message-ID, needed so a reply threads in the recipient's client. */
   messageId: string | null;
   /** The chain this message is part of, oldest first, from its References. */
@@ -1450,6 +2144,12 @@ export interface MailListRequest {
 
 /** How a message announces its priority to the recipient's mail client. */
 export type MailImportance = "high" | "normal" | "low";
+export interface SendMailInlineAttachment {
+  /** Absolute path also present in `attachments`. */
+  path: string;
+  /** Stable MIME Content-ID referenced by the outgoing HTML's `cid:` link. */
+  contentId: string;
+}
 export interface SendMailRequest {
   account?: string;
   to: string[];
@@ -1463,6 +2163,9 @@ export interface SendMailRequest {
   draft?: boolean;
   /** Absolute paths to files to attach. */
   attachments?: string[];
+  /** Files placed at authored nodes in the HTML alternative. Files omitted
+   * here remain ordinary trailing attachments. */
+  inlineAttachments?: SendMailInlineAttachment[];
   /** Marks the message urgent or low priority for the recipient's client.
    * "normal" is the default and writes no header. */
   importance?: MailImportance;
@@ -1528,6 +2231,12 @@ export interface ChatMemberDto {
   avatarUrl: string | null;
 }
 
+/** Shared native group name, distinct from this account's private label. */
+export interface ChatGroupInfoDto {
+  name: string;
+  isMember: boolean;
+}
+
 /** The structured identity behind visible mention text in an outbound message. */
 export interface ChatMentionDto {
   userId: string;
@@ -1576,8 +2285,9 @@ export interface ContactLinkMemberDto {
   chatId: string;
 }
 
-/** A local identity that says several platform conversations are one person.
- * It never sends the grouping to any source network. */
+/** A local contact identity. A single route stores a local display name;
+ * several routes say those platform conversations are the same person. It
+ * never sends the name or grouping to any source network. */
 export interface ContactLinkDto {
   id: string;
   name: string;
@@ -1589,6 +2299,13 @@ export interface ContactLinkDto {
 export interface MergeContactLinkRequest {
   name: string;
   members: ContactLinkMemberDto[];
+}
+
+/** Gives the local identity containing this route a user-chosen display name.
+ * If the route is not linked yet, the Hub creates a one-route identity. */
+export interface RenameContactRequest {
+  name: string;
+  member: ContactLinkMemberDto;
 }
 
 /** Starts one direct conversation or a remote group on one linked account. */
@@ -1677,6 +2394,16 @@ export interface ChatAttachmentDto {
   sticker?: boolean;
 }
 
+/** One account-native sticker Polymux can resend through WeChat. */
+export interface ChatStickerDto {
+  id: string;
+  url: string;
+  mimeType: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+}
+
 /** Metadata for a web link carried with a chat message. */
 export interface ChatLinkPreviewDto {
   title: string;
@@ -1688,6 +2415,30 @@ export interface ChatLinkPreviewDto {
   imageMimeType?: string | null;
   imageWidth?: number | null;
   imageHeight?: number | null;
+}
+
+/** A forwarded transcript. Native media stays in the source app until its
+ * bytes have been retrieved; transport URLs and keys never enter this DTO. */
+export interface ChatForwardedBundleDto {
+  title: string;
+  messages: ChatForwardedMessageDto[];
+  truncated: boolean;
+}
+
+export interface ChatForwardedMessageDto {
+  senderName: string | null;
+  /** Native display time, kept verbatim when the source omits a time zone. */
+  sentAt: string | null;
+  kind: "text" | "image" | "audio" | "video" | "file" | "link" | "location" | "record" | "unknown";
+  body: string;
+  forwarded?: ChatForwardedBundleDto;
+}
+
+/** Historical call summary; a missing duration must never become a made-up 0:00. */
+export interface ChatCallDto {
+  kind: "voice" | "video";
+  status: "ended" | "missed" | "declined" | "cancelled" | "incoming" | "started" | "unknown";
+  durationSeconds: number | null;
 }
 
 export interface ChatMessageDto {
@@ -1703,10 +2454,14 @@ export interface ChatMessageDto {
   sentAt: string;
   /** True when the signed-in account sent it. */
   mine: boolean;
+  /** Submitted locally but not confirmed by the source platform. Never auto-retry. */
+  deliveryStatus?: "unconfirmed";
   /** Media the message carries. Text messages have none. */
   attachments?: ChatAttachmentDto[];
   /** Structured link/card metadata rendered consistently across bridges. */
   linkPreview?: ChatLinkPreviewDto | null;
+  forwarded?: ChatForwardedBundleDto | null;
+  call?: ChatCallDto | null;
   /**
    * Set when the message holds something Polymux cannot bring across — a
    * voice note on a network with no media API, a photo whose key the source
@@ -1790,6 +2545,26 @@ export interface CommsStatusDto {
   };
 }
 
+/** Result of an explicit platform wake. `status` remains the passive fleet
+ * snapshot, while `ready` answers whether this exact user/agent action made
+ * the requested transport safe to use now. Keeping those facts separate lets
+ * cached on-demand chats remain visible without pretending a signed-out
+ * desktop session can accept an optimistic send. */
+export interface CommsWakeDto {
+  platform: CommsPlatform;
+  ready: boolean;
+  status: CommsStatusDto;
+}
+
+/** Ephemeral native login surface. Never include this in saved Hub snapshots. */
+export interface WeChatLoginDto {
+  state: "signed_in" | "signed_out" | "remembered_login" | "interactive_login" | "locked" | "launching" | "unavailable";
+  qrDataUrl: string | null;
+  expiresAt: number | null;
+  optionsReady: boolean;
+  issue?: "screen-recording" | "qr-expired" | "background-guard";
+}
+
 /**
  * A surface the agent has been asked to show, pushed to the renderer so the
  * workspace opens on it.
@@ -1849,7 +2624,7 @@ export interface WorkspaceRevealDto {
 }
 
 /** The workspace surfaces the agent can ask for by name. */
-export type WorkspaceSurface = "hub" | "drive" | "schedule" | "summary" | "phone";
+export type WorkspaceSurface = "hub" | "drive" | "tasks" | "calendar" | "summary" | "phone" | "terminal" | "ide" | "locker" | "media" | "usage" | "finance";
 
 /**
  * What the workspace looked like for one conversation: which tabs were open,
@@ -2242,6 +3017,30 @@ export interface TaskCardPatch {
 }
 
 export interface PolymuxApi {
+  devices: {request(value: import("./device-pairing.js").DevicePairingRequest): Promise<import("./device-pairing.js").DevicePairingState>};
+  account: {
+    /** Current optional-account state; safe to call when Supabase is not configured. */
+    get(): Promise<import("./account.js").AccountStatusDto>;
+    signInWithPassword(email: string, password: string): Promise<import("./account.js").AccountSignInResult>;
+    signUp(email: string, password: string): Promise<import("./account.js").AccountSignInResult>;
+    /** Re-sends the signup confirmation email after an unconfirmed sign-in. */
+    resendConfirmation(email: string): Promise<{ok: boolean; error?: string}>;
+    /** Sends a password-reset email; keep the app open so the reset link can return. */
+    requestPasswordReset(email: string): Promise<{ok: boolean; error?: string}>;
+    /** Sets a new password after the reset email's loopback redirect. */
+    updatePassword(password: string): Promise<import("./account.js").AccountSignInResult>;
+    /**
+     * Opens the provider's consent page in the user's browser and waits for
+     * the loopback redirect. Resolves on completion, cancellation, or error
+     * with the resulting state.
+     */
+    signInWithOAuth(provider: import("./account.js").AccountOAuthProvider): Promise<import("./account.js").AccountSignInResult>;
+    /** Restores another saved session on this machine. */
+    switchTo(userId: string): Promise<import("./account.js").AccountSignInResult>;
+    signOut(): Promise<import("./account.js").AccountStatusDto>;
+    /** Pushed on every sign-in, sign-out, and profile refresh. */
+    subscribe(listener: (status: import("./account.js").AccountStatusDto) => void): () => void;
+  };
   phone: {
     status(): Promise<PhoneStatusDto>;
     connect(): Promise<PhoneStatusDto>;
@@ -2257,9 +3056,37 @@ export interface PolymuxApi {
     type(text: string): Promise<void>;
     home(): Promise<void>;
   };
+  terminal: {
+    /** Allocates a PTY. Optional `cwd` is used when the shell first starts. */
+    create(cwd?: string): Promise<TerminalCreateDto>;
+    /** Starts that session's shell if needed and returns output so far. */
+    attach(id: string, cols: number, rows: number): Promise<TerminalAttachDto>;
+    write(id: string, data: string): Promise<void>;
+    resize(id: string, cols: number, rows: number): Promise<void>;
+    /** Kills that session only. */
+    close(id: string): Promise<void>;
+    subscribe(listener: (event: TerminalEventDto) => void): () => void;
+  };
+  ide: {
+    /** Opens a folder picker. Resolves to the chosen path, or null if cancelled. */
+    pickFolder(): Promise<string | null>;
+    /** One folder's names. Empty `path` is the project root. */
+    list(root: string, path?: string): Promise<IdeEntryDto[]>;
+    read(root: string, path: string): Promise<IdeFileDto>;
+    write(root: string, path: string, content: string): Promise<void>;
+    /** Creates a new text file. `path` is relative to the project root. */
+    create(root: string, path: string, content?: string): Promise<IdeFileDto>;
+    /** Moves or renames a file. Both paths are relative to the project root. */
+    move(root: string, from: string, to: string): Promise<IdeFileDto>;
+  };
   agentRuntime: {
     get(): Promise<AgentRuntimeDto>;
     registry(): Promise<AcpRegistryEntryDto[]>;
+    /** Reads only safe configuration metadata; no external agent is launched. */
+    inspectConfiguration(
+      request: Extract<UpdateAgentRuntimeRequest, {kind: "acp"}>,
+      sourceDirectory?: string,
+    ): Promise<ExternalAgentProfileDto[]>;
     update(request: UpdateAgentRuntimeRequest): Promise<AgentRuntimeDto>;
     settings(): Promise<AgentSettingsDto>;
     authenticate(methodId: string): Promise<AgentSettingsDto>;
@@ -2276,6 +3103,8 @@ export interface PolymuxApi {
     setDefault(id: string): Promise<ProfilesDto>;
     duplicate(id: string): Promise<ProfilesDto>;
     remove(id: string): Promise<ProfilesDto>;
+    connectExternal(request: ConnectExternalProfileRequest): Promise<ProfilesDto>;
+    openFolder(id: string, target?: "profile" | "source"): Promise<void>;
     subscribe(listener: (profiles: ProfilesDto) => void): () => void;
   };
   extension: {
@@ -2311,10 +3140,48 @@ export interface PolymuxApi {
     /** Writes real text, image pixels, or a file reference to the OS clipboard. */
     write(content: ClipboardContentDto): Promise<boolean>;
   };
+  locker: {
+    status(): Promise<LockerStatusDto>;
+    create(password: string): Promise<LockerStatusDto>;
+    unlock(password: string): Promise<LockerStatusDto>;
+    lock(): Promise<LockerStatusDto>;
+    /** Resets the idle-lock timer after a user action in Locker. */
+    touch(): Promise<void>;
+    list(): Promise<LockerListDto>;
+    reveal(id: string): Promise<LockerSecretsDto>;
+    totp(id: string): Promise<LockerTotpDto | null>;
+    /** Current and next authenticator codes for every TOTP item. */
+    codes(): Promise<LockerCodesDto[]>;
+    /** otpauth URL for one item, used to draw its QR code. */
+    otpauth(id: string): Promise<string | null>;
+    save(item: LockerItemInputDto): Promise<LockerItemDto>;
+    remove(id: string): Promise<LockerListDto>;
+    restore(ids: string[]): Promise<LockerListDto>;
+    purge(ids: string[]): Promise<LockerListDto>;
+    emptyTrash(): Promise<LockerListDto>;
+    pin(ids: string[], pinned: boolean): Promise<LockerListDto>;
+    reorder(ids: string[]): Promise<LockerListDto>;
+    changePassword(current: string, next: string): Promise<LockerStatusDto>;
+    copy(id: string, field: LockerCopyField, recoveryIndex?: number): Promise<boolean>;
+    importBegin(): Promise<LockerImportStartDto>;
+    importConfirm(password: string): Promise<LockerImportResultDto>;
+    /** Pulls or pushes the encrypted vault when storage is Account and the user is signed in. */
+    sync(): Promise<LockerStatusDto>;
+    /** This device vs Account. Account is the default. */
+    setStorage(mode: LockerStorageMode, resolve?: LockerStorageResolve): Promise<LockerStatusDto>;
+    subscribe(listener: (status: LockerStatusDto) => void): () => void;
+  };
+  /** Lifetime token, cost, and activity totals for the Usage app. */
+  finance: {
+    read(request: import("./finance.js").FinanceReadRequest): Promise<import("./finance.js").FinanceReadDto>;
+  };
+  usage: {
+    get(filter?: UsageFilterDto): Promise<UsageStatsDto>;
+  };
   window: {
     /** Opens a built-in workspace view in its own app window. */
     openWorkspaceView(
-      kind: "drive" | "schedule" | "calendar" | "hub" | "tasks" | "phone",
+      kind: PinnableWorkspaceView,
       conversationId?: string,
       placement?: {x: number; y: number; width?: number; height?: number},
     ): Promise<void>;
@@ -2333,18 +3200,6 @@ export interface PolymuxApi {
     ensureFirstRun(): Promise<FirstRunPermissionDto>;
     status(permission: SystemPermissionKind): Promise<SystemPermissionStatus>;
     request(permission: SystemPermissionKind): Promise<SystemPermissionStatus>;
-    /**
-     * Asks macOS for every grant the app is entitled to ask for and does not
-     * already have, in one pass. It is the button behind "ask again": each
-     * grant macOS has already decided is left alone, because it shows its
-     * dialog once and System Settings is the only place a refusal changes.
-     *
-     * Answers with the grants that are still not given, so a caller can offer
-     * that pane rather than leaving a button that appears to do nothing —
-     * which is what a sweep looks like when everything has already been
-     * decided and there is no dialog left to raise.
-     */
-    requestAll(): Promise<AppPermissionKind[]>;
     openSettings(permission: SystemPermissionKind | "location"): Promise<void>;
   };
   dictation: {
@@ -2368,14 +3223,55 @@ export interface PolymuxApi {
   };
   conversations: {
     list(): Promise<ConversationDto[]>;
+    listArchived(): Promise<ConversationDto[]>;
     create(title?: string): Promise<ConversationDto>;
+    duplicate(id: ConversationId, throughMessageId?: string): Promise<ConversationDto>;
     rename(id: ConversationId, title: string): Promise<ConversationDto | null>;
+    archive(id: ConversationId): Promise<ConversationDto | null>;
+    unarchive(id: ConversationId): Promise<ConversationDto | null>;
     remove(id: ConversationId): Promise<boolean>;
     messages(id: ConversationId): Promise<MessageDto[]>;
     updateMessage(
       id: string,
-      patch: { content?: JsonValue; metadata?: JsonValue; attachments?: string[] },
+      patch: { conversationId?: string; content?: JsonValue; metadata?: JsonValue; attachments?: string[] },
     ): Promise<MessageDto | null>;
+  };
+  team: {
+    list(): Promise<BotDto[]>;
+    groups(): Promise<TeamGroupDto[]>;
+    createGroup(request: CreateTeamGroupRequest): Promise<TeamGroupDto>;
+    updateGroup(id: string, request: UpdateTeamGroupRequest): Promise<TeamGroupDto>;
+    markGroupRead(id: string): Promise<TeamGroupDto>;
+    removeGroup(id: string): Promise<boolean>;
+    sendGroup(request: SendTeamGroupMessageRequest): Promise<MessageDto>;
+    /** Profiles installed on the computer currently acting as Team Host. */
+    profiles(hostId?: string): Promise<ProfileDto[]>;
+    create(request: CreateBotRequest): Promise<BotDto>;
+    update(id: string, request: UpdateBotRequest): Promise<BotDto>;
+    markRead(id: string): Promise<BotDto>;
+    remove(id: string): Promise<boolean>;
+    send(request: SendAgentMessageRequest): Promise<MessageDto>;
+    startComputer(id: string): Promise<BotDto>;
+    stopComputer(id: string): Promise<BotDto>;
+    leases(id?: string): Promise<LaptopCapabilityLeaseDto[]>;
+    grantLease(
+      id: string,
+      capabilities: LaptopCapabilityLeaseDto["capabilities"],
+      minutes?: number,
+    ): Promise<LaptopCapabilityLeaseDto>;
+    revokeLease(id: string): Promise<boolean>;
+    host(): Promise<TeamHostDto>;
+    hosts(): Promise<TeamHostDto[]>;
+    beginHostPairing(preserveFailures?: boolean): Promise<TeamHostDto>;
+    pairHost(request: PairTeamHostRequest): Promise<TeamHostDto>;
+    useLocalHost(): Promise<TeamHostDto>;
+    setDefaultHost(hostId: string): Promise<TeamHostDto>;
+    removeHost(hostId: string): Promise<TeamHostDto[]>;
+    resetHostPairing(): Promise<TeamHostDto>;
+    subscribeHost(listener: (host: TeamHostDto) => void): () => void;
+    subscribeHosts(listener: (hosts: TeamHostDto[]) => void): () => void;
+    subscribe(listener: (members: BotDto[]) => void): () => void;
+    subscribeGroups(listener: (groups: TeamGroupDto[]) => void): () => void;
   };
   runs: {
     start(request: StartRunRequest): Promise<StartRunResponse>;
@@ -2383,6 +3279,10 @@ export interface PolymuxApi {
     steer(runId: RunId, text: string, messageId?: string): Promise<void>;
     events(runId: RunId, afterSequence?: number): Promise<RunEventDto[]>;
     subscribe(listener: (event: RunEventDto) => void): () => void;
+  };
+  activity: {
+    /** A transient frame only; previews are never written to conversation history. */
+    preview(request: ActivityPreviewRequestDto): Promise<string | null>;
   };
   manager: {
     snapshot(): Promise<ManagerSnapshotDto>;
@@ -2406,6 +3306,10 @@ export interface PolymuxApi {
      * tool draws when it refuses a `file://` url.
      */
     preview(path: string): Promise<string>;
+    /** Copies a granted preview file to a location the user chooses. */
+    saveAs(url: string): Promise<string | null>;
+    /** Asks for a photo or video and grants the page a preview url for it. */
+    pick(): Promise<{url: string; name: string} | null>;
     /** What the agent asks to be shown; the drawer opens on it. */
     subscribeReveal(listener: (request: WorkspaceRevealDto) => void): () => void;
   };
@@ -2414,6 +3318,7 @@ export interface PolymuxApi {
     artifacts(conversationId: ConversationId): Promise<ArtifactDto[]>;
     references(conversationId: ConversationId): Promise<ReferenceDto[]>;
     addFiles(conversationId: ConversationId, files: File[]): Promise<ReferenceDto[]>;
+    subscribe(listener: (conversationId: ConversationId) => void): () => void;
   };
   memory: {
     status(): Promise<MemoryStatusDto>;
@@ -2456,8 +3361,7 @@ export interface PolymuxApi {
     removeCustom(id: string): Promise<McpServerDto[]>;
     searchRegistry(query: string, cursor?: string): Promise<McpRegistryPageDto>;
     /**
-     * Scans the MCP configuration files of the other agents installed on this
-     * machine, grouped by which one they belong to.
+     * Scans Pi's MCP configuration on this machine.
      */
     discover(): Promise<DiscoveredMcpGroupDto[]>;
     /** Copies a discovered server into ~/.polymux/mcp.json, where it becomes
@@ -2519,6 +3423,17 @@ export interface PolymuxApi {
      */
     upload(files: File[]): Promise<PluginDto[]>;
   };
+  /** Profile-scoped workspace Apps. Browser is core and intentionally absent. */
+  apps: {
+    list(): Promise<WorkspaceAppsDto>;
+    /** App discovery is separate from Claude Code plugin marketplaces. */
+    browse(query?: string): Promise<MarketplaceAppDto[]>;
+    install(id: string): Promise<WorkspaceAppsDto>;
+    setEnabled(id: string, enabled: boolean): Promise<WorkspaceAppsDto>;
+    setPinned(ids: string[]): Promise<WorkspaceAppsDto>;
+    /** Official Apps reject removal. */
+    remove(id: string): Promise<WorkspaceAppsDto>;
+  };
   /**
    * Messaging bridges and email accounts. Linking runs entirely here rather
    * than through a bridge's management room, so a QR scan or cookie sign-in is
@@ -2539,7 +3454,11 @@ export interface PolymuxApi {
      * been opened. Safe to fire on hover: a bridge already up makes this a
      * plain status read.
      */
-    wake(platform: CommsPlatform): Promise<CommsStatusDto>;
+    wake(platform: CommsPlatform): Promise<CommsWakeDto>;
+    /** Mirrors the current native login QR and enables its login checkboxes. */
+    weChatLogin(): Promise<WeChatLoginDto>;
+    /** User-requested foreground opening; never used by passive polling. */
+    weChatOpen(): Promise<void>;
     setHubUrl(baseUrl: string): Promise<CommsStatusDto>;
     /**
      * Sets messaging up with no input from the user: Polymux creates its own
@@ -2598,11 +3517,15 @@ export interface PolymuxApi {
     chatContacts(): Promise<CommsContactDto[]>;
     /** Current participants available to the chat composer's mention menu. */
     chatMembers(chatId: string): Promise<ChatMemberDto[]>;
-    /** User-approved identities shared by conversations on different platforms. */
+    chatGroupInfo(chatId: string): Promise<ChatGroupInfoDto>;
+    chatRenameGroup(chatId: string, name: string, expectedName: string): Promise<ChatGroupInfoDto>;
+    /** User-approved local contact identities and cross-platform links. */
     contactLinks(): Promise<ContactLinkDto[]>;
     /** Creates or extends one cross-platform identity. Overlapping links fold together. */
     contactLinkMerge(request: MergeContactLinkRequest): Promise<ContactLinkDto>;
-    /** Separates every route in one linked identity again. */
+    /** Renames one contact locally, preserving every route already linked to it. */
+    contactRename(request: RenameContactRequest): Promise<ContactLinkDto>;
+    /** Removes one local identity, separating linked routes or clearing a one-route name. */
     contactLinkRemove(id: string): Promise<void>;
     /** Opens a DM or creates a real remote group, returning its Matrix room id. */
     chatCreate(request: CreateChatRequest): Promise<string>;
@@ -2632,8 +3555,10 @@ export interface PolymuxApi {
     chatPickFiles(): Promise<string[]>;
     /** Sends a recorded voice note, as bytes rather than a file on disk. */
     chatSendAudio(chatId: string, bytes: Uint8Array, mimetype: string): Promise<void>;
-    /** Sends one selected image as a native sticker where supported. */
-    chatSendSticker(chatId: string, path: string): Promise<void>;
+    /** Account-native stickers available in this WeChat session. */
+    chatStickers(chatId: string): Promise<ChatStickerDto[]>;
+    /** Sends one selected account-native sticker. */
+    chatSendSticker(chatId: string, stickerId: string): Promise<void>;
     /** Recalls one of the signed-in account's own messages. */
     chatRecall(chatId: string, messageId: string): Promise<void>;
     /** Puts an emoji on a message. */
@@ -2652,6 +3577,13 @@ export interface PolymuxApi {
     mailMove(ids: string[], target: string, account?: string, folder?: string): Promise<void>;
     /** Erases messages outright. Emptying trash is this over every id in it. */
     mailDelete(ids: string[], account?: string, folder?: string): Promise<void>;
+    /** Reads one MIME part for an inline image or document preview. */
+    mailAttachment(
+      id: string,
+      part: string,
+      account?: string,
+      folder?: string,
+    ): Promise<MailAttachmentContentDto>;
     /**
      * Saves a message's attachments to the downloads directory and returns
      * where they landed, so the caller can open them.
@@ -2788,6 +3720,9 @@ export interface PolymuxApi {
       decision: "allow" | "deny",
       remember: boolean,
     ): Promise<void>;
+    /** Chooses one account from a live passkey prompt. Omitting the credential
+     * id cancels the authentication request. */
+    respondToWebAuthn(id: string, credentialId?: string): Promise<void>;
     sites(): Promise<BrowserSiteDto[]>;
     /** Clears one site's cookies, storage and caches. Chromium clears cookies
      * at the registrable domain, so neighbouring subdomains go with it. */
@@ -2811,6 +3746,9 @@ export interface PolymuxApi {
      * for. Never called to populate a list. */
     revealLogin(id: string): Promise<string | null>;
     deleteLogin(id: string): Promise<SavedLoginDto[]>;
+    /** Fills one offered Locker or saved-login item into the current page. */
+    fillAutofill(tabId: string, itemId: string): Promise<boolean>;
+    dismissAutofill(tabId: string): Promise<void>;
     /** The browsers found on this machine, with their readable profiles. */
     importSources(): Promise<BrowserSourceDto[]>;
     /** Pages visited, newest first. `query` matches url or title. Named apart

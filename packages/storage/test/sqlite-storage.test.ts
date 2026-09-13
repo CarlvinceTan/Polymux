@@ -75,6 +75,7 @@ test("stores conversations, ordered messages, attachments and archive state", ()
       ["message-2"],
     );
     assert.equal(storage.getMessage(first.id)?.id, first.id);
+    assert.equal(storage.latestMessage(created.id)?.id, second.id);
     assert.deepEqual(
       storage.updateMessage(first.id, {
         content: "Hello again",
@@ -103,6 +104,92 @@ test("stores conversations, ordered messages, attachments and archive state", ()
       storage.listConversations({ includeArchived: true })[0]?.title,
       "Greeting",
     );
+    assert.equal(
+      storage.listConversations({ archivedOnly: true })[0]?.title,
+      "Greeting",
+    );
+    storage.updateConversation(created.id, { archived: false });
+    assert.equal(storage.listConversations().length, 1);
+    assert.equal(storage.listConversations({ archivedOnly: true }).length, 0);
+  } finally {
+    storage.close();
+  }
+});
+
+test("deleteMessagesAfter drops later turns, attachments, and stale summaries", () => {
+  const storage = fixture();
+  try {
+    storage.createConversation({id: "chat", title: "Chat"});
+    const first = storage.appendMessage({
+      id: "user-1",
+      conversationId: "chat",
+      role: "user",
+      content: "Hello",
+    });
+    const reply = storage.appendMessage({
+      id: "assistant-1",
+      conversationId: "chat",
+      role: "assistant",
+      content: "Hi",
+    });
+    storage.appendMessage({
+      id: "user-2",
+      conversationId: "chat",
+      role: "user",
+      content: "And then",
+    });
+    storage.addAttachment({
+      id: "later-file",
+      messageId: reply.id,
+      name: "notes.txt",
+      path: "/tmp/notes.txt",
+      mimeType: "text/plain",
+      size: 5,
+      sha256: null,
+    });
+    storage.saveCompaction({
+      id: "compact-kept",
+      conversationId: "chat",
+      throughMessageSequence: first.sequence,
+      summary: "Greeted",
+      tokenCount: 4,
+      prefixFingerprint: "keep",
+    });
+    storage.saveCompaction({
+      id: "compact-stale",
+      conversationId: "chat",
+      throughMessageSequence: reply.sequence,
+      summary: "Includes the reply",
+      tokenCount: 8,
+      prefixFingerprint: "drop",
+    });
+
+    assert.equal(storage.deleteMessagesAfter("chat", first.sequence), 2);
+    assert.deepEqual(
+      storage.listMessages("chat").map((message) => message.id),
+      ["user-1"],
+    );
+    assert.equal(storage.listAttachments(reply.id).length, 0);
+    assert.equal(storage.getLatestCompaction("chat")?.id, "compact-kept");
+    assert.equal(storage.deleteMessagesAfter("chat", first.sequence), 0);
+  } finally {
+    storage.close();
+  }
+});
+
+test("latestMessage is not capped by the normal history page", () => {
+  const storage = fixture();
+  try {
+    const conversation = storage.createConversation({id: "long", title: "Long chat"});
+    for (let index = 1; index <= 501; index += 1)
+      storage.appendMessage({
+        id: `message-${index}`,
+        conversationId: conversation.id,
+        role: "assistant",
+        content: `Message ${index}`,
+      });
+    assert.equal(storage.listMessages(conversation.id).length, 500);
+    assert.equal(storage.latestMessage(conversation.id)?.content, "Message 501");
   } finally {
     storage.close();
   }
@@ -276,6 +363,10 @@ test("stores artifacts and references without putting file contents in SQLite", 
     assert.equal(
       storage.listReferences("conversation-1")[0]?.uri,
       "https://polymux.com",
+    );
+    assert.equal(
+      storage.updateReferenceTitle("reference-1", "Polymux desktop")?.title,
+      "Polymux desktop",
     );
   } finally {
     storage.close();
@@ -554,6 +645,7 @@ test("a blank title does not overwrite one already known", () => {
   storage.recordVisit({url: "https://example.com/a", title: "Real title"});
   const after = storage.recordVisit({url: "https://example.com/a", title: ""});
   assert.equal(after.title, "Real title");
+  assert.equal(storage.getHistoryEntry("https://example.com/a")?.title, "Real title");
 });
 
 test("history lists newest first and searches url and title", () => {
@@ -673,4 +765,53 @@ test("a prefix stays a prefix, and trimming keeps the head", () => {
   assert.deepEqual(storage.listCommsCache("body:x|").map((e) => e.value), ["e", "d"]);
   assert.equal(storage.deleteCommsCache("body:"), 4);
   assert.equal(storage.listCommsCache("body:").length, 0);
+});
+
+test("usage source reads run totals and tool names without transcripts", () => {
+  const storage = fixture();
+  try {
+    storage.createConversation({id: "conversation-1", title: "Usage"});
+    storage.createRun({id: "run-1", conversationId: "conversation-1", model: "provider/model"});
+    storage.updateRun("run-1", {
+      status: "completed",
+      usage: {totalTokens: 42, costUsd: 0.12, reasoningTokens: 0},
+    });
+    storage.appendRunEvent("run-1", "tool.started", {
+      toolCall: {type: "toolCall", id: "call-1", name: "Read", arguments: {}},
+    });
+    storage.appendRunEvent("run-1", "turn.started", {
+      footprint: {activeSkillNames: ["review", "commit"]},
+    });
+    const source = storage.loadUsageSource();
+    assert.equal(source.conversations.length, 1);
+    assert.equal(source.runs[0]?.usage && typeof source.runs[0].usage === "object" && !Array.isArray(source.runs[0].usage)
+      ? (source.runs[0].usage as {totalTokens: number}).totalTokens
+      : 0, 42);
+    assert.deepEqual(source.toolCounts, [{runId: "run-1", conversationId: "conversation-1", name: "Read", count: 1}]);
+    assert.deepEqual(source.skillTurns, [{runId: "run-1", conversationId: "conversation-1", names: ["review", "commit"]}]);
+  } finally {
+    storage.close();
+  }
+});
+
+test("usage recovers ACP identity from stored start events and keeps event counts per run", () => {
+  const storage = fixture();
+  try {
+    storage.createConversation({id: "acp-chat", title: "Runtime changes"});
+    for (const [id, name] of [["claude-run", "Claude Code"], ["codex-run", "Codex"]]) {
+      storage.createRun({id, conversationId: "acp-chat", model: "acp:npx"});
+      storage.appendRunEvent(id, "run.started", {model: {provider: "acp", id: "acp:npx", name}});
+      storage.appendRunEvent(id, "tool.started", {toolCall: {name: "github__read"}});
+    }
+    // A duplicate event must not duplicate the run or overwrite its first identity.
+    storage.appendRunEvent("claude-run", "run.started", {model: {provider: "acp", name: "Changed"}});
+    const result = storage.loadUsageSource();
+    assert.equal(result.runs.length, 2);
+    assert.equal(result.runs.find(run => run.id === "claude-run")?.agent?.name, "Claude Code");
+    assert.equal(result.runs.find(run => run.id === "codex-run")?.agent?.name, "Codex");
+    assert.equal(result.toolCounts.length, 2);
+    assert.deepEqual(result.toolCounts.map(row => row.runId).sort(), ["claude-run", "codex-run"]);
+  } finally {
+    storage.close();
+  }
 });

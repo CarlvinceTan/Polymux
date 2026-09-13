@@ -14,7 +14,7 @@ The workspace keeps the material behind an answer visible beside your conversati
 
 ## Open a view
 
-Use the workspace control in the title bar to open a view. The available views include **Drive**, **Hub**, **Browser**, **Schedule**, **Tasks**, and **Subagents**.
+Use the workspace control in the title bar to open a view. The available views include **Drive**, **Hub**, **Browser**, **Tasks**, and **Subagents**. Recurring schedules live inside **Tasks**.
 
 You can keep several tabs open, switch between them, resize the workspace, expand it, or minimise it back into the conversation.
 

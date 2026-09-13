@@ -1,7 +1,13 @@
 <script module lang="ts">
   import type {MessageData} from './Message.svelte';
   import type {AgentActivityItem} from './AgentActivity.svelte';
-  export type ChatMessage = MessageData & {activities?: AgentActivityItem[]; startedAt?: string; completedAt?: string};
+  export type ChatMessage = MessageData & {
+    activities?: AgentActivityItem[];
+    startedAt?: string;
+    completedAt?: string;
+    /** Renderer-only delivery state for an optimistic Team group message. */
+    teamDelivery?: 'pending' | 'failed';
+  };
 
   export const JUMP_TO_LATEST_THRESHOLD = 160;
   export const STICK_TO_LATEST_THRESHOLD = 20;
@@ -27,6 +33,34 @@
 </script>
 
 <script lang="ts">
+  export let messageTarget: {messageId: string} | null = null;
+  export let onMessageRevealed: () => void = () => {};
+  let revealingTarget: {messageId: string} | null = null;
+  $: if (messageTarget && messageTarget !== revealingTarget && messages.some((message) => message.id === messageTarget?.messageId)) {
+    revealingTarget = messageTarget;
+    void revealMessage(messageTarget);
+  }
+
+  async function revealMessage(target: {messageId: string}): Promise<void> {
+    stickToLatest = false;
+    await tick();
+    if (messageTarget !== target) return;
+    const node = document.getElementById(`message-${target.messageId}`);
+    if (!node || !column?.contains(node)) {
+      // The target is not in this pane. Hand control back instead of leaving
+      // the request pending, which would keep auto-follow switched off.
+      onMessageRevealed();
+      return;
+    }
+    node.scrollIntoView({behavior: 'instant', block: 'center'});
+    measure();
+    onMessageRevealed();
+  }
+
+  export let devices: import('@polymux/protocol').TeamHostDto[] = [];
+  export let deviceId = '';
+  export let deviceLocked = false;
+  export let onDeviceChange: (id: string) => void = () => {};
   import {onMount, tick} from 'svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import WelcomeChatPane from './WelcomeChatPane.svelte';
@@ -40,6 +74,8 @@
 
   export let messages: ChatMessage[] = [];
   export let running = false;
+  export let onFork: ((id: string) => Promise<void>) | undefined = undefined;
+  export let onShare: ((id: string) => void) | undefined = undefined;
   /** Empty means the composer's own default, which follows the language. */
   export let placeholder = '';
   export let queued: QueuedMessage[] = [];
@@ -54,7 +90,6 @@
   export let reasoning: ReasoningEffort = 'medium';
   export let onReasoningChange: (value: ReasoningEffort) => void = () => {};
   export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
-  export let onFeedback: (id: string, feedback: 'up' | 'down' | null) => void = () => {};
   /** A link in a message: the host decides which browser surface opens it. */
   export let onOpenLink: (url: string, title: string, anchor?: DOMRect) => void = () => {};
   export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
@@ -107,6 +142,7 @@
 
   async function followLatest(_count: number, _running: boolean): Promise<void> {
     await tick();
+    if (messageTarget) return;
     if (column && stickToLatest) column.scrollTop = column.scrollHeight;
     measure();
   }
@@ -174,7 +210,7 @@
 <div class="conversation-column" bind:this={column} onscroll={measure}>
   {#if messages.length === 0}
     <div class:voice-welcome={speechMode} class="empty-state">
-      <WelcomeChatPane
+      <WelcomeChatPane {devices} {deviceId} {deviceLocked} {onDeviceChange}
         showComposer={!speechMode}
         active={running}
         {speechModeEnabled}
@@ -203,7 +239,7 @@
             streaming={running && index === liveIndex}
           />
         {/if}
-        <Message {message} streaming={running && index === liveIndex} {activityVisible} {onEdit} {onFeedback} {onOpenLink} {onOpenFilePath}/>
+        <Message {message} streaming={running && index === liveIndex} {activityVisible} {onShare} {onFork} {onEdit} {onOpenLink} {onOpenFilePath}/>
       {/each}
     </div>
 
@@ -229,7 +265,7 @@
         {/if}
         {#if !speechMode}
           {#key draftKey}
-            <PromptInput active={running} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied} {onFileDragActiveChange} {draftKey}/>
+            <PromptInput {devices} {deviceId} {deviceLocked} {onDeviceChange} active={running} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied} {onFileDragActiveChange} {draftKey}/>
           {/key}
         {/if}
       </div>

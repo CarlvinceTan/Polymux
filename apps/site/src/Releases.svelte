@@ -2,7 +2,19 @@
   import {onMount} from 'svelte';
   import github from 'simple-icons/icons/github.svg?url';
   import logo from '../../desktop/src/renderer/public/polymux.svg';
-  import {formatReleaseDate, formatReleaseMonth, getRelease, releasePath, releases} from './lib/releases';
+  import {
+    ALL_PLATFORMS,
+    filterReleaseChangelog,
+    formatReleaseDate,
+    formatReleaseMonth,
+    getRelease,
+    groupReleaseChangelog,
+    releaseChangelog,
+    releasePath,
+    releasePlatforms,
+    releases,
+  } from './lib/releases';
+  import {renderSafeMarkdownInline} from './lib/markdown.js';
   import {
     formatFileSize,
     PLATFORM_LABELS,
@@ -26,6 +38,65 @@
     windows: 'Intel / AMD',
     linux: 'x86_64 AppImage',
   };
+
+  type ReleaseItem = {html: string};
+  type ReleaseGroup = {category: string; sections: {area: string; items: ReleaseItem[]}[]};
+  type ReleasePlatformTab = {value: string; label: string; tabId: string; panelId: string; groups: ReleaseGroup[]};
+
+  function panelKey(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'all';
+  }
+
+  /** Render every platform (plus All) once, so the first paint already contains the tabs. */
+  function buildPlatformTabs(): ReleasePlatformTab[] {
+    if (!release) return [];
+    const sections = releaseChangelog(release);
+    const versionKey = panelKey(release.version);
+
+    return [ALL_PLATFORMS, ...releasePlatforms(release)].map((value) => {
+      const key = `${versionKey}-${panelKey(value)}`;
+      return {
+        value,
+        label: value === ALL_PLATFORMS ? 'All' : value,
+        tabId: `release-platform-tab-${key}`,
+        panelId: `release-platform-panel-${key}`,
+        groups: groupReleaseChangelog(filterReleaseChangelog(sections, value)).map((group) => ({
+          category: group.category,
+          sections: group.sections.map((section) => ({
+            area: section.area,
+            items: section.items.map((item) => ({html: renderSafeMarkdownInline(item)})),
+          })),
+        })),
+      };
+    });
+  }
+
+  const platformTabs = buildPlatformTabs();
+  let selectedPlatform = $state<string>(ALL_PLATFORMS);
+
+  function selectPlatformWithKeyboard(event: KeyboardEvent) {
+    const keys = ['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    const button = event.currentTarget as HTMLButtonElement | null;
+    const tablist = button?.parentElement;
+    if (!button || !tablist) return;
+    const buttons = Array.from(tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const current = buttons.indexOf(button);
+    if (current === -1) return;
+
+    event.preventDefault();
+    let next = current;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (current + 1) % buttons.length;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (current - 1 + buttons.length) % buttons.length;
+    else if (event.key === 'End') next = buttons.length - 1;
+    else next = 0;
+
+    const target = buttons[next];
+    const tab = platformTabs[next];
+    if (!target || !tab) return;
+    selectedPlatform = tab.value;
+    target.focus();
+  }
 
   let downloads = $state<ReleaseDownloads | null>(null);
 
@@ -137,7 +208,49 @@
           <div class="release-copy">
             <p class="release-summary">{release.summary}</p>
             <h2 class="release-title">{release.title}</h2>
-            <div class="release-body">{@html release.html}</div>
+
+            {#if platformTabs.length > 1}
+              <div class="release-platforms" role="tablist" aria-label="Filter release notes by platform">
+                {#each platformTabs as tab (tab.value)}
+                  <button
+                    type="button"
+                    role="tab"
+                    id={tab.tabId}
+                    aria-controls={tab.panelId}
+                    aria-selected={selectedPlatform === tab.value}
+                    tabindex={selectedPlatform === tab.value ? 0 : -1}
+                    class:active={selectedPlatform === tab.value}
+                    onclick={() => (selectedPlatform = tab.value)}
+                    onkeydown={selectPlatformWithKeyboard}
+                  >{tab.label}</button>
+                {/each}
+              </div>
+
+              {#each platformTabs as tab (tab.value)}
+                <div
+                  class="release-body release-platform-panel"
+                  id={tab.panelId}
+                  role="tabpanel"
+                  aria-labelledby={tab.tabId}
+                  tabindex="0"
+                  hidden={selectedPlatform !== tab.value}
+                >
+                  {#each tab.groups as group (group.category)}
+                    <h2>{group.category}</h2>
+                    {#each group.sections as section (section.area)}
+                      <h3>{section.area}</h3>
+                      <ul>
+                        {#each section.items as item (item.html)}
+                          <li>{@html item.html}</li>
+                        {/each}
+                      </ul>
+                    {/each}
+                  {/each}
+                </div>
+              {/each}
+            {:else}
+              <div class="release-body">{@html release.html}</div>
+            {/if}
           </div>
         </article>
       </section>

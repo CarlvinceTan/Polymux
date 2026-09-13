@@ -58,7 +58,13 @@ export function installOfficialSkills(sources: string | string[], home = homedir
     existsSync(source),
   );
   if (!present.length) return target;
-  const digest = present.map((source) => treeDigest(source)).join(":");
+  // Mirrored Control scripts must still find signed helpers in the app's
+  // resources tree. Include its location so moving an app refreshes the link.
+  const nativeBin = present
+    .filter((source) => existsSync(path.join(source, "control", "scripts", "macos")))
+    .map((source) => path.resolve(source, "..", "..", "native", "bin"))
+    .find((directory) => existsSync(directory));
+  const digest = `${present.map((source) => treeDigest(source)).join(":")}:${nativeBin ?? ""}`;
   if (readManifest(target) === digest) return target;
   // Staged next to the target and swapped in: a crash or a quit mid-copy
   // leaves the previous mirror whole rather than a half-written skill set.
@@ -66,6 +72,7 @@ export function installOfficialSkills(sources: string | string[], home = homedir
   rmSync(staging, {recursive: true, force: true});
   mkdirSync(path.dirname(target), {recursive: true});
   for (const source of present) cpSync(source, staging, {recursive: true});
+  if (nativeBin) writeFileSync(path.join(staging, "control", "scripts", "macos", ".native-bin"), nativeBin);
   writeFileSync(path.join(staging, MANIFEST), `${JSON.stringify({digest})}\n`);
   const retired = `${target}.retiring`;
   rmSync(retired, {recursive: true, force: true});

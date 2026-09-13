@@ -66,3 +66,63 @@ test("removing a contact link separates its routes", () => {
   links.remove(created.id);
   assert.deepEqual(links.list(), []);
 });
+
+test("a renamed single contact persists and follows its remote identity", () => {
+  const store = new Preferences();
+  const ids = ["renamed", "renamed-v2"];
+  const links = new ContactLinks(store, {
+    now: () => new Date("2026-08-31T08:00:00.000Z"),
+    id: () => ids.shift() ?? "unexpected",
+  });
+  const renamed = links.rename({
+    name: "  小朱 🫶  ",
+    member: member("whatsapp", "61400"),
+  });
+  assert.equal(renamed.name, "小朱 🫶");
+  assert.equal(renamed.members.length, 1);
+
+  const reopened = new ContactLinks(store, {
+    now: () => new Date("2026-08-31T08:01:00.000Z"),
+    id: () => ids.shift() ?? "unexpected",
+  });
+  const revised = reopened.rename({
+    name: "Best friend",
+    member: {...member("whatsapp", "61400"), chatId: "!replacement:local"},
+  });
+  assert.equal(revised.id, "contact-renamed-v2");
+  assert.equal(revised.members[0]?.chatId, "!replacement:local");
+  reopened.remove(renamed.id);
+  assert.equal(reopened.list()[0]?.name, "Best friend", "a stale rename revision cannot clear the current name");
+});
+
+test("renaming one linked route preserves the whole cross-platform identity", () => {
+  const links = new ContactLinks(new Preferences(), {
+    now: () => new Date("2026-08-31T08:00:00.000Z"),
+    id: (() => {
+      const ids = ["linked", "renamed"];
+      return () => ids.shift() ?? "unexpected";
+    })(),
+  });
+  links.merge({
+    name: "Pranav",
+    members: [member("whatsapp", "61400"), member("telegram", "42")],
+  });
+  const renamed = links.rename({
+    name: "Uni friend",
+    member: member("telegram", "42"),
+  });
+  assert.equal(renamed.name, "Uni friend");
+  assert.deepEqual(renamed.members.map((item) => item.platform), ["whatsapp", "telegram"]);
+});
+
+test("contact names must be non-empty and at most 80 characters", () => {
+  const links = new ContactLinks(new Preferences());
+  assert.throws(
+    () => links.rename({name: "   ", member: member("telegram", "1")}),
+    /Enter a contact name/,
+  );
+  assert.throws(
+    () => links.rename({name: "x".repeat(81), member: member("telegram", "1")}),
+    /at most 80 characters/,
+  );
+});

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {SqliteStorage} from "@polymux/storage";
 import {HubCache} from "./cache.js";
-import type {ChatDto, CommsStatusDto, MailEnvelopeDto, MailFolderDto, MailMessageDto} from "@polymux/protocol";
+import type {ChatDto, ChatMessageDto, CommsStatusDto, MailEnvelopeDto, MailFolderDto, MailMessageDto} from "@polymux/protocol";
 
 function fixture() {
   const storage = new SqliteStorage(":memory:");
@@ -12,6 +12,19 @@ function fixture() {
 const folders = [{name: "INBOX", label: "Inbox", role: "inbox"}] as MailFolderDto[];
 const envelope = {id: "1", subject: "Hello"} as MailEnvelopeDto;
 const body = {id: "1", subject: "Hello", body: "Hi there"} as MailMessageDto;
+
+test("obsolete WeChat call pages are discarded once and replaced by structured history", () => {
+  const {cache, storage} = fixture();
+  cache.putChats([{id:"!wechat",platform:"wechat"},{id:"!matrix",platform:"matrix"}] as ChatDto[]);
+  const old = {id:"call",body:"[Call]"} as ChatMessageDto;
+  cache.putChatPage("!wechat",[old],null);
+  cache.putChatPage("!matrix",[old],null);
+  assert.deepEqual(cache.snapshot().messages.map(page=>page.chatId),["!matrix"]);
+  assert.equal(storage.readCommsCache("hub:chat:!wechat"),null);
+  const refreshed: ChatMessageDto = {...old,call:{kind:"voice",status:"ended",durationSeconds:1135}};
+  cache.putChatPage("!wechat",[refreshed],null);
+  assert.equal(cache.snapshot().messages.find(page=>page.chatId==="!wechat")?.messages[0].call?.durationSeconds,1135);
+});
 
 test("the snapshot hands back what passed through, and is empty before anything has", () => {
   const {cache} = fixture();

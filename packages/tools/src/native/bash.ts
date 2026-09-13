@@ -58,7 +58,10 @@ export function createBashTool(environment: ToolEnvironment): AgentTool {
         shellArgs,
         {
           cwd: workingDirectory(environment, context),
-          env: { ...process.env, ...environment.env },
+          // Native helpers can bind durable state (such as an exact-window
+          // lease) back to the activity row for this run without making the
+          // model invent an owner identifier.
+          env: { ...process.env, ...environment.env, POLYMUX_RUN_ID: context.runId },
           stdio: ["ignore", "pipe", "pipe"],
           // Its own process group, so a runaway child of the shell — a
           // recursive `grep` or `find` — is killed along with the shell

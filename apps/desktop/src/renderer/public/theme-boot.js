@@ -65,7 +65,14 @@
   // stylesheet. App.svelte treats "settled" as the sequence already watched.
   // The dead-bundle sweep at the bottom still runs: this cover, like any
   // other, must not outlive a bundle that never mounts.
-  var settled = new URLSearchParams(location.search).has("splashSettled");
+  var startupParams = new URLSearchParams(location.search);
+  var settled = startupParams.has("splashSettled");
+  // Warm windows must skip the cover before the renderer bundle mounts.
+  // Keep this separate from data-splash, which main sets when showing a window.
+  if (startupParams.get("coldStart") === "0" && !settled) {
+    root.dataset.skipStartup = "true";
+    return;
+  }
   if (settled) root.dataset.splash = "settled";
   else startSequence();
   function startSequence() {

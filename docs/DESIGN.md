@@ -39,21 +39,59 @@ Icons in rows sit close to their label — around 8px of gap. A larger gap reads
 as two separate columns rather than one labelled item. Icons that appear in the
 same strip, rail, or row set are all the same size.
 
-## Empty and loading states
+Check the rendered glyph as well as its box. A small optical correction, such
+as a 1px horizontal or vertical offset, is appropriate when uneven glyph
+padding makes correct layout look off-centre. Fix layout first, then keep any
+necessary correction in the shared icon or control style with its reason.
+Do not scatter per-instance offsets or move the surrounding controls to
+compensate. Keep text baselines aligned across neighbouring labelled controls.
 
-**They are centred in the space they fill.** When a view has no rows yet —
-nothing loaded, nothing created, a search with no results — the placeholder text
-(and any spinner or hint beside it) goes in the middle of the container, both
-horizontally and vertically, not tucked at the top-left where the first row
-would have been. Give the container `min-height: 100%` and centre with flex, the
-way `.empty-state` does. The same applies to loading text that stands in before
-content arrives: it occupies the centre of the space it is holding, so the view
-does not jump when the real content replaces it.
+## Icon consistency
 
-The exception is a small fixed-height slot inside a larger panel — a section of
-the Summary side panel, for instance — where the empty line is one item in a
-stack and centring it would break the stack's rhythm (`.empty-row`). Centre when
-the empty state owns the whole space; keep it in flow when it does not.
+Use the existing icon family and shared icon treatment. Icons in the same
+control group match in size, stroke thickness, and perceived weight; equal
+bounding boxes alone do not guarantee a visual match. Preserve brand artwork,
+but give it consistent placement and scale beside other icons. Reuse the same
+glyph for the same action across surfaces. Verify icons at their actual
+rendered size, including optical corrections, in both themes.
+
+## Light and dark themes
+
+Use existing theme-aware colour tokens for text, icons, surfaces, borders,
+dividers, placeholders, and interaction states. Avoid hard-coded colours that
+only work on one background. Text and icons must remain readable against their
+actual surface in both themes, including menus, overlays, loading states, and
+selected rows. Muted and disabled content should remain identifiable.
+
+Hover increases foreground contrast appropriately for the theme; it does not
+always mean making the colour darker. Focus and selection must remain visible
+without relying only on a subtle colour shift. Check theme switching with the
+affected menus or panels open so stale colours and mismatched surfaces show up.
+
+## Loading skeletons and placeholder states
+
+**Skeletons follow the layout of the components they replace.** Match the
+expected rows, text lines, icons or avatars, media shapes, widths, heights, and
+spacing using the same layout constraints as the loaded content. Keep them in
+the content's eventual position; do not centre a skeleton that represents a
+top-aligned list or substitute generic bars for a different component shape.
+Reserve predictable space so content arriving does not shift neighbouring UI.
+Compare the skeleton with the loaded state at normal and narrow widths.
+
+**Standalone placeholder messages default to the horizontal and vertical centre
+of the space they fill.** This includes loading text, empty views, no search
+results, and warning or error messages that replace unavailable content. When
+there is substantial unused space, centre the message and any related spinner,
+hint, or action as a group within that content area, not the entire window.
+Ensure the container actually fills the available area before centring it with
+flex or grid; `.empty-state` is the reference pattern.
+
+Use the scenario to choose exceptions. A small section in a larger panel may
+keep its empty line in the stack's rhythm (`.empty-row`). Field validation stays
+beside its field, and a warning accompanying usable content stays near that
+content. Do not force these into the centre or reserve a large empty area for
+them. Judge whether the message replaces the area's content or supports an
+existing control, and follow the closest established pattern.
 
 ## No stray chrome
 
@@ -65,10 +103,10 @@ habit:
   glyph stands in for a favicon it *replaces* it at the same size; it never gets
   nested inside the favicon's frame.
 - **No grey circle or pill highlight on hover for an icon button.** The icon
-  darkens instead. Where a whole row highlights, the highlight is inset — it
-  must not touch a divider or the container edge.
+  gains foreground contrast instead. Where a whole row highlights, the
+  highlight is inset — it must not touch a divider or the container edge.
 - **Clickable text stays text** — no border, no background, no button styling.
-  Hover darkens it, subtly.
+  Hover subtly increases foreground contrast for the current theme.
 - **Dividers are not edge-to-edge** and rules do not run under icons.
 - **No scrollbars, anywhere.** Every scrollable area hides them
   (`scrollbar-width: none` plus `::-webkit-scrollbar { display: none }`).
@@ -86,7 +124,8 @@ second treatment.
 
 Menus and submenus never overflow their container or the window: cap the height
 to a few rows, make the rest scroll, and flip or shift the menu so it stays on
-screen. A menu opened from a control is centred on that control.
+screen. A menu opened from a control is centred on that control when space
+permits; keeping it on screen takes priority at an edge.
 
 ## Text that does not fit
 
@@ -95,6 +134,31 @@ wider (`overflow: hidden; text-overflow: ellipsis; white-space: nowrap` with
 `min-width: 0` on the flex item). A tooltip appears **only** when the text is
 actually truncated — never as decoration on an obvious icon, never while that
 control's menu is open, and on list rows only after a ~1.5s hover.
+
+## Tooltips
+
+**Tooltips are short: one word where one word names the control, and never a
+sentence.** `data-tooltip-label` is a glance, not an explanation — `Add`,
+`Sort`, `Filter`, `Chats`, `Settings`. Put the fuller, specific wording in
+`aria-label`, which is read out and has room for it; the visible tooltip and the
+accessible name do not have to match. A canonical surface name may run a little
+longer when no shorter word names it (`Plugin Marketplace`), but do not restate
+a label already visible beside the control, and do not turn the tooltip into
+copy that explains what the control does.
+
+## Layout bounds and overflow
+
+At normal and narrow widths, long content must not overlap neighbouring text,
+icons, actions, or panel boundaries. Let the text area shrink while preserving
+the space and hit targets of adjacent controls. Define which content truncates,
+clips, or scrolls; do not hide overflow on a parent just to conceal a layout bug
+or accidentally clip menus and focus indicators.
+
+When a badge must clip, clip the whole badge, including its border and
+background. Do not add a fade unless the established pattern calls for it.
+Popovers and submenus stay within the available viewport and clear adjacent
+controls and resize handles. Check content extremes and open overlays after
+resizing, not just the initial layout with short labels.
 
 ## Motion
 
@@ -111,6 +175,12 @@ Transitions are smooth and quiet, and nothing jumps:
 - Consecutive states hand over: the outgoing one fades out as the incoming one
   slides or fades in, timed so the arrival lands before the transition ends.
 
+Keep shared control geometry consistent across loading, selected, hover, focus,
+and completed states. Reserve space for changing metrics and status icons so
+updates do not shift neighbouring controls. Expanding a row may reveal content,
+but its first-line marker and actions stay aligned. On completion or failure,
+clear transient animation, dragging opacity, and other active-only treatments.
+
 ## Spacing and rhythm
 
 Spacing within a section is uniform and deliberate — equal padding on both sides
@@ -119,3 +189,10 @@ title, its description and its body. Horizontal gaps run tight; when in doubt,
 reduce. When a pattern already exists elsewhere in the app (a search field's
 `x`, a rail's fades, a panel's row metrics), reuse it exactly instead of styling
 a near-copy.
+
+Reuse the actual shared component, class, or token where one exists. Search for
+the established implementation before adding local CSS. If a repeated pattern
+needs a correction, make it in the shared implementation and check its affected
+callers. Keep equivalent row heights, label gaps, padding, divider insets, and
+control treatments consistent across panels; avoid near-duplicate components
+that drift independently.

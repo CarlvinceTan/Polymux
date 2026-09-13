@@ -7,6 +7,7 @@ import {
   moveChatToFolder,
   renameChatFolder,
   toggleChatFolder,
+  uniqueChatFolderName,
   type ChatFolder,
 } from './chatFolders';
 
@@ -33,4 +34,18 @@ test('renaming, collapsing, deleting, and unfiling do not affect chats', () => {
   assert.deepEqual(folders[0], {id: 'work', name: 'Projects', collapsed: true, chatIds: ['chat-1']});
   assert.deepEqual(moveChatToFolder(folders, 'chat-1', null)[0]?.chatIds, []);
   assert.deepEqual(deleteChatFolder(folders, 'work'), []);
+});
+
+test('uniqueChatFolderName steps past folders already using the suggestion', () => {
+  assert.equal(uniqueChatFolderName([], 'New folder'), 'New folder');
+  assert.equal(uniqueChatFolderName([
+    {id: 'a', name: 'New folder', collapsed: false, chatIds: []},
+  ], 'New folder'), 'New folder 1');
+  assert.equal(uniqueChatFolderName([
+    {id: 'a', name: 'New folder', collapsed: false, chatIds: []},
+    {id: 'b', name: 'new folder 1', collapsed: false, chatIds: []},
+  ], 'New folder'), 'New folder 2');
+  assert.equal(uniqueChatFolderName([
+    {id: 'a', name: 'New folder 1', collapsed: false, chatIds: []},
+  ], 'New folder'), 'New folder');
 });

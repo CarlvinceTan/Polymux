@@ -156,9 +156,23 @@ const currentSigningIdentity = () => {
   return `${result.stdout ?? ""}${result.stderr ?? ""}`;
 };
 
+const currentEntitlements = () => {
+  const result = spawnSync("codesign", ["-d", "--entitlements", "-", brandedApp], {
+    encoding: "utf8",
+  });
+  return `${result.stdout ?? ""}${result.stderr ?? ""}`;
+};
+
 const needsStableResign = (identity) => {
-  if (!identity.authority) return false;
-  return !currentSigningIdentity().includes(`Authority=${identity.authority}`);
+  // keychain-access-groups is provisioning-profile restricted. A development
+  // bundle has no embedded profile, so macOS kills it before JavaScript starts
+  // if a previous signing pass added that entitlement. Strip it as a bounded
+  // one-time repair as well as keeping the signing identity stable.
+  if (currentEntitlements().includes("keychain-access-groups")) return true;
+  return Boolean(
+    identity.authority &&
+      !currentSigningIdentity().includes(`Authority=${identity.authority}`),
+  );
 };
 
 const resign = (identity = signingIdentity()) => {

@@ -17,6 +17,7 @@ export function createCommunicationsTools(
   return [
     createHubStateTool(comms),
     createChatsTool(comms),
+    createContactsTool(comms),
     createReadTool(comms),
     createSearchTool(comms),
     createUnreadTool(comms),
@@ -173,7 +174,7 @@ function createChatsTool(comms: Communications): AgentTool {
   return {
     name: "message_chats",
     description:
-      "Resolve one named person or alias across all messaging platforms and return complete current coverage. A non-empty query is required so unrelated chat names are never exposed by an accidental inventory call. Use query='*' only when the user explicitly asks to list every chat. Exact chat names stay on the fast path; after a miss, a bounded read-only Contacts lookup may match a nickname, relationship, real name, or phone identity. Do not repeat the same query with platform filters. Never guess when resolution is ambiguous; report only the matching candidates. A room can remain cached after its platform is disconnected: only coverage entries with live=true are current. Use the returned chat_id with message_read and message_send.",
+      "Resolve one named person or alias across all messaging platforms and return complete current coverage. A non-empty query is required so unrelated chat names are never exposed by an accidental inventory call. Use query='*' only when the user explicitly asks to list every chat. Exact chat names stay on the fast path; after a miss, a bounded read-only Contacts lookup may return matching names and phone numbers for a nickname, relationship, or real name. Do not repeat the same query with platform filters. Never guess when resolution is ambiguous; report only the matching candidates. If resolution.status is not-determined or denied, say Contacts access is needed rather than claiming the person does not exist. A room can remain cached after its platform is disconnected: only coverage entries with live=true are current. Use the returned chat_id with message_read and message_send.",
     parameters: {
       type: "object",
       properties: {
@@ -197,10 +198,80 @@ function createChatsTool(comms: Communications): AgentTool {
             status: resolved.status,
             contact_matches: resolved.identities.length,
             chat_matches: rooms.length,
-            ambiguous: rooms.length > 1,
+            ambiguous: rooms.length > 1 || resolved.identities.length > 1,
           },
+          ...(resolved.identities.length ? {
+            contacts: resolved.identities.map((identity) => ({
+              name: identity.name,
+              aliases: identity.aliases,
+              phone_numbers: identity.phones,
+            })),
+          } : {}),
           chats: rooms
             .map((room) => ({chat_id: room.roomId, name: room.name, platform: room.platform})),
+        });
+      } catch (error) {
+        return failed(error);
+      }
+    },
+  };
+}
+
+/** The same merged address book shown by Hub → Contacts. Unlike
+ * `message_chats`, this includes people who do not have an open DM yet. */
+function createContactsTool(comms: Communications): AgentTool {
+  return {
+    name: "message_contacts",
+    description:
+      "Search the Hub Contacts directory across every linked messaging account, including people who do not have an existing chat. A non-empty query is required; use query='*' only when the user explicitly asks to list all Hub contacts. Results include exact contact_id, platform/account routes, remote ids, identifiers, and any existing chat_id. Use contact_id and account_id with hub_draft to prepare a draft for a contact; never guess between multiple routes.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {type: "string", description: "Name, username, phone number, exact contact id, or '*'"},
+        platform: {type: "string", enum: PLATFORM_IDS},
+        account_id: {type: "string"},
+        offset: {type: "number", description: "Zero-based result offset; default 0"},
+        limit: {type: "number", description: "1-200 results; default 50"},
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    async execute(input) {
+      try {
+        const query = requireString(input.query, "query");
+        const needle = query === "*" ? "" : query.normalize("NFKC").toLowerCase();
+        const platform = asString(input.platform);
+        const accountId = asString(input.account_id);
+        const offset = nonNegative(input.offset, 0, 100_000);
+        const limit = bounded(input.limit, 50, 200);
+        const matches = (await comms.contacts()).filter((contact) => {
+          if (platform && contact.platform !== platform) return false;
+          if (accountId && !contact.accounts.some((account) => account.accountId === accountId)) return false;
+          if (!needle) return true;
+          return [contact.id, contact.name, ...contact.identifiers, ...contact.accounts.flatMap((account) => [
+            account.accountId,
+            account.accountName,
+            account.remoteId ?? "",
+          ])].some((value) => value.normalize("NFKC").toLowerCase().includes(needle));
+        });
+        const page = matches.slice(offset, offset + limit);
+        return ok({
+          total: matches.length,
+          offset,
+          next_offset: offset + page.length < matches.length ? offset + page.length : null,
+          contacts: page.map((contact) => ({
+            contact_id: contact.id,
+            name: contact.name,
+            platform: contact.platform,
+            identifiers: contact.identifiers,
+            chat_id: contact.chatId,
+            routes: contact.accounts.map((account) => ({
+              account_id: account.accountId,
+              account_name: account.accountName,
+              remote_id: account.remoteId,
+              chat_id: account.chatId,
+            })),
+          })),
         });
       } catch (error) {
         return failed(error);
@@ -592,4 +663,9 @@ function requireHubStateKinds(value: unknown): Array<typeof HUB_STATE_KINDS[numb
 function bounded(value: unknown, fallback: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(1, Math.floor(value)));
+}
+
+function nonNegative(value: unknown, fallback: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(0, Math.floor(value)));
 }

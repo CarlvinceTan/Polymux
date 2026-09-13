@@ -78,9 +78,18 @@ export class MailDraftAutosave {
             bcc: addresses(draft.bcc),
             subject: draft.subject,
             body: mailBodyWithSignature(draft.body, draft.signatureBody),
-            html: mailHtmlWithSignature(draft.body, draft.signatureHtml),
+            html: mailHtmlWithSignature(
+              draft.body,
+              draft.signatureHtml,
+              draft.inlineFiles.map((file) => ({
+                name: fileName(file.path),
+                contentId: file.contentId,
+                offset: file.offset,
+              })),
+            ),
             draft: true,
             attachments: draft.files,
+            inlineAttachments: draft.inlineFiles.map(({path, contentId}) => ({path, contentId})),
             importance: draft.importance,
             inReplyTo: draft.reply?.inReplyTo ?? undefined,
             references: draft.reply?.references,
@@ -173,4 +182,8 @@ export class MailDraftAutosave {
 
 function addresses(value: string): string[] {
   return value.split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function fileName(pathname: string): string {
+  return pathname.split(/[\\/]/).pop() ?? pathname;
 }

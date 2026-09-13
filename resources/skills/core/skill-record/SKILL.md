@@ -95,9 +95,9 @@ were trying to achieve; it does not oblige you to reproduce every click.
 - Prefer a capability that already exists over driving the interface. Email,
   messages, drives, reminders and the schedule have tools; a page has `browser`.
   A step done through one of those survives a redesign; a click does not.
-- Use `computer-use` where manipulating a native app *is* the task, where no
+- Use `control` (with `window-control` for exact native windows) where manipulating a native app *is* the task, where no
   capability exists, or where the check is visual. Load it before any step that
-  touches a local GUI app — its launch, focus and window rules apply here too.
+  touches a local GUI app — its coordination, lease, and focus rules apply here too.
 - Name the surface each step uses, describe targets by app, window and control
   rather than coordinates, and say how each step is verified. Fall back to
   coordinates only if the capture offers nothing better, and say so in the skill.

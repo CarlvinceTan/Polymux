@@ -18,7 +18,7 @@ let priming: Promise<void> | null = null;
 /** Every platform the app has a mark for, as a runtime set — the type alone
  * cannot answer whether a platform named by a tool call can be drawn. */
 export const PLATFORM_LOGOS = new Set<string>([
-  'whatsapp', 'telegram', 'signal', 'discord', 'slack', 'messenger', 'instagram',
+  'whatsapp', 'telegram', 'signal', 'slack', 'messenger', 'instagram',
   'linkedin', 'googlechat', 'gmessages', 'twitter', 'bluesky', 'gvoice',
   'zulip', 'imessage', 'wechat', 'matrix', 'mail',
 ]);

@@ -36,8 +36,6 @@ export interface BridgeDefinition {
   port: number;
   /** Keys written under `network:` in the seed config. */
   network?: Record<string, string>;
-  /** Pre-megabridge config layout; see BridgeSpec.legacy. */
-  legacy?: boolean;
 }
 
 export interface BridgeHostOptions {
@@ -113,12 +111,6 @@ export interface BridgeSpec {
   targets?: readonly string[];
   /** Keys written under `network:` in the seed config. */
   network?: Record<string, string>;
-  /**
-   * Pre-megabridge config layout: database under `appservice:`, provisioning
-   * under `bridge:`, no `network:` block. The binary rejects the modern shape
-   * outright, so the seed has to match its generation.
-   */
-  legacy?: boolean;
   /**
    * `network:` keys the binary refuses to start without, each mapped to the
    * placeholder upstream writes for it (empty string when it writes none).
@@ -247,12 +239,6 @@ export const BRIDGE_FLEET: readonly BridgeSpec[] = [
     binary: "mautrix-signal",
     platforms: ["darwin", "linux"],
   },
-  {
-    platform: "discord",
-    binary: "mautrix-discord",
-    legacy: true,
-    platforms: ["darwin", "linux"],
-  },
   { platform: "slack", binary: "mautrix-slack" },
   // These use the same config shape but separate executables upstream.
   {
@@ -303,8 +289,6 @@ export const BRIDGE_FLEET: readonly BridgeSpec[] = [
  */
 const LINKED_ACCOUNT_QUERIES = [
   "select count(*) as linked from user_login",
-  // Pre-megabridge bridges hang the account off the user row itself.
-  `select count(*) as linked from "user" where discord_token is not null and discord_token != ''`,
 ];
 
 const RESTART_DELAYS_MS = [1_000, 5_000, 15_000, 60_000];
@@ -497,7 +481,6 @@ export class BridgeHost {
         // Anything the user recorded still wins: every writer here merges the
         // config's own values over these.
         network: this.#withShipped(spec.platform, spec.network),
-        legacy: spec.legacy,
       }),
     );
   }
@@ -808,24 +791,6 @@ export class BridgeHost {
     );
     if (existing === null) {
       await writeFile(configPath, this.#seedConfig(bridge), "utf8");
-    } else if (bridge.legacy && /^database:/m.test(existing)) {
-      // An earlier Polymux seeded this legacy bridge with the modern layout,
-      // which its generation rejects at startup — it has been crash-looping
-      // ever since. Reseed in the shape it accepts. The registration goes with
-      // it: the reseed mints new tokens, and a registration carrying the old
-      // ones would leave the two halves unable to authenticate.
-      //
-      // The marker is a *top-level* `database:`, which only the modern seed
-      // writes — a legacy bridge keeps it under `appservice:`. An earlier
-      // version looked for `software:` instead, which these binaries also
-      // accept and write back when they upgrade the config in place: that
-      // matched a config this branch had just written, so every launch threw
-      // away working tokens and minted a new registration, forever.
-      this.#options.log?.(
-        `[${bridge.name}] config was seeded in a layout this bridge rejects; reseeding`,
-      );
-      await writeFile(configPath, this.#seedConfig(bridge), "utf8");
-      await rm(registrationPath, { force: true });
     } else if (bridge.network) {
       // A shared binary that predates its `network:` block (or gained new
       // required keys) exits at startup. Merge in what the spec requires,
@@ -903,7 +868,6 @@ export class BridgeHost {
       const repaired = repairConfig(onDisk, {
         serverName: this.#options.homeserver.serverName,
         baseUrl: this.#options.homeserver.baseUrl,
-        legacy: bridge.legacy,
         platform: bridge.name,
       });
       if (repaired !== onDisk) {
@@ -1140,46 +1104,6 @@ export class BridgeHost {
     const asToken = randomBytes(32).toString("hex");
     const hsToken = randomBytes(32).toString("hex");
     const provisioningSecret = randomBytes(32).toString("hex");
-    // A pre-megabridge binary rejects the modern layout at startup ("
-    // appservice.database not configured"), so it gets its own generation's
-    // shape: database inside `appservice:`, provisioning inside `bridge:`.
-    if (bridge.legacy)
-      return [
-        "homeserver:",
-        `    address: ${homeserver.baseUrl}`,
-        `    domain: ${homeserver.serverName}`,
-        "appservice:",
-        `    id: ${bridge.name}`,
-        `    address: http://127.0.0.1:${bridge.port}`,
-        "    hostname: 127.0.0.1",
-        `    port: ${bridge.port}`,
-        `    as_token: ${asToken}`,
-        `    hs_token: ${hsToken}`,
-        "    bot:",
-        `        username: ${bridge.name}bot`,
-        "    database:",
-        "        type: sqlite3-fk-wal",
-        "        uri: file:bridge.db?_txlock=immediate",
-        "bridge:",
-        "    provisioning:",
-        "        prefix: /_matrix/provision",
-        `        shared_secret: ${provisioningSecret}`,
-        "    permissions:",
-        `        "${homeserver.serverName}": user`,
-        // Double puppeting: see `doublePuppet()`. The legacy generation spells
-        // it with two maps under `bridge:` rather than a block of its own.
-        "    double_puppet_server_map:",
-        `        ${homeserver.serverName}: ${homeserver.baseUrl}`,
-        "    double_puppet_allow_discovery: false",
-        "    login_shared_secret_map:",
-        `        ${homeserver.serverName}: as_token:${asToken}`,
-        "logging:",
-        "    min_level: warn",
-        "    writers:",
-        "    - type: stdout",
-        "      format: pretty-colored",
-        "",
-      ].join("\n");
     // Written before `appservice:` only for readability; the binary upgrades
     // the file in place and key order carries no meaning.
     const network = bridge.network
@@ -1465,18 +1389,12 @@ export function repairConfig(
   options: {
     serverName: string;
     baseUrl: string;
-    legacy?: boolean;
     platform?: string;
   },
 ): string {
-  const { serverName, baseUrl, legacy, platform } = options;
+  const { serverName, baseUrl, platform } = options;
   let repaired = repairHistorySync(repairBackfill(source));
   if (platform === "instagram") repaired = repairInstagramMediaFetch(repaired);
-  // A legacy config keeps double puppeting as two maps nested under `bridge:`,
-  // so there is no top-level block to swap wholesale. It is left to the seed:
-  // the one bridge in that generation reseeds itself anyway when its layout is
-  // wrong, and rewriting nested YAML by regex is how a config gets corrupted.
-  if (legacy) return repaired;
   repaired = repairCleanupOnLogout(repaired);
   const asToken = AS_TOKEN.exec(repaired)?.[1];
   if (!asToken) return repaired;

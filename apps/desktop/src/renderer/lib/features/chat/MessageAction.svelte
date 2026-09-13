@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type MessageActionIcon = 'copy' | 'check' | 'edit' | 'thumb-up' | 'thumb-down';
+  export type MessageActionIcon = 'fork' | 'share' | 'copy' | 'check' | 'edit' | 'thumb-up' | 'thumb-down';
 </script>
 
 <script lang="ts">

@@ -237,7 +237,7 @@ function validateSkill(skillPath) {
 
 const argv = process.argv.slice(2);
 if (argv.length !== 1) {
-  console.log("Usage: python quick_validate.py <skill_directory>");
+  console.log("Usage: node quick_validate.mjs <skill_directory>");
   process.exit(1);
 }
 const [valid, message] = validateSkill(argv[0]);

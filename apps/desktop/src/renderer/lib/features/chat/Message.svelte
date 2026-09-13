@@ -1,4 +1,5 @@
 <script module lang="ts">
+  import type {AgentMessageOriginDto} from '@polymux/protocol';
   import {polymuxApi} from '../../api/polymux';
   import {onThemeChange} from '../../shared/theme';
 
@@ -47,6 +48,9 @@
     sentAt?: string;
     asGoal?: boolean;
     runId?: string;
+    /** Agent-authored provenance. It is presented on the user side without
+     * ever becoming a user-authority message in durable history. */
+    origin?: AgentMessageOriginDto;
   };
 </script>
 
@@ -57,6 +61,10 @@
   import {renderMarkdown} from './markdown';
   import Icon from '../../shared/components/Icon.svelte';
   import MessageAction from './MessageAction.svelte';
+  import MemoryCitations from './MemoryCitations.svelte';
+  import {extractMemoryCitations} from './memoryCitations';
+  import BloubAvatar from '../team/BloubAvatar.svelte';
+  import {bloubExpressionForMessage} from '../team/bloub/expression';
   import {t, translate} from '../../../i18n';
 
   export let message: MessageData;
@@ -64,12 +72,22 @@
   /** True when an AgentActivity block is rendered above this message; its
    * live shimmer row is the working indicator, so the dots stand down. */
   export let activityVisible = false;
+  /** A conversational surface can name the person who is typing instead of
+   * falling back to the generic Assistant label. */
+  export let respondingLabel = '';
+  /** Team bubbles already carry the speaker avatar beside the bubble. */
+  export let showOriginAvatar = true;
+  /** Team already establishes that every non-human speaker is an agent. Its
+   * badge carries the useful distinction — that bot's role — instead. */
+  export let originBadge: 'agent' | 'role' = 'agent';
   /** A transcript rather than a conversation — a delegated task's run, which
    * nobody can reply to. Copy stays; editing and feedback would both be
    * addressed to an agent that is not listening. */
   export let readOnly = false;
+  export let publicView = false;
+  export let onFork: ((id: string) => Promise<void>) | undefined = undefined;
+  export let onShare: ((id: string) => void) | undefined = undefined;
   export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
-  export let onFeedback: (id: string, feedback: MessageFeedback) => void = () => {};
   export let onOpenFile: (name: string) => void = () => {};
   /** `anchor` is the link's own box in the viewport: what opens it is a choice,
    * and the menu that asks belongs under the words that were clicked rather
@@ -77,6 +95,17 @@
   export let onOpenLink: (url: string, title: string, anchor?: DOMRect) => void = () => {};
   /** A file link inside the reply, distinct from onOpenFile's attachments. */
   export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
+
+  let forking = false;
+  let forkError = '';
+  async function forkMessage() {
+    if (forking || !onFork) return;
+    forking = true;
+    forkError = '';
+    try { await onFork(message.id); }
+    catch (error) { forkError = error instanceof Error ? error.message : 'Could not fork chat'; }
+    finally { forking = false; }
+  }
 
   let editing = false;
   let draft = '';
@@ -89,7 +118,8 @@
   let renderFrame = 0;
   let pendingSource = '';
 
-  $: scheduleMarkdown(message.role === 'assistant' ? message.text : '', streaming);
+  $: cited = message.role === 'assistant' ? extractMemoryCitations(message.text) : {text: message.text, memories: []};
+  $: scheduleMarkdown(message.role === 'assistant' ? cited.text : '', streaming);
   $: sentTime = formatMessageTime(message.sentAt);
 
   /**
@@ -168,7 +198,7 @@
   async function copyMessage(): Promise<void> {
     // The label only flips to Copied once the text is actually on the clipboard.
     const succeeded = message.text
-      ? await copyText(message.text)
+      ? await copyText(cited.text)
       : message.filePaths?.[0]
         ? await polymuxApi().clipboard.write({kind: 'file', path: message.filePaths[0]})
         : await copyText(message.files?.join('\n') ?? '');
@@ -176,10 +206,6 @@
     copied = true;
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => copied = false, 1400);
-  }
-
-  function toggleFeedback(value: 'up' | 'down'): void {
-    onFeedback(message.id, message.feedback === value ? null : value);
   }
 
   async function interactWithMarkdown(event: MouseEvent): Promise<void> {
@@ -200,6 +226,11 @@
     // A file link opens in its own application rather than the browser, and
     // the path is taken from the dataset the renderer decoded, not from the
     // href, so no one has to re-parse a file url here.
+    if (publicView) {
+      if (!['http:', 'https:'].includes(url.protocol)) event.preventDefault();
+      else { anchor.target = '_blank'; anchor.rel = 'noopener noreferrer'; }
+      return;
+    }
     if (url.protocol === 'file:') {
       const filePath = anchor.dataset.filePath;
       if (!filePath) return;
@@ -225,6 +256,7 @@
     // itself, so the bytes are asked for here. A streaming message rewrites
     // its html as it arrives, so new links are picked up as they appear.
     const fillFavicons = () => {
+      if (publicView) return;
       for (const image of node.querySelectorAll<HTMLImageElement>('img[data-link-favicon]')) {
         const source = image.dataset.linkFavicon;
         if (!source || image.dataset.faviconAsked !== undefined) continue;
@@ -251,7 +283,7 @@
   }
 </script>
 
-<article id={`message-${message.id}`} class:assistant={message.role === 'assistant'} class:editing class="message message-group">
+<article id={`message-${message.id}`} class:assistant={message.role === 'assistant'} class:peer={Boolean(message.origin)} class:editing class="message message-group">
   {#if editing}
     <div class="message-edit-shell">
       <textarea bind:this={editArea} bind:value={draft} aria-label={$t('message.edit')} rows="3" onkeydown={editKeydown}></textarea>
@@ -270,6 +302,15 @@
       </div>
     </div>
   {:else}
+    {#if message.origin}
+      <div class="message-peer-origin" aria-label={`Message from ${message.origin.name}${message.origin.role ? `, ${message.origin.role}` : ''}`}>
+        {#if showOriginAvatar && message.origin.avatar}<BloubAvatar avatar={message.origin.avatar} expression={bloubExpressionForMessage({text: message.text, streaming})} size={19} animated={false}/>{/if}
+        <span><strong>{message.origin.name}</strong>{#if originBadge === 'agent' && message.origin.role}<small>{message.origin.role}</small>{/if}</span>
+        {#if originBadge === 'role'}
+          {#if message.origin.role}<i class="role-badge">{message.origin.role}</i>{/if}
+        {:else}<i>Agent</i>{/if}
+      </div>
+    {/if}
     {#if message.text || message.role === 'assistant'}
       <div class="message-content" use:markdownInteractions>
         {#if message.text}
@@ -279,7 +320,7 @@
             <p>{message.text}</p>
           {/if}
         {:else if streaming && !activityVisible}
-          <span class="thinking" role="status" aria-label={$t('message.responding')}><i></i><i></i><i></i></span>
+          <span class="thinking" role="status" aria-label={respondingLabel || $t('message.responding')}><i></i><i></i><i></i></span>
         {:else if streaming}
           <!-- The live activity row above carries the working shimmer; pulse
                dots beneath it would be a second, redundant indicator. -->
@@ -291,6 +332,7 @@
       </div>
     {/if}
 
+    {#if forkError}<p role="alert">{forkError}</p>{/if}
     {#if message.files?.length}
       <div class:standalone={!message.text} class="message-files">
         {#each message.files as file (file)}
@@ -309,10 +351,11 @@
         {#if message.role === 'user' || (message.text && !streaming)}
           <div class="message-actions" aria-label={message.role === 'user' ? $t('message.userActions') : $t('message.assistantActions')}>
             <MessageAction icon={copied ? 'check' : 'copy'} label={copied ? $t('common.copied') : $t('common.copy')} onAction={copyMessage}/>
-            {#if message.role === 'user' && !readOnly}<MessageAction icon="edit" label={$t('common.edit')} onAction={startEdit}/>{/if}
+            {#if message.role === 'user' && !message.origin && !readOnly}<MessageAction icon="edit" label={$t('common.edit')} onAction={startEdit}/>{/if}
             {#if message.role === 'assistant' && !readOnly}
-              <MessageAction icon="thumb-up" label={$t('message.goodResponse')} active={message.feedback === 'up'} onAction={() => toggleFeedback('up')}/>
-              <MessageAction icon="thumb-down" label={$t('message.badResponse')} active={message.feedback === 'down'} onAction={() => toggleFeedback('down')}/>
+              {#if onShare}<MessageAction icon="share" label="Share" onAction={() => onShare?.(message.id)}/>{/if}
+              {#if cited.memories.length && !publicView}<MemoryCitations memories={cited.memories}/>{/if}
+              {#if onFork}<MessageAction icon="fork" label="Fork" onAction={forkMessage}/>{/if}
             {/if}
           </div>
         {/if}

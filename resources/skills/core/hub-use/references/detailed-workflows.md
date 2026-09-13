@@ -48,7 +48,7 @@ and the owning platform skills remain authoritative.
 
 - Discover the currently capable route instead of assuming a bridge, browser,
   desktop app, phone, operating system, or signed-in account is available.
-- Load `computer-use` for the selected fallback and let it own its mechanics.
+- Load `control` for the selected fallback and let it own its mechanics.
   Hub still owns the
   exact recipient, account, payload, and send authorization.
 - Keep one route for an ordered send. If a route fails, determine what already

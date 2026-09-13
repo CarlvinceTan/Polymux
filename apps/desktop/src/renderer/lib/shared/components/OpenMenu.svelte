@@ -4,6 +4,7 @@
   export type OpenChoice = {
     value: string;
     label: string;
+    danger?: boolean;
     /** A glyph, for the ways that are the app's own. */
     icon?: import('svelte').ComponentProps<import('./Icon.svelte').default>['name'];
     /**
@@ -25,20 +26,20 @@
    */
   export type OpenAnchor = {point: {x: number; y: number}} | {rect: DOMRect};
 
-  /** Kept off the window's edges by this much, in pixels. */
-  const MARGIN = 8;
   /** Under a link, and over the point of a click. */
   const GAP = 6;
 </script>
 
 <script lang="ts">
   import Icon from './Icon.svelte';
+  import {MENU_EDGE_MARGIN, clampToMenuEdge} from '../layout/menuPlacement';
 
   export let choices: OpenChoice[] = [];
   export let anchor: OpenAnchor | null = null;
   export let onChoose: (value: string) => void = () => {};
   export let onClose: () => void = () => {};
   export let compact = false;
+  export let ariaLabel = '';
 
   let menu: HTMLDivElement | null = null;
   let left = 0;
@@ -65,8 +66,6 @@
   function place(): void {
     if (!menu || !anchor) return;
     const {width, height} = menu.getBoundingClientRect();
-    const limitX = window.innerWidth - MARGIN;
-    const limitY = window.innerHeight - MARGIN;
 
     let x: number;
     let y: number;
@@ -82,9 +81,9 @@
       flipped = anchor.point.y - GAP - height;
     }
 
-    if (y + height > limitY && flipped >= MARGIN) y = flipped;
-    left = Math.max(MARGIN, Math.min(x, limitX - width));
-    top = Math.max(MARGIN, Math.min(y, limitY - height));
+    if (y + height > window.innerHeight - MENU_EDGE_MARGIN && flipped >= MENU_EDGE_MARGIN) y = flipped;
+    left = clampToMenuEdge(x, width, window.innerWidth);
+    top = clampToMenuEdge(y, height, window.innerHeight);
     placed = true;
   }
 
@@ -92,7 +91,7 @@
   $: if (menu && anchor && choices.length) void Promise.resolve().then(place);
 
   function keydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
+    if (anchor && choices.length && event.key === 'Escape') {
       event.stopPropagation();
       onClose();
     }
@@ -127,12 +126,15 @@
     class:placed
     style="left: {left}px; top: {top}px"
     role="menu"
+    aria-label={ariaLabel || undefined}
     tabindex="-1"
+    onkeydown={keydown}
   >
     {#each choices as choice (choice.value)}
       <button
         type="button"
         class="polymux-dropdown-item"
+        class:danger={choice.danger}
         role="menuitem"
         onclick={() => onChoose(choice.value)}
       >

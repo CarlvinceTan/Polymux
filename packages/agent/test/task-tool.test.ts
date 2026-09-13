@@ -52,11 +52,39 @@ test("task preserves an explicit empty skill route", async () => {
     description: "Native tools only",
     prompt: "Use the routed native capability",
     coordination: "independent",
-    tool_groups: ["email-read"],
+    tool_groups: ["browser-read"],
     skill_names: [],
   }, context);
 
   assert.deepEqual(captured?.skillNames, []);
+});
+
+test("every routed Hub worker retains the Hub workflow", async () => {
+  const requests: SubagentRequest[] = [];
+  const tool = createTaskTool(async (request) => {
+    requests.push(request);
+    return { name: `subagent_${requests.length}` };
+  }, { capabilityRouting: true });
+
+  await tool.execute({
+    description: "Find a Hub contact",
+    prompt: "Look up Luke in Hub Contacts",
+    coordination: "independent",
+    tool_groups: ["messages-read"],
+  }, context);
+  await tool.execute({
+    description: "Prepare a draft",
+    prompt: "Draft to the exact resolved recipient without sending",
+    coordination: "dependent",
+    depends_on: "subagent_1",
+    tool_groups: ["communications"],
+    skill_names: [],
+  }, context);
+
+  assert.deepEqual(requests.map((request) => request.skillNames), [
+    ["hub-use"],
+    ["hub-use"],
+  ]);
 });
 
 test("a coordinator's broad all route is narrowed when the task itself is unambiguously read-only", async () => {

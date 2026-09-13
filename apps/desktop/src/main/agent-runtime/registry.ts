@@ -9,7 +9,10 @@ const REGISTRY_URL = "https://cdn.agentclientprotocol.com/registry/v1/latest/reg
  * both become runnable presets; only the separate Custom card needs a command
  * supplied by the user. */
 export async function listAcpRegistry(): Promise<AcpRegistryEntryDto[]> {
-  const response = await fetch(REGISTRY_URL, {headers: {Accept: "application/json"}});
+  const response = await fetch(REGISTRY_URL, {
+    headers: {Accept: "application/json"},
+    signal: AbortSignal.timeout(10_000),
+  });
   if (!response.ok) throw new Error(`ACP Registry returned ${response.status}`);
   return parseAcpRegistry(await response.json(), packageInstalled);
 }
@@ -40,20 +43,21 @@ export function parseAcpRegistry(
       installed: launch ? isInstalled(launch.command, launch.packageSpec) : false,
       command: launch?.command ?? "",
       args: launch?.args ?? [],
+      ...(launch?.environment && Object.keys(launch.environment).length ? {environment: launch.environment} : {}),
     });
   }
   return entries;
 }
 
-function packageLaunch(value: unknown, command: string, prefix: string[]): {command: string; args: string[]; packageSpec: string} | undefined {
+function packageLaunch(value: unknown, command: string, prefix: string[]): {command: string; args: string[]; packageSpec: string; environment: Record<string, string>} | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
   if (typeof record.package !== "string" || !record.package.trim()) return undefined;
   const args = Array.isArray(record.args) ? record.args.filter((item): item is string => typeof item === "string") : [];
-  return {command, args: [...prefix, record.package, ...args], packageSpec: record.package};
+  return {command, args: [...prefix, record.package, ...args], packageSpec: record.package, environment: registryEnvironment(record.env)};
 }
 
-function binaryLaunch(value: unknown, platform: string): {command: string; args: string[]; packageSpec: string} | undefined {
+function binaryLaunch(value: unknown, platform: string): {command: string; args: string[]; packageSpec: string; environment: Record<string, string>} | undefined {
   if (!value || typeof value !== "object" || !platform) return undefined;
   const candidate = (value as Record<string, unknown>)[platform];
   if (!candidate || typeof candidate !== "object") return undefined;
@@ -62,7 +66,14 @@ function binaryLaunch(value: unknown, platform: string): {command: string; args:
   const command = standardBinaryCommand(record.cmd);
   if (!command) return undefined;
   const args = Array.isArray(record.args) ? record.args.filter((item): item is string => typeof item === "string") : [];
-  return {command, args, packageSpec: ""};
+  return {command, args, packageSpec: "", environment: registryEnvironment(record.env)};
+}
+
+function registryEnvironment(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(
+    ([key, item]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof item === "string" && item.length <= 4_096,
+  )) as Record<string, string>;
 }
 
 /** Archive commands are relative paths such as `./bin/devin` or

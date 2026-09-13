@@ -33,15 +33,23 @@ import { safeStorage } from "electron";
 import {
   BridgeHost,
   Homeserver,
-  ProcessWeChatWriter,
-  ensureWeChatAppRunningHidden,
-  primeWeChatAppHidden,
-  WeChatBridge,
-  WECHAT_FALLBACK_DIRECTORIES,
   loadShippedCredentials,
-  relayEnvironment,
 } from "@polymux/hub";
+import {
+  ProcessWeChatWriter,
+  primeWeChatAppHidden,
+  resolveWeChatAccounts,
+  defaultWeChatStoreRegistryPath,
+  weChatSessionStateHidden,
+  weChatAppProcessId,
+  WeChatBridge,
+  WeChatNativeStore,
+  WECHAT_FALLBACK_DIRECTORIES,
+  relayEnvironment,
+  type WeChatNativeAccount,
+} from "@polymux/wechat";
 import { serveMedia } from "./hub/media.js";
+import {weChatRuntimeFile, weChatNativeInboundEnabled, weChatExternalAccessEnabled} from "./hub/wechat-runtime.js";
 import { PREVIEW_SCHEME, previewResponse } from "./workspace/preview.js";
 import { registerPrivilegedSchemes } from "./system/schemes.js";
 import { loadAgentPrompts } from "@polymux/agent";
@@ -51,13 +59,16 @@ import {
   POLYMUX_TRAFFIC_LIGHT_POSITION,
   syncMacWindowButtons,
 } from "./system/window-buttons.js";
+import {applyShippedAccountCredentials} from "./system/shipped-account.js";
 import {applyShippedOAuthCredentials} from "./system/shipped-oauth.js";
+import {configurePlatformWebAuthn} from "./browser/webauthn-platform.js";
 
 // Drive and mailbox providers read their application registrations from the
 // environment. Populate it from the values compiled into a release before any
 // backend service is constructed. This is platform-neutral and keeps packaged
 // installs from depending on a developer's .env file.
 applyShippedOAuthCredentials();
+applyShippedAccountCredentials();
 
 // `npm start` runs the app as a child of the CLI, so its stdout and stderr are
 // pipes. Kill the terminal (or let the launcher exit) and the read end goes
@@ -247,6 +258,11 @@ function createStartupShellWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // A side instance paints this shell at zero opacity. It still has to run
+      // the complete startup sequence so the real window can take over; the
+      // default hidden-window throttling can otherwise leave that handoff
+      // waiting forever.
+      backgroundThrottling: false,
     },
   });
   const reveal = (): void => {
@@ -342,7 +358,7 @@ async function waitForStartupShell(window: BrowserWindow): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 500));
 }
 
-type SeparateWorkspaceView = "drive" | "schedule" | "calendar" | "hub" | "tasks";
+type SeparateWorkspaceView = "drive" | "calendar" | "hub" | "tasks" | "phone" | "locker" | "media" | "terminal" | "ide" | "usage" | "finance";
 type WorkspaceWindowPlacement = {
   x: number;
   y: number;
@@ -496,13 +512,13 @@ function createWindow(
       // expose its renderer through Accessibility. The background launcher
       // therefore uses `open -g` and this explicit switch: Launch Services
       // keeps the app nonfrontmost while Electron reveals the window inactive.
+      // Keep the automation surface present for AX even when the foreground
+      // app owns a fullscreen Space, without painting over or intercepting the
+      // user's work there.
       window.setVisibleOnAllWorkspaces(true, {
         visibleOnFullScreen: true,
         skipTransformProcessType: true,
       });
-      // Keep the automation surface present for AX even when the foreground
-      // app owns a fullscreen Space, without painting over or intercepting the
-      // user's work there.
       window.setOpacity(0);
       window.setIgnoreMouseEvents(true);
       window.showInactive();
@@ -717,22 +733,47 @@ function desktopBackendOptions(
       "native",
       "app-permissions.swift",
     ),
+    permissionGuideSourcePath: bundledResource("native", "permission-guide.swift"),
     contactsSourcePath: bundledResource("native", "contacts.swift"),
     remindersSourcePath: bundledResource("native", "reminders.swift"),
     calendarSourcePath: bundledResource("native", "calendar.swift"),
+    ptyHostSourcePath: bundledResource("native", "pty-host.c"),
     hub: hub
       ? {
           homeserver: hub.homeserver,
           directory: hub.directory,
           bridges: hub.bridges,
-          startWeChat: (owner: string) => wechat!.start(owner),
-          stopWeChat: () => wechat!.close(),
-          waitForWeChatOutbound: (eventId: string) =>
-            wechat!.waitForOutbound(eventId),
+          ...(wechat ? {
+            startWeChat: (owner: string) => wechat!.start(owner),
+            loadOlderWeChatHistory: (roomId: string, limit: number, oldestCachedAt?: number) =>
+              wechat!.loadOlderHistory(roomId, limit, oldestCachedAt),
+            refreshWeChatMedia: (roomId: string, eventIds: string[]) => wechat!.refreshCachedMedia(roomId, eventIds),
+            weChatOutboundReady: () => wechat!.outboundReady(),
+            weChatOutboundFailure: () => wechat!.outboundFailure(),
+            weChatNativeOnly: process.env.POLYMUX_WECHAT_PROVIDER === "native",
+            assertWeChatLiveTestDestination: (roomId: string) =>
+              wechat!.assertLiveTestDestination(roomId),
+            weChatOutboundStatus: () => wechat!.outboundStatus(),
+            weChatNativeReadable: () => wechat!.nativeReadable(),
+            weChatStickers: () => wechat!.stickerCatalog(),
+            weChatMembers: (roomId: string) => wechat!.members(roomId),
+            weChatGroupInfo: (roomId: string) => wechat!.groupInfo(roomId),
+            renameWeChatGroup: (roomId: string, name: string, expectedName: string) =>
+              wechat!.renameGroup(roomId, name, expectedName),
+            weChatSessionState: () => wechat!.desktopSessionState(),
+            weChatLogin: async () => ({state: await wechat!.desktopSessionState() ?? "unavailable", qrDataUrl: null, expiresAt: null, optionsReady: false}),
+            stopWeChat: () => wechat!.close(),
+            waitForWeChatOutbound: (eventId: string) =>
+              wechat!.waitForOutbound(eventId),
+            recallWeChat: (roomId: string, eventId: string) =>
+              wechat!.recall(roomId, eventId),
+            markWeChatRead: (roomId: string, eventId: string) =>
+              wechat!.markRead(roomId, eventId),
+          } : {}),
           discardOutbound: (eventId: string) =>
             hub!.homeserver.discardOutbound(eventId),
-          recallWeChat: (roomId: string, eventId: string) =>
-            wechat!.recall(roomId, eventId),
+          outboundDeliveryStatus: (eventId: string) =>
+            hub!.homeserver.outboundDeliveryStatus(eventId),
           onActivity: (listener) => {
             onHubActivity = listener;
           },
@@ -791,12 +832,19 @@ ipcMain.handle(
     const sourceWindow = BrowserWindow.fromWebContents(event.sender);
     if (!sourceWindow || event.senderFrame !== event.sender.mainFrame)
       throw new Error("Rejected IPC from an untrusted frame");
+    const resolvedValue = value === "schedule" ? "tasks" : value;
     if (
-      value !== "drive" &&
-      value !== "schedule" &&
-      value !== "calendar" &&
-      value !== "hub" &&
-      value !== "tasks"
+      resolvedValue !== "drive" &&
+      resolvedValue !== "calendar" &&
+      resolvedValue !== "hub" &&
+      resolvedValue !== "tasks" &&
+      resolvedValue !== "phone" &&
+      resolvedValue !== "locker" &&
+      resolvedValue !== "media" &&
+      resolvedValue !== "terminal" &&
+      resolvedValue !== "ide" &&
+      resolvedValue !== "usage" &&
+      resolvedValue !== "finance"
     )
       throw new Error("Unknown workspace view");
     if (conversationId !== undefined && typeof conversationId !== "string")
@@ -821,7 +869,7 @@ ipcMain.handle(
       throw new Error("Invalid workspace window placement");
     const validPlacement = placement as WorkspaceWindowPlacement | undefined;
     createWindow(
-      value,
+      resolvedValue as SeparateWorkspaceView,
       typeof conversationId === "string" ? conversationId : undefined,
       validPlacement,
     );
@@ -952,6 +1000,10 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
       `Bridges failed to start: ${error instanceof Error ? error.message : String(error)}`,
     );
   });
+  // WeChat can discover credentials and an already-running relay outside this
+  // instance's directory. Keep synthetic isolates free of all such discovery,
+  // including initial history/media import, unless live testing is explicit.
+  if (!weChatExternalAccessEnabled(process.env)) return {homeserver, bridges, directory};
   // No binary to supervise for WeChat, and no account to log into: it is a
   // relay against the desktop app. Started on demand rather than here, because
   // portal rooms belong to Polymux's Matrix user and that does not exist yet.
@@ -959,17 +1011,21 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
   // The daemon's CDN fallback needs the LLDB helper its released build
   // references but did not package; without being told where the shipped copy
   // lives it looks for one on the machine it was compiled on. A checkout
-  // carries it under scripts/; Forge copies that file beside app.asar in a
+  // carries it under scripts/wechat/; Forge copies that file beside app.asar in a
   // package so Python and LLDB can read it without crossing the ASAR boundary.
   const cdnCaptureScript = [
     path.join(process.resourcesPath, "wxcdn_fileid_capture.py"),
-    path.join(app.getAppPath(), "scripts", "wxcdn_fileid_capture.py"),
+    path.join(app.getAppPath(), "scripts", "wechat", "wxcdn_fileid_capture.py"),
   ].find((candidate) => existsSync(candidate));
+  const weChatRuntime = (name: string): string | undefined => weChatRuntimeFile(name, {
+    // The renamed development executable also reports isPackaged=true.
+    // Forge's build-time dev server marker identifies the checkout reliably.
+    development: Boolean(MAIN_WINDOW_VITE_DEV_SERVER_URL),
+    sourceDirectory: path.join(app.getAppPath(), "scripts", "wechat"),
+    bundledDirectory: bundledResource("wechat-writer"),
+  });
   const bundledWeChatWriter = process.platform === "darwin"
-    ? [
-        bundledResource("wechat-writer", "polymux-wechat-driver.mjs"),
-        path.join(app.getAppPath(), "scripts", "polymux-wechat-driver.mjs"),
-      ].find((candidate) => existsSync(candidate))
+    ? weChatRuntime("polymux-wechat-driver.mjs")
     : undefined;
   const weChatCli = process.platform === "darwin"
     ? [
@@ -980,16 +1036,24 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
       ].find((candidate) => existsSync(candidate))
     : undefined;
   const weChatPrimer = bundledResource("native", "bin", "wechat-prime");
+  // The snapshot worker ships beside the writer (Forge copies that directory
+  // into resources); a checkout runs it from scripts/wechat/ instead.
+  const weChatSnapshotWorker = weChatRuntime("wechat-snapshot-worker.mjs");
   const configuredWriter = process.env.POLYMUX_WECHAT_WRITER;
   const writer = configuredWriter
     ? new ProcessWeChatWriter(configuredWriter)
     : bundledWeChatWriter && process.env.POLYMUX_NODE
       ? new ProcessWeChatWriter(process.env.POLYMUX_NODE, {
           prefixArgs: [bundledWeChatWriter],
+          checkCompatibility: true,
           environment: relayEnvironment({
             ...process.env,
             POLYMUX_WECHAT_WIRE_NATIVE: "1",
             POLYMUX_WECHAT_LLDB_EXPERIMENTAL: "1",
+            // The Hub pauses the relay and owns its eventual recovery. The
+            // driver separately verifies the daemon has detached before a
+            // native operation; it must not restart the daemon mid-lease.
+            POLYMUX_WECHAT_RELAY_MANAGED: "1",
             ...(weChatCli ? {POLYMUX_WECHAT_CLI: weChatCli} : {}),
             ...(existsSync(weChatPrimer)
               ? {POLYMUX_WECHAT_PRIMER: weChatPrimer}
@@ -997,6 +1061,25 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
           }, cdnCaptureScript),
         })
       : undefined;
+  // Keyed native readers let the bridge serve conversations, history, and
+  // inbound traffic straight from WeChat's own stores with the relay as
+  // fallback. Resolution never blocks or fails startup: no keys means the
+  // existing relay path runs exactly as before.
+  const nativeAccounts: WeChatNativeAccount[] = process.platform === "darwin"
+    ? await resolveWeChatAccounts({
+        excludeLegacyRegistry: process.env.POLYMUX_WECHAT_PROVIDER === "native",
+        ...(process.env.POLYMUX_WECHAT_STORE_REGISTRY
+          ? {registryPath: process.env.POLYMUX_WECHAT_STORE_REGISTRY}
+          : {}),
+      }).catch((): WeChatNativeAccount[] => [])
+    : [];
+  const nativeStores = nativeAccounts
+    .filter((account) => account.keys.size > 0 && Boolean(account.dbDir))
+    .map((account) => new WeChatNativeStore(account, {
+      ...(weChatSnapshotWorker ? {workerPath: weChatSnapshotWorker} : {}),
+      registryPath: process.env.POLYMUX_WECHAT_STORE_REGISTRY ?? defaultWeChatStoreRegistryPath(),
+      log: (message) => console.warn(message),
+    }));
   wechat = new WeChatBridge({
     homeserver,
     directory: path.join(directory, "bridges"),
@@ -1009,11 +1092,34 @@ async function startHub(): Promise<NonNullable<typeof hub>> {
       ...WECHAT_FALLBACK_DIRECTORIES,
     ],
     ...(writer ? {writer} : {}),
-    ensureAppRunning: () => ensureWeChatAppRunningHidden(),
-    primeApp: () =>
-      primeWeChatAppHidden({
+    externalProvider: process.env.POLYMUX_WECHAT_PROVIDER !== "native",
+    appProcessId: () => weChatAppProcessId(),
+    // Login is user-controlled. Polling and sender preparation may reuse an
+    // existing signed-in process, but never launch Desktop or press sign-in.
+    ensureAppRunning: async () => (await weChatAppProcessId()) !== null,
+    primeApp: async () => (await wechat!.desktopSessionState()) === "signed_in"
+      ? primeWeChatAppHidden({...(existsSync(weChatPrimer) ? {helperPath: weChatPrimer} : {})})
+      : false,
+    sessionState: () =>
+      weChatSessionStateHidden({
         ...(existsSync(weChatPrimer) ? {helperPath: weChatPrimer} : {}),
+        ...(nativeStores.length === 1 ? {
+          nativeSessionHelperPath: bundledResource("native", "bin", "wechat-session-state"),
+          accountId: nativeStores[0]!.wxid,
+        } : {}),
       }),
+    // WeChat's live hook can omit messages typed in the desktop composer.
+    // Reopen the authenticated incremental stream frequently so those rows
+    // reach the Hub without waiting for the much slower general read sweep.
+    // Native WAL inbound replaces that poll when explicitly enabled and keyed.
+    desktopMessageSyncMs: 1_000,
+    ...(nativeStores.length ? {nativeStores} : {}),
+    preferNativeInbound: weChatNativeInboundEnabled(process.env),
+    testOnlyFileHelper:
+      process.env.POLYMUX_WECHAT_TEST_ONLY_FILEHELPER === "1",
+    ...(process.env.POLYMUX_WECHAT_TEST_CHAT_IDS !== undefined ? {
+      testChatIds: process.env.POLYMUX_WECHAT_TEST_CHAT_IDS.split(",").map(id => id.trim()),
+    } : {}),
     ...(cdnCaptureScript ? {cdnCaptureScript} : {}),
     log: (line) => console.warn(line),
   });
@@ -1150,6 +1256,11 @@ app.whenReady().then(async () => {
   // otherwise waits for an assistive client to attach and can leave a running
   // normal window with no semantic tree after a fullscreen/Space transition.
   app.setAccessibilitySupportEnabled(true);
+  const webAuthn = configurePlatformWebAuthn(app);
+  if (webAuthn.reason === "configuration-failed")
+    console.warn(
+      "Platform passkeys could not be enabled. Touch ID will be unavailable until the app is signed with its WebAuthn keychain entitlement.",
+    );
   startupShellWindow = createStartupShellWindow();
   // The shell owns the only cold-start animation. The renderer then replaces
   // its document inside this same native window, with no second splash or

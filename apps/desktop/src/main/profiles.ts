@@ -4,17 +4,28 @@ import {cp, mkdir, rm} from "node:fs/promises";
 import path from "node:path";
 import type {JsonValue, Storage} from "@polymux/storage";
 
-export interface ProfileRecord { id: string; name: string; isDefault: boolean; }
+export interface ExternalProfileSource {
+  kind: "external";
+  agentId: string;
+  agentName: string;
+  directory: string;
+}
+export interface ProfileRecord {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  source: ExternalProfileSource | null;
+}
 export interface ProfilesSnapshot { activeId: string; profiles: ProfileRecord[]; }
 
-const DEFAULT_PROFILE: ProfileRecord = {id: "default", name: "Default Profile", isDefault: true};
+const DEFAULT_PROFILE: ProfileRecord = {id: "default", name: "Default Profile", isDefault: true, source: null};
 const REGISTRY_KEY = "profiles.registry";
 const ACTIVE_KEY = "profiles.active";
 const DEFAULT_KEY = "profiles.default";
-const CONFIG_LAYOUT_MIGRATION_KEY = "profiles.config-layout-v1";
+const CONFIG_LAYOUT_MIGRATION_KEY = "profiles.config-layout-v2";
 const PROFILE_PREFERENCE_KEYS = new Set([
   "model", "model-roles", "agent-runtime", "custom-providers", "mcp-enabled",
-  "mcp-capabilities", "skill-enabled", "plugin-enabled",
+  "mcp-capabilities", "skill-enabled", "plugin-enabled", "app-enabled", "app-pins",
 ]);
 
 export class ProfileManager {
@@ -41,12 +52,12 @@ export class ProfileManager {
       : [];
     const savedDefault = records.find(profile => profile.id === DEFAULT_PROFILE.id);
     const defaultProfile = savedDefault
-      ? {...DEFAULT_PROFILE, name: savedDefault.name}
+      ? {...DEFAULT_PROFILE, name: savedDefault.name, source: profileSource(savedDefault.source)}
       : DEFAULT_PROFILE;
     const storedProfiles = [
       defaultProfile,
       ...records.filter(profile => profile.id !== DEFAULT_PROFILE.id)
-        .map(({id, name}) => ({id, name, isDefault: false})),
+        .map(({id, name, source}) => ({id, name, isDefault: false, source: profileSource(source)})),
     ];
     const requestedDefault = this.storage.getPreference(DEFAULT_KEY)?.value;
     const defaultId = typeof requestedDefault === "string" && storedProfiles.some(profile => profile.id === requestedDefault)
@@ -85,11 +96,11 @@ export class ProfileManager {
     return path.join(this.profilesDirectory, profileId);
   }
 
-  create(name: string): ProfilesSnapshot {
+  create(name: string, source: ExternalProfileSource | null = null): ProfilesSnapshot {
     const snapshot = this.snapshot();
     const profileName = requestedName(name);
     assertNameAvailable(profileName, snapshot.profiles);
-    const profile = {id: randomUUID(), name: profileName, isDefault: false};
+    const profile = {id: randomUUID(), name: profileName, isDefault: false, source};
     this.save([...snapshot.profiles, profile]);
     return this.snapshot();
   }
@@ -110,7 +121,12 @@ export class ProfileManager {
     const snapshot = this.snapshot();
     const source = snapshot.profiles.find(profile => profile.id === id);
     if (!source) throw new Error("Unknown profile");
-    const duplicate = {id: randomUUID(), name: uniqueName(`${source.name} copy`, snapshot.profiles), isDefault: false};
+    const duplicate = {
+      id: randomUUID(),
+      name: uniqueName(`${source.name} copy`, snapshot.profiles),
+      isDefault: false,
+      source: source.source,
+    };
     const prefix = id === DEFAULT_PROFILE.id ? "" : `profile:${id}:`;
     for (const preference of this.storage.listPreferences()) {
       if (id === DEFAULT_PROFILE.id) {
@@ -156,6 +172,13 @@ export class ProfileManager {
     return snapshot;
   }
 
+  setSource(id: string, source: ExternalProfileSource | null): ProfilesSnapshot {
+    const snapshot = this.snapshot();
+    if (!snapshot.profiles.some(profile => profile.id === id)) throw new Error("Unknown profile");
+    this.save(snapshot.profiles.map(profile => profile.id === id ? {...profile, source} : profile));
+    return this.snapshot();
+  }
+
   selectDefault(): ProfilesSnapshot {
     const profile = this.snapshot().profiles.find(candidate => candidate.isDefault)!;
     return this.select(profile.id);
@@ -196,7 +219,13 @@ export class ProfileManager {
       const destination = path.join(defaultDirectory, file);
       if (!existsSync(destination) && existsSync(source)) cpSync(source, destination, {errorOnExist: false});
     }
-    const defaultAssets = [["mcp.json"], ["skills"]] as const;
+    const defaultAssets = [
+      ["mcp.json"],
+      ["skills"],
+      ["plugins"],
+      ["plugins.json"],
+      ["memories"],
+    ] as const;
     for (const [name] of defaultAssets) {
       const source = path.join(this.defaultConfigDirectory, name);
       const destination = path.join(defaultDirectory, name);
@@ -228,6 +257,23 @@ export class ProfileManager {
 
 function validProfile(value: unknown): value is Record<string, JsonValue> & {id: string; name: string} {
   return !!value && typeof value === "object" && typeof (value as any).id === "string" && typeof (value as any).name === "string";
+}
+
+function profileSource(value: unknown): ExternalProfileSource | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (
+    source.kind !== "external" ||
+    typeof source.agentId !== "string" ||
+    typeof source.agentName !== "string" ||
+    typeof source.directory !== "string"
+  ) return null;
+  return {
+    kind: "external",
+    agentId: source.agentId,
+    agentName: source.agentName,
+    directory: path.resolve(source.directory),
+  };
 }
 
 

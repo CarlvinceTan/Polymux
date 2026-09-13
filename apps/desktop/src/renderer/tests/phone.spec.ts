@@ -2,9 +2,10 @@ import {expect, test} from '@playwright/test';
 
 test('Phone opens from the workspace and exposes the complete setup state', async ({page}) => {
   await page.goto('/');
-  await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+  await page.getByRole('button', {name: 'Toggle Workspace', exact: true}).click();
   const launcher = page.locator('.workspace-launcher');
-  await launcher.getByRole('button', {name: 'Phone'}).click();
+  await launcher.getByRole('button', {name: 'More apps'}).click();
+  await launcher.getByRole('button', {name: 'Phone', exact: true}).click();
 
   const phone = page.locator('.phone-view');
   await expect(phone.getByRole('heading', {name: 'Set up this iPhone'})).toBeVisible();
@@ -15,9 +16,10 @@ test('Phone opens from the workspace and exposes the complete setup state', asyn
 
 test('Phone remains available when its view closes and stops only on request', async ({page}) => {
   await page.goto('/');
-  await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+  await page.getByRole('button', {name: 'Toggle Workspace', exact: true}).click();
   const launcher = page.locator('.workspace-launcher');
-  await launcher.getByRole('button', {name: 'Phone'}).click();
+  await launcher.getByRole('button', {name: 'More apps'}).click();
+  await launcher.getByRole('button', {name: 'Phone', exact: true}).click();
 
   const phone = page.locator('.phone-view');
   await phone.getByRole('button', {name: 'Start phone control'}).click();
@@ -27,8 +29,8 @@ test('Phone remains available when its view closes and stops only on request', a
   await expect(phone.getByRole('textbox', {name: 'Type on iPhone'})).toBeVisible();
   await expect(phone).toContainText('Phone stays available to you and your agent');
 
-  await page.getByRole('button', {name: 'Toggle Workspace'}).click();
-  await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+  await page.getByRole('button', {name: 'Toggle Workspace', exact: true}).click();
+  await page.getByRole('button', {name: 'Toggle Workspace', exact: true}).click();
   await expect(phone.getByRole('button', {name: 'Stop phone control'})).toBeVisible();
 
   await phone.getByRole('button', {name: 'Stop phone control'}).click();
@@ -37,9 +39,10 @@ test('Phone remains available when its view closes and stops only on request', a
 
 test('Phone pairs Android wirelessly without a developer tool workflow', async ({page}) => {
   await page.goto('/?phone=android-pair');
-  await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+  await page.getByRole('button', {name: 'Toggle Workspace', exact: true}).click();
   const launcher = page.locator('.workspace-launcher');
-  await launcher.getByRole('button', {name: 'Phone'}).click();
+  await launcher.getByRole('button', {name: 'More apps'}).click();
+  await launcher.getByRole('button', {name: 'Phone', exact: true}).click();
 
   const phone = page.locator('.phone-view');
   await expect(phone.getByRole('heading', {name: 'Connect your phone'})).toBeVisible();
@@ -56,9 +59,10 @@ test('Phone pairs Android wirelessly without a developer tool workflow', async (
 
 test('Phone locally signs an iPhone through Apple Account verification', async ({page}) => {
   await page.goto('/?phone=ios-signing');
-  await page.getByRole('button', {name: 'Toggle Workspace'}).click();
+  await page.getByRole('button', {name: 'Toggle Workspace', exact: true}).click();
   const launcher = page.locator('.workspace-launcher');
-  await launcher.getByRole('button', {name: 'Phone'}).click();
+  await launcher.getByRole('button', {name: 'More apps'}).click();
+  await launcher.getByRole('button', {name: 'Phone', exact: true}).click();
 
   const phone = page.locator('.phone-view');
   await expect(phone.getByRole('heading', {name: 'Set up this iPhone'})).toBeVisible();

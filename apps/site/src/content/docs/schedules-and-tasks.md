@@ -12,17 +12,17 @@ published: true
 
 Polymux can run recurring requests later and keep delegated work visible while the main conversation continues.
 
+## Tasks
+
+The Tasks view tracks work that needs attention and its progress. Tasks are scoped to the conversation so the board stays connected to the request that created them.
+
 ## Schedule recurring work
 
-Open **Schedule** and describe what the agent should do each time. Choose the frequency and save the schedule. Active schedules run locally through Polymux and record their latest result.
+Open **Tasks**, add a task, and mark it as recurring to describe what the agent should do each time. Choose the frequency and save the schedule. Active schedules appear alongside tasks on the same board, run locally through Polymux, and record their latest result.
 
 Use schedules for repeatable work such as checking a source, preparing a summary, or monitoring a condition. The computer and required connections must be available when the run starts.
 
 Notifications for successful or failed scheduled work can be configured under **Settings → General → Notifications**.
-
-## Tasks
-
-The Tasks view tracks work that needs attention and its progress. Tasks are scoped to the conversation so the board stays connected to the request that created them.
 
 ## Subagents
 

@@ -27,7 +27,7 @@ export function generateSitemap() {
     ...posts.map((post) => urlEntry(`https://polymux.com/blog/${post.slug}/`, post.date)),
     urlEntry('https://polymux.com/releases/', releases[0]?.date ?? latestDate),
     ...releases.map((release) => urlEntry(`https://polymux.com/releases/${release.version}/`, release.date)),
-    urlEntry('https://polymux.com/privacy-policy/', '2026-08-24'),
+    urlEntry('https://polymux.com/privacy-policy/', '2026-08-31'),
   ];
 
   const sitemap = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries.join('\n')}\n</urlset>\n`;

@@ -1,13 +1,14 @@
 // The conversation never compresses below a readable measure, so both side
 // surfaces resize against this floor rather than against the viewport alone.
 export const MIN_MAIN_PANE_WIDTH = 432;
-// In a normal macOS window this is the compact point where the right-aligned
-// New Folder control sits directly below Search in the title-bar strip:
-// Search centres at x=161px and the folder centre is drawer width - 22px.
-export const MIN_CHAT_DRAWER_WIDTH = 183;
+// Assistant/Team, their divider, and the two heading actions must all retain
+// their intrinsic width. The former 183px floor predated that header and let
+// its labels paint through the action buttons when the drawer was narrowed.
+export const MIN_CHAT_DRAWER_WIDTH = 240;
 export const MAX_CHAT_DRAWER_WIDTH = 480;
 // Keeps split workspace views, especially Hub's rail and reader, from being
 // compressed into two impractically narrow columns.
+// Hub's compact mail toolbar fits all ten possible actions at this floor.
 export const MIN_WORKSPACE_WIDTH = 480;
 export const MAX_WORKSPACE_WIDTH = 720;
 export const SPLIT_LAYOUT_MIN_WIDTH = MIN_CHAT_DRAWER_WIDTH + MIN_MAIN_PANE_WIDTH + MIN_WORKSPACE_WIDTH + 1;
@@ -34,6 +35,50 @@ export function workspaceResizeBounds(viewportWidth: number, chatDrawerWidth: nu
 
 export function clampPanelWidth(width: number, resizeBounds: ResizeBounds): number {
   return Math.round(Math.max(resizeBounds.min, Math.min(resizeBounds.max, width)));
+}
+
+/**
+ * Dragging the chat divider past its max is a no-op while the workspace is
+ * docked. Once the workspace is expanded, the same overshoot into the right
+ * half of the window is a minimise gesture, and the chat drawer returns to
+ * its default width rather than staying pinned at the ceiling.
+ */
+export function chatDrawerOvershootMinimisesWorkspace(
+  clientX: number,
+  viewportWidth: number,
+  workspaceExpanded: boolean,
+  reservedWidth: number,
+): boolean {
+  if (!workspaceExpanded) return false;
+  const {max} = chatDrawerResizeBounds(viewportWidth, reservedWidth);
+  return clientX >= max && clientX >= viewportWidth / 2;
+}
+
+/** Horizontal centre of the conversation column while both side surfaces are docked. */
+export function dockedMainMidX(
+  viewportWidth: number,
+  leftColumn: number,
+  rightColumn: number,
+): number {
+  return leftColumn + Math.max(0, viewportWidth - leftColumn - rightColumn) / 2;
+}
+
+/**
+ * Dragging the workspace divider past its max leaves the docked edge on the
+ * ceiling. The pointer can keep travelling; once it crosses the left half of
+ * the main pane the workspace expands. `mainMidX` is that pane's current
+ * centre; omit it to fall back to the window midpoint.
+ */
+export function workspaceOvershootExpands(
+  clientX: number,
+  viewportWidth: number,
+  workspaceExpanded: boolean,
+  reservedWidth: number,
+  mainMidX = viewportWidth / 2,
+): boolean {
+  if (workspaceExpanded) return false;
+  const {max} = workspaceResizeBounds(viewportWidth, reservedWidth);
+  return viewportWidth - clientX > max && clientX <= mainMidX;
 }
 
 export interface PanelLayoutRequest {

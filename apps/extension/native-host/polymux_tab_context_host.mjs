@@ -4,10 +4,9 @@
  *
  * Chrome launches this process and frames each JSON message with a 4-byte
  * little-endian length prefix. Every snapshot received is written atomically to
- * ~/Library/Application Support/polymux-tab-context/tabs.json, where the Polymux
- * computer-use skill reads it (scripts/tab_context.mjs).
+ * ~/Library/Application Support/polymux-tab-context/tabs.json, where the agent's browser tools read it.
  */
-import {mkdirSync, readSync, renameSync, statSync, writeFileSync, writeSync} from "node:fs";
+import {closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync, writeSync} from "node:fs";
 import {homedir} from "node:os";
 import path from "node:path";
 import {pathToFileURL} from "node:url";
@@ -403,11 +402,43 @@ function writeSnapshot(snapshot) {
   renameSync(temporary, CACHE_PATH); // os.replace: atomic on the same volume
 }
 
+export function lockerConnection({
+  browser = process.env.POLYMUX_NATIVE_BROWSER ?? "chromium",
+  extensionId = process.env.POLYMUX_EXTENSION_ID,
+  caller = process.argv[browser === "firefox" ? 3 : 2],
+  manifestPath = process.argv[2],
+  home = homedir(),
+  instance = process.env.POLYMUX_DEV_INSTANCE?.trim(),
+} = {}) {
+  // Firefox supplies manifest path, then add-on ID; Chromium supplies its
+  // extension origin. Neither identity comes from the untrusted JSON request.
+  const approved = browser === "firefox"
+    ? extensionId === "extension@polymux.com" && caller === extensionId &&
+      manifestPath === path.join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts", "com.polymux.tab_context.json")
+    : browser === "chromium" && /^[a-p]{32}$/.test(extensionId ?? "") &&
+      (caller === `chrome-extension://${extensionId}/` || caller === `chrome-extension://${extensionId}`);
+  if (!approved) throw new Error("Unapproved Locker extension");
+  const file = path.join(home, instance ? `.polymux-${instance}` : ".polymux", "locker-extension-capability");
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || (process.platform !== "win32" &&
+      ((stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.())))
+      throw new Error("Locker extension capability is not private");
+    const token = readFileSync(fd, "utf8").trim();
+    if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("Invalid Locker extension capability");
+    return {ok: true, token};
+  } finally { closeSync(fd); }
+}
+
 function main() {
   for (;;) {
     const message = readMessage();
     if (message === null) return 0;
-    if (message.has("tabs") && Array.isArray(message.get("tabs"))) {
+    if (message.get("type") === "polymux:locker-connection") {
+      try { sendMessage(lockerConnection()); }
+      catch { sendMessage({ok: false, error: "Locker connection unavailable. Open Polymux and reinstall its browser host if needed."}); }
+    } else if (message.has("tabs") && Array.isArray(message.get("tabs"))) {
       try {
         writeSnapshot(message);
         sendMessage({ok: true, tab_count: message.get("tabs").length});
@@ -422,4 +453,4 @@ function main() {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(main());
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) process.exit(main());

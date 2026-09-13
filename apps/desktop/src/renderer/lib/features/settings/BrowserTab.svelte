@@ -1,27 +1,3 @@
-<script lang="ts" context="module">
-  import type {
-    BrowserDownloadDto as CachedDownloadDto,
-    BrowserSettingsDto as CachedSettingsDto,
-    SavedLoginDto as CachedLoginDto,
-    SitePermissionDto as CachedPermissionDto,
-  } from '@polymux/protocol';
-
-  /**
-   * What the Browser tab last saw, kept outside the component.
-   *
-   * Settings destroys the tab when the mode changes, so every return here would
-   * otherwise wait on four fresh reads and flash a loading state first. The tab
-   * paints what it knew and corrects it behind the pane. Window-lived, never
-   * persisted — which is exactly as long as the answer is worth trusting.
-   */
-  const browserSnapshot: {
-    settings: CachedSettingsDto | null;
-    logins: CachedLoginDto[];
-    downloads: CachedDownloadDto[];
-    permissions: CachedPermissionDto[];
-  } = {settings: null, logins: [], downloads: [], permissions: []};
-</script>
-
 <script lang="ts">
   import {onMount, type ComponentProps} from 'svelte';
   import type {
@@ -38,9 +14,11 @@
     SitePermissionDto,
   } from '@polymux/protocol';
   import {readableError} from '../../shared/errors';
+  import {loadSettingsBrowserSnapshot, settingsBrowserSnapshot} from '../../shared/state/settingsPreload';
   import {scrollFade} from '../../shared/scrollFade';
   import Icon from '../../shared/components/Icon.svelte';
-  import {plural, t, type MessageKey} from '../../../i18n';
+  import {activeLocale, plural, t, type MessageKey} from '../../../i18n';
+  import {clockTime} from '../../shared/displayTime';
 
   type IconName = ComponentProps<Icon>['name'];
 
@@ -49,10 +27,10 @@
   type Section = 'passwords' | 'downloads' | 'history' | 'permissions' | 'data' | 'import';
 
   let section: Section = 'passwords';
-  let settings: BrowserSettingsDto | null = browserSnapshot.settings;
-  let logins: SavedLoginDto[] = browserSnapshot.logins;
-  let downloads: BrowserDownloadDto[] = browserSnapshot.downloads;
-  let permissions: SitePermissionDto[] = browserSnapshot.permissions;
+  let settings: BrowserSettingsDto | null = settingsBrowserSnapshot.settings;
+  let logins: SavedLoginDto[] = settingsBrowserSnapshot.logins;
+  let downloads: BrowserDownloadDto[] = settingsBrowserSnapshot.downloads;
+  let permissions: SitePermissionDto[] = settingsBrowserSnapshot.permissions;
   let history: BrowserHistoryEntryDto[] = [];
   let historyQuery = '';
   /** Whether history has been asked for, as distinct from being empty. */
@@ -87,7 +65,7 @@
   onMount(() => {
     void load();
     return api.browser.subscribe((event) => {
-      if (event.type === 'downloads') downloads = browserSnapshot.downloads = event.downloads;
+      if (event.type === 'downloads') downloads = settingsBrowserSnapshot.downloads = event.downloads;
       // A password captured in a browser tab lands here without the tab being
       // reopened.
       if (event.type === 'logins') void refreshLogins();
@@ -97,23 +75,18 @@
   async function load(): Promise<void> {
     error = '';
     try {
-      const [nextSettings, nextLogins, nextDownloads, nextPermissions] = await Promise.all([
-        api.browser.settings(),
-        api.browser.logins(),
-        api.browser.downloads(),
-        api.browser.permissions(),
-      ]);
-      settings = browserSnapshot.settings = nextSettings;
-      logins = browserSnapshot.logins = nextLogins;
-      downloads = browserSnapshot.downloads = nextDownloads;
-      permissions = browserSnapshot.permissions = nextPermissions;
+      const next = await loadSettingsBrowserSnapshot(api, 5_000);
+      settings = next.settings;
+      logins = next.logins;
+      downloads = next.downloads;
+      permissions = next.permissions;
     } catch (cause) {
       error = readableError(cause);
     }
   }
 
   async function refreshLogins(): Promise<void> {
-    logins = browserSnapshot.logins = await api.browser.logins();
+    logins = settingsBrowserSnapshot.logins = await api.browser.logins();
   }
 
   async function guard(key: string, work: () => Promise<void>): Promise<void> {
@@ -130,7 +103,7 @@
 
   async function patchSettings(patch: Parameters<PolymuxApi['browser']['updateSettings']>[0]): Promise<void> {
     await guard('settings', async () => {
-      settings = browserSnapshot.settings = await api.browser.updateSettings(patch);
+      settings = settingsBrowserSnapshot.settings = await api.browser.updateSettings(patch);
     });
   }
 
@@ -159,7 +132,7 @@
 
   async function deleteLogin(login: SavedLoginDto): Promise<void> {
     await guard(`delete:${login.id}`, async () => {
-      logins = browserSnapshot.logins = await api.browser.deleteLogin(login.id);
+      logins = settingsBrowserSnapshot.logins = await api.browser.deleteLogin(login.id);
       if (revealed?.id === login.id) revealed = null;
     });
   }
@@ -169,7 +142,7 @@
     decision: PermissionDecisionDto,
   ): Promise<void> {
     await guard(`permission:${row.origin}:${row.permission}`, async () => {
-      permissions = browserSnapshot.permissions = await api.browser.setPermission(
+      permissions = settingsBrowserSnapshot.permissions = await api.browser.setPermission(
         row.origin,
         row.permission,
         decision,
@@ -210,7 +183,7 @@
   async function clearSite(origin: string): Promise<void> {
     await guard(`site:${origin}`, async () => {
       sites = await api.browser.clearSiteData(origin);
-      permissions = browserSnapshot.permissions = await api.browser.permissions();
+      permissions = settingsBrowserSnapshot.permissions = await api.browser.permissions();
       confirming = '';
     });
   }
@@ -309,16 +282,18 @@
      until three figures, none after — so a size reads the same wherever the
      app shows one. */
   /** A visit's date in the shortest form that is still unambiguous: a time for
-   * today, a weekday inside the week, a date beyond it. */
+   * today, a weekday inside the week, a date beyond it. The clock is the shared
+   * 12-hour one, so history reads like every other stamp in the app. */
   function formatVisited(iso: string): string {
     const when = new Date(iso);
     if (Number.isNaN(when.getTime())) return '';
     const now = new Date();
-    const sameDay = when.toDateString() === now.toDateString();
-    if (sameDay) return when.toLocaleTimeString(undefined, {hour: 'numeric', minute: '2-digit'});
+    if (when.toDateString() === now.toDateString()) return clockTime(when);
     const days = (now.getTime() - when.getTime()) / 86_400_000;
-    if (days < 7) return when.toLocaleDateString(undefined, {weekday: 'short', hour: 'numeric', minute: '2-digit'});
-    return when.toLocaleDateString(undefined, {month: 'short', day: 'numeric', year: when.getFullYear() === now.getFullYear() ? undefined : 'numeric'});
+    if (days < 7) {
+      return when.toLocaleDateString(activeLocale(), {weekday: 'short', hour: 'numeric', minute: '2-digit', hour12: true});
+    }
+    return when.toLocaleDateString(activeLocale(), {month: 'short', day: 'numeric', year: when.getFullYear() === now.getFullYear() ? undefined : 'numeric'});
   }
 
   function formatBytes(bytes: number): string {
@@ -498,7 +473,7 @@
                         aria-label={$t('browser.pauseDownload')}
                         onclick={() =>
                           void guard(`pause:${download.id}`, async () => {
-                            downloads = browserSnapshot.downloads =
+                            downloads = settingsBrowserSnapshot.downloads =
                               await api.browser.pauseDownload(download.id);
                           })}
                       >
@@ -509,7 +484,7 @@
                         aria-label={$t('browser.cancelDownload')}
                         onclick={() =>
                           void guard(`cancel:${download.id}`, async () => {
-                            downloads = browserSnapshot.downloads =
+                            downloads = settingsBrowserSnapshot.downloads =
                               await api.browser.cancelDownload(download.id);
                           })}
                       >
@@ -521,7 +496,7 @@
                         aria-label={$t('browser.resumeDownload')}
                         onclick={() =>
                           void guard(`resume:${download.id}`, async () => {
-                            downloads = browserSnapshot.downloads =
+                            downloads = settingsBrowserSnapshot.downloads =
                               await api.browser.resumeDownload(download.id);
                           })}
                       >
@@ -542,7 +517,7 @@
                       aria-label={$t('browser.removeDownload')}
                       onclick={() =>
                         void guard(`remove:${download.id}`, async () => {
-                          downloads = browserSnapshot.downloads =
+                          downloads = settingsBrowserSnapshot.downloads =
                             await api.browser.removeDownload(download.id);
                         })}
                     >
@@ -558,7 +533,7 @@
                 class="destructive"
                 onclick={() =>
                   void guard('clear-downloads', async () => {
-                    downloads = browserSnapshot.downloads = await api.browser.clearDownloads();
+                    downloads = settingsBrowserSnapshot.downloads = await api.browser.clearDownloads();
                   })}
               >
                 {$t('browser.clearDownloads')}
@@ -666,7 +641,7 @@
                 class="destructive"
                 onclick={() =>
                   void guard('clear-permissions', async () => {
-                    permissions = browserSnapshot.permissions =
+                    permissions = settingsBrowserSnapshot.permissions =
                       await api.browser.clearPermissions();
                   })}
               >
@@ -950,29 +925,27 @@
   .browser-item{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
   .browser-item strong{overflow:hidden;color:var(--neutral-900);text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:545}
   .browser-item small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:10px}
-  .browser-item small.warn{color:#a04545}
-  :global(:root[data-theme="dark"]) .browser-item small.warn{color:#e79c9c}
+  .browser-item small.warn{color:var(--danger-500)}
   .browser-secret{flex:none;max-width:180px;overflow:hidden;padding:2px 6px;border-radius:5px;background:var(--neutral-100);color:var(--neutral-800);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}
 
   .browser-item-actions{flex:none;display:flex;align-items:center;gap:2px}
   .browser-item-actions button{width:24px;height:24px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:var(--neutral-500);cursor:pointer}
   /* The icon darkens on hover; no pill, no circle. */
   .browser-item-actions button:hover{color:var(--neutral-950)}
-  .browser-item-actions button.destructive:hover{color:#a44343}
+  .browser-item-actions button.destructive:hover{color:var(--danger-500)}
   .browser-item-actions button.text{width:auto;padding:0 4px;font-family:inherit;font-size:10.5px;font-weight:550}
-  .browser-item-actions button.destructive.text{color:#a04545}
+  .browser-item-actions button.destructive.text{color:var(--danger-500)}
 
   .browser-empty{display:grid;place-items:center;min-height:120px;margin:0;color:var(--neutral-400);font-size:11px}
   .browser-empty.small{min-height:60px}
 
   .browser-hint{max-width:520px;margin:5px 0 0;color:var(--neutral-500);font-size:10.5px;line-height:1.5}
-  .browser-hint.warn{color:#a04545}
-  :global(:root[data-theme="dark"]) .browser-hint.warn{color:#e79c9c}
+  .browser-hint.warn{color:var(--danger-500)}
 
   .browser-block-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:12px}
   .browser-block-actions button{height:29px;flex:none;white-space:nowrap;border:1px solid var(--neutral-200);border-radius:8px;padding:0 12px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:11px;font-weight:550}
   .browser-block-actions button:hover{background:var(--neutral-100);color:var(--neutral-950)}
-  .browser-block-actions button.destructive{color:#a04545}
+  .browser-block-actions button.destructive{color:var(--danger-500)}
   .browser-block-actions button:disabled{cursor:default;opacity:.5}
 
   /* The confirmation takes the row over rather than opening a dialog: what is
@@ -980,7 +953,7 @@
   .browser-confirm{display:flex;align-items:center;gap:7px}
   .browser-confirm em{color:var(--neutral-600);font-style:normal;font-size:10.5px}
   .browser-confirm button{height:24px;border:1px solid var(--neutral-200);border-radius:7px;padding:0 9px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
-  .browser-confirm button.destructive{border-color:#c98a8a;color:#a04545}
+  .browser-confirm button.destructive{border-color:var(--danger-500);color:var(--danger-500)}
 
   .browser-columns,.browser-table{width:100%;table-layout:fixed;border-collapse:collapse}
   .browser-columns th{padding:0 8px 6px;color:var(--neutral-500);text-align:left;font-size:10px;font-weight:540}

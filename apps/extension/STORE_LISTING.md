@@ -3,7 +3,9 @@
 Polymux connects your browser to the Polymux desktop app. It
 gives Polymux a lightweight inventory of your open tabs and lets the agent
 control only the exact tab assigned to it, without switching your active tab
-or bringing a browser window to the foreground.
+or bringing a browser window to the foreground. It also includes Locker,
+which fills passwords, TOTP codes, and vault passkeys from the same vault
+as desktop Locker.
 
 ## What it does
 
@@ -11,6 +13,10 @@ or bringing a browser window to the foreground.
 - Allows Polymux to read and interact with a specifically leased browser tab.
 - Shows a visible badge and animated cursor while a tab is under agent control.
 - Releases browser control when the task ends or Polymux disconnects.
+- Fills passwords and TOTP codes on the current tab from the unlocked Locker
+  vault after you click an item, and can save a login the page just submitted.
+- Completes vault passkeys at the WebAuthn ceremony when Locker is unlocked;
+  cancel falls through to the browser's own authenticator.
 
 ## Privacy and control
 
@@ -32,7 +38,8 @@ The Polymux desktop app is required.
 
 Polymux connects browser tabs to the locally installed Polymux desktop app so
 the app can list open tabs and read or control only a tab assigned to it by the
-user.
+user, and fills logins from the user's own Locker vault on pages the user
+chooses.
 
 ### Permission justifications
 
@@ -66,11 +73,33 @@ trusted input, navigation, console and network inspection, dialogs, and file
 inputs. It attaches only while a tab is assigned and detaches when access is
 released, the tab closes, or the desktop app disconnects.
 
+#### `storage`
+
+The storage permission keeps the encrypted Locker vault blob and the account
+session in `chrome.storage.local` on the user's device, so fill and TOTP keep
+working from the cached ciphertext after the desktop app is quit. It is not
+used for tracking or advertising.
+
+#### `identity`
+
+The identity permission signs the user into their Polymux account with OAuth
+(`chrome.identity.launchWebAuthFlow`) so the popup can pull the cloud vault
+without the desktop app. It is used only when the user chooses Sign in.
+
 #### Host permission: `http://127.0.0.1:47654/*`
 
 The `127.0.0.1` host permission exchanges leases, commands, cursor status, and
 results with the Polymux desktop app through a loopback-only service on the
-user's computer. It does not grant access to a remote website or server.
+user's computer. Locker also unlocks the desktop vault and fills the current
+tab through this loopback connection. It does not grant access to a remote
+website or server.
+
+#### Host permission: `https://*.supabase.co/*`
+
+The Supabase host permission reaches the Polymux account backend so a signed-in
+user can pull their cloud vault without the desktop app. It is contacted only
+for account sign-in and vault sync, and local-only lockers never leave the
+device.
 
 #### Website access: `http://*/*` and `https://*/*`
 
@@ -99,6 +128,12 @@ device.
 - **User activity:** interactions performed within an assigned tab and their
   results are shared locally with the Polymux desktop app to execute and report
   the requested task.
+- **Passwords and credentials:** logins, TOTP secrets, and passkeys are read
+  from the user's own Locker vault only to fill a page the user chose, after
+  the vault is unlocked with the master password. The vault is stored
+  encrypted; the master password never leaves the device. A signed-in user may
+  sync the encrypted vault with their Polymux account; local-only lockers are
+  never uploaded.
 
 The extension does not sell this data, use it for advertising or credit-related
 purposes, or transfer it to a hosted Polymux service. Its use is limited to the

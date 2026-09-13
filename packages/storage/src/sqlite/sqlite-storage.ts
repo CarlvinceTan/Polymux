@@ -36,6 +36,12 @@ import type {
   SitePermission,
 } from "../types.js";
 import { migrate } from "./migrations.js";
+import type {
+  UsageRunRow,
+  UsageSkillTurn,
+  UsageSource,
+  UsageToolCount,
+} from "../usage.js";
 
 type Row = Record<string, unknown>;
 type Clock = () => string;
@@ -65,6 +71,20 @@ function nullableText(value: unknown): string | null {
 }
 function nullableNumber(value: unknown): number | null {
   return value == null ? null : Number(value);
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (Array.isArray(value))
+    return value.filter((item): item is string => typeof item === "string");
+  if (typeof value !== "string" || !value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 function conversation(row: Row): Conversation {
@@ -300,7 +320,8 @@ export class SqliteStorage implements Storage {
   }
 
   createConversation(input: NewConversation): Conversation {
-    const now = this.#clock();
+    const createdAt = input.createdAt ?? this.#clock();
+    const updatedAt = input.updatedAt ?? createdAt;
     this.database
       .prepare(
         "INSERT INTO conversations (id,title,created_at,updated_at,metadata_json) VALUES (?,?,?,?,?)",
@@ -308,8 +329,8 @@ export class SqliteStorage implements Storage {
       .run(
         input.id,
         input.title,
-        now,
-        now,
+        createdAt,
+        updatedAt,
         encode(input.metadata ?? emptyObject),
       );
     return this.getConversation(input.id)!;
@@ -325,13 +346,22 @@ export class SqliteStorage implements Storage {
   listConversations(
     options: {
       includeArchived?: boolean;
+      archivedOnly?: boolean;
       limit?: number;
       offset?: number;
     } = {},
   ): Conversation[] {
     const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
     const offset = Math.max(0, options.offset ?? 0);
-    const sql = `SELECT * FROM conversations ${options.includeArchived ? "" : "WHERE archived_at IS NULL"} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
+    const where = options.archivedOnly
+      ? "WHERE archived_at IS NOT NULL"
+      : options.includeArchived
+        ? ""
+        : "WHERE archived_at IS NULL";
+    const order = options.archivedOnly
+      ? "ORDER BY archived_at DESC"
+      : "ORDER BY updated_at DESC";
+    const sql = `SELECT * FROM conversations ${where} ${order} LIMIT ? OFFSET ?`;
     return (this.database.prepare(sql).all(limit, offset) as Row[]).map(
       conversation,
     );
@@ -384,7 +414,7 @@ export class SqliteStorage implements Storage {
             .get(input.conversationId) as Row
         ).sequence,
       );
-      const now = this.#clock();
+      const now = input.createdAt ?? this.#clock();
       this.database
         .prepare(
           "INSERT INTO messages (id,conversation_id,run_id,role,content_json,created_at,sequence,metadata_json) VALUES (?,?,?,?,?,?,?,?)",
@@ -433,6 +463,27 @@ export class SqliteStorage implements Storage {
     return this.getMessage(id);
   }
 
+  deleteMessagesAfter(conversationId: Id, sequence: number): number {
+    return this.transaction(() => {
+      const deleted = Number(
+        this.database
+          .prepare("DELETE FROM messages WHERE conversation_id=? AND sequence>?")
+          .run(conversationId, sequence).changes,
+      );
+      this.database
+        .prepare(
+          "DELETE FROM compactions WHERE conversation_id=? AND through_message_sequence>?",
+        )
+        .run(conversationId, sequence);
+      if (deleted) {
+        this.database
+          .prepare("UPDATE conversations SET updated_at=? WHERE id=?")
+          .run(this.#clock(), conversationId);
+      }
+      return deleted;
+    });
+  }
+
   listMessages(
     conversationId: Id,
     options: { afterSequence?: number; limit?: number } = {},
@@ -445,6 +496,13 @@ export class SqliteStorage implements Storage {
         )
         .all(conversationId, options.afterSequence ?? 0, limit) as Row[]
     ).map(message);
+  }
+
+  latestMessage(conversationId: Id): StoredMessage | null {
+    const row = this.database
+      .prepare("SELECT * FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 1")
+      .get(conversationId) as Row | undefined;
+    return row ? message(row) : null;
   }
 
   searchMessages(
@@ -629,6 +687,85 @@ export class SqliteStorage implements Storage {
     ).map(event);
   }
 
+  loadUsageSource(): UsageSource {
+    const runs = (
+      this.database
+        .prepare(
+          `SELECT r.id, r.conversation_id, r.model, r.started_at, r.finished_at, r.created_at, r.usage_json, r.parent_run_id,
+                  json_extract(e.payload_json, '$.agent.id') AS agent_id,
+                  json_extract(e.payload_json, '$.agent.kind') AS agent_kind,
+                  COALESCE(json_extract(e.payload_json, '$.agent.name'), json_extract(e.payload_json, '$.model.name')) AS agent_name,
+                  json_extract(e.payload_json, '$.model.provider') AS provider
+           FROM runs r
+           LEFT JOIN run_events e ON e.run_id = r.id AND e.sequence = (
+             SELECT MIN(sequence) FROM run_events WHERE run_id = r.id AND type = 'run.started'
+           )`,
+        )
+        .all() as Row[]
+    ).map(
+      (row): UsageRunRow => ({
+        id: text(row.id),
+        conversationId: text(row.conversation_id),
+        model: nullableText(row.model),
+        startedAt: nullableText(row.started_at),
+        finishedAt: nullableText(row.finished_at),
+        createdAt: text(row.created_at),
+        usage: nullableJson(row.usage_json),
+        parentRunId: nullableText(row.parent_run_id),
+        agent: row.agent_kind === "acp" || row.provider === "acp"
+          ? {kind: "acp", id: nullableText(row.agent_id) ?? "", name: nullableText(row.agent_name) ?? "ACP Agent"}
+          : null,
+      }),
+    );
+    const conversations = (
+      this.database.prepare("SELECT id, metadata_json FROM conversations").all() as Row[]
+    ).map((row) => ({
+      id: text(row.id),
+      metadata: nullableJson(row.metadata_json) ?? emptyObject,
+    }));
+    const toolCounts = (
+      this.database
+        .prepare(
+          `SELECT r.id AS run_id, r.conversation_id AS conversation_id,
+                  json_extract(e.payload_json, '$.toolCall.name') AS name,
+                  COUNT(*) AS n
+           FROM run_events e
+           JOIN runs r ON r.id = e.run_id
+           WHERE e.type = 'tool.started'
+             AND json_extract(e.payload_json, '$.toolCall.name') IS NOT NULL
+           GROUP BY r.id, name`,
+        )
+        .all() as Row[]
+    ).map(
+      (row): UsageToolCount => ({
+        runId: text(row.run_id),
+        conversationId: text(row.conversation_id),
+        name: text(row.name),
+        count: Number(row.n),
+      }),
+    );
+    const skillTurns = (
+      this.database
+        .prepare(
+          `SELECT r.id AS run_id, r.conversation_id AS conversation_id,
+                  json_extract(e.payload_json, '$.footprint.activeSkillNames') AS names
+           FROM run_events e
+           JOIN runs r ON r.id = e.run_id
+           WHERE e.type = 'turn.started'`,
+        )
+        .all() as Row[]
+    )
+      .map(
+        (row): UsageSkillTurn => ({
+          runId: text(row.run_id),
+          conversationId: text(row.conversation_id),
+          names: parseStringArray(row.names),
+        }),
+      )
+      .filter((turn) => turn.names.length > 0);
+    return {runs, conversations, toolCounts, skillTurns};
+  }
+
   saveCompaction(input: NewCompaction): Compaction {
     const now = this.#clock();
     this.database
@@ -774,6 +911,22 @@ export class SqliteStorage implements Storage {
         )
         .all(conversationId) as Row[]
     ).map(reference);
+  }
+
+  updateReferenceTitle(id: Id, title: string): StoredReference | null {
+    const next = title.trim();
+    if (!next) return this.getReference(id);
+    const result = this.database
+      .prepare("UPDATE refs SET title=? WHERE id=?")
+      .run(next, id);
+    return Number(result.changes ?? 0) > 0 ? this.getReference(id) : null;
+  }
+
+  getReference(id: Id): StoredReference | null {
+    const row = this.database
+      .prepare("SELECT * FROM refs WHERE id=?")
+      .get(id) as Row | undefined;
+    return row ? reference(row) : null;
   }
 
   createGoal(input: NewGoal): Goal {
@@ -979,6 +1132,13 @@ export class SqliteStorage implements Storage {
   recordVisit(input: NewHistoryEntry): HistoryEntry {
     const row = this.#writeVisit(input);
     return historyEntry(row);
+  }
+
+  getHistoryEntry(url: string): HistoryEntry | null {
+    const row = this.database
+      .prepare("SELECT * FROM browser_history WHERE url=?")
+      .get(url) as Row | undefined;
+    return row ? historyEntry(row) : null;
   }
 
   recordVisits(entries: NewHistoryEntry[]): number {

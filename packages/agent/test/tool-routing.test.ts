@@ -17,25 +17,25 @@ const tool = (name: string): AgentTool => ({
 });
 
 const catalogue = [
-  "browser", "browser_tabs", "browser_current_read", "browser_read", "browser_snapshot_many", "browser_control", "computer_state", "computer_arbiter", "resolve_current_location",
+  "browser", "browser_tabs", "browser_current_read", "browser_read", "browser_snapshot_many", "browser_control", "resolve_current_location",
   "email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all", "email_draft", "email_send",
-  "message_chats", "message_read", "message_search", "message_unread", "message_link_alias", "message_send",
+  "message_chats", "message_contacts", "message_read", "message_search", "message_unread", "message_link_alias", "message_send",
   "drive_sources", "drive_list", "drive_read", "drive_write", "drive_move",
-  "read", "write", "edit", "bash", "reminders_create", "reminders_list", "reminders_update", "schedule", "record_workflow",
-  "hub_draft", "third_party_unknown",
+  "read", "write", "edit", "bash", "reminders_create", "reminders_list", "reminders_update", "tasks", "schedule", "record_workflow",
+  "hub_state", "workspace_show", "hub_draft", "third_party_unknown",
 ].map(tool);
 
 test("task capability routing keeps only explicit groups plus skill reading", () => {
   assert.deepEqual(
     selectTaskTools(catalogue, ["browser", "email"]).map((item) => item.name),
-    ["browser", "browser_tabs", "browser_current_read", "browser_read", "browser_snapshot_many", "browser_control", "computer_state", "computer_arbiter", "email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all", "email_draft", "email_send", "read"],
+    ["browser", "browser_tabs", "browser_current_read", "browser_read", "browser_snapshot_many", "browser_control", "email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all", "email_draft", "email_send", "read", "hub_state", "workspace_show"],
   );
 });
 
 test("browser-read exposes only non-mutating current-page evidence tools", () => {
   assert.deepEqual(
     selectTaskTools(catalogue, ["browser-read"]).map((item) => item.name),
-    ["browser_current_read", "computer_state", "read"],
+    ["browser_current_read", "read"],
   );
 });
 
@@ -49,15 +49,15 @@ test("browser-research exposes embedded research without external-browser leases
 test("communication read routes exclude draft and send actions", () => {
   assert.deepEqual(
     selectTaskTools(catalogue, ["email-triage"]).map((item) => item.name),
-    ["email_read", "email_search_all", "read"],
+    ["email_read", "email_search_all", "read", "hub_state"],
   );
   assert.deepEqual(
     selectTaskTools(catalogue, ["email-read"]).map((item) => item.name),
-    ["email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all", "read"],
+    ["email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all", "read", "hub_state", "workspace_show"],
   );
   assert.deepEqual(
     selectTaskTools(catalogue, ["messages-read"]).map((item) => item.name),
-    ["message_chats", "message_read", "message_search", "message_unread", "read"],
+    ["message_chats", "message_contacts", "message_read", "message_search", "message_unread", "read", "hub_state", "workspace_show"],
   );
 });
 
@@ -91,16 +91,16 @@ test("the direct communication follow-up route spans email and chat actions", ()
     selectTaskTools(catalogue, ["communications"]).map((item) => item.name),
     [
       "email_accounts", "email_folders", "email_list", "email_read", "email_search",
-      "email_search_all", "email_draft", "email_send", "message_chats", "message_read",
-      "message_search", "message_unread", "message_link_alias", "message_send", "read",
+      "email_search_all", "email_draft", "email_send", "message_chats", "message_contacts", "message_read",
+      "message_search", "message_unread", "message_link_alias", "message_send", "read", "hub_state", "workspace_show", "hub_draft",
     ],
   );
 });
 
 test("file and action groups map to their complete bounded families", () => {
   assert.deepEqual(
-    selectTaskTools(catalogue, ["files", "reminders", "schedule"]).map((item) => item.name),
-    ["read", "write", "edit", "bash", "reminders_create", "reminders_list", "reminders_update", "schedule"],
+    selectTaskTools(catalogue, ["files", "reminders", "tasks", "schedule"]).map((item) => item.name),
+    ["read", "write", "edit", "bash", "reminders_create", "reminders_list", "reminders_update", "tasks", "schedule", "workspace_show"],
   );
 });
 
@@ -165,7 +165,7 @@ test("omitted routes infer only explicit read-only evidence families", () => {
 test("drive-read and files-read cannot mutate data", () => {
   assert.deepEqual(
     selectTaskTools(catalogue, ["drive-read", "files-read"]).map((item) => item.name),
-    ["drive_sources", "drive_list", "drive_read", "read"],
+    ["drive_sources", "drive_list", "drive_read", "read", "workspace_show"],
   );
 });
 

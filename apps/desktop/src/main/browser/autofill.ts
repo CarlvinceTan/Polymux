@@ -40,11 +40,25 @@ export interface LoginVault {
 }
 
 export const AUTOFILL_CHANNEL = "polymux:autofill";
+export const WEBAUTHN_CHANNEL = "polymux:webauthn";
+
+export type AutofillFields = {
+  username?: string;
+  password?: string;
+  totp?: string;
+};
+
+/** One credential, and only that credential, into a page the user asked to fill. */
+export function sendAutofill(contents: WebContents, fields: AutofillFields): void {
+  contents.send(AUTOFILL_CHANNEL, { kind: "fill", ...fields });
+}
 
 /** What the page sends up. Anything else is ignored — this arrives from a web
  * page's preload, so it is checked rather than trusted. */
+export type AutofillFocus = "login" | "otp";
+
 export type AutofillMessage =
-  | { kind: "page"; origin: string; forms: number }
+  | { kind: "page"; origin: string; forms: number; otp: number; focus: AutofillFocus | null }
   | { kind: "submitted"; origin: string; username: string; password: string };
 
 export function autofillMessage(value: unknown): AutofillMessage | null {
@@ -53,7 +67,13 @@ export function autofillMessage(value: unknown): AutofillMessage | null {
   const origin = typeof input.origin === "string" ? input.origin : "";
   if (!origin || origin === "null") return null;
   if (input.kind === "page" && typeof input.forms === "number")
-    return { kind: "page", origin, forms: input.forms };
+    return {
+      kind: "page",
+      origin,
+      forms: input.forms,
+      otp: typeof input.otp === "number" && input.otp > 0 ? input.otp : 0,
+      focus: input.focus === "login" || input.focus === "otp" ? input.focus : null,
+    };
   if (
     input.kind === "submitted" &&
     typeof input.username === "string" &&
@@ -156,13 +176,14 @@ export class Autofill {
     if (password === null) return false;
     // The page is only ever told the credential it is being given, never that
     // others exist for the site.
-    contents.send(AUTOFILL_CHANNEL, {
-      kind: "fill",
-      username: row.username,
-      password,
-    });
+    sendAutofill(contents, { username: row.username, password });
     this.#records.touchSavedLogin(id);
     return true;
+  }
+
+  /** Hands the page only the fields the user asked to fill. */
+  send(contents: WebContents, fields: AutofillFields): void {
+    sendAutofill(contents, fields);
   }
 
   /**

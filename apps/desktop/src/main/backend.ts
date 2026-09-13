@@ -1,3 +1,11 @@
+import {detectDesktopDeviceType} from './team/device-type.js';
+import {openWeChatDesktop} from '@polymux/wechat';
+import {updateDeviceMessage} from './team/device-message.js';
+import {DeviceConnections} from "./team/device-connections.js";
+import {AccountService} from "./account/account-service.js";
+import {AccountDevices} from "./account/account-devices.js";
+import {duplicateConversation} from "./backend/duplicate-conversation";
+import {rewindConversation} from "./backend/rewind-conversation";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import {
   copyFile,
@@ -14,23 +22,22 @@ import type { Stats } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import {
   GoalManager,
   MemoryManager,
   PolymuxAgent,
   SkillLoader,
-  createComputerTools,
   type AgentPrompts,
   type SkillLoaderOptions,
 } from "@polymux/agent";
-import { Computer } from "@polymux/computer";
 import { ComputerHistoryManager } from "@polymux/computer";
-import type { ActiveAgentRun } from "@polymux/core";
+import type { ActiveAgentRun, AgentToolResult } from "@polymux/core";
 import type {
   InferenceModel,
   InferenceService,
+  JsonObject,
   ModelRef,
 } from "@polymux/inference";
 import { PiInference } from "@polymux/inference/pi";
@@ -69,10 +76,29 @@ import type {
   DefaultAppDto,
   EnqueueManagerJobRequest,
   ManagerSnapshotDto,
+  MessageDto,
   AgentRuntimeDto,
+  ConnectExternalProfileRequest,
   CreateChatRequest,
   MergeContactLinkRequest,
+  RenameContactRequest,
   SetAgentProviderRequest,
+  CreateTeamGroupRequest,
+  CreateBotRequest,
+  UpdateTeamGroupRequest,
+  UpdateBotRequest,
+  SendTeamGroupMessageRequest,
+  SendAgentMessageRequest,
+  PairTeamHostRequest,
+  LaptopCapabilityLeaseDto,
+  AgentMessageOriginDto,
+  TeamGroupDto,
+  TeamHostDto,
+  BotDto,
+  ProfileDto,
+  WorkspaceAppDto,
+  WorkspaceAppsDto,
+  UsageStatsDto,
   PhonePointDto,
 } from "@polymux/protocol";
 import { createAppleMailSearcher } from "./hub/apple-mail.js";
@@ -84,19 +110,23 @@ import {
   driveS3Config,
   driveSource,
   LOCAL_RUNTIMES,
-  isAppPermissionKind,
   validateGoalCommand,
   validateSaveEmailAccount,
   validateSaveMailSignatures,
   validateStartRun,
 } from "@polymux/protocol";
 import { SqliteStorage } from "@polymux/storage/sqlite";
+import { summarizeUsage } from "@polymux/storage";
 import type { StoredMessage } from "@polymux/storage";
 import { ProfileManager } from "./profiles.js";
+import {TeamComputerManager, createTeamWorkspaceTool} from "./team/computers.js";
+import {TeamService, createAgentMessageTool, createTeamSetupTool, createTeamConnectionsTool, type BotTransfer} from "./team/service.js";
+import {TeamHostClient, TeamHostServer, type TeamDeviceRequest} from "./team/host-server.js";
 import {
   createNativeTools,
   importMcpServers,
   McpManager,
+  ToolMcpServer,
   ToolRegistry,
 } from "@polymux/tools";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
@@ -110,14 +140,17 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import {
   app,
   clipboard,
+  desktopCapturer,
   dialog,
   nativeImage,
   nativeTheme,
   net,
   Notification,
+  powerMonitor,
   safeStorage,
   session,
   shell,
+  webContents,
   type BrowserWindow,
   type IpcMain,
   type IpcMainInvokeEvent,
@@ -128,7 +161,17 @@ import {writeClipboardContent} from "./system/clipboard.js";
 import {ComputerHistoryActivities} from "./agent/computer-history-activities.js";
 import {BuiltinAgentRuntime} from "./agent-runtime/builtin.js";
 import {AcpAgentRuntime} from "./agent-runtime/acp.js";
+import {hostWorkspaceTools, teamWorkspaceTools, teamToolContext} from "./agent-runtime/workspace-tools.js";
 import {listAcpRegistry} from "./agent-runtime/registry.js";
+import {
+  externalAgentEnvironment,
+  externalAgentId,
+  externalMcpFile,
+  externalMcpKey,
+  importExternalConfiguration,
+  inspectExternalAgentProfiles,
+  managedExternalConfigurationDirectory,
+} from "./agent-runtime/configuration.js";
 import type {AgentRuntime, AgentRuntimeConfig} from "./agent-runtime/types.js";
 import { ChatPool, type JobPriority } from "./agent/chat-pool.js";
 import {
@@ -172,6 +215,8 @@ import {
   sendMailRequest,
   skillUploadFiles,
   systemPermission,
+  terminalInput,
+  terminalSessionId,
   workspaceSnapshot,
 } from "./backend/requests.js";
 import {
@@ -198,6 +243,7 @@ import {
   setupLocalRuntimeRequest,
   updateCustomProviderRequest,
 } from "./backend/models.js";
+import {preferredModel} from "./backend/model-selection.js";
 import {
   approximateLocation,
   browserAppName,
@@ -256,12 +302,12 @@ import {
 import { installSkillPackage, searchSkillRegistry } from "./skills/registry.js";
 import {
   declaredPermissions,
-  permissionsToRequest,
 } from "./skills/permissions.js";
 import {
   discoverAgentMcpServers,
   resolveDiscoveredMcp,
 } from "./mcp/discovery.js";
+import {financeReadRequest, readBank} from "./finance/bank.js";
 import { searchMcpRegistry } from "./mcp/registry.js";
 import { PluginRegistry } from "./plugins/registry.js";
 import { readManifest as readPluginManifest } from "./plugins/manifest.js";
@@ -269,18 +315,26 @@ import { ModelCatalog } from "./inference/model-catalog.js";
 import {
   Autofill,
   AUTOFILL_CHANNEL,
+  WEBAUTHN_CHANNEL,
   autofillMessage,
 } from "./browser/autofill.js";
+import {
+  buildAutofillOffer,
+  parseAutofillItem,
+  type AutofillPage,
+} from "./browser/locker-fill.js";
 import { BrowsingData } from "./browser/data.js";
 import { Downloads } from "./browser/downloads.js";
 import { EmbeddedBrowser } from "./browser/embedded.js";
 import { EncryptedLoginVault } from "./browser/logins.js";
 import { SitePermissions, originOf } from "./browser/permissions.js";
+import { WebAuthnAccounts } from "./browser/webauthn-accounts.js";
 import { applyImport } from "./browser/import/apply.js";
 import { discoverBrowsers, importFrom } from "./browser/import/discovery.js";
 import { importFromFile } from "./browser/import/files.js";
 import type { ImportedData } from "./browser/import/types.js";
 import { siteFaviconDataUrl } from "./browser/favicon.js";
+import { fetchPageTitle } from "./browser/page-title.js";
 import { RotatingInference } from "./inference/rotating.js";
 import {
   AccessibilityComputerHistoryFrames,
@@ -295,9 +349,10 @@ import { createPerRunCallLimit } from "./agent/tool-budget.js";
 import { RecordingCapture } from "./recording/capture.js";
 import { createRecordingTool } from "./recording/tools.js";
 import { RecordingMenubar } from "./recording/menubar.js";
-import { ComputerUseMenubar } from "./computer-use/menubar.js";
-import { PillIcon } from "./computer-use/pill-icon.js";
-import { WindowControlMonitor } from "./computer-use/monitor.js";
+import { WindowControlMenubar } from "./window-control/menubar.js";
+import { PillIcon } from "./window-control/pill-icon.js";
+import { WindowControlMonitor } from "./window-control/monitor.js";
+import {captureLeasedWindowPreview} from "./window-control/preview.js";
 import { AxReader, type AxWindow } from "./system/ax-reader.js";
 import { FileReloadWatcher } from "./system/file-reload-watcher.js";
 import { DirectoryWatcher } from "./system/directory-watcher.js";
@@ -317,10 +372,31 @@ import { HubCache } from "./hub/cache.js";
 import { Broadcasts } from "./hub/broadcasts.js";
 import { ContactLinks } from "./hub/contact-links.js";
 import { Drive, createDriveTools } from "@polymux/drive";
+import { LockerService } from "./locker/service.js";
+import { SupabaseLockerCloud } from "./locker/cloud.js";
+import {
+  lockerCopyField,
+  lockerId,
+  lockerIds,
+  lockerItemInput,
+  lockerPassword,
+  lockerStorageMode,
+  lockerStorageResolve,
+  lockerVaultBlob,
+  lockerWebAuthnCreate,
+  lockerWebAuthnGet,
+} from "./locker/requests.js";
 import { electronConsent } from "./system/drive-consent.js";
 import { sessionScopedSnapshot } from "./workspace/snapshot.js";
-import { PreviewGrants } from "./workspace/preview.js";
-import type { Homeserver, MatrixRoom } from "@polymux/hub";
+import { PreviewGrants, copyGrantedFile, previewTarget } from "./workspace/preview.js";
+import type {
+  Homeserver,
+  MatrixRoom,
+} from "@polymux/hub";
+import type {
+  WeChatSessionState,
+  WeChatStickerCatalogEntry,
+} from "@polymux/wechat";
 /**
  * How recent a message has to be to be worth announcing. Anything older is
  * history a bridge is catching up on rather than something just said.
@@ -355,7 +431,7 @@ interface BridgeInventory {
 }
 import { cancelCookieLogin, runCookieLogin } from "./hub/cookie-login.js";
 import { createCommunicationsTools } from "./hub/tools.js";
-import { parse as parseToml } from "smol-toml";
+import { PermissionGuide } from "./system/permission-guide.js";
 import { FirstRunPermissions } from "./system/first-run-permissions.js";
 import { AppPermissions } from "./system/app-permissions.js";
 import { ContactLookup } from "./hub/contacts.js";
@@ -363,6 +439,9 @@ import { Reminders } from "./reminders/index.js";
 import { createRemindersTools } from "./reminders/tools.js";
 import { PhoneController } from "./phone/controller.js";
 import { createPhoneTool } from "./phone/tools.js";
+import { TerminalSessions } from "./terminal/sessions.js";
+import { IdeService } from "./ide/service.js";
+import { requiredPath } from "./ide/paths.js";
 import { NativeCalendar } from "./calendar/index.js";
 import { serializeIcsEvents } from "./calendar/ics.js";
 import {
@@ -404,20 +483,22 @@ export interface DesktopBackendOptions {
   /** Isolated background automation must not initialize Squirrel or its macOS
    * background UI. Ordinary packaged sessions still check automatically. */
   suppressAutomaticUpdateChecks?: boolean;
-  codexConfigPath?: string;
   /** Path to the bundled native/ax-reader.swift accessibility helper. */
   axReaderSourcePath?: string;
   axEventsSourcePath?: string;
-  /** Path to native/pill-image.swift, which draws the Computer Use pill. */
+  /** Path to native/pill-image.swift, which draws the window-control pill. */
   pillImageSourcePath?: string;
   /** Path to the bundled native/app-permissions.swift privacy helper. */
   appPermissionsSourcePath?: string;
+  permissionGuideSourcePath?: string;
   /** Path to the bundled native/contacts.swift bounded lookup helper. */
   contactsSourcePath?: string;
   /** Path to the bundled native/reminders.swift EventKit helper. */
   remindersSourcePath?: string;
   /** Path to the bundled native/calendar.swift EventKit helper. */
   calendarSourcePath?: string;
+  /** Path to the bundled native/pty-host.c Terminal helper. */
+  ptyHostSourcePath?: string;
   /** Rebuilds profile-bound services while keeping the app window alive. */
   reloadForProfileChange?: () => void;
   /** Selects the designated default only for a fresh app launch. */
@@ -434,11 +515,32 @@ export interface DesktopBackendOptions {
     bridges?: BridgeInventory;
     /** Brings the in-process WeChat bridge up for Polymux's own account. */
     startWeChat?: (owner: string) => Promise<boolean>;
+    loadOlderWeChatHistory?: (roomId: string, limit: number, oldestCachedAt?: number) => Promise<boolean>;
+  refreshWeChatMedia?: (roomId: string, eventIds: string[]) => Promise<boolean>;
+    /** True only when WeChat's persistent relay can send immediately. */
+    weChatOutboundReady?: () => Promise<boolean>;
+    weChatOutboundFailure?: () => string | null;
+    weChatNativeOnly?: boolean;
+    /** Fails closed before a live-test action can wake or enqueue the wrong chat. */
+    assertWeChatLiveTestDestination?: (roomId: string) => void;
+    /** Passive sender state used by ordinary status polling. */
+    weChatOutboundStatus?: () => Promise<boolean>;
+    weChatNativeReadable?: () => boolean;
+    /** Account-native stickers already observed by the WeChat bridge. */
+    weChatStickers?: () => Promise<WeChatStickerCatalogEntry[]>;
+    weChatMembers?: (roomId: string) => Promise<import("@polymux/protocol").ChatMemberDto[] | null>;
+    weChatGroupInfo?: (roomId: string) => Promise<import("@polymux/protocol").ChatGroupInfoDto>;
+    renameWeChatGroup?: (roomId: string, name: string, expectedName: string) => Promise<import("@polymux/protocol").ChatGroupInfoDto>;
+    /** Read-only desktop sign-in state after an explicit WeChat wake attempt. */
+    weChatSessionState?: () => Promise<WeChatSessionState | null>;
+    weChatLogin?: () => Promise<import('@polymux/protocol').WeChatLoginDto>;
     /** Takes it back down again, when WeChat is unlinked from the Hub tab. */
     stopWeChat?: () => Promise<void>;
     waitForWeChatOutbound?: (eventId: string) => Promise<void>;
     discardOutbound?: (eventId: string) => void;
+    outboundDeliveryStatus?: (eventId: string) => "unconfirmed" | null;
     recallWeChat?: (roomId: string, eventId: string) => Promise<void>;
+    markWeChatRead?: (roomId: string, eventId: string) => Promise<void>;
     /**
      * Registers who to tell when a conversation moves. The homeserver is built
      * before the window, so it reports into the host and the host hands the
@@ -447,6 +549,125 @@ export interface DesktopBackendOptions {
     onActivity?: (listener: (activity: HubMessageActivity) => void) => void;
   };
 }
+
+const MAX_NEW_TAB_APPS = 4;
+const DEFAULT_NEW_TAB_APPS = ["drive", "calendar", "hub", "tasks"] as const;
+const MEDIA_IMAGE_EXTENSIONS = ["avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "svg", "webp"] as const;
+const MEDIA_VIDEO_EXTENSIONS = ["m4v", "mov", "mp4", "ogv", "webm"] as const;
+
+/** Browser is intentionally absent: it is Polymux's core workspace surface. */
+const OFFICIAL_WORKSPACE_APPS: ReadonlyArray<Omit<WorkspaceAppDto, "enabled">> = [
+  {
+    id: "hub",
+    name: "Hub",
+    description: "Messages and email across connected accounts.",
+    official: true,
+    workspaceKind: "hub",
+    settingsKind: "hub",
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "drive",
+    name: "Drive",
+    description: "Files from this computer and connected storage.",
+    official: true,
+    workspaceKind: "drive",
+    settingsKind: "drive",
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "media",
+    name: "Media",
+    description: "Photos and videos.",
+    official: true,
+    workspaceKind: "media",
+    settingsKind: null,
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "tasks",
+    name: "Tasks",
+    description: "Tasks created and managed by you and your agent.",
+    official: true,
+    workspaceKind: "tasks",
+    settingsKind: null,
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "calendar",
+    name: "Calendar",
+    description: "Events and availability from connected calendars.",
+    official: true,
+    workspaceKind: "calendar",
+    settingsKind: null,
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "phone",
+    name: "Phone",
+    description: "A shared phone screen for you and your agent.",
+    official: true,
+    workspaceKind: "phone",
+    settingsKind: null,
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "locker",
+    name: "Locker",
+    description: "Passwords, authenticator codes, recovery codes and passkeys.",
+    official: true,
+    workspaceKind: "locker",
+    settingsKind: null,
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "terminal",
+    name: "Terminal",
+    description: "A command line on this computer.",
+    official: true,
+    workspaceKind: "terminal",
+    settingsKind: null,
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "ide",
+    name: "IDE",
+    description: "A project folder, the file in front of you, and a terminal.",
+    official: true,
+    workspaceKind: "ide",
+    settingsKind: null,
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "finance",
+    name: "Finance",
+    description: "Bank accounts and agent payments.",
+    official: true,
+    workspaceKind: "finance",
+    settingsKind: null,
+    entry: null,
+    pinnable: true,
+  },
+  {
+    id: "usage",
+    name: "Usage",
+    description: "Tokens, API-equivalent spend, and activity over time.",
+    official: true,
+    workspaceKind: "usage",
+    settingsKind: null,
+    entry: null,
+    pinnable: true,
+  },
+];
 
 interface HubMessageActivity {
   roomId: string;
@@ -518,10 +739,14 @@ export class DesktopBackend {
   readonly #trustedWindows = new Map<number, BrowserWindow>();
   readonly #ipcMain: IpcMain;
   readonly #storage: SqliteStorage;
+  readonly #dataDirectory: string;
   readonly #phone: PhoneController;
+  readonly #terminal: TerminalSessions;
   readonly #profiles: ProfileManager;
   #agent?: PolymuxAgent;
   #agentRuntime?: AgentRuntime;
+  /** A Team member owns its own long-lived runtime/session. */
+  readonly #teamRuntimes = new Map<string, {profileId: string; key: string; runtime: AgentRuntime}>();
   #model?: ModelRef;
   /** Per-role model overrides, each with the reasoning level it was assigned
    * at. An absent role follows the main model. */
@@ -541,14 +766,15 @@ export class DesktopBackend {
   readonly #memory: MemoryManager;
   readonly #computerHistory: ComputerHistoryManager;
   readonly #computerHistoryActivities: ComputerHistoryActivities;
-  readonly #computer: Computer;
   readonly #computerSystem: ElectronComputerHistorySystem;
   readonly #interactionEvents: NativeInteractionEvents;
   #computerObservationStarted = false;
   readonly #recording: RecordingCapture;
-  readonly #computerUse: ComputerUseMenubar;
+  readonly #windowControlMenubar: WindowControlMenubar;
   readonly #windowControl: WindowControlMonitor;
   readonly #firstRunPermissions: FirstRunPermissions;
+  readonly #permissionGuide?: PermissionGuide;
+  #permissionSettingsRequest = 0;
   readonly #reminders: Reminders;
   readonly #calendar: NativeCalendar;
   readonly #stopCalendarChanges: () => void;
@@ -558,10 +784,29 @@ export class DesktopBackend {
    * persisted: a restart is the cheapest possible way to notice a grant that
    * changed while the app was not running.
    */
-  readonly #permissionsSettled = new Set<AppPermissionKind>();
   readonly #dictation: WhisperDictation;
   readonly #mcp = new McpManager();
   readonly #registry: ToolRegistry;
+  /** Host-owned app tools shared with ACP agents over a scoped loopback MCP server. */
+  readonly #workspaceToolMcp: ToolMcpServer;
+  readonly #teamToolMcp: ToolMcpServer;
+  /** Fail-closed tool surface for Team runs; never inherits active-profile tools. */
+  readonly #teamRegistry: ToolRegistry;
+  readonly #teamComputers: TeamComputerManager;
+  readonly #team: TeamService;
+  readonly #teamHostServer: TeamHostServer;
+  #deviceConnections!: DeviceConnections;
+  readonly #account: AccountService;
+  #accountDevices!: AccountDevices;
+  readonly #remoteBots = new Map<string, BotDto>();
+  readonly #remoteRunIds = new Set<string>();
+  readonly #remoteRunHosts = new Map<string, string>();
+  readonly #remoteRunConversations = new Map<string, string>();
+  readonly #remoteRunPolls = new Set<string>();
+  readonly #remoteRunSequences = new Map<string, number>();
+  readonly #remoteTeamRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #remoteTeamRefreshFailures = new Map<string, number>();
+  readonly #remoteDevicePolling = new Set<string>();
   readonly #browserResearchTool?: InAppBrowserResearchTool;
   readonly #hooks = new HookEngine();
   readonly #agentSurface = new AgentSurfaceServer();
@@ -576,12 +821,12 @@ export class DesktopBackend {
   readonly #tasks: TaskBoard;
   readonly #surfaceMenubar = new AgentSurfaceAdapter({
     onStop: () => {
-      // "Stop Using <App>" from the Computer Use pill: end browser control
+      // "Stop Using <App>" from the window-control pill: end browser control
       // and cancel whatever run was driving it.
       for (const lease of this.#agentSurface.snapshot().leases)
         this.#agentSurface.releaseLease(lease.id);
       for (const run of this.#activeRuns.values())
-        run.control.cancel(new Error("Stopped from the Computer Use menu"));
+        run.control.cancel(new Error("Stopped from the window-control menu"));
     },
   });
   readonly #activeRuns = new Map<string, ActiveAgentRun>();
@@ -593,7 +838,7 @@ export class DesktopBackend {
     string,
     ReturnType<typeof importMcpServers>[number]
   >();
-  readonly #plugins = new PluginRegistry();
+  readonly #plugins: PluginRegistry;
   /** Read once, on the first thing that needs it. */
   #pluginsLoaded?: Promise<void>;
   /** The namespaced ids of the servers plugins contribute, so the MCP tab can
@@ -601,10 +846,10 @@ export class DesktopBackend {
    * and a row there that could not be edited or removed would be a dead end. */
   readonly #pluginMcpIds = new Set<string>();
   readonly #mcpConfigPath: string;
+  readonly #mcpConfigKey: "mcpServers" | "mcp" | undefined;
   readonly #customSkillDirectory: string;
   readonly #mcpConfigWatcher: FileReloadWatcher;
   readonly #customSkillWatcher: DirectoryWatcher;
-  readonly #codexMcpConfigPath: string;
   #mcpReloadPending = false;
   #mcpReloadInFlight?: Promise<McpServerDto[]>;
   #closing = false;
@@ -616,9 +861,12 @@ export class DesktopBackend {
   #windowRefresh?: Promise<void>;
   #locationRefresh?: Promise<void>;
   readonly #sitePermissions: SitePermissions;
+  readonly #webAuthnAccounts: WebAuthnAccounts;
   readonly #downloads: Downloads;
   readonly #loginVault: EncryptedLoginVault;
   readonly #autofill: Autofill;
+  readonly #autofillPages = new Map<string, AutofillPage>();
+  readonly #autofillDismissed = new Set<string>();
   readonly #browsingData: BrowsingData;
   readonly #comms: Communications;
   /** Polymux-local recipient sets whose sends fan out into private DMs. */
@@ -633,18 +881,49 @@ export class DesktopBackend {
    * arrive on separate calls. */
   readonly #mailFolders = new Map<string, MailFolderDto[]>();
   readonly #drive: Drive;
+  readonly #locker: LockerService;
+  readonly #ide = new IdeService();
   /** Pins every run's tools to one folder, overriding the default output
    * folder. Set by tests and by hosts that embed the backend. */
   readonly #toolDirectory: string | undefined;
   readonly #reloadForProfileChange?: () => void;
 
   constructor(options: DesktopBackendOptions) {
+    this.#dataDirectory = options.dataDirectory;
     this.#phone = new PhoneController({
       ios: { dataDirectory: options.dataDirectory },
+    });
+    this.#terminal = new TerminalSessions({
+      sourcePath: options.ptyHostSourcePath ?? "",
+      cacheDirectory: path.join(options.dataDirectory, "bin"),
+      onEvent: (event) => this.#sendToTrustedWindows(channels.terminalEvent, event),
     });
     this.#window = options.window;
     this.#trustedWindows.set(options.window.webContents.id, options.window);
     this.#ipcMain = options.ipcMain;
+    this.#locker = new LockerService({
+      dataDirectory: options.dataDirectory,
+      onChanged: () => {
+        this.#sendToTrustedWindows(channels.lockerChanged, this.#locker.status());
+        this.#refreshAutofillOffers();
+      },
+    });
+    this.#agentSurface.attachLocker({
+      status: () => this.#locker.status(),
+      unlock: (password) => this.#locker.unlock(password),
+      lock: () => this.#locker.lock(),
+      matches: (url) => this.#locker.matchesForUrl(url),
+      fill: (id) => this.#locker.fillFields(id),
+      save: (item) => this.#locker.save(item),
+      totp: (id) => this.#locker.totp(id),
+      export: () => this.#locker.exportVault(),
+      import: (blob) => this.#locker.importVault(blob),
+      passkeys: (request) => this.#locker.listPasskeys(request),
+      getPasskey: (request) => this.#locker.getPasskey(request),
+      createPasskey: (request) => this.#locker.createPasskey(request),
+    });
+    powerMonitor.on("suspend", () => this.#locker.lock());
+    powerMonitor.on("lock-screen", () => this.#locker.lock());
     this.#toolDirectory = options.toolDirectory;
     this.#reloadForProfileChange = options.reloadForProfileChange;
     this.#coreSkills = new Set(options.coreSkills ?? []);
@@ -661,10 +940,14 @@ export class DesktopBackend {
       polymuxPath("profiles"),
     );
     if (options.selectDefaultProfile) this.#profiles.selectDefault();
-    const activeProfile = this.#profiles.snapshot().activeId;
+    const profileSnapshot = this.#profiles.snapshot();
+    const activeProfile = profileSnapshot.activeId;
+    const profile = profileSnapshot.profiles.find((candidate) => candidate.id === activeProfile)!;
     const profileDirectory = this.#profiles.directory(activeProfile);
     mkdirSync(profileDirectory, { recursive: true });
-    const personalSkills = path.join(profileDirectory, "skills");
+    const personalSkills = profile.source
+      ? path.join(profile.source.directory, "skills")
+      : path.join(profileDirectory, "skills");
     this.#skills = new SkillLoader({
       official: options.officialSkillDirectories,
       personal: personalSkills,
@@ -705,12 +988,8 @@ export class DesktopBackend {
       this.#apiKeys,
     );
     this.#goals = new GoalManager(this.#storage);
-    this.#memory = new MemoryManager({
-      // Outside the Electron data directory on purpose: the vault is plain
-      // Markdown meant to be opened, searched, and edited by hand, and it is
-      // the same layout Codex keeps at ~/.codex/memories.
-      directory: polymuxPath("memories"),
-    });
+    this.#memory = new MemoryManager({directory: path.join(profileDirectory, "memories")});
+    this.#plugins = new PluginRegistry(homedir(), profileDirectory);
     this.#axReader = new AxReader({
       sourcePath: options.axReaderSourcePath ?? "",
       cacheDirectory: path.join(options.dataDirectory, "bin"),
@@ -751,10 +1030,6 @@ export class DesktopBackend {
       store: this.#computerHistory.store,
       inference: this.#inference,
     });
-    this.#computer = new Computer(() => this.#computerStateInput(), {
-      search: ({ query, app, since, until, limit }) =>
-        this.#computerHistory.store.search(query, { app, since, until, limit }),
-    });
     // Record & Replay runs on its own tap and its own reads: a demonstration
     // the user just asked for must not depend on the ambient history being
     // switched on, or be narrowed by a capture policy written for it.
@@ -784,30 +1059,32 @@ export class DesktopBackend {
         };
       },
     });
-    // Computer Use drives native windows from a skill, through bash — nothing
-    // here is called when it takes one. Its lease registry is the one honest
-    // signal, so the pill is driven from that rather than from a hook that
-    // does not exist.
-    this.#computerUse = new ComputerUseMenubar({
+    // Window control drives native windows from the bundled skill, through
+    // bash — nothing here is called when it takes one. Its lease registry
+    // is the one honest signal, so the pill is driven from that rather than
+    // from a hook that does not exist.
+    this.#windowControlMenubar = new WindowControlMenubar({
       icon: new PillIcon({
         sourcePath: options.pillImageSourcePath ?? "",
         cacheDirectory: path.join(options.dataDirectory, "bin"),
       }),
       onStopAll: () => {
         for (const run of this.#activeRuns.values())
-          run.control.cancel(new Error("Stopped from the Computer Use menu"));
-        this.#computerUse.hide();
+          run.control.cancel(new Error("Stopped from the window-control menu"));
+        this.#windowControlMenubar.hide();
       },
     });
     this.#windowControl = new WindowControlMonitor({
       registryPath: polymuxPath("state", "window-control-leases.json"),
       windows: () => this.#windowSnapshot.windows,
-      onChange: (apps) => void this.#computerUse.update(apps),
+      onChange: (apps) => void this.#windowControlMenubar.update(apps),
     });
     this.#dictation = new WhisperDictation({
       modelDirectory: path.join(options.dataDirectory, "whisper"),
       binaryDirectory: options.dictationBinaryDirectory,
     });
+    if (options.permissionGuideSourcePath)
+      this.#permissionGuide = new PermissionGuide(options.permissionGuideSourcePath, path.join(options.dataDirectory, "bin"));
     this.#firstRunPermissions = new FirstRunPermissions({
       store: this.#storage,
       enabled: (permission) =>
@@ -856,7 +1133,32 @@ export class DesktopBackend {
           source: "local",
         });
       },
-      onTabReset: (tabId) => this.#sitePermissions.dismissTab(tabId),
+      onTabReset: (tabId) => {
+        this.#sitePermissions.dismissTab(tabId);
+        this.#webAuthnAccounts.dismissTab(tabId);
+        this.#clearAutofill(tabId);
+      },
+    });
+    this.#webAuthnAccounts = new WebAuthnAccounts({
+      tabIdForFrame: (frame) =>
+        this.#embeddedBrowser.tabIdFor(
+          frame ? (webContents.fromFrame(frame) ?? null) : null,
+        ),
+      prompt: (prompt) => {
+        if (this.#closing || this.#window.isDestroyed()) return;
+        this.#window.webContents.send(channels.browserEvent, {
+          type: "webauthn",
+          prompt,
+        });
+        this.#notifier.notify({
+          kind: "agent-attention",
+          title: "Choose a passkey",
+          body: notificationBody(
+            `Choose the account to use on ${prompt.relyingPartyId}.`,
+          ),
+          target: { kind: "browser", tabId: prompt.tabId },
+        });
+      },
     });
     this.#loginVault = new EncryptedLoginVault(
       path.join(options.dataDirectory, "logins.json"),
@@ -901,10 +1203,16 @@ export class DesktopBackend {
     // Polymux's own configuration lives in ~/.polymux next to its skills, not
     // buried in the platform's application-support directory: it is a file the
     // user is meant to be able to open, and a skill or script may be asked to.
-    this.#mcpConfigPath = path.join(profileDirectory, "mcp.json");
-    this.#customSkillDirectory = path.join(profileDirectory, "skills");
-    this.#codexMcpConfigPath =
-      options.codexConfigPath ?? path.join(homedir(), ".codex", "config.toml");
+    const sourcedMcp = profile.source
+      ? externalMcpFile(profile.source.agentId, profile.source.directory)
+      : undefined;
+    this.#mcpConfigPath = sourcedMcp ?? path.join(profileDirectory, "mcp.json");
+    this.#mcpConfigKey = sourcedMcp && profile.source
+      ? externalMcpKey(profile.source.agentId)
+      : undefined;
+    // A synced profile edits the external agent's live skill directory. Local
+    // and imported profiles keep their editable copy inside ~/.polymux.
+    this.#customSkillDirectory = personalSkills;
     this.#mcpConfigWatcher = new FileReloadWatcher(this.#mcpConfigPath, () =>
       this.#requestMcpReload(),
     );
@@ -967,10 +1275,27 @@ export class DesktopBackend {
               ? (platform) => options.hub!.bridges!.ensure(platform)
               : undefined,
             startWeChat: options.hub.startWeChat,
+            loadOlderWeChatHistory: options.hub.loadOlderWeChatHistory,
+            refreshWeChatMedia: options.hub.refreshWeChatMedia,
+            weChatOutboundReady: options.hub.weChatOutboundReady,
+            weChatOutboundFailure: options.hub.weChatOutboundFailure,
+            weChatNativeOnly: options.hub.weChatNativeOnly,
+            assertWeChatLiveTestDestination:
+              options.hub.assertWeChatLiveTestDestination,
+            weChatOutboundStatus: options.hub.weChatOutboundStatus,
+            weChatNativeReadable: options.hub.weChatNativeReadable,
+            weChatStickers: options.hub.weChatStickers,
+            weChatMembers: options.hub.weChatMembers,
+            weChatGroupInfo: options.hub.weChatGroupInfo,
+            renameWeChatGroup: options.hub.renameWeChatGroup,
+            weChatSessionState: options.hub.weChatSessionState,
+            weChatLogin: options.hub.weChatLogin,
             stopWeChat: options.hub.stopWeChat,
             waitForWeChatOutbound: options.hub.waitForWeChatOutbound,
             discardOutbound: options.hub.discardOutbound,
+            outboundDeliveryStatus: options.hub.outboundDeliveryStatus,
             recallWeChat: options.hub.recallWeChat,
+            markWeChatRead: options.hub.markWeChatRead,
           }
         : undefined,
       storage: {
@@ -1003,6 +1328,7 @@ export class DesktopBackend {
         "mail",
       ),
     });
+    this.#comms.startBackgroundSync();
     this.#broadcasts = new Broadcasts(this.#storage, {
       openDirect: (recipient) => {
         if (!recipient.remoteId)
@@ -1070,7 +1396,30 @@ export class DesktopBackend {
           this.#window.webContents.send(channels.driveChanged, status);
       },
     });
-    this.#runResources = new RunResourceRecorder(this.#storage);
+    this.#runResources = new RunResourceRecorder(
+      {
+        createArtifact: (input) => this.#storage.createArtifact(input),
+        listArtifacts: (conversationId) =>
+          this.#storage.listArtifacts(conversationId),
+        createReference: (input) => this.#storage.createReference(input),
+        listReferences: (conversationId) =>
+          this.#storage.listReferences(conversationId),
+        updateReferenceTitle: (id, title) =>
+          this.#storage.updateReferenceTitle(id, title),
+        pageTitleFor: (url) => historyPageTitle(this.#storage, url),
+      },
+      undefined,
+      {
+        resolveTitle: (url) => fetchPageTitle(session.defaultSession, url),
+        onChanged: (conversationId) => {
+          if (!this.#closing && !this.#window.isDestroyed())
+            this.#window.webContents.send(
+              channels.resourcesChanged,
+              conversationId,
+            );
+        },
+      },
+    );
     this.#notifier = new Notifier({
       preferences: () => {
         const general = this.#generalSettings();
@@ -1117,7 +1466,7 @@ export class DesktopBackend {
           ),
           target: {
             kind: "workspace",
-            request: { surface: "schedule" },
+            request: { surface: "tasks" },
           },
         });
         throw error;
@@ -1132,28 +1481,131 @@ export class DesktopBackend {
       if (!this.#closing && !this.#window.isDestroyed())
         this.#window.webContents.send(channels.tasksChanged, items);
     });
-    this.#registry = new ToolRegistry(
-      createNativeTools({
-        cwd: (context) => this.#runDirectory(context.runId),
+    this.#teamComputers = new TeamComputerManager();
+    this.#team = new TeamService({
+      storage: this.#storage,
+      profiles: this.#profiles,
+      computers: this.#teamComputers,
+      isConversationRunning: (conversationId) =>
+        [...this.#activeRuns.keys()].some(
+          (runId) => this.#storage.getRun(runId)?.conversationId === conversationId,
+        ),
+      deliver: (message) => this.#deliverAgentMessage(message),
+      requestLaptopAccess: (member, capability, tool) =>
+        this.#requestTeamLaptopAccess(member.name, capability, tool),
+      publish: () => { this.#publishAllBots(); },
+      publishGroups: (groups) => {
+        if (!this.#closing && !this.#window.isDestroyed())
+          this.#window.webContents.send(channels.teamGroupsChanged, groups);
+      },
+      writeHostSecret: async (hostId, secret) => {
+        const credentialId = `polymux-host:${hostId}`;
+        if (secret === null) {
+          await this.#credentials.delete(credentialId);
+          return;
+        }
+        await this.#credentials.modify(credentialId, async () => ({
+          type: "api_key",
+          key: secret,
+        }));
+      },
+      validateProfile: (profileId) => this.#assertTeamProfile(profileId),
+      transferDirectory: path.join(this.#dataDirectory, "team-transfers"),
+    });
+    const publicHostEndpoint = process.env.POLYMUX_HOST_PUBLIC_ENDPOINT?.trim() || null;
+    this.#teamHostServer = new TeamHostServer({
+      deviceType: detectDesktopDeviceType(),
+      storage: this.#storage,
+      host: process.env.POLYMUX_HOST_LISTEN?.trim() || undefined,
+      port: hostPort(process.env.POLYMUX_HOST_PORT),
+      publicEndpoint: publicHostEndpoint,
+      relayEndpoint: hostRelayEndpoint(publicHostEndpoint),
+      call: (method, args) => this.#handleTeamHostCall(method, args),
+      onPeerApproved: async (peer) => {
+        if (peer.endpoint && peer.hostId && peer.secret) {
+          await this.#team.savePeerConnection(peer.endpoint, {hostId: peer.hostId, deviceName: peer.deviceName, secret: peer.secret, deviceType: peer.deviceType});
+          this.#publishTeamHost();
+        }
+      },
+    });
+    this.#deviceConnections = new DeviceConnections(this.#teamHostServer, this.#team, hostRelayEndpoint(publicHostEndpoint) ?? "https://connect.polymux.com", async () => { await this.#teamList(); this.#publishTeamHost(); });
+    this.#account = new AccountService({
+      url: process.env.POLYMUX_SUPABASE_URL?.trim() || null,
+      anonKey: process.env.POLYMUX_SUPABASE_ANON_KEY?.trim() || null,
+      credentials: this.#credentials,
+      openExternal: (url) => void shell.openExternal(url),
+      onBeforeSessionChange: () => this.#accountDevices.withdraw(),
+      onSignedIn: () => {
+        this.#accountDevices?.start();
+        this.#publishAccount();
+        void this.#locker.hydrate();
+      },
+      onSignedOut: () => {
+        this.#accountDevices?.revoke();
+        this.#publishAccount();
+        this.#sendToTrustedWindows(channels.lockerChanged, this.#locker.status());
+      },
+    });
+    this.#accountDevices = new AccountDevices({
+      service: this.#account,
+      team: this.#team,
+      hostServer: this.#teamHostServer,
+      credentials: this.#credentials,
+      appVersion: appVersion().version,
+      onHostsChanged: () => this.#publishTeamHost(),
+    });
+    this.#locker.attachCloud(new SupabaseLockerCloud(this.#account));
+    void this.#account.restore().then(() => {
+      if (this.#account.status().signedIn) this.#accountDevices.start();
+      void this.#locker.hydrate();
+    });
+    this.#team.setLocalHostInfo(() => {
+      const snapshot = this.#teamHostServer.snapshot();
+      return {
+        endpoint: snapshot.endpoint,
+        deviceType: snapshot.deviceType,
+        pairingCode: snapshot.pairingCode,
+        pairingExpiresAt: snapshot.pairingExpiresAt,
+        pairedDesktopName: snapshot.pairedDesktopName,
+        detail: snapshot.detail,
+      };
+    });
+    this.#team.setLaptopBroker(async (member, capability, tool, input, _context, requiresApproval) =>
+      this.#teamHostServer.requestDevice({
+        memberId: member.id,
+        memberName: member.name,
+        capability,
+        tool: tool.name,
+        input: input as unknown as JsonValue,
+        requiresApproval,
       }),
     );
-    for (const tool of createComputerTools(this.#computer, {
-      refreshState: async () => {
-        await this.#refreshOpenWindows();
-      },
-    }))
-      this.#registry.register(tool);
-    for (const tool of createRemindersTools(this.#reminders))
+    void this.#teamHostServer.start().then(() => this.#team.publish());
+    const teamNativeTools = createNativeTools({
+      cwd: (context) => this.#runDirectory(context.runId),
+    }).map((tool) => this.#teamComputers.wrapNativeTool(
+      tool,
+      (runId) => this.#team.botForRun(runId)?.id ?? null,
+    ));
+    this.#registry = new ToolRegistry(teamNativeTools);
+    this.#teamRegistry = new ToolRegistry(teamNativeTools);
+    const remindersTools = createRemindersTools(this.#reminders);
+    for (const tool of remindersTools)
       this.#registry.register(tool);
     for (const tool of createBrowserControlTools(this.#agentSurface, {
       currentRead: true,
       embeddedBrowser: this.#embeddedBrowser,
-      computer: this.#computer,
-    }))
-      this.#registry.register(tool);
+    })) {
+      const guarded = this.#team.guardLaptopTool(tool, "browser");
+      this.#registry.register(guarded);
+      this.#teamRegistry.register(guarded);
+    }
     // The in-app Browser is the default surface for web work, so the agent
     // drives it directly rather than through the user's external browser.
-    const inAppBrowserTool = createInAppBrowserTool(this.#embeddedBrowser);
+    const inAppBrowserTool = this.#team.guardLaptopTool(
+      createInAppBrowserTool(this.#embeddedBrowser),
+      "browser",
+    );
     const boundResearch = createPerRunCallLimit(
         6,
         "The bounded public-research budget is complete. Do not open, read, snapshot, or interact with more research pages; synthesize from the current first-party evidence and state any remaining uncertainty.",
@@ -1172,30 +1624,39 @@ export class DesktopBackend {
         "dialog",
         "wait",
       ]);
-      this.#registry.register(
-        boundResearch(
-          inAppBrowserTool,
-          (input) =>
-            !workflowActions.has(
-              String((input as { action?: unknown })?.action ?? ""),
-            ),
-        ),
+      const browserWorkflowTool = boundResearch(
+        inAppBrowserTool,
+        (input) =>
+          !workflowActions.has(
+            String((input as { action?: unknown })?.action ?? ""),
+          ),
       );
-      this.#registry.register(
-        boundResearch(createInAppBrowserBatchTool(this.#embeddedBrowser)),
-      );
-      this.#browserResearchTool = createInAppBrowserReadTool(
-        this.#embeddedBrowser,
-      );
-    this.#registry.register(boundResearch(this.#browserResearchTool));
+      this.#registry.register(browserWorkflowTool);
+      this.#teamRegistry.register(browserWorkflowTool);
+      const browserBatchTool = boundResearch(this.#team.guardLaptopTool(
+        createInAppBrowserBatchTool(this.#embeddedBrowser),
+        "browser",
+      ));
+      this.#registry.register(browserBatchTool);
+      this.#teamRegistry.register(browserBatchTool);
+      this.#browserResearchTool = this.#team.guardLaptopTool(
+        createInAppBrowserReadTool(this.#embeddedBrowser),
+        "browser",
+      ) as InAppBrowserResearchTool;
+    const browserReadTool = boundResearch(this.#browserResearchTool);
+    this.#registry.register(browserReadTool);
+    this.#teamRegistry.register(browserReadTool);
     // The work the agent does lands in places the user cannot see while it
     // happens, so it needs a way to answer "show me" by opening one.
     // Both halves of the workspace surface run off the same revealer: one
     // shows a pane, the other writes into it. Only the showing half is kept
     // from delegated runs.
-    this.#registry.register(createWorkspaceTool(this.#workspaceRevealer()));
-    this.#registry.register(createHubDraftTool(this.#workspaceRevealer()));
-    this.#registry.register(createPhoneTool(this.#phone));
+    const workspaceTool = createWorkspaceTool(this.#workspaceRevealer());
+    const hubDraftTool = createHubDraftTool(this.#workspaceRevealer());
+    this.#registry.register(workspaceTool);
+    this.#registry.register(hubDraftTool);
+    const phoneTool = createPhoneTool(this.#phone);
+    this.#registry.register(phoneTool);
     this.#registry.register(
         createPolymuxUiInspectionTool({
           openSettings: async (mode) => {
@@ -1247,34 +1708,132 @@ export class DesktopBackend {
       );
     // Asking for something to happen every morning is a chat request like any
     // other, so the agent needs a way to write one down.
-    this.#registry.register(createScheduleTool(this.#scheduler));
-    this.#registry.register(
-      createTasksTool(
-        this.#tasks,
-        (runId) => this.#storage.getRun(runId)?.conversationId ?? null,
-      ),
+    const scheduleTool = createScheduleTool(this.#scheduler);
+    this.#registry.register(scheduleTool);
+    const tasksTool = createTasksTool(
+      this.#tasks,
+      (runId) => this.#storage.getRun(runId)?.conversationId ?? null,
     );
+    this.#registry.register(tasksTool);
     // Showing the agent a workflow is a chat request too, so the recorder is
     // always present rather than something the user has to switch on first.
     this.#registry.register(createRecordingTool(this.#recording));
+    const agentMessageTool = createAgentMessageTool(
+      this.#team,
+      (input, context) => this.#brokerTeamAgentMessage(input, context.runId),
+    );
+    this.#registry.register(agentMessageTool);
+    this.#teamRegistry.register(agentMessageTool);
+    this.#teamRegistry.register(createTeamWorkspaceTool(
+      this.#teamComputers,
+      (runId) => this.#team.botForRun(runId)?.id ?? null,
+      () => this.#drive.outputFolderSync(),
+    ));
+    this.#teamRegistry.register(createTeamConnectionsTool(this.#team, {
+      pool: async () => this.#connectionsPool(),
+      connect: async (botId, connections) => {
+        const bot = this.#team.bot(botId);
+        if (!bot) throw new Error("Unknown Team member");
+        const nextSkills = [...new Set([...(bot.skills ?? []), ...(connections.skills ?? [])])];
+        const nextMcp = [...new Set([...(bot.mcpServers ?? []), ...(connections.mcpServers ?? [])])];
+        const nextPlugins = [...new Set([...(bot.plugins ?? []), ...(connections.plugins ?? [])])];
+        return this.#updateBot(botId, {skills: nextSkills, mcpServers: nextMcp, plugins: nextPlugins});
+      },
+      disconnect: async (botId, connections) => {
+        const bot = this.#team.bot(botId);
+        if (!bot) throw new Error("Unknown Team member");
+        const removeSkills = new Set(connections.skills ?? []);
+        const removeMcp = new Set(connections.mcpServers ?? []);
+        const removePlugins = new Set(connections.plugins ?? []);
+        const nextSkills = (bot.skills ?? []).filter((s) => !removeSkills.has(s));
+        const nextMcp = (bot.mcpServers ?? []).filter((m) => !removeMcp.has(m));
+        const nextPlugins = (bot.plugins ?? []).filter((p) => !removePlugins.has(p));
+        return this.#updateBot(botId, {skills: nextSkills, mcpServers: nextMcp, plugins: nextPlugins});
+      },
+    }));
+    this.#registry.register(createTeamSetupTool(this.#team, {
+      options: async () => {
+        const host = this.#team.host();
+        const profiles = await this.#teamProfiles(host.hostId);
+        const connections = await this.#connectionsPool();
+        return {host, profiles, connections};
+      },
+      list: async () => this.#teamList(),
+      create: async (request) => this.#createBot(request),
+      update: async (id, request) => this.#updateBot(id, request),
+      remove: async (id) => this.#removeBot(id),
+    }));
     // Messaging and email are app capabilities rather than an MCP server the
     // user has to register, so their tools are always present.
-    for (const tool of createCommunicationsTools(this.#comms, {
+    const communicationsTools = createCommunicationsTools(this.#comms, {
       searchAllEmail: true,
       searchAllEmailTimeoutMs: 3_500,
-    }))
+    });
+    for (const tool of communicationsTools)
       this.#registry.register(tool);
-    // Same reasoning as messaging: the drives the user connected in Settings
-    // are an app capability, so the agent can act on all of them without an
-    // MCP server standing in between.
-    for (const tool of createDriveTools(this.#drive))
+    const driveTools = createDriveTools(this.#drive);
+    for (const tool of driveTools)
       this.#registry.register(tool);
+    this.#workspaceToolMcp = new ToolMcpServer({
+      name: "Polymux Workspace",
+      version: appVersion().version,
+      instructions: [
+        "These are Polymux's host-owned tools for Hub, Drive, Browser, Phone, Tasks, Schedule, Reminders, Team, and the workspace drawer.",
+        "Use workspace_show to reveal Hub or Drive results when the user asks to see them; use the browser tool's show action for a web page.",
+        "Inventory and message context are not permission to send or mutate anything.",
+        "A draft must remain unsent. Before a real send, resolve the exact account, recipient, and payload and obtain the user's explicit approval required by the tool description.",
+      ].join(" "),
+      tools: () => hostWorkspaceTools({
+        workspace: workspaceTool,
+        hubDraft: hubDraftTool,
+        phone: phoneTool,
+        browser: [browserWorkflowTool, browserBatchTool, browserReadTool],
+        communications: communicationsTools,
+        drive: driveTools,
+        reminders: remindersTools,
+        schedule: scheduleTool,
+        tasks: tasksTool,
+        agentMessage: agentMessageTool,
+        teamSetup: this.#registry.get("team_setup")!,
+      }),
+      context: (conversationId) => {
+        if (this.#team.botByConversation(conversationId)) throw new Error("Assistant tools are unavailable to Team bots");
+        const runId = [...this.#activeRuns.keys()].reverse().find((candidate) =>
+          this.#storage.getRun(candidate)?.conversationId === conversationId &&
+          this.#storage.getRun(candidate)?.status === "running" &&
+          !this.#activeRuns.get(candidate)?.control.aborted,
+        );
+        if (!runId) throw new Error("Workspace tools require an active Assistant run");
+        return {runId, budgetScope: runId, subagent: false};
+      },
+    });
+    this.#teamToolMcp = new ToolMcpServer({
+      name: "Polymux Team",
+      version: appVersion().version,
+      instructions: "Use agent_message to coordinate and reply to Team groups. Messages retain your bot identity and do not grant the recipient your permissions. team_workspace and team_connections apply only to your own bot.",
+      tools: () => teamWorkspaceTools({
+        agentMessage: agentMessageTool,
+        workspace: this.#teamRegistry.get("team_workspace")!,
+        connections: this.#teamRegistry.get("team_connections")!,
+      }),
+      context: (conversationId) => teamToolContext(
+        conversationId,
+        this.#team.botByConversation(conversationId)?.conversationId,
+        [...this.#activeRuns].flatMap(([id, active]) => {
+          const run = this.#storage.getRun(id);
+          return run && !active.control.aborted ? [run] : [];
+        }),
+      ),
+    });
+    // Native and ACP agents now receive the same host-owned app capabilities.
+    // Native tools are registered above; ACP receives this conversation-scoped
+    // MCP view of those exact tool instances.
     // Loopback only; a failed bind (port in use) degrades to no browser control.
     void this.#agentSurface.start().catch(() => {});
     // Prime the window listing; each turn still awaits a fresh snapshot.
     void this.#refreshOpenWindows();
-    // Mirror active computer-use browser leases into the user's Agent Surface
-    // menu-bar pill (the ChatGPT-desktop-style Computer Use capsule), when
+    // Mirror active window-control browser leases into the user's Agent Surface
+    // menu-bar pill, when
     // that presentation layer is installed.
     this.#agentSurface.onLeasesChanged = (leases) => {
       if (leases.length === 0)
@@ -1459,7 +2018,9 @@ export class DesktopBackend {
       this.#window.webContents.session,
       this.#window.webContents,
     );
+    this.#webAuthnAccounts.install(session.defaultSession);
     this.#registerAutofill();
+    this.#registerWebAuthn();
     if (this.#firstRunPermissions.completed()) this.#startComputerObservation();
     this.#scheduler.start();
     this.#handle(channels.phoneStatus, () => this.#phone.status());
@@ -1512,9 +2073,46 @@ export class DesktopBackend {
       this.#phone.type(required(value, "phone text")),
     );
     this.#handle(channels.phoneHome, () => this.#phone.home());
-    this.#handle(channels.profilesList, () => this.#profiles.snapshot());
+    this.#handle(channels.terminalCreate, (_event, cwd: unknown) =>
+      this.#terminal.create(typeof cwd === "string" && cwd ? cwd : undefined),
+    );
+    this.#handle(channels.terminalAttach, (_event, id: unknown, cols: unknown, rows: unknown) =>
+      this.#terminal.attach(
+        terminalSessionId(id),
+        terminalSize(cols, "columns"),
+        terminalSize(rows, "rows"),
+      ),
+    );
+    this.#handle(channels.terminalWrite, (_event, id: unknown, data: unknown) => {
+      const input = terminalInput(data);
+      if (input === undefined) return;
+      this.#terminal.write(terminalSessionId(id), input);
+    });
+    this.#handle(channels.terminalResize, (_event, id: unknown, cols: unknown, rows: unknown) => {
+      this.#terminal.resize(
+        terminalSessionId(id),
+        terminalSize(cols, "columns"),
+        terminalSize(rows, "rows"),
+      );
+    });
+    this.#handle(channels.terminalClose, (_event, id: unknown) => {
+      this.#terminal.close(terminalSessionId(id));
+    });
+    this.#handle(channels.profilesList, () => this.#profilesForRenderer());
     this.#handle(channels.agentRuntimeGet, () => this.#agentRuntimeDto());
     this.#handle(channels.agentRuntimeRegistry, () => listAcpRegistry());
+    this.#handle(
+      channels.agentRuntimeInspectConfiguration,
+      (_event, value: unknown, sourceDirectory: unknown) => {
+        const runtime = agentRuntimeRequest(value);
+        if (runtime.kind !== "acp") throw new Error("Only external agents have configuration to inspect");
+        return inspectExternalAgentProfiles(
+          runtime,
+          typeof sourceDirectory === "string" ? sourceDirectory : undefined,
+          {cwd: runtime.cwd ?? this.#profiles.directory()},
+        );
+      },
+    );
     this.#handle(channels.agentRuntimeUpdate, async (_event, value: unknown) => {
       if (this.#activeRuns.size)
         throw new Error("Wait for the active agent run to finish before switching agents.");
@@ -1595,12 +2193,36 @@ export class DesktopBackend {
       this.#profiles.duplicate(required(id, "profile id")),
     );
     this.#handle(channels.profilesRemove, async (_event, id: unknown) => {
+      const profileId = required(id, "profile id");
+      const assigned = this.#team.list().filter((member) => member.profileId === profileId);
+      if (assigned.length)
+        throw new Error(`Move ${assigned.map((member) => member.name).join(", ")} to another profile before deleting this one.`);
       const before = this.#profiles.snapshot().activeId;
-      const result = await this.#profiles.remove(required(id, "profile id"));
+      const result = await this.#profiles.remove(profileId);
       if (result.activeId !== before)
         setTimeout(() => this.#reloadForProfileChange?.(), 0);
       return result;
     });
+    this.#handle(channels.profilesConnectExternal, async (_event, value: unknown) =>
+      this.#connectExternalProfile(externalProfileConnectionRequest(value)),
+    );
+    this.#handle(
+      channels.profilesOpenFolder,
+      async (_event, id: unknown, target: unknown) => {
+        const profile = this.#profiles.snapshot().profiles.find(
+          (candidate) => candidate.id === required(id, "profile id"),
+        );
+        if (!profile) throw new Error("Unknown profile");
+        const directory = target === "source" && profile.source
+          ? profile.source.directory
+          : this.#profiles.directory(profile.id);
+        if (target === "source" && profile.source && !existsSync(directory))
+          throw new Error("That external configuration folder no longer exists. Change the profile source to reconnect it.");
+        if (target !== "source") await mkdir(directory, {recursive: true});
+        const error = await shell.openPath(directory);
+        if (error) throw new Error(error);
+      },
+    );
     this.#handle(channels.profilesSelect, (_event, id: unknown) => {
       const before = this.#profiles.snapshot().activeId;
       const result = this.#profiles.select(required(id, "profile id"));
@@ -1660,7 +2282,128 @@ export class DesktopBackend {
         clipboard,
         fetch: (url) => net.fetch(url),
         imageFromBuffer: (buffer) => nativeImage.createFromBuffer(buffer),
+        imageFromPath: (file) => nativeImage.createFromPath(file),
+        resolveLocalFile: (url) => previewTarget(this.previewGrants, url),
       }),
+    );
+    this.#handle(channels.lockerStatus, () => this.#locker.status());
+    this.#handle(channels.lockerCreate, (_event, password: unknown) =>
+      this.#locker.create(lockerPassword(password)),
+    );
+    this.#handle(channels.lockerUnlock, (_event, password: unknown) =>
+      this.#locker.unlock(lockerPassword(password)),
+    );
+    this.#handle(channels.lockerLock, () => this.#locker.lock());
+    this.#handle(channels.lockerTouch, () => this.#locker.touch());
+    this.#handle(channels.lockerList, () => this.#locker.list());
+    this.#handle(channels.lockerReveal, (_event, id: unknown) =>
+      this.#locker.reveal(lockerId(id)),
+    );
+    this.#handle(channels.lockerTotp, (_event, id: unknown) =>
+      this.#locker.totp(lockerId(id)),
+    );
+    this.#handle(channels.lockerSave, (_event, value: unknown) =>
+      this.#locker.save(lockerItemInput(value)),
+    );
+    this.#handle(channels.lockerRemove, (_event, id: unknown) =>
+      this.#locker.remove(lockerId(id)),
+    );
+    this.#handle(channels.lockerRestore, (_event, ids: unknown) =>
+      this.#locker.restore(lockerIds(ids)),
+    );
+    this.#handle(channels.lockerPurge, (_event, ids: unknown) =>
+      this.#locker.purge(lockerIds(ids)),
+    );
+    this.#handle(channels.lockerEmptyTrash, () => this.#locker.emptyTrash());
+    this.#handle(channels.lockerPin, (_event, ids: unknown, pinned: unknown) =>
+      this.#locker.pin(lockerIds(ids), pinned === true),
+    );
+    this.#handle(channels.lockerReorder, (_event, ids: unknown) =>
+      this.#locker.reorder(lockerIds(ids)),
+    );
+    this.#handle(channels.lockerChangePassword, (_event, current: unknown, next: unknown) =>
+      this.#locker.changePassword(lockerPassword(current, "Current password"), lockerPassword(next, "New password")),
+    );
+    this.#handle(channels.lockerCodes, () => this.#locker.codes());
+    this.#handle(channels.lockerOtpauth, (_event, id: unknown) =>
+      this.#locker.otpauth(lockerId(id)),
+    );
+    this.#handle(
+      channels.lockerCopy,
+      (_event, id: unknown, field: unknown, recoveryIndex: unknown) => {
+        const text = this.#locker.copyText(
+          lockerId(id),
+          lockerCopyField(field),
+          typeof recoveryIndex === "number" ? recoveryIndex : undefined,
+        );
+        clipboard.writeText(text);
+        return true;
+      },
+    );
+    this.#handle(channels.lockerImportBegin, async () => {
+      const result = await dialog.showOpenDialog(this.#window, {
+        title: "Import into Locker",
+        properties: ["openFile"],
+        filters: [
+          { name: "KeePass or CSV", extensions: ["kdbx", "csv"] },
+          { name: "KeePass", extensions: ["kdbx"] },
+          { name: "CSV", extensions: ["csv"] },
+        ],
+      });
+      return this.#locker.importBegin(
+        result.canceled ? null : (result.filePaths[0] ?? null),
+      );
+    });
+    this.#handle(channels.lockerImportConfirm, (_event, password: unknown) =>
+      this.#locker.importConfirm(lockerPassword(password, "KeePass password")),
+    );
+    this.#handle(channels.lockerSync, () => this.#locker.hydrate());
+    this.#handle(channels.lockerSetStorage, (_event, mode: unknown, resolve: unknown) =>
+      this.#locker.setStorage(lockerStorageMode(mode), lockerStorageResolve(resolve)),
+    );
+    this.#handle(channels.financeRead, (_event, value: unknown) => {
+      const request = financeReadRequest(value);
+      const server = this.#mcp.snapshots().find(server => server.id === request.serverId);
+      if (server?.status !== "connected") throw new Error("BankMCP is not connected");
+      return readBank(request, this.#mcp.toolsForServers([request.serverId]));
+    });
+    this.#handle(channels.usageGet, (_event, agentId: unknown) => this.#usageStats(agentId));
+    this.#handle(channels.idePickFolder, async () => {
+      const result = await dialog.showOpenDialog(this.#window, {
+        properties: ["openDirectory"],
+      });
+      return result.canceled ? null : (result.filePaths[0] ?? null);
+    });
+    this.#handle(channels.ideList, (_event, root: unknown, target: unknown) =>
+      this.#ide.list(
+        requiredPath(root, "project"),
+        typeof target === "string" ? target : "",
+      ),
+    );
+    this.#handle(channels.ideRead, (_event, root: unknown, target: unknown) =>
+      this.#ide.read(requiredPath(root, "project"), requiredPath(target, "file")),
+    );
+    this.#handle(channels.ideWrite, (_event, root: unknown, target: unknown, content: unknown) => {
+      if (typeof content !== "string") throw new Error("File content is required");
+      return this.#ide.write(
+        requiredPath(root, "project"),
+        requiredPath(target, "file"),
+        content,
+      );
+    });
+    this.#handle(channels.ideCreate, (_event, root: unknown, target: unknown, content: unknown) =>
+      this.#ide.create(
+        requiredPath(root, "project"),
+        requiredPath(target, "file"),
+        typeof content === "string" ? content : "",
+      ),
+    );
+    this.#handle(channels.ideMove, (_event, root: unknown, from: unknown, to: unknown) =>
+      this.#ide.move(
+        requiredPath(root, "project"),
+        requiredPath(from, "file"),
+        requiredPath(to, "destination"),
+      ),
     );
     if (!this.#suppressAutomaticUpdateChecks) startUpdateChecks();
     this.#handle(channels.permissionsStatus, (_event, value: unknown) =>
@@ -1672,12 +2415,20 @@ export class DesktopBackend {
     this.#handle(channels.permissionsRequest, (_event, value: unknown) =>
       this.#requestSystemPermission(systemPermission(value)),
     );
-    this.#handle(channels.permissionsRequestAll, () =>
-      this.#ensurePermissions(),
-    );
-    this.#handle(channels.permissionsOpenSettings, (_event, value: unknown) =>
-      openSystemPermissionSettings(systemPermission(value, true)),
-    );
+    this.#handle(channels.permissionsOpenSettings, async (_event, value: unknown) => {
+      const kind = systemPermission(value, true);
+      const request = ++this.#permissionSettingsRequest;
+      if (kind !== "screen-recording") this.#permissionGuide?.dismiss();
+      // Linux grants media through its portal, without a separate Settings
+      // destination. Keep the new link actionable on that platform too.
+      if (process.platform === "linux" && (kind === "microphone" || kind === "screen-recording")) {
+        await this.#requestSystemPermission(kind);
+        return;
+      }
+      await openSystemPermissionSettings(kind);
+      if (kind === "screen-recording" && request === this.#permissionSettingsRequest)
+        await this.#permissionGuide?.open();
+    });
     this.#handle(channels.dictationPrepare, () => {
       this.#requireMicrophone();
       return this.#dictation.prepare();
@@ -1690,8 +2441,20 @@ export class DesktopBackend {
       },
     );
     this.#handle(channels.conversationsList, () =>
-      this.#storage.listConversations(),
+      this.#team.assistantConversations(),
     );
+    this.#handle(channels.conversationsListArchived, () =>
+      this.#team.archivedAssistantConversations(),
+    );
+    this.#handle(channels.conversationsDuplicate, async (_event, id: string, throughMessageId?: string) => {
+      const conversationId = required(id, 'conversation id');
+      const deviceId = this.#team.executionDevice(conversationId);
+      if (deviceId === this.#team.localHost().hostId) return duplicateConversation(this.#storage, conversationId, throughMessageId === undefined ? undefined : required(throughMessageId, 'fork message id'));
+      const copy = await (await this.#remoteTeamClient(deviceId)).call<{id: string; title: string}>('conversations.duplicate', [conversationId, ...(throughMessageId === undefined ? [] : [required(throughMessageId, 'fork message id')])]);
+      const mirror = this.#storage.createConversation({id: copy.id, title: copy.title});
+      this.#storage.setPreference(`assistant.device:${copy.id}`, deviceId);
+      return mirror;
+    });
     this.#handle(channels.conversationsCreate, (_event, title?: string) =>
       this.#storage.createConversation({
         id: crypto.randomUUID(),
@@ -1700,50 +2463,64 @@ export class DesktopBackend {
     );
     this.#handle(
       channels.conversationsRename,
-      (_event, id: string, title: string) =>
-        this.#storage.updateConversation(required(id, "conversation id"), {
-          title: required(title, "title"),
-        }),
+      async (_event, id: string, title: string) => {
+        const deviceId = this.#team.executionDevice(required(id, 'conversation id'));
+        if (deviceId !== this.#team.localHost().hostId) await (await this.#remoteTeamClient(deviceId)).call('conversations.rename', [id, required(title, 'title')]);
+        return this.#storage.updateConversation(id, {title: required(title, 'title')});
+      },
+    );
+    this.#handle(channels.conversationsArchive, async (_event, id: string) =>
+      this.#setAssistantArchived(required(id, "conversation id"), true),
+    );
+    this.#handle(channels.conversationsUnarchive, async (_event, id: string) =>
+      this.#setAssistantArchived(required(id, "conversation id"), false),
     );
     this.#handle(channels.conversationsRemove, async (_event, id: string) => {
       const conversationId = required(id, "conversation id");
+      const deviceId = this.#team.executionDevice(conversationId);
+      if (deviceId !== this.#team.localHost().hostId) await (await this.#remoteTeamClient(deviceId)).call('conversations.remove', [conversationId]);
       // A run can still be appending durable events after the renderer asks to
       // delete its conversation. Cancelling and settling every run in that
       // conversation first keeps those writes from racing the FK cascade.
       // Repeat once children have settled because a parent may have registered
       // a delegated run immediately before observing cancellation.
-      while (true) {
-        const active = [...this.#activeRuns.entries()]
-          .filter(
-            ([runId]) =>
-              this.#storage.getRun(runId)?.conversationId === conversationId,
-          )
-          .map(([, run]) => run);
-        if (!active.length) break;
-        for (const run of active)
-          run.control.cancel(new Error("Conversation deleted"));
-        await Promise.allSettled(active.map((run) => run.result));
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
+      await this.#settleConversationRuns(conversationId, "Conversation deleted");
       this.#runResources.forget(conversationId);
       const removed = this.#storage.deleteConversation(conversationId);
       if (this.#managerJobs.removeChat(conversationId))
         this.#publishManagerJobs();
       return removed;
     });
-    this.#handle(channels.messagesList, (_event, id: string) =>
-      this.#storage
-        .listMessages(required(id, "conversation id"))
-        .map((message) => this.#messageDto(message)),
-    );
+    this.#handle(channels.messagesList, async (_event, id: string) => {
+      const conversationId = required(id, "conversation id");
+      const deviceId = this.#team.executionDevice(conversationId);
+      if (deviceId !== this.#team.localHost().hostId) return (await this.#remoteTeamClient(deviceId)).call<MessageDto[]>("conversations.messages", [conversationId]);
+      const remoteMember = this.#remoteMemberByConversation(conversationId);
+      if (remoteMember)
+        return (await this.#remoteTeamClient(remoteMember.hostId)).call<MessageDto[]>("conversations.messages", [conversationId]);
+      return this.#storage.listMessages(conversationId).map((message) => this.#messageDto(message));
+    });
     this.#handle(
       channels.messagesUpdate,
-      (
+      async (
         _event,
         id: string,
-        patch: { content?: unknown; metadata?: unknown; attachments?: unknown },
+        patch: { conversationId?: string; content?: unknown; metadata?: unknown; attachments?: unknown },
       ) => {
         const messageId = required(id, "message id");
+        if (patch.conversationId) {
+          const deviceId = this.#remoteMemberByConversation(patch.conversationId)?.hostId ?? this.#team.executionDevice(patch.conversationId);
+          if (deviceId !== this.#team.localHost().hostId) {
+            const client = await this.#remoteTeamClient(deviceId);
+            const attachments: string[] = [];
+            for (const file of optionalStringArray(patch.attachments, 'attachments')) {
+              if ((await stat(file)).size > 12 * 1024 * 1024) throw new Error('Remote attachments must be smaller than 12 MB.');
+              const uploaded = await client.call<{path:string}>('conversations.upload', [{conversationId: patch.conversationId, name: path.basename(file), data: (await readFile(file)).toString('base64')}]);
+              attachments.push(uploaded.path);
+            }
+            return client.call<MessageDto>('conversations.updateMessage', [messageId, {...patch, attachments} as JsonValue]);
+          }
+        }
         const updated = this.#storage.updateMessage(messageId, {
           content:
             patch.content === undefined ? undefined : json(patch.content),
@@ -1775,17 +2552,152 @@ export class DesktopBackend {
         return this.#messageDto(updated);
       },
     );
-    this.#handle(channels.runsStart, (_event, value: unknown) =>
-      this.#startRun(validateStartRun(value)),
+    this.#handle(channels.teamList, () => this.#teamList());
+    this.#handle(channels.teamGroupsList, () => this.#team.groups());
+    this.#handle(channels.teamGroupCreate, async (_event, value: CreateTeamGroupRequest) =>
+      this.#createTeamGroup(value),
     );
-    this.#handle(channels.runsCancel, (_event, runId: string) => {
-      this.#activeRuns.get(required(runId, "run id"))?.control.cancel();
+    this.#handle(channels.teamGroupUpdate, async (_event, id: string, value: UpdateTeamGroupRequest) =>
+      this.#updateTeamGroup(required(id, "Team group id"), value),
+    );
+    this.#handle(channels.teamGroupMarkRead, (_event, id: string) =>
+      this.#team.markGroupRead(required(id, "Team group id")),
+    );
+    this.#handle(channels.teamGroupRemove, async (_event, id: string) => {
+      const groupId = required(id, "Team group id");
+      const group = this.#team.group(groupId);
+      if (!group) return false;
+      await this.#settleConversationRuns(group.conversationId, "Team group deleted");
+      return this.#team.removeGroup(groupId);
+    });
+    this.#handle(channels.teamGroupSend, async (_event, value: SendTeamGroupMessageRequest) =>
+      this.#sendTeamGroupMessage(value),
+    );
+    this.#handle(channels.teamProfiles, async (_event, hostId?: string) =>
+      this.#teamProfiles(typeof hostId === "string" && hostId ? hostId : this.#team.host().hostId),
+    );
+    this.#handle(channels.teamCreate, async (_event, value: CreateBotRequest) =>
+      this.#createBot(value),
+    );
+    this.#handle(
+      channels.teamUpdate,
+      async (_event, id: string, value: UpdateBotRequest) =>
+        this.#updateBot(required(id, "Team member id"), value),
+    );
+    this.#handle(channels.teamMarkRead, async (_event, id: string) => this.#botMutation<BotDto>(
+      required(id, "Team member id"), "team.markRead", [],
+      (memberId) => this.#team.markRead(memberId),
+    ));
+    this.#handle(channels.teamRemove, async (_event, id: string) =>
+      this.#removeBot(required(id, "Team member id")),
+    );
+    this.#handle(channels.teamSend, async (_event, value: SendAgentMessageRequest) => this.#sendTeamMessage(value));
+    this.#handle(channels.teamComputerStart, async (_event, id: string) => this.#botMutation<BotDto>(
+      required(id, "Team member id"), "team.startComputer", [],
+      (memberId) => this.#team.startComputer(memberId),
+    ));
+    this.#handle(channels.teamComputerStop, async (_event, id: string) => this.#botMutation<BotDto>(
+      required(id, "Team member id"), "team.stopComputer", [],
+      (memberId) => this.#team.stopComputer(memberId),
+    ));
+    this.#handle(channels.teamLeases, async (_event, id?: string) => this.#teamLeases(id));
+    this.#handle(
+      channels.teamLeaseGrant,
+      async (_event, id: string, capabilities: LaptopCapabilityLeaseDto["capabilities"], minutes?: number) => this.#botMutation<LaptopCapabilityLeaseDto>(
+        required(id, "Team member id"),
+        "team.grantLease",
+        [capabilities as unknown as JsonValue, minutes ?? 15],
+        (memberId) => this.#team.grantLease(memberId, capabilities ?? [], minutes),
+      ),
+    );
+    this.#handle(channels.teamLeaseRevoke, async (_event, id: string) => this.#revokeTeamLease(required(id, "lease id")));
+    this.#handle(channels.devicePairing, async (_event, request: import('@polymux/protocol').DevicePairingRequest) => {
+      const state = await this.#deviceConnections.request(request);
+      if (state.connected || request.action === 'approve' || request.action === 'revoke') {
+        await this.#teamList();
+        this.#publishTeamHost();
+      }
+      return state;
+    });
+    this.#handle(channels.teamHostGet, () => this.#team.host());
+    this.#handle(channels.accountGet, () => this.#account.status());
+    this.#handle(channels.accountSignInWithPassword, (_event, email: string, password: string) =>
+      this.#account.signInWithPassword(required(email, "Email"), String(password ?? "")));
+    this.#handle(channels.accountSignUp, (_event, email: string, password: string) =>
+      this.#account.signUp(required(email, "Email"), String(password ?? "")));
+    this.#handle(channels.accountResendConfirmation, (_event, email: string) =>
+      this.#account.resendConfirmation(required(email, "Email")));
+    this.#handle(channels.accountRequestPasswordReset, (_event, email: string) =>
+      this.#account.requestPasswordReset(required(email, "Email")));
+    this.#handle(channels.accountUpdatePassword, (_event, password: string) =>
+      this.#account.updatePassword(String(password ?? "")));
+    this.#handle(channels.accountSignInWithOAuth, (_event, provider: string) => {
+      if (provider !== "google" && provider !== "apple") throw new Error("Unknown sign-in provider.");
+      return this.#account.signInWithOAuth(provider);
+    });
+    this.#handle(channels.accountSwitch, (_event, userId: string) =>
+      this.#account.switchTo(required(userId, "Account")));
+    this.#handle(channels.accountSignOut, () => this.#account.signOut());
+    this.#handle(channels.teamHostsList, () => this.#team.hosts());
+    this.#handle(channels.teamHostBeginPairing, (_event, preserveFailures?: boolean) => {
+      this.#teamHostServer.beginPairing(preserveFailures === true);
+      return this.#publishTeamHost();
+    });
+    this.#handle(channels.teamHostPair, async (_event, value: PairTeamHostRequest) => {
+      const host = await this.#team.pairHost(value);
+      await this.#teamList();
+      this.#publishTeamHost();
+      return host;
+    });
+    this.#handle(channels.teamHostLocal, async () => {
+      await this.#team.useLocalHost();
+      return this.#publishTeamHost();
+    });
+    this.#handle(channels.teamHostDefault, (_event, hostId: string) => {
+      this.#team.setDefaultHost(required(hostId, "Host id"));
+      return this.#publishTeamHost();
+    });
+    this.#handle(channels.teamHostRemove, async (_event, hostId: string) => {
+      const id = required(hostId, "Host id");
+      this.#stopRemoteTeamRefresh(id);
+      const hosts = await this.#team.removeHost(id);
+      this.#teamHostServer.revokePeer(id);
+      for (const [memberId, member] of this.#remoteBots) if (member.hostId === id) this.#remoteBots.delete(memberId);
+      for (const [runId, hostId] of this.#remoteRunHosts) if (hostId === id) {
+        this.#remoteRunHosts.delete(runId); this.#remoteRunConversations.delete(runId); this.#remoteRunIds.delete(runId);
+        const job = this.#managerJobs.forRun(runId);
+        if (job?.status === 'running') this.#managerJobs.fail(job.id, 'Device disconnected. The remote work may still be running.');
+      }
+      this.#publishManagerJobs();
+      this.#publishAllBots();
+      this.#publishTeamHost();
+      return hosts;
+    });
+    this.#handle(channels.teamHostResetPairing, () => {
+      this.#teamHostServer.resetPairing();
+      return this.#publishTeamHost();
+    });
+    this.#handle(channels.runsStart, async (_event, value: unknown) => {
+      const request = validateStartRun(value);
+      return this.#startRun(request);
+    });
+    this.#handle(channels.runsCancel, async (_event, runId: string) => {
+      const id = required(runId, "run id");
+      const hostId = this.#remoteRunHosts.get(id);
+      if (hostId) {
+        await (await this.#remoteTeamClient(hostId)).call("runs.cancel", [id]);
+        return;
+      }
+      this.#activeRuns.get(id)?.control.cancel();
     });
     this.#handle(
       channels.runsSteer,
       (_event, runId: string, text: string, messageId?: string) => {
         const id = required(runId, "run id");
         const value = required(text, "text");
+        const hostId = this.#remoteRunHosts.get(id);
+        if (hostId)
+          return this.#remoteTeamClient(hostId).then((client) => client.call("runs.steer", [id, value, messageId ?? null]));
         const run = this.#storage.getRun(id);
         if (!run) throw new Error(`Run not found: ${id}`);
         // Resolve the live run before persisting: a run that settled between the
@@ -1825,8 +2737,9 @@ export class DesktopBackend {
       void this.#drainManagerConversation(job.chatId);
       return job;
     });
-    this.#handle(channels.managerCancel, (_event, id: string) => {
+    this.#handle(channels.managerCancel, async (_event, id: string) => {
       const job = this.#managerJobs.cancel(required(id, "manager job id"));
+      if (job.runId && this.#remoteRunHosts.has(job.runId)) await (await this.#remoteTeamClient(this.#remoteRunHosts.get(job.runId)!)).call('runs.cancel', [job.runId]);
       if (job.runId)
         this.#activeRuns
           .get(job.runId)
@@ -1859,8 +2772,11 @@ export class DesktopBackend {
     );
     this.#handle(
       channels.runEventsList,
-      (_event, runId: string, afterSequence = 0) => {
+      async (_event, runId: string, afterSequence = 0) => {
         const id = required(runId, "run id");
+        const hostId = this.#remoteRunHosts.get(id);
+        if (hostId)
+          return (await this.#remoteTeamClient(hostId)).call<RunEventDto[]>("runs.events", [id, number(afterSequence)]);
         const run = this.#storage.getRun(id);
         const conversationId = run?.conversationId ?? "";
         return this.#storage
@@ -1870,12 +2786,36 @@ export class DesktopBackend {
           );
       },
     );
+    this.#handle(channels.activityPreview, async (_event, value: unknown) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      const request = value as {kind?: unknown; tabId?: unknown; runId?: unknown};
+      if (request.kind === "browser") {
+        const tabId = typeof request.tabId === "string" ? request.tabId.trim() : "";
+        return tabId ? this.#embeddedBrowser.preview(tabId) : null;
+      }
+      if (request.kind === "computer") {
+        const runId = typeof request.runId === "string" ? request.runId.trim() : "";
+        if (!runId) return null;
+        return captureLeasedWindowPreview({
+          registryPath: polymuxPath("state", "window-control-leases.json"),
+          runId,
+          sources: () => desktopCapturer.getSources({
+            types: ["window"],
+            thumbnailSize: {width: 720, height: 450},
+            fetchWindowIcons: false,
+          }),
+        });
+      }
+      return null;
+    });
     this.#handle(channels.goalsExecute, (_event, value: unknown) =>
       this.#executeGoal(validateGoalCommand(value)),
     );
-    this.#handle(channels.goalsGet, (_event, conversationId: string) =>
-      this.#goals.get(required(conversationId, "conversation id")),
-    );
+    this.#handle(channels.goalsGet, async (_event, conversationId: string) => {
+      const id = required(conversationId, 'conversation id');
+      const deviceId = this.#team.executionDevice(id);
+      return deviceId === this.#team.localHost().hostId ? this.#goals.get(id) : (await this.#remoteTeamClient(deviceId)).call('goals.get', [id]);
+    });
     this.#handle(channels.schedulesList, () => this.#scheduler.list());
     this.#handle(channels.schedulesCreate, (_event, value: unknown) =>
       this.#scheduler.create(scheduleInput(value)),
@@ -2163,6 +3103,8 @@ export class DesktopBackend {
     this.#handle(channels.commsWake, (_event, value: unknown) =>
       this.#comms.wake(commsPlatform(value)),
     );
+    this.#handle(channels.commsWeChatLogin, () => this.#comms.weChatLogin());
+    this.#handle(channels.commsWeChatOpen, () => openWeChatDesktop());
     this.#handle(channels.commsSetHubUrl, (_event, baseUrl: unknown) =>
       this.#comms.setHubUrl(required(baseUrl, "hub address")),
     );
@@ -2285,6 +3227,13 @@ export class DesktopBackend {
     this.#handle(channels.commsChatMembers, (_event, chatId: unknown) =>
       this.#comms.chatMembers(required(chatId, "chat id")),
     );
+    this.#handle(channels.commsChatGroupInfo, (_event, chatId: unknown) =>
+      this.#comms.chatGroupInfo(required(chatId, "chat id")),
+    );
+    this.#handle(channels.commsChatRenameGroup, (_event, chatId: unknown, name: unknown, expectedName: unknown) => {
+      if (typeof expectedName !== "string") throw new Error("The current group name is required");
+      return this.#comms.renameChatGroup(required(chatId, "chat id"), required(name, "group name"), expectedName);
+    });
     this.#handle(channels.commsContactLinks, () => this.#contactLinks.list());
     this.#handle(channels.commsContactLinkMerge, async (_event, input: unknown) => {
       const value = (input ?? {}) as Partial<MergeContactLinkRequest>;
@@ -2317,6 +3266,34 @@ export class DesktopBackend {
       return this.#contactLinks.merge({
         name: required(value.name, "contact name"),
         members,
+      });
+    });
+    this.#handle(channels.commsContactRename, async (_event, input: unknown) => {
+      const value = (input ?? {}) as Partial<RenameContactRequest>;
+      const raw = value.member;
+      if (!raw || typeof raw !== "object") throw new Error("Choose a contact to rename.");
+      const requested = {
+        platform: commsPlatform(raw.platform),
+        remoteId: typeof raw.remoteId === "string" && raw.remoteId.trim()
+          ? raw.remoteId.trim()
+          : null,
+        chatId: required(raw.chatId, "chat id"),
+      };
+      const normalizedRemote = requested.remoteId?.normalize("NFKC").toLowerCase();
+      const rooms = await this.#comms.chats();
+      const room = rooms.find((candidate) =>
+        candidate.platform === requested.platform &&
+        (candidate.roomId === requested.chatId ||
+          (normalizedRemote && candidate.remoteId?.normalize("NFKC").toLowerCase() === normalizedRemote)));
+      if (!room || room.group || room.space)
+        throw new Error("Only a current direct contact can be renamed.");
+      return this.#contactLinks.rename({
+        name: required(value.name, "contact name"),
+        member: {
+          platform: commsPlatform(room.platform),
+          remoteId: room.remoteId ?? null,
+          chatId: room.roomId,
+        },
       });
     });
     this.#handle(channels.commsContactLinkRemove, (_event, id: unknown) => {
@@ -2415,10 +3392,13 @@ export class DesktopBackend {
               senderAvatarUrl: message.senderAvatarUrl,
               body: message.body,
               notice: message.notice,
+              deliveryStatus: message.deliveryStatus,
               sentAt: message.sentAt,
               mine,
               attachments: message.attachments,
               linkPreview: message.linkPreview,
+              forwarded: message.forwarded,
+              call: message.call,
               viewIn: message.viewIn,
               reactions: message.reactions,
               replyTo: message.replyTo,
@@ -2471,6 +3451,7 @@ export class DesktopBackend {
         );
         return {
           id: eventId,
+          deliveryStatus: this.#comms.outboundDeliveryStatus(eventId),
           chatId: room,
           sender: this.#comms.userId ?? "",
           senderName: "You",
@@ -2529,16 +3510,17 @@ export class DesktopBackend {
       },
     );
     this.#handle(
+      channels.commsChatStickers,
+      (_event, chatId: unknown) =>
+        this.#comms.chatStickers(required(chatId, "chat id")),
+    );
+    this.#handle(
       channels.commsChatSendSticker,
-      async (_event, chatId: unknown, filePath: unknown) => {
-        const {readFile} = await import("node:fs/promises");
-        const file = required(filePath, "sticker path");
-        await this.#comms.sendChatSticker(required(chatId, "chat id"), {
-          name: path.basename(file),
-          mimetype: mimetypeOf(file),
-          bytes: new Uint8Array(await readFile(file)),
-        });
-      },
+      (_event, chatId: unknown, stickerId: unknown) =>
+        this.#comms.sendChatSticker(
+          required(chatId, "chat id"),
+          required(stickerId, "sticker id"),
+        ),
     );
     this.#handle(
       channels.commsChatRecall,
@@ -2628,6 +3610,7 @@ export class DesktopBackend {
         html: request.html,
         draft: request.draft,
         attachments: request.attachments,
+        inlineAttachments: request.inlineAttachments,
         importance: request.importance,
         inReplyTo: request.inReplyTo,
         references: request.references,
@@ -2646,6 +3629,16 @@ export class DesktopBackend {
       (_event, ids: unknown, account: unknown, folder: unknown) =>
         this.#comms.mailDelete(
           optionalStringArray(ids, "ids"),
+          typeof account === "string" ? account : undefined,
+          typeof folder === "string" ? folder : undefined,
+        ),
+    );
+    this.#handle(
+      channels.commsMailAttachment,
+      (_event, id: unknown, part: unknown, account: unknown, folder: unknown) =>
+        this.#comms.mailAttachment(
+          required(id, "message id"),
+          required(part, "attachment part"),
           typeof account === "string" ? account : undefined,
           typeof folder === "string" ? folder : undefined,
         ),
@@ -2730,10 +3723,8 @@ export class DesktopBackend {
       async (_event, name: string, enabled: boolean) => {
         const skill = required(name, "skill name");
         this.#setIntegrationEnabled("skill-enabled", skill, enabled);
-        // Switching a skill on is the moment its grants are worth asking for:
-        // the user is here, and the alternative is the agent meeting the refusal
-        // on its own halfway through the first thing it is asked to do.
-        if (enabled) await this.#ensurePermissions([skill]);
+        // Installing or enabling instructions does not request OS access.
+        // Built-in features request their own grants at the point of use.
         return this.#skillDtos();
       },
     );
@@ -2746,16 +3737,14 @@ export class DesktopBackend {
       return this.#skillDtos();
     });
     this.#handle(channels.skillsUpload, async (_event, value: unknown) => {
-      const installed = await this.#uploadSkill(skillUploadFiles(value));
-      await this.#ensurePermissions(installed);
+      await this.#uploadSkill(skillUploadFiles(value));
       return this.#skillDtos();
     });
     this.#handle(channels.skillsInstall, async (_event, spec: unknown) => {
-      const installed = await installSkillPackage(
+      await installSkillPackage(
         required(spec, "skill package"),
         this.#customSkillDirectory,
       );
-      await this.#ensurePermissions(installed.map((skill) => skill.name));
       return this.#skillDtos();
     });
     this.#handle(
@@ -2772,8 +3761,7 @@ export class DesktopBackend {
       ),
     );
     this.#handle(channels.skillsAdopt, async (_event, target: unknown) => {
-      const adopted = await this.#adoptSkill(required(target, "skill path"));
-      await this.#ensurePermissions(adopted ? [adopted] : undefined);
+      await this.#adoptSkill(required(target, "skill path"));
       return this.#skillDtos();
     });
     this.#handle(channels.pluginsList, () => this.#pluginDtos());
@@ -2844,6 +3832,60 @@ export class DesktopBackend {
       await this.#reloadMcpAfterMutation();
       return this.#pluginDtos();
     });
+    this.#handle(channels.appsList, () => this.#workspaceApps());
+    this.#handle(channels.appsBrowse, async (_event, query: unknown) => {
+      const text = typeof query === "string" ? query.trim().toLocaleLowerCase() : "";
+      const installed = new Set((await this.#workspaceApps()).apps.map((app) => app.id));
+      return OFFICIAL_WORKSPACE_APPS
+        .filter((app) => !text || `${app.name} ${app.description}`.toLocaleLowerCase().includes(text))
+        .map((app) => ({
+          id: app.id,
+          name: app.name,
+          description: app.description,
+          author: "Polymux",
+          official: true,
+          installed: installed.has(app.id),
+        }));
+    });
+    this.#handle(channels.appsInstall, async (_event, id: unknown) => {
+      const appId = required(id, "app id");
+      if (!OFFICIAL_WORKSPACE_APPS.some((app) => app.id === appId))
+        throw new Error("Unknown marketplace app");
+      return this.#workspaceApps();
+    });
+    this.#handle(
+      channels.appsSetEnabled,
+      async (_event, id: unknown, enabled: unknown) => {
+        const appId = required(id, "app id");
+        if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
+        const before = await this.#workspaceApps();
+        const app = before.apps.find((candidate) => candidate.id === appId);
+        if (!app) throw new Error("Unknown app");
+        this.#setIntegrationEnabled("app-enabled", appId, enabled);
+        if (!enabled && before.pinnedIds.includes(appId))
+          this.#setProfilePreference("app-pins", before.pinnedIds.filter((candidate) => candidate !== appId));
+        return this.#workspaceApps();
+      },
+    );
+    this.#handle(channels.appsSetPinned, async (_event, value: unknown) => {
+      if (!Array.isArray(value) || value.length > MAX_NEW_TAB_APPS)
+        throw new Error(`Pinned apps must be an array of at most ${MAX_NEW_TAB_APPS} app ids`);
+      const ids = value.map((id) => required(id, "app id"));
+      if (new Set(ids).size !== ids.length) throw new Error("Pinned apps cannot contain duplicates");
+      const snapshot = await this.#workspaceApps();
+      const available = new Set(snapshot.apps.filter((app) => app.enabled && app.pinnable).map((app) => app.id));
+      if (ids.some((id) => !available.has(id))) throw new Error("Only enabled workspace apps can be pinned");
+      this.#setProfilePreference("app-pins", ids);
+      return this.#workspaceApps();
+    });
+    this.#handle(channels.appsRemove, async (_event, id: unknown) => {
+      const appId = required(id, "app id");
+      const snapshot = await this.#workspaceApps();
+      const app = snapshot.apps.find((candidate) => candidate.id === appId);
+      if (!app) throw new Error("Unknown app");
+      if (app.official) throw new Error("Official apps cannot be uninstalled");
+      throw new Error("This marketplace app is not managed by the installed App registry");
+    });
     this.#handle(channels.modelsList, () =>
       this.#inference.listModels().map((model) => this.#modelDto(model)),
     );
@@ -2899,6 +3941,29 @@ export class DesktopBackend {
       }
       if (!stats.isFile()) throw new Error(`Not a file: ${resolved}`);
       return this.previewGrants.url(resolved);
+    });
+    this.#handle(channels.workspaceSaveAs, async (_event, target: unknown) => {
+      const url = required(target, "preview url");
+      const file = previewTarget(this.previewGrants, url);
+      if (!file) throw new Error("Not granted");
+      const result = await dialog.showSaveDialog(this.#window, {
+        defaultPath: path.join(app.getPath("downloads"), path.basename(file)),
+      });
+      if (result.canceled || !result.filePath) return null;
+      return copyGrantedFile(file, result.filePath);
+    });
+    this.#handle(channels.workspacePick, async () => {
+      const result = await dialog.showOpenDialog(this.#window, {
+        properties: ["openFile"],
+        filters: [
+          {name: "Media", extensions: [...MEDIA_IMAGE_EXTENSIONS, ...MEDIA_VIDEO_EXTENSIONS]},
+          {name: "Photos", extensions: [...MEDIA_IMAGE_EXTENSIONS]},
+          {name: "Videos", extensions: [...MEDIA_VIDEO_EXTENSIONS]},
+        ],
+      });
+      const chosen = result.canceled ? undefined : result.filePaths[0];
+      if (!chosen) return null;
+      return {url: this.previewGrants.url(chosen), name: path.basename(chosen)};
     });
     this.#handle(
       channels.browserOpen,
@@ -3074,6 +4139,14 @@ export class DesktopBackend {
     this.#handle(channels.browserLoginDelete, (_event, id: unknown) =>
       this.#autofill.delete(required(id, "login id")),
     );
+    this.#handle(
+      channels.browserAutofillFill,
+      (_event, tabId: unknown, itemId: unknown) =>
+        this.#fillAutofill(required(tabId, "tab id"), required(itemId, "item id")),
+    );
+    this.#handle(channels.browserAutofillDismiss, (_event, tabId: unknown) => {
+      this.#dismissAutofill(required(tabId, "tab id"));
+    });
     this.#handle(channels.browserSettingsGet, () => this.#browserSettings());
     this.#handle(
       channels.browserSettingsUpdate,
@@ -3135,6 +4208,15 @@ export class DesktopBackend {
           required(id, "prompt id"),
           decision === "allow" ? "allow" : "deny",
           remember === true,
+        );
+      },
+    );
+    this.#handle(
+      channels.browserWebAuthnRespond,
+      (_event, id: unknown, credentialId: unknown) => {
+        this.#webAuthnAccounts.respond(
+          required(id, "passkey prompt id"),
+          typeof credentialId === "string" ? credentialId : undefined,
         );
       },
     );
@@ -3402,7 +4484,13 @@ export class DesktopBackend {
           ? (await this.#providerDto(this.#model.provider)).configured
           : false;
         if (!currentUsable) {
-          const model = this.#inference.listModels(id)[0];
+          const lastUsed =
+            modelPreference(this.#profilePreference("model")?.value) ??
+            this.#model;
+          const model = preferredModel(
+            this.#inference.listModels(id),
+            lastUsed,
+          );
           if (model)
             this.#selectModel({ provider: model.provider, id: model.id });
         }
@@ -3454,19 +4542,18 @@ export class DesktopBackend {
           this.#providerOAuth.finish(id, controller);
         }
         const updated = await this.#providerDto(id);
-        const preferred =
-          this.#inference
-            .listModels(id)
-            .find((model) => model.id === "gpt-5.6-luna") ??
-          this.#inference.listModels(id)[0];
-        if (preferred) {
-          const ref = {
-            provider: preferred.provider,
-            id: preferred.id,
-            reasoning: "low" as const,
-          };
-          this.#selectModel(ref);
-          this.#setReasoningLevel("low");
+        // Signing in must not replace the model the user last selected. Only
+        // choose a model for a first-time setup that has no selection yet.
+        if (!this.#model) {
+          const lastUsed = modelPreference(
+            this.#profilePreference("model")?.value,
+          );
+          const preferred = preferredModel(
+            this.#inference.listModels(id),
+            lastUsed?.provider === id ? lastUsed : undefined,
+          );
+          if (preferred)
+            this.#selectModel({ provider: preferred.provider, id: preferred.id });
         }
         this.#reconcileRoles();
         return updated;
@@ -3567,7 +4654,11 @@ export class DesktopBackend {
       this.#storage.listArtifacts(required(conversationId, "conversation id")),
     );
     this.#handle(channels.referencesList, (_event, conversationId: string) =>
-      this.#storage.listReferences(required(conversationId, "conversation id")),
+      this.#runResources.present(
+        this.#storage.listReferences(
+          required(conversationId, "conversation id"),
+        ),
+      ),
     );
     this.#handle(
       channels.referencesAddFiles,
@@ -3628,17 +4719,22 @@ export class DesktopBackend {
   }
 
   async #performMcpReload(): Promise<McpServerDto[]> {
-    await this.#migrateCodexMcpConfig();
     const source = await readFile(this.#mcpConfigPath, "utf8").catch(
       (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return "{}";
         throw error;
       },
     );
-    // ~/.polymux/mcp.json is the one place servers are read from, which is what
-    // makes every one of them editable and removable in Settings. Another
-    // agent's servers arrive through Auto discovery, as copies.
-    const configs = importMcpServers(JSON.parse(source)).map((config) => ({
+    // The active profile reads one MCP config file: its own Polymux mcp.json,
+    // or a synced Pi profile's ~/.pi/agent/mcp.json. Claude, Codex, and other
+    // agent homes are not consulted during reload.
+    const parsed = JSON.parse(source) as unknown;
+    const configuration = this.#mcpConfigKey
+      ? {mcpServers: parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)[this.#mcpConfigKey] ?? {}
+          : {}}
+      : parsed;
+    const configs = importMcpServers(configuration).map((config) => ({
       ...config,
       metadata: { ...config.metadata, source: "polymux" },
       enabled: this.#integrationEnabled(
@@ -3716,51 +4812,20 @@ export class DesktopBackend {
       .map((snapshot) => this.#mcpDto(snapshot));
   }
 
-  /**
-   * Polymux used to run Codex's servers straight out of ~/.codex/config.toml,
-   * which left them unremovable here. They are copied across once so nothing
-   * a user already had disappears; after that the copy is theirs, and deleting
-   * it stays deleted rather than being re-imported on the next reload.
-   */
-  async #migrateCodexMcpConfig(): Promise<void> {
-    if (this.#storage.getPreference("mcp-codex-migrated")?.value === true)
-      return;
-    const codexSource = await readFile(this.#codexMcpConfigPath, "utf8").catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return "";
-        throw error;
-      },
-    );
-    const codexConfigs = codexSource
-      ? importMcpServers(parseToml(codexSource))
-      : [];
-    if (codexConfigs.length)
-      await this.#writeMcpConfig((servers) => {
-        for (const config of codexConfigs) {
-          // A Polymux entry of the same id wins: it was the deliberate local
-          // override of Codex's, and stays that way.
-          if (config.id in servers) continue;
-          servers[config.id] = {
-            ...config.metadata,
-            name: config.name ?? config.id,
-          };
-        }
-      });
-    this.#storage.setPreference("mcp-codex-migrated", true);
-  }
-
   async close(reason = "Polymux is closing"): Promise<void> {
     this.#closing = true;
-    this.#comms.close();
+    this.#stopRemoteTeamRefresh();
+    await this.#comms.close();
     if (this.#commsStatusTimer) clearInterval(this.#commsStatusTimer);
     stopUpdateChecks();
     this.#surfaceMenubar.close();
     void this.#agentSurface.close();
     this.#embeddedBrowser.closeAll();
+    this.#webAuthnAccounts.close();
     this.#mcpConfigWatcher.stop();
     this.#customSkillWatcher.stop();
     this.#windowControl.stop();
-    this.#computerUse.hide();
+    this.#windowControlMenubar.hide();
     this.#computerHistory.stop();
     this.#interactionEvents.stop();
     // A recording that outlived the app would keep a tap alive with nobody to
@@ -3768,13 +4833,17 @@ export class DesktopBackend {
     this.#recording.stop("interrupted");
     this.#scheduler.stop();
     this.#dictation.close();
+    this.#permissionGuide?.close();
     await this.#phone.close();
+    this.#terminal.closeAll();
+    this.#locker.close();
     this.#stopCalendarChanges();
     this.#calendar.close();
     const activeRuns = [...this.#activeRuns.values()];
     for (const run of activeRuns) run.control.cancel(new Error(reason));
     for (const channel of this.#registeredChannels)
       this.#ipcMain.removeHandler(channel);
+    this.#ipcMain.removeHandler(WEBAUTHN_CHANNEL);
     await Promise.allSettled([
       ...activeRuns.map((run) => run.result),
       ...(this.#mcpReloadInFlight ? [this.#mcpReloadInFlight] : []),
@@ -3784,6 +4853,15 @@ export class DesktopBackend {
     // memory survive the app closing rather than dying with the process.
     await this.#agent?.settleGoalWork();
     await this.#agentRuntime?.close?.();
+    await Promise.allSettled(
+      [...this.#teamRuntimes.values()].map(({runtime}) => runtime.close?.()),
+    );
+    this.#teamRuntimes.clear();
+    this.#deviceConnections.close();
+    this.#accountDevices?.stop();
+    await this.#teamHostServer.close();
+    await this.#workspaceToolMcp.close();
+    await this.#teamToolMcp.close();
     await this.#mcp.close();
     this.#storage.close();
   }
@@ -3852,6 +4930,967 @@ export class DesktopBackend {
     }
   }
 
+  async #teamProfiles(hostId: string): Promise<ProfileDto[]> {
+    const host = this.#team.hosts().find((candidate) => candidate.hostId === hostId);
+    if (!host) throw new Error("That Polymux Host is not configured on this Desktop.");
+    return host.mode === "local"
+      ? this.#profilesForRenderer().profiles
+      : (await this.#remoteTeamClient(hostId)).call<ProfileDto[]>("team.profiles");
+  }
+
+  async #connectionsPool() {
+    const skills = (await this.#skillDtos()).map((s) => ({
+      name: s.name,
+      description: s.description,
+    }));
+    const mcpServers = this.#mcpDtos(this.#mcp.snapshots()).map((m) => ({
+      id: m.id,
+      name: m.name,
+      description: m.description,
+    }));
+    const plugins = this.#pluginDtos().map((p) => ({
+      id: p.id,
+      name: p.name,
+      description: p.description,
+    }));
+    return {skills, mcpServers, plugins};
+  }
+
+  async #brokerTeamAgentMessage(input: JsonObject, runId: string): Promise<AgentToolResult | null> {
+    if (input.action === "list") {
+      const members = [...this.#team.list(), ...this.#remoteBots.values()];
+      const assistants = this.#team.targets().filter((target) => target.kind === "assistant");
+      return {
+        content: [
+          ...members.map((member) => `- ${member.name} [team] — ${member.role} (${member.id}) · ${member.hostName}`),
+          ...assistants.map((conversation) => `- ${conversation.name} [assistant] (${conversation.id})`),
+        ].join("\n") || "No other Polymux agents or Assistant chats are available.",
+      };
+    }
+    if (input.action !== "send" || typeof input.to !== "string" || typeof input.message !== "string") return null;
+    const run = this.#storage.getRun(runId);
+    if (!run) return null;
+    const sourceMember = this.#team.botByConversation(run.conversationId);
+    const attachments = Array.isArray(input.attachments)
+      ? input.attachments.filter((item): item is string => typeof item === "string")
+      : [];
+    const message = await this.#sendTeamMessage({
+      to: input.to,
+      text: input.message,
+      attachments,
+      ...(sourceMember ? {fromMemberId: sourceMember.id, automatic: true} : {fromConversationId: run.conversationId}),
+    });
+    return {
+      content: `Delivered agent message ${message.id} to ${input.to}.`,
+      metadata: {messageId: message.id, recipient: input.to},
+    };
+  }
+
+  #teamGroupMemberIds(value: unknown): string[] {
+    if (!Array.isArray(value)) throw new Error("Choose Team group members");
+    const memberIds = [...new Set(value.map((id) => required(id, "Team member id")))];
+    if (memberIds.length < 2) throw new Error("Choose at least two bots");
+    for (const id of memberIds)
+      if (!this.#bot(id)) throw new Error("A selected bot is no longer available");
+    return memberIds;
+  }
+
+  #createTeamGroup(request: CreateTeamGroupRequest): TeamGroupDto {
+    return this.#team.createGroup({
+      name: required(request?.name, "Team group name"),
+      memberIds: this.#teamGroupMemberIds(request?.memberIds),
+    });
+  }
+
+  #updateTeamGroup(id: string, request: UpdateTeamGroupRequest): TeamGroupDto {
+    return this.#team.updateGroup(id, {
+      ...(request?.name === undefined ? {} : {name: required(request.name, "Team group name")}),
+      ...(request?.memberIds === undefined ? {} : {memberIds: this.#teamGroupMemberIds(request.memberIds)}),
+    });
+  }
+
+  async #sendTeamGroupMessage(request: SendTeamGroupMessageRequest): Promise<MessageDto> {
+    const group = this.#team.group(required(request?.id, "Team group id"));
+    if (!group) throw new Error("Unknown Team group");
+    const text = required(request?.text, "message");
+    const memberIds = group.memberIds.filter((id) => this.#bot(id));
+    if (!memberIds.length) throw new Error("This group has no available bots");
+    const stored = this.#storage.appendMessage({
+      id: crypto.randomUUID(),
+      conversationId: group.conversationId,
+      runId: null,
+      role: "user",
+      content: text,
+      metadata: {teamGroupMessage: {memberIds} as unknown as JsonValue},
+    });
+    const instruction = [
+      text,
+      "",
+      `This came from the Team group “${group.name}”. Reply to ${group.conversationId} with agent_message when you have a useful response.`,
+      "Write the reply as a conversational message; use longer structure only when the work needs it.",
+    ].join("\n");
+    const deliveries = await Promise.allSettled(memberIds.map((to) => this.#sendTeamMessage({
+      to,
+      text: instruction,
+      fromConversationId: group.conversationId,
+    })));
+    const failedMemberIds = deliveries.flatMap((result, index) => result.status === "rejected" ? [memberIds[index]!] : []);
+    const deliveredMemberIds = memberIds.filter((_, index) => deliveries[index]?.status === "fulfilled");
+    const updated = this.#storage.updateMessage(stored.id, {
+      metadata: {
+        teamGroupMessage: {memberIds, deliveredMemberIds, failedMemberIds} as unknown as JsonValue,
+      },
+    }) ?? stored;
+    this.#team.publish();
+    if (!deliveredMemberIds.length)
+      throw new Error("The message was saved, but no bot could receive it");
+    return this.#messageDto(updated);
+  }
+
+  async #sendTeamMessage(request: SendAgentMessageRequest): Promise<MessageDto> {
+    const targetName = request.to.normalize("NFKC").toLocaleLowerCase();
+    const target = [...this.#team.list(), ...this.#remoteBots.values()].find((member) =>
+      member.id === request.to || member.name.normalize("NFKC").toLocaleLowerCase() === targetName,
+    );
+    const assistantTarget = target ? null : this.#team.targets().find((candidate) =>
+      candidate.kind === "assistant" && (
+        candidate.id === request.to || candidate.name.normalize("NFKC").toLocaleLowerCase() === targetName
+      ),
+    ) ?? null;
+    if (!target && !assistantTarget) throw new Error("Unknown Team member or Assistant chat");
+    const sourceMember = request.fromMemberId ? this.#bot(request.fromMemberId) : null;
+    const conversation = !sourceMember && request.fromConversationId
+      ? this.#storage.getConversation(request.fromConversationId)
+      : null;
+    if (!sourceMember && !conversation) throw new Error("An Assistant source conversation is required");
+    const sourceHostId = sourceMember?.hostId ?? this.#team.localHost().hostId;
+    const targetHostId = target?.hostId ?? this.#team.localHost().hostId;
+    if (request.attachments?.length && sourceHostId !== targetHostId)
+      throw new Error("Cross-Host agent messages currently support text only. Move the bot or send the attachment separately.");
+    const source: AgentMessageOriginDto = sourceMember ? {
+      kind: "team",
+      memberId: sourceMember.id,
+      conversationId: sourceMember.conversationId,
+      name: sourceMember.name,
+      role: sourceMember.role,
+      avatar: sourceMember.avatar,
+      traceId: crypto.randomUUID(),
+      hop: 0,
+      automatic: request.automatic === true,
+    } : {
+      kind: "assistant",
+      memberId: null,
+      conversationId: conversation!.id,
+      name: conversation!.title || "Assistant",
+      role: null,
+      avatar: null,
+      traceId: crypto.randomUUID(),
+      hop: 0,
+      automatic: false,
+    };
+    if (assistantTarget)
+      return this.#messageDto(await this.#team.sendFromOrigin({...request, to: assistantTarget.id}, source));
+    const host = this.#hostForMember(target!.id);
+    const targeted = {...request, to: target!.id};
+    if (host.mode === "local")
+      return this.#messageDto(await this.#team.sendFromOrigin(targeted, source));
+    return (await this.#remoteTeamClient(host.hostId)).call<MessageDto>(
+      "team.sendExternal",
+      [targeted as unknown as JsonValue, source as unknown as JsonValue],
+    );
+  }
+
+  async #createBot(request: CreateBotRequest): Promise<BotDto> {
+    const hostId = request.hostId?.trim() || this.#team.host().hostId;
+    const host = this.#team.hosts().find((candidate) => candidate.hostId === hostId);
+    if (!host) throw new Error("Choose a configured Polymux Host.");
+    if (host.mode === "local") return this.#team.create({...request, hostId});
+    const member = await this.#remoteTeamMutation<BotDto>(
+      hostId,
+      "team.create",
+      [{...request, hostId} as unknown as JsonValue],
+    );
+    return {...member, hostId, hostName: host.deviceName};
+  }
+
+  async #updateBot(id: string, request: UpdateBotRequest): Promise<BotDto> {
+    const current = this.#bot(id);
+    if (!current) throw new Error("Unknown Team member");
+    const targetHostId = request.hostId?.trim() || current.hostId;
+    if (targetHostId !== current.hostId)
+      return this.#moveBot(current, targetHostId, request);
+    const host = this.#hostForMember(id);
+    if (host.mode === "local") return this.#team.update(id, request);
+    const member = await this.#remoteTeamMutation<BotDto>(
+      host.hostId,
+      "team.update",
+      [id, request as unknown as JsonValue],
+    );
+    return {...member, hostId: host.hostId, hostName: host.deviceName};
+  }
+
+  async #moveBot(
+    current: BotDto,
+    targetHostId: string,
+    request: UpdateBotRequest,
+  ): Promise<BotDto> {
+    const sourceHost = this.#hostForMember(current.id);
+    const targetHost = this.#team.hosts().find((host) => host.hostId === targetHostId);
+    if (!targetHost) throw new Error("Choose a configured Polymux Host.");
+    const transfer = sourceHost.mode === "local"
+      ? await this.#team.exportBot(current.id)
+      : await (await this.#remoteTeamClient(sourceHost.hostId)).call<BotTransfer>("team.export", [current.id]);
+    transfer.member = {
+      ...transfer.member,
+      ...(request.name === undefined ? {} : {name: request.name}),
+      ...(request.role === undefined ? {} : {role: request.role}),
+      ...(request.avatar === undefined ? {} : {avatar: request.avatar}),
+      ...(request.laptopAccess === undefined ? {} : {laptopAccess: request.laptopAccess}),
+      ...(request.skills === undefined ? {} : {skills: request.skills}),
+      ...(request.mcpServers === undefined ? {} : {mcpServers: request.mcpServers}),
+      ...(request.plugins === undefined ? {} : {plugins: request.plugins}),
+    };
+    const profileId = request.profileId ?? current.profileId;
+    let imported = false;
+    try {
+      if (targetHost.mode === "local")
+        await this.#team.importBot(transfer, profileId);
+      else
+        await (await this.#remoteTeamClient(targetHost.hostId)).call<BotDto>(
+          "team.import",
+          [transfer as unknown as JsonValue, profileId],
+        );
+      imported = true;
+      if (!await this.#removeBotFromHost(current, sourceHost))
+        throw new Error("The source Host did not release the bot.");
+    } catch (error) {
+      if (imported) await this.#removeBotFromHost(
+        {...current, hostId: targetHost.hostId, hostName: targetHost.deviceName},
+        targetHost,
+      ).catch(() => {});
+      throw error;
+    }
+    const members = await this.#teamList();
+    const moved = members.find((member) => member.id === current.id && member.hostId === targetHost.hostId);
+    if (!moved) throw new Error("The bot moved, but the destination Host did not return it.");
+    return moved;
+  }
+
+  async #removeBot(id: string): Promise<boolean> {
+    const member = this.#bot(id);
+    if (!member) return false;
+    const removed = await this.#removeBotFromHost(member, this.#hostForMember(id));
+    await this.#teamList();
+    return removed;
+  }
+
+  async #removeBotFromHost(member: BotDto, host: TeamHostDto): Promise<boolean> {
+    if (host.mode === "remote")
+      return (await this.#remoteTeamClient(host.hostId)).call<boolean>("team.remove", [member.id]);
+    await this.#settleConversationRuns(member.conversationId, "Team member deleted");
+    await this.#teamRuntimes.get(member.id)?.runtime.close?.();
+    this.#teamRuntimes.delete(member.id);
+    return this.#team.remove(member.id);
+  }
+
+  async #botMutation<T>(
+    id: string,
+    method: string,
+    args: JsonValue[],
+    local: (id: string) => T | Promise<T>,
+  ): Promise<T> {
+    const host = this.#hostForMember(id);
+    if (host.mode === "local") return local(id);
+    return this.#remoteTeamMutation<T>(host.hostId, method, [id, ...args]);
+  }
+
+  async #teamLeases(id?: string): Promise<LaptopCapabilityLeaseDto[]> {
+    if (id) return this.#botMutation(
+      id,
+      "team.leases",
+      [],
+      (memberId) => this.#team.leases(memberId),
+    );
+    const remote = await Promise.all(this.#team.hosts().filter((host) => host.mode === "remote").map(async (host) =>
+      (await this.#remoteTeamClient(host.hostId)).call<LaptopCapabilityLeaseDto[]>("team.leases"),
+    ));
+    return [...this.#team.leases(), ...remote.flat()];
+  }
+
+  async #revokeTeamLease(id: string): Promise<boolean> {
+    if (this.#team.revokeLease(id)) return true;
+    for (const host of this.#team.hosts()) {
+      if (host.mode !== "remote") continue;
+      if (await (await this.#remoteTeamClient(host.hostId)).call<boolean>("team.revokeLease", [id])) return true;
+    }
+    return false;
+  }
+
+  async #remoteTeamClient(hostId: string): Promise<TeamHostClient> {
+    const host = this.#team.hosts().find((candidate) => candidate.hostId === hostId);
+    if (!host || host.mode !== "remote" || !host.endpoint)
+      throw new Error("That Polymux Host is not configured on this Desktop.");
+    const credential = await this.#credentials.read(`polymux-host:${hostId}`);
+    if (!credential || credential.type !== "api_key" || !credential.key)
+      throw new Error("The Polymux Host pairing secret is unavailable. Pair this Desktop again.");
+    return new TeamHostClient(host.endpoint, credential.key, this.#team.localHost().deviceType);
+  }
+
+  #remoteMemberByConversation(conversationId: string): BotDto | null {
+    for (const member of this.#remoteBots.values())
+      if (member.conversationId === conversationId) return member;
+    return null;
+  }
+
+  #bot(id: string): BotDto | null {
+    return this.#team.bot(id) ?? this.#remoteBots.get(id) ?? null;
+  }
+
+  #hostForMember(id: string): TeamHostDto {
+    const member = this.#bot(id);
+    if (!member) throw new Error("Unknown Team member");
+    const host = this.#team.hosts().find((candidate) => candidate.hostId === member.hostId);
+    if (!host) throw new Error(`${member.name}'s Host is no longer configured.`);
+    return host;
+  }
+
+  async #teamList(): Promise<BotDto[]> {
+    const remotes = this.#team.hosts().filter((host) => host.mode === "remote");
+    const configured = new Set(remotes.map((host) => host.hostId));
+    for (const hostId of [...this.#remoteTeamRefreshTimers.keys()])
+      if (!configured.has(hostId)) this.#stopRemoteTeamRefresh(hostId);
+    for (const [id, member] of this.#remoteBots)
+      if (!configured.has(member.hostId)) this.#remoteBots.delete(id);
+    await Promise.all(remotes.map(async (host) => {
+      try {
+        await this.#refreshRemoteTeamSnapshot(host.hostId, false);
+        this.#setRemoteHostState(host.hostId, "connected", null);
+      } catch (error) {
+        this.#setRemoteHostState(
+          host.hostId,
+          "disconnected",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      this.#startRemoteTeamRefresh(host.hostId);
+    }));
+    return this.#publishAllBots();
+  }
+
+  async #remoteTeamMutation<T>(hostId: string, method: string, args: JsonValue[]): Promise<T> {
+    const result = await (await this.#remoteTeamClient(hostId)).call<T>(method, args);
+    await this.#teamList();
+    return result;
+  }
+
+  #applyRemoteBots(host: TeamHostDto, members: BotDto[]): void {
+    for (const [id, member] of this.#remoteBots)
+      if (member.hostId === host.hostId) this.#remoteBots.delete(id);
+    for (const member of members)
+      this.#remoteBots.set(member.id, {...member, hostId: host.hostId, hostName: host.deviceName});
+  }
+
+  #publishAllBots(): BotDto[] {
+    const byId = new Map<string, BotDto>();
+    for (const member of this.#team.list()) byId.set(member.id, member);
+    for (const member of this.#remoteBots.values())
+      if (!byId.has(member.id)) byId.set(member.id, member);
+    const members = [...byId.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    if (!this.#closing && !this.#window.isDestroyed())
+      this.#window.webContents.send(channels.teamChanged, members);
+    return members;
+  }
+
+  async #refreshRemoteTeamSnapshot(hostId: string, publish = true): Promise<BotDto[]> {
+    const host = this.#team.hosts().find((candidate) => candidate.hostId === hostId);
+    if (!host || host.mode !== "remote") throw new Error("That Polymux Host is not configured.");
+    const client = await this.#remoteTeamClient(hostId);
+    const [members, runs, deviceInfo] = await Promise.all([
+      client.call<BotDto[]>("team.list"),
+      client.call<Array<{runId: string; conversationId: string}>>("runs.activeAll"),
+      client.call<{deviceType?: import("@polymux/protocol").DeviceType}>("devices.info"),
+    ]);
+    if (!this.#team.hosts().some(candidate => candidate.hostId === hostId)) return [];
+    if (deviceInfo.deviceType && deviceInfo.deviceType !== host.deviceType) {
+      this.#team.setRemoteHostState(hostId, "connected", null, deviceInfo.deviceType);
+      this.#publishTeamHost();
+    }
+    this.#applyRemoteBots(host, members);
+    const activeRunIds = new Set(runs.map((run) => run.runId));
+    for (const [runId, runHostId] of [...this.#remoteRunHosts]) {
+      if (runHostId !== hostId || activeRunIds.has(runId) || this.#remoteRunPolls.has(runId)) continue;
+      this.#remoteRunIds.delete(runId);
+      this.#remoteRunHosts.delete(runId);
+      this.#remoteRunConversations.delete(runId);
+      this.#remoteRunSequences.delete(runId);
+    }
+    for (const {runId, conversationId} of runs) {
+      if (!members.some(member => member.conversationId === conversationId) && this.#team.executionDevice(conversationId) !== hostId) continue;
+      this.#remoteRunConversations.set(runId, conversationId);
+      this.#remoteRunIds.add(runId);
+      this.#remoteRunHosts.set(runId, hostId);
+      void this.#pollRemoteRun(runId, hostId);
+    }
+    return publish ? this.#publishAllBots() : members;
+  }
+
+  #startRemoteTeamRefresh(hostId: string): void {
+    void this.#pollRemoteDeviceRequests(hostId);
+    this.#scheduleRemoteTeamRefresh(hostId, 2_000);
+  }
+
+  #scheduleRemoteTeamRefresh(hostId: string, delayMs: number): void {
+    if (this.#remoteTeamRefreshTimers.has(hostId)) return;
+    const timer = setTimeout(async () => {
+      this.#remoteTeamRefreshTimers.delete(hostId);
+      if (this.#closing || !this.#team.hosts().some((host) => host.hostId === hostId && host.mode === "remote")) {
+        this.#stopRemoteTeamRefresh(hostId);
+        return;
+      }
+      let nextDelay = 2_000;
+      try {
+        await this.#refreshRemoteTeamSnapshot(hostId);
+        this.#remoteTeamRefreshFailures.set(hostId, 0);
+        this.#setRemoteHostState(hostId, "connected", null);
+      } catch (error) {
+        const failures = (this.#remoteTeamRefreshFailures.get(hostId) ?? 0) + 1;
+        this.#remoteTeamRefreshFailures.set(hostId, failures);
+        nextDelay = Math.min(30_000, 2_000 * 2 ** Math.min(failures, 4));
+        this.#setRemoteHostState(
+          hostId,
+          "disconnected",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      if (!this.#closing && this.#team.hosts().some((host) => host.hostId === hostId))
+        this.#scheduleRemoteTeamRefresh(hostId, nextDelay);
+    }, delayMs);
+    timer.unref?.();
+    this.#remoteTeamRefreshTimers.set(hostId, timer);
+  }
+
+  #stopRemoteTeamRefresh(hostId?: string): void {
+    const hostIds = hostId ? [hostId] : [...this.#remoteTeamRefreshTimers.keys()];
+    for (const id of hostIds) {
+      const timer = this.#remoteTeamRefreshTimers.get(id);
+      if (timer) clearTimeout(timer);
+      this.#remoteTeamRefreshTimers.delete(id);
+      this.#remoteTeamRefreshFailures.delete(id);
+    }
+  }
+
+  #setRemoteHostState(
+    hostId: string,
+    state: "connected" | "disconnected" | "error",
+    detail: string | null,
+  ): void {
+    const before = this.#team.hosts().find((host) => host.hostId === hostId);
+    if (!before) return;
+    if (before.state === state && before.detail === detail) return;
+    const next = this.#team.setRemoteHostState(hostId, state, detail);
+    if (before.state !== next.state || before.detail !== next.detail) this.#publishTeamHost();
+  }
+
+  #publishTeamHost(): TeamHostDto {
+    const host = this.#team.host();
+    if (!this.#closing && !this.#window.isDestroyed()) {
+      this.#window.webContents.send(channels.teamHostChanged, host);
+      this.#window.webContents.send(channels.teamHostsChanged, this.#team.hosts());
+    }
+    return host;
+  }
+
+  #publishAccount(): void {
+    if (!this.#closing && !this.#window.isDestroyed())
+      this.#window.webContents.send(channels.accountChanged, this.#account.status());
+  }
+
+  async #pollRemoteDeviceRequests(hostId: string): Promise<void> {
+    if (this.#remoteDevicePolling.has(hostId)) return;
+    this.#remoteDevicePolling.add(hostId);
+    try {
+      while (!this.#closing && this.#team.hosts().some((host) => host.hostId === hostId && host.mode === "remote")) {
+        try {
+          const client = await this.#remoteTeamClient(hostId);
+          const request = await client.nextDeviceRequest();
+          if (!this.#team.hosts().some(host => host.hostId === hostId)) return;
+          if (!request) continue;
+          const resolution = await this.#resolveRemoteDeviceRequest(request);
+          await client.resolveDeviceRequest(request.id, resolution.approved, resolution.result);
+        } catch {
+          if (!this.#closing) await delay(1_000);
+        }
+      }
+    } finally {
+      this.#remoteDevicePolling.delete(hostId);
+    }
+  }
+
+  async #resolveRemoteDeviceRequest(request: TeamDeviceRequest): Promise<{
+    approved: boolean;
+    result: AgentToolResult;
+  }> {
+    if (request.capability === "team" && request.tool === "agent_message") {
+      const input = request.input && typeof request.input === "object" && !Array.isArray(request.input)
+        ? request.input as JsonObject
+        : {};
+      if (input.action === "list") return {
+        approved: true,
+        result: (await this.#brokerTeamAgentMessage(input, "")) ?? {content: "No other Polymux agents are available."},
+      };
+      if (input.action !== "send" || typeof input.to !== "string" || typeof input.message !== "string")
+        return {approved: false, result: {content: "The cross-Host agent message is invalid.", isError: true}};
+      try {
+        const message = await this.#sendTeamMessage({
+          fromMemberId: request.memberId,
+          to: input.to,
+          text: input.message,
+          automatic: true,
+          attachments: Array.isArray(input.attachments)
+            ? input.attachments.filter((item): item is string => typeof item === "string")
+            : [],
+        });
+        return {
+          approved: true,
+          result: {
+            content: `Delivered agent message ${message.id} to ${input.to}.`,
+            metadata: {messageId: message.id, recipient: input.to},
+          },
+        };
+      } catch (error) {
+        return {
+          approved: false,
+          result: {content: error instanceof Error ? error.message : String(error), isError: true},
+        };
+      }
+    }
+    const safeName = request.capability === "browser"
+      ? request.tool === "browser" || request.tool.startsWith("browser_")
+      : request.capability === "computer"
+        ? request.tool.startsWith("computer_")
+        : false;
+    const tool = safeName ? this.#registry.get(request.tool) : undefined;
+    if (!tool) return {
+      approved: false,
+      result: {content: `The paired laptop refused unavailable ${request.capability} tool ${request.tool}.`, isError: true},
+    };
+    let approved = !request.requiresApproval;
+    if (request.requiresApproval) {
+      const answer = await dialog.showMessageBox(this.#window, {
+        type: "question",
+        title: `${request.memberName} needs this laptop`,
+        message: `Allow ${request.memberName} to use ${request.capability} controls on this laptop?`,
+        detail: `Polymux Host requested “${request.tool}”. Access lasts for 15 minutes and can be revoked from Team.`,
+        buttons: ["Allow for 15 minutes", "Deny"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      });
+      approved = answer.response === 0;
+    }
+    if (!approved) return {
+      approved: false,
+      result: {content: `${request.memberName} was not granted access to this laptop.`, isError: true},
+    };
+    try {
+      const result = await tool.execute(request.input as JsonObject, {
+        runId: `remote-device:${request.id}`,
+        budgetScope: `remote-device:${request.memberId}`,
+        turn: 0,
+        callId: request.id,
+        signal: new AbortController().signal,
+        emitProgress: async () => {},
+      });
+      return {approved, result};
+    } catch (error) {
+      return {
+        approved,
+        result: {content: error instanceof Error ? error.message : String(error), isError: true},
+      };
+    }
+  }
+
+  async #pollRemoteRun(runId: string, hostId: string): Promise<void> {
+    if (this.#remoteRunPolls.has(runId)) return;
+    this.#remoteRunPolls.add(runId);
+    let sequence = this.#remoteRunSequences.get(runId) ?? 0;
+    try {
+      while (!this.#closing && this.#remoteRunHosts.get(runId) === hostId) {
+        try {
+          const events = await (await this.#remoteTeamClient(hostId)).call<RunEventDto[]>("runs.events", [runId, sequence]);
+          for (const event of events) {
+            sequence = Math.max(sequence, event.sequence);
+            this.#remoteRunSequences.set(runId, sequence);
+            if (!this.#window.isDestroyed()) this.#window.webContents.send(channels.runEvent, event);
+          }
+          if (events.some((event) => ["run.completed", "run.cancelled", "run.failed", "run.settled"].includes(event.type))) {
+            const job = this.#managerJobs.forRun(runId);
+            if (job?.status === 'running') {
+              if (events.some(event => event.type === 'run.failed')) this.#managerJobs.fail(job.id, 'The remote run failed.');
+              else if (events.some(event => event.type === 'run.cancelled')) this.#managerJobs.cancel(job.id);
+              else this.#managerJobs.complete(job.id);
+              this.#publishManagerJobs();
+            }
+            this.#remoteRunIds.delete(runId);
+            this.#remoteRunHosts.delete(runId);
+      this.#remoteRunConversations.delete(runId);
+            this.#remoteRunSequences.delete(runId);
+            if (job) void this.#drainManagerConversation(job.chatId);
+            return;
+          }
+          await delay(250);
+        } catch {
+          // A remote Host can briefly disappear while the laptop changes
+          // networks. The durable event log is replayed from `sequence` after
+          // reconnect, so no agent output is lost or duplicated.
+          await delay(1_000);
+        }
+      }
+    } finally {
+      this.#remoteRunPolls.delete(runId);
+    }
+  }
+
+  async #handleTeamHostCall(method: string, args: JsonValue[]): Promise<JsonValue> {
+    switch (method) {
+      case "team.list": return this.#team.list() as unknown as JsonValue;
+      case "team.profiles": return this.#profilesForRenderer().profiles as unknown as JsonValue;
+      case "team.create": return this.#team.create(args[0] as unknown as CreateBotRequest) as unknown as JsonValue;
+      case "team.update": return this.#team.update(required(args[0], "Team member id"), args[1] as unknown as UpdateBotRequest) as unknown as JsonValue;
+      case "team.markRead": return this.#team.markRead(required(args[0], "Team member id")) as unknown as JsonValue;
+      case "team.remove": {
+        const id = required(args[0], "Team member id");
+        const member = this.#team.require(id);
+        await this.#settleConversationRuns(member.conversationId, "Team member deleted");
+        await this.#teamRuntimes.get(id)?.runtime.close?.();
+        this.#teamRuntimes.delete(id);
+        return await this.#team.remove(id);
+      }
+      case "team.export": return await this.#team.exportBot(
+        required(args[0], "Team member id"),
+      ) as unknown as JsonValue;
+      case "team.import": return await this.#team.importBot(
+        args[0] as unknown as BotTransfer,
+        required(args[1], "profile id"),
+      ) as unknown as JsonValue;
+      case "team.send": return this.#messageDto(await this.#team.send(args[0] as unknown as SendAgentMessageRequest)) as unknown as JsonValue;
+      case "team.sendExternal": return this.#messageDto(await this.#team.sendFromOrigin(
+        args[0],
+        args[1],
+      )) as unknown as JsonValue;
+      case "team.startComputer": return await this.#team.startComputer(required(args[0], "Team member id")) as unknown as JsonValue;
+      case "team.stopComputer": return await this.#team.stopComputer(required(args[0], "Team member id")) as unknown as JsonValue;
+      case "team.leases": return this.#team.leases(typeof args[0] === "string" ? args[0] : undefined) as unknown as JsonValue;
+      case "team.grantLease": return this.#team.grantLease(
+        required(args[0], "Team member id"),
+        Array.isArray(args[1]) ? args[1] as LaptopCapabilityLeaseDto["capabilities"] : [],
+        typeof args[2] === "number" ? args[2] : undefined,
+      ) as unknown as JsonValue;
+      case "team.revokeLease": return this.#team.revokeLease(required(args[0], "lease id"));
+      case 'assistant.ensure': {
+        const id = required(args[0], 'conversation id');
+        if (this.#team.botByConversation(id)) throw new Error('This id belongs to a bot.');
+        return (this.#storage.getConversation(id) ?? this.#storage.createConversation({id, title: typeof args[1] === 'string' ? args[1] : 'Assistant'})) as unknown as JsonValue;
+      }
+      case 'conversations.duplicate': return duplicateConversation(this.#storage, required(args[0], 'conversation id'), args[1] === undefined ? undefined : required(args[1], 'fork message id')) as unknown as JsonValue;
+      case "conversations.list": return this.#team.assistantConversations() as unknown as JsonValue;
+      case "conversations.listArchived": return this.#team.archivedAssistantConversations() as unknown as JsonValue;
+      case "conversations.create": return this.#storage.createConversation({
+        id: crypto.randomUUID(),
+        title: typeof args[0] === "string" && args[0].trim() ? args[0].trim() : "New chat",
+      }) as unknown as JsonValue;
+      case "conversations.rename": return this.#storage.updateConversation(
+        required(args[0], "conversation id"),
+        {title: required(args[1], "title")},
+      ) as unknown as JsonValue;
+      case "conversations.archive": return await this.#setAssistantArchived(
+        required(args[0], "conversation id"),
+        true,
+      ) as unknown as JsonValue;
+      case "conversations.unarchive": return await this.#setAssistantArchived(
+        required(args[0], "conversation id"),
+        false,
+      ) as unknown as JsonValue;
+      case "conversations.remove": {
+        const conversationId = required(args[0], "conversation id");
+        await this.#settleConversationRuns(conversationId, "Conversation deleted from Polymux Phone");
+        this.#runResources.forget(conversationId);
+        const removed = this.#storage.deleteConversation(conversationId);
+        if (this.#managerJobs.removeChat(conversationId)) this.#publishManagerJobs();
+        return removed;
+      }
+      case 'goals.get': return this.#goals.get(required(args[0], 'conversation id')) as unknown as JsonValue;
+      case 'goals.execute': return this.#executeLocalGoal(validateGoalCommand(args[0])) as unknown as JsonValue;
+      case 'conversations.updateMessage': {
+        const message = updateDeviceMessage(this.#storage, required(args[0], 'message id'), args[1] as Parameters<typeof updateDeviceMessage>[2]);
+        return message ? this.#messageDto(message) as unknown as JsonValue : null;
+      }
+      case "conversations.messages": return this.#storage
+        .listMessages(required(args[0], "conversation id"))
+        .map((message) => this.#messageDto(message)) as unknown as JsonValue;
+      case "conversations.upload": return await this.#saveMobileUpload(args[0]);
+      case "hub.chats": return await this.#mobileHubChats();
+      case "hub.messages": return await this.#mobileHubMessages(
+        required(args[0], "chat id"),
+        typeof args[1] === "number" ? args[1] : 50,
+        typeof args[2] === "string" ? args[2] : undefined,
+      ) as unknown as JsonValue;
+      case "hub.markRead": {
+        if (this.#generalSettings().hubIncognitoMode) return false;
+        await this.#comms.markChatRead(
+          required(args[0], "chat id"),
+          required(args[1], "message id"),
+        );
+        return true;
+      }
+      case "hub.send": return await this.#mobileHubSend(
+        required(args[0], "chat id"),
+        required(args[1], "message"),
+      ) as unknown as JsonValue;
+      case "hub.sendFiles": return await this.#mobileHubSendFiles(args[0], args[1]);
+      case "runs.start": return await this.#startLocalRun(validateStartRun(args[0])) as unknown as JsonValue;
+      case "runs.active": return this.#activeTopLevelRuns()
+        .filter((run) => Boolean(this.#team.botByConversation(run.conversationId))) as unknown as JsonValue;
+      case "runs.activeAll": return this.#activeTopLevelRuns().filter(run => !this.#remoteRunHosts.has(run.runId)) as unknown as JsonValue;
+      case "runs.cancel": {
+        this.#activeRuns.get(required(args[0], "run id"))?.control.cancel();
+        return null;
+      }
+      case "runs.steer": {
+        const runId = required(args[0], "run id");
+        const text = required(args[1], "text");
+        const run = this.#storage.getRun(runId);
+        if (!run) throw new Error(`Run not found: ${runId}`);
+        this.#requireRun(runId).control.steer({role: "user", content: text});
+        this.#storage.appendMessage({
+          id: typeof args[2] === "string" && args[2] ? args[2] : crypto.randomUUID(),
+          conversationId: run.conversationId,
+          runId,
+          role: "user",
+          content: text,
+        });
+        return null;
+      }
+      case "runs.events": {
+        const runId = required(args[0], "run id");
+        const run = this.#storage.getRun(runId);
+        const conversationId = run?.conversationId ?? "";
+        return this.#storage.listRunEvents(runId, typeof args[1] === "number" ? args[1] : 0)
+          .map((event) => storedEventDto(event, conversationId, run?.parentRunId ?? null)) as unknown as JsonValue;
+      }
+      case "locker.status": return this.#locker.status() as unknown as JsonValue;
+      case "locker.create": return await this.#locker.create(lockerPassword(args[0])) as unknown as JsonValue;
+      case "locker.unlock": return await this.#locker.unlock(lockerPassword(args[0])) as unknown as JsonValue;
+      case "locker.lock": return this.#locker.lock() as unknown as JsonValue;
+      case "locker.list": return this.#locker.list() as unknown as JsonValue;
+      case "locker.reveal": return this.#locker.reveal(lockerId(args[0])) as unknown as JsonValue;
+      case "locker.totp": return this.#locker.totp(lockerId(args[0])) as unknown as JsonValue;
+      case "locker.save": return await this.#locker.save(lockerItemInput(args[0])) as unknown as JsonValue;
+      case "locker.remove": return await this.#locker.remove(lockerId(args[0])) as unknown as JsonValue;
+      case "locker.restore": return await this.#locker.restore(lockerIds(args[0])) as unknown as JsonValue;
+      case "locker.purge": return await this.#locker.purge(lockerIds(args[0])) as unknown as JsonValue;
+      case "locker.emptyTrash": return await this.#locker.emptyTrash() as unknown as JsonValue;
+      case "locker.pin": return await this.#locker.pin(lockerIds(args[0]), args[1] === true) as unknown as JsonValue;
+      case "locker.reorder": return await this.#locker.reorder(lockerIds(args[0])) as unknown as JsonValue;
+      case "locker.changePassword": return await this.#locker.changePassword(
+        lockerPassword(args[0], "Current password"),
+        lockerPassword(args[1], "New password"),
+      ) as unknown as JsonValue;
+      case "locker.codes": return this.#locker.codes() as unknown as JsonValue;
+      case "locker.otpauth": return this.#locker.otpauth(lockerId(args[0])) as unknown as JsonValue;
+      case "locker.copy": return this.#locker.copyText(
+        lockerId(args[0]),
+        lockerCopyField(args[1]),
+        typeof args[2] === "number" ? args[2] : undefined,
+      );
+      case "locker.sync": return await this.#locker.hydrate() as unknown as JsonValue;
+      case "locker.setStorage": return await this.#locker.setStorage(
+        lockerStorageMode(args[0]),
+        lockerStorageResolve(args[1]),
+      ) as unknown as JsonValue;
+      case "locker.export": return this.#locker.exportVault() as unknown as JsonValue;
+      case "locker.import": return await this.#locker.importVault(lockerVaultBlob(args[0])) as unknown as JsonValue;
+      default: throw new Error(`Unsupported Host method: ${method}`);
+    }
+  }
+
+  async #mobileHubChats(): Promise<JsonValue> {
+    const rooms = await this.#comms.chats();
+    const chats = rooms.map((room): ChatDto => ({
+      id: room.roomId,
+      name: room.name,
+      platform: room.platform,
+      ...(room.remoteId ? {remoteId: room.remoteId} : {}),
+      ...(room.currentPortal ? {currentPortal: true} : {}),
+      ...(room.space ? {space: true} : {}),
+      ...(room.defaultSpace ? {defaultSpace: true} : {}),
+      ...(room.parentIds?.length ? {parentIds: room.parentIds} : {}),
+      accountIds: room.accountIds,
+      unreadByAccount: room.unreadByAccount,
+      avatarUrl: room.avatarUrl,
+      unread: room.unread,
+      lastActivity: room.lastActivity,
+      preview: room.preview,
+      group: room.group,
+      official: room.official,
+    }));
+    this.#hubCache.putChats(chats);
+    return chats as unknown as JsonValue;
+  }
+
+  async #mobileHubMessages(
+    chatId: string,
+    limit: number,
+    before?: string,
+  ): Promise<{messages: ChatMessageDto[]; nextBefore: string | null}> {
+    const result = await this.#comms.readChat(chatId, Math.max(1, Math.min(100, limit)), before);
+    const me = this.#comms.userId;
+    const page = {
+      nextBefore: result.nextBefore ?? null,
+      messages: result.messages.map((message): ChatMessageDto => {
+        const mine = message.mine || (Boolean(me) && message.sender === me);
+        return {
+          id: message.eventId,
+          chatId: message.roomId || chatId,
+          sender: message.sender,
+          senderName: mine ? "You" : message.senderName || message.sender,
+          senderAvatarUrl: message.senderAvatarUrl,
+          body: message.body,
+          notice: message.notice,
+          deliveryStatus: message.deliveryStatus,
+          sentAt: message.sentAt,
+          mine,
+          attachments: message.attachments,
+          linkPreview: message.linkPreview,
+          forwarded: message.forwarded,
+          call: message.call,
+          viewIn: message.viewIn,
+          reactions: message.reactions,
+          replyTo: message.replyTo,
+        };
+      }),
+    };
+    if (!before) this.#hubCache.putChatPage(chatId, page.messages, page.nextBefore);
+    return page;
+  }
+
+  async #mobileHubSend(chatId: string, body: string): Promise<ChatMessageDto> {
+    const eventId = await this.#comms.sendChat(chatId, body);
+    return {
+      id: eventId,
+      deliveryStatus: this.#comms.outboundDeliveryStatus(eventId),
+      chatId,
+      sender: this.#comms.userId ?? "",
+      senderName: "You",
+      senderAvatarUrl: null,
+      body,
+      sentAt: new Date().toISOString(),
+      mine: true,
+      attachments: [],
+      reactions: [],
+      replyTo: null,
+    };
+  }
+
+  async #mobileHubSendFiles(chatValue: JsonValue, filesValue: JsonValue): Promise<JsonValue> {
+    const chatId = required(chatValue, "chat id");
+    if (!Array.isArray(filesValue) || !filesValue.length) throw new Error("Choose at least one file");
+    if (filesValue.length > 6) throw new Error("Send at most six files at once");
+    const files = filesValue.map((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        throw new Error("A Hub attachment is invalid");
+      const input = value as Record<string, JsonValue>;
+      const name = path.basename(required(input.name, "file name"))
+        .replace(/[^a-z0-9._ -]+/gi, "_").slice(0, 180) || "attachment";
+      const encoded = required(input.data, "file data");
+      if (encoded.length > 16 * 1024 * 1024 || !/^[a-z0-9+/]*={0,2}$/i.test(encoded))
+        throw new Error(`${name} is invalid or larger than 12 MB`);
+      const bytes = Buffer.from(encoded, "base64");
+      if (bytes.byteLength > 12 * 1024 * 1024) throw new Error(`${name} is larger than 12 MB`);
+      return {
+        name,
+        mimetype: typeof input.mimeType === "string" && input.mimeType
+          ? input.mimeType.slice(0, 160)
+          : "application/octet-stream",
+        bytes: new Uint8Array(bytes),
+      };
+    });
+    await this.#comms.sendChatFiles(chatId, files);
+    return null;
+  }
+
+  async #saveMobileUpload(value: JsonValue): Promise<JsonValue> {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Mobile upload must be an object");
+    const input = value as Record<string, JsonValue>;
+    const conversationId = required(input.conversationId, "conversation id");
+    if (!this.#storage.getConversation(conversationId))
+      throw new Error("That conversation no longer exists");
+    const suppliedName = path.basename(required(input.name, "file name"));
+    const name = suppliedName.replace(/[^a-z0-9._ -]+/gi, "_").slice(0, 180) || "attachment";
+    const encoded = required(input.data, "file data");
+    if (encoded.length > 16 * 1024 * 1024 || !/^[a-z0-9+/]*={0,2}$/i.test(encoded))
+      throw new Error("The mobile attachment is invalid or larger than 12 MB");
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.byteLength > 12 * 1024 * 1024)
+      throw new Error("Mobile attachments may be at most 12 MB");
+    const directory = path.join(this.#dataDirectory, "mobile-uploads", conversationId);
+    await mkdir(directory, {recursive: true});
+    const target = path.join(directory, `${crypto.randomUUID()}-${name}`);
+    await writeFile(target, bytes);
+    return {
+      path: target,
+      name,
+      mimeType: typeof input.mimeType === "string" ? input.mimeType.slice(0, 160) : null,
+      size: bytes.byteLength,
+    };
+  }
+
+  async #setAssistantArchived(conversationId: string, archived: boolean) {
+    const conversation = this.#storage.getConversation(conversationId);
+    if (!conversation) return null;
+    if (!this.#team.isAssistantConversation(conversationId))
+      throw new Error("Only assistant chats can be archived.");
+    if (Boolean(conversation.archivedAt) === archived) return conversation;
+    const deviceId = this.#team.executionDevice(conversationId);
+    if (deviceId !== this.#team.localHost().hostId)
+      await (await this.#remoteTeamClient(deviceId)).call(
+        archived ? "conversations.archive" : "conversations.unarchive",
+        [conversationId],
+      );
+    if (archived) {
+      await this.#settleConversationRuns(conversationId, "Conversation archived");
+      this.#runResources.forget(conversationId);
+      if (this.#managerJobs.removeChat(conversationId)) this.#publishManagerJobs();
+    }
+    return this.#storage.updateConversation(conversationId, {archived});
+  }
+
+  async #settleConversationRuns(conversationId: string, reason: string): Promise<void> {
+    // Repeat after settling because a parent can register a child immediately
+    // before it observes cancellation.
+    while (true) {
+      const active = [...this.#activeRuns.entries()]
+        .filter(([runId]) => this.#storage.getRun(runId)?.conversationId === conversationId)
+        .map(([, run]) => run);
+      if (!active.length) return;
+      for (const run of active) run.control.cancel(new Error(reason));
+      await Promise.allSettled(active.map((run) => run.result));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  #cancelQueuedManagerJobs(conversationId: string): void {
+    let changed = false;
+    for (const job of this.#managerJobs.list(conversationId)) {
+      if (job.status === "queued") {
+        this.#managerJobs.cancel(job.id);
+        changed = true;
+      }
+    }
+    if (changed) this.#publishManagerJobs();
+  }
+
   async #startRun(
     request: ReturnType<typeof validateStartRun> & {
       reuseUserMessage?: boolean;
@@ -3861,20 +5900,74 @@ export class DesktopBackend {
     },
     preparedRunId?: string,
   ): Promise<{ runId: string }> {
+      if (this.#team.botByConversation(request.conversationId)) return this.#startLocalRun(request, preparedRunId);
+      const member = this.#remoteMemberByConversation(request.conversationId);
+      const localId = this.#team.localHost().hostId;
+      const savedDevice = this.#team.executionDevice(request.conversationId);
+      const deviceId = member?.hostId ?? request.deviceId ?? savedDevice;
+      if (!member && deviceId !== savedDevice && (this.#storage.listMessages(request.conversationId).length || savedDevice !== localId)) throw new Error('Choose another device in a new Assistant chat.');
+      if (deviceId === localId) return this.#startLocalRun(request, preparedRunId);
+      const client = await this.#remoteTeamClient(deviceId);
+      if (!member) {
+        await client.call('assistant.ensure', [request.conversationId, this.#storage.getConversation(request.conversationId)?.title ?? 'Assistant']);
+        this.#storage.setPreference(`assistant.device:${request.conversationId}`, deviceId);
+      }
+      const attachments: string[] = [];
+      for (const file of request.attachments ?? []) {
+        const info = await stat(file);
+        if (!info.isFile() || info.size > 12 * 1024 * 1024) throw new Error('Remote attachments must be files smaller than 12 MB.');
+        const uploaded = await client.call<{path: string}>('conversations.upload', [{conversationId: request.conversationId, name: path.basename(file), data: (await readFile(file)).toString('base64')}]);
+        attachments.push(uploaded.path);
+      }
+      const result = await client.call<{runId: string}>('runs.start', [{...request, deviceId: undefined, attachments} as unknown as JsonValue]);
+      if (preparedRunId) { this.#managerJobs.replaceRun(preparedRunId, result.runId); this.#publishManagerJobs(); }
+      this.#remoteRunConversations.set(result.runId, request.conversationId);
+      this.#remoteRunIds.add(result.runId);
+      this.#remoteRunHosts.set(result.runId, deviceId);
+      void this.#pollRemoteRun(result.runId, deviceId);
+      return result;
+  }
+
+  async #startLocalRun(
+    request: ReturnType<typeof validateStartRun> & {
+      reuseUserMessage?: boolean;
+      contextThroughSequence?: number;
+      executionScopeId?: string;
+      replyToMessageId?: string;
+    },
+    preparedRunId?: string,
+  ): Promise<{ runId: string }> {
+    if (request.rewind) {
+      this.#cancelQueuedManagerJobs(request.conversationId);
+      await this.#settleConversationRuns(request.conversationId, "Edited and resent");
+      rewindConversation(this.#storage, {
+        conversationId: request.conversationId,
+        messageId: request.messageId!,
+        content: json(request.text),
+        attachments: request.attachments,
+      });
+    }
     this.#preemptGoalContinuation(request.conversationId);
+    const bot = this.#team.botByConversation(request.conversationId);
+    if (bot) await this.#teamComputers.start(bot.id);
     // Only deictic/current-screen requests pay for a synchronous AX refresh.
     // Other turns use the latest trusted snapshot and refresh it in parallel
     // for later, avoiding desktop inspection on the inference critical path.
-    const desktopContext = needsFreshDesktopContext(request.text)
-      ? this.#refreshOpenWindows()
-      : (void this.#refreshOpenWindows(), Promise.resolve());
-    const locationContext = this.#refreshPromptLocation(request.text);
+    const desktopContext = bot
+      ? Promise.resolve()
+      : needsFreshDesktopContext(request.text)
+        ? this.#refreshOpenWindows()
+        : (void this.#refreshOpenWindows(), Promise.resolve());
+    const locationContext = bot
+      ? Promise.resolve()
+      : this.#refreshPromptLocation(request.text);
     await Promise.all([
       this.#prepareMcpForRun(),
       desktopContext,
       locationContext,
     ]);
-    const agent = await this.#ensureConfiguredRuntime();
+    const agent = await this.#ensureConfiguredRuntime(request.conversationId);
+    if (request.rewind) await agent.resetHistory(request.conversationId);
     const pausedGoal = this.#storage.getGoal(request.conversationId);
     const maxTaskDispatches =
       pausedGoal &&
@@ -3892,7 +5985,7 @@ export class DesktopBackend {
       conversationId: request.conversationId,
       text: request.text,
       userMessageId: request.messageId,
-      reuseUserMessage: request.reuseUserMessage,
+      reuseUserMessage: Boolean(request.reuseUserMessage || request.rewind),
       attachments: request.attachments,
       asGoal: request.asGoal,
       reasoning: request.reasoning,
@@ -3907,8 +6000,16 @@ export class DesktopBackend {
         (pausedGoal.status === "active" || pausedGoal.status === "paused") &&
         shouldUseGoalProgressContext(request.text, pausedGoal.objective),
       ),
+      identity: bot ? {
+        name: bot.name,
+        role: bot.role,
+        bots: this.#team.list()
+          .filter((member) => member.id !== bot.id)
+          .map((member) => ({name: member.name, role: member.role})),
+      } : undefined,
     });
     this.#activeRuns.set(runId, active);
+    if (bot) this.#team.publish();
     void this.#forwardEvents(runId, active);
     return { runId };
   }
@@ -3920,6 +6021,7 @@ export class DesktopBackend {
       if (!run || run.parentRunId) continue;
       result.push({ runId, conversationId: run.conversationId });
     }
+    for (const [runId, conversationId] of this.#remoteRunConversations) result.push({runId, conversationId});
     return result;
   }
 
@@ -4204,6 +6306,7 @@ export class DesktopBackend {
     } finally {
       this.#browserResearchTool?.cleanupRun(runId);
       this.#activeRuns.delete(runId);
+      this.#team.publish();
       const settledRun = this.#storage.getRun(runId);
       const goalConversation = settledRun?.conversationId;
       const managerJob = this.#managerJobs.forRun(runId);
@@ -4232,6 +6335,7 @@ export class DesktopBackend {
       if (this.#activeRuns.size === 0 && this.#mcpReloadPending)
         await this.#reloadMcpAndPublish();
       this.#notifyRunSettled(runId);
+      if (!this.#storage.getRun(runId)?.parentRunId) void this.#teamHostServer.notifyPhones();
       if (!this.#window.isDestroyed()) {
         const settled = this.#storage.getRun(runId);
         const conversationId = settled?.conversationId ?? "";
@@ -4288,7 +6392,13 @@ export class DesktopBackend {
       this.#window.webContents.send(channels.mcpChanged, change);
   }
 
-  #executeGoal(request: GoalCommandRequest) {
+  async #executeGoal(request: GoalCommandRequest) {
+    const deviceId = this.#team.executionDevice(request.conversationId);
+    if (deviceId !== this.#team.localHost().hostId) return (await this.#remoteTeamClient(deviceId)).call('goals.execute', [request as unknown as JsonValue]);
+    return this.#executeLocalGoal(request);
+  }
+
+  #executeLocalGoal(request: GoalCommandRequest) {
     if (request.action === "update") {
       const goal = this.#storage.updateGoal(request.conversationId, {
         objective: request.objective!,
@@ -4302,81 +6412,6 @@ export class DesktopBackend {
         ? { action: "create", objective: request.objective! }
         : { action: request.action },
     );
-  }
-
-  /**
-   * Asks macOS for everything the app is entitled to ask for and does not yet
-   * have, so a grant is settled while the user is here rather than in the
-   * middle of a run. Called when a skill is installed or switched on — with
-   * that skill's name — and again before every run with no names at all.
-   *
-   * Three rules keep it quiet. A grant macOS has already decided is never
-   * asked for twice, because it shows its dialog once and a second call only
-   * costs a process. A grant the user switched off is not asked for at all —
-   * that switch is a refusal to use the capability, not a request to be
-   * reminded of it. And a permission macOS has no dialog for is skipped
-   * outright: "asking" for Full Disk Access means opening System Settings,
-   * which is a thing to do when someone pressed a button, never something to
-   * do to them because a run was starting.
-   */
-  async #ensurePermissions(
-    names?: Iterable<string>,
-  ): Promise<AppPermissionKind[]> {
-    // App grants only. The app's own permissions are swept below and each has
-    // a row with its own Allow button, so folding them in here would let a
-    // press on "ask again" — which sits with the skill grants — open the
-    // Microphone pane instead, and on a fresh build that is what it would
-    // always do.
-    const withheld: AppPermissionKind[] = [];
-    if (process.platform !== "darwin") return withheld;
-    const settings = this.#generalSettings();
-    const only = names ? new Set(names) : undefined;
-    const declared = new Set<AppPermissionKind>();
-    for (const skill of this.#skills.load().skills) {
-      // Without names this is the pre-run sweep, which covers what is actually
-      // loaded: every core skill, and the optional ones switched on.
-      const active = only
-        ? only.has(skill.name)
-        : this.#coreSkills.has(skill.name) ||
-          this.#integrationEnabled("skill-enabled", skill.name);
-      if (active)
-        for (const kind of declaredPermissions(skill)) declared.add(kind);
-    }
-    const statuses = new Map<AppPermissionKind, SystemPermissionStatus>();
-    for (const kind of declared) {
-      if (this.#permissionsSettled.has(kind)) continue;
-      const status = await permissionStatus(kind);
-      statuses.set(kind, status);
-      // "not-determined" is the only status worth revisiting: a granted one is
-      // done, and a refused one cannot be changed from here. Nothing is
-      // remembered across a restart, so a grant reset outside the app is
-      // noticed the next time Polymux runs.
-      if (status !== "not-determined") this.#permissionsSettled.add(kind);
-    }
-    const { kinds } = permissionsToRequest(
-      statuses.keys(),
-      settings,
-      (kind) => statuses.get(kind) ?? "unknown",
-    );
-    for (const kind of kinds) {
-      this.#permissionsSettled.add(kind);
-      if ((await this.#requestSystemPermission(kind)) !== "granted")
-        withheld.push(kind);
-    }
-    // A grant that was already decided against is reported too. macOS will not
-    // show its dialog a second time, so the caller offering System Settings is
-    // the only thing left that can change the answer.
-    for (const [kind, status] of statuses)
-      if (
-        status !== "not-determined" &&
-        status !== "granted" &&
-        !withheld.includes(kind)
-      )
-        withheld.push(kind);
-    // The app's own grants are deliberately not swept here. Each has a row
-    // with its own button, and a run starting is not a reason to ask for a
-    // capability that run may never use.
-    return withheld;
   }
 
   #skillDtos(): SkillDto[] {
@@ -4410,7 +6445,7 @@ export class DesktopBackend {
    * The installed plugins, each told what of its own the user already has
    * standalone. The comparison is made here rather than in the registry
    * because this is where both lists exist: the Skills tab's own skills, and
-   * the servers configured in ~/.polymux/mcp.json.
+   * the servers configured for the active MCP profile.
    */
   #pluginDtos(): PluginDto[] {
     const skills = new Map(
@@ -4430,8 +6465,95 @@ export class DesktopBackend {
     });
   }
 
+  /** Installed Apps for the active profile. Official Apps inherit the active
+   * agent's default until the user makes an explicit choice. App installation
+   * is deliberately independent from the plugin registry. */
+  async #workspaceApps(): Promise<WorkspaceAppsDto> {
+    const officialDefault = this.#runtimeConfig().kind === "polymux";
+    const official = OFFICIAL_WORKSPACE_APPS.map((app): WorkspaceAppDto => ({
+      ...app,
+      enabled: this.#integrationEnabled("app-enabled", app.id, officialDefault),
+    }));
+    const apps = official;
+    const available = new Set(apps.filter((app) => app.enabled && app.pinnable).map((app) => app.id));
+    const stored = this.#profilePreference("app-pins")?.value;
+    const requested = Array.isArray(stored)
+      ? stored.filter((id): id is string => typeof id === "string")
+      : DEFAULT_NEW_TAB_APPS.filter((id) => official.some((app) => app.id === id && app.enabled));
+    const pinnedIds = requested.filter((id, index) => available.has(id) && requested.indexOf(id) === index).slice(0, MAX_NEW_TAB_APPS);
+    return {apps, pinnedIds};
+  }
+
+  #usageStats(value: unknown): UsageStatsDto {
+    const filter = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    const scope = filter.scope === "assistant" || filter.scope === "team" ? filter.scope : "all";
+    const agentId = typeof filter.agentId === "string" && filter.agentId.trim() ? filter.agentId.trim() : null;
+    const source = this.#storage.loadUsageSource();
+    for (const run of source.runs) {
+      if (run.agent?.kind !== "acp") continue;
+      run.agent.id = externalAgentId({kind: "acp", agentId: run.agent.id, name: run.agent.name, command: "", args: []});
+    }
+    return {
+      identity: this.#usageIdentity(),
+      ...summarizeUsage(source, new Date(), {scope, agentId}, this.#usageCatalog()),
+    };
+  }
+
+  #usageCatalog(): {
+    plugins: {id: string; name: string; skills: string[]; mcpServerIds: string[]}[];
+    connections: {id: string; name: string}[];
+  } {
+    let plugins: PluginDto[] = [];
+    try {
+      plugins = this.#pluginDtos();
+    } catch {
+      plugins = [];
+    }
+    return {
+      plugins: plugins.map((plugin) => ({
+        id: plugin.id,
+        name: plugin.name,
+        skills: plugin.contributions.skills,
+        mcpServerIds: plugin.contributions.mcpServers,
+      })),
+      connections: this.#mcpDtos(this.#mcp.snapshots()).map((server) => ({
+        id: server.id,
+        name: server.name,
+      })),
+    };
+  }
+
+  #usageIdentity(): UsageStatsDto["identity"] {
+    const account = this.#account.status();
+    if (account.profile) {
+      const local = account.profile.email.split("@")[0]?.trim();
+      return {
+        name: account.profile.name.trim() || account.profile.email,
+        handle: local ? `@${local}` : null,
+        avatarUrl: account.profile.avatarUrl || null,
+        badge: "Account",
+      };
+    }
+    let username = "";
+    try {
+      username = userInfo().username?.trim() ?? "";
+    } catch {
+      username = "";
+    }
+    if (username)
+      return {name: username, handle: `@${username}`, avatarUrl: null, badge: null};
+    const snapshot = this.#profiles.snapshot();
+    const active = snapshot.profiles.find((profile) => profile.id === snapshot.activeId);
+    return {
+      name: active?.name?.trim() || "Polymux",
+      handle: null,
+      avatarUrl: null,
+      badge: null,
+    };
+  }
+
   #integrationEnabled(
-    key: "skill-enabled" | "mcp-enabled" | "plugin-enabled",
+    key: "skill-enabled" | "mcp-enabled" | "plugin-enabled" | "app-enabled",
     id: string,
     fallback = true,
   ): boolean {
@@ -4443,7 +6565,7 @@ export class DesktopBackend {
   }
 
   #setIntegrationEnabled(
-    key: "skill-enabled" | "mcp-enabled" | "plugin-enabled",
+    key: "skill-enabled" | "mcp-enabled" | "plugin-enabled" | "app-enabled",
     id: string,
     enabled: unknown,
   ): void {
@@ -4478,13 +6600,14 @@ export class DesktopBackend {
         error.code === "ENOENT" ? "{}" : Promise.reject(error),
     );
     const root = JSON.parse(source) as Record<string, unknown>;
-    const existing = root.mcpServers;
+    const key = this.#mcpConfigKey ?? "mcpServers";
+    const existing = root[key];
     const servers =
       existing && typeof existing === "object" && !Array.isArray(existing)
         ? { ...(existing as Record<string, unknown>) }
         : {};
     edit(servers);
-    root.mcpServers = servers;
+    root[key] = servers;
     await mkdir(path.dirname(this.#mcpConfigPath), { recursive: true });
     const temporary = `${this.#mcpConfigPath}.tmp`;
     await writeFile(temporary, `${JSON.stringify(root, null, 2)}\n`, "utf8");
@@ -4764,34 +6887,9 @@ export class DesktopBackend {
     this.#storage.setPreference("general-access", generalSettingsStorage(settings));
   }
 
-  /**
-   * What is open on the machine, for the ambient context block. Titles only,
-   * and only while accessibility is granted — the same permission ComputerHistory
-   * reads through. Cached briefly so a burst of runs costs one listing, and a
-   * failure answers with the last reading rather than failing the turn.
-   */
-  /**
-   * Whether a capability is available right now: the OS grant *and* the user's
-   * own switch for it in Settings. Turning the switch off leaves the grant
-   * alone, so switching it back on costs nothing.
-   */
-  /**
-   * Settles an app grant at the moment a tool needs it, which is the whole
-   * reason such a capability is a tool rather than a shelled-out command: this
-   * is a real point of use, so the dialog raised here is one the user's own
-   * request brought about, and the tool waits for the answer instead of
-   * failing and leaving them to work out why.
-   *
-   * The switches come first and never prompt. Turning a capability off is a
-   * refusal to use it, so the honest answer is to say so — raising a system
-   * dialog for something the user has switched off would be absurd.
-   */
+  /** Built-in tools request only the native grant they need, at point of use.
+   * Installing instructions or connecting an MCP is not a permission request. */
   async #requireAppPermission(kind: AppPermissionKind): Promise<string | null> {
-    const settings = this.#generalSettings();
-    if (!settings.appPermissionsEnabled)
-      return "App access for skills is switched off in Settings → General → Permissions.";
-    if (!settings.permissions[kind])
-      return `${kind} access is switched off in Settings → General → Permissions.`;
     if ((await permissionStatus(kind)) === "granted") return null;
     if ((await this.#requestSystemPermission(kind)) === "granted") return null;
     // macOS raises its dialog once. Past that the only thing that changes the
@@ -4799,8 +6897,7 @@ export class DesktopBackend {
     return `Polymux has not been given access to ${kind}. Allow it in System Settings → Privacy & Security.`;
   }
 
-  /** Calendar is a first-party workspace view, not an agent skill. Its own
-   * permission switch still applies, while the skills master switch does not. */
+  /** Calendar requests its native grant only when its workspace feature is used. */
   async #requireCalendarPermission(): Promise<string | null> {
     if (!this.#generalSettings().permissions.calendars)
       return "Calendar access is switched off in Settings → General → Permissions.";
@@ -4847,11 +6944,6 @@ export class DesktopBackend {
 
   #permissionAvailable(kind: SystemPermissionKind): boolean {
     const settings = this.#generalSettings();
-    // The master switch covers every app grant at once. It is a refusal to use
-    // them, not a revocation: macOS still holds whatever it granted, so
-    // switching it back on needs no second trip through System Settings.
-    if (isAppPermissionKind(kind) && !settings.appPermissionsEnabled)
-      return false;
     if (!settings.permissions[kind]) return false;
     return systemPermissionStatus(kind) === "granted";
   }
@@ -4872,6 +6964,20 @@ export class DesktopBackend {
         if (!this.#closing && !this.#window.isDestroyed())
           this.#window.webContents.send(channels.workspaceReveal, request);
       },
+      wake: async (request: WorkspaceRevealDto) => {
+        if (!request.chat?.draft) return;
+        const wantedId = request.chat.id?.trim().toLowerCase();
+        const wantedName = request.chat.name?.trim().toLowerCase();
+        const chat = (await this.#comms.chats().catch((): MatrixRoom[] => []))
+          .find((candidate) =>
+            !candidate.space &&
+            ((wantedId && candidate.roomId.toLowerCase() === wantedId) ||
+              (wantedName && candidate.name.toLowerCase() === wantedName)),
+          );
+        if (chat?.platform === "wechat") await this.#comms.wake("wechat");
+      },
+      chatForContact: (contactId: string, accountId?: string) =>
+        this.#comms.chatForContact(contactId, accountId),
       linked: async () => {
         const status = await this.#comms.status();
         return {
@@ -5025,35 +7131,12 @@ export class DesktopBackend {
     };
   }
 
-  #computerStateInput() {
-    const now = Date.now();
-    const external = readExternalPromptSnapshot(
-      now,
-      undefined,
-      Number.MAX_SAFE_INTEGER,
-    );
-    return {
-      windowsCapturedAt: this.#windowSnapshot.at
-        ? new Date(this.#windowSnapshot.at).toISOString()
-        : undefined,
-      browserTabsCapturedAt: new Date(now).toISOString(),
-      externalBrowserCapturedAt: external.capturedAt,
-      locked: this.#computerSystem.current().locked,
-      windows: this.#windowSnapshot.windows.map(
-        ({ app, title, frontmost }) => ({ app, title, frontmost }),
-      ),
-      browserTabs: this.#embeddedBrowser.tabs(),
-      externalBrowserTabs: external.tabs,
-    };
-  }
-
   #startComputerObservation(): void {
     this.#computerHistory.start();
     if (this.#computerObservationStarted) return;
     this.#computerObservationStarted = true;
     void this.#interactionEvents
       .start((event) => {
-        this.#computer.observe(event);
         // History remains independently optional: record() applies its enabled,
         // privacy, and interaction-event settings before retaining anything.
         this.#computerHistory.record(event);
@@ -5112,45 +7195,399 @@ export class DesktopBackend {
       this.#agentRuntime = new BuiltinAgentRuntime(this.#agent);
   }
 
-  #runtimeConfig(): AgentRuntimeConfig {
-    const stored = this.#profilePreference("agent-runtime")?.value;
+  #runtimeConfig(profileId = this.#profiles.snapshot().activeId): AgentRuntimeConfig {
+    const stored = this.#profiles.preference("agent-runtime", profileId)?.value;
     if (!stored || typeof stored !== "object" || Array.isArray(stored) || stored.kind !== "acp")
       return {kind: "polymux"};
     if (typeof stored.name !== "string" || typeof stored.command !== "string")
       return {kind: "polymux"};
-    return {
+    const base = {
       kind: "acp",
       name: stored.name.trim() || "ACP Agent",
       command: stored.command.trim(),
       args: Array.isArray(stored.args) ? stored.args.filter((item): item is string => typeof item === "string") : [],
       ...(typeof stored.cwd === "string" && stored.cwd.trim() ? {cwd: stored.cwd.trim()} : {}),
       config: agentRuntimeConfigValues(stored.config),
+      registryEnvironment: agentRegistryEnvironment(stored.registryEnvironment),
+    } satisfies Extract<AgentRuntimeConfig, {kind: "acp"}>;
+    const agentId = typeof stored.agentId === "string" && stored.agentId.trim()
+      ? stored.agentId.trim()
+      : externalAgentId(base);
+    const configId = typeof stored.configId === "string" && stored.configId.trim()
+      ? stored.configId.trim()
+      : agentId;
+    return {...base, agentId, configId};
+  }
+
+  #profilesForRenderer() {
+    const snapshot = this.#profiles.snapshot();
+    return {
+      ...snapshot,
+      profiles: snapshot.profiles.map((profile) => {
+        const runtime = this.#runtimeConfig(profile.id);
+        return {
+          ...profile,
+          agent: runtime.kind === "polymux"
+            ? {kind: "polymux" as const, id: "polymux", name: "Polymux"}
+            : {kind: "acp" as const, id: runtime.agentId!, name: runtime.name},
+          teamEligible: true,
+        };
+      }),
     };
+  }
+
+  async #connectExternalProfile(
+    request: ConnectExternalProfileRequest,
+  ): Promise<ReturnType<ProfileManager["snapshot"]>> {
+    if (this.#activeRuns.size)
+      throw new Error("Wait for the active agent run to finish before switching agents.");
+    let runtime = agentRuntimeRequest(request.runtime);
+    if (runtime.kind !== "acp") throw new Error("An external profile requires an ACP agent");
+    const before = this.#profiles.snapshot();
+    const current = before.profiles.find((profile) => profile.id === before.activeId)!;
+    if (request.profileId) {
+      if (!before.profiles.some((profile) => profile.id === request.profileId))
+        throw new Error("Unknown profile");
+      const stored = this.#profiles.preference("agent-runtime", request.profileId)?.value;
+      const storedRuntime = stored ? agentRuntimeRequest(stored) : null;
+      if (!storedRuntime || storedRuntime.kind !== "acp")
+        throw new Error("That profile no longer has an external agent to sync");
+      runtime = storedRuntime;
+    }
+    let targetId = request.profileId ?? current.id;
+    const target = this.#profiles.snapshot().profiles.find((profile) => profile.id === targetId);
+    if (!target) throw new Error("Unknown profile");
+    const priorSource = target.source;
+
+    const sourceDirectory = request.sourceDirectory?.trim()
+      ? inspectExternalAgentProfiles(runtime, request.sourceDirectory, {
+          cwd: runtime.cwd ?? this.#profiles.directory(targetId),
+        })[0]?.directory
+      : undefined;
+    if ((request.mode === "merge" || request.mode === "import" || request.mode === "sync") && !sourceDirectory)
+      throw new Error("Choose an external configuration folder first");
+
+    const inspected = sourceDirectory
+      ? inspectExternalAgentProfiles(runtime, sourceDirectory, {
+          cwd: runtime.cwd ?? this.#profiles.directory(targetId),
+        })[0]
+      : undefined;
+    if ((request.mode === "merge" || request.mode === "import") && !inspected?.supportsImport)
+      throw new Error(inspected?.importUnavailableReason ?? `${runtime.name} does not yet support configuration import`);
+
+    let nextSource: ProfileDto["source"] = null;
+    if (request.mode === "sync") {
+      if (!inspected?.exists) throw new Error("That external configuration folder no longer exists");
+      if (!inspected.supportsSync)
+        throw new Error(inspected.syncUnavailableReason ?? `${runtime.name} cannot be kept in sync safely.`);
+      nextSource = {
+        kind: "external",
+        agentId: runtime.agentId!,
+        agentName: runtime.name,
+        directory: inspected.directory,
+      };
+    }
+
+    const profileDirectory = this.#profiles.directory(targetId);
+    const runtimeRoot = path.join(profileDirectory, "agents", runtime.configId!);
+    const managedHome = path.join(runtimeRoot, "home");
+    const runtimeDirectory = managedExternalConfigurationDirectory(runtime, runtimeRoot, managedHome);
+    await mkdir(managedHome, {recursive: true});
+    await mkdir(runtimeDirectory, {recursive: true});
+    if (request.mode === "merge" || request.mode === "import") {
+      await importExternalConfiguration({
+        runtime,
+        sourceDirectory: sourceDirectory!,
+        profileDirectory,
+        runtimeDirectory,
+        sections: request.sections?.length
+          ? request.sections
+          : ["settings", "skills", "plugins", "mcp", "memory"],
+        cwd: runtime.cwd,
+      });
+    }
+    // Profile identity and source change only after every fallible inspection
+    // and copy has completed. A failed import therefore leaves an existing
+    // profile attached to exactly the source it had before the attempt.
+    if (request.profileName?.trim() && request.profileName.trim() !== target.name)
+      this.#profiles.rename(targetId, request.profileName);
+    this.#profiles.setSource(targetId, nextSource);
+    this.#profiles.setPreference("agent-runtime", runtime as unknown as JsonValue, targetId);
+    const shouldActivate = !request.profileId && before.activeId !== targetId;
+    if (shouldActivate) this.#profiles.select(targetId);
+    const result = this.#profiles.snapshot();
+    this.#sendToTrustedWindows(channels.profilesChanged, this.#profilesForRenderer());
+
+    const committedSource = result.profiles.find((profile) => profile.id === targetId)?.source ?? null;
+    const needsReload = shouldActivate || (before.activeId === targetId && JSON.stringify(priorSource) !== JSON.stringify(committedSource));
+    if (needsReload) setTimeout(() => this.#reloadForProfileChange?.(), 0);
+    else if (result.activeId === targetId) {
+      await this.#agentRuntime?.close?.();
+      this.#configureAgentRuntime(runtime);
+      if (request.mode === "merge") await this.reloadMcp();
+    }
+    return result;
   }
 
   #configureAgentRuntime(config = this.#runtimeConfig()): void {
     if (config.kind === "acp") {
+      this.#agentRuntime = undefined;
+      const snapshot = this.#profiles.snapshot();
+      const profile = snapshot.profiles.find((candidate) => candidate.id === snapshot.activeId)!;
+      const profileDirectory = this.#profiles.directory(profile.id);
+      const runtimeRoot = path.join(profileDirectory, "agents", config.configId ?? config.agentId ?? "agent");
+      const managedHome = path.join(runtimeRoot, "home");
+      const configurationDirectory = profile.source?.agentId === config.agentId
+        ? profile.source.directory
+        : managedExternalConfigurationDirectory(config, runtimeRoot, managedHome);
+      const cwd = config.cwd ?? path.join(profileDirectory, "workspace");
+      if (profile.source && !existsSync(configurationDirectory)) {
+        console.warn(`[acp:${config.name}] External configuration source is missing: ${configurationDirectory}`);
+        return;
+      }
+      if (!profile.source) mkdirSync(configurationDirectory, {recursive: true});
+      mkdirSync(managedHome, {recursive: true});
+      if (!config.cwd) mkdirSync(cwd, {recursive: true});
       this.#agentRuntime = new AcpAgentRuntime(
-        config,
+        {
+          ...config,
+          cwd,
+          environment: externalAgentEnvironment(config, configurationDirectory, managedHome),
+        },
         this.#storage,
         appVersion().version,
         (request) => this.#requestAcpPermission(request),
-        () => this.#acpMcpServers(),
+        (conversationId) => this.#acpMcpServers(conversationId),
+        (conversationId) => this.#workspaceToolMcp.revoke(conversationId),
       );
       return;
     }
     this.#agentRuntime = this.#agent ? new BuiltinAgentRuntime(this.#agent) : undefined;
   }
 
+  async #teamRuntime(member: BotDto): Promise<AgentRuntime> {
+    const config = this.#runtimeConfig(member.profileId);
+    const key = JSON.stringify({
+      profileId: member.profileId,
+      runtime: config,
+      model: this.#profiles.preference("model", member.profileId)?.value ?? null,
+      roles: this.#profiles.preference("model-roles", member.profileId)?.value ?? null,
+      source: this.#profiles.snapshot().profiles.find((profile) => profile.id === member.profileId)?.source ?? null,
+      skills: member.skills ?? null,
+      mcpServers: member.mcpServers ?? null,
+      plugins: member.plugins ?? null,
+    });
+    const existing = this.#teamRuntimes.get(member.id);
+    if (existing?.key === key) return existing.runtime;
+    await existing?.runtime.close?.();
+    const runtime = config.kind === "acp"
+      ? this.#teamAcpRuntime(member, config)
+      : this.#teamBuiltinRuntime(member);
+    this.#teamRuntimes.set(member.id, {profileId: member.profileId, key, runtime});
+    return runtime;
+  }
+
+  #assertTeamProfile(profileId: string): void {
+    if (!this.#profiles.snapshot().profiles.some((profile) => profile.id === profileId))
+      throw new Error("This bot's profile no longer exists");
+  }
+
+  #teamAcpRuntime(
+    member: BotDto,
+    config: Extract<AgentRuntimeConfig, {kind: "acp"}>,
+  ): AgentRuntime {
+    const profile = this.#profiles.snapshot().profiles.find(
+      (candidate) => candidate.id === member.profileId,
+    );
+    if (!profile) throw new Error("This bot's profile no longer exists");
+    const profileDirectory = this.#profiles.directory(profile.id);
+    const runtimeRoot = path.join(
+      profileDirectory,
+      "team-agents",
+      member.id,
+      config.configId ?? config.agentId ?? "agent",
+    );
+    const managedHome = path.join(runtimeRoot, "home");
+    const configurationDirectory = profile.source?.agentId === config.agentId
+      ? profile.source.directory
+      : managedExternalConfigurationDirectory(config, runtimeRoot, managedHome);
+    const cwd = path.join(runtimeRoot, "workspace");
+    if (profile.source && !existsSync(configurationDirectory))
+      throw new Error(`${profile.name}'s external configuration folder is missing`);
+    if (!profile.source) mkdirSync(configurationDirectory, {recursive: true});
+    mkdirSync(managedHome, {recursive: true});
+    mkdirSync(cwd, {recursive: true});
+    return new AcpAgentRuntime(
+      {
+        ...config,
+        cwd,
+        environment: externalAgentEnvironment(config, configurationDirectory, managedHome),
+      },
+      this.#storage,
+      appVersion().version,
+      // Re-read policy at request time: switching Laptop access to Off revokes
+      // authority even if this ACP process was already connected.
+      (request) => this.#requestTeamAcpPermission(this.#team.bot(member.id) ?? member, request),
+      () => this.#teamAcpMcpServers(this.#team.bot(member.id) ?? member),
+      (conversationId) => this.#teamToolMcp.revoke(conversationId),
+    );
+  }
+
+  #teamBuiltinRuntime(member: BotDto): AgentRuntime {
+    const profile = this.#profiles.snapshot().profiles.find((candidate) => candidate.id === member.profileId);
+    if (!profile) throw new Error("This bot's profile no longer exists");
+    const profileDirectory = this.#profiles.directory(profile.id);
+    const credentials = new EncryptedCredentialStore(
+      path.join(profileDirectory, "credentials.json"),
+      safeStorage,
+    );
+    const credentialSource = profile.id === "default"
+      ? new OpenCodeCredentialFallback(credentials)
+      : credentials;
+    const models = builtinModels({credentials: credentialSource});
+    for (const config of customProviderPreference(
+      this.#profiles.preference("custom-providers", profile.id)?.value,
+    )) {
+      const providerModels: Array<Model<"openai-completions">> = config.models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        api: "openai-completions",
+        provider: config.id,
+        baseUrl: config.baseUrl,
+        reasoning: false,
+        input: ["text"],
+        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+      }));
+      models.setProvider(createProvider({
+        id: config.id,
+        name: config.name,
+        baseUrl: config.baseUrl,
+        auth: {
+          apiKey: {
+            name: `${config.name} API key`,
+            resolve: async ({credential}) => ({
+              auth: {apiKey: credential?.key ?? "polymux-local"},
+              source: credential?.key ? "Saved API key" : "Custom endpoint",
+            }),
+          },
+        },
+        models: providerModels,
+        api: openAICompletionsApi(),
+      }));
+    }
+    const inference = new RotatingInference(
+      new PiInference(models),
+      new EncryptedApiKeyPool(path.join(profileDirectory, "api-keys.json"), safeStorage),
+    );
+    const preferred = modelPreference(this.#profiles.preference("model", profile.id)?.value);
+    const availableModels = inference.listModels();
+    const lastUsed = preferred && inference.getModel(preferred)
+      ? preferred
+      : this.#model && inference.getModel(this.#model)
+        ? this.#model
+        : undefined;
+    const model = preferredModel(availableModels, lastUsed);
+    if (!model) throw new Error(`No model is available in ${profile.name}`);
+    const roles = modelRolesPreference(this.#profiles.preference("model-roles", profile.id)?.value);
+    const personalSkills = profile.source
+      ? path.join(profile.source.directory, "skills")
+      : path.join(profileDirectory, "skills");
+    const skillEnabled = this.#profiles.preference("skill-enabled", profile.id)?.value;
+    const enabled = skillEnabled && typeof skillEnabled === "object" && !Array.isArray(skillEnabled)
+      ? skillEnabled as Record<string, JsonValue>
+      : {};
+    const assignedPlugins = new Set(member.plugins ?? []);
+    const pluginList = this.#pluginDtos();
+    const pluginSkills = pluginList
+      .filter((plugin) => assignedPlugins.has(plugin.id))
+      .flatMap((plugin) => plugin.contributions.skills);
+    const pluginMcpServers = pluginList
+      .filter((plugin) => assignedPlugins.has(plugin.id))
+      .flatMap((plugin) => plugin.contributions.mcpServers);
+    const assignedServerIds = new Set([...(member.mcpServers ?? []), ...pluginMcpServers]);
+    const mcpTools = assignedServerIds.size > 0
+      ? this.#mcp.toolsForServers(assignedServerIds)
+      : [];
+    const botTools = new ToolRegistry(this.#teamRegistry.list());
+    for (const tool of mcpTools) {
+      botTools.register(tool);
+    }
+    const assignedSkillNames = member.skills !== undefined || member.plugins !== undefined
+      ? new Set([...(member.skills ?? []), ...pluginSkills])
+      : null;
+    const agent = new PolymuxAgent({
+      inference,
+      storage: this.#storage,
+      memory: new MemoryManager({directory: path.join(profileDirectory, "memories")}),
+      computerHistory: this.#computerHistory,
+      drive: {promptContext: () => this.#drive.promptContext()},
+      environment: {
+        promptContext: () => {
+          const context = this.#environmentPromptContext();
+          const capabilities = new Set(
+            this.#team.leases(member.id).flatMap((lease) => lease.capabilities),
+          );
+          return {
+            ...context,
+            identityScoped: true,
+            locationEnabled: false,
+            location: undefined,
+            browserTabs: capabilities.has("browser") ? context.browserTabs : [],
+            externalBrowserTabs: capabilities.has("browser") ? context.externalBrowserTabs : [],
+            windows: capabilities.has("computer") ? context.windows : [],
+          };
+        },
+      },
+      tools: botTools,
+      model,
+      subagentModel: roles.subagent,
+      judgeModel: roles.judge,
+      compactionModel: roles.compaction,
+      subagentReasoning: roles.subagent?.reasoning,
+      judgeReasoning: roles.judge?.reasoning,
+      compactionReasoning: roles.compaction?.reasoning,
+      skills: {
+        official: this.#agentSkillOptions.official,
+        personal: personalSkills,
+        configured: this.#agentSkillOptions.configured,
+        isEnabled: (skill) => this.#coreSkills.has(skill.name) || (
+          assignedSkillNames !== null
+            ? assignedSkillNames.has(skill.name)
+            : enabled[skill.name] !== false
+        ),
+      },
+      prompts: this.#agentPrompts,
+      hooks: combineHooks(new ProtectedSkillGuard(officialSkillsHome()), this.#hooks),
+      onGoalContinuation: ({conversationId, runId, run}) =>
+        this.#trackGoalContinuation(conversationId, runId, run),
+      onSubagentRun: ({runId, run}) => this.#trackSubagentRun(runId, run),
+    });
+    return new BuiltinAgentRuntime(agent);
+  }
+
   #agentRuntimeDto(): AgentRuntimeDto {
     const config = this.#runtimeConfig();
     return config.kind === "polymux"
       ? {kind: "polymux", name: "Polymux Agent"}
-      : {kind: "acp", name: config.name, command: config.command, args: config.args, cwd: config.cwd ?? null, config: {...config.config}};
+      : {
+          kind: "acp",
+          name: config.name,
+          command: config.command,
+          args: config.args,
+          cwd: config.cwd ?? null,
+          config: {...config.config},
+          agentId: config.agentId!,
+          configId: config.configId!,
+          registryEnvironment: agentRegistryEnvironment(config.registryEnvironment),
+        };
   }
 
-  #acpMcpServers(): import("@agentclientprotocol/sdk").McpServer[] {
-    return [...this.#mcpConfigs.values()]
+  async #acpMcpServers(
+    conversationId: string,
+  ): Promise<import("@agentclientprotocol/sdk").McpServer[]> {
+    const configured = [...this.#mcpConfigs.values()]
       .filter((config) => config.enabled !== false && this.#integrationEnabled("mcp-enabled", config.id))
       .map((config) => config.transport === "stdio"
         ? {
@@ -5165,6 +7602,33 @@ export class DesktopBackend {
             url: config.url,
             headers: Object.entries(config.headers ?? {}).map(([name, value]) => ({name, value})),
           });
+    return [await this.#workspaceToolMcp.descriptor(conversationId), ...configured];
+  }
+
+  async #teamAcpMcpServers(
+    member: BotDto,
+  ): Promise<import("@agentclientprotocol/sdk").McpServer[]> {
+    const assignedPlugins = new Set(member.plugins ?? []);
+    const pluginMcpServers = this.#pluginDtos()
+      .filter((plugin) => assignedPlugins.has(plugin.id))
+      .flatMap((plugin) => plugin.contributions.mcpServers);
+    const assignedIds = new Set([...(member.mcpServers ?? []), ...pluginMcpServers]);
+    const configured = [...this.#mcpConfigs.values()]
+      .filter((config) => assignedIds.has(config.id) && config.enabled !== false && this.#integrationEnabled("mcp-enabled", config.id))
+      .map((config) => config.transport === "stdio"
+        ? {
+            name: config.name ?? config.id,
+            command: resolveExecutable(config.command),
+            args: config.args ?? [],
+            env: Object.entries(config.env ?? {}).map(([name, value]) => ({name, value})),
+          }
+        : {
+            type: "http" as const,
+            name: config.name ?? config.id,
+            url: config.url,
+            headers: Object.entries(config.headers ?? {}).map(([name, value]) => ({name, value})),
+          });
+    return [await this.#teamToolMcp.descriptor(member.conversationId), ...configured];
   }
 
   async #requestAcpPermission(
@@ -5189,6 +7653,92 @@ export class DesktopBackend {
     return option
       ? {outcome: {outcome: "selected", optionId: option.optionId}}
       : {outcome: {outcome: "cancelled"}};
+  }
+
+  async #requestTeamAcpPermission(
+    member: BotDto,
+    request: import("@agentclientprotocol/sdk").RequestPermissionRequest,
+  ): Promise<import("@agentclientprotocol/sdk").RequestPermissionResponse> {
+    const reject = request.options.find(
+      (option) => option.kind === "reject_once" || option.kind === "reject_always",
+    );
+    if (member.laptopAccess === "off" || this.#closing || this.#window.isDestroyed())
+      return reject
+        ? {outcome: {outcome: "selected", optionId: reject.optionId}}
+        : {outcome: {outcome: "cancelled"}};
+    const rejectIndex = reject ? request.options.indexOf(reject) : -1;
+    const {response} = await dialog.showMessageBox(this.#window, {
+      type: "question",
+      title: `${member.name} needs permission`,
+      message: request.toolCall.title || `${member.name} wants to use a tool`,
+      detail: `${member.name} is running ${member.profileName}'s configured agent. Choose exactly what it may do.`,
+      buttons: request.options.map((option) => option.name),
+      cancelId: rejectIndex,
+      defaultId: rejectIndex >= 0 ? rejectIndex : 0,
+      noLink: true,
+    });
+    const option = request.options[response];
+    return option
+      ? {outcome: {outcome: "selected", optionId: option.optionId}}
+      : {outcome: {outcome: "cancelled"}};
+  }
+
+  async #requestTeamLaptopAccess(
+    memberName: string,
+    capability: LaptopCapabilityLeaseDto["capabilities"][number],
+    tool: string,
+  ): Promise<boolean> {
+    if (this.#closing || this.#window.isDestroyed()) return false;
+    const {response} = await dialog.showMessageBox(this.#window, {
+      type: "question",
+      title: `${memberName} needs this laptop`,
+      message: `Allow ${memberName} to use ${capability} on this laptop for 15 minutes?`,
+      detail: `${tool} will run through the local Polymux device broker. The bot's isolated computer receives no laptop mount or reusable credential.`,
+      buttons: ["Not now", "Allow for 15 minutes"],
+      cancelId: 0,
+      defaultId: 0,
+      noLink: true,
+    });
+    return response === 1;
+  }
+
+  #deliverAgentMessage(input: {
+    conversationId: string;
+    text: string;
+    messageId: string;
+    /** Peer mail carries a source; host-authored turns such as a new bot's
+     * setup cue do not need one. */
+    source?: AgentMessageOriginDto;
+  }): void {
+    const active = [...this.#activeRuns.entries()]
+      .reverse()
+      .find(([runId]) => {
+        const run = this.#storage.getRun(runId);
+        return run?.conversationId === input.conversationId && !run.parentRunId;
+      });
+    if (active) {
+      active[1].control.steer({role: "user", content: input.text});
+      return;
+    }
+    void this.#startRun({
+      conversationId: input.conversationId,
+      text: input.text,
+      messageId: input.messageId,
+      attachments: [],
+      reuseUserMessage: true,
+    } as ReturnType<typeof validateStartRun> & {reuseUserMessage: boolean}).catch((error) => {
+      const message = this.#storage.getMessage(input.messageId);
+      if (!message) return;
+      const metadata = message.metadata && typeof message.metadata === "object" && !Array.isArray(message.metadata)
+        ? {...message.metadata}
+        : {};
+      this.#storage.updateMessage(input.messageId, {
+        metadata: {
+          ...metadata,
+          deliveryError: error instanceof Error ? error.message : String(error),
+        },
+      });
+    });
   }
 
   /** A stored override only counts while the model it names still exists. */
@@ -5506,8 +8056,8 @@ export class DesktopBackend {
   }
 
   /** Keep a stale model preference from making chat unusable after credentials
-   * are removed or changed. The user's selection wins while it is usable;
-   * otherwise the first configured provider becomes the active model. */
+   * are removed or changed. The user's last selection wins while it is usable;
+   * otherwise the first model from a configured provider is used. */
   async #ensureConfiguredAgent(): Promise<PolymuxAgent> {
     if (this.#model) {
       const current = await this.#providerDto(this.#model.provider);
@@ -5515,10 +8065,14 @@ export class DesktopBackend {
     }
 
     const providers = await this.#providerDtos();
-    for (const provider of providers) {
-      if (!provider.configured) continue;
-      const model = this.#inference.listModels(provider.id)[0];
-      if (!model) continue;
+    const configuredModels = providers
+      .filter((provider) => provider.configured)
+      .flatMap((provider) => this.#inference.listModels(provider.id));
+    const lastUsed = modelPreference(
+      this.#profilePreference("model")?.value,
+    );
+    const model = preferredModel(configuredModels, lastUsed);
+    if (model) {
       this.#selectModel({ provider: model.provider, id: model.id });
       return this.#requireAgent();
     }
@@ -5528,7 +8082,11 @@ export class DesktopBackend {
     );
   }
 
-  async #ensureConfiguredRuntime(): Promise<AgentRuntime> {
+  async #ensureConfiguredRuntime(conversationId?: string): Promise<AgentRuntime> {
+    const bot = conversationId
+      ? this.#team.botByConversation(conversationId)
+      : null;
+    if (bot) return this.#teamRuntime(bot);
     const config = this.#runtimeConfig();
     if (config.kind === "acp") {
       if (!this.#agentRuntime || this.#agentRuntime.id !== `acp:${config.command}`)
@@ -5683,18 +8241,148 @@ export class DesktopBackend {
    */
   #registerAutofill(): void {
     this.#ipcMain.on(AUTOFILL_CHANNEL, (event, payload: unknown) => {
-      if (!this.#embeddedBrowser.tabIdFor(event.sender)) return;
+      const tabId = this.#embeddedBrowser.tabIdFor(event.sender);
+      if (!tabId) return;
       const message = autofillMessage(payload);
       if (!message) return;
       const actual = originOf(event.sender.getURL());
       if (!actual || actual !== message.origin) return;
-      if (message.kind === "submitted")
-        void this.#autofill
-          .captureSubmission(message)
-          .catch((error: unknown) =>
-            console.warn("Could not save the submitted login", error),
-          );
+      if (message.kind === "page") {
+        this.#noteAutofillPage(tabId, message);
+        return;
+      }
+      void this.#autofill
+        .captureSubmission(message)
+        .catch((error: unknown) =>
+          console.warn("Could not save the submitted login", error),
+        );
     });
+  }
+
+  #registerWebAuthn(): void {
+    this.#ipcMain.handle(WEBAUTHN_CHANNEL, async (event, payload: unknown) => {
+      const tabId = this.#embeddedBrowser.tabIdFor(event.sender);
+      if (!tabId) return {error: "Not a browser tab"};
+      const origin = originOf(event.sender.getURL());
+      if (!origin) return {error: "That page has no origin"};
+      if (!payload || typeof payload !== "object" || Array.isArray(payload))
+        return {error: "Passkey request is required"};
+      const input = payload as Record<string, unknown>;
+      const action = typeof input.action === "string" ? input.action : "";
+      try {
+        const status = this.#locker.status();
+        if (action === "status")
+          return {unlocked: status.unlocked, exists: status.exists, locked: !status.unlocked};
+        if (!status.unlocked) return {locked: true, error: "Locker is locked"};
+        if (action === "offers") {
+          const request = lockerWebAuthnGet({...input, origin});
+          return {offers: this.#locker.listPasskeys(request)};
+        }
+        if (action === "get") {
+          const request = lockerWebAuthnGet({...input, origin});
+          return {credential: await this.#locker.getPasskey(request)};
+        }
+        if (action === "create") {
+          const request = lockerWebAuthnCreate({...input, origin});
+          return {credential: await this.#locker.createPasskey(request)};
+        }
+        return {error: "Unknown passkey request"};
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          locked: /locked|wrong master password/i.test(message),
+          invalidState: /already saved/i.test(message),
+          error: message,
+        };
+      }
+    });
+  }
+
+  #lockerAutofillAvailable(): boolean {
+    return this.#integrationEnabled(
+      "app-enabled",
+      "locker",
+      this.#runtimeConfig().kind === "polymux",
+    );
+  }
+
+  #lockerAutofillState(): "missing" | "locked" | "unlocked" {
+    if (!this.#lockerAutofillAvailable()) return "missing";
+    const status = this.#locker.status();
+    if (!status.exists) return "missing";
+    return status.unlocked ? "unlocked" : "locked";
+  }
+
+  #noteAutofillPage(tabId: string, page: AutofillPage): void {
+    const previous = this.#autofillPages.get(tabId);
+    if (!previous || previous.origin !== page.origin) this.#autofillDismissed.delete(tabId);
+    this.#autofillPages.set(tabId, page);
+    this.#publishAutofill(tabId);
+  }
+
+  #dismissAutofill(tabId: string): void {
+    this.#autofillDismissed.add(tabId);
+    this.#sendAutofillOffer(tabId, null);
+  }
+
+  #clearAutofill(tabId: string): void {
+    this.#autofillPages.delete(tabId);
+    this.#autofillDismissed.delete(tabId);
+    this.#sendAutofillOffer(tabId, null);
+  }
+
+  #refreshAutofillOffers(): void {
+    for (const tabId of this.#autofillPages.keys()) {
+      this.#autofillDismissed.delete(tabId);
+      this.#publishAutofill(tabId);
+    }
+  }
+
+  #publishAutofill(tabId: string): void {
+    if (this.#autofillDismissed.has(tabId)) return;
+    this.#sendAutofillOffer(tabId, this.#buildAutofillOffer(tabId));
+  }
+
+  #buildAutofillOffer(tabId: string) {
+    const page = this.#autofillPages.get(tabId);
+    if (!page) return null;
+    const locker = this.#lockerAutofillState();
+    return buildAutofillOffer({
+      tabId,
+      page,
+      locker,
+      lockerItems: locker === "unlocked" ? this.#locker.matchesForUrl(page.origin) : [],
+      browserLogins: this.#browserSettings().autofillEnabled
+        ? this.#autofill.forOrigin(page.origin)
+        : [],
+    });
+  }
+
+  #sendAutofillOffer(
+    tabId: string,
+    offer: ReturnType<typeof buildAutofillOffer>,
+  ): void {
+    if (this.#closing || this.#window.isDestroyed()) return;
+    this.#sendToTrustedWindows(channels.browserEvent, { type: "autofill", tabId, offer });
+  }
+
+  async #fillAutofill(tabId: string, itemId: string): Promise<boolean> {
+    const page = this.#autofillPages.get(tabId);
+    const contents = this.#embeddedBrowser.webContentsFor(tabId);
+    if (!page || !contents) return false;
+    const actual = originOf(contents.getURL());
+    if (!actual || actual !== page.origin) return false;
+    const parsed = parseAutofillItem(itemId);
+    if (!parsed) return false;
+    if (parsed.source === "browser") return this.#autofill.fill(contents, parsed.id);
+    if (this.#lockerAutofillState() !== "unlocked") return false;
+    const fields = this.#locker.fillFields(parsed.id);
+    this.#autofill.send(contents, {
+      username: fields.username || undefined,
+      password: fields.password || undefined,
+      totp: fields.totp || undefined,
+    });
+    return true;
   }
 }
 
@@ -5778,7 +8466,50 @@ function agentRuntimeRequest(value: unknown): AgentRuntimeConfig {
     : "ACP Agent";
   const args = optionalStringArray(input.args, "ACP arguments");
   const cwd = input.cwd == null ? undefined : required(input.cwd, "ACP working directory").trim() || undefined;
-  return {kind: "acp", name, command, args, ...(cwd ? {cwd} : {}), config: agentRuntimeConfigValues(input.config)};
+  const partial = {
+    kind: "acp" as const,
+    name,
+    command,
+    args,
+    ...(cwd ? {cwd} : {}),
+    config: agentRuntimeConfigValues(input.config),
+    registryEnvironment: agentRegistryEnvironment(input.registryEnvironment),
+  };
+  const requestedAgentId = typeof input.agentId === "string" ? input.agentId.trim() : "";
+  const agentId = requestedAgentId && /^[a-z0-9][a-z0-9-]*$/i.test(requestedAgentId)
+    ? requestedAgentId.toLowerCase()
+    : externalAgentId(partial);
+  const requestedConfigId = typeof input.configId === "string" ? input.configId.trim() : "";
+  const configId = requestedConfigId && /^[a-z0-9][a-z0-9-]*$/i.test(requestedConfigId)
+    ? requestedConfigId
+    : randomUUID();
+  return {...partial, agentId, configId};
+}
+
+function externalProfileConnectionRequest(value: unknown): ConnectExternalProfileRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("External profile connection must be an object");
+  const input = value as Record<string, unknown>;
+  if (!input.runtime || typeof input.runtime !== "object" || Array.isArray(input.runtime))
+    throw new Error("External profile connection requires an ACP runtime");
+  const runtime = agentRuntimeRequest(input.runtime);
+  if (runtime.kind !== "acp") throw new Error("External profile connection requires an ACP runtime");
+  const mode = input.mode;
+  if (mode !== "clean" && mode !== "merge" && mode !== "import" && mode !== "sync")
+    throw new Error("Unknown external profile connection mode");
+  const sections = Array.isArray(input.sections)
+    ? input.sections.filter((section): section is ConnectExternalProfileRequest["sections"][number] =>
+        section === "settings" || section === "skills" || section === "plugins" || section === "mcp" || section === "memory",
+      )
+    : undefined;
+  return {
+    runtime,
+    mode,
+    ...(typeof input.sourceDirectory === "string" ? {sourceDirectory: input.sourceDirectory} : {}),
+    ...(sections ? {sections} : {}),
+    ...(typeof input.profileName === "string" ? {profileName: input.profileName} : {}),
+    ...(typeof input.profileId === "string" ? {profileId: input.profileId} : {}),
+  };
 }
 
 function agentRuntimeConfigValues(value: unknown): Record<string, string | boolean> {
@@ -5786,6 +8517,24 @@ function agentRuntimeConfigValues(value: unknown): Record<string, string | boole
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string | boolean] =>
     typeof entry[1] === "string" || typeof entry[1] === "boolean",
   ));
+}
+
+function agentRegistryEnvironment(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => {
+    const [key, item] = entry;
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
+      typeof item === "string" &&
+      item.length <= 4_096 &&
+      !item.includes("\0") &&
+      !isReservedRegistryEnvironmentKey(key);
+  }));
+}
+
+function isReservedRegistryEnvironmentKey(key: string): boolean {
+  return /(?:TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIAL|AUTH|COOKIE)/i.test(key) ||
+    /^(?:HOME|USERPROFILE|PATH|PATHEXT|NODE_OPTIONS|ELECTRON_RUN_AS_NODE)$/i.test(key) ||
+    /^(?:XDG_|DYLD_|LD_|POLYMUX_|npm_|NPM_)/.test(key);
 }
 
 function agentProviderRequest(value: unknown): SetAgentProviderRequest {
@@ -5823,6 +8572,29 @@ function managerPriority(value: unknown): JobPriority {
   throw new Error(`Unknown manager priority: ${String(value)}`);
 }
 
+function hostPort(value: string | undefined): number {
+  if (!value?.trim()) return process.env.POLYMUX_DEV_INSTANCE?.trim() ? 0 : 47_680;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535)
+    throw new Error("POLYMUX_HOST_PORT must be an integer from 1 to 65535");
+  return parsed;
+}
+
+function hostRelayEndpoint(publicEndpoint: string | null): string | null {
+  const configured = process.env.POLYMUX_HOST_RELAY_ENDPOINT;
+  if (configured !== undefined) {
+    const value = configured.trim();
+    return !value || value === "0" || value.toLowerCase() === "off" ? null : value;
+  }
+  if (publicEndpoint || process.env.POLYMUX_HOST_LISTEN?.trim() || process.env.NODE_TEST_CONTEXT)
+    return null;
+  return "https://connect.polymux.com";
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 /**
  * Where an application named in ComputerHistory's exclusions actually lives.
  *
@@ -5858,6 +8630,56 @@ async function applicationBundle(name: string): Promise<string | null> {
     // Spotlight can be off or indexing; the glyph stands in.
     return null;
   }
+}
+
+function historyPageTitle(
+  storage: Pick<SqliteStorage, "getHistoryEntry">,
+  url: string,
+): string | null {
+  for (const candidate of historyUrlCandidates(url)) {
+    const title = storage.getHistoryEntry(candidate)?.title.trim() ?? "";
+    if (!title || /^https?:\/\//i.test(title)) continue;
+    try {
+      const host = new URL(candidate).hostname.replace(/^www\./, "");
+      if (title === host || title === new URL(candidate).hostname) continue;
+    } catch {
+      // A stored title that is not a host still wins.
+    }
+    return title;
+  }
+  return null;
+}
+
+/** www, trailing slash, and hash are the usual ways a cited url and a visited
+ * url disagree while still being the same page. */
+function historyUrlCandidates(url: string): string[] {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    const urls = new Set<string>([parsed.toString()]);
+    const hosts = parsed.hostname.startsWith("www.")
+      ? [parsed.hostname, parsed.hostname.slice(4)]
+      : [parsed.hostname, `www.${parsed.hostname}`];
+    const path =
+      parsed.pathname === "/" ? "/" : parsed.pathname.replace(/\/$/, "");
+    for (const host of hosts) {
+      for (const pathname of path === "/" ? ["/", ""] : [path, `${path}/`]) {
+        const next = new URL(parsed.toString());
+        next.hostname = host;
+        next.pathname = pathname || "/";
+        urls.add(next.toString());
+      }
+    }
+    return [...urls];
+  } catch {
+    return [url];
+  }
+}
+
+function terminalSize(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value))
+    throw new Error(`${label} must be a number`);
+  return value;
 }
 
 export { modelFromEnvironment } from "./backend/models.js";

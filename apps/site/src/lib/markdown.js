@@ -25,3 +25,20 @@ export function renderSafeMarkdown(body, windowLike = globalThis.window) {
     ALLOWED_TAGS: MARKDOWN_TAGS,
   });
 }
+
+/**
+ * Render a single line of Markdown (release-note bullets, short labels) as
+ * inline HTML, without wrapping the result in a block element.
+ * @param {string} text
+ * @param {import('dompurify').WindowLike} [windowLike]
+ */
+export function renderSafeMarkdownInline(text, windowLike = globalThis.window) {
+  if (!windowLike) {
+    throw new Error('Markdown rendering requires a browser-compatible window.');
+  }
+  const rendered = /** @type {string} */ (marked.parseInline(text, {gfm: true}));
+  return createDOMPurify(windowLike).sanitize(rendered, {
+    ALLOWED_ATTR: MARKDOWN_ATTRIBUTES,
+    ALLOWED_TAGS: MARKDOWN_TAGS,
+  });
+}

@@ -4,8 +4,47 @@ import path from "node:path";
 import {fileURLToPath} from "node:url";
 import {SqliteStorage} from "@polymux/storage/sqlite";
 import {AcpAgentRuntime} from "./acp.js";
+import {rewindConversation} from "../backend/rewind-conversation.js";
 
 const CLIENT_VERSION = "9.8.7";
+
+test("cancelled streaming ACP sessions cannot leak late output into the next turn", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({id: "chat", title: "Cancel"});
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const runtime = new AcpAgentRuntime({kind: "acp", name: "Fixture", command: process.execPath, args: [fixture, "--late-cancel"]}, storage, CLIENT_VERSION);
+  try {
+    const first = runtime.start({conversationId: "chat", runId: "first", text: "Old request"});
+    for await (const event of first.events) if (event.type === "message.text.delta") first.control.cancel();
+    assert.equal((await first.result).status, "cancelled");
+    const second = runtime.start({conversationId: "chat", runId: "second", text: "New request"});
+    for await (const _event of second.events) void _event;
+    assert.equal((await second.result).lastAgentMessage, "NEW ANSWER");
+  } finally { await runtime.close(); storage.close(); }
+});
+
+test("rewinding an ACP conversation reseeds only retained history", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({id: "chat", title: "Rewind"});
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const runtime = new AcpAgentRuntime({kind: "acp", name: "Fixture", command: process.execPath, args: [fixture, "--report-history"]}, storage, CLIENT_VERSION);
+  try {
+    for (const [index, text] of ["KEEP", "ORIGINAL", "DELETED"].entries()) {
+      const active = runtime.start({conversationId: "chat", runId: `run-${index}`, userMessageId: `user-${index}`, text});
+      for await (const _event of active.events) void _event;
+      assert.equal((await active.result).status, "completed");
+    }
+    rewindConversation(storage, {conversationId: "chat", messageId: "user-1", content: "REVISED"});
+    await runtime.resetHistory("chat");
+    const revised = runtime.start({conversationId: "chat", runId: "revised", userMessageId: "user-1", text: "REVISED", reuseUserMessage: true});
+    for await (const _event of revised.events) void _event;
+    const output = (await revised.result).lastAgentMessage!;
+    assert.match(output, /KEEP/);
+    assert.match(output, /REVISED/);
+    assert.doesNotMatch(output, /ORIGINAL|DELETED/);
+    assert.equal(JSON.parse(output).history.length, 1, "history is context, not replayed prompts");
+  } finally { await runtime.close(); storage.close(); }
+});
 
 test("ACP runtime negotiates, streams, and persists a completed turn", async () => {
   const storage = new SqliteStorage(":memory:");
@@ -14,6 +53,7 @@ test("ACP runtime negotiates, streams, and persists a completed turn", async () 
   const runtime = new AcpAgentRuntime({
     kind: "acp",
     name: "Fake ACP Agent",
+    agentId: "fake-agent",
     command: process.execPath,
     args: [fixture, `--expect-client-version=${CLIENT_VERSION}`],
   }, storage, CLIENT_VERSION);
@@ -30,9 +70,74 @@ test("ACP runtime negotiates, streams, and persists a completed turn", async () 
     assert.ok(events.some((event) => event.type === "message.completed"));
     assert.equal(storage.getRun("run-1")?.model, `acp:${process.execPath}`);
     assert.equal(storage.getRun("run-1")?.status, "completed");
+    assert.deepEqual(storage.loadUsageSource().runs[0]?.agent, {kind: "acp", id: "fake-agent", name: "Fake ACP Agent"});
     assert.deepEqual(storage.listMessages("chat-1").map((message) => message.role), ["user", "assistant"]);
   } finally {
     await runtime.close();
+    storage.close();
+  }
+});
+
+test("ACP sessions receive the host app MCP servers for their conversation", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({id: "chat-1", title: "ACP"});
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const requested: string[] = [];
+  const runtime = new AcpAgentRuntime({
+    kind: "acp",
+    name: "Fake ACP Agent",
+    command: process.execPath,
+    args: [fixture, "--expect-mcp-server=Polymux Workspace"],
+  }, storage, CLIENT_VERSION, undefined, async (conversationId) => {
+    requested.push(conversationId);
+    return [{
+      type: "http",
+      name: "Polymux Workspace",
+      url: "http://127.0.0.1:43210/mcp",
+      headers: [{name: "Authorization", value: "Bearer scoped"}],
+    }];
+  });
+
+  try {
+    const active = runtime.start({conversationId: "chat-1", runId: "run-1", text: "Hello"});
+    for await (const _event of active.events) void _event;
+    await active.result;
+    assert.deepEqual(requested, ["chat-1"]);
+  } finally {
+    await runtime.close();
+    storage.close();
+  }
+});
+
+test("ACP runtime uses the host-computed environment without merging process secrets", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({id: "chat-1", title: "Isolated ACP"});
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const previous = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "host-secret";
+  const runtime = new AcpAgentRuntime({
+    kind: "acp",
+    name: "Fake ACP Agent",
+    command: process.execPath,
+    args: [fixture, "--report-environment"],
+    environment: {
+      PATH: process.env.PATH,
+      HOME: "/profile/home",
+      XDG_CONFIG_HOME: "/profile/home/.config",
+    },
+  }, storage, CLIENT_VERSION);
+
+  try {
+    const active = runtime.start({conversationId: "chat-1", runId: "run-1", text: "Hello"});
+    for await (const _event of active.events) void _event;
+    assert.deepEqual(JSON.parse((await active.result).lastAgentMessage), {
+      home: "/profile/home",
+      xdg: "/profile/home/.config",
+    });
+  } finally {
+    await runtime.close();
+    if (previous === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previous;
     storage.close();
   }
 });
@@ -64,6 +169,113 @@ test("ACP runtime discovers, updates, and reapplies advertised session options",
     const active = runtime.start({conversationId: "chat-1", runId: "run-1", text: "Hello"});
     for await (const _event of active.events) void _event;
     assert.equal((await active.result).lastAgentMessage, "Hello from capable ACP");
+  } finally {
+    await runtime.close();
+    storage.close();
+  }
+});
+
+test("ACP runtime routes Claude status notices outside assistant prose", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({id: "chat-1", title: "Claude"});
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const runtime = new AcpAgentRuntime({
+    kind: "acp",
+    name: "Claude Agent",
+    command: process.execPath,
+    args: [fixture, "--emit-notices", "--expect-session-failures", "claude-agent-acp"],
+  }, storage, CLIENT_VERSION);
+
+  try {
+    const active = runtime.start({conversationId: "chat-1", runId: "run-1", text: "Hello"});
+    const events = [];
+    for await (const event of active.events) events.push(event);
+    const result = await active.result;
+
+    assert.equal(result.lastAgentMessage, "Hello from ACP");
+    assert.deepEqual(
+      events.filter((event) => event.type === "agent.notice").map((event) => ({
+        severity: event.severity,
+        message: event.message,
+      })),
+      [
+        {severity: "warning", message: "Fast mode turned off: requires extra usage to be enabled for this account."},
+        {severity: "error", message: "Claude is temporarily unavailable."},
+      ],
+    );
+    const assistant = storage.listMessages("chat-1").find((message) => message.role === "assistant");
+    assert.doesNotMatch(JSON.stringify(assistant?.content), /Fast mode|temporarily unavailable/);
+    assert.equal(storage.listRunEvents("run-1").some((event) => event.type === "agent.notice"), false);
+  } finally {
+    await runtime.close();
+    storage.close();
+  }
+});
+
+test("ACP runtime routes generic adapter warnings and errors outside assistant prose", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({id: "chat-1", title: "Generic ACP"});
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const runtime = new AcpAgentRuntime({
+    kind: "acp",
+    name: "Generic ACP Agent",
+    command: process.execPath,
+    args: [fixture, "--emit-generic-notices"],
+  }, storage, CLIENT_VERSION);
+
+  try {
+    const active = runtime.start({conversationId: "chat-1", runId: "run-1", text: "Hello"});
+    const events = [];
+    for await (const event of active.events) events.push(event);
+    const result = await active.result;
+
+    assert.equal(result.lastAgentMessage, "Hello from ACP");
+    assert.deepEqual(
+      events.filter((event) => event.type === "agent.notice").map((event) => ({
+        severity: event.severity,
+        message: event.message,
+      })),
+      [
+        {severity: "warning", message: "Warning: Connection is degraded."},
+        {severity: "error", message: "Error: External agent transport failed."},
+      ],
+    );
+    const assistant = storage.listMessages("chat-1").find((message) => message.role === "assistant");
+    assert.doesNotMatch(JSON.stringify(assistant?.content), /Connection is degraded|transport failed/);
+  } finally {
+    await runtime.close();
+    storage.close();
+  }
+});
+
+test("ACP runtime reports connection failures as notices instead of assistant content", async () => {
+  const storage = new SqliteStorage(":memory:");
+  storage.createConversation({id: "chat-1", title: "Failing ACP"});
+  const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/fake-acp-agent.mjs");
+  const runtime = new AcpAgentRuntime({
+    kind: "acp",
+    name: "Failing ACP Agent",
+    command: process.execPath,
+    args: [fixture, "--fail-prompt"],
+  }, storage, CLIENT_VERSION);
+
+  try {
+    const active = runtime.start({conversationId: "chat-1", runId: "run-1", text: "Hello"});
+    const events = [];
+    for await (const event of active.events) events.push(event);
+    const result = await active.result;
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.error?.reportedAsNotice, true);
+    assert.deepEqual(
+      events.filter((event) => event.type === "agent.notice").map((event) => ({
+        severity: event.severity,
+        message: event.message,
+      })),
+      [{severity: "error", message: "External agent connection lost"}],
+    );
+    assert.deepEqual(storage.listMessages("chat-1").map((message) => message.role), ["user"]);
+    assert.equal(storage.listRunEvents("run-1").some((event) => event.type === "agent.notice"), false);
   } finally {
     await runtime.close();
     storage.close();

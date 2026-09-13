@@ -56,13 +56,14 @@
   /**
    * Dates and times are formatted in the interface language, not the host's
    * regional setting: someone reading Polymux in Japanese expects Japanese
-   * month names here, whatever their machine is set to.
+   * month names here, whatever their machine is set to. The clock itself is
+   * always 12-hour, so one moment reads the same in every list.
    */
   export function formatScheduleTime(epochMs: number): string {
     const date = new Date(epochMs);
     const now = new Date();
     const sameDay = date.toDateString() === now.toDateString();
-    const clock = date.toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit'});
+    const clock = date.toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit', hour12: true});
     if (sameDay) return translate('schedule.todayAt', {time: clock});
     return date.toLocaleString(activeLocale(), {
       month: 'short',
@@ -70,6 +71,7 @@
       ...(date.getFullYear() === now.getFullYear() ? {} : {year: 'numeric'}),
       hour: 'numeric',
       minute: '2-digit',
+      hour12: true,
     });
   }
 
@@ -108,11 +110,12 @@
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
 
-  /** "08:00" in whatever shape the interface language writes a clock time. */
+  /** "3:30 pm" — the wall time on the shared 12-hour clock, with the interface
+   * language's wording around it. */
   export function formatTimeOfDay(time: string): string {
     const [hour, minute] = time.split(':').map(Number);
     const date = new Date(2000, 0, 1, Number.isFinite(hour) ? hour : 0, Number.isFinite(minute) ? minute : 0);
-    return date.toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit'});
+    return date.toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit', hour12: true});
   }
 
   function joinList(parts: string[]): string {

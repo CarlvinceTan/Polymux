@@ -1,3 +1,4 @@
+import './forge-vite-watch-close.js';
 import type {ForgeConfig} from '@electron-forge/shared-types';
 import {MakerSquirrel} from '@electron-forge/maker-squirrel';
 import {MakerZIP} from '@electron-forge/maker-zip';
@@ -6,13 +7,17 @@ import {VitePlugin} from '@electron-forge/plugin-vite';
 import {FusesPlugin} from '@electron-forge/plugin-fuses';
 import {FuseV1Options, FuseVersion} from '@electron/fuses';
 import {execFileSync} from 'node:child_process';
-import {existsSync, readFileSync, rmSync} from 'node:fs';
+import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {X509Certificate} from 'node:crypto';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 import {PERMISSION_USAGE_DESCRIPTIONS} from './src/main/system/permission-usage.js';
 
 // Forge runs from the repo root (package.json's `config.forge` points here),
 // so every path in this file is written relative to that root rather than to
 // this file's own directory.
 const app = 'apps/desktop';
+const appBundleId = 'com.flarehq.polymux';
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version as string;
 const icon = process.platform === 'win32'
   ? `${app}/assets/appicon.ico`
@@ -55,6 +60,61 @@ function localSigningIdentity(): string | undefined {
 
 const releaseSigningIdentity = process.env.APPLE_SIGNING_IDENTITY;
 const signingIdentity = releaseSigningIdentity ?? localSigningIdentity();
+
+/** The display name's parenthesised value is not reliably the certificate's
+ * team identifier (Apple Development certificates can differ). The OU in the
+ * actual signing certificate is the value codesign writes as TeamIdentifier. */
+function teamIdentifierFor(identity: string | undefined): string | undefined {
+  if (!identity || process.platform !== 'darwin') return undefined;
+  try {
+    const certificate = execFileSync(
+      'security',
+      ['find-certificate', '-c', identity, '-p'],
+      {encoding: 'utf8'},
+    );
+    return /^OU=([A-Z0-9]+)$/m.exec(new X509Certificate(certificate).subject)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Injects the one entitlement whose value is necessarily build-specific.
+ * Keeping the checked-in plist free of a developer's team id lets local Apple
+ * Development packages and Developer ID releases both receive a valid group. */
+function signingEntitlements(teamId: string | undefined): string {
+  const sourcePath = `${app}/assets/entitlements.plist`;
+  if (!teamId) return sourcePath;
+  const group = `${teamId}.${appBundleId}.webauthn`;
+  const source = readFileSync(sourcePath, 'utf8');
+  const directory = mkdtempSync(path.join(tmpdir(), 'polymux-entitlements-'));
+  const target = path.join(directory, 'entitlements.plist');
+  writeFileSync(
+    target,
+    source.replace(
+      '</dict>',
+      `  <key>keychain-access-groups</key>\n  <array>\n    <string>${group}</string>\n  </array>\n</dict>`,
+    ),
+  );
+  process.once('exit', () => rmSync(directory, {recursive: true, force: true}));
+  return target;
+}
+
+const signingTeamId = signingIdentity
+  ? (process.env.APPLE_TEAM_ID ?? teamIdentifierFor(signingIdentity))
+  : undefined;
+if (signingIdentity && !signingTeamId)
+  throw new Error(
+    `Could not determine the Apple team identifier for signing identity ${signingIdentity}. ` +
+      'Set APPLE_TEAM_ID explicitly so the main app receives its WebAuthn keychain entitlement.',
+  );
+const entitlements = signingEntitlements(signingTeamId);
+
+/** Only the application process uses the WebAuthn keychain group. Electron's
+ * helpers and bundled native tools receive their normal hardened-runtime
+ * signatures without inheriting that privileged application entitlement. */
+function isMainApplication(filePath: string): boolean {
+  return path.basename(filePath) === 'Polymux.app';
+}
 const notarising = Boolean(
   releaseSigningIdentity && process.env.APPLE_ID && process.env.APPLE_ID_PASSWORD && process.env.APPLE_TEAM_ID,
 );
@@ -74,11 +134,12 @@ const config: ForgeConfig = {
     // (half a gigabyte of build output); run `npm run bridges` before
     // packaging, which the prepackage hook does.
     extraResource: process.platform === 'darwin'
-      ? ['resources', 'scripts/wxcdn_fileid_capture.py']
+      ? ['resources', 'scripts/wechat/wxcdn_fileid_capture.py']
       : ['resources'],
     extendInfo: {
       NSLocationUsageDescription: 'Polymux uses your location only when Location access is enabled in General settings.',
       NSLocationWhenInUseUsageDescription: 'Polymux uses your location only when Location access is enabled in General settings.',
+      NSCameraUsageDescription: 'Polymux uses the camera only when you scan a device pairing QR code.',
       NSMicrophoneUsageDescription: 'Polymux uses the microphone only when you start voice input or speech mode.',
       NSSpeechRecognitionUsageDescription: 'Polymux converts speech to text only when you start voice dictation.',
       // Reminders, Calendars, Contacts, Photos and controlling other apps. The
@@ -87,7 +148,7 @@ const config: ForgeConfig = {
       // privacy class it has no description for, so the two must not drift.
       ...PERMISSION_USAGE_DESCRIPTIONS,
     },
-    appBundleId: 'com.flarehq.polymux',
+    appBundleId,
     // electron-installer-debian and electron-installer-redhat derive their
     // payload binary from package.json.name. Keep that internal Linux filename
     // aligned; productName still presents the app as Polymux everywhere.
@@ -101,8 +162,8 @@ const config: ForgeConfig = {
             // included: notarisation rejects a bundle holding an executable
             // signed by anyone else, and they arrive ad-hoc signed from their
             // own releases.
-            optionsForFile: () => ({
-              entitlements: `${app}/assets/entitlements.plist`,
+            optionsForFile: (filePath) => ({
+              ...(isMainApplication(filePath) ? {entitlements} : {}),
               hardenedRuntime: true,
             }),
           },
@@ -196,7 +257,7 @@ const config: ForgeConfig = {
           );
           execFileSync(
             process.execPath,
-            ['scripts/build-wechat-writer.mjs'],
+            ['scripts/wechat/build-wechat-writer.mjs'],
             {stdio: 'inherit'},
           );
         }
@@ -211,26 +272,26 @@ const config: ForgeConfig = {
       );
       execFileSync(
         process.execPath,
-        ['scripts/fetch-phone-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
+        ['scripts/phone/fetch-phone-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
         {stdio: 'inherit'},
       );
       execFileSync(
         process.execPath,
-        ['scripts/fetch-phone-ios-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
+        ['scripts/phone/fetch-phone-ios-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
         {stdio: 'inherit'},
       );
       execFileSync(
         process.execPath,
-        ['scripts/build-phone-ios-signer-runtime.mjs'],
+        ['scripts/phone/build-phone-ios-signer-runtime.mjs'],
         {stdio: 'inherit'},
       );
       execFileSync(
         process.execPath,
-        ['scripts/build-phone-ios-device.mjs'],
+        ['scripts/phone/build-phone-ios-device.mjs'],
         {stdio: 'inherit'},
       );
       if (platform === 'darwin') {
-        execFileSync(process.execPath, ['scripts/build-phone-wda.mjs'], {stdio: 'inherit'});
+        execFileSync(process.execPath, ['scripts/phone/build-phone-wda.mjs'], {stdio: 'inherit'});
       } else if (!existsSync('resources/phone/ios/WebDriverAgentRunner-Runner.app')) {
         throw new Error(
           'The cross-platform package is missing the unsigned WebDriverAgent artifact. ' +

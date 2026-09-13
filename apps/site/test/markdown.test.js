@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {JSDOM} from 'jsdom';
-import {renderSafeMarkdown} from '../src/lib/markdown.js';
+import {renderSafeMarkdown, renderSafeMarkdownInline} from '../src/lib/markdown.js';
 
 test('renders Markdown while removing executable HTML and unsafe URLs', () => {
   const browserWindow = /** @type {import('dompurify').WindowLike} */ (new JSDOM('').window);
@@ -23,4 +23,16 @@ test('renders Markdown while removing executable HTML and unsafe URLs', () => {
   assert.doesNotMatch(html, /javascript:|onerror|<script|alert\('x'\)/i);
   assert.doesNotMatch(html, /<form|<input|style=/i);
   assert.match(html, /<p>Visible text<\/p>/);
+});
+
+test('renders inline Markdown without block wrappers or unsafe HTML', () => {
+  const browserWindow = /** @type {import('dompurify').WindowLike} */ (new JSDOM('').window);
+  const html = renderSafeMarkdownInline(
+    'The new [documentation centre](/docs/) is **here** <script>alert(1)</script>',
+    browserWindow,
+  );
+
+  assert.match(html, /<a href="\/docs\/">documentation centre<\/a>/);
+  assert.match(html, /<strong>here<\/strong>/);
+  assert.doesNotMatch(html, /<p>|<script|alert\(1\)/i);
 });

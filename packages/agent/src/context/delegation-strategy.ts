@@ -1,23 +1,31 @@
 const COMPLEX = /\b(?:analyse|analyze|benchmark|changed|compare|comprehensive|coordinate|deep|evaluate|everything|find|investigate|multiple|plan|research|review|search|several|strategy|summari[sz]e)\b/i;
 const IMPLICIT_GUI = /\b(?:this|that (?:app|page|tab|window)|on my screen|i (?:have|had) open|currently open|what(?:'s| is) open|where i left off|what i was doing)\b/i;
-const REMOTE_OR_CROSS_SURFACE = /\b(?:browser|dropbox|google drive|icloud|onedrive|site|url|web|website)\b/i;
+const REMOTE_OR_CROSS_SURFACE = /\b(?:browser|site|url|web|website)\b/i;
 
-export type DirectToolGroup = "resume" | "browser-research" | "browser-read" | "communications" | "email-read" | "email" | "messages-read" | "messages" | "reminders" | "schedule" | "files";
+export type DirectToolGroup = "resume" | "browser-research" | "browser-read" | "communications" | "email-read" | "email" | "messages-read" | "messages" | "drive-read" | "reminders" | "tasks" | "schedule" | "files";
 
 const DOMAINS: ReadonlyArray<{ group: DirectToolGroup; pattern: RegExp }> = [
   { group: "email", pattern: /\b(?:emails?|inbox|mail|message subject)\b/i },
-  { group: "messages", pattern: /\b(?:chats?|messages?|text|whatsapp|wechat)\b/i },
+  {
+    group: "messages",
+    pattern: /\b(?:address book|bluesky|chats?|contact details?|contacts?|google chat|google messages|google voice|hub|imessage|instagram|linkedin|matrix|messages?|messenger|mobile number|phone number|recipients?|signal|slack|telegram|text|twitter|whatsapp|wechat|x|zulip)\b/i,
+  },
   { group: "reminders", pattern: /\b(?:remind|reminders?)\b/i },
+  { group: "tasks", pattern: /\b(?:task list|tasks)\b/i },
   { group: "schedule", pattern: /\b(?:calendars?|schedules?)\b/i },
+  { group: "drive-read", pattern: /\b(?:drive|dropbox|google drive|icloud|onedrive)\b/i },
   { group: "files", pattern: /\b(?:files?|folders?|documents?|pdfs?|spreadsheets?|slides?)\b/i },
 ];
 const PERSON_MESSAGE = /\b(?:dad|father|mum|mother|parent)\b/i;
 const IMPLICIT_PERSON_MESSAGE_READ = /\bwhat did (?:dad|father|mum|mother|(?:my )?parent) (?:message|say|send)(?: me)?\b/i;
-const COMMUNICATION_WRITE = /\b(?:draft|reply|respond|send|tell|text|write)\b/i;
+const COMMUNICATION_WRITE = /\b(?:compose|draft|reply|respond|send|text|write)\b|\btell\s+(?!me\b|us\b)/i;
+const DIRECT_PERSON_WRITE = /\b(?:compose|draft|reply|respond|send|tell|text|write)\b[\s\S]{0,80}\b(?:for|to)\s+(?:my\s+)?(?!(?:her|him|it|ones|the|them|those)\b)[\p{L}\p{N}][\p{L}\p{N}'’.-]*\b/iu;
+const CONTACT_LOOKUP = /\b(?:address book|contact details?|mobile number|phone number)\b/i;
 const IMPLICIT_REMINDER = /\b(?:don['’]?t|do not) forget to\b/i;
 const CONTEXTUAL_COMMUNICATION_FOLLOW_UP = /\b(?:draft|repl(?:y|ies)|respond)\b[\s\S]*\b(?:ones|those|them)\b|\b(?:ones|those|them)\b[\s\S]*\b(?:draft|repl(?:y|ies)|respond)\b/i;
+const CONTEXTUAL_MESSAGE_SOURCE_FOLLOW_UP = /\b(?:also|even|how about|what about)\b[\s\S]*\b(?:bluesky|google chat|google messages|google voice|imessage|instagram|linkedin|matrix|messenger|signal|slack|telegram|twitter|whatsapp|wechat|x|zulip)\b/i;
 
-const ACTION = /\b(?:add|archive|check|complete|create|draft|list|mark|move|open|read|remind|reply|save|send|show|tell|text|write)\b/i;
+const ACTION = /\b(?:add|archive|check|complete|compose|create|draft|list|mark|move|open|read|remind|reply|save|send|show|tell|text|write)\b/i;
 const CURRENT_PAGE_READ = /\b(?:explain|read|check|tell me|what (?:is|does)|whether|matter(?:s)?)\b/i;
 const CURRENT_PAGE_REFERENCE = /\b(?:this|that (?:page|tab|window)|current(?:ly open)? (?:page|tab|window)|on my screen)\b/i;
 const PAGE_MUTATION = /\b(?:accept|book|buy|change|click|close|delete|download|edit|fill|navigate|open|pay|purchase|send|submit|type|upload)\b/i;
@@ -69,6 +77,11 @@ export function directFastPathGroup(
     return "resume";
   if (words <= 24 && options.hasPriorAssistant && CONTEXTUAL_COMMUNICATION_FOLLOW_UP.test(trimmed))
     return "communications";
+  if (
+    words <= 12 &&
+    options.previousDirectGroup === "messages-read" &&
+    CONTEXTUAL_MESSAGE_SOURCE_FOLLOW_UP.test(trimmed)
+  ) return "messages-read";
   if (
     words <= 32 &&
     options.previousDirectGroup === "browser-research" &&
@@ -124,9 +137,17 @@ export function directFastPathGroup(
     IMPLICIT_GUI.test(trimmed) ||
     REMOTE_OR_CROSS_SURFACE.test(trimmed)
   ) return undefined;
-  if (!ACTION.test(trimmed) && !IMPLICIT_REMINDER.test(trimmed) && !IMPLICIT_PERSON_MESSAGE_READ.test(trimmed))
+  if (!ACTION.test(trimmed) && !CONTACT_LOOKUP.test(trimmed) && !IMPLICIT_REMINDER.test(trimmed) && !IMPLICIT_PERSON_MESSAGE_READ.test(trimmed))
     return undefined;
-  const domains = DOMAINS.filter(({ pattern }) => pattern.test(trimmed));
+  let domains = DOMAINS.filter(({ pattern }) => pattern.test(trimmed));
+  // A file named inside a cloud drive is still one Drive lookup. Mutations
+  // remain orchestrated because moving or saving may cross local and remote
+  // storage, but list/read/open/show can use the bounded Drive tools directly.
+  if (domains.some(({group}) => group === "drive-read")) {
+    if (/\b(?:add|create|delete|move|remove|save|upload|write)\b/i.test(trimmed))
+      return undefined;
+    domains = domains.filter(({group}) => group !== "files");
+  }
   if (domains.length === 1) {
     const group = domains[0]!.group;
     if (group === "messages" && !COMMUNICATION_WRITE.test(trimmed)) return "messages-read";
@@ -134,6 +155,7 @@ export function directFastPathGroup(
     return group;
   }
   if (!domains.length && IMPLICIT_REMINDER.test(trimmed)) return "reminders";
+  if (!domains.length && DIRECT_PERSON_WRITE.test(trimmed)) return "messages";
   if (!domains.length && PERSON_MESSAGE.test(trimmed))
     return COMMUNICATION_WRITE.test(trimmed) ? "messages" : "messages-read";
   return undefined;

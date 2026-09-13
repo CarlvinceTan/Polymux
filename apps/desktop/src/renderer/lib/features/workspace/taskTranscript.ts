@@ -120,7 +120,9 @@ export function applyTaskEvent(base: TaskTranscript, event: RunEventDto): TaskTr
       return {
         ...transcript,
         activities: upsertActivity(
-          transcript.activities.filter((item) => item.status !== 'active' || item.kind !== 'thinking'),
+          transcript.activities.map((item) => item.kind === 'thinking' && item.status === 'active'
+            ? {...item, status: 'completed'}
+            : item),
           {id, ...presentation, status: 'active'},
         ),
       };

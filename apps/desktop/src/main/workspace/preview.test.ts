@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { PreviewGrants, previewResponse, previewTarget } from "./preview.js";
+import { PreviewGrants, copyGrantedFile, previewResponse, previewTarget } from "./preview.js";
 
 const token = (url: string): string => new URL(url).host;
 
@@ -198,4 +200,18 @@ test("an ungranted token is refused before the disk is touched", async () => {
 
   assert.equal(response.status, 404);
   assert.deepEqual(calls, [], "a refused request still reached for a file");
+});
+
+test("saving a granted file copies it, and the same path is a no-op", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-save-as-"));
+  try {
+    const source = path.join(root, "shot.png");
+    const destination = path.join(root, "saved.png");
+    await writeFile(source, "png-bytes");
+    assert.equal(await copyGrantedFile(source, destination), destination);
+    assert.equal(await readFile(destination, "utf8"), "png-bytes");
+    assert.equal(await copyGrantedFile(source, source), source);
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
 });

@@ -14,6 +14,7 @@
   import {polymuxApi} from '../../api/polymux';
   import {onHubCacheInvalidated} from '../../shared/state/hubCache';
   import {rememberChatPlatforms} from '../../shared/state/chatPlatforms';
+  import {filterConnectedChats as filterWarmConnectedChats} from './chatConnection';
   import {MailDraftAutosave} from './mailDraftAutosave';
 
   /** Which source the rail has selected: a platform, or a mailbox folder. */
@@ -69,7 +70,10 @@
     messages: new Map(),
     mailboxes: new Map(),
     mail: new Map(),
-    source: null,
+    // All Platforms is the Hub's stable landing view. Keeping that selection
+    // from module creation means a warm status can never paint the otherwise
+    // impossible "Pick a source" state while the first fresh reads settle.
+    source: {kind: 'all'},
     activeChatId: null,
     activeBroadcastId: null,
     openGroups: {},
@@ -88,8 +92,10 @@
   const WARM_CHATS = 4;
 
   /** Guards against two callers warming the hub at once. */
+  let preparing: Promise<void> | null = null;
   let warming: Promise<void> | null = null;
   let seeded: Promise<void> | null = null;
+  let warmStatusUnsubscribe: (() => void) | null = null;
   /** One autosave queue survives Hub tab mounts, so leaving the workspace does
    * not cancel the mailbox write it just triggered. */
   const mailDraftAutosave = new MailDraftAutosave((request) => polymuxApi().comms.mailSend(request));
@@ -160,7 +166,26 @@
     session.activeChatId = null;
     session.activeBroadcastId = null;
     seeded = null;
+    preparing = null;
+    warming = null;
   });
+
+  /**
+   * Keeps the source rail current before the Hub component exists. The mounted
+   * Hub owns its richer subscriptions; this small window-lifetime listener is
+   * only what closes the gap between startup hydration and the first visit.
+   */
+  function watchWarmStatus(): void {
+    warmStatusUnsubscribe ??= polymuxApi().comms.subscribe((next) => {
+      session.status = next;
+    });
+  }
+
+  /** Stops the pre-mount listener when the app window is torn down. */
+  export function stopHubPreload(): void {
+    warmStatusUnsubscribe?.();
+    warmStatusUnsubscribe = null;
+  }
 
   /**
    * Where the agent asked the hub to land, and the mounted hub's way of going
@@ -199,7 +224,64 @@
   }
 
   /**
-   * Fetches what the hub opens onto, before it is opened.
+   * Fetches the Hub's complete opening frame during app startup.
+   *
+   * These four reads make up All Platforms: the source rail, conversation
+   * rows, broadcasts, and linked contacts. They run together behind the
+   * startup animation, and App waits for this bounded opening set before the
+   * animation lifts. Deeper message and mailbox reads remain in `warmHub`.
+   */
+  export async function prepareHub(): Promise<void> {
+    session.source ??= {kind: 'all'};
+    watchWarmStatus();
+    if (preparing) return preparing;
+    preparing = (async () => {
+      await seedHub();
+      const api = polymuxApi();
+      // Status owns zero-config embedded authentication and starts the WeChat
+      // bridge. Let it finish before reads that require that Matrix identity;
+      // startup previously launched all four together and exposed the auth
+      // race as an empty Hub behind a completed splash.
+      const nextStatus = await api.comms.status();
+      session.status = nextStatus;
+      const openingReads = [
+        api.comms.chats(),
+        api.comms.broadcasts(),
+        api.comms.contactLinks(),
+      ] as const;
+      if (nextStatus.hub.status === 'signed-in') {
+        const [nextChats, nextBroadcasts, nextContactLinks] = await Promise.all(openingReads);
+        session.chats = nextChats;
+        rememberChatPlatforms(session.chats);
+        session.broadcasts = nextBroadcasts;
+        session.contactLinks = nextContactLinks;
+        // WeChat recovery is owned by the background bridge. A temporarily
+        // cold sender must not hold the whole desktop behind its startup shell;
+        // the composer rechecks readiness immediately before an outbound send.
+        return;
+      }
+      // A deliberately external or signed-out Hub has to remain reachable so
+      // its settings can be fixed. Its optional opening reads may paint what
+      // is available, but do not turn that expected setup state into a splash
+      // that can never finish.
+      const [nextChats, nextBroadcasts, nextContactLinks] = await Promise.allSettled(openingReads);
+      if (nextChats.status === 'fulfilled') {
+        session.chats = nextChats.value;
+        rememberChatPlatforms(session.chats);
+      }
+      if (nextBroadcasts.status === 'fulfilled') session.broadcasts = nextBroadcasts.value;
+      if (nextContactLinks.status === 'fulfilled') session.contactLinks = nextContactLinks.value;
+    })().catch((error) => {
+      // A transient embedded start can be retried by the startup gate. Never
+      // cache a rejected promise as if preparation had completed.
+      preparing = null;
+      throw error;
+    });
+    return preparing;
+  }
+
+  /**
+   * Fetches what the hub opens beyond its first frame, before it is opened.
    *
    * Mail is the slow half — folders, then a page of envelopes, per account —
    * and it used to start only when the tab did, so the first open sat on a
@@ -211,12 +293,10 @@
     if (warming) return warming;
     warming = (async () => {
       const api = polymuxApi();
-      await seedHub();
+      await prepareHub();
+      const status = session.status;
+      if (!status) return;
       try {
-        const status = await api.comms.status();
-        session.status = status;
-        session.chats = await api.comms.chats().catch(() => session.chats);
-        rememberChatPlatforms(session.chats);
         for (const account of status.email.accounts) {
           try {
             const folders = await api.comms.mailFolders(account.id);
@@ -255,7 +335,7 @@
         }
         // The conversations at the top of the list, for the same reason: a
         // chat opens on its newest page, and that page is a round trip.
-        for (const chat of session.chats.filter((item) => !item.space).slice(0, WARM_CHATS)) {
+        for (const chat of filterWarmConnectedChats(session.chats, status).filter((item) => !item.space).slice(0, WARM_CHATS)) {
           if (session.messages.has(chat.id)) continue;
           try {
             const page = await api.comms.chatMessages(chat.id, 50);
@@ -273,6 +353,8 @@
 </script>
 
 <script lang="ts">
+  import MessageInput from '../../shared/components/MessageInput.svelte';
+  let messageInput: MessageInput;
   import {onMount, tick, type ComponentProps} from 'svelte';
   import {flip} from 'svelte/animate';
   import {fade} from 'svelte/transition';
@@ -285,11 +367,13 @@
     type ChatMemberDto,
     type ChatMessageDto,
     type ChatReactionDto,
+    type ChatStickerDto,
     type ContactLinkDto,
     type CommsContactDto,
     type CommsPlatform,
     type CommsStatusDto,
     type MailAddressDto,
+    type MailAttachmentDto,
     type MailEnvelopeDto,
     type MailFolderDto,
     type MailImportance,
@@ -301,11 +385,17 @@
   import {displayTime} from '../../shared/displayTime';
   import {scrollFade} from '../../shared/scrollFade';
   import Icon from '../../shared/components/Icon.svelte';
+  import SearchField from '../../shared/components/SearchField.svelte';
   import Menu from '../../shared/components/Menu.svelte';
   import PlatformLogo, {type Platform} from '../../shared/components/PlatformLogo.svelte';
   import {avatarInitial} from './avatarFallback';
   import {attachmentRenderKind} from './chatAttachments';
   import {chatClipboardContent} from './chatClipboard';
+  import {
+    filterConnectedChats,
+    isChatConnected,
+    isPlatformConnected,
+  } from './chatConnection';
   import {dedupeContactChats, dedupePortalChats} from './chatContacts';
   import {
     contactIdentityRows,
@@ -321,10 +411,22 @@
   } from './chatListFilters';
   import {chatSenderLabel} from './chatSenderLabel';
   import {
+    mergeFailedChatDraft,
+    pendingChatMessage,
+    pendingFileAttachment,
+    removeChatMessage,
+    replaceChatMessage,
+    withoutUnconfirmedChatEchoes,
+    type ChatDraftSnapshot,
+  } from './chatOutbound';
+  import {
     searchChatMessages,
     type ChatSearchFilter,
     type ChatSearchResult,
   } from './chatSearch';
+  import ChatVideo from './ChatVideo.svelte';
+  import ChatMediaPreview from './ChatMediaPreview.svelte';
+  import {downloadHubMedia} from './mediaDownload';
   import {mergeChatPage} from './chatMessagePages';
   import {
     activeComposerToken,
@@ -340,6 +442,7 @@
   import {mailBodyWithSignature, mailHtmlWithSignature} from './mailSignatures';
   import MessageReactions from './MessageReactions.svelte';
   import {MAIN_UI_ICON_STROKE_WIDTH, RAIL_TILE_SIZE} from '../../shared/layout/iconSizing';
+  import {MENU_EDGE_MARGIN, clampToMenuEdge} from '../../shared/layout/menuPlacement';
   import {activeLocale, t, translate} from '../../../i18n';
   import {
     applyOrder,
@@ -351,13 +454,19 @@
     type ObservedRailRow,
   } from './hubRailOrder';
   import {arrangeChats, hiddenChats, loadChatPrefs, toggleHidden, toggleMuted, togglePinned} from './chatPrefs';
-  import FileAttachment from '../chat/FileAttachment.svelte';
   import {recordedVoiceWav} from './voiceWav';
+  import VoiceMessagePlayer from './VoiceMessagePlayer.svelte';
   import EmojiPicker from './EmojiPicker.svelte';
+  import WeChatStickerPicker from './WeChatStickerPicker.svelte';
+  import WeChatGroupRename from './WeChatGroupRename.svelte';
+  import WeChatLoginPanel from './WeChatLoginPanel.svelte';
+  import CallMessage from './CallMessage.svelte';
+  import ForwardedMessages from './ForwardedMessages.svelte';
   import {
     loadChatDraft,
     loadMailDraft,
     saveChatDraft,
+    type MailComposerInlineAttachment,
     type MailComposerDraft,
   } from '../../shared/state/composerDrafts';
 
@@ -366,6 +475,7 @@
    * drive already use, so an attachment offers the same ways of opening as any
    * other file, under the pill that was clicked.
    */
+  export let onOpenMedia: (url: string, name: string) => void = () => {};
   export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
   /** The workspace drawer changes width continuously while expanding. These
    * two values keep the Hub's list and reader on the same continuous motion
@@ -392,7 +502,7 @@
     if (!next) return [];
     return [
       ...next.bridges
-        .filter((bridge) => bridge.state === 'connected')
+        .filter((bridge) => bridge.state === 'connected' || bridge.attention)
         .map((bridge) => ({
           id: `platform:${bridge.platform}`,
           accountIds: bridge.accounts.map((account) => account.id),
@@ -408,8 +518,16 @@
     status = next;
     session.status = next;
     railOrder = rememberRailOrder(railOrder, observedRailRows(next));
+    if (activeChat && !isChatConnected(activeChat, next)) closeDisconnectedChat(activeChat);
+    const platform = source?.kind === 'platform' ? source.platform : null;
+    if (platform && !isPlatformConnected(platform, next) &&
+        !next.bridges.find(bridge => bridge.platform === platform)?.attention) {
+      source = {kind: 'all'};
+      chatSearch = '';
+    }
   }
   let chats: ChatDto[] = session.chats;
+  $: connectedChats = filterConnectedChats(chats, status);
   let broadcasts: BroadcastDto[] = session.broadcasts;
   let contactLinks: ContactLinkDto[] = session.contactLinks;
   let source: Source | null = session.source;
@@ -424,6 +542,23 @@
   let loading = !session.status;
   let error = '';
   let busy = '';
+  /** Activity can arrive while a chat page or another Hub operation is still
+   * settling. Keep the affected room ids rather than dropping the push and
+   * making the user wait for the polling backstop. */
+  let pendingActivityChatIds = new Set<string>();
+  $: if (!busy && pendingActivityChatIds.size > 0 && !document.hidden) {
+    const pending = pendingActivityChatIds;
+    pendingActivityChatIds = new Set();
+    refreshActivityChats(pending);
+  }
+  /** Selecting WeChat is an explicit wake request. Keep its empty list in a
+   * loading state until that request has also refreshed the newly available
+   * rooms, rather than painting "No conversations yet" for the 20-second
+   * fallback poll window. */
+  let weChatWakePending = false;
+  $: weChatAttention = status?.bridges.find(bridge => bridge.platform === 'wechat')?.attention;
+  $: showWeChatAttention = Boolean(weChatAttention &&
+    ((source?.kind === 'platform' && source.platform === 'wechat') || activeChat?.platform === 'wechat'));
 
   // Messaging
   let activeChat: ChatDto | null = null;
@@ -440,6 +575,11 @@
   let profileReturnsToChat = false;
   let profileContacts: CommsContactDto[] = [];
   let profileLoading = false;
+  let profileRenameOpen = false;
+  let profileRenameName = '';
+  let profileRenameError = '';
+  let profileRenameButton: HTMLButtonElement | null = null;
+  let profileRenameInput: HTMLInputElement | null = null;
   let profileMergeOpen = false;
   let profileMergeSelected = new Set<string>();
   let profileMergeName = '';
@@ -451,6 +591,11 @@
    * dragging into Hub stages them here rather than sending on drop. */
   let chatFiles: string[] = [];
   let chatFileDragActive = false;
+  /** Local bubbles shown as soon as Send is pressed. WeChat may take tens of
+   * seconds to verify native delivery; the thread must still acknowledge the
+   * action immediately, without freezing the next draft behind it. */
+  let pendingChatMessageIds = new Set<string>();
+  let pendingChatSequence = 0;
   /** Token for the page of older messages, null once the room's start is in. */
   let chatBefore: string | null = null;
   /** The thread's scroller, so reaching its top can pull the page before. */
@@ -469,6 +614,8 @@
   let chatSearchToken = 0;
   let chatHeaderMenuOpen = false;
   let chatHeaderMenu: HTMLUListElement | null = null;
+  let groupRenameChatId: string | null = null;
+  let chatMoreButton: HTMLButtonElement | null = null;
   const CHAT_SEARCH_PAGE = 100;
   const CHAT_SEARCH_FILTERS: ChatSearchFilter[] = ['all', 'messages', 'media', 'files', 'links'];
   $: chatSearchResults = chatSearchOpen
@@ -490,6 +637,9 @@
   let composeSignatureBody = '';
   let composeSignatureHtml: string | null = null;
   let composeFiles: string[] = [];
+  let composeInlineFiles: MailComposerInlineAttachment[] = [];
+  /** Last body caret seen before the Attach button takes focus. */
+  let composeCaretOffset = 0;
   /** "normal" writes no header; the flag is a toggle rather than a menu
    * because the low end of the scale is asked for about once a decade. */
   let composeImportance: MailImportance = 'normal';
@@ -527,6 +677,15 @@
   let attachmentPaths: string[] = [];
   /** Which pill is waiting on the download, so only that one shows it. */
   let pendingAttachment: number | null = null;
+  /** Object URLs are renderer-local, short-lived views of lazily fetched MIME
+   * parts. They never enter the session cache or get written to Downloads just
+   * because a message was opened. */
+  let mailAttachmentUrls = new Map<string, string>();
+  let mailAttachmentLoading = new Set<string>();
+  let mailAttachmentFailed = new Set<string>();
+  let mailAttachmentLoadKey = '';
+
+  $: composePieces = mailComposePieces(composeBody, composeFiles, composeInlineFiles);
 
   /**
    * Which rail groups are expanded. A source with more than one account is a
@@ -541,6 +700,14 @@
   /** Media urls that failed to load, shown as a named file chip instead: a
    * picture whose bytes are gone would otherwise hold its full frame open as
    * a blank bubble. */
+  let photoPreview: {url: string; name: string; opener: HTMLButtonElement;
+    kind?: 'image' | 'video'; position?: number; playing?: boolean;
+    message: ChatMessageDto; attachment: NonNullable<ChatMessageDto['attachments']>[number]} | null = null;
+  function closePhotoPreview(restoreFocus = true): void {
+    const opener = photoPreview?.opener;
+    photoPreview = null;
+    if (restoreFocus) void tick().then(() => { if (opener?.isConnected) opener.focus(); });
+  }
   let brokenMedia = new Set<string>();
   /** How many times each has been asked for, so a blip is not mistaken for a
    * missing picture. */
@@ -578,7 +745,9 @@
   const RAIL_DEFAULT_WIDTH = 156;
   const RAIL_COMPACT_WIDTH = 52;
   const RAIL_SNAP_AT = (RAIL_DEFAULT_WIDTH + RAIL_COMPACT_WIDTH) / 2;
-  const HUB_SPLIT_MIN_WIDTH = 720;
+  // The list joins the reader only once the reader can still hold every mail
+  // action at the split. Below this, the selected pane gets the full width.
+  const HUB_SPLIT_MIN_WIDTH = 740;
   const HUB_SPLIT_LIST_WIDTH = 280;
   const RAIL_COMPACT_KEY = 'polymuxHubRailCompact';
   let railCompact = loadRailCompact();
@@ -586,7 +755,7 @@
   let railResizeStart: {x: number; width: number; direction: 1 | -1} | null = null;
   $: railWidth = railDragWidth ?? (railCompact ? RAIL_COMPACT_WIDTH : RAIL_DEFAULT_WIDTH);
   $: railIconOnly = railWidth < RAIL_SNAP_AT;
-  $: hubReading = !!openMail || !!openEnvelope || !!activeChat || !!activeBroadcast || composing;
+  $: hubReading = !!openMail || !!openEnvelope || !!activeChat || !!activeBroadcast || composing || showWeChatAttention;
   $: settledListWidth = dockedDrawerWidth >= HUB_SPLIT_MIN_WIDTH
     ? HUB_SPLIT_LIST_WIDTH
     : hubReading ? 0 : Math.max(0, dockedDrawerWidth - railWidth);
@@ -616,13 +785,13 @@
   let sort: Sort = 'date-desc';
   let filterMenu = false;
   $: CONVERSATION_FILTERS = [
-    {id: 'all' as ConversationListFilter, label: $t('hub.filterAll'), icon: 'platforms' as IconName},
-    {id: 'unread' as ConversationListFilter, label: $t('hub.filterUnread'), icon: 'bolt' as IconName},
-    {id: 'read' as ConversationListFilter, label: $t('hub.filterRead'), icon: 'check' as IconName},
+    {id: 'all' as ConversationListFilter, label: $t('hub.filterAll')},
+    {id: 'unread' as ConversationListFilter, label: $t('hub.filterUnread')},
+    {id: 'read' as ConversationListFilter, label: $t('hub.filterRead')},
   ];
   $: CONVERSATION_SORTS = [
-    {id: 'latest' as ConversationListSort, label: $t('hub.sortLatestMessage'), icon: 'arrow-down' as IconName},
-    {id: 'earliest' as ConversationListSort, label: $t('hub.sortEarliestMessage'), icon: 'arrow-up' as IconName},
+    {id: 'latest' as ConversationListSort, label: $t('hub.sortLatestMessage')},
+    {id: 'earliest' as ConversationListSort, label: $t('hub.sortEarliestMessage')},
   ];
   let conversationFilter: ConversationListFilter = 'all';
   let conversationSort: ConversationListSort = 'latest';
@@ -630,15 +799,31 @@
   let moveMenu = false;
   let selectionBusy = false;
 
-  $: visibleEnvelopes = envelopes.filter((envelope) =>
-    filter === 'unread'
+  $: visibleEnvelopes = envelopes.filter((envelope) => {
+    const matchesFilter = filter === 'unread'
       ? !envelope.seen
       : filter === 'flagged'
         ? envelope.flagged
         : filter === 'attachments'
           ? envelope.hasAttachment
-          : true,
-  );
+          : true;
+    return matchesFilter && envelopeMatchesSearch(envelope, search);
+  });
+
+  /** Filter the rows already on screen as the user types. Enter still asks
+   * the mailbox for a broader server-side result that can include later pages. */
+  function envelopeMatchesSearch(envelope: MailEnvelopeDto, query: string): boolean {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return true;
+    return [
+      envelope.subject,
+      envelope.from.name,
+      envelope.from.address,
+      envelope.to?.name,
+      envelope.to?.address,
+      envelope.preview,
+    ].some((value) => value?.toLowerCase().includes(needle));
+  }
 
   /** Conversation sizes for the rows on screen, redone as the folder changes. */
   $: chainCounts = chainSizes(envelopes);
@@ -648,7 +833,23 @@
     return chainCounts.get(baseSubject(envelope.subject)) ?? 1;
   }
 
-  $: safeHtml = openMail?.html ? sanitiseMail(openMail.html) : '';
+  $: safeHtml = openMail?.html
+    ? sanitiseMail(
+        openMail.html,
+        openMail.attachments,
+        mailAttachmentUrls,
+        mailAttachmentLoading,
+        mailAttachmentFailed,
+      )
+    : '';
+  $: plainAttachmentHtml = openMail && !openMail.html
+    ? attachmentListHtml(
+        openMail.attachments,
+        mailAttachmentUrls,
+        mailAttachmentLoading,
+        mailAttachmentFailed,
+      )
+    : '';
   $: safeComposeSignatureHtml = composeSignatureHtml ? sanitiseMail(composeSignatureHtml) : '';
 
   /**
@@ -661,7 +862,13 @@
    * that a sender's tracking pixel learns the message was opened, which is the
    * same cost those clients pay.
    */
-  function sanitiseMail(html: string): string {
+  function sanitiseMail(
+    html: string,
+    attachments: MailAttachmentDto[] = [],
+    urls = new Map<string, string>(),
+    loading = new Set<string>(),
+    failed = new Set<string>(),
+  ): string {
     const clean = DOMPurify.sanitize(html, {
       FORBID_TAGS: ['script', 'style', 'iframe', 'frame', 'object', 'embed', 'form', 'base', 'link', 'meta'],
       FORBID_ATTR: ['srcset', 'background', 'ping'],
@@ -669,13 +876,37 @@
     });
     const holder = document.createElement('div');
     holder.innerHTML = clean;
+    const used = new Set<string>();
+    const byCid = new Map(
+      attachments.flatMap((file) => {
+        const cid = normaliseCid(file.contentId ?? '');
+        return cid ? [[cid, file] as const] : [];
+      }),
+    );
+
+    for (const anchor of holder.querySelectorAll('a')) {
+      const cid = normaliseCid(anchor.getAttribute('href') ?? '');
+      const file = byCid.get(cid);
+      if (!file) continue;
+      const index = attachments.indexOf(file);
+      used.add(file.id);
+      anchor.replaceWith(attachmentElement(file, index, urls, loading, failed));
+    }
     for (const image of holder.querySelectorAll('img')) {
       const src = image.getAttribute('src') ?? '';
-      // `cid:` addresses a MIME part of this very message. Nothing in a
-      // browser can fetch that, so the image would sit there as a broken
-      // glyph with the sender's alt text beside it — worse than absent.
-      // `http:` is refused by the app's own policy and would break the same
-      // way, and both are usually a logo nobody misses.
+      const cid = normaliseCid(src);
+      const file = byCid.get(cid);
+      if (file) {
+        const index = attachments.indexOf(file);
+        const url = urls.get(file.id);
+        used.add(file.id);
+        if (url && file.mime?.startsWith('image/')) image.setAttribute('src', url);
+        else image.replaceWith(attachmentElement(file, index, urls, loading, failed));
+        continue;
+      }
+      // Plain `cid:` has no matching part, and `http:` is refused by the app's
+      // own policy. Either would leave a broken glyph and alt text in the
+      // middle of the sender's layout, so the space is given back.
       if (!src || /^(cid|http):/i.test(src)) {
         image.remove();
         continue;
@@ -685,7 +916,199 @@
       image.setAttribute('referrerpolicy', 'no-referrer');
       image.setAttribute('decoding', 'async');
     }
+    appendAttachmentList(
+      holder,
+      attachments.filter((file) => !used.has(file.id)),
+      attachments,
+      urls,
+      loading,
+      failed,
+    );
+    trimMailLeadingWhitespace(holder);
     return holder.innerHTML;
+  }
+
+  /**
+   * The reading pane owns no whitespace around designed mail. Remove only
+   * empty nodes before the sender's first real element, then mark that element
+   * so its outer top margin cannot recreate the same gap. Internal spacing is
+   * still entirely the sender's.
+   */
+  function trimMailLeadingWhitespace(holder: HTMLElement): void {
+    while (holder.firstChild) {
+      const node = holder.firstChild;
+      if (node.nodeType === Node.TEXT_NODE && !node.textContent?.trim()) {
+        node.remove();
+        continue;
+      }
+      if (node instanceof HTMLBRElement || (node instanceof HTMLElement && isEmptyMailSpacer(node))) {
+        node.remove();
+        continue;
+      }
+      break;
+    }
+    if (holder.firstChild instanceof HTMLElement) {
+      holder.firstChild.classList.add('hub-view-mail-first-content');
+    }
+  }
+
+  /** Empty layout shims have no authored content worth reserving space for. */
+  function isEmptyMailSpacer(element: HTMLElement): boolean {
+    const visualContent = 'img, table, video, audio, iframe, hr, svg, canvas';
+    const visualStyle = '[style*="background" i], [style*="border" i], [style*="outline" i]';
+    if (element.matches(visualContent) || element.matches(visualStyle)) return false;
+    if (element.querySelector(visualContent) || element.querySelector(visualStyle)) return false;
+    return !element.textContent?.trim();
+  }
+
+  function normaliseCid(value: string): string {
+    const raw = value.replace(/^cid:/i, '').replace(/^<|>$/g, '');
+    try {
+      return decodeURIComponent(raw).trim().toLowerCase();
+    } catch {
+      return raw.trim().toLowerCase();
+    }
+  }
+
+  function attachmentListHtml(
+    attachments: MailAttachmentDto[],
+    urls: Map<string, string>,
+    loading: Set<string>,
+    failed: Set<string>,
+  ): string {
+    if (attachments.length === 0) return '';
+    const holder = document.createElement('div');
+    appendAttachmentList(holder, attachments, attachments, urls, loading, failed);
+    return holder.innerHTML;
+  }
+
+  function appendAttachmentList(
+    holder: HTMLElement,
+    files: MailAttachmentDto[],
+    all: MailAttachmentDto[],
+    urls: Map<string, string>,
+    loading: Set<string>,
+    failed: Set<string>,
+  ): void {
+    if (files.length === 0) return;
+    const list = document.createElement('div');
+    list.className = 'hub-view-mail-inline-attachments';
+    for (const file of files)
+      list.append(attachmentElement(file, all.indexOf(file), urls, loading, failed));
+    holder.append(list);
+  }
+
+  function attachmentElement(
+    file: MailAttachmentDto,
+    index: number,
+    urls: Map<string, string>,
+    loading: Set<string>,
+    failed: Set<string>,
+  ): HTMLElement {
+    const url = urls.get(file.id) ?? '';
+    const section = document.createElement('section');
+    section.className = 'hub-view-mail-inline-attachment';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'hub-view-mail-attachment-head';
+    open.dataset.mailAttachmentIndex = String(index);
+    open.setAttribute('aria-label', `${$t('open.downloadAndOpen')}: ${file.name}`);
+
+    const type = document.createElement('span');
+    type.className = 'hub-view-mail-attachment-type';
+    type.textContent = attachmentType(file);
+    const name = document.createElement('strong');
+    name.textContent = file.name;
+    const action = document.createElement('span');
+    action.className = 'hub-view-mail-attachment-open';
+    action.setAttribute('aria-hidden', 'true');
+    action.textContent = '↓';
+    open.append(type, name, action);
+    section.append(open);
+
+    if (url && file.mime === 'application/pdf') {
+      const frame = document.createElement('iframe');
+      frame.className = 'hub-view-mail-pdf';
+      frame.src = url;
+      frame.title = file.name;
+      frame.loading = 'lazy';
+      section.append(frame);
+    } else if (url && file.mime?.startsWith('image/')) {
+      const image = document.createElement('img');
+      image.className = 'hub-view-mail-image-attachment';
+      image.src = url;
+      image.alt = file.name;
+      image.loading = 'lazy';
+      section.append(image);
+    } else if (url && file.mime?.startsWith('video/')) {
+      const video = document.createElement('video');
+      video.className = 'hub-view-mail-media-attachment';
+      video.src = url;
+      video.controls = true;
+      section.append(video);
+    } else if (url && file.mime?.startsWith('audio/')) {
+      const audio = document.createElement('audio');
+      audio.className = 'hub-view-mail-audio-attachment';
+      audio.src = url;
+      audio.controls = true;
+      section.append(audio);
+    } else if (loading.has(file.id) || failed.has(file.id)) {
+      const state = document.createElement('small');
+      state.className = 'hub-view-mail-attachment-state';
+      state.textContent = failed.has(file.id) ? $t('hub.unavailable') : $t('common.loading');
+      section.append(state);
+    }
+    return section;
+  }
+
+  function attachmentType(file: MailAttachmentDto): string {
+    const extension = file.name.split('.').at(-1)?.trim();
+    if (extension && extension !== file.name && extension.length <= 5) return extension.toUpperCase();
+    const subtype = file.mime?.split('/').at(-1)?.split(/[;+]/)[0]?.trim();
+    return (subtype || $t('hub.attachment')).slice(0, 5).toUpperCase();
+  }
+
+  function clearMailAttachmentPreviews(): void {
+    for (const url of mailAttachmentUrls.values()) URL.revokeObjectURL(url);
+    mailAttachmentUrls = new Map();
+    mailAttachmentLoading = new Set();
+    mailAttachmentFailed = new Set();
+    mailAttachmentLoadKey = '';
+  }
+
+  async function loadMailAttachmentPreviews(
+    message: MailMessageDto,
+    account: string,
+    folder: string,
+  ): Promise<void> {
+    clearMailAttachmentPreviews();
+    const previewable = message.attachments.filter((file) =>
+      file.mime === 'application/pdf' || /^(image|video|audio)\//.test(file.mime ?? ''),
+    );
+    if (previewable.length === 0) return;
+    const key = `${account}|${folder}|${message.id}`;
+    mailAttachmentLoadKey = key;
+    mailAttachmentLoading = new Set(previewable.map((file) => file.id));
+    await Promise.all(previewable.map(async (file) => {
+      try {
+        const loaded = await api.comms.mailAttachment(message.id, file.id, account, folder);
+        const url = URL.createObjectURL(new Blob([loaded.content], {type: loaded.mime ?? file.mime ?? ''}));
+        if (mailAttachmentLoadKey !== key) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        mailAttachmentUrls = new Map(mailAttachmentUrls).set(file.id, url);
+      } catch {
+        if (mailAttachmentLoadKey === key)
+          mailAttachmentFailed = new Set(mailAttachmentFailed).add(file.id);
+      } finally {
+        if (mailAttachmentLoadKey === key) {
+          const next = new Set(mailAttachmentLoading);
+          next.delete(file.id);
+          mailAttachmentLoading = next;
+        }
+      }
+    }));
   }
 
   /**
@@ -706,6 +1129,16 @@
    * here would navigate the app itself out of existence.
    */
   function openLink(event: MouseEvent): void {
+    const attachment = (event.target as HTMLElement | null)?.closest<HTMLElement>(
+      '[data-mail-attachment-index]',
+    );
+    if (attachment) {
+      event.preventDefault();
+      const index = Number(attachment.dataset.mailAttachmentIndex);
+      if (Number.isInteger(index) && index >= 0)
+        void openAttachment(index, attachment.getBoundingClientRect());
+      return;
+    }
     const anchor = (event.target as HTMLElement | null)?.closest('a');
     const href = anchor?.getAttribute('href') ?? '';
     if (!anchor) return;
@@ -745,7 +1178,7 @@
   }
 
   $: accounts = status?.email.accounts ?? [];
-  $: linked = (status?.bridges ?? []).filter((bridge) => bridge.state === 'connected');
+  $: linked = (status?.bridges ?? []).filter((bridge) => bridge.state === 'connected' || bridge.attention);
 
   /**
    * The rail as one arranged list. A platform and the mail group are the same
@@ -1095,7 +1528,7 @@
   }
   /** Chats belonging to whichever platform the rail has selected, pinned rows
    * first and hidden ones collected under their own row below. */
-  $: platformChats = chatsFor(source, chats);
+  $: platformChats = chatsFor(source, connectedChats);
   $: selectedSpaceId = source?.kind === 'platform' ? source.space ?? null : null;
   $: focusedSpace = selectedSpaceId
     ? platformChats.find((chat) => chat.space && chat.id === selectedSpaceId) ?? null
@@ -1134,18 +1567,7 @@
     filled?: boolean;
   };
 
-  /** Menu open over the collapsed strip. */
-  let overflowMenu = false;
-  /** The strip's own width, watched so it can fold before it overflows. */
-  let actionsWidth = 0;
-  /** One icon button, plus the gap after it. */
-  const ACTION_WIDTH = 30;
   $: mailActions = readerActions(openMail, openEnvelope, currentFolder);
-  // Below what the row needs, every action goes behind one ⋮ rather than
-  // wrapping onto a second line or being cut off at the edge.
-  $: compactActions = actionsWidth > 0 && actionsWidth < mailActions.length * ACTION_WIDTH;
-  // A strip that has grown back has nothing to hold a menu open over.
-  $: if (!compactActions && overflowMenu) overflowMenu = false;
 
   function readerActions(
     message: MailMessageDto | null,
@@ -1182,17 +1604,6 @@
         run: () => void erase([envelope.id]),
       });
     return actions;
-  }
-
-  /** Runs one action from the overflow menu and puts the menu away — except
-   * `move`, whose own list replaces it in place. */
-  function runAction(action: MailAction): void {
-    if (action.id === 'move') {
-      moveMenu = true;
-      return;
-    }
-    overflowMenu = false;
-    action.run?.();
   }
 
   /** What the box over the conversation list is filtering on. */
@@ -1254,11 +1665,11 @@
       );
   }
 
-  $: contactRows = contactsFor(chats, contactLinks, contactSearch);
+  $: contactRows = contactsFor(connectedChats, contactLinks, contactSearch);
   $: activeProfileLink = activeChat ? contactLinkForChat(activeChat, contactLinks) : null;
   $: activeProfileChats = activeChat
     ? activeProfileLink
-      ? dedupeContactChats(chats).filter((chat) =>
+      ? dedupeContactChats(connectedChats).filter((chat) =>
           activeProfileLink!.members.some((member) =>
             member.platform === chat.platform &&
             (member.remoteId && chat.remoteId
@@ -1276,7 +1687,7 @@
         (remote && account.remoteId?.trim().normalize('NFKC').toLowerCase() === remote)))
       .flatMap((contact) => contact.identifiers);
   }))];
-  $: profileMergeCandidates = dedupeContactChats(chats).filter((chat) => !chat.group && !chat.space);
+  $: profileMergeCandidates = dedupeContactChats(connectedChats).filter((chat) => !chat.group && !chat.space);
   $: selectedNewChatContacts = newChatContacts.filter((contact) => newChatSelected.has(contact.id));
   $: selectedBroadcastContacts = broadcastContacts.filter((contact) => broadcastSelected.has(contact.id));
   $: broadcastRows = broadcasts.filter((broadcast) => {
@@ -1625,6 +2036,7 @@
       signatureBody: composeSignatureBody,
       signatureHtml: composeSignatureHtml,
       files: [...composeFiles],
+      inlineFiles: composeInlineFiles.map((file) => ({...file})),
       importance: composeImportance,
       reply: composeReply ? {...composeReply, references: [...composeReply.references]} : null,
       remoteDraft,
@@ -1667,6 +2079,8 @@
     composeSignatureBody = saved.signatureBody;
     composeSignatureHtml = saved.signatureHtml;
     composeFiles = [...saved.files];
+    composeInlineFiles = saved.inlineFiles.map((file) => ({...file}));
+    composeCaretOffset = composeBody.length;
     composeImportance = saved.importance;
     composeReply = saved.reply
       ? {...saved.reply, references: [...saved.reply.references]}
@@ -1708,8 +2122,11 @@
     // reaches the homeserver at all.
     const unsubscribeActivity = api.comms.subscribeActivity((activity) => {
       if (document.hidden) return;
-      if (activeChat && activity.chatId === activeChat.id) void refreshChat();
-      else void refreshChats();
+      if (busy) {
+        pendingActivityChatIds = new Set([...pendingActivityChatIds, activity.chatId]);
+        return;
+      }
+      refreshActivityChats(new Set([activity.chatId]));
     });
     const timer = setInterval(() => {
       if (!document.hidden) void refreshOpen();
@@ -1717,7 +2134,10 @@
     // Coming back to the window is when stale content is most obvious, so it
     // does not wait out the rest of the interval.
     const onVisible = (): void => {
-      if (!document.hidden) void refreshOpen();
+      if (!document.hidden) {
+        pendingActivityChatIds = new Set();
+        void refreshOpen();
+      }
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
@@ -1733,6 +2153,7 @@
       railMotionDisposed = true;
       if (railMotionFrame) cancelAnimationFrame(railMotionFrame);
       leaveMailComposer();
+      clearMailAttachmentPreviews();
       showTarget = null;
       unsubscribe();
       unsubscribeActivity();
@@ -1757,7 +2178,7 @@
     if (target.chat) {
       const wanted = target.chat;
       if (chats.length === 0) await refreshChats();
-      const findChat = (): ChatDto | undefined => chats.find(
+      const findChat = (): ChatDto | undefined => connectedChats.find(
         (item) =>
           (wanted.id && item.id === wanted.id) ||
           (wanted.name && item.name.toLowerCase() === wanted.name.toLowerCase()),
@@ -1825,8 +2246,12 @@
       if (compose.bcc) composeBcc = compose.bcc;
       // Copies stay hidden until there is something in them to read.
       showCopies = Boolean(composeCc || composeBcc);
-      if (compose.attachments?.length) composeFiles = [...compose.attachments];
+      if (compose.attachments?.length) {
+        composeFiles = [...compose.attachments];
+        composeInlineFiles = [];
+      }
       if (compose.importance) composeImportance = compose.importance;
+      composeCaretOffset = composeBody.length;
       composeChanged();
       return;
     }
@@ -1861,9 +2286,11 @@
         broadcastDraft = loadChatDraft(`broadcast:${broadcast.id}`).text;
       }
     }
-    const chat = restoringChatId ? chats.find((item) => item.id === restoringChatId) : null;
+    const chat = restoringChatId
+      ? chats.find((item) => item.id === restoringChatId && isChatConnected(item, status))
+      : null;
     if (!chat) return;
-    const known = session.messages.get(chat.id);
+    const known = cachedChatPage(chat.id);
     activeChat = chat;
     chatMessages = known?.messages ?? [];
     chatBefore = known?.nextBefore ?? null;
@@ -1976,7 +2403,7 @@
   }
 
   async function prefetchChats(): Promise<void> {
-    for (const chat of chats.filter((item) => !item.space).slice(0, PREFETCH_CHATS)) {
+    for (const chat of connectedChats.filter((item) => !item.space).slice(0, PREFETCH_CHATS)) {
       if (session.messages.has(chat.id)) continue;
       if (activeChat) return;
       try {
@@ -1986,6 +2413,23 @@
         // Work done ahead of being asked for: the real read reports anything
         // genuinely wrong.
       }
+    }
+  }
+
+  async function wakeWeChatSource(): Promise<void> {
+    if (weChatWakePending) return;
+    weChatWakePending = true;
+    try {
+      acceptStatus(await api.comms.status());
+      // A successful wake can create the File Transfer room while the list
+      // still holds the signed-out snapshot. Fetch it in the same action so
+      // the conversation appears immediately rather than on the next poll.
+      await refreshChats();
+    } catch {
+      // The empty/cached view remains usable while the next explicit action
+      // retries the same bounded background recovery.
+    } finally {
+      weChatWakePending = false;
     }
   }
 
@@ -2000,6 +2444,11 @@
     chatMessages = [];
     openMail = null;
     openEnvelope = null;
+    // Selection refreshes read availability only. Opening Desktop and signing
+    // in are explicit user actions, independent of sender preparation.
+    if (platform === 'wechat') {
+      void wakeWeChatSource();
+    }
   }
 
   /** A Space is navigation, not a conversation: replace the platform's root
@@ -2036,7 +2485,7 @@
   function spaceChildCount(space: ChatDto): number {
     const available = source?.kind === 'platform' && source.platform === space.platform
       ? platformChats
-      : chats;
+      : connectedChats;
     return chatsInSpace(available, space.id).length;
   }
 
@@ -2153,7 +2602,7 @@
    * inbox pages the source-specific lists use. */
   $: unifiedRows = mailCacheRevision >= 0 && source?.kind === 'all'
     ? [
-        ...spaceRootChats(chats)
+        ...spaceRootChats(connectedChats)
           .filter((chat) => !chatPrefs.hidden.includes(chat.id) || activeChat?.id === chat.id)
           .map((chat): UnifiedRow => ({kind: 'chat', at: chat.lastActivity ?? '', chat})),
         ...[...mailCache.entries()].flatMap(([key, mailbox]) => {
@@ -2537,10 +2986,13 @@
   }
 
   async function openChat(chat: ChatDto): Promise<void> {
+    if (!isChatConnected(chat, status)) return;
     if (chat.space) {
       openSpace(chat);
       return;
     }
+    if (voiceState !== 'idle') await discardVoice();
+    groupRenameChatId = null;
     closeChatSearch();
     closeChatHeaderMenu();
     profileOpen = false;
@@ -2549,10 +3001,19 @@
     activeBroadcast = null;
     broadcastMessages = [];
     awayFromLatest = false;
+    // Opening a WeChat conversation is explicit use. Start its remembered
+    // session quietly now so the eventual Send press does not pay cold-start
+    // latency; passive app/Hub status polling never performs this wake-up.
+    if (chat.platform === 'wechat') {
+      void api.comms.wake('wechat').then((wake) => acceptStatus(wake.status)).catch(() => {
+        // The cached thread remains readable while reconnecting; Send performs
+        // the same readiness check and reports a real failure if one remains.
+      });
+    }
     // A conversation read earlier in this session opens on what it said then,
     // including however far back it had been scrolled, and is corrected by the
     // read behind it. Only a conversation never opened waits.
-    const known = session.messages.get(chat.id);
+    const known = cachedChatPage(chat.id);
     chatMessages = known?.messages ?? [];
     chatBefore = known?.nextBefore ?? null;
     restoreChatComposer(chat.id);
@@ -2566,7 +3027,12 @@
     try {
       const page = await api.comms.chatMessages(chat.id, CHAT_PAGE);
       if (activeChat?.id !== chat.id) return;
-      chatMessages = known ? mergeChatPage(known.messages, page.messages) : page.messages;
+      const messages = withoutUnconfirmedChatEchoes(
+        known?.messages ?? [],
+        page.messages,
+        pendingChatMessageIds,
+      );
+      chatMessages = known ? mergeChatPage(known.messages, messages) : messages;
       chatBefore = known ? known.nextBefore : page.nextBefore;
       restoreChatReply(chat.id);
       rememberChat(chat.id);
@@ -2595,11 +3061,13 @@
    * reads the conversation. From a thread, back returns to the thread; from
    * Contacts, back returns to the contact list. */
   async function openProfile(chat: ChatDto, returnsToChat: boolean): Promise<void> {
-    if (chat.group || chat.space) return;
+    if (chat.group || chat.space || !isChatConnected(chat, status)) return;
     activeChat = chat;
     activeBroadcast = null;
     profileOpen = true;
     profileReturnsToChat = returnsToChat;
+    profileRenameOpen = false;
+    profileRenameError = '';
     profileMergeOpen = false;
     profileMergeSelected = new Set();
     profileLoading = profileContacts.length === 0;
@@ -2614,6 +3082,7 @@
   }
 
   function closeProfile(): void {
+    profileRenameOpen = false;
     profileMergeOpen = false;
     profileOpen = false;
     if (profileReturnsToChat) return;
@@ -2622,9 +3091,46 @@
   }
 
   function startProfileMerge(): void {
+    profileRenameOpen = false;
     profileMergeName = profileName;
     profileMergeSelected = new Set(activeProfileChats.map((chat) => chat.id));
     profileMergeOpen = true;
+  }
+
+  function startProfileRename(): void {
+    profileMergeOpen = false;
+    profileRenameName = profileName;
+    profileRenameError = '';
+    profileRenameOpen = true;
+    void tick().then(() => {
+      profileRenameInput?.focus();
+      profileRenameInput?.select();
+    });
+  }
+
+  function cancelProfileRename(): void {
+    profileRenameOpen = false;
+    profileRenameError = '';
+    void tick().then(() => profileRenameButton?.focus());
+  }
+
+  async function saveProfileRename(): Promise<void> {
+    if (!activeChat) return;
+    const name = profileRenameName.trim();
+    if (!name || name === profileName || busy === 'contact-rename') return;
+    busy = 'contact-rename';
+    profileRenameError = '';
+    try {
+      await api.comms.contactRename({name, member: memberForChat(activeChat)});
+      contactLinks = await api.comms.contactLinks();
+      session.contactLinks = contactLinks;
+      profileRenameOpen = false;
+      error = '';
+    } catch (cause) {
+      profileRenameError = readableError(cause);
+    } finally {
+      busy = '';
+    }
   }
 
   function toggleProfileMergeChat(chat: ChatDto): void {
@@ -2777,8 +3283,7 @@
     try {
       const page = await api.comms.chatMessages(chatId, CHAT_PAGE, from);
       if (activeChat?.id !== chatId || chatBefore !== from) return;
-      const known = new Set(chatMessages.map((item) => item.id));
-      chatMessages = [...chatMessages, ...page.messages.filter((item) => !known.has(item.id))];
+      chatMessages = mergeChatPage(chatMessages, page.messages);
       if (activeChat) rememberChat(activeChat.id);
       // A page that adds nothing new is the end of what the bridge backfilled;
       // trusting only the token would spin on it forever.
@@ -2860,14 +3365,27 @@
   function onThreadScroll(): void {
     if (!threadEl) return;
     // The menu is pinned to the viewport, so scrolling the thread out from
-    // under it would leave it pointing at the wrong message.
-    if (messageMenu) closeMessageMenu();
+    // under it would leave it pointing at the wrong message. Chromium can
+    // also emit a no-op scroll event after opening the menu; keep the action
+    // available when its message has not actually moved.
+    if (
+      messageMenu
+      && Math.abs(threadEl.scrollTop - messageMenu.threadScrollTop) > 0.5
+    ) closeMessageMenu();
     awayFromLatest = Math.abs(threadEl.scrollTop) > 240;
     if (!chatBefore) return;
     // `column-reverse` puts the newest at scrollTop 0 and counts away from it;
     // the sign of that offset differs by engine, so distance is what is read.
     const fromTop = threadEl.scrollHeight - threadEl.clientHeight - Math.abs(threadEl.scrollTop);
     if (fromTop < 240) void loadOlderChat();
+  }
+
+  /** Refreshes the open thread immediately and any other changed chat rows. */
+  function refreshActivityChats(chatIds: Set<string>): void {
+    const openChatId = activeChat?.id;
+    const includesOpenChat = Boolean(openChatId && chatIds.has(openChatId));
+    if (includesOpenChat) void refreshChat();
+    if (!includesOpenChat || chatIds.size > 1) void refreshChats();
   }
 
   /** Newly arrived messages and relation changes in the open conversation. */
@@ -2883,10 +3401,22 @@
         Math.max(20, Math.min(1_000, chatMessages.length)),
       );
       if (activeChat?.id !== chatId) return;
+      const visible = withoutUnconfirmedChatEchoes(
+        chatMessages,
+        page.messages,
+        pendingChatMessageIds,
+      );
       const known = new Set(chatMessages.map((item) => item.id));
-      const fresh = page.messages.filter((item) => !known.has(item.id));
-      chatMessages = mergeChatPage(chatMessages, page.messages);
-      if (chatSearchOpen) chatSearchMessages = mergeChatPage(chatSearchMessages, page.messages);
+      const fresh = visible.filter((item) => !known.has(item.id));
+      chatMessages = mergeChatPage(chatMessages, visible);
+      if (photoPreview && photoPreview.kind !== 'video') {
+        const updated = visible.find(item => item.id === photoPreview?.message.id);
+        const attachment = updated?.attachments?.find(item => item.kind === 'image' && item.name === photoPreview?.attachment.name);
+        if (updated && attachment?.url && attachment.url !== photoPreview.url)
+          photoPreview = {...photoPreview, url: attachment.url, message: updated, attachment};
+      }
+
+      if (chatSearchOpen) chatSearchMessages = mergeChatPage(chatSearchMessages, visible);
       if (activeChat) rememberChat(activeChat.id);
       const newest = fresh[0];
       if (newest) await api.comms.chatMarkRead(chatId, newest.id).catch(() => {});
@@ -2939,6 +3469,25 @@
     chatHeaderMenuOpen = false;
   }
 
+  function openGroupRename(): void {
+    if (!activeChat?.group || activeChat.platform !== 'wechat') return;
+    closeChatHeaderMenu();
+    closeChatSearch();
+    groupRenameChatId = activeChat.id;
+  }
+
+  function closeGroupRename(chatId: string, restoreFocus: boolean): void {
+    if (groupRenameChatId !== chatId) return;
+    groupRenameChatId = null;
+    if (restoreFocus && activeChat?.id === chatId) void tick().then(() => chatMoreButton?.focus());
+  }
+
+  function acceptGroupRename(chatId: string, name: string): void {
+    chats = chats.map(chat => chat.id === chatId ? {...chat, name} : chat);
+    session.chats = chats;
+    if (activeChat?.id === chatId) activeChat = {...activeChat, name};
+  }
+
   async function loadChatSearchHistory(chatId: string, token: number): Promise<void> {
     if (!chatSearchBefore || token !== chatSearchToken || activeChat?.id !== chatId || !chatSearchOpen) return;
     chatSearchLoading = true;
@@ -2947,9 +3496,7 @@
         const before: string = chatSearchBefore;
         const page = await api.comms.chatMessages(chatId, CHAT_SEARCH_PAGE, before);
         if (token !== chatSearchToken || activeChat?.id !== chatId) return;
-        const known = new Set(chatSearchMessages.map((item) => item.id));
-        const older = page.messages.filter((item) => !known.has(item.id));
-        chatSearchMessages = [...chatSearchMessages, ...older];
+        chatSearchMessages = mergeChatPage(chatSearchMessages, page.messages);
         chatSearchBefore = page.messages.length === 0 || !page.nextBefore || page.nextBefore === before
           ? null
           : page.nextBefore;
@@ -2990,12 +3537,23 @@
     });
   }
 
+  /** A lost bridge removes its cached reader just as it removes its rail row.
+   * Preserve anything typed for the next reconnect, then return to the live
+   * combined list without leaving a permanent recovery banner behind. */
+  function closeDisconnectedChat(chat: ChatDto): void {
+    if (activeChat?.id !== chat.id) return;
+    persistChatComposer();
+    closeReader();
+    error = '';
+  }
+
   function chatComposerChanged(event: Event): void {
     updateComposerCursor(event);
     // Returning to the draft is allowed while browsing emoji; entering the
     // first character commits that return and clears every composer popover.
     composerToolsOpen = false;
     composerEmojiOpen = false;
+    composerStickerOpen = false;
     void tick().then(persistChatComposer);
   }
 
@@ -3018,40 +3576,195 @@
       : null;
   }
 
+  function cachedChatPage(
+    chatId: string,
+  ): {messages: ChatMessageDto[]; nextBefore: string | null} | undefined {
+    const cached = session.messages.get(chatId);
+    if (!cached) return undefined;
+    if (chats.some(chat => chat.id === chatId && chat.platform === 'wechat') &&
+        cached.messages.some(message => message.body === '[Call]' && !message.call)) {
+      session.messages.delete(chatId);
+      return undefined;
+    }
+    const messages = mergeChatPage(cached.messages.filter(
+      (message) => !message.id.startsWith('pending:') || pendingChatMessageIds.has(message.id),
+    ), []);
+    if (messages.length === cached.messages.length &&
+        messages.every((message, index) => message === cached.messages[index])) return cached;
+    const cleaned = {...cached, messages};
+    session.messages.set(chatId, cleaned);
+    return cleaned;
+  }
+
+  function nextPendingChatMessageId(): string {
+    pendingChatSequence += 1;
+    return `pending:${Date.now()}:${pendingChatSequence}`;
+  }
+
+  function updateChatMessageList(
+    chatId: string,
+    update: (messages: ChatMessageDto[]) => ChatMessageDto[],
+  ): void {
+    const cached = session.messages.get(chatId);
+    const open = activeChat?.id === chatId;
+    const messages = open ? chatMessages : (cached?.messages ?? []);
+    const next = update(messages);
+    session.messages.set(chatId, {
+      messages: next,
+      nextBefore: open ? chatBefore : (cached?.nextBefore ?? null),
+    });
+    if (open) chatMessages = next;
+  }
+
+  function addPendingChatMessage(message: ChatMessageDto): void {
+    pendingChatMessageIds = new Set([...pendingChatMessageIds, message.id]);
+    updateChatMessageList(message.chatId, (messages) => [message, ...messages]);
+  }
+
+  function settlePendingChatMessage(
+    chatId: string,
+    pendingId: string,
+    sent?: ChatMessageDto,
+  ): void {
+    pendingChatMessageIds = new Set(
+      [...pendingChatMessageIds].filter((id) => id !== pendingId),
+    );
+    updateChatMessageList(chatId, (messages) =>
+      sent
+        ? replaceChatMessage(messages, pendingId, sent)
+        : removeChatMessage(messages, pendingId),
+    );
+  }
+
+  function restoreFailedChatComposer(chatId: string, failed: ChatDraftSnapshot): void {
+    if (!failed.text.trim() && failed.files.length === 0) return;
+    const current = loadChatDraft(chatId);
+    const restored = mergeFailedChatDraft(current, failed);
+    saveChatDraft(chatId, restored);
+    if (activeChat?.id !== chatId) return;
+    draft = restored.text;
+    chatFiles = [...restored.files];
+    composerCursor = draft.length;
+    replyTo = restored.replyTo
+      ? (chatMessages.find((message) => message.id === restored.replyTo) ?? null)
+      : null;
+  }
+
+  /** Readiness still gates the real Matrix/native send, but not the local
+   * acknowledgement. The caller has already committed its one pending bubble
+   * and empty draft before this can spend seconds relaunching WeChat. */
+  async function chatReadyToSend(chat: ChatDto): Promise<boolean> {
+    if (chat.platform !== 'wechat') return true;
+    try {
+      const wake = await api.comms.wake('wechat');
+      acceptStatus(wake.status);
+      if (wake.ready) {
+        error = '';
+        return true;
+      }
+      error = wake.status.bridges.find((item) => item.platform === 'wechat')?.error
+        ?? 'WeChat is not ready to send yet.';
+    } catch (cause) {
+      error = readableError(cause);
+      return false;
+    }
+    return false;
+  }
+
   async function sendChat(): Promise<void> {
     const text = draft.trim();
     const files = [...chatFiles];
-    if (!activeChat || (!text && files.length === 0)) return;
+    const chat = activeChat;
+    if (!chat || (!text && files.length === 0)) return;
     composerToolsOpen = false;
     composerEmojiOpen = false;
-    busy = 'send-chat';
-    const chatId = activeChat.id;
+    const chatId = chat.id;
     const answering = replyTo?.id;
-    let sentFiles = false;
+    const mentions = text
+      ? mentionsInDraft(text, composerMembers, chat.group === true)
+      : undefined;
+    const filePending = files.map((file) => {
+      const id = nextPendingChatMessageId();
+      addPendingChatMessage(pendingChatMessage({
+        id,
+        chatId,
+        attachments: [pendingFileAttachment(file)],
+      }));
+      return {file, id};
+    });
+    const textPendingId = text ? nextPendingChatMessageId() : '';
+    if (textPendingId) {
+      addPendingChatMessage(pendingChatMessage({
+        id: textPendingId,
+        chatId,
+        body: text,
+        replyTo: answering,
+      }));
+    }
+
+    // Commit the next empty draft before the first await. A second Enter sees
+    // that empty value instead of dispatching the same message twice, and the
+    // user can immediately start writing the next message while this one is
+    // still being verified by its bridge.
+    chatFiles = [];
+    if (text) {
+      draft = '';
+      composerCursor = 0;
+      replyTo = null;
+    }
+    saveChatDraft(chatId, {
+      text: draft,
+      replyTo: replyTo?.id ?? null,
+      files: [...chatFiles],
+    });
+    error = '';
+
+    let remainingFiles = [...files];
+    let pendingText = textPendingId;
     try {
-      if (files.length > 0) {
-        await api.comms.chatSendFiles(chatId, files);
-        chatFiles = [];
-        sentFiles = true;
+      // WeChat can take several seconds to launch and restore its remembered
+      // session. That wake happens after the single local echo is visible and
+      // the draft is cleared, but before any Matrix event or native send is
+      // created. A refusal is therefore safe to roll back without risking the
+      // delivered-then-restored duplicate that an outbound timeout once caused.
+      if (!(await chatReadyToSend(chat))) {
+        for (const pending of filePending)
+          if (pendingChatMessageIds.has(pending.id))
+            settlePendingChatMessage(chatId, pending.id);
+        if (pendingText && pendingChatMessageIds.has(pendingText))
+          settlePendingChatMessage(chatId, pendingText);
+        restoreFailedChatComposer(chatId, {
+          text: pendingText ? text : '',
+          replyTo: pendingText ? (answering ?? null) : null,
+          files: remainingFiles,
+        });
+        return;
+      }
+      for (const pending of filePending) {
+        await api.comms.chatSendFiles(chatId, [pending.file]);
+        remainingFiles = remainingFiles.slice(1);
+        settlePendingChatMessage(chatId, pending.id);
+        if (activeChat?.id === chatId) await refreshChat();
       }
       if (text) {
-        const mentions = mentionsInDraft(text, composerMembers, activeChat.group === true);
         const sent = await api.comms.chatSend(chatId, text, answering, mentions);
-        chatMessages = [sent, ...chatMessages];
-        if (activeChat) rememberChat(activeChat.id);
-        draft = '';
-        composerCursor = 0;
-        replyTo = null;
+        settlePendingChatMessage(chatId, textPendingId, sent);
+        pendingText = '';
       }
-      saveChatDraft(chatId, {text: draft, replyTo: replyTo?.id ?? null, files: [...chatFiles]});
-      error = '';
+      if (activeChat?.id === chatId) error = '';
     } catch (cause) {
-      saveChatDraft(chatId, {text: draft, replyTo: replyTo?.id ?? null, files: [...chatFiles]});
-      error = readableError(cause);
-    } finally {
-      busy = '';
+      for (const pending of filePending)
+        if (pendingChatMessageIds.has(pending.id))
+          settlePendingChatMessage(chatId, pending.id);
+      if (pendingText && pendingChatMessageIds.has(pendingText))
+        settlePendingChatMessage(chatId, pendingText);
+      restoreFailedChatComposer(chatId, {
+        text: pendingText ? text : '',
+        replyTo: pendingText ? (answering ?? null) : null,
+        files: remainingFiles,
+      });
+      if (activeChat?.id === chatId) error = readableError(cause);
     }
-    if (sentFiles) await refreshChat();
   }
 
   function broadcastComposerChanged(): void {
@@ -3117,8 +3830,10 @@
     message: ChatMessageDto;
     anchorX: number;
     anchorY: number;
+    threadScrollTop: number;
     x: number;
     y: number;
+    attachment?: NonNullable<ChatMessageDto['attachments']>[number];
     placed?: boolean;
   } | null = null;
   let messageMenuEl: HTMLDivElement | undefined;
@@ -3152,15 +3867,18 @@
     chatMenu = null;
   }
 
-  function openMessageMenu(event: MouseEvent, message: ChatMessageDto): void {
+  function openMessageMenu(event: MouseEvent, message: ChatMessageDto, attachment?: NonNullable<ChatMessageDto['attachments']>[number]): void {
     event.preventDefault();
+    event.stopPropagation();
     reactingTo = '';
     reactionPickerOpen = false;
     messageMenuBottom = null;
     messageMenu = {
       message,
+      attachment,
       anchorX: event.clientX,
       anchorY: event.clientY,
+      threadScrollTop: threadEl?.scrollTop ?? 0,
       x: event.clientX,
       y: event.clientY,
     };
@@ -3186,7 +3904,7 @@
     currentY = y,
   ): {x: number; y: number} {
     const rect = element.getBoundingClientRect();
-    const margin = 8;
+    const margin = MENU_EDGE_MARGIN;
     // `position: fixed` is not always relative to the viewport: an ancestor
     // that establishes a containing block — `.hub-view` does, through
     // `container-type` — makes the coordinates relative to itself instead, and
@@ -3200,14 +3918,21 @@
     const flippedX = x + rect.width > window.innerWidth - margin ? x - rect.width : x;
     const flippedY = y + rect.height > window.innerHeight - margin ? y - rect.height : y;
     return {
-      x: Math.max(margin, Math.min(flippedX, window.innerWidth - rect.width - margin)) - originX,
-      y: Math.max(margin, Math.min(flippedY, window.innerHeight - rect.height - margin)) - originY,
+      x: clampToMenuEdge(flippedX, rect.width, window.innerWidth) - originX,
+      y: clampToMenuEdge(flippedY, rect.height, window.innerHeight) - originY,
     };
   }
 
   /** Keeps the menu on screen when the click lands near an edge — a menu that
    * opens half outside the window is worse than one on the other side of the
    * pointer. */
+  // Keep pointer coordinates in viewport space, outside Hub's size/scroll
+  // containment. The menu still belongs to this component and is removed on close.
+  function messageMenuPortal(element: HTMLElement): {destroy: () => void} {
+    document.body.append(element);
+    return {destroy: () => element.remove()};
+  }
+
   function clampMessageMenu(): void {
     if (!messageMenu || !messageMenuEl) return;
     messageMenu = {
@@ -3237,7 +3962,7 @@
     }
     if (messageMenuEl) {
       const rect = messageMenuEl.getBoundingClientRect();
-      const margin = 8;
+      const margin = MENU_EDGE_MARGIN;
       const pickerHeight = 168;
       const spaceAbove = rect.top - margin;
       const spaceBelow = window.innerHeight - rect.bottom - margin;
@@ -3396,10 +4121,19 @@
    * into another chat. */
   let composerToolsOpen = false;
   let composerEmojiOpen = false;
+  let composerStickerOpen = false;
   let composerPopoverChatId = '';
-  $: if ((composerToolsOpen || composerEmojiOpen) && activeChat?.id !== composerPopoverChatId) {
+  let stickerCatalog: ChatStickerDto[] = [];
+  let stickerLoading = false;
+  let stickerSending = false;
+  let voiceSending = false;
+  $: if (
+    (composerToolsOpen || composerEmojiOpen || composerStickerOpen) &&
+    activeChat?.id !== composerPopoverChatId
+  ) {
     composerToolsOpen = false;
     composerEmojiOpen = false;
+    composerStickerOpen = false;
   }
   $: composerMembers = mergeComposerMembers(chatMembers, chatMessages);
   $: composerToken = activeComposerToken(draft, composerCursor, activeChat?.platform ?? '');
@@ -3483,6 +4217,7 @@
     closeChatMenu();
     composerPopoverChatId = activeChat?.id ?? '';
     composerEmojiOpen = false;
+    composerStickerOpen = false;
     composerToolsOpen = true;
     await tick();
     composerToolsMenu?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
@@ -3490,7 +4225,27 @@
 
   function openComposerEmojiPicker(): void {
     composerToolsOpen = false;
+    composerStickerOpen = false;
     composerEmojiOpen = true;
+  }
+
+  async function openStickerPicker(): Promise<void> {
+    const chat = activeChat;
+    if (!chat || chat.platform !== 'wechat') return;
+    composerToolsOpen = false;
+    composerEmojiOpen = false;
+    composerStickerOpen = true;
+    stickerLoading = true;
+    try {
+      const catalog = await api.comms.chatStickers(chat.id);
+      if (activeChat?.id !== chat.id || !composerStickerOpen) return;
+      stickerCatalog = catalog;
+      error = '';
+    } catch (cause) {
+      if (activeChat?.id === chat.id) error = readableError(cause);
+    } finally {
+      if (activeChat?.id === chat.id) stickerLoading = false;
+    }
   }
 
   /** Inserts where typing would have continued, replacing a selected range and
@@ -3502,6 +4257,7 @@
     draft = `${draft.slice(0, start)}${emoji}${draft.slice(end)}`;
     composerToolsOpen = false;
     composerEmojiOpen = false;
+    composerStickerOpen = false;
     persistChatComposer();
     void tick().then(() => {
       input?.focus();
@@ -3580,22 +4336,42 @@
     }
   }
 
-  async function sendSticker(): Promise<void> {
-    if (!activeChat || activeChat.platform !== 'wechat') return;
-    const chatId = activeChat.id;
+  async function sendSticker(sticker: ChatStickerDto): Promise<void> {
+    if (!activeChat || activeChat.platform !== 'wechat' || stickerSending) return;
+    const chat = activeChat;
+    const chatId = chat.id;
     composerToolsOpen = false;
-    busy = 'sticker';
+    composerStickerOpen = false;
+    stickerSending = true;
+    const pendingId = nextPendingChatMessageId();
+    addPendingChatMessage(pendingChatMessage({
+      id: pendingId,
+      chatId,
+      attachments: [{
+        kind: 'image',
+        url: sticker.url,
+        name: 'Sticker',
+        mimeType: sticker.mimeType,
+        size: sticker.size,
+        width: sticker.width,
+        height: sticker.height,
+        sticker: true,
+      }],
+    }));
+    let sent = false;
     try {
-      const [file] = await api.comms.chatPickFiles();
-      if (!file) return;
-      await api.comms.chatSendSticker(chatId, file);
-      await refreshChat();
-      error = '';
+      if (!(await chatReadyToSend(chat))) return;
+      await api.comms.chatSendSticker(chatId, sticker.id);
+      sent = true;
+      if (activeChat?.id === chatId) error = '';
     } catch (cause) {
-      error = readableError(cause);
+      if (activeChat?.id === chatId) error = readableError(cause);
     } finally {
-      busy = '';
+      stickerSending = false;
+      if (pendingChatMessageIds.has(pendingId))
+        settlePendingChatMessage(chatId, pendingId);
     }
+    if (sent && activeChat?.id === chatId) await refreshChat();
   }
 
   /**
@@ -3612,6 +4388,8 @@
   let recorder: MediaRecorder | null = null;
   let voiceStream: MediaStream | null = null;
   let voiceParts: Blob[] = [];
+  /** The completed take survives a failed send so it can be played or retried. */
+  let voiceBlob: Blob | null = null;
   /** Seconds recorded, counted while running rather than measured after. */
   let elapsed = 0;
   let elapsedTimer: ReturnType<typeof setInterval> | null = null;
@@ -3632,12 +4410,15 @@
 
   async function startVoice(): Promise<void> {
     if (!activeChat || voiceState !== 'idle') return;
+    const chat = activeChat;
+    messageInput?.cancelDictation();
     composerToolsOpen = false;
     composerEmojiOpen = false;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({audio: true});
       const capture = new MediaRecorder(stream);
       voiceParts = [];
+      voiceBlob = null;
       capture.ondataavailable = (event) => {
         if (event.data.size > 0) voiceParts = [...voiceParts, event.data];
       };
@@ -3749,6 +4530,10 @@
 
   /** Throws the take away without sending it. */
   async function discardVoice(): Promise<void> {
+    clearVoiceCapture();
+  }
+
+  function clearVoiceCapture(): void {
     stopClock();
     stopMeter();
     stopPreview();
@@ -3758,6 +4543,7 @@
     recorder = null;
     voiceStream = null;
     voiceParts = [];
+    voiceBlob = null;
     voiceState = 'idle';
     elapsed = 0;
     levels = [];
@@ -3765,30 +4551,54 @@
 
   /** Ends the take and sends it. */
   async function sendVoice(): Promise<void> {
-    if (!activeChat || voiceState === 'idle' || !recorder) return;
-    const chatId = activeChat.id;
-    const platform = activeChat.platform;
+    if (!activeChat || voiceState === 'idle' || voiceSending) return;
+    const chat = activeChat;
+    const chatId = chat.id;
+    const platform = chat.platform;
     const capture = recorder;
-    const type = capture.mimeType || 'audio/webm';
-    stopClock();
-    stopMeter();
-    stopPreview();
-    const finished = new Promise<void>((resolve) => {
-      capture.onstop = () => resolve();
-    });
-    if (capture.state !== 'inactive') capture.stop();
-    await finished;
-    voiceStream?.getTracks().forEach((track) => track.stop());
-    const blob = new Blob(voiceParts, {type});
-    revokePreview();
-    recorder = null;
-    voiceStream = null;
-    voiceParts = [];
-    voiceState = 'idle';
-    elapsed = 0;
-    levels = [];
-    if (blob.size === 0) return;
-    busy = 'voice';
+    const type = voiceBlob?.type || capture?.mimeType || 'audio/webm';
+    if (!voiceBlob && capture) {
+      stopClock();
+      stopMeter();
+      stopPreview();
+      if (capture.state !== 'inactive') {
+        const finished = new Promise<void>((resolve) => {
+          capture.onstop = () => resolve();
+        });
+        capture.stop();
+        await finished;
+      }
+      voiceStream?.getTracks().forEach((track) => track.stop());
+      voiceBlob = new Blob(voiceParts, {type});
+      recorder = null;
+      voiceStream = null;
+      voiceParts = [];
+      voiceState = 'paused';
+      revokePreview();
+      if (voiceBlob.size > 0) previewUrl = URL.createObjectURL(voiceBlob);
+    }
+    const blob = voiceBlob;
+    if (!blob || blob.size === 0) return;
+    // Send is also Stop: preserve the completed take before a cold WeChat
+    // wake. If reconnect cannot finish yet, the user gets a paused recording
+    // they can retry instead of an apparently ignored click that keeps the
+    // microphone running.
+    if (!(await chatReadyToSend(chat))) return;
+    const pendingId = nextPendingChatMessageId();
+    addPendingChatMessage(pendingChatMessage({
+      id: pendingId,
+      chatId,
+      attachments: [{
+        kind: 'audio',
+        url: previewUrl || null,
+        name: 'Voice message',
+        mimeType: platform === 'wechat' ? 'audio/wav' : blob.type,
+        size: blob.size,
+        duration: elapsed,
+      }],
+    }));
+    voiceSending = true;
+    let sent = false;
     try {
       const bytes = platform === 'wechat'
         ? await recordedVoiceWav(blob)
@@ -3798,36 +4608,43 @@
         new Uint8Array(bytes),
         platform === 'wechat' ? 'audio/wav' : blob.type,
       );
-      await refreshChat();
-      error = '';
+      sent = true;
+      if (activeChat?.id === chatId) error = '';
     } catch (cause) {
-      error = readableError(cause);
+      if (activeChat?.id === chatId) error = readableError(cause);
     } finally {
-      busy = '';
+      voiceSending = false;
     }
+    if (pendingChatMessageIds.has(pendingId))
+      settlePendingChatMessage(chatId, pendingId);
+    if (sent && activeChat?.id === chatId) await refreshChat();
+    if (sent) await discardVoice();
   }
 
   async function readMail(envelope: MailEnvelopeDto): Promise<void> {
     if (!source || source.kind !== 'mail') return;
+    const {account, folder} = source;
     // Switch to the reader straight away on what the list already knows —
     // sender, subject, date — and fill the body in when it arrives. Waiting on
     // the fetch before showing anything reads as a dead click.
     openEnvelope = envelope;
     // A message read or prefetched earlier opens on its own body rather than
     // on the skeleton; the fetch behind it only replaces what changed.
-    const cached = session.mail.get(mailKey(source.account, source.folder, envelope.id));
+    const cached = session.mail.get(mailKey(account, folder, envelope.id));
     openMail = cached ?? null;
     attachmentPaths = [];
+    clearMailAttachmentPreviews();
     thread = [];
     chainExpanded = false;
     composing = false;
     busy = cached ? '' : `mail:${envelope.id}`;
     try {
-      const message = await api.comms.mailMessage(envelope.id, source.account, source.folder);
-      session.mail.set(mailKey(source.account, source.folder, envelope.id), message);
+      const message = await api.comms.mailMessage(envelope.id, account, folder);
+      session.mail.set(mailKey(account, folder, envelope.id), message);
       // A slower earlier click must not overwrite whatever is open now.
       if (openEnvelope?.id !== envelope.id) return;
       openMail = message;
+      void loadMailAttachmentPreviews(message, account, folder);
       // Opening a message is what marks it read, the same as any mail client.
       // Reading the body deliberately does not do it — the fetch peeks, so
       // that prefetching the next few messages cannot mark mail read the user
@@ -3835,7 +4652,6 @@
       // person actually looked. Not awaited: the row flips now, and the server
       // catching up is not something the reader waits on.
       if (!envelope.seen) {
-        const {account, folder} = source;
         void api.comms.mailFlag([envelope.id], 'seen', true, account, folder).catch(() => {});
         envelopes = envelopes.map((item) =>
           item.id === envelope.id ? {...item, seen: true} : item,
@@ -4072,6 +4888,8 @@
     composeSignatureBody = signature?.body ?? '';
     composeSignatureHtml = signature?.html ?? null;
     composeFiles = [];
+    composeInlineFiles = [];
+    composeCaretOffset = composeBody.length;
     composeImportance = 'normal';
     composeDraft = null;
     // Only an answer continues a chain; a forward starts its own.
@@ -4111,6 +4929,8 @@
       composeSignatureBody = '';
       composeSignatureHtml = null;
       composeFiles = [];
+      composeInlineFiles = [];
+      composeCaretOffset = composeBody.length;
       composeReply = null;
       composeDraft = {id: envelope.id, folder: source.folder};
       const snapshot = mailComposerSnapshot(false);
@@ -4128,12 +4948,24 @@
       error = readableError(cause);
       return [] as string[];
     });
-    composeFiles = [...composeFiles, ...picked.filter((file) => !composeFiles.includes(file))];
-    if (picked.length) composeChanged();
+    const added = picked.filter((file) => !composeFiles.includes(file));
+    if (added.length === 0) return;
+    const offset = Math.max(0, Math.min(composeBody.length, composeCaretOffset));
+    composeFiles = [...composeFiles, ...added];
+    composeInlineFiles = [
+      ...composeInlineFiles,
+      ...added.map((path) => ({
+        path,
+        contentId: `mail-${crypto.randomUUID()}@polymux.local`,
+        offset,
+      })),
+    ];
+    composeChanged();
   }
 
   function removeComposeFile(file: string): void {
     composeFiles = composeFiles.filter((item) => item !== file);
+    composeInlineFiles = composeInlineFiles.filter((item) => item.path !== file);
     composeChanged();
   }
 
@@ -4151,7 +4983,93 @@
   }
 
   function fileName(pathname: string): string {
-    return pathname.split('/').pop() ?? pathname;
+    return pathname.split(/[\\/]/).pop() ?? pathname;
+  }
+
+  function composeFileType(pathname: string): string {
+    const name = fileName(pathname);
+    const extension = name.split('.').at(-1)?.trim();
+    return extension && extension !== name && extension.length <= 5
+      ? extension.toUpperCase()
+      : $t('hub.attachment').slice(0, 5).toUpperCase();
+  }
+
+  type MailComposePiece = {
+    from: number;
+    to: number;
+    text: string;
+    /** The attachment drawn immediately after this editable text segment. */
+    file: string | null;
+  };
+
+  function mailComposePieces(
+    body: string,
+    files: string[],
+    inlineFiles: MailComposerInlineAttachment[],
+  ): MailComposePiece[] {
+    const inline = new Map(inlineFiles.map((file) => [file.path, file]));
+    const placed = files
+      .map((file, order) => ({
+        file,
+        order,
+        offset: Math.max(0, Math.min(body.length, inline.get(file)?.offset ?? body.length)),
+      }))
+      .sort((left, right) => left.offset - right.offset || left.order - right.order);
+    const pieces: MailComposePiece[] = [];
+    let from = 0;
+    for (const placement of placed) {
+      pieces.push({
+        from,
+        to: placement.offset,
+        text: body.slice(from, placement.offset),
+        file: placement.file,
+      });
+      from = placement.offset;
+    }
+    pieces.push({from, to: body.length, text: body.slice(from), file: null});
+    return pieces;
+  }
+
+  /** A segment edit moves only the attachments after that segment. Text
+   * before an already drawn card cannot silently drag it somewhere else. */
+  function updateComposePiece(index: number, event: Event): void {
+    const field = event.currentTarget as HTMLTextAreaElement;
+    const piece = composePieces[index];
+    if (!piece) return;
+    const delta = field.value.length - piece.text.length;
+    composeBody = composeBody.slice(0, piece.from) + field.value + composeBody.slice(piece.to);
+    if (delta !== 0) {
+      const following = new Set(composePieces.slice(index).flatMap((item) => item.file ? [item.file] : []));
+      composeInlineFiles = composeInlineFiles.map((file) =>
+        following.has(file.path) ? {...file, offset: file.offset + delta} : file,
+      );
+    }
+    composeCaretOffset = piece.from + (field.selectionStart ?? field.value.length);
+    fitComposeTextarea(field);
+    composeChanged();
+  }
+
+  function rememberComposeCaret(index: number, event: Event): void {
+    const field = event.currentTarget as HTMLTextAreaElement;
+    const piece = composePieces[index];
+    if (!piece) return;
+    composeCaretOffset = piece.from + (field.selectionStart ?? field.value.length);
+  }
+
+  function fitComposeTextarea(field: HTMLTextAreaElement): void {
+    field.style.height = '0px';
+    field.style.height = `${field.scrollHeight}px`;
+  }
+
+  function fitComposeSegment(field: HTMLTextAreaElement, value: string): {update(next: string): void} {
+    const resize = (): void => fitComposeTextarea(field);
+    requestAnimationFrame(resize);
+    return {
+      update(next) {
+        if (next !== value) requestAnimationFrame(resize);
+        value = next;
+      },
+    };
   }
 
   /**
@@ -4225,9 +5143,18 @@
           bcc: addressList(composeBcc),
           subject: composeSubject,
           body: mailBodyWithSignature(composeBody, composeSignatureBody),
-          html: mailHtmlWithSignature(composeBody, composeSignatureHtml),
+          html: mailHtmlWithSignature(
+            composeBody,
+            composeSignatureHtml,
+            composeInlineFiles.map((file) => ({
+              name: fileName(file.path),
+              contentId: file.contentId,
+              offset: file.offset,
+            })),
+          ),
           draft: false,
           attachments: composeFiles,
+          inlineAttachments: composeInlineFiles.map(({path, contentId}) => ({path, contentId})),
           importance: composeImportance,
           inReplyTo: composeReply?.inReplyTo ?? undefined,
           references: composeReply?.references,
@@ -4248,6 +5175,8 @@
       composeSignatureBody = '';
       composeSignatureHtml = null;
       composeFiles = [];
+      composeInlineFiles = [];
+      composeCaretOffset = 0;
       composeImportance = 'normal';
       composeReply = null;
       composeDraft = null;
@@ -4263,9 +5192,12 @@
   /** Returns to the list, which is what the back affordance does when the
    * drawer is too narrow to show both at once. */
   function closeReader(): void {
+    groupRenameChatId = null;
+    if (voiceState !== 'idle') void discardVoice();
     closeChatSearch();
     closeChatHeaderMenu();
     openMail = null;
+    clearMailAttachmentPreviews();
     openEnvelope = null;
     activeChat = null;
     activeBroadcast = null;
@@ -4362,6 +5294,11 @@
       composerEmojiOpen = false;
       composerInput?.focus();
     }
+    else if (composerStickerOpen) {
+      event.stopPropagation();
+      composerStickerOpen = false;
+      composerInput?.focus();
+    }
     else if (composerToolsOpen) {
       event.stopPropagation();
       composerToolsOpen = false;
@@ -4398,11 +5335,20 @@
     if (chatHeaderMenuOpen && !insideChatHeaderMenu) closeChatHeaderMenu();
     if (composerToolsOpen && !insideComposerTools) composerToolsOpen = false;
     if (composerEmojiOpen && !insideComposerRow) composerEmojiOpen = false;
+    if (composerStickerOpen && !insideComposerRow) composerStickerOpen = false;
     if (conversationFilterMenu && !insideConversationFilter) conversationFilterMenu = false;
   }}
 />
 
 <div class="hub-view">
+  {#each photoPreview ? [photoPreview] : [] as preview (preview.message.id)}
+    <ChatMediaPreview src={preview.url} name={preview.name} kind={preview.kind ?? 'image'}
+      initialPosition={preview.position ?? 0} resume={preview.playing ?? false}
+      onContextMenu={(event) => openMessageMenu(event, preview.message, preview.attachment)}
+      onError={(event) => retryMedia(event, preview.url)}
+      onClose={() => closePhotoPreview()}
+      onExpand={() => { const {url, name} = preview; closePhotoPreview(false); onOpenMedia(url, name); }}/>
+  {/each}
   <div
     class="hub-view-grid"
     class:reading={hubReading}
@@ -4589,12 +5535,12 @@
   <section class="hub-view-list" aria-label={$t('hub.messages')}>
     {#if broadcastCreateOpen}
       <div class="hub-view-list-head hub-view-new-chat-head">
-        <input
-          bind:this={broadcastSearchInput}
+        <SearchField
+          bind:input={broadcastSearchInput}
           bind:value={broadcastSearch}
-          type="search"
           placeholder={$t('hub.searchContacts')}
-          aria-label={$t('hub.searchContacts')}
+          label={$t('hub.searchContacts')}
+          clearLabel={$t('common.clearSearch')}
         />
         <button
           type="button"
@@ -4683,12 +5629,12 @@
       </ul>
     {:else if newChatOpen}
       <div class="hub-view-list-head hub-view-new-chat-head">
-        <input
-          bind:this={newChatSearchInput}
+        <SearchField
+          bind:input={newChatSearchInput}
           bind:value={newChatSearch}
-          type="search"
           placeholder={$t('hub.searchContacts')}
-          aria-label={$t('hub.searchContacts')}
+          label={$t('hub.searchContacts')}
+          clearLabel={$t('common.clearSearch')}
         />
         <button
           type="button"
@@ -4837,22 +5783,27 @@
           <!-- Which mailbox this is a folder of, since the rail only says
                "Mail" once its accounts are folded away. -->
           {#if currentAccount}
-            <span class="hub-view-list-account">{currentAccount.email}</span>
+            {#if railIconOnly && compactAccountOptions.length > 1}
+              <div class="hub-view-mail-account-picker">
+                <Menu
+                  options={compactAccountOptions}
+                  value={currentRailAccount}
+                  label={$t('hub.chooseAccount')}
+                  trailingIcon="switch"
+                  plain
+                  floating
+                  onChange={chooseCompactAccount}
+                />
+              </div>
+            {:else}
+              <span class="hub-view-list-account">{currentAccount.email}</span>
+            {/if}
           {/if}
         </div>
-        {#if railIconOnly && compactAccountOptions.length > 1}
-          <div class="hub-view-account-picker">
-            <Menu
-              options={compactAccountOptions}
-              value={currentRailAccount}
-              label={$t('hub.chooseAccount')}
-              onChange={chooseCompactAccount}
-            />
-          </div>
-        {/if}
-        <input
-          type="search"
+        <SearchField
           placeholder={$t('hub.searchFolder')}
+          label={$t('hub.searchFolder')}
+          clearLabel={$t('common.clearSearch')}
           bind:value={search}
           onkeydown={(event) => {
             if (event.key === 'Enter') void loadEnvelopes();
@@ -4970,9 +5921,16 @@
               <span class="hub-view-row-line">
                 <span class="hub-view-row-preview">{envelope.preview ?? ''}</span>
                 <span class="hub-view-row-meta">
-                  {#if envelope.flagged}<Icon name="flag" size={12} filled />{/if}
+                  {#if envelope.importance === 'high'}
+                    <span role="img" aria-label={$t('hub.important')}><Icon name="bolt" size={12} /></span>
+                  {/if}
+                  {#if envelope.flagged}
+                    <span role="img" aria-label={$t('hub.filterFlagged')}><Icon name="flag" size={12} filled /></span>
+                  {/if}
                   {#if envelope.answered}<Icon name="back" size={12} />{/if}
-                  {#if envelope.hasAttachment}<Icon name="attach" size={12} />{/if}
+                  {#if envelope.hasAttachment}
+                    <span role="img" aria-label={$t('hub.attachment')}><Icon name="attach" size={12} /></span>
+                  {/if}
                   {#if chainCount(envelope) > 1}
                     <span class="hub-view-row-chain" title={`${chainCount(envelope)} messages`}>
                       {chainCount(envelope)}
@@ -5022,11 +5980,11 @@
       </div>
     {:else if source?.kind === 'broadcasts'}
       <div class="hub-view-list-head">
-        <input
+        <SearchField
           bind:value={broadcastListSearch}
-          type="search"
           placeholder={$t('hub.searchBroadcasts')}
-          aria-label={$t('hub.searchBroadcasts')}
+          label={$t('hub.searchBroadcasts')}
+          clearLabel={$t('common.clearSearch')}
         />
         <button
           type="button"
@@ -5080,7 +6038,12 @@
       </ul>
     {:else if source?.kind === 'all'}
       <div class="hub-view-list-head">
-        <input bind:value={chatSearch} type="search" placeholder={$t('hub.searchAllPlatforms')} aria-label={$t('hub.searchAllPlatforms')} />
+        <SearchField
+          bind:value={chatSearch}
+          placeholder={$t('hub.searchAllPlatforms')}
+          label={$t('hub.searchAllPlatforms')}
+          clearLabel={$t('common.clearSearch')}
+        />
         {@render conversationFilterControl()}
         <button
           type="button"
@@ -5102,9 +6065,11 @@
               {/if}
             {:else}
               <button type="button" class="hub-view-row" class:unread={!row.envelope.seen} onclick={() => void openUnifiedMail(row)}>
-                <span class="hub-view-chat-avatar-wrap" aria-hidden="true">
-                  <span class="hub-view-chat-avatar placeholder">{sender(row.envelope).trim().charAt(0).toUpperCase()}</span>
-                  <span class="hub-view-platform-badge"><PlatformLogo platform="mail" size={12} /></span>
+                <!-- A sender photo belongs to conversations on messaging
+                     platforms. Mail keeps its source mark without inventing a
+                     contact avatar from the sender's initial. -->
+                <span class="hub-view-mail-mark" aria-hidden="true">
+                  <PlatformLogo platform="mail" size={28} />
                 </span>
                 <span class="hub-view-chat-copy">
                   <span class="hub-view-row-top"><strong>{sender(row.envelope)}</strong><em>{when(row.envelope.date)}</em></span>
@@ -5127,11 +6092,11 @@
       {@render chatContextMenu()}
     {:else if source?.kind === 'contacts'}
       <div class="hub-view-list-head">
-        <input
+        <SearchField
           bind:value={contactSearch}
-          type="search"
           placeholder={$t('hub.searchContacts')}
-          aria-label={$t('hub.searchContacts')}
+          label={$t('hub.searchContacts')}
+          clearLabel={$t('common.clearSearch')}
         />
         <button
           type="button"
@@ -5210,15 +6175,15 @@
             />
           </div>
         {/if}
-        <input
+        <SearchField
           bind:value={chatSearch}
-          type="search"
           placeholder={focusedSpace
             ? $t('hub.searchSpace', {space: focusedSpace.name})
             : $t('hub.searchConversations')}
-          aria-label={focusedSpace
+          label={focusedSpace
             ? $t('hub.searchSpace', {space: focusedSpace.name})
             : $t('hub.searchConversations')}
+          clearLabel={$t('common.clearSearch')}
         />
         {@render conversationFilterControl()}
         <button
@@ -5240,7 +6205,9 @@
             {/if}
           </li>
         {:else}
-          {#if loading}
+          {#if source.platform === 'wechat' && weChatAttention}
+            <li class="hub-view-empty" aria-hidden="true"></li>
+          {:else if loading || (source.platform === 'wechat' && weChatWakePending)}
             <!-- The rows that are coming, in their own shape: a spinner in the
                  middle of an empty column says less than the list arriving. -->
             {#each SKELETON_ROWS as index (index)}
@@ -5325,11 +6292,13 @@
     ondrop={(event) => void dropIntoChat(event)}
   >
     <div class="hub-file-drop-pane-overlay" aria-hidden="true"></div>
-    {#if error}
+    {#if error && !showWeChatAttention}
       <p class="hub-view-error" role="alert">{error}</p>
     {/if}
 
-    {#if composing}
+    {#if showWeChatAttention && weChatAttention}
+      <WeChatLoginPanel attention={weChatAttention} onRefresh={wakeWeChatSource} />
+    {:else if composing}
       <header class="hub-view-reader-head">
         <button type="button" class="hub-view-back" onclick={closeReader}>
           <Icon name="back" size={13} /> Back
@@ -5365,22 +6334,6 @@
           <span>{$t('hub.subject')}</span>
           <input bind:value={composeSubject} oninput={composeFieldChanged} />
         </label>
-        {#if composeFiles.length > 0}
-          <div class="hub-view-attachments">
-            {#each composeFiles as file (file)}
-              <span class="hub-view-file">
-                {fileName(file)}
-                <button
-                  type="button"
-                  title={$t('hub.removeAttachment')}
-                  onclick={() => removeComposeFile(file)}
-                >
-                  <Icon name="close" size={11} />
-                </button>
-              </span>
-            {/each}
-          </div>
-        {/if}
         {#if (currentAccount?.signatures.length ?? 0) > 0}
           <div class="hub-view-signature-control">
             <span>{$t('hub.signature')}</span>
@@ -5394,7 +6347,35 @@
             />
           </div>
         {/if}
-        <textarea bind:value={composeBody} oninput={composeFieldChanged} placeholder={$t('hub.writeMessage')}></textarea>
+        <div class="hub-view-compose-body" aria-label={$t('hub.writeMessage')}>
+          {#each composePieces as piece, index}
+            <textarea
+              class:last={index === composePieces.length - 1}
+              value={piece.text}
+              use:fitComposeSegment={piece.text}
+              oninput={(event) => updateComposePiece(index, event)}
+              onselect={(event) => rememberComposeCaret(index, event)}
+              onkeyup={(event) => rememberComposeCaret(index, event)}
+              onclick={(event) => rememberComposeCaret(index, event)}
+              onfocus={(event) => rememberComposeCaret(index, event)}
+              placeholder={composeFiles.length === 0 && index === 0 ? $t('hub.writeMessage') : ''}
+              aria-label={index === 0 ? $t('hub.writeMessage') : `${$t('hub.writeMessage')} ${index + 1}`}
+            ></textarea>
+            {#if piece.file}
+              <section class="hub-view-mail-inline-attachment hub-view-compose-attachment">
+                <span class="hub-view-mail-attachment-type">{composeFileType(piece.file)}</span>
+                <strong>{fileName(piece.file)}</strong>
+                <button
+                  type="button"
+                  aria-label={`${$t('hub.removeAttachment')}: ${fileName(piece.file)}`}
+                  onclick={() => removeComposeFile(piece.file!)}
+                >
+                  <Icon name="close" size={11} />
+                </button>
+              </section>
+            {/if}
+          {/each}
+        </div>
         {#if composeSignatureBody || safeComposeSignatureHtml}
           <div class="hub-view-signature-preview" role="region" aria-label={$t('hub.signaturePreview')}>
             <span>{$t('hub.signature')}</span>
@@ -5420,7 +6401,7 @@
             data-tooltip-label={$t('hub.markImportant')}
             onclick={toggleComposeImportance}
           >
-            <Icon name="flag" size={13} />
+            <Icon name="bolt" size={13} />
           </button>
           </div>
           <button type="button" onclick={leaveMailComposer}>{$t('common.cancel')}</button>
@@ -5438,11 +6419,17 @@
         </footer>
       </div>
     {:else if openMail || openEnvelope}
-      <header class="hub-view-reader-head">
-        <!-- The chevron sits beside the subject rather than on a line above it,
-             the same way it does in a chat: the subject is the title, and a
-             labelled row of its own costs a line the message would rather have. -->
-        <div class="hub-view-reader-title">
+      {@const mailSenderName =
+        openMail?.from?.name ??
+        openMail?.from?.address ??
+        (openEnvelope ? sender(openEnvelope) : $t('hub.unknownSender'))}
+      {@const mailSentAt = openMail?.date ?? openEnvelope?.date ?? ''}
+      <header class="hub-view-reader-head hub-view-mail-head">
+        <!-- A message opens on its human hierarchy: who sent it, what it is,
+             and who received it. The mailbox and time stay quieter at the far
+             edge. Mail identity stays textual because an address is not a
+             shared social profile. -->
+        <div class="hub-view-mail-overview">
           <button
             type="button"
             class="hub-view-back hub-view-back-icon"
@@ -5451,184 +6438,126 @@
           >
             <Icon name="back" size={15} />
           </button>
-          <h2>{openMail?.subject ?? openEnvelope?.subject ?? ''}</h2>
+          <div class="hub-view-mail-identity">
+            <strong class="hub-view-mail-sender">{mailSenderName}</strong>
+            <h2>{openMail?.subject ?? openEnvelope?.subject ?? ''}</h2>
+            {#if openMail && (openMail.to.length > 0 || openMail.cc.length > 0 || openMail.bcc.length > 0)}
+              <!-- Each field keeps its own labelled line; Bcc appears only on
+                   messages we sent. -->
+              <p class="hub-view-recipients">
+                {#if openMail.to.length > 0}
+                  <span><b>To:</b> {names(openMail.to)}</span>
+                {/if}
+                {#if openMail.cc.length > 0}
+                  <span><b>Cc:</b> {names(openMail.cc)}</span>
+                {/if}
+                {#if openMail.bcc.length > 0}
+                  <span><b>Bcc:</b> {names(openMail.bcc)}</span>
+                {/if}
+              </p>
+            {/if}
+          </div>
+          <div class="hub-view-mail-meta">
+            <div class="hub-view-mail-meta-line">
+              <span class="hub-view-mail-location">
+                <Icon name={FOLDER_ICONS[currentFolder?.role ?? 'other'] ?? 'folder'} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
+                <span>
+                  {folderLabel(currentFolder?.label ?? mailFolder)}
+                  {#if currentAccount}
+                    <em>– {currentAccount.displayName ?? currentAccount.email}</em>
+                  {/if}
+                </span>
+              </span>
+              {#if mailSentAt}
+                <time datetime={mailSentAt}>{displayTime(mailSentAt)}</time>
+              {/if}
+            </div>
+            {#if openEnvelope?.importance === 'high' || openMail?.importance === 'high' || openEnvelope?.flagged || openEnvelope?.hasAttachment || (openMail?.attachments.length ?? 0) > 0}
+              <span class="hub-view-mail-marks">
+                {#if openEnvelope?.importance === 'high' || openMail?.importance === 'high'}
+                  <span role="img" aria-label={$t('hub.important')}><Icon name="bolt" size={13} /></span>
+                {/if}
+                {#if openEnvelope?.flagged}
+                  <span role="img" aria-label={$t('hub.filterFlagged')}><Icon name="flag" size={13} filled /></span>
+                {/if}
+                {#if openEnvelope?.hasAttachment || (openMail?.attachments.length ?? 0) > 0}
+                  <span role="img" aria-label={$t('hub.attachment')}><Icon name="attach" size={13} /></span>
+                {/if}
+              </span>
+            {/if}
+          </div>
         </div>
-        <p>
-          {openMail?.from?.name ??
-            openMail?.from?.address ??
-            (openEnvelope ? sender(openEnvelope) : $t('hub.unknownSender'))}
-          {#if openMail?.date ?? openEnvelope?.date}
-            <em>· {displayTime(openMail?.date ?? openEnvelope?.date ?? '')}</em>
-          {/if}
-        </p>
-        {#if openMail && (openMail.to.length > 0 || openMail.cc.length > 0 || openMail.bcc.length > 0)}
-          <!-- Each field on its own line and labelled, the way a message states
-               them: a run of names is only readable once you know which field
-               it belongs to. Bcc appears only on messages we sent. -->
-          <p class="hub-view-recipients">
-            {#if openMail.to.length > 0}
-              <span><b>To:</b> {names(openMail.to)}</span>
-            {/if}
-            {#if openMail.cc.length > 0}
-              <span><b>Cc:</b> {names(openMail.cc)}</span>
-            {/if}
-            {#if openMail.bcc.length > 0}
-              <span><b>Bcc:</b> {names(openMail.bcc)}</span>
-            {/if}
-          </p>
-        {/if}
         <!-- One strip of bare icons, each saying what it does on hover through
              the app's own tooltip rather than the system's: these actions are
              the same weight as every other icon control in the app, so they
              wear the same nothing — no pill, no rule between them, no label on
-             the one that used to carry text.
-
-             Too narrow for the row and the whole strip folds into one ⋮, where
-             the actions get their names back beside the same icons. Folding
-             all of them together keeps the reading pane's actions in one place
-             at any width, rather than splitting them across a row and a menu. -->
+             the one that used to carry text. The workspace floor reserves this
+             row, so every action remains directly available. -->
         <div
           class="hub-view-reader-actions"
-          class:compact={compactActions}
-          bind:clientWidth={actionsWidth}
           onfocusout={(event) => {
             const next = event.relatedTarget;
-            if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
-              moveMenu = false;
-              overflowMenu = false;
-            }
+            if (!(next instanceof Node) || !event.currentTarget.contains(next)) moveMenu = false;
           }}
         >
-          {#if compactActions}
-            <div class="hub-view-action-group hub-view-move">
-              <button
-                type="button"
-                aria-label={$t('hub.moreActions')}
-                aria-expanded={overflowMenu}
-                onclick={() => {
-                  overflowMenu = !overflowMenu;
-                  moveMenu = false;
-                }}
-              >
-                <Icon name="more" size={15} />
-              </button>
-              {#if overflowMenu}
-                <!-- Opens rightwards: the ⋮ sits at the pane's leading edge, so
-                     a menu anchored to its right edge would hang off the pane
-                     and over the rail beside it. -->
-                <ul class="hub-view-folder-menu">
-                  {#if moveMenu && openEnvelope}
-                    {@const envelope = openEnvelope}
+          {#each mailActions as action (action.id)}
+            {#if action.id === 'move'}
+              <div class="hub-view-action-group hub-view-move">
+                <button
+                  type="button"
+                  aria-label={action.label}
+                  aria-expanded={moveMenu}
+                  onclick={() => (moveMenu = !moveMenu)}
+                >
+                  <Icon name={action.icon} size={15} />
+                </button>
+                {#if moveMenu && openEnvelope}
+                  {@const envelope = openEnvelope}
+                  <ul class="hub-view-folder-menu hub-view-menu-right">
                     {#each railFolders.filter((item) => item.name !== mailFolder) as target (target.name)}
                       <li>
-                        <button
-                          type="button"
-                          onclick={() => {
-                            overflowMenu = false;
-                            void moveTo(envelope, target.name);
-                          }}
-                        >
+                        <button type="button" onclick={() => void moveTo(envelope, target.name)}>
                           <Icon name={FOLDER_ICONS[target.role] ?? 'folder'} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
                           {target.label}
                         </button>
                       </li>
                     {/each}
-                  {:else}
-                    {#each mailActions as action (action.id)}
-                      <li>
-                        <button
-                          type="button"
-                          class:destructive={action.destructive}
-                          class:on={action.on}
-                          disabled={action.disabled}
-                          onclick={() => runAction(action)}
-                        >
-                          <Icon name={action.icon} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} filled={action.filled} />
-                          {action.label}
-                        </button>
-                      </li>
-                    {/each}
-                  {/if}
-                </ul>
-              {/if}
-            </div>
-          {:else}
-            {#each mailActions as action (action.id)}
-              {#if action.id === 'move'}
-                <div class="hub-view-action-group hub-view-move">
-                  <button
-                    type="button"
-                    aria-label={action.label}
-                    aria-expanded={moveMenu}
-                    onclick={() => (moveMenu = !moveMenu)}
-                  >
-                    <Icon name={action.icon} size={15} />
-                  </button>
-                  {#if moveMenu && openEnvelope}
-                    {@const envelope = openEnvelope}
-                    <ul class="hub-view-folder-menu hub-view-menu-right">
-                      {#each railFolders.filter((item) => item.name !== mailFolder) as target (target.name)}
-                        <li>
-                          <button type="button" onclick={() => void moveTo(envelope, target.name)}>
-                            <Icon name={FOLDER_ICONS[target.role] ?? 'folder'} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
-                            {target.label}
-                          </button>
-                        </li>
-                      {/each}
-                    </ul>
-                  {/if}
-                </div>
-              {:else}
-                <button
-                  type="button"
-                  class:destructive={action.destructive}
-                  class:on={action.on}
-                  disabled={action.disabled}
-                  aria-label={action.label}
-                  onclick={() => action.run?.()}
-                >
-                  <Icon name={action.icon} size={15} filled={action.filled} />
-                </button>
-              {/if}
-            {/each}
-          {/if}
+                  </ul>
+                {/if}
+              </div>
+            {:else}
+              <button
+                type="button"
+                class:destructive={action.destructive}
+                class:on={action.on}
+                disabled={action.disabled}
+                aria-label={action.label}
+                onclick={() => action.run?.()}
+              >
+                <Icon name={action.icon} size={15} filled={action.filled} />
+              </button>
+            {/if}
+          {/each}
         </div>
       </header>
       {#if openMail}
-        {#if openMail.attachments.length > 0}
-          <!-- What came with the message, before the message: a strip of the
-               same pills the composer uses, so a file reads the same wherever
-               the app shows one. Clicking one hands it to the app's open menu,
-               which hangs under the pill that was clicked. -->
-          <div class="hub-view-mail-files">
-            {#each openMail.attachments as file, index (file.name)}
-              <button
-                type="button"
-                class="hub-view-mail-file"
-                disabled={busy === 'attachments'}
-                onclick={(event) => void openAttachment(index, event.currentTarget.getBoundingClientRect())}
-              >
-                <FileAttachment
-                  name={file.name}
-                  status={busy === 'attachments' && pendingAttachment === index ? 'uploading' : 'done'}
-                  progress={busy === 'attachments' && pendingAttachment === index ? 40 : 100}
-                  removable={false}
-                />
-              </button>
-            {/each}
-          </div>
-        {/if}
         {#if safeHtml}
           <!-- The sender's own markup, sanitised: scripts, frames, forms and
-               stylesheets are stripped, and links are opened in the real
-               browser rather than inside the app. -->
+               stylesheets are stripped. CID attachments are resolved at the
+               exact authored node; MIME parts without one are appended after
+               the message because the format supplies no body position. -->
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="hub-view-body hub-view-html" onclick={openLink} onerrorcapture={hideBrokenImage}>
             {@html safeHtml}
           </div>
         {:else}
-          <div class="hub-view-body">{openMail.body}</div>
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="hub-view-body hub-view-plain-mail" onclick={openLink}>
+            <div class="hub-view-mail-plain-text">{openMail.body}</div>
+            {@html plainAttachmentHtml}
+          </div>
         {/if}
         {#if thread.length > 1}
           <div class="hub-view-chain">
@@ -5744,10 +6673,22 @@
           <span class="hub-view-profile-avatar">
             {@render chatAvatar(profileName, activeProfileChats[0]?.avatarUrl ?? activeChat.avatarUrl, `profile:${activeChat.id}`)}
           </span>
-          <h2 class="hub-view-profile-name">
-            <span>{profileName}</span>
-            {#if activeProfileChats.some((chat) => chat.official)}{@render officialBadge()}{/if}
-          </h2>
+          <div class="hub-view-profile-title">
+            <h2 class="hub-view-profile-name">
+              <span>{profileName}</span>
+              {#if activeProfileChats.some((chat) => chat.official)}{@render officialBadge()}{/if}
+            </h2>
+            <button
+              bind:this={profileRenameButton}
+              type="button"
+              class="hub-view-profile-rename-button"
+              aria-label={$t('hub.renameContact', {name: profileName})}
+              data-tooltip-label={$t('common.rename')}
+              onclick={startProfileRename}
+            >
+              <Icon name="edit" size={13} />
+            </button>
+          </div>
           <p>
             {activeProfilePlatformCount > 1
               ? $t('hub.platformCount', {count: activeProfilePlatformCount})
@@ -5764,6 +6705,45 @@
             </button>
           </div>
         </section>
+
+        {#if profileRenameOpen}
+          <section class="hub-view-profile-section hub-view-profile-merge hub-view-profile-rename">
+            <h3>{$t('hub.renameContactTitle')}</h3>
+            <label>
+              <span>{$t('hub.contactName')}</span>
+              <input
+                bind:this={profileRenameInput}
+                bind:value={profileRenameName}
+                maxlength="80"
+                required
+                aria-invalid={profileRenameError ? 'true' : 'false'}
+                onkeydown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    cancelProfileRename();
+                  } else if (event.key === 'Enter' && !event.isComposing) {
+                    event.preventDefault();
+                    void saveProfileRename();
+                  }
+                }}
+              />
+            </label>
+            {#if profileRenameError}
+              <p class="hub-view-profile-form-error" role="alert">{profileRenameError}</p>
+            {/if}
+            <footer>
+              <button type="button" onclick={cancelProfileRename}>{$t('common.cancel')}</button>
+              <button
+                type="button"
+                class="hub-view-primary"
+                disabled={!profileRenameName.trim() || profileRenameName.trim() === profileName || busy === 'contact-rename'}
+                onclick={() => void saveProfileRename()}
+              >
+                {busy === 'contact-rename' ? $t('hub.saving') : $t('common.save')}
+              </button>
+            </footer>
+          </section>
+        {/if}
 
         {#if profileMergeOpen}
           <section class="hub-view-profile-section hub-view-profile-merge">
@@ -5834,7 +6814,7 @@
           </section>
         {/if}
 
-        {#if activeProfileLink}
+        {#if activeProfileLink && activeProfileLink.members.length > 1}
           <button
             type="button"
             class="hub-view-profile-unmerge"
@@ -5916,6 +6896,7 @@
             <button
               type="button"
               class="hub-view-chat-more"
+              bind:this={chatMoreButton}
               aria-label={$t('hub.moreActions')}
               aria-haspopup="menu"
               aria-expanded={chatHeaderMenuOpen}
@@ -5931,6 +6912,13 @@
                 aria-label={$t('hub.moreActions')}
                 transition:fade={{duration: 100}}
               >
+                {#if activeChat.group && activeChat.platform === 'wechat'}
+                  <li role="presentation">
+                    <button type="button" role="menuitem" onclick={openGroupRename}>
+                      <Icon name="edit" size={14} /><span>{$t('hub.renameGroup')}</span>
+                    </button>
+                  </li>
+                {/if}
                 {#if !activeChat.group}
                   <li role="presentation">
                     <button
@@ -5967,7 +6955,7 @@
                       closeChatHeaderMenu();
                     }}
                   >
-                    <Icon name={chatPrefs.pinned.includes(activeChat.id) ? 'pin-off' : 'pin'} size={14} />
+                    <Icon name={chatPrefs.pinned.includes(activeChat.id) ? 'pin-filled' : 'pin'} size={14} />
                     <span>{chatPrefs.pinned.includes(activeChat.id) ? $t('hub.unpinChat') : $t('hub.pinChat')}</span>
                   </button>
                 </li>
@@ -5989,6 +6977,14 @@
           </div>
         {/if}
       </header>
+      {#if groupRenameChatId === activeChat.id}
+        {#key activeChat.id}
+          {@const renamedChatId = activeChat.id}
+          <WeChatGroupRename chatId={renamedChatId}
+            onRenamed={(name) => acceptGroupRename(renamedChatId, name)}
+            onClose={(restoreFocus) => closeGroupRename(renamedChatId, restoreFocus)} />
+        {/key}
+      {/if}
       {#if chatSearchOpen}
         <nav class="hub-view-chat-search-tabs" aria-label={$t('hub.searchFilters')}>
           {#each CHAT_SEARCH_FILTERS as filter (filter)}
@@ -6048,7 +7044,7 @@
           {/if}
         </div>
       {:else}
-      <div class="hub-view-thread" bind:this={threadEl} onscroll={onThreadScroll}>
+      <div class="hub-view-thread" role="region" aria-label={activeChat.name} bind:this={threadEl} onscroll={onThreadScroll}>
         {#each chatTimeline as item (item.key)}
           {@const stampEntry = item.kind === 'notice' ? item.entry : item.entries[item.entries.length - 1]!}
           {#if item.kind === 'notice'}
@@ -6057,13 +7053,20 @@
           <div class="hub-view-message-run">
           {#each item.entries as entry (entry.message.id)}
           {@const message = entry.message}
+          {@const hasMedia = (message.attachments ?? []).some(attachment => attachment.url && !brokenMedia.has(attachment.url))}
           {@const index = entry.index}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="hub-view-bubble-row"
             class:mine={message.mine}
             data-message-id={message.id}
-            oncontextmenu={(event) => openMessageMenu(event, message)}
+            id={`hub-message-${message.id}`}
+            role="group"
+            aria-label={`${senderLabel(message)}, ${messageTime(message.sentAt)}`}
+            oncontextmenu={(event) => {
+              if (pendingChatMessageIds.has(message.id)) event.preventDefault();
+              else openMessageMenu(event, message);
+            }}
           >
           <!-- Who sent it, above the bubble and aligned to its leading edge.
                Every platform and conversation type uses this same treatment;
@@ -6092,19 +7095,22 @@
           {/if}
           <div
             class="hub-view-bubble"
+            class:media={hasMedia}
             class:mine={message.mine}
             class:reply-target-highlight={replyTargetHighlight === message.id}
+            data-hub-message-pending={pendingChatMessageIds.has(message.id)}
           >
             {#if quoted(message)}
               <!-- What this answers, kept short: the point is recognition, and
                    the message it quotes is a scroll away. -->
               <span class="hub-view-quote">
                 <strong>{senderLabel(quoted(message)!)}</strong>
-                {quoted(message)!.body || $t('hub.attachment')}
+                {quoted(message)!.forwarded?.title || quoted(message)!.body || $t('hub.attachment')}
               </span>
             {:else if message.replyTo}
               <span class="hub-view-quote">{$t('hub.replyToEarlier')}</span>
             {/if}
+            <div class="hub-view-message-media">
             {#each message.attachments ?? [] as attachment (`${attachment.kind}:${attachment.url ?? attachment.name}`)}
               {@const attachmentKind = attachmentRenderKind(attachment)}
               {#if !attachment.url}
@@ -6125,6 +7131,9 @@
                   <span class="hub-view-bubble-file-name">{attachment.name}</span>
                 </span>
               {:else if attachmentKind === 'image'}
+                <button type="button" class="hub-chat-photo" aria-label={`${$t('hub.previewPhoto')}: ${attachment.name}`}
+                  onclick={(event) => { closeMessageMenu(); photoPreview = {url: attachment.url!, name: attachment.name, opener: event.currentTarget, message, attachment}; }}
+                  oncontextmenu={(event) => openMessageMenu(event, message, attachment)}>
                 <img
                   class="hub-view-bubble-image"
                   class:sticker={attachment.sticker}
@@ -6135,29 +7144,24 @@
                   loading="lazy"
                   onerror={(event) => retryMedia(event, attachment.url!)}
                 />
+                </button>
               {:else if attachmentKind === 'audio'}
                 <!-- Voice notes are most of what arrives on these networks, so
                      they play in place rather than downloading first. -->
-                <audio
-                  class="hub-view-bubble-audio"
-                  controls
-                  preload="metadata"
+                <VoiceMessagePlayer
                   src={attachment.url}
-                  onerror={(event) => retryMedia(event, attachment.url!)}
-                ></audio>
+                  name={attachment.name}
+                  fallbackDuration={attachment.duration}
+                  onError={(event) => retryMedia(event, attachment.url!)}
+                />
               {:else if attachmentKind === 'video'}
-                <!-- svelte-ignore a11y_media_has_caption -->
-                <!-- A video someone sent over WhatsApp has no caption track to
-                     offer; there is nothing to point this at. -->
-                <video
-                  class="hub-view-bubble-video"
-                  controls
-                  playsinline
-                  preload="metadata"
-                  src={attachment.url}
-                  aria-label={attachment.name}
-                  onerror={(event) => retryMedia(event, attachment.url!)}
-                ></video>
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div oncontextmenu={(event) => openMessageMenu(event, message, attachment)}>
+                  <ChatVideo src={attachment.url} name={attachment.name}
+                    onOpen={(state) => { closeMessageMenu(); photoPreview = {url: attachment.url!, name: attachment.name,
+                      kind: 'video', position: state.position, playing: state.playing, opener: state.opener, message, attachment}; }}
+                    onError={(event) => retryMedia(event, attachment.url!)} />
+                </div>
               {:else}
                 <a class="hub-view-bubble-file" href={attachment.url} download={attachment.name}>
                   <Icon name="attach" size={13} />
@@ -6165,7 +7169,18 @@
                 </a>
               {/if}
             {/each}
-            {#if message.body}
+            {#if hasMedia && (message.reactions ?? []).length > 0}
+              <MessageReactions
+                reactions={message.reactions ?? []}
+                onreact={(key) => void react(message, key)}
+              />
+            {/if}
+            </div>
+            {#if message.forwarded}
+              <ForwardedMessages bundle={message.forwarded} />
+            {:else if message.call}
+              <CallMessage call={message.call} />
+            {:else if message.body}
               <p>
                 {#each messageParts(message.body) as part}
                   {#if part.url}<a class="hub-view-message-link" href={part.url} onclick={openLink}>{part.text}</a>{:else}{part.text}{/if}
@@ -6212,7 +7227,7 @@
                 </span>
               {/if}
             {/if}
-            {#if message.viewIn}
+            {#if message.viewIn && !message.call}
               <!-- Media the bridge could not carry across. The source app can
                    still show it, so the placeholder opens that app rather than
                    leaving the reader at a dead end. -->
@@ -6225,7 +7240,7 @@
                 {$t('hub.viewIn', {app: message.viewIn.app})}
               </button>
             {/if}
-            {#if (message.reactions ?? []).length > 0}
+            {#if !hasMedia && (message.reactions ?? []).length > 0}
               <MessageReactions
                 reactions={message.reactions ?? []}
                 onreact={(key) => void react(message, key)}
@@ -6236,6 +7251,9 @@
             <time class="hub-view-bubble-time" datetime={message.sentAt}>{messageTime(message.sentAt)}</time>
           {/if}
           </div>
+          {#if message.mine && message.deliveryStatus === 'unconfirmed'}
+            <span class="hub-view-delivery-status" role="status" title="Check WeChat before sending again.">Delivery unconfirmed</span>
+          {/if}
           </div>
           {/each}
           </div>
@@ -6275,6 +7293,7 @@
           class:has-reactions={activeChat.platform !== 'wechat'}
           role="menu"
           bind:this={messageMenuEl}
+          use:messageMenuPortal
           style:left={`${messageMenu.x}px`}
           style:top={messageMenuBottom === null ? `${messageMenu.y}px` : 'auto'}
           style:bottom={messageMenuBottom === null ? 'auto' : `${messageMenuBottom}px`}
@@ -6301,6 +7320,15 @@
               />
             {/if}
           {/if}
+          {#if messageMenu.attachment?.url}
+            {@const attachment = messageMenu.attachment}
+            <button class="polymux-dropdown-item" role="menuitem"
+              onclick={() => { onOpenMedia(attachment.url!, attachment.name); closeMessageMenu(); }}
+            ><Icon name="expand" size={14}/><span>{$t('hub.openInMedia')}</span></button>
+            <button class="polymux-dropdown-item" role="menuitem"
+              onclick={() => { void downloadHubMedia(attachment.url!, attachment.name).catch(cause => error = readableError(cause)); closeMessageMenu(); }}
+            ><Icon name="download" size={14}/><span>{$t('drive.download')}</span></button>
+          {/if}
           <button
             class="polymux-dropdown-item"
             role="menuitem"
@@ -6317,7 +7345,7 @@
               role="menuitem"
               disabled={busy === `recall:${target.id}`}
               onclick={() => void recallMessage(target)}
-            ><Icon name="trash" size={14} /><span>{$t('common.delete')}</span></button>
+            ><Icon name="trash" size={14} /><span>{$t('hub.recall')}</span></button>
           {/if}
         </div>
       {/if}
@@ -6379,11 +7407,11 @@
           <button
             type="button"
             class="hub-view-composer-add"
-            class:active={composerToolsOpen || composerEmojiOpen}
+            class:active={composerToolsOpen || composerEmojiOpen || composerStickerOpen}
             title={$t('hub.moreActions')}
-            aria-label={$t('hub.moreActions')}
+            aria-label={`${$t('hub.moreActions')}: ${activeChat.name}`}
             aria-haspopup="menu"
-            aria-expanded={composerToolsOpen || composerEmojiOpen}
+            aria-expanded={composerToolsOpen || composerEmojiOpen || composerStickerOpen}
             onclick={() => void toggleComposerTools()}
           >
             <Icon name="plus" size={16} />
@@ -6414,13 +7442,16 @@
                 <Icon name="smile" size={14} />
                 <span>{$t('hub.addEmoji')}</span>
               </button>
+              <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => void startVoice()}>
+                <Icon name="mic" size={14}/><span>{$t('hub.recordVoice')}</span>
+              </button>
               {#if activeChat.platform === 'wechat'}
                 <button
                   type="button"
                   class="polymux-dropdown-item"
                   role="menuitem"
-                  disabled={busy === 'sticker'}
-                  onclick={() => void sendSticker()}
+                  disabled={stickerSending}
+                  onclick={() => void openStickerPicker()}
                 >
                   <Icon name="image" size={14} />
                   <span>{$t('hub.sendSticker')}</span>
@@ -6430,6 +7461,14 @@
           {/if}
           {#if composerEmojiOpen}
             <EmojiPicker direction="above" ariaLabel={$t('hub.emoji')} onpick={insertComposerEmoji} />
+          {/if}
+          {#if composerStickerOpen}
+            <WeChatStickerPicker
+              stickers={stickerCatalog}
+              loading={stickerLoading}
+              ariaLabel={$t('hub.sendSticker')}
+              onpick={(sticker) => void sendSticker(sticker)}
+            />
           {/if}
         {/if}
         <div class="hub-view-composer" class:capturing={voiceState !== 'idle'}>
@@ -6468,50 +7507,16 @@
               {/each}
             </div>
           {/if}
-          {#if !draft}
-            <span class="hub-view-composer-hint" aria-hidden="true">
-              {$t('hub.messagePlaceholder', {name: activeChat.name})}
-            </span>
-          {/if}
-          <textarea
-            bind:this={composerInput}
-            bind:value={draft}
-            rows="1"
-            oninput={chatComposerChanged}
-            onclick={updateComposerCursor}
-            onkeyup={updateComposerCursor}
+          {#key activeChat.id}
+          <MessageInput bind:this={messageInput} bind:field={composerInput} bind:value={draft}
             placeholder={$t('hub.messagePlaceholder', {name: activeChat.name})}
-            aria-label={$t('hub.messagePlaceholder', {name: activeChat.name})}
-            aria-autocomplete="list"
-            aria-controls={composerAutocompleteOpen ? 'hub-composer-autocomplete' : undefined}
-            aria-activedescendant={composerAutocompleteOpen
-              ? `hub-composer-suggestion-${composerAutocompleteIndex}`
-              : undefined}
-            onkeydown={chatComposerKeydown}
-          ></textarea>
-          {#if draft.trim() || chatFiles.length > 0}
-            <button
-              type="button"
-              class="hub-view-primary"
-              title={$t('hub.send')}
-              aria-label={$t('hub.send')}
-              disabled={busy === 'send-chat'}
-              onclick={() => void sendChat()}
-            >
-              <Icon name="send" size={15} />
-            </button>
-          {:else}
-            <button
-              type="button"
-              class="hub-view-primary"
-              title={$t('hub.recordVoice')}
-              aria-label={$t('hub.recordVoice')}
-              disabled={busy === 'voice'}
-              onclick={() => void startVoice()}
-            >
-              <Icon name="mic" size={15} />
-            </button>
-          {/if}
+            hasAttachments={chatFiles.length > 0}
+            oninput={chatComposerChanged} oncursor={updateComposerCursor}
+            ondictation={() => { composerCursor = composerInput?.selectionStart ?? draft.length; persistChatComposer(); }}
+            autocompleteId={composerAutocompleteOpen ? 'hub-composer-autocomplete' : undefined}
+            activeDescendant={composerAutocompleteOpen ? `hub-composer-suggestion-${composerAutocompleteIndex}` : undefined}
+            onkeydown={chatComposerKeydown} onSend={() => void sendChat()} />
+          {/key}
         {:else}
           <button
             type="button"
@@ -6544,7 +7549,7 @@
               {/each}
             </span>
           </div>
-          {#if voiceState === 'recording'}
+          {#if voiceState === 'recording' && recorder}
             <button
               type="button"
               title={$t('hub.pauseRecording')}
@@ -6553,7 +7558,7 @@
             >
               <Icon name="pause" size={15} />
             </button>
-          {:else}
+          {:else if recorder}
             <button
               type="button"
               title={$t('hub.resumeRecording')}
@@ -6568,7 +7573,7 @@
             class="hub-view-primary hub-view-send-voice"
             title={$t('hub.send')}
             aria-label={$t('hub.send')}
-            disabled={busy === 'voice'}
+            disabled={voiceSending}
             onclick={() => void sendVoice()}
           >
             <Icon name="send" size={15} />
@@ -6628,8 +7633,10 @@
                 conversationFilterMenu = false;
               }}
             >
-              <Icon name={option.icon} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
-              {option.label}
+              <span>{option.label}</span>
+              <span class="hub-view-conversation-filter-check">
+                {#if conversationFilter === option.id}<Icon name="check" size={13} />{/if}
+              </span>
             </button>
           </li>
         {/each}
@@ -6646,8 +7653,10 @@
                 conversationFilterMenu = false;
               }}
             >
-              <Icon name={option.icon} size={13} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
-              {option.label}
+              <span>{option.label}</span>
+              <span class="hub-view-conversation-filter-check">
+                {#if conversationSort === option.id}<Icon name="check" size={13} />{/if}
+              </span>
             </button>
           </li>
         {/each}
@@ -6742,7 +7751,7 @@
           <!-- The glyph is decorative, so the state it stands for is said in
                words for anyone who cannot see it. -->
           <span class="visually-hidden">{$t('hub.pinned')}</span>
-          <Icon name="pin" size={11} />
+          <Icon name="pin-filled" size={11} />
         {/if}
         {#if chatPrefs.muted.includes(chat.id)}
           <span class="visually-hidden">{$t('hub.muted')}</span>
@@ -6811,7 +7820,7 @@
       style:visibility={chatMenu.placed ? 'visible' : 'hidden'}
     >
       <button class="polymux-dropdown-item" role="menuitem" onclick={() => { chatPrefs = togglePinned(chatPrefs, target.id); closeChatMenu(); }}>
-        <Icon name={pinned ? 'pin-off' : 'pin'} size={14} /><span>{pinned ? $t('hub.unpinChat') : $t('hub.pinChat')}</span>
+        <Icon name={pinned ? 'pin-filled' : 'pin'} size={14} /><span>{pinned ? $t('hub.unpinChat') : $t('hub.pinChat')}</span>
       </button>
       <button class="polymux-dropdown-item" role="menuitem" onclick={() => { chatPrefs = toggleMuted(chatPrefs, target.id); closeChatMenu(); }}>
         <Icon name={muted ? 'speaker' : 'speaker-off'} size={14} /><span>{muted ? $t('hub.unmuteChat') : $t('hub.muteChat')}</span>

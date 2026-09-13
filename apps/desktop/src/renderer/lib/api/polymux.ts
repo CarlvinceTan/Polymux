@@ -1,4 +1,6 @@
+import {conversationCopyTitle} from '../../../shared/conversation-copy';
 import type {
+  AccountStatusDto,
   ArtifactDto,
   AgentRuntimeDto,
   AgentSettingsDto,
@@ -18,6 +20,7 @@ import type {
   DiscoveredMcpGroupDto,
   DiscoveredSkillGroupDto,
   BrowserDownloadDto,
+  BrowserEventDto,
   BrowserHistoryEntryDto,
   BrowserSettingsDto,
   BrowserSiteDto,
@@ -25,6 +28,7 @@ import type {
   BroadcastDto,
   BroadcastMessageDto,
   ChatActivityDto,
+  ChatStickerDto,
   DriveEntryDto,
   DriveProviderId,
   DriveStatusDto,
@@ -32,6 +36,7 @@ import type {
   MailFolderDto,
   WorkspaceRevealDto,
   WorkspaceSnapshotDto,
+  WorkspaceAppsDto,
   ConversationDto,
   GoalDto,
   GeneralSettingsDto,
@@ -47,22 +52,34 @@ import type {
   ModelRoleAssignmentDto,
   ModelRolesDto,
   ProviderDto,
+  ProfileDto,
   ReasoningEffort,
   ReferenceDto,
   RunEventDto,
   ScheduleDto,
+  MarketplaceAppDto,
   MarketplacePluginDto,
   PluginDto,
   PluginMarketplaceDto,
   PhoneIosSigningStatusDto,
   PhoneStatusDto,
   SkillDto,
+  SendMailRequest,
   StartRunRequest,
+  TeamGroupDto,
+  TeamHostDto,
+  TerminalEventDto,
+  UsageStatsDto,
+  IdeEntryDto,
+  IdeFileDto,
+  BotDto,
 } from '@polymux/protocol';
 import {LOCAL_RUNTIMES, parseDriveSourceId} from '@polymux/protocol';
+import {isBinaryFileName, languageForName} from '../../../main/ide/language';
 import {EXTENSION_INSTALL_URL} from '../../../shared/extension';
 
 let browserApi: PolymuxApi | undefined;
+let demoDevicePairing: import('@polymux/protocol').DevicePairingState = {approvals: typeof location !== 'undefined' && new URLSearchParams(location.search).has('deviceApproval') ? [{id: 'incoming', deviceName: 'Test Phone', choices: ['17', '42', '68'], expiresAt: new Date(Date.now() + 120000).toISOString()}] : [], connectedDevices: [], outgoing: null};
 
 export function polymuxApi(): PolymuxApi {
   if (typeof window !== 'undefined' && window.polymux) return window.polymux;
@@ -108,26 +125,129 @@ function sameDemoContactMember(
 function createBrowserDemoApi(): PolymuxApi {
   // The dev branch always represents an already-configured profile.
   const onboardingPreview = false;
+  const permissionPreview = new URLSearchParams(window.location.search).get('permissions') === 'preview';
   const releaseNotesPreview = new URLSearchParams(window.location.search).get('releaseNotesPreview') === '1';
   const weChatMissingPreview = new URLSearchParams(window.location.search).get('wechat') === 'missing';
+  const emptyTeamPreview = new URLSearchParams(window.location.search).get('team') === 'empty';
+  const emptyChatsPreview = new URLSearchParams(window.location.search).get('chats') === 'empty';
+  const teamGroupSendPreview = new URLSearchParams(window.location.search).get('teamGroupSend');
   const now = Date.now();
-  let conversations: ConversationDto[] = [
+  let conversations: ConversationDto[] = emptyChatsPreview ? [] : [
     conversation('welcome', 'Planning a product launch', now - 86_400_000),
     conversation('research', 'Research notes', now - 3 * 86_400_000),
   ];
-  const messages = new Map<string, MessageDto[]>([
+  const messages = new Map<string, MessageDto[]>(emptyChatsPreview ? [] : [
     ['welcome', [
       message('m1', 'welcome', 'user', 'Help me outline a simple launch plan.', now - 6000),
       message('m2', 'welcome', 'assistant', [{type: 'text', text: 'I can turn that into a concise plan with milestones, owners, and launch-day checks.'}], now - 2000),
     ]],
   ]);
+  if (new URLSearchParams(location.search).has('memoryCitations')) {
+    messages.set('welcome', [
+      message('m1', 'welcome', 'user', 'Help me outline a simple launch plan.', now - 6000),
+      message('m2', 'welcome', 'assistant', [{type: 'text', text: 'Here is your concise launch plan.\n\n<polymux-memories>["Maintained personal pi presentation preferences", "Prefers concise project updates"]</polymux-memories>'}], now - 2000),
+    ]);
+  }
+  if (new URLSearchParams(location.search).has('forkChat')) {
+    messages.set('welcome', [
+      message('m1', 'welcome', 'user', 'First question', now - 6000),
+      message('m2', 'welcome', 'assistant', [{type: 'text', text: 'First answer'}], now - 5000),
+      message('m3', 'welcome', 'user', 'Later question', now - 4000),
+      message('m4', 'welcome', 'assistant', [{type: 'text', text: 'Later answer'}], now - 3000),
+    ]);
+  }
   const goals = new Map<string, GoalDto>();
   const addedReferences = new Map<string, ReferenceDto[]>();
   const listeners = new Set<(event: RunEventDto) => void>();
+  const demoBrowserListeners = new Set<(event: BrowserEventDto) => void>();
+  let demoWebAuthnAnswer: {id: string; credentialId?: string} | null = null;
+  (window as unknown as {
+    polymuxDemoRequestPasskey?: (tabId: string) => void;
+    polymuxDemoPasskeyAnswer?: () => {id: string; credentialId?: string} | null;
+  }).polymuxDemoRequestPasskey = (tabId) => {
+    const event: BrowserEventDto = {
+      type: 'webauthn',
+      prompt: {
+        id: 'demo-passkey-prompt',
+        tabId,
+        relyingPartyId: 'github.com',
+        accounts: [
+          {credentialId: 'personal-passkey', displayName: 'Carlvince', name: 'carlvince@example.com'},
+          {credentialId: 'work-passkey', displayName: 'Work', name: 'carlvince@work.example'},
+        ],
+      },
+    };
+    for (const listener of demoBrowserListeners) listener(event);
+  };
+  (window as unknown as {
+    polymuxDemoPasskeyAnswer?: () => {id: string; credentialId?: string} | null;
+  }).polymuxDemoPasskeyAnswer = () => demoWebAuthnAnswer;
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const runConversations = new Map<string, string>();
-  let demoProfiles = [{id: 'default', name: 'Default Profile', isDefault: true}];
+  let demoProfiles: ProfileDto[] = [{id: 'default', name: 'Default Profile', isDefault: true, source: null}];
   let demoActiveProfile = 'default';
+  let demoHosts: TeamHostDto[] = [
+    {
+      mode: 'local', state: 'local', endpoint: null, hostId: 'demo-host', desktopId: 'demo-desktop',
+      deviceName: 'This Mac', deviceType: 'laptop', fingerprint: 'a22f 91bc 3780 552d', pairedAt: null, detail: null, isDefault: true,
+      listeningEndpoint: 'https://connect.polymux.com/h/86c92dd5-5042-4aa4-a33f-b656bf641e28', pairingCode: 'K7M2P9X4Q',
+      pairingExpiresAt: new Date(now + 5 * 60_000).toISOString(), pairedDesktopName: null,
+    },
+    {
+      mode: 'remote', state: 'connected', endpoint: 'https://connect.polymux.com/h/3cb460aa-2ce8-49c7-a53d-fe33a1e827f4', hostId: 'demo-studio-host', desktopId: 'demo-desktop',
+      deviceName: 'Studio Linux', deviceType: 'server', fingerprint: '71ad 309c 14fe a992', pairedAt: new Date(now - 86_400_000).toISOString(), detail: null, isDefault: false,
+    },
+  ];
+  const demoTeamListeners = new Set<(members: BotDto[]) => void>();
+  const demoTeamGroupListeners = new Set<(groups: TeamGroupDto[]) => void>();
+  let demoBots: BotDto[] = emptyTeamPreview ? [] : [
+    demoBot('maya', 'team-maya', 'Maya', 'Product researcher', '#8b5cf6', 'working', 'Comparing the latest primary sources.', now - 42_000),
+    demoBot('linus', 'team-linus', 'Linus', 'Software engineer', '#3ecf8e', 'idle', 'Ready to work', now - 3_400_000),
+    demoBot('sol', 'team-sol', 'Sol', 'Operations coordinator', '#f08a24', 'idle', 'Launch checklist updated.', now - 86_400_000),
+  ];
+  (window as unknown as {
+    polymuxDemoSetTeamStatus?: (id: string, status: BotDto['status']) => void;
+  }).polymuxDemoSetTeamStatus = (id, status) => {
+    demoBots = demoBots.map((member) => member.id === id ? {...member, status} : member);
+    demoTeamListeners.forEach((listener) => listener(structuredClone(demoBots)));
+  };
+  let demoTeamGroups: TeamGroupDto[] = emptyTeamPreview ? [] : [{
+    id: 'launch-room',
+    conversationId: 'team-group-launch',
+    name: 'Launch room',
+    memberIds: ['maya', 'linus', 'sol'],
+    preview: 'Two claims still need primary sources.',
+    updatedAt: new Date(now - 24_000).toISOString(),
+    unread: true,
+    unreadCount: 2,
+  }];
+  messages.set('team-maya', [
+    message('team-peer-demo', 'team-maya', 'tool', 'Please compare the onboarding findings with the current product brief.', now - 90_000, null, {
+      agentRelay: {
+        source: {kind: 'assistant', memberId: null, conversationId: 'research', name: 'Research notes', role: null, avatar: null, traceId: 'demo-trace', hop: 0, automatic: false},
+        destination: {kind: 'team', memberId: 'maya', conversationId: 'team-maya', name: 'Maya'},
+        deliveredAt: new Date(now - 90_000).toISOString(),
+      },
+    } as unknown as JsonValue),
+    message('team-maya-reply', 'team-maya', 'assistant', [{type: 'text', text: 'I’m checking the claims against primary sources and will flag anything the brief overstates.'}], now - 42_000),
+  ]);
+  messages.set('team-group-launch', [
+    message('team-group-question', 'team-group-launch', 'user', 'What is still blocking launch?', now - 120_000),
+    message('team-group-maya', 'team-group-launch', 'tool', 'Two claims still need primary sources. I’m checking both now.', now - 55_000, null, {
+      agentRelay: {
+        source: {kind: 'team', memberId: 'maya', conversationId: 'team-maya', name: 'Maya', role: 'Product researcher', avatar: demoBots.find((member) => member.id === 'maya')?.avatar ?? null, traceId: 'demo-group-maya', hop: 1, automatic: true},
+        destination: {kind: 'assistant', memberId: null, conversationId: 'team-group-launch', name: 'Launch room'},
+        deliveredAt: new Date(now - 55_000).toISOString(),
+      },
+    } as unknown as JsonValue),
+    message('team-group-linus', 'team-group-launch', 'tool', 'The release build is green. I’m waiting on Maya’s source check before I tag it ready.', now - 24_000, null, {
+      agentRelay: {
+        source: {kind: 'team', memberId: 'linus', conversationId: 'team-linus', name: 'Linus', role: 'Software engineer', avatar: demoBots.find((member) => member.id === 'linus')?.avatar ?? null, traceId: 'demo-group-linus', hop: 1, automatic: true},
+        destination: {kind: 'assistant', memberId: null, conversationId: 'team-group-launch', name: 'Launch room'},
+        deliveredAt: new Date(now - 24_000).toISOString(),
+      },
+    } as unknown as JsonValue),
+  ]);
   let demoAgentRuntime: AgentRuntimeDto = {kind: 'polymux', name: 'Polymux Agent'};
   const demoCompactAgentSettings: AgentSettingsDto = {
     authMethods: [{id: 'account', name: 'Sign in with agent account', description: 'Continue with the account managed by this agent.', type: 'agent', available: true}],
@@ -196,6 +316,21 @@ function createBrowserDemoApi(): PolymuxApi {
     {id: 'opencode', name: 'OpenCode', description: 'Open source coding agent', version: '1.0.0', icon: '', installed: false, command: 'npx', args: ['-y', 'opencode-ai@1.0.0', 'acp']},
     {id: 'junie', name: 'Junie', description: 'AI Coding Agent by JetBrains', version: '3032.2.0', icon: '', installed: false, command: 'junie', args: ['--acp=true']},
     {id: 'poolside', name: 'Poolside', description: "Poolside's coding agent", version: '1.0.16', icon: '', installed: false, command: 'pool', args: ['acp']},
+  ];
+  const demoTeamProfileOptions = (): ProfileDto[] => [
+    ...demoProfiles.map((profile) => ({
+      ...profile,
+      agent: {kind: 'polymux' as const, id: 'polymux', name: 'Polymux'},
+      teamEligible: true,
+    })),
+    {
+      id: 'demo-claude-team',
+      name: 'Claude Research',
+      isDefault: false,
+      source: {kind: 'external', agentId: 'claude', agentName: 'Claude Code', directory: '/Users/demo/.claude'},
+      agent: {kind: 'acp', id: 'claude', name: 'Claude Code'},
+      teamEligible: true,
+    },
   ];
   let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string; reasoning?: ReasoningEffort}>> = {};
   const demoRoles = (): ModelRolesDto => {
@@ -285,6 +420,168 @@ function createBrowserDemoApi(): PolymuxApi {
       conflicts: [{kind: 'skill', name: 'pdf', existingSource: 'official'}],
     },
   ];
+  let demoWorkspaceApps: WorkspaceAppsDto = {
+    apps: [
+      {id: 'hub', name: 'Hub', description: 'Messages and email across connected accounts.', official: true, enabled: true, workspaceKind: 'hub', settingsKind: 'hub', entry: null, pinnable: true},
+      {id: 'drive', name: 'Drive', description: 'Files from this computer and connected storage.', official: true, enabled: true, workspaceKind: 'drive', settingsKind: 'drive', entry: null, pinnable: true},
+      {id: 'media', name: 'Media', description: 'Photos and videos.', official: true, enabled: true, workspaceKind: 'media', settingsKind: null, entry: null, pinnable: true},
+      {id: 'tasks', name: 'Tasks', description: 'Tasks created and managed by you and your agent.', official: true, enabled: true, workspaceKind: 'tasks', settingsKind: null, entry: null, pinnable: true},
+      {id: 'calendar', name: 'Calendar', description: 'Events and availability from connected calendars.', official: true, enabled: true, workspaceKind: 'calendar', settingsKind: null, entry: null, pinnable: true},
+      {id: 'phone', name: 'Phone', description: 'Your connected Android or iPhone screen.', official: true, enabled: true, workspaceKind: 'phone', settingsKind: null, entry: null, pinnable: true},
+      {id: 'locker', name: 'Locker', description: 'Passwords, authenticator codes, recovery codes and passkeys.', official: true, enabled: true, workspaceKind: 'locker', settingsKind: null, entry: null, pinnable: true},
+      {id: 'terminal', name: 'Terminal', description: 'A command line on this computer.', official: true, enabled: true, workspaceKind: 'terminal', settingsKind: null, entry: null, pinnable: true},
+      {id: 'ide', name: 'IDE', description: 'A project folder, the file in front of you, and a terminal.', official: true, enabled: true, workspaceKind: 'ide', settingsKind: null, entry: null, pinnable: true},
+      {id: 'finance', name: 'Finance', description: 'Bank accounts and agent payments.', official: true, enabled: true, workspaceKind: 'finance', settingsKind: null, entry: null, pinnable: true},
+      {id: 'usage', name: 'Usage', description: 'Tokens, API-equivalent spend, and activity over time.', official: true, enabled: true, workspaceKind: 'usage', settingsKind: null, entry: null, pinnable: true},
+    ],
+    pinnedIds: ['drive', 'calendar', 'hub', 'tasks'],
+  };
+  type DemoLockerEntry = {
+    id: string;
+    title: string;
+    username: string;
+    url: string;
+    notes: string;
+    groupName: string;
+    password: string;
+    totpSecret: string;
+    recoveryCodes: string[];
+    passkey: {
+      relyingParty: string;
+      username: string;
+      credentialId: string;
+      userHandle: string;
+      privateKeyPem: string;
+    } | null;
+    pinned: boolean;
+    sortIndex: number;
+    trashed: boolean;
+    updatedAt: string;
+  };
+  let demoLockerExists = false;
+  let demoLockerUnlocked = false;
+  let demoLockerMaster = '';
+  let demoLockerStorage: import('@polymux/protocol').LockerStorageMode = 'account';
+  const demoLockerItems: DemoLockerEntry[] = [];
+  const demoLockerListeners = new Set<(status: import('@polymux/protocol').LockerStatusDto) => void>();
+  const demoLockerStatus = (): import('@polymux/protocol').LockerStatusDto => ({
+    exists: demoLockerExists,
+    unlocked: demoLockerUnlocked,
+    itemCount: demoLockerItems.filter((item) => !item.trashed).length,
+    idleLockSeconds: 300,
+    sync: {
+      signedIn: false,
+      available: false,
+      state: demoLockerStorage === 'local' ? 'local' : 'offline',
+      storage: demoLockerStorage,
+      revision: 0,
+      lastSyncedAt: null,
+    },
+  });
+  const notifyDemoLocker = (): void => {
+    const status = demoLockerStatus();
+    for (const listener of demoLockerListeners) listener(status);
+  };
+  const demoUsageStats = (): UsageStatsDto => {
+    const origin = new Date();
+    origin.setHours(0, 0, 0, 0);
+    const start = new Date(origin);
+    start.setDate(start.getDate() - 52 * 7);
+    start.setDate(start.getDate() - start.getDay());
+    const days: UsageStatsDto['days'] = [];
+    let lifetimeTokens = 0;
+    let peakTokens = 0;
+    let costUsd = 0;
+    let runs = 0;
+    for (const cursor = new Date(start); cursor.getTime() <= origin.getTime(); cursor.setDate(cursor.getDate() + 1)) {
+      const daysAgo = Math.round((origin.getTime() - cursor.getTime()) / 86_400_000);
+      const seed = cursor.getFullYear() * 10_000 + (cursor.getMonth() + 1) * 100 + cursor.getDate();
+      const pulse = seed % 10;
+      const recent = daysAgo < 78;
+      const quiet = (!recent && pulse < 7) || (cursor.getDay() === 0 && pulse < 5);
+      const tokens = quiet ? 0 : (recent ? 90_000 : 12_000) + pulse * (recent ? 55_000 : 4_000);
+      const dayRuns = tokens ? 1 + (pulse % 4) : 0;
+      const spend = tokens * 0.0000024;
+      lifetimeTokens += tokens;
+      costUsd += spend;
+      runs += dayRuns;
+      if (tokens > peakTokens) peakTokens = tokens;
+      const year = cursor.getFullYear();
+      const month = String(cursor.getMonth() + 1).padStart(2, '0');
+      const day = String(cursor.getDate()).padStart(2, '0');
+      days.push({date: `${year}-${month}-${day}`, tokens, costUsd: spend, runs: dayRuns});
+    }
+    return {
+      identity: {name: 'Polymux', handle: '@polymux', avatarUrl: null, badge: null},
+      lifetimeTokens,
+      peakTokens,
+      costUsd,
+      longestChatMs: 7 * 3_600_000 + 26 * 60_000,
+      currentStreakDays: 18,
+      longestStreakDays: 49,
+      days,
+      fastModePercent: 16,
+      reasoningPercent: 41,
+      skillsExplored: 141,
+      skillsUsed: 18_941,
+      totalChats: Math.max(runs, 128),
+      plugins: [
+        {name: 'background-gui', count: 2187},
+        {name: 'window-control', count: 1577},
+        {name: 'communication', count: 1430},
+        {name: 'email-use', count: 1254},
+        {name: 'control', count: 1163},
+      ],
+      connections: [
+        {name: 'GitHub', count: 842},
+        {name: 'Linear', count: 311},
+        {name: 'Notion', count: 188},
+      ],
+      models: [
+        {model: 'anthropic/claude-sonnet-4', tokens: Math.round(lifetimeTokens * 0.62), costUsd: costUsd * 0.7, runs: Math.round(runs * 0.6)},
+        {model: 'openai/gpt-5', tokens: Math.round(lifetimeTokens * 0.38), costUsd: costUsd * 0.3, runs: Math.round(runs * 0.4)},
+      ],
+      agents: [
+        {id: 'polymux', kind: 'polymux', name: 'Polymux', tokens: lifetimeTokens * .6, costUsd: costUsd * .6, runs: runs * .6, chats: 60},
+        {id: 'acp:claude', kind: 'acp', name: 'Claude Code', tokens: lifetimeTokens * .2, costUsd: costUsd * .2, runs: runs * .2, chats: 20},
+        {id: 'acp:codex', kind: 'acp', name: 'Codex', tokens: lifetimeTokens * .2, costUsd: costUsd * .2, runs: runs * .2, chats: 20},
+      ],
+      agentId: null,
+      scope: 'all',
+      spendIncomplete: false,
+    };
+  };
+  const demoLockerList = (): import('@polymux/protocol').LockerListDto => ({
+    groups: [{id: 'general', name: 'Locker', parentId: null}],
+    items: demoLockerItems
+      .filter((item) => !item.trashed)
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.sortIndex - b.sortIndex || a.title.localeCompare(b.title))
+      .map(demoLockerSummary),
+    trash: demoLockerItems.filter((item) => item.trashed).map(demoLockerSummary),
+  });
+  const demoLockerSummary = (item: DemoLockerEntry): import('@polymux/protocol').LockerItemDto => ({
+    id: item.id,
+    title: item.title,
+    username: item.username,
+    url: item.url,
+    notes: item.notes,
+    groupId: 'general',
+    groupName: item.groupName || 'Locker',
+    hasPassword: item.password.length > 0,
+    hasTotp: item.totpSecret.length > 0,
+    hasRecoveryCodes: item.recoveryCodes.length > 0,
+    hasPasskey: Boolean(item.passkey),
+    pinned: item.pinned,
+    sortIndex: item.sortIndex,
+    updatedAt: item.updatedAt,
+  });
+  const demoTotp = (secret: string): import('@polymux/protocol').LockerTotpDto => {
+    const period = 30;
+    const remaining = period - (Math.floor(Date.now() / 1000) % period);
+    const digits = String(Math.floor(Date.now() / 1000 / period) % 1_000_000).padStart(6, '0');
+    const next = String((Math.floor(Date.now() / 1000 / period) + 1) % 1_000_000).padStart(6, '0');
+    return {code: digits, next, period, remaining, issuer: '', account: secret ? 'demo' : ''};
+  };
   const demoMarketplaces: PluginMarketplaceDto[] = [
     {id: 'claude-code', name: 'claude-code-plugins', source: 'anthropics/claude-code', pluginCount: 3, builtin: true},
   ];
@@ -306,12 +603,9 @@ function createBrowserDemoApi(): PolymuxApi {
     ]},
   ];
   const demoDiscoveredMcp: DiscoveredMcpGroupDto[] = [
-    {id: 'claude:claude_desktop_config.json', label: 'Claude', path: '~/Library/Application Support/Claude/claude_desktop_config.json', servers: [
-      {id: 'memory', name: 'Memory', description: 'Remember facts across chats.', transport: 'stdio', target: 'npx', source: 'claude', path: '~/Library/Application Support/Claude/claude_desktop_config.json', state: 'available'},
-    ]},
-    {id: 'codex:config.toml', label: 'Codex', path: '~/.codex/config.toml', servers: [
-      {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', transport: 'stdio', target: 'node', source: 'codex', path: '~/.codex/config.toml', state: 'loaded'},
-      {id: 'linear', name: 'Linear', transport: 'streamable-http', target: 'https://mcp.linear.app/sse', source: 'codex', path: '~/.codex/config.toml', state: 'available'},
+    {id: 'pi:mcp.json', label: 'Pi', path: '~/.pi/agent/mcp.json', servers: [
+      {id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories.', transport: 'stdio', target: 'node', source: 'pi', path: '~/.pi/agent/mcp.json', state: 'loaded'},
+      {id: 'linear', name: 'Linear', transport: 'streamable-http', target: 'https://mcp.linear.app/sse', source: 'pi', path: '~/.pi/agent/mcp.json', state: 'available'},
     ]},
   ];
   const demoMcpServers: McpServerDto[] = [
@@ -342,7 +636,6 @@ function createBrowserDemoApi(): PolymuxApi {
       {platform: 'zulip', name: 'Zulip', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'apitoken', name: 'API token', description: 'Login with your Zulip email and API token'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'messenger', name: 'Messenger', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'messenger', name: 'messenger.com', description: 'Login using cookies from messenger.com'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'instagram', name: 'Instagram', api: 'bridgev2', state: 'connected', accounts: [{id: 'ig1', name: '@carl.builds', avatarUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', state: 'connected', error: null}, {id: 'ig2', name: '@polymux', avatarUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', state: 'connected', error: null}], flows: [{id: 'instagram', name: 'instagram.com', description: 'Login using cookies from instagram.com'}], setup: null, managementRoomHint: null, error: null},
-      {platform: 'discord', name: 'Discord', api: 'legacy', state: 'logged-out', accounts: [], flows: [{id: 'qr', name: 'QR code', description: 'Recommended · Scan with the Discord mobile app; CAPTCHAs are not supported'}, {id: 'user-token', name: 'User token', description: 'Full personal account access · Manual and sensitive; may carry account risk'}, {id: 'bot-token', name: 'Bot token', description: 'Servers only · The bot sees only channels and permissions granted to it'}, {id: 'oauth-token', name: 'OAuth token', description: 'Limited scopes · Standard Discord OAuth cannot provide all personal messages'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'linkedin', name: 'LinkedIn', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'cookies', name: 'Cookies', description: 'Log in with your LinkedIn account using your cookies'}], setup: null, managementRoomHint: null, error: null},
       {platform: 'imessage', name: 'iMessage', api: 'bridgev2', state: 'logged-out', accounts: [], flows: [{id: 'local', name: 'This Mac', description: 'Read the Messages database on this Mac'}], setup: null, managementRoomHint: null, error: null},
       // No bridge to log in to: a relay against the WeChat app on this Mac,
@@ -381,6 +674,71 @@ function createBrowserDemoApi(): PolymuxApi {
     );
   };
   const demoCommsListeners = new Set<(status: CommsStatusDto) => void>();
+  let demoWeChatLogin: import('@polymux/protocol').WeChatLoginDto = {
+    state: 'unavailable', qrDataUrl: null, expiresAt: null, optionsReady: false,
+  };
+  (window as unknown as {polymuxDemoWeChatLogin: (value: import('@polymux/protocol').WeChatLoginDto) => void})
+    .polymuxDemoWeChatLogin = value => { demoWeChatLogin = value; };
+  (window as unknown as {
+    polymuxDemoWeChatAttention: (attention: {title: string; detail: string; installUrl?: string; retry?: boolean} | null, connected?: boolean) => void;
+  }).polymuxDemoWeChatAttention = (attention, connected = true) => {
+    demoCommsStatus.bridges = demoCommsStatus.bridges.map(bridge => bridge.platform === 'wechat'
+      ? {...bridge, attention, state: connected ? 'connected' : 'unavailable'} : bridge);
+    for (const listener of demoCommsListeners) listener(structuredClone(demoCommsStatus));
+  };
+  const demoWakeCalls: CommsPlatform[] = [];
+  let demoChatReads = 0;
+  let demoChatPickGate: Promise<void> | null = null;
+  /** Test-only sticker catalog. Real accounts observe this from the bridge. */
+  let demoStickers: ChatStickerDto[] | null = null;
+  let demoStickerGate: Promise<void> | null = null;
+  let releaseDemoChatPick: (() => void) | null = null;
+  let demoWeChatWakeGate: Promise<void> | null = null;
+  let releaseDemoWeChatWake: (() => void) | null = null;
+  let demoWeChatWakeReady = true;
+  (window as unknown as {
+    polymuxDemoWakeCalls?: () => CommsPlatform[];
+  }).polymuxDemoWakeCalls = () => [...demoWakeCalls];
+  (window as unknown as {
+    polymuxDemoChatReads?: () => number;
+  }).polymuxDemoChatReads = () => demoChatReads;
+  (window as unknown as {
+    polymuxDemoHoldChatPick?: () => void;
+    polymuxDemoReleaseChatPick?: () => void;
+  }).polymuxDemoHoldChatPick = () => {
+    if (demoChatPickGate) return;
+    demoChatPickGate = new Promise<void>((resolve) => {
+      releaseDemoChatPick = resolve;
+    });
+  };
+  (window as unknown as {
+    polymuxDemoReleaseChatPick?: () => void;
+  }).polymuxDemoReleaseChatPick = () => {
+    releaseDemoChatPick?.();
+    releaseDemoChatPick = null;
+    demoChatPickGate = null;
+  };
+  (window as unknown as {
+    polymuxDemoHoldWeChatWake?: () => void;
+    polymuxDemoReleaseWeChatWake?: () => void;
+  }).polymuxDemoHoldWeChatWake = () => {
+    if (demoWeChatWakeGate) return;
+    demoWeChatWakeGate = new Promise<void>((resolve) => {
+      releaseDemoWeChatWake = resolve;
+    });
+  };
+  (window as unknown as {
+    polymuxDemoReleaseWeChatWake?: () => void;
+  }).polymuxDemoReleaseWeChatWake = () => {
+    releaseDemoWeChatWake?.();
+    releaseDemoWeChatWake = null;
+    demoWeChatWakeGate = null;
+  };
+  (window as unknown as {
+    polymuxDemoSetWeChatWakeReady?: (ready: boolean) => void;
+  }).polymuxDemoSetWeChatWakeReady = (ready) => {
+    demoWeChatWakeReady = ready;
+  };
   /** Test-only status push: it follows the same subscription seam used when a
    * second Polymux window changes an account in Settings. */
   (window as unknown as {
@@ -420,6 +778,27 @@ function createBrowserDemoApi(): PolymuxApi {
     {id: '!wa-nus-soc:local', name: 'School of Computing', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 10_800_000).toISOString(), preview: 'Tutorial group list', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
     {id: '!wa-nus-running:local', name: 'Running 👟', platform: 'whatsapp', accountIds: ['wa1'], unreadByAccount: {wa1: 0}, unread: 0, lastActivity: new Date(now - 14_400_000).toISOString(), preview: 'Saturday, 8am at UTown', group: true, parentIds: ['!wa-default-space:local', '!wa-nus-space:local'], avatarUrl: null},
   ];
+  let demoWeChatGroup = {name: 'Study group', isMember: true, renameError: '', renameDelayMs: 0, readDelayMs: 0};
+  (window as unknown as {
+    polymuxDemoSetStickers?: (stickers: ChatStickerDto[] | null) => void;
+    polymuxDemoSetStickerGate?: (gate: Promise<void> | null) => void;
+  }).polymuxDemoSetStickers = stickers => {
+    demoStickers = stickers;
+  };
+  (window as unknown as {
+    polymuxDemoSetStickerGate?: (gate: Promise<void> | null) => void;
+  }).polymuxDemoSetStickerGate = gate => {
+    demoStickerGate = gate;
+  };
+  (window as unknown as {
+    polymuxDemoSetWeChatGroup?: (settings: Partial<typeof demoWeChatGroup>) => void;
+  }).polymuxDemoSetWeChatGroup = settings => {
+    demoWeChatGroup = {...demoWeChatGroup, ...settings};
+    const existing = demoChats.find(chat => chat.id === '!wx-group:local');
+    if (existing) existing.name = demoWeChatGroup.name;
+    else demoChats.push({id: '!wx-group:local', name: demoWeChatGroup.name, platform: 'wechat',
+      group: true, avatarUrl: null, unread: 0, lastActivity: new Date(now).toISOString(), preview: ''});
+  };
   /** Test-only stand-in for a read marker changed by a native platform. It
    * deliberately emits no Hub activity: remote reads have no new message to
    * push, so the ordinary focused refresh has to discover them. */
@@ -438,9 +817,12 @@ function createBrowserDemoApi(): PolymuxApi {
   // the generic-file route used by some reel shares while still letting the
   // headless browser prove the inline player receives playable bytes.
   const demoReelUrl = 'data:video/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAJeEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggElTbuMU6uEHFO7a1OsggJI7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjIuMTIuMTAyV0GNTGF2ZjYyLjEyLjEwMkSJiEBpAAAAAAAAFlSua8iuAQAAAAAAAD/XgQFzxYisFaVyoEewLpyBACK1nIN1bmSIgQCGhVZfVlA5g4EBI+ODhAJiWgDgkLCBELqBHJqBAlWwhFW5gQESVMNnQIBzc6BjwIBnyJpFo4dFTkNPREVSRIeNTGF2ZjYyLjEyLjEwMnNz2mPAi2PFiKwVpXKgR7AuZ8ilRaOHRU5DT0RFUkSHmExhdmM2Mi4yOC4xMDIgbGlidnB4LXZwOWfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDAuMjAwMDAwMDAwAB9DtnVAl+eBAKO+gQAAgIJJg0IAAPABtgY4JBwYSgAAIEAAMV///5V29t/0rJIV6+83T8qAkchIzbj8ppDSUIBEwUeNuAQOsACjk4EAKACGAECSnEhQAAADcAAAUuKjk4EAUACGAECSnEBO4AADcAAAUuKjk4EAeACGAECSnEhQAAADcAAAUuKjk4EAoACGAECSnDhNQAADcAAAUuIcU7trkbuPs4EAt4r3gQHxggGr8IED';
+  // A real, short Opus voice note. Keeping playable bytes in the browser demo
+  // lets the custom message control prove playback rather than only its paint.
+  const demoVoiceUrl = 'data:audio/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQRChYECGFOAZwEAAAAAAALsEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggFCTbuMU6uEHFO7a1OsggLW7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjIuMTIuMTAyV0GNTGF2ZjYyLjEyLjEwMkSJiEB5gAAAAAAAFlSua+WuAQAAAAAAAFzXgQFzxYhJcb6Va8TQLJyBACK1nIN1bmSIgQCGhkFfT1BVU1aqg2MuoFa7hATEtACDgQLhkZ+BAbWIQL9AAAAAAABiZIEQY6KTT3B1c0hlYWQBATgBQB8AAAAAABJUw2f9c3OgY8CAZ8iaRaOHRU5DT0RFUkSHjUxhdmY2Mi4xMi4xMDJzc9djwItjxYhJcb6Va8TQLGfIokWjh0VOQ09ERVJEh5VMYXZjNjIuMjguMTAyIGxpYm9wdXNnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAwLjQwODAwMDAwMAAfQ7Z1QQzngQCji4EAAIAIC+Y7I6tgo4qBABWACAissw7Go4qBACmACAissw7Go4qBAD2ACAissw7Go4qBAFGACAissw7Go4qBAGWACAissw7Go4qBAHmACAissw7Go4qBAI2ACAissw7Go4qBAKGACAissw7Go4qBALWACAissw7Go4qBAMmACAissw7Go4qBAN2ACAissw7Go4qBAPGACAissw7Go4qBAQWACAissw7Go4qBARmACAissw7Go4qBAS2ACAissw7Go4qBAUGACAissw7Go4qBAVWACAissw7Go4qBAWmACAissw7Go4qBAX2ACAissw7GoJahioEBkQAICKyzDsabgQd1ooQAzf5gHFO7a5G7j7OBALeK94EB8YIBxPCBAw==';
   let demoChatMessages: ChatMessageDto[] = [
     {id: 'wx1', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 2_100_000).toISOString(), mine: true, attachments: [{kind: 'file', url: null, name: 'Project notes.pdf', mimeType: null, size: 1_572_864}], viewIn: {app: 'WeChat', url: 'weixin://'}},
-    {id: 'wx2', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 2_000_000).toISOString(), mine: true, attachments: [{kind: 'audio', url: null, name: 'Voice message', mimeType: null, size: null, duration: 8}], viewIn: {app: 'WeChat', url: 'weixin://'}},
+    {id: 'wx2', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 2_000_000).toISOString(), mine: true, attachments: [{kind: 'audio', url: demoVoiceUrl, name: 'Voice message', mimeType: 'audio/webm', size: 796, duration: .4}], viewIn: {app: 'WeChat', url: 'weixin://'}},
     {id: 'wx3', chatId: '!wx-filehelper:local', sender: 'WeChat', body: 'A message was recalled', notice: true, sentAt: new Date(now - 1_900_000).toISOString(), mine: false},
     {id: 'wx4', chatId: '!wx-filehelper:local', sender: 'You', body: 'My answer\n↳ Alice: Earlier text', sentAt: new Date(now - 1_800_000).toISOString(), mine: true, viewIn: {app: 'WeChat', url: 'weixin://'}},
     {id: 'wx5', chatId: '!wx-filehelper:local', sender: 'You', body: '', sentAt: new Date(now - 1_700_000).toISOString(), mine: true, linkPreview: {title: 'Useful article', description: 'A short description', url: 'https://example.test/article', source: 'example.test'}, viewIn: {app: 'WeChat', url: 'weixin://'}},
@@ -489,7 +871,68 @@ function createBrowserDemoApi(): PolymuxApi {
     // merely looked like a GIF made the sticker vanish from the demo.
     {id: 'c5', chatId: '!wa-jules:local', sender: '@whatsapp_jules:local', senderName: 'Unknown user', body: '', sentAt: new Date(now - 3_400_000).toISOString(), mine: false, replyTo: 'c2', attachments: [{kind: 'image', url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'Sticker', mimeType: 'image/gif', size: 42, width: 240, height: 240, sticker: true}]},
   ];
+  type DemoChatAction =
+    | {kind: 'text'; chatId: string; text: string; replyTo: string | null}
+    | {kind: 'files'; chatId: string; files: string[]}
+    | {kind: 'audio'; chatId: string; mimetype: string; size: number}
+    | {kind: 'sticker'; chatId: string; stickerId: string}
+    | {kind: 'recall'; chatId: string; messageId: string};
+  const demoChatActions: DemoChatAction[] = [];
+  (window as unknown as {
+    polymuxDemoChatActions?: () => DemoChatAction[];
+  }).polymuxDemoChatActions = () => structuredClone(demoChatActions);
+  let demoChatSendGate: Promise<void> | null = null;
+  let releaseDemoChatSend: (() => void) | null = null;
+  let demoNextDeliveryUnconfirmed = false;
+  (window as unknown as {polymuxDemoUnconfirmNextChatSend: () => void}).polymuxDemoUnconfirmNextChatSend = () => {
+    demoNextDeliveryUnconfirmed = true;
+  };
+  (window as unknown as {polymuxDemoConfirmChatMessage: (id: string) => void}).polymuxDemoConfirmChatMessage = id => {
+    demoChatMessages = demoChatMessages.map(message => message.id === id ? {...message, deliveryStatus: undefined} : message);
+    const message = demoChatMessages.find(message => message.id === id);
+    if (message) demoActivityListeners.forEach(listener => listener({chatId: message.chatId, sender: message.sender}));
+  };
+
+  (window as unknown as {
+    polymuxDemoHoldChatSends?: () => void;
+    polymuxDemoReleaseChatSends?: () => void;
+  }).polymuxDemoHoldChatSends = () => {
+    if (demoChatSendGate) return;
+    demoChatSendGate = new Promise<void>((resolve) => {
+      releaseDemoChatSend = resolve;
+    });
+  };
+  (window as unknown as {
+    polymuxDemoReleaseChatSends?: () => void;
+  }).polymuxDemoReleaseChatSends = () => {
+    releaseDemoChatSend?.();
+    releaseDemoChatSend = null;
+    demoChatSendGate = null;
+  };
   const demoActivityListeners = new Set<(activity: ChatActivityDto) => void>();
+  (window as unknown as {
+    polymuxDemoIncomingChatMessage?: (chatId: string, body: string, details?: Pick<ChatMessageDto, 'forwarded' | 'viewIn'>) => void;
+  }).polymuxDemoIncomingChatMessage = (chatId, body, details) => {
+    const sentAt = new Date().toISOString();
+    demoChatMessages = [{
+      id: crypto.randomUUID(),
+      chatId,
+      sender: 'A contact',
+      body,
+      sentAt,
+      mine: false,
+      reactions: [],
+      forwarded: details?.forwarded,
+      viewIn: details?.viewIn,
+    }, ...demoChatMessages];
+    demoChats = demoChats.map((chat) => chat.id === chatId
+      ? {...chat, preview: body, lastActivity: sentAt}
+      : chat);
+    queueMicrotask(() => demoActivityListeners.forEach((listener) => listener({
+      chatId,
+      sender: '@polymux_demo_contact:local',
+    })));
+  };
   const demoAddReaction = (
     chatId: string,
     messageId: string,
@@ -529,6 +972,14 @@ function createBrowserDemoApi(): PolymuxApi {
   let demoBroadcasts: BroadcastDto[] = [];
   let demoContactLinks: ContactLinkDto[] = [];
   const demoBroadcastMessages = new Map<string, BroadcastMessageDto[]>();
+  const demoMailSends: SendMailRequest[] = [];
+  (window as unknown as {
+    polymuxDemoMailSends?: () => SendMailRequest[];
+  }).polymuxDemoMailSends = () => demoMailSends.map((request) => structuredClone(request));
+  const demoPdfContent = Uint8Array.from(
+    atob('JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA0MSA+PgpzdHJlYW0KQlQgL0YxIDI0IFRmIDcyIDcyMCBUZCAoUTMgcmVwb3J0KSBUaiBFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMzMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQwMQolJUVPRgo='),
+    (character) => character.charCodeAt(0),
+  ).buffer;
   const demoMailFolders: MailFolderDto[] = [
     {name: 'INBOX', label: 'Inbox', role: 'inbox'},
     {name: '[Gmail]/Drafts', label: 'Drafts', role: 'drafts'},
@@ -538,9 +989,9 @@ function createBrowserDemoApi(): PolymuxApi {
     {name: '[Gmail]/Trash', label: 'Trash', role: 'trash'},
   ];
   let demoEnvelopes: Array<{folder: string; body: string; html?: string; envelope: MailEnvelopeDto}> = [
-    {folder: 'INBOX', body: 'The quarterly numbers are attached. Let me know if you want the breakdown by region before Thursday.', envelope: {id: '1', subject: 'Q3 numbers', from: {name: 'Priya Raman', address: 'priya@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 5_400_000).toISOString(), seen: false, flagged: false, answered: false, draft: false, hasAttachment: true}},
+    {folder: 'INBOX', body: 'The quarterly numbers are attached. Let me know if you want the breakdown by region before Thursday.', html: '<p>The quarterly numbers are attached.</p><a href="cid:q3-report">Q3 report</a><p>Let me know if you want the breakdown by region before Thursday.</p>', envelope: {id: '1', subject: 'Q3 numbers', from: {name: 'Priya Raman', address: 'priya@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 5_400_000).toISOString(), seen: false, flagged: true, answered: false, draft: false, hasAttachment: true, importance: 'high'}},
     {folder: 'INBOX', body: 'Reminder that the office will be closed on Monday.', envelope: {id: '2', subject: 'Closed Monday', from: {name: 'Office', address: 'office@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 90_000_000).toISOString(), seen: true, flagged: true, answered: false, draft: false, hasAttachment: false}},
-    {folder: 'INBOX', body: 'Your invoice for August is ready to view.', html: '<div style="font-family:system-ui"><img src="cid:logo@example" alt="Billing"><img src="https://example.com/seal.png" alt="Paid"><h2 style="margin:0 0 8px">Invoice #1042</h2><p>Your invoice for August is <b>ready to view</b>.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left" style="border-bottom:1px solid #ddd">Item</th><th align="right" style="border-bottom:1px solid #ddd">Amount</th></tr><tr><td>Subscription</td><td align="right">$42.00</td></tr></table><p><a href="https://example.com/invoice/1042">View invoice</a></p></div>', envelope: {id: '3', subject: 'Invoice ready', from: {name: 'Billing', address: 'billing@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 172_800_000).toISOString(), seen: true, flagged: false, answered: true, draft: false, hasAttachment: false}},
+    {folder: 'INBOX', body: 'Your invoice for August is ready to view.', html: '<br><div style="height:40px"></div><div style="margin-top:36px;font-family:system-ui"><img src="cid:logo@example" alt="Billing"><img src="https://example.com/seal.png" alt="Paid"><h2 style="margin:0 0 8px">Invoice #1042</h2><p>Your invoice for August is <b>ready to view</b>.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left" style="border-bottom:1px solid #ddd">Item</th><th align="right" style="border-bottom:1px solid #ddd">Amount</th></tr><tr><td>Subscription</td><td align="right">$42.00</td></tr></table><p><a href="https://example.com/invoice/1042">View invoice</a></p></div>', envelope: {id: '3', subject: 'Invoice ready', from: {name: 'Billing', address: 'billing@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 172_800_000).toISOString(), seen: true, flagged: false, answered: true, draft: false, hasAttachment: false}},
     {folder: '[Gmail]/Spam', body: 'You have definitely won a prize.', envelope: {id: '4', subject: 'YOU WON', from: {name: null, address: 'noreply@spam.example'}, to: null, date: new Date(now - 200_000_000).toISOString(), seen: false, flagged: false, answered: false, draft: false, hasAttachment: false}},
   ];
   const demoWorkspaceSnapshots = new Map<string, WorkspaceSnapshotDto>();
@@ -602,7 +1053,6 @@ function createBrowserDemoApi(): PolymuxApi {
     reasoningLevel: 'medium',
     onboardingCompleted: !onboardingPreview,
     permissions: {microphone: true, 'screen-recording': true, accessibility: true, 'full-disk-access': true, reminders: true, calendars: true, contacts: true, photos: true, automation: true},
-    appPermissionsEnabled: true,
     notificationsEnabled: true,
     notifications: {'schedule-completed': true, 'schedule-failed': true, 'agent-completed': true, 'agent-attention': true, 'message-received': true},
     pinnedViews: [],
@@ -612,6 +1062,9 @@ function createBrowserDemoApi(): PolymuxApi {
   const demoUpdateReady =
     typeof location !== 'undefined' &&
     new URLSearchParams(location.search).get('update') === 'ready';
+  const demoAgentConnectionFailure =
+    typeof location !== 'undefined' &&
+    new URLSearchParams(location.search).get('agentConnection') === 'fail';
   const demoUpdate: AppUpdateDto = {
     status: demoUpdateReady ? 'ready' : 'unsupported',
     version: '0.1.0',
@@ -743,17 +1196,223 @@ function createBrowserDemoApi(): PolymuxApi {
       type: async () => {},
       home: async () => {},
     },
+    terminal: (() => {
+      const listeners = new Set<(event: TerminalEventDto) => void>();
+      const sessions = new Map<string, {seq: number; replay: string}>();
+      const prompt = btoa('$ ');
+      const session = (id: string) => {
+        const existing = sessions.get(id);
+        if (!existing) throw new Error('Unknown terminal session');
+        return existing;
+      };
+      return {
+        create: async (_cwd?: string) => {
+          const id = crypto.randomUUID();
+          sessions.set(id, {seq: 0, replay: prompt});
+          return {id};
+        },
+        attach: async (id: string) => {
+          const current = session(id);
+          return {id, seq: current.seq, replay: current.replay};
+        },
+        write: async (id: string, data: string) => {
+          const current = session(id);
+          current.seq += 1;
+          const event: TerminalEventDto = {type: 'data', id, seq: current.seq, data: btoa(data)};
+          for (const listener of listeners) listener(event);
+        },
+        resize: async () => {},
+        close: async (id: string) => {
+          const current = sessions.get(id);
+          if (!current) return;
+          sessions.delete(id);
+          current.seq += 1;
+          const event: TerminalEventDto = {type: 'exit', id, seq: current.seq, code: 0};
+          for (const listener of listeners) listener(event);
+        },
+        subscribe(listener: (event: TerminalEventDto) => void) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      };
+    })(),
+    ide: (() => {
+      const root = '/Users/demo/project';
+      const files = new Map<string, IdeFileDto>([
+        ['README.md', {name: 'README.md', path: 'README.md', language: 'Markdown', binary: false, content: '# Demo\n\nA small project for the IDE.\n'}],
+        ['package.json', {name: 'package.json', path: 'package.json', language: 'JSON', binary: false, content: '{\n  "name": "demo"\n}\n'}],
+        ['src/main.go', {name: 'main.go', path: 'src/main.go', language: 'Go', binary: false, content: 'package main\n\nfunc main() {}\n'}],
+        ['src/icon.png', {name: 'icon.png', path: 'src/icon.png', language: 'Binary', binary: true, content: null}],
+        ['src/App.svelte', {name: 'App.svelte', path: 'src/App.svelte', language: 'Svelte', binary: false, content: '<script lang="ts">\n  let name = $state("demo");\n</script>\n\n<p>Hello {name}</p>\n'}],
+        ['src/app.css', {name: 'app.css', path: 'src/app.css', language: 'CSS', binary: false, content: ':root {\n  color: inherit;\n}\n'}],
+        ['src/main.ts', {name: 'main.ts', path: 'src/main.ts', language: 'TypeScript', binary: false, content: 'console.log("demo");\n'}],
+      ]);
+      const tree: Record<string, IdeEntryDto[]> = {
+        '': [
+          {name: 'src', path: 'src', kind: 'folder'},
+          {name: 'README.md', path: 'README.md', kind: 'file'},
+          {name: 'package.json', path: 'package.json', kind: 'file'},
+        ],
+        src: [
+          {name: 'App.svelte', path: 'src/App.svelte', kind: 'file'},
+          {name: 'app.css', path: 'src/app.css', kind: 'file'},
+          {name: 'icon.png', path: 'src/icon.png', kind: 'file'},
+          {name: 'main.go', path: 'src/main.go', kind: 'file'},
+          {name: 'main.ts', path: 'src/main.ts', kind: 'file'},
+        ],
+      };
+      const parentOf = (relative: string) => {
+        const index = relative.lastIndexOf('/');
+        return index < 0 ? '' : relative.slice(0, index);
+      };
+      const baseOf = (relative: string) => {
+        const index = relative.lastIndexOf('/');
+        return index < 0 ? relative : relative.slice(index + 1);
+      };
+      const sortTree = (entries: IdeEntryDto[]) =>
+        [...entries].sort((a, b) => {
+          if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
+          return a.name.localeCompare(b.name, undefined, {sensitivity: 'base'});
+        });
+      const addToTree = (relative: string, kind: IdeEntryDto['kind']) => {
+        const parent = parentOf(relative);
+        const siblings = tree[parent] ?? [];
+        if (kind === 'folder' && !tree[relative]) tree[relative] = [];
+        if (siblings.some((entry) => entry.path === relative)) return;
+        tree[parent] = sortTree([...siblings, {name: baseOf(relative), path: relative, kind}]);
+      };
+      const removeFromTree = (relative: string) => {
+        const parent = parentOf(relative);
+        tree[parent] = (tree[parent] ?? []).filter((entry) => entry.path !== relative);
+      };
+      const assertName = (relative: string) => {
+        const name = baseOf(relative);
+        if (!name || name === '.' || name === '..' || name.includes('\\')) throw new Error('Invalid name');
+      };
+      // Feed real file-reader results into the browser-only IDE fixture.
+      (window as unknown as {polymuxDemoAddIdeFiles: (values: IdeFileDto[]) => void})
+        .polymuxDemoAddIdeFiles = (values) => {
+          for (const file of values) {
+            files.set(file.path, structuredClone(file));
+            addToTree(file.path, 'file');
+          }
+        };
+      return {
+        pickFolder: async () => root,
+        list: async (_project: string, path = '') => structuredClone(tree[path] ?? []),
+        read: async (_project: string, path: string) => {
+          const file = files.get(path);
+          if (!file) throw new Error('File not found');
+          return structuredClone(file);
+        },
+        write: async (_project: string, path: string, content: string) => {
+          const file = files.get(path);
+          if (!file || file.binary) throw new Error('File not found');
+          files.set(path, {...file, content});
+        },
+        create: async (_project: string, path: string, content = '') => {
+          assertName(path);
+          if (files.has(path) || (tree[parentOf(path)] ?? []).some((entry) => entry.path === path)) {
+            throw new Error('Already exists');
+          }
+          const parent = parentOf(path);
+          if (parent && !tree[parent] && !tree[''].some((entry) => entry.path === parent && entry.kind === 'folder')) {
+            throw new Error('Folder not found');
+          }
+          const name = baseOf(path);
+          const binary = isBinaryFileName(name);
+          const file: IdeFileDto = {
+            name,
+            path,
+            language: languageForName(name),
+            binary,
+            content: binary ? null : content,
+          };
+          files.set(path, file);
+          addToTree(path, 'file');
+          return structuredClone(file);
+        },
+        move: async (_project: string, from: string, to: string) => {
+          assertName(to);
+          const file = files.get(from);
+          if (!file) throw new Error('File not found');
+          if (from === to) return structuredClone(file);
+          if (files.has(to) || (tree[parentOf(to)] ?? []).some((entry) => entry.path === to)) {
+            throw new Error('Already exists');
+          }
+          const parent = parentOf(to);
+          if (parent && !tree[parent] && !tree[''].some((entry) => entry.path === parent && entry.kind === 'folder')) {
+            throw new Error('Folder not found');
+          }
+          const name = baseOf(to);
+          const binary = isBinaryFileName(name);
+          const next: IdeFileDto = {
+            ...file,
+            name,
+            path: to,
+            language: languageForName(name),
+            binary,
+            content: binary ? null : file.binary ? '' : file.content,
+          };
+          files.delete(from);
+          files.set(to, next);
+          removeFromTree(from);
+          addToTree(to, 'file');
+          return structuredClone(next);
+        },
+      };
+    })(),
     agentRuntime: {
       get: async () => structuredClone(demoAgentRuntime),
       registry: async () => demoAcpRegistry,
+      inspectConfiguration: async (request, sourceDirectory) => {
+        const requestedId = request.agentId ?? request.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const family = ({'claude-acp': 'claude', 'codex-acp': 'codex', 'pi-acp': 'pi', 'qwen-code': 'qwen', 'github-copilot-cli': 'github-copilot'} as Record<string, string>)[requestedId] ?? requestedId;
+        const defaultDirectory = ({
+          claude: '/Users/demo/.claude', codex: '/Users/demo/.codex', pi: '/Users/demo/.pi/agent',
+          opencode: '/Users/demo/.config/opencode', junie: '/Users/demo/.junie', poolside: '/Users/demo/.config/poolside',
+          gemini: '/Users/demo/.gemini', qwen: '/Users/demo/.qwen', 'github-copilot': '/Users/demo/.copilot',
+          'mistral-vibe': '/Users/demo/.vibe',
+        } as Record<string, string>)[family];
+        const verified = !!defaultDirectory;
+        const directory = sourceDirectory?.trim() || defaultDirectory || '';
+        const exists = family === 'claude' || !!sourceDirectory?.trim();
+        const syncReason = family === 'poolside'
+          ? 'Poolside follows a shared XDG configuration root. Import a private copy instead.'
+          : exists ? null : 'No configuration folder exists at this location yet.';
+        return [{
+          id: directory || `unsupported:${requestedId}`,
+          agentId: family,
+          agentName: request.name,
+          name: directory.endsWith('-work') ? `${request.name} Work` : `${request.name} Default`,
+          directory,
+          exists,
+          supportsImport: verified,
+          supportsSync: verified && family !== 'poolside' && exists,
+          importUnavailableReason: verified ? null : 'Polymux does not yet have a verified configuration adapter for this agent. Start clean to avoid exposing unrelated files.',
+          syncUnavailableReason: verified ? syncReason : 'The official ACP registry does not publish this agent\'s configuration layout.',
+          summaries: family === 'claude' ? [
+            {kind: 'settings' as const, count: 3, items: ['settings.json', 'agents/explore.md', 'CLAUDE.md'], importable: true, detail: null},
+            {kind: 'skills' as const, count: 4, items: ['ce-code-review', 'frontend-design', 'ui-tester', 'run'], importable: true, detail: null},
+            {kind: 'plugins' as const, count: 2, items: ['context-mode', 'frontend-design'], importable: true, detail: null},
+            {kind: 'mcp' as const, count: 2, items: ['Google Drive', 'Notion'], importable: true, detail: null},
+            {kind: 'memory' as const, count: 1, items: ['MEMORY.md'], importable: true, detail: null},
+          ] : (['settings', 'skills', 'plugins', 'mcp', 'memory'] as const).map((kind) => ({kind, count: 0, items: [], importable: verified, detail: null})),
+        }];
+      },
       update: async (request) => {
         demoAgentRuntime = request.kind === 'polymux'
           ? {kind: 'polymux', name: 'Polymux Agent'}
-          : {kind: 'acp', name: request.name, command: request.command, args: request.args ?? [], cwd: request.cwd ?? null, config: request.config ?? {}};
+          : {kind: 'acp', name: request.name, command: request.command, args: request.args ?? [], cwd: request.cwd ?? null, config: request.config ?? {}, agentId: request.agentId ?? request.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), configId: request.configId ?? crypto.randomUUID()};
         if (request.kind === 'acp') demoAgentSettings = structuredClone(request.name === 'pi ACP' ? demoPiAgentSettings : demoCompactAgentSettings);
+        demoWorkspaceApps.apps = demoWorkspaceApps.apps.map((app) => app.official ? {...app, enabled: request.kind === 'polymux'} : app);
+        demoWorkspaceApps.pinnedIds = request.kind === 'polymux' ? ['drive', 'calendar', 'hub', 'tasks'] : [];
         return structuredClone(demoAgentRuntime);
       },
-      settings: async () => structuredClone(demoAgentSettings),
+      settings: async () => {
+        if (demoAgentConnectionFailure) throw new Error('External agent connection failed');
+        return structuredClone(demoAgentSettings);
+      },
       authenticate: async (methodId) => {
         if (!demoAgentSettings.authMethods.some((method) => method.id === methodId && method.available)) throw new Error(`Unsupported authentication method: ${methodId}`);
         demoAgentSettings = {...demoAgentSettings, authRequired: false};
@@ -779,12 +1438,40 @@ function createBrowserDemoApi(): PolymuxApi {
     },
     profiles: {
       list: async () => ({activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}),
-      create: async (name) => { demoProfiles.push({id: crypto.randomUUID(), name: name.trim() || 'New profile', isDefault: false}); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
+      create: async (name) => { demoProfiles.push({id: crypto.randomUUID(), name: name.trim() || 'New profile', isDefault: false, source: null}); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
       select: async (id) => { demoActiveProfile = id; return {activeId: id, profiles: structuredClone(demoProfiles)}; },
       rename: async (id, name) => { demoProfiles = demoProfiles.map(profile => profile.id === id ? {...profile, name} : profile); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
       setDefault: async (id) => { demoProfiles = demoProfiles.map(profile => ({...profile, isDefault: profile.id === id})); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
-      duplicate: async (id) => { const source = demoProfiles.find(profile => profile.id === id)!; demoProfiles.push({id: crypto.randomUUID(), name: `${source.name} copy`, isDefault: false}); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
+      duplicate: async (id) => { const source = demoProfiles.find(profile => profile.id === id)!; demoProfiles.push({...source, id: crypto.randomUUID(), name: `${source.name} copy`, isDefault: false}); return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
       remove: async (id) => { demoProfiles = demoProfiles.filter(profile => profile.id !== id); if (demoActiveProfile === id) demoActiveProfile = 'default'; return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)}; },
+      connectExternal: async (request) => {
+        let target = request.profileId ? demoProfiles.find((profile) => profile.id === request.profileId) : undefined;
+        if (!target && (request.mode === 'import' || request.mode === 'sync')) {
+          target = {id: crypto.randomUUID(), name: request.profileName?.trim() || `${request.runtime.name} Profile`, isDefault: false, source: null};
+          demoProfiles.push(target);
+          demoActiveProfile = target.id;
+        }
+        target ??= demoProfiles.find((profile) => profile.id === demoActiveProfile)!;
+        target.name = request.profileName?.trim() || target.name;
+        target.source = request.mode === 'sync'
+          ? {kind: 'external', agentId: request.runtime.agentId ?? 'claude', agentName: request.runtime.name, directory: request.sourceDirectory ?? '/Users/demo/.claude'}
+          : null;
+        demoAgentRuntime = {
+          kind: 'acp',
+          name: request.runtime.name,
+          command: request.runtime.command,
+          args: request.runtime.args ?? [],
+          cwd: request.runtime.cwd ?? null,
+          config: request.runtime.config ?? {},
+          agentId: request.runtime.agentId ?? 'claude',
+          configId: request.runtime.configId ?? crypto.randomUUID(),
+        };
+        demoAgentSettings = structuredClone(request.runtime.name === 'pi ACP' ? demoPiAgentSettings : demoCompactAgentSettings);
+        demoWorkspaceApps.apps = demoWorkspaceApps.apps.map((app) => app.official ? {...app, enabled: false} : app);
+        demoWorkspaceApps.pinnedIds = [];
+        return {activeId: demoActiveProfile, profiles: structuredClone(demoProfiles)};
+      },
+      openFolder: async () => {},
       subscribe: () => () => {},
     },
     extension: {
@@ -838,6 +1525,235 @@ function createBrowserDemoApi(): PolymuxApi {
         }
       },
     },
+    locker: {
+      status: async () => demoLockerStatus(),
+      create: async (password) => {
+        if (password.length < 8) throw new Error('Use at least 8 characters');
+        demoLockerExists = true;
+        demoLockerUnlocked = true;
+        demoLockerMaster = password;
+        notifyDemoLocker();
+        return demoLockerStatus();
+      },
+      unlock: async (password) => {
+        if (!demoLockerExists) throw new Error('Create a locker first');
+        if (password !== demoLockerMaster) throw new Error('Wrong master password');
+        demoLockerUnlocked = true;
+        notifyDemoLocker();
+        return demoLockerStatus();
+      },
+      lock: async () => {
+        demoLockerUnlocked = false;
+        notifyDemoLocker();
+        return demoLockerStatus();
+      },
+      touch: async () => {},
+      list: async () => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        return demoLockerList();
+      },
+      reveal: async (id) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        const item = demoLockerItems.find((entry) => entry.id === id);
+        if (!item) throw new Error('That item is not in the locker');
+        return {
+          password: item.password,
+          totp: item.totpSecret ? demoTotp(item.totpSecret) : null,
+          recoveryCodes: item.recoveryCodes,
+          passkey: item.passkey
+            ? {
+                relyingParty: item.passkey.relyingParty,
+                username: item.passkey.username,
+                credentialId: item.passkey.credentialId,
+                userHandle: item.passkey.userHandle,
+              }
+            : null,
+        };
+      },
+      totp: async (id) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        const item = demoLockerItems.find((entry) => entry.id === id && !entry.trashed);
+        return item?.totpSecret ? demoTotp(item.totpSecret) : null;
+      },
+      codes: async () => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        return demoLockerItems
+          .filter((entry) => !entry.trashed && entry.totpSecret)
+          .map((entry) => {
+            const totp = demoTotp(entry.totpSecret);
+            return {id: entry.id, code: totp.code, next: totp.next, period: totp.period, remaining: totp.remaining};
+          });
+      },
+      otpauth: async (id) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        const item = demoLockerItems.find((entry) => entry.id === id);
+        if (!item?.totpSecret) return null;
+        const issuer = encodeURIComponent(item.title || 'Locker');
+        const account = encodeURIComponent(item.username || item.title || 'Locker');
+        return `otpauth://totp/${issuer}:${account}?secret=${item.totpSecret.replace(/\s+/g, '')}&issuer=${issuer}`;
+      },
+      save: async (input) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        const existing = input.id ? demoLockerItems.find((entry) => entry.id === input.id) : undefined;
+        const entry: DemoLockerEntry = existing ?? {
+          id: crypto.randomUUID(),
+          title: input.title,
+          username: '',
+          url: '',
+          notes: '',
+          groupName: 'Locker',
+          password: '',
+          totpSecret: '',
+          recoveryCodes: [],
+          passkey: null,
+          pinned: false,
+          sortIndex: demoLockerItems.length,
+          trashed: false,
+          updatedAt: new Date().toISOString(),
+        };
+        entry.title = input.title;
+        if (input.username !== undefined) entry.username = input.username;
+        if (input.url !== undefined) entry.url = input.url;
+        if (input.notes !== undefined) entry.notes = input.notes;
+        if (input.groupName !== undefined) entry.groupName = input.groupName;
+        if (input.password !== undefined) entry.password = input.password;
+        if (input.totpSecret !== undefined) entry.totpSecret = input.totpSecret;
+        if (input.recoveryCodes !== undefined) entry.recoveryCodes = input.recoveryCodes;
+        if (input.passkey !== undefined)
+          entry.passkey = input.passkey
+            ? {
+                relyingParty: input.passkey.relyingParty,
+                username: input.passkey.username,
+                credentialId: input.passkey.credentialId,
+                userHandle: input.passkey.userHandle ?? '',
+                privateKeyPem: input.passkey.privateKeyPem ?? existing?.passkey?.privateKeyPem ?? '',
+              }
+            : null;
+        entry.updatedAt = new Date().toISOString();
+        if (!existing) demoLockerItems.push(entry);
+        notifyDemoLocker();
+        return demoLockerList().items.find((item) => item.id === entry.id)!;
+      },
+      remove: async (id) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        const item = demoLockerItems.find((entry) => entry.id === id && !entry.trashed);
+        if (item) item.trashed = true;
+        notifyDemoLocker();
+        return demoLockerList();
+      },
+      restore: async (ids) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        for (const id of ids) {
+          const item = demoLockerItems.find((entry) => entry.id === id);
+          if (item) item.trashed = false;
+        }
+        notifyDemoLocker();
+        return demoLockerList();
+      },
+      purge: async (ids) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        for (const id of ids) {
+          const index = demoLockerItems.findIndex((entry) => entry.id === id && entry.trashed);
+          if (index >= 0) demoLockerItems.splice(index, 1);
+        }
+        notifyDemoLocker();
+        return demoLockerList();
+      },
+      emptyTrash: async () => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        for (let index = demoLockerItems.length - 1; index >= 0; index -= 1) {
+          if (demoLockerItems[index]?.trashed) demoLockerItems.splice(index, 1);
+        }
+        notifyDemoLocker();
+        return demoLockerList();
+      },
+      pin: async (ids, pinned) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        for (const id of ids) {
+          const item = demoLockerItems.find((entry) => entry.id === id && !entry.trashed);
+          if (item) item.pinned = pinned;
+        }
+        notifyDemoLocker();
+        return demoLockerList();
+      },
+      reorder: async (ids) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        ids.forEach((id, index) => {
+          const item = demoLockerItems.find((entry) => entry.id === id);
+          if (item) item.sortIndex = index;
+        });
+        notifyDemoLocker();
+        return demoLockerList();
+      },
+      changePassword: async (current, next) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        if (current !== demoLockerMaster) throw new Error('Wrong master password');
+        if (next.length < 8) throw new Error('Use at least 8 characters');
+        demoLockerMaster = next;
+        notifyDemoLocker();
+        return demoLockerStatus();
+      },
+      copy: async (id, field, recoveryIndex) => {
+        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        const item = demoLockerItems.find((entry) => entry.id === id);
+        if (!item) throw new Error('That item is not in the locker');
+        const text =
+          field === 'password' ? item.password
+          : field === 'username' ? item.username
+          : field === 'url' ? item.url
+          : field === 'notes' ? item.notes
+          : field === 'totp' ? demoTotp(item.totpSecret).code
+          : item.recoveryCodes[recoveryIndex ?? -1] ?? '';
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      importBegin: async () => ({status: 'cancelled' as const}),
+      importConfirm: async () => ({imported: 0, skipped: 0, problems: ['Import is available in the desktop app']}),
+      sync: async () => demoLockerStatus(),
+      setStorage: async (mode) => {
+        demoLockerStorage = mode;
+        notifyDemoLocker();
+        return demoLockerStatus();
+      },
+      subscribe(listener) {
+        demoLockerListeners.add(listener);
+        return () => demoLockerListeners.delete(listener);
+      },
+    },
+    finance: {
+      read: async () => { throw new Error("Connect BankMCP in the desktop app to read your accounts."); },
+    },
+    usage: {
+      get: async (filter = {}) => {
+        const stats = demoUsageStats();
+        const scope = filter.scope ?? 'all';
+        const shares: Record<string, number> = scope === 'assistant'
+          ? {polymux: 5 / 6, 'acp:claude': 1}
+          : scope === 'team' ? {polymux: 1 / 6, 'acp:codex': 1} : {polymux: 1, 'acp:claude': 1, 'acp:codex': 1};
+        const agents = stats.agents.filter(agent => shares[agent.id]).map(agent => ({...agent,
+          tokens: Math.round(agent.tokens * shares[agent.id]), costUsd: agent.costUsd * shares[agent.id],
+          runs: Math.round(agent.runs * shares[agent.id]), chats: Math.round(agent.chats * shares[agent.id]),
+        }));
+        const selected = filter.agentId ? agents.filter(agent => agent.id === filter.agentId) : agents;
+        const tokens = selected.reduce((sum, agent) => sum + agent.tokens, 0);
+        const spend = selected.reduce((sum, agent) => sum + agent.costUsd, 0);
+        const ratio = stats.lifetimeTokens ? tokens / stats.lifetimeTokens : 0;
+        return {
+          ...stats, scope, agents, agentId: filter.agentId ?? null,
+          lifetimeTokens: tokens, peakTokens: Math.round(stats.peakTokens * ratio), costUsd: spend,
+          totalChats: selected.reduce((sum, agent) => sum + agent.chats, 0),
+          days: stats.days.map(day => ({...day, tokens: Math.round(day.tokens * ratio), costUsd: day.costUsd * ratio, runs: Math.round(day.runs * ratio)})),
+          plugins: scope === 'team' || filter.agentId === 'acp:codex'
+            ? [{name: 'window-control', count: 412}, {name: 'communication', count: 208}] : stats.plugins,
+          connections: scope === 'team' || filter.agentId === 'acp:codex' ? [{name: 'Linear', count: 180}] : stats.connections,
+          models: stats.models.map(model => ({...model, tokens: Math.round(model.tokens * ratio), costUsd: model.costUsd * ratio, runs: Math.round(model.runs * ratio)})),
+        };
+      },
+    },
     // A browser tab has no traffic lights to move out of, so the state never
     // changes and the subscription has nothing to tear down.
     window: {
@@ -847,13 +1763,20 @@ function createBrowserDemoApi(): PolymuxApi {
     },
     permissions: {
       ensureFirstRun: async () => ({firstRun: false, microphone: 'granted', screenRecording: 'granted'}),
-      status: async () => (onboardingPreview ? 'not-determined' : 'granted'),
-      requestAll: async () => [],
+      status: async (kind) => {
+        if (permissionPreview) {
+          const value = localStorage.getItem(`polymux.demo.permission.${kind}`);
+          return value === 'granted' || value === 'unknown' || value === 'restricted' ? value : 'denied';
+        }
+        return onboardingPreview ? 'not-determined' : 'granted';
+      },
       request: async () => {
         await new Promise((resolve) => setTimeout(resolve, 600));
         return 'granted';
       },
-      openSettings: async () => {},
+      openSettings: async (kind) => {
+        if (permissionPreview) localStorage.setItem('polymux.demo.permission.opened', kind);
+      },
     },
     dictation: {
       // Nothing to fetch: the demo has no model behind it.
@@ -869,7 +1792,20 @@ function createBrowserDemoApi(): PolymuxApi {
       },
     },
     conversations: {
-      list: async () => [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      duplicate: async (id, throughMessageId) => {
+        const source = conversations.find(item => item.id === id);
+        if (!source) throw new Error('Conversation not found');
+        const history = messages.get(id) ?? [];
+        const boundary = throughMessageId === undefined ? history.length - 1 : history.findIndex(item => item.id === throughMessageId);
+        if (throughMessageId !== undefined && boundary < 0) throw new Error('Fork message not found in conversation');
+        const copy = conversation(crypto.randomUUID(), conversationCopyTitle(source.title, conversations.map(item => item.title)), Date.now());
+        conversations = [copy, ...conversations];
+        messages.set(copy.id, structuredClone(history.slice(0, boundary + 1)).map(message => ({...message,
+          id: crypto.randomUUID(), conversationId: copy.id, runId: null})));
+        return copy;
+      },
+      list: async () => [...conversations].filter((item) => !item.archivedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      listArchived: async () => [...conversations].filter((item) => item.archivedAt).sort((a, b) => (b.archivedAt ?? b.updatedAt).localeCompare(a.archivedAt ?? a.updatedAt)),
       create: async (title = 'New chat') => {
         const created = conversation(crypto.randomUUID(), title, Date.now());
         conversations = [created, ...conversations];
@@ -880,6 +1816,21 @@ function createBrowserDemoApi(): PolymuxApi {
         const current = conversations.find((item) => item.id === id);
         if (!current) return null;
         const updated = {...current, title, updatedAt: new Date().toISOString()};
+        conversations = conversations.map((item) => item.id === id ? updated : item);
+        return updated;
+      },
+      archive: async (id) => {
+        const current = conversations.find((item) => item.id === id);
+        if (!current) return null;
+        const now = new Date().toISOString();
+        const updated = {...current, archivedAt: current.archivedAt ?? now, updatedAt: now};
+        conversations = conversations.map((item) => item.id === id ? updated : item);
+        return updated;
+      },
+      unarchive: async (id) => {
+        const current = conversations.find((item) => item.id === id);
+        if (!current) return null;
+        const updated = {...current, archivedAt: null, updatedAt: new Date().toISOString()};
         conversations = conversations.map((item) => item.id === id ? updated : item);
         return updated;
       },
@@ -913,6 +1864,282 @@ function createBrowserDemoApi(): PolymuxApi {
         return null;
       },
     },
+    devices: {
+      request: async (request) => {
+        if (request.action === 'start') {
+          demoDevicePairing = {approvals: [], connectedDevices: [], outgoing: {id: 'demo-pair', number: '42', deviceName: 'Home Mac mini', expiresAt: new Date(Date.now() + 120000).toISOString()}};
+        }
+        if (request.action === 'approve') demoDevicePairing = {approvals: [], outgoing: null, connectedDevices: request.number === '42' ? [{deviceId: 'test-phone', deviceName: 'Test Phone', deviceType: 'phone', online: true, pairedAt: new Date().toISOString()}] : []};
+        if (request.action === 'cancel') demoDevicePairing = {approvals: [], connectedDevices: [], outgoing: null};
+        if (request.action === 'invitation') return {...demoDevicePairing, installCommand: 'curl -fsSL https://polymux.com/install.sh | sh -s -- connect demo-invitation'};
+        return structuredClone(demoDevicePairing);
+      },
+    },
+    account: (() => {
+      let status: AccountStatusDto = {signedIn: false, available: true, profile: null, accounts: []};
+      const listeners = new Set<(status: AccountStatusDto) => void>();
+      const publish = (): AccountStatusDto => { listeners.forEach((listener) => listener(structuredClone(status))); return structuredClone(status); };
+      const applyProfile = (next: NonNullable<AccountStatusDto['profile']>): AccountStatusDto => {
+        if (status.signedIn && status.profile && status.profile.userId !== next.userId) {
+          const rest = status.accounts.filter((entry) => entry.userId !== next.userId && entry.userId !== status.profile!.userId);
+          status.accounts = [status.profile, ...rest];
+        }
+        status = {
+          signedIn: true,
+          available: true,
+          profile: next,
+          accounts: status.accounts.filter((entry) => entry.userId !== next.userId),
+        };
+        return publish();
+      };
+      return {
+        get: async () => structuredClone(status),
+        signInWithPassword: async (email) => applyProfile({
+          userId: `demo:${email.toLowerCase()}`,
+          email,
+          name: email.split('@')[0] ?? 'Demo',
+          avatarUrl: '',
+        }),
+        signUp: async (email) => applyProfile({
+          userId: `demo:${email.toLowerCase()}`,
+          email,
+          name: email.split('@')[0] ?? 'Demo',
+          avatarUrl: '',
+        }),
+        resendConfirmation: async () => ({ok: true}),
+        requestPasswordReset: async () => ({ok: true}),
+        updatePassword: async () => publish(),
+        signInWithOAuth: async (provider) => {
+          void provider;
+          return applyProfile({userId: 'demo-user', email: 'owner@example.com', name: 'Demo', avatarUrl: ''});
+        },
+        switchTo: async (userId) => {
+          const found = status.accounts.find((entry) => entry.userId === userId);
+          if (!found) return structuredClone(status);
+          return applyProfile(found);
+        },
+        signOut: async () => {
+          status = {signedIn: false, available: true, profile: null, accounts: status.accounts};
+          return publish();
+        },
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => { listeners.delete(listener); };
+        },
+      };
+    })(),
+    team: {
+      list: async () => structuredClone(demoBots),
+      groups: async () => structuredClone(demoTeamGroups),
+      createGroup: async (request) => {
+        const group: TeamGroupDto = {
+          id: crypto.randomUUID(),
+          conversationId: crypto.randomUUID(),
+          name: request.name,
+          memberIds: [...new Set(request.memberIds)],
+          preview: 'No messages yet',
+          updatedAt: new Date().toISOString(),
+          unread: false,
+          unreadCount: 0,
+        };
+        demoTeamGroups = [group, ...demoTeamGroups];
+        messages.set(group.conversationId, []);
+        demoTeamGroupListeners.forEach((listener) => listener(structuredClone(demoTeamGroups)));
+        return structuredClone(group);
+      },
+      updateGroup: async (id, request) => {
+        const current = demoTeamGroups.find((group) => group.id === id);
+        if (!current) throw new Error('Unknown Team group');
+        const updated = {...current, ...request, updatedAt: new Date().toISOString()};
+        demoTeamGroups = demoTeamGroups.map((group) => group.id === id ? updated : group);
+        demoTeamGroupListeners.forEach((listener) => listener(structuredClone(demoTeamGroups)));
+        return structuredClone(updated);
+      },
+      markGroupRead: async (id) => {
+        const current = demoTeamGroups.find((group) => group.id === id);
+        if (!current) throw new Error('Unknown Team group');
+        current.unread = false;
+        current.unreadCount = 0;
+        demoTeamGroupListeners.forEach((listener) => listener(structuredClone(demoTeamGroups)));
+        return structuredClone(current);
+      },
+      removeGroup: async (id) => {
+        const current = demoTeamGroups.find((group) => group.id === id);
+        if (!current) return false;
+        demoTeamGroups = demoTeamGroups.filter((group) => group.id !== id);
+        messages.delete(current.conversationId);
+        demoTeamGroupListeners.forEach((listener) => listener(structuredClone(demoTeamGroups)));
+        return true;
+      },
+      sendGroup: async (request) => {
+        const group = demoTeamGroups.find((candidate) => candidate.id === request.id);
+        if (!group) throw new Error('Unknown Team group');
+        if (teamGroupSendPreview === 'slow' || teamGroupSendPreview === 'fail')
+          await new Promise((resolve) => setTimeout(resolve, 240));
+        if (teamGroupSendPreview === 'fail') throw new Error('Demo group delivery failed');
+        const created = message(crypto.randomUUID(), group.conversationId, 'user', request.text, Date.now(), null, {
+          teamGroupMessage: {memberIds: group.memberIds, deliveredMemberIds: group.memberIds, failedMemberIds: []},
+        });
+        messages.set(group.conversationId, [...(messages.get(group.conversationId) ?? []), created]);
+        group.preview = request.text;
+        group.updatedAt = created.createdAt;
+        demoTeamGroupListeners.forEach((listener) => listener(structuredClone(demoTeamGroups)));
+        return structuredClone(created);
+      },
+      profiles: async () => structuredClone(demoTeamProfileOptions()),
+      create: async (request) => {
+        const host = demoHosts.find((candidate) => candidate.hostId === (request.hostId ?? demoHosts.find((candidate) => candidate.isDefault)?.hostId)) ?? demoHosts[0];
+        const member = demoBot(
+          crypto.randomUUID(), crypto.randomUUID(), request.name, request.role,
+          request.avatar.color, 'idle', request.role,
+          Date.now(), request.avatar.shape,
+        );
+        member.avatar = structuredClone(request.avatar);
+        member.profileId = request.profileId;
+        member.profileName = demoTeamProfileOptions().find((profile) => profile.id === request.profileId)?.name ?? 'Missing profile';
+        member.hostId = host.hostId;
+        member.hostName = host.deviceName;
+        member.deviceType = host.deviceType;
+        member.laptopAccess = request.laptopAccess === 'ask' ? 'ask' : 'off';
+        member.skills = request.skills;
+        member.mcpServers = request.mcpServers;
+        member.plugins = request.plugins;
+        demoBots = [member, ...demoBots];
+        messages.set(member.conversationId, []);
+        demoTeamListeners.forEach((listener) => listener(structuredClone(demoBots)));
+        return structuredClone(member);
+      },
+      update: async (id, request) => {
+        const current = demoBots.find((member) => member.id === id);
+        if (!current) throw new Error('Unknown Team member');
+        const updated: BotDto = {
+          ...current,
+          ...request,
+          hostName: request.hostId
+            ? demoHosts.find((host) => host.hostId === request.hostId)?.deviceName ?? current.hostName
+            : current.hostName,
+          deviceType: request.hostId
+            ? demoHosts.find((host) => host.hostId === request.hostId)?.deviceType ?? current.deviceType
+            : current.deviceType,
+          profileName: request.profileId
+            ? demoTeamProfileOptions().find((profile) => profile.id === request.profileId)?.name ?? 'Missing profile'
+            : current.profileName,
+          updatedAt: new Date().toISOString(),
+        };
+        demoBots = demoBots.map((member) => member.id === id ? updated : member);
+        demoTeamListeners.forEach((listener) => listener(structuredClone(demoBots)));
+        return structuredClone(updated);
+      },
+      markRead: async (id) => {
+        const current = demoBots.find((member) => member.id === id);
+        if (!current) throw new Error('Unknown Team member');
+        current.unread = false;
+        demoTeamListeners.forEach((listener) => listener(structuredClone(demoBots)));
+        return structuredClone(current);
+      },
+      remove: async (id) => {
+        const member = demoBots.find((candidate) => candidate.id === id);
+        if (!member) return false;
+        demoBots = demoBots.filter((candidate) => candidate.id !== id);
+        demoTeamGroups = demoTeamGroups.map((group) => ({...group, memberIds: group.memberIds.filter((memberId) => memberId !== id)}));
+        messages.delete(member.conversationId);
+        demoTeamListeners.forEach((listener) => listener(structuredClone(demoBots)));
+        demoTeamGroupListeners.forEach((listener) => listener(structuredClone(demoTeamGroups)));
+        return true;
+      },
+      send: async (request) => {
+        const target = demoBots.find((member) => member.id === request.to || member.name.toLowerCase() === request.to.toLowerCase());
+        if (!target) throw new Error('Unknown Team member');
+        const sourceConversation = request.fromConversationId ?? 'welcome';
+        const source = demoBots.find((member) => member.id === request.fromMemberId);
+        const created = message(crypto.randomUUID(), target.conversationId, 'tool', request.text, Date.now(), null, {
+          agentRelay: {source: {
+            kind: source ? 'team' : 'assistant', memberId: source?.id ?? null,
+            conversationId: source?.conversationId ?? sourceConversation,
+            name: source?.name ?? conversations.find((item) => item.id === sourceConversation)?.title ?? 'Assistant',
+            role: source?.role ?? null, avatar: source?.avatar ?? null,
+            traceId: crypto.randomUUID(), hop: 0, automatic: request.automatic === true,
+          }},
+        } as unknown as JsonValue);
+        messages.set(target.conversationId, [...(messages.get(target.conversationId) ?? []), created]);
+        target.preview = request.text;
+        target.updatedAt = created.createdAt;
+        target.unread = true;
+        demoTeamListeners.forEach((listener) => listener(structuredClone(demoBots)));
+        return structuredClone(created);
+      },
+      startComputer: async (id) => {
+        const member = demoBots.find((candidate) => candidate.id === id);
+        if (!member) throw new Error('Unknown Team member');
+        member.computer = {...member.computer, state: 'running', detail: null};
+        return structuredClone(member);
+      },
+      stopComputer: async (id) => {
+        const member = demoBots.find((candidate) => candidate.id === id);
+        if (!member) throw new Error('Unknown Team member');
+        member.computer = {...member.computer, state: 'stopped', detail: null};
+        return structuredClone(member);
+      },
+      leases: async () => [],
+      grantLease: async (id, capabilities, minutes = 15) => ({
+        id: crypto.randomUUID(), memberId: id, capabilities,
+        createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + minutes * 60_000).toISOString(),
+      }),
+      revokeLease: async () => true,
+      host: async () => structuredClone(demoHosts.find((host) => host.isDefault) ?? demoHosts[0]),
+      hosts: async () => structuredClone(demoHosts),
+      beginHostPairing: async (_preserveFailures) => {
+        demoHosts = demoHosts.map((host) => host.mode === 'local'
+          ? {...host, pairingExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString()}
+          : host);
+        return structuredClone(demoHosts.find((host) => host.mode === 'local')!);
+      },
+      pairHost: async (request) => {
+        demoHosts = demoHosts.map((host) => ({...host, isDefault: false}));
+        const remote: TeamHostDto = {
+          mode: 'remote', state: 'connected', endpoint: request.endpoint, hostId: 'demo-remote-host', desktopId: 'demo-desktop',
+          deviceName: 'Home Mac mini', fingerprint: '7fe2 a901 35bc 101d', pairedAt: new Date().toISOString(), detail: null, isDefault: true,
+        };
+        demoHosts = [...demoHosts.filter((host) => host.hostId !== remote.hostId), remote];
+        return structuredClone(remote);
+      },
+      useLocalHost: async () => {
+        demoHosts = demoHosts.map((host) => ({...host, isDefault: host.mode === 'local'}));
+        return structuredClone(demoHosts.find((host) => host.isDefault)!);
+      },
+      setDefaultHost: async (hostId) => {
+        demoHosts = demoHosts.map((host) => ({...host, isDefault: host.hostId === hostId}));
+        const selected = demoHosts.find((host) => host.isDefault);
+        if (!selected) throw new Error('Unknown Host');
+        return structuredClone(selected);
+      },
+      removeHost: async (hostId) => {
+        if (demoBots.some((member) => member.hostId === hostId)) throw new Error("Move this Host's bots elsewhere before removing it.");
+        demoHosts = demoHosts.filter((host) => host.hostId !== hostId);
+        if (!demoHosts.some((host) => host.isDefault)) demoHosts[0].isDefault = true;
+        return structuredClone(demoHosts);
+      },
+      resetHostPairing: async () => ({
+        mode: 'local', state: 'local', endpoint: null, hostId: 'demo-host', desktopId: 'demo-desktop',
+        deviceName: 'This Mac', deviceType: 'laptop', fingerprint: 'a22f 91bc 3780 552d', pairedAt: null, detail: null,
+        listeningEndpoint: 'https://connect.polymux.com/h/86c92dd5-5042-4aa4-a33f-b656bf641e28', pairingCode: 'N8W3H6Y2K',
+        pairingExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), pairedDesktopName: null,
+      }),
+      subscribeHost() {
+        return () => {};
+      },
+      subscribeHosts() {
+        return () => {};
+      },
+      subscribe(listener) {
+        demoTeamListeners.add(listener);
+        return () => demoTeamListeners.delete(listener);
+      },
+      subscribeGroups(listener) {
+        demoTeamGroupListeners.add(listener);
+        return () => demoTeamGroupListeners.delete(listener);
+      },
+    },
     runs: {
       start: async (request) => startDemoRun(request),
       cancel: async (runId) => finishDemoRun(runId, 'run.cancelled'),
@@ -926,6 +2153,15 @@ function createBrowserDemoApi(): PolymuxApi {
       },
       events: async () => [],
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    },
+    activity: {
+      preview: async (request) => {
+        const browser = request.kind === 'browser';
+        const label = browser ? 'Browser' : 'Computer';
+        const accent = browser ? '#b9d4ff' : '#d7c7ff';
+        const frame = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="450" viewBox="0 0 720 450"><rect width="720" height="450" fill="#fff"/><rect x="34" y="32" width="194" height="20" rx="5" fill="${accent}"/><rect x="34" y="72" width="590" height="12" rx="5" fill="#dededb"/><rect x="34" y="96" width="498" height="12" rx="5" fill="#e8e8e5"/><rect x="34" y="146" width="292" height="204" rx="10" fill="#f0f0ed"/><rect x="354" y="146" width="270" height="17" rx="5" fill="#dededb"/><rect x="354" y="178" width="218" height="12" rx="5" fill="#e8e8e5"/><rect x="354" y="212" width="246" height="12" rx="5" fill="#e8e8e5"/><text x="34" y="408" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" fill="#777">${label} live content</text></svg>`;
+        return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(frame)}`;
+      },
     },
     manager: {
       snapshot: async () => ({enabled: false, jobs: []}),
@@ -943,6 +2179,26 @@ function createBrowserDemoApi(): PolymuxApi {
       // The demo has no host to grant a file with, and a browser tab could not
       // read one anyway: whatever it is handed is already loadable, or nothing.
       preview: async (path) => path,
+      saveAs: async (url) => {
+        const name = decodeURIComponent(url.split('/').pop() ?? 'download');
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = name;
+        link.click();
+        return name;
+      },
+      pick: async () => {
+        const file = await new Promise<File | null>((resolve) => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = 'image/*,video/*,.avif,.bmp,.gif,.heic,.heif,.jpeg,.jpg,.png,.svg,.webp,.m4v,.mov,.mp4,.ogv,.webm';
+          input.addEventListener('change', () => resolve(input.files?.[0] ?? null), {once: true});
+          input.addEventListener('cancel', () => resolve(null), {once: true});
+          input.click();
+        });
+        if (!file) return null;
+        return {url: URL.createObjectURL(file), name: file.name};
+      },
       // Nothing drives the agent in the demo, so nothing ever asks to be shown.
       // The demo has no agent to ask for a surface, so the reveal channel is
       // driven from the page instead: `window.polymuxDemoReveal(request)` fans
@@ -1141,6 +2397,7 @@ function createBrowserDemoApi(): PolymuxApi {
         addedReferences.set(conversationId, [...(addedReferences.get(conversationId) ?? []), ...created]);
         return created;
       },
+      subscribe: () => () => {},
     },
     memory: {
       status: async () => ({
@@ -1195,13 +2452,23 @@ function createBrowserDemoApi(): PolymuxApi {
     },
     comms: {
       status: async () => demoCommsStatus,
+      weChatLogin: async () => structuredClone(demoWeChatLogin),
+      weChatOpen: async () => {},
       // The demo's data is already in memory, so there is nothing on disk for
       // a snapshot to be: it hands back an empty one and the demo hub fetches
       // as it always did.
       snapshot: async () => ({status: null, chats: [], mailboxes: [], mail: [], messages: []}),
       refresh: async () => demoCommsStatus,
       // Nothing to start in a browser tab; the demo's bridges are always up.
-      wake: async () => demoCommsStatus,
+      wake: async (platform) => {
+        demoWakeCalls.push(platform);
+        if (platform === 'wechat' && demoWeChatWakeGate) await demoWeChatWakeGate;
+        return {
+          platform,
+          ready: platform !== 'wechat' || demoWeChatWakeReady,
+          status: demoCommsStatus,
+        };
+      },
       setHubUrl: async (baseUrl) => {
         demoCommsStatus.hub.baseUrl = baseUrl;
         return demoCommsStatus;
@@ -1288,7 +2555,10 @@ function createBrowserDemoApi(): PolymuxApi {
         );
         return demoCommsStatus;
       },
-      chats: async () => demoChats,
+      chats: async () => {
+        demoChatReads += 1;
+        return demoChats;
+      },
       chatContacts: async () => demoChats
         .filter((chat) => !chat.group && !chat.space)
         .map((chat) => ({
@@ -1321,6 +2591,23 @@ function createBrowserDemoApi(): PolymuxApi {
             ]
           : [],
       contactLinks: async () => structuredClone(demoContactLinks),
+      chatGroupInfo: async (chatId) => {
+        if (demoWeChatGroup.readDelayMs) await new Promise(resolve => setTimeout(resolve, demoWeChatGroup.readDelayMs));
+        const chat = demoChats.find(chat => chat.id === chatId && chat.platform === 'wechat' && chat.group);
+        if (!chat) throw new Error('This WeChat group is unavailable');
+        return {name: chat.name, isMember: demoWeChatGroup.isMember};
+      },
+      chatRenameGroup: async (chatId, name, expectedName) => {
+        if (demoWeChatGroup.renameDelayMs) await new Promise(resolve => setTimeout(resolve, demoWeChatGroup.renameDelayMs));
+        if (demoWeChatGroup.renameError) throw new Error(demoWeChatGroup.renameError);
+        const chat = demoChats.find(chat => chat.id === chatId && chat.platform === 'wechat' && chat.group);
+        if (!chat) throw new Error('This WeChat group is unavailable');
+        if (!name.trim()) throw new Error('Enter a group name');
+        if (chat.name !== expectedName) throw new Error('The group name changed. Reload it and try again.');
+        chat.name = name.trim();
+        demoWeChatGroup.name = chat.name;
+        return {name: chat.name, isMember: true};
+      },
       contactLinkMerge: async (request) => {
         const overlapping = demoContactLinks.filter((link) => link.members.some((member) =>
           request.members.some((candidate) => candidate.platform === member.platform &&
@@ -1331,6 +2618,21 @@ function createBrowserDemoApi(): PolymuxApi {
           id: `contact-${crypto.randomUUID()}`,
           name: request.name,
           members: mergeDemoContactLinkMembers(overlapping, request.members),
+          createdAt: overlapping[0]?.createdAt ?? at,
+          updatedAt: at,
+        };
+        const removed = new Set(overlapping.map((item) => item.id));
+        demoContactLinks = [link, ...demoContactLinks.filter((item) => !removed.has(item.id))];
+        return structuredClone(link);
+      },
+      contactRename: async (request) => {
+        const overlapping = demoContactLinks.filter((link) =>
+          link.members.some((member) => sameDemoContactMember(member, request.member)));
+        const at = new Date().toISOString();
+        const link: ContactLinkDto = {
+          id: `contact-${crypto.randomUUID()}`,
+          name: request.name.trim(),
+          members: mergeDemoContactLinkMembers(overlapping, [request.member]),
           createdAt: overlapping[0]?.createdAt ?? at,
           updatedAt: at,
         };
@@ -1418,17 +2720,46 @@ function createBrowserDemoApi(): PolymuxApi {
         nextBefore: null,
       }),
       chatSend: async (chatId, text, replyTo) => {
+        const gate = demoChatSendGate;
+        if (gate) await gate;
+        demoChatActions.push({kind: 'text', chatId, text, replyTo: replyTo ?? null});
         const sent: ChatMessageDto = {id: crypto.randomUUID(), chatId, sender: 'You', body: text, sentAt: new Date().toISOString(), mine: true, replyTo: replyTo ?? null, reactions: []};
+        if (demoNextDeliveryUnconfirmed) {
+          sent.deliveryStatus = 'unconfirmed';
+          demoNextDeliveryUnconfirmed = false;
+        }
         demoChatMessages = [sent, ...demoChatMessages];
         return sent;
       },
       // The demo has no homeserver to upload to and no microphone to open, so
-      // the file and voice paths are accepted and go nowhere.
-      chatSendFiles: async () => {},
-      chatPickFiles: async () => [],
-      chatSendAudio: async () => {},
-      chatSendSticker: async () => {},
+      // file and voice payloads are recorded for renderer interaction tests.
+      chatSendFiles: async (chatId, files) => {
+        demoChatActions.push({kind: 'files', chatId, files: [...files]});
+      },
+      chatPickFiles: async () => {
+        const gate = demoChatPickGate;
+        if (gate) await gate;
+        return [];
+      },
+      chatSendAudio: async (chatId, bytes, mimetype) => {
+        demoChatActions.push({kind: 'audio', chatId, mimetype, size: bytes.byteLength});
+      },
+      chatStickers: async () => {
+        if (demoStickerGate) await demoStickerGate;
+        return demoStickers ?? [{
+          id: 'demo-native-sticker',
+          url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+          mimeType: 'image/gif',
+          size: 42,
+          width: 240,
+          height: 240,
+        }];
+      },
+      chatSendSticker: async (chatId, stickerId) => {
+        demoChatActions.push({kind: 'sticker', chatId, stickerId});
+      },
       chatRecall: async (chatId, messageId) => {
+        demoChatActions.push({kind: 'recall', chatId, messageId});
         demoChatMessages = demoChatMessages.filter(
           (item) => item.chatId !== chatId || item.id !== messageId,
         );
@@ -1472,13 +2803,27 @@ function createBrowserDemoApi(): PolymuxApi {
       mailMessage: async (id) => {
         const found = demoEnvelopes.find((item) => item.envelope.id === id);
         if (!found) throw new Error(`No message ${id}`);
-        return {id, subject: found.envelope.subject, from: found.envelope.from, to: found.envelope.to ? [found.envelope.to] : [], cc: [], bcc: [], date: found.envelope.date, body: found.body, html: found.html ?? null, attachments: found.envelope.hasAttachment ? [{name: 'q3-report.pdf', mime: 'application/pdf'}] : [], messageId: `<demo-${id}@example.com>`, references: []};
+        const attachments = !found.envelope.hasAttachment
+          ? []
+          : id === '1'
+            ? [
+                {id: '2', name: 'q3-report.pdf', mime: 'application/pdf', contentId: 'q3-report', disposition: 'inline' as const, size: demoPdfContent.byteLength},
+                {id: '3', name: 'regional-breakdown.csv', mime: 'text/csv', contentId: null, disposition: 'attachment' as const, size: 24},
+              ]
+            : [{id: '2', name: 'q3-report.pdf', mime: 'application/pdf', contentId: null, disposition: 'attachment' as const, size: demoPdfContent.byteLength}];
+        return {id, subject: found.envelope.subject, from: found.envelope.from, to: found.envelope.to ? [found.envelope.to] : [], cc: [], bcc: [], date: found.envelope.date, body: found.body, html: found.html ?? null, attachments, importance: found.envelope.importance, messageId: `<demo-${id}@example.com>`, references: []};
       },
-      mailSend: async () => ({}),
+      mailSend: async (request) => {
+        demoMailSends.push(structuredClone(request));
+        return {};
+      },
       mailDelete: async (ids) => {
         demoEnvelopes = demoEnvelopes.filter((item) => !ids.includes(item.envelope.id));
       },
-      mailDownload: async () => ['/tmp/q3-report.pdf'],
+      mailAttachment: async (_id, part) => part === '3'
+        ? {id: part, name: 'regional-breakdown.csv', mime: 'text/csv', content: new TextEncoder().encode('region,total\nAPAC,42').buffer}
+        : {id: part, name: 'q3-report.pdf', mime: 'application/pdf', content: demoPdfContent},
+      mailDownload: async () => ['/tmp/q3-report.pdf', '/tmp/regional-breakdown.csv'],
       mailOpenFile: async () => {},
       mailPickFiles: async () => ['/tmp/demo-attachment.pdf'],
       mailMove: async (ids, target) => {
@@ -1893,6 +3238,9 @@ function createBrowserDemoApi(): PolymuxApi {
         return [...demoBrowserPermissions];
       },
       respondToPermission: async () => {},
+      respondToWebAuthn: async (id, credentialId) => {
+        demoWebAuthnAnswer = {id, ...(credentialId ? {credentialId} : {})};
+      },
       sites: async () => [...demoBrowserSites],
       clearSiteData: async (site) => {
         demoBrowserSites = demoBrowserSites.filter((row) => row.origin !== site);
@@ -1918,6 +3266,8 @@ function createBrowserDemoApi(): PolymuxApi {
         return [...demoBrowserLogins];
       },
       revealLogin: async (id) => demoBrowserPasswords.get(id) ?? null,
+      fillAutofill: async () => false,
+      dismissAutofill: async () => {},
       deleteLogin: async (id) => {
         const at = demoBrowserLogins.findIndex((row) => row.id === id);
         if (at >= 0) demoBrowserLogins.splice(at, 1);
@@ -1972,7 +3322,10 @@ function createBrowserDemoApi(): PolymuxApi {
         historySkipped: 0,
         problems: ['the login has no password'],
       }),
-      subscribe: () => () => {},
+      subscribe: (listener) => {
+        demoBrowserListeners.add(listener);
+        return () => demoBrowserListeners.delete(listener);
+      },
     },
     /**
      * The demo world outside Electron. One installed plugin and a small
@@ -2031,6 +3384,49 @@ function createBrowserDemoApi(): PolymuxApi {
       },
       views: async () => [],
       upload: async () => demoPlugins,
+    },
+    apps: {
+      list: async () => structuredClone(demoWorkspaceApps),
+      browse: async (query) => {
+        const text = (query ?? '').trim().toLowerCase();
+        return demoWorkspaceApps.apps
+          .filter((app) => !text || `${app.name} ${app.description}`.toLowerCase().includes(text))
+          .map((app): MarketplaceAppDto => ({
+            id: app.id,
+            name: app.name,
+            description: app.description,
+            author: 'Polymux',
+            official: app.official,
+            installed: true,
+          }));
+      },
+      install: async (id) => {
+        if (!demoWorkspaceApps.apps.some((app) => app.id === id)) throw new Error(`Unknown marketplace app: ${id}`);
+        return structuredClone(demoWorkspaceApps);
+      },
+      setEnabled: async (id, enabled) => {
+        const app = demoWorkspaceApps.apps.find((candidate) => candidate.id === id);
+        if (!app) throw new Error(`Unknown app: ${id}`);
+        app.enabled = enabled;
+        if (!enabled) demoWorkspaceApps.pinnedIds = demoWorkspaceApps.pinnedIds.filter((candidate) => candidate !== id);
+        return structuredClone(demoWorkspaceApps);
+      },
+      setPinned: async (ids) => {
+        if (ids.length > 4) throw new Error('Only four apps can be pinned to New Tab');
+        const available = new Set(demoWorkspaceApps.apps.filter((app) => app.enabled && app.pinnable).map((app) => app.id));
+        if (new Set(ids).size !== ids.length || ids.some((id) => !available.has(id)))
+          throw new Error('Only enabled workspace apps can be pinned');
+        demoWorkspaceApps.pinnedIds = [...ids];
+        return structuredClone(demoWorkspaceApps);
+      },
+      remove: async (id) => {
+        const app = demoWorkspaceApps.apps.find((candidate) => candidate.id === id);
+        if (!app) throw new Error(`Unknown app: ${id}`);
+        if (app.official) throw new Error('Official apps cannot be uninstalled');
+        demoWorkspaceApps.apps = demoWorkspaceApps.apps.filter((candidate) => candidate.id !== id);
+        demoWorkspaceApps.pinnedIds = demoWorkspaceApps.pinnedIds.filter((candidate) => candidate !== id);
+        return structuredClone(demoWorkspaceApps);
+      },
     },
     providers: {
       list: async () => demoProviders.map((provider) => providerWithKeys(provider)),
@@ -2143,14 +3539,60 @@ function createBrowserDemoApi(): PolymuxApi {
   function startDemoRun(request: StartRunRequest): {runId: string} {
     const runId = crypto.randomUUID();
     const timestamp = Date.now();
-    runConversations.set(runId, request.conversationId);
     const items = messages.get(request.conversationId) ?? [];
-    items.push(message(request.messageId ?? crypto.randomUUID(), request.conversationId, 'user', request.text, timestamp, null, {asGoal: request.asGoal ?? false}));
+    if (request.rewind && request.messageId) {
+      for (const [activeRunId, chatId] of [...runConversations]) {
+        if (chatId === request.conversationId) finishDemoRun(activeRunId, 'run.cancelled');
+      }
+      const index = items.findIndex((item) => item.id === request.messageId);
+      if (index >= 0) {
+        const current = items[index]!;
+        const attachments = (request.attachments ?? []).map((attachmentPath) => ({
+          id: crypto.randomUUID(),
+          messageId: current.id,
+          name: attachmentPath.split(/[\\/]/).pop() ?? attachmentPath,
+          path: attachmentPath,
+          mimeType: null,
+          size: null,
+          sha256: null,
+          createdAt: new Date(timestamp).toISOString(),
+        }));
+        items.splice(index, items.length - index, {
+          ...current,
+          content: request.text,
+          attachments: [...current.attachments, ...attachments.filter((file) => !current.attachments.some((existing) => existing.path === file.path))],
+        });
+      }
+    } else if (!request.reuseUserMessage) {
+      items.push(message(request.messageId ?? crypto.randomUUID(), request.conversationId, 'user', request.text, timestamp, null, {asGoal: request.asGoal ?? false}));
+    }
+    runConversations.set(runId, request.conversationId);
     messages.set(request.conversationId, items);
     if (request.asGoal) goals.set(request.conversationId, goal(request.conversationId, request.text));
     emit(runId, request.conversationId, 'run.started', {});
     emit(runId, request.conversationId, 'run.state', {status: 'running'});
     emit(runId, request.conversationId, 'message.reasoning.delta', {delta: 'Thinking'});
+    if (request.text === '__demo_agent_notice__') {
+      emit(runId, request.conversationId, 'agent.notice', {
+        severity: 'warning',
+        message: 'Fast mode turned off: requires extra usage to be enabled for this account.',
+      });
+    }
+    if (request.text === '__demo_external_connection_failure__') {
+      timers.set(runId, setTimeout(() => {
+        timers.delete(runId);
+        runConversations.delete(runId);
+        emit(runId, request.conversationId, 'agent.notice', {
+          severity: 'error',
+          message: 'External agent connection lost',
+        });
+        emit(runId, request.conversationId, 'run.failed', {
+          result: {error: {message: 'External agent connection lost', reportedAsNotice: true}},
+        });
+        queueMicrotask(() => emit(runId, request.conversationId, 'run.settled', {}));
+      }, 50));
+      return {runId};
+    }
     // Exercises the real failed-run UI without persisting a fake assistant
     // response; production Electron runs never use this browser demo adapter.
     if (request.text === '__demo_provider_failure__') {
@@ -2211,7 +3653,7 @@ function createBrowserDemoApi(): PolymuxApi {
       return {runId};
     }
     if (isActivityDemo) {
-      const args = {path: '/skills/computer-use/SKILL.md'};
+      const args = {path: '/skills/window-control/SKILL.md'};
       const commentary = 'I’ll read the skill files first to see what applies here.';
       emit(runId, request.conversationId, 'message.completed', {message: {role: 'assistant', content: [{type: 'text', text: commentary}]}, phase: 'commentary'});
       emit(runId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-skill-read-1', name: 'read', arguments: args}});
@@ -2223,8 +3665,11 @@ function createBrowserDemoApi(): PolymuxApi {
     timers.set(runId, setTimeout(() => {
       const text = 'This is the assembled Polymux chat surface. Connect the send handler to your agent backend when it is ready.';
       if (isActivityDemo) {
-        const args = {path: '/skills/computer-use/SKILL.md'};
-        emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}, result: {content: 'Read the unified computer-use workflow.'}});
+        const args = {path: '/skills/window-control/SKILL.md'};
+        emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}, result: {content: 'Read the window-control workflow.'}});
+        const browserArgs = {action: 'read', tabId: 'demo-browser-tab', url: 'https://polymux.com/docs'};
+        emit(runId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-browser-1', name: 'browser', arguments: browserArgs}});
+        emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-browser-1', name: 'browser', arguments: browserArgs}, result: {content: JSON.stringify({ok: true, tabId: 'demo-browser-tab', pageUrl: browserArgs.url, pageTitle: 'Polymux Docs'})}});
         items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [], Date.now() - 2, runId, {phase: 'commentary'}));
         items.push(message(crypto.randomUUID(), request.conversationId, 'assistant', [], Date.now() - 1, runId, {phase: 'commentary'}));
       }
@@ -2354,6 +3799,32 @@ function conversation(id: string, title: string, timestamp: number): Conversatio
   return {id, title, createdAt: date, updatedAt: date, archivedAt: null};
 }
 
+function demoBot(
+  id: string,
+  conversationId: string,
+  name: string,
+  role: string,
+  color: string,
+  status: BotDto['status'],
+  preview: string,
+  timestamp: number,
+  shape: BotDto['avatar']['shape'] = 'circle',
+  skills?: string[],
+  mcpServers?: string[],
+  plugins?: string[],
+): BotDto {
+  return {
+    id, conversationId, name, role,
+    profileId: 'default', profileName: 'Default Profile',
+    hostId: 'demo-host', hostName: 'This Mac', deviceType: 'laptop',
+    avatar: {shape, color},
+    laptopAccess: 'ask', status, preview,
+    updatedAt: new Date(timestamp).toISOString(), unread: false,
+    computer: {provider: 'remote', state: 'running', detail: null, persistent: true, network: 'none'},
+    skills, mcpServers, plugins,
+  };
+}
+
 function message(id: string, conversationId: string, role: MessageDto['role'], content: JsonValue, timestamp: number, runId: string | null = null, metadata: JsonValue = {}): MessageDto {
   return {id, conversationId, runId, role, content, createdAt: new Date(timestamp).toISOString(), sequence: 0, attachments: [], metadata};
 }
@@ -2469,7 +3940,7 @@ function demoBrowserDownloadState(
 }
 
 function demoReferences(conversationId: string): ReferenceDto[] {
-  return [{id: 'polymux-site', conversationId, runId: null, kind: 'web', title: 'polymux.com', uri: 'https://polymux.com', createdAt: new Date().toISOString(), metadata: {}}];
+  return [{id: 'polymux-site', conversationId, runId: null, kind: 'web', title: 'Polymux', uri: 'https://polymux.com', createdAt: new Date().toISOString(), metadata: {}}];
 }
 
 /**

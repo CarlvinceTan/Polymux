@@ -1,5 +1,5 @@
 import {createWriteStream} from "node:fs";
-import {mkdtemp, rm, stat} from "node:fs/promises";
+import {mkdtemp, readFile, rm, stat} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {Readable} from "node:stream";
@@ -21,8 +21,14 @@ export interface ClipboardDependencies<Image extends ClipboardImage> {
   clipboard: ClipboardWriter<Image>;
   fetch(url: string): Promise<Response>;
   imageFromBuffer(buffer: Buffer): Image;
+  /** Preferred for a file already on disk: nativeImage decodes paths more
+   * reliably than a raw buffer for several still formats Chromium can show. */
+  imageFromPath?(filePath: string): Image;
   platform?: NodeJS.Platform;
   temporaryRoot?: string;
+  /** Turns a granted preview url back into the file on disk, so a local still
+   * or clip does not have to be fetched and rewritten just to copy it. */
+  resolveLocalFile?(url: string): string | undefined;
 }
 
 /**
@@ -51,6 +57,35 @@ export async function writeClipboardContent<Image extends ClipboardImage>(
       writeFileReference(
         dependencies.clipboard,
         path.resolve(content.path),
+        dependencies.platform ?? process.platform,
+      );
+      return true;
+    }
+
+    const local = dependencies.resolveLocalFile?.(content.url);
+    if (local) {
+      const details = await stat(local);
+      if (!details.isFile()) return false;
+      if (content.copyAs === "file") {
+        writeFileReference(
+          dependencies.clipboard,
+          path.resolve(local),
+          dependencies.platform ?? process.platform,
+        );
+        return true;
+      }
+      const image = dependencies.imageFromPath
+        ? dependencies.imageFromPath(local)
+        : dependencies.imageFromBuffer(await readFile(local));
+      if (!image.isEmpty()) {
+        dependencies.clipboard.writeImage(image);
+        return true;
+      }
+      // SVG and a few other stills render in the page but nativeImage cannot
+      // rasterize them. A file reference still pastes into Finder.
+      writeFileReference(
+        dependencies.clipboard,
+        path.resolve(local),
         dependencies.platform ?? process.platform,
       );
       return true;
@@ -117,7 +152,7 @@ function clipboardContent(value: unknown): ClipboardContentDto {
     throw new Error("Unknown clipboard attachment type");
   const url = requiredString(input.url, "clipboard attachment url");
   const protocol = new URL(url).protocol;
-  if (!["polymux-media:", "http:", "https:"].includes(protocol))
+  if (!["polymux-media:", "polymux-preview:", "http:", "https:"].includes(protocol))
     throw new Error("Unsupported clipboard attachment url");
   return {
     kind: "attachment",

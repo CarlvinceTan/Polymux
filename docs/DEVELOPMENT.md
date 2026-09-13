@@ -5,6 +5,9 @@
 ```sh
 npm install
 npm install --prefix apps/site
+npm install --prefix apps/phone
+npm install --prefix apps/connect/relay
+npm install --prefix apps/connect/edge
 POLYMUX_DEV_INSTANCE=review POLYMUX_MODEL=openai/gpt-5.6-luna npm run isolate
 
 npm run check
@@ -16,6 +19,26 @@ npm run make
 
 Use an isolate for development so test runs cannot touch the ordinary profile,
 session, or Hub port. Reuse a named `POLYMUX_DEV_INSTANCE` when useful.
+
+## Test coverage
+
+`npm test` runs the script, package, desktop main-process, renderer unit, CLI,
+site, relay, and phone suites, followed by the relay and edge type checks.
+`npm run check` checks desktop Svelte and TypeScript; also run
+`npm --prefix apps/site run check` and `npm run phone:check` for those apps.
+
+`npm run test:ui` runs the renderer interaction suite in headless Chromium with
+its own demo build in the system temporary directory and preview server. Set `POLYMUX_UI_TEST_PORT` to an unused
+port when running another suite concurrently; the default is 4173.
+
+`npm run test:browser-live` exercises real CDP against Playwright’s isolated
+headless Chromium. Install the browser for it and `test:ui` with
+`npx playwright install chromium` if needed. It opens no user browser profile.
+
+The `test:connect-live`, `test:host-remote-live`, and `test:preview-live` commands
+are separate opt-in integration checks. Review their launch and service
+requirements before running them; they are not part of `npm test` and do not
+establish coverage when skipped.
 
 ## Bridge binaries
 
@@ -56,8 +79,8 @@ cp .env.example .env
 ```
 
 `POLYMUX_MODEL` uses `provider/model` format. Credentials are resolved by `pi-ai`;
-environment credentials are suitable for development until the settings UI and
-operating-system credential store are added.
+environment credentials are suitable for development; the app also keeps API
+keys in the OS-encrypted credential store.
 
 ## Skills and MCP
 

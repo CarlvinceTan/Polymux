@@ -25,6 +25,16 @@ export interface RunResourceStore {
   listArtifacts(conversationId?: string): Artifact[];
   createReference(input: NewReference): StoredReference;
   listReferences(conversationId: string): StoredReference[];
+  /** Fill in a hostname placeholder once the page's own title is known. */
+  updateReferenceTitle?(id: string, title: string): StoredReference | null;
+  /** Title already stored for this page in browsing history, if any. */
+  pageTitleFor?(url: string): string | null;
+}
+
+export interface RunResourceRecorderOptions {
+  /** Network lookup for a cited page that was never opened in this run. */
+  resolveTitle?: (url: string) => Promise<string | null>;
+  onChanged?: (conversationId: string) => void;
 }
 
 interface RecordedResource {
@@ -37,6 +47,8 @@ interface RecordedResource {
 export class RunResourceRecorder {
   readonly #store: RunResourceStore;
   readonly #newId: () => string;
+  readonly #resolveTitle?: (url: string) => Promise<string | null>;
+  readonly #onChanged?: (conversationId: string) => void;
   /** Keys already stored, per conversation, so a run that reads one page
    * fifteen times contributes one reference. Seeded from storage on first use
    * so restarts and earlier runs still de-duplicate. */
@@ -45,10 +57,19 @@ export class RunResourceRecorder {
    * url reads better as "Upcoming AI events — Eventbrite" than as a hostname,
    * and this is the only place that title was ever available. */
   readonly #titles = new Map<string, Map<string, string>>();
+  /** Fetches already kicked off for a stored reference, so listing the same
+   * conversation twice does not hit the network twice. */
+  readonly #resolving = new Set<string>();
 
-  constructor(store: RunResourceStore, newId: () => string = () => crypto.randomUUID()) {
+  constructor(
+    store: RunResourceStore,
+    newId: () => string = () => crypto.randomUUID(),
+    options: RunResourceRecorderOptions = {},
+  ) {
     this.#store = store;
     this.#newId = newId;
+    this.#resolveTitle = options.resolveTitle;
+    this.#onChanged = options.onChanged;
   }
 
   /** Called for every run event. Tool calls contribute outputs and remembered
@@ -68,11 +89,53 @@ export class RunResourceRecorder {
         this.#persist(conversationId, runId, {
           kind: "reference",
           key: link.url,
-          title: link.title || this.#titles.get(conversationId)?.get(link.url) || hostTitle(link.url),
+          title: this.#titleFor(conversationId, link.url, link.title),
         });
     } catch {
       // Summary bookkeeping never interrupts the run it is observing.
     }
+  }
+
+  /**
+   * Swap hostname placeholders for titles we already know, and start a fetch
+   * for the rest. Listing is what the Summary panel reads, so a conversation
+   * opened after the fact still gets real names.
+   */
+  present(references: StoredReference[]): StoredReference[] {
+    return references.map((reference) => this.#presentOne(reference));
+  }
+
+  #presentOne(reference: StoredReference): StoredReference {
+    if (reference.kind !== "web" || !isFallbackTitle(reference.title, reference.uri)) {
+      this.#remember(reference.conversationId, reference.uri, reference.title);
+      return reference;
+    }
+    const title = this.#knownTitle(reference.conversationId, reference.uri);
+    if (title && title !== reference.title) {
+      this.#store.updateReferenceTitle?.(reference.id, title);
+      return {...reference, title};
+    }
+    this.#resolveLater(reference);
+    return reference;
+  }
+
+  #titleFor(conversationId: string, url: string, cited: string): string {
+    const known = this.#knownTitle(conversationId, url);
+    if (known) return known;
+    const label = cited.trim();
+    if (label && !isFallbackTitle(label, url)) return label;
+    return hostTitle(url);
+  }
+
+  #knownTitle(conversationId: string, url: string): string | undefined {
+    const remembered = this.#lookup(conversationId, url);
+    if (remembered && !isFallbackTitle(remembered, url)) return remembered;
+    const fromHistory = this.#store.pageTitleFor?.(url)?.trim();
+    if (fromHistory && !isFallbackTitle(fromHistory, url)) {
+      this.#remember(conversationId, url, fromHistory);
+      return fromHistory;
+    }
+    return undefined;
   }
 
   #noteTitles(conversationId: string, args: Record<string, unknown>, result: {content: unknown; metadata?: unknown}): void {
@@ -81,9 +144,24 @@ export class RunResourceRecorder {
     const url = webUrl(payload.pageUrl) ?? webUrl(args.url) ?? webUrl(args.uri);
     const title = payload.pageTitle ?? payload.title;
     if (!url || typeof title !== "string" || !title.trim()) return;
+    this.#remember(conversationId, url, title.trim());
+  }
+
+  #remember(conversationId: string, url: string, title: string): void {
+    if (!title || isFallbackTitle(title, url)) return;
     const titles = this.#titles.get(conversationId) ?? new Map<string, string>();
-    titles.set(url, title.trim());
+    for (const key of urlKeys(url)) titles.set(key, title);
     this.#titles.set(conversationId, titles);
+  }
+
+  #lookup(conversationId: string, url: string): string | undefined {
+    const titles = this.#titles.get(conversationId);
+    if (!titles) return undefined;
+    for (const key of urlKeys(url)) {
+      const title = titles.get(key);
+      if (title) return title;
+    }
+    return undefined;
   }
 
   #persist(conversationId: string, runId: string | null, resource: RecordedResource): void {
@@ -94,7 +172,7 @@ export class RunResourceRecorder {
   #persistReference(conversationId: string, runId: string | null, resource: RecordedResource): void {
     if (!this.#claim(conversationId, resource.key)) return;
     try {
-      this.#store.createReference({
+      const stored = this.#store.createReference({
         id: this.#newId(),
         conversationId,
         runId,
@@ -102,10 +180,29 @@ export class RunResourceRecorder {
         title: resource.title,
         uri: resource.key,
       });
+      if (isFallbackTitle(stored.title, stored.uri)) this.#resolveLater(stored);
     } catch {
       // A resource that cannot be stored must never fail the run it came from.
       this.#release(conversationId, resource.key);
     }
+  }
+
+  #resolveLater(reference: StoredReference): void {
+    const resolve = this.#resolveTitle;
+    if (!resolve || this.#resolving.has(reference.id)) return;
+    this.#resolving.add(reference.id);
+    void resolve(reference.uri)
+      .then((title) => {
+        const next = title?.trim() ?? "";
+        if (!next || isFallbackTitle(next, reference.uri)) return;
+        this.#remember(reference.conversationId, reference.uri, next);
+        const updated = this.#store.updateReferenceTitle?.(reference.id, next);
+        if (updated) this.#onChanged?.(reference.conversationId);
+      })
+      .catch(() => {
+        // A title we cannot fetch is a hostname, not a failed run.
+      })
+      .finally(() => this.#resolving.delete(reference.id));
   }
 
   #persistArtifact(conversationId: string, runId: string | null, resource: RecordedResource): void {
@@ -171,7 +268,8 @@ function artifactsFrom(
 }
 
 /** Markdown links, then bare urls, in the order the reply mentions them.
- * Trailing punctuation is sentence, not url: "see https://x.com/a." */
+ * Trailing punctuation is sentence or emphasis, not url: "see https://x.com/a."
+ * and the `**https://x.com/a**` wrapping models often put around a link. */
 function citedLinks(content: unknown): Array<{url: string; title: string}> {
   const blocks = Array.isArray(content) ? content : [];
   const text = blocks
@@ -181,7 +279,7 @@ function citedLinks(content: unknown): Array<{url: string; title: string}> {
   const links: Array<{url: string; title: string}> = [];
   const seen = new Set<string>();
   const add = (raw: string, title: string): void => {
-    const url = webUrl(raw.replace(/[).,;:!?'"]+$/, ""));
+    const url = citedUrl(raw);
     if (!url || seen.has(url)) return;
     seen.add(url);
     links.push({url, title: title.trim()});
@@ -193,12 +291,71 @@ function citedLinks(content: unknown): Array<{url: string; title: string}> {
   return links;
 }
 
+function citedUrl(raw: string): string | null {
+  const url = webUrl(raw.replace(/[).,;:!?'"`*_~]+$/g, ""));
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    parsed.pathname = parsed.pathname.replace(/(?:[`*_~]|%60|%2a|%5f|%7e)+$/gi, "") || "/";
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 function hostTitle(url: string): string {
   try {
     const parsed = new URL(url);
-    return `${parsed.hostname}${parsed.pathname === "/" ? "" : parsed.pathname}`;
+    const host = parsed.hostname.replace(/^www\./, "");
+    return `${host}${parsed.pathname === "/" ? "" : parsed.pathname}`;
   } catch {
     return url;
+  }
+}
+
+/** A title that is just the url or host is not a website title. */
+function isFallbackTitle(title: string, url: string): boolean {
+  const trimmed = title.trim();
+  if (!trimmed) return true;
+  if (/^https?:\/\//i.test(trimmed)) return true;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (trimmed === parsed.hostname || trimmed === host) return true;
+    if (trimmed === hostTitle(url)) return true;
+    if (trimmed === `${parsed.hostname}${parsed.pathname === "/" ? "" : parsed.pathname}`) return true;
+  } catch {
+    if (trimmed === url) return true;
+  }
+  return false;
+}
+
+function urlKeys(value: string): string[] {
+  const url = webUrl(value);
+  if (!url) return [];
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    const hosts = parsed.hostname.startsWith("www.")
+      ? [parsed.hostname, parsed.hostname.slice(4)]
+      : [parsed.hostname, `www.${parsed.hostname}`];
+    const paths = parsed.pathname === "/"
+      ? ["/", ""]
+      : parsed.pathname.endsWith("/")
+        ? [parsed.pathname, parsed.pathname.slice(0, -1)]
+        : [parsed.pathname, `${parsed.pathname}/`];
+    const keys: string[] = [url];
+    for (const host of hosts) {
+      for (const path of paths) {
+        const next = new URL(parsed.toString());
+        next.hostname = host;
+        next.pathname = path || "/";
+        keys.push(next.toString());
+      }
+    }
+    return [...new Set(keys)];
+  } catch {
+    return [url];
   }
 }
 

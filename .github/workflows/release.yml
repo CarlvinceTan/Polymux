@@ -22,8 +22,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Validate curated release notes before building installers
+        run: node scripts/release/release-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
       - run: npm ci
       - run: npm ci --prefix apps/site
+      - run: npm ci --prefix apps/connect/relay
+      - run: npm ci --prefix apps/connect/edge
+      - run: npm ci --prefix apps/phone
       - run: npm run check
       - run: npm test
       - run: npm run check --prefix apps/site
@@ -46,7 +51,7 @@ jobs:
           ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
           CWS_EXTENSION_ID: abcoknklbjpjkchpejlfpkjlajmifgnk
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
-        run: node scripts/verify-published-extension.mjs
+        run: node scripts/release/verify-published-extension.mjs
 
   phone-ios-runtime:
     name: Build unsigned iPhone control runtime
@@ -57,7 +62,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: node scripts/build-phone-wda.mjs
+      - run: node scripts/phone/build-phone-wda.mjs
       - name: Verify and archive WebDriverAgent
         run: |
           WDA="resources/phone/ios/WebDriverAgentRunner-Runner.app"
@@ -124,7 +129,7 @@ jobs:
             resources/phone
             resources/whisper
             resources/native/bin
-          key: polymux-runtime-${{ runner.os }}-arm64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/fetch-phone-tools.mjs', 'scripts/fetch-phone-ios-tools.mjs', 'scripts/build-phone-zsign.mjs', 'scripts/build-phone-ios-signer.mjs', 'scripts/build-phone-ios-signer-runtime.mjs', 'scripts/phone-ios-signer-helper.py', 'scripts/build-phone-ios-device.mjs', 'scripts/phone-ios-device-helper.py', 'scripts/phone-ios-device-*.lock', 'scripts/fetch-whisper.mjs', 'scripts/build-native-helpers.ts', 'resources/native/*.swift', 'apps/desktop/src/main/system/permission-usage.ts') }}
+          key: polymux-runtime-${{ runner.os }}-arm64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/phone/fetch-phone-tools.mjs', 'scripts/phone/fetch-phone-ios-tools.mjs', 'scripts/phone/build-phone-zsign.mjs', 'scripts/phone/build-phone-ios-signer.mjs', 'scripts/phone/build-phone-ios-signer-runtime.mjs', 'scripts/phone/phone-ios-signer-helper.py', 'scripts/phone/build-phone-ios-device.mjs', 'scripts/phone/phone-ios-device-helper.py', 'scripts/phone/phone-ios-device-*.lock', 'scripts/fetch-whisper.mjs', 'scripts/build-native-helpers.ts', 'resources/native/*.swift', 'apps/desktop/src/main/system/permission-usage.ts') }}
 
       - name: Require release credentials
         env:
@@ -164,6 +169,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          POLYMUX_SUPABASE_URL: ${{ secrets.POLYMUX_SUPABASE_URL }}
+          POLYMUX_SUPABASE_ANON_KEY: ${{ secrets.POLYMUX_SUPABASE_ANON_KEY }}
           POLYMUX_TELEGRAM_API_ID: ${{ secrets.POLYMUX_TELEGRAM_API_ID }}
           POLYMUX_TELEGRAM_API_HASH: ${{ secrets.POLYMUX_TELEGRAM_API_HASH }}
           POLYMUX_GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.POLYMUX_GOOGLE_DRIVE_CLIENT_ID }}
@@ -177,7 +184,7 @@ jobs:
           POLYMUX_MICROSOFT_MAIL_CLIENT_ID: ${{ secrets.POLYMUX_MICROSOFT_MAIL_CLIENT_ID }}
           POLYMUX_MICROSOFT_MAIL_CLIENT_SECRET: ${{ secrets.POLYMUX_MICROSOFT_MAIL_CLIENT_SECRET }}
         run: |
-          node scripts/verify-release-connections.mjs
+          node scripts/release/verify-release-connections.mjs
           npm run make -- --arch=arm64
 
       - name: Verify packaged artifacts
@@ -318,10 +325,12 @@ jobs:
           path: |
             resources/phone
             resources/whisper
-          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/fetch-phone-tools.mjs', 'scripts/fetch-phone-ios-tools.mjs', 'scripts/build-phone-ios-signer.mjs', 'scripts/build-phone-ios-signer-runtime.mjs', 'scripts/phone-ios-signer-helper.py', 'scripts/build-phone-ios-device.mjs', 'scripts/phone-ios-device-helper.py', 'scripts/phone-ios-device-*.lock', 'scripts/fetch-whisper.mjs') }}
+          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/phone/fetch-phone-tools.mjs', 'scripts/phone/fetch-phone-ios-tools.mjs', 'scripts/phone/build-phone-ios-signer.mjs', 'scripts/phone/build-phone-ios-signer-runtime.mjs', 'scripts/phone/phone-ios-signer-helper.py', 'scripts/phone/build-phone-ios-device.mjs', 'scripts/phone/phone-ios-device-helper.py', 'scripts/phone/phone-ios-device-*.lock', 'scripts/fetch-whisper.mjs') }}
       - name: Build installers
         shell: pwsh
         env:
+          POLYMUX_SUPABASE_URL: ${{ secrets.POLYMUX_SUPABASE_URL }}
+          POLYMUX_SUPABASE_ANON_KEY: ${{ secrets.POLYMUX_SUPABASE_ANON_KEY }}
           POLYMUX_TELEGRAM_API_ID: ${{ secrets.POLYMUX_TELEGRAM_API_ID }}
           POLYMUX_TELEGRAM_API_HASH: ${{ secrets.POLYMUX_TELEGRAM_API_HASH }}
           POLYMUX_GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.POLYMUX_GOOGLE_DRIVE_CLIENT_ID }}
@@ -335,7 +344,7 @@ jobs:
           POLYMUX_MICROSOFT_MAIL_CLIENT_ID: ${{ secrets.POLYMUX_MICROSOFT_MAIL_CLIENT_ID }}
           POLYMUX_MICROSOFT_MAIL_CLIENT_SECRET: ${{ secrets.POLYMUX_MICROSOFT_MAIL_CLIENT_SECRET }}
         run: |
-          node scripts/verify-release-connections.mjs
+          node scripts/release/verify-release-connections.mjs
           npm run make -- --arch=x64
       - name: Verify Windows artifacts
         shell: pwsh
@@ -490,12 +499,14 @@ jobs:
             resources/node
             resources/phone
             resources/whisper
-          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/fetch-phone-tools.mjs', 'scripts/fetch-phone-ios-tools.mjs', 'scripts/build-phone-ios-signer.mjs', 'scripts/build-phone-ios-signer-runtime.mjs', 'scripts/phone-ios-signer-helper.py', 'scripts/build-phone-ios-device.mjs', 'scripts/phone-ios-device-helper.py', 'scripts/phone-ios-device-*.lock', 'scripts/fetch-whisper.mjs') }}
+          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/phone/fetch-phone-tools.mjs', 'scripts/phone/fetch-phone-ios-tools.mjs', 'scripts/phone/build-phone-ios-signer.mjs', 'scripts/phone/build-phone-ios-signer-runtime.mjs', 'scripts/phone/phone-ios-signer-helper.py', 'scripts/phone/build-phone-ios-device.mjs', 'scripts/phone/phone-ios-device-helper.py', 'scripts/phone/phone-ios-device-*.lock', 'scripts/fetch-whisper.mjs') }}
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run test:tools
       - name: Package app
         env:
+          POLYMUX_SUPABASE_URL: ${{ secrets.POLYMUX_SUPABASE_URL }}
+          POLYMUX_SUPABASE_ANON_KEY: ${{ secrets.POLYMUX_SUPABASE_ANON_KEY }}
           POLYMUX_TELEGRAM_API_ID: ${{ secrets.POLYMUX_TELEGRAM_API_ID }}
           POLYMUX_TELEGRAM_API_HASH: ${{ secrets.POLYMUX_TELEGRAM_API_HASH }}
           POLYMUX_GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.POLYMUX_GOOGLE_DRIVE_CLIENT_ID }}
@@ -509,9 +520,21 @@ jobs:
           POLYMUX_MICROSOFT_MAIL_CLIENT_ID: ${{ secrets.POLYMUX_MICROSOFT_MAIL_CLIENT_ID }}
           POLYMUX_MICROSOFT_MAIL_CLIENT_SECRET: ${{ secrets.POLYMUX_MICROSOFT_MAIL_CLIENT_SECRET }}
         run: |
-          node scripts/verify-release-connections.mjs
+          node scripts/release/verify-release-connections.mjs
           npm run package -- --platform=linux --arch=x64
       - run: npm run make:appimage
+      - name: Build headless CLI
+        env:
+          POLYMUX_SUPABASE_URL: ${{ secrets.POLYMUX_SUPABASE_URL }}
+          POLYMUX_SUPABASE_ANON_KEY: ${{ secrets.POLYMUX_SUPABASE_ANON_KEY }}
+        run: |
+          npm run build:cli
+          mkdir -p out/cli-release
+          cp apps/cli/dist/polymux.mjs out/cli-release/polymux.mjs
+          cp apps/cli/dist/LICENSE.grok-mermaid.txt out/cli-release/
+          tar -czf out/cli-release/polymux-cli.tar.gz -C out/cli-release polymux.mjs LICENSE.grok-mermaid.txt
+          (cd out/cli-release && sha256sum polymux-cli.tar.gz > polymux-cli.tar.gz.sha256)
+          test "$(node apps/cli/dist/polymux.mjs --version)" = "$(node -p 'require("./package.json").version')"
       - name: Verify Linux artifacts
         run: |
           APPIMAGE="$(find out/make/appimage -type f -name '*.AppImage' -print -quit)"
@@ -612,6 +635,8 @@ jobs:
           path: |
             out/make/appimage/*.AppImage
             out/make/appimage/latest-linux.yml
+            out/cli-release/polymux-cli.tar.gz
+            out/cli-release/polymux-cli.tar.gz.sha256
           if-no-files-found: error
 
   release:
@@ -619,6 +644,12 @@ jobs:
     needs: [browser-compatibility, macos, windows, linux]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Prepare curated release notes
+        run: node scripts/release/release-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
@@ -628,9 +659,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mapfile -t ASSETS < <(find release-assets -type f \
-            \( -name '*.dmg' -o -name '*.zip' -o -name '*Setup.exe' -o -name '*.nupkg' -o -name 'RELEASES' -o -name '*.AppImage' -o -name 'latest-linux.yml' \) \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*Setup.exe' -o -name '*.nupkg' -o -name 'RELEASES' -o -name '*.AppImage' -o -name 'latest-linux.yml' -o -name 'polymux-cli.tar.gz' -o -name 'polymux-cli.tar.gz.sha256' \) \
             -print)
           test "${#ASSETS[@]}" -ge 7
-          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" --generate-notes \
+          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" --notes-file "$RUNNER_TEMP/release-notes.md" \
             --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "Polymux ${GITHUB_REF_NAME#v}"

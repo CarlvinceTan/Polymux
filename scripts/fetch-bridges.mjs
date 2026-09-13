@@ -42,7 +42,7 @@ import {
   fetchReleaseBuffer,
   fetchReleaseHead,
   fetchReleaseText,
-} from "./release-fetch.mjs";
+} from "./release/release-fetch.mjs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputOverride = process.argv.find((flag) => flag.startsWith("--output="))?.slice(9);
@@ -73,13 +73,6 @@ export const FLEET = [
     repo: "signal",
     tag: "v0.2607.0",
     commit: "df6f954a62174640e82ef5c3457e8858f038f6c6",
-  },
-  {
-    binary: "mautrix-discord",
-    repo: "discord",
-    tag: "v0.7.6",
-    commit: "19e26674e6624a02bced982aafe845cb20e43827",
-    command: ".",
   },
   {
     binary: "mautrix-slack",
@@ -342,7 +335,7 @@ async function fetchFromCi(entry) {
  * Messages database and has no meaning on Windows.
  */
 const WINDOWS_SOURCE_FLEET = [
-  ...FLEET.filter((entry) => !["signal", "discord"].includes(entry.repo)),
+  ...FLEET.filter((entry) => !["signal"].includes(entry.repo)),
   {
     binary: "mautrix-googlechat",
     repo: "googlechat",
@@ -599,13 +592,13 @@ async function main() {
   else if (requestedPlatform === "linux")
     console.log(
       requestedArch === "x64"
-        ? "\nLinux includes 14 native bridges; only iMessage is unavailable."
-        : "\nLinux arm64 includes 13 native bridges; Google Chat has no pinned " +
+        ? "\nLinux includes 13 native bridges; only iMessage is unavailable."
+        : "\nLinux arm64 includes 12 native bridges; Google Chat has no pinned " +
           "artifact and iMessage is unavailable.",
     );
   else
     console.log(
-      "\nWindows includes 12 native bridges; Signal and the legacy Discord bridge remain unsupported upstream, while iMessage is Apple-only.",
+      "\nWindows includes 12 native bridges; Signal remains unsupported upstream, while iMessage is Apple-only.",
     );
   if (windowsSourceRoot)
     await rm(windowsSourceRoot, {recursive: true, force: true});

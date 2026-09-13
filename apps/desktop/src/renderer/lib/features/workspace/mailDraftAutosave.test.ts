@@ -30,6 +30,7 @@ function draft(revision: number, body: string): MailComposerDraft {
     signatureBody: '',
     signatureHtml: null,
     files: [],
+    inlineFiles: [],
     importance: 'normal',
     reply: null,
     remoteDraft: null,
@@ -97,6 +98,32 @@ test('switching accounts keeps each mailbox draft state in sync', async () => {
   assert.deepEqual(loadMailDraft('personal')?.remoteDraft, {id: '20', folder: 'Drafts'});
   assert.equal(loadMailDraft('personal')?.pending, false);
   autosave.complete('compose-1', 'personal');
+});
+
+test('draft autosave keeps inline file placement in HTML and MIME metadata', async () => {
+  Object.defineProperty(globalThis, 'localStorage', {value: new MemoryStorage(), configurable: true});
+  const requests: SendMailRequest[] = [];
+  const autosave = new MailDraftAutosave(async (request) => {
+    requests.push(request);
+    return {draft: {id: '10', folder: 'Drafts'}};
+  }, 60_000);
+  autosave.update({
+    ...draft(1, 'Before\nAfter'),
+    files: ['/tmp/report.pdf'],
+    inlineFiles: [{
+      path: '/tmp/report.pdf',
+      contentId: 'report@polymux.local',
+      offset: 7,
+    }],
+  });
+  await autosave.flush('compose-1');
+
+  assert.deepEqual(requests[0]?.inlineAttachments, [{
+    path: '/tmp/report.pdf',
+    contentId: 'report@polymux.local',
+  }]);
+  assert.match(requests[0]?.html ?? '', /Before<br><div><a href="cid:report@polymux\.local">report\.pdf<\/a><\/div>After/);
+  autosave.complete('compose-1', 'work');
 });
 
 test('autosaved drafts carry the selected signature without folding it into local text', async () => {

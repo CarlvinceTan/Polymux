@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {activityPresentation, collapseActivities, runThinkingActivity, settledActivities, toolResultFailed, visibleCommentaryLabel} from './activities';
+import {activityPresentation, activityPreviewTabId, collapseActivities, runThinkingActivity, settledActivities, toolResultFailed, visibleCommentaryLabel} from './activities';
 
 test('provider scratch headings do not become user-visible activity rows', () => {
   assert.equal(visibleCommentaryLabel('**Planning message lookup implementation**'), null);
@@ -17,6 +17,23 @@ test('browser activity names the surface and the operation it performed', () => 
   });
   assert.equal(activityPresentation('browser_tabs').target, 'Tabs');
   assert.equal(activityPresentation('browser', {action: 'snapshot'}).target, 'Snapshot');
+  assert.deepEqual(activityPresentation('browser_read', {target: 'https://example.com'}, 'run-1').preview, {
+    kind: 'browser',
+    tabId: '',
+  });
+});
+
+test('computer activity binds its live preview to the run that loaded the skill', () => {
+  assert.deepEqual(activityPresentation('read', {path: '/skills/window-control/SKILL.md'}, 'run-1').preview, {
+    kind: 'computer',
+    runId: 'run-1',
+  });
+});
+
+test('browser preview identity is recovered from progress or tool results', () => {
+  assert.equal(activityPreviewTabId({browserTabId: 'tab-progress'}), 'tab-progress');
+  assert.equal(activityPreviewTabId({content: JSON.stringify({ok: true, tabId: 'tab-result'})}), 'tab-result');
+  assert.equal(activityPreviewTabId({content: JSON.stringify({pages: [{tabId: 'tab-batch'}]})}), 'tab-batch');
 });
 
 test('domain-level tool errors are failures even when the call completed', () => {
@@ -52,6 +69,15 @@ test('one browser row keeps its operations and any failure as detail', () => {
   ]);
 });
 
+test('one browser row keeps the newest live tab preview', () => {
+  const browser = {kind: 'searching' as const, label: 'Using Browser', icon: 'globe' as const};
+  const activities = collapseActivities([
+    {id: 'open', ...browser, status: 'completed' as const, preview: {kind: 'browser' as const, tabId: 'tab-1'}},
+    {id: 'read', ...browser, status: 'active' as const, preview: {kind: 'browser' as const, tabId: 'tab-2'}},
+  ]);
+  assert.deepEqual(activities[0]?.preview, {kind: 'browser', tabId: 'tab-2'});
+});
+
 test('reasoning reuses the optimistic thinking row for the whole run', () => {
   const optimistic = {id: 'optimistic', kind: 'thinking' as const, label: 'Thinking', status: 'completed' as const};
   assert.equal(runThinkingActivity([optimistic], 'run-1')?.id, 'optimistic');
@@ -78,16 +104,38 @@ test('the settled trail condenses a stretch of commands to one counted row', () 
   assert.deepEqual(commands[0]?.steps?.map((step) => step.label), ['git status', 'npm test']);
 });
 
-test('a counted row keeps each call\u2019s result and a failure stays red', () => {
+test('the settled trail keeps the finished compaction line', () => {
+  const settled = settledActivities([
+    {id: 'c', kind: 'compacting' as const, label: 'Compacted 100 tokens → 40 tokens', status: 'completed'},
+  ]);
+  assert.deepEqual(settled.map((row) => row.label), ['Compacted 100 tokens → 40 tokens']);
+});
+
+test('a failed command says it failed to run', () => {
+  const commands = settledActivities([
+    {id: 'a', kind: 'running' as const, label: 'python3 script.py', status: 'failed', result: 'Command timed out'},
+  ]);
+  assert.deepEqual(commands.map((row) => [row.label, row.status]), [
+    ['Failed to run 1 command', 'failed'],
+  ]);
+});
+
+test('settled commands separate successful calls from failures and label both honestly', () => {
   const commands = settledActivities([
     {id: 'a', kind: 'running' as const, label: 'git status', status: 'completed'},
     {id: 'b', kind: 'running' as const, label: 'npm test', status: 'failed', result: 'boom'},
+    {id: 'c', kind: 'running' as const, label: 'npm check', status: 'failed', result: 'still broken'},
   ]);
-  assert.equal(commands.length, 1);
-  assert.equal(commands[0]?.status, 'failed');
+  assert.deepEqual(commands.map((row) => [row.label, row.status]), [
+    ['Ran 1 command', 'completed'],
+    ['Failed to run 2 commands', 'failed'],
+  ]);
   assert.deepEqual(commands[0]?.steps?.map((step) => [step.label, step.result]), [
     ['git status', undefined],
+  ]);
+  assert.deepEqual(commands[1]?.steps?.map((step) => [step.label, step.result]), [
     ['npm test', 'boom'],
+    ['npm check', 'still broken'],
   ]);
 });
 

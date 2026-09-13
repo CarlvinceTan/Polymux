@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { copyFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -95,6 +96,16 @@ export function previewTarget(grants: PreviewGrants, url: string): string | unde
   } catch {
     return undefined;
   }
+}
+
+/** Copies a granted preview to the path the save dialog chose. Same-path is a
+ * no-op so saving over the open file does not throw. */
+export async function copyGrantedFile(source: string, destination: string): Promise<string> {
+  const from = path.resolve(source);
+  const to = path.resolve(destination);
+  if (from === to) return to;
+  await copyFile(from, to);
+  return to;
 }
 
 /** Just enough of a request to answer one, so the rule can be tested without

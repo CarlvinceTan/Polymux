@@ -34,12 +34,50 @@ test("fields belonging to another surface are left out", () => {
   });
 });
 
+test("a Drive target carries the exact source and containing folder", async () => {
+  assert.deepEqual(
+    await shown({
+      surface: "drive",
+      source: "google-drive#default",
+      path: "reports-opaque-folder-id",
+    }),
+    {
+      surface: "drive",
+      drive: {
+        source: "google-drive#default",
+        path: "reports-opaque-folder-id",
+      },
+    },
+  );
+});
+
 test("Phone is a first-class revealable workspace surface", async () => {
   assert.deepEqual(await shown({surface: "phone"}), {surface: "phone"});
 });
 
+test("IDE is a first-class revealable workspace surface", async () => {
+  assert.deepEqual(await shown({surface: "ide"}), {surface: "ide"});
+});
+
+test("Locker is a first-class revealable workspace surface", async () => {
+  assert.deepEqual(await shown({surface: "locker"}), {surface: "locker"});
+});
+
+test("Usage is a first-class revealable workspace surface", async () => {
+  assert.deepEqual(await shown({surface: "usage"}), {surface: "usage"});
+});
+
 test("an unknown surface is refused rather than guessed at", async () => {
   assert.equal(await shown({ surface: "settings" }), null);
+});
+
+test("Tasks and Calendar are first-class revealable workspace apps", async () => {
+  assert.deepEqual(await shown({surface: "tasks"}), {surface: "tasks"});
+  assert.deepEqual(await shown({surface: "calendar"}), {surface: "calendar"});
+});
+
+test("a legacy schedule surface lands on the unified task board", async () => {
+  assert.deepEqual(await shown({surface: "schedule"}), {surface: "tasks"});
 });
 
 test("a chat can be named when its id is not known", async () => {
@@ -80,6 +118,53 @@ test("a chat draft fills that chat's box, and sends nothing", async () => {
   assert.deepEqual(result.shown, {
     surface: "hub",
     chat: { name: "Ming", draft: "On my way." },
+  });
+});
+
+test("an agent chat draft wakes its platform before checking the target", async () => {
+  const order: string[] = [];
+  const tool = createHubDraftTool({
+    reveal: () => order.push("reveal"),
+    wake: async () => {
+      order.push("wake");
+    },
+    linked: async () => {
+      order.push("linked");
+      return linkedHub;
+    },
+  });
+  const result = await tool.execute(
+    {chatName: "Ming", draft: "On my way."},
+    {subagent: false} as never,
+  );
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(order, ["wake", "linked", "reveal"]);
+});
+
+test("a Hub contact without an existing DM can receive an unsent draft", async () => {
+  let shown: WorkspaceRevealDto | null = null;
+  const tool = createHubDraftTool({
+    reveal: (request) => { shown = request; },
+    chatForContact: async (contactId, accountId) => {
+      assert.equal(contactId, "whatsapp:personal:luke");
+      assert.equal(accountId, "personal");
+      return {id: "!new:polymux", name: "Luke Tan"};
+    },
+    // A newly created room may not be in the next sync page yet; successful
+    // exact contact resolution is authoritative for this draft.
+    linked: async () => ({mailAccounts: [], chats: []}),
+  });
+
+  const result = await tool.execute({
+    contactId: "whatsapp:personal:luke",
+    contactAccountId: "personal",
+    draft: "Are you free Friday?",
+  }, {subagent: false} as never);
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(shown, {
+    surface: "hub",
+    chat: {id: "!new:polymux", name: "Luke Tan", draft: "Are you free Friday?"},
   });
 });
 

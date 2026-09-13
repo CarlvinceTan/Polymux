@@ -3,6 +3,7 @@ name: hub-use
 description: Use for email and personal messaging across all connected platforms, accounts, and conversations. Query Hub.State for the smallest relevant complete inventory of platforms, email accounts, or chats; resolve vague references from that compact state; then use the exact Hub read or write route. Covers proactive bounded email evidence searches, unread and cross-platform discovery, replies, drafts, attachments, and sending. Availability and message context never authorize sending or mailbox/chat mutation.
 author: Polymux
 category: Communication
+permissions: contacts
 ---
 
 # Hub Use
@@ -20,6 +21,10 @@ retrieve only what is needed, and preserve the user's established style.
 2. Resolve vague references from platform, account, chat name, stable ID,
    unread count, and recency. Ask only when multiple candidates remain
    genuinely ambiguous.
+   Use `message_contacts` for the Hub Contacts directory, especially when the
+   person may not have an existing conversation. Its exact `contact_id` and
+   route `account_id` can be passed to `hub_draft`; Polymux may create the DM,
+   but the draft remains in the composer and sends nothing.
 3. Read only the exact conversation, mailbox, or bounded search needed.
    Inventory metadata is not permission to inspect unrelated content.
 4. Before a write, resolve the exact platform, account, recipient, payload, and
@@ -33,7 +38,7 @@ routing skills; their behavior is owned here.
 
 - Keep replies short, cohesive, and outcome-first. For an explanatory answer, use at most five short points and omit implementation details, caveats, metrics, deep-dive menus, and meta-commentary unless they are decision-critical or requested.
 - Matrix is the shared backend for WhatsApp, Telegram, Discord, Messenger, Instagram, LinkedIn, iMessage, and verified WeChat. Platform-specific adapters remain authoritative where one exists. Use `apple-reminders` for reminders and `chat-style` for final personal wording.
-- Before any discovery or call that may initialize, reveal, or control a local GUI app, load `computer-use` and follow its current route. This skill does not duplicate GUI mechanics.
+- Before any discovery or call that may initialize, reveal, or control a local GUI app, load `control` and follow its coordination, using `window-control` for exact native windows. This skill does not duplicate GUI mechanics.
 - Prefer capable direct APIs, connectors, and CLIs before browser, desktop, or phone control.
 - Never invent a recipient, address, chat ID, account, or delivery result. Observed context is not send authority.
 
@@ -58,13 +63,13 @@ Never retry an ambiguous send until delivery evidence has been checked.
 
 ## Platform routing
 
-- **Matrix-backed messaging:** for WhatsApp, Telegram, Discord, Messenger, Instagram, LinkedIn, iMessage, and WeChat, use the Matrix tools directly. Resolve a person or personal alias with `message_chats`, which can safely match Contacts after an exact room-name miss, then read the single resolved chat with `message_read`; use `message_search` for a topic or words inside messages. Never choose among ambiguous identity candidates. Account authentication alone is not proof of a usable room or live bridge. Treat each tool's `coverage` as the current source of truth: cached rooms or messages from a platform with `live: false` are historical only and must not be presented as current or exhaustive.
+- **Matrix-backed messaging:** for WhatsApp, Telegram, Discord, Messenger, Instagram, LinkedIn, iMessage, and WeChat, use the Matrix tools directly. Resolve an existing conversation or personal alias with `message_chats`; use `message_contacts` for the Hub address book and people without a DM, then read the single resolved chat with `message_read`. Use `message_search` for a topic or words inside messages. Never choose among ambiguous identity candidates. Account authentication alone is not proof of a usable room or live bridge. Treat each tool's `coverage` as the current source of truth: cached rooms or messages from a platform with `live: false` are historical only and must not be presented as current or exhaustive.
 - **All new or unread messages:** use one global `message_unread` call rather than scanning platforms or rooms separately. Continue its pagination when the user asks for all, group results by platform and conversation, and do not mark anything read.
 - **Learning an alias:** when the user explicitly says or confirms that an alias refers to one exact resolved chat, record that mapping with `message_link_alias`. Never infer a family relationship, learn from an unconfirmed candidate, or select among ambiguous chats. The saved mapping may be used on later turns even if a bridge recreates the room under a new id.
 - **Matrix unavailable or unsupported:** when Matrix lacks the exact room, account state, media feature, or required capability, immediately report the platform, account, missing capability, and observed blocker. Do not attempt a browser, desktop, phone, or platform-specific fallback unless the user explicitly asks for that alternate route.
 - **Email:** use the configured Hub email tools first. Use Himalaya for a configured CLI route; use Apple Mail on macOS or Outlook/webmail on Windows when the direct route is unavailable, university policy blocks it, the user requests the native app, or exact rich signature rendering is required.
 - **WeChat:** use the verified Matrix route for reading, searching, unread retrieval, and text sending. For an unsupported feature, report the limitation and wait for an explicit fallback request.
-- **Web surfaces:** load `computer-use` and use the Polymux in-app Browser first.
+- **Web surfaces:** load `control` and use the Polymux in-app Browser first.
 - **Reminders:** load `apple-reminders` for Apple Reminders; do not treat reminders as messages.
 
 ## Tiered context

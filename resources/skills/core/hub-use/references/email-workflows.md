@@ -19,7 +19,7 @@ when email materially informed the result without exposing unrelated content.
 Prefer configured Hub mail tools, then Himalaya when selected and working.
 University mail may require Apple Mail on macOS or Outlook/webmail on Windows.
 Use a native or web surface when exact rich signatures or embedded images
-matter. Before GUI use, load `computer-use`; keep fallbacks nonfrontmost unless
+matter. Before GUI use, load `control`; keep fallbacks nonfrontmost unless
 the user must interact.
 
 Email discovery authorizes no mailbox mutation. Never send, forward, delete,

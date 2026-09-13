@@ -1,5 +1,39 @@
 # Third-party notices
 
+## Bloub
+
+Polymux's Team-avatar geometry, customization catalogues, spherical-eye model,
+deterministic liveliness, and eye-fit data are adapted from
+[Bloub](https://github.com/jeremy-prt/bloub) revision
+`b4bb3c1b5f93c7b87a2e8d620f667c4093d97749`.
+
+Copyright (c) 2026 Jérémy Perret
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Bloub states that it is not affiliated with, endorsed by, or connected to
+x.ai, and that its MIT licence covers its code rather than the visual design
+it recreates. Polymux likewise uses the implementation as an independent Team
+avatar customizer and does not claim affiliation with x.ai.
+
 ## scrcpy and Android Debug Bridge
 
 Polymux bundles the pinned official [scrcpy](https://github.com/Genymobile/scrcpy)
@@ -72,3 +106,46 @@ is BSD licensed and its emulator core is GPL-2.0. Polymux does not redistribute
 that package: on first Apple setup, the separate signer helper downloads the
 exact platform wheel directly from PyPI, verifies its pinned SHA-256 digest,
 and keeps it in the private local signer directory.
+
+## jsQR
+
+Device QR scanning uses [jsQR](https://github.com/cozmo/jsQR), licensed under Apache-2.0. The Apache-2.0 license is included in this
+repository's LICENSE file. jsQR decodes camera frames and selected images locally.
+
+## grok-mermaid
+
+The Polymux CLI uses grok-mermaid 0.2.2 for Unicode terminal diagrams.
+Copyright 2023-2026 SpaceXAI and Copyright 2026 Alexey Zaytsev.
+Licensed under Apache License 2.0; the CLI distribution includes the full text
+as `LICENSE.grok-mermaid.txt`.
+
+## IDE language registries
+
+The IDE uses [CodeMirror language-data](https://code.haverbeke.berlin/codemirror/language-data),
+[linguist-languages](https://github.com/ikatyang-collab/linguist-languages) with
+[GitHub Linguist](https://github.com/github-linguist/linguist) metadata, and
+[binary-extensions](https://github.com/sindresorhus/binary-extensions).
+These projects are licensed under the MIT License.
+
+Copyright (C) 2018-2021 Marijn Haverbeke and others (CodeMirror).
+Copyright (c) Ika (linguist-languages).
+Copyright (c) 2017 GitHub, Inc. (Linguist).
+Copyright (c) Sindre Sorhus and Paul Miller (binary-extensions).
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

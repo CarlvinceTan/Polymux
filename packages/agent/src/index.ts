@@ -10,7 +10,6 @@ export * from "./goals/judge.js";
 export * from "./goals/loop.js";
 export * from "./memory/computer-history-access.js";
 export * from "./memory/computer-history-tools.js";
-export * from "./computer/tools.js";
 export * from "./memory/consolidator.js";
 export * from "./memory/history-tools.js";
 export * from "./memory/manager.js";

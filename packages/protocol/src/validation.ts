@@ -130,7 +130,6 @@ export const COMMS_PLATFORMS: {
   { value: "signal", label: "Signal", route: "signal", bot: "signalbot" },
   { value: "messenger", label: "Messenger", route: "messenger", bot: "messengerbot" },
   { value: "instagram", label: "Instagram", route: "instagram", bot: "instagrambot" },
-  { value: "discord", label: "Discord", route: "discord", bot: "discordbot" },
   { value: "slack", label: "Slack", route: "slack", bot: "slackbot" },
   { value: "linkedin", label: "LinkedIn", route: "linkedin", bot: "linkedinbot" },
   { value: "googlechat", label: "Google Chat", route: "googlechat", bot: "googlechatbot" },
@@ -556,13 +555,19 @@ export function validateSaveMailSignatures(value: unknown): SaveMailSignaturesRe
 
 export function validateStartRun(value: unknown): StartRunRequest {
   const input = record(value, "start run");
+  const messageId =
+    input.messageId === undefined
+      ? undefined
+      : text(input.messageId, "messageId");
+  const rewind =
+    input.rewind === undefined ? undefined : boolean(input.rewind, "rewind");
+  if (rewind && !messageId)
+    throw new Error("messageId is required to resend from a previous message");
   return {
+    deviceId: input.deviceId === undefined ? undefined : text(input.deviceId, "deviceId"),
     conversationId: text(input.conversationId, "conversationId"),
     text: text(input.text, "text"),
-    messageId:
-      input.messageId === undefined
-        ? undefined
-        : text(input.messageId, "messageId"),
+    messageId,
     attachments:
       input.attachments === undefined
         ? undefined
@@ -577,6 +582,11 @@ export function validateStartRun(value: unknown): StartRunRequest {
       input.speechMode === undefined
         ? undefined
         : boolean(input.speechMode, "speechMode"),
+    reuseUserMessage:
+      input.reuseUserMessage === undefined
+        ? undefined
+        : boolean(input.reuseUserMessage, "reuseUserMessage"),
+    rewind,
   };
 }
 

@@ -283,14 +283,25 @@ function normalizedNativeSkills(
   groups: TaskToolGroup[] | undefined,
   names: string[] | undefined,
 ): string[] | undefined {
-  if (!groups?.length || groups.includes("all") || !names?.length) return names;
+  if (!groups?.length || groups.includes("all")) return names;
+  const hubGroups = new Set<TaskToolGroup>([
+    "email-triage",
+    "email-read",
+    "email",
+    "messages-read",
+    "messages",
+    "communications",
+  ]);
+  const routedHub = groups.some((group) => hubGroups.has(group));
+  const requested = names ?? [];
   const supports = new Map<string, ReadonlySet<TaskToolGroup>>([
   ]);
   const routed = new Set(groups);
-  const kept = names.filter((name) => {
+  const kept = requested.filter((name) => {
     const nativeGroups = supports.get(name);
     return !nativeGroups || ![...nativeGroups].some((group) => routed.has(group));
   });
+  if (routedHub && !kept.includes("hub-use")) kept.push("hub-use");
   return kept;
 }
 

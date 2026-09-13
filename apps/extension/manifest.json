@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Polymux",
-  "version": "0.2.2",
-  "description": "Lets Polymux see open-tab metadata and securely control only the browser tabs assigned to it.",
+  "version": "0.3.0",
+  "description": "Locker autofill plus tab context for Polymux. Fills passwords, TOTP, and vault passkeys from the same vault as desktop Locker.",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -11,16 +11,29 @@
   },
   "permissions": [
     "tabs",
+    "storage",
     "nativeMessaging",
     "alarms",
-    "debugger"
+    "debugger",
+    "identity"
   ],
   "host_permissions": [
-    "http://127.0.0.1:47654/*"
+    "http://127.0.0.1:47654/*",
+    "https://*.supabase.co/*"
   ],
   "background": {
     "service_worker": "background.js",
     "type": "module"
+  },
+  "action": {
+    "default_title": "Polymux Locker",
+    "default_popup": "locker/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "content_scripts": [
     {
@@ -31,10 +44,55 @@
       "js": [
         "shared/cursor-motion.js",
         "shared/cursor-overlay.js",
-        "content.js"
+        "agent/content.js"
       ],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "locker/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "locker/webauthn-page.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "locker/webauthn.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "locker/webauthn-page.js"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
     }
   ]
 }

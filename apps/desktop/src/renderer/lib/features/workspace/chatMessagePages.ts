@@ -1,9 +1,9 @@
 import type {ChatMessageDto} from '@polymux/protocol';
 
 /**
- * New messages lead the page, while fresh copies of known messages replace
- * them in place. The latter matters for mutable Matrix relations: a reaction
- * can change long after the message itself was first loaded.
+ * Merge updated content by identity, then order by authored time. Sync can
+ * discover older history or recover media long after newer messages arrived.
+ * Stable ties preserve the page order for messages sent in the same instant.
  */
 export function mergeChatPage(
   known: ChatMessageDto[],
@@ -14,5 +14,9 @@ export function mergeChatPage(
   return [
     ...fresh.filter((item) => !knownIds.has(item.id)),
     ...known.map((item) => byId.get(item.id) ?? item),
-  ];
+  ].sort((left, right) => {
+    const a = Date.parse(left.sentAt);
+    const b = Date.parse(right.sentAt);
+    return Number.isFinite(a) && Number.isFinite(b) ? b - a : 0;
+  });
 }

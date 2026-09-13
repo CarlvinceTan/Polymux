@@ -1,4 +1,8 @@
 <script lang="ts">
+  export let devices: import('@polymux/protocol').TeamHostDto[] = [];
+  export let deviceId = '';
+  export let deviceLocked = false;
+  export let onDeviceChange: (id: string) => void = () => {};
   import PromptInput from './PromptInput.svelte';
   import type {ReasoningEffort} from '@polymux/protocol';
   import {t} from '../../../i18n';
@@ -75,7 +79,7 @@
   </div>
   {#if showComposer}
     {#key draftKey}
-      <PromptInput variant="welcome" {active} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied} {onFileDragActiveChange} {draftKey}/>
+      <PromptInput {devices} {deviceId} {deviceLocked} {onDeviceChange} variant="welcome" {active} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied} {onFileDragActiveChange} {draftKey}/>
     {/key}
   {/if}
 </div>

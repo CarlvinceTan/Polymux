@@ -184,3 +184,14 @@ test("terminal history is bounded per chat without pruning active dependencies",
   board.complete("new-terminal");
   assert.ok(board.list("chat").some((job) => job.id === "dependency"));
 });
+
+test('remote dispatch preserves the task and tracks the actual run for cancellation and completion', () => {
+  const board = new ChatPool(new Preferences(), {clock: clock()});
+  board.enqueue({id: 'remote', chatId: 'chat', text: 'Work remotely'});
+  board.claimNext('prepared');
+  board.replaceRun('prepared', 'remote-run');
+  assert.equal(board.forRun('prepared'), null);
+  assert.equal(board.forRun('remote-run')?.id, 'remote');
+  board.complete('remote');
+  assert.equal(board.list()[0]?.status, 'completed');
+});

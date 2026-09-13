@@ -134,6 +134,8 @@ export interface EnvironmentContextProvider {
 }
 
 export interface EnvironmentContext {
+  /** The host already reduced open state to this Team identity's leases. */
+  identityScoped?: boolean;
   /** When the desktop-window portion of this context was last verified. */
   windowsCapturedAt?: string;
   /** When Polymux read its own live tab registry for this turn. */
@@ -283,6 +285,12 @@ export interface StartPolymuxRunInput {
    * indistinguishable from typed text, so the prompt has to say which it is.
    */
   speechMode?: boolean;
+  /** Persistent identity supplied by Polymux Team rather than user content. */
+  identity?: {
+    name: string;
+    role: string;
+    bots: Array<{name: string; role: string}>;
+  };
   /**
    * A continued worker's retained context, seeded ahead of its new
    * instruction so it resumes where it settled instead of re-browsing. The
@@ -334,6 +342,12 @@ export class PolymuxAgent {
       options.prompts?.consolidation,
     );
     this.#skillLoader = new SkillLoader(options.skills);
+  }
+
+  resetHistory(conversationId: string): void {
+    this.#compaction.resetHistory(conversationId);
+    this.#retainedTasks.delete(conversationId);
+    this.#lastDirectToolGroup.delete(conversationId);
   }
 
   start(input: StartPolymuxRunInput): ActiveAgentRun {
@@ -473,7 +487,23 @@ export class PolymuxAgent {
     // The screen is the user's own run's to move: a delegated run never gets
     // the tools that decide what is on it, and says so in its answer instead.
     const subagentRun = Boolean(input.parentRunId);
-    const rawEnvironment = this.#options.environment?.promptContext();
+    const capturedEnvironment = this.#options.environment?.promptContext();
+    // A Team member starts in its remote/private computer. Laptop state only
+    // enters through a brokered capability lease; the shared active-profile
+    // runtime must therefore be safe even before a dedicated profile runtime
+    // has been constructed.
+    const rawEnvironment = input.identity && capturedEnvironment
+      ? capturedEnvironment.identityScoped
+        ? {...capturedEnvironment, locationEnabled: false, location: undefined}
+        : {
+            ...capturedEnvironment,
+            locationEnabled: false,
+            location: undefined,
+            browserTabs: [],
+            externalBrowserTabs: [],
+            windows: [],
+          }
+      : capturedEnvironment;
     // Privacy and relevance minimisation are invariants: precise location and
     // unrelated open state must never enter a prompt without a relevant need.
     const environment = selectEnvironmentForPrompt(rawEnvironment, text);
@@ -569,6 +599,7 @@ export class PolymuxAgent {
       // the piece it was sent for.
       goal: subagentRun ? null : this.goals.get(input.conversationId),
       speechMode: input.speechMode,
+      identity: input.identity,
     });
     // What the run the user is talking to may do with its own hands.
     //
@@ -665,8 +696,8 @@ export class PolymuxAgent {
     // The coordinator's own instructions, loaded rather than built in.
     //
     // A skill left in the catalogue is one line the model has to choose to
-    // open — which, on a browsing request, it does not: it opens computer-use
-    // and starts browsing. `agents/main.md` is loaded into every run that can
+    // open — which, on a browsing request, it does not: it opens the
+    // nearest-looking skill instead. `resources/prompts/main.md` is loaded into every run that can
     // delegate, so the policy is in front of the coordinator before it decides
     // anything, without becoming a section of the system prompt that every
     // subagent then carries too.
@@ -758,6 +789,7 @@ export class PolymuxAgent {
                     this.#options.reasoning,
                 }
               : undefined,
+            (telemetry) => reportStatus("compacted", telemetry),
           ),
         reviewFinal: async ({ text: answer }) => {
           const issues = finalAnswerQualityIssues(
@@ -1079,6 +1111,22 @@ function toInferenceMessage(
         ? `${content}\n\nAttached files:\n${attachments.map((path) => `- ${path}`).join("\n")}`
         : content,
     };
+  }
+  // Peer mail is stored as agent-authored (`tool`), never as user authority,
+  // but enters the recipient's context as a clearly attributed inbound turn.
+  if (message.role === "tool" && message.metadata && typeof message.metadata === "object" && !Array.isArray(message.metadata)) {
+    const relay = (message.metadata as Record<string, JsonValue>).agentRelay;
+    const source = relay && typeof relay === "object" && !Array.isArray(relay)
+      ? (relay as Record<string, JsonValue>).source
+      : null;
+    if (source && typeof source === "object" && !Array.isArray(source)) {
+      const origin = source as Record<string, JsonValue>;
+      if (typeof origin.name === "string") {
+        const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+        const role = typeof origin.role === "string" && origin.role ? ` (${origin.role})` : "";
+        return {role: "user", content: `Message from ${origin.name}${role}:\n\n${content}`};
+      }
+    }
   }
   if (message.role === "assistant" && Array.isArray(message.content))
     return { role: "assistant", content: message.content as never };
