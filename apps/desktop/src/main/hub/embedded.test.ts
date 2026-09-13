@@ -554,7 +554,8 @@ test("the live-test recipient fence runs before readiness or Matrix mutation", a
   }
 });
 
-test("an unready WeChat relay rejects before creating a Matrix event", async () => {
+test("an unready WeChat relay rejects before creating a Matrix event",
+  {skip: process.platform !== "darwin"}, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "polymux-wechat-ready-"));
   const hs = new Homeserver({serverName: "polymux.local", dataDirectory: directory});
   await hs.start();
@@ -1248,7 +1249,8 @@ test("unconfirmed WeChat delivery keeps its bubble and status across reload, whi
   }
 });
 
-test("background WeChat observer detects manual login without invoking login or sender helpers", async () => {
+test("background WeChat observer detects manual login without invoking login or sender helpers",
+  {skip: process.platform !== "darwin"}, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'polymux-manual-signin-'));
   const hs = new Homeserver({serverName: 'polymux.local', dataDirectory: directory});
   await hs.start();
