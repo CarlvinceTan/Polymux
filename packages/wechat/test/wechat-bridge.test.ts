@@ -1281,18 +1281,22 @@ test("the chat directory repairs a direct contact profile without reimporting hi
         .digest("hex")
         .slice(0, 24);
       const userId = `@wechat_${digest}:polymux.local`;
-      const response = await fetch(
-        new URL(
-          `/_matrix/client/v3/profile/${encodeURIComponent(userId)}`,
-          homeserver.baseUrl,
-        ),
-        { headers: { Authorization: `Bearer ${accessToken}` } },
+      const profile = await eventually(
+        async () => {
+          const response = await fetch(
+            new URL(
+              `/_matrix/client/v3/profile/${encodeURIComponent(userId)}`,
+              homeserver.baseUrl,
+            ),
+            { headers: { Authorization: `Bearer ${accessToken}` } },
+          );
+          assert.equal(response.ok, true);
+          return (await response.json()) as { displayname?: string };
+        },
+        (value) => value.displayname === "·W·",
+        "the repaired contact profile",
       );
-      assert.equal(response.ok, true);
-      assert.equal(
-        ((await response.json()) as { displayname?: string }).displayname,
-        "·W·",
-      );
+      assert.equal(profile.displayname, "·W·");
     },
     (relay) => {
       relay.catalogue.chats = [{

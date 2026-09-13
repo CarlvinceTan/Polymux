@@ -41,7 +41,7 @@ registerBunOAuthFlows();
 declare const __POLYMUX_CLI_SUPABASE_URL__: string;
 declare const __POLYMUX_CLI_SUPABASE_ANON_KEY__: string;
 
-const VERSION = "0.3.3";
+const VERSION = "0.3.4";
 const args = process.argv.slice(2);
 
 
