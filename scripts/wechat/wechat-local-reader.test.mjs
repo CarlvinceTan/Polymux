@@ -80,7 +80,8 @@ test('own registry supplies account and authenticated stickers with no legacy fi
   } finally {await rm(home,{recursive:true,force:true});}
 });
 
-test('native readiness rejects a changed binary before CLI or debugger execution', async () => {
+test('native readiness rejects a changed binary before CLI or debugger execution',
+  {skip: process.platform !== 'darwin'}, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'wechat-upgrade-'));
   try {
     const dylib = path.join(directory, 'wechat.dylib'); await writeFile(dylib, 'new unsupported WeChat build');
