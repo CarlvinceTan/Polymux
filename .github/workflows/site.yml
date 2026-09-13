@@ -18,9 +18,6 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/site
     steps:
       - uses: actions/checkout@v4
 
@@ -28,9 +25,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/site/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            apps/site/package-lock.json
 
+      # The site's share page imports desktop renderer components, so the
+      # monorepo root (workspaces, @tsconfig/svelte, the shared packages) must
+      # be installed before the site is checked or built.
       - run: npm ci
-      - run: npm test
-      - run: npm run check
-      - run: npm run build
+      - run: npm ci --prefix apps/site
+      - run: npm test --prefix apps/site
+      - run: npm run check --prefix apps/site
+      - run: npm run build --prefix apps/site
