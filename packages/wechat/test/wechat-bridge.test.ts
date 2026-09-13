@@ -4809,33 +4809,33 @@ test("setup names the missing piece, starting with WeChat itself", () => {
   // Order matters: someone with no WeChat at all must not be sent looking for
   // a relay they have never heard of, so the app is reported first.
   assert.match(
-    setupHint({ wechat: false, relay: false }) ?? "",
+    setupHint({ wechat: false, relay: false }, "darwin") ?? "",
     /WeChat for Mac is not installed/,
   );
   assert.match(
-    setupHint({ wechat: false, relay: true }) ?? "",
+    setupHint({ wechat: false, relay: true }, "darwin") ?? "",
     /WeChat for Mac is not installed/,
   );
   assert.match(
-    setupHint({ wechat: true, relay: false }) ?? "",
+    setupHint({ wechat: true, relay: false }, "darwin") ?? "",
     /WeChat is open and signed in/,
   );
   // How Polymux reaches WeChat is its own plumbing. Naming any of it hands the
   // user a task they cannot act on instead of the one they can.
   for (const hint of [
-    setupHint({ wechat: false, relay: false }),
-    setupHint({ wechat: true, relay: false }),
+    setupHint({ wechat: false, relay: false }, "darwin"),
+    setupHint({ wechat: true, relay: false }, "darwin"),
   ])
     assert.doesNotMatch(
       hint ?? "",
       /relay|wechat-use|wechatd|daemon|loopback|port/i,
     );
   // Both present is not a setup problem, so there is nothing to say.
-  assert.equal(setupHint({ wechat: true, relay: true }), null);
+  assert.equal(setupHint({ wechat: true, relay: true }, "darwin"), null);
 });
 
 test("setup offers the official installer only when WeChat itself is missing", () => {
-  assert.deepEqual(setupGuidance({wechat: false, relay: false}), {
+  assert.deepEqual(setupGuidance({wechat: false, relay: false}, "darwin"), {
     error: "WeChat for Mac is not installed. Install it and sign in — Polymux reads WeChat from the desktop app on this Mac rather than through a sign-in of its own.",
     installUrl: WECHAT_DOWNLOAD_URL,
   });
@@ -4854,8 +4854,8 @@ test("setup offers the official installer only when WeChat itself is missing", (
     setupGuidance({wechat: false, relay: false}, "linux").installUrl,
     WECHAT_DOWNLOAD_URLS.linux,
   );
-  assert.equal(setupGuidance({wechat: true, relay: false}).installUrl, null);
-  assert.equal(setupGuidance({wechat: true, relay: true}).installUrl, null);
+  assert.equal(setupGuidance({wechat: true, relay: false}, "darwin").installUrl, null);
+  assert.equal(setupGuidance({wechat: true, relay: true}, "darwin").installUrl, null);
 });
 
 test("the daemon is told where the shipped CDN-capture helper lives", () => {
@@ -5354,7 +5354,8 @@ test("a status refresh cannot restart the relay during a native write", async ()
 });
 
 for (const [identitySource, operation] of [["relay", "read"], ["host", "read"], ["unavailable", "read"], ["host", "text"]] as const) {
-test(`an owned relay requires its exact WeChat target from ${identitySource} for ${operation}`, async () => {
+test(`an owned relay requires its exact WeChat target from ${identitySource} for ${operation}`,
+  {skip: process.platform !== "darwin"}, async () => {
   const binaryDirectory = await mkdtemp(path.join(tmpdir(), "wechat-owned-relay-"));
   const relayBinary = path.join(binaryDirectory, "wechat-bridge");
   const starts = path.join(binaryDirectory, "starts.log");

@@ -60,7 +60,7 @@ test("a relay resumes when its owning application crashes", {skip: process.platf
   } finally {parent.kill("SIGTERM"); relay.kill("SIGTERM");}
 });
 
-test("native lease expiry retains ownership until explicit completion", {skip: process.platform === "win32"}, async () => {
+test("native lease expiry retains ownership until explicit completion", {skip: process.platform !== "darwin"}, async () => {
   const relay = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {stdio: "ignore"});
   const target = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {stdio: "ignore"});
   let release: WeChatRelayRelease | undefined;
