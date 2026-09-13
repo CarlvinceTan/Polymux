@@ -59,6 +59,22 @@ export function loadChatFolders(): ChatFolder[] {
   }
 }
 
+/**
+ * The name a new-folder field opens on: the suggestion, then
+ * "New folder 1", "New folder 2", and so on once that name is taken.
+ * The suffix counts extra copies rather than numbering the first folder.
+ */
+export function uniqueChatFolderName(folders: ChatFolder[], name: string): string {
+  const suggestion = name.trim();
+  if (!suggestion) return suggestion;
+  const used = new Set(folders.map((folder) => folder.name.toLowerCase()));
+  if (!used.has(suggestion.toLowerCase())) return suggestion;
+  for (let index = 1; ; index += 1) {
+    const candidate = `${suggestion} ${index}`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
 export function createChatFolder(folders: ChatFolder[], id: string, name: string): ChatFolder[] {
   const cleanName = name.trim();
   if (!id || !cleanName || folders.some((folder) => folder.id === id)) return folders;

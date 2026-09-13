@@ -16,6 +16,7 @@ export const TASK_TOOL_GROUPS = [
   "files",
   "files-read",
   "reminders",
+  "tasks",
   "schedule",
   "recording",
   "workspace",
@@ -77,7 +78,7 @@ export function inferTaskToolGroups(description: string, prompt: string): TaskTo
     groups.push("browser-research");
   if (/\b(?:email|mail|inbox|correspondence)\b/.test(text)) groups.push("email-triage");
   if (/\b(?:drive|cloud|records?|documents?|files?|folders?)\b/.test(text)) groups.push("drive-read");
-  if (/\b(?:message|chat|whatsapp|telegram|discord|imessage|wechat)\b/.test(text))
+  if (/\b(?:message|chat|whatsapp|telegram|imessage|wechat)\b/.test(text))
     groups.push("messages-read");
   return groups.length ? [...new Set(groups)] : undefined;
 }
@@ -129,40 +130,40 @@ export function selectTaskTools(
     ) return true;
     if (
       selected.has("browser-read") &&
-      ["browser_current_read", "computer_state"].includes(name)
+      ["browser_current_read"].includes(name)
     ) return true;
-    if (selected.has("browser") && (name.startsWith("browser") || ["computer_state", "computer_arbiter"].includes(name))) return true;
-    if (selected.has("email-triage") && ["email_search_all", "email_read"].includes(name)) return true;
-    if (selected.has("email-read") && ["email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all"].includes(name)) return true;
-    if (selected.has("email") && name.startsWith("email_")) return true;
+    if (selected.has("browser") && name.startsWith("browser")) return true;
+    if (selected.has("email-triage") && ["hub_state", "email_search_all", "email_read"].includes(name)) return true;
+    if (selected.has("email-read") && ["hub_state", "workspace_show", "email_accounts", "email_folders", "email_list", "email_read", "email_search", "email_search_all"].includes(name)) return true;
+    if (selected.has("email") && (name === "hub_state" || name === "workspace_show" || name.startsWith("email_"))) return true;
     if (
       selected.has("messages-read") &&
-      (["message_chats", "message_read", "message_search", "message_unread"].includes(name) ||
+      (["hub_state", "workspace_show", "message_chats", "message_contacts", "message_read", "message_search", "message_unread"].includes(name) ||
         isExternalMessageReadTool(name))
     ) return true;
-    if (selected.has("messages") && name.startsWith("message_")) return true;
-    if (selected.has("communications") && (name.startsWith("email_") || name.startsWith("message_"))) return true;
-    if (selected.has("drive") && name.startsWith("drive_")) return true;
-    if (selected.has("drive-read") && ["drive_sources", "drive_list", "drive_read"].includes(name))
+    if (selected.has("messages") && (["hub_state", "hub_draft", "workspace_show"].includes(name) || name.startsWith("message_"))) return true;
+    if (selected.has("communications") && (["hub_state", "hub_draft", "workspace_show"].includes(name) || name.startsWith("email_") || name.startsWith("message_"))) return true;
+    if (selected.has("drive") && (name === "workspace_show" || name.startsWith("drive_"))) return true;
+    if (selected.has("drive-read") && ["drive_sources", "drive_list", "drive_read", "workspace_show"].includes(name))
       return true;
     if (selected.has("files") && ["read", "write", "edit", "bash"].includes(name))
       return true;
     if (selected.has("files-read") && name === "read") return true;
     if (selected.has("reminders") && name.startsWith("reminders_")) return true;
-    if (selected.has("schedule") && name === "schedule") return true;
+    if (selected.has("tasks") && ["tasks", "workspace_show"].includes(name)) return true;
+    if (selected.has("schedule") && ["schedule", "workspace_show"].includes(name)) return true;
     if (selected.has("recording") && name === "record_workflow") return true;
-    if (selected.has("workspace") && name === "hub_draft") return true;
+    if (selected.has("workspace") && ["hub_draft", "workspace_show"].includes(name)) return true;
     if (
       selected.has("resume") &&
       (
         [
           "bash", "edit", "read", "write",
-          "computer_state", "computer_arbiter",
           "browser", "browser_tabs", "browser_current_read", "browser_read",
           "browser_snapshot_many", "browser_control",
           "email_accounts", "email_folders", "email_list", "email_read",
           "email_search", "email_search_all", "email_draft",
-          "message_chats", "message_read", "message_search", "message_unread",
+          "hub_state", "hub_draft", "message_chats", "message_contacts", "message_read", "message_search", "message_unread",
           "reminders_create", "reminders_list", "reminders_update", "schedule",
           "workspace_show", "record_workflow",
         ].includes(name)

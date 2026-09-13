@@ -229,6 +229,42 @@ export class Homeserver {
     this.#store.close();
   }
 
+  /** Removes a locally recorded outbound event after its bridge rejects it.
+   * The redaction is intentionally unarmed and bridge-originated, so cleanup
+   * cannot become a remote recall command. */
+  discardOutbound(eventId: string): void {
+    const target = this.#store.event(eventId);
+    if (!target || target.redactedBy) return;
+    this.#outboundArmed.delete(eventId);
+    this.#append({
+      roomId: target.roomId,
+      sender: target.sender,
+      type: "m.room.redaction",
+      stateKey: null,
+      content: {redacts: eventId},
+      ts: Date.now(),
+      redacts: eventId,
+      origin: "polymux.local-delivery-cleanup",
+    });
+  }
+
+  outboundDeliveryStatus(eventId: string): "unconfirmed" | null {
+    const content = this.#store.event(eventId)?.content;
+    return content && typeof content === "object" && "co.polymux.delivery" in content &&
+      content["co.polymux.delivery"] === "unconfirmed" ? "unconfirmed" : null;
+  }
+
+  setOutboundDeliveryStatus(eventId: string, status: "unconfirmed" | null): void {
+    if (!this.#store.setOutboundDeliveryStatus(eventId, status)) return;
+    const event = this.#store.event(eventId)!;
+    // Wake sync readers with a non-message, unarmed local event. This cannot
+    // dispatch a second send or generate an incoming-message notification.
+    this.#append({roomId: event.roomId, sender: event.sender,
+      type: "co.polymux.delivery", stateKey: null,
+      content: {event_id: eventId, status}, ts: Date.now(),
+      origin: "polymux.local-delivery-status"});
+  }
+
   /**
    * Registers a bridge from its registration data and starts its pusher. The
    * bot user is NOT created here: the bridge registers it itself and expects

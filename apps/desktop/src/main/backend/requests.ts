@@ -17,6 +17,24 @@ export function required(value: unknown, label: string): string {
     throw new Error(`${label} must be a non-empty string`);
   return value.trim();
 }
+
+/**
+ * Bytes the renderer sends to the workspace PTY. Control characters such as
+ * CR, LF, DEL, and CSI sequences are real keystrokes, so this must not trim.
+ * Empty strings are skipped — xterm/WebGL can emit them.
+ */
+export function terminalInput(value: unknown): string | undefined {
+  if (typeof value !== "string") throw new Error("terminal input must be a string");
+  return value.length === 0 ? undefined : value;
+}
+
+/** Session ids are opaque tokens from `create`; they must not be trimmed. */
+export function terminalSessionId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0)
+    throw new Error("terminal id must be a string");
+  return value;
+}
+
 /**
  * Answers to a bridge login step. Field ids come from the bridge, so the map is
  * accepted as-is apart from requiring every value to be a string.
@@ -159,6 +177,7 @@ export function sendMailRequest(value: unknown): SendMailRequest {
   const input = value as Record<string, unknown>;
   const to = optionalStringArray(input.to, "to");
   const draft = input.draft === true;
+  const attachments = optionalStringArray(input.attachments, "attachments");
   if (!draft && to.length === 0) throw new Error("At least one recipient is required");
   return {
     account: typeof input.account === "string" ? input.account : undefined,
@@ -169,12 +188,38 @@ export function sendMailRequest(value: unknown): SendMailRequest {
     body: typeof input.body === "string" ? input.body : "",
     html: typeof input.html === "string" ? input.html : undefined,
     draft,
-    attachments: optionalStringArray(input.attachments, "attachments"),
+    attachments,
+    inlineAttachments: inlineMailAttachments(input.inlineAttachments, attachments),
     importance: mailImportance(input.importance),
     inReplyTo: typeof input.inReplyTo === "string" ? input.inReplyTo : undefined,
     references: optionalStringArray(input.references, "references"),
     replacesDraft: draftReference(input.replacesDraft),
   };
+}
+
+function inlineMailAttachments(
+  value: unknown,
+  attachments: string[],
+): SendMailRequest["inlineAttachments"] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("inline attachments must be an array");
+  const paths = new Set(attachments);
+  const contentIds = new Set<string>();
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new Error("inline attachment must be an object");
+    const input = item as Record<string, unknown>;
+    const path = required(input.path, "inline attachment path");
+    const contentId = required(input.contentId, "inline attachment content id");
+    if (!paths.has(path))
+      throw new Error("Inline attachment path must also be attached");
+    if (contentId.length > 255 || !/^[^\s<>]+$/.test(contentId))
+      throw new Error("Inline attachment content id is invalid");
+    if (contentIds.has(contentId))
+      throw new Error("Inline attachment content ids must be unique");
+    contentIds.add(contentId);
+    return {path, contentId};
+  });
 }
 
 /** Anything but the two flags is "normal", which writes no header at all. */

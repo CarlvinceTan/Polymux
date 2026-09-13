@@ -4,10 +4,12 @@ import type {
   ContactLinkMemberDto,
   JsonValue,
   MergeContactLinkRequest,
+  RenameContactRequest,
 } from "@polymux/protocol";
 
 const PREFERENCE_KEY = "hub-contact-links";
 const MAX_MEMBERS = 32;
+const MAX_NAME_LENGTH = 80;
 
 export interface ContactLinkPreferenceStore {
   getPreference(key: string): {value: unknown} | null | undefined;
@@ -61,8 +63,42 @@ export class ContactLinks {
 
     const now = this.#now().toISOString();
     const name = request.name.trim() || overlapping[0]?.name || "Linked contact";
+    // Extending or collapsing an existing identity creates a new revision id.
+    // A detached Hub window may still hold the previous id; letting that stale
+    // view remove the reused id would also delete routes it never displayed.
     const link: ContactLinkDto = {
-      id: overlapping[0]?.id ?? `contact-${this.#id()}`,
+      id: `contact-${this.#id()}`,
+      name,
+      members,
+      createdAt: overlapping[0]?.createdAt ?? now,
+      updatedAt: now,
+    };
+    const replaced = new Set(overlapping.map((item) => item.id));
+    this.#state.links = [link, ...this.#state.links.filter((item) => !replaced.has(item.id))];
+    this.#save();
+    return structuredClone(link);
+  }
+
+  /** Stores a local display name for a contact. Renaming any route in a linked
+   * identity renames the whole person; an unlinked route becomes a one-member
+   * identity so the choice survives restarts and portal-room replacement. */
+  rename(request: RenameContactRequest): ContactLinkDto {
+    const requested = uniqueMembers([request.member])[0];
+    if (!requested) throw new Error("Choose a current direct conversation.");
+    const name = contactName(request.name);
+    const overlapping = this.#state.links.filter((link) =>
+      link.members.some((member) => sameMember(member, requested)),
+    );
+    const members = uniqueMembers([
+      ...overlapping.flatMap((link) => link.members),
+      requested,
+    ]);
+    if (members.length > MAX_MEMBERS)
+      throw new Error(`One contact can link at most ${MAX_MEMBERS} conversations.`);
+
+    const now = this.#now().toISOString();
+    const link: ContactLinkDto = {
+      id: `contact-${this.#id()}`,
       name,
       members,
       createdAt: overlapping[0]?.createdAt ?? now,
@@ -114,6 +150,14 @@ function uniqueMembers(input: readonly ContactLinkMemberDto[]): ContactLinkMembe
 
 function normalized(value: string | null): string {
   return value?.trim().normalize("NFKC").toLowerCase() ?? "";
+}
+
+function contactName(value: string): string {
+  const name = value.trim();
+  if (!name) throw new Error("Enter a contact name.");
+  if (name.length > MAX_NAME_LENGTH)
+    throw new Error(`A contact name can contain at most ${MAX_NAME_LENGTH} characters.`);
+  return name;
 }
 
 function storedContactLinks(value: unknown): StoredContactLinks {

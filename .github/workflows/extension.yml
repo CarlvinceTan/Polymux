@@ -5,15 +5,17 @@ on:
     branches: [main]
     paths:
       - "apps/extension/background.js"
-      - "apps/extension/content.js"
-      - "apps/extension/lib/**"
+      - "apps/extension/agent/**"
+      - "apps/extension/locker/**"
       - "apps/extension/icons/**"
       - "apps/extension/manifest.json"
+      - "apps/extension/scripts/**"
       - "packages/browser/src/**"
-      - "scripts/package-chrome-extension.sh"
-      - "scripts/browser-compatibility.mjs"
-      - "scripts/validate-browser-compatibility.mjs"
-      - "scripts/validate-extension-version.mjs"
+      - "packages/locker/src/**"
+      - "scripts/release/package-chrome-extension.sh"
+      - "scripts/release/browser-compatibility.mjs"
+      - "scripts/release/validate-browser-compatibility.mjs"
+      - "scripts/release/validate-extension-version.mjs"
       - ".github/workflows/extension.yml"
   workflow_dispatch:
 
@@ -41,16 +43,22 @@ jobs:
         with:
           node-version: 24
 
+      - name: Install build dependencies
+        run: npm ci
+
       - name: Validate extension manifest
-        run: node scripts/validate-extension-version.mjs
+        run: node scripts/release/validate-extension-version.mjs
 
       - name: Validate desktop compatibility contract
         env:
           BASE_REVISION: ${{ github.event_name == 'push' && github.event.before || 'origin/main' }}
-        run: node scripts/validate-browser-compatibility.mjs --base="$BASE_REVISION"
+        run: node scripts/release/validate-browser-compatibility.mjs --base="$BASE_REVISION"
 
       - name: Package extension
-        run: scripts/package-chrome-extension.sh dist/polymux-agent-surface.zip
+        env:
+          POLYMUX_SUPABASE_URL: ${{ secrets.POLYMUX_SUPABASE_URL }}
+          POLYMUX_SUPABASE_ANON_KEY: ${{ secrets.POLYMUX_SUPABASE_ANON_KEY }}
+        run: scripts/release/package-chrome-extension.sh dist/polymux-agent-surface.zip
 
       - uses: google-github-actions/auth@v3
         id: google-auth
@@ -93,7 +101,7 @@ jobs:
             process.stdout.write(versions[0] ?? "");
           ' "$RUNNER_TEMP/cws-status.json")"
           if [[ -n "$previous_version" ]]; then
-            node scripts/validate-extension-version.mjs --previous-version "$previous_version"
+            node scripts/release/validate-extension-version.mjs --previous-version "$previous_version"
           else
             echo "No published or submitted Store package exists; allowing the initial automated upload."
           fi

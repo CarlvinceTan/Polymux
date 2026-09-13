@@ -9,6 +9,7 @@
     PolymuxApi,
   } from '@polymux/protocol';
   import {readableError} from '../../shared/errors';
+  import {loadSettingsDriveSnapshot, settingsDriveSnapshot} from '../../shared/state/settingsPreload';
   import {scrollFade} from '../../shared/scrollFade';
   import Icon from '../../shared/components/Icon.svelte';
   import {activeLocale, locale, plural, t, translate, withLocale, type MessageKey} from '../../../i18n';
@@ -16,9 +17,13 @@
 
   export let api: PolymuxApi;
 
-  let status: DriveStatusDto | null = null;
+  let status: DriveStatusDto | null = settingsDriveSnapshot.status;
+  $: if (status && status !== settingsDriveSnapshot.status) {
+    settingsDriveSnapshot.status = status;
+    settingsDriveSnapshot.loadedAt = Date.now();
+  }
   let selected: DriveProviderId | 'configuration' = 'local';
-  let loading = true;
+  let loading = !settingsDriveSnapshot.status;
   let error = '';
   let busy = '';
 
@@ -35,10 +40,10 @@
   });
 
   async function load(): Promise<void> {
-    loading = true;
+    loading = !status;
     error = '';
     try {
-      status = await api.drive.status();
+      status = await loadSettingsDriveSnapshot(api, 5_000);
     } catch (cause) {
       error = readableError(cause);
     } finally {
@@ -644,13 +649,12 @@
   .drive-value code{overflow:hidden;padding:2px 6px;border-radius:5px;background:var(--neutral-100);color:var(--neutral-800);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}
   .drive-value button{height:26px;flex:none;border:1px solid var(--neutral-200);border-radius:7px;padding:0 10px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
   .drive-value button:hover{background:var(--neutral-100);color:var(--neutral-950)}
-  .drive-value button.destructive{color:#a04545}
+  .drive-value button.destructive{color:var(--danger-500)}
   .drive-value button:disabled{cursor:default;opacity:.5}
 
   .drive-hint{max-width:520px;margin:5px 0 0;color:var(--neutral-500);font-size:10.5px;line-height:1.5}
   .drive-hint code{padding:1px 4px;border-radius:4px;background:var(--neutral-100);font-size:10px}
-  .drive-hint.warn{color:#a04545}
-  :global(:root[data-theme="dark"]) .drive-hint.warn{color:#e79c9c}
+  .drive-hint.warn{color:var(--danger-500)}
 
   .drive-form{display:flex;max-width:440px;flex-direction:column;gap:9px}
   .drive-form label{display:flex;flex-direction:column;gap:3px}

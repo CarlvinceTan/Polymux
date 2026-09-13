@@ -62,9 +62,9 @@ export interface PluginRuntime {
  * The plugins on this machine: which marketplaces were added, which plugins
  * were installed from them, and what each one contributes.
  *
- * Plugins live in `~/.polymux/plugins/<marketplace>/<plugin>` and the state
- * file sits beside them, in the same `~/.polymux` the skills and MCP servers
- * use — a plugin is a folder the user can open, not a database row.
+ * Plugins live in the active profile's `plugins/<marketplace>/<plugin>` and
+ * the state file sits beside them. A plugin is a folder the user can open,
+ * not a database row.
  */
 export class PluginRegistry {
   readonly #root: string;
@@ -75,9 +75,9 @@ export class PluginRegistry {
    * limit the user out of their own search. */
   readonly #catalogs = new Map<string, { catalog: Catalog; readAt: number }>();
 
-  constructor(home = homedir()) {
-    this.#root = path.join(polymuxHome(home), "plugins");
-    this.#stateFile = path.join(polymuxHome(home), "plugins.json");
+  constructor(home = homedir(), configurationHome = polymuxHome(home)) {
+    this.#root = path.join(configurationHome, "plugins");
+    this.#stateFile = path.join(configurationHome, "plugins.json");
   }
 
   /** Reads the state file, seeding the built-in marketplace on first run. */

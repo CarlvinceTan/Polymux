@@ -8,7 +8,7 @@ import type { AgentSurfaceServer } from "../agent/surface.js";
 import type { ControlSession } from "./embedded.js";
 import type { InAppBrowser } from "./embedded-tools.js";
 import { createBrowserControlTools } from "./control-tools.js";
-import {Computer} from "@polymux/computer";
+import { buildCommand } from "./commands.js";
 
 /**
  * A surface that records what it was asked to run, so the tests can assert on
@@ -198,23 +198,21 @@ test("focus probes the tab before handing back a lease", async () => {
   });
 });
 
-test("browser mutations require the exact Computer.Arbiter capability", async () => {
+test("an extension lease never substitutes for Control admission", async () => {
   const fake = fakeSurface({ok: true, pageUrl: "https://example.com/", pageTitle: "Example"});
-  const computer = new Computer(() => ({
-    externalBrowserTabs: [{tabId: 7, windowId: 2, title: "Example", url: "https://example.com/", active: false}],
-  }));
-  const tool = createBrowserControlTools(fake.surface, {computer}).find((candidate) => candidate.name === "browser_control")!;
+  const tool = createBrowserControlTools(fake.surface).find((candidate) => candidate.name === "browser_control")!;
   const focused = await tool.execute({action: "focus", url: "https://example.com/"}, context);
   const lease = JSON.parse(focused.content as string);
-  assert.equal(lease.surfaceId, "tab:external:7");
+  assert.equal(lease.leaseId, "lease-1");
 
-  const denied = await tool.execute({action: "click", leaseId: lease.leaseId, ref: "e1"}, context);
+  const denied = await tool.execute({action: "click", ref: "e1"}, context);
   assert.equal(denied.isError, true);
-  assert.match(denied.content as string, /Computer\.Arbiter/);
+  assert.match(denied.content as string, /requires the leaseId from focus/);
 
-  const grant = computer.Arbiter.request({ownerId: "run-1", surfaceId: lease.surfaceId, operation: "press", scope: "tab"});
-  const allowed = await tool.execute({action: "click", leaseId: lease.leaseId, ref: "e1", computerToken: grant.token}, context);
-  assert.equal(allowed.isError, undefined);
+  const allowed = await tool.execute({action: "click", leaseId: lease.leaseId, ref: "e1"}, context);
+  assert.equal(allowed.isError, true);
+  assert.match(allowed.content as string, /Control admission/);
+  assert.equal(fake.commands.length, 1);
 });
 
 test("a tab that never answers releases the lease instead of leaking it", async () => {
@@ -268,78 +266,38 @@ test("snapshot forwards only its own filters", async () => {
   });
 });
 
-test("a target action carries ref, selector and point through unchanged", async () => {
-  const { surface, commands } = fakeSurface();
-  await controlTool(surface).execute(
-    { action: "click", leaseId: "L", ref: "e7", pace: "fast" },
-    context,
-  );
-  assert.equal(commands[0].command.kind, "click");
-  assert.equal(commands[0].command.pace, "fast");
-  assert.equal(commands[0].command.ref, "e7");
-  assert.equal(commands[0].command.selector, undefined);
+test("page command construction preserves targets and content independently of admission", () => {
+  const click = buildCommand("click", {ref: "e7", pace: "fast", role: "button", name: "Save", exact: true, text: "Sign in"});
+  assert.equal(click.ref, "e7");
+  assert.equal(click.pace, "fast");
+  assert.equal(click.role, "button");
+  assert.equal(click.name, "Save");
+  assert.equal(click.exact, true);
+  assert.equal(click.locatorText, "Sign in");
+  assert.equal(click.text, undefined);
+  assert.equal(buildCommand("type", {ref: "e2", text: "hello"}).text, "hello");
+  assert.equal(buildCommand("fill", {ref: "e2", value: "Alex Example"}).text, "Alex Example");
 });
 
-test("a semantic locator reaches the page as one", async () => {
-  const { surface, commands } = fakeSurface();
-  await controlTool(surface).execute(
-    { action: "click", leaseId: "L", role: "button", name: "Save", exact: true },
-    context,
-  );
-  assert.equal(commands[0].command.role, "button");
-  assert.equal(commands[0].command.name, "Save");
-  assert.equal(commands[0].command.exact, true);
-});
-
-test("text names the element for click but is the content for type", async () => {
-  const { surface, commands } = fakeSurface();
-  await controlTool(surface).execute(
-    { action: "click", leaseId: "L", text: "Sign in" },
-    context,
-  );
-  assert.equal(commands[0].command.locatorText, "Sign in", "click targets by text");
-  assert.equal(commands[0].command.text, undefined, "click must not carry it as content");
-
-  await controlTool(surface).execute(
-    { action: "type", leaseId: "L", ref: "e2", text: "hello" },
-    context,
-  );
-  assert.equal(commands[1].command.text, "hello", "type enters the text");
-  assert.equal(commands[1].command.ref, "e2");
-});
-
-test("fill accepts value as a content alias instead of silently clearing the field", async () => {
-  const { surface, commands } = fakeSurface();
-  await controlTool(surface).execute(
-    { action: "fill", leaseId: "L", ref: "e2", value: "Alex Example" },
-    context,
-  );
-  assert.equal(commands[0].command.text, "Alex Example");
-  assert.equal(commands[0].command.ref, "e2");
-
-  const missing = await controlTool(surface).execute(
-    {action: "fill", leaseId: "L", ref: "e2"},
-    context,
-  );
-  assert.equal(missing.isError, true);
-  assert.match(missing.content as string, /requires text or value/);
-});
-
-test("targeting actions demand a target, except click at a point", async () => {
-  const { surface, commands } = fakeSurface();
-  for (const action of ["click", "fill", "select", "check", "get", "upload"]) {
-    const result = await controlTool(surface).execute({ action, leaseId: "L" }, context);
-    assert.equal(result.isError, true, action);
-    assert.match(result.content as string, /requires (a target|value|files)/, action);
+test("all external mutations fail closed before reaching the extension", async () => {
+  const {surface, commands} = fakeSurface();
+  for (const input of [
+    {action: "click", ref: "e1"}, {action: "eval", expression: "location.reload()"},
+    {action: "wait", fn: "location.reload()"}, {action: "dialog", accept: true},
+    {action: "navigate", url: "https://example.com"}, {action: "tabNew"},
+    {action: "tabClose", tabId: 1}, {action: "scroll", deltaY: 1},
+  ]) {
+    const result = await controlTool(surface).execute({...input, leaseId: "L"}, context);
+    assert.equal(result.isError, true, input.action);
+    assert.match(result.content as string, /Control admission/, input.action);
   }
   assert.equal(commands.length, 0);
+});
 
-  const ok = await controlTool(surface).execute(
-    { action: "click", leaseId: "L", x: 10, y: 20 },
-    context,
-  );
-  assert.notEqual(ok.isError, true);
-  assert.equal(commands.length, 1);
+test("focus preserves explicit tab identity", async () => {
+  const {surface, leasedTabs} = fakeSurface();
+  await controlTool(surface).execute({action: "focus", tabId: 42}, context);
+  assert.deepEqual(leasedTabs, [{url: "", title: "", tabId: 42}]);
 });
 
 test("actions with required arguments say which one is missing", async () => {
@@ -397,24 +355,13 @@ test("a screenshot comes back as an image block the model can see", async () => 
   ]);
 });
 
-test("slow actions get a longer timeout than ordinary ones", async () => {
-  const { surface, commands } = fakeSurface();
-  await controlTool(surface).execute(
-    { action: "navigate", leaseId: "L", url: "https://example.com" },
-    context,
-  );
-  await controlTool(surface).execute({ action: "hover", leaseId: "L", ref: "e1" }, context);
-  assert.equal(commands[0].timeoutMs, 60_000);
-  assert.equal(commands[1].timeoutMs, 20_000);
-});
-
 test("a failed command surfaces the extension's reason", async () => {
   const { surface } = fakeSurface({
     ok: false,
     error: "Target is covered by div.cookie-banner at that point",
   });
   const result = await controlTool(surface).execute(
-    { action: "click", leaseId: "L", ref: "e1" },
+    { action: "get", leaseId: "L", ref: "e1" },
     context,
   );
   assert.equal(result.isError, true);

@@ -584,6 +584,45 @@ test("applies transformed context without mutating durable context", async () =>
   );
 });
 
+test("emits telemetry reported by a context compaction", async () => {
+  const inference = new FakeInference();
+  inference.responses.push([done([{ type: "text", text: "ok" }])]);
+  const runner = new AgentRunner({ inference });
+  const active = runner.start({
+    runId: "run-compaction-telemetry",
+    model,
+    context: { messages: [{ role: "user", content: "Original" }] },
+    transformContext: async ({ context, reportStatus }) => {
+      await reportStatus("compacting");
+      await reportStatus("compacted", {
+        originalTokens: 100,
+        compactedTokens: 40,
+        summaryTokens: 12,
+        summarizedMessages: 3,
+        retainedMessages: 1,
+      });
+      return {
+        ...context,
+        messages: [{ role: "user", content: "Compacted" }],
+      };
+    },
+  });
+  const events = await collect(active.events);
+  const result = await active.result;
+  assert.equal(result.status, "completed");
+  assert.equal(result.hadWorkActivity, true);
+  assert.deepEqual(
+    events.find((event) => event.type === "context.compacted")?.compaction,
+    {
+      originalTokens: 100,
+      compactedTokens: 40,
+      summaryTokens: 12,
+      summarizedMessages: 3,
+      retainedMessages: 1,
+    },
+  );
+});
+
 test("supports steering between turns and cancellation", async () => {
   const inference = new FakeInference();
   inference.responses.push(

@@ -45,3 +45,13 @@
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{transition-duration:.01ms!important}}
 @media(min-width:1051px){/* Sit the nav labels on the wordmark baseline rather than its optical centre. */
 .releases-header nav{position:relative;top:6px}}
+/* Platform filtering for long release notes. */
+.release-platforms{margin:0 0 26px;display:flex;flex-wrap:wrap;gap:6px}
+.release-platforms button{min-height:32px;padding:0 13px;border:1px solid var(--line);border-radius:10px;background:#fafaf8;color:#777772;font-family:inherit;font-size:12px;font-weight:600;letter-spacing:-.005em;cursor:pointer;transition:background 140ms ease,border-color 140ms ease,color 140ms ease}
+.release-platforms button:hover{color:var(--ink);background:#fff}
+.release-platforms button.active{border-color:#c6c6c0;background:#e5e5e1;color:var(--ink);font-weight:650}
+.release-platforms button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.release-platform-panel[hidden]{display:none}
+.release-platform-panel:focus-visible{outline:2px solid var(--ink);outline-offset:4px;border-radius:14px}
+@media(max-width:760px){.release-platforms{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}.release-platforms::-webkit-scrollbar{display:none}.release-platforms button{flex:0 0 auto}}
+

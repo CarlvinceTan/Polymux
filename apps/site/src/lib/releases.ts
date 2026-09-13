@@ -1,5 +1,13 @@
 import {parse as parseYaml} from 'yaml';
 import {renderSafeMarkdown} from './markdown.js';
+import {
+  ALL_PLATFORMS,
+  filterReleaseChangelog as filterSections,
+  groupReleaseChangelog as groupSections,
+  releaseChangelog as changelogFor,
+  releasePlatforms as platformsFor,
+  resolveReleasePlatform as resolvePlatform,
+} from './release-changelog.js';
 
 export type ReleaseEntry = {
   version: string;
@@ -10,6 +18,47 @@ export type ReleaseEntry = {
   body: string;
   html: string;
 };
+
+export type ReleaseChangelogSection = {
+  category: string;
+  area: string;
+  items: string[];
+};
+
+export type ReleaseChangelogGroup = {
+  category: string;
+  sections: ReleaseChangelogSection[];
+};
+
+export {ALL_PLATFORMS};
+
+/** The ordered category/area sections of a release body. */
+export function releaseChangelog(entry: Pick<ReleaseEntry, 'body'>): ReleaseChangelogSection[] {
+  return changelogFor(entry);
+}
+
+/** The platform/area names a release mentions, in first-appearance order. */
+export function releasePlatforms(entry: Pick<ReleaseEntry, 'body'>): string[] {
+  return platformsFor(entry);
+}
+
+/** Keep only the requested platform's sections; ALL_PLATFORMS keeps everything. */
+export function filterReleaseChangelog(
+  sections: ReleaseChangelogSection[],
+  platform: string = ALL_PLATFORMS,
+): ReleaseChangelogSection[] {
+  return filterSections(sections, platform);
+}
+
+/** Group sections by category, preserving the order categories first appear. */
+export function groupReleaseChangelog(sections: ReleaseChangelogSection[]): ReleaseChangelogGroup[] {
+  return groupSections(sections);
+}
+
+/** Resolve a requested filter to a platform the release has, defaulting to All. */
+export function resolveReleasePlatform(platforms: string[], requested?: string): string {
+  return resolvePlatform(platforms, requested);
+}
 
 const sources = import.meta.glob<string>('../content/releases/*.md', {
   eager: true,

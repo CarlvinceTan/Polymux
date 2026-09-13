@@ -319,17 +319,24 @@ export class EmailAccounts {
     html?: string;
     draft?: boolean;
     attachments?: string[];
+    inlineAttachments?: Array<{path: string; contentId: string}>;
     importance?: "high" | "normal" | "low";
     inReplyTo?: string;
     references?: string[];
   }): Promise<{draft?: {id: string; folder: string}}> {
     const accountId = await this.#accountId(options.account);
     const account = await this.#account(accountId);
+    const inline = new Map(
+      (options.inlineAttachments ?? []).map((file) => [file.path, file.contentId]),
+    );
     const files = await Promise.all(
       (options.attachments ?? []).map(async (file) => ({
         name: path.basename(file),
         mime: mimeType(file),
         content: await (await import("node:fs/promises")).readFile(file),
+        ...(inline.has(file)
+          ? {contentId: inline.get(file)!, disposition: "inline" as const}
+          : {}),
       })),
     );
     const messageId = newMessageId(options.from);
@@ -455,6 +462,25 @@ export class EmailAccounts {
       })
       .catch((cause: unknown) => {
         throw new Error(`Could not delete the message: ${reason(cause)}`);
+      });
+  }
+
+  /** Reads one MIME part without saving it merely because it is previewed. */
+  async attachment(options: {
+    id: string;
+    part: string;
+    account?: string;
+    folder?: string;
+  }): Promise<{id: string; name: string; mime: string; content: Buffer}> {
+    return this.#store
+      .attachment({
+        account: await this.#accountId(options.account),
+        folder: options.folder ?? "INBOX",
+        id: options.id,
+        part: options.part,
+      })
+      .catch((cause: unknown) => {
+        throw new Error(`Could not read the attachment: ${reason(cause)}`);
       });
   }
 

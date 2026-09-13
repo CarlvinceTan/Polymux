@@ -205,12 +205,12 @@ export interface SavedLogin {
 }
 
 export type NewConversation = Pick<Conversation, "id" | "title"> &
-  Partial<Pick<Conversation, "metadata">>;
+  Partial<Pick<Conversation, "metadata" | "createdAt" | "updatedAt">>;
 export type NewMessage = Pick<
   StoredMessage,
   "id" | "conversationId" | "role" | "content"
 > &
-  Partial<Pick<StoredMessage, "runId" | "metadata">>;
+  Partial<Pick<StoredMessage, "runId" | "metadata" | "createdAt">>;
 export type NewRun = Pick<AgentRun, "id" | "conversationId"> &
   Partial<Pick<AgentRun, "model" | "status" | "parentRunId">>;
 export type NewGoal = Pick<Goal, "id" | "conversationId" | "objective"> &

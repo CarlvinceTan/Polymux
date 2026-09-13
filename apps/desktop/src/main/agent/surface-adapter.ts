@@ -4,8 +4,7 @@ import path from "node:path";
 
 /**
  * Adapter for the user's Agent Surface installation — the local presentation
- * layer whose macOS menu-bar app replicates the ChatGPT desktop Computer Use
- * pill (capsule status item, overlapping app icons, and the native
+ * layer whose macOS menu-bar app replicates the ChatGPT desktop pill (capsule status item, overlapping app icons, and the native
  * `Stop Using <App>` menu).
  *
  * Polymux publishes expiring `window` leases to the loopback service on
@@ -63,7 +62,7 @@ export class AgentSurfaceAdapter {
     this.#tokenPath =
       options.tokenPath ?? path.join(homedir(), ".agent-surface", "token");
     this.#agentId = options.agentId ?? "polymux";
-    this.#agentName = options.agentName ?? "Flare";
+    this.#agentName = options.agentName ?? "Polymux";
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.#refreshMs = options.refreshMs ?? DEFAULT_REFRESH_MS;
     this.#stopPollMs = options.stopPollMs ?? DEFAULT_STOP_POLL_MS;

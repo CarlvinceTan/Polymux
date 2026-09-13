@@ -159,6 +159,11 @@ export class EmbeddedBrowser {
     return null;
   }
 
+  webContentsFor(tabId: string): WebContents | null {
+    const contents = this.#views.get(tabId)?.webContents;
+    return contents && !contents.isDestroyed() ? contents : null;
+  }
+
   navigate(tabId: string, url: string): void {
     void this.#views.get(tabId)?.webContents.loadURL(url).catch(() => {
       // Unreachable hosts surface through Chromium's own error page.

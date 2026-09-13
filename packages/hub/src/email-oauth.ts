@@ -102,6 +102,33 @@ export function mailOAuthLabel(provider: MailOAuthProvider): string {
   return provider === "google" ? "Google" : "Microsoft";
 }
 
+/**
+ * Keeps the provider's useful refusal when an OAuth library wraps it in a
+ * generic error such as "server responded with an error in the response
+ * body". These errors cross Electron IPC, where only `Error.message` survives,
+ * so the detail has to be promoted before it leaves the main process.
+ */
+export function mailOAuthError(
+  provider: MailOAuthProvider,
+  cause: unknown,
+): Error {
+  const records: unknown[] = [cause];
+  if (cause && typeof cause === "object") records.push((cause as {cause?: unknown}).cause);
+  for (const candidate of records) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const detail = candidate as {error_description?: unknown; error?: unknown};
+    const description = detail.error_description ?? detail.error;
+    if (typeof description === "string" && description.trim())
+      return new Error(`${mailOAuthLabel(provider)} sign-in failed: ${description.trim()}`);
+  }
+  const message = cause instanceof Error ? cause.message.trim() : String(cause ?? "").trim();
+  return new Error(
+    message
+      ? `${mailOAuthLabel(provider)} sign-in failed: ${message}`
+      : `${mailOAuthLabel(provider)} sign-in failed.`,
+  );
+}
+
 /** What a completed sign-in yields. */
 export interface MailAuthorization {
   provider: MailOAuthProvider;
@@ -151,10 +178,15 @@ export async function signInToMailbox(
     ...(shape.extra ?? {}),
   });
   const landed = await awaitRedirect(url.href, state, provider, options.consent);
-  const tokens = await authorizationCodeGrant(config, landed, {
-    pkceCodeVerifier: verifier,
-    expectedState: state,
-  });
+  let tokens;
+  try {
+    tokens = await authorizationCodeGrant(config, landed, {
+      pkceCodeVerifier: verifier,
+      expectedState: state,
+    });
+  } catch (cause) {
+    throw mailOAuthError(provider, cause);
+  }
   if (!tokens.refresh_token)
     throw new Error(
       `${mailOAuthLabel(provider)} returned no refresh token, so the mailbox could not stay signed in.`,

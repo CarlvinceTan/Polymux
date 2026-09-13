@@ -1,5 +1,6 @@
 <script module lang="ts">
   import type {Platform} from '../../shared/components/PlatformLogo.svelte';
+  import type {ActivityPreviewRequestDto} from '@polymux/protocol';
 
   export type AgentActivityKind =
     | 'thinking'
@@ -49,6 +50,8 @@
     /** How many calls this row stands for. A collapsed stretch of identical
      * calls stays counted so the settled trail can still say "Ran 2 commands". */
     count?: number;
+    /** A passive frame for Browser or exact-window activity. */
+    preview?: ActivityPreviewRequestDto;
   };
 </script>
 
@@ -58,6 +61,7 @@
   import {cubicOut} from 'svelte/easing';
   import {activityDuration, collapseActivities, formatElapsedSeconds, nextDurationTickDelay, settledActivities} from './activities';
   import Icon from '../../shared/components/Icon.svelte';
+  import LiveActivityPreview from '../../shared/components/LiveActivityPreview.svelte';
   import PlatformLogo from '../../shared/components/PlatformLogo.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import {t} from '../../../i18n';
@@ -67,11 +71,27 @@
   export let completedAt: string | undefined = undefined;
   export let streaming = false;
 
-  let expanded = false;
+  // A live run narrates itself in full, then folds back to its counted summary
+  // as soon as it settles. Starting from the incoming prop also covers the
+  // component's first paint, before a reactive streaming change can occur.
+  let expanded = streaming;
+  let previousStreaming = streaming;
   let now = Date.now();
   /** Per-row detail disclosure, keyed by activity id. Mirrors ChatGPT's
    * trail, where a row's extra detail stays hidden until that row is opened. */
   let detailOpen: Record<string, boolean> = {};
+  /** Computer and Browser rows share one content-only preview slot. */
+  let previewOpenId: string | null = null;
+
+  // Keep a user's manual fold choice for the rest of the current run, but do
+  // not let an opened live trail spill into the finished transcript. A future
+  // run mounted into the same component opens its narration again.
+  $: if (streaming !== previousStreaming) {
+    previousStreaming = streaming;
+    expanded = streaming;
+    detailOpen = {};
+    previewOpenId = null;
+  }
 
   $: elapsed = Math.max(1, activityDuration(startedAt, completedAt, now));
   $: collapsed = collapseActivities(activities);
@@ -79,13 +99,35 @@
   $: latest = collapsed.at(-1);
   // Settled shows the codex-style summary: one counted row per stretch of the
   // same work ("Ran 2 commands"), plus anything that failed. The full trail
-  // waits behind the heading. While streaming, the latest activity doubles as
-  // the live status line.
+  // waits behind the heading. A manually folded live run keeps only its latest
+  // status line; otherwise its chronological narration stays visible.
   $: visibleActivities = expanded ? collapsed : streaming && latest ? [latest] : settled;
   // Collapsed streaming shows exactly one row, so a swap is a handoff: the
   // outgoing row fades out, then the incoming one slides up into its place.
   // Rows are stacked in a single grid cell so the two never push each other.
   $: solo = !expanded && streaming;
+  $: if (previewOpenId && !collapsed.some((activity) => activity.id === previewOpenId && activity.preview)) previewOpenId = null;
+
+  function toggleExpanded(): void {
+    if (!activities.length) return;
+    expanded = !expanded;
+    if (!expanded) previewOpenId = null;
+  }
+
+  function togglePreview(id: string): void {
+    previewOpenId = previewOpenId === id ? null : id;
+  }
+
+  /** Reasoning opens as its tokens arrive, but stays a normal disclosure so a
+   * user can fold it for the rest of the turn. Other activity detail remains
+   * closed until explicitly requested. */
+  function detailIsOpen(activity: AgentActivityItem, opened: Record<string, boolean>, isStreaming: boolean): boolean {
+    return opened[activity.id] ?? (isStreaming && activity.kind === 'thinking' && Boolean(activity.result));
+  }
+
+  function toggleDetail(activity: AgentActivityItem): void {
+    detailOpen = {...detailOpen, [activity.id]: !detailIsOpen(activity, detailOpen, streaming)};
+  }
 
   /** Live rows key on the activity's own id; settled ones key under a prefix
    * of their own, so the handoff re-inserts the rows and they cross-fade in
@@ -93,6 +135,8 @@
   function rowKey(activity: AgentActivityItem): string {
     return streaming ? activity.id : `settled:${activity.id}`;
   }
+
+
   const OUT_MS = 140;
   const IN_MS = 240;
 
@@ -163,16 +207,6 @@
     return {update: measure, destroy: () => observer.disconnect()};
   }
 
-  /** The closed row's one line: the prose's first paragraph line, with the rest
-   * left to the disclosure. The line itself is truncated in CSS, so no length
-   * is guessed here. */
-  /** The first line with something on it. Falls back to the trimmed whole
-   * rather than the raw text: returning what it was given meant a label of
-   * only whitespace came back as whitespace and drew an empty row. */
-  function leadLine(text: string): string {
-    return text.split('\n').find((line) => line.trim().length > 0)?.trim() ?? text.trim();
-  }
-
   const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat' | 'archive' | 'mail'> = {
     thinking: 'brain',
     compacting: 'compact',
@@ -197,7 +231,7 @@
     type="button"
     class="agent-activity-heading"
     aria-expanded={expanded}
-    onclick={() => activities.length && (expanded = !expanded)}
+    onclick={toggleExpanded}
   >
     <span>{streaming ? $t('activity.workingFor', {elapsed: formatElapsedSeconds(elapsed)}) : $t('activity.workedFor', {elapsed: formatElapsedSeconds(elapsed)})}</span>
     {#if activities.length}<Icon name="chevron" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>{/if}
@@ -211,42 +245,42 @@
           out:fade|local={{duration: solo ? OUT_MS : 0, easing: cubicOut}}
           class:settled={!streaming}
           use:glint={activity.label} class:active={activity.status === 'active'} class:live={streaming && activity.status === 'active'} class:failed={activity.status === 'failed'} class:commentary={activity.kind === 'commentary'}>
-          {#if activity.logo}
-            <PlatformLogo platform={activity.logo} size={17}/>
-          {:else}
-            <Icon name={activity.icon ?? activityIcons[activity.kind]} size={17}/>
+          {#if activity.kind !== 'commentary'}
+            {#if activity.logo}
+              <PlatformLogo platform={activity.logo} size={17}/>
+            {:else}
+              <Icon name={activity.icon ?? activityIcons[activity.kind]} size={17}/>
+            {/if}
           {/if}
-          {#if (expanded || !streaming) && activity.kind === 'commentary'}
-            <!-- A commentary row carries the model's own prose, which runs to
-                 paragraphs. Opening the trail should not dump all of it: the row
-                 shows its opening line and holds the rest behind its own
-                 disclosure, like every other row's detail. -->
+          {#if activity.kind === 'commentary'}
+            <!-- Narration is the model's own prose. Show it as ordinary wrapping
+                 text, not as a truncated disclosure row. -->
+            <span class="activity-copy">{activity.label}</span>
+          {:else if (expanded || !streaming) && activity.preview}
             <button
               type="button"
-              class="activity-copy activity-detail-toggle"
-              aria-expanded={Boolean(detailOpen[activity.id])}
-              onclick={() => detailOpen = {...detailOpen, [activity.id]: !detailOpen[activity.id]}}
+              class="activity-copy activity-detail-toggle activity-preview-toggle"
+              aria-label={`${activity.label}${activity.target ? ` ${activity.target}` : ''}`}
+              aria-expanded={previewOpenId === activity.id}
+              onclick={() => togglePreview(activity.id)}
             >
-              <span class="activity-row-line">
-                <span class="activity-lede">{leadLine(activity.label)}</span>
-                <Icon name="chevron" size={13}/>
-              </span>
-              {#if detailOpen[activity.id]}
-                <span class="activity-prose">{activity.label}</span>
+              <span>{activity.label}{#if activity.target} <span class="activity-target">{activity.target}</span>{/if}</span>
+              {#if previewOpenId === activity.id}
+                <LiveActivityPreview source={activity.preview}/>
               {/if}
             </button>
           {:else if (expanded || !streaming) && (activity.result || activity.steps?.length)}
             <button
               type="button"
               class="activity-copy activity-detail-toggle"
-              aria-expanded={Boolean(detailOpen[activity.id])}
-              onclick={() => detailOpen = {...detailOpen, [activity.id]: !detailOpen[activity.id]}}
+              aria-expanded={detailIsOpen(activity, detailOpen, streaming)}
+              onclick={() => toggleDetail(activity)}
             >
               <span class="activity-row-line">
                 <span>{activity.label}{#if activity.target} <span class="activity-target">{activity.target}</span>{/if}</span>
                 <Icon name="chevron" size={13}/>
               </span>
-              {#if detailOpen[activity.id]}
+              {#if detailIsOpen(activity, detailOpen, streaming)}
                 {#if activity.steps?.length}
                   <ul class="activity-steps">
                     {#each activity.steps as step (step.id)}
@@ -256,7 +290,13 @@
                     {/each}
                   </ul>
                 {/if}
-                {#if activity.result}<small>{activity.result}</small>{/if}
+                {#if activity.result}
+                  {#if activity.kind === 'thinking'}
+                    <!-- Reasoning is streamed provider text, not markdown. Keep
+                         whitespace and token boundaries exactly as delivered. -->
+                    <span class="activity-thinking">{activity.result}</span>
+                  {:else}<small>{activity.result}</small>{/if}
+                {/if}
               {/if}
             </button>
           {:else}

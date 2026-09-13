@@ -8,10 +8,40 @@ test("short explicit single-domain actions use the direct fast path", () => {
   assert.equal(shouldUseDirectFastPath("List my unread email"), true);
   assert.equal(directFastPathGroup("List my unread email"), "email-read");
   assert.equal(directFastPathGroup("Reply to Dad and say I will arrive at 7"), "messages");
+  assert.equal(directFastPathGroup("Show my Hub contacts"), "messages-read");
+  assert.equal(directFastPathGroup("Draft a reply to Luke saying I will arrive at 7"), "messages");
+  assert.equal(directFastPathGroup("Compose a Telegram message to Luke"), "messages");
+  assert.equal(directFastPathGroup("what's luke's phone number"), "messages-read");
+  assert.equal(directFastPathGroup("what's luke's phone number on whatsapp"), "messages-read");
+  assert.equal(directFastPathGroup("can you tell me what luke's phone number is"), "messages-read");
+  assert.equal(directFastPathGroup("Show me Launch brief.docx in Google Drive"), "drive-read");
+  assert.equal(directFastPathGroup("List my Dropbox files"), "drive-read");
+  assert.equal(directFastPathGroup("Open my OneDrive folder"), "drive-read");
+  assert.equal(directFastPathGroup("Show my tasks"), "tasks");
+  assert.equal(directFastPathGroup("Open my calendar"), "schedule");
   assert.equal(
     directFastPathGroup("Make sure I don't forget to submit my exchange form tomorrow morning"),
     "reminders",
   );
+});
+
+test("every Hub messaging app name routes to the shared message surface", () => {
+  for (const platform of [
+    "WhatsApp", "Telegram", "Signal", "Messenger", "Instagram",
+    "Slack", "LinkedIn", "Google Chat", "Google Messages", "X", "Bluesky",
+    "Google Voice", "Zulip", "iMessage", "WeChat", "Matrix",
+  ]) assert.equal(directFastPathGroup(`Open ${platform}`), "messages-read", platform);
+  assert.equal(directFastPathGroup("Draft an email to luke@example.com"), "email");
+  assert.equal(directFastPathGroup("Send an email to luke@example.com"), "email");
+});
+
+test("a short platform correction keeps the prior Contacts lookup direct", () => {
+  assert.equal(
+    directFastPathGroup("even in whatsapp?", {previousDirectGroup: "messages-read"}),
+    "messages-read",
+  );
+  assert.equal(directFastPathGroup("even in whatsapp?"), undefined);
+  assert.equal(directFastPathGroup("you didn't check whatsapp"), "messages-read");
 });
 
 test("single-site discovery is direct while multi-source and implicit-screen work keep orchestration", () => {
@@ -105,6 +135,7 @@ test("realistic routing corpus preserves the direct-orchestrated boundary", () =
     ["Fill this form in and stop before submitting", undefined],
     ["Put the file I have open in the right folder", undefined],
     ["Email Dad the file called report.pdf", undefined],
+    ["Show report.pdf in OneDrive", "drive-read"],
     ["Move report.pdf to OneDrive", undefined],
     ["Search my email for the booking and compare it with the calendar", undefined],
     ["Review the attached document", undefined],

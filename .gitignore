@@ -15,6 +15,10 @@ test-results
 /resources/whisper/
 /resources/wechat-writer/
 
+# Phone-control runtimes fetched or built for the current platform
+/resources/phone/android/
+/resources/phone/ios/
+
 # Signed macOS helper binaries, built from resources/native/*.swift by Forge
 /resources/native/bin/
 
@@ -25,6 +29,8 @@ test-results
 /out/
 .DS_Store
 /dist/
+/apps/cli/dist/
+/apps/connect/relay/.wrangler/
 /apps/site/blog/*/
 /apps/site/docs/*/
 /apps/site/releases/*/
@@ -49,3 +55,15 @@ __pycache__/
 .vercel
 .env*
 !.env.example
+
+# Publishable account key injected from .env / CI; never commit a filled copy.
+/apps/extension/locker/config.local.js
+
+# Generated Safari Xcode projects (rebuilt via convert.sh / convert-ios.sh)
+/apps/extension/safari/Polymux/
+/apps/extension/safari/ios/
+
+
+
+# Local Supabase CLI link/cache state
+/supabase/.temp/

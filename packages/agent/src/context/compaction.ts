@@ -1,4 +1,5 @@
-import type { AgentContext } from "@polymux/core";
+import type { AgentContext, ContextCompactionTelemetry } from "@polymux/core";
+import {createHash} from "node:crypto";
 import type {
   AssistantBlock,
   InferenceMessage,
@@ -8,7 +9,11 @@ import type {
   ReasoningEffort,
 } from "@polymux/inference";
 import type { Storage } from "@polymux/storage";
-import { estimateContextTokens, estimateMessageTokens } from "./tokens.js";
+import {
+  estimateContextTokens,
+  estimateMessageTokens,
+  estimateTextTokens,
+} from "./tokens.js";
 
 export interface CompactionSettings {
   enabled: boolean;
@@ -72,6 +77,10 @@ export class CompactionManager {
     this.#prompt = prompt?.trim() || defaultCompactionPrompt;
   }
 
+  resetHistory(conversationId: string): void {
+    this.#cached.delete(conversationId);
+  }
+
   async transform(
     conversationId: string,
     model: ModelRef,
@@ -91,6 +100,7 @@ export class CompactionManager {
      * moves.
      */
     summarizer?: { model: ModelRef; reasoning?: ReasoningEffort },
+    onCompacted?: (telemetry: ContextCompactionTelemetry) => Promise<void>,
   ): Promise<AgentContext> {
     const modelInfo = this.#inference.getModel(model);
     if (!this.#settings.enabled || !modelInfo) return context;
@@ -127,10 +137,11 @@ export class CompactionManager {
       )
         return compacted;
     }
-    if (
-      estimateContextTokens(context.messages, context.systemPrompt) <= threshold
-    )
-      return context;
+    const originalTokens = estimateContextTokens(
+      context.messages,
+      context.systemPrompt,
+    );
+    if (originalTokens <= threshold) return context;
     let recentTokens = 0;
     let cut = context.messages.length;
     while (cut > 1) {
@@ -145,6 +156,7 @@ export class CompactionManager {
     }
     if (cut <= 0) return context;
     const older = context.messages.slice(0, cut);
+    const recent = context.messages.slice(cut);
     await onCompacting?.();
     const summary = await this.#summarize(
       summarizer?.model ?? model,
@@ -152,6 +164,17 @@ export class CompactionManager {
       signal,
       summarizer?.reasoning,
     );
+    const compacted = withSummary(context, summary, recent);
+    await onCompacted?.({
+      originalTokens,
+      compactedTokens: estimateContextTokens(
+        compacted.messages,
+        compacted.systemPrompt,
+      ),
+      summaryTokens: estimateTextTokens(summary),
+      summarizedMessages: older.length,
+      retainedMessages: recent.length,
+    });
     const prefix = fingerprint(older);
     this.#storage.saveCompaction({
       id: crypto.randomUUID(),
@@ -162,7 +185,7 @@ export class CompactionManager {
       prefixFingerprint: prefix,
     });
     this.#cached.set(conversationId, { prefix, cut, summary });
-    return withSummary(context, summary, context.messages.slice(cut));
+    return compacted;
   }
 
   /**
@@ -301,11 +324,9 @@ function cutThrough(
   return cut;
 }
 
-/** Cheap identity for a run of messages: role and estimated size of each. */
+/** Content identity: same-size edits must invalidate saved and cached summaries. */
 function fingerprint(messages: InferenceMessage[]): string {
-  return messages
-    .map((message) => `${message.role}:${estimateMessageTokens(message)}`)
-    .join("|");
+  return createHash("sha256").update(JSON.stringify(messages)).digest("hex");
 }
 
 /**

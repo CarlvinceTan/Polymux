@@ -35,6 +35,7 @@ export function collapseActivities(activities: AgentActivityItem[] = []): AgentA
         result: activity.result ?? last.result,
         status: aggregateStatus(last.status, activity.status),
         steps,
+        preview: latestPreview(last, activity),
       };
       continue;
     }
@@ -62,6 +63,16 @@ export function collapseActivities(activities: AgentActivityItem[] = []): AgentA
     }
   }
   return collapsed;
+}
+
+function latestPreview(
+  previous: AgentActivityItem,
+  next: AgentActivityItem,
+): AgentActivityItem['preview'] {
+  if (!next.preview) return undefined;
+  if (next.preview?.kind === 'computer') return next.preview;
+  if (next.preview?.kind === 'browser' && next.preview.tabId) return next.preview;
+  return previous.preview ?? next.preview;
 }
 
 function isBrowserActivity(activity: AgentActivityItem): boolean {
@@ -96,20 +107,32 @@ const COUNT_SUMMARIES: Partial<Record<AgentActivityKind, PluralKey>> = {
   editing: 'activity.editedFiles',
 };
 
+/** A failed command did not "run" successfully. Give failed stretches their
+ * own wording and keep them apart from successful command stretches so neither
+ * the label nor its count misstates what happened. */
+function countSummaryFamily(activity: AgentActivityItem): PluralKey | undefined {
+  if (activity.kind === 'running' && activity.status === 'failed') return 'activity.failedCommands';
+  return COUNT_SUMMARIES[activity.kind];
+}
+
 /**
  * What the settled trail shows: one row per stretch of the same counted work,
  * each call behind it kept as a step with whatever it came back with. That is
  * the codex handoff — the live line disappears and "Ran 2 commands" takes its
  * place. Narration (thinking, commentary, a successful detour) stays behind
- * the heading; a failure is never dropped, so a failed row that is not one of
- * the counted kinds still shows, in red.
+ * the heading; finished compaction keeps its one-line token receipt, and a
+ * failure is never dropped, so a failed row that is not one of the counted
+ * kinds still shows, in red.
  */
+const SETTLED_VISIBLE_KINDS = new Set<AgentActivityKind>(['compacting']);
+
 export function settledActivities(activities: AgentActivityItem[] = []): AgentActivityItem[] {
   const summary: AgentActivityItem[] = [];
   for (const activity of activities) {
     const last = summary.at(-1);
-    const family = COUNT_SUMMARIES[activity.kind];
-    if (family && last && last.kind === activity.kind) {
+    const family = countSummaryFamily(activity);
+    const lastFamily = last ? countSummaryFamily(last) : undefined;
+    if (family && last && last.kind === activity.kind && family === lastFamily) {
       const count = (last.count ?? 1) + (activity.count ?? 1);
       summary[summary.length - 1] = {
         ...last,
@@ -122,7 +145,11 @@ export function settledActivities(activities: AgentActivityItem[] = []): AgentAc
     }
     summary.push(family ? countedRow(activity, family) : activity);
   }
-  return summary.filter((row) => COUNT_SUMMARIES[row.kind] !== undefined || row.status === 'failed');
+  return summary.filter((row) =>
+    COUNT_SUMMARIES[row.kind] !== undefined
+    || SETTLED_VISIBLE_KINDS.has(row.kind)
+    || row.status === 'failed',
+  );
 }
 
 function countedRow(activity: AgentActivityItem, family: PluralKey): AgentActivityItem {
@@ -171,7 +198,8 @@ export function runThinkingActivity(
 export function activityPresentation(
   name: string,
   input: Record<string, unknown> = {},
-): Pick<AgentActivityItem, 'kind' | 'label' | 'icon' | 'logo' | 'target'> {
+  runId = '',
+): Pick<AgentActivityItem, 'kind' | 'label' | 'icon' | 'logo' | 'target' | 'preview'> {
   const normalized = name.toLowerCase();
   const path = typeof input.path === 'string' ? input.path : '';
   const uri = typeof input.uri === 'string' ? input.uri : '';
@@ -186,20 +214,23 @@ export function activityPresentation(
   // "Browser" rows. Keep the familiar globe, but name the operation or host
   // beside it so the trail reveals detours such as an unnecessary external-tab
   // check instead of making every browse look like the same successful step.
-  if (normalized === 'browser' || normalized === 'browser_tabs' || normalized === 'browser_control') {
+  const inAppBrowser = normalized === 'browser' || normalized === 'browser_read' || normalized === 'browser_snapshot_many';
+  if (inAppBrowser || normalized === 'browser_tabs' || normalized === 'browser_control') {
+    const tabId = browserTabId(input);
     return {
       kind: 'searching',
       label: translate('activity.using', {name: 'Browser'}),
       icon: 'globe',
       target: browserTarget(input, normalized),
+      ...(inAppBrowser && (tabId || runId) ? {preview: {kind: 'browser', tabId}} : {}),
     };
   }
 
   if (normalized.includes('read') && /(?:^|\/)skill\.md$/i.test(path)) {
-    return skillActivity(path.split('/').at(-2) ?? '');
+    return skillActivity(path.split('/').at(-2) ?? '', runId);
   }
   if (normalized === 'skill' || normalized.startsWith('skill_') || normalized.startsWith('skill.')) {
-    return skillActivity(typeof input.name === 'string' ? input.name : '');
+    return skillActivity(typeof input.name === 'string' ? input.name : '', runId);
   }
   // Memory is checked before the generic search and tool rules: recall is a
   // search, but "Recalling memory" is what the user needs to see, and the row
@@ -255,7 +286,9 @@ export function activityPresentation(
 }
 
 function browserTarget(input: Record<string, unknown>, name: string): string | undefined {
-  const url = typeof input.url === 'string' ? input.url.trim() : '';
+  const url = typeof input.url === 'string' ? input.url.trim()
+    : typeof input.target === 'string' ? input.target.trim()
+    : '';
   if (url) {
     try {
       return new URL(url).hostname.replace(/^www\./, '');
@@ -266,6 +299,44 @@ function browserTarget(input: Record<string, unknown>, name: string): string | u
   if (name === 'browser_tabs') return 'Tabs';
   const action = typeof input.action === 'string' ? input.action.trim() : '';
   return action ? humanize(action) : undefined;
+}
+
+function browserTabId(input: Record<string, unknown>): string {
+  if (typeof input.tabId === 'string') return input.tabId.trim();
+  if (Array.isArray(input.tabIds))
+    return input.tabIds.find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim() ?? '';
+  return '';
+}
+
+/** Pull a browser tab identity from either tool progress data or a result. */
+export function activityPreviewTabId(value: unknown): string | null {
+  const direct = previewTabIdFromRecord(record(value));
+  if (direct) return direct;
+  const content = record(value).content;
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.map((block) => typeof record(block).text === 'string' ? String(record(block).text) : '').find(Boolean) ?? ''
+      : '';
+  if (!text || text.length > 1_000_000) return null;
+  try {
+    return previewTabIdFromRecord(record(JSON.parse(text)));
+  } catch {
+    return null;
+  }
+}
+
+function previewTabIdFromRecord(value: Record<string, unknown>): string | null {
+  const direct = typeof value.browserTabId === 'string' ? value.browserTabId.trim()
+    : typeof value.tabId === 'string' ? value.tabId.trim()
+    : '';
+  if (direct) return direct;
+  const pages = Array.isArray(value.pages) ? value.pages : [];
+  for (const page of pages) {
+    const tabId = typeof record(page).tabId === 'string' ? String(record(page).tabId).trim() : '';
+    if (tabId) return tabId;
+  }
+  return null;
 }
 
 /** Some tools complete normally at the transport layer while returning a
@@ -322,7 +393,7 @@ function knownPlatform(value: string): AgentActivityItem['logo'] | undefined {
 }
 
 const PLATFORM_LOGOS = new Set([
-  'whatsapp', 'telegram', 'signal', 'discord', 'slack', 'messenger', 'instagram',
+  'whatsapp', 'telegram', 'signal', 'slack', 'messenger', 'instagram',
   'linkedin', 'googlechat', 'gmessages', 'twitter', 'bluesky', 'gvoice',
   'zulip', 'imessage', 'wechat', 'matrix', 'mail',
 ]);
@@ -335,16 +406,17 @@ const PLATFORM_LOGOS = new Set([
  * stable key.
  */
 const skillDisplay: Record<string, {name: string; icon: AgentActivityItem['icon']}> = {
-  'computer-use': {name: 'Computer', icon: 'computer'},
+  'window-control': {name: 'Window Control', icon: 'computer'},
 };
 
-function skillActivity(value: string): {kind: AgentActivityKind; label: string; icon?: AgentActivityItem['icon']} {
+function skillActivity(value: string, runId = ''): {kind: AgentActivityKind; label: string; icon?: AgentActivityItem['icon']; preview?: AgentActivityItem['preview']} {
   const known = skillDisplay[value.toLowerCase()];
   const name = known ? known.name : value ? humanize(value) : translate('activity.skill');
   return {
     kind: 'skill',
     label: translate('activity.using', {name}),
     ...(known?.icon ? {icon: known.icon} : {}),
+    ...(known?.icon === 'computer' && runId ? {preview: {kind: 'computer', runId} as const} : {}),
   };
 }
 

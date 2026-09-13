@@ -28,7 +28,7 @@ jobs:
       - run: npm ci
 
       - name: Verify release tags match pinned source commits
-        run: node scripts/verify-bridge-pins.mjs
+        run: node scripts/release/verify-bridge-pins.mjs
 
       - uses: actions/cache@v4
         with:

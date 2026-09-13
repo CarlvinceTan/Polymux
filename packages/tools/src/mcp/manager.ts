@@ -37,6 +37,13 @@ export class McpManager {
       connection.tools(),
     );
   }
+
+  toolsForServers(serverIds: Iterable<string>): AgentTool[] {
+    const ids = new Set(serverIds);
+    return [...this.#connections.entries()]
+      .filter(([id]) => ids.has(id))
+      .flatMap(([, connection]) => connection.tools());
+  }
   snapshots(): McpConnectionSnapshot[] {
     return [...this.#connections.values()].map((connection) =>
       connection.snapshot(),

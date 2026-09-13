@@ -3,9 +3,50 @@ import { channels } from "@polymux/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api: PolymuxApi = {
+  phone: {
+    status: () => ipcRenderer.invoke(channels.phoneStatus),
+    connect: () => ipcRenderer.invoke(channels.phoneConnect),
+    pairAndroid: (pairingAddress, pairingCode, connectAddress) =>
+      ipcRenderer.invoke(channels.phonePairAndroid, pairingAddress, pairingCode, connectAddress),
+    iosSigningStatus: () => ipcRenderer.invoke(channels.phoneIosSigningStatus),
+    iosSigningBegin: (email, password) =>
+      ipcRenderer.invoke(channels.phoneIosSigningBegin, email, password),
+    iosSigningComplete: (code) => ipcRenderer.invoke(channels.phoneIosSigningComplete, code),
+    iosSigningLogout: () => ipcRenderer.invoke(channels.phoneIosSigningLogout),
+    stop: () => ipcRenderer.invoke(channels.phoneStop),
+    frame: () => ipcRenderer.invoke(channels.phoneFrame),
+    tap: (point) => ipcRenderer.invoke(channels.phoneTap, point),
+    swipe: (from, to, durationMs) =>
+      ipcRenderer.invoke(channels.phoneSwipe, from, to, durationMs),
+    type: (value) => ipcRenderer.invoke(channels.phoneType, value),
+    home: () => ipcRenderer.invoke(channels.phoneHome),
+  },
+  terminal: {
+    create: (cwd) => ipcRenderer.invoke(channels.terminalCreate, cwd),
+    attach: (id, cols, rows) => ipcRenderer.invoke(channels.terminalAttach, id, cols, rows),
+    write: (id, data) => ipcRenderer.invoke(channels.terminalWrite, id, data),
+    resize: (id, cols, rows) => ipcRenderer.invoke(channels.terminalResize, id, cols, rows),
+    close: (id) => ipcRenderer.invoke(channels.terminalClose, id),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").TerminalEventDto) =>
+        listener(value);
+      ipcRenderer.on(channels.terminalEvent, receive);
+      return () => ipcRenderer.removeListener(channels.terminalEvent, receive);
+    },
+  },
+  ide: {
+    pickFolder: () => ipcRenderer.invoke(channels.idePickFolder),
+    list: (root, path) => ipcRenderer.invoke(channels.ideList, root, path),
+    read: (root, path) => ipcRenderer.invoke(channels.ideRead, root, path),
+    write: (root, path, content) => ipcRenderer.invoke(channels.ideWrite, root, path, content),
+    create: (root, path, content) => ipcRenderer.invoke(channels.ideCreate, root, path, content),
+    move: (root, from, to) => ipcRenderer.invoke(channels.ideMove, root, from, to),
+  },
   agentRuntime: {
     get: () => ipcRenderer.invoke(channels.agentRuntimeGet),
     registry: () => ipcRenderer.invoke(channels.agentRuntimeRegistry),
+    inspectConfiguration: (request, sourceDirectory) =>
+      ipcRenderer.invoke(channels.agentRuntimeInspectConfiguration, request, sourceDirectory),
     update: (request) => ipcRenderer.invoke(channels.agentRuntimeUpdate, request),
     settings: () => ipcRenderer.invoke(channels.agentRuntimeSettings),
     authenticate: (methodId) => ipcRenderer.invoke(channels.agentRuntimeAuthenticate, methodId),
@@ -22,6 +63,8 @@ const api: PolymuxApi = {
     setDefault: (id) => ipcRenderer.invoke(channels.profilesSetDefault, id),
     duplicate: (id) => ipcRenderer.invoke(channels.profilesDuplicate, id),
     remove: (id) => ipcRenderer.invoke(channels.profilesRemove, id),
+    connectExternal: (request) => ipcRenderer.invoke(channels.profilesConnectExternal, request),
+    openFolder: (id, target) => ipcRenderer.invoke(channels.profilesOpenFolder, id, target),
     subscribe(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: Parameters<typeof listener>[0]) => listener(value);
       ipcRenderer.on(channels.profilesChanged, receive);
@@ -45,9 +88,54 @@ const api: PolymuxApi = {
   clipboard: {
     write: (content) => ipcRenderer.invoke(channels.clipboardWrite, content),
   },
+  locker: {
+    status: () => ipcRenderer.invoke(channels.lockerStatus),
+    create: (password) => ipcRenderer.invoke(channels.lockerCreate, password),
+    unlock: (password) => ipcRenderer.invoke(channels.lockerUnlock, password),
+    lock: () => ipcRenderer.invoke(channels.lockerLock),
+    touch: () => ipcRenderer.invoke(channels.lockerTouch),
+    list: () => ipcRenderer.invoke(channels.lockerList),
+    reveal: (id) => ipcRenderer.invoke(channels.lockerReveal, id),
+    totp: (id) => ipcRenderer.invoke(channels.lockerTotp, id),
+    codes: () => ipcRenderer.invoke(channels.lockerCodes),
+    otpauth: (id) => ipcRenderer.invoke(channels.lockerOtpauth, id),
+    save: (item) => ipcRenderer.invoke(channels.lockerSave, item),
+    remove: (id) => ipcRenderer.invoke(channels.lockerRemove, id),
+    restore: (ids) => ipcRenderer.invoke(channels.lockerRestore, ids),
+    purge: (ids) => ipcRenderer.invoke(channels.lockerPurge, ids),
+    emptyTrash: () => ipcRenderer.invoke(channels.lockerEmptyTrash),
+    pin: (ids, pinned) => ipcRenderer.invoke(channels.lockerPin, ids, pinned),
+    reorder: (ids) => ipcRenderer.invoke(channels.lockerReorder, ids),
+    changePassword: (current, next) => ipcRenderer.invoke(channels.lockerChangePassword, current, next),
+    copy: (id, field, recoveryIndex) =>
+      ipcRenderer.invoke(channels.lockerCopy, id, field, recoveryIndex),
+    importBegin: () => ipcRenderer.invoke(channels.lockerImportBegin),
+    importConfirm: (password) => ipcRenderer.invoke(channels.lockerImportConfirm, password),
+    sync: () => ipcRenderer.invoke(channels.lockerSync),
+    setStorage: (mode, resolve) => ipcRenderer.invoke(channels.lockerSetStorage, mode, resolve),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").LockerStatusDto) =>
+        listener(value);
+      ipcRenderer.on(channels.lockerChanged, receive);
+      return () => ipcRenderer.removeListener(channels.lockerChanged, receive);
+    },
+  },
+  finance: {
+    read: (request) => ipcRenderer.invoke(channels.financeRead, request),
+  },
+  usage: {
+    get: (filter) => ipcRenderer.invoke(channels.usageGet, filter ?? {}),
+  },
   window: {
     openWorkspaceView: (kind, conversationId, placement) =>
       ipcRenderer.invoke(channels.windowOpenWorkspaceView, kind, conversationId, placement),
+    subscribeNotificationTarget(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: Parameters<typeof listener>[0]) =>
+        listener(value);
+      ipcRenderer.on(channels.windowOpenNotificationTarget, receive);
+      return () =>
+        ipcRenderer.removeListener(channels.windowOpenNotificationTarget, receive);
+    },
     subscribeFullscreen(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: boolean) =>
         listener(value);
@@ -62,7 +150,6 @@ const api: PolymuxApi = {
       ipcRenderer.invoke(channels.permissionsStatus, permission),
     request: (permission) =>
       ipcRenderer.invoke(channels.permissionsRequest, permission),
-    requestAll: () => ipcRenderer.invoke(channels.permissionsRequestAll),
     openSettings: (permission) =>
       ipcRenderer.invoke(channels.permissionsOpenSettings, permission),
   },
@@ -73,13 +160,83 @@ const api: PolymuxApi = {
   },
   conversations: {
     list: () => ipcRenderer.invoke(channels.conversationsList),
+    listArchived: () => ipcRenderer.invoke(channels.conversationsListArchived),
     create: (title) => ipcRenderer.invoke(channels.conversationsCreate, title),
+    duplicate: (id, throughMessageId) => ipcRenderer.invoke(channels.conversationsDuplicate, id, throughMessageId),
     rename: (id, title) =>
       ipcRenderer.invoke(channels.conversationsRename, id, title),
+    archive: (id) => ipcRenderer.invoke(channels.conversationsArchive, id),
+    unarchive: (id) => ipcRenderer.invoke(channels.conversationsUnarchive, id),
     remove: (id) => ipcRenderer.invoke(channels.conversationsRemove, id),
     messages: (id) => ipcRenderer.invoke(channels.messagesList, id),
     updateMessage: (id, patch) =>
       ipcRenderer.invoke(channels.messagesUpdate, id, patch),
+  },
+  devices: {request: (value) => ipcRenderer.invoke(channels.devicePairing, value)},
+  account: {
+    get: () => ipcRenderer.invoke(channels.accountGet),
+    signInWithPassword: (email, password) => ipcRenderer.invoke(channels.accountSignInWithPassword, email, password),
+    signUp: (email, password) => ipcRenderer.invoke(channels.accountSignUp, email, password),
+    resendConfirmation: (email) => ipcRenderer.invoke(channels.accountResendConfirmation, email),
+    requestPasswordReset: (email) => ipcRenderer.invoke(channels.accountRequestPasswordReset, email),
+    updatePassword: (password) => ipcRenderer.invoke(channels.accountUpdatePassword, password),
+    signInWithOAuth: (provider) => ipcRenderer.invoke(channels.accountSignInWithOAuth, provider),
+    switchTo: (userId) => ipcRenderer.invoke(channels.accountSwitch, userId),
+    signOut: () => ipcRenderer.invoke(channels.accountSignOut),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").AccountStatusDto) => listener(value);
+      ipcRenderer.on(channels.accountChanged, receive);
+      return () => { ipcRenderer.removeListener(channels.accountChanged, receive); };
+    },
+  },
+  team: {
+    list: () => ipcRenderer.invoke(channels.teamList),
+    groups: () => ipcRenderer.invoke(channels.teamGroupsList),
+    createGroup: (request) => ipcRenderer.invoke(channels.teamGroupCreate, request),
+    updateGroup: (id, request) => ipcRenderer.invoke(channels.teamGroupUpdate, id, request),
+    markGroupRead: (id) => ipcRenderer.invoke(channels.teamGroupMarkRead, id),
+    removeGroup: (id) => ipcRenderer.invoke(channels.teamGroupRemove, id),
+    sendGroup: (request) => ipcRenderer.invoke(channels.teamGroupSend, request),
+    profiles: (hostId) => ipcRenderer.invoke(channels.teamProfiles, hostId),
+    create: (request) => ipcRenderer.invoke(channels.teamCreate, request),
+    update: (id, request) => ipcRenderer.invoke(channels.teamUpdate, id, request),
+    markRead: (id) => ipcRenderer.invoke(channels.teamMarkRead, id),
+    remove: (id) => ipcRenderer.invoke(channels.teamRemove, id),
+    send: (request) => ipcRenderer.invoke(channels.teamSend, request),
+    startComputer: (id) => ipcRenderer.invoke(channels.teamComputerStart, id),
+    stopComputer: (id) => ipcRenderer.invoke(channels.teamComputerStop, id),
+    leases: (id) => ipcRenderer.invoke(channels.teamLeases, id),
+    grantLease: (id, capabilities, minutes) =>
+      ipcRenderer.invoke(channels.teamLeaseGrant, id, capabilities, minutes),
+    revokeLease: (id) => ipcRenderer.invoke(channels.teamLeaseRevoke, id),
+    host: () => ipcRenderer.invoke(channels.teamHostGet),
+    hosts: () => ipcRenderer.invoke(channels.teamHostsList),
+    beginHostPairing: (preserveFailures?: boolean) => ipcRenderer.invoke(channels.teamHostBeginPairing, preserveFailures),
+    pairHost: (request) => ipcRenderer.invoke(channels.teamHostPair, request),
+    useLocalHost: () => ipcRenderer.invoke(channels.teamHostLocal),
+    setDefaultHost: (hostId) => ipcRenderer.invoke(channels.teamHostDefault, hostId),
+    removeHost: (hostId) => ipcRenderer.invoke(channels.teamHostRemove, hostId),
+    resetHostPairing: () => ipcRenderer.invoke(channels.teamHostResetPairing),
+    subscribeHost(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").TeamHostDto) => listener(value);
+      ipcRenderer.on(channels.teamHostChanged, receive);
+      return () => ipcRenderer.removeListener(channels.teamHostChanged, receive);
+    },
+    subscribeHosts(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").TeamHostDto[]) => listener(value);
+      ipcRenderer.on(channels.teamHostsChanged, receive);
+      return () => ipcRenderer.removeListener(channels.teamHostsChanged, receive);
+    },
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").BotDto[]) => listener(value);
+      ipcRenderer.on(channels.teamChanged, receive);
+      return () => ipcRenderer.removeListener(channels.teamChanged, receive);
+    },
+    subscribeGroups(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").TeamGroupDto[]) => listener(value);
+      ipcRenderer.on(channels.teamGroupsChanged, receive);
+      return () => ipcRenderer.removeListener(channels.teamGroupsChanged, receive);
+    },
   },
   runs: {
     start: (request) => ipcRenderer.invoke(channels.runsStart, request),
@@ -94,6 +251,9 @@ const api: PolymuxApi = {
       ipcRenderer.on(channels.runEvent, receive);
       return () => ipcRenderer.removeListener(channels.runEvent, receive);
     },
+  },
+  activity: {
+    preview: (request) => ipcRenderer.invoke(channels.activityPreview, request),
   },
   manager: {
     snapshot: () => ipcRenderer.invoke(channels.managerSnapshot),
@@ -163,6 +323,8 @@ const api: PolymuxApi = {
     saveSnapshot: (conversationId, snapshot) =>
       ipcRenderer.invoke(channels.workspaceSnapshotSave, conversationId, snapshot),
     preview: (path) => ipcRenderer.invoke(channels.workspacePreview, path),
+    saveAs: (url) => ipcRenderer.invoke(channels.workspaceSaveAs, url),
+    pick: () => ipcRenderer.invoke(channels.workspacePick),
     subscribeReveal(listener) {
       const receive = (_event: Electron.IpcRendererEvent, value: WorkspaceRevealDto) =>
         listener(value);
@@ -188,6 +350,12 @@ const api: PolymuxApi = {
         size: file.size,
       })),
     ),
+    subscribe(listener) {
+      const receive = (_event: Electron.IpcRendererEvent, conversationId: string) =>
+        listener(conversationId);
+      ipcRenderer.on(channels.resourcesChanged, receive);
+      return () => ipcRenderer.removeListener(channels.resourcesChanged, receive);
+    },
   },
   memory: {
     status: () => ipcRenderer.invoke(channels.memoryStatus),
@@ -231,6 +399,8 @@ const api: PolymuxApi = {
     snapshot: () => ipcRenderer.invoke(channels.commsSnapshot),
     refresh: () => ipcRenderer.invoke(channels.commsRefresh),
     wake: (platform) => ipcRenderer.invoke(channels.commsWake, platform),
+    weChatLogin: () => ipcRenderer.invoke(channels.commsWeChatLogin),
+    weChatOpen: () => ipcRenderer.invoke(channels.commsWeChatOpen),
     setHubUrl: (baseUrl) => ipcRenderer.invoke(channels.commsSetHubUrl, baseUrl),
     connect: () => ipcRenderer.invoke(channels.commsConnect),
     signIn: (userId, password) => ipcRenderer.invoke(channels.commsSignIn, userId, password),
@@ -252,8 +422,11 @@ const api: PolymuxApi = {
     chats: () => ipcRenderer.invoke(channels.commsChats),
     chatContacts: () => ipcRenderer.invoke(channels.commsChatContacts),
     chatMembers: (chatId) => ipcRenderer.invoke(channels.commsChatMembers, chatId),
+    chatGroupInfo: (chatId) => ipcRenderer.invoke(channels.commsChatGroupInfo, chatId),
+    chatRenameGroup: (chatId, name, expectedName) => ipcRenderer.invoke(channels.commsChatRenameGroup, chatId, name, expectedName),
     contactLinks: () => ipcRenderer.invoke(channels.commsContactLinks),
     contactLinkMerge: (request) => ipcRenderer.invoke(channels.commsContactLinkMerge, request),
+    contactRename: (request) => ipcRenderer.invoke(channels.commsContactRename, request),
     contactLinkRemove: (id) => ipcRenderer.invoke(channels.commsContactLinkRemove, id),
     chatCreate: (request) => ipcRenderer.invoke(channels.commsChatCreate, request),
     broadcasts: () => ipcRenderer.invoke(channels.commsBroadcasts),
@@ -271,6 +444,12 @@ const api: PolymuxApi = {
     chatPickFiles: () => ipcRenderer.invoke(channels.commsChatPickFiles),
     chatSendAudio: (chatId, bytes, mimetype) =>
       ipcRenderer.invoke(channels.commsChatSendAudio, chatId, bytes, mimetype),
+    chatStickers: (chatId) =>
+      ipcRenderer.invoke(channels.commsChatStickers, chatId),
+    chatSendSticker: (chatId, stickerId) =>
+      ipcRenderer.invoke(channels.commsChatSendSticker, chatId, stickerId),
+    chatRecall: (chatId, messageId) =>
+      ipcRenderer.invoke(channels.commsChatRecall, chatId, messageId),
     chatReact: (chatId, messageId, key) =>
       ipcRenderer.invoke(channels.commsChatReact, chatId, messageId, key),
     chatUnreact: (chatId, reactionId) =>
@@ -288,6 +467,8 @@ const api: PolymuxApi = {
       ipcRenderer.invoke(channels.commsMailFlag, ids, flag, on, account, folder),
     mailDelete: (ids, account, folder) =>
       ipcRenderer.invoke(channels.commsMailDelete, ids, account, folder),
+    mailAttachment: (id, part, account, folder) =>
+      ipcRenderer.invoke(channels.commsMailAttachment, id, part, account, folder),
     mailDownload: (id, account, folder) =>
       ipcRenderer.invoke(channels.commsMailDownload, id, account, folder),
     mailOpenFile: (path) => ipcRenderer.invoke(channels.commsMailOpenFile, path),
@@ -393,6 +574,14 @@ const api: PolymuxApi = {
       relativePath: file.webkitRelativePath,
     }))),
   },
+  apps: {
+    list: () => ipcRenderer.invoke(channels.appsList),
+    browse: (query) => ipcRenderer.invoke(channels.appsBrowse, query),
+    install: (id) => ipcRenderer.invoke(channels.appsInstall, id),
+    setEnabled: (id, enabled) => ipcRenderer.invoke(channels.appsSetEnabled, id, enabled),
+    setPinned: (ids) => ipcRenderer.invoke(channels.appsSetPinned, ids),
+    remove: (id) => ipcRenderer.invoke(channels.appsRemove, id),
+  },
   models: {
     list: () => ipcRenderer.invoke(channels.modelsList),
     select: (provider, id) =>
@@ -437,6 +626,8 @@ const api: PolymuxApi = {
     clearPermissions: (site) => ipcRenderer.invoke(channels.browserPermissionsClear, site),
     respondToPermission: (id, decision, remember) =>
       ipcRenderer.invoke(channels.browserPermissionRespond, id, decision, remember),
+    respondToWebAuthn: (id, credentialId) =>
+      ipcRenderer.invoke(channels.browserWebAuthnRespond, id, credentialId),
     sites: () => ipcRenderer.invoke(channels.browserSitesList),
     clearSiteData: (site) => ipcRenderer.invoke(channels.browserClearSiteData, site),
     clearBrowsingData: (options) => ipcRenderer.invoke(channels.browserClearBrowsingData, options),
@@ -445,6 +636,9 @@ const api: PolymuxApi = {
       ipcRenderer.invoke(channels.browserLoginSave, site, username, password),
     revealLogin: (id) => ipcRenderer.invoke(channels.browserLoginReveal, id),
     deleteLogin: (id) => ipcRenderer.invoke(channels.browserLoginDelete, id),
+    fillAutofill: (tabId, itemId) =>
+      ipcRenderer.invoke(channels.browserAutofillFill, tabId, itemId),
+    dismissAutofill: (tabId) => ipcRenderer.invoke(channels.browserAutofillDismiss, tabId),
     browsingHistory: (options) => ipcRenderer.invoke(channels.browserHistoryList, options),
     suggestions: (query) => ipcRenderer.invoke(channels.browserSuggestions, query),
     forgetHistoryEntry: (url) => ipcRenderer.invoke(channels.browserHistoryForget, url),

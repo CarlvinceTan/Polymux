@@ -4,8 +4,6 @@ import type {BrowserSettingsDto, GeneralSettingsDto, ReasoningEffort} from "@pol
 import {app, nativeTheme} from "electron";
 import {
   DEFAULT_PERMISSION_SWITCHES,
-  permissionSwitches,
-  permissionSwitchesUpdate,
 } from "./permission-settings.js";
 import {
   DEFAULT_NOTIFICATION_SWITCHES,
@@ -48,20 +46,15 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
     locationEnabled: true,
     hubIncognitoMode: false,
     reasoningLevel: reasoningEffort(process.env.POLYMUX_REASONING, "medium") ?? "medium",
-    advancedMode: false,
     onboardingCompleted: false,
-    // Every capability is on by default: the OS grant is the real gate, and
-    // this switch exists to turn one off without giving the grant back.
+    // System grants are authoritative. Retired in-app switches must not leave
+    // a granted permission silently unusable after their controls are removed.
     permissions: {...DEFAULT_PERMISSION_SWITCHES},
     // Same reasoning as the permission switches: on by default, because the
     // OS grant is the real gate and a notification the user never asked to
     // silence is the behaviour they expect.
     notificationsEnabled: true,
     notifications: {...DEFAULT_NOTIFICATION_SWITCHES},
-    // On by default for the same reason as the switches it covers: the OS
-    // grant is the real gate, and a skill installed to do a job should be able
-    // to ask for what that job needs.
-    appPermissionsEnabled: true,
     pinnedViews: [],
     location: null,
   };
@@ -75,10 +68,6 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
         : defaults.theme,
     language: supportedLanguage(record.language) ?? defaults.language,
     currency: supportedCurrency(record.currency),
-    advancedMode:
-      typeof record.advancedMode === "boolean"
-        ? record.advancedMode
-        : defaults.advancedMode,
     speechModeEnabled:
       typeof record.speechModeEnabled === "boolean"
         ? record.speechModeEnabled
@@ -111,16 +100,12 @@ export function generalSettingsPreference(value: unknown): GeneralSettingsDto {
         record.reasoningLevel ?? record.thinkingLevel,
         defaults.reasoningLevel,
       ) ?? defaults.reasoningLevel,
-    permissions: permissionSwitches(record.permissions, defaults.permissions),
+    permissions: {...DEFAULT_PERMISSION_SWITCHES},
     notificationsEnabled:
       typeof record.notificationsEnabled === "boolean"
         ? record.notificationsEnabled
         : defaults.notificationsEnabled,
     notifications: notificationSwitches(record.notifications, defaults.notifications),
-    appPermissionsEnabled:
-      typeof record.appPermissionsEnabled === "boolean"
-        ? record.appPermissionsEnabled
-        : defaults.appPermissionsEnabled,
     pinnedViews: pinnedViewsPreference(record.pinnedViews),
     location: locationPreference(record.location),
   };
@@ -159,8 +144,6 @@ export function generalSettingsUpdate(
     typeof record.onboardingCompleted !== "boolean"
   )
     throw new Error("onboardingCompleted must be a boolean");
-  if (record.advancedMode !== undefined && typeof record.advancedMode !== "boolean")
-    throw new Error("advancedMode must be a boolean");
   if (
     record.speechModeEnabled !== undefined &&
     typeof record.speechModeEnabled !== "boolean"
@@ -190,7 +173,7 @@ export function generalSettingsUpdate(
   )
     throw new Error("reasoningLevel must be a supported reasoning effort");
   if (record.pinnedViews !== undefined && !validPinnedViews(record.pinnedViews))
-    throw new Error("pinnedViews must be an array of drive, schedule, calendar, hub, or tasks");
+    throw new Error("pinnedViews must be an array of drive, calendar, hub, tasks, phone, locker, media, terminal, ide, usage, or finance");
   const locationEnabled =
     typeof record.locationEnabled === "boolean"
       ? record.locationEnabled
@@ -207,9 +190,8 @@ export function generalSettingsUpdate(
       : current.onboardingCompleted;
   return {
     onboardingCompleted,
-    // A partial update patches the map rather than replacing it, so a row can
-    // send only the switch the user just moved.
-    permissions: permissionSwitchesUpdate(record.permissions, current.permissions),
+    // OS permission status is the only gate exposed by Settings.
+    permissions: {...DEFAULT_PERMISSION_SWITCHES},
     // The master switch and the per-kind map move independently: silencing
     // everything must not forget which kinds were chosen underneath.
     notificationsEnabled:
@@ -217,10 +199,6 @@ export function generalSettingsUpdate(
         ? record.notificationsEnabled
         : current.notificationsEnabled,
     notifications: notificationSwitchesUpdate(record.notifications, current.notifications),
-    appPermissionsEnabled:
-      typeof record.appPermissionsEnabled === "boolean"
-        ? record.appPermissionsEnabled
-        : current.appPermissionsEnabled,
     theme:
       record.theme === "light" || record.theme === "dark" || record.theme === "system"
         ? record.theme
@@ -232,10 +210,6 @@ export function generalSettingsUpdate(
         : record.currency === null
           ? null
           : supportedCurrency(record.currency),
-    advancedMode:
-      typeof record.advancedMode === "boolean"
-        ? record.advancedMode
-        : current.advancedMode,
     speechModeEnabled:
       typeof record.speechModeEnabled === "boolean"
         ? record.speechModeEnabled
@@ -343,7 +317,7 @@ export function requiredLocation(value: unknown): NonNullable<GeneralSettingsDto
   return { latitude, longitude, accuracy, updatedAt: record.updatedAt };
 }
 
-const PINNABLE_VIEWS = new Set(['drive', 'schedule', 'calendar', 'hub', 'tasks']);
+const PINNABLE_VIEWS = new Set(['drive', 'calendar', 'hub', 'tasks', 'phone', 'locker', 'media', 'terminal', 'ide', 'usage', 'finance']);
 
 function validPinnedViews(value: unknown): string[] | false {
   if (!Array.isArray(value)) return false;
@@ -360,7 +334,7 @@ function validPinnedViews(value: unknown): string[] | false {
 function pinnedViewsPreference(value: unknown): GeneralSettingsDto['pinnedViews'] {
   if (!Array.isArray(value)) return [];
   return value.filter(
-    (item): item is 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' =>
+    (item): item is GeneralSettingsDto['pinnedViews'][number] =>
       typeof item === 'string' && PINNABLE_VIEWS.has(item),
   ).filter((item, i, arr) => arr.indexOf(item) === i);
 }

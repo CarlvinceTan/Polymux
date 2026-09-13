@@ -11,6 +11,9 @@ export interface OutgoingAttachment {
   mime: string;
   /** Raw bytes, base64-encoded when written into the message. */
   content: Buffer;
+  /** Present when the HTML alternative references this part with `cid:`. */
+  contentId?: string;
+  disposition?: "inline" | "attachment";
 }
 
 /** A header value with anything that could forge a new header removed. */
@@ -101,32 +104,67 @@ export function mimeMessage(options: {
       "",
     ].join("\r\n");
 
-  const boundary = `polymux-${Date.now().toString(36)}-${files.length}`;
-  const parts = [
-    html
-      ? [
-          `Content-Type: multipart/alternative; boundary="${alternativeBoundary}"`,
-          "",
-          alternativeBody,
-        ].join("\r\n")
-      : ["Content-Type: text/plain; charset=utf-8", "", body].join("\r\n"),
-    ...files.map((file) =>
-      [
-        `Content-Type: ${file.mime}; name="${headerValue(file.name)}"`,
-        "Content-Transfer-Encoding: base64",
-        `Content-Disposition: attachment; filename="${headerValue(file.name)}"`,
+  // A Content-ID has meaning only to an HTML part. Without one, fail soft to
+  // ordinary attachments rather than emitting unreferenced related parts.
+  const inlineFiles = html
+    ? files.filter((file) => file.disposition === "inline" && file.contentId)
+    : [];
+  const trailingFiles = files.filter((file) => !inlineFiles.includes(file));
+  const contentPart = html
+    ? [
+        `Content-Type: multipart/alternative; boundary="${alternativeBoundary}"`,
         "",
-        file.content.toString("base64").replace(/(.{76})/g, "$1\r\n"),
-      ].join("\r\n"),
-    ),
-  ];
+        alternativeBody,
+      ].join("\r\n")
+    : ["Content-Type: text/plain; charset=utf-8", "", body].join("\r\n");
+
+  const relatedBoundary = `polymux-related-${Date.now().toString(36)}-${inlineFiles.length}`;
+  const relatedBody = multipartBody(relatedBoundary, [
+    contentPart,
+    ...inlineFiles.map(attachmentPart),
+  ]);
+  if (trailingFiles.length === 0 && inlineFiles.length > 0)
+    return [
+      ...headers,
+      `Content-Type: multipart/related; boundary="${relatedBoundary}"`,
+      "",
+      relatedBody,
+      "",
+    ].join("\r\n");
+
+  const boundary = `polymux-${Date.now().toString(36)}-${files.length}`;
+  const primaryPart = inlineFiles.length > 0
+    ? [
+        `Content-Type: multipart/related; boundary="${relatedBoundary}"`,
+        "",
+        relatedBody,
+      ].join("\r\n")
+    : contentPart;
   return [
     ...headers,
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
     "",
+    multipartBody(boundary, [primaryPart, ...trailingFiles.map(attachmentPart)]),
+    "",
+  ].join("\r\n");
+}
+
+function attachmentPart(file: OutgoingAttachment): string {
+  const inline = file.disposition === "inline" && Boolean(file.contentId);
+  return [
+    `Content-Type: ${file.mime}; name="${headerValue(file.name)}"`,
+    "Content-Transfer-Encoding: base64",
+    ...(inline ? [`Content-ID: <${headerValue(file.contentId!)}>`] : []),
+    `Content-Disposition: ${inline ? "inline" : "attachment"}; filename="${headerValue(file.name)}"`,
+    "",
+    file.content.toString("base64").replace(/(.{76})/g, "$1\r\n"),
+  ].join("\r\n");
+}
+
+function multipartBody(boundary: string, parts: string[]): string {
+  return [
     ...parts.map((part) => `--${boundary}\r\n${part}`),
     `--${boundary}--`,
-    "",
   ].join("\r\n");
 }
 

@@ -12,14 +12,43 @@ export function mailBodyWithSignature(body: string, signature: string): string {
   return message ? `${message}\n\n${ending}` : ending;
 }
 
-/** Builds the HTML alternative only when the chosen signature has formatting. */
-export function mailHtmlWithSignature(body: string, signatureHtml: string | null): string | undefined {
+export interface PositionedMailAttachment {
+  name: string;
+  contentId: string;
+  /** UTF-16 body offset, matching textarea selection offsets. */
+  offset: number;
+}
+
+/** Builds the HTML alternative when the signature or positioned files need
+ * it. Attachment links become the authored `cid:` nodes the reader resolves
+ * back into cards and previews. */
+export function mailHtmlWithSignature(
+  body: string,
+  signatureHtml: string | null,
+  attachments: PositionedMailAttachment[] = [],
+): string | undefined {
   const ending = signatureHtml?.trim();
-  if (!ending) return undefined;
+  if (!ending && attachments.length === 0) return undefined;
   const message = body.trimEnd();
-  const authored = escapeHtml(message).replace(/\n/g, '<br>');
+  const authored = attachmentHtml(message, attachments);
+  if (!ending) return `<div>${authored}</div>`;
   const signature = `<div data-polymux-signature="true">${ending}</div>`;
   return authored ? `<div>${authored}</div><br><br>${signature}` : signature;
+}
+
+function attachmentHtml(body: string, attachments: PositionedMailAttachment[]): string {
+  let from = 0;
+  let html = '';
+  for (const file of attachments
+    .map((file, order) => ({file, order}))
+    .sort((left, right) => left.file.offset - right.file.offset || left.order - right.order)
+    .map(({file}) => file)) {
+    const offset = Math.max(from, Math.min(body.length, file.offset));
+    html += escapeHtml(body.slice(from, offset)).replace(/\n/g, '<br>');
+    html += `<div><a href="cid:${escapeAttribute(file.contentId)}">${escapeHtml(file.name)}</a></div>`;
+    from = offset;
+  }
+  return html + escapeHtml(body.slice(from)).replace(/\n/g, '<br>');
 }
 
 function escapeHtml(value: string): string {
@@ -28,4 +57,8 @@ function escapeHtml(value: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function escapeAttribute(value: string): string {
+  return escapeHtml(value).replace(/'/g, '&#39;');
 }

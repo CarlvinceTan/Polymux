@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { installLockerWebAuthn } from "./webauthn.js";
 
 /**
  * Runs inside every embedded browser tab.
@@ -68,6 +69,31 @@ function loginForms(): FormFields[] {
   return found;
 }
 
+const OTP_NAME = /otp|totp|2fa|two.?factor|one.?time|verification.?code|auth.?code|mfa|authenticator/i;
+
+/** A field a site is using for a one-time code. Autocomplete is the strongest
+ * signal; name, id and inputmode catch the rest. Password fields are never
+ * treated as OTP — those are the login form. */
+function otpFields(): HTMLInputElement[] {
+  return [...document.querySelectorAll("input")].filter((input): input is HTMLInputElement => {
+    if (!visible(input) || input.type === "password") return false;
+    if (input.autocomplete === "one-time-code") return true;
+    const label = `${input.name} ${input.id} ${input.placeholder}`;
+    if (!OTP_NAME.test(label)) return false;
+    const max = Number(input.maxLength);
+    return !Number.isFinite(max) || max <= 0 || (max >= 4 && max <= 10);
+  });
+}
+
+function fieldFocus(): "login" | "otp" | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLInputElement) || !visible(active)) return null;
+  if (otpFields().includes(active)) return "otp";
+  if (loginForms().some((form) => form.password === active || form.username === active))
+    return "login";
+  return null;
+}
+
 /**
  * Writes a value the way a person would, so a framework notices.
  *
@@ -87,14 +113,17 @@ function fillField(field: HTMLInputElement, value: string): void {
   field.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-/** The last count reported, so an unchanged page stays quiet. */
-let reportedForms = -1;
+/** The last report, so an unchanged page stays quiet. */
+let reportedSignature = "";
 
 function report(): void {
   const forms = loginForms().length;
-  if (forms === reportedForms) return;
-  reportedForms = forms;
-  ipcRenderer.send(CHANNEL, { kind: "page", origin: location.origin, forms });
+  const otp = otpFields().length;
+  const focus = fieldFocus();
+  const signature = `${forms}:${otp}:${focus ?? ""}`;
+  if (signature === reportedSignature) return;
+  reportedSignature = signature;
+  ipcRenderer.send(CHANNEL, { kind: "page", origin: location.origin, forms, otp, focus });
 }
 
 /** Watches for a submitted login so it can be offered for saving. A single-page
@@ -125,13 +154,24 @@ function watchSubmissions(): void {
   );
 }
 
-ipcRenderer.on(CHANNEL, (_event, message: { kind: string; username?: string; password?: string }) => {
-  if (message.kind !== "fill" || !message.password) return;
-  const form = loginForms()[0];
-  if (!form) return;
-  if (form.username && message.username) fillField(form.username, message.username);
-  fillField(form.password, message.password);
-});
+ipcRenderer.on(
+  CHANNEL,
+  (
+    _event,
+    message: { kind: string; username?: string; password?: string; totp?: string },
+  ) => {
+    if (message.kind !== "fill") return;
+    const form = loginForms()[0];
+    if (form && message.password) {
+      if (form.username && message.username) fillField(form.username, message.username);
+      fillField(form.password, message.password);
+    }
+    if (message.totp) {
+      const fields = otpFields();
+      if (fields[0]) fillField(fields[0], message.totp);
+    }
+  },
+);
 
 if (document.readyState === "loading")
   document.addEventListener("DOMContentLoaded", () => {
@@ -158,8 +198,11 @@ const observer = new MutationObserver(() => {
   });
 });
 observer.observe(document.documentElement, { childList: true, subtree: true });
+document.addEventListener("focusin", report, true);
+document.addEventListener("focusout", () => requestAnimationFrame(report), true);
 
 // Nothing is exposed to the page: this bridge exists so the module counts as a
 // preload rather than being tree-shaken to nothing, and so page scripts cannot
 // reach ipcRenderer.
 contextBridge.exposeInMainWorld("__polymuxAutofill", { present: true });
+installLockerWebAuthn();

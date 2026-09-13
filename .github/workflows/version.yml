@@ -25,6 +25,6 @@ jobs:
         with:
           node-version: 24
       - name: Validate version
-        run: node scripts/validate-release-version.mjs --base=${{ github.event.pull_request.base.sha }}
+        run: node scripts/release/validate-release-version.mjs --base=${{ github.event.pull_request.base.sha }}
       - name: Validate browser compatibility
-        run: node scripts/validate-browser-compatibility.mjs --base=${{ github.event.pull_request.base.sha }}
+        run: node scripts/release/validate-browser-compatibility.mjs --base=${{ github.event.pull_request.base.sha }}

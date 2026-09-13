@@ -94,12 +94,23 @@ export class HubCache {
   /** Everything at once, because the renderer wants one round trip before its
    * first paint rather than one per pane. */
   snapshot(): HubSnapshotDto {
+    const chats = this.#read<ChatDto[]>(CHATS_KEY) ?? [];
+    const wechat = new Set(chats.filter(chat => chat.platform === "wechat").map(chat => chat.id));
+    const messages = this.#list<HubSnapshotDto["messages"][number]>(CHAT_PAGE_PREFIX)
+      .filter(page => {
+        // Discard disposable pages from before structured call summaries.
+        // Re-reading the local timeline restores the real caption and duration;
+        // showing the old text first would leave a stale [Call] bubble on screen.
+        if (!wechat.has(page.chatId) || !page.messages.some(message => message.body === "[Call]" && !message.call)) return true;
+        try {this.#store.deleteCommsCache(`${CHAT_PAGE_PREFIX}${page.chatId}`);} catch { /* The live read can still replace it. */ }
+        return false;
+      });
     return {
       status: this.#read<CommsStatusDto>(STATUS_KEY),
-      chats: this.#read<ChatDto[]>(CHATS_KEY) ?? [],
+      chats,
       mailboxes: this.#list<HubSnapshotDto["mailboxes"][number]>(MAILBOX_PREFIX),
       mail: this.#list<HubSnapshotDto["mail"][number]>(BODY_PREFIX),
-      messages: this.#list<HubSnapshotDto["messages"][number]>(CHAT_PAGE_PREFIX),
+      messages,
     };
   }
 

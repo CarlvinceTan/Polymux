@@ -188,6 +188,35 @@ const migrations: Migration[] = [
     CREATE INDEX IF NOT EXISTS comms_cache_fetched_idx ON comms_cache(fetched_at DESC);
   `,
   },
+  {
+    // The original monochrome swatch saved only its current colour. Give
+    // existing bots the explicit pair now used by the avatar editor.
+    // Run once so later custom fixed ink/cream choices remain intentional.
+    version: 9,
+    sql: `
+    UPDATE conversations
+    SET metadata_json = json_set(metadata_json,
+      '$.teamMember.avatar.color', '#0a0a0c',
+      '$.teamMember.avatar.colorPair', json('{"light":"#0a0a0c","dark":"#f1efe9"}'))
+    WHERE json_extract(metadata_json, '$.teamMember.version') = 1
+      AND json_type(metadata_json, '$.teamMember.avatar.colorPair') IS NULL
+      AND lower(json_extract(metadata_json, '$.teamMember.avatar.color')) IN ('#0a0a0c', '#f1efe9');
+  `,
+  },
+  {
+    // Rename the saved Team entity once; keep conversation data and custom settings.
+    version: 10,
+    sql: `
+    UPDATE conversations
+    SET metadata_json = json_remove(
+      CASE WHEN json_type(metadata_json, '$.bot') IS NULL
+        THEN json_set(metadata_json, '$.bot', json_extract(metadata_json, '$.teamMember'))
+        ELSE metadata_json END,
+      '$.teamMember')
+    WHERE json_type(metadata_json, '$.teamMember') IS NOT NULL;
+    `,
+  },
+
 ];
 
 /**

@@ -1,17 +1,3 @@
-<script lang="ts" context="module">
-  import type {CommsStatusDto as CachedStatusDto} from '@polymux/protocol';
-
-  /**
-   * The last status the Hub tab saw, kept outside the component.
-   *
-   * Settings destroys the tab when the mode changes, so every return to Hub
-   * used to wait on a fresh status read and flash its loading rail first. The
-   * tab now paints what it knew and corrects it behind the pane. Window-lived,
-   * never persisted — which is exactly as long as the answer is worth trusting.
-   */
-  const hubSnapshot: {status: CachedStatusDto | null} = {status: null};
-</script>
-
 <script lang="ts">
   import {onMount, tick} from 'svelte';
   import type {
@@ -30,6 +16,7 @@
   import {COMMS_EMAIL_PRESETS, permissionPrompts, presetForHost} from '@polymux/protocol';
   import {readableError} from '../../shared/errors';
   import {invalidateHubCache} from '../../shared/state/hubCache';
+  import {loadSettingsHubSnapshot, settingsHubSnapshot} from '../../shared/state/settingsPreload';
   import {scrollFade} from '../../shared/scrollFade';
   import {qrSvgPath} from '../../shared/qr';
   import {bridgeLogo, mailLogo} from '../../shared/options/platformBrands';
@@ -90,14 +77,17 @@
 
   type Section = {kind: 'bridge'; platform: CommsPlatform} | {kind: 'mail'};
 
-  let status: CommsStatusDto | null = hubSnapshot.status;
-  $: if (status) hubSnapshot.status = status;
+  let status: CommsStatusDto | null = settingsHubSnapshot.status;
+  $: if (status && status !== settingsHubSnapshot.status) {
+    settingsHubSnapshot.status = status;
+    settingsHubSnapshot.loadedAt = Date.now();
+  }
   // Mail heads the rail whatever the fleet turns out to hold, so the opening
   // section is set here rather than waiting on the first status — the pane is
   // filled the moment the tab is opened, not a beat later. `keepSelectionOnRail`
   // still moves it if a filter hides Mail.
   let selected: Section | null = {kind: 'mail'};
-  let loading = !hubSnapshot.status;
+  let loading = !settingsHubSnapshot.status;
   let error = '';
   let busy = '';
   let emailHealthChecking = false;
@@ -180,7 +170,7 @@
     loading = !status;
     error = '';
     try {
-      status = await api.comms.status();
+      status = await loadSettingsHubSnapshot(api, 5_000);
     } catch (cause) {
       error = readableError(cause);
     } finally {
@@ -328,7 +318,7 @@
     if (wokenPlatforms.has(platform)) return;
     wokenPlatforms.add(platform);
     const next = await api.comms.wake(platform).catch((): null => null);
-    if (next) status = next;
+    if (next) status = next.status;
   }
 
   async function saveSetup(platform: CommsPlatform): Promise<void> {
@@ -480,6 +470,13 @@
     } finally {
       busy = '';
     }
+  }
+
+  /** Installer links come from the trusted bridge catalogue, but keep the
+   * renderer from handing any non-web scheme to the operating system. */
+  function openInstall(url: string): void {
+    if (!/^https?:\/\//i.test(url)) return;
+    void api.browser.openExternal(url);
   }
 
   // Versions the login flow so a cancelled attempt's pending waits cannot
@@ -1187,6 +1184,20 @@
             </section>
           {/if}
 
+          {#if activeBridge.installUrl}
+            <section class="comms-block">
+              <footer class="comms-actions">
+                <button
+                  type="button"
+                  class="primary"
+                  onclick={() => openInstall(activeBridge.installUrl!)}
+                >
+                  {$t('hub.downloadPlatform', {platform: activeBridge.name})}
+                </button>
+              </footer>
+            </section>
+          {/if}
+
           {#if settling === activeBridge.platform}
             <!-- Between the phone confirming and the bridge reporting the
                  account. One line, in place: the pane carries on rather than
@@ -1512,22 +1523,21 @@
   .comms-value code{overflow:hidden;padding:2px 6px;border-radius:5px;background:var(--neutral-100);color:var(--neutral-800);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}
   .comms-value button{height:26px;flex:none;border:1px solid var(--neutral-200);border-radius:7px;padding:0 10px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
   .comms-value button:hover{background:var(--neutral-100);color:var(--neutral-950)}
-  .comms-value button.destructive{color:#a04545}
+  .comms-value button.destructive{color:var(--danger-500)}
   .comms-value button:disabled{cursor:default;opacity:.5}
 
   .comms-hint{max-width:520px;margin:5px 0 0;color:var(--neutral-500);font-size:10.5px;line-height:1.5}
-  .comms-hint.warn{color:#a04545}
-  :global(:root[data-theme="dark"]) .comms-hint.warn{color:#e79c9c}
+  .comms-hint.warn{color:var(--danger-500)}
 
   /* Above the form and the same width as it, because for a Google or
      Microsoft mailbox there is nothing below worth filling in. */
   .comms-signin{display:flex;max-width:440px;flex-direction:column;gap:7px;margin:0 0 14px}
-  .comms-signin-button{display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:none;color:var(--ink);font-family:inherit;font-size:12.5px;font-weight:560;cursor:pointer;transition:border-color .16s,opacity .16s}
+  .comms-signin-button{display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--neutral-200);border-radius:9px;padding:9px 12px;background:none;color:var(--neutral-900);font-family:inherit;font-size:12.5px;font-weight:560;cursor:pointer;transition:border-color .16s,opacity .16s}
   .comms-signin-button img{width:18px;height:18px;display:block;flex:none;object-fit:contain}
-  .comms-signin-button:hover:not(:disabled){border-color:var(--ink-soft)}
+  .comms-signin-button:hover:not(:disabled){border-color:var(--neutral-400)}
   .comms-signin-button:disabled{opacity:.55;cursor:default}
-  .comms-signin-button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
-  .comms-signin-note{margin:1px 0 0;color:var(--ink-faint);font-size:11.5px}
+  .comms-signin-button:focus-visible{outline:2px solid var(--neutral-950);outline-offset:2px}
+  .comms-signin-note{margin:1px 0 0;color:var(--neutral-500);font-size:11.5px}
   .comms-form{display:flex;max-width:440px;flex-direction:column;gap:9px}
   .comms-form label{display:flex;flex-direction:column;gap:3px}
   .comms-form label>span{color:var(--neutral-600);font-size:10.5px;font-weight:530}
@@ -1572,8 +1582,8 @@
   .comms-mailbox-actions{display:flex;gap:6px;margin-top:9px}
   .comms-mailbox-actions button{height:26px;border:1px solid var(--neutral-200);border-radius:7px;padding:0 9px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
   .comms-mailbox-actions button:hover:not(:disabled){background:var(--neutral-100);color:var(--neutral-950)}
-  .comms-mailbox-actions button.destructive{color:#a04545}
-  .comms-mailbox-actions button:disabled{cursor:default;opacity:.5}
+  .comms-mailbox-actions button.destructive{color:var(--danger-500)}
+  .comms-mailbox-actions button:disabled{color:var(--disabled-text);cursor:default;opacity:1}
   .comms-mailbox-empty{display:flex;align-items:center;justify-content:space-between;gap:12px}
   .comms-mailbox-empty p{margin:0;color:var(--neutral-500);font-size:11px}
   .comms-mailbox-empty button{height:27px;flex:none;border:1px solid var(--neutral-200);border-radius:7px;padding:0 11px;background:var(--app-surface);color:var(--neutral-800);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
@@ -1617,9 +1627,8 @@
   .comms-signature-checkmark{box-sizing:border-box;width:15px;height:15px;flex:none;display:grid;place-items:center;border:1px solid var(--neutral-300);border-radius:5px;background:var(--app-surface);color:transparent;transition:background .12s ease,border-color .12s ease,color .12s ease}
   .comms-signature-default:hover .comms-signature-checkmark{border-color:var(--neutral-500)}
   .comms-signature-default.checked .comms-signature-checkmark{border-color:var(--neutral-900);background:var(--neutral-900);color:var(--app-bg)}
-  .comms-signature-editor-footer>button.destructive{min-height:24px;display:flex;align-items:center;gap:5px;flex:none;border:0;padding:0;background:transparent;color:#a04545;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:530;line-height:1.2}
-  .comms-signature-editor-footer>button.destructive:hover{color:#7f2f2f}
-  :global(:root[data-theme="dark"]) .comms-signature-editor-footer>button.destructive{color:#d98d8d}
+  .comms-signature-editor-footer>button.destructive{min-height:24px;display:flex;align-items:center;gap:5px;flex:none;border:0;padding:0;background:transparent;color:var(--danger-500);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:530;line-height:1.2}
+  .comms-signature-editor-footer>button.destructive:hover{color:var(--danger-600)}
 
   .comms-signature-empty{min-height:0;flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:7px;color:var(--neutral-400);animation:comms-signature-in .14s ease-out both}
   .comms-signature-empty>span{width:28px;height:28px;display:grid;place-items:center;color:var(--neutral-400)}
@@ -1631,7 +1640,7 @@
 
   .comms-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:540}
   .comms-status::before{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor;content:""}
-  .comms-status[data-state="ok"]{color:#3f9c5a}
-  .comms-status[data-state="error"]{color:#a04545}
+  .comms-status[data-state="ok"]{color:var(--status-success-text)}
+  .comms-status[data-state="error"]{color:var(--status-error-text)}
   .comms-status[data-state="unknown"]{color:var(--neutral-500)}
 </style>

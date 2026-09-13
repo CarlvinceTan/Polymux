@@ -11,4 +11,12 @@ export class BuiltinAgentRuntime implements AgentRuntime {
   start(input: AgentRuntimeStartInput) {
     return this.agent.start(input);
   }
+
+  resetHistory(conversationId: string): void {
+    this.agent.resetHistory(conversationId);
+  }
+
+  close(): Promise<void> {
+    return this.agent.settleGoalWork();
+  }
 }

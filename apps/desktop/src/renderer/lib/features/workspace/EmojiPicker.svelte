@@ -1,7 +1,7 @@
 <script lang="ts">
   import {onMount, tick} from 'svelte';
-  import {cubicInOut} from 'svelte/easing';
   import {t} from '../../../i18n';
+  import {pickerReveal} from '../../shared/motion/pickerReveal';
   import Icon from '../../shared/components/Icon.svelte';
 
   export let onpick: (emoji: string) => void = () => {};
@@ -124,25 +124,6 @@
   let atTop = true;
   let atBottom = false;
 
-  /** Reveals a fixed-size inner picker through a changing-height viewport.
-   * Unlike `slide`, this never scales the top padding, so a picker opening
-   * below the quick row cannot settle with a final search-field nudge. */
-  function reveal(node: HTMLElement) {
-    const height = Number.parseFloat(getComputedStyle(node).height);
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    return {
-      duration: reducedMotion ? 0 : 320,
-      easing: cubicInOut,
-      css: (progress: number) => {
-        const opacity = Math.min(progress * 4, 1);
-        const edge = `rgba(0,0,0,${progress})`;
-        return `height:${height * progress}px;min-height:0;overflow:clip;opacity:${opacity};` +
-          `-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 12px),${edge} 100%);` +
-          `mask-image:linear-gradient(to bottom,#000 calc(100% - 12px),${edge} 100%)`;
-      },
-    };
-  }
-
   $: needle = query.trim().toLocaleLowerCase();
   $: filtered = EMOJIS.filter((entry) =>
     !needle || `${entry[0]} ${entry[1]} ${entry[2]}`.toLocaleLowerCase().includes(needle),
@@ -167,7 +148,7 @@
   class:below={direction === 'below'}
   role="group"
   aria-label={ariaLabel || $t('hub.react')}
-  transition:reveal
+  transition:pickerReveal
 >
   <div class="hub-view-emoji-picker-content">
     <label class="hub-view-emoji-search">

@@ -3,11 +3,13 @@
   import {tooltipLeft, tooltipTop, type TooltipAlignment} from '../layout/tooltipPosition';
 
   let tooltip: HTMLDivElement;
-  let target: HTMLButtonElement | null = null;
+  const targetSelector = 'button, [data-tooltip-overflow]';
+  const tooltipId = 'polymux-shared-tooltip';
+  let target: HTMLElement | null = null;
   /** The button under the pointer, which outlives the pill: a control that
       stops qualifying mid-hover (its menu opens) has to be able to raise the
       tooltip again when it qualifies once more, without the pointer moving. */
-  let hovered: HTMLButtonElement | null = null;
+  let hovered: HTMLElement | null = null;
   let label = '';
   let left = 0;
   let top = 0;
@@ -24,7 +26,7 @@
 
   /** A labelled icon button gets a tooltip; anything that already shows its own
       text, or opts out by name, does not. */
-  function tooltipLabel(button: HTMLButtonElement): string {
+  function tooltipLabel(button: HTMLElement): string {
     const setting = button.getAttribute('data-tooltip');
     if (setting === '' || setting === 'none') return '';
     // A left chevron already carries the universal meaning of going back.
@@ -36,6 +38,10 @@
     // cover the first item. Applies to every popover trigger in the app.
     if (button.getAttribute('aria-expanded') === 'true') return '';
     const explicit = button.getAttribute('data-tooltip-label');
+    if (button.hasAttribute('data-tooltip-overflow')) {
+      const text = button.querySelector<HTMLElement>('[data-tooltip-overflow-text]') ?? button;
+      return text.scrollWidth > text.clientWidth + 1 ? explicit || text.textContent || '' : '';
+    }
     if (explicit) return explicit;
     if (!button.querySelector(':scope > svg') || button.querySelector(':scope > span')) return '';
     return button.getAttribute('aria-label') || '';
@@ -43,7 +49,7 @@
 
   /** A row or rich description needs time to be read without flashing over
       every hover, so the model tooltip waits before appearing. */
-  function delayFor(button: HTMLButtonElement): number {
+  function delayFor(button: HTMLElement): number {
     const value = button.getAttribute('data-tooltip-delay');
     const ms = value === null ? 0 : Number(value);
     return Number.isFinite(ms) && ms > 0 ? ms : 0;
@@ -53,7 +59,7 @@
    * `settled` says the pointer has demonstrably been still on this button
    * already, so the pause the delay is there to wait for has happened.
    */
-  function show(button: HTMLButtonElement, settled = false): void {
+  function show(button: HTMLElement, settled = false): void {
     // The startup cover is click-through, so the pointer reaches the app
     // behind it; a pill raised then would float over the brand alone. The
     // pointer is still on the button when the cover lifts, though, and nothing
@@ -63,6 +69,7 @@
     const nextLabel = tooltipLabel(button);
     if (!nextLabel) return;
     if (target === button && label === nextLabel && visible) return;
+    if (target && target !== button) hide();
     target = button;
     wide = button.hasAttribute('data-tooltip-wide');
     visible = false;
@@ -94,18 +101,27 @@
     left = tooltipLeft(targetRect, tooltipRect.width, window.innerWidth, alignment);
     top = tooltipTop(targetRect, tooltipRect.height, window.innerHeight);
     visible = true;
+    const describedBy = new Set((button.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean));
+    describedBy.add(tooltipId);
+    button.setAttribute('aria-describedby', [...describedBy].join(' '));
   }
 
-  function hide(button?: HTMLButtonElement): void {
+  function hide(button?: HTMLElement): void {
     if (button && target !== button) return;
     clearTimeout(pendingTimer);
+    if (target) {
+      const describedBy = (target.getAttribute('aria-describedby') ?? '').split(/\s+/)
+        .filter((id) => id && id !== tooltipId).join(' ');
+      if (describedBy) target.setAttribute('aria-describedby', describedBy);
+      else target.removeAttribute('aria-describedby');
+    }
     target = null;
     visible = false;
     label = '';
   }
 
-  function buttonFrom(event: Event): HTMLButtonElement | null {
-    return (event.target as Element | null)?.closest<HTMLButtonElement>('button') ?? null;
+  function buttonFrom(event: Event): HTMLElement | null {
+    return (event.target as Element | null)?.closest<HTMLElement>(targetSelector) ?? null;
   }
 
   onMount(() => {
@@ -123,7 +139,7 @@
     };
     const pointerMove = (event: PointerEvent) => {
       if (!target) return;
-      const hoveredButton = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLButtonElement>('button') ?? null;
+      const hoveredButton = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>(targetSelector) ?? null;
       if (hoveredButton !== target) {
         hovered = hoveredButton;
         hide();
@@ -177,7 +193,7 @@
     window.addEventListener('resize', dismiss);
     window.addEventListener('scroll', dismiss, true);
     return () => {
-      clearTimeout(pendingTimer);
+      hide();
       targetObserver.disconnect();
       coverObserver.disconnect();
       document.removeEventListener('pointerover', pointerOver, true);
@@ -195,5 +211,5 @@
 </script>
 
 {#if label}
-  <div use:portal bind:this={tooltip} class:visible class:wide class="shared-tooltip" role="tooltip" style:left={`${left}px`} style:top={`${top}px`}>{label}</div>
+  <div use:portal bind:this={tooltip} id={tooltipId} class:visible class:wide class="shared-tooltip" role="tooltip" style:left={`${left}px`} style:top={`${top}px`}>{label}</div>
 {/if}

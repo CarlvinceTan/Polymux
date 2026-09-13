@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
 import {DEFAULT_NOTIFICATION_SWITCHES} from "../backend/notification-settings.js";
-import {Notifier, notificationBody, type NotificationRequest} from "./notifications.js";
+import {
+  activateNotification,
+  Notifier,
+  notificationBody,
+  type NotificationActivation,
+  type NotificationRequest,
+} from "./notifications.js";
 
 function harness(overrides: {
   enabled?: boolean;
@@ -26,6 +32,7 @@ const request: NotificationRequest = {
   kind: "schedule-completed",
   title: "Morning briefing",
   body: "Done",
+  target: {kind: "conversation", conversationId: "conversation-1"},
 };
 
 test("posts when the master switch and the kind are both on", () => {
@@ -58,6 +65,42 @@ test("a focused window is not interrupted, but a forced notification still lands
   assert.equal(notifier.notify(request), "focused");
   assert.equal(notifier.notify({...request, force: true}), "posted");
   assert.equal(posted.length, 1);
+});
+
+test("clicking restores and focuses the app before opening the exact target", () => {
+  const calls: string[] = [];
+  const activation: NotificationActivation = {
+    restore: () => calls.push("restore"),
+    show: () => calls.push("show"),
+    focusWindow: () => calls.push("focus-window"),
+    focusApp: () => calls.push("focus-app"),
+    open: (target) =>
+      calls.push(
+        target.kind === "conversation"
+          ? `open:${target.conversationId}`
+          : `open:${target.kind}`,
+      ),
+  };
+  activateNotification(request, activation);
+  assert.deepEqual(calls, [
+    "restore",
+    "show",
+    "focus-window",
+    "focus-app",
+    "open:conversation-1",
+  ]);
+});
+
+test("a test notification only brings the app forward", () => {
+  const calls: string[] = [];
+  activateNotification({...request, target: undefined}, {
+    restore: () => calls.push("restore"),
+    show: () => calls.push("show"),
+    focusWindow: () => calls.push("focus-window"),
+    focusApp: () => calls.push("focus-app"),
+    open: () => calls.push("open"),
+  });
+  assert.deepEqual(calls, ["restore", "show", "focus-window", "focus-app"]);
 });
 
 test("bodies are collapsed and cut on a word boundary", () => {

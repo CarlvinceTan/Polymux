@@ -52,7 +52,7 @@ reference files that the workflow never consumes.
      default prompt, and purpose-relevant icon treatment.
    - Preserve stable behavior and interfaces unless the user requests a change.
 3. **Initialize or stage**
-   - For a new skill, use `scripts/init_skill.mjs`; do not hand-build boilerplate.
+   - For a new skill, use `scripts/init_skill.py`; do not hand-build boilerplate.
    - For a personal skill, load `skill-maintenance`, create or stage the
      candidate first, and initialize only in that inactive location. Never
      initialize directly in the live skill root.

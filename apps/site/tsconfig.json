@@ -5,7 +5,14 @@
     "checkJs": true,
     "isolatedModules": true,
     "moduleResolution": "bundler",
-    "noEmit": true
+    "noEmit": true,
+    "target": "ESNext"
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.svelte",
+    "vite.config.ts",
+    "../desktop/src/renderer/polymux.d.ts",
+    "../desktop/src/renderer/vite-env.d.ts"
+  ]
 }

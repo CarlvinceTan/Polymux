@@ -3,7 +3,7 @@
    * hub — the agent activity trail among them — name a platform of their own
    * and need the same list to be sure it can be drawn. */
   export type Platform =
-    | 'whatsapp' | 'telegram' | 'signal' | 'discord' | 'slack' | 'messenger' | 'instagram'
+    | 'whatsapp' | 'telegram' | 'signal' | 'slack' | 'messenger' | 'instagram'
     | 'linkedin' | 'googlechat' | 'gmessages' | 'twitter' | 'bluesky' | 'gvoice'
     | 'zulip' | 'imessage' | 'wechat' | 'matrix' | 'mail';
 </script>
@@ -12,7 +12,6 @@
   import type {SimpleIcon} from 'simple-icons';
   import {
     siBluesky,
-    siDiscord,
     siImessage,
     siGooglechat,
     siGooglemessages,
@@ -71,7 +70,6 @@
     telegram: siTelegram,
     signal: siSignal,
     slack,
-    discord: siDiscord,
     messenger: siMessenger,
     instagram: siInstagram,
     linkedin,

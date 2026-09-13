@@ -15,7 +15,8 @@
 // The side benefit is that CDP reaches a background tab, so driving a lease
 // never pulls the tab in front of whatever the user is doing.
 
-import { attach, chromeTransport, detach, detachAll, isAttached } from "./lib/cdp.js";
+import { attach, chromeTransport, detach, detachAll, isAttached } from "./agent/cdp.js";
+import { lockerRequest, handleWebAuthn, unlockDeviceSession } from "./locker/api.js";
 import {
   createSession,
   desktopSupportsExtension,
@@ -46,6 +47,18 @@ function surfaceFetch(input, init = {}) {
   for (const [name, value] of Object.entries(SURFACE_HEADERS))
     headers.set(name, value);
   return fetch(input, {...init, headers});
+}
+
+function senderOrigin(sender) {
+  try {
+    if (sender?.id !== chrome.runtime.id || !sender?.url || sender.origin === "null") return "";
+    const url = new URL(sender.url);
+    if (!["https:", "http:"].includes(url.protocol)) return "";
+    if (sender.origin && sender.origin !== url.origin) return "";
+    return url.origin;
+  } catch {
+    return "";
+  }
 }
 
 // --- Tab context ----------------------------------------------------------
@@ -151,7 +164,10 @@ async function findTab(tab) {
   const tabs = await chrome.tabs.query({});
   if (Number.isInteger(tab.tabId)) {
     const exact = tabs.find((candidate) => candidate.id === tab.tabId);
-    return exact?.url && !exact.url.startsWith("chrome://") ? exact : null;
+    if (!exact?.url || exact.url.startsWith("chrome://")) return null;
+    if (tab.url && normalizedUrl(exact.url) !== normalizedUrl(tab.url)) return null;
+    if (tab.title && String(exact.title ?? "").trim().toLowerCase() !== String(tab.title).trim().toLowerCase()) return null;
+    return exact;
   }
   const wantedUrl = normalizedUrl(tab.url || "");
   const wantedTitle = String(tab.title || "").trim().toLowerCase();
@@ -164,13 +180,13 @@ async function findTab(tab) {
   });
   if (candidates.length === 0) return null;
   if (candidates.length > 1 && wantedTitle) {
-    const exact = candidates.find(
+    const exact = candidates.filter(
       (candidate) =>
         String(candidate.title ?? "").trim().toLowerCase() === wantedTitle,
     );
-    if (exact) return exact;
+    return exact.length === 1 ? exact[0] : null;
   }
-  return candidates[0];
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 async function sessionFor(lease) {
@@ -420,7 +436,44 @@ async function releaseAll() {
 
 // The content script still reads the feed itself for presentation (badge and
 // cursor state), and cannot fetch 127.0.0.1 from an arbitrary origin.
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+let pendingLogin = null;
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const trustedPage = sender?.id === chrome.runtime.id && typeof sender.url === "string" &&
+    sender.url.startsWith(chrome.runtime.getURL(""));
+  if (["polymux:locker-pending", "polymux:locker-clear-pending", "polymux:locker-request", "polymux:locker-device-unlock"].includes(message?.type) && !trustedPage) {
+    sendResponse({ok: false, error: "Open the Polymux extension to use this action"});
+    return false;
+  }
+  if (message?.type === "polymux:locker-page") {
+    return false;
+  }
+  if (message?.type === "polymux:locker-submitted") {
+    pendingLogin = {
+      origin: message.origin,
+      url: message.url,
+      title: message.title,
+      username: message.username,
+      password: message.password,
+    };
+    sendResponse({ok: true});
+    return false;
+  }
+  if (message?.type === "polymux:locker-pending") {
+    sendResponse(pendingLogin);
+    return false;
+  }
+  if (message?.type === "polymux:locker-clear-pending") {
+    pendingLogin = null;
+    sendResponse({ok: true});
+    return false;
+  }
+  if (message?.type === "polymux:locker-request") {
+    lockerRequest(message.path, message.options)
+      .then((value) => sendResponse({ok: true, value}))
+      .catch((error) => sendResponse({ok: false, error: String(error), code: error?.code}));
+    return true;
+  }
   if (message?.type === "polymux:cursor-arrived") {
     surfaceFetch(ARRIVAL_URL, {
       method: "POST",
@@ -458,6 +511,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true, snapshot });
       })
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+
+  if (message?.type === "polymux:locker-device-unlock") {
+    unlockDeviceSession(message.password)
+      .then((status) => sendResponse({ok: true, unlocked: status.unlocked}))
+      .catch((error) => sendResponse({ok: false, error: String(error)}));
+    return true;
+  }
+  if (message?.type === "polymux:webauthn") {
+    const origin = senderOrigin(sender);
+    if (!origin || !["status", "offers", "get", "create"].includes(message.action)) {
+      sendResponse({error: "Invalid passkey sender or action"});
+      return false;
+    }
+    handleWebAuthn({...message, origin})
+      .then((value) => sendResponse(value))
+      .catch((error) => sendResponse({error: String(error)}));
     return true;
   }
 

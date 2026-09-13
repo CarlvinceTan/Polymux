@@ -15,7 +15,7 @@ const STOP: ReadonlySet<string> = new Set<string>([
 const TOPICS = [
   ["browser", "website", "page", "site", "web", "search", "research", "events", "form", "fill", "url", "live"],
   ["email", "mail", "inbox", "application", "booking", "receipt"],
-  ["message", "reply", "chat", "email", "mail", "dad", "father", "parent", "mum", "mother", "whatsapp", "wechat"],
+  ["message", "reply", "chat", "contact", "phone", "mobile", "number", "addressbook", "hub", "recipient", "email", "mail", "dad", "father", "parent", "mum", "mother", "bluesky", "googlechat", "gmessages", "gvoice", "imessage", "instagram", "linkedin", "matrix", "messenger", "signal", "slack", "telegram", "twitter", "whatsapp", "wechat", "zulip"],
   ["changed", "change", "update", "updates", "browser", "web", "search", "research", "email", "mail", "inbox", "message", "whatsapp", "wechat"],
   ["computerHistory", "screen", "switched", "doing", "recent", "before"],
   ["window", "tab", "open", "focus", "foreground", "gui", "app"],
@@ -29,8 +29,10 @@ const CORE_RULES: Record<string, RegExp> = {
   "chat-style": /\b(?:chat|dad|father|message|mum|mother|parent|reply|respond|text)\b/i,
   documents: /\b(?:docx|document|word)\b/i,
   "drive-use": /\b(?:drive[- ]use|google drive|my drive)\b|\bdrive\s+(?:file|folder|link|sharing|storage)\b/i,
-  "hub-use": /\b(?:application|booking|changed|change|chat|dad|email|father|inbox|mail|message|mum|mother|parent|receipt|reply|respond|whatsapp|wechat)\b/i,
-  "computer-use": /\b(?:app|browse|browser|computerHistory|doing|events?|fill|find|focus|form|foreground|gui|latest|live|open|page|research|screen|search|site|switched|tab|url|web|website|window|changed|change)\b|\bthis\s+(?:document|file|form|page|pdf|presentation|spreadsheet|tab|window)\b/i,
+  "hub-use": /\b(?:address book|application|bluesky|booking|changed|change|chat|contact details?|contacts?|dad|email|father|google chat|google messages|google voice|hub|imessage|inbox|instagram|linkedin|mail|matrix|message|messenger|mobile number|mum|mother|parent|phone number|receipt|recipients?|reply|respond|signal|slack|telegram|twitter|whatsapp|wechat|x|zulip)\b/i,
+  "computer-history": /\b(?:computerHistory|history|doing|switched)\b|\bbefore\s+i\s+switched\b|\bwhat\s+was\s+i\s+doing\b/i,
+  control: /\b(?:arbiter|fence|handoff|lease[sd]?|surface[sd]?|takeover)\b|\bhuman attention\b|\bexact\s+(?:surface|tab|window)\b|\bbackground\s+action\b/i,
+  "window-control": /\b(?:windows?|menubar|pill|foreground|focus|capture|screenshot|screen)\b|\bexact\s+window\b/i,
   "skill-record": /\b(?:demonstrate|demonstration|mimic|record workflow|watch me)\b/i,
   pdf: /\bpdf\b/i,
   presentations: /\b(?:powerpoint|pptx|presentation|slides?)\b/i,
@@ -39,15 +41,10 @@ const CORE_RULES: Record<string, RegExp> = {
   spreadsheets: /\b(?:csv|excel|spreadsheet|workbook|xlsx)\b/i,
 };
 
-const EXPLICIT_COMMUNICATION_SOURCE = /\b(?:dad|email|father|inbox|mail|message|mum|mother|parent|whatsapp|wechat)\b/i;
-const EXPLICIT_DRIVE_SOURCE = /\b(?:drive[- ]use|google drive|my drive)\b|\bdrive\s+(?:file|folder|link|sharing|storage)\b/i;
-const EXPLICIT_PUBLIC_WEB = /\b(?:browse|browser|online|page|research|search|site|url|web|website)\b/i;
-const REMINDER_INTENT = /\b(?:remind|reminder|reminders)\b|\b(?:don['’]?t|do not) forget\b/i;
-const EXPLICIT_SURFACE_ACTION = /\b(?:browse|browser|fill|open|page|site|tab|web|website|window)\b/i;
+const DIRECT_PERSONAL_DRAFT = /\b(?:compose|draft|reply|respond|send|tell|text|write)\b[\s\S]{0,80}\b(?:for|to)\s+(?:my\s+)?(?!(?:her|him|it|ones|the|them|those)\b)[\p{L}\p{N}][\p{L}\p{N}'’.-]*\b/iu;
 const OFFICIAL_COUNTERPART: Record<string, string> = {
   email: "hub-use",
   message: "hub-use",
-  "window-control": "computer-use",
 };
 
 function words(value: string): Set<string> {
@@ -134,21 +131,9 @@ export function selectSkillsForPrompt(skills: Skill[], prompt: string): Skill[] 
     const coreRule = CORE_RULES[coreName];
     if (coreRule) {
       if (
-        coreName === "computer-use"
-        && REMINDER_INTENT.test(prompt)
-        && !EXPLICIT_SURFACE_ACTION.test(prompt)
-      ) return false;
-      if (
-        coreName === "computer-use"
-        && EXPLICIT_COMMUNICATION_SOURCE.test(prompt)
-        && !EXPLICIT_PUBLIC_WEB.test(prompt)
-        && !/\b(?:app|computerHistory|doing|focus|foreground|screen|switched|tab|window)\b/i.test(prompt)
-      ) return false;
-      if (
-        coreName === "computer-use"
-        && EXPLICIT_DRIVE_SOURCE.test(prompt)
-        && !EXPLICIT_SURFACE_ACTION.test(prompt)
-      ) return false;
+        (coreName === "hub-use" || coreName === "chat-style")
+        && DIRECT_PERSONAL_DRAFT.test(prompt)
+      ) return true;
       return coreRule.test(prompt);
     }
     // Verbose personal and plugin descriptions must not inherit every alias

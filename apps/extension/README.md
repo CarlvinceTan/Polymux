@@ -18,7 +18,7 @@ extension it descends from:
   URL, active/pinned state; never page contents) through the
   `com.polymux.tab_context` native messaging host into
   `~/Library/Application Support/polymux-tab-context/tabs.json`, read by the
-  agent's `browser_tabs` tool and the computer-use skill.
+  agent's `browser_tabs` tool.
 - **Control** — Polymux runs a loopback agent-surface feed on
   `http://127.0.0.1:47654`. The background worker long-polls it, binds each
   lease to the exact tab it names (by URL, then title — never by position or
@@ -30,6 +30,27 @@ extension it descends from:
   cursor. Before any pointer command the worker asks it to animate the cursor
   to the target and waits for it to land, so the move-then-act sequencing
   holds even though the input itself is dispatched over CDP.
+- **Locker** — the toolbar popup unlocks the same KeePass vault the desktop
+  Locker uses (via `http://127.0.0.1:47654/v1/locker/*`). Every desktop Locker
+  request carries a private installation capability obtained through the approved
+  native messaging host, never through a webpage or HTTP enrollment endpoint.
+  Install the browser host before using desktop Locker. It fills passwords
+  and TOTP on the current tab after you click an item, and can save a login
+  the page just submitted. Passkeys are filled at the WebAuthn ceremony:
+  `navigator.credentials.get` / `create` are intercepted (Chromium, Firefox,
+  and Safari shared JS) and completed from KeePassXC `KPEX_PASSKEY_*` fields
+  when Locker is unlocked. Unlock only in desktop Locker or the extension popup,
+  then choose Retry on the page; the page never collects the master password.
+  A locked vault refuses; cancel falls through to
+  the browser's own authenticator. While Polymux is running the extension also
+  caches the encrypted vault blob in `chrome.storage.local`. After that, fill
+  and TOTP still work if desktop is quit: you unlock the cached ciphertext with
+  the same master password. Sign in to the Polymux account from the popup to
+  pull the cloud vault without desktop. Local-only lockers stay on-device and
+  are not uploaded. Rebuild `locker/offline.js` with
+  `node apps/extension/scripts/build-locker.mjs` after locker-package changes.
+  That script also writes `locker/config.local.js` from `POLYMUX_SUPABASE_URL`
+  / `POLYMUX_SUPABASE_ANON_KEY` in `.env`.
 
 Control happens inside the page only — the extension never raises the browser
 window, switches tabs, or steals the user's focus. Because CDP reaches an
@@ -85,8 +106,28 @@ and retry.
    directory. Copy the extension ID.
 2. `./install.sh <extension-id>` — registers the native messaging host for
    every Chromium-based browser it finds (Chrome, Brave, Edge, Arc, …).
-3. Reload the extension. Polymux must be running for control (the loopback feed
-   lives in the app); tab snapshots work either way.
+3. Reload the extension. Agent-surface control needs Polymux running. Locker
+   fill uses the loopback while desktop is open, the cached vault after that,
+   or the account cloud vault after you sign in from the popup. Tab snapshots
+   work either way.
+
+## Firefox
+
+Load `manifest.firefox.json` as a temporary add-on (`about:debugging` → This
+Firefox → Load Temporary Add-on). On macOS, run `./install.sh firefox` to
+register its native host for the fixed add-on ID `extension@polymux.com`, then
+reload the add-on. Desktop Locker uses the same authenticated loopback protocol
+and account sign-in as Chromium. The installer validates Firefox's add-on ID
+and native-manifest path before releasing the private capability. Agent-surface CDP control
+is Chromium-only; Firefox does not expose `chrome.debugger`.
+
+## Safari
+
+Safari needs an Apple-signed wrapper, not this folder loaded as Chrome. See
+[`safari/README.md`](safari/README.md). iOS Safari Web Extensions still need
+store signing; use the Polymux phone app Locker until that wrapper ships.
+Safari currently supports its cached/account vault only; its sandboxed wrapper
+has no approved native connection to desktop Locker.
 
 Browser security requires a person to approve an unpacked extension once.
 There is no silent profile mutation or enterprise policy installation.

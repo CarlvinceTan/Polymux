@@ -2,6 +2,15 @@
 // the title bar, drawer and panel controls read as a single set.
 export const MAIN_UI_ICON_SIZE = 16;
 export const MAIN_UI_ICON_STROKE_WIDTH = 1.5;
+// Catppuccin vscode-icons fill a 16 viewBox edge-to-edge. Lucide marks at
+// MAIN_UI_ICON_SIZE sit in a 24 viewBox, so the same CSS size reads smaller.
+// Draw Catppuccin at this size, centred in the 16px row slot, so the IDE tree
+// matches Drive's folder/file icons. Strokes are authored for 16px, so they
+// thin as the glyph shrinks; scale the default width back up to land on the
+// same 1 CSS px line as Icon.svelte.
+export const FILE_KIND_GLYPH_SIZE = 12;
+export const FILE_KIND_GLYPH_STROKE_WIDTH =
+  Math.round((MAIN_UI_ICON_SIZE / FILE_KIND_GLYPH_SIZE) * 100) / 100;
 // The gear's teeth push right to the edge of its box, so at the shared size it
 // reads heavier than the flat-sided icons beside it. It draws a notch smaller
 // to land on the same optical weight.

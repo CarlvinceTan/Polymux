@@ -11,6 +11,7 @@ import type {
   AgentContext,
   AgentRunError,
   AgentRunEvent,
+  ContextCompactionTelemetry,
   AgentRunRequest,
   AgentRunResult,
   AgentTool,
@@ -187,6 +188,7 @@ export class AgentRunner {
         }
 
         let compacting = false;
+        let compactionTelemetry: ContextCompactionTelemetry | undefined;
         const synthesisOnly = Boolean(
           request.toolTurnBudget && toolTurns >= request.toolTurnBudget.maximum,
         );
@@ -198,10 +200,17 @@ export class AgentRunner {
                 context: cloneContext(context),
                 model: request.model,
                 signal,
-                reportStatus: async (status) => {
-                  if (status === 'compacting' && !compacting) {
+                reportStatus: async (status, telemetry) => {
+                  if (status === "compacted") {
+                    compactionTelemetry = telemetry;
                     compacting = true;
-                    await emit({type: 'context.compacting', turn: turns});
+                    hadWorkActivity = true;
+                    return;
+                  }
+                  if (status === "compacting" && !compacting) {
+                    compacting = true;
+                    hadWorkActivity = true;
+                    await emit({ type: "context.compacting", turn: turns });
                   }
                 },
               }),
@@ -213,7 +222,14 @@ export class AgentRunner {
             content: request.toolTurnBudget!.synthesisPrompt,
           });
         const activeInferenceTools = synthesisOnly ? [] : inferenceTools;
-        if (compacting) await emit({type: 'context.compacted', turn: turns});
+        if (compacting)
+          await emit({
+            type: "context.compacted",
+            turn: turns,
+            ...(compactionTelemetry
+              ? { compaction: compactionTelemetry }
+              : {}),
+          });
         await emit({
           type: "turn.started",
           turn: turns,

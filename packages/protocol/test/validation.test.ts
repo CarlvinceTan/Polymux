@@ -14,12 +14,17 @@ test("validates renderer run requests at the Electron boundary", () => {
   assert.deepEqual(validateStartRun({ conversationId: "one", text: "hello" }), {
     conversationId: "one",
     text: "hello",
+    deviceId: undefined,
     messageId: undefined,
     attachments: undefined,
     asGoal: undefined,
     reasoning: undefined,
     speechMode: undefined,
+    reuseUserMessage: undefined,
+    rewind: undefined,
   });
+  assert.equal(validateStartRun({conversationId: "one", text: "remote", deviceId: "device-b"}).deviceId, "device-b");
+  assert.throws(() => validateStartRun({conversationId: "one", text: "remote", deviceId: 123}));
   assert.equal(
     validateStartRun({ conversationId: "one", text: "ship it", asGoal: true })
       .asGoal,
@@ -42,6 +47,20 @@ test("validates renderer run requests at the Electron boundary", () => {
   assert.throws(
     () => validateStartRun({ conversationId: "", text: "hello" }),
     /conversationId/,
+  );
+  assert.equal(
+    validateStartRun({
+      conversationId: "one",
+      text: "revised",
+      messageId: "user-1",
+      rewind: true,
+      reuseUserMessage: true,
+    }).rewind,
+    true,
+  );
+  assert.throws(
+    () => validateStartRun({ conversationId: "one", text: "revised", rewind: true }),
+    /messageId/,
   );
 });
 

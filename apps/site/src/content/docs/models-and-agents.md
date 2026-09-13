@@ -20,7 +20,7 @@ Local runtimes appear as providers when Polymux can reach them. They do not requ
 
 ## Choose models
 
-Open **Settings → Models** to select the models assigned to available roles. Basic mode presents a simplified choice; Advanced mode exposes the full picker and configuration.
+Open **Settings → Models** to select the models assigned to available roles. The full picker and role configuration are always available.
 
 Changing the model affects future agent work. It does not remove existing chats or workspace content.
 

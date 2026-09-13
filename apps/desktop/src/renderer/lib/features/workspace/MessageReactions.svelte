@@ -46,7 +46,7 @@
   function measure(): void {
     if (!root || !normal) return;
     const row = root.closest<HTMLElement>('.hub-view-bubble-row');
-    const bubble = root.closest<HTMLElement>('.hub-view-bubble');
+    const bubble = root.closest<HTMLElement>('.hub-view-message-media, .hub-view-bubble');
     if (!row || !bubble) return;
     const rowBox = row.getBoundingClientRect();
     const bubbleBox = bubble.getBoundingClientRect();
@@ -73,6 +73,8 @@
     const row = root.closest<HTMLElement>('.hub-view-bubble-row');
     const observer = new ResizeObserver(queueMeasure);
     if (row) observer.observe(row);
+    const anchor = root.closest<HTMLElement>('.hub-view-message-media, .hub-view-bubble');
+    if (anchor) observer.observe(anchor);
     observer.observe(normal);
     queueMeasure();
     return () => {

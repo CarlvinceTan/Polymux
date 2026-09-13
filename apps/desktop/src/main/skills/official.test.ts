@@ -54,3 +54,16 @@ test("a missing bundle leaves any existing mirror in place", () => {
   assert.equal(installOfficialSkills(path.join(source, "absent"), home), target);
   assert.match(readFileSync(path.join(target, "computer-use", "SKILL.md"), "utf8"), /name: computer-use/);
 });
+
+test("mirrored Control resolves native helpers after the app location changes", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "polymux-control-mirror-"));
+  for (const app of ["first-app", "moved-app"]) {
+    const resources = path.join(root, app, "resources");
+    const source = path.join(resources, "skills", "core");
+    mkdirSync(path.join(source, "control", "scripts", "macos"), {recursive: true});
+    mkdirSync(path.join(resources, "native", "bin"), {recursive: true});
+    const target = installOfficialSkills(source, path.join(root, "home"));
+    assert.equal(readFileSync(path.join(target, "control", "scripts", "macos", ".native-bin"), "utf8"),
+      path.join(resources, "native", "bin"));
+  }
+});

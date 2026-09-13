@@ -1,10 +1,15 @@
+import {readFileSync, statSync} from "node:fs";
 import {readFile} from "node:fs/promises";
 import {createHmac} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import path from "node:path";
-import WebSocket from "ws";
 import {mediaUrl} from "./media-url.js";
-import {visibleWeChatText} from "./wechat-emoji.js";
+import {callOf} from "./call.js";
+import {
+  visibleWeChatText,
+  forwardedBundleOf,
+  isWeChatContainerChannel,
+} from "@polymux/wechat";
 import {COMMS_PLATFORMS} from "@polymux/protocol";
 import type {
   CommsBridgeAccountDto,
@@ -16,12 +21,12 @@ import type {
   CommsPlatform,
   ChatMemberDto,
   ChatMentionsDto,
+  ChatForwardedBundleDto,
+  ChatCallDto,
 } from "@polymux/protocol";
 
-/** Provisioning route prefix every bridgev2 bridge serves its login API under. */
+/** Provisioning route prefix every bridge serves its login API under. */
 const BRIDGEV2_PREFIX = "_matrix/provision/v3";
-/** mautrix-discord predates the step API and still serves the v1 routes. */
-const LEGACY_PREFIX = "_matrix/provision/v1";
 
 /**
  * A `display_and_wait` submit blocks server-side until the remote user acts on
@@ -102,51 +107,6 @@ export class ProvisioningError extends Error {
   }
 }
 
-type LegacyQrMessage = {code?: string; success?: boolean; error?: string};
-
-/** Small queue around mautrix-discord's streaming QR provisioning socket. */
-class LegacyQrSession {
-  readonly #socket: WebSocket;
-  readonly #messages: LegacyQrMessage[] = [];
-  readonly #waiters: Array<{
-    resolve: (message: LegacyQrMessage) => void;
-    reject: (error: Error) => void;
-  }> = [];
-
-  constructor(socket: WebSocket) {
-    this.#socket = socket;
-    socket.on("message", (data) => {
-      try {
-        this.#push(JSON.parse(data.toString()) as LegacyQrMessage);
-      } catch {
-        this.#fail(new Error("Discord returned an unreadable QR response."));
-      }
-    });
-    socket.on("error", (error) => this.#fail(error));
-    socket.on("close", () => this.#fail(new Error("Discord QR sign-in closed before approval.")));
-  }
-
-  next(): Promise<LegacyQrMessage> {
-    const ready = this.#messages.shift();
-    if (ready) return Promise.resolve(ready);
-    return new Promise((resolve, reject) => this.#waiters.push({resolve, reject}));
-  }
-
-  close(): void {
-    this.#socket.close();
-  }
-
-  #push(message: LegacyQrMessage): void {
-    const waiter = this.#waiters.shift();
-    if (waiter) waiter.resolve(message);
-    else this.#messages.push(message);
-  }
-
-  #fail(error: Error): void {
-    for (const waiter of this.#waiters.splice(0)) waiter.reject(error);
-  }
-}
-
 /**
  * Talks to the local Matrix homeserver and to each bridge's provisioning API.
  *
@@ -165,6 +125,7 @@ export class MatrixHub {
   readonly #fetch: typeof globalThis.fetch;
   readonly #secrets = new Map<string, string | null>();
   readonly #roomNames = new Map<string, string>();
+  #weChatOwnershipCache: {stamp: string; value: {owner?: string; roomToChat?: Record<string, string>; ownMessageEvents?: Record<string, Record<string, boolean>>}} | null = null;
   readonly #roomPlatforms = new Map<string, string>();
   /** Sender display names and avatars, keyed by Matrix id. */
   readonly #profiles = new Map<string, {name: string; avatarUrl: string | null}>();
@@ -177,7 +138,6 @@ export class MatrixHub {
    * later reaction refreshes do not repeat the bridge-database join.
    */
   readonly #reactionTargetAliases = new Map<string, Map<string, string[]>>();
-  readonly #legacyQrSessions = new Map<string, LegacyQrSession>();
   #registrationSecretCache: string | null | undefined;
 
   constructor(options: MatrixHubOptions) {
@@ -367,7 +327,17 @@ export class MatrixHub {
         `/_matrix/client/v3/sync?filter=${filter}&timeout=0`,
       );
     }
-    const joined = Object.entries(sync.rooms?.join ?? {});
+    const userId = this.#auth().userId;
+    const weChatBot = `@wechatbot:${userId.slice(userId.indexOf(":") + 1)}`;
+    const joined = Object.entries(sync.rooms?.join ?? {}).filter(([, room]) => {
+      const state = [...(room.state?.events ?? []), ...(room.timeline?.events ?? [])];
+      const bridge = lastStateEvent(state, "m.bridge");
+      // Existing imported folders remain stored, but must not duplicate a
+      // contained chat's preview or unread badge. Only trust our own bridge.
+      return !(this.#embedded && bridge?.sender === weChatBot &&
+        bridge.content?.protocol?.id === "wechat" &&
+        isWeChatContainerChannel(bridge.content?.channel?.id));
+    });
     const currentPortalRooms = await currentWeChatPortalRooms(this.#directory);
     // A Space relationship can be advertised from either side. Some bridges
     // write `m.space.parent` into each child, while others only write
@@ -392,7 +362,6 @@ export class MatrixHub {
     // the event store, so use its chronological head for the row just as the
     // open conversation does. Otherwise an imported 2025 batch can replace a
     // 2026 message's preview, timestamp and sort position in the chat list.
-    const userId = this.#auth().userId;
     const localLatest = this.#localLatestMessages(joined.map(([roomId]) => roomId));
     const rooms = joined.map(([roomId, room]) => {
       const state = [...(room.state?.events ?? []), ...(room.timeline?.events ?? [])];
@@ -400,16 +369,24 @@ export class MatrixHub {
       const avatar = lastStateEvent(state, "m.room.avatar")?.content?.url;
       const members = state.filter((event) => event.type === "m.room.member");
       const timeline = room.timeline?.events ?? [];
-      const last = localLatest.get(roomId) ?? timeline
-        .filter((event): event is RawEvent => isTimelineItem(event, userId))
-        .at(-1);
+      const bridgeEvent = lastStateEvent(state, "m.bridge");
+      const bridgeContent = bridgeEvent?.content;
+      const bridged = bridgeContent?.protocol?.id;
+      const platform = platformOfProtocol(bridged) ??
+        platformOfRoom(members.map((event) => event.state_key ?? ""));
+      const hasChatActivity = (event: RawEvent | undefined): event is RawEvent =>
+        platform === "wechat" ? isMessage(event) : isTimelineItem(event, userId);
+      const localLast = localLatest.get(roomId);
+      const last = hasChatActivity(localLast) ? localLast : timeline.filter(hasChatActivity).at(-1);
       // Ordering falls back to whatever did happen last, so a room whose
       // window holds no message still sits where its activity puts it. The
       // signed-in account joining is local bookkeeping, not chat activity.
       const latestNonSelfEvent = timeline
         .filter((event) => event.type !== "m.room.member" || event.state_key !== userId)
         .at(-1);
-      const activityTs = last?.origin_server_ts ?? latestNonSelfEvent?.origin_server_ts;
+      // WeChat imports every portal before its media/history. Room creation,
+      // title, avatar and puppet joins must never look like a new chat message.
+      const fallbackActivityTs = platform === "wechat" ? undefined : latestNonSelfEvent?.origin_server_ts;
       /**
        * A direct chat is a room with one other human in it. The bridges name
        * those rooms after the contact and leave groups with their own title,
@@ -439,8 +416,6 @@ export class MatrixHub {
        * filed three quarters of the WhatsApp chats here under "matrix" and
        * left them out of the list their platform was selected for.
        */
-      const bridged = lastStateEvent(state, "m.bridge")?.content?.protocol?.id;
-      const bridgeContent = lastStateEvent(state, "m.bridge")?.content;
       const remoteId = bridgeContent?.channel?.id?.trim();
       // Bridge v2 distinguishes the account-wide filtering container from a
       // real remote community. Older bridges used the unsuffixed key.
@@ -464,9 +439,6 @@ export class MatrixHub {
           .map((event) => event.state_key!),
         ...(childParents.get(roomId) ?? []),
       ])];
-      const platform =
-        platformOfProtocol(bridged) ??
-        platformOfRoom(members.map((event) => event.state_key ?? ""));
       this.#roomPlatforms.set(roomId, platform);
       const group = roomType
         ? roomType !== "dm"
@@ -477,6 +449,28 @@ export class MatrixHub {
       // badge from untrusted room state.
       const official = this.#embedded &&
         officialAccountFromState(state, counterpart?.state_key);
+      const nativeUnread = lastStateEvent(state, "co.polymux.wechat.unread");
+      const nativeSession = lastStateEvent(state, "co.polymux.wechat.session");
+      const sessionTimestamp = nativeSession?.content?.last_message_ts;
+      const nativeActivityTs = this.#embedded && platform === "wechat" &&
+        bridgeEvent?.sender === weChatBot && nativeSession?.sender === weChatBot &&
+        typeof sessionTimestamp === "number" && Number.isSafeInteger(sessionTimestamp) &&
+        sessionTimestamp > 0 && sessionTimestamp <= 8_640_000_000_000_000
+          ? sessionTimestamp : undefined;
+      // A fresh stream message may beat the next native list sweep. Older
+      // history must likewise never replace the directory's newer preview.
+      const useNativePreview = nativeActivityTs !== undefined &&
+        nativeActivityTs > (last?.origin_server_ts ?? 0);
+      const activityTs = nativeActivityTs === undefined
+        ? last?.origin_server_ts ?? fallbackActivityTs
+        : Math.max(last?.origin_server_ts ?? 0, nativeActivityTs);
+      const nativePreview = nativeSession?.content?.preview;
+      const attestedUnread = this.#embedded && platform === "wechat" &&
+        nativeUnread?.sender === weChatBot &&
+        lastStateEvent(state, "m.bridge")?.sender === weChatBot &&
+        Number.isSafeInteger(nativeUnread.content?.count) &&
+        nativeUnread.content!.count! >= 0
+          ? nativeUnread.content!.count : undefined;
       return {
         roomId,
         name: contactDisplayName(rawName, platform, group),
@@ -487,9 +481,11 @@ export class MatrixHub {
         ...(remoteId ? {remoteId} : {}),
         ...(currentPortalRooms.has(roomId) ? {currentPortal: true} : {}),
         avatarUrl: mediaUrl(avatar ?? (!group ? counterpart?.content?.avatar_url : undefined)),
-        unread: room.unread_notifications?.notification_count ?? 0,
+        unread: attestedUnread ?? room.unread_notifications?.notification_count ?? 0,
         lastActivity: activityTs ? new Date(activityTs).toISOString() : null,
-        preview: last ? previewOf(last, userId) : null,
+        preview: useNativePreview
+          ? typeof nativePreview === "string" ? nativePreview : null
+          : last ? previewOf(last, userId) : null,
         /**
          * mautrix marks direct chats outright, and that answer is taken when
          * it is there. Otherwise the member count decides: a bridged direct
@@ -557,7 +553,9 @@ export class MatrixHub {
     }
     return enriched
         // Recency, with the never-used rooms after everything that has traffic.
-        .sort((a, b) => Date.parse(b.lastActivity ?? "0") - Date.parse(a.lastActivity ?? "0"));
+        .sort((a, b) => a.lastActivity === null
+          ? b.lastActivity === null ? 0 : 1
+          : b.lastActivity === null ? -1 : Date.parse(b.lastActivity) - Date.parse(a.lastActivity));
   }
 
   /**
@@ -654,7 +652,7 @@ export class MatrixHub {
           found.set(row.room_id, state);
         }
       } catch {
-        // Legacy bridges do not share Bridge v2's portal schema.
+        // Older portal schemas do not share Bridge v2's shape.
       }
       try {
         const avatars = database.prepare(`
@@ -754,7 +752,7 @@ export class MatrixHub {
             found.set(row.room_id, state);
           }
         } catch {
-          // Legacy bridges without Bridge v2 read markers retain Matrix's count.
+          // Bridges without read markers retain Matrix's count.
         }
       }
       if (platform === "whatsapp") {
@@ -1032,6 +1030,8 @@ export class MatrixHub {
               (
                 e.type = 'm.room.member' AND
                 e.state_key NOT GLOB '@*bot:*' AND
+                e.state_key NOT GLOB '@whatsapp_*:*' AND
+                e.state_key NOT GLOB '@wechat_*:*' AND
                 e.state_key != ? AND
                 json_type(e.content_json, '$.displayname') = 'text' AND
                 json_extract(e.content_json, '$.membership') IN ('invite', 'join', 'leave', 'ban') AND
@@ -1142,12 +1142,14 @@ export class MatrixHub {
             -- the conversation. Counting it as a page slot could return a
             -- short or even empty page when an old message got many reactions.
             AND type IN ('m.room.message', 'm.sticker')
+            AND COALESCE(json_extract(content_json, '$."m.relates_to".rel_type'), '') != 'm.replace'
           UNION ALL
           SELECT event_id, room_id, sender, type, state_key, content_json,
                  origin_server_ts, redacts, redacted_by, stream_order,
                  prev_content_json
           FROM member_history member
           WHERE member.state_key NOT GLOB '@*bot:*'
+            AND member.state_key NOT GLOB '@whatsapp_*:*'
             AND member.state_key != ?
             AND json_type(member.content_json, '$.displayname') = 'text'
             AND json_extract(member.content_json, '$.membership') IN ('invite', 'join', 'leave', 'ban')
@@ -1194,8 +1196,20 @@ export class MatrixHub {
       const page = rows.slice(0, pageSize);
       const last = page.at(-1);
       const state = this.#localRoomState(database, roomId);
+      // Resolve updates independently of pagination. An attachment recovered
+      // later changes the original bubble; it must not consume a page slot or
+      // appear as another message when its target falls outside that page.
+      const edits = page.length ? database.prepare(`
+        SELECT event_id, room_id, sender, type, content_json, origin_server_ts,
+               redacts, redacted_by, stream_order
+        FROM events
+        WHERE room_id = ? AND type = 'm.room.message' AND redacted_by IS NULL
+          AND json_extract(content_json, '$."m.relates_to".rel_type') = 'm.replace'
+          AND json_extract(content_json, '$."m.relates_to".event_id') IN (${page.map(() => '?').join(',')})
+        ORDER BY origin_server_ts ASC, stream_order ASC
+      `).all(roomId, ...page.map(row => String(row.event_id))) as Array<Record<string, unknown>> : [];
       return {
-        chunk: page.map(rawEventFromDatabase),
+        chunk: withEdits([...page, ...edits].map(rawEventFromDatabase)),
         state,
         end: more && last
           ? localTimelineToken(Number(last.origin_server_ts), Number(last.stream_order))
@@ -1415,6 +1429,21 @@ export class MatrixHub {
     const pending = messages.filter((message) => !message.mine);
     if (!this.#directory || pending.length === 0) return messages;
 
+    if (this.#embedded) {
+      try {
+        const file = path.join(this.#directory, "bridges", "wechat", "state.json");
+        const info = statSync(file), stamp = `${info.ino}:${info.mtimeMs}:${info.size}`;
+        if (this.#weChatOwnershipCache?.stamp !== stamp)
+          this.#weChatOwnershipCache = {stamp, value: JSON.parse(readFileSync(file, "utf8"))};
+        const state = this.#weChatOwnershipCache.value;
+        const chat = state.roomToChat?.[roomId];
+        if (state.owner === this.#auth().userId && chat) {
+          for (const item of pending)
+            if (state.ownMessageEvents?.[chat]?.[item.eventId] === true) ownEvents.add(item.eventId);
+        }
+      } catch { /* Only the local bridge's attested map can grant ownership. */ }
+    }
+
     const cachedPlatform = this.#roomPlatforms.get(roomId);
     const bridgePlatforms = COMMS_PLATFORMS.map((entry) => entry.value).filter(
       (platform) => platform !== "matrix" && platform !== "wechat",
@@ -1488,7 +1517,7 @@ export class MatrixHub {
             `).all(roomId, ...senders) as Array<{sender_mxid: string}>;
             for (const row of senderRows) ownSenders.add(row.sender_mxid);
           } catch {
-            // Some legacy bridge schemas predate the sender_mxid column.
+            // Some bridge schemas predate the sender_mxid column.
           }
         }
 
@@ -1537,7 +1566,7 @@ export class MatrixHub {
           }
         }
       } catch {
-        // Legacy bridges have different tables and keep Matrix-id ownership.
+        // Older schemas have different tables and keep Matrix-id ownership.
       } finally {
         database.close();
       }
@@ -1651,7 +1680,7 @@ export class MatrixHub {
   async #withLinkPreviews(messages: MatrixMessage[]): Promise<MatrixMessage[]> {
     if (this.#embedded) return messages;
     return Promise.all(messages.map(async (message) => {
-      if (message.linkPreview || message.linkPreviewSuppressed) return message;
+      if (message.forwarded || message.linkPreview || message.linkPreviewSuppressed) return message;
       const url = firstHttpUrl(message.body);
       if (!url) return message;
       const preview = await this.#homeserverLinkPreview(url, Date.parse(message.sentAt));
@@ -1859,6 +1888,27 @@ export class MatrixHub {
     return result.event_id ?? "";
   }
 
+  /** Sends uploaded image bytes as a native sticker event rather than a photo. */
+  async sendSticker(
+    roomId: string,
+    file: {url: string; name: string; mimetype: string; size: number},
+  ): Promise<string> {
+    const result = await this.#client<{event_id?: string}>(
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.sticker/${this.#txnId()}`,
+      {
+        method: "PUT",
+        body: {
+          msgtype: "m.image",
+          body: file.name,
+          url: file.url,
+          info: {mimetype: file.mimetype, size: file.size},
+          "co.polymux.sticker": true,
+        },
+      },
+    );
+    return result.event_id ?? "";
+  }
+
   /** Uploads bytes to the media repository and returns their `mxc://` id. */
   async upload(name: string, mimetype: string, bytes: Uint8Array): Promise<string> {
     const {matrixToken} = this.#auth();
@@ -1894,6 +1944,10 @@ export class MatrixHub {
       `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/redact/${encodeURIComponent(eventId)}/${this.#txnId()}`,
       {method: "PUT", body: {}},
     );
+  }
+
+  async roomPlatform(roomId: string): Promise<string> {
+    return this.#roomPlatform(roomId);
   }
 
   /** A transaction id makes a send idempotent if the request is retried. */
@@ -1951,6 +2005,16 @@ export class MatrixHub {
         platform = found;
         break;
       }
+    }
+    if (platform === "matrix") {
+      const state = await this.#client<
+        Array<{type?: string; content?: {protocol?: {id?: string}}}>
+      >(`/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state`).catch(
+        (): Array<{type?: string; content?: {protocol?: {id?: string}}}> => [],
+      );
+      const bridged = state.find((event) => event.type === "m.bridge")
+        ?.content?.protocol?.id;
+      if (bridged) platform = normalisePlatform(bridged);
     }
     this.#roomPlatforms.set(roomId, platform);
     return platform;
@@ -2013,53 +2077,12 @@ export class MatrixHub {
     const whoami = await this.#provision<WhoamiResponse>(route, "whoami", {}).catch(
       (error: unknown) => error as Error,
     );
-    if (whoami instanceof ProvisioningError && whoami.status === 404) {
-      // No v3 routes: a legacy bridge. Only its ping tells us anything.
-      const legacy = await this.#legacyPing(route).catch((error: unknown) => error as Error);
-      if (legacy instanceof Error)
-        return {...base, api: "legacy", state: "unreachable", error: legacy.message};
+    if (whoami instanceof ProvisioningError && whoami.status === 404)
       return {
         ...base,
-        api: "legacy",
-        state: legacy.loggedIn ? (legacy.connected ? "connected" : "connecting") : "logged-out",
-        accounts: legacy.loggedIn
-          ? [
-              {
-                id: legacy.id ?? platform,
-                name: legacy.id ?? name,
-                state: legacy.connected ? "connected" : "connecting",
-                error: null,
-              },
-            ]
-          : [],
-        flows: legacy.loggedIn
-          ? []
-          : [
-              {
-                id: "qr",
-                name: "QR code",
-                description: "Recommended · Scan with the Discord mobile app; CAPTCHAs are not supported",
-              },
-              {
-                id: "user-token",
-                name: "User token",
-                description: "Full personal account access · Manual and sensitive; may carry account risk",
-              },
-              {
-                id: "bot-token",
-                name: "Bot token",
-                description: "Servers only · The bot sees only channels and permissions granted to it",
-              },
-              {
-                id: "oauth-token",
-                name: "OAuth token",
-                description: "Limited scopes · Standard Discord OAuth cannot provide all personal messages",
-              },
-            ],
-        managementRoomHint: legacy.managementRoom,
-        error: null,
+        state: "unreachable",
+        error: "This bridge does not speak the current provisioning API.",
       };
-    }
     if (whoami instanceof Error)
       return {...base, state: "unreachable", error: whoami.message};
 
@@ -2185,109 +2208,9 @@ export class MatrixHub {
     }).catch((): undefined => undefined);
   }
 
-  async logout(route: string, accountId: string, api: "bridgev2" | "legacy"): Promise<void> {
-    if (api === "legacy") {
-      await this.#legacy(route, "logout", {method: "POST"});
-      return;
-    }
+  async logout(route: string, accountId: string): Promise<void> {
     await this.#provision(route, `logout/${encodeURIComponent(accountId)}`, {
       method: "POST",
-    });
-  }
-
-  /** Links a legacy bridge from a pasted account token. */
-  async legacyTokenLogin(route: string, token: string): Promise<void> {
-    await this.#legacy(route, "login/token", {method: "POST", body: {token}});
-  }
-
-  /** Starts mautrix-discord's websocket QR login and returns its first code. */
-  async legacyQrLoginStart(route: string, loginId: string): Promise<string> {
-    this.legacyQrLoginCancel(loginId);
-    const secret = await this.#sharedSecret(route);
-    if (!secret)
-      throw new ProvisioningError(
-        `Could not read ${route}'s provisioning secret from the hub, so its QR login cannot be driven from here.`,
-        0,
-        null,
-      );
-    const url = new URL(`${this.#baseUrl}/bridges/${route}/${LEGACY_PREFIX}/login/qr`);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    const userId = this.#auth().userId;
-    if (userId) url.searchParams.set("user_id", userId);
-    const session = new LegacyQrSession(
-      new WebSocket(url, {headers: {Authorization: `Bearer ${secret}`}}),
-    );
-    this.#legacyQrSessions.set(loginId, session);
-    try {
-      const message = await session.next();
-      if (message.code) return message.code;
-      throw new Error(message.error || "Discord did not return a QR code.");
-    } catch (error) {
-      this.legacyQrLoginCancel(loginId);
-      throw error;
-    }
-  }
-
-  /** Waits for approval, or hands a refreshed QR code back to the renderer. */
-  async legacyQrLoginWait(loginId: string): Promise<{code: string | null; complete: boolean}> {
-    const session = this.#legacyQrSessions.get(loginId);
-    if (!session) throw new Error("This Discord QR sign-in expired. Start it again.");
-    const message = await session.next();
-    if (message.success) {
-      this.#legacyQrSessions.delete(loginId);
-      return {code: null, complete: true};
-    }
-    if (message.code) return {code: message.code, complete: false};
-    this.legacyQrLoginCancel(loginId);
-    throw new Error(message.error || "Discord QR sign-in failed.");
-  }
-
-  legacyQrLoginCancel(loginId: string): void {
-    this.#legacyQrSessions.get(loginId)?.close();
-    this.#legacyQrSessions.delete(loginId);
-  }
-
-  async #legacyPing(route: string): Promise<{
-    loggedIn: boolean;
-    connected: boolean;
-    id: string | null;
-    managementRoom: string | null;
-  }> {
-    // mautrix-discord serializes this object with Go's default field name, so
-    // the key really is capitalised.
-    const result = await this.#legacy<{
-      Discord?: {id?: string; logged_in?: boolean; connected?: boolean};
-      management_room?: string;
-    }>(route, "ping", {});
-    return {
-      loggedIn: result.Discord?.logged_in === true,
-      connected: result.Discord?.connected === true,
-      id: result.Discord?.id ?? null,
-      managementRoom: result.management_room || null,
-    };
-  }
-
-  async #legacy<T>(
-    route: string,
-    endpoint: string,
-    options: {method?: "GET" | "POST"; body?: unknown},
-  ): Promise<T> {
-    const url = new URL(`${this.#baseUrl}/bridges/${route}/${LEGACY_PREFIX}/${endpoint}`);
-    const auth = this.#auth();
-    // The legacy API has no Matrix-token mode; it only accepts the shared
-    // secret, and it identifies the user by query parameter.
-    const secret = await this.#sharedSecret(route);
-    if (!secret)
-      throw new ProvisioningError(
-        `Could not read ${route}'s provisioning secret from the hub, so its login cannot be driven from here.`,
-        0,
-        null,
-      );
-    if (auth.userId) url.searchParams.set("user_id", auth.userId);
-    return this.#json<T>(url.toString(), {
-      method: options.method,
-      body: options.body,
-      headers: {Authorization: `Bearer ${secret}`},
     });
   }
 
@@ -2326,8 +2249,7 @@ export class MatrixHub {
 
   /**
    * Recovers a bridge's provisioning secret from its own config file. Only
-   * needed when the app holds no Matrix token, or for legacy bridges that
-   * accept nothing else.
+   * needed when the app holds no Matrix token.
    */
   async #sharedSecret(route: string): Promise<string | null> {
     if (this.#secrets.has(route)) return this.#secrets.get(route) ?? null;
@@ -2468,9 +2390,12 @@ export interface MatrixMessage {
   body: string;
   /** A conversation event, such as a group membership change, not authored text. */
   notice: boolean;
+  deliveryStatus?: "unconfirmed";
   sentAt: string;
   attachments: MatrixAttachment[];
   linkPreview: MatrixLinkPreview | null;
+  forwarded?: ChatForwardedBundleDto | null;
+  call?: ChatCallDto | null;
   /** An explicit empty preview bundle means the sender opted out. */
   linkPreviewSuppressed?: boolean;
   /** Where to go to see media that could not be carried across. */
@@ -2507,6 +2432,11 @@ interface RawEvent {
   unsigned?: {prev_content?: RawEvent["content"]};
   content?: {
     body?: string;
+    /** Bridge-attested native unread state. */
+    count?: number;
+    /** Bridge-attested WeChat directory metadata, in milliseconds. */
+    last_message_ts?: number | null;
+    preview?: string | null;
     msgtype?: string;
     url?: string;
     /** The source post for rich Instagram media, whether or not its bytes were fetched. */
@@ -2531,6 +2461,10 @@ interface RawEvent {
     "co.polymux.view_in"?: {app?: string; url?: string};
     /** Structured preview emitted by any bridge that can describe a rich item. */
     "co.polymux.link_preview"?: {title?: string; description?: string; url?: string; source?: string};
+    "co.polymux.forwarded"?: unknown;
+    "co.polymux.call"?: unknown;
+    "co.polymux.wechat.native"?: unknown;
+    "com.beeper.action_message"?: unknown;
     /** Set by the WeChat bridge on a sticker, which it sends as a picture. */
     "co.polymux.sticker"?: boolean;
     /** Set on content imported by the WeChat bridge. */
@@ -2547,6 +2481,7 @@ interface RawEvent {
     is_official?: boolean;
     /** A bridge-originated conversation event rather than authored text. */
     "co.polymux.notice"?: boolean;
+    "co.polymux.delivery"?: "unconfirmed";
     /** Set on `m.bridge`: which network the room is a portal for. */
     protocol?: {id?: string};
     /** A bridge-safe remote conversation identity, not the raw contact id. */
@@ -2971,11 +2906,17 @@ function withEdits(chunk: RawEvent[]): RawEvent[] {
     .map((event) => {
       const edit = event.event_id ? edits.get(event.event_id) : undefined;
       if (!edit) return event;
-      // The replacement is the whole new content, but what the original was
-      // a reply to is not the edit's to carry — it stays.
+      // Keep an existing reply target. A native bridge can discover a missing
+      // attachment quote after importing the picture; only its same-author
+      // update may fill that absent relation.
+      const replacement = contentOf(edit);
+      const recoveredReply = event.content?.["co.polymux.wechat.remote"] === true &&
+        replacement?.["co.polymux.wechat.remote"] === true && edit.sender === event.sender
+        ? replacement?.["m.relates_to"]?.["m.in_reply_to"] : undefined;
       return {
         ...event,
-        content: {...contentOf(edit), "m.relates_to": event.content?.["m.relates_to"]},
+        content: {...replacement, "m.relates_to": event.content?.["m.relates_to"] ??
+          (recoveredReply ? {"m.in_reply_to": recoveredReply} : undefined)},
       };
     });
 }
@@ -3045,6 +2986,7 @@ function toMessage(raw: RawEvent, userId?: string | null): MatrixMessage {
   const linkPreview = linkPreviewOf(event);
   const visibleBody = visibleMessageBody(event, userId ?? null);
   const viewIn = viewInOf(event);
+  const call = callOf(event.content ?? {});
   return {
     eventId: event.event_id ?? "",
     roomId: event.room_id ?? "",
@@ -3061,10 +3003,13 @@ function toMessage(raw: RawEvent, userId?: string | null): MatrixMessage {
       : linkPreview
         ? firstHttpUrl(visibleBody) ?? visibleBody
         : visibleBody,
-    notice: isNotice(event),
+    notice: !call && isNotice(event),
+    ...(event.content?.["co.polymux.delivery"] === "unconfirmed" ? {deliveryStatus: "unconfirmed" as const} : {}),
     sentAt: new Date(event.origin_server_ts ?? 0).toISOString(),
     attachments,
     linkPreview,
+    forwarded: forwardedBundleOf(event.content?.["co.polymux.forwarded"]),
+    ...(call ? {call} : {}),
     ...(Array.isArray(event.content?.["com.beeper.linkpreviews"]) &&
     event.content["com.beeper.linkpreviews"].length === 0
       ? {linkPreviewSuppressed: true}
@@ -3138,6 +3083,12 @@ function membershipNotice(event: RawEvent, userId: string | null): string | null
     isBridgeBot(event.state_key)
   ) return null;
   const platform = platformFromSender(event.state_key) ?? "";
+  // mautrix-whatsapp republishes its participant roster as Matrix membership
+  // state during group resyncs. Those rows describe bridge state, not a
+  // WhatsApp timeline item, and can otherwise surface old removals as if they
+  // happened at the resync time. Native service messages still arrive as
+  // ordinary m.room.message notices and remain visible.
+  if (platform === "whatsapp") return null;
   const rawName = event.content?.displayname?.trim() || previous?.displayname?.trim();
   if (!rawName) return null;
   const name = bridgeDisplayName(rawName, platform);
@@ -3508,14 +3459,9 @@ function toCookieFields(field: {
 /**
  * A bridge's provisioning shared secret, read out of its config.
  *
- * Deliberately a narrow read rather than a YAML parse, but it has to know both
- * layouts: megabridge binaries keep `provisioning:` at the top level, while
- * pre-megabridge ones nest it under `bridge:`. Looking only at the top level
- * meant Discord — the one legacy bridge in the fleet — reported that its login
- * could not be driven from here, with the secret sitting in the file all along.
- *
- * So the block is found at whatever indent it sits on, and the search stops at
- * the first line that is no longer inside it.
+ * Deliberately a narrow read rather than a YAML parse: the block is found at
+ * whatever indent it sits on, and the search stops at the first line that is
+ * no longer inside it.
  */
 export function provisioningSecret(source: string): string | null {
   const lines = source.split("\n");

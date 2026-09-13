@@ -1,4 +1,6 @@
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {defineConfig} from 'vite';
@@ -11,6 +13,14 @@ const projectRoot = path.join(appRoot, '..', '..');
 const packageVersion = (JSON.parse(
   readFileSync(path.join(projectRoot, 'package.json'), 'utf8'),
 ) as {version: string}).version;
+const outputKey = process.env.POLYMUX_RENDERER_OUTPUT_KEY?.trim();
+if (outputKey && !/^[a-zA-Z0-9_-]+$/.test(outputKey))
+  throw new Error('POLYMUX_RENDERER_OUTPUT_KEY contains unsupported characters');
+// Forge can clear .vite while an ordinary app build is running. Keep test
+// output outside that tree, with separate directories per checkout and port.
+const testOutputRoot = outputKey
+  ? path.join(tmpdir(), 'polymux-renderer-tests', createHash('sha256').update(projectRoot).digest('hex').slice(0, 12), outputKey)
+  : null;
 
 // This config is served two ways: by Electron Forge for the app itself, and by
 // a bare `vite` for working on the renderer in a browser. Forge merges its own
@@ -30,7 +40,9 @@ const forgeDriven = process.argv.some((argument) => argument.includes('electron-
 // same place.
 export default defineConfig({
   root: path.join(appRoot, 'src/renderer'),
-  cacheDir: path.join(projectRoot, 'node_modules', forgeDriven ? '.vite-app' : '.vite-web'),
+  cacheDir: testOutputRoot
+    ? path.join(testOutputRoot, 'cache')
+    : path.join(projectRoot, 'node_modules', forgeDriven ? '.vite-app' : '.vite-web'),
   plugins: [svelte()],
   define: {
     __POLYMUX_VERSION__: JSON.stringify(packageVersion),
@@ -56,7 +68,9 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: path.join(projectRoot, '.vite/renderer/main_window'),
+    outDir: testOutputRoot
+      ? path.join(testOutputRoot, 'main_window')
+      : path.join(projectRoot, '.vite/renderer/main_window'),
     emptyOutDir: true,
     // The only chunk above Vite's default 500k warning is the already-lazy
     // Three.js voice renderer (~531k); keep warnings meaningful for regressions.
@@ -67,7 +81,16 @@ export default defineConfig({
     rolldownOptions: {
       output: {
         codeSplitting: {
-          groups: [{name: 'renderer', tags: ['$initial'], maxSize: 450_000}],
+          groups: [
+            {
+              name: 'locales',
+              test: /apps[\\/]desktop[\\/]src[\\/]renderer[\\/]i18n[\\/]locales/,
+              priority: 10,
+              maxSize: 400_000,
+              includeDependenciesRecursively: false,
+            },
+            {name: 'renderer', tags: ['$initial'], maxSize: 450_000},
+          ],
         },
       },
     },

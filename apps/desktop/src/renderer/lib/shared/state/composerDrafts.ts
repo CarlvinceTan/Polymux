@@ -8,6 +8,12 @@ export type ChatComposerDraft = {
   files: string[];
 };
 
+export type MailComposerInlineAttachment = {
+  path: string;
+  contentId: string;
+  offset: number;
+};
+
 export type MailComposerDraft = {
   localId: string;
   revision: number;
@@ -24,6 +30,9 @@ export type MailComposerDraft = {
   signatureBody: string;
   signatureHtml: string | null;
   files: string[];
+  /** Files inserted at a body caret. Paths absent here remain trailing MIME
+   * attachments even though the composer still shows them after the text. */
+  inlineFiles: MailComposerInlineAttachment[];
   importance: MailImportance;
   reply: {inReplyTo: string | null; references: string[]} | null;
   remoteDraft: {id: string; folder: string} | null;
@@ -73,6 +82,10 @@ function write(next: ComposerDraftStore): void {
   }
 }
 
+export function newAgentDraftKey(folderId: string | null): string {
+  return folderId ? `new:folder:${folderId}` : 'new';
+}
+
 export function loadAgentDraft(key: string): string {
   return read().agent[key] ?? '';
 }
@@ -109,6 +122,11 @@ export function saveChatDraft(chatId: string, draft: ChatComposerDraft): void {
 export function loadMailDraft(account: string): MailComposerDraft | null {
   const saved = read().mail[account];
   if (!saved || typeof saved.localId !== 'string' || saved.account !== account) return null;
+  const body = typeof saved.body === 'string' ? saved.body : '';
+  const files = Array.isArray(saved.files)
+    ? saved.files.filter((item): item is string => typeof item === 'string')
+    : [];
+  const fileSet = new Set(files);
   return {
     localId: saved.localId,
     revision: Number.isFinite(saved.revision) ? saved.revision : 0,
@@ -119,11 +137,30 @@ export function loadMailDraft(account: string): MailComposerDraft | null {
     cc: typeof saved.cc === 'string' ? saved.cc : '',
     bcc: typeof saved.bcc === 'string' ? saved.bcc : '',
     subject: typeof saved.subject === 'string' ? saved.subject : '',
-    body: typeof saved.body === 'string' ? saved.body : '',
+    body,
     signatureId: typeof saved.signatureId === 'string' ? saved.signatureId : '',
     signatureBody: typeof saved.signatureBody === 'string' ? saved.signatureBody : '',
     signatureHtml: typeof saved.signatureHtml === 'string' ? saved.signatureHtml : null,
-    files: Array.isArray(saved.files) ? saved.files.filter((item): item is string => typeof item === 'string') : [],
+    files,
+    inlineFiles: Array.isArray(saved.inlineFiles)
+      ? saved.inlineFiles.flatMap((item) => {
+          if (!item || typeof item !== 'object') return [];
+          const value = item as Partial<MailComposerInlineAttachment>;
+          if (
+            typeof value.path !== 'string' ||
+            !fileSet.has(value.path) ||
+            typeof value.contentId !== 'string' ||
+            !/^[^\s<>]+$/.test(value.contentId) ||
+            typeof value.offset !== 'number' ||
+            !Number.isFinite(value.offset)
+          ) return [];
+          return [{
+            path: value.path,
+            contentId: value.contentId,
+            offset: Math.max(0, Math.min(body.length, Math.trunc(value.offset))),
+          }];
+        })
+      : [],
     importance: saved.importance === 'high' || saved.importance === 'low' ? saved.importance : 'normal',
     reply: saved.reply && typeof saved.reply === 'object'
       ? {

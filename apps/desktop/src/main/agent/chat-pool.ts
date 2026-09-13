@@ -305,6 +305,14 @@ export class ChatPool {
     return job ? clone(job) : null;
   }
 
+  replaceRun(previousId: string, runId: string): void {
+    const job = this.#jobs.find(candidate => candidate.runId === previousId && candidate.status === 'running');
+    if (!job) return;
+    job.runId = runId;
+    job.updatedAt = this.#now();
+    this.#persist();
+  }
+
   forRun(runId: string): ManagerJob | null {
     const job = this.#jobs.find((candidate) => candidate.runId === runId);
     return job ? clone(job) : null;

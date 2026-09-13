@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {Communications, matchContactChats, resolveChatAliasFromRooms} from "./index.js";
+import {
+  Communications,
+  matchContactChats,
+  messageCoverageFromBridges,
+  resolveChatAliasFromRooms,
+} from "./index.js";
 import type {EmailAccounts} from "@polymux/hub";
+import {COMMS_PLATFORMS, type CommsContactDto} from "@polymux/protocol";
 import {createCommunicationsTools} from "./tools.js";
 
 function toolResult(value: {content?: unknown}): unknown {
@@ -90,6 +96,23 @@ test("message tools include current connected coverage without probing", async (
   assert.equal(coverageCalls, 1, "coverage is a cached snapshot, not another status probe");
 });
 
+test("message coverage uses bridge state rather than its change-detection fingerprint", () => {
+  const coverage = messageCoverageFromBridges([
+    {platform: "whatsapp", state: "connected"},
+    {platform: "instagram", state: "logged-out"},
+  ] as never);
+
+  assert.deepEqual(coverage.find((entry) => entry.platform === "whatsapp"), {
+    platform: "whatsapp", state: "connected", live: true,
+  });
+  assert.deepEqual(coverage.find((entry) => entry.platform === "instagram"), {
+    platform: "instagram", state: "logged-out", live: false,
+  });
+  assert.deepEqual(coverage.find((entry) => entry.platform === "telegram"), {
+    platform: "telegram", state: "unknown", live: false,
+  });
+});
+
 test("message search marks logged-out cached WhatsApp coverage as non-live", async () => {
   const tools = createCommunicationsTools({
     messageCoverage: () => [{platform: "whatsapp", state: "logged-out", live: false}],
@@ -140,6 +163,132 @@ test("message_chats refuses an accidental unfiltered inventory", async () => {
   assert.equal(result.isError, true);
   assert.equal(listed, false);
   assert.doesNotMatch(result.content as string, /Private/);
+});
+
+test("message_contacts exposes the Hub directory, including people without a chat", async () => {
+  const tools = createCommunicationsTools({
+    contacts: async (): Promise<CommsContactDto[]> => [{
+      id: "whatsapp:personal:luke",
+      remoteId: "61400000000",
+      name: "Luke Tan",
+      platform: "whatsapp",
+      accountId: "personal",
+      accountName: "Personal",
+      avatarUrl: null,
+      identifiers: ["+61 400 000 000"],
+      chatId: null,
+      accounts: [{
+        accountId: "personal",
+        accountName: "Personal",
+        remoteId: "61400000000",
+        chatId: null,
+      }],
+    }],
+  } as unknown as Communications);
+  const tool = tools.find((candidate) => candidate.name === "message_contacts")!;
+
+  assert.deepEqual(toolResult(await tool.execute({query: "Luke"}, {} as never)), {
+    total: 1,
+    offset: 0,
+    next_offset: null,
+    contacts: [{
+      contact_id: "whatsapp:personal:luke",
+      name: "Luke Tan",
+      platform: "whatsapp",
+      identifiers: ["+61 400 000 000"],
+      chat_id: null,
+      routes: [{
+        account_id: "personal",
+        account_name: "Personal",
+        remote_id: "61400000000",
+        chat_id: null,
+      }],
+    }],
+  });
+});
+
+test("contact lookup accepts every supported external Hub messaging app", () => {
+  const contacts = createCommunicationsTools({} as Communications)
+    .find((candidate) => candidate.name === "message_contacts")!;
+  const platform = (contacts.parameters.properties as Record<string, {enum?: string[]}>)
+    .platform;
+  assert.deepEqual(
+    platform?.enum,
+    COMMS_PLATFORMS.filter((entry) => entry.value !== "matrix").map((entry) => entry.value),
+  );
+});
+
+test("message_contacts paginates an explicitly requested full directory", async () => {
+  const contacts = Array.from({length: 3}, (_, index): CommsContactDto => ({
+    id: `telegram:personal:${index}`,
+    remoteId: `person-${index}`,
+    name: `Person ${index}`,
+    platform: "telegram" as const,
+    accountId: "personal",
+    accountName: "Personal",
+    avatarUrl: null,
+    identifiers: [],
+    chatId: null,
+    accounts: [{accountId: "personal", accountName: "Personal", remoteId: `person-${index}`, chatId: null}],
+  }));
+  const tools = createCommunicationsTools({contacts: async () => contacts} as unknown as Communications);
+  const tool = tools.find((candidate) => candidate.name === "message_contacts")!;
+  const result = toolResult(await tool.execute({query: "*", offset: 1, limit: 1}, {} as never)) as {
+    total: number; offset: number; next_offset: number | null; contacts: Array<{name: string}>;
+  };
+
+  assert.deepEqual(result, {
+    total: 3,
+    offset: 1,
+    next_offset: 2,
+    contacts: [{
+      contact_id: "telegram:personal:1",
+      name: "Person 1",
+      platform: "telegram",
+      identifiers: [],
+      chat_id: null,
+      routes: [{
+        account_id: "personal",
+        account_name: "Personal",
+        remote_id: "person-1",
+        chat_id: null,
+      }],
+    }],
+  });
+});
+
+test("an exact Hub contact route becomes a DM without sending content", async () => {
+  const comms = Object.create(Communications.prototype) as Communications;
+  let created: unknown;
+  Object.assign(comms, {
+    contacts: async (): Promise<CommsContactDto[]> => [{
+      id: "whatsapp:personal:luke",
+      remoteId: "61400000000",
+      name: "Luke Tan",
+      platform: "whatsapp",
+      accountId: "personal",
+      accountName: "Personal",
+      avatarUrl: null,
+      identifiers: ["+61 400 000 000"],
+      chatId: null,
+      accounts: [{accountId: "personal", accountName: "Personal", remoteId: "61400000000", chatId: null}],
+    }],
+    createChat: async (request: unknown) => {
+      created = request;
+      return "!new:polymux";
+    },
+  });
+
+  assert.deepEqual(await comms.chatForContact("whatsapp:personal:luke", "personal"), {
+    id: "!new:polymux",
+    name: "Luke Tan",
+    platform: "whatsapp",
+  });
+  assert.deepEqual(created, {
+    platform: "whatsapp",
+    accountId: "personal",
+    participantIds: ["61400000000"],
+  });
 });
 
 test("contact aliases match chats by real name or normalized phone without guessing", () => {
@@ -220,6 +369,26 @@ test("ambiguous contact resolution is exposed instead of silently selecting a ro
   assert.equal(result.resolution.ambiguous, true);
   assert.equal(result.chats.length, 2);
   assert.match(tool.description, /never guess/i);
+});
+
+test("one bounded contact match returns its phone numbers without requiring an existing chat", async () => {
+  const tools = createCommunicationsTools({
+    messageCoverage: () => [{platform: "whatsapp", state: "connected", live: true}],
+    resolveChatAlias: async () => ({
+      status: "granted",
+      identities: [{name: "Luke Tan", aliases: ["Luke"], phones: ["+61 400 000 000"]}],
+      chats: [] as never[],
+    }),
+  } as unknown as Communications);
+  const tool = tools.find((candidate) => candidate.name === "message_chats")!;
+
+  assert.deepEqual(toolResult(await tool.execute({query: "Luke"}, {} as never)), {
+    coverage: [{platform: "whatsapp", state: "connected", live: true}],
+    resolution: {status: "granted", contact_matches: 1, chat_matches: 0, ambiguous: false},
+    contacts: [{name: "Luke Tan", aliases: ["Luke"], phone_numbers: ["+61 400 000 000"]}],
+    chats: [],
+  });
+  assert.match(tool.description, /Contacts access is needed/i);
 });
 
 test("the all-inbox search does not change the normal tool surface", () => {

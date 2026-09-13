@@ -1,10 +1,25 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import {polymuxPath} from "../system/paths.js";
+import {loadLockerCapability, matchesLockerCapability} from "./locker-capability.js";
+
+const lockerResponseOrigins = new WeakMap<ServerResponse, string | null>();
 import {
   SURFACE_PROTOCOL,
   SURFACE_PROTOCOL_HEADERS,
   negotiateSurfaceProtocol,
 } from "@polymux/browser";
+import {LOCKER_SURFACE_PATHS} from "@polymux/protocol";
+import type {
+  LockerFillFieldsDto,
+  LockerItemDto,
+  LockerItemInputDto,
+  LockerStatusDto,
+  LockerTotpDto,
+  LockerVaultBlobDto,
+} from "@polymux/protocol";
+import type {PasskeyOffer, WebAuthnAssertion, WebAuthnAttestation, WebAuthnCreateRequest, WebAuthnGetRequest} from "@polymux/locker";
+import {lockerId, lockerItemInput, lockerPassword, lockerVaultBlob, lockerWebAuthnCreate, lockerWebAuthnGet} from "../locker/requests.js";
 
 /**
  * Loopback agent-surface feed and command channel for the Polymux browser
@@ -176,6 +191,22 @@ export interface SurfaceLease {
   updatedAtMs: number;
 }
 
+/** Same vault the desktop Locker and phone Host use. Secrets only on fill/save. */
+export interface SurfaceLocker {
+  status(): LockerStatusDto;
+  unlock(password: string): Promise<LockerStatusDto>;
+  lock(): LockerStatusDto;
+  matches(url: string): LockerItemDto[];
+  fill(id: string): LockerFillFieldsDto;
+  save(item: LockerItemInputDto): Promise<LockerItemDto>;
+  totp(id: string): LockerTotpDto | null;
+  export?(): LockerVaultBlobDto | null;
+  import?(blob: LockerVaultBlobDto): Promise<LockerStatusDto>;
+  passkeys?(request: WebAuthnGetRequest): PasskeyOffer[];
+  getPasskey?(request: WebAuthnGetRequest): Promise<WebAuthnAssertion>;
+  createPasskey?(request: WebAuthnCreateRequest): Promise<WebAuthnAttestation>;
+}
+
 export interface SurfaceCompatibility {
   compatible: boolean;
   negotiatedVersion: number | null;
@@ -209,17 +240,26 @@ export class AgentSurfaceServer {
   readonly #leases = new Map<string, SurfaceLease>();
   readonly #waiters = new Set<() => void>();
   readonly #pendingCommands = new Map<string, PendingCommand>();
+  #locker: SurfaceLocker | null = null;
   #clock: () => number;
+  readonly #lockerCapabilityPath: string;
+  #lockerCapability: string | null = null;
 
-  constructor(options: { port?: number; clock?: () => number } = {}) {
+  constructor(options: { port?: number; clock?: () => number; lockerCapabilityPath?: string } = {}) {
     this.#port =
       options.port ??
       Number(process.env.POLYMUX_AGENT_SURFACE_PORT || DEFAULT_PORT);
     this.#clock = options.clock ?? Date.now;
+    this.#lockerCapabilityPath = options.lockerCapabilityPath ?? polymuxPath("locker-extension-capability");
   }
 
   get port(): number {
     return this.#port;
+  }
+
+  attachLocker(locker: SurfaceLocker | null): void {
+    if (locker) this.#lockerCapability ??= loadLockerCapability(this.#lockerCapabilityPath);
+    this.#locker = locker;
   }
 
   async start(): Promise<void> {
@@ -354,8 +394,27 @@ export class AgentSurfaceServer {
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    // Locker is a separate authenticated boundary, including unknown subpaths
+    // and OPTIONS. Extension background fetches use host_permissions; no public
+    // preflight or HTTP enrollment endpoint is needed.
+    if (url.pathname === "/v1/locker" || url.pathname.startsWith("/v1/locker/")) {
+      lockerResponseOrigins.set(response, null);
+      const origin = request.headers.origin;
+      const allowedOrigin = origin === undefined || /^chrome-extension:\/\/[a-p]{32}$/.test(origin) ||
+        /^moz-extension:\/\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(origin);
+      if (request.headers.host !== `127.0.0.1:${this.#port}` || !allowedOrigin) {
+        json(response, 403, {error: "Untrusted Locker client"});
+        return;
+      }
+      this.#lockerCapability ??= loadLockerCapability(this.#lockerCapabilityPath);
+      if (!matchesLockerCapability(request.headers.authorization, this.#lockerCapability)) {
+        json(response, 403, {error: "Locker client authentication required"});
+        return;
+      }
+      lockerResponseOrigins.set(response, origin ?? null);
+    }
     if (request.method === "OPTIONS") {
-      response.writeHead(204, corsHeaders());
+      response.writeHead(204, corsHeaders(response));
       response.end();
       return;
     }
@@ -385,6 +444,7 @@ export class AgentSurfaceServer {
       json(response, 200, { ok: true, surface: compatibility });
       return;
     }
+    if (await this.#handleLocker(request, response, url, compatibility)) return;
     if (request.method === "POST" && url.pathname === "/v1/results") {
       const body = await readBody(request);
       const commandId = String(body.commandId ?? "");
@@ -412,6 +472,91 @@ export class AgentSurfaceServer {
       return;
     }
     json(response, 404, { error: "not found" });
+  }
+
+  async #handleLocker(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    compatibility: SurfaceCompatibility,
+  ): Promise<boolean> {
+    const path = url.pathname;
+    const lockerPaths = Object.values(LOCKER_SURFACE_PATHS);
+    if (!lockerPaths.includes(path as (typeof lockerPaths)[number])) return false;
+    const locker = this.#locker;
+    if (!locker) {
+      json(response, 503, {error: "Locker is not available", surface: compatibility});
+      return true;
+    }
+    try {
+      if (request.method === "GET" && path === LOCKER_SURFACE_PATHS.status) {
+        json(response, 200, locker.status());
+        return true;
+      }
+      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.unlock) {
+        const body = await readBody(request);
+        json(response, 200, await locker.unlock(lockerPassword(body.password)));
+        return true;
+      }
+      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.lock) {
+        await readBody(request);
+        json(response, 200, locker.lock());
+        return true;
+      }
+      if (request.method === "GET" && path === LOCKER_SURFACE_PATHS.matches) {
+        json(response, 200, {items: locker.matches(String(url.searchParams.get("url") ?? ""))});
+        return true;
+      }
+      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.fill) {
+        const body = await readBody(request);
+        json(response, 200, locker.fill(lockerId(body.id)));
+        return true;
+      }
+      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.save) {
+        const body = await readBody(request);
+        json(response, 200, await locker.save(lockerItemInput(body)));
+        return true;
+      }
+      if (request.method === "GET" && path === LOCKER_SURFACE_PATHS.totp) {
+        json(response, 200, locker.totp(lockerId(url.searchParams.get("id"))));
+        return true;
+      }
+      if (request.method === "GET" && path === LOCKER_SURFACE_PATHS.export) {
+        json(response, 200, locker.export?.() ?? null);
+        return true;
+      }
+      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.import) {
+        const body = await readBody(request);
+        if (!locker.import) throw new Error("Locker import is not available");
+        json(response, 200, await locker.import(lockerVaultBlob(body)));
+        return true;
+      }
+      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.passkeys) {
+        const body = await readBody(request);
+        if (!locker.passkeys) throw new Error("Passkeys are not available");
+        json(response, 200, {offers: locker.passkeys(lockerWebAuthnGet({...body, origin: body.origin}))});
+        return true;
+      }
+      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.passkeyGet) {
+        const body = await readBody(request);
+        if (!locker.getPasskey) throw new Error("Passkeys are not available");
+        json(response, 200, await locker.getPasskey(lockerWebAuthnGet(body)));
+        return true;
+      }
+      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.passkeyCreate) {
+        const body = await readBody(request);
+        if (!locker.createPasskey) throw new Error("Passkeys are not available");
+        json(response, 200, await locker.createPasskey(lockerWebAuthnCreate(body)));
+        return true;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Locker request failed";
+      const locked = /locked|wrong master password/i.test(message);
+      json(response, locked ? 401 : 400, {error: message});
+      return true;
+    }
+    json(response, 404, {error: "not found"});
+    return true;
   }
 
   #waitForChange(waitMs: number): Promise<void> {
@@ -443,17 +588,22 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(body),
-    ...corsHeaders(),
+    ...corsHeaders(response),
   });
   response.end(body);
 }
 
-function corsHeaders(): Record<string, string> {
+function corsHeaders(response: ServerResponse): Record<string, string> {
+  const locker = lockerResponseOrigins.has(response);
+  const origin = lockerResponseOrigins.get(response);
+  if (locker && !origin) return {};
   return {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": origin ?? "*",
+    ...(locker ? {Vary: "Origin"} : {}),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": [
       "Content-Type",
+      ...(locker ? ["Authorization"] : []),
       ...Object.values(SURFACE_PROTOCOL_HEADERS),
     ].join(", "),
   };

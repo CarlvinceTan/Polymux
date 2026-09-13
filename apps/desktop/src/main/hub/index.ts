@@ -1,4 +1,7 @@
 import path from "node:path";
+import {weChatAttention} from "./wechat-attention.js";
+import {unavailableWeChatLogin, isWeChatDeliveryUnconfirmed} from "@polymux/wechat";
+import type {WeChatLoginDto} from "@polymux/protocol";
 import {polymuxHome} from "../system/paths.js";
 import {homedir} from "node:os";
 import {spawn} from "node:child_process";
@@ -7,7 +10,7 @@ import {
   bridgeDisplayName,
   EmailAccounts,
   MatrixHub,
-  probeWeChatRelay,
+  mediaUrl,
   shippedNetworkConfig,
   type CommandResult,
   type CommandRunner,
@@ -18,19 +21,28 @@ import {
   type MatrixRoom,
 } from "@polymux/hub";
 import {
+  probeWeChatRelay,
+  type WeChatSessionState,
+  type WeChatStickerCatalogEntry,
+} from "@polymux/wechat";
+import {
   COMMS_PLATFORMS,
   type CommsBridgeDto,
   type CommsBridgeSetupDto,
   type ChatMemberDto,
+  type ChatGroupInfoDto,
   type ChatMentionsDto,
+  type ChatStickerDto,
   type CommsContactDto,
   type CommsEmailAccountDto,
   type CommsLoginStepDto,
   type CommsPlatform,
   type CommsStatusDto,
+  type CommsWakeDto,
   type CreateChatRequest,
   type JsonValue,
   type MailEnvelopeDto,
+  type MailAttachmentContentDto,
   type MailFolderDto,
   type MailListRequest,
   type MailMessageDto,
@@ -104,6 +116,7 @@ export function bridgeStatusFingerprint(bridge: CommsBridgeDto): string {
     state: bridge.state,
     error: bridge.error,
     permission: bridge.permission,
+    installUrl: bridge.installUrl,
     managementRoomHint: bridge.managementRoomHint,
     accounts: bridge.accounts.map((account) => ({
       id: account.id,
@@ -112,6 +125,16 @@ export function bridgeStatusFingerprint(bridge: CommsBridgeDto): string {
       state: account.state,
       error: account.error,
     })),
+  });
+}
+
+export function messageCoverageFromBridges(
+  bridges: ReadonlyArray<Pick<CommsBridgeDto, "platform" | "state">>,
+): Array<{platform: string; state: string; live: boolean}> {
+  const states = new Map(bridges.map((bridge) => [bridge.platform, bridge.state]));
+  return COMMS_PLATFORMS.filter((entry) => entry.value !== "matrix").map((entry) => {
+    const state = states.get(entry.value) ?? "unknown";
+    return {platform: entry.value, state, live: state === "connected"};
   });
 }
 
@@ -211,12 +234,40 @@ export interface EmbeddedHub {
    * to exist first, so it is started here rather than with the hub.
    */
   startWeChat?: (owner: string) => Promise<boolean>;
+  loadOlderWeChatHistory?: (roomId: string, limit: number, oldestCachedAt?: number) => Promise<boolean>;
+  refreshWeChatMedia?: (roomId: string, eventIds: string[]) => Promise<boolean>;
+  /** True only when WeChat's persistent relay can send without a cold timeout. */
+  weChatOutboundReady?: () => Promise<boolean>;
+    weChatOutboundFailure?: () => string | null;
+    weChatNativeOnly?: boolean;
+  /** Fails closed before a live-test action can wake or enqueue the wrong chat. */
+  assertWeChatLiveTestDestination?: (roomId: string) => void;
+  /** Passive sender state; must never relaunch or interact with WeChat. */
+  weChatOutboundStatus?: () => Promise<boolean>;
+  /** Local keyed conversations remain readable when the sender is unavailable. */
+  weChatNativeReadable?: () => boolean;
+  /** Account-native stickers already observed by the WeChat bridge. */
+  weChatStickers?: () => Promise<WeChatStickerCatalogEntry[]>;
+  weChatMembers?: (roomId: string) => Promise<ChatMemberDto[] | null>;
+  weChatGroupInfo?: (roomId: string) => Promise<ChatGroupInfoDto>;
+  renameWeChatGroup?: (roomId: string, name: string, expectedName: string) => Promise<ChatGroupInfoDto>;
+  /** Read-only desktop sign-in state after an explicit WeChat wake attempt. */
+  weChatSessionState?: () => Promise<WeChatSessionState | null>;
+  weChatLogin?: () => Promise<WeChatLoginDto>;
   /**
    * Takes the WeChat bridge back down. Unlinking cannot sign anything out —
    * the account belongs to WeChat.app — so what it does is stop carrying that
    * app's messages into the hub.
    */
   stopWeChat?: () => Promise<void>;
+  /** Resolves only after the native bridge verifies this Matrix event. */
+  waitForWeChatOutbound?: (eventId: string) => Promise<void>;
+  /** Removes a local event whose remote delivery failed. */
+  discardOutbound?: (eventId: string) => void;
+  outboundDeliveryStatus?: (eventId: string) => "unconfirmed" | null;
+  /** Recalls a verified WeChat send before redacting it locally. */
+  recallWeChat?: (roomId: string, eventId: string) => Promise<void>;
+  markWeChatRead?: (roomId: string, eventId: string) => Promise<void>;
   /** Values already recorded for a bridge's own configuration. */
   networkConfig?: (platform: string) => Promise<Record<string, string>>;
   /**
@@ -229,9 +280,9 @@ export interface EmbeddedHub {
 /**
  * OAuth client registrations for mail sign-in, read from the environment the
  * same way the drive providers' are. A dedicated mail registration wins, but
- * the provider's drive registration is a valid public desktop client too and
- * is the useful default: users should not lose one-click mailbox sign-in just
- * because the build did not duplicate the same client id under a second name.
+ * the provider's drive registration is a valid default too: users should not
+ * lose one-click mailbox sign-in just because the build did not duplicate the
+ * same client id under a second name.
  *
  * The shared registration still needs both loopback redirect URIs and the mail
  * scopes enabled in the provider console. Those are registration concerns;
@@ -245,13 +296,22 @@ export function mailOAuthClients(): Partial<
     ["google", "POLYMUX_GOOGLE_MAIL", "POLYMUX_GOOGLE_DRIVE"],
     ["microsoft", "POLYMUX_MICROSOFT_MAIL", "POLYMUX_ONEDRIVE"],
   ] as const) {
-    const clientId =
-      process.env[`${mailPrefix}_CLIENT_ID`]?.trim() ||
-      process.env[`${sharedPrefix}_CLIENT_ID`]?.trim();
+    const dedicatedClientId = process.env[`${mailPrefix}_CLIENT_ID`]?.trim();
+    const clientId = dedicatedClientId || process.env[`${sharedPrefix}_CLIENT_ID`]?.trim();
     if (!clientId) continue;
-    const clientSecret =
-      process.env[`${mailPrefix}_CLIENT_SECRET`]?.trim() ||
-      process.env[`${sharedPrefix}_CLIENT_SECRET`]?.trim();
+    // A dedicated Mail registration uses only its own secret, if any.
+    // Sharing Drive is provider-specific: Google confidential clients require
+    // the Drive secret on the token request, or Google replies
+    // "client_secret is missing". Microsoft public clients reject a code
+    // redeemed as confidential, so their Drive secret must not be sent.
+    const secretPrefix = dedicatedClientId
+      ? mailPrefix
+      : provider === "google"
+        ? sharedPrefix
+        : undefined;
+    const clientSecret = secretPrefix
+      ? process.env[`${secretPrefix}_CLIENT_SECRET`]?.trim()
+      : undefined;
     clients[provider] = {clientId, ...(clientSecret ? {clientSecret} : {})};
   }
   return clients;
@@ -429,11 +489,17 @@ export class Communications {
   #matrixToken: string | null = null;
   #userId: string | null = null;
   #loaded = false;
+  /** One credential/provisioning read for every concurrent startup caller. */
+  #loadTask: Promise<void> | null = null;
   #syncController: AbortController | null = null;
   #syncTask: Promise<void> | null = null;
   #syncGeneration = 0;
   /** Connection-test outcomes, which are too slow to redo on every status read. */
   readonly #emailStatus = new Map<string, {status: "ok" | "error"; error: string | null}>();
+  /** Most recent complete fleet snapshot. An explicit WeChat send wake can
+   * return this immediately once its sender is ready, while a fresh status
+   * pass catches the settings surface up in the background. */
+  #lastStatus: CommsStatusDto | null = null;
   /**
    * What each bridge was last seen as, so a state that changed without anyone
    * asking for it can be pushed. Every other publish follows an action the
@@ -441,7 +507,7 @@ export class Communications {
    * started by the status read itself — has no such moment, and a window
    * already open would otherwise keep the list it happened to load with.
    */
-  readonly #bridgeStates = new Map<string, string>();
+  readonly #bridgeFingerprints = new Map<string, string>();
   /**
    * Cookie steps handed to the UI, keyed `<platform>:<stepId>`. The sign-in
    * window needs the exact url and field list the bridge asked for, and the
@@ -506,10 +572,7 @@ export class Communications {
    * without turning each agent call into another fleet-wide status check.
    */
   messageCoverage(): Array<{platform: string; state: string; live: boolean}> {
-    return COMMS_PLATFORMS.filter((entry) => entry.value !== "matrix").map((entry) => {
-      const state = this.#bridgeStates.get(entry.value) ?? "unknown";
-      return {platform: entry.value, state, live: state === "connected"};
-    });
+    return messageCoverageFromBridges(this.#lastStatus?.bridges ?? []);
   }
 
   /**
@@ -531,9 +594,90 @@ export class Communications {
    * The UI fires this on hover as well as on click, so it has to be cheap and
    * repeatable: a bridge already running makes it a plain status read.
    */
-  async wake(platform: CommsPlatform): Promise<CommsStatusDto> {
+  #weChatLoginRequest: Promise<WeChatLoginDto> | null = null;
+  #weChatObservation: string | null = null;
+  #weChatPoll: Promise<void> | null = null;
+
+  /** Background observer, independent of whether Hub is mounted. Never
+   * prepares a sender, launches Desktop or changes its login controls. */
+  async pollWeChat(): Promise<void> {
+    if (this.#backgroundClosed) return;
+    if (this.#weChatPoll) return this.#weChatPoll;
+    const poll = (async () => {
+      await this.#load();
+      if (this.#backgroundClosed || !this.#userId || !this.#weChatLinked() || !this.#embedded?.weChatSessionState) return;
+      const owner = this.#userId;
+      const state = await this.#embedded.weChatSessionState();
+      if (this.#backgroundClosed || owner !== this.#userId || !this.#weChatLinked()) return;
+      const observed = JSON.stringify([owner, state, this.#embedded.weChatNativeReadable?.() ?? false]);
+      if (observed === this.#weChatObservation) return;
+      await this.status();
+      if (!this.#backgroundClosed && owner === this.#userId && this.#weChatLinked()) this.#weChatObservation = observed;
+    })();
+    this.#weChatPoll = poll;
+    try { await poll; }
+    finally { if (this.#weChatPoll === poll) this.#weChatPoll = null; }
+  }
+
+  async weChatLogin(): Promise<WeChatLoginDto> {
+    await this.#load();
+    if (!this.#userId || !this.#weChatLinked() || !this.#embedded?.weChatLogin)
+      return unavailableWeChatLogin();
+    if (this.#weChatLoginRequest) return this.#weChatLoginRequest;
+    const owner = this.#userId;
+    const request = this.#embedded.weChatLogin().catch(unavailableWeChatLogin).then(result =>
+      owner === this.#userId && this.#weChatLinked() ? result : unavailableWeChatLogin());
+    this.#weChatLoginRequest = request;
+    try {
+      return await request;
+    }
+    finally { if (this.#weChatLoginRequest === request) this.#weChatLoginRequest = null; }
+  }
+
+  async wake(platform: CommsPlatform): Promise<CommsWakeDto> {
     await this.#embedded?.ensure?.(platform).catch((): undefined => undefined);
-    return this.status();
+    let ready: boolean | null = null;
+    if (platform === "wechat" && this.#userId) {
+      // A complete status snapshot has already registered the in-process
+      // appservice. Repeating that full relay probe before every composer
+      // action is unnecessary; the background refresh below still performs
+      // it so inbound sync can recover independently after a send.
+      if (!this.#lastStatus)
+        await this.#embedded?.startWeChat?.(this.#userId).catch(() => false);
+      ready = await this.#embedded?.weChatOutboundReady?.().catch(() => false) ?? false;
+    }
+    const refreshedStatus = this.status();
+    // The composer needs the sender answer, not another fleet-wide status
+    // round trip. WeChat Desktop also paints its local bubble before remote
+    // delivery verification; returning the last complete snapshot here lets
+    // Polymux do the same without weakening the native exactly-once check.
+    if (platform === "wechat" && ready === true && this.#lastStatus) {
+      void refreshedStatus.catch((): undefined => undefined);
+      return {
+        platform,
+        ready: true,
+        status: {
+          ...this.#lastStatus,
+          bridges: this.#lastStatus.bridges.map((bridge) =>
+            bridge.platform === "wechat"
+              ? {...bridge, state: "connected", error: null, attention: null}
+              : bridge,
+          ),
+        },
+      };
+    }
+    const currentStatus = await refreshedStatus;
+    return {
+      platform,
+      ready:
+        ready ??
+        currentStatus.bridges.some(
+          (bridge) => bridge.platform === platform && bridge.state === "connected",
+        ),
+      status: platform === "wechat" && ready === false && this.#embedded?.weChatOutboundFailure?.()
+        ? {...currentStatus, bridges: currentStatus.bridges.map(bridge => bridge.platform === "wechat"
+          ? {...bridge, error: this.#embedded!.weChatOutboundFailure!()} : bridge)} : currentStatus,
+    };
   }
 
   async status(): Promise<CommsStatusDto> {
@@ -641,36 +785,52 @@ export class Communications {
           managementRoomHint: null,
           error: null,
         };
-      // Two independent questions, and both have to be yes. A relay reports on
-      // its link to the WeChat app, not on where it delivers: one configured
-      // against another homeserver is entirely healthy and still invisible
-      // here. Reporting only the first is how a seat comes to say "connected"
-      // over a platform whose messages can never arrive.
+      // Require both a readable source and registration in this Hub. A
+      // healthy relay configured for another homeserver is not enough; a
+      // verified native directory can supply reads independently of the relay.
       // Bringing it up is part of reading its status: the bridge is in-process
       // and idempotent, so the first status read after sign-in is what starts
       // it. Nothing else would.
       if (this.#userId) await this.#embedded?.startWeChat?.(this.#userId).catch(() => false);
-      const [relay, delivers] = await Promise.all([
-        probeWeChatRelay(),
+      const outboundProbe =
+        this.#embedded?.weChatOutboundStatus ??
+        this.#embedded?.weChatOutboundReady;
+      const [relay, delivers, outboundReady, desktopSession] = await Promise.all([
+        probeWeChatRelay(this.#embedded?.weChatNativeOnly),
         this.#hub.hasBridgeBot(`${entry.value}bot`),
+        outboundProbe
+          ? outboundProbe().catch(() => false)
+          : Promise.resolve(true),
+        this.#embedded?.weChatSessionState?.().catch((): null => null) ?? Promise.resolve(null),
       ]);
-      const usable = relay.running && delivers;
+      const onDemand = outboundReady && relay.installUrl === null;
+      const nativeReadable = this.#embedded?.weChatNativeReadable?.() ?? false;
+      const usable = delivers && (relay.running || nativeReadable || onDemand);
+      // Connection status governs conversation navigation. A failed sender
+      // must not hide readable rooms; every outbound action has its own gate.
+      const ready = usable;
       return {
         platform: entry.value,
         name: entry.label,
         api: "none",
-        state: usable ? "connected" : "unavailable",
+        state: ready ? "connected" : usable ? "connecting" : "unavailable",
         accounts:
           usable && relay.account
-            ? [{id: relay.account.id, name: relay.account.name, state: "connected", error: null}]
+            ? [{
+                id: relay.account.id,
+                name: relay.account.name,
+                state: ready ? "connected" : "connecting",
+                error: null,
+              }]
             : [],
         flows: [],
         setup: null,
         managementRoomHint: null,
-        error:
-          relay.running && !delivers
-            ? `Polymux has reached ${entry.label} on this Mac but has not finished connecting it. Reopen this in a moment.`
-            : relay.error,
+        // Recovery stays quiet. Confirmed sign-in/lock requirements use a
+        // separate attention state so readable conversations remain available.
+        error: relay.installUrl ? relay.error : null,
+        installUrl: relay.installUrl,
+        attention: weChatAttention(desktopSession, relay.installUrl, relay.running || nativeReadable),
       };
     };
     // One slow bridge should not serialize behind the others.
@@ -732,13 +892,14 @@ export class Communications {
         }),
       },
     };
+    this.#lastStatus = result;
     // Read last, and only told about a change: a status read is not itself
     // news, and re-sending an unchanged fleet on every poll would repaint
     // every open window for nothing.
     const moved = bridges.some((bridge) =>
-      this.#bridgeStates.get(bridge.platform) !== bridgeStatusFingerprint(bridge));
+      this.#bridgeFingerprints.get(bridge.platform) !== bridgeStatusFingerprint(bridge));
     for (const bridge of bridges)
-      this.#bridgeStates.set(bridge.platform, bridgeStatusFingerprint(bridge));
+      this.#bridgeFingerprints.set(bridge.platform, bridgeStatusFingerprint(bridge));
     if (moved) this.#onChange(result);
     return result;
   }
@@ -834,52 +995,7 @@ export class Communications {
       if (this.#userId) await this.#embedded?.startWeChat?.(this.#userId).catch(() => false);
       return {type: "complete", loginId: "wechat", accountId: null, accountName: null};
     }
-    const {route, api} = await this.#target(platform);
-    if (api === "legacy") {
-      const loginId = `legacy:${platform}:${flowId}`;
-      if (flowId === "qr") {
-        const code = await this.#hub.legacyQrLoginStart(route, loginId);
-        return {
-          type: "display_and_wait",
-          loginId,
-          stepId: "qr",
-          display: "qr",
-          data: code,
-          imageUrl: "",
-          instructions: "In Discord mobile, open your profile, choose Scan QR Code, then approve this login.",
-        };
-      }
-      const labels: Record<string, {name: string; instructions: string}> = {
-        "user-token": {
-          name: "User token",
-          instructions: "Paste your Discord user token. Treat it like a password; Discord may flag unusual account automation.",
-        },
-        "bot-token": {
-          name: "Bot token",
-          instructions: "Paste a bot token. It can access only servers and channels where that bot was invited and granted permission.",
-        },
-        "oauth-token": {
-          name: "OAuth token",
-          instructions: "Paste a Discord OAuth token. Its access is limited to the scopes granted and usually cannot mirror personal messages.",
-        },
-      };
-      const copy = labels[flowId] ?? labels["user-token"]!;
-      return {
-        type: "user_input",
-        loginId,
-        stepId: "token",
-        instructions: copy.instructions,
-        fields: [
-          {
-            id: "token",
-            type: "token",
-            name: copy.name,
-            description: null,
-            pattern: null,
-          },
-        ],
-      };
-    }
+    const {route} = await this.#target(platform);
     const step = await this.#hub.loginStart(route, flowId);
     return this.#remember(platform, step);
   }
@@ -890,15 +1006,7 @@ export class Communications {
     stepId: string,
     values: Record<string, string>,
   ): Promise<CommsLoginStepDto> {
-    const {route, api} = await this.#target(platform);
-    if (api === "legacy") {
-      const token = values.token?.trim();
-      if (!token) throw new Error("An account token is required");
-      const kind = loginId.split(":").at(-1);
-      const credential = kind === "bot-token" ? `Bot ${token}` : kind === "oauth-token" ? `Bearer ${token}` : token;
-      await this.#hub.legacyTokenLogin(route, credential);
-      return {type: "complete", loginId, accountId: null, accountName: null};
-    }
+    const {route} = await this.#target(platform);
     const step = await this.#hub.loginSubmit(route, loginId, stepId, "user_input", values);
     return this.#remember(platform, step);
   }
@@ -908,21 +1016,7 @@ export class Communications {
     loginId: string,
     stepId: string,
   ): Promise<CommsLoginStepDto> {
-    const {route, api} = await this.#target(platform);
-    if (api === "legacy") {
-      const result = await this.#hub.legacyQrLoginWait(loginId);
-      return result.complete
-        ? {type: "complete", loginId, accountId: null, accountName: null}
-        : {
-            type: "display_and_wait",
-            loginId,
-            stepId,
-            display: "qr",
-            data: result.code!,
-            imageUrl: "",
-            instructions: "The QR code refreshed. Scan it in Discord mobile, then approve this login.",
-          };
-    }
+    const {route} = await this.#target(platform);
     const step = await this.#hub.loginWait(route, loginId, stepId);
     return this.#remember(platform, step);
   }
@@ -974,8 +1068,7 @@ export class Communications {
     // the flow, the user still needs the dialog to close.
     this.#cancelCookieLogin?.(platform);
     const target = await this.#target(platform).catch((): null => null);
-    if (target?.api === "bridgev2") await this.#hub.loginCancel(target.route, loginId);
-    else if (target?.api === "legacy") this.#hub.legacyQrLoginCancel(loginId);
+    if (target) await this.#hub.loginCancel(target.route, loginId);
     return this.#publish();
   }
 
@@ -988,8 +1081,8 @@ export class Communications {
       await this.#embedded?.stopWeChat?.().catch((): void => undefined);
       return this.#publish();
     }
-    const {route, api} = await this.#target(platform);
-    await this.#hub.logout(route, accountId, api);
+    const {route} = await this.#target(platform);
+    await this.#hub.logout(route, accountId);
     return this.#publish();
   }
 
@@ -1045,6 +1138,11 @@ export class Communications {
     return account;
   }
 
+  /** Mailbox list without the fleet-wide status probe around it. */
+  async emailAccounts(): Promise<CommsEmailAccountDto[]> {
+    return this.#email.list();
+  }
+
   /** The signed-in Matrix id, so a caller can tell the user's own messages apart. */
   get userId(): string | null {
     return this.#userId;
@@ -1065,7 +1163,7 @@ export class Communications {
 
   /** One merged address book over every linked account. A bridge directory is
    * the complete source where it exists; already-open direct rooms fill the
-   * gaps for legacy bridges and local relays. */
+   * gaps for local relays. */
   async contacts(): Promise<CommsContactDto[]> {
     const [rooms, status] = await Promise.all([this.chats(), this.status()]);
     const directRooms = rooms.filter((room) => !room.group && !room.space);
@@ -1162,11 +1260,37 @@ export class Communications {
   async createChat(request: CreateChatRequest): Promise<string> {
     const participantIds = [...new Set(request.participantIds.map((id) => id.trim()).filter(Boolean))];
     if (participantIds.length === 0) throw new Error("Choose at least one person.");
-    const {route, api} = await this.#target(request.platform);
-    if (api !== "bridgev2")
-      throw new Error(`${COMMS_PLATFORMS.find((entry) => entry.value === request.platform)?.label ?? request.platform} cannot start new conversations from the Hub yet.`);
+    const {route} = await this.#target(request.platform);
     await this.#load();
     return this.#hub.createChat(route, request.accountId, participantIds, request.name);
+  }
+
+  /** Resolves one exact Hub contact route to a DM, creating the remote room
+   * only when that contact does not already have one. This is the contact-side
+   * seam used by an agent draft; it never sends a message. */
+  async chatForContact(
+    contactId: string,
+    accountId?: string,
+  ): Promise<{id: string; name: string; platform: CommsPlatform}> {
+    const contact = (await this.contacts()).find((candidate) => candidate.id === contactId);
+    if (!contact) throw new Error("That Hub contact no longer exists. Read message_contacts again.");
+    const routes = accountId
+      ? contact.accounts.filter((account) => account.accountId === accountId)
+      : contact.accounts;
+    if (routes.length === 0)
+      throw new Error(`That contact is not reachable through account "${accountId}".`);
+    if (routes.length > 1)
+      throw new Error("That contact has multiple account routes. Pass the exact account_id from message_contacts.");
+    const route = routes[0]!;
+    if (route.chatId) return {id: route.chatId, name: contact.name, platform: contact.platform};
+    if (!route.remoteId)
+      throw new Error("That contact route cannot start a new conversation yet.");
+    const id = await this.createChat({
+      platform: contact.platform,
+      accountId: route.accountId,
+      participantIds: [route.remoteId],
+    });
+    return {id, name: contact.name, platform: contact.platform};
   }
 
   async resolveChatAlias(alias: string): Promise<{
@@ -1205,7 +1329,38 @@ export class Communications {
     limit: number,
     before?: string,
   ): Promise<{nextBefore: string | null; messages: MatrixMessage[]}> {
-    return this.#readWithEmbeddedAuthRecovery(() => this.#hub.messages(chatId, limit, before));
+    return this.#readWithEmbeddedAuthRecovery(async () => {
+      let page = await this.#hub.messages(chatId, limit, before);
+      const refresh = this.#embedded?.refreshWeChatMedia;
+      if (refresh && await this.#hub.roomPlatform(chatId) === "wechat") {
+        const candidates = page.messages.filter(item =>
+          !item.mine || item.body === "[unknown]" || item.body === "[Sticker]" ||
+          item.viewIn?.app === "WeChat" ||
+          item.attachments.some(attachment => attachment.kind === "image" || !attachment.url));
+        if (candidates.length && await refresh(chatId, candidates.map(item => item.eventId)).catch(() => false))
+          page = await this.#hub.messages(chatId, limit, before);
+      }
+      const load = this.#embedded?.loadOlderWeChatHistory;
+      if (!load || (await this.#hub.roomPlatform(chatId)) !== "wechat") return page;
+      // A complete boundary second must be imported before issuing the next
+      // local cursor. This also brings older native pages into local search.
+      while (true) {
+        const oldest = page.nextBefore && page.messages.length
+          ? Math.min(...page.messages.map((message) => Date.parse(message.sentAt))) : undefined;
+        let more: boolean;
+        try {
+          more = await load(chatId, limit + 1, oldest);
+        } catch (error) {
+          // Cached messages remain readable while the Desktop connection is
+          // unavailable. An empty requested page must expose the failure.
+          if (page.messages.length) return page;
+          throw error;
+        }
+        page = await this.#hub.messages(chatId, limit, before);
+        if (!more) break;
+      }
+      return page;
+    });
   }
 
   /** True for both Polymux's Matrix account and any linked bridge identity
@@ -1248,11 +1403,34 @@ export class Communications {
 
   async markChatRead(chatId: string, messageId: string): Promise<void> {
     await this.#load();
+    if (this.#embedded?.markWeChatRead && (await this.#hub.roomPlatform(chatId)) === "wechat")
+      return this.#embedded.markWeChatRead(chatId, messageId);
     return this.#hub.markRead(chatId, messageId);
   }
 
   async chatMembers(chatId: string): Promise<ChatMemberDto[]> {
-    return this.#readWithEmbeddedAuthRecovery(() => this.#hub.members(chatId));
+    return this.#readWithEmbeddedAuthRecovery(async () => {
+      if (this.#embedded?.weChatMembers && (await this.#hub.roomPlatform(chatId)) === "wechat") {
+        const native = await this.#embedded.weChatMembers(chatId);
+        if (native) return native;
+      }
+      return this.#hub.members(chatId);
+    });
+  }
+
+  async chatGroupInfo(chatId: string): Promise<ChatGroupInfoDto> {
+    await this.#load();
+    if (!this.#embedded?.weChatGroupInfo || (await this.#hub.roomPlatform(chatId)) !== "wechat")
+      throw new Error("Group renaming is available for connected WeChat groups");
+    return this.#embedded.weChatGroupInfo(chatId);
+  }
+
+  async renameChatGroup(chatId: string, name: string, expectedName: string): Promise<ChatGroupInfoDto> {
+    await this.#load();
+    if (!this.#embedded?.renameWeChatGroup || (await this.#hub.roomPlatform(chatId)) !== "wechat")
+      throw new Error("Group renaming is available for connected WeChat groups");
+    this.#embedded.assertWeChatLiveTestDestination?.(chatId);
+    return this.#embedded.renameWeChatGroup(chatId, name, expectedName);
   }
 
   async sendChat(
@@ -1262,7 +1440,10 @@ export class Communications {
     mentions?: ChatMentionsDto,
   ): Promise<string> {
     await this.#load();
-    return this.#hub.send(chatId, text, replyTo, mentions);
+    await this.#assertChatOutboundReady(chatId);
+    const eventId = await this.#hub.send(chatId, text, replyTo, mentions);
+    await this.#confirmOutbound(chatId, eventId);
+    return eventId;
   }
 
   /**
@@ -1274,16 +1455,118 @@ export class Communications {
     files: Array<{name: string; mimetype: string; bytes: Uint8Array}>,
   ): Promise<void> {
     await this.#load();
+    await this.#assertChatOutboundReady(chatId);
     for (const file of files) {
       const url = await this.#hub.upload(file.name, file.mimetype, file.bytes);
-      await this.#hub.sendMedia(chatId, {
+      const eventId = await this.#hub.sendMedia(chatId, {
         url,
         name: file.name,
         mimetype: file.mimetype,
         size: file.bytes.byteLength,
         msgtype: msgtypeOf(file.mimetype),
       });
+      await this.#confirmOutbound(chatId, eventId);
     }
+  }
+
+  async sendChatSticker(
+    chatId: string,
+    stickerId: string,
+  ): Promise<void> {
+    await this.#load();
+    await this.#assertChatOutboundReady(chatId);
+    if (
+      !this.#embedded?.weChatStickers ||
+      (await this.#hub.roomPlatform(chatId)) !== "wechat"
+    )
+      throw new Error("Native stickers are only available for WeChat chats");
+    const sticker = (await this.#embedded.weChatStickers()).find(
+      (entry) => entry.id === stickerId,
+    );
+    if (!sticker) throw new Error("That WeChat sticker is no longer available");
+    const eventId = await this.#hub.sendSticker(chatId, {
+      url: sticker.uri,
+      name: "Sticker",
+      mimetype: sticker.mimeType,
+      size: sticker.size,
+    });
+    await this.#confirmOutbound(chatId, eventId);
+  }
+
+  async chatStickers(chatId: string): Promise<ChatStickerDto[]> {
+    await this.#load();
+    if (
+      !this.#embedded?.weChatStickers ||
+      (await this.#hub.roomPlatform(chatId)) !== "wechat"
+    )
+      return [];
+    return (await this.#embedded.weChatStickers()).flatMap((sticker) => {
+      const url = mediaUrl(sticker.uri);
+      return url ? [{...sticker, url}] : [];
+    });
+  }
+
+  async recallChat(chatId: string, eventId: string): Promise<void> {
+    await this.#load();
+    if (
+      this.#embedded?.recallWeChat &&
+      (await this.#hub.roomPlatform(chatId)) === "wechat"
+    ) {
+      // Recall is an outbound native action too. It can be invoked from a
+      // message menu without the composer wake that precedes ordinary sends,
+      // so prepare the same hidden, signed-in desktop session before touching
+      // WeChat or redacting anything locally.
+      await this.#assertChatOutboundReady(chatId);
+      await this.#embedded.recallWeChat(chatId, eventId);
+      return;
+    }
+    await this.#hub.redact(chatId, eventId);
+  }
+
+  outboundDeliveryStatus(eventId: string): "unconfirmed" | undefined {
+    return this.#embedded?.outboundDeliveryStatus?.(eventId) ?? undefined;
+  }
+
+  async #confirmOutbound(chatId: string, eventId: string): Promise<void> {
+    if (
+      !this.#embedded?.waitForWeChatOutbound ||
+      (await this.#hub.roomPlatform(chatId)) !== "wechat"
+    )
+      return;
+    try {
+      await this.#embedded.waitForWeChatOutbound(eventId);
+    } catch (error) {
+      // The native request may still arrive. Keep its local event and status;
+      // returning it clears the submitted draft without presenting it as sent.
+      if (isWeChatDeliveryUnconfirmed(error)) return;
+      this.#embedded.discardOutbound?.(eventId);
+      throw error;
+    }
+  }
+
+  /** Rejects before Matrix creates an optimistic event, so an unready WeChat
+   * relay never produces a bubble that disappears and restores the draft. */
+  async #assertChatOutboundReady(chatId: string): Promise<void> {
+    if ((await this.#hub.roomPlatform(chatId)) !== "wechat") return;
+    // Acceptance mode is intentionally stricter than ordinary readiness: do
+    // not launch WeChat, upload a file, or create even a local event for a
+    // recipient outside File Transfer. The bridge repeats this check at the
+    // transport boundary for Matrix clients that bypass this UI.
+    this.#embedded?.assertWeChatLiveTestDestination?.(chatId);
+    if (await this.#embedded?.weChatSessionState?.() === "locked")
+      throw new Error("Unlock your Mac before sending through WeChat.");
+    if (!this.#embedded?.weChatOutboundReady) return;
+    if (await this.#embedded.weChatOutboundReady().catch(() => false)) return;
+    const failure = this.#embedded.weChatOutboundFailure?.();
+    if (failure) throw new Error(failure);
+    const session = await this.#embedded.weChatSessionState?.();
+    if (session === "locked")
+      throw new Error("Unlock your Mac before sending through WeChat.");
+    if (session === "signed_out" || session === "interactive_login")
+      throw new Error("Sign in to WeChat Desktop, then try again.");
+    throw new Error(
+      "Polymux is reconnecting WeChat's background sender automatically. Try again in a moment.",
+    );
   }
 
   async reactToChat(chatId: string, messageId: string, key: string): Promise<string> {
@@ -1342,6 +1625,21 @@ export class Communications {
 
   async mailDownload(id: string, account?: string, folder?: string): Promise<string[]> {
     return this.#email.download({id, account, folder});
+  }
+
+  async mailAttachment(
+    id: string,
+    part: string,
+    account?: string,
+    folder?: string,
+  ): Promise<MailAttachmentContentDto> {
+    const file = await this.#email.attachment({id, part, account, folder});
+    return {
+      id: file.id,
+      name: file.name,
+      mime: file.mime,
+      content: Uint8Array.from(file.content).buffer,
+    };
   }
 
   async mailFlag(
@@ -1497,6 +1795,7 @@ export class Communications {
     html?: string;
     draft?: boolean;
     attachments?: string[];
+    inlineAttachments?: Array<{path: string; contentId: string}>;
     importance?: "high" | "normal" | "low";
     inReplyTo?: string;
     references?: string[];
@@ -1535,19 +1834,22 @@ export class Communications {
   }
 
   /** Resolves the provisioning route for a platform, or explains why there is none. */
-  async #target(
-    platform: CommsPlatform,
-  ): Promise<{route: string; api: "bridgev2" | "legacy"}> {
+  async #target(platform: CommsPlatform): Promise<{route: string}> {
     const entry = COMMS_PLATFORMS.find((item) => item.value === platform);
     if (!entry?.route)
       throw new Error(
         `${entry?.label ?? platform} does not have a bridge that can be linked from here.`,
       );
     await this.#load();
+    // A cached settings snapshot can still be showing this bridge's login
+    // flows before the on-demand process from this launch is ready. Every
+    // login action comes through #target, so make readiness a backend
+    // invariant instead of relying on the renderer's best-effort warm-up.
+    await this.#embedded?.ensure?.(platform);
     const bridge = await this.#hub.bridge(platform, entry.label, entry.route);
     if (bridge.api === "none")
       throw new Error(`${entry.label} is not reachable through the hub.`);
-    return {route: entry.route, api: bridge.api};
+    return {route: entry.route};
   }
 
   async #load(): Promise<void> {
@@ -1555,7 +1857,16 @@ export class Communications {
       this.#ensureSync();
       return;
     }
-    this.#loaded = true;
+    if (this.#loadTask) return this.#loadTask;
+    const task = this.#loadOnce().finally(() => {
+      if (this.#loadTask === task) this.#loadTask = null;
+    });
+    this.#loadTask = task;
+    return task;
+  }
+
+  /** Completes authentication before another read is allowed to use the Hub. */
+  async #loadOnce(): Promise<void> {
     const stored = await this.#credentials
       .read(HUB_CREDENTIAL_ID)
       .catch((): undefined => undefined);
@@ -1568,21 +1879,61 @@ export class Communications {
     // user — no password, no server, no choice — so the account is minted the
     // first time anything asks, and "set up messaging" ceases to be a page.
     if (this.#embeddedMode && this.#embedded && !this.#matrixToken) {
-      try {
-        const minted = this.#embedded.provision(`polymux-${randomBytes(4).toString("hex")}`);
-        await this.#store(minted.userId, minted.accessToken, null);
-      } catch {
-        // The homeserver may still be binding its port; the next status()
-        // retries because #loaded only reflects the credential read.
-        this.#loaded = false;
-      }
+      const minted = this.#embedded.provision(`polymux-${randomBytes(4).toString("hex")}`);
+      await this.#store(minted.userId, minted.accessToken, null);
     }
+    // Set only after the credential read and any zero-config provisioning are
+    // both complete. Setting it before the first await let startup's parallel
+    // status/chats reads race ahead with a null Matrix token.
+    this.#loaded = true;
     this.#ensureSync();
   }
 
+  #backgroundClosed = false;
+  readonly #publishing = new Set<Promise<unknown>>();
+  #backgroundStarted = false;
+  #backgroundTimer: ReturnType<typeof setTimeout> | null = null;
+  #backgroundTask: Promise<void> | null = null;
+
+  /** Own WeChat ingestion independently of any mounted Hub window. The passive
+   * bridge start reads available stores and resumes an already signed-in app;
+   * it never invokes composer readiness or overrides an explicit unlink. */
+  startBackgroundSync(intervalMs = 3_000): void {
+    if (this.#backgroundStarted || this.#backgroundClosed || !this.#embeddedMode) return;
+    this.#backgroundStarted = true;
+    const tick = () => {
+      if (this.#backgroundClosed) return;
+      this.#backgroundTask = (async () => {
+        await this.#load();
+        if (this.#backgroundClosed || !this.#embeddedMode || !this.#userId || !this.#weChatLinked()) return;
+        await this.#embedded?.startWeChat?.(this.#userId);
+        await this.pollWeChat();
+      })().catch(() => {
+        // Access can arrive after launch. Retry without making Hub the owner.
+      }).finally(() => {
+        this.#backgroundTask = null;
+        if (!this.#backgroundClosed) {
+          this.#backgroundTimer = setTimeout(tick, intervalMs);
+          this.#backgroundTimer.unref?.();
+        }
+      });
+    };
+    tick();
+  }
+
   /** Stops background work owned by this backend/profile. */
-  close(): void {
+  async close(): Promise<void> {
+    this.#backgroundClosed = true;
+    if (this.#backgroundTimer) clearTimeout(this.#backgroundTimer);
+    this.#backgroundTimer = null;
+    // Let an in-flight status read finish before teardown: it reaches into the
+    // mailbox store and the keychain, and shutdown must not report completion
+    // while that work is still writing. An idle shutdown takes no extra turn.
+    if (this.#publishing.size) await Promise.allSettled([...this.#publishing]);
+    await this.#backgroundTask;
+    await this.#weChatPoll?.catch(() => {});
     this.#stopSync();
+    await this.#email.close();
   }
 
   /** Starts one sync follower for the current homeserver and credential. */
@@ -1631,10 +1982,18 @@ export class Communications {
     }
   }
 
-  async #publish(): Promise<CommsStatusDto> {
-    const status = await this.status();
-    this.#onChange(status);
-    return status;
+  #publish(): Promise<CommsStatusDto> {
+    const task = (async (): Promise<CommsStatusDto> => {
+      const status = await this.status();
+      this.#onChange(status);
+      return status;
+    })();
+    // A status read touches the mailbox store and the OS keychain. Shutdown
+    // has to know about the ones still running, or I/O lands after close()
+    // has already resolved.
+    this.#publishing.add(task);
+    void task.catch((): undefined => undefined).finally(() => this.#publishing.delete(task));
+    return task;
   }
 
   /**

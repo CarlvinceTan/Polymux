@@ -1,6 +1,6 @@
 <script module lang="ts">
-  export type WorkspaceTabKind = 'new' | 'media' | 'browser' | 'summary' | 'drive' | 'schedule' | 'calendar' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'view';
-  export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; section?: 'outputs' | 'references' | 'tasks'};
+  export type WorkspaceTabKind = 'new' | 'media' | 'browser' | 'summary' | 'drive' | 'calendar' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'phone' | 'locker' | 'terminal' | 'ide' | 'usage' | 'finance' | 'view' | 'settings' | 'connections';
+  export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; appId?: string; section?: 'outputs' | 'references' | 'tasks'};
 
   /**
    * Favicons this session has already tried to decode, and the ones that
@@ -134,21 +134,27 @@
     return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
   }
 
-  /** The hub, the drive and the schedule are places rather than documents:
+  /** The hub, the drive and tasks are places rather than documents:
    * there is only ever one of each, so they carry a fixed id and reopening one
    * surfaces the tab that already exists. */
   export const SINGLETON_TAB_IDS: Partial<Record<WorkspaceTabKind, string>> = {
     drive: 'workspace-drive',
-    schedule: 'workspace-schedule',
     calendar: 'workspace-calendar',
     hub: 'workspace-hub',
     subagents: 'workspace-subagents',
     tasks: 'workspace-tasks',
+    phone: 'workspace-phone',
+    locker: 'workspace-locker',
+    ide: 'workspace-ide',
+    finance: 'workspace-finance',
+    usage: 'workspace-usage',
+    settings: 'workspace-settings',
+    connections: 'workspace-connections',
   };
 </script>
 
 <script lang="ts">
-  import {onDestroy} from 'svelte';
+  import {onDestroy, type ComponentProps} from 'svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import {leasedUrls, isLeased} from './agentSurfaceLeases';
   import {
@@ -160,7 +166,7 @@
   import {scrollFadeX} from '../../shared/scrollFade';
   import {onThemeChange} from '../../shared/theme';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
-  import {SPLIT_LAYOUT_MIN_WIDTH, clampPanelWidth, workspaceResizeBounds} from '../../shared/layout/layoutSizing';
+  import {SPLIT_LAYOUT_MIN_WIDTH, clampPanelWidth, workspaceOvershootExpands, workspaceResizeBounds} from '../../shared/layout/layoutSizing';
   import MediaView from './MediaView.svelte';
   import BrowserView from './BrowserView.svelte';
   import NewView from './NewView.svelte';
@@ -169,12 +175,20 @@
   import TaskGlyph from '../../shared/components/TaskGlyph.svelte';
   import type {TaskTranscript} from './taskTranscript';
   import type {TaskStatus} from './taskStatus';
-  import HubView from './HubView.svelte';
+  import type HubViewComponent from './HubView.svelte';
   import SummaryView, {type SummaryViewData} from './SummaryView.svelte';
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
-  import ScheduleView, {type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './ScheduleView.svelte';
+  import type {ScheduleItem, ScheduleFrequency, ScheduleRun} from './ScheduleView.svelte';
   import CalendarView from './CalendarView.svelte';
   import TasksView, {type TaskCard} from './TasksView.svelte';
+  import type {GeneralSettingsDto, WorkspaceAppDto, WorkspaceAppsDto} from '@polymux/protocol';
+  import PhoneView from './PhoneView.svelte';
+  import TerminalView from './TerminalView.svelte';
+  import IDEview from './IDEview.svelte';
+  import LockerView from './LockerView.svelte';
+  import UsageView from './UsageView.svelte';
+  import FinanceView from './FinanceView.svelte';
+  import type SettingsPageComponent from '../settings/SettingsPage.svelte';
   import {t, translate, type MessageKey} from '../../../i18n';
 
   export let tabs: WorkspaceTab[] = [];
@@ -190,12 +204,35 @@
    * direction. Hub uses it to hand its panes over without a breakpoint jump. */
   export let motionProgress = 0;
   export let dockedWidth = 420;
+  let HubView: typeof HubViewComponent | null = null;
+  let hubViewPromise: Promise<typeof HubViewComponent> | null = null;
+  async function loadHubView(): Promise<typeof HubViewComponent> {
+    if (HubView) return HubView;
+    hubViewPromise ??= import('./HubView.svelte').then((module) => module.default);
+    return HubView = await hubViewPromise;
+  }
+  let SettingsView: typeof SettingsPageComponent | null = null;
+  let settingsViewPromise: Promise<typeof SettingsPageComponent> | null = null;
+  async function loadSettingsView(): Promise<typeof SettingsPageComponent> {
+    if (SettingsView) return SettingsView;
+    settingsViewPromise ??= import('../settings/SettingsPage.svelte').then((module) => module.default);
+    return SettingsView = await settingsViewPromise;
+  }
+  export let settingsMode: ComponentProps<typeof SettingsPageComponent>['initialMode'] = '';
+  export let currentPinnedViews: GeneralSettingsDto['pinnedViews'] = [];
+  export let onAgentNotice: (severity: 'warning' | 'error', message: string) => void = () => {};
+  export let onGeneralChange: (settings: GeneralSettingsDto) => void = () => {};
+  export let onAppsChange: (apps: WorkspaceAppsDto) => void = () => {};
+  export let onChatsChanged: () => void = () => {};
   export let reservedWidth = 0;
+  /** Current horizontal centre of the main (conversation) pane. */
+  export let mainMidX: number | undefined = undefined;
   export let summaryData: SummaryViewData = {outputs: [], references: [], tasks: []};
   /** Subagent transcripts, keyed by the task id the tab carries. */
   export let taskTranscripts: Record<string, TaskTranscript> = {};
   export let onOpenLink: (url: string, title: string) => void = () => {};
   export let onOpenTask: (task: SummaryViewData['tasks'][number]) => void = () => {};
+  export let onOpenMedia: (url: string, name: string) => void = () => {};
   export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
   export let driveRoot: DriveEntry = {id: 'drive-root', name: translate('workspace.drive'), kind: 'folder', children: []};
   /** Storage backends the drive can be switched between. */
@@ -252,18 +289,29 @@
   export let onReorderTabs: (ids: string[]) => void = () => {};
   /** Opens a previously visited page in a browser tab. */
   export let onOpenUrl: (url: string, title: string) => void = () => {};
+  export let conversationId = '';
+  export let apps: WorkspaceAppDto[] = [];
+  export let pinnedAppIds: string[] = [];
+  export let onOpenApp: (app: WorkspaceAppDto) => void = () => {};
   export let onToggleExpand: () => void = () => {};
   export let onResize: (width: number) => void = () => {};
   export let onResizeState: (resizing: boolean) => void = () => {};
+  /** Clears stepped expand/minimise motion when the drawer is dismissed. */
+  export let onSlideWidth: (width: number | null) => void = () => {};
+  /** A deliberate drag through half of the drawer dismisses the whole
+   * workspace; closing a tab remains a separate action. */
+  export let onCollapse: () => void = () => {};
   /** True while another surface covers the drawer; the embedded browser's
    * native view must hide under it. */
   export let browserObscured = false;
   export let onTabState: (id: string, patch: {title?: string; url?: string; favicon?: string | null}) => void = () => {};
-  export let pinnedViews: Array<'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'> = [];
-  export let onTogglePin: (kind: 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') => void = () => {};
+  type PinnedView = GeneralSettingsDto['pinnedViews'][number];
+  export let pinnedViews: PinnedView[] = [];
+  export let onTogglePin: (kind: PinnedView) => void = () => {};
   export let onOpenSeparateWindow: (
     kind: WorkspaceTabKind,
     placement?: {x: number; y: number; width?: number; height?: number},
+    tabId?: string,
   ) => void = () => {};
 
   let panel: HTMLElement;
@@ -331,19 +379,27 @@
       y: window.screenY + bounds.top + 24,
       width: Math.round(bounds.width),
       height: Math.round(bounds.height),
-    });
+    }, tab.id);
   }
 
-  $: isSingletonKind = (kind: WorkspaceTabKind): kind is 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks' =>
-    kind === 'drive' || kind === 'schedule' || kind === 'calendar' || kind === 'hub' || kind === 'tasks';
+  $: isSingletonKind = (kind: WorkspaceTabKind): kind is PinnedView =>
+    kind === 'drive' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'phone' || kind === 'locker' || kind === 'media' || kind === 'terminal' || kind === 'ide' || (kind === 'usage' || kind === 'finance');
 
   $: activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+  $: if (activeTab?.kind === 'hub') void loadHubView();
+  $: if (activeTab?.kind === 'settings' || activeTab?.kind === 'connections') void loadSettingsView();
   /** A task tab is named by its row in Summary and takes its status from it, so
    * the tab and the row can never disagree. */
   $: activeTask = summaryData.tasks.find((task) => task.id === activeTab?.id);
   /** The one-of-a-kind views drop out of the menus once they are open: there is
    * nothing left to create, only a tab to click. */
-  $: openKinds = new Set([...tabs.map((tab) => tab.kind), ...unavailableKinds]);
+  $: openKinds = new Set([
+    ...tabs.flatMap((tab) => {
+      if (tab.kind === 'terminal') return tab.appId ? [tab.appId] : [];
+      return [tab.kind, ...(tab.appId ? [tab.appId] : [])];
+    }),
+    ...unavailableKinds,
+  ]);
   /** The pages the launcher offers to pick up again. */
   $: historySuggestions = $visitHistory.slice(0, HISTORY_SUGGESTION_LIMIT);
 
@@ -352,15 +408,25 @@
    * a tab opened before a language switch would otherwise keep the old wording. */
   const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {
     drive: 'workspace.drive',
-    schedule: 'workspace.schedule',
     calendar: 'workspace.calendar',
     hub: 'workspace.hub',
     subagents: 'workspace.subagents',
     tasks: 'workspace.tasks',
+    phone: 'workspace.phone',
+    locker: 'workspace.locker',
+    media: 'workspace.media',
+    terminal: 'workspace.terminal',
+    ide: 'workspace.ide',
+    finance: 'workspace.finance', usage: 'workspace.usage',
+    settings: 'settings.title',
+    connections: 'workspace.connections',
   };
   $: tabTitle = (tab: WorkspaceTab): string => {
-    const key = SINGLETON_TAB_IDS[tab.kind] === tab.id ? singletonTitles[tab.kind] : undefined;
+    const key = SINGLETON_TAB_IDS[tab.kind] === tab.id || tab.kind === 'terminal'
+      ? singletonTitles[tab.kind]
+      : undefined;
     if (key) return $t(key);
+    if (tab.kind === 'media' && !tab.url) return $t('workspace.media');
     // A delegated run is named after what it was asked to do, which on its own
     // reads like any other tab. Saying it is a task is what tells them apart.
     if (tab.kind === 'subagent') return $t('view.taskTitle', {title: tab.title || $t('activity.delegatedTask')});
@@ -372,19 +438,25 @@
   $: taskTabStatus = (tab: WorkspaceTab): TaskStatus =>
     summaryData.tasks.find((task) => task.id === tab.id)?.status ?? 'active';
 
-  const tabIcons: Record<WorkspaceTabKind, 'plus' | 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'clock' | 'calendar' | 'send' | 'task' | 'tasks' | 'panel'> = {
+  const tabIcons: Record<WorkspaceTabKind, 'plus' | 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'calendar' | 'send' | 'task' | 'tasks' | 'phone' | 'key' | 'terminal' | 'code' | 'chart' | 'banknote' | 'panel' | 'settings' | 'connections'> = {
     new: 'plus',
     media: 'image',
     browser: 'globe',
     summary: 'summary',
     drive: 'drive',
-    schedule: 'clock',
     calendar: 'calendar',
     hub: 'chat',
     subagent: 'task',
     subagents: 'send',
     tasks: 'tasks',
+    phone: 'phone',
+    locker: 'key',
+    terminal: 'terminal',
+    ide: 'code',
+    finance: 'banknote', usage: 'chart',
     view: 'panel',
+    settings: 'settings',
+    connections: 'connections',
   };
 
   /** Hides the embedded page only once the closing slide has finished. While
@@ -416,7 +488,7 @@
    * A favicon is tested off-screen and only shown once it decodes. The main
    * process validates the bytes before sending them, but svg and ico pass
    * through undecoded, and a tab restored from a snapshot can carry an icon
-   * that no longer resolves — putting either straight in an <img> paints the
+   * that no longer resolves — putting either straight in an image element paints the
    * browser's broken-image placeholder for as long as the failure takes to
    * arrive. Waiting means the globe holds the slot and is replaced, never
    * flashed over.
@@ -466,10 +538,12 @@
   }
 
   function resizeFromPointer(clientX: number): void {
-    onResize(clampPanelWidth(window.innerWidth - clientX, workspaceResizeBounds(window.innerWidth, reservedWidth)));
+    const bounds = workspaceResizeBounds(window.innerWidth, reservedWidth);
+    onResize(clampPanelWidth(window.innerWidth - clientX, bounds));
   }
 
   let pointerResizing = false;
+  let resizeStartWidth = 0;
   let pendingResizeX: number | null = null;
   let resizeFrame = 0;
 
@@ -500,9 +574,39 @@
     resizeFromPointer(clientX);
   }
 
+  function crossedCollapseThreshold(clientX: number): boolean {
+    return resizeStartWidth > 0 && window.innerWidth - clientX <= resizeStartWidth / 2;
+  }
+
+  function crossedExpandThreshold(clientX: number): boolean {
+    return workspaceOvershootExpands(clientX, window.innerWidth, expanded, reservedWidth, mainMidX);
+  }
+
+  function finishPointerResize(event: PointerEvent, action: 'keep' | 'collapse' | 'expand', clientX = 0): void {
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+    resizeFrame = 0;
+    pendingResizeX = null;
+    pointerResizing = false;
+    resizeStartWidth = 0;
+    (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
+    if (action === 'collapse') {
+      onSlideWidth(null);
+      onCollapse();
+      onResizeState(false);
+    } else if (action === 'expand') {
+      const {max} = workspaceResizeBounds(window.innerWidth, reservedWidth);
+      onResize(max);
+      onToggleExpand();
+      onResizeState(false);
+    } else {
+      onResizeState(false);
+    }
+  }
+
   function startResize(event: PointerEvent): void {
     if (expanded || window.innerWidth < SPLIT_LAYOUT_MIN_WIDTH) return;
     pointerResizing = true;
+    resizeStartWidth = panel.getBoundingClientRect().width;
     onResizeState(true);
     (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
     flushPointerResize(latestClientX(event));
@@ -511,16 +615,23 @@
 
   function dragResize(event: PointerEvent): void {
     if (!pointerResizing) return;
-    queuePointerResize(latestClientX(event));
+    const clientX = latestClientX(event);
+    if (crossedCollapseThreshold(clientX)) finishPointerResize(event, 'collapse', clientX);
+    else if (crossedExpandThreshold(clientX)) finishPointerResize(event, 'expand', clientX);
+    else queuePointerResize(clientX);
     event.preventDefault();
   }
 
   function stopResize(event: PointerEvent): void {
     if (!pointerResizing) return;
-    flushPointerResize(latestClientX(event));
-    pointerResizing = false;
-    onResizeState(false);
-    (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
+    const clientX = latestClientX(event);
+    let action: 'keep' | 'collapse' | 'expand' = 'keep';
+    if (event.type !== 'pointercancel') {
+      if (crossedCollapseThreshold(clientX)) action = 'collapse';
+      else if (crossedExpandThreshold(clientX)) action = 'expand';
+    }
+    if (action === 'keep') flushPointerResize(clientX);
+    finishPointerResize(event, action, clientX);
   }
 
   onDestroy(() => {
@@ -613,10 +724,7 @@
                 <!-- Results the user has not opened yet are worth seeing from
                      outside the view, so the tab carries the same dot the row
                      does. -->
-                {#if tab.kind === 'schedule' && unreadSchedules > 0}
-                  <span class="tab-unread" aria-label={$t('schedule.unread')}></span>
-                {/if}
-                {#if tab.kind === 'tasks' && unreadTasks > 0}
+                {#if tab.kind === 'tasks' && (unreadTasks > 0 || unreadSchedules > 0)}
                   <span class="tab-unread" aria-label={$t('tasks.unread')}></span>
                 {/if}
               </span>
@@ -648,16 +756,27 @@
     class="workspace-content"
     class:empty={!activeTab || activeTab.kind === 'new'}
     class:browser={activeTab?.kind === 'browser' || activeTab?.kind === 'view'}
+    class:settings={activeTab?.kind === 'settings' || activeTab?.kind === 'connections'}
+    class:ide={activeTab?.kind === 'ide'}
+    class:workspace-usage={activeTab?.kind === 'usage'}
   >
+    {#each tabs.filter((tab) => tab.kind === 'ide') as tab (`${conversationId}:${tab.id}`)}
+      <div class="workspace-persistent-view" hidden={activeTab?.id !== tab.id}>
+        <IDEview />
+      </div>
+    {/each}
     {#if !activeTab || activeTab.kind === 'new'}
       <NewView
         {openKinds}
+        {apps}
+        {pinnedAppIds}
         {historySuggestions}
         onChoose={onNew}
+        onChooseApp={onOpenApp}
         {onOpenUrl}
         usableFavicon={(favicon) => usableFavicon(favicon, faviconsSettled + themeRevision)}
       />
-    {:else if activeTab.kind === 'media'}<MediaView title={activeTab.title} src={activeTab.url ?? ''}/>
+    {:else if activeTab.kind === 'media'}{#key `${activeTab.id}:${activeTab.url ?? ''}`}<MediaView title={activeTab.title} src={activeTab.url ?? ''} onOpen={(next) => onTabState(activeTab.id, next)}/>{/key}
     <!-- Keyed by tab: switching between two browser tabs must destroy the old
          BrowserView (which hides its native page) and mount the new one, not
          retarget one instance and leave the old page painted on screen. -->
@@ -671,12 +790,24 @@
       {onOpenFilePath}
     />
     {:else if activeTab.kind === 'subagents'}<SubagentsView subagents={summaryData.tasks} onOpenSubagent={onOpenTask}/>
-    {:else if activeTab.kind === 'hub'}<HubView
-      {onOpenFilePath}
-      drawerMotionProgress={motionProgress}
-      dockedDrawerWidth={dockedWidth}
-    />
+    {:else if activeTab.kind === 'hub'}
+      {#if HubView}
+        <HubView
+          {onOpenMedia}
+          {onOpenFilePath}
+          drawerMotionProgress={motionProgress}
+          dockedDrawerWidth={dockedWidth}
+        />
+      {:else}
+        <div class="workspace-view-loading" role="status">Loading Hub…</div>
+      {/if}
     {:else if activeTab.kind === 'calendar'}<CalendarView/>
+    {:else if activeTab.kind === 'phone'}<PhoneView/>
+    {:else if activeTab.kind === 'terminal'}{#key activeTab.id}<TerminalView sessionId={activeTab.id}/>{/key}
+    {:else if activeTab.kind === 'ide'}<!-- kept mounted above -->
+    {:else if activeTab.kind === 'locker'}<LockerView/>
+    {:else if activeTab.kind === 'finance'}<FinanceView/>
+    {:else if activeTab.kind === 'usage'}<UsageView/>
     {:else if activeTab.kind === 'drive'}<DriveView
       title={activeTab.title}
       root={driveRoot}
@@ -698,7 +829,24 @@
       onDownload={driveActions?.download ?? null}
       onDelete={driveActions?.remove ?? null}
     />
-    {:else if activeTab.kind === 'schedule' || activeTab.kind === 'tasks'}<TasksView items={taskItems} error={tasksError} onDismissError={onDismissTasksError} onCreateCard={onCreateTaskCard} onUpdateCard={onUpdateTaskCard} onDeleteCard={onDeleteTaskCard} onMarkRead={onMarkTasksRead} onRecycleCard={onRecycleTaskCard} schedules={scheduleItems} scheduleError={scheduleError} onDismissScheduleError={onDismissScheduleError} onOpenScheduleRun={onOpenScheduleRun} onMarkScheduleRead={onMarkScheduleRead} onToggleSchedule={onToggleSchedule} onSaveSchedule={onSaveSchedule} onDeleteSchedule={onDeleteSchedule} onRunSchedule={onRunSchedule}/>
+    {:else if activeTab.kind === 'tasks'}<TasksView items={taskItems} error={tasksError} onDismissError={onDismissTasksError} onCreateCard={onCreateTaskCard} onUpdateCard={onUpdateTaskCard} onDeleteCard={onDeleteTaskCard} onMarkRead={onMarkTasksRead} onRecycleCard={onRecycleTaskCard} schedules={scheduleItems} scheduleError={scheduleError} onDismissScheduleError={onDismissScheduleError} onOpenScheduleRun={onOpenScheduleRun} onMarkScheduleRead={onMarkScheduleRead} onToggleSchedule={onToggleSchedule} onSaveSchedule={onSaveSchedule} onDeleteSchedule={onDeleteSchedule} onRunSchedule={onRunSchedule}/>
+    {:else if activeTab.kind === 'settings' || activeTab.kind === 'connections'}
+      {#if SettingsView}
+        {#key activeTab.kind}
+          <SettingsView
+            surface={activeTab.kind === 'connections' ? 'connections' : 'settings'}
+            initialMode={activeTab.kind === 'connections' ? 'connections' : settingsMode}
+            workspaceExpanded={expanded}
+            {currentPinnedViews}
+            {onAgentNotice}
+            {onGeneralChange}
+            {onAppsChange}
+            {onChatsChanged}
+          />
+        {/key}
+      {:else}
+        <div class="workspace-view-loading" role="status">{activeTab.kind === 'connections' ? 'Loading Connections…' : 'Loading Settings…'}</div>
+      {/if}
     {:else}<SummaryView section={activeTab.section ?? 'outputs'} data={summaryData} {onOpenTask}/>
     {/if}
   </div>
@@ -707,9 +855,9 @@
 {#if contextMenu}
   <div class="polymux-dropdown-menu tab-context-menu" role="menu" style="position: fixed; left: {contextMenu.x}px; top: {contextMenu.y}px; z-index: 200;">
     {#if isSingletonKind(contextMenu.tab.kind)}
-      <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { const kind = contextMenu?.tab.kind as 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks'; closeContextMenu(); onTogglePin(kind); }}>
-        <Icon name={pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') ? 'pin-off' : 'pin'} size={14}/>
-        <span>{pinnedViews.includes(contextMenu.tab.kind as 'drive' | 'schedule' | 'calendar' | 'hub' | 'tasks') ? $t('titlebar.unpinView') : $t('titlebar.pinView')}</span>
+      <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { const kind = contextMenu?.tab.kind as PinnedView; closeContextMenu(); onTogglePin(kind); }}>
+        <Icon name={pinnedViews.includes(contextMenu.tab.kind as PinnedView) ? 'pin-filled' : 'pin'} size={14}/>
+        <span>{pinnedViews.includes(contextMenu.tab.kind as PinnedView) ? $t('titlebar.unpinView') : $t('titlebar.pinView')}</span>
       </button>
       <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => { if (contextMenu) openTabInSeparateWindow(contextMenu.tab); }}>
         <Icon name="send" size={14}/>

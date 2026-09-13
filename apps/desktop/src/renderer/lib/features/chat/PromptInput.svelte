@@ -1,6 +1,11 @@
 <script lang="ts">
-  import {onMount} from 'svelte';
-  import {readableError} from '../../shared/errors';
+  import AssistantDevicePicker from '../team/AssistantDevicePicker.svelte';
+  export let devices: import('@polymux/protocol').TeamHostDto[] = [];
+  export let deviceId = '';
+  export let deviceLocked = false;
+  export let onDeviceChange: (id: string) => void = () => {};
+  import {onMount, tick} from 'svelte';
+  import {createDictation} from '../../shared/components/dictation';
   import {polymuxApi} from '../../api/polymux';
   import type {ModelDto, ReasoningEffort} from '@polymux/protocol';
   import Icon from '../../shared/components/Icon.svelte';
@@ -8,13 +13,10 @@
   import ProviderLogo from '../../shared/components/ProviderLogo.svelte';
   import {loadAgentDraft, saveAgentDraft} from '../../shared/state/composerDrafts';
   import {t, translate} from '../../../i18n';
+  import {MENU_EDGE_MARGIN, clampToMenuEdge} from '../../shared/layout/menuPlacement';
 
   export let active = false;
   export let speechModeEnabled = true;
-  /** Basic mode leaves the model to whichever provider is configured, so the
-   * picker has nothing to ask and is left out of the option strip. */
-  export let advancedMode = false;
-  export let onOpenPlugins: () => void = () => {};
   /** Seconds of silence that end dictation, or null to listen until pressed again. */
   export let dictationAutoStopSeconds: number | null = 6;
   /** Empty means the default prompt, which follows the language. */
@@ -59,6 +61,8 @@
   const fixedEffortModels = [/-reasoner\b/, /^grok-4(?!.*mini)/, /-pro\b/];
   let modelMenuOpen = false;
   let modelWrap: HTMLDivElement;
+  let modelButton: HTMLButtonElement;
+  let modelMenuEl: HTMLElement;
   /** Only models whose provider is configured — the ones a run can actually
       use — reach the menu. */
   let availableModels: ModelDto[] = [];
@@ -68,54 +72,24 @@
   let searchField: HTMLInputElement;
   /** The row whose reasoning submenu is showing, keyed provider/id. */
   let openModelKey = '';
-  /** Where that submenu sits, in pixels from the menu's top. */
-  let openModelTop = 0;
+  let modelSubmenu: HTMLElement;
+  let modelRow: HTMLElement;
 
   const modelKey = (model: ModelDto): string => `${model.provider}/${model.id}`;
   const adjustable = (model: ModelDto): boolean =>
     model.reasoning && !fixedEffortModels.some((pattern) => pattern.test(model.id));
 
-  // Dictation writes into the draft; speech mode is the primary button instead.
-  // Recording happens here, but recognition runs locally in the main process
-  // (whisper.cpp): the Web Speech API needs Google's cloud recogniser, which
-  // Electron does not ship, so it always failed mid-session.
-  // The button no longer waits on any of it: pressing it settles the label in
-  // the same tick, and each press owns a session so a transcript still landing
-  // from the last one cannot write over the next.
-  type Dictation = {
-    /** Where this session's text sits in the draft — the caret at press time. */
-    start: number;
-    /** What the last pass wrote there, so the next one revises that span rather
-        than appending a second copy of the same sentence. */
-    written: string;
-    chunks: Blob[];
-    stream: MediaStream | null;
-    recorder: MediaRecorder | null;
-    /** Recording is over: stop feeding this session audio. */
-    closed: boolean;
-    /** The recorder flushed its last slice; release once the queue drains. */
-    drained: boolean;
-    pending: boolean;
-    running: boolean;
-    /** Tears down the silence watch; null when nothing is being watched. */
-    listen: (() => void) | null;
-  };
-  /** How often a slice is cut and handed to a transcription pass. */
-  const SLICE_INTERVAL = 600;
-  /** How often the level is sampled while listening. */
-  const LEVEL_INTERVAL = 100;
-  /** Speech has to clear the room's own noise by this much, in dB. Rooms differ
-   * far more than voices do, so the bar is set against a floor that follows the
-   * room rather than at a fixed level. */
-  const VOICE_MARGIN = 12;
-  /** …but never treat the near-silence of a muted or dead mic as speech. */
-  const VOICE_FLOOR = -55;
-  /** The session taking audio, or null when the button reads VOICE. */
-  let recording: Dictation | null = null;
-  /** The newest session, recording or not — it alone may write to the draft. */
-  let owner: Dictation | null = null;
   let dictationListening = false;
   let dictationError = '';
+  const dictation = createDictation({
+    getText: () => draft,
+    caret: () => editor?.caret() ?? draft.length,
+    setText: (text, caret) => { draft = text; editor?.setText(text, caret); },
+    autoStopSeconds: () => dictationAutoStopSeconds,
+    onState: (listening, error) => { dictationListening = listening; dictationError = error; },
+  });
+  const toggleDictation = () => dictation.toggle();
+  const cancelDictation = () => dictation.cancel();
 
   $: hasContent = draft.length > 0 || attachments.length > 0;
   /** Content is always sendable; with an empty composer the button offers to
@@ -164,6 +138,7 @@
     const ids = new Set(ordered.map((chip) => chip.id));
     const files = attachments.filter((attachment) => ids.has(attachment.id)).map((attachment) => attachment.file);
     if (!trimmed && !files.length) return;
+    cancelDictation();
     onSend(trimmed, files.length ? files : attachments.map((attachment) => attachment.file), goalEnabled, immediate);
     goalEnabled = false;
     draft = '';
@@ -184,32 +159,82 @@
       : [{value: reasoning, label: model.reasoning ? $t('reasoning.default') : $t('reasoning.none')}];
   }
 
-  /** A menu row and a submenu option are both 28px tall, and the submenu adds
-      its 4px padding twice plus the Reasoning heading. */
-  const MENU_ROW_HEIGHT = 28;
-  const SUBMENU_CHROME = 28;
+  /** The list hangs off the MODEL word, at body level so a drawer or scroller
+      cannot clip it. Welcome drops it below; a conversation lifts it above. */
+  function floatMenu(node: HTMLElement, side: 'default' | 'welcome') {
+    document.body.appendChild(node);
+    const gap = 6;
+    const margin = 8;
+    let openDown = side === 'welcome';
+    const place = () => {
+      const button = modelButton;
+      if (!button) return;
+      const word = (button.querySelector('span:last-of-type') ?? button).getBoundingClientRect();
+      const trigger = button.getBoundingClientRect();
+      const box = node.getBoundingClientRect();
+      const left = Math.max(margin, Math.min(
+        word.left + word.width / 2 - box.width / 2,
+        window.innerWidth - margin - box.width,
+      ));
+      let top = openDown ? trigger.bottom + gap : trigger.top - gap - box.height;
+      top = Math.max(margin, Math.min(top, window.innerHeight - margin - box.height));
+      node.style.left = `${left}px`;
+      node.style.top = `${top}px`;
+      node.style.visibility = 'visible';
+    };
+    node.style.visibility = 'hidden';
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(node);
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return {
+      update(next: 'default' | 'welcome') {
+        openDown = next === 'welcome';
+        place();
+      },
+      destroy() {
+        observer.disconnect();
+        window.removeEventListener('resize', place);
+        window.removeEventListener('scroll', place, true);
+        node.remove();
+      },
+    };
+  }
 
-  /** How close a submenu may come to the window edge before it slides back in. */
-  const SUBMENU_MARGIN = 8;
+  /** Escape the conversation scroller and measure the actual rendered menu. */
+  function floatSubmenu(node: HTMLElement, _key: string) {
+    document.body.appendChild(node);
+    const place = () => {
+      const row = modelRow?.getBoundingClientRect();
+      const menu = modelRow?.closest('.model-menu')?.getBoundingClientRect();
+      if (!row || !menu) return;
+      const box = node.getBoundingClientRect();
+      const right = menu.right + 4;
+      const left = right + box.width <= window.innerWidth - MENU_EDGE_MARGIN
+        ? right : menu.left - 4 - box.width;
+      node.style.left = `${clampToMenuEdge(left, box.width, window.innerWidth)}px`;
+      node.style.top = `${clampToMenuEdge(row.top - 4, box.height, window.innerHeight)}px`;
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(node);
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return {
+      update: place,
+      destroy() {
+        observer.disconnect();
+        window.removeEventListener('resize', place);
+        window.removeEventListener('scroll', place, true);
+        node.remove();
+      },
+    };
+  }
 
-  /**
-   * Opens a row's submenu and lines its top up with that row, measured against
-   * the menu because the submenu hangs outside the scrolling list.
-   *
-   * The submenu is taller than a row, so a row low in the list would hang it
-   * off the bottom of the window. Alignment is therefore kept only while it
-   * fits: past that the submenu slides up to rest against the edge, the way a
-   * native menu does, rather than running off the screen.
-   */
   function openRow(model: ModelDto, row: HTMLElement): void {
+    modelRow = row;
     openModelKey = modelKey(model);
-    const menu = row.closest('.model-menu');
-    if (!menu) return;
-    const menuTop = menu.getBoundingClientRect().top;
-    const submenuHeight = SUBMENU_CHROME + effortsFor(model).length * MENU_ROW_HEIGHT;
-    const lowest = window.innerHeight - SUBMENU_MARGIN - submenuHeight;
-    const wanted = row.getBoundingClientRect().top - 4;
-    openModelTop = Math.max(SUBMENU_MARGIN, Math.min(wanted, lowest)) - menuTop;
   }
 
   /** One choice settles both halves — which model runs and how hard it thinks —
@@ -255,7 +280,7 @@
       }
     }
     // The search takes the caret so typing filters straight away.
-    await Promise.resolve();
+    await tick();
     searchField?.focus();
   }
 
@@ -265,7 +290,7 @@
     // text it cleared — is no longer inside anything, so containment would read
     // it as an outside click and close the menu under the user.
     if (!target.isConnected) return;
-    if (modelMenuOpen && !modelWrap?.contains(target)) closeModelMenu();
+    if (modelMenuOpen && !modelWrap?.contains(target) && !modelMenuEl?.contains(target) && !modelSubmenu?.contains(target)) closeModelMenu();
   }
 
   function modelMenuKeydown(event: KeyboardEvent): void {
@@ -358,248 +383,6 @@
     addFiles(event.dataTransfer?.files ?? []);
   }
 
-  /** Synchronous on purpose: the label and the ping settle in this tick, and
-      the mic is acquired afterwards. */
-  function toggleDictation(): void {
-    if (dictationListening) {
-      stopDictation();
-      return;
-    }
-    dictationListening = true;
-    dictationError = '';
-    const next: Dictation = {
-      // Dictation adds to the composer, so it starts where the caret is and
-      // leaves the text on either side of it alone.
-      start: editor?.caret() ?? draft.length,
-      written: '',
-      chunks: [],
-      stream: null,
-      recorder: null,
-      closed: false,
-      drained: false,
-      pending: false,
-      running: false,
-      listen: null,
-    };
-    recording = next;
-    owner = next;
-    void openRecorder(next).catch(() => abandonRecorder(next, translate('dictation.startFailed')));
-  }
-
-  /** Hands the mic back and leaves the clip transcribing in the background, so
-      the label returns to VOICE without waiting for whisper.cpp. */
-  function stopDictation(): void {
-    const session = recording;
-    dictationListening = false;
-    recording = null;
-    if (!session) return;
-    endCapture(session);
-    // No recorder yet means the mic never opened, so there is nothing to flush.
-    if (session.recorder && session.recorder.state !== 'inactive') session.recorder.stop();
-    else releaseRecorder(session);
-  }
-
-  /** Unmount path: drop the clip instead of transcribing it. */
-  function cancelDictation(): void {
-    const session = recording;
-    owner = null;
-    recording = null;
-    dictationListening = false;
-    if (!session) return;
-    endCapture(session);
-    if (session.recorder) {
-      session.recorder.onstop = null;
-      if (session.recorder.state !== 'inactive') session.recorder.stop();
-    }
-    releaseRecorder(session);
-  }
-
-  /** Marks a session finished capturing: the watcher stops, and later audio and
-      timers can no longer act on it. */
-  function endCapture(session: Dictation): void {
-    session.closed = true;
-    session.listen?.();
-    session.listen = null;
-  }
-
-  function releaseRecorder(session: Dictation): void {
-    session.stream?.getTracks().forEach((track) => track.stop());
-    session.stream = null;
-    session.chunks = [];
-  }
-
-  async function openRecorder(session: Dictation): Promise<void> {
-    const permission = await api.permissions.request('microphone');
-    if (session.closed) return;
-    if (permission !== 'granted') {
-      abandonRecorder(session, translate('dictation.noPermission'));
-      return;
-    }
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({audio: true});
-    } catch {
-      abandonRecorder(session, translate('dictation.noMicrophone'));
-      return;
-    }
-    session.stream = stream;
-    // Stopped while the mic was being handed over: nothing was captured, so
-    // drop the stream rather than record into a session nobody is watching.
-    if (session.closed) {
-      releaseRecorder(session);
-      return;
-    }
-    const next = new MediaRecorder(stream);
-    next.ondataavailable = (event) => {
-      if (!event.data.size) return;
-      session.chunks.push(event.data);
-      void transcribeRecording(session);
-    };
-    next.onstop = () => {
-      session.drained = true;
-      void transcribeRecording(session);
-    };
-    session.recorder = next;
-    // Each data slice extends the same WebM recording. Re-running local
-    // Whisper over the accumulated clip lets the draft show partial results
-    // without depending on a cloud streaming recogniser.
-    //
-    // The cadence is what dictation latency mostly is: a word spoken just after
-    // a slice boundary waits this long before any pass can see it. Partials run
-    // against a resident model in ~110ms, so the slice is the floor, not the
-    // engine.
-    next.start(SLICE_INTERVAL);
-    try {
-      watchForSilence(session, stream);
-    } catch {
-      // No level metering available: dictation still records, and the button
-      // stays the way to end it.
-    }
-  }
-
-  /** Stops listening once the room has been quiet for the configured window.
-      Whatever was said before the silence is still transcribed, so this only
-      spares the user from pressing the button again after they trail off. */
-  function watchForSilence(session: Dictation, stream: MediaStream): void {
-    const limit = dictationAutoStopSeconds;
-    if (!limit) return;
-    const context = new AudioContext();
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 1024;
-    const source = context.createMediaStreamSource(stream);
-    source.connect(analyser);
-    const samples = new Float32Array(analyser.fftSize);
-    // Starts low so a genuinely quiet room does not have to shout to be heard,
-    // and creeps up so a fan or a fridge starting mid-sentence re-baselines.
-    let floor = -70;
-    // Measured rather than counted in ticks: a throttled window fires the
-    // interval late, and the user still expects the window they configured.
-    let lastVoice = performance.now();
-    const timer = setInterval(() => {
-      analyser.getFloatTimeDomainData(samples);
-      let sum = 0;
-      for (const sample of samples) sum += sample * sample;
-      const level = 20 * Math.log10(Math.sqrt(sum / samples.length) + 1e-9);
-      floor = level < floor ? level : Math.min(floor + 0.15, level);
-      if (level > Math.max(floor + VOICE_MARGIN, VOICE_FLOOR)) lastVoice = performance.now();
-      else if (performance.now() - lastVoice >= limit * 1000 && recording === session) stopDictation();
-    }, LEVEL_INTERVAL);
-    session.listen = () => {
-      clearInterval(timer);
-      source.disconnect();
-      void context.close();
-    };
-    void context.resume();
-  }
-
-  function abandonRecorder(session: Dictation, message: string): void {
-    releaseRecorder(session);
-    if (session.closed) return;
-    endCapture(session);
-    if (recording === session) {
-      recording = null;
-      dictationListening = false;
-    }
-    if (owner === session) dictationError = message;
-  }
-
-  async function transcribeRecording(session: Dictation): Promise<void> {
-    session.pending = true;
-    if (session.running) return;
-    session.running = true;
-    while (session.pending) {
-      session.pending = false;
-      const clip = new Blob(session.chunks);
-      if (!clip.size) continue;
-      // The recorder has flushed, so this pass is the one whose text is kept:
-      // it goes through the slower, more careful decode.
-      const last = session.drained;
-      try {
-        const text = await api.dictation.transcribe(await monoWav(clip), last);
-        // A later press owns the draft, so anything still arriving from this
-        // clip would overwrite what that one is writing.
-        if (text && owner === session) spliceTranscript(session, text);
-      } catch (error) {
-        if (owner === session) dictationError = dictationFailure(error);
-      }
-    }
-    session.running = false;
-    if (session.drained) releaseRecorder(session);
-  }
-
-  /**
-   * Puts this pass's text where the session started, replacing only what the
-   * previous pass wrote there. Everything the user typed survives — before the
-   * span, after it, or while dictation was running.
-   */
-  function spliceTranscript(session: Dictation, text: string): void {
-    const live = draft;
-    let start = session.start;
-    // Typing ahead of the span shifts it; find it again rather than write over
-    // the characters now sitting at the old offset.
-    if (live.slice(start, start + session.written.length) !== session.written) {
-      const moved = live.indexOf(session.written);
-      start = session.written && moved !== -1 ? moved : live.length;
-      if (start === live.length) session.written = '';
-    }
-    const head = live.slice(0, start);
-    const tail = live.slice(start + session.written.length);
-    const lead = head && !/\s$/.test(head) ? ' ' : '';
-    const trail = tail && !/^\s/.test(tail) ? ' ' : '';
-    session.start = start;
-    session.written = `${lead}${text}${trail}`;
-    draft = `${head}${session.written}${tail}`;
-    // The caret belongs at the end of the dictated words, not after the text
-    // that was already sitting to their right.
-    editor?.setText(draft, head.length + lead.length + text.length);
-  }
-
-  /** whisper.cpp wants mono 16kHz 16-bit PCM; decodeAudioData resamples to the
-   * context rate, so the conversion is one render plus a WAV header. */
-  async function monoWav(clip: Blob): Promise<ArrayBuffer> {
-    const context = new OfflineAudioContext(1, 1, 16000);
-    const decoded = await context.decodeAudioData(await clip.arrayBuffer());
-    const samples = decoded.getChannelData(0);
-    const wav = new DataView(new ArrayBuffer(44 + samples.length * 2));
-    const writeAscii = (offset: number, text: string) => {
-      for (let index = 0; index < text.length; index += 1) wav.setUint8(offset + index, text.charCodeAt(index));
-    };
-    writeAscii(0, 'RIFF'); wav.setUint32(4, 36 + samples.length * 2, true); writeAscii(8, 'WAVE');
-    writeAscii(12, 'fmt '); wav.setUint32(16, 16, true); wav.setUint16(20, 1, true); wav.setUint16(22, 1, true);
-    wav.setUint32(24, 16000, true); wav.setUint32(28, 32000, true); wav.setUint16(32, 2, true); wav.setUint16(34, 16, true);
-    writeAscii(36, 'data'); wav.setUint32(40, samples.length * 2, true);
-    for (let index = 0; index < samples.length; index += 1) {
-      const sample = Math.max(-1, Math.min(1, samples[index]));
-      wav.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-    }
-    return wav.buffer;
-  }
-
-  function dictationFailure(error: unknown): string {
-    const message = readableError(error);
-    const detail = message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
-    return detail || translate('dictation.stopped');
-  }
 
   onMount(() => {
     // Fetches the speech-to-text model if setup never got to it — on a machine
@@ -654,7 +437,7 @@
       data-testid="prompt-primary-button"
       class="polymux-primary"
       aria-label={primary === 'send' ? $t('composer.sendMessage') : primary === 'stop' ? $t('composer.stopAgent') : $t('composer.startSpeechMode')}
-      data-tooltip-label={primary === 'send' ? (active ? $t('composer.queueHint') : $t('composer.send')) : primary === 'stop' ? $t('composer.stopAgent') : $t('composer.speechMode')}
+      data-tooltip="none"
       onclick={primaryAction}
     ><Icon name={primary === 'mic' ? 'waveform' : primary} size={primary === 'stop' ? 22 : 18}/></button>
   </div>
@@ -682,21 +465,14 @@
       aria-pressed={goalEnabled}
       onclick={() => goalEnabled = !goalEnabled}
     ><Icon name="goal" size={14}/><span>{$t('composer.goal')}</span></button>
-    {#if !advancedMode}
-    <!-- Basic mode has no model selector, and this stands in its place: the
-         one surface where what the agent can do is added to or taken away. It
-         opens Settings rather than holding a menu of its own — configuring a
-         plugin is a page's worth of work, not a dropdown's. -->
-    <button type="button" onclick={onOpenPlugins}><Icon name="puzzle" size={14}/><span>{$t('composer.plugins')}</span></button>
-    {/if}
-    {#if advancedMode}
+    <AssistantDevicePicker {devices} {deviceId} locked={deviceLocked} onChange={onDeviceChange}/>
     <div bind:this={modelWrap} class="prompt-option-wrap">
-      <button type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} onclick={() => void toggleModelMenu()}>
+      <button bind:this={modelButton} type="button" aria-haspopup="menu" aria-expanded={modelMenuOpen} disabled={devices.some(device => device.hostId === deviceId && device.mode === 'remote')} data-tooltip-label={devices.some(device => device.hostId === deviceId && device.mode === 'remote') ? 'Model is configured on the selected device' : undefined} onclick={() => void toggleModelMenu()}>
         <Icon name="brain" size={14}/>
         <span>{$t('composer.model')}</span>
       </button>
       {#if modelMenuOpen && modelsLoaded}
-        <div class="polymux-dropdown-menu model-menu" role="menu" aria-label={$t('composer.modelOptions')}>
+        <div bind:this={modelMenuEl} use:floatMenu={variant} class="polymux-dropdown-menu model-menu" role="menu" aria-label={$t('composer.modelOptions')}>
           <div class="model-menu-search">
             <Icon name="search" size={13}/>
             <input
@@ -747,7 +523,7 @@
           <!-- Outside the scroller: a submenu inside it would be clipped by the
                overflow that makes the list scrollable. -->
           {#if openModel}
-            <div class="polymux-dropdown-menu model-submenu" role="menu" aria-label={$t('composer.reasoningFor', {model: openModel.name})} style:top={`${openModelTop}px`}>
+            <div bind:this={modelSubmenu} use:floatSubmenu={openModelKey} class="polymux-dropdown-menu model-submenu" role="menu" aria-label={$t('composer.reasoningFor', {model: openModel.name})}>
               <p class="model-submenu-title">{$t('composer.reasoning')}</p>
               {#each effortsFor(openModel) as option (option.value)}
                 <button
@@ -769,7 +545,6 @@
         </div>
       {/if}
     </div>
-    {/if}
   </div>
   {#if dictationError}<p class="dictation-error" role="alert">{dictationError}</p>{/if}
 </div>

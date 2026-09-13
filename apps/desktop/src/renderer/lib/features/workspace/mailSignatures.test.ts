@@ -21,3 +21,14 @@ test('formatted signatures become an HTML alternative without treating authored 
   );
   assert.equal(mailHtmlWithSignature('Plain only', null), undefined);
 });
+
+test('positioned files become CID links at their authored body offsets', () => {
+  assert.equal(
+    mailHtmlWithSignature('Before\nAfter', null, [{
+      name: 'Q3 <report>.pdf',
+      contentId: 'q3-report@polymux.local',
+      offset: 7,
+    }]),
+    '<div>Before<br><div><a href="cid:q3-report@polymux.local">Q3 &lt;report&gt;.pdf</a></div>After</div>',
+  );
+});

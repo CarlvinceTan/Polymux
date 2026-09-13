@@ -42,3 +42,12 @@ test('a remote identity keeps a link attached after its Matrix portal changes', 
   const rows = contactIdentityRows([whatsapp, currentTelegram], [link([whatsapp, oldTelegram])]);
   assert.deepEqual(rows[0]?.chats.map((item) => item.id), ['wa-1', 'tg-current']);
 });
+
+test('a one-route identity applies a local contact name after its portal room changes', () => {
+  const old = chat('wa-old', 'whatsapp', {remoteId: '61400'});
+  const current = chat('wa-current', 'whatsapp', {remoteId: '61400', name: '+61 400'});
+  const renamed = {...link([old]), name: 'Mum'};
+  const rows = contactIdentityRows([current], [renamed]);
+  assert.equal(rows[0]?.name, 'Mum');
+  assert.equal(rows[0]?.primary.id, 'wa-current');
+});

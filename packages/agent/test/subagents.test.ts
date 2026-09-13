@@ -1637,8 +1637,12 @@ test("the shipped agent prompts are the ones the internal agents run on", async 
   // to the code is a prompt nobody can edit where they were told to edit it.
   for (const name of AGENT_PROMPT_NAMES)
     assert.ok(prompts[name], `resources/prompts/${name}.md must exist`);
-  assert.match(prompts.base ?? "", /You are Flare/);
+  assert.match(prompts.base ?? "", /You are Polymux/);
+  assert.match(prompts.base ?? "", /Do not identify as ChatGPT/);
+  assert.doesNotMatch(prompts.base ?? "", /You are Flare/);
   assert.match(prompts.direct ?? "", /bounded request/i);
+  assert.match(prompts.main ?? "", /You are Polymux, the run the user is talking to/);
+  assert.match(prompts.main ?? "", /identify as Polymux, not as ChatGPT/);
   assert.match(prompts.main ?? "", /delegate/i);
   assert.match(
     prompts.main ?? "",

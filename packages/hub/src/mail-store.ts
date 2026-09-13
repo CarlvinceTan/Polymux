@@ -3,6 +3,7 @@ import type {
   MailAddressDto,
   MailEnvelopeDto,
   MailFolderDto,
+  MailImportance,
   MailMessageDto,
 } from "@polymux/protocol";
 
@@ -190,7 +191,15 @@ export class MailStore {
             flags: true,
             // A reply threads in the recipient's client only if it echoes the
             // chain it answers, and the envelope does not carry it.
-            headers: ["references", "in-reply-to"],
+            headers: [
+              "references",
+              "in-reply-to",
+              "importance",
+              "priority",
+              "x-priority",
+              "x-msmail-priority",
+            ],
+            labels: true,
             ...(wanted.length ? {bodyParts: wanted.map((part) => part.id)} : {}),
           },
           {uid: true},
@@ -224,7 +233,15 @@ export class MailStore {
           html: html ?? null,
           attachments: parts
             .filter((part) => part.attachment)
-            .map((part) => ({name: part.name ?? "attachment", mime: part.type})),
+            .map((part) => ({
+              id: part.id,
+              name: part.name ?? "attachment",
+              mime: part.type,
+              contentId: part.contentId,
+              disposition: part.disposition,
+              size: part.size,
+            })),
+          importance: messageImportance(message.headers, message.labels),
           messageId: envelope?.messageId ?? null,
           references: references(message.headers),
         } satisfies MailMessageDto;
@@ -358,6 +375,35 @@ export class MailStore {
     });
   }
 
+  /** One attachment's bytes, for an inline image or document preview. */
+  async attachment(options: {
+    account: string;
+    folder: string;
+    id: string;
+    part: string;
+  }): Promise<{id: string; name: string; mime: string; content: Buffer}> {
+    return this.#run(options.account, async (client) => {
+      const lock = await client.getMailboxLock(options.folder);
+      try {
+        const message = await client.fetchOne(options.id, {uid: true, bodyStructure: true}, {uid: true});
+        if (!message) throw new Error("That message is no longer in this folder.");
+        const wanted = flattenParts(message.bodyStructure).find(
+          (part) => part.attachment && part.id === options.part,
+        );
+        if (!wanted) throw new Error("That attachment is no longer part of this message.");
+        const content = await this.#attachmentContent(client, options.id, wanted);
+        return {
+          id: wanted.id,
+          name: wanted.name ?? "attachment",
+          mime: wanted.type,
+          content,
+        };
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
   /** Every attachment's bytes, named as the message announces them. */
   async attachments(options: {
     account: string;
@@ -376,18 +422,25 @@ export class MailStore {
           // save, and swallowing it here would report "no attachments" for a
           // message that plainly has one — while also stepping on the one-shot
           // reconnect above, which only fires for an error that reaches it.
-          const download = await client.download(options.id, part.id, {uid: true});
-          if (!download?.content)
-            throw new Error(`${part.name ?? "An attachment"} could not be read from the server.`);
-          const chunks: Buffer[] = [];
-          for await (const chunk of download.content) chunks.push(Buffer.from(chunk));
-          files.push({name: part.name ?? `attachment-${index + 1}`, content: Buffer.concat(chunks)});
+          files.push({
+            name: part.name ?? `attachment-${index + 1}`,
+            content: await this.#attachmentContent(client, options.id, part),
+          });
         }
         return files;
       } finally {
         lock.release();
       }
     });
+  }
+
+  async #attachmentContent(client: ImapFlow, id: string, part: MessagePart): Promise<Buffer> {
+    const download = await client.download(id, part.id, {uid: true});
+    if (!download?.content)
+      throw new Error(`${part.name ?? "An attachment"} could not be read from the server.`);
+    const chunks: Buffer[] = [];
+    for await (const chunk of download.content) chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks);
   }
 
   /**
@@ -597,7 +650,14 @@ async function collect(
   const messages: FetchMessageObject[] = [];
   for await (const message of client.fetch(
     range,
-    {uid: true, envelope: true, flags: true, bodyStructure: true},
+    {
+      uid: true,
+      envelope: true,
+      flags: true,
+      bodyStructure: true,
+      labels: true,
+      headers: ["importance", "priority", "x-priority", "x-msmail-priority"],
+    },
     {uid},
   ))
     messages.push(message);
@@ -637,6 +697,7 @@ function toEnvelope(message: FetchMessageObject): MailEnvelopeDto {
     answered: flags.has("\\Answered"),
     draft: flags.has("\\Draft"),
     hasAttachment: flattenParts(message.bodyStructure).some((part) => part.attachment),
+    importance: messageImportance(message.headers, message.labels),
   };
 }
 
@@ -654,6 +715,9 @@ interface MessagePart {
   type: string;
   name: string | null;
   attachment: boolean;
+  /** Content-ID, normalised without angle brackets for matching `cid:` URLs. */
+  contentId: string | null;
+  disposition: "inline" | "attachment" | null;
   /** Content-Transfer-Encoding, lowercased; "" when the part states none. */
   encoding: string;
   /** The part's charset, lowercased; "" when the part states none. */
@@ -664,9 +728,8 @@ interface MessagePart {
 
 /**
  * The message's parts, flat, each with the section number a fetch addresses it
- * by. A part is an attachment because it is dispositioned as one or carries a
- * filename — not because of its type: an inline signature image is a picture
- * the reader should not be offered as a download, while a forwarded `.eml` is.
+ * by. Non-text CID parts stay in the list so the reader can resolve them at
+ * their authored HTML node; once used there they are not repeated as a file.
  */
 function flattenParts(node: unknown, into: MessagePart[] = []): MessagePart[] {
   if (!node || typeof node !== "object") return into;
@@ -679,6 +742,7 @@ function flattenParts(node: unknown, into: MessagePart[] = []): MessagePart[] {
     dispositionParameters?: Record<string, string>;
     parameters?: Record<string, string>;
     childNodes?: unknown[];
+    id?: string;
   };
   const type = (part.type ?? "").toLowerCase();
   const encoding = (part.encoding ?? "").toLowerCase();
@@ -694,6 +758,8 @@ function flattenParts(node: unknown, into: MessagePart[] = []): MessagePart[] {
       type,
       name: part.dispositionParameters?.filename ?? part.parameters?.name ?? "forwarded.eml",
       attachment: true,
+      contentId: contentId(part.id),
+      disposition: "attachment",
       encoding,
       charset,
       size: part.size ?? 0,
@@ -709,16 +775,24 @@ function flattenParts(node: unknown, into: MessagePart[] = []): MessagePart[] {
   const name = part.dispositionParameters?.filename ?? part.parameters?.name ?? null;
   const disposition = (part.disposition ?? "").toLowerCase();
   const textual = type === "text/plain" || type === "text/html";
+  const cid = contentId(part.id);
   into.push({
     id,
     type: type || "application/octet-stream",
     name,
-    attachment: disposition === "attachment" || (!textual && !!name),
+    attachment: disposition === "attachment" || (!textual && (!!name || !!cid)),
+    contentId: cid,
+    disposition: disposition === "inline" || disposition === "attachment" ? disposition : null,
     encoding,
     charset,
     size: part.size ?? 0,
   });
   return into;
+}
+
+function contentId(value: string | undefined): string | null {
+  const id = (value ?? "").trim().replace(/^<|>$/g, "");
+  return id || null;
 }
 
 /**
@@ -915,13 +989,38 @@ function folderRole(name: string, desc: string): MailFolderDto["role"] {
  */
 function references(headers: Buffer | undefined): string[] {
   if (!headers) return [];
-  const text = headers.toString("utf8");
-  const read = (name: string): string => {
-    const match = new RegExp(`^${name}:([^]*?)(?=\\r?\\n[^ \\t]|$)`, "im").exec(text);
-    return match ? match[1].replace(/\s+/g, " ").trim() : "";
-  };
-  const ids = `${read("references")} ${read("in-reply-to")}`.match(/<[^>]+>/g) ?? [];
+  const ids = `${header(headers, "references")} ${header(headers, "in-reply-to")}`.match(/<[^>]+>/g) ?? [];
   return [...new Set(ids)];
+}
+
+/** One unfolded RFC header value from the bounded header block IMAP returned. */
+function header(headers: Buffer | undefined, name: string): string {
+  if (!headers) return "";
+  const match = new RegExp(`^${name}:([^]*?)(?=\\r?\\n[^ \\t]|$)`, "im")
+    .exec(headers.toString("utf8"));
+  return match ? match[1].replace(/\s+/g, " ").trim() : "";
+}
+
+/**
+ * Priority is authored by the sender; Flagged is a mailbox state owned by the
+ * recipient. Gmail additionally exposes its Important label over IMAP, while
+ * other clients use one of several interoperable priority headers.
+ */
+function messageImportance(
+  headers: Buffer | undefined,
+  labels: Set<string> | undefined,
+): MailImportance {
+  if ([...(labels ?? [])].some((label) => /^\\?important$/i.test(label))) return "high";
+  const declared = header(headers, "importance").toLowerCase();
+  const priority = `${header(headers, "priority")} ${header(headers, "x-msmail-priority")}`.toLowerCase();
+  const numeric = /\b([1-5])\b/.exec(header(headers, "x-priority"))?.[1];
+  if (/\bhigh\b/.test(declared)) return "high";
+  if (/\blow\b/.test(declared)) return "low";
+  if (/\bnon-urgent\b/.test(priority)) return "low";
+  if (/\burgent\b/.test(priority)) return "high";
+  if (numeric === "1" || numeric === "2") return "high";
+  if (numeric === "4" || numeric === "5") return "low";
+  return "normal";
 }
 
 /**

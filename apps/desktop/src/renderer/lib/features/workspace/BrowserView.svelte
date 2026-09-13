@@ -1,5 +1,6 @@
 <script module lang="ts">
   export type BrowserDownload = {id: string; title: string; kind?: 'document' | 'image' | 'pdf' | 'spreadsheet' | 'file'; completedAt?: string};
+  const autofillOffers = new Map<string, import('@polymux/protocol').BrowserAutofillOfferDto>();
 </script>
 
 <script lang="ts">
@@ -7,7 +8,9 @@
   import Icon from '../../shared/components/Icon.svelte';
   import {polymuxApi} from '../../api/polymux';
   import {t, type MessageKey} from '../../../i18n';
-  import type {BrowserHistoryEntryDto, BrowserPermissionDto, BrowserPermissionPromptDto} from '@polymux/protocol';
+  import type {BrowserAutofillOfferDto, BrowserHistoryEntryDto, BrowserPermissionDto, BrowserPermissionPromptDto, BrowserWebAuthnAccountDto, BrowserWebAuthnPromptDto} from '@polymux/protocol';
+  import {readableError} from '../../shared/errors';
+  import {onEmbeddedBrowserYield, watchEmbeddedBrowserOverlays} from './browserOverlay';
 
   type AddressRow = {
     id: string;
@@ -57,12 +60,60 @@
     permissionPrompt = null;
     rememberPermission = false;
   }
+
+  function passkeyAccountTitle(account: BrowserWebAuthnAccountDto): string {
+    return account.displayName?.trim() || account.name?.trim() || $t('browser.passkey');
+  }
+
+  function passkeyAccountDetail(account: BrowserWebAuthnAccountDto): string {
+    const name = account.name?.trim() ?? '';
+    return name && name !== account.displayName?.trim() ? name : '';
+  }
+
+  function fillAutofill(itemId: string): void {
+    if (!embedded) return;
+    void api.browser.fillAutofill(tabId, itemId);
+  }
+
+  function dismissAutofill(): void {
+    autofillOffer = null;
+    autofillOffers.delete(tabId);
+    lockerPassword = '';
+    lockerUnlockError = '';
+    if (embedded) void api.browser.dismissAutofill(tabId);
+  }
+
+  async function unlockLockerFromBrowser(): Promise<void> {
+    if (!lockerPassword) return;
+    lockerUnlocking = true;
+    try {
+      await api.locker.unlock(lockerPassword);
+      lockerPassword = '';
+      lockerUnlockError = '';
+    } catch (reason) {
+      lockerUnlockError = readableError(reason);
+    } finally {
+      lockerUnlocking = false;
+    }
+  }
+
+  function answerWebAuthn(credentialId?: string): void {
+    if (!passkeyPrompt) return;
+    const id = passkeyPrompt.id;
+    passkeyPrompt = null;
+    void api.browser.respondToWebAuthn(id, credentialId);
+  }
   // The embedded browser is real Chromium hosted by the main process. Without
   // it (browser demo, tests) the old iframe rendering stands in, with its
   // framing-header limitations.
   const embedded = api.browser.embedded && Boolean(tabId);
 
   let permissionPrompt: BrowserPermissionPromptDto | null = null;
+  let passkeyPrompt: BrowserWebAuthnPromptDto | null = null;
+  let autofillOffer: BrowserAutofillOfferDto | null = autofillOffers.get(tabId) ?? null;
+  let lockerPassword = '';
+  let lockerUnlocking = false;
+  let lockerUnlockError = '';
   let rememberPermission = false;
   let draft = url ?? '';
   let currentUrl = url ?? '';
@@ -76,6 +127,10 @@
   let downloadsOpen = false;
   let moreOpen = false;
   let addressSuggestionsOpen = false;
+  /** Window-modal dialogs in the renderer document. Combined with `obscured`
+   * so a modal the parent has not named still hides the native page. */
+  let overlayObscured = false;
+  let pageVisible = true;
   let addressRows: AddressRow[] = [];
   let selectedAddressRow = -1;
   let addressLookupRevision = 0;
@@ -85,6 +140,7 @@
   let pagePreview: string | null = null;
   let popoverRevision = 0;
   let visibilityRevision = 0;
+  let freezeRevision = 0;
   let visibilityChange: Promise<void> = Promise.resolve();
   let findOpen = false;
   let findQuery = '';
@@ -100,6 +156,7 @@
   let moreWrapper: HTMLElement;
   let surface: HTMLElement;
   let unsubscribe: (() => void) | undefined;
+  let stopOverlayWatch: (() => void) | undefined;
   let boundsFrame: number | undefined;
   let lastBounds = '';
   let downloads: BrowserDownload[] = [];
@@ -108,14 +165,35 @@
   // The bar's own popovers hang over the page too, so it steps aside for them
   // the same way it does for surfaces that cover the whole drawer. A captured
   // frame remains in the DOM beneath a popover while the native view is away.
-  $: if (embedded) updatePageVisibility(!obscured && !downloadsOpen && !moreOpen && !addressSuggestionsOpen);
+  $: pageVisible = !obscured && !overlayObscured && !downloadsOpen && !moreOpen && !addressSuggestionsOpen;
+  $: if (embedded) updatePageVisibility(pageVisible);
 
   function updatePageVisibility(visible: boolean): void {
     const revision = ++visibilityRevision;
+    if (visible) freezeRevision += 1;
     visibilityChange = api.browser.setVisible(tabId, visible).catch(() => {});
     void visibilityChange.then(() => {
       if (visible && revision === visibilityRevision) pagePreview = null;
     });
+  }
+
+  async function capturePagePreview(): Promise<string | null> {
+    if (pagePreview) return pagePreview;
+    if (!embedded || !pageLoaded) return null;
+    try {
+      return await api.browser.preview(tabId);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Copy the live page into the renderer before the native view steps aside,
+   * so a modal backdrop still has something to blur. */
+  async function freezePageForOverlay(): Promise<void> {
+    const revision = ++freezeRevision;
+    const preview = await capturePagePreview();
+    if (revision !== freezeRevision) return;
+    if (preview) pagePreview = preview;
   }
 
   async function togglePopover(target: 'downloads' | 'more'): Promise<void> {
@@ -130,16 +208,8 @@
     const revision = ++popoverRevision;
     downloadsOpen = false;
     moreOpen = false;
-    let preview = pagePreview;
-    if (!preview && embedded && pageLoaded) {
-      try {
-        preview = await api.browser.preview(tabId);
-      } catch {
-        preview = null;
-      }
-    }
+    await freezePageForOverlay();
     if (revision !== popoverRevision) return;
-    pagePreview = preview;
     if (target === 'downloads') downloadsOpen = true;
     else moreOpen = true;
   }
@@ -431,8 +501,12 @@
     const box = surface.getBoundingClientRect();
     // A tab with nothing loaded swallows every click without reporting one,
     // which used to leave the address bar holding the caret. Keeping the view
-    // out of the way until a page exists hands those clicks to the DOM.
-    const rect = pageLoaded ? box : {x: box.x, y: box.y, width: 0, height: 0};
+    // out of the way until a page exists hands those clicks to the DOM. The
+    // same collapse applies while a renderer overlay covers the pane: a zero
+    // rectangle cannot paint over a modal even if setVisible lags.
+    const rect = pageLoaded && pageVisible
+      ? box
+      : {x: box.x, y: box.y, width: 0, height: 0};
     const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
     if (key === lastBounds) return;
     lastBounds = key;
@@ -440,22 +514,27 @@
   }
 
   onMount(() => {
-    if (!embedded) return;
-    // The answer is the tab's live page. A tab the agent opened finished
-    // loading before this pane existed, so its state events are already spent:
-    // asking is the only way to learn there is a page behind the view, and
-    // without it the empty state sits over a loaded page for good.
-    const initialSurface = surface.getBoundingClientRect();
-    void api.browser.open(tabId, url || undefined, {
-      width: initialSurface.width,
-      height: initialSurface.height,
-    }).then((page) => {
-      if (!page.url) return;
-      pageLoaded = true;
-      currentUrl = page.url;
-      if (!addressDirty && document.activeElement !== addressInput) draft = page.url;
-      onState({title: page.title || undefined, url: page.url});
-    });
+    if (embedded) {
+      const stopWatch = watchEmbeddedBrowserOverlays((value) => {
+        if (!value) {
+          overlayObscured = false;
+          return;
+        }
+        void freezePageForOverlay().then(async () => {
+          await tick();
+          overlayObscured = true;
+        });
+      });
+      const stopYield = onEmbeddedBrowserYield(async () => {
+        await freezePageForOverlay();
+        await tick();
+        overlayObscured = true;
+      });
+      stopOverlayWatch = () => {
+        stopWatch();
+        stopYield();
+      };
+    }
     unsubscribe = api.browser.subscribe((event) => {
       if (event.type === 'state' && event.state.tabId === tabId) {
         currentUrl = event.state.url;
@@ -477,7 +556,31 @@
       } else if (event.type === 'permission' && event.prompt.tabId === tabId) {
         permissionPrompt = event.prompt;
         rememberPermission = false;
+      } else if (event.type === 'webauthn' && event.prompt.tabId === tabId) {
+        passkeyPrompt = event.prompt;
+      } else if (event.type === 'autofill' && event.tabId === tabId) {
+        autofillOffer = event.offer;
+        if (event.offer) autofillOffers.set(tabId, event.offer);
+        else autofillOffers.delete(tabId);
+        lockerUnlockError = '';
+        if (!event.offer || event.offer.locker !== 'locked') lockerPassword = '';
       }
+    });
+    if (!embedded) return;
+    // The answer is the tab's live page. A tab the agent opened finished
+    // loading before this pane existed, so its state events are already spent:
+    // asking is the only way to learn there is a page behind the view, and
+    // without it the empty state sits over a loaded page for good.
+    const initialSurface = surface.getBoundingClientRect();
+    void api.browser.open(tabId, url || undefined, {
+      width: initialSurface.width,
+      height: initialSurface.height,
+    }).then((page) => {
+      if (!page.url) return;
+      pageLoaded = true;
+      currentUrl = page.url;
+      if (!addressDirty && document.activeElement !== addressInput) draft = page.url;
+      onState({title: page.title || undefined, url: page.url});
     });
     void api.browser.downloads().then((value) => downloads = value);
     const observer = new ResizeObserver(reportBounds);
@@ -497,12 +600,15 @@
   onDestroy(() => {
     popoverRevision += 1;
     visibilityRevision += 1;
+    freezeRevision += 1;
     addressLookupRevision += 1;
     clearTimeout(addressLookupTimer);
     stopWatchingFocus();
     clearTimeout(refreshingTimer);
     if (boundsFrame !== undefined) cancelAnimationFrame(boundsFrame);
+    stopOverlayWatch?.();
     unsubscribe?.();
+    if (passkeyPrompt) answerWebAuthn();
     // Switching tabs unmounts this component while the tab stays open, so the
     // view hides rather than closes; the drawer closes it with the tab.
     if (embedded) void api.browser.setVisible(tabId, false);
@@ -511,7 +617,7 @@
 
 <svelte:window onclick={dismiss} onmousedown={releaseOnOutsideClick} onblur={releaseAddress}/>
 
-<div class="browser-bar">
+<div class="browser-bar" data-browser-tab-id={tabId}>
   <div class="browser-actions browser-nav-actions">
     <button type="button" aria-label={$t('browser.back')} disabled={!canGoBack} onclick={() => goHistory(-1)}><Icon name="back" size={16}/></button>
     <button type="button" aria-label={$t('browser.forward')} disabled={!canGoForward} onclick={() => goHistory(1)}><Icon name="forward" size={16}/></button>
@@ -611,6 +717,43 @@
   </div>
 </div>
 
+{#if autofillOffer}
+  <div class="browser-autofill" role="region" aria-label={$t('browser.autofillOffer')}>
+    <Icon name="key" size={14}/>
+    {#if autofillOffer.locker === 'locked'}
+      <form class="browser-autofill-unlock" onsubmit={(event) => { event.preventDefault(); void unlockLockerFromBrowser(); }}>
+        <span class="browser-autofill-text">{$t('browser.autofillLocked')}</span>
+        <input
+          type="password"
+          bind:value={lockerPassword}
+          autocomplete="off"
+          aria-label={$t('browser.autofillMaster')}
+          placeholder={$t('browser.autofillMaster')}
+          disabled={lockerUnlocking}
+        />
+        {#if lockerUnlockError}<span class="browser-autofill-error">{lockerUnlockError}</span>{/if}
+        <button type="submit" class="primary" disabled={lockerUnlocking || !lockerPassword}>{$t('browser.unlockLocker')}</button>
+      </form>
+    {/if}
+    {#if autofillOffer.items.length}
+      <div class="browser-autofill-items">
+        {#each autofillOffer.items as item (item.id)}
+          <button type="button" class="browser-autofill-item" onclick={() => fillAutofill(item.id)}>
+            <span class="browser-autofill-copy">
+              <strong>{item.title}</strong>
+              {#if item.username}<small>{item.username}</small>{/if}
+            </span>
+            <span>{autofillOffer.focus === 'otp' && item.hasTotp ? $t('browser.fillCode') : $t('browser.fill')}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+    <button type="button" class="browser-autofill-dismiss" aria-label={$t('browser.dismissAutofill')} onclick={dismissAutofill}>
+      <Icon name="close" size={13}/>
+    </button>
+  </div>
+{/if}
+
 {#if permissionPrompt}
   <!-- In the chrome rather than over the page: the page is a WebContentsView
        the compositor puts above the renderer's DOM, so an overlay on the
@@ -626,6 +769,39 @@
     <button type="button" class="primary" onclick={() => answerPermission('allow')}>
       {$t('browser.allow')}
     </button>
+  </div>
+{/if}
+
+{#if passkeyPrompt}
+  <!-- Account selection belongs to the browser chrome for the same compositor
+       reason as permissions: the native WebContentsView paints above DOM in
+       the page rectangle. -->
+  <div
+    class="browser-passkey"
+    role="dialog"
+    aria-labelledby={`browser-passkey-title-${passkeyPrompt.id}`}
+  >
+    <div class="browser-passkey-head">
+      <Icon name="key" size={15}/>
+      <strong id={`browser-passkey-title-${passkeyPrompt.id}`}>
+        {$t('browser.passkeyPrompt', {site: passkeyPrompt.relyingPartyId})}
+      </strong>
+      <button type="button" class="browser-passkey-cancel" onclick={() => answerWebAuthn()}>
+        {$t('browser.cancel')}
+      </button>
+    </div>
+    <div class="browser-passkey-accounts">
+      {#each passkeyPrompt.accounts as account (account.credentialId)}
+        <button
+          type="button"
+          class="browser-passkey-account"
+          onclick={() => answerWebAuthn(account.credentialId)}
+        >
+          <strong>{passkeyAccountTitle(account)}</strong>
+          {#if passkeyAccountDetail(account)}<small>{passkeyAccountDetail(account)}</small>{/if}
+        </button>
+      {/each}
+    </div>
   </div>
 {/if}
 

@@ -21,6 +21,12 @@ function memoryStore(): RunResourceStore & {references: StoredReference[]; artif
       return stored;
     },
     listReferences: (conversationId) => references.filter((item) => item.conversationId === conversationId),
+    updateReferenceTitle(id, title) {
+      const stored = references.find((item) => item.id === id);
+      if (!stored) return null;
+      stored.title = title.trim();
+      return stored;
+    },
     createArtifact(input: NewArtifact) {
       const stored = {
         ...input,
@@ -151,4 +157,80 @@ test("records written files as outputs with a kind from the extension", () => {
     store.artifacts.map(({name, path, kind}) => ({name, path, kind})),
     [{name: "notes.md", path: "/home/me/notes.md", kind: "document"}],
   );
+});
+
+test("strips markdown wrapping from cited urls", () => {
+  const store = memoryStore();
+  const recorder = new RunResourceRecorder(store, () => `id-${store.references.length}`);
+  recorder.record("chat-1", "run-1", messageCompleted(
+    "See `https://www.example.com/` and **https://example.com/docs**.",
+  ));
+  assert.deepEqual(
+    store.references.map(({uri}) => uri),
+    ["https://www.example.com/", "https://example.com/docs"],
+  );
+});
+
+test("keeps reserved encodings in cited resource paths", () => {
+  const store = memoryStore();
+  const recorder = new RunResourceRecorder(store, () => `id-${store.references.length}`);
+  const urls = ["https://gitlab.example/api/projects/group%2Frepo", "https://example.com/a%25b%3Fc%23d", "https://example.com/%E6%96%87"];
+  recorder.record("chat-1", "run-1", messageCompleted(urls.map((url) => `[Reference](${url})`).join("\n")));
+  assert.deepEqual(store.references.map(({uri}) => uri), urls);
+});
+
+test("titles a cited url from a www variant the run opened", () => {
+  const store = memoryStore();
+  const recorder = new RunResourceRecorder(store, () => "id-1");
+  recorder.record("chat-1", "run-1", toolCompleted(
+    "browser_control",
+    {action: "navigate", url: "https://www.example.com/docs"},
+    JSON.stringify({ok: true, pageUrl: "https://www.example.com/docs", pageTitle: "Docs"}),
+  ));
+  recorder.record("chat-1", "run-1", messageCompleted("See https://example.com/docs for the details."));
+  assert.deepEqual(
+    store.references.map(({title, uri}) => ({title, uri})),
+    [{title: "Docs", uri: "https://example.com/docs"}],
+  );
+});
+
+test("prefers a browsed page title over a url used as link text", () => {
+  const store = memoryStore();
+  const recorder = new RunResourceRecorder(store, () => "id-1");
+  recorder.record("chat-1", "run-1", toolCompleted(
+    "browser_control",
+    {action: "navigate", url: "https://example.com/docs"},
+    JSON.stringify({ok: true, pageUrl: "https://example.com/docs", pageTitle: "Docs"}),
+  ));
+  recorder.record("chat-1", "run-1", messageCompleted("[https://example.com/docs](https://example.com/docs)"));
+  assert.equal(store.references[0]?.title, "Docs");
+});
+
+test("presents a history title for a hostname placeholder", () => {
+  const store = memoryStore();
+  store.pageTitleFor = (url) => url.includes("example.com") ? "Docs" : null;
+  store.createReference({id: "existing", conversationId: "chat-1", kind: "web", title: "example.com/docs", uri: "https://example.com/docs"});
+  const recorder = new RunResourceRecorder(store, () => "id-new");
+  assert.deepEqual(
+    recorder.present(store.references).map(({title}) => title),
+    ["Docs"],
+  );
+});
+
+test("fills in a fetched page title after persist", async () => {
+  const store = memoryStore();
+  let finish!: (title: string | null) => void;
+  const pending = new Promise<string | null>((resolve) => { finish = resolve; });
+  const changed: string[] = [];
+  const recorder = new RunResourceRecorder(store, () => "id-1", {
+    resolveTitle: () => pending,
+    onChanged: (conversationId) => changed.push(conversationId),
+  });
+  recorder.record("chat-1", "run-1", messageCompleted("See https://example.com/docs."));
+  assert.equal(store.references[0]?.title, "example.com/docs");
+  finish("Docs");
+  await pending;
+  await Promise.resolve();
+  assert.equal(store.references[0]?.title, "Docs");
+  assert.deepEqual(changed, ["chat-1"]);
 });

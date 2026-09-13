@@ -80,13 +80,29 @@ export interface AgentTool {
   ): Promise<AgentToolResult>;
 }
 
+export interface ContextCompactionTelemetry {
+  /** Estimated total context tokens before older turns were summarized away. */
+  originalTokens?: number;
+  /** Estimated total context tokens offered after the summary replaced them. */
+  compactedTokens?: number;
+  /** Estimated size of the generated summary itself. */
+  summaryTokens?: number;
+  /** Messages covered by the generated summary. */
+  summarizedMessages?: number;
+  /** Recent messages kept verbatim after the summary. */
+  retainedMessages?: number;
+}
+
 export interface ContextTransformInput {
   runId: RunId;
   turn: number;
   context: Readonly<AgentContext>;
   model: ModelRef;
   signal: AbortSignal;
-  reportStatus(status: 'compacting'): Promise<void>;
+  reportStatus(
+    status: 'compacting' | 'compacted',
+    telemetry?: ContextCompactionTelemetry,
+  ): Promise<void>;
 }
 
 export type ContextTransformer = (
@@ -149,8 +165,8 @@ export interface AgentRunResult {
   usage: InferenceUsage;
   /** Wall-clock time of the whole run, for "Worked for Ns" presentation. */
   durationMs: number;
-  /** True when any tool was invoked. A run without work is a plain reply and
-   * a client should show no activity group for it. */
+  /** True when any visible work happened. A run without tools or compaction is
+   * a plain reply and a client should show no activity group for it. */
   hadWorkActivity: boolean;
   /** Text of the run's final assistant message — the answer a client keeps
    * visible while everything before it collapses into the activity group. */
@@ -168,6 +184,9 @@ export interface AgentRunError {
     | "internal";
   message: string;
   retryable: boolean;
+  /** The runtime already emitted a separate `agent.notice` for this failure,
+   * so clients should not repeat it as assistant-authored content. */
+  reportedAsNotice?: boolean;
   cause?: unknown;
 }
 
@@ -179,7 +198,7 @@ export interface BaseRunEvent {
 
 export type AgentRunEvent = BaseRunEvent &
   (
-    | { type: "run.started"; model: ModelRef }
+    | { type: "run.started"; model: ModelRef; agent?: {kind: "acp"; id: string; name: string} }
     | { type: "run.state"; status: RunStatus }
     | {
         type: "turn.started";
@@ -221,7 +240,7 @@ export type AgentRunEvent = BaseRunEvent &
       }
     | { type: "model.started"; turn: number; model: InferenceModel }
     | { type: "context.compacting"; turn: number }
-    | { type: "context.compacted"; turn: number }
+    | { type: "context.compacted"; turn: number; compaction?: ContextCompactionTelemetry }
     | { type: "message.text.delta"; turn: number; index: number; delta: string }
     | {
         type: "message.reasoning.delta";
@@ -249,6 +268,13 @@ export type AgentRunEvent = BaseRunEvent &
         type: "message.final_rejected";
         turn: number;
         repairMessageCount: number;
+      }
+    | {
+        /** A runtime notice for the client chrome, not words spoken by the
+         * assistant. Kept separate so provider status never enters the chat. */
+        type: "agent.notice";
+        severity: "warning" | "error";
+        message: string;
       }
     | { type: "tool.started"; turn: number; toolCall: ToolCallBlock }
     | {

@@ -22,6 +22,14 @@ export interface LinkedHub {
 
 export interface WorkspaceRevealer {
   reveal(request: WorkspaceRevealDto): void;
+  /** Prepares a platform only when an agent explicitly targets its draft. */
+  wake?(request: WorkspaceRevealDto): Promise<void>;
+  /** Resolves an exact Hub contact route to an existing or newly-created DM.
+   * Creating the room sends no content; the returned room receives the draft. */
+  chatForContact?(
+    contactId: string,
+    accountId?: string,
+  ): Promise<{id: string; name: string}>;
   /**
    * What the hub is actually connected to. A draft is only written into the
    * hub when the account or chat it names is linked there; with nothing
@@ -31,7 +39,7 @@ export interface WorkspaceRevealer {
   linked?(): Promise<LinkedHub>;
 }
 
-const SURFACES: WorkspaceSurface[] = ["hub", "drive", "schedule", "summary"];
+const SURFACES: WorkspaceSurface[] = ["hub", "drive", "tasks", "calendar", "summary", "phone", "terminal", "ide", "locker", "media", "usage", "finance"];
 /** How a drafted mail relates to an existing one. */
 const COMPOSE_MODES = ["new", "reply", "reply-all", "forward"] as const;
 const IMPORTANCE = ["high", "normal", "low"] as const;
@@ -44,12 +52,18 @@ export function createWorkspaceTool(workspace: WorkspaceRevealer): AgentTool {
       "Use it when the user asks to see something ('show me', 'open it', 'where is it?'),",
       "and after finishing work whose result lives in the app rather than in the reply —",
       "a saved draft, a file on a drive, a schedule.",
-      "Surfaces: 'hub' is mail and messaging; 'drive' is files; 'schedule' is recurring tasks;",
-      "'summary' is the conversation summary.",
+      "Surfaces: 'hub' is mail and messaging; 'drive' is files; 'tasks' is the task board",
+      "and schedules; 'calendar' is calendar events; 'summary' is the",
+      "conversation summary; 'phone' is the connected phone screen; 'terminal'",
+      "is the command line on this computer; 'ide' is the project editor; 'locker'",
+      "is the password vault; 'media' is photos and videos; 'usage' is tokens,",
+      "API-equivalent spend, and activity over time; finance is bank accounts and agent payment setup.",
       "Say where inside the surface to land: for mail give account and folder, and messageId",
       "when you know it — without one the newest message in that folder opens, which is what",
       "'the draft you just wrote' means; subject narrows that to the newest carrying it.",
-      "For messaging give chatId or chatName; for the drive give source and path.",
+      "For messaging give chatId or chatName. For Drive, give the source returned by",
+      "drive_sources and the containing folder path passed to drive_list — use the folder",
+      "whose listing contains the file, not the file's own path, so the file is visible.",
       "To write a message rather than go to one, use `hub_draft`.",
       "This only navigates: it shows the user a surface and changes nothing.",
       "For a web page use the browser tool's 'show' instead.",
@@ -73,7 +87,11 @@ export function createWorkspaceTool(workspace: WorkspaceRevealer): AgentTool {
         chatId: { type: "string" },
         chatName: { type: "string" },
         source: { type: "string" },
-        path: { type: "string" },
+        path: {
+          type: "string",
+          description:
+            "For Drive, the folder path to open, exactly as passed to drive_list. Empty opens the source root; do not pass a file path.",
+        },
       },
       required: ["surface"],
       additionalProperties: false,
@@ -117,6 +135,8 @@ export function createHubDraftTool(workspace: WorkspaceRevealer): AgentTool {
       "composer, filled in and waiting for the user.",
       "For a chat give chatId or chatName and `draft`; `replyTo` is the id of the message being",
       "answered, and the box then quotes it the way pressing Reply does.",
+      "For a person returned by message_contacts, give contactId, contactAccountId when it has",
+      "multiple routes, and draft. Polymux opens or creates that DM but does not send anything.",
       "For mail give the `account` and any of `to`, `cc`, `bcc` (comma-separated), `subject`,",
       "`draft` as the body, `attachments` as absolute paths, and `importance` 'high' or 'low'.",
       "`mode` 'reply', 'reply-all' or 'forward' answers the message messageId/subject names:",
@@ -140,6 +160,8 @@ export function createHubDraftTool(workspace: WorkspaceRevealer): AgentTool {
         subject: { type: "string" },
         chatId: { type: "string" },
         chatName: { type: "string" },
+        contactId: { type: "string" },
+        contactAccountId: { type: "string" },
         draft: { type: "string" },
         to: { type: "string" },
         cc: { type: "string" },
@@ -152,14 +174,42 @@ export function createHubDraftTool(workspace: WorkspaceRevealer): AgentTool {
       additionalProperties: false,
     },
     async execute(input, context) {
-      const request = revealRequest({ ...input, surface: "hub" });
+      const contactId = text(input.contactId);
+      let preparedContact = false;
+      let resolvedInput = input;
+      if (contactId) {
+        if (text(input.chatId) || text(input.chatName) || text(input.account))
+          return {
+            content: "Choose one draft target: contactId, chatId/chatName, or a mail account.",
+            isError: true,
+          };
+        if (!text(input.draft))
+          return {content: "A contact draft requires draft text.", isError: true};
+        if (!workspace.chatForContact)
+          return {content: "Hub contact drafting is unavailable in this app session.", isError: true};
+        try {
+          const target = await workspace.chatForContact(
+            contactId,
+            text(input.contactAccountId) || undefined,
+          );
+          resolvedInput = {...input, chatId: target.id, chatName: target.name};
+          preparedContact = true;
+        } catch (error) {
+          return {
+            content: error instanceof Error ? error.message : String(error),
+            isError: true,
+          };
+        }
+      }
+      const request = revealRequest({ ...resolvedInput, surface: "hub" });
       if (!request?.mail?.compose && !request?.chat?.draft)
         return {
           content:
             "Nothing to draft: give chatId/chatName with draft, or account with the mail fields.",
           isError: true,
         };
-      const unlinked = workspace.linked
+      await workspace.wake?.(request);
+      const unlinked = workspace.linked && !preparedContact
         ? unlinkedDraftTarget(
             request,
             await workspace.linked().catch((): LinkedHub | null => null),
@@ -188,7 +238,8 @@ export function createHubDraftTool(workspace: WorkspaceRevealer): AgentTool {
 /** The tool's flat arguments as the request the renderer acts on, or null when
  * the surface is not one of ours. */
 export function revealRequest(input: Record<string, unknown>): WorkspaceRevealDto | null {
-  const surface = SURFACES.find((name) => name === input.surface);
+  const requestedSurface = input.surface === "schedule" ? "tasks" : input.surface;
+  const surface = SURFACES.find((name) => name === requestedSurface);
   if (!surface) return null;
   const request: WorkspaceRevealDto = { surface };
   const account = text(input.account);

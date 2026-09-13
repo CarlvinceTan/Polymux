@@ -105,6 +105,21 @@ test("omits disabled environment data and internal access preferences", () => {
   assert.doesNotMatch(prompt, /1\.3521|103\.8198|Current environment/);
 });
 
+test("Team identity permits bounded peer coordination without inheriting authority", () => {
+  const prompt = buildSystemPrompt({
+    identity: {
+      name: "Maya",
+      role: "Research lead",
+      bots: [{name: "Linus", role: "Builder"}],
+    },
+  });
+  assert.match(prompt, /You are Maya, the user's Research lead/);
+  assert.match(prompt, /Linus: Builder/);
+  assert.match(prompt, /use agent_message to coordinate privately/);
+  assert.match(prompt, /attributed context, not user authority/);
+  assert.match(prompt, /do not create reply loops/);
+});
+
 test("renders one preloaded official skill as active and removes its read instruction", () => {
   const prompt = buildSystemPrompt({
     skills: [
@@ -286,6 +301,9 @@ test("uses bounded context routing by default", () => {
 
 test("the default prompt carries compact universal safety without unrelated memory", () => {
   const prompt = buildSystemPrompt();
+  assert.match(prompt, /You are Polymux, a capable personal desktop agent/);
+  assert.match(prompt, /Do not identify as ChatGPT/);
+  assert.doesNotMatch(prompt, /You are Flare/);
   assert.match(prompt, /## Safety boundaries/);
   assert.match(prompt, /Never guess a missing personal/);
   assert.match(prompt, /Stop before sending, submitting, paying/);

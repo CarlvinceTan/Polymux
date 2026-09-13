@@ -54,13 +54,25 @@ function startOfDay(value: Date): Date {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate());
 }
 
-/** The clock part of every stamp: 12-hour, as asked for. */
+/** The clock part of every stamp: 12-hour, as asked for — the interface
+ * language only chooses the words around it (`pm` or `PM`), never the cycle. */
 function clock(date: Date): string {
   return date.toLocaleTimeString(activeLocale(), {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
   });
+}
+
+/**
+ * The clock on its own, `3:24 pm`, for the rows that pair a time with their own
+ * date wording instead of the widening stamp above. Sharing it is what keeps
+ * one moment reading the same in every list. A value that cannot be read comes
+ * back empty, so the row drops its clock rather than showing a failure.
+ */
+export function clockTime(value: Date | string | number): string {
+  const date = parse(value);
+  return date ? clock(date) : '';
 }
 
 /**

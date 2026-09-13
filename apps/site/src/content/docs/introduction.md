@@ -20,8 +20,7 @@ It is designed to feel useful after a normal desktop install while staying open 
 - **Hub** brings supported messaging services and email into one inbox.
 - **Drive** works with local files, cloud drives, network folders, and S3-compatible storage.
 - **Browser** gives the agent an in-app browser and controlled access to assigned external tabs.
-- **Schedule** runs saved requests at a recurring time.
-- **Tasks and Subagents** keep delegated work visible without crowding the main conversation.
+- **Tasks and Subagents** keep delegated work visible without crowding the main conversation, including saved requests that run at a recurring time.
 - **Memory** preserves useful context locally between conversations.
 
 ## Agent-agnostic by design

@@ -99,3 +99,17 @@ test("bash returns output and failure state without an approval layer", async ()
     await rm(item.cwd, { recursive: true, force: true });
   }
 });
+
+test("bash exposes the stable run identity to native helpers", async () => {
+  const item = await fixture();
+  try {
+    const result = await item.registry.get("bash")!.execute({
+      command: process.platform === "win32"
+        ? "Write-Output $env:POLYMUX_RUN_ID"
+        : "printf %s \"$POLYMUX_RUN_ID\"",
+    }, {...item.context, runId: "run-preview"});
+    assert.match(String(result.content), /run-preview/);
+  } finally {
+    await rm(item.cwd, {recursive: true, force: true});
+  }
+});

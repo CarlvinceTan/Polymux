@@ -404,6 +404,21 @@ export class HomeserverStore {
     return row ? rowToEvent(row) : null;
   }
 
+  /** Local delivery metadata preserves the message body and ordering. */
+  setOutboundDeliveryStatus(eventId: string, status: "unconfirmed" | null): boolean {
+    const event = this.event(eventId);
+    if (!event || event.origin || event.redactedBy ||
+        !["m.room.message", "m.sticker"].includes(event.type) ||
+        !event.content || typeof event.content !== "object" || Array.isArray(event.content)) return false;
+    const content = {...event.content} as Record<string, unknown>;
+    if ((content["co.polymux.delivery"] ?? null) === status) return false;
+    if (status) content["co.polymux.delivery"] = status;
+    else delete content["co.polymux.delivery"];
+    this.#db.prepare("UPDATE events SET content_json = ? WHERE event_id = ?")
+      .run(JSON.stringify(content), eventId);
+    return true;
+  }
+
   /**
    * Applies a redaction to the event it names: the event stays in the timeline
    * and keeps its place, and loses everything the redaction algorithm does not
@@ -609,6 +624,9 @@ export class HomeserverStore {
         `SELECT e.* FROM events e
          LEFT JOIN receipts r ON r.user_id = ? AND r.room_id = e.room_id
          WHERE e.room_id IN (${placeholders}) AND e.type IN ('m.room.message', 'm.sticker') AND e.sender != ?
+           AND e.redacted_by IS NULL
+           AND COALESCE(json_extract(e.content_json, '$."co.polymux.backfill"'), 0) != 1
+           AND COALESCE(json_extract(e.content_json, '$."m.relates_to".rel_type'), '') != 'm.replace'
            AND e.stream_order > COALESCE(r.stream_order, 0) AND e.stream_order > ?
          ORDER BY e.stream_order ASC LIMIT ?`,
       )
@@ -626,6 +644,9 @@ export class HomeserverStore {
         `SELECT e.room_id AS room_id, COUNT(*) AS unread FROM events e
          LEFT JOIN receipts r ON r.user_id = ? AND r.room_id = e.room_id
          WHERE e.room_id IN (${placeholders}) AND e.type IN ('m.room.message', 'm.sticker') AND e.sender != ?
+           AND e.redacted_by IS NULL
+           AND COALESCE(json_extract(e.content_json, '$."co.polymux.backfill"'), 0) != 1
+           AND COALESCE(json_extract(e.content_json, '$."m.relates_to".rel_type'), '') != 'm.replace'
            AND e.stream_order > COALESCE(r.stream_order, 0)
          GROUP BY e.room_id`,
       )

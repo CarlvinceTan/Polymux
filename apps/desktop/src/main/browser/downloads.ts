@@ -121,8 +121,9 @@ export class Downloads {
       path: row.path,
       kind: downloadKind(row.filename),
       completedAt: new Date(row.finishedAt ?? row.startedAt).toLocaleTimeString([], {
-        hour: "2-digit",
+        hour: "numeric",
         minute: "2-digit",
+        hour12: true,
       }),
       url: row.url,
       state: row.state,

@@ -358,6 +358,47 @@ test("keeps formatted alternatives together when files are attached", () => {
   assert.match(raw, /Content-Disposition: attachment; filename="note.txt"/);
 });
 
+test("writes positioned attachments as related Content-ID parts", () => {
+  const raw = mimeMessage({
+    ...OUTGOING,
+    html: '<div>Before</div><div><a href="cid:report@polymux.local">report.pdf</a></div><div>After</div>',
+    attachments: [{
+      name: "report.pdf",
+      mime: "application/pdf",
+      content: Buffer.from("%PDF-test"),
+      contentId: "report@polymux.local",
+      disposition: "inline",
+    }],
+  });
+  assert.match(raw, /Content-Type: multipart\/related/);
+  assert.match(raw, /Content-Type: multipart\/alternative/);
+  assert.match(raw, /href="cid:report@polymux\.local"/);
+  assert.match(raw, /Content-ID: <report@polymux\.local>/);
+  assert.match(raw, /Content-Disposition: inline; filename="report\.pdf"/);
+  assert.equal(/Content-Type: multipart\/mixed/.test(raw), false);
+});
+
+test("keeps ordinary files outside a related inline document", () => {
+  const raw = mimeMessage({
+    ...OUTGOING,
+    html: '<a href="cid:report@polymux.local">report.pdf</a>',
+    attachments: [
+      {
+        name: "report.pdf",
+        mime: "application/pdf",
+        content: Buffer.from("%PDF-test"),
+        contentId: "report@polymux.local",
+        disposition: "inline",
+      },
+      {name: "numbers.csv", mime: "text/csv", content: Buffer.from("a,b")},
+    ],
+  });
+  assert.match(raw, /Content-Type: multipart\/mixed/);
+  assert.match(raw, /Content-Type: multipart\/related/);
+  assert.match(raw, /Content-Disposition: inline; filename="report\.pdf"/);
+  assert.match(raw, /Content-Disposition: attachment; filename="numbers\.csv"/);
+});
+
 test("threading headers travel with a reply", () => {
   const raw = mimeMessage({
     ...OUTGOING,
@@ -556,12 +597,59 @@ test("lists the files a message announces without downloading them", async () =>
   };
   await withMailbox([{path: "INBOX", messages: [message]}], async (accounts, server) => {
     const read = await accounts.message({id: "7", account: "work", folder: "INBOX"});
-    assert.deepEqual(read.attachments, [{name: "report.pdf", mime: "application/pdf"}]);
+    assert.deepEqual(read.attachments, [{
+      id: "2",
+      name: "report.pdf",
+      mime: "application/pdf",
+      contentId: null,
+      disposition: "attachment",
+      size: 90000,
+    }]);
     assert.equal(read.body, "See attached.");
     // The whole point of reading the structure first: the PDF is named in the
     // reader without a byte of it crossing the wire.
     const fetched = server.commands.filter((line) => /BODY\.PEEK\[2\]/.test(line));
     assert.deepEqual(fetched, [], "an attachment must not be fetched to show the body");
+  });
+});
+
+test("preserves a CID attachment's authored position and fetches only that part", async () => {
+  const html = '<p>Before</p><a href="cid:q3-report">Report</a><p>After</p>';
+  const message: FakeMessage = {
+    uid: 7,
+    flags: [],
+    envelope: envelopeLine({subject: "Inline report", from: ["Accounts", "accounts@example.com"]}),
+    bodyStructure:
+      `(("TEXT" "HTML" ("CHARSET" "utf-8") NIL NIL "7BIT" ${html.length} 1)` +
+      '("APPLICATION" "PDF" ("NAME" "report.pdf") "<q3-report>" NIL "7BIT" 9 NIL ' +
+      '("INLINE" ("FILENAME" "report.pdf")) NIL NIL) "RELATED")',
+    parts: {"1": html, "1.MIME": PLAIN_HEADERS, "2": "%PDF-test", "2.MIME": PLAIN_HEADERS},
+  };
+  await withMailbox([{path: "INBOX", messages: [message]}], async (accounts, server) => {
+    const read = await accounts.message({id: "7", account: "work", folder: "INBOX"});
+    assert.deepEqual(read.attachments, [{
+      id: "2",
+      name: "report.pdf",
+      mime: "application/pdf",
+      contentId: "q3-report",
+      disposition: "inline",
+      size: 9,
+    }]);
+    assert.equal(
+      server.commands.some((line) => /BODY\.PEEK\[2\]/.test(line)),
+      false,
+      "reading the message still leaves the PDF lazy",
+    );
+
+    const attachment = await accounts.attachment({
+      id: "7",
+      part: "2",
+      account: "work",
+      folder: "INBOX",
+    });
+    assert.equal(attachment.id, "2");
+    assert.equal(attachment.mime, "application/pdf");
+    assert.equal(attachment.content.toString(), "%PDF-test");
   });
 });
 
@@ -587,6 +675,20 @@ test("carries the ids a reply needs to thread", async () => {
     assert.equal(read.messageId, "<c@example.com>");
     // In-Reply-To repeats the last reference; the chain must not double it.
     assert.deepEqual(read.references, ["<a@example.com>", "<b@example.com>"]);
+  });
+});
+
+test("keeps sender importance separate from the recipient's flag", async () => {
+  const message = alternative(7, "Please review.", "<p>Please review.</p>");
+  message.flags = ["\\Flagged"];
+  message.parts.HEADER = "Importance: high\r\nX-Priority: 1 (Highest)\r\n\r\n";
+  await withMailbox([{path: "INBOX", messages: [message]}], async (accounts) => {
+    const [listed] = await accounts.envelopes({account: "work", folder: "INBOX"});
+    assert.equal(listed.flagged, true);
+    assert.equal(listed.importance, "high");
+
+    const read = await accounts.message({id: "7", account: "work", folder: "INBOX"});
+    assert.equal(read.importance, "high");
   });
 });
 

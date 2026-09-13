@@ -316,6 +316,10 @@ export function createInAppBrowserReadTool(
         rememberRunTab(lastTabByRun, runId, opened.tabId);
         rememberOwnedRunTab(tabsByRun, runId, opened.tabId);
       }
+      // The renderer can begin its passive live preview as soon as the hidden
+      // tab exists. An empty progress label carries routing data without
+      // manufacturing a visible sub-step in the activity trail.
+      await context.emitProgress?.("", {browserTabId: opened.tabId});
       try {
         let session = await browser.session(opened.tabId);
         // `did-stop-loading` fires before many first-party SPAs finish

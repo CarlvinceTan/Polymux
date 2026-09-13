@@ -38,6 +38,11 @@ import {
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
+import {
+  fetchReleaseBuffer,
+  fetchReleaseHead,
+  fetchReleaseText,
+} from "./release/release-fetch.mjs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputOverride = process.argv.find((flag) => flag.startsWith("--output="))?.slice(9);
@@ -68,13 +73,6 @@ export const FLEET = [
     repo: "signal",
     tag: "v0.2607.0",
     commit: "df6f954a62174640e82ef5c3457e8858f038f6c6",
-  },
-  {
-    binary: "mautrix-discord",
-    repo: "discord",
-    tag: "v0.7.6",
-    commit: "19e26674e6624a02bced982aafe845cb20e43827",
-    command: ".",
   },
   {
     binary: "mautrix-slack",
@@ -238,9 +236,9 @@ async function sha256Of(buffer) {
 
 /** The checksum the release itself publishes for this asset. */
 async function expectedChecksum(entry) {
-  const response = await fetch(url(entry, "sha256sums.txt"));
+  const {response, body} = await fetchReleaseText(url(entry, "sha256sums.txt"));
   if (!response.ok) throw new Error(`no sha256sums.txt (HTTP ${response.status})`);
-  const line = (await response.text())
+  const line = body
     .split("\n")
     .find((row) => row.trim().endsWith(asset(entry)));
   if (!line) throw new Error(`sha256sums.txt does not list ${asset(entry)}`);
@@ -258,14 +256,15 @@ async function fetchOne(entry) {
   if (!force && (await alreadyHave(entry, checksum))) return {skipped: true, checksum};
 
   if (dryRun) {
-    const head = await fetch(url(entry, asset(entry)), {method: "HEAD"});
+    const head = await fetchReleaseHead(url(entry, asset(entry)), {
+      init: {method: "HEAD"},
+    });
     if (!head.ok) throw new Error(`asset unavailable (HTTP ${head.status})`);
     return {size: Number(head.headers.get("content-length") ?? 0), checksum, dryRun: true};
   }
 
-  const response = await fetch(url(entry, asset(entry)));
+  const {response, body} = await fetchReleaseBuffer(url(entry, asset(entry)));
   if (!response.ok) throw new Error(`download failed (HTTP ${response.status})`);
-  const body = Buffer.from(await response.arrayBuffer());
   const actual = await sha256Of(body);
   if (actual !== checksum)
     throw new Error(`checksum mismatch: expected ${checksum}, got ${actual}`);
@@ -290,18 +289,21 @@ async function fetchFromCi(entry) {
     );
 
   if (dryRun) {
-    const head = await fetch(ciUrl(entry, entry.binary), {method: "HEAD"});
+    const head = await fetchReleaseHead(ciUrl(entry, entry.binary), {
+      init: {method: "HEAD"},
+    });
     if (!head.ok) throw new Error(`artifact unavailable (HTTP ${head.status})`);
     for (const extra of entry.extras) {
-      const side = await fetch(ciUrl(entry, extra), {method: "HEAD"});
+      const side = await fetchReleaseHead(ciUrl(entry, extra), {
+        init: {method: "HEAD"},
+      });
       if (!side.ok) throw new Error(`${extra} unavailable (HTTP ${side.status})`);
     }
     return {size: Number(head.headers.get("content-length") ?? 0), checksum: entry.sha256 ?? "unpinned", dryRun: true};
   }
 
-  const response = await fetch(ciUrl(entry, entry.binary));
+  const {response, body} = await fetchReleaseBuffer(ciUrl(entry, entry.binary));
   if (!response.ok) throw new Error(`download failed (HTTP ${response.status})`);
-  const body = Buffer.from(await response.arrayBuffer());
   const actual = await sha256Of(body);
   if (entry.sha256 && actual !== entry.sha256)
     throw new Error(`checksum mismatch: expected ${entry.sha256}, got ${actual}`);
@@ -311,9 +313,11 @@ async function fetchFromCi(entry) {
 
   // Shared libraries the binary loads from its own directory at runtime.
   for (const extra of entry.extras) {
-    const side = await fetch(ciUrl(entry, extra));
+    const {response: side, body: sideBody} = await fetchReleaseBuffer(
+      ciUrl(entry, extra),
+    );
     if (!side.ok) throw new Error(`${extra} download failed (HTTP ${side.status})`);
-    await writeFile(path.join(outputDirectory, extra), Buffer.from(await side.arrayBuffer()));
+    await writeFile(path.join(outputDirectory, extra), sideBody);
   }
 
   return {size: body.length, checksum: actual, unpinned: !entry.sha256};
@@ -331,7 +335,7 @@ async function fetchFromCi(entry) {
  * Messages database and has no meaning on Windows.
  */
 const WINDOWS_SOURCE_FLEET = [
-  ...FLEET.filter((entry) => !["signal", "discord"].includes(entry.repo)),
+  ...FLEET.filter((entry) => !["signal"].includes(entry.repo)),
   {
     binary: "mautrix-googlechat",
     repo: "googlechat",
@@ -388,7 +392,9 @@ async function windowsSource(entry) {
     windowsSources.set(key, (async () => {
       const sourceUrl = `https://github.com/mautrix/${entry.repo}/archive/${entry.commit}.tar.gz`;
       if (dryRun) {
-        const response = await fetch(sourceUrl, {method: "HEAD"});
+        const response = await fetchReleaseHead(sourceUrl, {
+          init: {method: "HEAD"},
+        });
         if (!response.ok) throw new Error(`source unavailable (HTTP ${response.status})`);
         return {dryRun: true, size: Number(response.headers.get("content-length") ?? 0)};
       }
@@ -396,9 +402,9 @@ async function windowsSource(entry) {
       const directory = path.join(windowsSourceRoot, `${entry.repo}-${entry.commit.slice(0, 12)}`);
       const archive = path.join(windowsSourceRoot, `${entry.repo}-${entry.commit.slice(0, 12)}.tar.gz`);
       await mkdir(directory, {recursive: true});
-      const response = await fetch(sourceUrl);
+      const {response, body} = await fetchReleaseBuffer(sourceUrl);
       if (!response.ok) throw new Error(`source download failed (HTTP ${response.status})`);
-      await writeFile(archive, Buffer.from(await response.arrayBuffer()));
+      await writeFile(archive, body);
       execFileSync("tar", ["-xzf", archive, "--strip-components=1", "-C", directory], {
         stdio: "ignore",
       });
@@ -586,13 +592,13 @@ async function main() {
   else if (requestedPlatform === "linux")
     console.log(
       requestedArch === "x64"
-        ? "\nLinux includes 14 native bridges; only iMessage is unavailable."
-        : "\nLinux arm64 includes 13 native bridges; Google Chat has no pinned " +
+        ? "\nLinux includes 13 native bridges; only iMessage is unavailable."
+        : "\nLinux arm64 includes 12 native bridges; Google Chat has no pinned " +
           "artifact and iMessage is unavailable.",
     );
   else
     console.log(
-      "\nWindows includes 12 native bridges; Signal and the legacy Discord bridge remain unsupported upstream, while iMessage is Apple-only.",
+      "\nWindows includes 12 native bridges; Signal remains unsupported upstream, while iMessage is Apple-only.",
     );
   if (windowsSourceRoot)
     await rm(windowsSourceRoot, {recursive: true, force: true});

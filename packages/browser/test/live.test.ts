@@ -16,16 +16,16 @@ import { chromeBinary, startLiveBrowser, type LiveBrowser } from "./live-browser
  * It is what caught a rewrite that had been passing `send` as the CDP method
  * name, which typechecking and parsing both waved through.
  *
- * Skipped unless Chrome is installed, because it drives the real thing.
+ * Skipped unless Playwright Chromium is installed and the suite is opted in.
  */
 
 const FIXTURE = new URL("./fixtures/page.html", import.meta.url).pathname;
-// Opt-in: this launches a real browser and takes about a minute, so it is not
+// Opt-in: this launches isolated headless Chromium and takes about a minute, so it is not
 // part of `npm test`. Run it with `npm run test:browser-live`.
 const requested = process.env.POLYMUX_LIVE_BROWSER === "1";
 const available = requested && chromeBinary() !== null;
 
-describe("browser against a real browser", { skip: !available && (requested ? "no Chrome installed" : "set POLYMUX_LIVE_BROWSER=1 to run") }, () => {
+describe("browser against a real browser", { skip: !available && (requested ? "install Playwright Chromium to run" : "set POLYMUX_LIVE_BROWSER=1 to run") }, () => {
   let browser: LiveBrowser;
   let session: ReturnType<typeof createSession>;
 
@@ -36,9 +36,9 @@ describe("browser against a real browser", { skip: !available && (requested ? "n
     await handlers.wait(session, { selector: "#buy", timeoutMs: 10_000 });
   });
 
-  after(() => {
+  after(async () => {
     if (session) stopSession(session);
-    if (browser) browser.stop();
+    if (browser) await browser.stop();
   });
 
   const status = async (): Promise<string> =>

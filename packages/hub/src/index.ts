@@ -36,14 +36,44 @@ export {
   type WeChatWriter,
   type WeChatWriteRequest,
   type WeChatWriteResult,
-} from "./wechat-bridge.js";
-export {ProcessWeChatWriter} from "./wechat-writer.js";
-export {
+  type WeChatStickerCatalogEntry,
+  type WeChatHomeserver,
+  type WeChatAppserviceRecord,
+  ProcessWeChatWriter,
+  ensureWeChatAppRunningHidden,
+  primeWeChatAppHidden,
+  weChatSessionReadyHidden,
+  weChatSessionStateHidden,
+  weChatAppIsRunning,
+  type EnsureWeChatAppOptions,
+  type PrimeWeChatAppOptions,
+  type WeChatSessionState,
   WECHAT_NATIVE_PROFILES,
   findWeChatNativeProfile,
   type WeChatNativeProfile,
-} from "./wechat-native-profile.js";
-export {loadHeadImages, type HeadImageOptions} from "./wechat-head-images.js";
+  loadHeadImages,
+  type HeadImageOptions,
+  probeWeChatRelay,
+  setupGuidance,
+  setupHint,
+  WECHAT_DOWNLOAD_URL,
+  WECHAT_DOWNLOAD_URLS,
+  weChatDownloadUrl,
+  type WeChatRelayStatus,
+  visibleWeChatText,
+  forwardedBundleOf,
+  forwardedBundleText,
+  weChatForwardedBundle,
+  isWeChatContainerChannel,
+  isWeChatSessionContainer,
+  weChatMemberTitle,
+  weChatPortalChannelId,
+  pauseWeChatRelay,
+  parseWeChatJson,
+  weChatAttachmentReply,
+  weChatConversationList,
+  weChatHistoryPage,
+} from "@polymux/wechat";
 export {
   bridgeDisplayName,
   MatrixHub,
@@ -67,11 +97,7 @@ export {
   type CommandRunner,
   type EmailAccountsOptions,
 } from "./email.js";
-export {
-  probeWeChatRelay,
-  setupHint,
-  type WeChatRelayStatus,
-} from "./wechat-relay.js";
+
 export {MEDIA_SCHEME, mediaUrl} from "./media-url.js";
 
 export {

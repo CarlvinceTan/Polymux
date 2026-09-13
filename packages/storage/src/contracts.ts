@@ -33,12 +33,14 @@ import type {
   SavedLogin,
   SitePermission,
 } from "./types.js";
+import type { UsageSource } from "./usage.js";
 
 export interface ConversationStore {
   createConversation(input: NewConversation): Conversation;
   getConversation(id: Id): Conversation | null;
   listConversations(options?: {
     includeArchived?: boolean;
+    archivedOnly?: boolean;
     limit?: number;
     offset?: number;
   }): Conversation[];
@@ -53,10 +55,19 @@ export interface ConversationStore {
     id: Id,
     patch: { content?: JsonValue; metadata?: JsonValue },
   ): StoredMessage | null;
+  /**
+   * Drops every message after `sequence` in this conversation. Attachments
+   * cascade with the rows; summaries that reached into the deleted suffix go
+   * with them, so a later turn cannot reuse a compact of turns that no longer
+   * exist. Sequence numbers of what remains are left alone — the next append
+   * continues from the new end.
+   */
+  deleteMessagesAfter(conversationId: Id, sequence: number): number;
   listMessages(
     conversationId: Id,
     options?: { afterSequence?: number; limit?: number },
   ): StoredMessage[];
+  latestMessage(conversationId: Id): StoredMessage | null;
   /**
    * Substring search across stored messages, newest first. Conversation history
    * is the record of what was actually said, so it is searched on demand rather
@@ -83,6 +94,8 @@ export interface RunStore {
   ): AgentRun | null;
   appendRunEvent(runId: Id, type: string, payload: JsonValue): RunEvent;
   listRunEvents(runId: Id, afterSequence?: number): RunEvent[];
+  /** Rows the Usage app needs, without loading full transcripts. */
+  loadUsageSource(): UsageSource;
 }
 
 export interface MemoryStore {
@@ -99,6 +112,7 @@ export interface ResourceStore {
   listArtifacts(conversationId?: Id): Artifact[];
   createReference(input: NewReference): StoredReference;
   listReferences(conversationId: Id): StoredReference[];
+  updateReferenceTitle(id: Id, title: string): StoredReference | null;
 }
 
 export interface GoalStore {
@@ -144,6 +158,7 @@ export interface BrowserStore {
    * replaces the stored one only when larger. Importing the same profile twice
    * therefore lands on the same number rather than double it. */
   recordVisit(input: NewHistoryEntry): HistoryEntry;
+  getHistoryEntry(url: string): HistoryEntry | null;
   /** Most recent first. `query` matches url or title, case-insensitively. */
   listHistory(options?: {query?: string; limit?: number}): HistoryEntry[];
   /** Records many visits in one transaction — an import is tens of thousands

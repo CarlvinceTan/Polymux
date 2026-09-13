@@ -90,7 +90,7 @@ export function oauthAppFromEnv(
  * Runs the authorization-code flow for one provider and holds the resulting
  * tokens.
  *
- * The user signs in on the provider's own page in a dedicated window — Polymux
+ * The user signs in on the provider's own page — Polymux
  * never sees the password, only the code the provider hands back. PKCE is
  * always used, so a build shipping a public client id is still safe against an
  * intercepted code.
@@ -282,10 +282,10 @@ export class OAuthClient {
    * lets the browser land on a page that says the flow is done instead of a
    * connection error.
    *
-   * Only the window itself is the host's to open. Everything that decides
-   * whether a code is trustworthy — the state check, the timeout, the port —
-   * stays here, so no host can weaken the flow by implementing the prompt
-   * differently.
+   * Only putting the provider page on screen is the host's to do. Everything
+   * that decides whether a code is trustworthy — the state check, the timeout,
+   * the port — stays here, so no host can weaken the flow by implementing the
+   * prompt differently.
    */
   async #awaitCode(url: string, expectedState: string): Promise<string> {
     let server: Server | undefined;
