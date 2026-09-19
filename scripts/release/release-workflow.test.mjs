@@ -54,7 +54,8 @@ test("macOS releases are signed and notarized with no unsigned fallback", () => 
   assert.match(job("linux"), /resources\/wxcdn_fileid_capture\.py/);
   assert.match(job("linux"), /resources\/resources\/wechat-writer/);
   assert.match(release, /--notes-file "\$RUNNER_TEMP\/release-notes\.md"/);
-  assert.match(job("verify"), /release-notes\.mjs "\$GITHUB_REF_NAME"/);
+  assert.match(job("verify"), /release-notes\.mjs "\$RELEASE_VERSION"/);
+  assert.match(job("verify"), /RELEASE_VERSION: \$\{\{ inputs\.release_version \|\| github\.ref_name \}\}/);
   assert.doesNotMatch(release, /--generate-notes/);
   assert.doesNotMatch(release, /--prerelease/);
 });

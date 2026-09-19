@@ -4,6 +4,12 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: Release version to validate without publishing (workflow dispatch only)
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -23,7 +29,9 @@ jobs:
           node-version: 24
           cache: npm
       - name: Validate curated release notes before building installers
-        run: node scripts/release/release-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version || github.ref_name }}
+        run: node scripts/release/release-notes.mjs "$RELEASE_VERSION" > "$RUNNER_TEMP/release-notes.md"
       - run: npm ci
       - run: npm ci --prefix apps/site
       - run: npm ci --prefix apps/connect/relay
