@@ -16,6 +16,7 @@ import ipaddress
 import json
 import os
 import signal
+import site
 import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -29,6 +30,12 @@ _TUNNEL_UNDERLAY_SCOPE = "unknown"
 # reuse the standalone Python already shipped for local signing.
 _BUNDLED_SITE_PACKAGES = Path(__file__).resolve().parent / "site-packages"
 if _BUNDLED_SITE_PACKAGES.is_dir():
+    # addsitedir processes the .pth files pip writes into the bundle. pywin32
+    # relies on its .pth for the Windows import roots and DLL directory, and a
+    # plain sys.path entry does not execute them.
+    site.addsitedir(str(_BUNDLED_SITE_PACKAGES))
+    with contextlib.suppress(ValueError):
+        sys.path.remove(str(_BUNDLED_SITE_PACKAGES))
     sys.path.insert(0, str(_BUNDLED_SITE_PACKAGES))
 
 

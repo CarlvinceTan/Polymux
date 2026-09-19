@@ -248,20 +248,24 @@ async function removePip(runtime, target) {
 }
 
 function smoke(python, outputDirectory) {
+  const sitePackages = path.join(outputDirectory, "site-packages");
   const helper = path.join(outputDirectory, "helper.py");
   const response = execFileSync(python, [helper, "ping"], {encoding: "utf8"}).trim();
   const parsed = JSON.parse(response);
   if (!parsed.ready || parsed.protocolVersion !== IOS_DEVICE_PROTOCOL_VERSION)
     throw new Error("The bundled iPhone device helper failed its protocol smoke test.");
+  // Process the bundle's .pth files exactly as the helper does: pywin32 is
+  // importable only after its .pth adds the Windows import roots.
   execFileSync(python, ["-c", [
+    "import site, sys",
+    "site.addsitedir(sys.argv[1])",
     "from pymobiledevice3.remote.native_tunnel import NativeRemotedTunnel",
     "from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel",
     "from pymobiledevice3.services.dvt.testmanaged.xcuitest import XCUITestService",
-  ].join("; ")], {
+  ].join("; "), sitePackages], {
     stdio: "inherit",
     env: {
       ...process.env,
-      PYTHONPATH: path.join(outputDirectory, "site-packages"),
       PYTHONDONTWRITEBYTECODE: "1",
       PYTHONUTF8: "1",
     },

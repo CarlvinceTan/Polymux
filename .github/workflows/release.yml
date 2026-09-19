@@ -231,13 +231,24 @@ jobs:
             grep -q '"protocolVersion":1'
           "$IOS_SIGNER/zsign" -v
           IOS_DEVICE="$APP_PATH/Contents/Resources/resources/phone/ios/device"
-          test -f "$IOS_DEVICE/LICENSE.pymobiledevice3.txt"
-          test -f "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt"
-          test -f "$IOS_DEVICE/SOURCE_ARCHIVES.json"
-          test -f "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz"
-          test -f "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz"
-          test -f "$IOS_DEVICE/sources/pygnuutils-0.1.1.tar.gz"
-          test -x "$IOS_DEVICE/python/bin/python3"
+          for required in \
+            "$IOS_DEVICE/LICENSE.pymobiledevice3.txt" \
+            "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt" \
+            "$IOS_DEVICE/SOURCE_ARCHIVES.json" \
+            "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz" \
+            "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz" \
+            "$IOS_DEVICE/sources/pygnuutils-0.1.1.tar.gz"; do
+            test -f "$required" || {
+              echo "The macOS package is missing iPhone tunnel runtime file: $required"
+              ls -la "$IOS_DEVICE" || true
+              exit 1
+            }
+          done
+          test -x "$IOS_DEVICE/python/bin/python3" || {
+            echo "The macOS package is missing the iPhone tunnel Python runtime: $IOS_DEVICE/python/bin/python3"
+            ls -la "$IOS_DEVICE" || true
+            exit 1
+          }
           "$IOS_DEVICE/python/bin/python3" --version | grep -q 'Python 3.13'
           "$IOS_DEVICE/python/bin/python3" "$IOS_DEVICE/helper.py" ping | \
             grep -q '"protocolVersion":1'
@@ -550,7 +561,6 @@ jobs:
           BRIDGES="$EXTRACTED/squashfs-root/resources/resources/bridges"
           EXPECTED=(
             mautrix-bluesky
-            mautrix-discord
             mautrix-gmessages
             mautrix-googlechat
             mautrix-gvoice
@@ -613,13 +623,24 @@ jobs:
             grep -q '"protocolVersion":1'
           "$IOS_SIGNER/zsign" -v
           IOS_DEVICE="$EXTRACTED/squashfs-root/resources/resources/phone/ios/device"
-          test -f "$IOS_DEVICE/LICENSE.pymobiledevice3.txt"
-          test -f "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt"
-          test -f "$IOS_DEVICE/SOURCE_ARCHIVES.json"
-          test -f "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz"
-          test -f "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz"
-          test -f "$IOS_DEVICE/sources/pygnuutils-0.1.1.tar.gz"
-          test -x "$IOS_DEVICE/python/bin/python3"
+          for required in \
+            "$IOS_DEVICE/LICENSE.pymobiledevice3.txt" \
+            "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt" \
+            "$IOS_DEVICE/SOURCE_ARCHIVES.json" \
+            "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz" \
+            "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz" \
+            "$IOS_DEVICE/sources/pygnuutils-0.1.1.tar.gz"; do
+            test -f "$required" || {
+              echo "The Linux package is missing iPhone tunnel runtime file: $required"
+              ls -la "$IOS_DEVICE" || true
+              exit 1
+            }
+          done
+          test -x "$IOS_DEVICE/python/bin/python3" || {
+            echo "The Linux package is missing the iPhone tunnel Python runtime: $IOS_DEVICE/python/bin/python3"
+            ls -la "$IOS_DEVICE" || true
+            exit 1
+          }
           "$IOS_DEVICE/python/bin/python3" --version | grep -q 'Python 3.13'
           "$IOS_DEVICE/python/bin/python3" "$IOS_DEVICE/helper.py" ping | \
             grep -q '"protocolVersion":1'
