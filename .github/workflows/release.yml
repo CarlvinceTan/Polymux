@@ -275,21 +275,24 @@ jobs:
             exit 1
           }
           WDA="$APP_PATH/Contents/Resources/resources/phone/ios/WebDriverAgentRunner-Runner.app"
-          test -x "$WDA/WebDriverAgentRunner-Runner"
-          test -d "$WDA/PlugIns/WebDriverAgentRunner.xctest"
-          test -f "$APP_PATH/Contents/Resources/resources/phone/ios/WDA_SOURCE.json"
-          plutil -extract CFBundleIdentifier raw "$WDA/Info.plist" | grep -q '^com.flarehq.polymux.wda.xctrunner$'
+          test -x "$WDA/WebDriverAgentRunner-Runner" || { echo "The macOS package is missing the WDA runner."; exit 1; }
+          test -d "$WDA/PlugIns/WebDriverAgentRunner.xctest" || { echo "The macOS package is missing the WDA test bundle."; exit 1; }
+          test -f "$APP_PATH/Contents/Resources/resources/phone/ios/WDA_SOURCE.json" || { echo "The macOS package is missing WDA_SOURCE.json."; exit 1; }
+          plutil -extract CFBundleIdentifier raw "$WDA/Info.plist" | grep -q '^com.flarehq.polymux.wda.xctrunner$' || {
+            echo "The macOS package WDA bundle identifier is wrong."
+            exit 1
+          }
           NATIVE="$APP_PATH/Contents/Resources/resources/native/bin"
-          for helper in app-permissions ax-events ax-reader calendar contacts pill-image reminders wechat-media-prepare wechat-paste-send wechat-prime; do
-            test -x "$NATIVE/$helper"
-            file "$NATIVE/$helper" | grep -q 'arm64'
+          for helper in app-permissions ax-events ax-reader calendar contacts pill-image permission-guide reminders wechat-media-prepare wechat-launch-hidden wechat-prime wechat-session-state; do
+            test -x "$NATIVE/$helper" || { echo "The macOS package is missing native helper: $helper"; exit 1; }
+            file "$NATIVE/$helper" | grep -q 'arm64' || { echo "The macOS package native helper is not arm64: $helper"; exit 1; }
           done
           WECHAT_WRITER="$APP_PATH/Contents/Resources/resources/wechat-writer"
-          test -x "$WECHAT_WRITER/polymux-wechat-driver.mjs"
+          test -x "$WECHAT_WRITER/polymux-wechat-driver.mjs" || { echo "The macOS package is missing the WeChat driver."; exit 1; }
           for file in wechat-daemon-coordination.mjs wechat-wire.mjs wechat_native_cdn_upload_lldb.py wechat_native_task_lldb.py; do
-            test -f "$WECHAT_WRITER/$file"
+            test -f "$WECHAT_WRITER/$file" || { echo "The macOS package is missing WeChat writer file: $file"; exit 1; }
           done
-          test -d "$WECHAT_WRITER/node_modules/silk-wasm/lib"
+          test -d "$WECHAT_WRITER/node_modules/silk-wasm/lib" || { echo "The macOS package is missing the silk-wasm runtime."; exit 1; }
           DMG="$(find out/make -type f -name '*.dmg' -print -quit)"
           ZIP="$(find out/make -type f -name '*.zip' -print -quit)"
           test -n "$DMG" && test -n "$ZIP"
