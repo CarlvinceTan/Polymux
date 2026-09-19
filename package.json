@@ -1,7 +1,7 @@
 {
   "name": "polymux-desktop",
   "productName": "Polymux",
-  "version": "0.3.4",
+  "version": "0.3.0",
   "description": "Agent-agnostic desktop workspace",
   "author": "Carlvince Tan",
   "main": ".vite/build/main.js",

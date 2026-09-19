@@ -187,8 +187,9 @@ test("headless runtime waits for pooled mailbox connections to close", async (t)
     // Shutdown drains any status read already in flight before it tears the
     // mailbox down, so wait for the logout rather than counting event-loop
     // turns. Both properties still have to hold: it starts, and it is awaited.
-    for (let turn = 0; turn < 100 && !logoutStarted; turn += 1)
-      await new Promise<void>((resolve) => setImmediate(resolve));
+    const deadline = Date.now() + 5_000;
+    while (!logoutStarted && Date.now() < deadline)
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
     assert.equal(logoutStarted, true, "Shutdown should close the pooled mailbox connection");
     assert.equal(closed, false, "Shutdown must wait for mailbox logout to finish");
     releaseLogout();

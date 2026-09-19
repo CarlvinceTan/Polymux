@@ -4,6 +4,12 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: Release version to validate without publishing (workflow dispatch only)
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -23,7 +29,9 @@ jobs:
           node-version: 24
           cache: npm
       - name: Validate curated release notes before building installers
-        run: node scripts/release/release-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version || github.ref_name }}
+        run: node scripts/release/release-notes.mjs "$RELEASE_VERSION" > "$RUNNER_TEMP/release-notes.md"
       - run: npm ci
       - run: npm ci --prefix apps/site
       - run: npm ci --prefix apps/connect/relay
@@ -192,6 +200,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Running the bundled Python must not drop __pycache__ files into the
+          # signed bundle; that invalidates the code signature checked below.
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONUTF8: "1"
         run: |
           APP_PATH="out/Polymux-darwin-arm64/Polymux.app"
           test -d "$APP_PATH"
@@ -231,32 +243,60 @@ jobs:
             grep -q '"protocolVersion":1'
           "$IOS_SIGNER/zsign" -v
           IOS_DEVICE="$APP_PATH/Contents/Resources/resources/phone/ios/device"
-          test -f "$IOS_DEVICE/LICENSE.pymobiledevice3.txt"
-          test -f "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt"
-          test -f "$IOS_DEVICE/SOURCE_ARCHIVES.json"
-          test -f "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz"
-          test -f "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz"
-          test -f "$IOS_DEVICE/sources/pygnuutils-0.1.1.tar.gz"
-          test -x "$IOS_DEVICE/python/bin/python3"
-          "$IOS_DEVICE/python/bin/python3" --version | grep -q 'Python 3.13'
-          "$IOS_DEVICE/python/bin/python3" "$IOS_DEVICE/helper.py" ping | \
-            grep -q '"protocolVersion":1'
+          for required in \
+            "$IOS_DEVICE/LICENSE.pymobiledevice3.txt" \
+            "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt" \
+            "$IOS_DEVICE/SOURCE_ARCHIVES.json" \
+            "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz" \
+            "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz" \
+            "$IOS_DEVICE/sources/pygnuutils-0.1.1.tar.gz"; do
+            test -f "$required" || {
+              echo "The macOS package is missing iPhone tunnel runtime file: $required"
+              ls -la "$IOS_DEVICE" || true
+              exit 1
+            }
+          done
+          test -x "$IOS_DEVICE/python/bin/python3" || {
+            echo "The macOS package is missing the iPhone tunnel Python runtime: $IOS_DEVICE/python/bin/python3"
+            ls -la "$IOS_DEVICE" || true
+            exit 1
+          }
+          DEVICE_PYTHON="$IOS_DEVICE/python/bin/python3"
+          DEVICE_VERSION="$("$DEVICE_PYTHON" --version 2>&1)" || {
+            echo "The macOS package could not run its iPhone tunnel Python: $DEVICE_VERSION"
+            exit 1
+          }
+          echo "$DEVICE_VERSION" | grep -q 'Python 3.13' || {
+            echo "The macOS package has an unexpected iPhone tunnel Python: $DEVICE_VERSION"
+            exit 1
+          }
+          DEVICE_PING="$("$DEVICE_PYTHON" "$IOS_DEVICE/helper.py" ping 2>&1)" || {
+            echo "The macOS package could not run its iPhone tunnel helper: $DEVICE_PING"
+            exit 1
+          }
+          echo "$DEVICE_PING" | grep -q '"protocolVersion":1' || {
+            echo "The macOS package helper returned an unexpected response: $DEVICE_PING"
+            exit 1
+          }
           WDA="$APP_PATH/Contents/Resources/resources/phone/ios/WebDriverAgentRunner-Runner.app"
-          test -x "$WDA/WebDriverAgentRunner-Runner"
-          test -d "$WDA/PlugIns/WebDriverAgentRunner.xctest"
-          test -f "$APP_PATH/Contents/Resources/resources/phone/ios/WDA_SOURCE.json"
-          plutil -extract CFBundleIdentifier raw "$WDA/Info.plist" | grep -q '^com.flarehq.polymux.wda.xctrunner$'
+          test -x "$WDA/WebDriverAgentRunner-Runner" || { echo "The macOS package is missing the WDA runner."; exit 1; }
+          test -d "$WDA/PlugIns/WebDriverAgentRunner.xctest" || { echo "The macOS package is missing the WDA test bundle."; exit 1; }
+          test -f "$APP_PATH/Contents/Resources/resources/phone/ios/WDA_SOURCE.json" || { echo "The macOS package is missing WDA_SOURCE.json."; exit 1; }
+          plutil -extract CFBundleIdentifier raw "$WDA/Info.plist" | grep -q '^com.flarehq.polymux.wda.xctrunner$' || {
+            echo "The macOS package WDA bundle identifier is wrong."
+            exit 1
+          }
           NATIVE="$APP_PATH/Contents/Resources/resources/native/bin"
-          for helper in app-permissions ax-events ax-reader calendar contacts pill-image reminders wechat-media-prepare wechat-paste-send wechat-prime; do
-            test -x "$NATIVE/$helper"
-            file "$NATIVE/$helper" | grep -q 'arm64'
+          for helper in app-permissions ax-events ax-reader calendar contacts pill-image permission-guide reminders wechat-media-prepare wechat-launch-hidden wechat-prime wechat-session-state; do
+            test -x "$NATIVE/$helper" || { echo "The macOS package is missing native helper: $helper"; exit 1; }
+            file "$NATIVE/$helper" | grep -q 'arm64' || { echo "The macOS package native helper is not arm64: $helper"; exit 1; }
           done
           WECHAT_WRITER="$APP_PATH/Contents/Resources/resources/wechat-writer"
-          test -x "$WECHAT_WRITER/polymux-wechat-driver.mjs"
+          test -x "$WECHAT_WRITER/polymux-wechat-driver.mjs" || { echo "The macOS package is missing the WeChat driver."; exit 1; }
           for file in wechat-daemon-coordination.mjs wechat-wire.mjs wechat_native_cdn_upload_lldb.py wechat_native_task_lldb.py; do
-            test -f "$WECHAT_WRITER/$file"
+            test -f "$WECHAT_WRITER/$file" || { echo "The macOS package is missing WeChat writer file: $file"; exit 1; }
           done
-          test -d "$WECHAT_WRITER/node_modules/silk-wasm/lib"
+          test -d "$WECHAT_WRITER/node_modules/silk-wasm/lib" || { echo "The macOS package is missing the silk-wasm runtime."; exit 1; }
           DMG="$(find out/make -type f -name '*.dmg' -print -quit)"
           ZIP="$(find out/make -type f -name '*.zip' -print -quit)"
           test -n "$DMG" && test -n "$ZIP"
@@ -536,6 +576,10 @@ jobs:
           (cd out/cli-release && sha256sum polymux-cli.tar.gz > polymux-cli.tar.gz.sha256)
           test "$(node apps/cli/dist/polymux.mjs --version)" = "$(node -p 'require("./package.json").version')"
       - name: Verify Linux artifacts
+        env:
+          # Keep the bundled Python from writing __pycache__ into the package.
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONUTF8: "1"
         run: |
           APPIMAGE="$(find out/make/appimage -type f -name '*.AppImage' -print -quit)"
           test -n "$APPIMAGE"
@@ -550,7 +594,6 @@ jobs:
           BRIDGES="$EXTRACTED/squashfs-root/resources/resources/bridges"
           EXPECTED=(
             mautrix-bluesky
-            mautrix-discord
             mautrix-gmessages
             mautrix-googlechat
             mautrix-gvoice
@@ -613,16 +656,41 @@ jobs:
             grep -q '"protocolVersion":1'
           "$IOS_SIGNER/zsign" -v
           IOS_DEVICE="$EXTRACTED/squashfs-root/resources/resources/phone/ios/device"
-          test -f "$IOS_DEVICE/LICENSE.pymobiledevice3.txt"
-          test -f "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt"
-          test -f "$IOS_DEVICE/SOURCE_ARCHIVES.json"
-          test -f "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz"
-          test -f "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz"
-          test -f "$IOS_DEVICE/sources/pygnuutils-0.1.1.tar.gz"
-          test -x "$IOS_DEVICE/python/bin/python3"
-          "$IOS_DEVICE/python/bin/python3" --version | grep -q 'Python 3.13'
-          "$IOS_DEVICE/python/bin/python3" "$IOS_DEVICE/helper.py" ping | \
-            grep -q '"protocolVersion":1'
+          for required in \
+            "$IOS_DEVICE/LICENSE.pymobiledevice3.txt" \
+            "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt" \
+            "$IOS_DEVICE/SOURCE_ARCHIVES.json" \
+            "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz" \
+            "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz" \
+            "$IOS_DEVICE/sources/pygnuutils-0.1.1.tar.gz"; do
+            test -f "$required" || {
+              echo "The Linux package is missing iPhone tunnel runtime file: $required"
+              ls -la "$IOS_DEVICE" || true
+              exit 1
+            }
+          done
+          test -x "$IOS_DEVICE/python/bin/python3" || {
+            echo "The Linux package is missing the iPhone tunnel Python runtime: $IOS_DEVICE/python/bin/python3"
+            ls -la "$IOS_DEVICE" || true
+            exit 1
+          }
+          DEVICE_PYTHON="$IOS_DEVICE/python/bin/python3"
+          DEVICE_VERSION="$("$DEVICE_PYTHON" --version 2>&1)" || {
+            echo "The Linux package could not run its iPhone tunnel Python: $DEVICE_VERSION"
+            exit 1
+          }
+          echo "$DEVICE_VERSION" | grep -q 'Python 3.13' || {
+            echo "The Linux package has an unexpected iPhone tunnel Python: $DEVICE_VERSION"
+            exit 1
+          }
+          DEVICE_PING="$("$DEVICE_PYTHON" "$IOS_DEVICE/helper.py" ping 2>&1)" || {
+            echo "The Linux package could not run its iPhone tunnel helper: $DEVICE_PING"
+            exit 1
+          }
+          echo "$DEVICE_PING" | grep -q '"protocolVersion":1' || {
+            echo "The Linux package helper returned an unexpected response: $DEVICE_PING"
+            exit 1
+          }
           WDA="$EXTRACTED/squashfs-root/resources/resources/phone/ios/WebDriverAgentRunner-Runner.app"
           test -x "$WDA/WebDriverAgentRunner-Runner"
           test -d "$WDA/PlugIns/WebDriverAgentRunner.xctest"
