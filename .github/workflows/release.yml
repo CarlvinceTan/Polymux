@@ -200,6 +200,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Running the bundled Python must not drop __pycache__ files into the
+          # signed bundle; that invalidates the code signature checked below.
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONUTF8: "1"
         run: |
           APP_PATH="out/Polymux-darwin-arm64/Polymux.app"
           test -d "$APP_PATH"
@@ -572,6 +576,10 @@ jobs:
           (cd out/cli-release && sha256sum polymux-cli.tar.gz > polymux-cli.tar.gz.sha256)
           test "$(node apps/cli/dist/polymux.mjs --version)" = "$(node -p 'require("./package.json").version')"
       - name: Verify Linux artifacts
+        env:
+          # Keep the bundled Python from writing __pycache__ into the package.
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONUTF8: "1"
         run: |
           APPIMAGE="$(find out/make/appimage -type f -name '*.AppImage' -print -quit)"
           test -n "$APPIMAGE"
