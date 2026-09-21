@@ -30,26 +30,26 @@ extension it descends from:
   cursor. Before any pointer command the worker asks it to animate the cursor
   to the target and waits for it to land, so the move-then-act sequencing
   holds even though the input itself is dispatched over CDP.
-- **Locker** — the toolbar popup unlocks the same KeePass vault the desktop
-  Locker uses (via `http://127.0.0.1:47654/v1/locker/*`). Every desktop Locker
+- **Vault** — the toolbar popup unlocks the same KeePass vault the desktop
+  Vault uses (via `http://127.0.0.1:47654/v1/vault/*`). Every desktop Vault
   request carries a private installation capability obtained through the approved
   native messaging host, never through a webpage or HTTP enrollment endpoint.
-  Install the browser host before using desktop Locker. It fills passwords
+  Install the browser host before using desktop Vault. It fills passwords
   and TOTP on the current tab after you click an item, and can save a login
   the page just submitted. Passkeys are filled at the WebAuthn ceremony:
   `navigator.credentials.get` / `create` are intercepted (Chromium, Firefox,
   and Safari shared JS) and completed from KeePassXC `KPEX_PASSKEY_*` fields
-  when Locker is unlocked. Unlock only in desktop Locker or the extension popup,
+  when Vault is unlocked. Unlock only in desktop Vault or the extension popup,
   then choose Retry on the page; the page never collects the master password.
   A locked vault refuses; cancel falls through to
   the browser's own authenticator. While Polymux is running the extension also
   caches the encrypted vault blob in `chrome.storage.local`. After that, fill
   and TOTP still work if desktop is quit: you unlock the cached ciphertext with
   the same master password. Sign in to the Polymux account from the popup to
-  pull the cloud vault without desktop. Local-only lockers stay on-device and
-  are not uploaded. Rebuild `locker/offline.js` with
-  `node apps/extension/scripts/build-locker.mjs` after locker-package changes.
-  That script also writes `locker/config.local.js` from `POLYMUX_SUPABASE_URL`
+  pull the cloud vault without desktop. Local-only vaults stay on-device and
+  are not uploaded. Rebuild `vault/offline.js` with
+  `node apps/extension/scripts/build-vault.mjs` after vault-package changes.
+  That script also writes `vault/config.local.js` from `POLYMUX_SUPABASE_URL`
   / `POLYMUX_SUPABASE_ANON_KEY` in `.env`.
 
 Control happens inside the page only — the extension never raises the browser
@@ -106,7 +106,7 @@ and retry.
    directory. Copy the extension ID.
 2. `./install.sh <extension-id>` — registers the native messaging host for
    every Chromium-based browser it finds (Chrome, Brave, Edge, Arc, …).
-3. Reload the extension. Agent-surface control needs Polymux running. Locker
+3. Reload the extension. Agent-surface control needs Polymux running. Vault
    fill uses the loopback while desktop is open, the cached vault after that,
    or the account cloud vault after you sign in from the popup. Tab snapshots
    work either way.
@@ -116,7 +116,7 @@ and retry.
 Load `manifest.firefox.json` as a temporary add-on (`about:debugging` → This
 Firefox → Load Temporary Add-on). On macOS, run `./install.sh firefox` to
 register its native host for the fixed add-on ID `extension@polymux.com`, then
-reload the add-on. Desktop Locker uses the same authenticated loopback protocol
+reload the add-on. Desktop Vault uses the same authenticated loopback protocol
 and account sign-in as Chromium. The installer validates Firefox's add-on ID
 and native-manifest path before releasing the private capability. Agent-surface CDP control
 is Chromium-only; Firefox does not expose `chrome.debugger`.
@@ -125,9 +125,9 @@ is Chromium-only; Firefox does not expose `chrome.debugger`.
 
 Safari needs an Apple-signed wrapper, not this folder loaded as Chrome. See
 [`safari/README.md`](safari/README.md). iOS Safari Web Extensions still need
-store signing; use the Polymux phone app Locker until that wrapper ships.
+store signing; use the Polymux Mobile app Vault until that wrapper ships.
 Safari currently supports its cached/account vault only; its sandboxed wrapper
-has no approved native connection to desktop Locker.
+has no approved native connection to desktop Vault.
 
 Browser security requires a person to approve an unpacked extension once.
 There is no silent profile mutation or enterprise policy installation.

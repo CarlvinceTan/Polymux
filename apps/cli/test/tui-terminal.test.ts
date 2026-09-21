@@ -73,6 +73,82 @@ class TestTerminal implements Terminal {
   }
 }
 
+test('workspace menus navigate bots, details, tasks and schedules in normal and narrow terminals', {timeout: 15000}, async () => {
+  const {mkdtemp, rm, writeFile} = await import('node:fs/promises');
+  const {tmpdir} = await import('node:os');
+  const path = await import('node:path');
+  const directory = await mkdtemp(path.join(tmpdir(), 'polymux-tui-workspace-'));
+  const terminal = new TestTerminal();
+  const calls: string[] = [];
+  const bot = {id: 'bot', conversationId: 'bot-chat', name: 'Research bot', role: 'Find sources and check references',
+    profileName: 'Research', profileId: 'research', hostName: 'Test computer', status: 'working', unread: true,
+    laptopAccess: 'ask', preview: 'Reviewing the results', computer: {state: 'running'}, skills: ['Research']};
+  const client: HostClient = {async call<T>(method: string): Promise<T> {
+    calls.push(method);
+    if (method === 'conversations.messages' || method === 'runs.active') return [] as T;
+    if (method === 'runs.configuration') return {model: 'test/model', reasoning: 'medium', contextWindow: 10000, skills: [], mcps: []} as T;
+    if (method === 'team.list') return [bot] as T;
+    if (method === 'tasks.snapshot') return [{id: 'failed-run', chatId: 'chat', chatTitle: 'Research', title: 'Check the source', status: 'failed', runId: 'failed-run', parentRunId: null, error: 'Provider unavailable', result: '', startedAt: null, finishedAt: null}] as T;
+    if (method === 'schedules.list') return [] as T;
+    throw new Error(`Unexpected ${method}`);
+  }};
+  const app = runTui(client, {id: 'chat', title: 'Workspace preview'}, terminal, {settingsHome: directory, cwd: directory,
+    account: async <T>() => [{providerId: 'test-provider', type: 'api_key'}] as T,
+    devices: async () => ({approvals: [], outgoing: null, connectedDevices: [{deviceId: 'server', deviceName: 'Research server', deviceType: 'server', pairedAt: '2026-09-16'}]}),
+  });
+  const until = async (pattern: RegExp) => {
+    for (let i = 0; i < 150; i++) {
+      const text = await terminal.text();
+      if (pattern.test(text)) return text;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.fail(`Missing ${pattern}\n${await terminal.text()}`);
+  };
+  const type = async (text: string) => {
+    terminal.input(text); await new Promise(resolve => setTimeout(resolve, 30)); terminal.input('\r');
+  };
+  const esc = async () => {terminal.input('\x1b'); await new Promise(resolve => setTimeout(resolve, 50));};
+  const capture = async (name: string) => {
+    if (!process.env.POLYMUX_TUI_SCREENSHOTS) return;
+    await terminal.text();
+    const rows = Array.from({length: terminal.rows}, (_, y) => Array.from({length: terminal.columns}, (_, x) => {
+      const cell = terminal.screen.buffer.active.getLine(y)?.getCell(x);
+      return {text: cell?.getChars() || ' ', width: cell?.getWidth() ?? 1,
+        fg: cell?.isFgRGB() ? cell.getFgColor() : null, bg: cell?.isBgRGB() ? cell.getBgColor() : null};
+    }));
+    await writeFile(path.join(process.env.POLYMUX_TUI_SCREENSHOTS, `${name}.json`), JSON.stringify(rows));
+  };
+  try {
+    await until(/Workspace preview/);
+    await type('/bots'); await until(/Research bot.*Working/); await capture('bots-wide');
+    await type('Research bot'); await until(/Open conversation/);
+    await type('Summary'); await until(/Device: Test computer/); await capture('bot-summary-wide');
+    assert.match(await terminal.text(), /Find sources and check references/);
+    terminal.screen.resize(36, 24); terminal.resize();
+    await until(/Device: Test computer/); await capture('bot-summary-narrow');
+    await esc(); await until(/Open conversation/); await esc(); await until(/Create bot/); await esc();
+    await type('/tasks'); await until(/Check.*failed/); await capture('tasks-narrow');
+    await type('Check'); await until(/Details and result/);
+    await type('Details'); await until(/Provider unavailable/); await capture('task-failure-narrow');
+    await esc(); await esc();
+    await type('/schedules'); await until(/Create schedule/); await capture('schedules-empty-narrow'); await esc();
+    await type('/apps'); await until(/Assistant/); await capture('apps-narrow'); await esc();
+    await type('/providers'); await until(/test-provider/); await capture('providers-narrow'); await esc();
+    await type('/devices'); await until(/Research server/); await capture('devices-narrow'); await esc();
+    terminal.screen.resize(90, 28); terminal.resize();
+    await type('/settings'); await until(/Providers/); await capture('settings-wide'); await esc();
+    assert.ok(!calls.some(method => /create|update|remove|cancel|startComputer/.test(method)));
+  } catch (error) {
+    console.error(await terminal.text());
+    throw error;
+  } finally {
+    for (let i = 0; i < 6; i++) {terminal.input('\x1b'); await new Promise(resolve => setTimeout(resolve, 30));}
+    terminal.input('\x03'); await new Promise(resolve => setTimeout(resolve, 30));
+    terminal.input('\x03'); await app;
+    terminal.screen.dispose(); await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test(
   "mouse selection omits box chrome and gutters, preserves indentation, and targets the rounded editor",
   { timeout: 10000 },
@@ -287,7 +363,8 @@ test(
     };
     try {
       await until(/Terminal test/);
-      assert.match(await terminal.text(), /1 skills • 0 mcps/);
+      assert.match(await terminal.text(), /\[Skills\]/);
+      assert.match(await terminal.text(), /control/);
       send("Hello");
       await until(/Hello/);
       const promptRow = (await terminal.text())
@@ -344,7 +421,7 @@ test(
       terminal.screen.resize(38, 18);
       terminal.resize();
       await new Promise((resolve) => setTimeout(resolve, 80));
-      assert.match(await terminal.text(), /mcps/);
+      assert.match(await terminal.text(), /t\/s/);
       send("/exit");
       await app;
       await terminal.text();
@@ -825,3 +902,48 @@ for (const interruption of ["conversation change", "stop", "escape"]) {
     },
   );
 }
+
+test('TUI reads and edits a bot on an explicitly supplied isolated Desktop Host', {
+  skip: !process.env.POLYMUX_TUI_DESKTOP_PEER,
+  timeout: 20000,
+}, async () => {
+  const {readFile, mkdtemp, rm} = await import('node:fs/promises');
+  const {tmpdir} = await import('node:os');
+  const path = await import('node:path');
+  const {TeamHostClient} = await import('@polymux/host');
+  const peer = JSON.parse(await readFile(process.env.POLYMUX_TUI_DESKTOP_PEER!, 'utf8'));
+  const client = new TeamHostClient(peer.endpoint, peer.secret);
+  const home = await mkdtemp(path.join(tmpdir(), 'polymux-tui-desktop-terminal-'));
+  const bot = await client.call<{id: string; conversationId: string}>('team.create', [{name: 'Terminal fixture', role: 'Check sources', profileId: 'default', avatar: {shape: 'circle', color: '#61afef'}}]);
+  const terminal = new TestTerminal();
+  const app = runTui(client, {id: bot.conversationId, title: 'Terminal fixture'}, terminal, {settingsHome: home, cwd: home, hostName: 'Isolated Desktop', hostId: 'fixture'});
+  const until = async (pattern: RegExp) => {
+    for (let n = 0; n < 150; n++) {if (pattern.test(await terminal.text())) return; await new Promise(resolve => setTimeout(resolve, 25));}
+    assert.fail(`Missing ${pattern}\n${await terminal.text()}`);
+  };
+  const type = async (text: string) => {terminal.input(text); await new Promise(resolve => setTimeout(resolve, 40)); terminal.input('\r');};
+  const esc = async () => {terminal.input('\x1b'); await new Promise(resolve => setTimeout(resolve, 80));};
+  try {
+    await until(/Isolated Desktop/);
+    await type('/bots'); await until(/Create bot/);
+    await type('Terminal fixture'); await until(/Open conversation/);
+    // Search Settings is ambiguous with Agent settings; the first match is Settings.
+    await type('Settings'); await until(/Connections profile/);
+    await type('Instructions'); await until(/╭─ Instructions/);
+    await type('Reviewed from the terminal'); await until(/Open conversation/);
+    const saved = (await client.call<Array<{id: string; role: string}>>('team.list')).find(b => b.id === bot.id);
+    assert.equal(saved?.role, 'Reviewed from the terminal');
+    await type('Summary'); await until(/Reviewed from the terminal/);
+    await esc(); await esc(); await esc();
+    await type('/tasks'); await until(/All Assistant chats/); await esc();
+    await type('/schedules'); await until(/Create schedule/); await esc();
+    assert.deepEqual(await client.call('runs.updates', ['missing-fixture-run', 0]), {events: [], draft: null});
+  } finally {
+    for (let i = 0; i < 6; i++) await esc();
+    terminal.input('\x03'); await new Promise(resolve => setTimeout(resolve, 40)); terminal.input('\x03');
+    await app;
+    terminal.screen.dispose();
+    await client.call('team.remove', [bot.id]);
+    await rm(home, {recursive: true, force: true});
+  }
+});

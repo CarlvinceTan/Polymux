@@ -358,7 +358,7 @@ async function waitForStartupShell(window: BrowserWindow): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 500));
 }
 
-type SeparateWorkspaceView = "drive" | "calendar" | "hub" | "tasks" | "phone" | "locker" | "media" | "terminal" | "ide" | "usage" | "finance";
+type SeparateWorkspaceView = "drive" | "calendar" | "hub" | "tasks" | "mobile" | "vault" | "media" | "terminal" | "ide" | "usage" | "finance";
 type WorkspaceWindowPlacement = {
   x: number;
   y: number;
@@ -838,8 +838,8 @@ ipcMain.handle(
       resolvedValue !== "calendar" &&
       resolvedValue !== "hub" &&
       resolvedValue !== "tasks" &&
-      resolvedValue !== "phone" &&
-      resolvedValue !== "locker" &&
+      resolvedValue !== "mobile" &&
+      resolvedValue !== "vault" &&
       resolvedValue !== "media" &&
       resolvedValue !== "terminal" &&
       resolvedValue !== "ide" &&

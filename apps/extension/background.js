@@ -16,7 +16,7 @@
 // never pulls the tab in front of whatever the user is doing.
 
 import { attach, chromeTransport, detach, detachAll, isAttached } from "./agent/cdp.js";
-import { lockerRequest, handleWebAuthn, unlockDeviceSession } from "./locker/api.js";
+import { vaultRequest, handleWebAuthn, unlockDeviceSession } from "./vault/api.js";
 import {
   createSession,
   desktopSupportsExtension,
@@ -441,14 +441,14 @@ let pendingLogin = null;
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const trustedPage = sender?.id === chrome.runtime.id && typeof sender.url === "string" &&
     sender.url.startsWith(chrome.runtime.getURL(""));
-  if (["polymux:locker-pending", "polymux:locker-clear-pending", "polymux:locker-request", "polymux:locker-device-unlock"].includes(message?.type) && !trustedPage) {
+  if (["polymux:vault-pending", "polymux:vault-clear-pending", "polymux:vault-request", "polymux:vault-device-unlock"].includes(message?.type) && !trustedPage) {
     sendResponse({ok: false, error: "Open the Polymux extension to use this action"});
     return false;
   }
-  if (message?.type === "polymux:locker-page") {
+  if (message?.type === "polymux:vault-page") {
     return false;
   }
-  if (message?.type === "polymux:locker-submitted") {
+  if (message?.type === "polymux:vault-submitted") {
     pendingLogin = {
       origin: message.origin,
       url: message.url,
@@ -459,17 +459,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ok: true});
     return false;
   }
-  if (message?.type === "polymux:locker-pending") {
+  if (message?.type === "polymux:vault-pending") {
     sendResponse(pendingLogin);
     return false;
   }
-  if (message?.type === "polymux:locker-clear-pending") {
+  if (message?.type === "polymux:vault-clear-pending") {
     pendingLogin = null;
     sendResponse({ok: true});
     return false;
   }
-  if (message?.type === "polymux:locker-request") {
-    lockerRequest(message.path, message.options)
+  if (message?.type === "polymux:vault-request") {
+    vaultRequest(message.path, message.options)
       .then((value) => sendResponse({ok: true, value}))
       .catch((error) => sendResponse({ok: false, error: String(error), code: error?.code}));
     return true;
@@ -514,7 +514,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "polymux:locker-device-unlock") {
+  if (message?.type === "polymux:vault-device-unlock") {
     unlockDeviceSession(message.password)
       .then((status) => sendResponse({ok: true, unlocked: status.unlocked}))
       .catch((error) => sendResponse({ok: false, error: String(error)}));

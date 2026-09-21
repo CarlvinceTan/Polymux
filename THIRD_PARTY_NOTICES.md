@@ -80,7 +80,7 @@ distribution so its wireless TCP-PSK tunnel uses Python's supported PSK
 callback API; the Python license is included as
 `LICENSE.python-standalone.txt`. Polymux's companion helper source is shipped
 as `helper.py` and is distributed under GPL-3.0-or-later as
-`LICENSE.phone-ios-device-helper.txt`.
+`LICENSE.mobile-ios-device-helper.txt`.
 
 This source-and-license packaging is an engineering safeguard, not a legal
 opinion. Before a public release, counsel should confirm that the companion's

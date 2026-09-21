@@ -3,8 +3,8 @@
   import {onDestroy, onMount, tick, type ComponentProps} from 'svelte';
   import {readableError} from '../../shared/errors';
   import type {AcpRegistryEntryDto, AgentConfigOptionDto, AgentProviderDto, AgentSettingsDto} from '@polymux/protocol';
-  import type {AgentRuntimeDto, AppUpdateDto, AppVersionDto, BrowserExtensionDto, ComputerHistoryActivityDto, ComputerHistoryEntryDto, ComputerHistoryStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, ExternalAgentProfileDto, ExternalConfigurationSection, ExternalProfileConnectionMode, GeneralSettingsDto, MarketplaceAppDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryEntryDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProfileDto, ProfilesDto, ProviderDto, ProviderOAuthEventDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, UpdateAgentRuntimeRequest, WorkspaceAppDto, WorkspaceAppsDto} from '@polymux/protocol';
-  import {SUPPORTED_LANGUAGES} from '@polymux/protocol';
+  import type {AgentRuntimeDto, AppUpdateDto, AppVersionDto, BrowserExtensionDto, ComputerHistoryActivityDto, ComputerHistoryEntryDto, ComputerHistoryStatusDto, DiscoveredMcpDto, DiscoveredMcpGroupDto, DiscoveredSkillDto, DiscoveredSkillGroupDto, ExternalAgentProfileDto, ExternalConfigurationSection, ExternalProfileConnectionMode, GeneralSettingsDto, MarketplacePluginDto, McpRegistryEntryDto, McpServerDto, MemoryEntryDto, MemoryStatusDto, ModelDto, ModelMetadataDto, ModelRole, ModelRolesDto, NotificationKind, PluginDto, PluginMarketplaceDto, ProfileDto, ProfilesDto, ProviderDto, ProviderOAuthEventDto, ReasoningEffort, SkillDto, SkillRegistryEntryDto, SystemPermissionKind, SystemPermissionStatus, UpdateAgentRuntimeRequest, WorkspaceAppsDto} from '@polymux/protocol';
+  import {SUPPORTED_LANGUAGES, isReasoningModelId} from '@polymux/protocol';
   import {scrollFade} from '../../shared/scrollFade';
   import {clockTime} from '../../shared/displayTime';
   import {polymuxApi} from '../../api/polymux';
@@ -22,9 +22,6 @@
   import {MAX_WORKSPACE_WIDTH} from '../../shared/layout/layoutSizing';
   import Menu from '../../shared/components/Menu.svelte';
   import ProviderLogo from '../../shared/components/ProviderLogo.svelte';
-  import HubTab from './HubTab.svelte';
-  import DriveTab from './DriveTab.svelte';
-  import BrowserTab from './BrowserTab.svelte';
   import ArchivedChatsTab from './ArchivedChatsTab.svelte';
 
   export let onGeneralChange: (settings: GeneralSettingsDto) => void = () => {};
@@ -42,8 +39,8 @@
     {kind: 'calendar', icon: 'calendar', label: 'workspace.calendar'},
     {kind: 'hub', icon: 'chat', label: 'workspace.hub'},
     {kind: 'tasks', icon: 'tasks', label: 'workspace.tasks'},
-    {kind: 'phone', icon: 'phone', label: 'workspace.phone'},
-    {kind: 'locker', icon: 'key', label: 'workspace.locker'},
+    {kind: 'mobile', icon: 'mobile', label: 'workspace.mobile'},
+    {kind: 'vault', icon: 'key', label: 'workspace.vault'},
     {kind: 'media', icon: 'image', label: 'workspace.media'},
     {kind: 'terminal', icon: 'terminal', label: 'workspace.terminal'},
     {kind: 'ide', icon: 'code', label: 'workspace.ide'},
@@ -62,8 +59,20 @@
   };
   /** Which of ComputerHistory's two source panels a control belongs to. */
   type ComputerHistoryList = 'apps' | 'sites';
-  type Mode = 'appearance' | 'voice' | 'permissions' | 'notifications' | 'about' | 'profile' | 'app-marketplace' | 'connections' | 'plugins' | 'mcp' | 'skills' | 'model' | 'provider' | 'computer-history' | 'archived-chats';
-  type ConnectionKind = 'skill' | 'mcp' | 'plugin' | 'app';
+  type Mode = 'appearance' | 'voice' | 'permissions' | 'notifications' | 'about' | 'profile' | 'connections' | 'plugins' | 'mcp' | 'skills' | 'model' | 'provider' | 'computer-history' | 'archived-chats';
+  type SettingsSearchEntry = {
+    id: string;
+    mode: Mode;
+    icon: IconName;
+    title: string;
+    description: string;
+    keywords: string;
+    groupId: string;
+    groupLabel: string;
+    target?: string;
+    order: number;
+  };
+  type ConnectionKind = 'skill' | 'mcp' | 'plugin';
   type ConnectionItem = {
     key: string;
     kind: ConnectionKind;
@@ -75,13 +84,10 @@
     hasApp: boolean;
     official: boolean;
     enabled: boolean;
-    /** A surface the app always supplies: listed as a connection, but with
-     * nothing to install, enable or remove. */
-    alwaysOn?: boolean;
     catalogPlugin?: MarketplacePluginDto;
     catalogMcp?: McpRegistryEntryDto;
   };
-  const CONNECTIONS_MODES = new Set<Mode>(['connections', 'plugins', 'mcp', 'skills', 'app-marketplace']);
+  const CONNECTIONS_MODES = new Set<Mode>(['connections', 'plugins', 'mcp', 'skills']);
   /** Settings keeps preferences; Connections is its own workspace view. */
   export let surface: 'settings' | 'connections' = 'settings';
   /** The tab to open on. Empty means the page opens where it always has;
@@ -92,64 +98,14 @@
   type ModelKind = 'text' | 'image' | 'video' | 'audio' | 'embedding';
   type Currency = Exclude<GeneralSettingsDto['currency'], null>;
 
-  /** Browser is the core workspace surface, so the backend has no workspace-app
-   * row for it: there is nothing to install, enable or unpin. It is still
-   * configurable, so the connection list carries a row built here and its
-   * detail hosts the browser settings. */
-  const browserApp = {
-    id: 'browser',
-    name: 'Browser',
-    description: '',
-    official: true,
-    enabled: true,
-    workspaceKind: null,
-    settingsKind: null,
-    entry: null,
-    pinnable: false,
-  } satisfies WorkspaceAppDto;
-  $: browserConnectionApp = {...browserApp, name: $t('settings.tabBrowser'), description: $t('settings.browserBlurb')};
-  /** Built-in Apps carry an English name and description from the backend. This
-   * maps their stable id to catalog keys so the interface language decides what
-   * the Connections list, marketplace and app pages show for them. */
-  const OFFICIAL_APP_TEXT: Record<string, {name: MessageKey; description: MessageKey}> = {
-    hub: {name: 'workspace.hub', description: 'app.hub.description'},
-    drive: {name: 'workspace.drive', description: 'app.drive.description'},
-    media: {name: 'workspace.media', description: 'app.media.description'},
-    tasks: {name: 'workspace.tasks', description: 'app.tasks.description'},
-    calendar: {name: 'workspace.calendar', description: 'app.calendar.description'},
-    phone: {name: 'workspace.phone', description: 'app.phone.description'},
-    locker: {name: 'workspace.locker', description: 'app.locker.description'},
-    terminal: {name: 'workspace.terminal', description: 'app.terminal.description'},
-    ide: {name: 'workspace.ide', description: 'app.ide.description'},
-    finance: {name: 'workspace.finance', description: 'app.finance.description'},
-    usage: {name: 'workspace.usage', description: 'app.usage.description'},
-  };
-  function appName(app: {id: string; name: string}): string {
-    const key = OFFICIAL_APP_TEXT[app.id]?.name;
-    return key ? translate(key) : app.name;
-  }
-  function appSubtitle(app: {id: string; description: string}): string {
-    const key = OFFICIAL_APP_TEXT[app.id]?.description;
-    return key ? translate(key) : app.description;
-  }
-  /** Which settings surface an App's detail hosts, if any. Browser answers here
-   * rather than through `settingsKind`, which only describes apps the backend
-   * can install. */
-  function appSettingsKind(app: WorkspaceAppDto | null): 'hub' | 'drive' | 'browser' | null {
-    if (!app) return null;
-    if (app.settingsKind === 'hub' || app.settingsKind === 'drive') return app.settingsKind;
-    return app.id === browserApp.id ? 'browser' : null;
-  }
-  function connectionApp(item: ConnectionItem | null): WorkspaceAppDto | null {
-    if (!item || item.kind !== 'app') return null;
-    return workspaceApps.apps.find((app) => app.id === item.id) ?? (item.alwaysOn ? browserConnectionApp : null);
-  }
-
   const api = polymuxApi();
   /** How much of a marketplace arrives at once, and how much more each time
    * the list is scrolled to its end. */
   const CATALOG_PAGE = 30;
   const SKILL_REGISTRY_PAGE = 15;
+  /** Installed connections lead the directory with their names on show; the
+   * rest stay one "Manage installed" click away. */
+  const INSTALLED_PREVIEW_LIMIT = 6;
   /** How close to the end counts as the end — a list asks for the next page
    * while the last rows are still coming into view, so the rows are there by
    * the time the scroll reaches them. */
@@ -164,7 +120,7 @@
 
   function openingMode(): Mode {
     if (surface === 'connections') return initialMode && CONNECTIONS_MODES.has(initialMode) ? initialMode : 'connections';
-    return initialMode && !CONNECTIONS_MODES.has(initialMode) ? initialMode : 'appearance';
+    return initialMode === 'profile' ? 'model' : initialMode && !CONNECTIONS_MODES.has(initialMode) ? initialMode : 'appearance';
   }
 
   let mode: Mode = openingMode();
@@ -217,14 +173,13 @@
   /** The rail's filter over the tab list, kept apart from `search`, which is
    * the per-tab list filter inside the content column. */
   let navSearch = '';
+  let highlightedSettingsTarget = '';
+  let settingsSearchHighlightTimer: ReturnType<typeof setTimeout> | undefined;
   // Whatever the last visit learned, on screen before the first request.
   let mcpServers: McpServerDto[] = settingsSnapshot.mcpServers;
   let skills: SkillDto[] = settingsSnapshot.skills;
   let plugins: PluginDto[] = settingsSnapshot.plugins;
   let workspaceApps: WorkspaceAppsDto = settingsSnapshot.workspaceApps;
-  let selectedAppId = '';
-  let updatingAppId = '';
-  let removingAppId = '';
   let models: ModelDto[] = settingsSnapshot.models;
   let providers: ProviderDto[] = settingsSnapshot.providers;
   let computerHistory: ComputerHistoryStatusDto | null = settingsSnapshot.computerHistory;
@@ -278,7 +233,6 @@
   let updatingAutoStop = false;
   let updatingTime = false;
   let updatingLocation = false;
-  let updatingHubIncognitoMode = false;
   let permissionStatuses: Partial<Record<SystemPermissionKind, SystemPermissionStatus>> = {};
   let askingPermission: SystemPermissionKind | '' = '';
   /** The kind whose switch is in flight, or 'all' for the master one. */
@@ -368,10 +322,9 @@
   /** Directory A (marketplace landing) state: which category card filters the
    * sections below, and which result card's detail modal is open. Bots has no
    * prebuilt catalog yet, so its card explains that instead of listing rows. */
-  type MarketplaceCategory = 'all' | 'bots' | 'skill' | 'mcp' | 'plugin' | 'app';
+  type MarketplaceCategory = 'all' | 'bots' | 'skill' | 'mcp' | 'plugin';
   let marketplaceCategory: MarketplaceCategory = 'all';
   let browsingInstalledConnections = false;
-  let installedStripWidth = 0;
   let marketplaceDetailKey: string | null = null;
   let modelRoles: ModelRolesDto | null = settingsSnapshot.modelRoles;
   /** The role the model directory is open for. Empty is the tab's own view: the
@@ -400,12 +353,6 @@
   let pluginCatalogError = '';
   let pluginCatalogTimer: ReturnType<typeof setTimeout> | undefined;
   let installingPluginId = '';
-  let appCatalog: MarketplaceAppDto[] = [];
-  let appCatalogQuery = '';
-  let appCatalogSearching = false;
-  let appCatalogError = '';
-  let appCatalogTimer: ReturnType<typeof setTimeout> | undefined;
-  let installingAppId = '';
   let pluginMarketplaceSource = '';
   let addingPluginMarketplace = false;
   let pluginFolderInput: HTMLInputElement;
@@ -490,7 +437,6 @@
     {value: 'skills', label: $t('settings.tabSkills')},
     {value: 'mcp', label: 'MCP'},
     {value: 'plugins', label: $t('settings.tabPlugins')},
-    {value: 'apps', label: 'Apps'},
   ];
   $: connectionSortOptions = [
     {value: 'name-asc', label: 'A–Z'},
@@ -511,7 +457,6 @@
       : agentPane === 'providers'
         ? {title: 'Providers', description: 'Configure the provider routes supplied by this agent.'}
         : {title: $t('settings.tabAgent'), description: 'Configure your agent.'},
-    'app-marketplace': {title: $t('settings.categoryApps'), description: $t('settings.appsBlurb')},
     connections: {title: $t('workspace.connections'), description: $t('settings.connectionsBlurb')},
     plugins: {title: 'Plugins', description: ''},
     mcp: {title: 'MCPs', description: ''},
@@ -542,9 +487,17 @@
   $: visibleMcp = selectMcpServers(mcpServers, query, mcpFilter, mcpSort);
   $: visibleSkills = selectSkills(skills, query, skillFilter, skillSort);
   $: visiblePlugins = selectPlugins(plugins, query, pluginFilter, pluginSort);
-  $: connectionItems = withLocale($locale, buildConnectionItems(plugins, skills, mcpServers, workspaceApps.apps, appCatalog));
-  $: installedConnections = withLocale($locale, buildConnectionItems(plugins, skills, mcpServers, workspaceApps.apps, []));
+  $: connectionItems = withLocale($locale, buildConnectionItems(plugins, skills, mcpServers));
+  $: installedConnections = withLocale($locale, buildConnectionItems(plugins, skills, mcpServers));
   $: visibleConnections = selectConnections(connectionItems, query, connectionFilter, connectionSort);
+  /** The connections surface's rail mixes kinds, so those rows name their type
+   * unless the active filter already narrows the list to one. The subtitle is
+   * derived here because Svelte untracks function calls made from markup. */
+  $: railShowsKind = surface === 'connections' && connectionFilter !== 'skills' && connectionFilter !== 'mcp' && connectionFilter !== 'plugins';
+  $: railConnections = withLocale($locale, visibleConnections.map((item) => ({
+    ...item,
+    subtitle: railShowsKind ? `${connectionKindLabel(item)} · ${item.subtitle}` : item.subtitle,
+  })));
   /** Directory A is the Connections landing: a marketplace with a centred
    * search, category cards, and recommended sections. The per-type rail and
    * detail views stay one "See all" click away. */
@@ -552,8 +505,19 @@
   $: directoryItems = buildDirectoryItems(connectionItems, featuredPlugins, mcpRegistryFeatured, mcpServers);
   $: marketplaceQueryResults = selectConnections(directoryItems, query, 'all', 'name-asc');
   $: marketplaceConnected = [...installedConnections].sort((a, b) => a.name.localeCompare(b.name));
-  // 44px icon plus the 10px gap; reserve 96px for the "+N more" affordance.
-  $: installedStripLimit = installedStripWidth > 0 ? Math.max(1, Math.floor((installedStripWidth - 96) / 54)) : 6;
+  /** The installed preview names each connection's type, computed here for the
+   * same reason as the rail subtitles above. */
+  $: installedPreview = withLocale($locale, marketplaceConnected.slice(0, INSTALLED_PREVIEW_LIMIT).map((item) => ({
+    ...item,
+    kindLabel: connectionKindLabel(item),
+  })));
+  /** Search results are counted per kind so a section heading can say how many
+   * matches it holds without printing the whole preview slice. */
+  $: marketplaceKindMatches = {
+    plugin: marketplaceQueryResults.filter((item) => item.kind === 'plugin').length,
+    skill: marketplaceQueryResults.filter((item) => item.kind === 'skill').length,
+    mcp: marketplaceQueryResults.filter((item) => item.kind === 'mcp').length,
+  };
   $: marketplaceDetail = marketplaceDetailKey ? connectionItems.find((item) => item.key === marketplaceDetailKey) ?? null : null;
   $: marketplaceCounts = {
     all: directoryItems.length,
@@ -561,7 +525,6 @@
     skill: directoryItems.filter((item) => item.kind === 'skill').length,
     mcp: directoryItems.filter((item) => item.kind === 'mcp').length,
     plugin: directoryItems.filter((item) => item.kind === 'plugin').length,
-    app: directoryItems.filter((item) => item.kind === 'app').length,
   };
   $: marketplaceScrollKey = `${marketplaceCategory}:${query}:${marketplaceQueryResults.length}`;
   /** The role the directory is open for. Opening it sets the rail's filter to
@@ -605,8 +568,6 @@
   $: mcp = mcpServers.find((item) => item.id === selectedMcp);
   $: skill = skills.find((item) => item.name === selectedSkill);
   $: plugin = plugins.find((item) => item.id === selectedPlugin);
-  $: selectedApp = workspaceApps.apps.find((item) => item.id === selectedAppId) ?? (selectedAppId === browserApp.id ? browserConnectionApp : null);
-  $: selectedCatalogApp = appCatalog.find((item) => item.id === selectedAppId) ?? null;
   $: modelCompany = modelCompanies.find((item) => item.id === selectedModelProvider);
   $: credentialProviderGroup = visibleProviders.find((item) => item.id === selectedCredentialProvider);
   $: credentialProviders = credentialProviderGroup?.providers ?? [];
@@ -639,6 +600,86 @@
   $: activeRailFilterOptions = connectionsTabActive ? connectionFilterOptions : mode === 'mcp' ? mcpFilterOptions : mode === 'skills' ? skillFilterOptions : mode === 'plugins' ? pluginFilterOptions : mode === 'model' ? modelFilterOptions : providerFilterOptions;
   $: activeRailSortOptions = connectionsTabActive ? connectionSortOptions : mode === 'mcp' ? mcpSortOptions : mode === 'skills' ? skillSortOptions : mode === 'plugins' ? pluginSortOptions : mode === 'model' ? modelSortOptions : providerSortOptions;
   $: modeHeader = browsingInstalledConnections ? {title: 'Installed', description: ''} : MODE_HEADERS[mode];
+
+  function normalizeSettingsSearch(value: string): string {
+    return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+  }
+
+  function settingsSearchScore(entry: SettingsSearchEntry, query: string): number {
+    const title = normalizeSettingsSearch(entry.title);
+    const description = normalizeSettingsSearch(entry.description);
+    const keywords = normalizeSettingsSearch(entry.keywords);
+    const haystack = `${title} ${description} ${keywords}`;
+    const tokens = query.split(/\s+/).filter(Boolean);
+    if (title === query) return 0;
+    if (title.startsWith(query)) return 1 + title.length / 1000;
+    if (title.split(/\s+/).some((word) => word.startsWith(query))) return 2 + title.length / 1000;
+    const titleIndex = title.indexOf(query);
+    if (titleIndex >= 0) return 3 + titleIndex / 1000;
+    if (description.includes(query)) return 4;
+    if (keywords.includes(query)) return 5;
+    if (tokens.length > 1 && tokens.every((token) => haystack.includes(token))) return 6;
+    return Number.POSITIVE_INFINITY;
+  }
+
+  /** Search the labels and descriptions people see, not only the top-level
+   * rail. Pane entries stay first in the catalogue; leaf rows carry a target so
+   * selecting a result can reveal the exact control in its section. */
+  function buildSettingsSearchCatalog(): SettingsSearchEntry[] {
+    const paneEntries = settingsNavGroups.flatMap((group, groupIndex) => group.tabs.map((tab, tabIndex) => ({
+      id: `pane:${tab.id}`,
+      mode: tab.id,
+      icon: tab.icon,
+      title: tab.label,
+      description: MODE_HEADERS[tab.id]?.description ?? '',
+      keywords: group.label,
+      groupId: `nav:${group.id}`,
+      groupLabel: group.label,
+      order: groupIndex * 100 + tabIndex,
+    })));
+    let rowOrder = 1000;
+    const row = (id: string, mode: Mode, icon: IconName, title: string, description: string, keywords: string, target = id): SettingsSearchEntry => ({
+      id,
+      mode,
+      icon,
+      title,
+      description,
+      keywords,
+      groupId: `mode:${mode}`,
+      groupLabel: MODE_HEADERS[mode].title,
+      target,
+      order: rowOrder++,
+    });
+
+    return [
+      ...paneEntries,
+      row('appearance-theme', 'appearance', 'sun-moon', translate('settings.theme'), translate('settings.themeHint'), 'appearance color light dark system'),
+      row('appearance-language', 'appearance', 'languages', translate('settings.language'), translate('settings.languageHint'), 'locale translation region'),
+      row('appearance-top-bar', 'appearance', 'pin', translate('settings.pinnedViews'), translate('settings.pinnedViewsHint'), 'workspace navigation icons titlebar reorder'),
+      row('voice-speech-mode', 'voice', 'waveform', translate('settings.speechMode'), translate('settings.speechModeHint'), 'voice conversation realtime'),
+      row('voice-auto-stop', 'voice', 'mic-off', translate('settings.autoStop'), translate('settings.autoStopHint'), 'dictation silence microphone'),
+      row('permissions-time', 'permissions', 'clock', translate('settings.time'), '', 'timezone clock'),
+      row('permissions-location', 'permissions', 'globe', translate('settings.location'), '', 'gps place'),
+      row('permissions-microphone', 'permissions', 'mic', translate('permission.microphone'), translate('permission.microphoneReason'), 'audio recording privacy'),
+      row('permissions-accessibility', 'permissions', 'cursor', translate('permission.accessibility'), translate('permission.accessibilityReason'), 'control macos privacy'),
+      row('permissions-screen-recording', 'permissions', 'screen-record', translate('permission.screenRecording'), translate('permission.screenRecordingReason'), 'screen capture privacy'),
+      row('permissions-full-disk-access', 'permissions', 'folder', translate('permission.fullDisk'), translate('permission.fullDiskReason'), 'files storage privacy'),
+      row('notifications-schedule-completed', 'notifications', 'calendar', translate('settings.notifyScheduleCompleted'), translate('settings.notifyScheduleCompletedHint'), 'alerts schedules'),
+      row('notifications-schedule-failed', 'notifications', 'calendar-error', translate('settings.notifyScheduleFailed'), translate('settings.notifyScheduleFailedHint'), 'alerts schedules'),
+      row('notifications-agent-completed', 'notifications', 'circle-check', translate('settings.notifyAgentCompleted'), translate('settings.notifyAgentCompletedHint'), 'alerts agents'),
+      row('notifications-agent-attention', 'notifications', 'circle-question', translate('settings.notifyAgentAttention'), translate('settings.notifyAgentAttentionHint'), 'alerts agents'),
+      row('notifications-message-received', 'notifications', 'inbox', translate('settings.notifyMessageReceived'), translate('settings.notifyMessageReceivedHint'), 'alerts messages'),
+      row('about-extension', 'about', 'puzzle', translate('extension.title'), translate('extension.hint'), 'browser extension'),
+      row('about-version', 'about', 'verified', 'Version', versionDetailText, 'updates release build'),
+      row('memory-local', 'computer-history', 'brain', 'Local memory', translate('settings.memoryBody'), 'computer history recall'),
+      row('memory-computer-history', 'computer-history', 'computer', 'Computer history', translate('settings.computerHistoryBody'), 'screen context captures'),
+      row('memory-exclusions', 'computer-history', 'prohibited', 'Computer history exclusions', translate('settings.computerHistoryPermissionsBody'), 'privacy applications websites'),
+      row('memory-private-browsing', 'computer-history', 'incognito', translate('settings.computerHistoryPrivateBrowsing'), translate('settings.computerHistoryPrivateBrowsingBody'), 'incognito private windows'),
+      row('memory-interaction-history', 'computer-history', 'cursor', translate('settings.computerHistoryInteractions'), translate('settings.computerHistoryInteractionsBody'), 'clicks keyboard scroll app switches'),
+      ...MODEL_ROLES.map((role) => row(`model-role-${role.value}`, 'model', role.kind === 'text' ? 'bot' : role.kind === 'image' ? 'image' : role.kind === 'video' ? 'video' : 'waveform', role.label, role.hint, role.job)),
+    ];
+  }
+
   /* One icon per tab, all from the shared set at one size, so the rail reads as
      a single strip rather than eight separately chosen marks. The rail holds
      three groups: what the app itself does, the agent it runs on, and the one
@@ -651,7 +692,8 @@
       {id: 'permissions' as Mode, icon: 'shield' as IconName, label: $t('settings.groupPermissions')},
     ]},
     {id: 'assistant', label: $t('settings.sectionAssistant'), tabs: [
-      {id: 'profile' as Mode, icon: 'bot' as IconName, label: $t('settings.tabAgent')},
+      {id: 'model' as Mode, icon: 'bot' as IconName, label: $t('settings.tabModels')},
+      {id: 'provider' as Mode, icon: 'bolt' as IconName, label: $t('settings.tabProviders')},
       {id: 'voice' as Mode, icon: 'waveform' as IconName, label: $t('settings.groupVoice')},
       {id: 'computer-history' as Mode, icon: 'clock' as IconName, label: $t('settings.tabMemory')},
       {id: 'archived-chats' as Mode, icon: 'archive' as IconName, label: $t('settings.tabArchivedChats')},
@@ -660,19 +702,25 @@
       {id: 'about' as Mode, icon: 'info' as IconName, label: $t('settings.groupAbout')},
     ]},
   ];
-  /* The rail's own search narrows the tab list. It never hides the tab you are
-     on: a filter that emptied the page out from under you would read as the
-     setting having been removed. A group with nothing left drops its header. */
-  $: navQuery = navSearch.trim().toLowerCase();
-  $: visibleSettingsNavGroups = settingsNavGroups
-    .map((group) => ({
-      ...group,
-      tabs: navQuery
-        ? group.tabs.filter((tab) => tabIsActive(tab.id) || tab.label.toLowerCase().includes(navQuery))
-        : group.tabs,
-    }))
-    .filter((group) => group.tabs.length > 0);
-  $: visibleNavCount = visibleSettingsNavGroups.reduce((count, group) => count + group.tabs.length, 0);
+  /* The rail's search is a small Settings index rather than a tab filter: it
+     searches pane labels and the rows inside them, then groups the matches by
+     the place the setting lives. */
+  $: navQuery = normalizeSettingsSearch(navSearch.trim());
+  $: settingsSearchCatalog = withLocale($locale, buildSettingsSearchCatalog());
+  $: settingsSearchMatches = navQuery
+    ? settingsSearchCatalog
+        .map((entry) => ({entry, score: settingsSearchScore(entry, navQuery)}))
+        .filter((match) => Number.isFinite(match.score))
+        .sort((a, b) => a.score - b.score || a.entry.order - b.entry.order)
+    : [];
+  $: settingsSearchGroups = settingsSearchMatches.reduce<Array<{id: string; label: string; items: SettingsSearchEntry[]}>>((groups, match) => {
+    const group = groups.find((item) => item.id === match.entry.groupId);
+    if (group) group.items.push(match.entry);
+    else groups.push({id: match.entry.groupId, label: match.entry.groupLabel, items: [match.entry]});
+    return groups;
+  }, []);
+  $: visibleSettingsNavGroups = settingsNavGroups;
+  $: visibleNavCount = settingsSearchMatches.length || visibleSettingsNavGroups.reduce((count, group) => count + group.tabs.length, 0);
   /* Named against the counts rather than the filtered rails: a search that
      hides every row is the user narrowing a list they have, not an empty tab. */
   $: openMarketplaceWhenEmpty(mode, !loading, {mcp: mcpServers.length, skills: skills.length, plugins: plugins.length});
@@ -693,7 +741,7 @@
     ++agentSettingsRequest;
     clearTimeout(mcpRegistryTimer);
     clearTimeout(registryTimer);
-    clearTimeout(appCatalogTimer);
+    clearTimeout(settingsSearchHighlightTimer);
   });
 
   onMount(() => {
@@ -709,7 +757,6 @@
     // Warm the marketplace while the user is still browsing Settings so its
     // first reveal does not wait on the registry network request.
     void preloadMcpMarketplace();
-    void refreshAppCatalog();
     void preloadPluginDirectory();
     const pageObserver = new ResizeObserver((entries) => {
       measureSettingsWidth(entries[0]?.contentRect.width ?? 0);
@@ -1103,13 +1150,7 @@
     selectMode('profile');
   }
 
-  function leaveCompactSettings(): void {
-    if (mode === 'model' || mode === 'provider' || mode === 'profile' && agentPane !== 'agents') {
-      backToAgent();
-      return;
-    }
-    settingsAtRoot = true;
-  }
+  function leaveCompactSettings(): void { settingsAtRoot = true; }
 
   let measuredWidth = 0;
 
@@ -1429,54 +1470,7 @@
     pluginItems: PluginDto[],
     skillItems: SkillDto[],
     mcpItems: McpServerDto[],
-    installedApps: WorkspaceAppDto[],
-    catalog: MarketplaceAppDto[],
   ): ConnectionItem[] {
-    const apps = new Map<string, ConnectionItem>();
-    for (const app of installedApps) {
-      apps.set(app.id, {
-        key: `app:${app.id}`,
-        kind: 'app',
-        id: app.id,
-        name: appName(app),
-        subtitle: appSubtitle(app),
-        hasSkill: false,
-        hasMcp: false,
-        hasApp: app.workspaceKind === 'view' || app.workspaceKind !== null,
-        official: app.official,
-        enabled: app.enabled,
-      });
-    }
-    for (const entry of catalog) {
-      if (apps.has(entry.id)) continue;
-      apps.set(entry.id, {
-        key: `app:${entry.id}`,
-        kind: 'app',
-        id: entry.id,
-        name: appName(entry),
-        subtitle: appSubtitle(entry),
-        hasSkill: false,
-        hasMcp: false,
-        hasApp: true,
-        official: entry.official,
-        enabled: false,
-      });
-    }
-    if (!apps.has(browserApp.id)) {
-      apps.set(browserApp.id, {
-        key: `app:${browserApp.id}`,
-        kind: 'app',
-        id: browserApp.id,
-        name: browserConnectionApp.name,
-        subtitle: browserConnectionApp.description,
-        hasSkill: false,
-        hasMcp: false,
-        hasApp: false,
-        official: true,
-        enabled: true,
-        alwaysOn: true,
-      });
-    }
     return [
       ...pluginItems.map((item) => ({
         key: `plugin:${item.id}`,
@@ -1514,7 +1508,6 @@
         official: item.source === 'official',
         enabled: item.enabled,
       })),
-      ...apps.values(),
     ];
   }
 
@@ -1525,7 +1518,6 @@
         || stateFilter === 'enabled' && item.enabled
         || stateFilter === 'disabled' && !item.enabled
         || stateFilter === item.kind
-        || stateFilter === 'apps' && item.kind === 'app'
         || stateFilter === 'plugins' && item.kind === 'plugin'
         || stateFilter === 'skills' && item.kind === 'skill'
         || stateFilter === 'mcp' && item.kind === 'mcp')
@@ -1535,8 +1527,7 @@
   function connectionSelected(item: ConnectionItem): boolean {
     if (item.kind === 'mcp') return adding !== 'mcp' && item.id === selectedMcp;
     if (item.kind === 'skill') return adding !== 'skills' && item.id === selectedSkill;
-    if (item.kind === 'plugin') return adding !== 'plugins' && !browsingPluginMarketplace && item.id === selectedPlugin;
-    return (mode === 'connections' || mode === 'app-marketplace') && selectedAppId === item.id;
+    return adding !== 'plugins' && !browsingPluginMarketplace && item.id === selectedPlugin;
   }
 
   function selectConnection(item: ConnectionItem): void {
@@ -1563,19 +1554,50 @@
       selectPlugin(item.id);
       return;
     }
-    mode = 'connections';
-    selectedAppId = item.id;
   }
 
   /** The glyph that says what a connection contains: sparkles for skills, the
-   * MCP mark, the puzzle piece for plugins, and the app window (not the
-   * sidebar rectangle) for UI surfaces. */
+   * MCP mark, and the puzzle piece for plugins. */
   function marketplaceKindIcon(item: ConnectionItem): IconName {
     if (item.kind === 'skill') return 'sparkles';
     if (item.kind === 'mcp') return 'mcp';
-    if (item.kind === 'plugin') return 'puzzle';
-    return appIcon({id: item.id});
+    return 'puzzle';
   }
+
+  /** A row-level type word, used wherever connections of different kinds share
+   * one list. */
+  function connectionKindLabel(item: ConnectionItem): string {
+    if (item.kind === 'skill') return $t('settings.kindSkill');
+    if (item.kind === 'mcp') return $t('settings.kindMcp');
+    return $t('settings.kindPlugin');
+  }
+
+  /** The connections rail mixes kinds, so each row names its type unless the
+   * active filter already narrows the list to one. */
+
+  /** The row's trailing control is decided inline in the directory markup: the
+   * template has to read `installingPluginId`/`installingMcpRegistryId`
+   * directly, since Svelte untracks function calls made from markup. */
+
+  /** A directory section reads as "Recommended …" only while it is a preview of
+   * everything; a narrowed or searched list is titled by its kind alone. */
+  function directorySectionTitle(kind: ConnectionKind): string {
+    if (marketplaceCategory === 'all' && !query) {
+      if (kind === 'plugin') return $t('settings.recommendedPlugins');
+      if (kind === 'skill') return $t('settings.recommendedSkills');
+      return $t('settings.recommendedMcps');
+    }
+    if (kind === 'plugin') return $t('settings.categoryPlugins');
+    if (kind === 'skill') return $t('settings.categorySkills');
+    return $t('settings.categoryMcps');
+  }
+
+  /** A directory section reads as "Recommended …" only while it previews
+   * everything; once a search or a category narrows the page it is titled by
+   * its kind alone. Reactive values, so the headings follow the filters. */
+  $: pluginSectionTitle = marketplaceCategory === 'all' && !query ? $t('settings.recommendedPlugins') : $t('settings.categoryPlugins');
+  $: skillSectionTitle = marketplaceCategory === 'all' && !query ? $t('settings.recommendedSkills') : $t('settings.categorySkills');
+  $: mcpSectionTitle = marketplaceCategory === 'all' && !query ? $t('settings.recommendedMcps') : $t('settings.categoryMcps');
 
   /** One section's rows: the first four when every section is on screen, the
    * whole kind once its category card narrows the page. */
@@ -1629,7 +1651,7 @@
   }
 
   /** A result card's detail is a modal; the full view is the previous
-   * rail-and-detail screen for that kind. Apps live in the modal itself. */
+   * rail-and-detail screen for that kind. */
   function openMarketplaceFullView(item: ConnectionItem): void {
     marketplaceDetailKey = null;
     selectConnection(item);
@@ -1646,12 +1668,12 @@
     marketplaceDetailKey = null;
     if (kind === 'skill') selectMode('skills');
     else if (kind === 'mcp') { selectMode('mcp'); beginMcpMarketplace(); }
-    else if (kind === 'plugin') { selectMode('plugins'); pluginCatalogQuery = ''; beginPluginMarketplace(); }
-    else selectMode('app-marketplace');
+    else { selectMode('plugins'); pluginCatalogQuery = ''; beginPluginMarketplace(); }
   }
 
-  /** The row's quick action: enable what is installed, install what is not. */
-  function toggleMarketplaceItem(item: ConnectionItem): void {
+  /** A directory row's action for a catalog entry that is not installed yet:
+   * install it, or open the form the entry needs to be configured first. */
+  function installMarketplaceItem(item: ConnectionItem): void {
     if (item.catalogPlugin) {
       if (!installingPluginId) void installPlugin(item.catalogPlugin);
       return;
@@ -1662,26 +1684,6 @@
         selectMode('mcp');
         configureMcpRegistryEntry(item.catalogMcp);
       } else void installMcpRegistryEntry(item.catalogMcp);
-      return;
-    }
-    if (item.kind === 'skill') {
-      const entry = skills.find((candidate) => candidate.name === item.id);
-      if (entry) void setSkillEnabled(entry);
-    } else if (item.kind === 'mcp') {
-      const entry = mcpServers.find((candidate) => candidate.id === item.id);
-      if (entry) void setMcpEnabled(entry);
-    } else if (item.kind === 'plugin') {
-      const entry = plugins.find((candidate) => candidate.id === item.id);
-      if (entry) void setPluginEnabled(entry);
-    } else {
-      // Browser is always on: the row is a way in to its settings, not a switch.
-      if (item.alwaysOn) return;
-      const app = workspaceApps.apps.find((candidate) => candidate.id === item.id);
-      if (app) void setWorkspaceAppEnabled(app);
-      else {
-        const entry = appCatalog.find((candidate) => candidate.id === item.id);
-        if (entry) void installWorkspaceApp(entry);
-      }
     }
   }
 
@@ -1776,14 +1778,15 @@
   }
 
   function selectMode(next: Mode): void {
+    if (next === 'profile') next = 'model';
     if (surface === 'connections' && !CONNECTIONS_MODES.has(next)) return;
     if (surface === 'settings' && CONNECTIONS_MODES.has(next)) return;
+    clearTimeout(settingsSearchHighlightTimer);
+    highlightedSettingsTarget = '';
     settingsAtRoot = false;
     browsingInstalledConnections = false;
     mode = next;
     if (next === 'permissions') void refreshPermissionStatuses();
-    if (next !== 'app-marketplace') selectedAppId = '';
-    if (next === 'profile') agentPane = 'agents';
     search = '';
     browsingRole = '';
     adding = null;
@@ -1801,6 +1804,21 @@
     }
   }
 
+  async function openSettingsSearchResult(result: SettingsSearchEntry): Promise<void> {
+    navSearch = '';
+    selectMode(result.mode);
+    if (!result.target) return;
+    await tick();
+    const target = pageEl?.querySelector<HTMLElement>(`[data-settings-search-id="${result.target}"]`);
+    if (!target) return;
+    clearTimeout(settingsSearchHighlightTimer);
+    highlightedSettingsTarget = result.target;
+    target.scrollIntoView({block: 'center', behavior: 'smooth'});
+    settingsSearchHighlightTimer = setTimeout(() => {
+      highlightedSettingsTarget = '';
+    }, 1800);
+  }
+
   $: if (initialMode !== appliedInitialMode) {
     appliedInitialMode = initialMode;
     if (surface === 'connections') {
@@ -1816,117 +1834,10 @@
     return currentMode === tab;
   }
 
-  function appIcon(app: {id: string}): IconName {
-    return app.id === 'hub' ? 'chat'
-      : app.id === 'drive' ? 'drive'
-      : app.id === 'browser' ? 'globe'
-      : app.id === 'tasks' ? 'tasks'
-      : app.id === 'calendar' ? 'calendar'
-      : app.id === 'phone' ? 'phone'
-      : app.id === 'locker' ? 'key'
-      : app.id === 'terminal' ? 'terminal'
-      : app.id === 'ide' ? 'code'
-      : app.id === 'usage' ? 'chart'
-      : 'apps';
-  }
-
   function applyWorkspaceApps(next: WorkspaceAppsDto): void {
     workspaceApps = next;
     settingsSnapshot.workspaceApps = next;
     onAppsChange(next);
-    const installed = new Set(next.apps.map((app) => app.id));
-    appCatalog = appCatalog.map((app) => ({...app, installed: installed.has(app.id)}));
-    // Browser is supplied by the app itself, so only an installed App can be
-    // taken away from under the connection that is open.
-    if (selectedAppId !== browserApp.id && selectedAppId && !next.apps.some((app) => app.id === selectedAppId && app.enabled)) {
-      if (surface === 'connections') selectMode('connections');
-      else selectedAppId = '';
-    }
-  }
-
-  async function setWorkspaceAppEnabled(app: WorkspaceAppDto): Promise<void> {
-    if (updatingAppId) return;
-    updatingAppId = app.id;
-    try {
-      applyWorkspaceApps(await api.apps.setEnabled(app.id, !app.enabled));
-      error = '';
-    } catch (reason) {
-      error = readableError(reason);
-    } finally {
-      updatingAppId = '';
-    }
-  }
-
-  async function toggleNewTabApp(app: WorkspaceAppDto): Promise<void> {
-    if (updatingAppId || !app.enabled || !app.pinnable) return;
-    const pinned = workspaceApps.pinnedIds.includes(app.id);
-    if (!pinned && workspaceApps.pinnedIds.length >= 4) {
-      error = 'New Tab can hold up to four pinned Apps.';
-      return;
-    }
-    updatingAppId = app.id;
-    try {
-      const ids = pinned
-        ? workspaceApps.pinnedIds.filter((id) => id !== app.id)
-        : [...workspaceApps.pinnedIds, app.id];
-      applyWorkspaceApps(await api.apps.setPinned(ids));
-      error = '';
-    } catch (reason) {
-      error = readableError(reason);
-    } finally {
-      updatingAppId = '';
-    }
-  }
-
-  async function removeWorkspaceApp(app: WorkspaceAppDto): Promise<void> {
-    if (app.official || removingAppId) return;
-    if (!window.confirm(translate('settings.uninstallConfirm', {name: appName(app)}))) return;
-    removingAppId = app.id;
-    try {
-      applyWorkspaceApps(await api.apps.remove(app.id));
-      error = '';
-    } catch (reason) {
-      error = readableError(reason);
-    } finally {
-      removingAppId = '';
-    }
-  }
-
-  async function refreshAppCatalog(): Promise<void> {
-    appCatalogSearching = true;
-    try {
-      appCatalog = await api.apps.browse(appCatalogQuery);
-      appCatalogError = '';
-    } catch (reason) {
-      appCatalog = [];
-      appCatalogError = readableError(reason);
-    } finally {
-      appCatalogSearching = false;
-    }
-  }
-
-  function searchAppMarketplace(): void {
-    clearTimeout(appCatalogTimer);
-    appCatalogTimer = setTimeout(() => void refreshAppCatalog(), 250);
-  }
-
-  function clearAppMarketplaceSearch(): void {
-    appCatalogQuery = '';
-    void refreshAppCatalog();
-  }
-
-  async function installWorkspaceApp(entry: MarketplaceAppDto): Promise<void> {
-    if (installingAppId || entry.installed) return;
-    installingAppId = entry.id;
-    try {
-      applyWorkspaceApps(await api.apps.install(entry.id));
-      appCatalog = appCatalog.map((app) => app.id === entry.id ? {...app, installed: true} : app);
-      error = '';
-    } catch (reason) {
-      error = readableError(reason);
-    } finally {
-      installingAppId = '';
-    }
   }
 
   function selectMcp(id: string): void { browsingMcpRegistry = false; discoveringMcp = false; selectedMcp = id; adding = null; }
@@ -2191,19 +2102,6 @@
       updatingLocation = false;
     }
     if (enabled && general?.locationEnabled) void refreshLocation();
-  }
-
-  async function setHubIncognitoMode(enabled: boolean): Promise<void> {
-    updatingHubIncognitoMode = true;
-    try {
-      general = await api.general.update({hubIncognitoMode: enabled});
-      onGeneralChange(general);
-      error = '';
-    } catch (reason) {
-      error = readableError(reason);
-    } finally {
-      updatingHubIncognitoMode = false;
-    }
   }
 
   /** The platform service gets a short first try; Electron's Chromium rarely
@@ -3439,7 +3337,10 @@
   /** The levels a model can be assigned at, or none when it does not reason or
    * reasons at a level the caller cannot set. */
   function modelEfforts(model: ModelDto): ReasoningEffort[] {
-    if (!model.reasoning) return [];
+    if (!model.id) return [];
+    const meta = metadataFor(model);
+    const reasoning = model.reasoning || meta?.reasoning || isReasoningModelId(model.id, model.name);
+    if (!reasoning) return [];
     if (fixedEffortModels.some((pattern) => pattern.test(model.id))) return [];
     return ['off', 'low', 'medium', 'high'];
   }
@@ -3476,17 +3377,38 @@
     return !!assignment && assignment.provider === item.provider && assignment.id === item.id;
   }
 
-  /** What the role runs today, whether it was set or is following main. The
+  /** What the role runs today, whether it was set, is following main, or defaults to Auto. The
    * roles view reads the model and the level off this. */
   function roleEffective(role: {value: ModelRole; followsMain: boolean}, roles: ModelRolesDto | null) {
-    return roleAssignment(role.value, roles) ?? (role.followsMain ? roleAssignment('main', roles) : null);
+    const direct = roleAssignment(role.value, roles);
+    if (direct) return direct;
+    if (role.followsMain) {
+      const main = roleAssignment('main', roles);
+      if (main) return main;
+      return {provider: '', id: 'auto', name: 'Auto'};
+    }
+    return {provider: '', id: 'auto', name: 'Auto'};
   }
 
   /** The catalogue entry behind an assignment, which is what says whether the
    * level can be chosen at all. */
   function roleModel(role: {value: ModelRole; followsMain: boolean}, roles: ModelRolesDto | null, items: ModelDto[]): ModelDto | undefined {
     const assignment = roleEffective(role, roles);
-    return assignment ? items.find((item) => item.provider === assignment.provider && item.id === assignment.id) : undefined;
+    if (!assignment || !assignment.provider || assignment.provider === 'none') return undefined;
+    const found = items.find((item) => item.provider === assignment.provider && item.id === assignment.id);
+    if (found) return found;
+    return {
+      provider: assignment.provider,
+      id: assignment.id,
+      name: assignment.name,
+      reasoning: Boolean(assignment.reasoning) || isReasoningModelId(assignment.id, assignment.name),
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      input: ['text'],
+      cost: {input: null, output: null, cacheRead: null, cacheWrite: null},
+      selected: false,
+      custom: true,
+    };
   }
 
   /** The level a model is worth starting at in a given job: the lightest
@@ -3513,7 +3435,7 @@
    * the model it was already running, which is what the row was showing. */
   async function setRoleEffort(role: {value: ModelRole; followsMain: boolean}, effort: string): Promise<void> {
     const assignment = roleEffective(role, modelRoles);
-    if (!assignment) return;
+    if (!assignment || !assignment.provider || assignment.provider === 'none') return;
     await assignModelRole(role.value, {provider: assignment.provider, id: assignment.id, name: assignment.name}, effort ? (effort as ReasoningEffort) : undefined);
   }
 
@@ -3537,11 +3459,32 @@
     }
   }
 
+  async function resetModelRole(role: ModelRole): Promise<void> {
+    assigningRole = `${role}:reset`;
+    try {
+      modelRoles = await api.models.resetRole(role);
+      if (role === 'main') {
+        models = await api.models.list();
+      }
+      if (role === 'speech') {
+        general = await api.general.get();
+        onGeneralChange(general);
+      }
+      error = '';
+    } catch (reason) {
+      error = readableError(reason);
+    } finally {
+      assigningRole = '';
+    }
+  }
+
   async function clearModelRole(role: ModelRole): Promise<void> {
-    if (role === 'main') return;
     assigningRole = `${role}:clear`;
     try {
       modelRoles = await api.models.clearRole(role);
+      if (role === 'main') {
+        models = await api.models.list();
+      }
       if (role === 'speech') {
         general = await api.general.get();
         onGeneralChange(general);
@@ -3902,32 +3845,6 @@
      already showing that value, so its slide only ever means a user click. -->
 {#snippet pendingToggle()}<span class="computerHistory-toggle pending" aria-hidden="true"><span></span></span>{/snippet}
 
-<!-- A connection's own settings, hosted by its detail rather than by a tab in
-     the settings rail: the rail is for the app and the agent it runs on. -->
-{#snippet appSettingsPane(app: WorkspaceAppDto | null)}
-  {@const kind = appSettingsKind(app)}
-  {#if app && kind}
-    <div class="connection-settings">
-      {#if kind === 'hub'}
-        <div class="general-options hub-preferences">
-          <section class="general-group">
-            <section class="general-setting-row">
-              <span class="option-mark large"><Icon name="incognito" size={18}/></span>
-              <span class="general-setting-copy"><h4>{$t('settings.hubIncognitoMode')}</h4><small>{$t('settings.hubIncognitoModeHint')}</small></span>
-              {#if general}<button type="button" class:enabled={general.hubIncognitoMode} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableHubIncognitoMode')} aria-checked={general.hubIncognitoMode} disabled={updatingHubIncognitoMode} onclick={() => void setHubIncognitoMode(!general!.hubIncognitoMode)}><span></span></button>{:else}{@render pendingToggle()}{/if}
-            </section>
-          </section>
-        </div>
-        <HubTab {api}/>
-      {:else if kind === 'drive'}
-        <DriveTab {api}/>
-      {:else}
-        <BrowserTab {api}/>
-      {/if}
-    </div>
-  {/if}
-{/snippet}
-
 <!-- One column per kind of source: apps on the left, websites on the right,
      each with its own field so nothing has to be guessed from the text. -->
 {#snippet sourceColumn(list: ComputerHistoryList, title: string, rows: Array<{name: string; icon: string | null}>)}
@@ -3993,16 +3910,35 @@
       {#if navSearch}<button type="button" class="search-clear" aria-label={$t('settings.clear')} data-tooltip-label={$t('settings.clear')} onclick={() => navSearch = ''}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
     </div>
 
-    <div class="options-nav-list" role="tablist" use:scrollFade={visibleNavCount} aria-label={$t('settings.tabsLabel')}>
-      {#each visibleSettingsNavGroups as group (group.id)}
-        <p class="options-nav-section">{group.label}</p>
-        {#each group.tabs as tab (tab.id)}
-          <button type="button" role="tab" class="options-nav-item" aria-selected={tabIsActive(tab.id, mode)} class:active={tabIsActive(tab.id)} onclick={() => selectMode(tab.id)}>
-            <Icon name={tab.icon} size={16} strokeWidth={1.7}/><span>{tab.label}</span>
-          </button>
+    {#if navQuery}
+      <div class="options-nav-results" use:scrollFade={settingsSearchMatches.length} aria-label={$t('settings.searchSettings')}>
+        {#if settingsSearchGroups.length}
+          {#each settingsSearchGroups as group (group.id)}
+            <section class="options-nav-result-group" aria-label={group.label}>
+              <p class="options-nav-section">{group.label}</p>
+              {#each group.items as result (result.id)}
+                <button type="button" class="options-nav-result" class:active={tabIsActive(result.mode)} aria-label={`${result.title}, ${group.label}`} onclick={() => void openSettingsSearchResult(result)}>
+                  <Icon name={result.icon} size={16} strokeWidth={1.7}/><span>{result.title}</span>
+                </button>
+              {/each}
+            </section>
+          {/each}
+        {:else}
+          <p class="options-nav-empty" role="status">{$t('settings.noSettingsFound')}</p>
+        {/if}
+      </div>
+    {:else}
+      <div class="options-nav-list" role="tablist" use:scrollFade={visibleNavCount} aria-label={$t('settings.tabsLabel')}>
+        {#each visibleSettingsNavGroups as group (group.id)}
+          <p class="options-nav-section">{group.label}</p>
+          {#each group.tabs as tab (tab.id)}
+            <button type="button" role="tab" class="options-nav-item" aria-selected={tabIsActive(tab.id, mode)} class:active={tabIsActive(tab.id)} onclick={() => selectMode(tab.id)}>
+              <Icon name={tab.icon} size={16} strokeWidth={1.7}/><span>{tab.label}</span>
+            </button>
+          {/each}
         {/each}
-      {/each}
-    </div>
+      </div>
+    {/if}
 
   </nav>
   {/if}
@@ -4012,8 +3948,8 @@
       {#if surface === 'connections' && (mode !== 'connections' || browsingInstalledConnections)}
         <button type="button" class="agent-back" aria-label={$t('settings.backToConnections')} onclick={() => selectMode('connections')}><Icon name="back" size={28}/></button>
       {:else if surface === 'settings' && compactLayout && !settingsAtRoot}
-        <button type="button" class="agent-back" aria-label={mode === 'model' || mode === 'provider' || mode === 'profile' && agentPane !== 'agents' ? 'Back to Assistant' : 'Back to Settings'} onclick={leaveCompactSettings}><Icon name="back" size={28}/></button>
-      {:else if mode === 'model' || mode === 'provider' || mode === 'profile' && agentPane !== 'agents'}
+        <button type="button" class="agent-back" aria-label={mode === 'profile' && agentPane !== 'agents' ? 'Back to Assistant' : 'Back to Settings'} onclick={leaveCompactSettings}><Icon name="back" size={28}/></button>
+      {:else if mode === 'profile' && agentPane !== 'agents'}
         <button type="button" class="agent-back" aria-label="Back to Assistant" onclick={backToAgent}><Icon name="back" size={28}/></button>
       {/if}
       <h2>{modeHeader.title}</h2>
@@ -4213,52 +4149,12 @@
           </div>
         </div>
       {/if}
-    {:else if mode === 'app-marketplace'}
-      <div class="general-options app-options" role="tabpanel">
-        <section class="general-group">
-          <header class="app-group-header">
-            <h3>{$t('settings.availableApps')}</h3>
-          </header>
-          <div class="model-search app-marketplace-search">
-            <Icon name="search" size={14}/>
-            <input bind:value={appCatalogQuery} type="search" placeholder={$t('settings.searchAppMarketplace')} aria-label={$t('settings.searchAppMarketplace')} spellcheck="false" oninput={searchAppMarketplace}/>
-            {#if appCatalogQuery}<button type="button" class="search-clear" aria-label={$t('settings.clear')} data-tooltip-label={$t('settings.clear')} onclick={clearAppMarketplaceSearch}><Icon name="close" size={13} strokeWidth={1.7}/></button>{/if}
-          </div>
-          <div class="app-management-list app-marketplace-list">
-            {#each appCatalog as entry (entry.id)}
-              {@const app = workspaceApps.apps.find((candidate) => candidate.id === entry.id)}
-              <section class="general-setting-row app-management-row">
-                <span class="option-mark large"><Icon name={appIcon(entry)} size={18}/></span>
-                <span class="general-setting-copy">
-                  <span class="app-name-line"><h4>{withLocale($locale, appName(entry))}</h4>{#if entry.official}<span class="options-badge official-badge">{$t('settings.official')}</span>{/if}</span>
-                  <small>{withLocale($locale, appSubtitle(entry))}</small>
-                </span>
-                <span class="app-management-actions">
-                  {#if app}
-                    {#if app.pinnable}
-                      <button type="button" class:active={workspaceApps.pinnedIds.includes(app.id)} class="app-pin-button" aria-label={workspaceApps.pinnedIds.includes(app.id) ? $t('settings.unpinFromNewTab', {name: withLocale($locale, appName(app))}) : $t('settings.pinToNewTab', {name: withLocale($locale, appName(app))})} aria-pressed={workspaceApps.pinnedIds.includes(app.id)} disabled={!app.enabled || updatingAppId !== '' || (!workspaceApps.pinnedIds.includes(app.id) && workspaceApps.pinnedIds.length >= 4)} onclick={() => void toggleNewTabApp(app)}><Icon name={workspaceApps.pinnedIds.includes(app.id) ? 'pin-filled' : 'pin'} size={15}/></button>
-                    {/if}
-                    {#if !app.official}<button type="button" class="app-remove-button" aria-label={$t('settings.uninstallNamed', {name: withLocale($locale, appName(app))})} disabled={removingAppId !== ''} onclick={() => void removeWorkspaceApp(app)}><Icon name="trash" size={14}/></button>{/if}
-                    <span class="skill-registry-installed">{$t('settings.installed')}</span>
-                    <button type="button" class:enabled={app.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableNamed', {name: withLocale($locale, appName(app))})} aria-checked={app.enabled} disabled={updatingAppId !== '' || removingAppId !== ''} onclick={() => void setWorkspaceAppEnabled(app)}><span></span></button>
-                  {:else}
-                    <button type="button" class="permission-retry" disabled={installingAppId !== ''} onclick={() => void installWorkspaceApp(entry)}>{installingAppId === entry.id ? $t('settings.installing') : $t('settings.install')}</button>
-                  {/if}
-                </span>
-              </section>
-            {:else}
-              <p class="options-empty detail">{appCatalogSearching ? $t('settings.searching') : appCatalogError || (appCatalogQuery.trim() ? $t('settings.noAppsMatch') : $t('settings.noAppsYet'))}</p>
-            {/each}
-          </div>
-          <p class="app-pin-limit">{$t('settings.appPinLimit')}</p>
-        </section>
-      </div>
     {:else if mode === 'archived-chats'}
       <ArchivedChatsTab {api} {onChatsChanged} />
     {:else if mode === 'appearance'}
       <div class="general-options" role="tabpanel">
         <section class="general-group">
-          <section class="general-setting-row">
+          <section class="general-setting-row" data-settings-search-id="appearance-theme" class:settings-search-highlight={highlightedSettingsTarget === 'appearance-theme'}>
             <span class="option-mark large"><Icon name="sun-moon" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.theme')}</h4><small>{$t('settings.themeHint')}</small></span>
             <div class="theme-switch" role="radiogroup" aria-label={$t('settings.theme')}>
@@ -4267,14 +4163,14 @@
               {/each}
             </div>
           </section>
-          <section class="general-setting-row">
+          <section class="general-setting-row" data-settings-search-id="appearance-language" class:settings-search-highlight={highlightedSettingsTarget === 'appearance-language'}>
             <span class="option-mark large"><Icon name="languages" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.language')}</h4><small>{$t('settings.languageHint')}</small></span>
             <div class="setting-menu language" class:busy={updatingLanguage || !general}>
               <Menu options={languageOptions} value={general?.language ?? 'system'} label={$t('settings.language')} wide onChange={(value) => void setLanguage(value)}/>
             </div>
           </section>
-          <button type="button" class="general-setting-row pinned-views-row" class:expanded={pinnedViewsExpanded} aria-expanded={pinnedViewsExpanded} aria-controls="pinned-views-config" onclick={() => pinnedViewsExpanded = !pinnedViewsExpanded}>
+          <button type="button" class="general-setting-row pinned-views-row" data-settings-search-id="appearance-top-bar" class:expanded={pinnedViewsExpanded} class:settings-search-highlight={highlightedSettingsTarget === 'appearance-top-bar'} aria-expanded={pinnedViewsExpanded} aria-controls="pinned-views-config" onclick={() => pinnedViewsExpanded = !pinnedViewsExpanded}>
             <span class="option-mark large"><Icon name="pin" size={18}/></span>
             <span class="general-setting-copy pinned-views-toggle">
               <h4>{$t('settings.pinnedViews')}</h4><small>{$t('settings.pinnedViewsHint')}</small>
@@ -4326,12 +4222,12 @@
     {:else if mode === 'voice'}
       <div class="general-options" role="tabpanel">
         <section class="general-group">
-          <section class="general-setting-row">
+          <section class="general-setting-row" data-settings-search-id="voice-speech-mode" class:settings-search-highlight={highlightedSettingsTarget === 'voice-speech-mode'}>
             <span class="option-mark large"><Icon name="waveform" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.speechMode')}</h4><small>{$t('settings.speechModeHint')}</small></span>
             {#if general}<button type="button" class:enabled={general.speechModeEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableSpeechMode')} aria-checked={general.speechModeEnabled} disabled={updatingSpeechMode} onclick={() => void setSpeechModeEnabled(!general!.speechModeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
-          <section class="general-setting-row">
+          <section class="general-setting-row" data-settings-search-id="voice-auto-stop" class:settings-search-highlight={highlightedSettingsTarget === 'voice-auto-stop'}>
             <span class="option-mark large"><Icon name="mic-off" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.autoStop')}</h4><small>{$t('settings.autoStopHint')}</small></span>
             <div class="setting-menu language" class:busy={updatingAutoStop || !general}>
@@ -4349,12 +4245,12 @@
     {:else if mode === 'permissions'}
       <div class="general-options" role="tabpanel">
         <section class="general-group">
-          <section class="general-setting-row">
+          <section class="general-setting-row" data-settings-search-id="permissions-time" class:settings-search-highlight={highlightedSettingsTarget === 'permissions-time'}>
             <span class="option-mark large"><Icon name="clock" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.time')}</h4><small>{general?.timeEnabled ? Intl.DateTimeFormat().resolvedOptions().timeZone : $t('settings.notShared')}</small></span>
             {#if general}<button type="button" class:enabled={general.timeEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableTime')} aria-checked={general.timeEnabled} disabled={updatingTime} onclick={() => void setTimeEnabled(!general!.timeEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
-          <section class="general-setting-row">
+          <section class="general-setting-row" data-settings-search-id="permissions-location" class:settings-search-highlight={highlightedSettingsTarget === 'permissions-location'}>
             <span class="option-mark large"><Icon name="globe" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.location')}</h4><small>{locationStatusText}</small></span>
             {#if general?.locationEnabled && !locating && (locationError || !general.location)}
@@ -4364,7 +4260,7 @@
           </section>
           {#each PERMISSION_ROWS as row (row.kind)}
             {@const status = permissionStatuses[row.kind]}
-            <section class="general-setting-row permission-setting-row" data-permission={row.kind}>
+            <section class="general-setting-row permission-setting-row" data-permission={row.kind} data-settings-search-id={`permissions-${row.kind}`} class:settings-search-highlight={highlightedSettingsTarget === `permissions-${row.kind}`}>
               <span class="option-mark large"><Icon name={row.icon} size={18}/></span>
               <span class="general-setting-copy"><h4>{$t(row.title)}</h4><small>{$t(row.reason)}</small></span>
               <div class="permission-actions">
@@ -4386,7 +4282,7 @@
     {:else if mode === 'notifications'}
       <div class="general-options" role="tabpanel">
         <section class="general-group">
-          <section class="general-setting-row">
+          <section class="general-setting-row" data-settings-search-id="notifications-enabled" class:settings-search-highlight={highlightedSettingsTarget === 'notifications-enabled'}>
             <span class="option-mark large"><Icon name="bell" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.notifications')}</h4><small>{$t('settings.notificationsHint')}</small></span>
             {#if general}<button type="button" class:enabled={general.notificationsEnabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableNotifications')} aria-checked={general.notificationsEnabled} disabled={updatingNotifications === 'all'} onclick={() => void setNotificationsEnabled(!general!.notificationsEnabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
@@ -4395,7 +4291,7 @@
                and inert, but keep showing the choice they will come back to. -->
           <div class="computerHistory-group" class:disabled={general ? !general.notificationsEnabled : false}>
             {#each NOTIFICATION_ROWS as row (row.kind)}
-              <section class="general-setting-row">
+              <section class="general-setting-row" data-settings-search-id={`notifications-${row.kind}`} class:settings-search-highlight={highlightedSettingsTarget === `notifications-${row.kind}`}>
                 <span class="option-mark large"><Icon name={row.icon} size={18}/></span>
                 <span class="general-setting-copy"><h4>{$t(row.title)}</h4><small>{$t(row.hint)}</small></span>
                 {#if general}<button type="button" class:enabled={general.notifications[row.kind]} class="computerHistory-toggle" role="switch" aria-label={$t(row.title)} aria-checked={general.notifications[row.kind]} disabled={!general.notificationsEnabled || updatingNotifications === row.kind} onclick={() => void setNotificationKind(row.kind, !general!.notifications[row.kind])}><span></span></button>{:else}{@render pendingToggle()}{/if}
@@ -4411,7 +4307,7 @@
                this row is the only way back to the install page. It states the
                installed case rather than disappearing, so the setting does not
                look missing to someone who came looking for it. -->
-          <section class="general-setting-row">
+          <section class="general-setting-row" data-settings-search-id="about-extension" class:settings-search-highlight={highlightedSettingsTarget === 'about-extension'}>
             <span class="option-mark large"><Icon name="puzzle" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('extension.title')}</h4><small>{$t('extension.hint')}</small></span>
             {#if extensionStatus?.installed}
@@ -4420,7 +4316,7 @@
               <button type="button" class="permission-retry" onclick={() => void openExtensionInstall()}>{$t('extension.install')}</button>
             {/if}
           </section>
-          <section class="general-setting-row">
+          <section class="general-setting-row" data-settings-search-id="about-version" class:settings-search-highlight={highlightedSettingsTarget === 'about-version'}>
             <span class="option-mark large"><Icon name="verified" size={18}/></span>
             <span class="general-setting-copy"><h4>Version {appVersion?.version ?? '—'}</h4><small>{versionDetailText}</small></span>
             {#if update?.status === 'ready'}
@@ -4434,19 +4330,19 @@
       </div>
     {:else if mode === 'computer-history'}
       <div class="memory-options" role="tabpanel">
-        <section class="memory-setting-row memory-primary-row">
+        <section class="memory-setting-row memory-primary-row" data-settings-search-id="memory-local" class:settings-search-highlight={highlightedSettingsTarget === 'memory-local'}>
           <span class="option-mark large"><Icon name="brain" size={18}/></span>
           <span class="general-setting-copy"><h4>Local memory</h4><small>{$t('settings.memoryBody')}</small><span class="computerHistory-inline-stats" aria-label={$t('settings.memoryStorage')}><span>{plural('settings.memoriesCount', memory?.memories ?? 0)}</span><span>{formatBytes(memory?.storedBytes ?? 0)}</span><span>{$t('settings.memoryLatest', {time: formatMemoryTime(memory?.latestMemoryAt)})}</span><span>{$t('settings.memoryConsolidated', {time: formatMemoryTime(memory?.consolidatedAt)})}</span>{#if (memory?.pendingMemories ?? 0) > 0}<span>{$t('settings.memoryPending', {count: memory?.pendingMemories ?? 0})}</span>{/if}</span></span>
           {#if memory}<button type="button" class:enabled={memory.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableMemory')} aria-checked={memory.enabled} disabled={updatingMemory} onclick={() => void setMemoryEnabled(!memory!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
         </section>
-        <section class="memory-setting-row memory-primary-row">
+        <section class="memory-setting-row memory-primary-row" data-settings-search-id="memory-computer-history" class:settings-search-highlight={highlightedSettingsTarget === 'memory-computer-history'}>
           <span class="option-mark large"><Icon name="computer" size={18}/></span>
           <span class="general-setting-copy"><h4>Computer history</h4><small>{$t('settings.computerHistoryBody')}</small><span class="computerHistory-inline-stats" aria-label="Computer history storage"><span>{$t('settings.computerHistoryCaptures', {count: computerHistory?.storedFrames ?? 0})}</span><span>{formatBytes(computerHistory?.storedBytes ?? 0)}</span><span>{$t('settings.computerHistoryLatest', {time: formatMemoryTime(computerHistory?.lastCapturedAt)})}</span><span>{$t('settings.computerHistoryEvents', {count: computerHistory?.storedEvents ?? 0})}</span></span></span>
           {#if computerHistory}<button type="button" class:enabled={computerHistory.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableComputerHistory')} aria-checked={computerHistory.enabled} disabled={updatingComputerHistory} onclick={() => void setComputerHistoryEnabled(!computerHistory!.enabled)}><span></span></button>{:else}{@render pendingToggle()}{/if}
         </section>
         {#if memory?.consolidationError}<section class="computerHistory-error"><span><h4>{$t('settings.consolidationFailed')}</h4><p>{memory.consolidationError}</p><small>{$t('settings.consolidationFallback')}{#if memory.consolidationRetryAfter}{$t('settings.consolidationRetryAt', {time: formatMemoryTime(memory.consolidationRetryAfter)})}{:else}{$t('settings.consolidationRetryNext')}{/if}</small></span></section>{/if}
         <section class="history-settings-group">
-          <button type="button" class="memory-setting-row history-settings-row pinned-views-row" class:expanded={computerHistoryExclusionsExpanded} aria-expanded={computerHistoryExclusionsExpanded} aria-controls="computer-history-exclusions" onclick={() => computerHistoryExclusionsExpanded = !computerHistoryExclusionsExpanded}>
+          <button type="button" class="memory-setting-row history-settings-row pinned-views-row" data-settings-search-id="memory-exclusions" class:expanded={computerHistoryExclusionsExpanded} class:settings-search-highlight={highlightedSettingsTarget === 'memory-exclusions'} aria-expanded={computerHistoryExclusionsExpanded} aria-controls="computer-history-exclusions" onclick={() => computerHistoryExclusionsExpanded = !computerHistoryExclusionsExpanded}>
             <span class="option-mark large"><Icon name="prohibited" size={18}/></span>
             <span class="general-setting-copy"><h4>Computer history exclusions</h4><small>{$t('settings.computerHistoryPermissionsBody')}</small></span>
             <span class="pinned-views-control"><span class="pinned-views-configure">Configure</span><span class="pinned-views-chevron" class:open={computerHistoryExclusionsExpanded}><Icon name="chevron" size={14}/></span></span>
@@ -4457,12 +4353,12 @@
               {@render sourceColumn('sites', $t('settings.computerHistorySites'), siteRows)}
             </div>
           {/if}
-          <section class="memory-setting-row history-settings-row">
+          <section class="memory-setting-row history-settings-row" data-settings-search-id="memory-private-browsing" class:settings-search-highlight={highlightedSettingsTarget === 'memory-private-browsing'}>
             <span class="option-mark large"><Icon name="incognito" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.computerHistoryPrivateBrowsing')}</h4><small>{$t('settings.computerHistoryPrivateBrowsingBody')}</small></span>
             {#if computerHistory}<button type="button" class:enabled={computerHistory.recordPrivateBrowsing} class="computerHistory-toggle" role="switch" aria-label={$t('settings.computerHistoryPrivateBrowsing')} aria-checked={computerHistory.recordPrivateBrowsing} disabled={!computerHistory.enabled || updatingComputerHistory} onclick={() => void updateComputerHistory({recordPrivateBrowsing: !computerHistory!.recordPrivateBrowsing})}><span></span></button>{:else}{@render pendingToggle()}{/if}
           </section>
-          <section class="memory-setting-row history-settings-row">
+          <section class="memory-setting-row history-settings-row" data-settings-search-id="memory-interaction-history" class:settings-search-highlight={highlightedSettingsTarget === 'memory-interaction-history'}>
             <span class="option-mark large"><Icon name="cursor" size={18}/></span>
             <span class="general-setting-copy"><h4>{$t('settings.computerHistoryInteractions')}</h4><small>{$t('settings.computerHistoryInteractionsBody')}</small></span>
             {#if computerHistory}<button type="button" class:enabled={computerHistory.interactionEvents} class="computerHistory-toggle" role="switch" aria-label={$t('settings.computerHistoryInteractions')} aria-checked={computerHistory.interactionEvents} disabled={!computerHistory.enabled || updatingComputerHistory} onclick={() => void updateComputerHistory({interactionEvents: !computerHistory!.interactionEvents})}><span></span></button>{:else}{@render pendingToggle()}{/if}
@@ -4571,26 +4467,43 @@
           </div>
           {#each MODEL_ROLES as role (role.value)}
             {@const assignment = roleAssignment(role.value, modelRoles)}
+            {@const effective = roleEffective(role, modelRoles)}
             {@const efforts = modelEfforts(roleModel(role, modelRoles, models) ?? ({} as ModelDto))}
-            {@const settable = !!assignment && efforts.length > 1}
-            <section class="general-setting-row">
+            {@const isNone = effective?.provider === 'none' || effective?.id === 'none'}
+            {@const isAuto = effective?.id === 'auto' || effective?.name === 'Auto'}
+            {@const settable = !isNone && !isAuto && efforts.length > 1}
+            {@const showReset = !!assignment}
+            {@const showClear = !isNone}
+            <section class="general-setting-row" data-settings-search-id={`model-role-${role.value}`} class:settings-search-highlight={highlightedSettingsTarget === `model-role-${role.value}`}>
               <span class="general-setting-copy"><h4>{role.label}</h4><small>{role.hint}</small></span>
               <span class="role-controls">
-                <!-- The level always reads from the same control, so the rows
-                     line up: a model that cannot think harder simply has None
-                     as its only answer. -->
-                <div class="setting-menu role-effort-menu" class:busy={assigningRole !== ''}>
-                  <Menu options={settable ? roleEffortOptions(efforts) : [{value: 'off', label: $t('reasoning.none')}]} value={settable ? assignment?.reasoning ?? 'off' : 'off'} label={$t('composer.reasoningFor', {model: assignment?.name ?? role.label})} onChange={(value) => { if (settable) void setRoleEffort(role, value); }}/>
-                </div>
+                {#if role.kind === 'text'}
+                  <div class="setting-menu role-effort-menu" class:busy={assigningRole !== ''}>
+                    <Menu options={settable ? roleEffortOptions(efforts) : [{value: 'off', label: $t('reasoning.none')}]} value={settable ? (assignment?.reasoning ?? (assignment ? 'off' : effective?.reasoning ?? 'off')) : 'off'} label={$t('composer.reasoningFor', {model: isNone ? $t('reasoning.none') : isAuto ? $t('settings.roleAuto', {default: 'Auto'}) : (effective?.name ?? role.label)})} onChange={(value) => { if (settable) void setRoleEffort(role, value); }}/>
+                  </div>
+                {:else}
+                  <div class="role-effort-placeholder" aria-hidden="true"></div>
+                {/if}
                 <span class="role-model-field">
-                  <button type="button" class="role-model" aria-label={$t('settings.roleSet', {model: assignment?.name ?? role.label, job: role.job})} disabled={assigningRole !== ''} onclick={() => browseForRole(role.value)}>
-                    <!-- The provider's own mark, as the composer's model picker
-                         carries it: the company is read before the name is. -->
-                    {#if assignment}<span class="role-model-mark"><ProviderLogo provider={assignment.provider} size={14}/></span>{/if}
-                    <span>{assignment?.name ?? $t('settings.setModel')}</span>
+                  <button type="button" class="role-model" aria-label={$t('settings.roleSet', {model: isNone ? $t('reasoning.none') : isAuto ? $t('settings.roleAuto', {default: 'Auto'}) : (effective?.name ?? role.label), job: role.job})} disabled={assigningRole !== ''} onclick={() => browseForRole(role.value)}>
+                    {#if effective?.provider && !isNone && !isAuto}
+                      <span class="role-model-mark"><ProviderLogo provider={effective.provider} size={14}/></span>
+                    {/if}
+                    <span>{isNone ? $t('reasoning.none') : isAuto ? $t('settings.roleAuto', {default: 'Auto'}) : (effective?.name ?? $t('settings.setModel'))}</span>
                   </button>
-                  {#if assignment && role.value !== 'main'}
-                    <button type="button" class="role-model-clear" aria-label={$t('settings.clear')} disabled={assigningRole !== ''} onclick={() => void clearModelRole(role.value)}><Icon name="close" size={13} strokeWidth={1.7}/></button>
+                  {#if showReset || showClear}
+                  <div class="role-model-actions">
+                    {#if showReset}
+                    <button type="button" class="role-model-action role-model-reset" aria-label={$t('settings.resetToDefault', {default: 'Reset to default'})} title={$t('settings.resetToDefault', {default: 'Reset to default'})} disabled={assigningRole !== ''} onclick={(e) => { e.stopPropagation(); void resetModelRole(role.value); }}>
+                      <Icon name="reload" size={12} strokeWidth={1.7}/>
+                    </button>
+                    {/if}
+                    {#if showClear}
+                    <button type="button" class="role-model-action role-model-clear" aria-label={$t('settings.clear')} title={$t('settings.clear')} disabled={assigningRole !== ''} onclick={(e) => { e.stopPropagation(); void clearModelRole(role.value); }}>
+                      <Icon name="close" size={13} strokeWidth={1.7}/>
+                    </button>
+                    {/if}
+                  </div>
                   {/if}
                 </span>
               </span>
@@ -4614,9 +4527,6 @@
           <button type="button" class:active={marketplaceCategory === 'all'} class="marketplace-chip" aria-pressed={marketplaceCategory === 'all'} onclick={() => marketplaceCategory = 'all'}>
             <Icon name="storefront" size={15}/><span>{$t('settings.categoryAll')}</span><span class="marketplace-count">{marketplaceCounts.all}</span>
           </button>
-          <button type="button" class:active={marketplaceCategory === 'app'} class="marketplace-chip" aria-pressed={marketplaceCategory === 'app'} onclick={() => marketplaceCategory = 'app'}>
-            <Icon name="apps" size={15}/><span>{$t('settings.categoryApps')}</span><span class="marketplace-count">{marketplaceCounts.app}</span>
-          </button>
           <button type="button" class:active={marketplaceCategory === 'bots'} class="marketplace-chip" aria-pressed={marketplaceCategory === 'bots'} onclick={() => marketplaceCategory = 'bots'}>
             <Icon name="bot" size={15}/><span>{$t('settings.categoryBots')}</span><span class="marketplace-count">{marketplaceCounts.bots}</span>
           </button>
@@ -4636,53 +4546,28 @@
         {:else}
           {#if marketplaceCategory === 'all' && !query && marketplaceConnected.length}
             <section class="marketplace-section">
-              <div class="marketplace-section-head"><h3>{$t('settings.yourConnections')}</h3></div>
-              <div class="marketplace-strip" bind:clientWidth={installedStripWidth}>
-                {#each marketplaceConnected.slice(0, installedStripLimit) as item (item.key)}
-                  <button type="button" class="marketplace-strip-item" aria-label={`${item.name}, ${item.subtitle}`} title={`${item.name} — ${item.subtitle}`} onclick={() => openMarketplaceDetail(item)}>
-                    <Icon name={marketplaceKindIcon(item)} size={18}/>
-                  </button>
-                {/each}
-                {#if marketplaceConnected.length > installedStripLimit}
-                  <button type="button" class="marketplace-more" aria-label={$t('settings.showAllInstalled')} onclick={openInstalledConnections}>{$t('settings.moreCount', {count: marketplaceConnected.length - installedStripLimit})}</button>
-                {/if}
+              <div class="marketplace-section-head">
+                <h3>{$t('settings.installedHeading')}<span class="marketplace-count">{marketplaceConnected.length}</span></h3>
+                <button type="button" class="marketplace-see-all" onclick={openInstalledConnections}><span>{$t('settings.manageInstalled')}</span><Icon name="forward" size={13}/></button>
               </div>
+              <ul class="marketplace-grid">
+                {#each installedPreview as item (item.key)}
+                  <li class="marketplace-row">
+                    <button type="button" class="marketplace-row-main" onclick={() => openMarketplaceDetail(item)}>
+                      <span class="marketplace-row-mark"><Icon name={marketplaceKindIcon(item)} size={17}/></span>
+                      <span class="marketplace-row-copy">
+                        <span class="marketplace-row-name"><strong>{item.name}</strong>{#if item.official}<span class="official-rail-stamp" aria-label={$t('settings.official')}><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span>
+                        <small>{item.kindLabel} · {item.subtitle}</small>
+                      </span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
             </section>
           {/if}
 
           {#if marketplaceCategory === 'bots' && query}
             <p class="marketplace-empty">{$t('settings.noBotsMatch')}</p>
-          {/if}
-          {#if marketplaceCategory === 'all' || marketplaceCategory === 'app'}
-            {@const appRows = marketplaceSection('app', marketplaceQueryResults, marketplaceCategory)}
-            {#if appRows.length || marketplaceCategory === 'app'}
-              <section class="marketplace-section" aria-label={$t('settings.recommendedApps')}>
-                <div class="marketplace-section-head">
-                  <h3>{marketplaceCategory === 'all' ? $t('settings.recommendedApps') : $t('settings.categoryApps')}</h3>
-                  <button type="button" class="marketplace-see-all" onclick={() => marketplaceSeeAll('app')}><span>{$t('settings.seeAll')}</span><Icon name="forward" size={13}/></button>
-                </div>
-                {#if appRows.length}
-                  <ul class="marketplace-grid">
-                    {#each appRows as item (item.key)}
-                      <li class="marketplace-row">
-                        <button type="button" class="marketplace-row-main" onclick={() => openMarketplaceDetail(item)}>
-                          <span class="marketplace-row-mark"><Icon name={marketplaceKindIcon(item)} size={17}/></span>
-                          <span class="marketplace-row-copy">
-                            <span class="marketplace-row-name"><strong>{item.name}</strong>{#if item.official}<span class="official-rail-stamp" aria-label={$t('settings.official')}><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span>
-                            <small>{item.subtitle}</small>
-                          </span>
-                        </button>
-                        <button type="button" class:added={item.enabled} class="marketplace-add" disabled={item.alwaysOn || integrationSaving || !!installingPluginId || !!installingMcpRegistryId} aria-label={item.alwaysOn ? $t('settings.alwaysAvailable', {name: item.name}) : item.enabled ? $t('settings.disableNamed', {name: item.name}) : $t('settings.addNamed', {name: item.name})} aria-pressed={item.enabled} onclick={() => toggleMarketplaceItem(item)}>
-                          <Icon name={item.enabled ? 'check' : 'plus'} size={15}/>
-                        </button>
-                      </li>
-                    {/each}
-                  </ul>
-                {:else}
-                  <p class="marketplace-empty">{query ? $t('settings.noAppsMatch') : $t('settings.noAppsYet')}</p>
-                {/if}
-              </section>
-            {/if}
           {/if}
 
           {#if (marketplaceCategory === 'all' || marketplaceCategory === 'bots') && !query}
@@ -4695,9 +4580,9 @@
           {#if marketplaceCategory === 'all' || marketplaceCategory === 'plugin'}
             {@const pluginRows = marketplaceSection('plugin', marketplaceQueryResults, marketplaceCategory)}
             {#if pluginRows.length || marketplaceCategory === 'plugin' || !query}
-              <section class="marketplace-section" aria-label={$t('settings.recommendedPlugins')}>
+              <section class="marketplace-section" aria-label={pluginSectionTitle}>
                 <div class="marketplace-section-head">
-                  <h3>{marketplaceCategory === 'all' ? $t('settings.recommendedPlugins') : $t('settings.categoryPlugins')}</h3>
+                  <h3>{pluginSectionTitle}{#if query}<span class="marketplace-count">{marketplaceKindMatches.plugin}</span>{/if}</h3>
                   <button type="button" class="marketplace-see-all" onclick={() => marketplaceSeeAll('plugin')}><span>{$t('settings.seeAll')}</span><Icon name="forward" size={13}/></button>
                 </div>
                 {#if featuredPluginsLoading}<p class="marketplace-empty" role="status">{$t('settings.loadingMarketplace')}</p>{/if}
@@ -4713,9 +4598,17 @@
                             <small>{item.subtitle}</small>
                           </span>
                         </button>
-                        <button type="button" class:added={item.enabled} class="marketplace-add" disabled={integrationSaving || !!installingPluginId || !!installingMcpRegistryId} aria-label={item.enabled ? $t('settings.disableNamed', {name: item.name}) : $t('settings.addNamed', {name: item.name})} aria-pressed={item.enabled} onclick={() => toggleMarketplaceItem(item)}>
-                          <Icon name={item.enabled ? 'check' : 'plus'} size={15}/>
-                        </button>
+                        {#if (item.catalogPlugin && installingPluginId === item.catalogPlugin.id) || (item.catalogMcp && installingMcpRegistryId === item.catalogMcp.id)}
+                          <span class="marketplace-status">{$t('settings.installing')}</span>
+                        {:else if item.enabled}
+                          <span class="marketplace-status active">{$t('settings.enabled')}</span>
+                        {:else if item.catalogMcp && item.catalogMcp.requiredHeaders.length}
+                          <button type="button" class="permission-retry" disabled={integrationSaving} onclick={() => installMarketplaceItem(item)}>{$t('settings.configure')}</button>
+                        {:else if item.catalogPlugin || item.catalogMcp}
+                          <button type="button" class="permission-retry" disabled={integrationSaving || !!installingPluginId || !!installingMcpRegistryId} onclick={() => installMarketplaceItem(item)}>{$t('settings.install')}</button>
+                        {:else}
+                          <span class="marketplace-status">{$t('settings.disabled')}</span>
+                        {/if}
                       </li>
                     {/each}
                   </ul>
@@ -4729,9 +4622,9 @@
           {#if marketplaceCategory === 'all' || marketplaceCategory === 'skill'}
             {@const skillRows = marketplaceSection('skill', marketplaceQueryResults, marketplaceCategory)}
             {#if skillRows.length || marketplaceCategory === 'skill'}
-              <section class="marketplace-section" aria-label={$t('settings.recommendedSkills')}>
+              <section class="marketplace-section" aria-label={skillSectionTitle}>
                 <div class="marketplace-section-head">
-                  <h3>{marketplaceCategory === 'all' ? $t('settings.recommendedSkills') : $t('settings.categorySkills')}</h3>
+                  <h3>{skillSectionTitle}{#if query}<span class="marketplace-count">{marketplaceKindMatches.skill}</span>{/if}</h3>
                   <button type="button" class="marketplace-see-all" onclick={() => marketplaceSeeAll('skill')}><span>{$t('settings.seeAll')}</span><Icon name="forward" size={13}/></button>
                 </div>
                 {#if skillRows.length}
@@ -4745,9 +4638,17 @@
                             <small>{item.subtitle}</small>
                           </span>
                         </button>
-                        <button type="button" class:added={item.enabled} class="marketplace-add" disabled={integrationSaving || !!installingPluginId || !!installingMcpRegistryId} aria-label={item.enabled ? $t('settings.disableNamed', {name: item.name}) : $t('settings.addNamed', {name: item.name})} aria-pressed={item.enabled} onclick={() => toggleMarketplaceItem(item)}>
-                          <Icon name={item.enabled ? 'check' : 'plus'} size={15}/>
-                        </button>
+                        {#if (item.catalogPlugin && installingPluginId === item.catalogPlugin.id) || (item.catalogMcp && installingMcpRegistryId === item.catalogMcp.id)}
+                          <span class="marketplace-status">{$t('settings.installing')}</span>
+                        {:else if item.enabled}
+                          <span class="marketplace-status active">{$t('settings.enabled')}</span>
+                        {:else if item.catalogMcp && item.catalogMcp.requiredHeaders.length}
+                          <button type="button" class="permission-retry" disabled={integrationSaving} onclick={() => installMarketplaceItem(item)}>{$t('settings.configure')}</button>
+                        {:else if item.catalogPlugin || item.catalogMcp}
+                          <button type="button" class="permission-retry" disabled={integrationSaving || !!installingPluginId || !!installingMcpRegistryId} onclick={() => installMarketplaceItem(item)}>{$t('settings.install')}</button>
+                        {:else}
+                          <span class="marketplace-status">{$t('settings.disabled')}</span>
+                        {/if}
                       </li>
                     {/each}
                   </ul>
@@ -4761,9 +4662,9 @@
           {#if marketplaceCategory === 'all' || marketplaceCategory === 'mcp'}
             {@const mcpRows = marketplaceSection('mcp', marketplaceQueryResults, marketplaceCategory)}
             {#if mcpRows.length || marketplaceCategory === 'mcp' || !query}
-              <section class="marketplace-section" aria-label={$t('settings.recommendedMcpServers')}>
+              <section class="marketplace-section" aria-label={mcpSectionTitle}>
                 <div class="marketplace-section-head">
-                  <h3>{marketplaceCategory === 'all' ? $t('settings.recommendedMcps') : $t('settings.categoryMcps')}</h3>
+                  <h3>{mcpSectionTitle}{#if query}<span class="marketplace-count">{marketplaceKindMatches.mcp}</span>{/if}</h3>
                   <button type="button" class="marketplace-see-all" onclick={() => marketplaceSeeAll('mcp')}><span>{$t('settings.seeAll')}</span><Icon name="forward" size={13}/></button>
                 </div>
                 {#if mcpRegistrySearching}<p class="marketplace-empty" role="status">{$t('settings.loadingMarketplace')}</p>{/if}
@@ -4779,9 +4680,17 @@
                             <small>{item.subtitle}</small>
                           </span>
                         </button>
-                        <button type="button" class:added={item.enabled} class="marketplace-add" disabled={integrationSaving || !!installingPluginId || !!installingMcpRegistryId} aria-label={item.enabled ? $t('settings.disableNamed', {name: item.name}) : $t('settings.addNamed', {name: item.name})} aria-pressed={item.enabled} onclick={() => toggleMarketplaceItem(item)}>
-                          <Icon name={item.enabled ? 'check' : 'plus'} size={15}/>
-                        </button>
+                        {#if (item.catalogPlugin && installingPluginId === item.catalogPlugin.id) || (item.catalogMcp && installingMcpRegistryId === item.catalogMcp.id)}
+                          <span class="marketplace-status">{$t('settings.installing')}</span>
+                        {:else if item.enabled}
+                          <span class="marketplace-status active">{$t('settings.enabled')}</span>
+                        {:else if item.catalogMcp && item.catalogMcp.requiredHeaders.length}
+                          <button type="button" class="permission-retry" disabled={integrationSaving} onclick={() => installMarketplaceItem(item)}>{$t('settings.configure')}</button>
+                        {:else if item.catalogPlugin || item.catalogMcp}
+                          <button type="button" class="permission-retry" disabled={integrationSaving || !!installingPluginId || !!installingMcpRegistryId} onclick={() => installMarketplaceItem(item)}>{$t('settings.install')}</button>
+                        {:else}
+                          <span class="marketplace-status">{$t('settings.disabled')}</span>
+                        {/if}
                       </li>
                     {/each}
                   </ul>
@@ -4797,7 +4706,7 @@
     {#if marketplaceDetail}
       {@const detail = marketplaceDetail}
       <div class="marketplace-backdrop" role="presentation" onclick={(event) => {if (event.target === event.currentTarget) closeMarketplaceDetail();}}>
-        <div class="marketplace-modal" class:hosts-settings={appSettingsKind(connectionApp(detail)) !== null} role="dialog" aria-modal="true" aria-label={detail.name}>
+        <div class="marketplace-modal" role="dialog" aria-modal="true" aria-label={detail.name}>
           <button type="button" class="marketplace-close" aria-label={$t('settings.closeShort')} onclick={closeMarketplaceDetail}><Icon name="close" size={15}/></button>
           <div class="marketplace-hero">
             <span class="marketplace-hero-mark"><Icon name={marketplaceKindIcon(detail)} size={24}/></span>
@@ -4869,34 +4778,6 @@
                 <button type="button" class="marketplace-full-view" onclick={() => openMarketplaceFullView(detail)}><span>{$t('settings.openFullView')}</span><Icon name="forward" size={13}/></button>
               </div>
             {/if}
-          {:else}
-            {@const app = connectionApp(detail)}
-            {@const entry = app ? null : appCatalog.find((candidate) => candidate.id === detail.id)}
-            {#if app}
-              <div class="marketplace-modal-actions">
-                {#if !detail.alwaysOn}
-                  <section class="marketplace-enable-row">
-                    <span class="marketplace-enable-copy"><h4>{$t('settings.enabled')}</h4><small>{$t('settings.makeAvailable', {name: withLocale($locale, appName(app))})}</small></span>
-                    <button type="button" class:enabled={app.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableNamed', {name: withLocale($locale, appName(app))})} aria-checked={app.enabled} disabled={updatingAppId !== '' || removingAppId !== ''} onclick={() => void setWorkspaceAppEnabled(app)}><span></span></button>
-                  </section>
-                {/if}
-                {#if app.pinnable}
-                  <section class="marketplace-enable-row">
-                    <span class="marketplace-enable-copy"><h4>{$t('workspace.newTab')}</h4><small>{$t('settings.newTabKeepCompact')}</small></span>
-                    <button type="button" class:enabled={workspaceApps.pinnedIds.includes(app.id)} class="computerHistory-toggle" role="switch" aria-label={$t('settings.pinToNewTab', {name: withLocale($locale, appName(app))})} aria-checked={workspaceApps.pinnedIds.includes(app.id)} disabled={updatingAppId !== '' || (!workspaceApps.pinnedIds.includes(app.id) && workspaceApps.pinnedIds.length >= 4)} onclick={() => void toggleNewTabApp(app)}><span></span></button>
-                  </section>
-                {/if}
-                {#if !app.official}
-                  <button type="button" class="marketplace-uninstall" aria-label={$t('settings.uninstallNamed', {name: withLocale($locale, appName(app))})} disabled={removingAppId !== ''} onclick={() => void removeWorkspaceApp(app)}><Icon name="trash" size={14}/><span>{$t('settings.uninstall')}</span></button>
-                {/if}
-              </div>
-              {@render appSettingsPane(app)}
-            {:else if entry}
-              <p class="marketplace-tag">{withLocale($locale, appSubtitle(entry))}</p>
-              <div class="marketplace-modal-actions">
-                <button type="button" class="permission-retry" disabled={installingAppId !== ''} onclick={() => void installWorkspaceApp(entry)}>{installingAppId === entry.id ? $t('settings.installing') : $t('settings.install')}</button>
-              </div>
-            {/if}
           {/if}
         </div>
       </div>
@@ -4912,7 +4793,7 @@
 
         <ul class="options-rail-list" class:empty-state={railEmpty} use:scrollFade={railContentKey}>
           {#if connectionsTabActive}
-            {#each visibleConnections as item (item.key)}
+            {#each railConnections as item (item.key)}
               <li><button type="button" class:selected={connectionSelected(item)} class:integration-disabled={!item.enabled} class="options-rail-row" onclick={() => selectConnection(item)}>
                 <span class="options-rail-copy"><span class="skill-name-line"><strong>{item.name}</strong>{#if item.official}<span class="official-rail-stamp" aria-label={$t('settings.official')}><Icon name="verified" size={13} strokeWidth={1.8}/></span>{/if}</span><small>{item.subtitle}</small></span>
                 <span class="connection-caps" aria-hidden="true">
@@ -5003,7 +4884,6 @@
                 {/if}
               </div>
             {:else if mode === 'connections'}
-              <button type="button" class="rail-tool" aria-label={$t('settings.browseAppMarketplace')} data-tooltip-label={$t('settings.appMarketplace')} onclick={() => selectMode('app-marketplace')}><Icon name="storefront" size={15}/></button>
               <div class="rail-tool-wrap">
                 <button type="button" class:active={mcpAddMenuOpen || skillAddMenuOpen || pluginAddMenuOpen} class="rail-tool" aria-label={$t('settings.addConnection')} aria-haspopup="menu" aria-expanded={mcpAddMenuOpen} data-tooltip-label={$t('settings.add')} onclick={() => { openRailMenu = null; mcpAddMenuOpen = !mcpAddMenuOpen; skillAddMenuOpen = false; pluginAddMenuOpen = false; }}><Icon name="plus" size={15}/></button>
                 {#if mcpAddMenuOpen}
@@ -5011,7 +4891,6 @@
                     <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => beginAdd('mcp')}><span>{$t('settings.addMcpServer')}</span></button>
                     <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => beginAdd('skills')}><span>{$t('settings.addSkills')}</span></button>
                     <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => beginAdd('plugins')}><span>{$t('settings.addPlugins')}</span></button>
-                    <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => selectMode('app-marketplace')}><span>{$t('settings.browseAppMarketplace')}</span></button>
                   </div>
                 {/if}
               </div>
@@ -5448,30 +5327,6 @@
           {/if}
           {/each}
           {/if}
-        {:else if mode === 'connections' && (selectedApp || selectedCatalogApp)}
-          {@const app = selectedApp}
-          {@const entry = selectedCatalogApp}
-          <header class="options-detail-header">
-            <span class="option-mark large"><Icon name={appIcon(app ?? entry ?? {id: selectedAppId})} size={18}/></span>
-            <span class="options-title-group"><h3>{withLocale($locale, app ? appName(app) : entry ? appName(entry) : '')}</h3>{#if (app?.official || entry?.official)}<span class="options-badge official-badge">{$t('settings.official')}</span>{/if}</span>
-            <div class="skill-detail-actions">
-            {#if app && app !== browserApp}
-            {#if !app.official}<button type="button" class="provider-edit destructive" aria-label={$t('settings.uninstallNamed', {name: withLocale($locale, appName(app))})} disabled={removingAppId !== ''} onclick={() => void removeWorkspaceApp(app)}><Icon name="trash" size={14}/></button>{/if}
-            <button type="button" class:enabled={app.enabled} class="computerHistory-toggle" role="switch" aria-label={$t('settings.enableNamed', {name: withLocale($locale, appName(app))})} aria-checked={app.enabled} disabled={updatingAppId !== '' || removingAppId !== ''} onclick={() => void setWorkspaceAppEnabled(app)}><span></span></button>
-          {:else if entry}
-            <button type="button" class="permission-retry" disabled={installingAppId !== ''} onclick={() => void installWorkspaceApp(entry)}>{installingAppId === entry.id ? $t('settings.installing') : $t('settings.install')}</button>
-          {/if}
-            </div>
-          </header>
-          <section class="options-detail-block"><h4>{$t('settings.description')}</h4><p class="skill-description">{app ? withLocale($locale, appSubtitle(app)) : entry ? withLocale($locale, appSubtitle(entry)) : ''}</p></section>
-          {#if app?.pinnable}
-            <section class="general-setting-row">
-              <span class="option-mark large"><Icon name="pin" size={18}/></span>
-              <span class="general-setting-copy"><h4>{$t('workspace.newTab')}</h4><small>{$t('settings.newTabKeepCompact')}</small></span>
-              <button type="button" class:enabled={workspaceApps.pinnedIds.includes(app.id)} class="computerHistory-toggle" role="switch" aria-label={$t('settings.pinToNewTab', {name: withLocale($locale, appName(app))})} aria-checked={workspaceApps.pinnedIds.includes(app.id)} disabled={updatingAppId !== '' || (!workspaceApps.pinnedIds.includes(app.id) && workspaceApps.pinnedIds.length >= 4)} onclick={() => void toggleNewTabApp(app)}><span></span></button>
-            </section>
-          {/if}
-          {@render appSettingsPane(app)}
         {:else}
           <p class="options-empty detail">{$t('settings.selectItem')}</p>
         {/if}
@@ -5582,7 +5437,10 @@
   .options-page.compact .runtime-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
   .options-page.compact .role-controls,.options-page.compact .role-model-field{max-width:100%}
   .options-page.compact .role-model-field{width:100%}
-  .options-page.compact .app-management-row{flex-wrap:wrap;row-gap:8px}
+  .options-page.compact .role-controls{display:grid;grid-template-columns:104px minmax(0,1fr);width:min(60%,328px)}
+  .options-page.compact .role-controls .setting-menu{margin:0}
+  .options-page.compact .role-columns .role-controls>span{width:auto;box-sizing:border-box}
+  .options-page.compact .role-options .general-setting-row{flex-wrap:nowrap}
   .options-nav{position:relative;z-index:2;min-height:0;display:flex;flex-direction:column;gap:10px;padding:16px 12px 14px;border-right:1px solid var(--neutral-200)}
   .options-nav-search{flex:none;margin:0 2px}
   .options-nav-list{min-height:0;flex:1;display:flex;flex-direction:column;gap:1px;overflow-y:auto;padding:2px}
@@ -5595,19 +5453,16 @@
   .options-nav-item span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .options-nav-item:hover,.options-nav-item:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
   .options-nav-item.active{background:var(--neutral-200);color:var(--neutral-950);font-weight:540}
-  .app-group-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
-  .app-group-header h3{margin:0}
-  .app-management-list{display:flex;flex-direction:column}
-  .app-management-row{min-height:58px}
-  .app-name-line{min-width:0;display:flex;align-items:center;gap:7px}
-  .app-name-line h4{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .app-name-line .options-badge{height:16px;padding:0 5px;font-size:8.5px;line-height:16px}
-  .app-management-actions{display:flex;flex:none;align-items:center;gap:8px;margin-left:auto}
-  .app-pin-button,.app-remove-button{width:26px;height:26px;display:grid;place-items:center;border:0;background:transparent;color:var(--neutral-400);cursor:pointer;transition:color .15s}
-  .app-pin-button:hover,.app-pin-button:focus-visible,.app-remove-button:hover,.app-remove-button:focus-visible{outline:0;color:var(--neutral-900)}
-  .app-pin-button.active{color:var(--neutral-900)}
-  .app-pin-button:disabled,.app-remove-button:disabled{opacity:.35;cursor:default}
-  .app-pin-limit{margin:10px 0 0;padding:0 10px;color:var(--neutral-400);font-size:11px}
+  .options-nav-results{min-height:0;flex:1;overflow-y:auto;padding:2px;scrollbar-width:none}
+  .options-nav-results::-webkit-scrollbar{display:none}
+  .options-nav-result-group{display:flex;flex-direction:column;gap:1px}
+  .options-nav-result-group+.options-nav-result-group{margin-top:9px}
+  .options-nav-result{width:100%;height:34px;flex:none;display:flex;align-items:center;gap:8px;overflow:hidden;border:0;border-radius:9px;padding:0 9px;background:transparent;color:var(--neutral-600);cursor:pointer;text-align:left;font-family:inherit;font-size:12.5px}
+  .options-nav-result :global(svg){flex:none}
+  .options-nav-result span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .options-nav-result:hover,.options-nav-result:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}
+  .options-nav-result.active{background:var(--neutral-200);color:var(--neutral-950);font-weight:540}
+  .options-nav-empty{margin:12px 9px;color:var(--neutral-400);font-size:11.5px;line-height:1.45}
   .external-setup-backdrop{position:fixed;z-index:1400;inset:0;display:grid;place-items:center;padding:24px;background:rgba(0,0,0,.28);-webkit-app-region:no-drag;animation:options-page-in .12s ease-out}
   .external-setup-dialog{width:min(720px,calc(100vw - 48px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;gap:14px;overflow-y:auto;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:14px;padding:18px;background:var(--app-surface);box-shadow:0 20px 60px rgba(0,0,0,.24);scrollbar-width:none}
   .external-setup-dialog::-webkit-scrollbar{display:none}
@@ -5664,10 +5519,11 @@
   .options-header h2{height:35px;line-height:35px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.options-header p{margin:7px 0 0;height:19px;overflow:hidden;color:var(--neutral-600);text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;line-height:19px}
   .options-error{margin:0 18px 8px;padding:7px 10px;border-radius:8px;background:var(--neutral-100);color:var(--neutral-700);font-size:12px}
   .general-options{flex:1;min-height:0;overflow-y:auto;padding:2px var(--options-detail-edge) 20px calc(var(--options-content-edge) + var(--options-tab-inline))}.general-setting-row{display:flex;align-items:center;gap:11px;min-height:62px;border-bottom:1px solid var(--neutral-200)}.general-setting-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}.general-setting-copy h4{margin:0;color:var(--neutral-900);font-size:12.5px;font-weight:570}.general-setting-copy small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.permission-retry{height:28px;flex:none;border:1px solid var(--neutral-200);border-radius:8px;padding:0 10px;background:var(--app-surface);color:var(--neutral-700);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.permission-retry:hover,.permission-retry:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.setting-menu{flex:none}.setting-menu.language{--select-menu-rows:5}.setting-menu.busy{pointer-events:none;opacity:.5}.setting-menu :global(.select-menu-trigger){height:28px;border-radius:8px;font-size:10.5px}.theme-switch{display:flex;flex:none;gap:2px;padding:2px;border-radius:9px;background:var(--neutral-100)}.theme-switch button{height:26px;border:0;border-radius:7px;padding:0 9px;background:transparent;color:var(--neutral-500);cursor:pointer;font-family:inherit;font-size:10.5px}.theme-switch button:hover,.theme-switch button:focus-visible{outline:0;color:var(--neutral-900)}.theme-switch button.active{background:var(--app-surface);color:var(--neutral-950);box-shadow:0 1px 3px rgba(0,0,0,.09)}.theme-switch button:disabled{cursor:default;opacity:.5}
+  :is(.general-setting-row,.memory-setting-row).settings-search-highlight{animation:settings-search-highlight 1.8s ease-out}
+  @keyframes settings-search-highlight{0%,18%{background-color:color-mix(in srgb,var(--flare-blue,#2384cb) 12%,transparent)}100%{background-color:transparent}}
   /* Grouped like the rest of the page: a small heading, then its rows. The
      last row in a group drops its rule so the group ends on space, not on a
      line that would read as the start of the next one. */
-  .hub-preferences{flex:none;overflow:visible;padding-bottom:16px}
   .general-group{display:block;margin:0 0 26px}
   .general-group:last-child{margin-bottom:0}
   .general-group>h3{margin:0 0 2px;color:var(--neutral-500);font-size:11.5px;font-weight:560;letter-spacing:.01em}
@@ -5760,7 +5616,7 @@
   .model-table tr.model-row{cursor:pointer}
   /* The roles view: each job on one row, with what it runs and how hard it
      thinks sitting on the text's own centre line. */
-  .role-controls{flex:none;display:flex;align-items:center;gap:8px}.role-effort-menu :global(.select-menu-trigger){width:104px}.role-model-field{position:relative;width:216px;height:28px;display:block}.role-model{height:28px;width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;overflow:hidden;border:1px solid var(--neutral-200);border-radius:8px;padding:0 11px;text-align:left;white-space:nowrap;text-overflow:ellipsis;background:var(--app-surface);color:var(--neutral-800);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.role-model-field:has(.role-model-clear) .role-model{padding-right:32px}.role-model:hover:not(:disabled),.role-model:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.role-model:disabled{cursor:default;opacity:.55}.role-model-clear{position:absolute;top:0;right:5px;width:23px;height:28px;display:grid;place-items:center;border:0;padding:0;background:transparent;color:var(--neutral-400);cursor:pointer;opacity:0;transition:color .14s ease,opacity .14s ease}.role-model-field:hover .role-model-clear,.role-model-clear:focus-visible{opacity:1}.role-model-clear:hover,.role-model-clear:focus-visible{outline:0;color:var(--neutral-950)}.role-model-clear:disabled{cursor:default}/* The composer's model picker tile (`.model-menu-mark`), same size: lobehub's
+  .role-controls{flex:none;display:flex;align-items:center;gap:8px}.role-effort-menu :global(.select-menu-trigger){width:104px}.role-effort-placeholder{width:104px;height:28px;flex:none}.role-model-field{position:relative;width:216px;height:28px;display:block}.role-model{height:28px;width:100%;display:flex;align-items:center;justify-content:flex-start;gap:8px;overflow:hidden;border:1px solid var(--neutral-200);border-radius:8px;padding:0 52px 0 11px;text-align:left;white-space:nowrap;text-overflow:ellipsis;background:var(--app-surface);color:var(--neutral-800);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}.role-model:hover:not(:disabled),.role-model:focus-visible{outline:0;background:var(--neutral-100);color:var(--neutral-950)}.role-model:disabled{cursor:default;opacity:.55}.role-model-actions{position:absolute;top:0;right:4px;height:28px;display:flex;align-items:center;gap:1px}.role-model-action{width:20px;height:24px;display:grid;place-items:center;border:0;border-radius:4px;padding:0;background:transparent;color:var(--neutral-400);cursor:pointer;transition:color .14s ease,background-color .14s ease}.role-model-action:hover,.role-model-action:focus-visible{outline:0;color:var(--neutral-950);background:var(--neutral-100)}.role-model-action:disabled{cursor:default;opacity:.4}/* The composer's model picker tile (`.model-menu-mark`), same size: lobehub's
      monochrome marks draw with their own black, so a bare logo is black on
      near-black in the dark theme. The light tile is what makes it read. */
   .role-model-mark{width:20px;height:20px;display:grid;flex:none;place-items:center;border:1px solid var(--neutral-200);border-radius:6px;background:#fff}.role-model>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.role-columns{height:30px;display:flex;align-items:center;gap:11px;border-bottom:1px solid var(--neutral-200);color:var(--neutral-500);font-size:10.5px;font-weight:540}.role-columns>span:first-child{min-width:0;flex:1}.role-columns .role-controls>span{padding-left:11px;text-align:left}.role-columns .role-controls>span:first-child{width:104px}.role-columns .role-controls>span:last-child{width:216px}
@@ -5886,14 +5742,14 @@
   .history-evidence-empty{min-height:52px;display:flex;align-items:center;justify-content:center;margin:0;color:var(--neutral-400);font-size:10px;text-align:center}
   /* Directory A: the marketplace landing. Token-driven like the rest of the
      page, so both themes read without special cases. */
-  .marketplace-directory{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
-  .marketplace-scroll{min-height:0;flex:1;overflow-y:auto;padding:6px var(--options-detail-edge) 24px calc(var(--options-content-edge) + var(--options-tab-inline));scrollbar-width:none}
+  .marketplace-directory{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;container-type:inline-size}
+  .marketplace-scroll{min-height:0;flex:1;overflow-y:auto;padding:14px var(--options-detail-edge) 36px calc(var(--options-content-edge) + var(--options-tab-inline));scrollbar-width:none}
   .marketplace-scroll::-webkit-scrollbar{display:none}
   .marketplace-search{width:100%;height:42px;display:flex;align-items:center;gap:10px;margin:4px 0 0;border:1px solid var(--neutral-200);border-radius:12px;padding:0 14px;background:var(--input-surface);color:var(--neutral-500)}
   .marketplace-search input{min-width:0;flex:1;border:0;background:transparent;color:var(--neutral-900);font:inherit;font-size:13.5px}
   .marketplace-search input:focus{outline:0}
   .marketplace-search input::placeholder{color:var(--neutral-400)}
-  .marketplace-chips{display:flex;gap:8px;margin-top:16px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+  .marketplace-chips{display:flex;gap:8px;margin:16px -4px 0;overflow-x:auto;padding:4px;scrollbar-width:none}
   .marketplace-chips::-webkit-scrollbar{display:none}
   .marketplace-chip{height:34px;display:flex;flex:none;align-items:center;gap:7px;border:1px solid transparent;border-radius:10px;padding:0 12px;background:var(--neutral-100);color:var(--neutral-700);cursor:pointer;font:inherit;font-size:13px;font-weight:550;white-space:nowrap}
   .marketplace-chip :global(svg){flex:none;color:var(--neutral-500)}
@@ -5903,43 +5759,30 @@
   .marketplace-chip.active :global(svg){color:var(--on-primary)}
   .marketplace-count{color:var(--neutral-400);font-size:11.5px;font-weight:500}
   .marketplace-chip.active .marketplace-count{color:var(--on-primary);opacity:.65}
-  .marketplace-section{margin-top:20px}
-  .marketplace-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 2px 8px}
+  .marketplace-section{margin-top:32px}
+  .marketplace-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 2px 16px}
   .marketplace-section-head h3{margin:0;color:var(--neutral-950);font-size:14px;font-weight:600}
+  .marketplace-section-head h3 .marketplace-count{margin-left:8px}
   .marketplace-see-all{display:flex;flex:none;align-items:center;gap:3px;border:0;padding:2px;background:transparent;color:var(--neutral-500);cursor:pointer;font:inherit;font-size:12.5px}
   .marketplace-see-all:hover{color:var(--neutral-950)}
   .marketplace-see-all:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;border-radius:4px}
-  .marketplace-strip{display:flex;align-items:center;gap:10px;margin:2px}
-  .marketplace-strip-item{width:44px;height:44px;flex:none;display:grid;place-items:center;border:0;border-radius:11px;background:var(--neutral-100);color:var(--neutral-700);cursor:pointer}
-  .marketplace-strip-item:hover{background:var(--neutral-200);color:var(--neutral-950)}
-  .marketplace-strip-item:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
-  .marketplace-more{flex:none;margin-left:5px;border:0;padding:0;background:none;color:var(--neutral-500);font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}.marketplace-more:hover{color:var(--neutral-950)}.marketplace-more:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
-  .marketplace-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 20px;margin:0;padding:0;list-style:none}
-  @media(max-width:900px){.marketplace-grid{grid-template-columns:minmax(0,1fr)}}
-  .marketplace-row{display:flex;align-items:flex-start;gap:4px;border-radius:11px;padding:9px 10px}
+  .marketplace-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 32px;margin:0;padding:0;list-style:none}
+  @container(max-width:640px){.marketplace-grid{grid-template-columns:minmax(0,1fr)}}
+  .marketplace-row{display:flex;align-items:flex-start;gap:4px;border-radius:11px;padding:12px 10px}
   .marketplace-row:hover{background:var(--neutral-100)}
   .marketplace-row-main{min-width:0;flex:1;display:flex;align-items:flex-start;gap:11px;border:0;padding:0;background:transparent;color:inherit;cursor:pointer;text-align:left;font:inherit}
   .marketplace-row-main:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;border-radius:8px}
   .marketplace-row-mark{width:36px;height:36px;flex:none;display:grid;place-items:center;border-radius:10px;background:var(--neutral-100);color:var(--neutral-700)}
   .marketplace-row:hover .marketplace-row-mark{background:var(--neutral-200)}
-  .marketplace-row-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px;padding-top:1px}
+  .marketplace-row-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:4px;padding-top:1px}
   .marketplace-row-name{display:flex;align-items:center;gap:6px;color:var(--neutral-900);font-size:13.5px}
   .marketplace-row-name strong{min-width:0;overflow:hidden;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
   .marketplace-row-copy>small{overflow:hidden;color:var(--neutral-500);text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
-  .marketplace-add{width:28px;height:28px;flex:none;display:grid;place-items:center;margin-top:4px;border:0;border-radius:8px;background:transparent;color:var(--neutral-400);cursor:pointer}
-  .marketplace-add:hover{color:var(--neutral-950)}
-  .marketplace-add:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
-  .marketplace-add.added{color:var(--success-text)}
+  .marketplace-status{flex:none;margin-top:4px;color:var(--neutral-400);font-size:11.5px;font-weight:550}
+  .marketplace-status.active{color:var(--success-text)}
   .marketplace-empty{margin:8px 2px 0;color:var(--neutral-500);font-size:12.5px}
   .marketplace-backdrop{position:absolute;inset:0;z-index:30;display:grid;place-items:center;padding:24px;background:rgba(0,0,0,.28)}
   .marketplace-modal{position:relative;width:min(640px,100%);min-width:0;max-height:100%;overflow-y:auto;box-sizing:border-box;border:1px solid var(--neutral-200);border-radius:16px;padding:24px 26px;background:var(--app-surface);box-shadow:0 30px 90px rgba(0,0,0,.35);scrollbar-width:none}
-  /* A connection whose settings live here needs room for their own rail. */
-  .marketplace-modal.hosts-settings{width:min(940px,100%)}
-  /* The settings a connection carries sit at the foot of its detail. They bring
-     their own scrolling, so they are given a height to scroll in: the card
-     itself scrolls to them. */
-  .connection-settings{display:flex;flex-direction:column;height:min(58vh,440px);margin-top:20px;padding-top:16px;border-top:1px solid var(--neutral-200)}
-  .connection-settings>.general-options{flex:none;overflow:visible;padding:0 0 12px}
   .marketplace-modal::-webkit-scrollbar{display:none}
   .marketplace-close{position:absolute;top:16px;right:16px;width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:var(--neutral-400);cursor:pointer}
   .marketplace-close:hover{color:var(--neutral-950)}
@@ -5970,7 +5813,4 @@
   .marketplace-full-view{align-self:flex-start;display:flex;align-items:center;gap:6px;border:0;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer;font:inherit;font-size:12.5px;font-weight:550}
   .marketplace-full-view:hover{color:var(--neutral-950)}
   .marketplace-full-view:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;border-radius:4px}
-  .marketplace-uninstall{align-self:flex-start;display:flex;align-items:center;gap:6px;border:0;padding:0;background:transparent;color:var(--neutral-500);cursor:pointer;font:inherit;font-size:12.5px}
-  .marketplace-uninstall:hover{color:var(--danger-600)}
-  .marketplace-uninstall:disabled{cursor:default;opacity:.45}
 </style>

@@ -58,14 +58,14 @@ if [[ "$native_browser" == "firefox" ]]; then
 import {writeFileSync} from "node:fs";
 writeFileSync(process.argv[3], JSON.stringify({
   name: "com.polymux.tab_context",
-  description: "Polymux tab context and authenticated Locker connection",
+  description: "Polymux tab context and authenticated Vault connection",
   path: process.argv[2],
   type: "stdio",
   allowed_extensions: ["extension@polymux.com"],
 }, null, 2) + "\n");
 JS
   print "Installed Firefox host manifest: $target_dir/com.polymux.tab_context.json"
-  print "Done. Reload the Polymux add-on and open Polymux to connect Locker."
+  print "Done. Reload the Polymux add-on and open Polymux to connect Vault."
   exit 0
 fi
 

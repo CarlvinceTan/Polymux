@@ -1,8 +1,8 @@
 # Polymux
 
-> Polymux is a desktop AI workspace that brings chats, email, files, browser tabs, and a user's choice of AI models together in one place.
+> Polymux is a desktop AI workspace that brings chats, email, files, an encrypted Vault, connected devices, browser tabs, and a user's choice of AI models together in one place.
 
-Polymux runs on macOS, Windows, and Linux. It lets a user ask one assistant to find and work with the right conversation, file, or browser page while keeping the workspace and model choice together. Browser-extension access is limited to tab metadata and the exact tab assigned to a task.
+Polymux runs on macOS, Windows, and Linux. It lets a user ask one assistant to find and work with the right conversation, file, or browser page while keeping the workspace and model choice together. Connected devices can run Assistant work on a paired computer, and the encrypted Vault stores passwords, authenticator codes, recovery codes, and passkeys. Browser-extension access is limited to tab metadata and the exact tab assigned to a task.
 
 ## Primary pages
 
@@ -10,7 +10,7 @@ Polymux runs on macOS, Windows, and Linux. It lets a user ask one assistant to f
 - [Polymux product](https://polymux.com/product/): Plain-language guides to the app and agent features in Polymux.
 - [Workspace](https://polymux.com/product/workspace/), [Hub](https://polymux.com/product/hub/), [Drive](https://polymux.com/product/drive/), and [Browser](https://polymux.com/product/browser/): Key app features.
 - [Memory](https://polymux.com/product/memory/), [Tasks and schedules](https://polymux.com/product/tasks-and-schedules/), [Models and agents](https://polymux.com/product/models-and-agents/), and [Skills and tools](https://polymux.com/product/skills-and-tools/): Key agent features.
-- [Polymux documentation](https://polymux.com/docs/): Installation, setup, workspace features, connections, models, extensions, privacy, and troubleshooting.
+- [Polymux documentation](https://polymux.com/docs/): Installation, setup, workspace features, connected devices, the encrypted Vault, models, extensions, privacy, and troubleshooting.
 - [Polymux blog](https://polymux.com/blog/): Product thinking, comparisons, and notes from building Polymux.
 - [Polymux releases](https://polymux.com/releases/): Versioned release notes, improvements, and desktop downloads.
 - [Polymux vs Hermes Agent, OpenClaw, and Khoj](https://polymux.com/blog/polymux-vs-hermes-openclaw-khoj/): A comparison of four different approaches to personal AI assistants.
@@ -27,6 +27,9 @@ Polymux runs on macOS, Windows, and Linux. It lets a user ask one assistant to f
 - Product name: Polymux
 - Category: Desktop AI workspace
 - Platforms: macOS, Windows, Linux
-- Current site release: 0.2.3
-- Core surfaces: Chat, Hub, Drive, Browser
+- Current app version: 0.3.1
+- Current release notes: 0.3.1
+- Core surfaces: Chat, Hub, Drive, Browser, Vault, Tasks, Mobile
+- Connected devices can run Assistant work on the current computer or a paired Host.
+- The encrypted Vault stores passwords, authenticator codes, recovery codes, and passkeys with optional account sync of the encrypted vault only.
 - Connected services include messaging, email, cloud drives, local files, hosted AI providers, and local models.

@@ -45,8 +45,9 @@
   import TeamRoleLabel from '../team/TeamRoleLabel.svelte';
   import {scrollFade} from '../../shared/scrollFade';
   import Icon from '../../shared/components/Icon.svelte';
-  import BloubAvatar from '../team/BloubAvatar.svelte';
+  import TeamAvatar from '../team/TeamAvatar.svelte';
   import GroupAvatar from '../team/GroupAvatar.svelte';
+  import {teamGroupName} from '../team/groupName';
   import {bloubActivityForTeamStatus, bloubExpressionForTeamStatus} from '../team/bloub/expression';
   import {chatPinsStorageKey, loadChatPins, toggleChatPin} from './chatPins';
   import ChatListMenu from './ChatListMenu.svelte';
@@ -105,15 +106,14 @@
   export let onAddTeam: () => void = () => {};
   export let onNewBot: () => void = () => {};
   export let onEditTeam: (id: string) => void = () => {};
-  export let onEditTeamGroup: (id: string) => void = () => {};
+  export let onEditTeamGroup: (id: string, anchor: {left: number; bottom: number; width: number}) => void = () => {};
   export let onDeleteTeam: (id: string) => void = () => {};
   export let onDeleteTeamGroup: (id: string) => void = () => {};
   export let account: AccountStatusDto | null = null;
   /** The gear toggles Settings closed when that view is already expanded. */
   export let onToggleSettings: () => void = () => {};
   export let settingsExpanded = false;
-  export let onOpenConnections: () => void = () => {};
-  export let connectionsExpanded = false;
+  export let onToggleConnections: () => void = () => {};
   export let onOpenHost: (anchor: HTMLButtonElement) => void = () => {};
   export let onSignIn: () => void = () => {};
   export let onSignOut: () => void = () => {};
@@ -639,6 +639,15 @@
     return group.memberIds.flatMap((id) => bots.find((member) => member.id === id) ?? []);
   }
 
+  /** The anchor for the group's own surface, taken from however the row menu
+   * was opened: under the options trigger, or at the pointer. */
+  function groupMenuAnchor(): {left: number; bottom: number; width: number} {
+    if (menuAnchor?.kind === 'trigger')
+      return {left: menuAnchor.left, bottom: menuAnchor.bottom, width: menuAnchor.right - menuAnchor.left};
+    if (menuAnchor?.kind === 'point') return {left: menuAnchor.x, bottom: menuAnchor.y, width: 0};
+    return {left: 0, bottom: window.innerHeight / 2, width: 0};
+  }
+
   function groupStatus(group: TeamGroupDto): string {
     const working = groupMembers(group).filter((member) => member.status === 'working').length;
     return working
@@ -719,12 +728,12 @@
                   role="group"
                   oncontextmenu={(event) => openContextMenu(event, 'team-group', group.id)}
                 >
-                  <button class="chat-drawer-team-avatar-trigger" type="button" aria-label={`Options for ${group.name}`} aria-haspopup="menu" aria-expanded={menu?.kind === 'team-group' && menu.id === group.id} onclick={(event) => toggleMenu(event, 'team-group', group.id)}>
-                    <span class="chat-drawer-team-avatar"><GroupAvatar {members} size={39} label={`${group.name} group avatar`}/></span>
+                  <button class="chat-drawer-team-avatar-trigger" type="button" aria-label={`Options for ${teamGroupName(group, bots)}`} aria-haspopup="menu" aria-expanded={menu?.kind === 'team-group' && menu.id === group.id} onclick={(event) => toggleMenu(event, 'team-group', group.id)}>
+                    <span class="chat-drawer-team-avatar"><GroupAvatar {members} size={39} label={`${teamGroupName(group, bots)} group avatar`}/></span>
                   </button>
-                  <button class="chat-drawer-open-team" type="button" aria-label={`Open group ${group.name}`} aria-current={group.conversationId === activeId ? 'page' : undefined} onclick={() => onOpenTeamGroup(group.id)}>
+                  <button class="chat-drawer-open-team" type="button" aria-label={`Open group ${teamGroupName(group, bots)}`} aria-current={group.conversationId === activeId ? 'page' : undefined} onclick={() => onOpenTeamGroup(group.id)}>
                     <span class="chat-drawer-team-copy">
-                      <span class="chat-drawer-team-top"><strong>{group.name}</strong><small>{groupStatus(group)}</small><time datetime={group.updatedAt}>{teamTime(group.updatedAt)}</time></span>
+                      <span class="chat-drawer-team-top"><strong>{teamGroupName(group, bots)}</strong><small>{groupStatus(group)}</small><time datetime={group.updatedAt}>{teamTime(group.updatedAt)}</time></span>
                       <span class="chat-drawer-team-bottom"><span>{group.preview}</span>{#if group.unread}<i class="chat-drawer-team-unread" aria-label={`${group.unreadCount} unread`}></i>{/if}</span>
                     </span>
                   </button>
@@ -758,7 +767,7 @@
                   onclick={(event) => toggleMenu(event, 'team', member.id)}
                 >
                   <span class="chat-drawer-team-avatar">
-                    <BloubAvatar avatar={member.avatar} expression={bloubExpressionForTeamStatus(member.status, member.preview)} activity={bloubActivityForTeamStatus(member.status)} size={39} label={`${member.name} avatar`}/>
+                    <TeamAvatar avatar={member.avatar} expression={bloubExpressionForTeamStatus(member.status, member.preview)} activity={bloubActivityForTeamStatus(member.status)} size={39} label={`${member.name} avatar`}/>
                     <i class:working={member.status === 'working'} class:waiting={member.status === 'waiting-for-device'} class:offline={member.status === 'computer-offline'} class:error={member.status === 'error'} aria-hidden="true"></i>
                   </span>
                 </button>
@@ -785,7 +794,7 @@
       </div>
     {:else}
       <div class="chat-drawer-team-empty">
-        <span class="chat-drawer-team-empty-avatar"><BloubAvatar avatar={{shape: 'pebble', color: '#0a0a0c'}} expression="curious" size={46} monochrome/></span>
+        <span class="chat-drawer-team-empty-avatar"><TeamAvatar avatar={{shape: 'pebble', color: '#0a0a0c'}} expression="curious" size={46} monochrome/></span>
         <strong>No bots yet</strong>
         <p>Add a bot with its own role, agent and computer.</p>
         <button type="button" onclick={onNewBot}>Add bot</button>
@@ -938,13 +947,13 @@
   </div>
 
   <!-- Connections sits above the account divider. Chat rows fade into it
-       the same way a settings rail fades at its scrolled edge. -->
+       the same way a settings rail fades at its scrolled edge. It never
+       holds an active state: hover is the only highlight, and a second
+       press toggles back like Settings. -->
   <button
     type="button"
     class="chat-drawer-connections"
-    class:active={connectionsExpanded}
-    aria-current={connectionsExpanded ? 'page' : undefined}
-    onclick={onOpenConnections}
+    onclick={onToggleConnections}
   >
     <span class="chat-drawer-connections-icon">
       <Icon name="connections" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
@@ -991,8 +1000,8 @@
   {:else if menu?.kind === 'team-group'}
     {@const menuGroup = teamGroups.find((group) => group.id === menu?.id)}
     {#if menuGroup}
-      <div bind:this={menuElement} class="polymux-dropdown-menu chat-drawer-row-menu" role="menu" aria-label={`Options for ${menuGroup.name}`} style:left={`${menuLeft}px`} style:top={`${menuTop}px`} style:visibility={menuPlaced ? 'visible' : 'hidden'}>
-        <button class="polymux-dropdown-item" role="menuitem" onclick={() => { onEditTeamGroup(menuGroup.id); menu = null; }}><Icon name="edit" size={14}/><span>Edit group</span></button>
+      <div bind:this={menuElement} class="polymux-dropdown-menu chat-drawer-row-menu" role="menu" aria-label={`Options for ${teamGroupName(menuGroup, bots)}`} style:left={`${menuLeft}px`} style:top={`${menuTop}px`} style:visibility={menuPlaced ? 'visible' : 'hidden'}>
+        <button class="polymux-dropdown-item" role="menuitem" onclick={() => { const id = menuGroup.id; const anchor = groupMenuAnchor(); menu = null; onEditTeamGroup(id, anchor); }}><Icon name="edit" size={14}/><span>Edit group</span></button>
         <button class="polymux-dropdown-item destructive" role="menuitem" onclick={() => { onDeleteTeamGroup(menuGroup.id); menu = null; }}><Icon name="trash" size={14}/><span>Delete group</span></button>
       </div>
     {/if}

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {mkdtemp, rm} from "node:fs/promises";
+import {execFileSync} from "node:child_process";
+import {mkdtemp, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
@@ -144,6 +145,63 @@ test(
       assert.equal(exits.filter((event) => event.id === second.id).length, 0);
     } finally {
       sessions.closeAll();
+      if (previousShell === undefined) delete process.env.SHELL;
+      else process.env.SHELL = previousShell;
+      await rm(cacheDirectory, {recursive: true, force: true});
+    }
+  },
+);
+
+test(
+  "close settles a shell that ignores SIGHUP and releases its host",
+  {skip: process.platform === "win32", timeout: 20_000},
+  async () => {
+    const cacheDirectory = await mkdtemp(path.join(tmpdir(), "polymux-pty-"));
+    const shellPath = path.join(cacheDirectory, "stubborn-shell.sh");
+    await writeFile(
+      shellPath,
+      '#!/bin/sh\ntrap "" HUP INT TERM\nwhile true; do sleep 1; done\n',
+      {mode: 0o755},
+    );
+    const previousShell = process.env.SHELL;
+    process.env.SHELL = shellPath;
+    const chunks: Buffer[] = [];
+    const exits: Array<{type: string; id: string}> = [];
+    const sessions = new TerminalSessions({
+      sourcePath,
+      cacheDirectory,
+      onEvent: (event) => {
+        if (event.type === "exit") {
+          exits.push(event);
+          return;
+        }
+        if (event.type !== "data") return;
+        chunks.push(Buffer.from(event.data, "base64"));
+      },
+    });
+    try {
+      const created = sessions.create();
+      await sessions.attach(created.id, 80, 24);
+      // Answering proves the host is up and handling signals, so closing below
+      // tests the teardown rather than racing its startup.
+      sessions.write(created.id, "printf 'polymux-pty-ready\\n'\n");
+      await waitForOutput(() => chunks, "polymux-pty-ready", 15_000);
+      sessions.close(created.id);
+      // SIGHUP alone cannot settle this shell. A close that leaves the helper
+      // running, or that never reports the helper's exit because the shell still
+      // holds its control pipe, times out here — and the unreported exit leaves
+      // the whole test runner waiting on a host that outlives it.
+      await waitForExit(exits, created.id, 15_000);
+      assert.equal(sessions.has(created.id), false);
+    } finally {
+      sessions.closeAll();
+      // This shell refuses every signal the session can send, so it outlives a
+      // killed helper and has to be reaped here rather than by the teardown.
+      try {
+        execFileSync("pkill", ["-9", "-f", shellPath], {stdio: "ignore"});
+      } catch {
+        // Nothing left to reap.
+      }
       if (previousShell === undefined) delete process.env.SHELL;
       else process.env.SHELL = previousShell;
       await rm(cacheDirectory, {recursive: true, force: true});

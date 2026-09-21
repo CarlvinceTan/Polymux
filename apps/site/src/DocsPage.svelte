@@ -3,6 +3,7 @@
   import github from 'simple-icons/icons/github.svg?url';
   import logo from '../../desktop/src/renderer/public/polymux.svg';
   import {docsNeighbours, docsPages, docsPath, docsSections, getDocsPage} from './lib/docs';
+  import DownloadIcon from './lib/DownloadIcon.svelte';
   import MobileMenu from './lib/MobileMenu.svelte';
 
   const parts = location.pathname.split('/').filter(Boolean);
@@ -112,7 +113,7 @@
       <a class="site-shell-github" href="https://github.com/CarlvinceTan/Polymux" aria-label="Polymux on GitHub">
         <img src={github} alt="" />
       </a>
-      <a class="site-shell-download" href="/#download">Download</a>
+      <a class="site-shell-download" href="/#download"><DownloadIcon />Download</a>
       <MobileMenu active="docs" />
     </div>
   </div>
@@ -141,6 +142,12 @@
         </section>
       {/each}
     </nav>
+    <div class="docs-sidebar-links">
+      <a href="/">Home</a>
+      <a href="/releases/">Releases</a>
+      <a href="/#download">Download</a>
+      <a href="https://github.com/CarlvinceTan/Polymux">GitHub</a>
+    </div>
   </aside>
 
   <main class="docs-main">

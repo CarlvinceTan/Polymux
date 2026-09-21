@@ -5,11 +5,17 @@
 ```sh
 npm install
 npm install --prefix apps/site
-npm install --prefix apps/phone
+npm install --prefix apps/mobile
 npm install --prefix apps/connect/relay
 npm install --prefix apps/connect/edge
 POLYMUX_DEV_INSTANCE=review POLYMUX_MODEL=openai/gpt-5.6-luna npm run isolate
 
+npm run desktop
+npm run site
+npm run mobile
+npm run desktop:check
+npm run site:check
+npm run mobile:check
 npm run check
 npm run test
 npm run test:ui
@@ -19,13 +25,22 @@ npm run make
 
 Use an isolate for development so test runs cannot touch the ordinary profile,
 session, or Hub port. Reuse a named `POLYMUX_DEV_INSTANCE` when useful.
+`npm run desktop` is the short form for an isolated desktop run. `npm run site`
+starts the public site at Vite's local URL, and `npm run site:build` produces
+the production site build. `npm run mobile` prompts for iOS, Android, browser
+preview, or the desktop-sized Tauri shell; Tauri then prompts for the exact
+iOS or Android device unless one is supplied.
+
+The CLI is already available as `npm run cli`. Arguments pass through with
+`npm run cli -- <arguments>`. Use `npm run cli:check` for its build and test
+coverage, or `npm run cli:build` to produce the packaged CLI.
 
 ## Test coverage
 
 `npm test` runs the script, package, desktop main-process, renderer unit, CLI,
-site, relay, and phone suites, followed by the relay and edge type checks.
+site, relay, and mobile suites, followed by the relay and edge type checks.
 `npm run check` checks desktop Svelte and TypeScript; also run
-`npm --prefix apps/site run check` and `npm run phone:check` for those apps.
+`npm --prefix apps/site run check` and `npm run mobile:check` for those apps.
 
 `npm run test:ui` runs the renderer interaction suite in headless Chromium with
 its own demo build in the system temporary directory and preview server. Set `POLYMUX_UI_TEST_PORT` to an unused

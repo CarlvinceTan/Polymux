@@ -191,6 +191,11 @@ const config: ForgeConfig = {
     new VitePlugin({
       build: [
         {
+          entry: `${app}/src/main/usage/usage-worker.ts`,
+          config: `${app}/vite.usage.config.ts`,
+          target: 'main',
+        },
+        {
           entry: `${app}/src/main/main.ts`,
           config: `${app}/vite.main.config.ts`,
           target: 'main',
@@ -272,30 +277,30 @@ const config: ForgeConfig = {
       );
       execFileSync(
         process.execPath,
-        ['scripts/phone/fetch-phone-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
+        ['scripts/mobile/fetch-mobile-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
         {stdio: 'inherit'},
       );
       execFileSync(
         process.execPath,
-        ['scripts/phone/fetch-phone-ios-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
+        ['scripts/mobile/fetch-mobile-ios-tools.mjs', `--platform=${platform}`, `--arch=${arch}`],
         {stdio: 'inherit'},
       );
       execFileSync(
         process.execPath,
-        ['scripts/phone/build-phone-ios-signer-runtime.mjs'],
+        ['scripts/mobile/build-mobile-ios-signer-runtime.mjs'],
         {stdio: 'inherit'},
       );
       execFileSync(
         process.execPath,
-        ['scripts/phone/build-phone-ios-device.mjs'],
+        ['scripts/mobile/build-mobile-ios-device.mjs'],
         {stdio: 'inherit'},
       );
       if (platform === 'darwin') {
-        execFileSync(process.execPath, ['scripts/phone/build-phone-wda.mjs'], {stdio: 'inherit'});
-      } else if (!existsSync('resources/phone/ios/WebDriverAgentRunner-Runner.app')) {
+        execFileSync(process.execPath, ['scripts/mobile/build-mobile-wda.mjs'], {stdio: 'inherit'});
+      } else if (!existsSync('resources/mobile/ios/WebDriverAgentRunner-Runner.app')) {
         throw new Error(
           'The cross-platform package is missing the unsigned WebDriverAgent artifact. ' +
-            'Build it on macOS with `npm run phone:wda` and copy resources/phone/ios before packaging.',
+            'Build it on macOS with `npm run mobile:wda` and copy resources/mobile/ios before packaging.',
         );
       }
       // The skill scripts' interpreter. The RunAsNode fuse below is off, so a

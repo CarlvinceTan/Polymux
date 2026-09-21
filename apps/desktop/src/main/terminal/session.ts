@@ -77,19 +77,25 @@ export class TerminalSession {
     this.#child = undefined;
     this.#control = undefined;
     this.#pendingWrites = [];
-    if (!child || child.killed) {
+    if (!child || !isRunning(child)) {
       this.#emitExit(null);
       return;
     }
     child.kill("SIGHUP");
+    // The escalation tests liveness rather than `child.killed`, which only
+    // reports that a signal was sent. Reading that flag here meant the SIGKILL
+    // never fired, so a shell that ignores SIGHUP kept its pty-host alive
+    // forever after the session had been closed.
     setTimeout(() => {
-      if (!child.killed) child.kill("SIGKILL");
+      if (isRunning(child)) child.kill("SIGKILL");
     }, 1500).unref?.();
   }
 
   async #ensureStarted(): Promise<void> {
     if (this.#closing) throw new Error("Terminal is closing");
-    if (this.#child && !this.#child.killed) return;
+    // A signal that has been requested but not yet delivered does not make the
+    // cell free to reuse, so this cannot read `child.killed` either.
+    if (this.#child && isRunning(this.#child)) return;
     this.#starting ??= this.#spawn().finally(() => {
       this.#starting = undefined;
     });
@@ -202,6 +208,11 @@ export class TerminalSession {
   #applySize(): void {
     this.#control?.write(`resize ${this.#cols} ${this.#rows}\n`);
   }
+}
+
+/** Whether the helper process is still alive, rather than merely signalled. */
+function isRunning(child: ChildProcess): boolean {
+  return child.exitCode === null && child.signalCode === null;
 }
 
 function windowSize(cols: number, rows: number): {cols: number; rows: number} {

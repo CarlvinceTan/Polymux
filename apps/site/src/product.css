@@ -19,3 +19,6 @@
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{transition-duration:.01ms!important}}
 @media(min-width:1051px){/* Sit the nav labels on the wordmark baseline rather than its optical centre. */
 .product-header nav{position:relative;top:6px}}
+
+/* Match Polymux Desktop's interface typography. */
+.feature-benefits article>span,.feature-catalogue>header>span{font-family:inherit}

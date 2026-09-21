@@ -9,7 +9,7 @@ import type {AgentRun} from "@polymux/storage";
 export function hostWorkspaceTools(input: {
   workspace: AgentTool;
   hubDraft: AgentTool;
-  phone: AgentTool;
+  mobile: AgentTool;
   browser: AgentTool[];
   communications: AgentTool[];
   drive: AgentTool[];
@@ -22,7 +22,7 @@ export function hostWorkspaceTools(input: {
   return [
     input.workspace,
     input.hubDraft,
-    input.phone,
+    input.mobile,
     ...input.browser,
     ...input.communications,
     ...input.drive,

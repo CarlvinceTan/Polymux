@@ -117,6 +117,16 @@
   transition: opacity 140ms ease;
 }
 
+.site-shell-download .download-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .site-shell-download:hover { opacity: .82; }
 
 @media (max-width: 1050px) {

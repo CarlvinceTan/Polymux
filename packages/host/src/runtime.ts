@@ -44,7 +44,9 @@ import {TeamComputerManager} from "../../../apps/desktop/src/main/team/computers
 import {
   TeamService,
   createAgentMessageTool,
+  createTeamConnectionsTool,
   createTeamSetupTool,
+  createTeamSpawnTool,
   type BotTransfer,
 } from "../../../apps/desktop/src/main/team/service.js";
 import {
@@ -52,17 +54,23 @@ import {
   type TeamHostServerSnapshot,
 } from "../../../apps/desktop/src/main/team/host-server.js";
 import {Communications} from "../../../apps/desktop/src/main/hub/index.js";
-import {LockerService} from "../../../apps/desktop/src/main/locker/service.js";
+import {VaultService} from "../../../apps/desktop/src/main/vault/service.js";
+import {Scheduler} from '../../../apps/desktop/src/main/scheduler/index.js';
+import {SCHEDULE_HOST_METHODS, scheduleHostCall} from '../../../apps/desktop/src/main/scheduler/host.js';
+import {createScheduleTool} from '../../../apps/desktop/src/main/scheduler/tools.js';
+import {LocalUsage} from '../../../apps/desktop/src/main/usage/local-usage.js';
+import {summarizeUsage} from '@polymux/storage';
+import {taskOverview} from '../../../apps/desktop/src/main/tasks/overview.js';
 import {
-  lockerCopyField,
-  lockerId,
-  lockerIds,
-  lockerItemInput,
-  lockerPassword,
-  lockerStorageMode,
-  lockerStorageResolve,
-  lockerVaultBlob,
-} from "../../../apps/desktop/src/main/locker/requests.js";
+  vaultCopyField,
+  vaultId,
+  vaultIds,
+  vaultItemInput,
+  vaultPassword,
+  vaultStorageMode,
+  vaultStorageResolve,
+  vaultBlob,
+} from "../../../apps/desktop/src/main/vault/requests.js";
 import {createKeychainShimRun, HeadlessCredentialStore} from "./credentials.js";
 
 export interface HeadlessHostRuntimeOptions {
@@ -103,10 +111,13 @@ export class HeadlessHostRuntime {
   readonly #team: TeamService;
   readonly #server: TeamHostServer;
   readonly #deviceConnections: DeviceConnections;
-  readonly #locker: LockerService;
+  readonly #vault: VaultService;
   readonly #comms: Communications;
+  readonly #scheduler: Scheduler;
+  readonly #localUsage: LocalUsage;
   readonly #tools: ToolRegistry;
   readonly #activeRuns = new Map<string, ActiveAgentRun>();
+  readonly #scheduledRunIds = new Set<string>();
   readonly #drafts = new Map<string, {turn: number; text: string; timestamp: number}>();
   readonly #runtimes = new Map<string, CachedRuntime>();
   readonly #account: HostAccount;
@@ -126,6 +137,28 @@ export class HeadlessHostRuntime {
     this.#modelsFile = path.join(configDirectory, "..", "models.json");
     this.#modelCredentials = new HeadlessCredentialStore(path.join(configDirectory, "model-credentials.json"), options.adminSecret ?? "");
     this.#storage = new SqliteStorage(path.join(options.dataDirectory, "polymux.sqlite"));
+    this.#localUsage = new LocalUsage(options.dataDirectory);
+    this.#scheduler = new Scheduler(this.#storage, async schedule => {
+      const bot = schedule.botId ? this.#team.require(schedule.botId) : undefined;
+      const previous = schedule.history.find(run => run.conversationId)?.conversationId;
+      const conversationId = bot?.conversationId ?? (previous && this.#storage.getConversation(previous)?.id)
+        ?? this.#storage.createConversation({id: randomUUID(), title: schedule.title, metadata: {deviceAssistant: true}}).id;
+      if ([...this.#activeRuns.keys()].some(id => this.#storage.getRun(id)?.conversationId === conversationId))
+        throw new Error('This conversation is already working');
+      const {runId} = await this.#startRun({conversationId, text: schedule.prompt, messageId: randomUUID(), attachments: []});
+      this.#scheduledRunIds.add(runId);
+      try {
+        await this.#activeRuns.get(runId)?.result;
+      } finally {
+        this.#scheduledRunIds.delete(runId);
+      }
+      const run = this.#storage.getRun(runId);
+      if (run?.status !== 'completed') throw new Error('The scheduled run did not complete');
+      const message = this.#storage.latestMessage(conversationId);
+      const content = message?.runId === runId && message.role === 'assistant' ? message.content : null;
+      const summary = typeof content === 'string' ? content : Array.isArray(content) ? content.flatMap(b => b && typeof b === 'object' && !Array.isArray(b) && typeof b.text === 'string' ? [b.text] : []).join('\n') : '';
+      return {conversationId, runId, summary: summary.slice(-1200) || undefined};
+    });
     this.#profiles = new ProfileManager(
       this.#storage,
       options.dataDirectory,
@@ -146,7 +179,7 @@ export class HeadlessHostRuntime {
       validateProfile: (profileId) => this.#requireProfile(profileId),
       transferDirectory: path.join(options.dataDirectory, "team-transfers"),
     });
-    this.#locker = new LockerService({
+    this.#vault = new VaultService({
       dataDirectory: options.dataDirectory,
       onChanged: () => {},
     });
@@ -203,6 +236,46 @@ export class HeadlessHostRuntime {
       update: async (id, request) => this.#team.update(id, request),
       remove: async (id) => this.#removeMember(id),
     }));
+    // Headless bots get the same self-service as Desktop ones: the workspace
+    // pool for capability self-setup, and peer spawning for durable teammates.
+    // The Host has no extra connections pool beyond skills/MCP/plugins lists,
+    // so pool reads stay empty rather than failing the bot's setup turn.
+    this.#tools.register(createTeamConnectionsTool(this.#team, {
+      pool: async () => ({skills: [], mcpServers: [], plugins: []}),
+      connect: async (botId, connections) => {
+        const bot = this.#team.bot(botId);
+        if (!bot) throw new Error("Unknown Team member");
+        return this.#team.update(botId, {
+          skills: [...new Set([...(bot.skills ?? []), ...(connections.skills ?? [])])],
+          mcpServers: [...new Set([...(bot.mcpServers ?? []), ...(connections.mcpServers ?? [])])],
+          plugins: [...new Set([...(bot.plugins ?? []), ...(connections.plugins ?? [])])],
+        });
+      },
+      disconnect: async (botId, connections) => {
+        const bot = this.#team.bot(botId);
+        if (!bot) throw new Error("Unknown Team member");
+        const removeSkills = new Set(connections.skills ?? []);
+        const removeMcp = new Set(connections.mcpServers ?? []);
+        const removePlugins = new Set(connections.plugins ?? []);
+        return this.#team.update(botId, {
+          skills: (bot.skills ?? []).filter((s) => !removeSkills.has(s)),
+          mcpServers: (bot.mcpServers ?? []).filter((m) => !removeMcp.has(m)),
+          plugins: (bot.plugins ?? []).filter((p) => !removePlugins.has(p)),
+        });
+      },
+    }));
+    this.#tools.register(createTeamSpawnTool(this.#team, {
+      options: async () => ({profiles: this.#profileDtos()}),
+      spawn: async (request, parentBotId) => this.#team.spawn(request, parentBotId),
+      children: async (parentBotId) => this.#team.children(parentBotId),
+      updateSelf: async (parentBotId, request) => this.#team.update(parentBotId, request),
+      archive: async (parentBotId, confirmName, botId) => this.#archiveSpawnedBot(parentBotId, confirmName, botId),
+    }));
+    this.#tools.register(createScheduleTool(
+      this.#scheduler,
+      runId => this.#team.botByConversation(this.#storage.getRun(runId)?.conversationId ?? '')?.id,
+      {isRoutineRun: (runId) => this.#scheduledRunIds.has(runId)},
+    ));
     this.#server = new TeamHostServer({
       storage: this.#storage,
       host: options.listen ?? "127.0.0.1",
@@ -233,15 +306,15 @@ export class HeadlessHostRuntime {
         detail: snapshot.detail,
       };
     });
-    this.#team.setLaptopBroker(async (member, capability, tool, input, _context, requiresApproval) =>
+    this.#team.setLaptopBroker(async (member, capability, tool, input, _context, accessForDevice) =>
       this.#server.requestDevice({
         memberId: member.id,
         memberName: member.name,
         capability,
         tool: tool.name,
         input: input as unknown as JsonValue,
-        requiresApproval,
-      }),
+        requiresApproval: true,
+      }, {accessForDevice}),
     );
   }
 
@@ -262,27 +335,73 @@ export class HeadlessHostRuntime {
     this.#team.publish();
     await this.#account.restore();
     await this.#reloadResources();
+    this.#scheduler.start();
+    // Cues stored while the Host was stopped never got their delivery
+    // microtask; re-arm them once the Host is ready to run them.
+    setTimeout(() => {
+      if (this.#closing) return;
+      for (const member of this.#team.list()) {
+        try {
+          this.#team.ensureSetup(member.id);
+        } catch {
+          // Already has a cue or history; the pending check below decides.
+        }
+      }
+      for (const member of this.#team.pendingBotSetups()) {
+        try {
+          this.#team.retrySetup(member.id);
+        } catch {
+          // Already working or introduced since the list was read.
+        }
+      }
+      for (const member of this.#team.list()) {
+        try {
+          this.#team.retryRelayDelivery(member.conversationId);
+        } catch {
+          // Nothing pending, still working, or setup first.
+        }
+      }
+    }, 8_000).unref?.();
     return snapshot;
   }
 
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    this.#scheduler.stop();
+    this.#localUsage.close();
     await this.#account.close();
     for (const run of this.#activeRuns.values())
       run.control.cancel(new Error("Polymux Host is stopping"));
+    await Promise.allSettled([...this.#activeRuns.values()].map(run => run.result));
     await Promise.allSettled([...this.#runtimes.values()].map(({agent}) => agent.settleGoalWork()));
     this.#deviceConnections.close();
     await this.#resourceReload?.catch(() => {});
     await this.#mcp.close();
     await this.#comms.close();
-    this.#locker.close();
+    this.#vault.close();
     await this.#server.close();
     this.#storage.close();
   }
 
   async #call(method: string, args: JsonValue[]): Promise<JsonValue> {
+    if ((SCHEDULE_HOST_METHODS as readonly string[]).includes(method))
+      return scheduleHostCall(this.#scheduler, method, args, id => {this.#team.require(id);});
     switch (method) {
+      case 'tasks.snapshot': return taskOverview(this.#storage) as unknown as JsonValue;
+      case 'tasks.cancel': this.#activeRuns.get(required(args[0], 'Task'))?.control.cancel(); return null;
+      case 'usage.get': {
+        const filter = args[0] && typeof args[0] === 'object' && !Array.isArray(args[0]) ? args[0] : {};
+        const scope = filter.scope === 'assistant' || filter.scope === 'team' || filter.scope === 'polymux' ? filter.scope : 'all';
+        const source = this.#storage.loadUsageSource();
+        const local = scope === 'all' ? this.#localUsage.snapshot(filter.refresh === true) : null;
+        if (local) {
+          source.runs.push(...local.source.runs); source.conversations.push(...local.source.conversations);
+          source.toolCounts.push(...local.source.toolCounts); source.skillTurns.push(...local.source.skillTurns);
+        }
+        return {...summarizeUsage(source, new Date(), {scope, agentId: typeof filter.agentId === 'string' ? filter.agentId : null}),
+          ...(local ? {discovery: local.discovery} : {})} as unknown as JsonValue;
+      }
       case 'account.request': {
         const value = args[0] as Record<string, JsonValue> | undefined;
         if (value?.action === 'resources.reload') {await this.#reloadResources(); return {ok: true};}
@@ -319,16 +438,18 @@ export class HeadlessHostRuntime {
           const deployed = this.#options.model?.trim() || process.env.POLYMUX_MODEL?.trim();
           if (deployed && value.model !== deployed) throw new Error('The Host has an explicit model configured. Change its model setting to choose a different model.');
           this.#profiles.setPreference(`conversation.model:${conversationId}`, model as unknown as JsonValue, profileId);
-          this.#profiles.setPreference('model', model as unknown as JsonValue, profileId);
+          if (!this.#team.botByConversation(conversationId)) this.#profiles.setPreference('model', model as unknown as JsonValue, profileId);
         }
         if (value.reasoning !== undefined) {
           if (typeof value.reasoning !== 'string' || !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value.reasoning)) throw new Error('Unknown reasoning effort.');
           const model = this.#modelFor(profileId, conversationId);
-          this.#profiles.setPreference(`model.reasoning:${model}`, value.reasoning, profileId);
+          this.#profiles.setPreference(this.#team.botByConversation(conversationId) ? `conversation.reasoning:${conversationId}:${model}` : `model.reasoning:${model}`, value.reasoning, profileId);
         }
         return this.#runConfiguration(conversationId);
       }
       case 'models.list': return new PiInference(hostModels(new EnvironmentCredentialStore(this.#modelCredentials), this.#modelsFile)).listModels() as unknown as JsonValue;
+      case 'team.agentRegistry': return []; // ACP execution is a Desktop capability.
+      case "team.hosts": return this.#team.hosts() as unknown as JsonValue;
       case "team.list": return this.#team.list() as unknown as JsonValue;
       case "team.profiles": return this.#profileDtos() as unknown as JsonValue;
       case "team.create": return this.#team.create(
@@ -373,10 +494,23 @@ export class HeadlessHostRuntime {
           ? args[1] as LaptopCapabilityLeaseDto["capabilities"]
           : [],
         typeof args[2] === "number" ? args[2] : undefined,
+        typeof args[3] === "string" ? args[3] : undefined,
       ) as unknown as JsonValue;
       case "team.revokeLease": return this.#team.revokeLease(
         required(args[0], "lease id"),
       );
+      case "team.retrySetup": return this.#team.retrySetup(
+        required(args[0], "Team member id"),
+      ) as unknown as JsonValue;
+      case "team.spawn": return this.#team.spawn(
+        args[0] as unknown as CreateBotRequest & {prompt?: string; spawnKey?: string},
+        required(args[1], "Parent bot id"),
+      ) as unknown as JsonValue;
+      case "team.archiveSpawn": return await this.#archiveSpawnedBot(
+        required(args[0], "Parent bot id"),
+        required(args[1], "Bot name"),
+        typeof args[2] === "string" ? args[2] : undefined,
+      ) as unknown as JsonValue;
       case 'assistant.ensure': {
         const id = required(args[0], 'conversation id');
         const existing = this.#storage.getConversation(id);
@@ -434,9 +568,35 @@ export class HeadlessHostRuntime {
         const message = updateDeviceMessage(this.#storage, required(args[0], 'message id'), args[1] as Parameters<typeof updateDeviceMessage>[2]);
         return message ? this.#messageDto(message) as unknown as JsonValue : null;
       }
-      case "conversations.messages": return this.#storage
-        .listMessages(required(args[0], "conversation id"))
-        .map((message) => this.#messageDto(message)) as unknown as JsonValue;
+      case "conversations.messages": {
+        const conversationId = required(args[0], "conversation id");
+        // Opening a bot's conversation heals a missing first-run turn and
+        // re-arms a stalled one or a peer message whose wakeup failed.
+        let openedBot = this.#team.botByConversation(conversationId);
+        if (openedBot) {
+          try {
+            openedBot = this.#team.ensureSetup(openedBot.id);
+          } catch {
+            // Keep the previously read bot; the checks below still apply.
+          }
+        }
+        if (openedBot?.setupPending === true) {
+          try {
+            this.#team.retrySetup(openedBot.id);
+          } catch {
+            // Introduced, working, or otherwise unable; explicit retry covers it.
+          }
+        } else if (openedBot) {
+          try {
+            this.#team.retryRelayDelivery(conversationId);
+          } catch {
+            // Nothing pending or still working.
+          }
+        }
+        return this.#storage
+          .listMessages(conversationId)
+          .map((message) => this.#messageDto(message)) as unknown as JsonValue;
+      }
       case 'runs.active':
       case 'runs.activeAll': return [...this.#activeRuns.keys()].flatMap(runId => {
         const run = this.#storage.getRun(runId);
@@ -502,38 +662,38 @@ export class HeadlessHostRuntime {
       case "hub.testEmailAccount": {
         return await this.#comms.emailTest(required(args[0], "account id")) as unknown as JsonValue;
       }
-      case "locker.status": return this.#locker.status() as unknown as JsonValue;
-      case "locker.create": return await this.#locker.create(lockerPassword(args[0])) as unknown as JsonValue;
-      case "locker.unlock": return await this.#locker.unlock(lockerPassword(args[0])) as unknown as JsonValue;
-      case "locker.lock": return this.#locker.lock() as unknown as JsonValue;
-      case "locker.list": return this.#locker.list() as unknown as JsonValue;
-      case "locker.reveal": return this.#locker.reveal(lockerId(args[0])) as unknown as JsonValue;
-      case "locker.totp": return this.#locker.totp(lockerId(args[0])) as unknown as JsonValue;
-      case "locker.save": return await this.#locker.save(lockerItemInput(args[0])) as unknown as JsonValue;
-      case "locker.remove": return await this.#locker.remove(lockerId(args[0])) as unknown as JsonValue;
-      case "locker.restore": return await this.#locker.restore(lockerIds(args[0])) as unknown as JsonValue;
-      case "locker.purge": return await this.#locker.purge(lockerIds(args[0])) as unknown as JsonValue;
-      case "locker.emptyTrash": return await this.#locker.emptyTrash() as unknown as JsonValue;
-      case "locker.pin": return await this.#locker.pin(lockerIds(args[0]), args[1] === true) as unknown as JsonValue;
-      case "locker.reorder": return await this.#locker.reorder(lockerIds(args[0])) as unknown as JsonValue;
-      case "locker.changePassword": return await this.#locker.changePassword(
-        lockerPassword(args[0], "Current password"),
-        lockerPassword(args[1], "New password"),
+      case "vault.status": return this.#vault.status() as unknown as JsonValue;
+      case "vault.create": return await this.#vault.create(vaultPassword(args[0])) as unknown as JsonValue;
+      case "vault.unlock": return await this.#vault.unlock(vaultPassword(args[0])) as unknown as JsonValue;
+      case "vault.lock": return this.#vault.lock() as unknown as JsonValue;
+      case "vault.list": return this.#vault.list() as unknown as JsonValue;
+      case "vault.reveal": return this.#vault.reveal(vaultId(args[0])) as unknown as JsonValue;
+      case "vault.totp": return this.#vault.totp(vaultId(args[0])) as unknown as JsonValue;
+      case "vault.save": return await this.#vault.save(vaultItemInput(args[0])) as unknown as JsonValue;
+      case "vault.remove": return await this.#vault.remove(vaultId(args[0])) as unknown as JsonValue;
+      case "vault.restore": return await this.#vault.restore(vaultIds(args[0])) as unknown as JsonValue;
+      case "vault.purge": return await this.#vault.purge(vaultIds(args[0])) as unknown as JsonValue;
+      case "vault.emptyTrash": return await this.#vault.emptyTrash() as unknown as JsonValue;
+      case "vault.pin": return await this.#vault.pin(vaultIds(args[0]), args[1] === true) as unknown as JsonValue;
+      case "vault.reorder": return await this.#vault.reorder(vaultIds(args[0])) as unknown as JsonValue;
+      case "vault.changePassword": return await this.#vault.changePassword(
+        vaultPassword(args[0], "Current password"),
+        vaultPassword(args[1], "New password"),
       ) as unknown as JsonValue;
-      case "locker.codes": return this.#locker.codes() as unknown as JsonValue;
-      case "locker.otpauth": return this.#locker.otpauth(lockerId(args[0])) as unknown as JsonValue;
-      case "locker.copy": return this.#locker.copyText(
-        lockerId(args[0]),
-        lockerCopyField(args[1]),
+      case "vault.codes": return this.#vault.codes() as unknown as JsonValue;
+      case "vault.otpauth": return this.#vault.otpauth(vaultId(args[0])) as unknown as JsonValue;
+      case "vault.copy": return this.#vault.copyText(
+        vaultId(args[0]),
+        vaultCopyField(args[1]),
         typeof args[2] === "number" ? args[2] : undefined,
       );
-      case "locker.sync": return await this.#locker.hydrate() as unknown as JsonValue;
-      case "locker.setStorage": return await this.#locker.setStorage(
-        lockerStorageMode(args[0]),
-        lockerStorageResolve(args[1]),
+      case "vault.sync": return await this.#vault.hydrate() as unknown as JsonValue;
+      case "vault.setStorage": return await this.#vault.setStorage(
+        vaultStorageMode(args[0]),
+        vaultStorageResolve(args[1]),
       ) as unknown as JsonValue;
-      case "locker.export": return this.#locker.exportVault() as unknown as JsonValue;
-      case "locker.import": return await this.#locker.importVault(lockerVaultBlob(args[0])) as unknown as JsonValue;
+      case "vault.export": return this.#vault.exportVault() as unknown as JsonValue;
+      case "vault.import": return await this.#vault.importVault(vaultBlob(args[0])) as unknown as JsonValue;
       default: throw new Error(`Unsupported Host method: ${method}`);
     }
   }
@@ -638,6 +798,7 @@ export class HeadlessHostRuntime {
   async #startRun(value: JsonValue): Promise<{runId: string}> {
     const request = validateStartRun(value);
     const member = this.#team.botByConversation(request.conversationId);
+    if (member?.agentRuntime?.kind === 'acp') throw new Error('This Host does not run ACP agents. Use the bot on Desktop or choose Polymux in its agent settings.');
     const conversation = this.#storage.getConversation(request.conversationId);
     const assistant = conversation?.metadata && typeof conversation.metadata === 'object' && !Array.isArray(conversation.metadata) && conversation.metadata.deviceAssistant === true;
     if (!member && !assistant) throw new Error('Create an Assistant conversation on this device first.');
@@ -664,7 +825,7 @@ export class HeadlessHostRuntime {
       text: request.text,
       userMessageId: request.messageId,
       attachments: request.attachments,
-      reasoning: request.reasoning ?? this.#reasoningFor(identity.profileId, selectedModel),
+      reasoning: request.reasoning ?? this.#reasoningFor(identity.profileId, selectedModel, request.conversationId),
       speechMode: request.speechMode,
       asGoal: request.asGoal,
       reuseUserMessage: Boolean(request.reuseUserMessage || request.rewind),
@@ -796,7 +957,35 @@ export class HeadlessHostRuntime {
     const cached = this.#runtimes.get(id);
     if (cached) await cached.agent.settleGoalWork();
     this.#runtimes.delete(id);
-    return this.#team.remove(id);
+    const removed = await this.#team.remove(id);
+    if (removed) this.#retireBotSchedules(id);
+    return removed;
+  }
+
+  async #archiveSpawnedBot(parentBotId: string, confirmName: string, botId?: string): Promise<BotDto> {
+    const target = this.#team.spawnedBot(parentBotId, confirmName, botId);
+    for (const [runId, active] of this.#activeRuns) {
+      if (this.#storage.getRun(runId)?.conversationId === target.conversationId)
+        active.control.cancel(new Error("Team member deleted"));
+    }
+    const cached = this.#runtimes.get(target.id);
+    if (cached) await cached.agent.settleGoalWork();
+    this.#runtimes.delete(target.id);
+    const archived = await this.#team.archiveSpawnedBot(parentBotId, confirmName, botId);
+    this.#retireBotSchedules(archived.id);
+    return archived;
+  }
+
+  /** Drops a removed bot's schedules; without its conversation they can never run again. */
+  #retireBotSchedules(botId: string): void {
+    for (const item of this.#scheduler.list()) {
+      if (item.botId !== botId) continue;
+      try {
+        this.#scheduler.remove(item.id);
+      } catch {
+        // Already removed between the list and the remove.
+      }
+    }
   }
 
   #profileDtos(): ProfileDto[] {
@@ -838,8 +1027,8 @@ export class HeadlessHostRuntime {
     return this.#team.botByConversation(conversationId)?.profileId ?? this.#profiles.snapshot().activeId;
   }
 
-  #reasoningFor(profileId: string, model: string): import('@polymux/protocol').ReasoningEffort | undefined {
-    const value = this.#profiles.preference(`model.reasoning:${model}`, profileId)?.value;
+  #reasoningFor(profileId: string, model: string, conversationId?: string): import('@polymux/protocol').ReasoningEffort | undefined {
+    const value = (conversationId ? this.#profiles.preference(`conversation.reasoning:${conversationId}:${model}`, profileId)?.value : undefined) ?? this.#profiles.preference(`model.reasoning:${model}`, profileId)?.value;
     return typeof value === 'string' && ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value)
       ? value as import('@polymux/protocol').ReasoningEffort : undefined;
   }
@@ -850,7 +1039,7 @@ export class HeadlessHostRuntime {
     try { model = this.#modelFor(profileId, conversationId); } catch { /* An unconfigured host can still open the model picker. */ }
     const skills = new SkillLoader({official: this.#options.officialSkillDirectories, personal: path.join(this.#profiles.directory(profileId), 'skills'), configured: [path.join(path.dirname(this.#modelsFile), 'skills')]}).load().skills.map(skill => skill.name);
     const info = model ? new PiInference(hostModels(new EnvironmentCredentialStore(this.#modelCredentials), this.#modelsFile)).getModel(parseModel(model)) : undefined;
-    return {model, reasoning: model ? this.#reasoningFor(profileId, model) ?? 'xhigh' : 'xhigh', contextWindow: info?.contextWindow ?? 0, skills, mcps: this.#mcpNames};
+    return {model, reasoning: model ? this.#reasoningFor(profileId, model, conversationId) ?? 'xhigh' : 'xhigh', contextWindow: info?.contextWindow ?? 0, skills, mcps: this.#mcpNames};
   }
 
   #modelFor(profileId: string, conversationId?: string): string {

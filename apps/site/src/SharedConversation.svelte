@@ -4,8 +4,11 @@
   import AgentActivity from '../../desktop/src/renderer/lib/features/chat/AgentActivity.svelte';
   import type {ChatMessage} from '../../desktop/src/renderer/lib/features/chat/ChatPane.svelte';
   import Icon from '../../desktop/src/renderer/lib/shared/components/Icon.svelte';
+  import {activityTrailSplits} from '../../desktop/src/renderer/lib/features/chat/activities';
   import {scrollFade} from '../../desktop/src/renderer/lib/shared/scrollFade';
   let snapshot: {title: string; messages: ChatMessage[]; expiresAt: number} | null = null;
+  // A steered run's work is cut around the steer, exactly as the app draws it.
+  $: trail = activityTrailSplits(snapshot?.messages ?? []);
   let state = 'Loading conversation…';
   let column: HTMLDivElement;
   let jump = false;
@@ -41,8 +44,12 @@
   <div class="conversation-column shared-column" bind:this={column} use:scrollFade onscroll={() => jump = column.scrollHeight - column.scrollTop - column.clientHeight > 160}>
     <div class="message-list">
       {#each snapshot.messages as message (message.id)}
-        {@const activityVisible = message.role === 'assistant' && Boolean(message.activities?.length)}
-        {#if activityVisible}<AgentActivity activities={message.activities ?? []} startedAt={message.startedAt} completedAt={message.completedAt ?? message.startedAt}/>{/if}
+        {@const earlier = trail.above.get(message.id)}
+        {@const later = trail.tail.get(message.id)}
+        {@const activities = later?.activities ?? message.activities ?? []}
+        {@const activityVisible = message.role === 'assistant' && Boolean(activities.length)}
+        {#if earlier?.activities.length}<AgentActivity activities={earlier.activities} startedAt={earlier.startedAt} completedAt={earlier.completedAt ?? earlier.startedAt}/>{/if}
+        {#if activityVisible}<AgentActivity activities={activities} startedAt={later?.startedAt ?? message.startedAt} completedAt={message.completedAt ?? message.startedAt}/>{/if}
         <Message {message} {activityVisible} readOnly publicView/>
       {/each}
     </div>

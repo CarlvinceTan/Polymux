@@ -610,15 +610,15 @@
 </div>
 
 <style>
-  .drive{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 16px var(--options-content-edge)}
+  .drive{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge, 24px) 16px var(--options-content-edge, 18px)}
   .drive-muted{color:var(--neutral-400);font-size:11px}
   .drive-error{display:flex;align-items:center;gap:12px;margin-bottom:10px;padding:9px 11px;border-radius:9px;background:#fff5f5;color:#8f3e3e;font-size:11px}
   .drive-error>span{min-width:0;flex:1}
   .drive-error button{height:26px;flex:none;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:7px;padding:0 9px;background:var(--app-surface);color:inherit;cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550}
   :global(:root[data-theme="dark"]) .drive-error{background:#321f1f;color:#eea7a7}
 
-  .drive-body{min-width:0;min-height:0;flex:1;display:grid;grid-template-columns:calc(186px + var(--options-tab-inline)) minmax(0,1fr);gap:var(--options-divider-gap)}
-  .drive-rail{min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px var(--options-divider-gap) 6px 0;overflow-y:auto;list-style:none;border-right:1px solid var(--neutral-200)}
+  .drive-body{min-width:0;min-height:0;flex:1;display:grid;grid-template-columns:calc(186px + var(--options-tab-inline, 11px)) minmax(0,1fr);gap:var(--options-divider-gap, 15px)}
+  .drive-rail{min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px var(--options-divider-gap, 15px) 6px 0;overflow-y:auto;list-style:none;border-right:1px solid var(--neutral-200)}
   .drive-rail>li{margin:0}
   .drive-rail button{width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:10px;padding:5px 9px;background:transparent;color:var(--neutral-700);cursor:pointer;font-family:inherit;text-align:left}
   .drive-rail button:hover{background:var(--neutral-100)}

@@ -7,7 +7,7 @@
   import {onMount, tick} from 'svelte';
   import {createDictation} from '../../shared/components/dictation';
   import {polymuxApi} from '../../api/polymux';
-  import type {ModelDto, ReasoningEffort} from '@polymux/protocol';
+  import {isReasoningModelId, type ModelDto, type ReasoningEffort} from '@polymux/protocol';
   import Icon from '../../shared/components/Icon.svelte';
   import InlineChip, {type InlineChipItem, type SubmittedChip} from './InlineChip.svelte';
   import ProviderLogo from '../../shared/components/ProviderLogo.svelte';
@@ -16,6 +16,7 @@
   import {MENU_EDGE_MARGIN, clampToMenuEdge} from '../../shared/layout/menuPlacement';
 
   export let active = false;
+  export let onSteerFirstQueued: () => void = () => {};
   export let speechModeEnabled = true;
   /** Seconds of silence that end dictation, or null to listen until pressed again. */
   export let dictationAutoStopSeconds: number | null = 6;
@@ -77,7 +78,8 @@
 
   const modelKey = (model: ModelDto): string => `${model.provider}/${model.id}`;
   const adjustable = (model: ModelDto): boolean =>
-    model.reasoning && !fixedEffortModels.some((pattern) => pattern.test(model.id));
+    (model.reasoning || isReasoningModelId(model.id, model.name)) &&
+    !fixedEffortModels.some((pattern) => pattern.test(model.id));
 
   let dictationListening = false;
   let dictationError = '';
@@ -137,7 +139,7 @@
     const trimmed = text.trim();
     const ids = new Set(ordered.map((chip) => chip.id));
     const files = attachments.filter((attachment) => ids.has(attachment.id)).map((attachment) => attachment.file);
-    if (!trimmed && !files.length) return;
+    if (!trimmed && !files.length) { if (immediate) onSteerFirstQueued(); return; }
     cancelDictation();
     onSend(trimmed, files.length ? files : attachments.map((attachment) => attachment.file), goalEnabled, immediate);
     goalEnabled = false;

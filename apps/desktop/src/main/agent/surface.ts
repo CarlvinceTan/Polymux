@@ -1,25 +1,25 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import {polymuxPath} from "../system/paths.js";
-import {loadLockerCapability, matchesLockerCapability} from "./locker-capability.js";
+import {loadVaultCapability, matchesVaultCapability} from "./vault-capability.js";
 
-const lockerResponseOrigins = new WeakMap<ServerResponse, string | null>();
+const vaultResponseOrigins = new WeakMap<ServerResponse, string | null>();
 import {
   SURFACE_PROTOCOL,
   SURFACE_PROTOCOL_HEADERS,
   negotiateSurfaceProtocol,
 } from "@polymux/browser";
-import {LOCKER_SURFACE_PATHS} from "@polymux/protocol";
+import {VAULT_SURFACE_PATHS} from "@polymux/protocol";
 import type {
-  LockerFillFieldsDto,
-  LockerItemDto,
-  LockerItemInputDto,
-  LockerStatusDto,
-  LockerTotpDto,
-  LockerVaultBlobDto,
+  VaultFillFieldsDto,
+  VaultItemDto,
+  VaultItemInputDto,
+  VaultStatusDto,
+  VaultTotpDto,
+  VaultBlobDto,
 } from "@polymux/protocol";
-import type {PasskeyOffer, WebAuthnAssertion, WebAuthnAttestation, WebAuthnCreateRequest, WebAuthnGetRequest} from "@polymux/locker";
-import {lockerId, lockerItemInput, lockerPassword, lockerVaultBlob, lockerWebAuthnCreate, lockerWebAuthnGet} from "../locker/requests.js";
+import type {PasskeyOffer, WebAuthnAssertion, WebAuthnAttestation, WebAuthnCreateRequest, WebAuthnGetRequest} from "@polymux/vault";
+import {vaultId, vaultItemInput, vaultPassword, vaultBlob, vaultWebAuthnCreate, vaultWebAuthnGet} from "../vault/requests.js";
 
 /**
  * Loopback agent-surface feed and command channel for the Polymux browser
@@ -191,17 +191,17 @@ export interface SurfaceLease {
   updatedAtMs: number;
 }
 
-/** Same vault the desktop Locker and phone Host use. Secrets only on fill/save. */
-export interface SurfaceLocker {
-  status(): LockerStatusDto;
-  unlock(password: string): Promise<LockerStatusDto>;
-  lock(): LockerStatusDto;
-  matches(url: string): LockerItemDto[];
-  fill(id: string): LockerFillFieldsDto;
-  save(item: LockerItemInputDto): Promise<LockerItemDto>;
-  totp(id: string): LockerTotpDto | null;
-  export?(): LockerVaultBlobDto | null;
-  import?(blob: LockerVaultBlobDto): Promise<LockerStatusDto>;
+/** Same vault the desktop Vault and Mobile Host use. Secrets only on fill/save. */
+export interface SurfaceVault {
+  status(): VaultStatusDto;
+  unlock(password: string): Promise<VaultStatusDto>;
+  lock(): VaultStatusDto;
+  matches(url: string): VaultItemDto[];
+  fill(id: string): VaultFillFieldsDto;
+  save(item: VaultItemInputDto): Promise<VaultItemDto>;
+  totp(id: string): VaultTotpDto | null;
+  export?(): VaultBlobDto | null;
+  import?(blob: VaultBlobDto): Promise<VaultStatusDto>;
   passkeys?(request: WebAuthnGetRequest): PasskeyOffer[];
   getPasskey?(request: WebAuthnGetRequest): Promise<WebAuthnAssertion>;
   createPasskey?(request: WebAuthnCreateRequest): Promise<WebAuthnAttestation>;
@@ -240,26 +240,26 @@ export class AgentSurfaceServer {
   readonly #leases = new Map<string, SurfaceLease>();
   readonly #waiters = new Set<() => void>();
   readonly #pendingCommands = new Map<string, PendingCommand>();
-  #locker: SurfaceLocker | null = null;
+  #vault: SurfaceVault | null = null;
   #clock: () => number;
-  readonly #lockerCapabilityPath: string;
-  #lockerCapability: string | null = null;
+  readonly #vaultCapabilityPath: string;
+  #vaultCapability: string | null = null;
 
-  constructor(options: { port?: number; clock?: () => number; lockerCapabilityPath?: string } = {}) {
+  constructor(options: { port?: number; clock?: () => number; vaultCapabilityPath?: string } = {}) {
     this.#port =
       options.port ??
       Number(process.env.POLYMUX_AGENT_SURFACE_PORT || DEFAULT_PORT);
     this.#clock = options.clock ?? Date.now;
-    this.#lockerCapabilityPath = options.lockerCapabilityPath ?? polymuxPath("locker-extension-capability");
+    this.#vaultCapabilityPath = options.vaultCapabilityPath ?? polymuxPath("vault-extension-capability");
   }
 
   get port(): number {
     return this.#port;
   }
 
-  attachLocker(locker: SurfaceLocker | null): void {
-    if (locker) this.#lockerCapability ??= loadLockerCapability(this.#lockerCapabilityPath);
-    this.#locker = locker;
+  attachVault(vault: SurfaceVault | null): void {
+    if (vault) this.#vaultCapability ??= loadVaultCapability(this.#vaultCapabilityPath);
+    this.#vault = vault;
   }
 
   async start(): Promise<void> {
@@ -394,24 +394,24 @@ export class AgentSurfaceServer {
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    // Locker is a separate authenticated boundary, including unknown subpaths
+    // Vault is a separate authenticated boundary, including unknown subpaths
     // and OPTIONS. Extension background fetches use host_permissions; no public
     // preflight or HTTP enrollment endpoint is needed.
-    if (url.pathname === "/v1/locker" || url.pathname.startsWith("/v1/locker/")) {
-      lockerResponseOrigins.set(response, null);
+    if (url.pathname === "/v1/vault" || url.pathname.startsWith("/v1/vault/")) {
+      vaultResponseOrigins.set(response, null);
       const origin = request.headers.origin;
       const allowedOrigin = origin === undefined || /^chrome-extension:\/\/[a-p]{32}$/.test(origin) ||
         /^moz-extension:\/\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(origin);
       if (request.headers.host !== `127.0.0.1:${this.#port}` || !allowedOrigin) {
-        json(response, 403, {error: "Untrusted Locker client"});
+        json(response, 403, {error: "Untrusted Vault client"});
         return;
       }
-      this.#lockerCapability ??= loadLockerCapability(this.#lockerCapabilityPath);
-      if (!matchesLockerCapability(request.headers.authorization, this.#lockerCapability)) {
-        json(response, 403, {error: "Locker client authentication required"});
+      this.#vaultCapability ??= loadVaultCapability(this.#vaultCapabilityPath);
+      if (!matchesVaultCapability(request.headers.authorization, this.#vaultCapability)) {
+        json(response, 403, {error: "Vault client authentication required"});
         return;
       }
-      lockerResponseOrigins.set(response, origin ?? null);
+      vaultResponseOrigins.set(response, origin ?? null);
     }
     if (request.method === "OPTIONS") {
       response.writeHead(204, corsHeaders(response));
@@ -444,7 +444,7 @@ export class AgentSurfaceServer {
       json(response, 200, { ok: true, surface: compatibility });
       return;
     }
-    if (await this.#handleLocker(request, response, url, compatibility)) return;
+    if (await this.#handleVault(request, response, url, compatibility)) return;
     if (request.method === "POST" && url.pathname === "/v1/results") {
       const body = await readBody(request);
       const commandId = String(body.commandId ?? "");
@@ -474,83 +474,83 @@ export class AgentSurfaceServer {
     json(response, 404, { error: "not found" });
   }
 
-  async #handleLocker(
+  async #handleVault(
     request: IncomingMessage,
     response: ServerResponse,
     url: URL,
     compatibility: SurfaceCompatibility,
   ): Promise<boolean> {
     const path = url.pathname;
-    const lockerPaths = Object.values(LOCKER_SURFACE_PATHS);
-    if (!lockerPaths.includes(path as (typeof lockerPaths)[number])) return false;
-    const locker = this.#locker;
-    if (!locker) {
-      json(response, 503, {error: "Locker is not available", surface: compatibility});
+    const vaultPaths = Object.values(VAULT_SURFACE_PATHS);
+    if (!vaultPaths.includes(path as (typeof vaultPaths)[number])) return false;
+    const vault = this.#vault;
+    if (!vault) {
+      json(response, 503, {error: "Vault is not available", surface: compatibility});
       return true;
     }
     try {
-      if (request.method === "GET" && path === LOCKER_SURFACE_PATHS.status) {
-        json(response, 200, locker.status());
+      if (request.method === "GET" && path === VAULT_SURFACE_PATHS.status) {
+        json(response, 200, vault.status());
         return true;
       }
-      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.unlock) {
+      if (request.method === "POST" && path === VAULT_SURFACE_PATHS.unlock) {
         const body = await readBody(request);
-        json(response, 200, await locker.unlock(lockerPassword(body.password)));
+        json(response, 200, await vault.unlock(vaultPassword(body.password)));
         return true;
       }
-      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.lock) {
+      if (request.method === "POST" && path === VAULT_SURFACE_PATHS.lock) {
         await readBody(request);
-        json(response, 200, locker.lock());
+        json(response, 200, vault.lock());
         return true;
       }
-      if (request.method === "GET" && path === LOCKER_SURFACE_PATHS.matches) {
-        json(response, 200, {items: locker.matches(String(url.searchParams.get("url") ?? ""))});
+      if (request.method === "GET" && path === VAULT_SURFACE_PATHS.matches) {
+        json(response, 200, {items: vault.matches(String(url.searchParams.get("url") ?? ""))});
         return true;
       }
-      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.fill) {
+      if (request.method === "POST" && path === VAULT_SURFACE_PATHS.fill) {
         const body = await readBody(request);
-        json(response, 200, locker.fill(lockerId(body.id)));
+        json(response, 200, vault.fill(vaultId(body.id)));
         return true;
       }
-      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.save) {
+      if (request.method === "POST" && path === VAULT_SURFACE_PATHS.save) {
         const body = await readBody(request);
-        json(response, 200, await locker.save(lockerItemInput(body)));
+        json(response, 200, await vault.save(vaultItemInput(body)));
         return true;
       }
-      if (request.method === "GET" && path === LOCKER_SURFACE_PATHS.totp) {
-        json(response, 200, locker.totp(lockerId(url.searchParams.get("id"))));
+      if (request.method === "GET" && path === VAULT_SURFACE_PATHS.totp) {
+        json(response, 200, vault.totp(vaultId(url.searchParams.get("id"))));
         return true;
       }
-      if (request.method === "GET" && path === LOCKER_SURFACE_PATHS.export) {
-        json(response, 200, locker.export?.() ?? null);
+      if (request.method === "GET" && path === VAULT_SURFACE_PATHS.export) {
+        json(response, 200, vault.export?.() ?? null);
         return true;
       }
-      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.import) {
+      if (request.method === "POST" && path === VAULT_SURFACE_PATHS.import) {
         const body = await readBody(request);
-        if (!locker.import) throw new Error("Locker import is not available");
-        json(response, 200, await locker.import(lockerVaultBlob(body)));
+        if (!vault.import) throw new Error("Vault import is not available");
+        json(response, 200, await vault.import(vaultBlob(body)));
         return true;
       }
-      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.passkeys) {
+      if (request.method === "POST" && path === VAULT_SURFACE_PATHS.passkeys) {
         const body = await readBody(request);
-        if (!locker.passkeys) throw new Error("Passkeys are not available");
-        json(response, 200, {offers: locker.passkeys(lockerWebAuthnGet({...body, origin: body.origin}))});
+        if (!vault.passkeys) throw new Error("Passkeys are not available");
+        json(response, 200, {offers: vault.passkeys(vaultWebAuthnGet({...body, origin: body.origin}))});
         return true;
       }
-      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.passkeyGet) {
+      if (request.method === "POST" && path === VAULT_SURFACE_PATHS.passkeyGet) {
         const body = await readBody(request);
-        if (!locker.getPasskey) throw new Error("Passkeys are not available");
-        json(response, 200, await locker.getPasskey(lockerWebAuthnGet(body)));
+        if (!vault.getPasskey) throw new Error("Passkeys are not available");
+        json(response, 200, await vault.getPasskey(vaultWebAuthnGet(body)));
         return true;
       }
-      if (request.method === "POST" && path === LOCKER_SURFACE_PATHS.passkeyCreate) {
+      if (request.method === "POST" && path === VAULT_SURFACE_PATHS.passkeyCreate) {
         const body = await readBody(request);
-        if (!locker.createPasskey) throw new Error("Passkeys are not available");
-        json(response, 200, await locker.createPasskey(lockerWebAuthnCreate(body)));
+        if (!vault.createPasskey) throw new Error("Passkeys are not available");
+        json(response, 200, await vault.createPasskey(vaultWebAuthnCreate(body)));
         return true;
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Locker request failed";
+      const message = error instanceof Error ? error.message : "Vault request failed";
       const locked = /locked|wrong master password/i.test(message);
       json(response, locked ? 401 : 400, {error: message});
       return true;
@@ -594,16 +594,16 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 }
 
 function corsHeaders(response: ServerResponse): Record<string, string> {
-  const locker = lockerResponseOrigins.has(response);
-  const origin = lockerResponseOrigins.get(response);
-  if (locker && !origin) return {};
+  const vault = vaultResponseOrigins.has(response);
+  const origin = vaultResponseOrigins.get(response);
+  if (vault && !origin) return {};
   return {
     "Access-Control-Allow-Origin": origin ?? "*",
-    ...(locker ? {Vary: "Origin"} : {}),
+    ...(vault ? {Vary: "Origin"} : {}),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": [
       "Content-Type",
-      ...(locker ? ["Authorization"] : []),
+      ...(vault ? ["Authorization"] : []),
       ...Object.values(SURFACE_PROTOCOL_HEADERS),
     ].join(", "),
   };

@@ -2,9 +2,9 @@
   import languagesIcon from '../../../assets/icons/languages.png';
 
   export let name:
-    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'computer' | 'devices' | 'tablet' | 'laptop' | 'server' | 'phone' | 'call' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'smile' | 'waveform' | 'stop' | 'cursor'
+    | 'summary' | 'panel' | 'panel-left' | 'screen-record' | 'computer' | 'devices' | 'tablet' | 'laptop' | 'server' | 'phone' | 'mobile' | 'call' | 'apps' | 'plus' | 'close' | 'send' | 'mic' | 'smile' | 'waveform' | 'stop' | 'cursor'
     | 'attach' | 'options' | 'verified' | 'globe' | 'file' | 'task' | 'back'
-    | 'forward' | 'reload' | 'download' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down' | 'arrow-up' | 'arrow-up-right' | 'switch'
+    | 'forward' | 'reload' | 'download' | 'printer' | 'more' | 'ellipsis' | 'trash' | 'expand' | 'collapse' | 'chevron' | 'arrow-down' | 'arrow-up' | 'arrow-up-right' | 'switch'
     | 'bolt' | 'document-text' | 'paper-airplane' | 'history' | 'archive' | 'drive' | 'new-chat'
     | 'copy' | 'check' | 'circle-check' | 'circle-question' | 'bug' | 'edit' | 'signature' | 'thumb-up' | 'thumb-down' | 'search' | 'zoom-in' | 'zoom-out' | 'picture-in-picture' | 'terminal' | 'wrench' | 'book-open' | 'languages'
     | 'memory-cited' | 'brain' | 'compact' | 'compress' | 'sparkles' | 'bot'
@@ -15,7 +15,7 @@
     | 'mail' | 'inbox' | 'spam' | 'storefront' | 'settings' | 'cloud'
     | 'reply' | 'reply-all' | 'mail-forward' | 'flag'
     | 'key' | 'shield' | 'prohibited' | 'eye' | 'eye-off' | 'incognito' | 'external' | 'import' | 'cookie'
-    | 'pin' | 'pin-filled' | 'bell' | 'tasks' | 'platforms' | 'broadcast' | 'align-left' | 'align-center' | 'align-right' | 'logout' | 'google' | 'apple' | 'lock' | 'qr';
+    | 'pin' | 'pin-filled' | 'bell' | 'tasks' | 'platforms' | 'broadcast' | 'align-left' | 'align-center' | 'align-right' | 'logout' | 'google' | 'apple' | 'lock' | 'qr' | 'fingerprint' | 'cloud-check';
   export let size = 20;
   export let strokeWidth = 1.7;
   export let filled = false;
@@ -58,6 +58,8 @@
   {:else if name === 'call'}
     <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3.1-8.7A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.8 2.1Z"/>
   {:else if name === 'phone'}
+    <rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 5h3"/><circle cx="12" cy="18.6" r=".8" fill="currentColor" stroke="none"/>
+  {:else if name === 'mobile'}
     <rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 5h3"/><circle cx="12" cy="18.6" r=".8" fill="currentColor" stroke="none"/>
   {:else if name === 'apps'}
     <!-- One application window for the aggregate app-access permission. -->
@@ -147,6 +149,10 @@
     <path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>
   {:else if name === 'cloud'}
     <path d="M7.4 19.5A4.9 4.9 0 0 1 6.9 9.75 6.1 6.1 0 0 1 18.4 10.4 4.55 4.55 0 0 1 17.6 19.5z"/>
+  {:else if name === 'cloud-check'}
+    <!-- The synced state of the cloud mark: same outline, tick inside. -->
+    <path d="M7.4 19.5A4.9 4.9 0 0 1 6.9 9.75 6.1 6.1 0 0 1 18.4 10.4 4.55 4.55 0 0 1 17.6 19.5z"/>
+    <path d="m9.6 14.4 1.9 1.9 3.9-3.9"/>
   {:else if name === 'globe'}
     <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>
   {:else if name === 'cookie'}
@@ -182,6 +188,10 @@
     <path d="M20 11a8 8 0 1 1-2.34-5.66L20 7.7M20 3v3.2q0 1.5-1.5 1.5h-3.2"/>
   {:else if name === 'download'}
     <path d="M12 3v12M7 10l5 5 5-5M5 20h14"/>
+  {:else if name === 'printer'}
+    <path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/>
+    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+    <rect x="6" y="14" width="12" height="8" rx="1"/>
   {:else if name === 'more'}
     <circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/>
   {:else if name === 'ellipsis'}
@@ -452,6 +462,13 @@
     <path d="M14 4.5h5.5V10M19.5 4.5 11 13"/><path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5"/>
   {:else if name === 'qr'}
     <rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><path d="M15 15h3v3h3M15 21h3M21 12v3M12 3v3M3 12h3M12 9v6"/>
+  {:else if name === 'fingerprint'}
+    <!-- Touch ID: broken concentric arcs around a short central swirl, drawn
+         in the same outline language as the rest of the family. -->
+    <path d="M12 3.5a8.5 8.5 0 0 1 8.4 7.2M12 3.5A8.5 8.5 0 0 0 3.6 10.7"/>
+    <path d="M5 15.5A8.6 8.6 0 0 1 5.4 11M19 11a8.6 8.6 0 0 1 .4 4.5M6.3 18.6A8.5 8.5 0 0 0 8 20.5M17.7 20a8.5 8.5 0 0 0 1.5-2.2"/>
+    <path d="M12 7.5a4.5 4.5 0 0 1 4.4 5.4M12 7.5A4.5 4.5 0 0 0 7.6 12.9M8.4 16.6a4.6 4.6 0 0 0 1.2 2M15.6 16.6a4.6 4.6 0 0 0 .8-3"/>
+    <path d="M12 11.2a.9.9 0 0 1 .9 1c0 1.8-.5 3.4-1.2 4.8M12 11.2a.9.9 0 0 0-.9 1c0 1.2.2 2.3.6 3.3"/>
   {:else if name === 'tasks'}
     <rect x="4" y="3" width="16" height="18" rx="2.5"/><rect x="7.5" y="1.5" width="9" height="3" rx="1.5"/><path d="m9.5 11.5 2 2 3.5-4"/>
   {/if}

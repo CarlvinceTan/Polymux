@@ -1,9 +1,12 @@
+import {agentRuntimeRequest, agentRuntimeConfigValues, agentRegistryEnvironment} from './agent-runtime/config-request.js';
+import {LocalUsage} from "./usage/local-usage.js";
 import {detectDesktopDeviceType} from './team/device-type.js';
 import {openWeChatDesktop} from '@polymux/wechat';
 import {updateDeviceMessage} from './team/device-message.js';
 import {DeviceConnections} from "./team/device-connections.js";
 import {AccountService} from "./account/account-service.js";
 import {AccountDevices} from "./account/account-devices.js";
+import {forkConversation} from '../../../../packages/host/src/fork.js';
 import {duplicateConversation} from "./backend/duplicate-conversation";
 import {rewindConversation} from "./backend/rewind-conversation";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -99,7 +102,7 @@ import type {
   WorkspaceAppDto,
   WorkspaceAppsDto,
   UsageStatsDto,
-  PhonePointDto,
+  MobilePointDto,
 } from "@polymux/protocol";
 import { createAppleMailSearcher } from "./hub/apple-mail.js";
 import {
@@ -120,8 +123,10 @@ import { summarizeUsage } from "@polymux/storage";
 import type { StoredMessage } from "@polymux/storage";
 import { ProfileManager } from "./profiles.js";
 import {TeamComputerManager, createTeamWorkspaceTool} from "./team/computers.js";
-import {TeamService, createAgentMessageTool, createTeamSetupTool, createTeamConnectionsTool, type BotTransfer} from "./team/service.js";
+import {TeamService, createAgentMessageTool, createTeamSetupTool, createTeamConnectionsTool, createTeamSpawnTool, type BotTransfer} from "./team/service.js";
 import {TeamHostClient, TeamHostServer, type TeamDeviceRequest} from "./team/host-server.js";
+import {requestTeamAcpPermission} from "./team/acp-permissions.js";
+import {authorizeDeviceRequest} from "./team/device-permissions.js";
 import {
   createNativeTools,
   importMcpServers,
@@ -150,6 +155,7 @@ import {
   safeStorage,
   session,
   shell,
+  systemPreferences,
   webContents,
   type BrowserWindow,
   type IpcMain,
@@ -236,6 +242,8 @@ import {
   customProviderRequest,
   discoverModels,
   discoverModelsRequest,
+  isMultimodalModelId,
+  isReasoningModelId,
   MODEL_ROLES,
   modelPreference,
   modelRole,
@@ -322,7 +330,7 @@ import {
   buildAutofillOffer,
   parseAutofillItem,
   type AutofillPage,
-} from "./browser/locker-fill.js";
+} from "./browser/vault-fill.js";
 import { BrowsingData } from "./browser/data.js";
 import { Downloads } from "./browser/downloads.js";
 import { EmbeddedBrowser } from "./browser/embedded.js";
@@ -367,25 +375,27 @@ import { Scheduler } from "./scheduler/index.js";
 import { createScheduleTool } from "./scheduler/tools.js";
 import { TaskBoard } from "./tasks/index.js";
 import { createTasksTool } from "./tasks/tools.js";
+import {SCHEDULE_HOST_METHODS, scheduleHostCall} from './scheduler/host.js';
+import {taskOverview} from './tasks/overview.js';
 import { Communications } from "./hub/index.js";
 import { HubCache } from "./hub/cache.js";
 import { Broadcasts } from "./hub/broadcasts.js";
 import { ContactLinks } from "./hub/contact-links.js";
 import { Drive, createDriveTools } from "@polymux/drive";
-import { LockerService } from "./locker/service.js";
-import { SupabaseLockerCloud } from "./locker/cloud.js";
+import { VaultService } from "./vault/service.js";
+import { SupabaseVaultCloud } from "./vault/cloud.js";
 import {
-  lockerCopyField,
-  lockerId,
-  lockerIds,
-  lockerItemInput,
-  lockerPassword,
-  lockerStorageMode,
-  lockerStorageResolve,
-  lockerVaultBlob,
-  lockerWebAuthnCreate,
-  lockerWebAuthnGet,
-} from "./locker/requests.js";
+  vaultCopyField,
+  vaultId,
+  vaultIds,
+  vaultItemInput,
+  vaultPassword,
+  vaultStorageMode,
+  vaultStorageResolve,
+  vaultBlob,
+  vaultWebAuthnCreate,
+  vaultWebAuthnGet,
+} from "./vault/requests.js";
 import { electronConsent } from "./system/drive-consent.js";
 import { sessionScopedSnapshot } from "./workspace/snapshot.js";
 import { PreviewGrants, copyGrantedFile, previewTarget } from "./workspace/preview.js";
@@ -437,8 +447,8 @@ import { AppPermissions } from "./system/app-permissions.js";
 import { ContactLookup } from "./hub/contacts.js";
 import { Reminders } from "./reminders/index.js";
 import { createRemindersTools } from "./reminders/tools.js";
-import { PhoneController } from "./phone/controller.js";
-import { createPhoneTool } from "./phone/tools.js";
+import { MobileController } from "./mobile/controller.js";
+import { createMobileTool } from "./mobile/tools.js";
 import { TerminalSessions } from "./terminal/sessions.js";
 import { IdeService } from "./ide/service.js";
 import { requiredPath } from "./ide/paths.js";
@@ -608,21 +618,21 @@ const OFFICIAL_WORKSPACE_APPS: ReadonlyArray<Omit<WorkspaceAppDto, "enabled">> =
     pinnable: true,
   },
   {
-    id: "phone",
-    name: "Phone",
-    description: "A shared phone screen for you and your agent.",
+    id: "mobile",
+    name: "Mobile",
+    description: "A shared mobile screen for you and your agent.",
     official: true,
-    workspaceKind: "phone",
+    workspaceKind: "mobile",
     settingsKind: null,
     entry: null,
     pinnable: true,
   },
   {
-    id: "locker",
-    name: "Locker",
+    id: "vault",
+    name: "Vault",
     description: "Passwords, authenticator codes, recovery codes and passkeys.",
     official: true,
-    workspaceKind: "locker",
+    workspaceKind: "vault",
     settingsKind: null,
     entry: null,
     pinnable: true,
@@ -740,12 +750,14 @@ export class DesktopBackend {
   readonly #ipcMain: IpcMain;
   readonly #storage: SqliteStorage;
   readonly #dataDirectory: string;
-  readonly #phone: PhoneController;
+  readonly #localUsage: LocalUsage;
+  readonly #mobile: MobileController;
   readonly #terminal: TerminalSessions;
   readonly #profiles: ProfileManager;
   #agent?: PolymuxAgent;
   #agentRuntime?: AgentRuntime;
   /** A Team member owns its own long-lived runtime/session. */
+  readonly #terminalDrafts = new Map<string, {turn: number; text: string; timestamp: number}>();
   readonly #teamRuntimes = new Map<string, {profileId: string; key: string; runtime: AgentRuntime}>();
   #model?: ModelRef;
   /** Per-role model overrides, each with the reasoning level it was assigned
@@ -881,7 +893,7 @@ export class DesktopBackend {
    * arrive on separate calls. */
   readonly #mailFolders = new Map<string, MailFolderDto[]>();
   readonly #drive: Drive;
-  readonly #locker: LockerService;
+  readonly #vault: VaultService;
   readonly #ide = new IdeService();
   /** Pins every run's tools to one folder, overriding the default output
    * folder. Set by tests and by hosts that embed the backend. */
@@ -890,7 +902,8 @@ export class DesktopBackend {
 
   constructor(options: DesktopBackendOptions) {
     this.#dataDirectory = options.dataDirectory;
-    this.#phone = new PhoneController({
+    this.#localUsage = new LocalUsage(options.dataDirectory);
+    this.#mobile = new MobileController({
       ios: { dataDirectory: options.dataDirectory },
     });
     this.#terminal = new TerminalSessions({
@@ -901,29 +914,39 @@ export class DesktopBackend {
     this.#window = options.window;
     this.#trustedWindows.set(options.window.webContents.id, options.window);
     this.#ipcMain = options.ipcMain;
-    this.#locker = new LockerService({
+    this.#vault = new VaultService({
       dataDirectory: options.dataDirectory,
+      biometrics: {
+        isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+        canPromptBiometric: () =>
+          process.platform === "darwin" &&
+          typeof systemPreferences.canPromptTouchID === "function" &&
+          systemPreferences.canPromptTouchID(),
+        promptBiometric: (reason) => systemPreferences.promptTouchID(reason),
+        encryptString: (password) => safeStorage.encryptString(password),
+        decryptString: (encrypted) => safeStorage.decryptString(encrypted),
+      },
       onChanged: () => {
-        this.#sendToTrustedWindows(channels.lockerChanged, this.#locker.status());
+        this.#sendToTrustedWindows(channels.vaultChanged, this.#vault.status());
         this.#refreshAutofillOffers();
       },
     });
-    this.#agentSurface.attachLocker({
-      status: () => this.#locker.status(),
-      unlock: (password) => this.#locker.unlock(password),
-      lock: () => this.#locker.lock(),
-      matches: (url) => this.#locker.matchesForUrl(url),
-      fill: (id) => this.#locker.fillFields(id),
-      save: (item) => this.#locker.save(item),
-      totp: (id) => this.#locker.totp(id),
-      export: () => this.#locker.exportVault(),
-      import: (blob) => this.#locker.importVault(blob),
-      passkeys: (request) => this.#locker.listPasskeys(request),
-      getPasskey: (request) => this.#locker.getPasskey(request),
-      createPasskey: (request) => this.#locker.createPasskey(request),
+    this.#agentSurface.attachVault({
+      status: () => this.#vault.status(),
+      unlock: (password) => this.#vault.unlock(password),
+      lock: () => this.#vault.lock(),
+      matches: (url) => this.#vault.matchesForUrl(url),
+      fill: (id) => this.#vault.fillFields(id),
+      save: (item) => this.#vault.save(item),
+      totp: (id) => this.#vault.totp(id),
+      export: () => this.#vault.exportVault(),
+      import: (blob) => this.#vault.importVault(blob),
+      passkeys: (request) => this.#vault.listPasskeys(request),
+      getPasskey: (request) => this.#vault.getPasskey(request),
+      createPasskey: (request) => this.#vault.createPasskey(request),
     });
-    powerMonitor.on("suspend", () => this.#locker.lock());
-    powerMonitor.on("lock-screen", () => this.#locker.lock());
+    powerMonitor.on("suspend", () => this.#vault.lock());
+    powerMonitor.on("lock-screen", () => this.#vault.lock());
     this.#toolDirectory = options.toolDirectory;
     this.#reloadForProfileChange = options.reloadForProfileChange;
     this.#coreSkills = new Set(options.coreSkills ?? []);
@@ -979,6 +1002,11 @@ export class DesktopBackend {
           ? new OpenCodeCredentialFallback(this.#credentials)
           : this.#credentials,
     });
+    // The catalogue decorates custom models at registration time, so it must
+    // exist before the first #registerCustomProvider call below — otherwise
+    // #customProviderModels reads .lookup off an unassigned field and the
+    // constructor throws, leaving the app stuck on the loading screen.
+    this.#modelCatalog = new ModelCatalog({ cacheDir: options.dataDirectory });
     for (const config of customProviderPreference(
       this.#profilePreference("custom-providers")?.value,
     ))
@@ -1094,7 +1122,6 @@ export class DesktopBackend {
       request: (permission) => this.#requestSystemPermission(permission),
       onReady: () => this.#startComputerObservation(),
     });
-    this.#modelCatalog = new ModelCatalog({ cacheDir: options.dataDirectory });
     this.#downloads = new Downloads({
       records: this.#storage,
       preferences: () => {
@@ -1538,12 +1565,12 @@ export class DesktopBackend {
       onSignedIn: () => {
         this.#accountDevices?.start();
         this.#publishAccount();
-        void this.#locker.hydrate();
+        void this.#vault.hydrate();
       },
       onSignedOut: () => {
         this.#accountDevices?.revoke();
         this.#publishAccount();
-        this.#sendToTrustedWindows(channels.lockerChanged, this.#locker.status());
+        this.#sendToTrustedWindows(channels.vaultChanged, this.#vault.status());
       },
     });
     this.#accountDevices = new AccountDevices({
@@ -1554,10 +1581,10 @@ export class DesktopBackend {
       appVersion: appVersion().version,
       onHostsChanged: () => this.#publishTeamHost(),
     });
-    this.#locker.attachCloud(new SupabaseLockerCloud(this.#account));
+    this.#vault.attachCloud(new SupabaseVaultCloud(this.#account));
     void this.#account.restore().then(() => {
       if (this.#account.status().signedIn) this.#accountDevices.start();
-      void this.#locker.hydrate();
+      void this.#vault.hydrate();
     });
     this.#team.setLocalHostInfo(() => {
       const snapshot = this.#teamHostServer.snapshot();
@@ -1570,15 +1597,15 @@ export class DesktopBackend {
         detail: snapshot.detail,
       };
     });
-    this.#team.setLaptopBroker(async (member, capability, tool, input, _context, requiresApproval) =>
+    this.#team.setLaptopBroker(async (member, capability, tool, input, _context, accessForDevice) =>
       this.#teamHostServer.requestDevice({
         memberId: member.id,
         memberName: member.name,
         capability,
         tool: tool.name,
         input: input as unknown as JsonValue,
-        requiresApproval,
-      }),
+        requiresApproval: true,
+      }, {accessForDevice}),
     );
     void this.#teamHostServer.start().then(() => this.#team.publish());
     const teamNativeTools = createNativeTools({
@@ -1655,8 +1682,8 @@ export class DesktopBackend {
     const hubDraftTool = createHubDraftTool(this.#workspaceRevealer());
     this.#registry.register(workspaceTool);
     this.#registry.register(hubDraftTool);
-    const phoneTool = createPhoneTool(this.#phone);
-    this.#registry.register(phoneTool);
+    const mobileTool = createMobileTool(this.#mobile);
+    this.#registry.register(mobileTool);
     this.#registry.register(
         createPolymuxUiInspectionTool({
           openSettings: async (mode) => {
@@ -1708,7 +1735,13 @@ export class DesktopBackend {
       );
     // Asking for something to happen every morning is a chat request like any
     // other, so the agent needs a way to write one down.
-    const scheduleTool = createScheduleTool(this.#scheduler);
+    const scheduleTool = createScheduleTool(this.#scheduler, runId =>
+      this.#team.botByConversation(this.#storage.getRun(runId)?.conversationId ?? "")?.id,
+      // A scheduled run that could create schedules would cascade without
+      // bound, so creation is refused unattended while reads and edits stay.
+      {isRoutineRun: (runId) => this.#scheduledRunIds.has(runId)},
+    );
+    this.#teamRegistry.register(scheduleTool);
     this.#registry.register(scheduleTool);
     const tasksTool = createTasksTool(
       this.#tasks,
@@ -1751,6 +1784,18 @@ export class DesktopBackend {
         return this.#updateBot(botId, {skills: nextSkills, mcpServers: nextMcp, plugins: nextPlugins});
       },
     }));
+    this.#teamRegistry.register(createTeamSpawnTool(this.#team, {
+      options: async () => {
+        const host = this.#team.host();
+        const profiles = await this.#teamProfiles(host.hostId);
+        const connections = await this.#connectionsPool();
+        return {profiles, connections};
+      },
+      spawn: async (request, parentBotId) => this.#spawnBot(request, parentBotId),
+      children: async (parentBotId) => this.#team.children(parentBotId),
+      updateSelf: async (parentBotId, request) => this.#updateBot(parentBotId, request),
+      archive: async (parentBotId, confirmName, botId) => this.#archiveSpawnedBot(parentBotId, confirmName, botId),
+    }));
     this.#registry.register(createTeamSetupTool(this.#team, {
       options: async () => {
         const host = this.#team.host();
@@ -1778,7 +1823,7 @@ export class DesktopBackend {
       name: "Polymux Workspace",
       version: appVersion().version,
       instructions: [
-        "These are Polymux's host-owned tools for Hub, Drive, Browser, Phone, Tasks, Schedule, Reminders, Team, and the workspace drawer.",
+        "These are Polymux's host-owned tools for Hub, Drive, Browser, Mobile, Tasks, Schedule, Reminders, Team, and the workspace drawer.",
         "Use workspace_show to reveal Hub or Drive results when the user asks to see them; use the browser tool's show action for a web page.",
         "Inventory and message context are not permission to send or mutate anything.",
         "A draft must remain unsent. Before a real send, resolve the exact account, recipient, and payload and obtain the user's explicit approval required by the tool description.",
@@ -1786,7 +1831,7 @@ export class DesktopBackend {
       tools: () => hostWorkspaceTools({
         workspace: workspaceTool,
         hubDraft: hubDraftTool,
-        phone: phoneTool,
+        mobile: mobileTool,
         browser: [browserWorkflowTool, browserBatchTool, browserReadTool],
         communications: communicationsTools,
         drive: driveTools,
@@ -1810,12 +1855,12 @@ export class DesktopBackend {
     this.#teamToolMcp = new ToolMcpServer({
       name: "Polymux Team",
       version: appVersion().version,
-      instructions: "Use agent_message to coordinate and reply to Team groups. Messages retain your bot identity and do not grant the recipient your permissions. team_workspace and team_connections apply only to your own bot.",
-      tools: () => teamWorkspaceTools({
+      instructions: "Use agent_message to coordinate and reply to Team groups. Messages retain your bot identity and do not grant the recipient your permissions. team_workspace and team_connections apply only to your own bot. team_spawn creates a durable peer bot with its own conversation and computer; a bounded helper inside this turn is a subagent dispatch instead.",
+      tools: () => [...teamWorkspaceTools({
         agentMessage: agentMessageTool,
         workspace: this.#teamRegistry.get("team_workspace")!,
         connections: this.#teamRegistry.get("team_connections")!,
-      }),
+      }), scheduleTool, this.#teamRegistry.get("team_spawn")!],
       context: (conversationId) => teamToolContext(
         conversationId,
         this.#team.botByConversation(conversationId)?.conversationId,
@@ -2023,12 +2068,17 @@ export class DesktopBackend {
     this.#registerWebAuthn();
     if (this.#firstRunPermissions.completed()) this.#startComputerObservation();
     this.#scheduler.start();
-    this.#handle(channels.phoneStatus, () => this.#phone.status());
-    this.#handle(channels.phoneConnect, () => this.#phone.connect());
+    // Cues stored while the app was closed never got their delivery microtask;
+    // re-arm them shortly after startup once the Host is ready to run them.
+    setTimeout(() => {
+      if (!this.#closing) this.#ensurePendingBotSetups();
+    }, 8_000).unref?.();
+    this.#handle(channels.mobileStatus, () => this.#mobile.status());
+    this.#handle(channels.mobileConnect, () => this.#mobile.connect());
     this.#handle(
-      channels.phonePairAndroid,
+      channels.mobilePairAndroid,
       (_event, pairingAddress: unknown, pairingCode: unknown, connectAddress: unknown) =>
-        this.#phone.pairAndroid(
+        this.#mobile.pairAndroid(
           required(pairingAddress, "Android pairing address"),
           required(pairingCode, "Android pairing code"),
           typeof connectAddress === "string" && connectAddress.trim()
@@ -2036,43 +2086,43 @@ export class DesktopBackend {
             : undefined,
         ),
     );
-    this.#handle(channels.phoneIosSigningStatus, () =>
-      this.#phone.iosSigningStatus(),
+    this.#handle(channels.mobileIosSigningStatus, () =>
+      this.#mobile.iosSigningStatus(),
     );
     this.#handle(
-      channels.phoneIosSigningBegin,
+      channels.mobileIosSigningBegin,
       (_event, email: unknown, password: unknown) =>
-        this.#phone.iosSigningBegin(
+        this.#mobile.iosSigningBegin(
           required(email, "Apple Account email"),
           required(password, "Apple Account password"),
         ),
     );
     this.#handle(
-      channels.phoneIosSigningComplete,
+      channels.mobileIosSigningComplete,
       (_event, code: unknown) =>
-        this.#phone.iosSigningComplete(required(code, "Apple verification code")),
+        this.#mobile.iosSigningComplete(required(code, "Apple verification code")),
     );
-    this.#handle(channels.phoneIosSigningLogout, () =>
-      this.#phone.iosSigningLogout(),
+    this.#handle(channels.mobileIosSigningLogout, () =>
+      this.#mobile.iosSigningLogout(),
     );
-    this.#handle(channels.phoneStop, () => this.#phone.stop());
-    this.#handle(channels.phoneFrame, () => this.#phone.frame());
-    this.#handle(channels.phoneTap, (_event, point: unknown) =>
-      this.#phone.tap(point as PhonePointDto),
+    this.#handle(channels.mobileStop, () => this.#mobile.stop());
+    this.#handle(channels.mobileFrame, () => this.#mobile.frame());
+    this.#handle(channels.mobileTap, (_event, point: unknown) =>
+      this.#mobile.tap(point as MobilePointDto),
     );
     this.#handle(
-      channels.phoneSwipe,
+      channels.mobileSwipe,
       (_event, from: unknown, to: unknown, durationMs: unknown) =>
-        this.#phone.swipe(
-          from as PhonePointDto,
-          to as PhonePointDto,
+        this.#mobile.swipe(
+          from as MobilePointDto,
+          to as MobilePointDto,
           typeof durationMs === "number" ? durationMs : undefined,
         ),
     );
-    this.#handle(channels.phoneType, (_event, value: unknown) =>
-      this.#phone.type(required(value, "phone text")),
+    this.#handle(channels.mobileType, (_event, value: unknown) =>
+      this.#mobile.type(required(value, "phone text")),
     );
-    this.#handle(channels.phoneHome, () => this.#phone.home());
+    this.#handle(channels.mobileHome, () => this.#mobile.home());
     this.#handle(channels.terminalCreate, (_event, cwd: unknown) =>
       this.#terminal.create(typeof cwd === "string" && cwd ? cwd : undefined),
     );
@@ -2117,9 +2167,10 @@ export class DesktopBackend {
       if (this.#activeRuns.size)
         throw new Error("Wait for the active agent run to finish before switching agents.");
       const config = agentRuntimeRequest(value);
+      if (config.kind !== "polymux") throw new Error("Configure ACP agents in the individual bot settings.");
       await this.#agentRuntime?.close?.();
       this.#setProfilePreference("agent-runtime", config as unknown as JsonValue);
-      this.#configureAgentRuntime(config);
+      this.#configureAgentRuntime();
       return this.#agentRuntimeDto();
     });
     this.#handle(channels.agentRuntimeSettings, () => {
@@ -2286,63 +2337,69 @@ export class DesktopBackend {
         resolveLocalFile: (url) => previewTarget(this.previewGrants, url),
       }),
     );
-    this.#handle(channels.lockerStatus, () => this.#locker.status());
-    this.#handle(channels.lockerCreate, (_event, password: unknown) =>
-      this.#locker.create(lockerPassword(password)),
+    this.#handle(channels.vaultStatus, () => this.#vault.status());
+    this.#handle(channels.vaultCreate, (_event, password: unknown) =>
+      this.#vault.create(vaultPassword(password)),
     );
-    this.#handle(channels.lockerUnlock, (_event, password: unknown) =>
-      this.#locker.unlock(lockerPassword(password)),
+    this.#handle(channels.vaultUnlock, (_event, password: unknown) =>
+      this.#vault.unlock(vaultPassword(password)),
     );
-    this.#handle(channels.lockerLock, () => this.#locker.lock());
-    this.#handle(channels.lockerTouch, () => this.#locker.touch());
-    this.#handle(channels.lockerList, () => this.#locker.list());
-    this.#handle(channels.lockerReveal, (_event, id: unknown) =>
-      this.#locker.reveal(lockerId(id)),
+    this.#handle(channels.vaultUnlockBiometric, () => this.#vault.unlockBiometric());
+    this.#handle(channels.vaultBiometricStatus, () => this.#vault.biometricStatus());
+    this.#handle(channels.vaultBiometricEnroll, (_event, password: unknown) =>
+      this.#vault.enrollBiometric(vaultPassword(password)),
     );
-    this.#handle(channels.lockerTotp, (_event, id: unknown) =>
-      this.#locker.totp(lockerId(id)),
+    this.#handle(channels.vaultBiometricDisenroll, () => this.#vault.disenrollBiometric());
+    this.#handle(channels.vaultLock, () => this.#vault.lock());
+    this.#handle(channels.vaultTouch, () => this.#vault.touch());
+    this.#handle(channels.vaultList, () => this.#vault.list());
+    this.#handle(channels.vaultReveal, (_event, id: unknown) =>
+      this.#vault.reveal(vaultId(id)),
     );
-    this.#handle(channels.lockerSave, (_event, value: unknown) =>
-      this.#locker.save(lockerItemInput(value)),
+    this.#handle(channels.vaultTotp, (_event, id: unknown) =>
+      this.#vault.totp(vaultId(id)),
     );
-    this.#handle(channels.lockerRemove, (_event, id: unknown) =>
-      this.#locker.remove(lockerId(id)),
+    this.#handle(channels.vaultSave, (_event, value: unknown) =>
+      this.#vault.save(vaultItemInput(value)),
     );
-    this.#handle(channels.lockerRestore, (_event, ids: unknown) =>
-      this.#locker.restore(lockerIds(ids)),
+    this.#handle(channels.vaultRemove, (_event, id: unknown) =>
+      this.#vault.remove(vaultId(id)),
     );
-    this.#handle(channels.lockerPurge, (_event, ids: unknown) =>
-      this.#locker.purge(lockerIds(ids)),
+    this.#handle(channels.vaultRestore, (_event, ids: unknown) =>
+      this.#vault.restore(vaultIds(ids)),
     );
-    this.#handle(channels.lockerEmptyTrash, () => this.#locker.emptyTrash());
-    this.#handle(channels.lockerPin, (_event, ids: unknown, pinned: unknown) =>
-      this.#locker.pin(lockerIds(ids), pinned === true),
+    this.#handle(channels.vaultPurge, (_event, ids: unknown) =>
+      this.#vault.purge(vaultIds(ids)),
     );
-    this.#handle(channels.lockerReorder, (_event, ids: unknown) =>
-      this.#locker.reorder(lockerIds(ids)),
+    this.#handle(channels.vaultEmptyTrash, () => this.#vault.emptyTrash());
+    this.#handle(channels.vaultPin, (_event, ids: unknown, pinned: unknown) =>
+      this.#vault.pin(vaultIds(ids), pinned === true),
     );
-    this.#handle(channels.lockerChangePassword, (_event, current: unknown, next: unknown) =>
-      this.#locker.changePassword(lockerPassword(current, "Current password"), lockerPassword(next, "New password")),
+    this.#handle(channels.vaultReorder, (_event, ids: unknown) =>
+      this.#vault.reorder(vaultIds(ids)),
     );
-    this.#handle(channels.lockerCodes, () => this.#locker.codes());
-    this.#handle(channels.lockerOtpauth, (_event, id: unknown) =>
-      this.#locker.otpauth(lockerId(id)),
+    this.#handle(channels.vaultChangePassword, (_event, current: unknown, next: unknown) =>
+      this.#vault.changePassword(vaultPassword(current, "Current password"), vaultPassword(next, "New password")),
+    );
+    this.#handle(channels.vaultCodes, () => this.#vault.codes());
+    this.#handle(channels.vaultOtpauth, (_event, id: unknown) =>
+      this.#vault.otpauth(vaultId(id)),
     );
     this.#handle(
-      channels.lockerCopy,
+      channels.vaultCopy,
       (_event, id: unknown, field: unknown, recoveryIndex: unknown) => {
-        const text = this.#locker.copyText(
-          lockerId(id),
-          lockerCopyField(field),
+        const text = this.#vault.copyText(
+          vaultId(id),
+          vaultCopyField(field),
           typeof recoveryIndex === "number" ? recoveryIndex : undefined,
         );
         clipboard.writeText(text);
         return true;
       },
     );
-    this.#handle(channels.lockerImportBegin, async () => {
+    this.#handle(channels.vaultImportBegin, async () => {
       const result = await dialog.showOpenDialog(this.#window, {
-        title: "Import into Locker",
+        title: "Import into Vault",
         properties: ["openFile"],
         filters: [
           { name: "KeePass or CSV", extensions: ["kdbx", "csv"] },
@@ -2350,16 +2407,16 @@ export class DesktopBackend {
           { name: "CSV", extensions: ["csv"] },
         ],
       });
-      return this.#locker.importBegin(
+      return this.#vault.importBegin(
         result.canceled ? null : (result.filePaths[0] ?? null),
       );
     });
-    this.#handle(channels.lockerImportConfirm, (_event, password: unknown) =>
-      this.#locker.importConfirm(lockerPassword(password, "KeePass password")),
+    this.#handle(channels.vaultImportConfirm, (_event, password: unknown) =>
+      this.#vault.importConfirm(vaultPassword(password, "KeePass password")),
     );
-    this.#handle(channels.lockerSync, () => this.#locker.hydrate());
-    this.#handle(channels.lockerSetStorage, (_event, mode: unknown, resolve: unknown) =>
-      this.#locker.setStorage(lockerStorageMode(mode), lockerStorageResolve(resolve)),
+    this.#handle(channels.vaultSync, () => this.#vault.hydrate());
+    this.#handle(channels.vaultSetStorage, (_event, mode: unknown, resolve: unknown) =>
+      this.#vault.setStorage(vaultStorageMode(mode), vaultStorageResolve(resolve)),
     );
     this.#handle(channels.financeRead, (_event, value: unknown) => {
       const request = financeReadRequest(value);
@@ -2498,6 +2555,37 @@ export class DesktopBackend {
       const remoteMember = this.#remoteMemberByConversation(conversationId);
       if (remoteMember)
         return (await this.#remoteTeamClient(remoteMember.hostId)).call<MessageDto[]>("conversations.messages", [conversationId]);
+      // Opening a bot's conversation re-arms a stalled first-run turn, the
+      // way Grok re-kickstarts on openAgent: a cue stored while the app was
+      // closed, or a run that failed before the introduction, restarts now
+      // that someone is looking. Bots from before cues were pinned, or with a
+      // fully cleared history, get their first turn posted now — at most once
+      // ever. Already-working and introduced bots are untouched, and failures
+      // stay on the cue for the next attempt.
+      let openedBot = this.#team.botByConversation(conversationId);
+      if (openedBot) {
+        try {
+          openedBot = this.#team.ensureSetup(openedBot.id);
+        } catch {
+          // Keep the previously read bot; the checks below still apply.
+        }
+      }
+      if (openedBot?.setupPending === true) {
+        try {
+          this.#team.retrySetup(openedBot.id);
+          void this.#teamList().catch(() => {});
+        } catch {
+          // Introduced, working, or remotely owned since the list was read.
+        }
+      } else if (openedBot) {
+        // A stored peer message whose wakeup failed restarts now that someone
+        // is looking, mirroring the setup re-arm above.
+        try {
+          if (this.#team.retryRelayDelivery(conversationId)) void this.#teamList().catch(() => {});
+        } catch {
+          // Working or otherwise unable; explicit sends cover it.
+        }
+      }
       return this.#storage.listMessages(conversationId).map((message) => this.#messageDto(message));
     });
     this.#handle(
@@ -2576,6 +2664,9 @@ export class DesktopBackend {
     this.#handle(channels.teamProfiles, async (_event, hostId?: string) =>
       this.#teamProfiles(typeof hostId === "string" && hostId ? hostId : this.#team.host().hostId),
     );
+    this.#handle(channels.teamAgentRegistry, async (_event, hostId?: string) => this.#botAgentRegistry(hostId));
+    this.#handle(channels.teamAgentSettings, async (_event, id: string, request: import("@polymux/protocol").BotAgentSettingsRequest) =>
+      this.#botMutation(required(id, "Bot id"), "team.agentSettings", [request as unknown as JsonValue], memberId => this.#localBotAgentSettings(memberId, request)));
     this.#handle(channels.teamCreate, async (_event, value: CreateBotRequest) =>
       this.#createBot(value),
     );
@@ -2590,6 +2681,9 @@ export class DesktopBackend {
     ));
     this.#handle(channels.teamRemove, async (_event, id: string) =>
       this.#removeBot(required(id, "Team member id")),
+    );
+    this.#handle(channels.teamRetrySetup, async (_event, id: string) =>
+      this.#retryBotSetup(required(id, "Team member id")),
     );
     this.#handle(channels.teamSend, async (_event, value: SendAgentMessageRequest) => this.#sendTeamMessage(value));
     this.#handle(channels.teamComputerStart, async (_event, id: string) => this.#botMutation<BotDto>(
@@ -2818,7 +2912,11 @@ export class DesktopBackend {
     });
     this.#handle(channels.schedulesList, () => this.#scheduler.list());
     this.#handle(channels.schedulesCreate, (_event, value: unknown) =>
-      this.#scheduler.create(scheduleInput(value)),
+      {
+        const input = scheduleInput(value);
+        if (input.botId && !this.#bot(input.botId)) throw new Error("This bot is no longer available");
+        return this.#scheduler.create(input);
+      },
     );
     this.#handle(
       channels.schedulesUpdate,
@@ -3924,13 +4022,18 @@ export class DesktopBackend {
     this.#handle(channels.modelsClearRole, (_event, role: unknown) =>
       this.#clearRole(modelRole(role)),
     );
-    this.#handle(channels.modelsMetadata, () =>
-      this.#modelCatalog.metadataFor(
+    this.#handle(channels.modelsResetRole, (_event, role: unknown) =>
+      this.#resetRole(modelRole(role)),
+    );
+    this.#handle(channels.modelsMetadata, async () => {
+      const result = await this.#modelCatalog.metadataFor(
         this.#inference
           .listModels()
           .map((model) => ({ provider: model.provider, id: model.id })),
-      ),
-    );
+      );
+      this.#refreshCustomProviders();
+      return result;
+    });
     this.#handle(channels.workspacePreview, async (_event, target: unknown) => {
       const resolved = required(target, "file path");
       let stats: Stats;
@@ -4814,6 +4917,7 @@ export class DesktopBackend {
 
   async close(reason = "Polymux is closing"): Promise<void> {
     this.#closing = true;
+    this.#localUsage.close();
     this.#stopRemoteTeamRefresh();
     await this.#comms.close();
     if (this.#commsStatusTimer) clearInterval(this.#commsStatusTimer);
@@ -4834,9 +4938,9 @@ export class DesktopBackend {
     this.#scheduler.stop();
     this.#dictation.close();
     this.#permissionGuide?.close();
-    await this.#phone.close();
+    await this.#mobile.close();
     this.#terminal.closeAll();
-    this.#locker.close();
+    this.#vault.close();
     this.#stopCalendarChanges();
     this.#calendar.close();
     const activeRuns = [...this.#activeRuns.values()];
@@ -5116,11 +5220,27 @@ export class DesktopBackend {
   async #updateBot(id: string, request: UpdateBotRequest): Promise<BotDto> {
     const current = this.#bot(id);
     if (!current) throw new Error("Unknown Team member");
+    if (request.agentRuntime && current.status === "working" &&
+        JSON.stringify(agentRuntimeRequest(request.agentRuntime)) !== JSON.stringify(current.agentRuntime))
+      throw new Error("Wait for this bot to finish before changing its agent.");
     const targetHostId = request.hostId?.trim() || current.hostId;
     if (targetHostId !== current.hostId)
       return this.#moveBot(current, targetHostId, request);
     const host = this.#hostForMember(id);
-    if (host.mode === "local") return this.#team.update(id, request);
+    if (host.mode === "local") {
+      const updated = this.#team.update(id, request);
+      if (JSON.stringify(current.agentRuntime) !== JSON.stringify(updated.agentRuntime) || current.profileId !== updated.profileId || current.laptopAccess !== updated.laptopAccess ||
+          JSON.stringify(current.deviceAccess) !== JSON.stringify(updated.deviceAccess)) {
+        const cached = this.#teamRuntimes.get(id);
+        // ACP agents may cache allow_always decisions inside their session.
+        // Ending that process makes an edited device policy effective now.
+        if (cached?.runtime instanceof AcpAgentRuntime) {
+          this.#teamRuntimes.delete(id);
+          await cached.runtime.close();
+        }
+      }
+      return updated;
+    }
     const member = await this.#remoteTeamMutation<BotDto>(
       host.hostId,
       "team.update",
@@ -5142,10 +5262,12 @@ export class DesktopBackend {
       : await (await this.#remoteTeamClient(sourceHost.hostId)).call<BotTransfer>("team.export", [current.id]);
     transfer.member = {
       ...transfer.member,
+      ...(request.agentRuntime === undefined ? {} : {agentRuntime: agentRuntimeRequest(request.agentRuntime)}),
       ...(request.name === undefined ? {} : {name: request.name}),
       ...(request.role === undefined ? {} : {role: request.role}),
       ...(request.avatar === undefined ? {} : {avatar: request.avatar}),
       ...(request.laptopAccess === undefined ? {} : {laptopAccess: request.laptopAccess}),
+      ...(request.deviceAccess === undefined ? {} : {deviceAccess: request.deviceAccess}),
       ...(request.skills === undefined ? {} : {skills: request.skills}),
       ...(request.mcpServers === undefined ? {} : {mcpServers: request.mcpServers}),
       ...(request.plugins === undefined ? {} : {plugins: request.plugins}),
@@ -5190,7 +5312,123 @@ export class DesktopBackend {
     await this.#settleConversationRuns(member.conversationId, "Team member deleted");
     await this.#teamRuntimes.get(member.id)?.runtime.close?.();
     this.#teamRuntimes.delete(member.id);
-    return this.#team.remove(member.id);
+    const removed = await this.#team.remove(member.id);
+    // Schedules belong to the bot: without its conversation and computer they
+    // can never run again, so they go with it instead of failing on every firing.
+    if (removed) this.#retireBotSchedules(member.id);
+    return removed;
+  }
+
+  /** Drops a removed bot's schedules; its conversation and computer are gone with it. */
+  #retireBotSchedules(botId: string): void {
+    for (const item of this.#scheduler.list()) {
+      if (item.botId !== botId) continue;
+      try {
+        this.#scheduler.remove(item.id);
+      } catch {
+        // Already removed between the list and the remove.
+      }
+    }
+  }
+
+  /**
+   * A Team bot spawning a durable peer on the parent's Host. Local parents
+   * spawn locally (the setup cue and optional first task deliver through the
+   * local Host); remote parents spawn on their Host, which owns the new
+   * conversation, computer, and setup run.
+   */
+  async #spawnBot(request: CreateBotRequest & {prompt?: string; spawnKey?: string}, parentBotId: string): Promise<BotDto> {
+    const parent = this.#bot(parentBotId);
+    if (!parent) throw new Error("Unknown Team member");
+    const host = this.#hostForMember(parentBotId);
+    if (host.mode === "local") {
+      const created = this.#team.spawn(request, parentBotId);
+      await this.#teamList();
+      return {...created, hostId: host.hostId, hostName: host.deviceName};
+    }
+    const member = await this.#remoteTeamMutation<BotDto>(
+      host.hostId,
+      "team.spawn",
+      [request as unknown as JsonValue, parentBotId],
+    );
+    await this.#teamList();
+    return {...member, hostId: host.hostId, hostName: host.deviceName};
+  }
+
+  async #archiveSpawnedBot(parentBotId: string, confirmName: string, botId?: string): Promise<BotDto> {
+    const parent = this.#bot(parentBotId);
+    if (!parent) throw new Error("Unknown Team member");
+    const host = this.#hostForMember(parentBotId);
+    if (host.mode === "local") {
+      const archived = await this.#archiveLocalSpawn(parentBotId, confirmName, botId);
+      await this.#teamList();
+      return archived;
+    }
+    const member = await this.#remoteTeamMutation<BotDto>(
+      host.hostId,
+      "team.archiveSpawn",
+      [parentBotId, confirmName, ...(botId ? [botId] : [])],
+    );
+    await this.#teamList();
+    return {...member, hostId: host.hostId, hostName: host.deviceName};
+  }
+
+  /** Settles a spawned peer's runs before its conversation is removed, as with delete. */
+  async #archiveLocalSpawn(parentBotId: string, confirmName: string, botId?: string): Promise<BotDto> {
+    const target = this.#team.spawnedBot(parentBotId, confirmName, botId);
+    await this.#settleConversationRuns(target.conversationId, "Team member deleted");
+    await this.#teamRuntimes.get(target.id)?.runtime.close?.();
+    this.#teamRuntimes.delete(target.id);
+    const archived = await this.#team.archiveSpawnedBot(parentBotId, confirmName, botId);
+    this.#retireBotSchedules(archived.id);
+    return archived;
+  }
+
+  /**
+   * Re-delivers stalled first-run setup turns — cues stored while the app was
+   * closed, or runs that failed before the bot could introduce itself. This is
+   * the startup/open counterpart to the per-create kickstart, matching Grok's
+   * kickstart-on-ready and Rakazo's focus-prompt re-arm. Failures are recorded
+   * on the cue for the next attempt rather than surfacing as noise.
+   */
+  #ensurePendingBotSetups(): void {
+    for (const member of this.#team.list()) {
+      try {
+        this.#team.ensureSetup(member.id);
+      } catch {
+        // Already has a cue or history; the pending check below decides.
+      }
+    }
+    for (const member of this.#team.pendingBotSetups()) {
+      try {
+        this.#team.retrySetup(member.id);
+      } catch {
+        // Already working, already introduced, or remote-owned: the next
+        // trigger (open, configure, explicit retry) covers it.
+      }
+    }
+    for (const member of this.#team.list()) {
+      try {
+        this.#team.retryRelayDelivery(member.conversationId);
+      } catch {
+        // Nothing pending, still working, or setup first.
+      }
+    }
+    void this.#teamList().catch(() => {});
+  }
+
+  async #retryBotSetup(id: string): Promise<BotDto> {
+    const member = this.#bot(id);
+    if (!member) throw new Error("Unknown Team member");
+    const host = this.#hostForMember(id);
+    if (host.mode === "local") {
+      const retried = this.#team.retrySetup(id);
+      await this.#teamList();
+      return retried;
+    }
+    const retried = await this.#remoteTeamMutation<BotDto>(host.hostId, "team.retrySetup", [id]);
+    await this.#teamList();
+    return {...retried, hostId: host.hostId, hostName: host.deviceName};
   }
 
   async #botMutation<T>(
@@ -5415,8 +5653,8 @@ export class DesktopBackend {
           const request = await client.nextDeviceRequest();
           if (!this.#team.hosts().some(host => host.hostId === hostId)) return;
           if (!request) continue;
-          const resolution = await this.#resolveRemoteDeviceRequest(request);
-          await client.resolveDeviceRequest(request.id, resolution.approved, resolution.result);
+          const resolution = await this.#resolveRemoteDeviceRequest(request, client);
+          await client.resolveDeviceRequest(request.id, resolution.approved, resolution.result, resolution.approvedByUser);
         } catch {
           if (!this.#closing) await delay(1_000);
         }
@@ -5426,8 +5664,9 @@ export class DesktopBackend {
     }
   }
 
-  async #resolveRemoteDeviceRequest(request: TeamDeviceRequest): Promise<{
+  async #resolveRemoteDeviceRequest(request: TeamDeviceRequest, client: TeamHostClient): Promise<{
     approved: boolean;
+    approvedByUser?: boolean;
     result: AgentToolResult;
   }> {
     if (request.capability === "team" && request.tool === "agent_message") {
@@ -5472,25 +5711,28 @@ export class DesktopBackend {
     const tool = safeName ? this.#registry.get(request.tool) : undefined;
     if (!tool) return {
       approved: false,
-      result: {content: `The paired laptop refused unavailable ${request.capability} tool ${request.tool}.`, isError: true},
+      result: {content: `This device refused unavailable ${request.capability} tool ${request.tool}.`, isError: true},
     };
-    let approved = !request.requiresApproval;
-    if (request.requiresApproval) {
-      const answer = await dialog.showMessageBox(this.#window, {
-        type: "question",
-        title: `${request.memberName} needs this laptop`,
-        message: `Allow ${request.memberName} to use ${request.capability} controls on this laptop?`,
-        detail: `Polymux Host requested “${request.tool}”. Access lasts for 15 minutes and can be revoked from Team.`,
-        buttons: ["Allow for 15 minutes", "Deny"],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      });
-      approved = answer.response === 0;
-    }
+    const {approved, approvedByUser} = await authorizeDeviceRequest(
+      () => client.deviceRequestAccess(request.id),
+      async () => {
+        if (this.#closing || this.#window.isDestroyed()) return false;
+        const answer = await dialog.showMessageBox(this.#window, {
+          type: "question",
+          title: `${request.memberName} needs device access`,
+          message: `Allow ${request.memberName} to use ${request.capability} controls on ${this.#team.localHost().deviceName}?`,
+          detail: `Polymux Host requested “${request.tool}”. Access lasts for 15 minutes and can be revoked from Team.`,
+          buttons: ["Allow for 15 minutes", "Deny"],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        });
+        return answer.response === 0;
+      },
+    );
     if (!approved) return {
       approved: false,
-      result: {content: `${request.memberName} was not granted access to this laptop.`, isError: true},
+      result: {content: `${request.memberName} was not granted access to this device.`, isError: true},
     };
     try {
       const result = await tool.execute(request.input as JsonObject, {
@@ -5501,10 +5743,11 @@ export class DesktopBackend {
         signal: new AbortController().signal,
         emitProgress: async () => {},
       });
-      return {approved, result};
+      return {approved, approvedByUser, result};
     } catch (error) {
       return {
         approved,
+        approvedByUser,
         result: {content: error instanceof Error ? error.message : String(error), isError: true},
       };
     }
@@ -5551,12 +5794,88 @@ export class DesktopBackend {
     }
   }
 
+  #terminalConfiguration(conversationId: string): JsonValue {
+    if (!this.#storage.getConversation(conversationId)) throw new Error('Conversation not found');
+    const bot = this.#team.botByConversation(conversationId);
+    const ref = bot
+      ? modelPreference(this.#profiles.preference(`conversation.model:${conversationId}`, bot.profileId)?.value)
+        ?? modelPreference(this.#profiles.preference('model', bot.profileId)?.value) ?? this.#model
+      : this.#model;
+    const info = ref ? (bot ? this.#teamInference(bot) : this.#inference).getModel(ref) : undefined;
+    return {model: ref ? `${ref.provider}/${ref.id}` : null,
+      reasoning: bot ? this.#profiles.preference(`conversation.reasoning:${conversationId}`, bot.profileId)?.value ?? this.#generalSettings().reasoningLevel : this.#generalSettings().reasoningLevel,
+      contextWindow: info?.contextWindow ?? 0,
+      skills: bot ? bot.skills ?? [] : this.#skillDtos().filter(skill => skill.enabled).map(skill => skill.name),
+      mcps: bot ? bot.mcpServers ?? [] : this.#mcp.snapshots().filter(server => server.status === 'connected').map(server => server.id)};
+  }
+
   async #handleTeamHostCall(method: string, args: JsonValue[]): Promise<JsonValue> {
+    if ((SCHEDULE_HOST_METHODS as readonly string[]).includes(method))
+      return scheduleHostCall(this.#scheduler, method, args, id => {this.#team.require(id);});
     switch (method) {
+      case 'models.list': {
+        const bot = typeof args[0] === 'string' ? this.#team.botByConversation(args[0]) : undefined;
+        return (bot ? this.#teamInference(bot) : this.#inference).listModels().map(model => this.#modelDto(model)) as unknown as JsonValue;
+      }
+      case 'runs.configuration': return this.#terminalConfiguration(required(args[0], 'conversation id'));
+      case 'runs.configure': {
+        const id = required(args[0], 'conversation id');
+        const bot = this.#team.botByConversation(id);
+        if (!this.#storage.getConversation(id)) throw new Error('Conversation not found');
+        if (this.#activeTopLevelRuns().some(run => bot ? run.conversationId === id : !this.#team.botByConversation(run.conversationId))) throw new Error('Wait for active runs before changing model settings');
+        if (bot?.agentRuntime?.kind === 'acp') throw new Error('Configure this bot through its Agent settings');
+        const patch = args[1];
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('Expected model settings');
+        const effort = patch.reasoning === undefined ? undefined : reasoningEffort(patch.reasoning, null);
+        if (patch.reasoning !== undefined && !effort) throw new Error('Unknown reasoning effort');
+        if (patch.model !== undefined) {
+          const value = required(patch.model, 'model');
+          const slash = value.indexOf('/');
+          const ref = {provider: value.slice(0, slash), id: value.slice(slash + 1)};
+          if (slash < 1 || !(bot ? this.#teamInference(bot) : this.#inference).getModel(ref)) throw new Error('Unknown model');
+          if (bot) this.#profiles.setPreference(`conversation.model:${id}`, json(ref), bot.profileId);
+          else {await this.#assertProviderConfigured(ref.provider); this.#selectModel(ref);}
+        }
+        if (effort) {
+          if (bot) this.#profiles.setPreference(`conversation.reasoning:${id}`, effort, bot.profileId);
+          else this.#setReasoningLevel(effort);
+        }
+        // A model arriving for this conversation may unblock a stalled
+        // first-run turn that failed with "no model available".
+        if (bot?.setupPending === true) {
+          try {
+            this.#team.retrySetup(bot.id);
+            void this.#teamList().catch(() => {});
+          } catch {
+            // Still working or otherwise unable; open and explicit retry cover it.
+          }
+        }
+        return this.#terminalConfiguration(id);
+      }
+      case 'runs.updates': return {events: await this.#handleTeamHostCall('runs.events', args), draft: this.#terminalDrafts.get(required(args[0], 'run id')) ?? null} as unknown as JsonValue;
+
+      case 'usage.get': return this.#usageStats(args[0]) as unknown as JsonValue;
+      case 'tasks.snapshot': return taskOverview(this.#storage, this.#managerJobs.list()) as unknown as JsonValue;
+      case 'tasks.cancel': {
+        const id = required(args[0], 'Task');
+        if (id.startsWith('job:')) {
+          const job = this.#managerJobs.cancel(id.slice(4));
+          if (job.runId && this.#remoteRunHosts.has(job.runId))
+            await (await this.#remoteTeamClient(this.#remoteRunHosts.get(job.runId)!)).call('runs.cancel', [job.runId]);
+          if (job.runId) this.#activeRuns.get(job.runId)?.control.cancel();
+          this.#publishManagerJobs();
+        } else if (this.#remoteRunHosts.has(id))
+          await (await this.#remoteTeamClient(this.#remoteRunHosts.get(id)!)).call('runs.cancel', [id]);
+        else this.#activeRuns.get(id)?.control.cancel();
+        return null;
+      }
+      case "team.hosts": return this.#team.hosts() as unknown as JsonValue;
       case "team.list": return this.#team.list() as unknown as JsonValue;
       case "team.profiles": return this.#profilesForRenderer().profiles as unknown as JsonValue;
+      case "team.agentRegistry": return await listAcpRegistry() as unknown as JsonValue;
+      case "team.agentSettings": return await this.#localBotAgentSettings(required(args[0], "Bot id"), args[1] as unknown as import("@polymux/protocol").BotAgentSettingsRequest) as unknown as JsonValue;
       case "team.create": return this.#team.create(args[0] as unknown as CreateBotRequest) as unknown as JsonValue;
-      case "team.update": return this.#team.update(required(args[0], "Team member id"), args[1] as unknown as UpdateBotRequest) as unknown as JsonValue;
+      case "team.update": return await this.#updateBot(required(args[0], "Team member id"), args[1] as unknown as UpdateBotRequest) as unknown as JsonValue;
       case "team.markRead": return this.#team.markRead(required(args[0], "Team member id")) as unknown as JsonValue;
       case "team.remove": {
         const id = required(args[0], "Team member id");
@@ -5564,7 +5883,9 @@ export class DesktopBackend {
         await this.#settleConversationRuns(member.conversationId, "Team member deleted");
         await this.#teamRuntimes.get(id)?.runtime.close?.();
         this.#teamRuntimes.delete(id);
-        return await this.#team.remove(id);
+        const removed = await this.#team.remove(id);
+        if (removed) this.#retireBotSchedules(id);
+        return removed;
       }
       case "team.export": return await this.#team.exportBot(
         required(args[0], "Team member id"),
@@ -5585,13 +5906,34 @@ export class DesktopBackend {
         required(args[0], "Team member id"),
         Array.isArray(args[1]) ? args[1] as LaptopCapabilityLeaseDto["capabilities"] : [],
         typeof args[2] === "number" ? args[2] : undefined,
+        typeof args[3] === "string" ? args[3] : undefined,
       ) as unknown as JsonValue;
       case "team.revokeLease": return this.#team.revokeLease(required(args[0], "lease id"));
+      case "team.retrySetup": {
+        return this.#team.retrySetup(required(args[0], "Team member id")) as unknown as JsonValue;
+      }
+      case "team.spawn": return this.#team.spawn(
+        args[0] as unknown as CreateBotRequest & {prompt?: string; spawnKey?: string},
+        required(args[1], "Parent bot id"),
+      ) as unknown as JsonValue;
+      case "team.archiveSpawn": {
+        const spawner = required(args[0], "Parent bot id");
+        const spawnedName = required(args[1], "Bot name");
+        const spawnedId = typeof args[2] === "string" ? args[2] : undefined;
+        const target = this.#team.spawnedBot(spawner, spawnedName, spawnedId);
+        await this.#settleConversationRuns(target.conversationId, "Team member deleted");
+        await this.#teamRuntimes.get(target.id)?.runtime.close?.();
+        this.#teamRuntimes.delete(target.id);
+        const archived = await this.#team.archiveSpawnedBot(spawner, spawnedName, spawnedId) as unknown as BotDto;
+        this.#retireBotSchedules(archived.id);
+        return archived as unknown as JsonValue;
+      }
       case 'assistant.ensure': {
         const id = required(args[0], 'conversation id');
         if (this.#team.botByConversation(id)) throw new Error('This id belongs to a bot.');
         return (this.#storage.getConversation(id) ?? this.#storage.createConversation({id, title: typeof args[1] === 'string' ? args[1] : 'Assistant'})) as unknown as JsonValue;
       }
+      case 'conversations.fork': return forkConversation(this.#storage, required(args[0], 'conversation id'), required(args[1], 'message id')) as unknown as JsonValue;
       case 'conversations.duplicate': return duplicateConversation(this.#storage, required(args[0], 'conversation id'), args[1] === undefined ? undefined : required(args[1], 'fork message id')) as unknown as JsonValue;
       case "conversations.list": return this.#team.assistantConversations() as unknown as JsonValue;
       case "conversations.listArchived": return this.#team.archivedAssistantConversations() as unknown as JsonValue;
@@ -5613,7 +5955,7 @@ export class DesktopBackend {
       ) as unknown as JsonValue;
       case "conversations.remove": {
         const conversationId = required(args[0], "conversation id");
-        await this.#settleConversationRuns(conversationId, "Conversation deleted from Polymux Phone");
+        await this.#settleConversationRuns(conversationId, "Conversation deleted from Polymux Mobile");
         this.#runResources.forget(conversationId);
         const removed = this.#storage.deleteConversation(conversationId);
         if (this.#managerJobs.removeChat(conversationId)) this.#publishManagerJobs();
@@ -5649,8 +5991,7 @@ export class DesktopBackend {
       ) as unknown as JsonValue;
       case "hub.sendFiles": return await this.#mobileHubSendFiles(args[0], args[1]);
       case "runs.start": return await this.#startLocalRun(validateStartRun(args[0])) as unknown as JsonValue;
-      case "runs.active": return this.#activeTopLevelRuns()
-        .filter((run) => Boolean(this.#team.botByConversation(run.conversationId))) as unknown as JsonValue;
+      case "runs.active": return this.#activeTopLevelRuns() as unknown as JsonValue;
       case "runs.activeAll": return this.#activeTopLevelRuns().filter(run => !this.#remoteRunHosts.has(run.runId)) as unknown as JsonValue;
       case "runs.cancel": {
         this.#activeRuns.get(required(args[0], "run id"))?.control.cancel();
@@ -5678,38 +6019,38 @@ export class DesktopBackend {
         return this.#storage.listRunEvents(runId, typeof args[1] === "number" ? args[1] : 0)
           .map((event) => storedEventDto(event, conversationId, run?.parentRunId ?? null)) as unknown as JsonValue;
       }
-      case "locker.status": return this.#locker.status() as unknown as JsonValue;
-      case "locker.create": return await this.#locker.create(lockerPassword(args[0])) as unknown as JsonValue;
-      case "locker.unlock": return await this.#locker.unlock(lockerPassword(args[0])) as unknown as JsonValue;
-      case "locker.lock": return this.#locker.lock() as unknown as JsonValue;
-      case "locker.list": return this.#locker.list() as unknown as JsonValue;
-      case "locker.reveal": return this.#locker.reveal(lockerId(args[0])) as unknown as JsonValue;
-      case "locker.totp": return this.#locker.totp(lockerId(args[0])) as unknown as JsonValue;
-      case "locker.save": return await this.#locker.save(lockerItemInput(args[0])) as unknown as JsonValue;
-      case "locker.remove": return await this.#locker.remove(lockerId(args[0])) as unknown as JsonValue;
-      case "locker.restore": return await this.#locker.restore(lockerIds(args[0])) as unknown as JsonValue;
-      case "locker.purge": return await this.#locker.purge(lockerIds(args[0])) as unknown as JsonValue;
-      case "locker.emptyTrash": return await this.#locker.emptyTrash() as unknown as JsonValue;
-      case "locker.pin": return await this.#locker.pin(lockerIds(args[0]), args[1] === true) as unknown as JsonValue;
-      case "locker.reorder": return await this.#locker.reorder(lockerIds(args[0])) as unknown as JsonValue;
-      case "locker.changePassword": return await this.#locker.changePassword(
-        lockerPassword(args[0], "Current password"),
-        lockerPassword(args[1], "New password"),
+      case "vault.status": return this.#vault.status() as unknown as JsonValue;
+      case "vault.create": return await this.#vault.create(vaultPassword(args[0])) as unknown as JsonValue;
+      case "vault.unlock": return await this.#vault.unlock(vaultPassword(args[0])) as unknown as JsonValue;
+      case "vault.lock": return this.#vault.lock() as unknown as JsonValue;
+      case "vault.list": return this.#vault.list() as unknown as JsonValue;
+      case "vault.reveal": return this.#vault.reveal(vaultId(args[0])) as unknown as JsonValue;
+      case "vault.totp": return this.#vault.totp(vaultId(args[0])) as unknown as JsonValue;
+      case "vault.save": return await this.#vault.save(vaultItemInput(args[0])) as unknown as JsonValue;
+      case "vault.remove": return await this.#vault.remove(vaultId(args[0])) as unknown as JsonValue;
+      case "vault.restore": return await this.#vault.restore(vaultIds(args[0])) as unknown as JsonValue;
+      case "vault.purge": return await this.#vault.purge(vaultIds(args[0])) as unknown as JsonValue;
+      case "vault.emptyTrash": return await this.#vault.emptyTrash() as unknown as JsonValue;
+      case "vault.pin": return await this.#vault.pin(vaultIds(args[0]), args[1] === true) as unknown as JsonValue;
+      case "vault.reorder": return await this.#vault.reorder(vaultIds(args[0])) as unknown as JsonValue;
+      case "vault.changePassword": return await this.#vault.changePassword(
+        vaultPassword(args[0], "Current password"),
+        vaultPassword(args[1], "New password"),
       ) as unknown as JsonValue;
-      case "locker.codes": return this.#locker.codes() as unknown as JsonValue;
-      case "locker.otpauth": return this.#locker.otpauth(lockerId(args[0])) as unknown as JsonValue;
-      case "locker.copy": return this.#locker.copyText(
-        lockerId(args[0]),
-        lockerCopyField(args[1]),
+      case "vault.codes": return this.#vault.codes() as unknown as JsonValue;
+      case "vault.otpauth": return this.#vault.otpauth(vaultId(args[0])) as unknown as JsonValue;
+      case "vault.copy": return this.#vault.copyText(
+        vaultId(args[0]),
+        vaultCopyField(args[1]),
         typeof args[2] === "number" ? args[2] : undefined,
       );
-      case "locker.sync": return await this.#locker.hydrate() as unknown as JsonValue;
-      case "locker.setStorage": return await this.#locker.setStorage(
-        lockerStorageMode(args[0]),
-        lockerStorageResolve(args[1]),
+      case "vault.sync": return await this.#vault.hydrate() as unknown as JsonValue;
+      case "vault.setStorage": return await this.#vault.setStorage(
+        vaultStorageMode(args[0]),
+        vaultStorageResolve(args[1]),
       ) as unknown as JsonValue;
-      case "locker.export": return this.#locker.exportVault() as unknown as JsonValue;
-      case "locker.import": return await this.#locker.importVault(lockerVaultBlob(args[0])) as unknown as JsonValue;
+      case "vault.export": return this.#vault.exportVault() as unknown as JsonValue;
+      case "vault.import": return await this.#vault.importVault(vaultBlob(args[0])) as unknown as JsonValue;
       default: throw new Error(`Unsupported Host method: ${method}`);
     }
   }
@@ -5988,7 +6329,7 @@ export class DesktopBackend {
       reuseUserMessage: Boolean(request.reuseUserMessage || request.rewind),
       attachments: request.attachments,
       asGoal: request.asGoal,
-      reasoning: request.reasoning,
+      reasoning: request.reasoning ?? (bot ? reasoningEffort(this.#profiles.preference(`conversation.reasoning:${bot.conversationId}`, bot.profileId)?.value, null) ?? undefined : undefined),
       speechMode: request.speechMode,
       runId,
       contextThroughSequence: request.contextThroughSequence,
@@ -6118,12 +6459,16 @@ export class DesktopBackend {
     const previous = schedule.history.find(
       (entry) => entry.conversationId,
     )?.conversationId;
-    const conversationId =
+    const bot = schedule.botId ? this.#bot(schedule.botId) : null;
+    if (schedule.botId && !bot) throw new Error("This bot is no longer available");
+    const conversationId = bot?.conversationId ??
       (previous && this.#storage.getConversation(previous)?.id) ??
       this.#storage.createConversation({
         id: randomUUID(),
         title: schedule.title,
       }).id;
+    if (bot && this.#activeTopLevelRuns().some(run => run.conversationId === conversationId))
+      throw new Error(`${bot.name} is already working. Run this schedule again when it finishes.`);
     const before = this.#storage.listMessages(conversationId).length;
     const { runId } = await this.#startRun({
       conversationId,
@@ -6131,17 +6476,38 @@ export class DesktopBackend {
       messageId: randomUUID(),
       attachments: [],
     } as ReturnType<typeof validateStartRun>);
+    if (bot && bot.hostId !== this.#team.localHost().hostId) {
+      let sequence = 0;
+      let summary = '';
+      const deadline = Date.now() + 24 * 60 * 60 * 1000;
+      while (!this.#closing && Date.now() < deadline) {
+        const events = await (await this.#remoteTeamClient(bot.hostId)).call<RunEventDto[]>('runs.events', [runId, sequence]);
+        for (const event of events) {
+          sequence = Math.max(sequence, event.sequence);
+          if (event.type === 'message.completed' && event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)) {
+            const message = event.payload.message;
+            if (message && typeof message === 'object' && !Array.isArray(message) && message.role === 'assistant')
+              summary = assistantText(message.content);
+          }
+          if (event.type === 'run.failed' || event.type === 'run.cancelled')
+            throw new Error(event.type === 'run.cancelled' ? 'The scheduled run was cancelled' : 'The scheduled run failed');
+          if (event.type === 'run.completed') return {conversationId, runId, summary: summary.trim().slice(-1200) || undefined};
+        }
+        await delay(500);
+      }
+      throw new Error('Stopped waiting for the scheduled run; its completion could not be verified');
+    }
     this.#scheduledRunIds.add(runId);
     const active = this.#activeRuns.get(runId);
     // #forwardEvents owns the events and the settling; awaiting the same
     // promise here only waits for the end of it.
     if (active) await active.result;
     const run = this.#storage.getRun(runId);
-    if (run?.status === "failed")
+    if (!run || run.status !== "completed")
       throw new Error(
-        typeof run.error === "string" && run.error
+        typeof run?.error === "string" && run.error
           ? run.error
-          : "The scheduled run failed",
+          : "The scheduled run did not complete",
       );
     return {
       conversationId,
@@ -6289,6 +6655,10 @@ export class DesktopBackend {
     try {
       for await (const event of active.events) {
         const run = this.#storage.getRun(runId);
+        if (event.type === 'message.text.delta') {
+          const previous = this.#terminalDrafts.get(runId);
+          this.#terminalDrafts.set(runId, {turn: event.turn, text: (previous?.turn === event.turn ? previous.text : '') + event.delta, timestamp: event.timestamp});
+        } else if (event.type === 'message.completed' || event.type === 'model.started') this.#terminalDrafts.delete(runId);
         const conversationId = run?.conversationId ?? "";
         // Links the reply cites and files written during the run feed the
         // Summary panel.
@@ -6305,6 +6675,7 @@ export class DesktopBackend {
       // still lets the renderer replace optimistic state with stored messages.
     } finally {
       this.#browserResearchTool?.cleanupRun(runId);
+      this.#terminalDrafts.delete(runId);
       this.#activeRuns.delete(runId);
       this.#team.publish();
       const settledRun = this.#storage.getRun(runId);
@@ -6335,7 +6706,7 @@ export class DesktopBackend {
       if (this.#activeRuns.size === 0 && this.#mcpReloadPending)
         await this.#reloadMcpAndPublish();
       this.#notifyRunSettled(runId);
-      if (!this.#storage.getRun(runId)?.parentRunId) void this.#teamHostServer.notifyPhones();
+      if (!this.#storage.getRun(runId)?.parentRunId) void this.#teamHostServer.notifyMobiles();
       if (!this.#window.isDestroyed()) {
         const settled = this.#storage.getRun(runId);
         const conversationId = settled?.conversationId ?? "";
@@ -6486,14 +6857,22 @@ export class DesktopBackend {
 
   #usageStats(value: unknown): UsageStatsDto {
     const filter = value && typeof value === "object" ? value as Record<string, unknown> : {};
-    const scope = filter.scope === "assistant" || filter.scope === "team" ? filter.scope : "all";
+    const scope = filter.scope === "polymux" || filter.scope === "assistant" || filter.scope === "team" ? filter.scope : "all";
     const agentId = typeof filter.agentId === "string" && filter.agentId.trim() ? filter.agentId.trim() : null;
     const source = this.#storage.loadUsageSource();
     for (const run of source.runs) {
       if (run.agent?.kind !== "acp") continue;
       run.agent.id = externalAgentId({kind: "acp", agentId: run.agent.id, name: run.agent.name, command: "", args: []});
     }
+    const local = scope === "all" ? this.#localUsage.snapshot(filter.refresh === true) : null;
+    if (local) {
+      source.runs = source.runs.concat(local.source.runs);
+      source.conversations = source.conversations.concat(local.source.conversations);
+      source.toolCounts = source.toolCounts.concat(local.source.toolCounts);
+      source.skillTurns = source.skillTurns.concat(local.source.skillTurns);
+    }
     return {
+      ...(local ? {discovery: local.discovery} : {}),
       identity: this.#usageIdentity(),
       ...summarizeUsage(source, new Date(), {scope, agentId}, this.#usageCatalog()),
     };
@@ -7195,7 +7574,8 @@ export class DesktopBackend {
       this.#agentRuntime = new BuiltinAgentRuntime(this.#agent);
   }
 
-  #runtimeConfig(profileId = this.#profiles.snapshot().activeId): AgentRuntimeConfig {
+  #runtimeConfig(profileId?: string): AgentRuntimeConfig {
+    if (profileId === undefined) return {kind: "polymux"};
     const stored = this.#profiles.preference("agent-runtime", profileId)?.value;
     if (!stored || typeof stored !== "object" || Array.isArray(stored) || stored.kind !== "acp")
       return {kind: "polymux"};
@@ -7323,7 +7703,7 @@ export class DesktopBackend {
     if (needsReload) setTimeout(() => this.#reloadForProfileChange?.(), 0);
     else if (result.activeId === targetId) {
       await this.#agentRuntime?.close?.();
-      this.#configureAgentRuntime(runtime);
+      this.#configureAgentRuntime();
       if (request.mode === "merge") await this.reloadMcp();
     }
     return result;
@@ -7365,18 +7745,62 @@ export class DesktopBackend {
     this.#agentRuntime = this.#agent ? new BuiltinAgentRuntime(this.#agent) : undefined;
   }
 
-  async #teamRuntime(member: BotDto): Promise<AgentRuntime> {
-    const config = this.#runtimeConfig(member.profileId);
-    const key = JSON.stringify({
+  async #botAgentRegistry(hostId?: string): Promise<import("@polymux/protocol").AcpRegistryEntryDto[]> {
+    const host = this.#team.hosts().find(item => item.hostId === (hostId || this.#team.host().hostId));
+    if (!host) throw new Error("Unknown bot Host");
+    return host.mode === "local" ? listAcpRegistry()
+      : (await this.#remoteTeamClient(host.hostId)).call("team.agentRegistry", []);
+  }
+
+  async #localBotAgentSettings(id: string, request: import("@polymux/protocol").BotAgentSettingsRequest): Promise<import("@polymux/protocol").BotAgentSettingsDto> {
+    const member = this.#team.require(id);
+    if (member.status === "working") throw new Error("Wait for this bot to finish before configuring its agent.");
+    if (!request || typeof request !== "object") throw new Error("Invalid bot settings request");
+    let config = member.agentRuntime ? agentRuntimeRequest(member.agentRuntime) : this.#runtimeConfig(member.profileId);
+    const runtime = await this.#teamRuntime(member);
+    if (!(runtime instanceof AcpAgentRuntime) || config.kind !== "acp") {
+      if (request.action !== "get") throw new Error("This bot does not expose ACP settings.");
+      return {runtime: config, settings: {authMethods: [], authRequired: false, supportsLogout: false, configOptions: [], providers: [], supportsProviders: false}};
+    }
+    let settings: import("@polymux/protocol").AgentSettingsDto;
+    switch (request.action) {
+      case "get": settings = await runtime.settings(); break;
+      case "authenticate": settings = await runtime.authenticate(required(request.methodId, "Authentication method")); break;
+      case "logout": settings = await runtime.logout(); break;
+      case "option": {
+        const optionId = required(request.id, "Agent option");
+        if (typeof request.value !== "string" && typeof request.value !== "boolean") throw new Error("Invalid agent option value");
+        settings = await runtime.setConfigOption(optionId, request.value);
+        config = {...config, config: {...config.config, [optionId]: request.value}};
+        this.#team.update(id, {agentRuntime: config});
+        const cached = this.#teamRuntimes.get(id);
+        if (cached) cached.key = this.#teamRuntimeKey({...member, agentRuntime: config}, config);
+        break;
+      }
+      case "provider": settings = await runtime.setProvider(agentProviderRequest(request.provider)); break;
+      case "disableProvider": settings = await runtime.disableProvider(required(request.id, "Provider")); break;
+      default: throw new Error("Unknown bot settings action");
+    }
+    return {runtime: config, settings};
+  }
+
+  #teamRuntimeKey(member: BotDto, config: AgentRuntimeConfig): string {
+    return JSON.stringify({
       profileId: member.profileId,
       runtime: config,
-      model: this.#profiles.preference("model", member.profileId)?.value ?? null,
+      model: this.#profiles.preference(`conversation.model:${member.conversationId}`, member.profileId)?.value ?? this.#profiles.preference("model", member.profileId)?.value ?? null,
       roles: this.#profiles.preference("model-roles", member.profileId)?.value ?? null,
-      source: this.#profiles.snapshot().profiles.find((profile) => profile.id === member.profileId)?.source ?? null,
+      source: this.#profiles.snapshot().profiles.find(profile => profile.id === member.profileId)?.source ?? null,
       skills: member.skills ?? null,
       mcpServers: member.mcpServers ?? null,
       plugins: member.plugins ?? null,
+      ...(config.kind === "acp" ? {laptopAccess: member.laptopAccess, deviceAccess: member.deviceAccess ?? {}} : {}),
     });
+  }
+
+  async #teamRuntime(member: BotDto): Promise<AgentRuntime> {
+    const config = member.agentRuntime ? agentRuntimeRequest(member.agentRuntime) : this.#runtimeConfig(member.profileId);
+    const key = this.#teamRuntimeKey(member, config);
     const existing = this.#teamRuntimes.get(member.id);
     if (existing?.key === key) return existing.runtime;
     await existing?.runtime.close?.();
@@ -7408,13 +7832,10 @@ export class DesktopBackend {
       config.configId ?? config.agentId ?? "agent",
     );
     const managedHome = path.join(runtimeRoot, "home");
-    const configurationDirectory = profile.source?.agentId === config.agentId
-      ? profile.source.directory
-      : managedExternalConfigurationDirectory(config, runtimeRoot, managedHome);
+    // ACP writes only to this bot's home, including authentication and providers.
+    const configurationDirectory = managedExternalConfigurationDirectory(config, runtimeRoot, managedHome);
     const cwd = path.join(runtimeRoot, "workspace");
-    if (profile.source && !existsSync(configurationDirectory))
-      throw new Error(`${profile.name}'s external configuration folder is missing`);
-    if (!profile.source) mkdirSync(configurationDirectory, {recursive: true});
+    mkdirSync(configurationDirectory, {recursive: true});
     mkdirSync(managedHome, {recursive: true});
     mkdirSync(cwd, {recursive: true});
     return new AcpAgentRuntime(
@@ -7425,16 +7846,16 @@ export class DesktopBackend {
       },
       this.#storage,
       appVersion().version,
-      // Re-read policy at request time: switching Laptop access to Off revokes
+      // Re-read policy at request time: restricting this device revokes
       // authority even if this ACP process was already connected.
-      (request) => this.#requestTeamAcpPermission(this.#team.bot(member.id) ?? member, request),
+      (request) => this.#requestTeamAcpPermission(member.id, request),
       () => this.#teamAcpMcpServers(this.#team.bot(member.id) ?? member),
       (conversationId) => this.#teamToolMcp.revoke(conversationId),
     );
   }
 
-  #teamBuiltinRuntime(member: BotDto): AgentRuntime {
-    const profile = this.#profiles.snapshot().profiles.find((candidate) => candidate.id === member.profileId);
+  #teamInference(member: BotDto): InferenceService {
+    const profile = this.#profiles.snapshot().profiles.find(candidate => candidate.id === member.profileId);
     if (!profile) throw new Error("This bot's profile no longer exists");
     const profileDirectory = this.#profiles.directory(profile.id);
     const credentials = new EncryptedCredentialStore(
@@ -7448,18 +7869,7 @@ export class DesktopBackend {
     for (const config of customProviderPreference(
       this.#profiles.preference("custom-providers", profile.id)?.value,
     )) {
-      const providerModels: Array<Model<"openai-completions">> = config.models.map((model) => ({
-        id: model.id,
-        name: model.name,
-        api: "openai-completions",
-        provider: config.id,
-        baseUrl: config.baseUrl,
-        reasoning: false,
-        input: ["text"],
-        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
-        contextWindow: 128_000,
-        maxTokens: 8_192,
-      }));
+      const providerModels = this.#customProviderModels(config);
       models.setProvider(createProvider({
         id: config.id,
         name: config.name,
@@ -7481,7 +7891,15 @@ export class DesktopBackend {
       new PiInference(models),
       new EncryptedApiKeyPool(path.join(profileDirectory, "api-keys.json"), safeStorage),
     );
-    const preferred = modelPreference(this.#profiles.preference("model", profile.id)?.value);
+    return inference;
+  }
+
+  #teamBuiltinRuntime(member: BotDto): AgentRuntime {
+    const profile = this.#profiles.snapshot().profiles.find((candidate) => candidate.id === member.profileId);
+    if (!profile) throw new Error("This bot's profile no longer exists");
+    const profileDirectory = this.#profiles.directory(profile.id);
+    const inference = this.#teamInference(member);
+    const preferred = modelPreference(this.#profiles.preference(`conversation.model:${member.conversationId}`, profile.id)?.value) ?? modelPreference(this.#profiles.preference("model", profile.id)?.value);
     const availableModels = inference.listModels();
     const lastUsed = preferred && inference.getModel(preferred)
       ? preferred
@@ -7526,17 +7944,19 @@ export class DesktopBackend {
       environment: {
         promptContext: () => {
           const context = this.#environmentPromptContext();
-          const capabilities = new Set(
-            this.#team.leases(member.id).flatMap((lease) => lease.capabilities),
-          );
+          const current = this.#team.bot(member.id) ?? member;
+          const hostId = this.#team.localHost().hostId;
+          const access = this.#team.deviceAccessMode(current, hostId);
+          const hasAccess = (capability: "browser" | "computer") => access === "allow" ||
+            access === "ask" && this.#team.hasDeviceLease(member.id, hostId, capability);
           return {
             ...context,
             identityScoped: true,
             locationEnabled: false,
             location: undefined,
-            browserTabs: capabilities.has("browser") ? context.browserTabs : [],
-            externalBrowserTabs: capabilities.has("browser") ? context.externalBrowserTabs : [],
-            windows: capabilities.has("computer") ? context.windows : [],
+            browserTabs: hasAccess("browser") ? context.browserTabs : [],
+            externalBrowserTabs: hasAccess("browser") ? context.externalBrowserTabs : [],
+            windows: hasAccess("computer") ? context.windows : [],
           };
         },
       },
@@ -7656,31 +8076,34 @@ export class DesktopBackend {
   }
 
   async #requestTeamAcpPermission(
-    member: BotDto,
+    memberId: string,
     request: import("@agentclientprotocol/sdk").RequestPermissionRequest,
   ): Promise<import("@agentclientprotocol/sdk").RequestPermissionResponse> {
-    const reject = request.options.find(
-      (option) => option.kind === "reject_once" || option.kind === "reject_always",
-    );
-    if (member.laptopAccess === "off" || this.#closing || this.#window.isDestroyed())
-      return reject
-        ? {outcome: {outcome: "selected", optionId: reject.optionId}}
+    return requestTeamAcpPermission(() => {
+      const current = this.#team.bot(memberId);
+      return !current || this.#closing || this.#window.isDestroyed()
+        ? "off"
+        : this.#team.deviceAccessMode(current, this.#team.localHost().hostId);
+    }, request, async () => {
+      const member = this.#team.require(memberId);
+      const rejectIndex = request.options.findIndex(
+        (option) => option.kind === "reject_once" || option.kind === "reject_always",
+      );
+      const {response} = await dialog.showMessageBox(this.#window, {
+        type: "question",
+        title: `${member.name} needs permission`,
+        message: request.toolCall.title || `${member.name} wants to use a tool`,
+        detail: `${member.name} is running ${member.profileName}'s configured agent. Choose exactly what it may do.`,
+        buttons: request.options.map((option) => option.name),
+        cancelId: rejectIndex,
+        defaultId: rejectIndex >= 0 ? rejectIndex : 0,
+        noLink: true,
+      });
+      const option = request.options[response];
+      return option
+        ? {outcome: {outcome: "selected", optionId: option.optionId}}
         : {outcome: {outcome: "cancelled"}};
-    const rejectIndex = reject ? request.options.indexOf(reject) : -1;
-    const {response} = await dialog.showMessageBox(this.#window, {
-      type: "question",
-      title: `${member.name} needs permission`,
-      message: request.toolCall.title || `${member.name} wants to use a tool`,
-      detail: `${member.name} is running ${member.profileName}'s configured agent. Choose exactly what it may do.`,
-      buttons: request.options.map((option) => option.name),
-      cancelId: rejectIndex,
-      defaultId: rejectIndex >= 0 ? rejectIndex : 0,
-      noLink: true,
     });
-    const option = request.options[response];
-    return option
-      ? {outcome: {outcome: "selected", optionId: option.optionId}}
-      : {outcome: {outcome: "cancelled"}};
   }
 
   async #requestTeamLaptopAccess(
@@ -7691,9 +8114,9 @@ export class DesktopBackend {
     if (this.#closing || this.#window.isDestroyed()) return false;
     const {response} = await dialog.showMessageBox(this.#window, {
       type: "question",
-      title: `${memberName} needs this laptop`,
-      message: `Allow ${memberName} to use ${capability} on this laptop for 15 minutes?`,
-      detail: `${tool} will run through the local Polymux device broker. The bot's isolated computer receives no laptop mount or reusable credential.`,
+      title: `${memberName} needs device access`,
+      message: `Allow ${memberName} to use ${capability} on ${this.#team.localHost().deviceName} for 15 minutes?`,
+      detail: `${tool} will run through the local Polymux device broker. The bot's isolated computer receives no device mount or reusable credential.`,
       buttons: ["Not now", "Allow for 15 minutes"],
       cancelId: 0,
       defaultId: 0,
@@ -7744,7 +8167,9 @@ export class DesktopBackend {
   /** A stored override only counts while the model it names still exists. */
   #usableRole(role: ModelRole): RoleSelection | undefined {
     const ref = this.#roleOverrides[role];
-    return ref && this.#inference.getModel(ref) ? ref : undefined;
+    if (!ref) return undefined;
+    if (ref.provider === "none" && ref.id === "none") return undefined;
+    return this.#inference.getModel(ref) ? ref : undefined;
   }
 
   /** Re-derives what follows from role assignments after provider or model
@@ -7769,11 +8194,22 @@ export class DesktopBackend {
       ref: RoleSelection | undefined,
     ): ModelRoleAssignmentDto | null => {
       if (!ref) return null;
+      if (ref.provider === "none" && ref.id === "none") {
+        return {
+          provider: "none",
+          id: "none",
+          name: "None",
+        };
+      }
       const model = this.#inference.getModel(ref);
       if (!model) return null;
       // A model that never reasons reports no level, so the row can say so
       // rather than implying a choice the provider ignores.
-      const reasoning = model.reasoning ? ref.reasoning : undefined;
+      const isReasoning =
+        model.reasoning ||
+        (this.#modelCatalog.lookup(ref.id, ref.provider)?.reasoning ??
+          isReasoningModelId(ref.id, model.name));
+      const reasoning = isReasoning ? ref.reasoning : undefined;
       return {
         provider: ref.provider,
         id: ref.id,
@@ -7781,23 +8217,22 @@ export class DesktopBackend {
         ...(reasoning ? { reasoning } : {}),
       };
     };
-    // Main's level is the one runs are started at, which the composer owns, so
-    // it is read back from the general settings rather than stored twice.
+    const mainRef =
+      this.#roleOverrides.main ??
+      (this.#model
+        ? {
+            ...this.#model,
+            reasoning: this.#generalSettings().reasoningLevel,
+          }
+        : undefined);
     return {
-      main: assignment(
-        this.#model
-          ? {
-              ...this.#model,
-              reasoning: this.#generalSettings().reasoningLevel,
-            }
-          : undefined,
-      ),
-      subagent: assignment(this.#usableRole("subagent")),
-      judge: assignment(this.#usableRole("judge")),
-      compaction: assignment(this.#usableRole("compaction")),
-      speech: assignment(this.#usableRole("speech")),
-      image: assignment(this.#usableRole("image")),
-      video: assignment(this.#usableRole("video")),
+      main: assignment(mainRef),
+      subagent: assignment(this.#roleOverrides.subagent),
+      judge: assignment(this.#roleOverrides.judge),
+      compaction: assignment(this.#roleOverrides.compaction),
+      speech: assignment(this.#roleOverrides.speech),
+      image: assignment(this.#roleOverrides.image),
+      video: assignment(this.#roleOverrides.video),
     };
   }
 
@@ -7805,34 +8240,59 @@ export class DesktopBackend {
     role: ModelRole,
     ref: RoleSelection,
   ): Promise<ModelRolesDto> {
-    await this.#assertProviderConfigured(ref.provider);
-    if (role === "main") {
-      this.#selectModel(ref);
-      // Main runs read their level from the general settings, so a level chosen
-      // with the main model lands there — the composer picks it up as its own.
-      if (ref.reasoning) this.#setReasoningLevel(ref.reasoning);
-      return this.#modelRoles();
+    if (ref.provider !== "none") {
+      await this.#assertProviderConfigured(ref.provider);
+      if (!this.#inference.getModel(ref))
+        throw new Error(`Unknown model: ${ref.provider}/${ref.id}`);
     }
-    if (!this.#inference.getModel(ref))
-      throw new Error(`Unknown model: ${ref.provider}/${ref.id}`);
     this.#roleOverrides = { ...this.#roleOverrides, [role]: ref };
     this.#persistRoles();
+    if (role === "main") {
+      if (ref.provider === "none") {
+        this.#model = undefined;
+        this.#setProfilePreference("model", { provider: "none", id: "none" });
+      } else {
+        this.#selectModel(ref);
+        // Main runs read their level from the general settings, so a level chosen
+        // with the main model lands there — the composer picks it up as its own.
+        if (ref.reasoning) this.#setReasoningLevel(ref.reasoning);
+      }
+      return this.#modelRoles();
+    }
     // A deliberate assignment always turns speech mode on; the transition
     // logic in the reconcile then only aligns its marker.
-    this.#setSpeechModeForRoleChange(role, true);
+    this.#setSpeechModeForRoleChange(role, ref.provider !== "none");
     this.#reconcileRoles(false);
     return this.#modelRoles();
   }
 
   #clearRole(role: ModelRole): ModelRolesDto {
-    // The main model is what everything else falls back to, so there is
-    // nothing to clear it to.
-    if (role === "main") throw new Error("The main model cannot be cleared");
+    this.#roleOverrides = {
+      ...this.#roleOverrides,
+      [role]: { provider: "none", id: "none" },
+    };
+    this.#persistRoles();
+    if (role === "main") {
+      this.#model = undefined;
+      this.#setProfilePreference("model", { provider: "none", id: "none" });
+      return this.#modelRoles();
+    }
+    // Deliberately clearing speech switches speech mode off; the reconcile
+    // then aligns its assignment marker.
+    this.#setSpeechModeForRoleChange(role, false);
+    this.#reconcileRoles(false);
+    return this.#modelRoles();
+  }
+
+  #resetRole(role: ModelRole): ModelRolesDto {
     const { [role]: _removed, ...rest } = this.#roleOverrides;
     this.#roleOverrides = rest;
     this.#persistRoles();
-    // Deliberately clearing speech switches speech mode off; the reconcile
-    // then aligns its assignment marker.
+    if (role === "main") {
+      this.#model = undefined;
+      this.#setProfilePreference("model", undefined);
+      return this.#modelRoles();
+    }
     this.#setSpeechModeForRoleChange(role, false);
     this.#reconcileRoles(false);
     return this.#modelRoles();
@@ -7911,21 +8371,57 @@ export class DesktopBackend {
     return id;
   }
 
-  #registerCustomProvider(config: CustomProviderConfig): void {
-    const models: Array<Model<"openai-completions">> = config.models.map(
-      (model) => ({
+  #customProviderModels(
+    config: CustomProviderConfig,
+  ): Array<Model<"openai-completions">> {
+    return config.models.map((model) => {
+      const catalogEntry = this.#modelCatalog.lookup(model.id, config.id);
+      const isReasoning =
+        typeof model.reasoning === "boolean"
+          ? model.reasoning
+          : (catalogEntry?.reasoning ?? isReasoningModelId(model.id, model.name));
+      const catalogHasImage =
+        catalogEntry?.attachment === true ||
+        catalogEntry?.modalities?.input?.some((t) => t !== "text") === true;
+      const input: Array<"text" | "image"> =
+        model.input?.length
+          ? model.input
+          : catalogHasImage
+            ? ["text", "image"]
+            : isMultimodalModelId(model.id, model.name)
+              ? ["text", "image"]
+              : ["text"];
+      const contextWindow =
+        catalogEntry?.limit?.context ?? model.contextWindow ?? 128_000;
+      const maxTokens =
+        catalogEntry?.limit?.output ?? model.maxTokens ?? 8_192;
+
+      return {
         id: model.id,
         name: model.name,
         api: "openai-completions",
         provider: config.id,
         baseUrl: config.baseUrl,
-        reasoning: false,
-        input: ["text"],
+        reasoning: isReasoning,
+        input,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128_000,
-        maxTokens: 8_192,
-      }),
+        contextWindow,
+        maxTokens,
+      };
+    });
+  }
+
+  #refreshCustomProviders(): void {
+    const configs = customProviderPreference(
+      this.#profiles.preference("custom-providers")?.value,
     );
+    for (const config of configs) {
+      this.#registerCustomProvider(config);
+    }
+  }
+
+  #registerCustomProvider(config: CustomProviderConfig): void {
+    const models = this.#customProviderModels(config);
     this.#models.setProvider(
       createProvider({
         id: config.id,
@@ -8007,9 +8503,9 @@ export class DesktopBackend {
       id: runtime.id,
       name: runtime.name,
       baseUrl,
-      models: models.map((model) => ({
-        id: model.id,
-        name: model.name ?? model.id,
+      models: models.map((modelId) => ({
+        id: modelId,
+        name: modelId,
       })),
     });
     this.#persistCustomProviders();
@@ -8090,11 +8586,11 @@ export class DesktopBackend {
     const config = this.#runtimeConfig();
     if (config.kind === "acp") {
       if (!this.#agentRuntime || this.#agentRuntime.id !== `acp:${config.command}`)
-        this.#configureAgentRuntime(config);
+        this.#configureAgentRuntime();
       return this.#agentRuntime!;
     }
     await this.#ensureConfiguredAgent();
-    if (!this.#agentRuntime) this.#configureAgentRuntime(config);
+    if (!this.#agentRuntime) this.#configureAgentRuntime();
     return this.#agentRuntime!;
   }
 
@@ -8270,21 +8766,21 @@ export class DesktopBackend {
       const input = payload as Record<string, unknown>;
       const action = typeof input.action === "string" ? input.action : "";
       try {
-        const status = this.#locker.status();
+        const status = this.#vault.status();
         if (action === "status")
           return {unlocked: status.unlocked, exists: status.exists, locked: !status.unlocked};
-        if (!status.unlocked) return {locked: true, error: "Locker is locked"};
+        if (!status.unlocked) return {locked: true, error: "Vault is locked"};
         if (action === "offers") {
-          const request = lockerWebAuthnGet({...input, origin});
-          return {offers: this.#locker.listPasskeys(request)};
+          const request = vaultWebAuthnGet({...input, origin});
+          return {offers: this.#vault.listPasskeys(request)};
         }
         if (action === "get") {
-          const request = lockerWebAuthnGet({...input, origin});
-          return {credential: await this.#locker.getPasskey(request)};
+          const request = vaultWebAuthnGet({...input, origin});
+          return {credential: await this.#vault.getPasskey(request)};
         }
         if (action === "create") {
-          const request = lockerWebAuthnCreate({...input, origin});
-          return {credential: await this.#locker.createPasskey(request)};
+          const request = vaultWebAuthnCreate({...input, origin});
+          return {credential: await this.#vault.createPasskey(request)};
         }
         return {error: "Unknown passkey request"};
       } catch (error) {
@@ -8298,17 +8794,17 @@ export class DesktopBackend {
     });
   }
 
-  #lockerAutofillAvailable(): boolean {
+  #vaultAutofillAvailable(): boolean {
     return this.#integrationEnabled(
       "app-enabled",
-      "locker",
+      "vault",
       this.#runtimeConfig().kind === "polymux",
     );
   }
 
-  #lockerAutofillState(): "missing" | "locked" | "unlocked" {
-    if (!this.#lockerAutofillAvailable()) return "missing";
-    const status = this.#locker.status();
+  #vaultAutofillState(): "missing" | "locked" | "unlocked" {
+    if (!this.#vaultAutofillAvailable()) return "missing";
+    const status = this.#vault.status();
     if (!status.exists) return "missing";
     return status.unlocked ? "unlocked" : "locked";
   }
@@ -8346,12 +8842,12 @@ export class DesktopBackend {
   #buildAutofillOffer(tabId: string) {
     const page = this.#autofillPages.get(tabId);
     if (!page) return null;
-    const locker = this.#lockerAutofillState();
+    const vault = this.#vaultAutofillState();
     return buildAutofillOffer({
       tabId,
       page,
-      locker,
-      lockerItems: locker === "unlocked" ? this.#locker.matchesForUrl(page.origin) : [],
+      vault,
+      vaultItems: vault === "unlocked" ? this.#vault.matchesForUrl(page.origin) : [],
       browserLogins: this.#browserSettings().autofillEnabled
         ? this.#autofill.forOrigin(page.origin)
         : [],
@@ -8375,8 +8871,8 @@ export class DesktopBackend {
     const parsed = parseAutofillItem(itemId);
     if (!parsed) return false;
     if (parsed.source === "browser") return this.#autofill.fill(contents, parsed.id);
-    if (this.#lockerAutofillState() !== "unlocked") return false;
-    const fields = this.#locker.fillFields(parsed.id);
+    if (this.#vaultAutofillState() !== "unlocked") return false;
+    const fields = this.#vault.fillFields(parsed.id);
     this.#autofill.send(contents, {
       username: fields.username || undefined,
       password: fields.password || undefined,
@@ -8453,39 +8949,6 @@ function managerJobRequest(value: unknown): EnqueueManagerJobRequest {
   };
 }
 
-function agentRuntimeRequest(value: unknown): AgentRuntimeConfig {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Agent runtime must be an object");
-  const input = value as Record<string, unknown>;
-  if (input.kind === "polymux") return {kind: "polymux"};
-  if (input.kind !== "acp") throw new Error("Unknown agent runtime");
-  const command = required(input.command, "ACP command").trim();
-  if (!command) throw new Error("ACP command cannot be empty");
-  const name = typeof input.name === "string" && input.name.trim()
-    ? input.name.trim()
-    : "ACP Agent";
-  const args = optionalStringArray(input.args, "ACP arguments");
-  const cwd = input.cwd == null ? undefined : required(input.cwd, "ACP working directory").trim() || undefined;
-  const partial = {
-    kind: "acp" as const,
-    name,
-    command,
-    args,
-    ...(cwd ? {cwd} : {}),
-    config: agentRuntimeConfigValues(input.config),
-    registryEnvironment: agentRegistryEnvironment(input.registryEnvironment),
-  };
-  const requestedAgentId = typeof input.agentId === "string" ? input.agentId.trim() : "";
-  const agentId = requestedAgentId && /^[a-z0-9][a-z0-9-]*$/i.test(requestedAgentId)
-    ? requestedAgentId.toLowerCase()
-    : externalAgentId(partial);
-  const requestedConfigId = typeof input.configId === "string" ? input.configId.trim() : "";
-  const configId = requestedConfigId && /^[a-z0-9][a-z0-9-]*$/i.test(requestedConfigId)
-    ? requestedConfigId
-    : randomUUID();
-  return {...partial, agentId, configId};
-}
-
 function externalProfileConnectionRequest(value: unknown): ConnectExternalProfileRequest {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("External profile connection must be an object");
@@ -8510,31 +8973,6 @@ function externalProfileConnectionRequest(value: unknown): ConnectExternalProfil
     ...(typeof input.profileName === "string" ? {profileName: input.profileName} : {}),
     ...(typeof input.profileId === "string" ? {profileId: input.profileId} : {}),
   };
-}
-
-function agentRuntimeConfigValues(value: unknown): Record<string, string | boolean> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string | boolean] =>
-    typeof entry[1] === "string" || typeof entry[1] === "boolean",
-  ));
-}
-
-function agentRegistryEnvironment(value: unknown): Record<string, string> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => {
-    const [key, item] = entry;
-    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
-      typeof item === "string" &&
-      item.length <= 4_096 &&
-      !item.includes("\0") &&
-      !isReservedRegistryEnvironmentKey(key);
-  }));
-}
-
-function isReservedRegistryEnvironmentKey(key: string): boolean {
-  return /(?:TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIAL|AUTH|COOKIE)/i.test(key) ||
-    /^(?:HOME|USERPROFILE|PATH|PATHEXT|NODE_OPTIONS|ELECTRON_RUN_AS_NODE)$/i.test(key) ||
-    /^(?:XDG_|DYLD_|LD_|POLYMUX_|npm_|NPM_)/.test(key);
 }
 
 function agentProviderRequest(value: unknown): SetAgentProviderRequest {

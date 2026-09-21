@@ -135,8 +135,8 @@ export type PinnableWorkspaceView =
   | "calendar"
   | "hub"
   | "tasks"
-  | "phone"
-  | "locker"
+  | "mobile"
+  | "vault"
   | "media"
   | "terminal"
   | "ide"
@@ -211,7 +211,7 @@ export interface ExternalProfileSourceDto {
   directory: string;
 }
 export interface ProfileAgentDto {
-  kind: "polymux" | "acp";
+  kind: "polymux" | "acp" | "external";
   /** Stable ACP registry/family id, or `polymux` for the built-in agent. */
   id: string;
   name: string;
@@ -313,8 +313,12 @@ export interface TeamComputerDto {
   network: "none" | "restricted";
 }
 
+export type DeviceAccessMode = "allow" | "ask" | "off";
+
 /** One row in Team is one persistent agent and one private conversation. */
 export interface BotDto {
+  /** Agent configuration owned by this bot; never changes Assistant or another bot. */
+  agentRuntime?: UpdateAgentRuntimeRequest;
   id: string;
   conversationId: ConversationId;
   name: string;
@@ -327,9 +331,10 @@ export interface BotDto {
   /** Device kind of that computer, for the glyph shown beside its name. */
   deviceType?: import('./device-pairing.js').DeviceType;
   avatar: TeamAvatarDto;
-  /** Peer tools may contact other members without asking the user each time. */
-  /** Device-side tools remain behind a short-lived lease even when this is on. */
-  laptopAccess: "off" | "ask";
+  /** Base device policy; new bots allow access without prompting. */
+  laptopAccess: DeviceAccessMode;
+  /** Per-device overrides keyed by the configured device Host id. */
+  deviceAccess?: Record<string, DeviceAccessMode>;
   status: BotStatus;
   preview: string;
   updatedAt: string;
@@ -343,6 +348,12 @@ export interface BotDto {
   mcpServers?: string[];
   /** Plugin ids enabled for this bot from the connections pool. */
   plugins?: string[];
+  /** Id of the bot that spawned this one, when created by a peer bot. */
+  parentBotId?: string;
+  /** True while the bot's first-run setup turn has not produced a reply yet. */
+  setupPending?: boolean;
+  /** Last setup delivery failure, when the first-run turn could not start. */
+  setupError?: string | null;
 }
 
 /** A Desktop-owned conversation that fans a message out to named Team agents. */
@@ -372,26 +383,44 @@ export interface SendTeamGroupMessageRequest {
   text: string;
 }
 
+export type BotAgentSettingsRequest =
+  | {action: "get" | "logout"}
+  | {action: "authenticate"; methodId: string}
+  | {action: "option"; id: string; value: string | boolean}
+  | {action: "provider"; provider: SetAgentProviderRequest}
+  | {action: "disableProvider"; id: string};
+export interface BotAgentSettingsDto {runtime: UpdateAgentRuntimeRequest; settings: AgentSettingsDto;}
+
 export interface CreateBotRequest {
+  /** Agent configuration owned by this bot; never changes Assistant or another bot. */
+  agentRuntime?: UpdateAgentRuntimeRequest;
   name: string;
   role: string;
   profileId: string;
   avatar: TeamAvatarDto;
   /** Defaults to the Desktop's preferred Host. */
   hostId?: string;
-  laptopAccess?: "off" | "ask";
+  laptopAccess?: DeviceAccessMode;
+  deviceAccess?: Record<string, DeviceAccessMode>;
   skills?: string[];
   mcpServers?: string[];
   plugins?: string[];
+  /** Id of the spawning bot, when a peer bot creates this one. */
+  parentBotId?: string;
+  /** Idempotence key: reusing a key returns the existing bot instead of a duplicate. */
+  spawnKey?: string;
 }
 export interface UpdateBotRequest {
+  /** Agent configuration owned by this bot; never changes Assistant or another bot. */
+  agentRuntime?: UpdateAgentRuntimeRequest;
   name?: string;
   role?: string;
   profileId?: string;
   avatar?: TeamAvatarDto;
   /** Moving this value transfers the bot and conversation to that Host. */
   hostId?: string;
-  laptopAccess?: "off" | "ask";
+  laptopAccess?: DeviceAccessMode;
+  deviceAccess?: Record<string, DeviceAccessMode>;
   skills?: string[];
   mcpServers?: string[];
   plugins?: string[];
@@ -416,19 +445,26 @@ export interface SendAgentMessageRequest {
   fromMemberId?: string;
   attachments?: string[];
   automatic?: boolean;
+  /** What the recipient should do with this message. Defaults to a plain message. */
+  intent?: AgentMessageIntent;
 }
+
+/** Triage signal on an agent message: request, result, question, status, or fyi. */
+export type AgentMessageIntent = "request" | "result" | "question" | "status" | "fyi";
 
 export interface LaptopCapabilityLeaseDto {
   id: string;
   memberId: string;
+  /** Approval applies only to this configured device. */
+  hostId: string;
   capabilities: Array<"browser" | "computer" | "files">;
   createdAt: string;
   expiresAt: string;
 }
 
 /**
- * Polymux Host is deliberately personal: exactly one Desktop may be paired to
- * one Host. There are no organisations, shared admin panels, or second users.
+ * Polymux Host connects personal devices through individually paired identities.
+ * Each configured device has its own connection and access policy.
  */
 export interface TeamHostDto {
   deviceType?: import('./device-pairing.js').DeviceType;
@@ -1010,28 +1046,38 @@ export interface UsageModelSpendDto {
 export interface UsageAgentDto {
   id: string;
   name: string;
-  kind: "polymux" | "acp";
+  kind: "polymux" | "acp" | "external";
   tokens: number;
   costUsd: number;
   runs: number;
   chats: number;
 }
 
-export type UsageScope = "all" | "assistant" | "team";
+export type UsageScope = "all" | "polymux" | "assistant" | "team";
 export interface UsageFilterDto {
   scope?: UsageScope;
   agentId?: string | null;
+  refresh?: boolean;
+}
+
+export interface UsageDiscoveryDto {
+  status: "scanning" | "ready" | "partial" | "error";
+  updatedAt: string | null;
+  detectedAgents: number;
+  supportedAgents: number;
+  estimated: boolean;
 }
 
 /**
  * Lifetime activity for the Usage app. Token spend is API-equivalent USD from
  * each run's stored model rates — the same mapping CodeBurn uses on local logs.
- * Totals are this installation's SQLite run log, including parent and child
- * runs. Scope separates Assistant and Team; agentId selects the runtime used
- * for those runs, independently of team member or current profile settings.
+ * All usage combines local agent history with this installation's run log.
+ * Polymux contains only app runs; Assistant and Team divide those app runs.
+ * agentId selects a recorded runtime independently of the current profile.
  */
 export interface UsageStatsDto {
   identity: UsageIdentityDto;
+  discovery?: UsageDiscoveryDto;
   lifetimeTokens: number;
   peakTokens: number;
   costUsd: number;
@@ -1089,48 +1135,57 @@ export type TerminalEventDto =
    * further `close` calls are a no-op. */
   | {type: "exit"; id: string; seq: number; code: number | null};
 
-export type LockerSyncState = "offline" | "local" | "syncing" | "synced" | "pending" | "error";
+export type VaultSyncState = "offline" | "local" | "syncing" | "synced" | "pending" | "error";
 
-/** Where this device keeps the locker. Account is the default. */
-export type LockerStorageMode = "local" | "account";
+/** Where this device keeps the vault. Account is the default. */
+export type VaultStorageMode = "local" | "account";
 
-/** Which copy to keep when linking a local locker to an existing account vault. */
-export type LockerStorageResolve = "keep-local" | "keep-cloud";
+/** Which copy to keep when linking a local vault to an existing account vault. */
+export type VaultStorageResolve = "keep-local" | "keep-cloud";
 
 /** Cloud sync of the encrypted vault blob. Never includes secrets. */
-export interface LockerSyncDto {
+export interface VaultSyncDto {
   signedIn: boolean;
   available: boolean;
-  state: LockerSyncState;
-  storage: LockerStorageMode;
+  state: VaultSyncState;
+  storage: VaultStorageMode;
   revision: number;
   lastSyncedAt: string | null;
   conflict?: "cloud-exists";
   error?: string;
 }
 
-export interface LockerStatusDto {
+export interface VaultStatusDto {
   exists: boolean;
   unlocked: boolean;
   itemCount: number;
   idleLockSeconds: number;
-  sync: LockerSyncDto;
+  sync: VaultSyncDto;
+  biometric: VaultBiometricDto;
+}
+
+/** Touch ID unlock state. The master password itself never leaves main. */
+export interface VaultBiometricDto {
+  /** This device can offer biometric unlock (secure storage plus a prompt). */
+  available: boolean;
+  /** A biometric unlock secret is stored for this vault. */
+  enrolled: boolean;
 }
 
 /** Username, password, and current TOTP for one fill. Secrets only after a user click. */
-export interface LockerFillFieldsDto {
+export interface VaultFillFieldsDto {
   username: string;
   password: string;
   totp: string | null;
 }
 
-export interface LockerGroupDto {
+export interface VaultGroupDto {
   id: string;
   name: string;
   parentId: string | null;
 }
 
-export interface LockerItemDto {
+export interface VaultItemDto {
   id: string;
   title: string;
   username: string;
@@ -1147,13 +1202,13 @@ export interface LockerItemDto {
   updatedAt: string | null;
 }
 
-export interface LockerListDto {
-  groups: LockerGroupDto[];
-  items: LockerItemDto[];
-  trash: LockerItemDto[];
+export interface VaultListDto {
+  groups: VaultGroupDto[];
+  items: VaultItemDto[];
+  trash: VaultItemDto[];
 }
 
-export interface LockerTotpDto {
+export interface VaultTotpDto {
   code: string;
   next: string;
   period: number;
@@ -1162,7 +1217,7 @@ export interface LockerTotpDto {
   account: string;
 }
 
-export interface LockerCodesDto {
+export interface VaultCodesDto {
   id: string;
   code: string;
   next: string;
@@ -1170,21 +1225,21 @@ export interface LockerCodesDto {
   remaining: number;
 }
 
-export interface LockerPasskeyDto {
+export interface VaultPasskeyDto {
   relyingParty: string;
   username: string;
   credentialId: string;
   userHandle: string;
 }
 
-export interface LockerSecretsDto {
+export interface VaultSecretsDto {
   password: string;
-  totp: LockerTotpDto | null;
+  totp: VaultTotpDto | null;
   recoveryCodes: string[];
-  passkey: LockerPasskeyDto | null;
+  passkey: VaultPasskeyDto | null;
 }
 
-export interface LockerPasskeyInputDto {
+export interface VaultPasskeyInputDto {
   relyingParty: string;
   username: string;
   credentialId: string;
@@ -1192,7 +1247,7 @@ export interface LockerPasskeyInputDto {
   privateKeyPem?: string;
 }
 
-export interface LockerItemInputDto {
+export interface VaultItemInputDto {
   id?: string;
   title: string;
   username?: string;
@@ -1202,38 +1257,38 @@ export interface LockerItemInputDto {
   password?: string;
   totpSecret?: string;
   recoveryCodes?: string[];
-  passkey?: LockerPasskeyInputDto | null;
+  passkey?: VaultPasskeyInputDto | null;
 }
 
-export interface LockerImportResultDto {
+export interface VaultImportResultDto {
   imported: number;
   skipped: number;
   problems: string[];
 }
 
-export type LockerImportStartDto =
+export type VaultImportStartDto =
   | { status: "cancelled" }
-  | ({ status: "imported" } & LockerImportResultDto)
+  | ({ status: "imported" } & VaultImportResultDto)
   | { status: "needs-password"; name: string };
 
-export type LockerCopyField = "password" | "username" | "url" | "totp" | "notes" | "recovery";
+export type VaultCopyField = "password" | "username" | "url" | "totp" | "notes" | "recovery";
 
 /** Encrypted kdbx plus revision metadata. Never includes plaintext secrets. */
-export interface LockerVaultMetaDto {
+export interface VaultMetaDto {
   revision: number;
   updatedAt: string;
   checksum: string;
   dirty: boolean;
   lastSyncedAt: string | null;
-  storage: LockerStorageMode;
+  storage: VaultStorageMode;
 }
 
-export interface LockerVaultBlobDto {
+export interface VaultBlobDto {
   bytes: string;
-  meta: LockerVaultMetaDto;
+  meta: VaultMetaDto;
 }
 
-export interface PhoneDeviceDto {
+export interface MobileDeviceDto {
   platform: "ios" | "android";
   id: string;
   udid: string;
@@ -1246,10 +1301,10 @@ export interface PhoneDeviceDto {
   tunnelAddress: string | null;
 }
 
-export interface PhoneStatusDto {
+export interface MobileStatusDto {
   supported: boolean;
   stage: "unsupported" | "disconnected" | "needs-signing" | "ready" | "connected" | "error";
-  device: PhoneDeviceDto | null;
+  device: MobileDeviceDto | null;
   signing: {
     available: boolean;
     source: "existing-profile" | "none";
@@ -1272,7 +1327,7 @@ export interface PhoneStatusDto {
   message: string | null;
 }
 
-export interface PhoneIosSigningStatusDto {
+export interface MobileIosSigningStatusDto {
   supported: boolean;
   stage: "unavailable" | "signed-out" | "verification-required" | "authenticated";
   email: string | null;
@@ -1281,7 +1336,7 @@ export interface PhoneIosSigningStatusDto {
   message: string | null;
 }
 
-export interface PhoneFrameDto {
+export interface MobileFrameDto {
   deviceId: string;
   dataUrl: string;
   width: number;
@@ -1289,7 +1344,7 @@ export interface PhoneFrameDto {
   capturedAt: string;
 }
 
-export interface PhonePointDto {
+export interface MobilePointDto {
   x: number;
   y: number;
 }
@@ -1355,6 +1410,7 @@ export interface ModelMetadataDto {
   releaseDate?: string;
   lastUpdated?: string;
   openWeights?: boolean;
+  reasoning?: boolean;
   toolCall?: boolean;
   structuredOutput?: boolean;
   temperature?: boolean;
@@ -1403,7 +1459,7 @@ export interface CreateCustomProviderRequest {
   baseUrl: string;
   logoDataUrl?: string;
   apiKey?: string;
-  models: Array<{id: string; name?: string}>;
+  models: Array<{id: string; name?: string; reasoning?: boolean}>;
 }
 export interface UpdateCustomProviderRequest extends Omit<CreateCustomProviderRequest, "apiKey"> {
   id: string;
@@ -1550,6 +1606,21 @@ export interface EnqueueManagerJobRequest {
 export interface ManagerSnapshotDto {
   enabled: boolean;
   jobs: ManagerJobDto[];
+}
+/** Terminal/app overview of durable runs and work that has not started yet. */
+export interface TaskOverviewDto {
+  id: string;
+  jobId?: string;
+  chatId: string;
+  chatTitle: string;
+  title: string;
+  status: string;
+  runId: string | null;
+  parentRunId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  result: string;
 }
 export interface GoalCommandRequest {
   conversationId: ConversationId;
@@ -1714,7 +1785,7 @@ export type BrowserAutofillFocus = "login" | "otp";
 
 export interface BrowserAutofillItemDto {
   id: string;
-  source: "locker" | "browser";
+  source: "vault" | "browser";
   title: string;
   username: string;
   hasPassword: boolean;
@@ -1725,8 +1796,8 @@ export interface BrowserAutofillItemDto {
 export interface BrowserAutofillOfferDto {
   tabId: string;
   origin: string;
-  /** Whether a Locker vault exists on this device. */
-  locker: "missing" | "locked" | "unlocked";
+  /** Whether a Vault vault exists on this device. */
+  vault: "missing" | "locked" | "unlocked";
   focus: BrowserAutofillFocus | null;
   items: BrowserAutofillItemDto[];
 }
@@ -2624,7 +2695,7 @@ export interface WorkspaceRevealDto {
 }
 
 /** The workspace surfaces the agent can ask for by name. */
-export type WorkspaceSurface = "hub" | "drive" | "tasks" | "calendar" | "summary" | "phone" | "terminal" | "ide" | "locker" | "media" | "usage" | "finance";
+export type WorkspaceSurface = "hub" | "drive" | "tasks" | "calendar" | "summary" | "mobile" | "terminal" | "ide" | "vault" | "media" | "usage" | "finance";
 
 /**
  * What the workspace looked like for one conversation: which tabs were open,
@@ -2855,6 +2926,8 @@ export interface ScheduleRunDto {
 
 export interface ScheduleDto {
   id: string;
+  /** Absent for Assistant schedules; a Team schedule always keeps its bot owner. */
+  botId?: string;
   title: string;
   /** The instruction the agent runs each time. */
   prompt: string;
@@ -2870,6 +2943,7 @@ export interface ScheduleDto {
 }
 
 export interface ScheduleInput {
+  botId?: string;
   title: string;
   prompt: string;
   frequency: ScheduleFrequencyDto;
@@ -3041,18 +3115,18 @@ export interface PolymuxApi {
     /** Pushed on every sign-in, sign-out, and profile refresh. */
     subscribe(listener: (status: import("./account.js").AccountStatusDto) => void): () => void;
   };
-  phone: {
-    status(): Promise<PhoneStatusDto>;
-    connect(): Promise<PhoneStatusDto>;
-    pairAndroid(pairingAddress: string, pairingCode: string, connectAddress?: string): Promise<PhoneStatusDto>;
-    iosSigningStatus(): Promise<PhoneIosSigningStatusDto>;
-    iosSigningBegin(email: string, password: string): Promise<PhoneIosSigningStatusDto>;
-    iosSigningComplete(code: string): Promise<PhoneIosSigningStatusDto>;
-    iosSigningLogout(): Promise<PhoneIosSigningStatusDto>;
-    stop(): Promise<PhoneStatusDto>;
-    frame(): Promise<PhoneFrameDto>;
-    tap(point: PhonePointDto): Promise<void>;
-    swipe(from: PhonePointDto, to: PhonePointDto, durationMs?: number): Promise<void>;
+  mobile: {
+    status(): Promise<MobileStatusDto>;
+    connect(): Promise<MobileStatusDto>;
+    pairAndroid(pairingAddress: string, pairingCode: string, connectAddress?: string): Promise<MobileStatusDto>;
+    iosSigningStatus(): Promise<MobileIosSigningStatusDto>;
+    iosSigningBegin(email: string, password: string): Promise<MobileIosSigningStatusDto>;
+    iosSigningComplete(code: string): Promise<MobileIosSigningStatusDto>;
+    iosSigningLogout(): Promise<MobileIosSigningStatusDto>;
+    stop(): Promise<MobileStatusDto>;
+    frame(): Promise<MobileFrameDto>;
+    tap(point: MobilePointDto): Promise<void>;
+    swipe(from: MobilePointDto, to: MobilePointDto, durationMs?: number): Promise<void>;
     type(text: string): Promise<void>;
     home(): Promise<void>;
   };
@@ -3140,36 +3214,41 @@ export interface PolymuxApi {
     /** Writes real text, image pixels, or a file reference to the OS clipboard. */
     write(content: ClipboardContentDto): Promise<boolean>;
   };
-  locker: {
-    status(): Promise<LockerStatusDto>;
-    create(password: string): Promise<LockerStatusDto>;
-    unlock(password: string): Promise<LockerStatusDto>;
-    lock(): Promise<LockerStatusDto>;
-    /** Resets the idle-lock timer after a user action in Locker. */
+  vault: {
+    status(): Promise<VaultStatusDto>;
+    create(password: string): Promise<VaultStatusDto>;
+    unlock(password: string): Promise<VaultStatusDto>;
+    /** Prompt for biometrics, then unlock with the stored master password. */
+    unlockBiometric(): Promise<VaultStatusDto>;
+    biometricStatus(): Promise<VaultBiometricDto>;
+    enrollBiometric(password: string): Promise<VaultStatusDto>;
+    disenrollBiometric(): Promise<VaultStatusDto>;
+    lock(): Promise<VaultStatusDto>;
+    /** Resets the idle-lock timer after a user action in Vault. */
     touch(): Promise<void>;
-    list(): Promise<LockerListDto>;
-    reveal(id: string): Promise<LockerSecretsDto>;
-    totp(id: string): Promise<LockerTotpDto | null>;
+    list(): Promise<VaultListDto>;
+    reveal(id: string): Promise<VaultSecretsDto>;
+    totp(id: string): Promise<VaultTotpDto | null>;
     /** Current and next authenticator codes for every TOTP item. */
-    codes(): Promise<LockerCodesDto[]>;
+    codes(): Promise<VaultCodesDto[]>;
     /** otpauth URL for one item, used to draw its QR code. */
     otpauth(id: string): Promise<string | null>;
-    save(item: LockerItemInputDto): Promise<LockerItemDto>;
-    remove(id: string): Promise<LockerListDto>;
-    restore(ids: string[]): Promise<LockerListDto>;
-    purge(ids: string[]): Promise<LockerListDto>;
-    emptyTrash(): Promise<LockerListDto>;
-    pin(ids: string[], pinned: boolean): Promise<LockerListDto>;
-    reorder(ids: string[]): Promise<LockerListDto>;
-    changePassword(current: string, next: string): Promise<LockerStatusDto>;
-    copy(id: string, field: LockerCopyField, recoveryIndex?: number): Promise<boolean>;
-    importBegin(): Promise<LockerImportStartDto>;
-    importConfirm(password: string): Promise<LockerImportResultDto>;
+    save(item: VaultItemInputDto): Promise<VaultItemDto>;
+    remove(id: string): Promise<VaultListDto>;
+    restore(ids: string[]): Promise<VaultListDto>;
+    purge(ids: string[]): Promise<VaultListDto>;
+    emptyTrash(): Promise<VaultListDto>;
+    pin(ids: string[], pinned: boolean): Promise<VaultListDto>;
+    reorder(ids: string[]): Promise<VaultListDto>;
+    changePassword(current: string, next: string): Promise<VaultStatusDto>;
+    copy(id: string, field: VaultCopyField, recoveryIndex?: number): Promise<boolean>;
+    importBegin(): Promise<VaultImportStartDto>;
+    importConfirm(password: string): Promise<VaultImportResultDto>;
     /** Pulls or pushes the encrypted vault when storage is Account and the user is signed in. */
-    sync(): Promise<LockerStatusDto>;
+    sync(): Promise<VaultStatusDto>;
     /** This device vs Account. Account is the default. */
-    setStorage(mode: LockerStorageMode, resolve?: LockerStorageResolve): Promise<LockerStatusDto>;
-    subscribe(listener: (status: LockerStatusDto) => void): () => void;
+    setStorage(mode: VaultStorageMode, resolve?: VaultStorageResolve): Promise<VaultStatusDto>;
+    subscribe(listener: (status: VaultStatusDto) => void): () => void;
   };
   /** Lifetime token, cost, and activity totals for the Usage app. */
   finance: {
@@ -3246,10 +3325,14 @@ export interface PolymuxApi {
     sendGroup(request: SendTeamGroupMessageRequest): Promise<MessageDto>;
     /** Profiles installed on the computer currently acting as Team Host. */
     profiles(hostId?: string): Promise<ProfileDto[]>;
+    agentRegistry(hostId?: string): Promise<AcpRegistryEntryDto[]>;
+    agentSettings(id: string, request: BotAgentSettingsRequest): Promise<BotAgentSettingsDto>;
     create(request: CreateBotRequest): Promise<BotDto>;
     update(id: string, request: UpdateBotRequest): Promise<BotDto>;
     markRead(id: string): Promise<BotDto>;
     remove(id: string): Promise<boolean>;
+    /** Re-delivers a stalled first-run setup turn for the bot. */
+    retrySetup(id: string): Promise<BotDto>;
     send(request: SendAgentMessageRequest): Promise<MessageDto>;
     startComputer(id: string): Promise<BotDto>;
     stopComputer(id: string): Promise<BotDto>;
@@ -3634,6 +3717,8 @@ export interface PolymuxApi {
     ): Promise<ModelRolesDto>;
     /** Clears a role's override so it follows the main model again. */
     clearRole(role: ModelRole): Promise<ModelRolesDto>;
+    /** Resets a role back to its default. */
+    resetRole(role: ModelRole): Promise<ModelRolesDto>;
     /** Catalogue detail for the current models, keyed `<provider>:<id>`. */
     metadata(): Promise<Record<string, ModelMetadataDto>>;
   };
@@ -3746,7 +3831,7 @@ export interface PolymuxApi {
      * for. Never called to populate a list. */
     revealLogin(id: string): Promise<string | null>;
     deleteLogin(id: string): Promise<SavedLoginDto[]>;
-    /** Fills one offered Locker or saved-login item into the current page. */
+    /** Fills one offered Vault or saved-login item into the current page. */
     fillAutofill(tabId: string, itemId: string): Promise<boolean>;
     dismissAutofill(tabId: string): Promise<void>;
     /** The browsers found on this machine, with their readable profiles. */

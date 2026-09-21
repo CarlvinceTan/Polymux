@@ -1,15 +1,18 @@
 <script lang="ts">
   import type {TeamGroupDto, BotDto} from '@polymux/protocol';
   import {onDestroy, tick} from 'svelte';
+  import {t} from '../../../i18n';
   import MessageInput from '../../shared/components/MessageInput.svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import OpenMenu, {type OpenAnchor} from '../../shared/components/OpenMenu.svelte';
   import {loadAgentDraft, saveAgentDraft} from '../../shared/state/composerDrafts';
   import Message from '../chat/Message.svelte';
+  import type {AgentActivityItem} from '../chat/AgentActivity.svelte';
   import type {ChatMessage} from '../chat/ChatPane.svelte';
   import type {QueuedMessage} from '../chat/QueuedMessages.svelte';
-  import BloubAvatar from './BloubAvatar.svelte';
+  import TeamAvatar from './TeamAvatar.svelte';
   import GroupAvatar from './GroupAvatar.svelte';
+  import {teamGroupName} from './groupName';
   import {deviceTypeIconName} from '../../shared/deviceTypeIcon';
   import {bloubActivityForTeamStatus, bloubExpressionForMessage, bloubExpressionForTeamStatus} from './bloub/expression';
   import {teamMessageSpeaker} from './messageIdentity';
@@ -41,6 +44,8 @@
   export let bot: BotDto | null = null;
   export let group: TeamGroupDto | null = null;
   export let groupMembers: BotDto[] = [];
+  /** Used to resolve the small avatar beside an inline agent-message event. */
+  export let teamMembers: BotDto[] = [];
   export let messages: ChatMessage[] = [];
   export let running = false;
   /** Dispatch is distinct from an Agent run: it must not animate old replies. */
@@ -53,7 +58,9 @@
   export let onSend: (text: string, files: File[], asGoal: boolean, immediate: boolean) => void = () => {};
   export let onEdit: (id: string, text: string, files: File[]) => void = () => {};
   /** Opening the bot or group editor from the empty conversation. */
-  export let onEditIdentity: () => void = () => {};
+  export let onEditIdentity: (anchor?: {left: number; bottom: number; width: number}) => void = () => {};
+  /** Re-delivers a stalled first-run setup turn for the bot. */
+  export let onRetrySetup: () => void = () => {};
   export let onOpenLink: (url: string, title: string, anchor?: DOMRect) => void = () => {};
   export let onOpenFilePath: (path: string, anchor?: DOMRect) => void = () => {};
   export let onSteerQueued: (id: string) => void = () => {};
@@ -74,13 +81,26 @@
   let appliedInsertion = '';
   let dragDepth = 0;
   let draggingFiles = false;
+  let retryingSetup = false;
+
+  $: setupBanner = !group && bot && !running && (bot.setupError || bot.setupPending) ? bot : null;
+
+  async function retrySetup(): Promise<void> {
+    if (retryingSetup) return;
+    retryingSetup = true;
+    try {
+      await onRetrySetup();
+    } finally {
+      retryingSetup = false;
+    }
+  }
 
   $: liveIndex = lastAssistantIndex(messages);
-  $: conversationName = group?.name ?? bot?.name ?? 'Team';
+  $: conversationName = group ? teamGroupName(group, groupMembers) : bot?.name ?? 'Team';
   $: speakerContext = bot ? bot : {
     id: group?.id ?? 'team-group',
     conversationId: group?.conversationId ?? activeConversationId,
-    name: group?.name ?? 'Team',
+    name: group ? teamGroupName(group, groupMembers) : 'Team',
     role: 'Team group',
     avatar: null,
   };
@@ -123,6 +143,18 @@
 
   function fileKey(file: File): string {
     return `${file.name}\0${file.size}\0${file.lastModified}`;
+  }
+
+  function inlineActivities(message: ChatMessage): AgentActivityItem[] {
+    return (message.activities ?? []).filter((activity) => activity.display === 'inline');
+  }
+
+  function activityAvatar(activity: AgentActivityItem) {
+    const target = activity.target?.trim().toLocaleLowerCase();
+    if (!target) return null;
+    return [...groupMembers, ...teamMembers].find((member) =>
+      member.id.toLocaleLowerCase() === target || member.name.toLocaleLowerCase() === target,
+    )?.avatar ?? null;
   }
 
   function removeFile(target: File): void {
@@ -220,13 +252,13 @@
   <div bind:this={thread} class="team-chat-thread" aria-live="polite" onscroll={measureScroll}>
     {#if messages.length === 0 && !detachedTyping}
       <div class="team-chat-empty">
-        <button type="button" class="team-chat-empty-identity" aria-label={`Edit ${conversationName}`} onclick={onEditIdentity}>
+        <button type="button" class="team-chat-empty-identity" aria-label={`Edit ${conversationName}`} onclick={(event) => onEditIdentity((event.currentTarget as HTMLElement).getBoundingClientRect())}>
           {#if group}
-            <GroupAvatar members={groupMembers} size={58} label={`${group.name} group avatar`}/>
-            <strong>Message {group.name}</strong>
+            <GroupAvatar members={groupMembers} size={58} label={`${conversationName} group avatar`}/>
+            <strong>Message {conversationName}</strong>
             <span>{groupMembers.map((candidate) => candidate.name).join(', ')}</span>
           {:else if bot}
-            <BloubAvatar
+            <TeamAvatar
               avatar={bot.avatar}
               expression={bloubExpressionForTeamStatus(bot.status, bot.preview)}
               activity={bloubActivityForTeamStatus(bot.status)}
@@ -241,19 +273,38 @@
     {/if}
 
     <div class="team-chat-messages">
+      {#if setupBanner}
+        <div class="team-chat-setup" role={setupBanner.setupError ? 'alert' : 'status'}>
+          {#if setupBanner.setupError}
+            <span>{$t('team.setupFailed', {error: setupBanner.setupError})}</span>
+            <button type="button" disabled={retryingSetup} onclick={() => void retrySetup()}>{$t('team.retrySetup')}</button>
+          {:else}
+            <span>{$t('team.setupStarting', {name: setupBanner.name})}</span>
+          {/if}
+        </div>
+      {/if}
       {#each messages as message, index (message.id)}
         {@const streaming = running && index === liveIndex}
         {@const speaker = teamMessageSpeaker(message, speakerContext)}
-        <div class:agent={speaker.side === 'agent'} class:human={speaker.side === 'human'} class:peer={speaker.source === 'peer'} class:with-footer={speaker.side === 'agent' && Boolean(message.sentAt || (message.text && !streaming))} data-team-speaker={speaker.key} class="team-chat-message-row">
-          {#if speaker.side === 'agent'}
+        {#each inlineActivities(message) as activity (activity.id)}
+          {@const avatar = activityAvatar(activity)}
+          <div class="team-chat-activity" role={activity.status === 'active' ? 'status' : undefined} aria-label={activity.label}>
+            {#if avatar}
+              <span class="team-chat-activity-avatar" aria-hidden="true"><TeamAvatar {avatar} expression="neutral" activity={activity.status === 'active' ? 'working' : 'idle'} animated={activity.status === 'active'} size={18} paper="var(--app-bg)" label="" /></span>
+            {/if}
+            <span>{activity.label}</span>
+          </div>
+        {/each}
+        <div class:agent={speaker.side === 'agent'} class:human={speaker.side === 'human'} class:peer={speaker.source === 'peer'} data-team-speaker={speaker.key} class="team-chat-message-row">
+          {#if speaker.side === 'agent' && streaming}
             <span class:agent-fallback={!speaker.avatar} class="team-chat-avatar" aria-hidden={speaker.avatar ? undefined : 'true'}>
               {#if speaker.avatar}
-                <BloubAvatar
+                <TeamAvatar
                   avatar={speaker.avatar}
                   expression={bloubExpressionForMessage({text: message.text, streaming})}
                   activity={streaming ? (message.text.trim() ? 'working' : 'thinking') : 'idle'}
                   size={28}
-                  animated={streaming}
+                  animated
                   paper="var(--neutral-100)"
                   label={`${speaker.name} avatar`}
                 />
@@ -289,7 +340,7 @@
             {#if group}
               <GroupAvatar members={workingMembers} size={28} label={`${workingMembers.map((candidate) => candidate.name).join(' and ')} working`}/>
             {:else if bot}
-              <BloubAvatar avatar={bot.avatar} expression="attentive" activity="working" size={28} paper="var(--neutral-100)" label={`${bot.name} avatar`}/>
+              <TeamAvatar avatar={bot.avatar} expression="attentive" activity="working" size={28} paper="var(--neutral-100)" label={`${bot.name} avatar`}/>
             {/if}
           </span>
           <span class="team-chat-typing" role="status" aria-label={group ? `${workingMembers.map((candidate) => candidate.name).join(' and ')} working` : `${bot?.name ?? 'Agent'} is typing`}><i></i><i></i><i></i></span>
@@ -368,10 +419,12 @@
      three values there and here in step — tests/team-identity-alignment.spec.ts
      fails if they drift. */
   .team-chat-empty-identity span :global(svg){display:inline-block;margin-right:3px;vertical-align:calc(.5ex - 6px)}.team-chat-empty-identity:hover strong,.team-chat-empty-identity:focus-visible strong{color:var(--neutral-950)}.team-chat-empty-identity:hover span,.team-chat-empty-identity:focus-visible span{color:var(--neutral-700)}.team-chat-empty-identity:focus-visible{outline:2px solid var(--focus-ring);outline-offset:-2px}@media (prefers-reduced-motion:reduce){.team-chat-empty-identity strong,.team-chat-empty-identity span{transition:none}}
-  .team-chat-message-row{width:100%;min-width:0;display:flex;align-items:flex-end;gap:7px}.team-chat-message-row.human{justify-content:flex-end;padding-left:52px;box-sizing:border-box}.team-chat-message-row.agent{padding-right:52px;box-sizing:border-box}.team-chat-avatar{width:28px;height:28px;display:grid;place-items:center;flex:none;color:var(--neutral-600)}.team-chat-avatar.agent-fallback{border-radius:50%;background:var(--neutral-100)}.team-chat-message-row.agent.with-footer .team-chat-avatar{margin-bottom:18px}.team-chat-message{min-width:0;max-width:76%}.team-chat-message-row.human .team-chat-message{margin-left:auto}
+  .team-chat-activity{width:100%;display:flex;align-items:center;justify-content:center;gap:6px;padding:2px 24px;color:var(--secondary);font-size:11.5px;line-height:1.3;text-align:center}.team-chat-activity-avatar{display:grid;place-items:center;flex:none}.team-chat-activity>span:last-child{min-width:0;overflow-wrap:anywhere}
+  .team-chat-message-row{width:100%;min-width:0;display:flex;align-items:flex-end;gap:7px}.team-chat-message-row.human{justify-content:flex-end;padding-left:52px;box-sizing:border-box}.team-chat-message-row.agent{padding-right:52px;box-sizing:border-box}.team-chat-avatar{width:28px;height:28px;display:grid;place-items:center;flex:none;color:var(--neutral-600)}.team-chat-avatar.agent-fallback{border-radius:50%;background:var(--neutral-100)}.team-chat-message{min-width:0;max-width:76%}.team-chat-message-row.human .team-chat-message{margin-left:auto}
   .team-chat-message :global(.message){max-width:100%;margin:0;color:var(--neutral-900);font-size:12.5px;line-height:1.48}.team-chat-message :global(.message:not(.assistant)){max-width:100%}.team-chat-message :global(.message-content){overflow:hidden}.team-chat-message-row.agent :global(.message-content){width:fit-content;max-width:100%;box-sizing:border-box;border-radius:13px;padding:8px 11px;background:var(--neutral-100)}.team-chat-message-row.human :global(.message-content){border:0;border-radius:13px;padding:8px 11px;background:var(--neutral-950);color:var(--app-bg)}
   .team-chat-message-row.human :global(.message-content p){color:inherit}.team-chat-message :global(.message-peer-origin){display:flex;align-items:baseline;gap:5px;margin:0 2px 4px;color:var(--secondary);font-size:11px;line-height:1.2}.team-chat-message :global(.message-peer-origin span){min-width:0;display:flex;align-items:baseline;gap:5px;overflow:hidden}.team-chat-message :global(.message-peer-origin strong){overflow:hidden;color:var(--neutral-800);font-weight:620;text-overflow:ellipsis;white-space:nowrap}.team-chat-message :global(.message-peer-origin small){overflow:hidden;color:var(--secondary);text-overflow:ellipsis;white-space:nowrap}.team-chat-message :global(.message-peer-origin i){flex:none;border:1px solid var(--neutral-300);border-radius:5px;padding:1px 4px;color:var(--neutral-700);font-size:11px;font-style:normal;font-weight:650;letter-spacing:.03em;text-transform:uppercase}.team-chat-message :global(.message-peer-origin i.role-badge){max-width:min(220px,50%);overflow:hidden;border-color:var(--team-role-outline);border-radius:6px;padding:1px 6px;background:var(--team-role-surface);color:var(--team-role-text);font-weight:500;letter-spacing:0;text-overflow:ellipsis;text-transform:none;white-space:nowrap}.team-chat-message :global(.markdown-body p){margin:.55em 0}.team-chat-message :global(.markdown-body :is(h1,h2,h3,h4)){color:inherit}.team-chat-message :global(.message-footer){min-height:16px;margin-top:2px;color:var(--secondary);opacity:1}.team-chat-message :global(.message-actions){display:none}.team-chat-message :global(.message-time){color:var(--secondary);font-size:11px;line-height:14px}.team-chat-message-row.agent :global(.message-footer){padding-left:2px}.team-chat-message :global(.message-files){gap:6px;margin-top:5px}.team-chat-message :global(.file-card){padding:8px 10px;border-radius:10px;box-shadow:none}.team-chat-message :global(.file-icon){width:30px;height:30px}.team-chat-message :global(.file-copy strong){font-size:11.5px}.team-chat-message :global(.file-copy small),.team-chat-message :global(.open-in){font-size:11px}
   .team-chat-delivery{display:block;margin:2px 3px 0;color:var(--secondary);font-size:11px;text-align:right}.team-chat-delivery.failed{color:var(--danger-600)}
+  .team-chat-setup{display:flex;align-items:baseline;justify-content:center;gap:8px;margin:2px 3px 0;color:var(--secondary);font-size:11px;text-align:center}.team-chat-setup[role=alert]{color:var(--danger-600)}.team-chat-setup button{border:0;padding:0;background:none;color:inherit;font:inherit;text-decoration:underline;text-underline-offset:2px;cursor:pointer}.team-chat-setup button:disabled{opacity:.6;cursor:default}
   .team-chat-typing{display:inline-flex;align-items:center;gap:5px;border-radius:13px;padding:11px 13px;background:var(--neutral-100)}.team-chat-typing i{width:6px;height:6px;border-radius:50%;background:var(--secondary);animation:team-typing 1.2s ease-in-out infinite}.team-chat-typing i:nth-child(2){animation-delay:.2s}.team-chat-typing i:nth-child(3){animation-delay:.4s}.detached-typing .team-chat-avatar{margin-bottom:0}@keyframes team-typing{0%,60%,100%{opacity:.38;transform:scale(1)}30%{opacity:1;transform:scale(1.3)}}
   .team-chat-queued-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:4px 6px;padding-left:52px}.team-chat-queued-bubble{max-width:76%;border-radius:13px;padding:8px 11px;background:color-mix(in srgb,var(--neutral-950) 68%,transparent);color:var(--app-bg);opacity:.72}.team-chat-queued-bubble p{margin:0;font-size:12.5px;line-height:1.48;white-space:pre-wrap}.team-chat-queued-file{display:flex;align-items:center;gap:4px;margin-top:4px;font-size:11px}.team-chat-queued-state{color:var(--secondary);font-size:11px}.team-chat-queued-actions{display:flex}.team-chat-queued-actions button{width:22px;height:22px;display:grid;place-items:center;border:0;border-radius:6px;padding:0;background:transparent;color:var(--neutral-700);cursor:pointer}.team-chat-queued-actions button:hover{color:var(--neutral-900)}
   .team-chat-footer{position:relative;flex:none;padding:0 14px 14px;background:linear-gradient(to bottom,transparent,var(--app-bg) 18px)}.team-chat-composer-row{width:100%;display:flex;align-items:flex-end;gap:6px;margin-top:10px}.team-chat-add{width:36px;height:42px;display:grid;place-items:center;flex:none;border:0;padding:0;background:transparent;color:var(--neutral-700);cursor:pointer}.team-chat-add:hover,.team-chat-add.active{color:var(--neutral-950)}

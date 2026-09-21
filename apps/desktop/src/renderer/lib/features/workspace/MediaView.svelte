@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AppSettingsButton from './AppSettingsButton.svelte';
   import {downloadHubMedia} from './mediaDownload';
   import {onDestroy, tick} from 'svelte';
   import {on} from 'svelte/events';
@@ -21,11 +22,13 @@
   } from './mediaView';
 
   let {
+    onOpenSettings,
     title = '',
     src = '',
     fitted = true,
     onOpen = () => {},
   }: {
+    onOpenSettings?: () => void;
     title?: string;
     src?: string;
     fitted?: boolean;
@@ -223,7 +226,7 @@
 
 {#if src && kind === 'video'}
   <div class="media-view">
-    <div class="media-toolbar">
+    <div class="media-toolbar"><AppSettingsButton name="Media" onclick={onOpenSettings}/>
       <div bind:this={speedWrap} class="media-speed">
         <button
           type="button"
@@ -294,7 +297,7 @@
   </div>
 {:else if src}
   <div class="media-view">
-    <div class="media-toolbar">
+    <div class="media-toolbar"><AppSettingsButton name="Media" onclick={onOpenSettings}/>
       <button
         type="button"
         class="media-tool"
@@ -357,7 +360,8 @@
     </div>
   </div>
 {:else}
-  <div class="new-tab-empty">
+  <div class="new-tab-empty app-empty-view">
+    <div class="app-empty-settings"><AppSettingsButton name="Media" onclick={onOpenSettings}/></div>
     <Icon name="image" size={30}/>
     <h2>{title || $t('workspace.media')}</h2>
     <button type="button" class="new-tab-empty-text" onclick={() => void pickMedia()}>{$t('common.open')}</button>

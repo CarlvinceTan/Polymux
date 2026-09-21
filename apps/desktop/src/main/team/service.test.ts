@@ -9,7 +9,7 @@ import {TEAM_AVATAR_SHAPES, type AgentMessageOriginDto} from "@polymux/protocol"
 import {ProfileManager} from "../profiles.js";
 import {TeamComputerManager} from "./computers.js";
 import {TeamHostServer} from "./host-server.js";
-import {TeamService, agentRelayInferenceText, createAgentMessageTool, createTeamSetupTool, createTeamConnectionsTool, relayOrigin, parseAgentMessageOrigin} from "./service.js";
+import {TeamService, agentRelayInferenceText, createAgentMessageTool, createTeamSetupTool, createTeamConnectionsTool, createTeamSpawnTool, relayIntent, relayOrigin, parseAgentMessageOrigin} from "./service.js";
 import {isTeamBotSetupCue, teamBotSetupPrompt} from "./setup.js";
 
 const avatar = {shape: "circle" as const, color: "#8b5cf6"};
@@ -72,6 +72,36 @@ test("creating a Team bot opens its conversation with a hidden setup turn", asyn
     assert.equal(isTeamBotSetupCue(messages[0]!.metadata), true);
     // ...and it is not the preview the bot list shows before the bot answers.
     assert.equal(team.require(bot.id).preview, "Research lead");
+  } finally {
+    storage.close();
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("a bot created without a role asks its first turn to propose one", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-team-setup-"));
+  const storage = new SqliteStorage(path.join(root, "team.sqlite"));
+  try {
+    const delivered: Array<{conversationId: string; text: string}> = [];
+    const team = new TeamService({
+      storage,
+      profiles: new ProfileManager(storage, root),
+      computers: new TeamComputerManager(),
+      deliver: ({conversationId, text}) => delivered.push({conversationId, text}),
+    });
+    // "New Chat" from the To: bar: no role, so setup happens in the conversation.
+    const bot = team.create({name: "New Chat", role: "", profileId: "default", avatar});
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+    assert.equal(team.require(bot.id).role, "");
+    assert.equal(delivered[0]!.text, teamBotSetupPrompt(bot));
+    assert.match(delivered[0]!.text, /no role or assignment chosen yet/);
+    assert.match(delivered[0]!.text, /propose two or three concrete roles/);
+
+    // A role can be added later, and cleared again without being rejected.
+    const named = team.update(bot.id, {role: "Research lead"});
+    assert.equal(named.role, "Research lead");
+    assert.equal(team.update(bot.id, {role: ""}).role, "");
   } finally {
     storage.close();
     await rm(root, {recursive: true, force: true});
@@ -231,9 +261,10 @@ test("bot communication is always available while laptop access stays bounded", 
     assert.equal(handoff.conversationId, linus.conversationId);
 
     const approvals: boolean[] = [];
-    team.setLaptopBroker(async (_member, _capability, _tool, _input, _context, requiresApproval) => {
-      approvals.push(requiresApproval);
-      return {approved: true, result: {content: "brokered laptop result"}};
+    team.setLaptopBroker(async (_member, _capability, _tool, _input, _context, accessForDevice) => {
+      const hostId = team.localHost().hostId;
+      approvals.push(accessForDevice(hostId).requiresApproval);
+      return {approved: true, hostId, result: {content: "brokered laptop result"}};
     });
     let localExecutions = 0;
     const tool: AgentTool = {
@@ -255,7 +286,7 @@ test("bot communication is always available while laptop access stays bounded", 
     team.update(maya.id, {laptopAccess: "off"});
     const denied = await guarded.execute({}, {...context, callId: "call-3"});
     assert.equal(denied.isError, true);
-    assert.match(String(denied.content), /not allowed to use this laptop/);
+    assert.match(String(denied.content), /not allowed to use this device/);
     assert.deepEqual(approvals, [true, false]);
   } finally {
     storage.close();
@@ -425,7 +456,11 @@ test("moving a bot preserves identity, conversation and attachments", async () =
     assert.equal(moved.id, maya.id);
     assert.equal(moved.conversationId, maya.conversationId);
     assert.equal(moved.hostId, target.localHost().hostId);
-    const importedMessage = targetStorage.listMessages(maya.conversationId)[0]!;
+    const imported = targetStorage.listMessages(maya.conversationId);
+    // The hidden first-run cue travels with the history, so the moved bot can
+    // still introduce itself when its setup turn was never delivered.
+    assert.equal(isTeamBotSetupCue(imported[0]!.metadata), true);
+    const importedMessage = imported[1]!;
     assert.equal(importedMessage.content, "Keep this history.");
     assert.equal(importedMessage.createdAt, createdAt);
     const importedAttachment = targetStorage.listAttachments(importedMessage.id)[0]!;
@@ -440,7 +475,7 @@ test("moving a bot preserves identity, conversation and attachments", async () =
   }
 });
 
-test("Assistant can inspect setup and create a bot without granting laptop access", async () => {
+test("Assistant can inspect setup and create a bot with default device access", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "polymux-team-setup-"));
   const storage = new SqliteStorage(path.join(root, "team.sqlite"));
   try {
@@ -471,6 +506,7 @@ test("Assistant can inspect setup and create a bot without granting laptop acces
     assert.match(options.content, /Eligible profiles:\n- Default Profile \(default\)/);
     assert.match(options.content, /Available connections pool in workspace/);
     assert.match(options.content, /Skills: web-search/);
+    assert.ok(options.content.includes(team.localHost().hostId));
     const created = await tool.execute({
       action: "create",
       name: "Maya",
@@ -482,7 +518,7 @@ test("Assistant can inspect setup and create a bot without granting laptop acces
     if (typeof created.content !== "string") assert.fail("Expected text setup result");
     assert.match(created.content, /Created Maya, Research lead/);
     const maya = team.list()[0]!;
-    assert.equal(maya.laptopAccess, "off");
+    assert.equal(maya.laptopAccess, "allow");
     assert.match(maya.avatar.color, /^#[0-9a-f]{6}$/i);
     assert.deepEqual(maya.skills, ["web-search"]);
     assert.deepEqual(maya.mcpServers, ["github"]);
@@ -494,6 +530,10 @@ test("Assistant can inspect setup and create a bot without granting laptop acces
     const updated = await tool.execute({action: "update", member: maya.id, role: "Staff researcher", skills: ["web-search", "deep-research"]}, context);
     assert.match(String(updated.content), /Staff researcher/);
     assert.deepEqual(team.list()[0]!.skills, ["web-search", "deep-research"]);
+    const deviceAccess = {[team.localHost().hostId]: "ask"};
+    await tool.execute({action: "update", member: maya.id, deviceAccess}, context);
+    assert.deepEqual(team.require(maya.id).deviceAccess, deviceAccess);
+    await assert.rejects(tool.execute({action: "update", member: maya.id, deviceAccess: {device: "alow"}}, context), /Device access/);
 
     await assert.rejects(tool.execute({action: "remove", member: maya.id}, context), /confirm=true/);
     const removed = await tool.execute({action: "remove", member: maya.id, confirm: true}, context);
@@ -571,6 +611,469 @@ test("archived assistant chats leave the drawer list and stay out of Team", asyn
     assert.equal(team.archivedAssistantConversations().some((item) => item.id === maya.conversationId), false);
     assert.equal(team.isAssistantConversation(assistant.id), true);
     assert.equal(team.isAssistantConversation(maya.conversationId), false);
+  } finally {
+    storage.close();
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+
+test("device access defaults to allow; ask approvals are scoped and revoked when policy tightens", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-device-access-"));
+  const storage = new SqliteStorage(":memory:");
+  try {
+    let approvals = 0;
+    const team = new TeamService({storage, profiles: new ProfileManager(storage, root), computers: new TeamComputerManager(),
+      requestLaptopAccess: async () => { approvals++; return true; }});
+    const member = team.create({name: "Maya", role: "Research", profileId: "default", avatar});
+    const localId = team.localHost().hostId;
+    await team.savePeerConnection("http://127.0.0.1:9551", {hostId: "device-a", deviceName: "A", secret: "test-a"});
+    await team.savePeerConnection("http://127.0.0.1:9552", {hostId: "device-b", deviceName: "B", secret: "test-b"});
+    storage.createRun({id: "policy-run", conversationId: member.conversationId, model: "provider/model"});
+    const context: AgentToolContext = {runId: "policy-run", turn: 0, callId: "call", signal: new AbortController().signal, emitProgress: async () => {}};
+    assert.equal(member.laptopAccess, "allow");
+    assert.equal(await team.authorizeLaptopTool(context, "files", "read_file"), true);
+    assert.equal(approvals, 0);
+    assert.equal(team.leases(member.id).length, 0);
+    assert.equal(team.deviceAccessMode(member, "unknown-device"), "off");
+
+    team.update(member.id, {deviceAccess: {[localId]: "ask", "device-a": "ask", "device-b": "ask"}});
+    assert.equal(await team.authorizeLaptopTool(context, "files", "read_file"), true);
+    assert.equal(await team.authorizeLaptopTool(context, "files", "read_file"), true);
+    assert.equal(approvals, 1);
+    assert.equal(team.leases(member.id)[0]!.hostId, localId);
+
+    const destinations = ["device-a", "device-b", "device-a"];
+    const requested: Array<{device: string; requiresApproval: boolean}> = [];
+    team.setLaptopBroker(async (_member, _capability, _tool, _input, _context, accessForDevice) => {
+      const hostId = destinations.shift()!;
+      const policy = accessForDevice(hostId);
+      assert.equal(policy.allowed, true);
+      requested.push({device: hostId, requiresApproval: policy.requiresApproval});
+      return {hostId, approved: true, result: {content: hostId}};
+    });
+    const guarded = team.guardLaptopTool({name: "read_file", description: "test", parameters: {type: "object"}, execute: async () => ({content: "local"})}, "files");
+    for (let index = 0; index < 3; index++) await guarded.execute({}, context);
+    assert.deepEqual(requested, [
+      {device: "device-a", requiresApproval: true}, {device: "device-b", requiresApproval: true}, {device: "device-a", requiresApproval: false},
+    ]);
+    const oldLease = team.leases(member.id).find((lease) => lease.hostId === "device-a")!;
+    team.update(member.id, {deviceAccess: {[localId]: "ask", "device-a": "off", "device-b": "ask"}});
+    assert.equal(team.hasDeviceLease(member.id, "device-a", "files"), false);
+    assert.equal(team.hasDeviceLease(member.id, "device-b", "files"), true);
+    // An old grant cannot override a newly restrictive policy, even if restored.
+    storage.setPreference("team.laptop-leases", [...team.leases(), oldLease] as never);
+    team.setLaptopBroker(async (_member, _capability, _tool, _input, _context, accessForDevice) => {
+      assert.deepEqual(accessForDevice("device-a"), {allowed: false, requiresApproval: false});
+      assert.deepEqual(accessForDevice("device-b"), {allowed: true, requiresApproval: false});
+      return {hostId: "device-a", approved: true, result: {content: "should not be accepted"}};
+    });
+    assert.equal((await guarded.execute({}, context)).isError, true);
+    team.update(member.id, {deviceAccess: {[localId]: "off", "device-a": "off", "device-b": "ask"}});
+    assert.equal(await team.authorizeLaptopTool(context, "files", "read_file"), false);
+    assert.equal(approvals, 1);
+  } finally { storage.close(); await rm(root, {recursive: true, force: true}); }
+});
+
+test("device policies validate input, survive transfer, and migrate old defaults without retaining unscoped approvals", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-device-migration-"));
+  const storage = new SqliteStorage(":memory:");
+  const targetStorage = new SqliteStorage(":memory:");
+  try {
+    const team = new TeamService({storage, profiles: new ProfileManager(storage, root), computers: new TeamComputerManager()});
+    const target = new TeamService({storage: targetStorage, profiles: new ProfileManager(targetStorage, root), computers: new TeamComputerManager()});
+    const request = {name: "Maya", role: "Research", profileId: "default", avatar};
+    for (const deviceAccess of [{a: "alow"}, [], "allow", {" ": "off"}, {a: null}, null] as unknown[])
+      assert.throws(() => team.create({...request, deviceAccess} as never), /Device access/);
+    for (const laptopAccess of ["alow", null]) assert.throws(() => team.create({...request, laptopAccess} as never), /Device access/);
+    const member = team.create({...request, deviceAccess: {"device-a": "ask", "device-b": "off"}, skills: ["research"]});
+    assert.throws(() => team.update(member.id, {deviceAccess: {a: "alow"}} as never), /Device access/);
+    const moved = await target.importBot(await team.exportBot(member.id), "default");
+    assert.deepEqual(moved.deviceAccess, member.deviceAccess);
+    assert.deepEqual(moved.skills, ["research"]);
+    for (const oldPolicy of ["ask", "off"]) {
+      const old = team.create({...request, name: oldPolicy});
+      const metadata = JSON.parse(JSON.stringify(storage.getConversation(old.conversationId)!.metadata));
+      delete metadata.bot.deviceAccess;
+      metadata.bot.laptopAccess = oldPolicy;
+      storage.updateConversation(old.conversationId, {metadata});
+      assert.equal(team.require(old.id).laptopAccess, oldPolicy === "ask" ? "allow" : "off");
+    }
+    storage.setPreference("team.laptop-leases", [{id: "legacy", memberId: member.id, capabilities: ["files"], createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString()}]);
+    assert.deepEqual(team.leases(), []);
+  } finally { storage.close(); targetStorage.close(); await rm(root, {recursive: true, force: true}); }
+});
+
+test("bot agent configuration is independent of shared profiles and survives transfer", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-bot-runtime-"));
+  const storage = new SqliteStorage(":memory:");
+  const destinationStorage = new SqliteStorage(":memory:");
+  try {
+    const profiles = new ProfileManager(storage, path.join(root, "source"));
+    const team = new TeamService({storage, profiles, computers: new TeamComputerManager()});
+    const runtime = {kind: "acp" as const, name: "Fixture ACP", command: "node", args: ["fixture.mjs"], config: {model: "fast"}};
+    const first = team.create({name: "First", role: "Research", profileId: "default", avatar, agentRuntime: runtime});
+    const second = team.create({name: "Second", role: "Review", profileId: "default", avatar, agentRuntime: runtime});
+    assert.equal(first.agentRuntime?.kind, "acp");
+    assert.notDeepEqual(first.agentRuntime, second.agentRuntime, "each bot gets its own configuration slot");
+    const selected = first.agentRuntime!;
+    assert.equal(selected.kind, "acp");
+    if (selected.kind !== "acp") throw new Error("Expected ACP");
+    team.update(first.id, {agentRuntime: {...selected, config: {model: "capable", brave: true}}});
+    assert.deepEqual(team.require(second.id).agentRuntime, second.agentRuntime);
+    assert.equal(profiles.preference("agent-runtime"), null);
+    const reread = new TeamService({storage, profiles, computers: new TeamComputerManager()});
+    assert.deepEqual(reread.require(first.id).agentRuntime, team.require(first.id).agentRuntime);
+    const destination = new TeamService({storage: destinationStorage, profiles: new ProfileManager(destinationStorage, path.join(root, "destination")), computers: new TeamComputerManager()});
+    const moved = await destination.importBot(await team.exportBot(first.id), "default");
+    assert.deepEqual(moved.agentRuntime, team.require(first.id).agentRuntime);
+    assert.throws(() => team.update(first.id, {agentRuntime: {kind: "acp", name: "Bad", command: " "}}), /command/i);
+    const safe = team.update(first.id, {agentRuntime: {...selected, configId: "../../other-bot", registryEnvironment: {HOME: "/other", TOKEN: "secret", COLOR: "yes"}}}).agentRuntime;
+    assert.equal(safe?.kind, "acp");
+    if (safe?.kind === "acp") { assert.match(safe.configId!, /^[a-z0-9-]+$/); assert.deepEqual(safe.registryEnvironment, {COLOR: "yes"}); }
+  } finally { storage.close(); destinationStorage.close(); await rm(root, {recursive: true, force: true}); }
+});
+
+test("a bot spawning a peer reuses its spawn key and tracks the parent", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-team-spawn-"));
+  const storage = new SqliteStorage(path.join(root, "team.sqlite"));
+  try {
+    const delivered: Array<{conversationId: string; text: string; messageId: string}> = [];
+    const team = new TeamService({
+      storage,
+      profiles: new ProfileManager(storage, root),
+      computers: new TeamComputerManager(),
+      deliver: (input) => delivered.push(input),
+    });
+    const maya = team.create({name: "Maya", role: "Research lead", profileId: "default", avatar});
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+    const scout = team.spawn({
+      name: "Scout", role: "Field researcher", profileId: "default",
+      avatar, prompt: "Survey the inbox.", spawnKey: "spawn-key-1",
+    }, maya.id);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+    assert.equal(scout.parentBotId, maya.id);
+    assert.deepEqual(team.children(maya.id).map((member) => member.id), [scout.id]);
+    // The peer opens with the hidden setup cue, then its first task follows it.
+    const childMessages = storage.listMessages(scout.conversationId);
+    assert.equal(childMessages.length, 2);
+    assert.equal(isTeamBotSetupCue(childMessages[0]!.metadata), true);
+    assert.equal(childMessages[1]!.content, "Survey the inbox.");
+    const childDeliveries = delivered.filter((item) => item.conversationId === scout.conversationId);
+    assert.equal(childDeliveries.length, 2);
+    assert.equal(childDeliveries[1]!.text, "Survey the inbox.");
+
+    // A retried spawn reuses the winner instead of duplicating the peer.
+    const duplicate = team.spawn({
+      name: "Scout Again", role: "Field researcher", profileId: "default",
+      avatar, prompt: "Survey the inbox.", spawnKey: "spawn-key-1",
+    }, maya.id);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    assert.equal(duplicate.id, scout.id);
+    assert.equal(team.list().length, 2);
+    // ...and it does not re-store or re-deliver the first task.
+    assert.equal(storage.listMessages(scout.conversationId).length, 2);
+    assert.equal(delivered.filter((item) => item.conversationId === scout.conversationId).length, 2);
+
+    // Parentage survives a move to another Host.
+    const destinationStorage = new SqliteStorage(":memory:");
+    try {
+      const destination = new TeamService({
+        storage: destinationStorage,
+        profiles: new ProfileManager(destinationStorage, path.join(root, "destination")),
+        computers: new TeamComputerManager(),
+      });
+      const moved = await destination.importBot(await team.exportBot(scout.id), "default");
+      assert.equal(moved.parentBotId, maya.id);
+    } finally { destinationStorage.close(); }
+  } finally {
+    storage.close();
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("a bot archives only its own spawned peers with an exact-name confirmation", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-team-archive-spawn-"));
+  const storage = new SqliteStorage(":memory:");
+  try {
+    const team = new TeamService({
+      storage,
+      profiles: new ProfileManager(storage, root),
+      computers: new TeamComputerManager(),
+      deliver: () => {},
+    });
+    const maya = team.create({name: "Maya", role: "Research lead", profileId: "default", avatar});
+    const linus = team.create({name: "Linus", role: "Builder", profileId: "default", avatar});
+    const scout = team.spawn({name: "Scout", role: "Helper", profileId: "default", avatar}, maya.id);
+    await assert.rejects(team.archiveSpawnedBot(maya.id, ""), /confirm_name/);
+    await assert.rejects(team.archiveSpawnedBot(maya.id, "Wrong name"), /did not create/);
+    await assert.rejects(team.archiveSpawnedBot(linus.id, "Scout"), /did not create/);
+    await assert.rejects(team.archiveSpawnedBot(maya.id, "Scout", linus.id), /not created by this bot/);
+    // A bot cannot archive itself, even when the name matches.
+    await assert.rejects(team.archiveSpawnedBot(maya.id, "Maya", maya.id), /not created by this bot/);
+    const archived = await team.archiveSpawnedBot(maya.id, "Scout");
+    assert.equal(archived.id, scout.id);
+    assert.equal(team.bot(scout.id), null);
+
+    // Two peers sharing a name require the id to disambiguate.
+    const first = team.spawn({name: "Scout", role: "One", profileId: "default", avatar, spawnKey: "key-1"}, maya.id);
+    const second = team.spawn({name: "Scout", role: "Two", profileId: "default", avatar, spawnKey: "key-2"}, maya.id);
+    await assert.rejects(team.archiveSpawnedBot(maya.id, "Scout"), /bot_id/);
+    await team.archiveSpawnedBot(maya.id, "Scout", second.id);
+    assert.equal(team.bot(second.id), null);
+    assert.equal(team.require(first.id).name, "Scout");
+  } finally { storage.close(); await rm(root, {recursive: true, force: true}); }
+});
+
+test("a stalled setup cue stays pending until the bot replies and retry re-delivers it", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-team-retry-"));
+  const storage = new SqliteStorage(path.join(root, "team.sqlite"));
+  try {
+    const delivered: Array<{conversationId: string; text: string; messageId: string}> = [];
+    const team = new TeamService({
+      storage,
+      profiles: new ProfileManager(storage, root),
+      computers: new TeamComputerManager(),
+      deliver: (input) => delivered.push(input),
+    });
+    const bot = team.create({name: "Maya", role: "Research lead", profileId: "default", avatar});
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    assert.equal(delivered.length, 1);
+    assert.equal(team.require(bot.id).setupPending, true);
+    assert.equal(team.require(bot.id).setupError, null);
+    assert.deepEqual(team.pendingBotSetups().map((member) => member.id), [bot.id]);
+
+    const cue = storage.listMessages(bot.conversationId)[0]!;
+    assert.equal(isTeamBotSetupCue(cue.metadata), true);
+    storage.updateMessage(cue.id, {metadata: {setupCue: true, deliveryError: "No model is available"}});
+    assert.equal(team.require(bot.id).setupError, "No model is available");
+
+    team.retrySetup(bot.id);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    assert.equal(delivered.length, 2);
+    assert.equal(delivered[1]!.messageId, cue.id);
+    assert.equal(team.require(bot.id).setupError, null);
+    assert.equal(team.require(bot.id).setupPending, true);
+
+    storage.appendMessage({id: "assistant-1", conversationId: bot.conversationId, runId: null, role: "assistant", content: "Hello!"});
+    assert.equal(team.require(bot.id).setupPending, false);
+    assert.deepEqual(team.pendingBotSetups(), []);
+    await assert.rejects(async () => team.retrySetup(bot.id), /already completed/);
+
+    // The user engaging first also settles the setup, as in Rakazo's focus prompt.
+    const quiet = team.create({name: "Quiet", role: "", profileId: "default", avatar});
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    assert.equal(team.require(quiet.id).setupPending, true);
+    storage.appendMessage({id: "user-1", conversationId: quiet.conversationId, runId: null, role: "user", content: "Hi there"});
+    assert.equal(team.require(quiet.id).setupPending, false);
+  } finally {
+    storage.close();
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("team_spawn lets a bot grow durable peers but not touch other bots", async () => {  const root = await mkdtemp(path.join(tmpdir(), "polymux-team-spawn-tool-"));
+  const storage = new SqliteStorage(path.join(root, "team.sqlite"));
+  try {
+    const profiles = new ProfileManager(storage, root);
+    const delivered: string[] = [];
+    const team = new TeamService({
+      storage, profiles, computers: new TeamComputerManager(),
+      deliver: ({conversationId}) => delivered.push(conversationId),
+    });
+    const tool = createTeamSpawnTool(team, {
+      options: async () => ({profiles: profiles.snapshot().profiles}),
+      spawn: async (request, parentBotId) => team.spawn(request, parentBotId),
+      children: async (parentBotId) => team.children(parentBotId),
+      updateSelf: async (parentBotId, request) => team.update(parentBotId, request),
+      archive: async (parentBotId, confirmName, botId) => team.archiveSpawnedBot(parentBotId, confirmName, botId),
+    });
+    const context = (runId: string): AgentToolContext => ({
+      runId, turn: 0, callId: "spawn", signal: new AbortController().signal,
+      emitProgress: async () => {},
+    });
+    const maya = team.create({name: "Maya", role: "Research lead", profileId: "default", avatar});
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    storage.createRun({id: "run-maya", conversationId: maya.conversationId, model: "provider/model"});
+    const mayaContext = context("run-maya");
+
+    await assert.rejects(tool.execute({action: "spawn", name: "Scout"}, {...context("assistant-run")}), /only for Team bots/);
+    const spawned = await tool.execute({action: "spawn", name: "Scout", role: "Helper", prompt: "Say hi"}, mayaContext);
+    if (typeof spawned.content !== "string") assert.fail("Expected text spawn result");
+    assert.match(spawned.content, /Created Scout/);
+    const childId = (spawned.metadata as {memberId: string}).memberId;
+    assert.equal(team.require(childId).parentBotId, maya.id);
+    const repeated = await tool.execute({action: "spawn", name: "Scout", role: "Helper"}, mayaContext);
+    assert.equal((repeated.metadata as {memberId: string}).memberId, childId);
+
+    const listed = await tool.execute({action: "list"}, mayaContext);
+    assert.match(String(listed.content), /Scout — Helper/);
+    const renamed = await tool.execute({action: "update", role: "Night watch"}, mayaContext);
+    assert.match(String(renamed.content), /Night watch/);
+    assert.equal(team.require(maya.id).role, "Night watch");
+
+    const linus = team.create({name: "Linus", role: "Builder", profileId: "default", avatar});
+    storage.createRun({id: "run-linus", conversationId: linus.conversationId, model: "provider/model"});
+    await assert.rejects(
+      tool.execute({action: "archive", confirm_name: "Scout"}, context("run-linus")),
+      /did not create/,
+    );
+    const archived = await tool.execute({action: "archive", confirm_name: "Scout"}, mayaContext);
+    assert.match(String(archived.content), /Archived Scout/);
+    assert.equal(team.bot(childId), null);
+    assert.equal(delivered.filter((id) => id === maya.conversationId).length, 1);
+  } finally {
+    storage.close();
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("agent messages carry an optional triage intent into the delivery", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-team-intent-"));
+  const storage = new SqliteStorage(":memory:");
+  try {
+    const delivered: Array<{text: string; messageId: string}> = [];
+    const team = new TeamService({
+      storage,
+      profiles: new ProfileManager(storage, root),
+      computers: new TeamComputerManager(),
+      deliver: ({text, messageId}) => delivered.push({text, messageId}),
+    });
+    const maya = team.create({name: "Maya", role: "Research lead", profileId: "default", avatar});
+    const linus = team.create({name: "Linus", role: "Builder", profileId: "default", avatar});
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    storage.createRun({id: "run-maya", conversationId: maya.conversationId, model: "provider/model"});
+
+    const requested = await team.sendFromRun("run-maya", linus.id, "Please build the parser.", [], "request");
+    assert.equal(relayIntent(requested.metadata), "request");
+    assert.equal(agentRelayInferenceText(requested), "Request from Maya (Research lead):\n\nPlease build the parser.");
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    assert.ok(delivered.some((item) => item.messageId === requested.id && item.text.startsWith("Request from Maya")));
+
+    const plain = await team.send({fromMemberId: maya.id, to: linus.id, text: "Heads up."});
+    assert.equal(relayIntent(plain.metadata), undefined);
+    assert.equal(agentRelayInferenceText(plain), "Message from Maya (Research lead):\n\nHeads up.");
+
+    await assert.rejects(team.send({fromMemberId: maya.id, to: linus.id, text: "Nope.", intent: "urgent"} as never), /intent/);
+
+    const tool = createAgentMessageTool(team);
+    const toolContext: AgentToolContext = {runId: "run-maya", turn: 0, callId: "mail", signal: new AbortController().signal, emitProgress: async () => {}};
+    const sent = await tool.execute({action: "send", to: linus.name, message: "Done.", intent: "result"}, toolContext);
+    assert.equal((sent.metadata as {intent: string}).intent, "result");
+    await assert.rejects(tool.execute({action: "send", to: linus.name, message: "Done.", intent: "urgent"}, toolContext), /intent/);
+  } finally { storage.close(); await rm(root, {recursive: true, force: true}); }
+});
+
+test("a failed peer-message wakeup is re-armed without duplicating the row", async () => {  const root = await mkdtemp(path.join(tmpdir(), "polymux-team-relay-retry-"));
+  const storage = new SqliteStorage(path.join(root, "team.sqlite"));
+  try {
+    const delivered: Array<{conversationId: string; text: string; messageId: string}> = [];
+    const team = new TeamService({
+      storage,
+      profiles: new ProfileManager(storage, root),
+      computers: new TeamComputerManager(),
+      deliver: (input) => delivered.push(input),
+    });
+    const maya = team.create({name: "Maya", role: "Research lead", profileId: "default", avatar});
+    const linus = team.create({name: "Linus", role: "Builder", profileId: "default", avatar});
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    // Both introductions land, so setup is settled before the peer mail.
+    for (const member of [maya, linus]) {
+      storage.appendMessage({id: `hello-${member.id}`, conversationId: member.conversationId, runId: null, role: "assistant", content: "Hello!"});
+    }
+    storage.createRun({id: "run-maya", conversationId: maya.conversationId, model: "provider/model"});
+    const relay = await team.sendFromRun("run-maya", linus.id, "Please build the parser.");
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    // Linus's deliveries are its setup cue plus this peer wakeup.
+    const wakeups = delivered.filter((item) => item.conversationId === linus.conversationId);
+    assert.equal(wakeups.length, 2);
+    assert.equal(wakeups[1]!.messageId, relay.id);
+
+    // The wakeup fails (usually "no model available") and is recorded on the row.
+    storage.updateMessage(relay.id, {metadata: {...relay.metadata as Record<string, never>, deliveryError: "No model is available"}});
+    assert.equal(team.retryRelayDelivery(linus.conversationId), true);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    const retried = delivered.filter((item) => item.conversationId === linus.conversationId);
+    assert.equal(retried.length, 3);
+    assert.equal(retried[2]!.messageId, relay.id);
+    assert.equal(storage.listMessages(linus.conversationId).filter((message) => relayOrigin(message.metadata)).length, 1);
+
+    // Once the bot replies, there is nothing left to re-arm.
+    storage.appendMessage({id: "linus-reply", conversationId: linus.conversationId, runId: null, role: "assistant", content: "On it."});
+    assert.equal(team.retryRelayDelivery(linus.conversationId), false);
+
+    // A bot whose setup never ran keeps its introduction first: relays wait.
+    const quiet = team.create({name: "Quiet", role: "", profileId: "default", avatar});
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    assert.equal(team.require(quiet.id).setupPending, true);
+    const parked = await team.send({fromMemberId: maya.id, to: quiet.id, text: "Parked peer mail."});
+    assert.equal(relayOrigin(parked.metadata)?.name, "Maya");
+    storage.updateMessage(parked.id, {metadata: {...parked.metadata as Record<string, never>, deliveryError: "No model is available"}});
+    assert.equal(team.retryRelayDelivery(quiet.conversationId), false);
+  } finally {
+    storage.close();
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("ensureSetup posts a first turn once for legacy bots with empty conversations", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "polymux-team-ensure-"));
+  const storage = new SqliteStorage(path.join(root, "team.sqlite"));
+  try {
+    const delivered: Array<{conversationId: string; messageId: string}> = [];
+    const team = new TeamService({
+      storage,
+      profiles: new ProfileManager(storage, root),
+      computers: new TeamComputerManager(),
+      deliver: ({conversationId, messageId}) => delivered.push({conversationId, messageId}),
+    });
+    const flush = () => new Promise<void>((resolve) => queueMicrotask(resolve));
+    const legacy = team.create({name: "Mark", role: "Job Seeker", profileId: "default", avatar});
+    await flush();
+    assert.equal(delivered.length, 1);
+    // Simulate a pre-cue bot: no pinned cue and a fully empty conversation.
+    const conversation = storage.getConversation(legacy.conversationId)!;
+    const metadata = JSON.parse(JSON.stringify(conversation.metadata));
+    delete metadata.bot.setupMessageId;
+    storage.updateConversation(conversation.id, {metadata});
+    storage.deleteMessagesAfter(legacy.conversationId, 0);
+    assert.equal(storage.listMessages(legacy.conversationId).length, 0);
+
+    const healed = team.ensureSetup(legacy.id);
+    // The conversation-open path immediately re-arms a pending setup. The cue
+    // delivery queued by ensureSetup must win without starting a second run.
+    team.retrySetup(legacy.id);
+    await flush();
+    assert.equal(healed.setupPending, true);
+    const cue = storage.listMessages(legacy.conversationId);
+    assert.equal(cue.length, 1);
+    assert.equal(isTeamBotSetupCue(cue[0]!.metadata), true);
+    assert.equal(delivered.length, 2);
+    assert.equal(delivered[1]!.messageId, cue[0]!.id);
+
+    // A second call never duplicates the first turn.
+    team.ensureSetup(legacy.id);
+    await flush();
+    assert.equal(storage.listMessages(legacy.conversationId).length, 1);
+    assert.equal(delivered.length, 2);
+
+    // Bots with history but no pinned cue are left alone.
+    const historian = team.create({name: "Nora", role: "Librarian", profileId: "default", avatar});
+    await flush();
+    const historianConversation = storage.getConversation(historian.conversationId)!;
+    const historianMetadata = JSON.parse(JSON.stringify(historianConversation.metadata));
+    delete historianMetadata.bot.setupMessageId;
+    storage.updateConversation(historianConversation.id, {metadata: historianMetadata});
+    assert.equal(team.ensureSetup(historian.id).id, historian.id);
+    await flush();
+    assert.ok(storage.listMessages(historian.conversationId).length >= 1);
+    assert.equal(
+      storage.listMessages(historian.conversationId).filter((message) => isTeamBotSetupCue(message.metadata)).length,
+      1,
+      "the original cue is not duplicated",
+    );
   } finally {
     storage.close();
     await rm(root, {recursive: true, force: true});

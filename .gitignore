@@ -16,8 +16,8 @@ test-results
 /resources/wechat-writer/
 
 # Phone-control runtimes fetched or built for the current platform
-/resources/phone/android/
-/resources/phone/ios/
+/resources/mobile/android/
+/resources/mobile/ios/
 
 # Signed macOS helper binaries, built from resources/native/*.swift by Forge
 /resources/native/bin/
@@ -45,6 +45,7 @@ test-results
 
 # Local experimentation workspace
 /experiments/
+/docs/reviews/
 *.sqlite.local
 *.sqlite.incomplete.local
 *.sqlite-wal
@@ -57,7 +58,7 @@ __pycache__/
 !.env.example
 
 # Publishable account key injected from .env / CI; never commit a filled copy.
-/apps/extension/locker/config.local.js
+/apps/extension/vault/config.local.js
 
 # Generated Safari Xcode projects (rebuilt via convert.sh / convert-ios.sh)
 /apps/extension/safari/Polymux/

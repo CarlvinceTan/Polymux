@@ -4,6 +4,7 @@
 </script>
 
 <script lang="ts">
+  export let onOpenSettings: (() => void) | undefined = undefined;
   import {onDestroy, onMount, tick} from 'svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import {polymuxApi} from '../../api/polymux';
@@ -11,15 +12,16 @@
   import type {BrowserAutofillOfferDto, BrowserHistoryEntryDto, BrowserPermissionDto, BrowserPermissionPromptDto, BrowserWebAuthnAccountDto, BrowserWebAuthnPromptDto} from '@polymux/protocol';
   import {readableError} from '../../shared/errors';
   import {onEmbeddedBrowserYield, watchEmbeddedBrowserOverlays} from './browserOverlay';
+  import {
+    type AddressRow,
+    displayUrl,
+    findInlineCompletionCandidate,
+    getInlineCompletion,
+    looksLikeAddress,
+    rankAddressRows,
+  } from './browserAddressSuggestions';
 
-  type AddressRow = {
-    id: string;
-    kind: 'history' | 'search';
-    title: string;
-    detail: string;
-    value: string;
-  };
-
+  export let settingsName = 'Browser';
   export let tabId = '';
   export let title = '';
   export let url: string | undefined = '';
@@ -78,22 +80,22 @@
   function dismissAutofill(): void {
     autofillOffer = null;
     autofillOffers.delete(tabId);
-    lockerPassword = '';
-    lockerUnlockError = '';
+    vaultPassword = '';
+    vaultUnlockError = '';
     if (embedded) void api.browser.dismissAutofill(tabId);
   }
 
-  async function unlockLockerFromBrowser(): Promise<void> {
-    if (!lockerPassword) return;
-    lockerUnlocking = true;
+  async function unlockVaultFromBrowser(): Promise<void> {
+    if (!vaultPassword) return;
+    vaultUnlocking = true;
     try {
-      await api.locker.unlock(lockerPassword);
-      lockerPassword = '';
-      lockerUnlockError = '';
+      await api.vault.unlock(vaultPassword);
+      vaultPassword = '';
+      vaultUnlockError = '';
     } catch (reason) {
-      lockerUnlockError = readableError(reason);
+      vaultUnlockError = readableError(reason);
     } finally {
-      lockerUnlocking = false;
+      vaultUnlocking = false;
     }
   }
 
@@ -111,9 +113,9 @@
   let permissionPrompt: BrowserPermissionPromptDto | null = null;
   let passkeyPrompt: BrowserWebAuthnPromptDto | null = null;
   let autofillOffer: BrowserAutofillOfferDto | null = autofillOffers.get(tabId) ?? null;
-  let lockerPassword = '';
-  let lockerUnlocking = false;
-  let lockerUnlockError = '';
+  let vaultPassword = '';
+  let vaultUnlocking = false;
+  let vaultUnlockError = '';
   let rememberPermission = false;
   let draft = url ?? '';
   let currentUrl = url ?? '';
@@ -135,6 +137,10 @@
   let selectedAddressRow = -1;
   let addressLookupRevision = 0;
   let addressLookupTimer: ReturnType<typeof setTimeout> | undefined;
+  let userTypedText = "";
+  let isDeleting = false;
+  let inlineSuggestionActive = false;
+  let cachedHistory: BrowserHistoryEntryDto[] = [];
   /** The native page must hide while a renderer menu sits above it. Its last
    * frame stays here for that short handoff so the browser never turns blank. */
   let pagePreview: string | null = null;
@@ -218,18 +224,9 @@
     return `browser-address-option-${tabId || 'preview'}-${index}`;
   }
 
-  function displayUrl(value: string): string {
-    try {
-      const parsed = new URL(value);
-      return `${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}${parsed.search}`;
-    } catch {
-      return value;
-    }
-  }
-
   function historyRows(history: BrowserHistoryEntryDto[]): AddressRow[] {
-    return history.slice(0, 5).map((entry, index) => ({
-      id: `history-${index}-${entry.url}`,
+    return history.slice(0, 8).map((entry) => ({
+      id: `history-${entry.url}`,
       kind: 'history',
       title: entry.title || displayUrl(entry.url),
       detail: displayUrl(entry.url),
@@ -255,20 +252,100 @@
     }).slice(0, 6);
   }
 
-  function looksLikeAddress(value: string): boolean {
-    if (/^[a-z][a-z\d+.-]*:\/\//i.test(value)) return true;
-    return !/\s/.test(value) && /^[\w.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(value);
+  function tryApplyInlineCompletion(query: string): boolean {
+    if (isDeleting || !query.trim() || !addressInput) return false;
+
+    const cachedAsRows = cachedHistory.length ? historyRows(cachedHistory) : [];
+    const match = findInlineCompletionCandidate(query, addressRows, cachedAsRows);
+
+    if (match) {
+      const {row, completion} = match;
+      inlineSuggestionActive = true;
+      selectedAddressRow = 0;
+
+      if (addressRows.length > 0 && addressRows[0]?.id !== row.id) {
+        addressRows = [row, ...addressRows.filter((r) => r.id !== row.id)];
+      } else if (addressRows.length === 0) {
+        addressRows = [row];
+      }
+
+      addressInput.value = completion;
+      draft = completion;
+      addressInput.setSelectionRange(query.length, completion.length);
+      queueMicrotask(() => {
+        if (inlineSuggestionActive && document.activeElement === addressInput && addressInput.value === completion) {
+          addressInput.setSelectionRange(query.length, completion.length);
+        }
+      });
+      return true;
+    }
+
+    inlineSuggestionActive = false;
+    selectedAddressRow = -1;
+    return false;
+  }
+
+  function highlightAddressRow(index: number): void {
+    if (selectedAddressRow === index) return;
+    selectedAddressRow = index;
+    const row = addressRows[index];
+    if (index === 0 && row && userTypedText && !isDeleting) {
+      const completion = getInlineCompletion(userTypedText, row);
+      if (completion) {
+        inlineSuggestionActive = true;
+        draft = completion;
+        if (addressInput) {
+          addressInput.value = completion;
+          addressInput.setSelectionRange(userTypedText.length, completion.length);
+        }
+        return;
+      }
+    }
+    if (inlineSuggestionActive) {
+      inlineSuggestionActive = false;
+      if (addressInput && userTypedText) {
+        addressInput.value = userTypedText;
+        draft = userTypedText;
+        addressInput.setSelectionRange(userTypedText.length, userTypedText.length);
+      }
+    }
   }
 
   async function showAddressRows(rows: AddressRow[], revision: number): Promise<void> {
     if (revision !== addressLookupRevision || document.activeElement !== addressInput) return;
-    const selectedId = selectedAddressRow >= 0 ? addressRows[selectedAddressRow]?.id : null;
-    addressRows = rows;
-    selectedAddressRow = selectedId ? rows.findIndex((row) => row.id === selectedId) : -1;
-    if (!rows.length) {
+    const rankedRows = userTypedText ? rankAddressRows(rows, userTypedText) : rows;
+    addressRows = rankedRows;
+    if (!rankedRows.length) {
       addressSuggestionsOpen = false;
+      selectedAddressRow = -1;
+      inlineSuggestionActive = false;
       return;
     }
+
+    const topRow = rankedRows[0];
+    const completion = !isDeleting && userTypedText ? getInlineCompletion(userTypedText, topRow) : null;
+
+    if (completion && topRow) {
+      selectedAddressRow = 0;
+      inlineSuggestionActive = true;
+      if (addressInput) {
+        if (addressInput.value !== completion) {
+          addressInput.value = completion;
+          draft = completion;
+          addressInput.setSelectionRange(userTypedText.length, completion.length);
+        } else if (
+          addressInput.selectionStart !== userTypedText.length ||
+          addressInput.selectionEnd !== completion.length
+        ) {
+          addressInput.setSelectionRange(userTypedText.length, completion.length);
+        }
+      }
+    } else {
+      inlineSuggestionActive = false;
+      const selectedId = selectedAddressRow >= 0 ? addressRows[selectedAddressRow]?.id : null;
+      selectedAddressRow = selectedId ? rankedRows.findIndex((row) => row.id === selectedId) : -1;
+    }
+
     if (!addressSuggestionsOpen) {
       let preview = pagePreview;
       if (!preview && embedded && pageLoaded) {
@@ -286,8 +363,18 @@
 
   async function loadAddressRows(query: string, revision: number): Promise<void> {
     const text = query.trim().slice(0, 200);
-    const history = await api.browser.browsingHistory({query: text || undefined, limit: 5}).catch(() => []);
+    const history = await api.browser.browsingHistory({query: text || undefined, limit: 10}).catch(() => []);
     if (revision !== addressLookupRevision) return;
+
+    if (history?.length) {
+      const known = new Set(cachedHistory.map((h) => h.url));
+      for (const item of history) {
+        if (!known.has(item.url)) {
+          cachedHistory.push(item);
+          known.add(item.url);
+        }
+      }
+    }
 
     const local = historyRows(history);
     const immediate = text ? [...local, ...searchRows(text, [])] : local;
@@ -311,22 +398,47 @@
     addressSuggestionsOpen = false;
     addressRows = [];
     selectedAddressRow = -1;
+    inlineSuggestionActive = false;
+    isDeleting = false;
   }
 
   function focusAddress(): void {
     watchDocumentFocus();
+    userTypedText = '';
+    isDeleting = false;
+    inlineSuggestionActive = false;
     addressInput.select();
+    void api.browser.browsingHistory({limit: 20}).then((entries) => {
+      if (entries?.length) cachedHistory = entries;
+    }).catch(() => {});
     scheduleAddressRows('', 0);
   }
 
-  function inputAddress(): void {
+  function inputAddress(event: Event): void {
     addressDirty = true;
-    scheduleAddressRows(draft);
+    const inputEvent = event as InputEvent;
+    const inputType = inputEvent.inputType ?? '';
+    isDeleting = inputType.startsWith('delete');
+    userTypedText = addressInput?.value ?? draft;
+    if (!isDeleting) {
+      tryApplyInlineCompletion(userTypedText);
+    } else {
+      inlineSuggestionActive = false;
+      selectedAddressRow = -1;
+    }
+    scheduleAddressRows(userTypedText);
   }
 
   function blurAddress(): void {
     stopWatchingFocus();
     closeAddressSuggestions();
+    inlineSuggestionActive = false;
+    isDeleting = false;
+    if (!addressDirty) {
+      draft = currentUrl;
+    } else if (userTypedText) {
+      draft = userTypedText;
+    }
   }
 
   function chooseAddressRow(row: AddressRow): void {
@@ -339,8 +451,52 @@
     if (event.key === 'Escape' && addressSuggestionsOpen) {
       event.preventDefault();
       closeAddressSuggestions();
+      if (userTypedText) {
+        draft = userTypedText;
+        if (addressInput) {
+          addressInput.value = userTypedText;
+          addressInput.setSelectionRange(userTypedText.length, userTypedText.length);
+        }
+      }
       return;
     }
+
+    if (event.key === 'Backspace' || event.key === 'Delete') {
+      isDeleting = true;
+      if (inlineSuggestionActive) {
+        event.preventDefault();
+        inlineSuggestionActive = false;
+        selectedAddressRow = -1;
+        if (addressInput && userTypedText) {
+          addressInput.value = userTypedText;
+          draft = userTypedText;
+          addressInput.setSelectionRange(userTypedText.length, userTypedText.length);
+        }
+        return;
+      }
+      return;
+    }
+
+    if (event.key === 'Tab') {
+      if (inlineSuggestionActive && selectedAddressRow === 0) {
+        event.preventDefault();
+        inlineSuggestionActive = false;
+        userTypedText = draft;
+        if (addressInput) {
+          addressInput.setSelectionRange(draft.length, draft.length);
+        }
+        return;
+      }
+    }
+
+    if (event.key === 'ArrowRight' || event.key === 'End') {
+      if (inlineSuggestionActive) {
+        inlineSuggestionActive = false;
+        userTypedText = draft;
+      }
+      return;
+    }
+
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
       if (event.key === 'Enter' && addressSuggestionsOpen && selectedAddressRow >= 0) {
         event.preventDefault();
@@ -349,6 +505,7 @@
       }
       return;
     }
+
     if (!addressRows.length) return;
     event.preventDefault();
     addressSuggestionsOpen = true;
@@ -356,6 +513,38 @@
     selectedAddressRow = selectedAddressRow < 0
       ? (direction > 0 ? 0 : addressRows.length - 1)
       : (selectedAddressRow + direction + addressRows.length) % addressRows.length;
+
+    const activeRow = addressRows[selectedAddressRow];
+    if (activeRow) {
+      if (selectedAddressRow === 0 && !isDeleting && userTypedText) {
+        const completion = getInlineCompletion(userTypedText, activeRow);
+        if (completion) {
+          inlineSuggestionActive = true;
+          draft = completion;
+          if (addressInput) {
+            addressInput.value = completion;
+            addressInput.setSelectionRange(userTypedText.length, completion.length);
+          }
+        } else {
+          inlineSuggestionActive = false;
+          const displayVal = activeRow.kind === 'history' ? displayUrl(activeRow.value) : activeRow.value;
+          draft = displayVal;
+          if (addressInput) {
+            addressInput.value = displayVal;
+            addressInput.setSelectionRange(displayVal.length, displayVal.length);
+          }
+        }
+      } else {
+        inlineSuggestionActive = false;
+        const displayVal = activeRow.kind === 'history' ? displayUrl(activeRow.value) : activeRow.value;
+        draft = displayVal;
+        if (addressInput) {
+          addressInput.value = displayVal;
+          addressInput.setSelectionRange(displayVal.length, displayVal.length);
+        }
+      }
+    }
+
     void tick().then(() => {
       const row = document.getElementById(addressRowId(selectedAddressRow));
       if (!row || !addressList) return;
@@ -514,6 +703,9 @@
   }
 
   onMount(() => {
+    void api.browser.browsingHistory({limit: 20}).then((entries) => {
+      if (entries?.length) cachedHistory = entries;
+    }).catch(() => {});
     if (embedded) {
       const stopWatch = watchEmbeddedBrowserOverlays((value) => {
         if (!value) {
@@ -562,8 +754,8 @@
         autofillOffer = event.offer;
         if (event.offer) autofillOffers.set(tabId, event.offer);
         else autofillOffers.delete(tabId);
-        lockerUnlockError = '';
-        if (!event.offer || event.offer.locker !== 'locked') lockerPassword = '';
+        vaultUnlockError = '';
+        if (!event.offer || event.offer.vault !== 'locked') vaultPassword = '';
       }
     });
     if (!embedded) return;
@@ -665,7 +857,7 @@
             role="option"
             aria-selected={selectedAddressRow === index}
             onmousedown={(event) => event.preventDefault()}
-            onmousemove={() => selectedAddressRow = index}
+            onmousemove={() => highlightAddressRow(index)}
             onclick={() => chooseAddressRow(row)}
           >
             <span class="address-suggestion-icon"><Icon name={row.kind === 'history' ? 'history' : 'search'} size={15}/></span>
@@ -706,11 +898,28 @@
       <button type="button" aria-label={$t('browser.more')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={moreOpen} onclick={() => void togglePopover('more')}><Icon name="more" size={16}/></button>
       {#if moreOpen}
         <div class="polymux-dropdown-menu workspace-more-menu" role="menu">
-          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={openFind}><span>{$t('browser.findInPage')}</span></button>
-          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => { moreOpen = false; void api.browser.print(tabId); }}><span>{$t('browser.print')}</span></button>
-          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => void takeScreenshot()}><span>{$t('browser.screenshot')}</span></button>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={openFind}><Icon name="search" size={14}/><span>{$t('browser.findInPage')}</span></button>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => { moreOpen = false; void api.browser.print(tabId); }}><Icon name="printer" size={14}/><span>{$t('browser.print')}</span></button>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!embedded || !pageLoaded} onclick={() => void takeScreenshot()}><Icon name="image" size={14}/><span>{$t('browser.screenshot')}</span></button>
           <div class="workspace-menu-divider"></div>
-          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!currentUrl && !url} onclick={() => { moreOpen = false; void api.browser.openExternal(currentUrl || url || ''); }}><span>{$t('browser.openExternal')}</span></button>
+          <button type="button" class="polymux-dropdown-item" role="menuitem" disabled={!currentUrl && !url} onclick={() => { moreOpen = false; void api.browser.openExternal(currentUrl || url || ''); }}><Icon name="external" size={14}/><span>{$t('browser.openExternal')}</span></button>
+          {#if onOpenSettings}
+            <div class="workspace-menu-divider"></div>
+            <button
+              type="button"
+              class="polymux-dropdown-item"
+              role="menuitem"
+              aria-label={`${settingsName} settings`}
+              data-app-settings-button
+              onclick={() => {
+                moreOpen = false;
+                onOpenSettings?.();
+              }}
+            >
+              <Icon name="settings" size={14}/>
+              <span>{$t('titlebar.settings')}</span>
+            </button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -720,19 +929,19 @@
 {#if autofillOffer}
   <div class="browser-autofill" role="region" aria-label={$t('browser.autofillOffer')}>
     <Icon name="key" size={14}/>
-    {#if autofillOffer.locker === 'locked'}
-      <form class="browser-autofill-unlock" onsubmit={(event) => { event.preventDefault(); void unlockLockerFromBrowser(); }}>
+    {#if autofillOffer.vault === 'locked'}
+      <form class="browser-autofill-unlock" onsubmit={(event) => { event.preventDefault(); void unlockVaultFromBrowser(); }}>
         <span class="browser-autofill-text">{$t('browser.autofillLocked')}</span>
         <input
           type="password"
-          bind:value={lockerPassword}
+          bind:value={vaultPassword}
           autocomplete="off"
           aria-label={$t('browser.autofillMaster')}
           placeholder={$t('browser.autofillMaster')}
-          disabled={lockerUnlocking}
+          disabled={vaultUnlocking}
         />
-        {#if lockerUnlockError}<span class="browser-autofill-error">{lockerUnlockError}</span>{/if}
-        <button type="submit" class="primary" disabled={lockerUnlocking || !lockerPassword}>{$t('browser.unlockLocker')}</button>
+        {#if vaultUnlockError}<span class="browser-autofill-error">{vaultUnlockError}</span>{/if}
+        <button type="submit" class="primary" disabled={vaultUnlocking || !vaultPassword}>{$t('browser.unlockVault')}</button>
       </form>
     {/if}
     {#if autofillOffer.items.length}

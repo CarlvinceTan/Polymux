@@ -5,6 +5,10 @@
     activities?: AgentActivityItem[];
     startedAt?: string;
     completedAt?: string;
+    /** How much of the run's work had already happened when this steer landed.
+     * The trail is drawn either side of it, so the transcript reads in the
+     * order the work actually happened. */
+    activitiesBefore?: number;
     /** Renderer-only delivery state for an optimistic Team group message. */
     teamDelivery?: 'pending' | 'failed';
   };
@@ -67,6 +71,7 @@
   import Message from './Message.svelte';
   import PromptInput from './PromptInput.svelte';
   import AgentActivity from './AgentActivity.svelte';
+  import {activityTrailSplits} from './activities';
   import QueuedMessages, {type QueuedMessage} from './QueuedMessages.svelte';
   import GoalBar, {type ActiveGoal} from './GoalBar.svelte';
   import type {ReasoningEffort} from '@polymux/protocol';
@@ -132,6 +137,8 @@
      steer lands — and an assistant with no text yet would read as Stopped.
      The live turn is the last assistant message instead. */
   $: liveIndex = lastAssistantIndex(messages);
+  // A steer cuts the run's trail around the message that interrupted it.
+  $: trail = activityTrailSplits(messages);
 
   function lastAssistantIndex(list: ChatMessage[]): number {
     for (let index = list.length - 1; index >= 0; index -= 1) {
@@ -230,11 +237,19 @@
   {:else}
     <div class="message-list" aria-live="polite" style={composerReserve ? `--composer-reserve:${composerReserve}px` : ''}>
       {#each messages as message, index (message.id)}
-        {@const activityVisible = message.role === 'assistant' && Boolean(message.activities?.length || (running && index === liveIndex))}
+        {@const earlier = trail.above.get(message.id)}
+        {@const later = trail.tail.get(message.id)}
+        {@const activities = later?.activities ?? message.activities ?? []}
+        {@const activityVisible = message.role === 'assistant' && Boolean(activities.length || (running && index === liveIndex))}
+        {#if earlier?.activities.length}
+          <!-- Work the agent finished before this steer, still where it
+               happened: above the words that interrupted it. -->
+          <AgentActivity activities={earlier.activities} startedAt={earlier.startedAt} completedAt={earlier.completedAt}/>
+        {/if}
         {#if activityVisible}
           <AgentActivity
-            activities={message.activities ?? []}
-            startedAt={message.startedAt}
+            activities={activities}
+            startedAt={later?.startedAt ?? message.startedAt}
             completedAt={message.completedAt}
             streaming={running && index === liveIndex}
           />
@@ -265,7 +280,7 @@
         {/if}
         {#if !speechMode}
           {#key draftKey}
-            <PromptInput {devices} {deviceId} {deviceLocked} {onDeviceChange} active={running} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied} {onFileDragActiveChange} {draftKey}/>
+            <PromptInput onSteerFirstQueued={() => { if (queued[0]) onSteerQueued(queued[0].id); }} {devices} {deviceId} {deviceLocked} {onDeviceChange} active={running} {speechModeEnabled} {dictationAutoStopSeconds} {placeholder} {onSend} {onStop} {onVoice} {reasoning} {onReasoningChange} {insertion} {onInsertionApplied} {onFileDragActiveChange} {draftKey}/>
           {/key}
         {/if}
       </div>

@@ -126,6 +126,7 @@ export function scheduleInput(value: unknown): ScheduleInput {
     throw new Error("Schedule must be an object");
   const input = value as Record<string, unknown>;
   return {
+    ...(input.botId !== undefined ? {botId: required(input.botId, "bot id")} : {}),
     title: required(input.title, "title"),
     prompt: required(input.prompt, "prompt"),
     frequency: scheduleFrequency(input.frequency),
@@ -258,7 +259,8 @@ export function workspaceSnapshot(value: unknown): WorkspaceSnapshotDto {
       .map((tab) => ({
         id: String(tab.id ?? ""),
         title: String(tab.title ?? ""),
-        kind: String(tab.kind ?? ""),
+        // One-time rename: the vault tab used to be called 'locker'.
+        kind: tab.kind === "locker" ? "vault" : String(tab.kind ?? ""),
         ...(typeof tab.url === "string" ? {url: tab.url} : {}),
         ...(typeof tab.favicon === "string" ? {favicon: tab.favicon} : {}),
         ...(typeof tab.section === "string" ? {section: tab.section} : {}),

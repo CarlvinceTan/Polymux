@@ -1,4 +1,6 @@
 <script lang="ts">
+  export let onOpenSettings: (() => void) | undefined = undefined;
+  import AppSettingsButton from './AppSettingsButton.svelte';
   import {onMount} from 'svelte';
   import type {
     CalendarAvailability,
@@ -20,8 +22,23 @@
     removeCachedCalendarEvent,
     subscribeCalendarInvalidations,
   } from './calendar-session';
+  import {
+    buildSuggestionInput,
+    collectSuggestionInputs,
+    dedupeSuggestionsAgainstEvents,
+    extractEventSuggestions,
+    filterDismissed,
+    type EventSuggestion,
+  } from './event-suggestions';
+  import {
+    HOUR_HEIGHT,
+    soloBlock,
+    timedLayout,
+    type TimedLayout,
+  } from './calendar-layout';
 
   type CalendarViewMode = 'day' | 'week' | 'month' | 'year';
+  type CalendarSidebarView = 'calendars' | 'suggestions';
   type EditorState = {
     id: string | null;
     title: string;
@@ -41,9 +58,9 @@
   };
 
   const api = polymuxApi();
-  const HOUR_HEIGHT = 52;
   const HOURS = Array.from({length: 24}, (_, hour) => hour);
   const WEEKDAY_REFERENCE = new Date(2021, 0, 4);
+  const NO_TIMED_LAYOUT: Map<string, TimedLayout> = new Map();
 
   let mode: CalendarViewMode = storedMode();
   let cursor = startOfDay(new Date());
@@ -62,6 +79,11 @@
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let timeScroll: HTMLDivElement;
   let loadSequence = 0;
+  let suggestions: EventSuggestion[] = [];
+  let suggestionsLoading = false;
+  let sidebarView: CalendarSidebarView = 'calendars';
+  let suggestionsScanned = false;
+  let suggestionsScanSequence = 0;
 
   $: shownEvents = events.filter((event) => {
     if (hiddenCalendarIds.includes(event.calendarId)) return false;
@@ -74,6 +96,10 @@
   $: visibleCalendarIds = calendars.filter((calendar) => !hiddenCalendarIds.includes(calendar.id)).map((calendar) => calendar.id);
   $: compactCalendarOptions = calendars.map((calendar) => ({value: calendar.id, label: `${calendar.source.title} · ${calendar.title}`}));
   $: weekDays = daysFrom(startOfWeek(cursor), 7);
+  $: timeDays = mode === 'day' ? [cursor] : weekDays;
+  $: timedLayouts = new Map(
+    timeDays.map((day) => [dateInput(day), timedLayout(eventsOnDay(day, eventsByDay, false), day)]),
+  );
   $: monthDays = daysFrom(startOfWeek(new Date(cursor.getFullYear(), cursor.getMonth(), 1)), 42);
   $: miniDays = daysFrom(startOfWeek(new Date(cursor.getFullYear(), cursor.getMonth(), 1)), 42);
   $: range = rangeFor(cursor, mode);
@@ -88,7 +114,11 @@
     } catch {
       hiddenCalendarIds = [];
     }
-    void loadEvents(!initiallyCached);
+    void loadEvents(!initiallyCached).then(() => {
+      // Suggestions are a background read over recent Hub evidence — bounded,
+      // receipt-free, and silent when the Hub is unreachable.
+      if (!suggestionsScanned) void scanSuggestions();
+    });
     const refreshIfStale = () => {
       if (!document.hidden && !calendarRangeIsFresh(rangeFor(cursor, mode)))
         void loadEvents(false);
@@ -148,6 +178,116 @@
   function scrollToWorkingDay(): void {
     if ((mode === 'day' || mode === 'week') && timeScroll && timeScroll.scrollTop < 10)
       timeScroll.scrollTop = Math.max(0, 7.5 * HOUR_HEIGHT);
+  }
+
+  async function scanSuggestions(): Promise<void> {
+    const request = ++suggestionsScanSequence;
+    suggestionsLoading = true;
+    try {
+      const inputs = await collectSuggestionInputs(
+        {
+          chats: () => api.comms.chats(),
+          chatMessages: (chatId, limit) => api.comms.chatMessages(chatId, limit),
+          status: () => api.comms.status(),
+          mailEnvelopes: (enquiry) => api.comms.mailEnvelopes({folder: enquiry.folder, pageSize: enquiry.pageSize, account: enquiry.account}),
+          mailMessage: (id, account, folder) => api.comms.mailMessage(id, account, folder),
+        },
+        new Date(),
+      );
+      if (request !== suggestionsScanSequence) return;
+      const extracted = extractEventSuggestions(inputs, new Date());
+      const fresh = dedupeSuggestionsAgainstEvents(extracted, events);
+      suggestions = filterDismissed(fresh, loadDismissedSuggestionIds()).slice(0, 6);
+      suggestionsScanned = true;
+      if (!suggestions.length && sidebarView === 'suggestions') sidebarView = 'calendars';
+    } catch {
+      // A Hub without mail, with no chats, or offline leaves no suggestions —
+      // the calendar itself must keep working.
+      if (request === suggestionsScanSequence) suggestions = [];
+    } finally {
+      if (request === suggestionsScanSequence) suggestionsLoading = false;
+    }
+  }
+
+  function loadDismissedSuggestionIds(): Set<string> {
+    try {
+      const stored = JSON.parse(localStorage.getItem('polymux-calendar-suggestions-dismissed') ?? '[]');
+      return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function persistSuggestionDismissal(id: string): void {
+    try {
+      const dismissed = loadDismissedSuggestionIds();
+      dismissed.add(id);
+      localStorage.setItem('polymux-calendar-suggestions-dismissed', JSON.stringify([...dismissed].slice(-500)));
+    } catch {
+      // Dismissal persistence is best-effort; the suggestion simply returns.
+    }
+  }
+
+  function dismissSuggestion(id: string): void {
+    persistSuggestionDismissal(id);
+    suggestions = suggestions.filter((suggestion) => suggestion.id !== id);
+    if (!suggestions.length) sidebarView = 'calendars';
+  }
+
+  function writableCalendarId(): string | null {
+    return calendars.find((calendar) => calendar.editable && !hiddenCalendarIds.includes(calendar.id))?.id
+      ?? calendars.find((calendar) => calendar.editable)?.id
+      ?? null;
+  }
+
+  async function addSuggestion(suggestion: EventSuggestion): Promise<void> {
+    const calendarId = writableCalendarId();
+    if (!calendarId) {
+      showNotice('Connect or enable a writable calendar first.');
+      return;
+    }
+    try {
+      const saved = await api.calendar.create(buildSuggestionInput(suggestion, calendarId));
+      cacheCalendarEvent(saved);
+      events = cachedCalendarRange(rangeFor(cursor, mode))?.events ?? [...events, saved];
+      persistSuggestionDismissal(suggestion.id);
+      suggestions = suggestions.filter((item) => item.id !== suggestion.id);
+      if (!suggestions.length) sidebarView = 'calendars';
+      showNotice('Event added.');
+    } catch (cause) {
+      showNotice(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  function openSuggestion(suggestion: EventSuggestion): void {
+    const calendarId = writableCalendarId() ?? suggestion.source.id;
+    const start = new Date(suggestion.start);
+    const end = new Date(suggestion.end);
+    editor = {
+      id: null,
+      title: suggestion.title,
+      calendarId: writableCalendarId() ?? calendars.find((calendar) => calendar.editable)?.id ?? calendarId,
+      allDay: suggestion.allDay,
+      startDate: dateInput(start),
+      startTime: timeInput(start),
+      endDate: dateInput(end),
+      endTime: timeInput(end),
+      location: suggestion.location ?? '',
+      notes: suggestion.notes ?? '',
+      url: suggestion.url ?? '',
+      recurrence: '',
+      alarm: suggestion.alarmMinutes === undefined ? '' : String(suggestion.alarmMinutes),
+      availability: suggestion.availability ?? 'busy',
+      editable: true,
+    };
+  }
+
+  function suggestionWhen(suggestion: EventSuggestion): string {
+    const start = new Date(suggestion.start);
+    if (suggestion.allDay) return start.toLocaleDateString(activeLocale(), {weekday: 'short', month: 'short', day: 'numeric'});
+    const day = start.toLocaleDateString(activeLocale(), {weekday: 'short', month: 'short', day: 'numeric'});
+    const time = start.toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit', hour12: true});
+    return `${day} · ${time}`;
   }
 
   function chooseMode(next: CalendarViewMode): void {
@@ -356,18 +496,6 @@
     return allDay === undefined ? items : items.filter((event) => event.allDay === allDay);
   }
 
-  function eventTop(event: CalendarEventDto, day: Date): number {
-    const start = Math.max(Date.parse(event.start), startOfDay(day).getTime());
-    return Math.max(0, (start - startOfDay(day).getTime()) / 3_600_000 * HOUR_HEIGHT);
-  }
-
-  function eventHeight(event: CalendarEventDto, day: Date): number {
-    const dayStart = startOfDay(day).getTime();
-    const start = Math.max(Date.parse(event.start), dayStart);
-    const end = Math.min(Date.parse(event.end), dayStart + 86_400_000);
-    return Math.max(22, (end - start) / 3_600_000 * HOUR_HEIGHT);
-  }
-
   function timeLabel(event: CalendarEventDto): string {
     if (event.allDay) return 'all-day';
     return new Date(event.start).toLocaleTimeString(activeLocale(), {hour: 'numeric', minute: '2-digit', hour12: true});
@@ -522,21 +650,51 @@
         {/each}
       </div>
 
-      <div class="calendar-list-heading"><span>Calendars</span><button type="button" aria-label="Refresh calendars" onclick={() => void refresh()}><Icon name="reload" size={13}/></button></div>
-      <div class="calendar-source-list">
-        {#each sources as source (source.id)}
-          <div class="calendar-source">
-            <p>{source.title}</p>
-            {#each source.calendars as calendar (calendar.id)}
-              <button type="button" class="calendar-row" class:disabled={hiddenCalendarIds.includes(calendar.id)} aria-pressed={!hiddenCalendarIds.includes(calendar.id)} onclick={() => toggleCalendar(calendar.id)}>
-                <span class="calendar-check" style:--calendar-color={calendar.color}>{#if !hiddenCalendarIds.includes(calendar.id)}<Icon name="check" size={10} strokeWidth={2.3}/>{/if}</span>
-                <span>{calendar.title}</span>
-                {#if calendar.subscribed}<small>read-only</small>{/if}
-              </button>
-            {/each}
+      <nav class="calendar-sidebar-views" aria-label="Calendar views">
+        <div class="calendar-sidebar-view-row" class:active={sidebarView === 'calendars'}>
+          <button type="button" class="calendar-sidebar-view" aria-pressed={sidebarView === 'calendars'} onclick={() => sidebarView = 'calendars'}>Calendars</button>
+          {#if sidebarView === 'calendars'}
+            <button type="button" class="calendar-sidebar-refresh" aria-label="Refresh calendars" onclick={() => void refresh()}><Icon name="reload" size={13}/></button>
+          {/if}
+        </div>
+        {#if suggestions.length}
+          <div class="calendar-sidebar-view-row" class:active={sidebarView === 'suggestions'}>
+            <button type="button" class="calendar-sidebar-view" aria-label={`Suggested events, ${suggestions.length} found`} aria-pressed={sidebarView === 'suggestions'} onclick={() => sidebarView = 'suggestions'}><Icon name="sparkles" size={12}/><span>Suggested</span><span class="calendar-sidebar-count">{suggestions.length}</span></button>
+            {#if sidebarView === 'suggestions'}
+              <button type="button" class="calendar-sidebar-refresh" aria-label="Refresh suggested events" aria-busy={suggestionsLoading} onclick={() => void scanSuggestions()}><Icon name="reload" size={13}/></button>
+            {/if}
           </div>
-        {/each}
-      </div>
+        {/if}
+      </nav>
+      {#if sidebarView === 'calendars'}
+        <div class="calendar-source-list">
+          {#each sources as source (source.id)}
+            <div class="calendar-source">
+              <p>{source.title}</p>
+              {#each source.calendars as calendar (calendar.id)}
+                <button type="button" class="calendar-row" class:disabled={hiddenCalendarIds.includes(calendar.id)} aria-pressed={!hiddenCalendarIds.includes(calendar.id)} onclick={() => toggleCalendar(calendar.id)}>
+                  <span class="calendar-check" style:--calendar-color={calendar.color}>{#if !hiddenCalendarIds.includes(calendar.id)}<Icon name="check" size={10} strokeWidth={2.3}/>{/if}</span>
+                  <span>{calendar.title}</span>
+                  {#if calendar.subscribed}<small>read-only</small>{/if}
+                </button>
+              {/each}
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <div class="calendar-suggestion-list" aria-label="Suggested events">
+          {#each suggestions as suggestion (suggestion.id)}
+            <div class="calendar-suggestion-row">
+              <button type="button" class="calendar-suggestion-main" aria-label={`Review ${suggestion.title}`} onclick={() => openSuggestion(suggestion)}>
+                <strong>{suggestion.title}</strong>
+                <span>{suggestionWhen(suggestion)}</span>
+              </button>
+              <button type="button" class="calendar-suggestion-action" aria-label={`Add ${suggestion.title}`} onclick={() => void addSuggestion(suggestion)}><Icon name="plus" size={13}/></button>
+              <button type="button" class="calendar-suggestion-action" aria-label={`Dismiss ${suggestion.title}`} onclick={() => dismissSuggestion(suggestion.id)}><Icon name="close" size={12}/></button>
+            </div>
+          {/each}
+        </div>
+      {/if}
       <button type="button" class="accounts-button" onclick={() => void api.calendar.openAccounts()}><Icon name="settings" size={14}/><span>Calendar Accounts…</span></button>
     </aside>
   {/if}
@@ -560,7 +718,7 @@
           <button type="button" class:active={mode === view} aria-pressed={mode === view} onclick={() => chooseMode(view as CalendarViewMode)}>{view[0].toUpperCase() + view.slice(1)}</button>
         {/each}
       </div>
-      <div class="calendar-toolbar-actions">
+      <div class="calendar-toolbar-actions"><AppSettingsButton name="Calendar" size={14} onclick={onOpenSettings}/>
         {#if searchOpen}<div class="calendar-search"><Icon name="search" size={14}/><input bind:value={search} placeholder="Search events" aria-label="Search events"/><button type="button" aria-label="Close search" onclick={() => { search = ''; searchOpen = false; }}><Icon name="close" size={12}/></button></div>{:else}<button type="button" class="bare-icon" aria-label="Search" onclick={() => searchOpen = true}><Icon name="search" size={15}/></button>{/if}
         <button type="button" class="bare-icon" aria-label="Import calendar" onclick={() => void importCalendar()}><Icon name="import" size={15}/></button>
         <button type="button" class="bare-icon" aria-label="Export visible calendar" onclick={() => void exportCalendar()}><Icon name="download" size={15}/></button>
@@ -615,7 +773,7 @@
       <div class="time-view" class:single={mode === 'day'}>
         <div class="time-header">
           <div class="time-gutter"></div>
-          {#each mode === 'day' ? [cursor] : weekDays as day}
+          {#each timeDays as day}
             <button type="button" class="time-day-heading" class:today={sameDay(day, new Date())} onclick={() => mode === 'week' && selectDate(day, 'day')}>
               <span>{day.toLocaleDateString(activeLocale(), {weekday: 'short'})}</span><strong>{day.getDate()}</strong>
             </button>
@@ -623,7 +781,7 @@
         </div>
         <div class="all-day-row">
           <span class="all-day-label">all-day</span>
-          {#each mode === 'day' ? [cursor] : weekDays as day}
+          {#each timeDays as day}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="all-day-cell" ondblclick={() => openCreate(day, 0)}>
               {#each eventsOnDay(day, eventsByDay, true) as item (item.id)}
@@ -635,11 +793,13 @@
         <div class="time-scroll" bind:this={timeScroll}>
           <div class="time-grid" style:--day-count={mode === 'day' ? 1 : 7} style:--hour-height={`${HOUR_HEIGHT}px`}>
             <div class="time-labels">{#each HOURS as hour}<span style:top={`${hour * HOUR_HEIGHT}px`}>{hourLabel(hour)}</span>{/each}</div>
-            {#each mode === 'day' ? [cursor] : weekDays as day}
+            {#each timeDays as day}
+              {@const layout = timedLayouts.get(dateInput(day)) ?? NO_TIMED_LAYOUT}
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="time-day-column" ondblclick={(event) => { const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect(); openCreate(day, Math.max(0, Math.min(23, Math.floor((event.clientY - bounds.top) / HOUR_HEIGHT)))); }}>
                 {#each eventsOnDay(day, eventsByDay, false) as item (item.id)}
-                  <button type="button" class="time-event" style:--event-color={calendarColor(item.calendarId)} style:top={`${eventTop(item, day)}px`} style:height={`${eventHeight(item, day)}px`} onclick={() => openEvent(item)} ondblclick={(event) => event.stopPropagation()}>
+                  {@const position = layout.get(item.id) ?? soloBlock(item, day)}
+                  <button type="button" class="time-event" class:compact={position.compact} style:--event-color={calendarColor(item.calendarId)} style:top={`${position.top}px`} style:height={`${position.height}px`} style:left={position.left} style:width={position.width} style:z-index={position.zIndex} onclick={() => openEvent(item)} ondblclick={(event) => event.stopPropagation()}>
                     <strong>{item.title}</strong><span>{timeLabel(item)}{item.location ? ` · ${item.location}` : ''}</span>
                   </button>
                 {/each}
@@ -685,11 +845,11 @@
   button, input, select, textarea { font: inherit; }
   button { color: inherit; }
   .calendar-sidebar { width: 188px; min-width: 188px; display: flex; flex-direction: column; box-sizing: border-box; padding: 12px 10px 9px; overflow: hidden; border-right: 1px solid var(--neutral-200); background: var(--neutral-50); transition: width .18s cubic-bezier(.4,0,.2,1), min-width .18s cubic-bezier(.4,0,.2,1), padding .18s cubic-bezier(.4,0,.2,1), opacity .12s ease, border-color .12s ease; }
-  .mini-heading, .calendar-list-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 5px; }
+  .mini-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 5px; }
   .mini-heading strong { font-size: 12px; font-weight: 620; }
   .mini-heading div, .nav-buttons { display: flex; align-items: center; }
-  .mini-heading button, .calendar-list-heading button, .nav-buttons button, .bare-icon, .event-editor header button { width: 25px; height: 25px; display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; transition: color .15s ease; }
-  .mini-heading button:hover, .calendar-list-heading button:hover, .nav-buttons button:hover, .bare-icon:hover, .event-editor header button:hover { color: var(--neutral-950); }
+  .mini-heading button, .nav-buttons button, .bare-icon, .event-editor header button { width: 25px; height: 25px; display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; transition: color .15s ease; }
+  .mini-heading button:hover, .nav-buttons button:hover, .bare-icon:hover, .event-editor header button:hover { color: var(--neutral-950); }
   .mini-weekdays, .mini-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
   .mini-weekdays { margin-top: 9px; color: var(--neutral-400); font-size: 9px; text-align: center; }
   .mini-grid { margin-top: 3px; }
@@ -698,7 +858,17 @@
   .mini-grid button.outside { color: var(--neutral-300); }
   .mini-grid button.today { color: #fff; background: #df554b; }
   .mini-grid button.selected:not(.today) { background: var(--neutral-200); }
-  .calendar-list-heading { margin-top: 17px; color: var(--neutral-500); font-size: 10.5px; font-weight: 620; text-transform: uppercase; letter-spacing: .045em; }
+  .calendar-sidebar-views { display: flex; flex-direction: column; gap: 1px; margin-top: 14px; }
+  .calendar-sidebar-view-row { min-height: 28px; display: flex; align-items: center; border-radius: 7px; padding: 0 3px; }
+  .calendar-sidebar-view-row:hover, .calendar-sidebar-view-row.active { background: var(--neutral-100); }
+  .calendar-sidebar-view { min-width: 0; flex: 1; height: 28px; display: flex; align-items: center; gap: 7px; border: 0; padding: 0 4px; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 11px; font-weight: 550; text-align: left; }
+  .calendar-sidebar-view:hover, .calendar-sidebar-view-row.active .calendar-sidebar-view { color: var(--neutral-950); }
+  .calendar-sidebar-view:focus-visible, .calendar-sidebar-refresh:focus-visible { outline: 1px solid var(--neutral-500); outline-offset: 1px; border-radius: 5px; }
+  .calendar-sidebar-view span:not(.calendar-sidebar-count) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .calendar-sidebar-count { margin-left: auto; color: var(--neutral-400); font-size: 9.5px; }
+  .calendar-sidebar-refresh { width: 25px; height: 25px; display: grid; place-items: center; flex: none; border: 0; padding: 0; background: transparent; color: var(--neutral-500); cursor: pointer; }
+  .calendar-sidebar-refresh:hover { color: var(--neutral-950); }
+  .calendar-sidebar-refresh[aria-busy='true'] :global(svg) { animation: calendar-spin .7s linear infinite; }
   .calendar-source-list { min-height: 0; flex: 1; margin-top: 4px; overflow-y: auto; scrollbar-width: none; }
   .calendar-source-list::-webkit-scrollbar { display: none; }
   .calendar-source p { margin: 10px 6px 3px; overflow: hidden; color: var(--neutral-400); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -709,6 +879,17 @@
   .calendar-row.disabled { color: var(--neutral-400); }
   .calendar-check { width: 13px; height: 13px; display: grid; flex: none; place-items: center; border: 1.5px solid var(--calendar-color); border-radius: 4px; background: var(--calendar-color); color: white; }
   .calendar-row.disabled .calendar-check { background: transparent; }
+  .calendar-suggestion-list { min-height: 0; flex: 1; margin-top: 4px; overflow-y: auto; scrollbar-width: none; }
+  .calendar-suggestion-list::-webkit-scrollbar { display: none; }
+  .calendar-suggestion-row { display: grid; grid-template-columns: minmax(0,1fr) 24px 24px; align-items: center; border-radius: 7px; padding: 1px 2px; }
+  .calendar-suggestion-row:hover, .calendar-suggestion-row:focus-within { background: var(--neutral-100); }
+  .calendar-suggestion-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; border: 0; padding: 6px 4px 6px 6px; background: transparent; cursor: pointer; text-align: left; }
+  .calendar-suggestion-main strong, .calendar-suggestion-main span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .calendar-suggestion-main strong { color: var(--neutral-900); font-size: 11.5px; font-weight: 580; }
+  .calendar-suggestion-main span { color: var(--neutral-500); font-size: 9.5px; }
+  .calendar-suggestion-action { width: 24px; height: 24px; display: grid; place-items: center; border: 0; padding: 0; background: transparent; color: var(--neutral-400); cursor: pointer; }
+  .calendar-suggestion-action:hover { color: var(--neutral-950); }
+  .calendar-suggestion-action:focus-visible { outline: 1px solid var(--neutral-500); outline-offset: 1px; border-radius: 5px; }
   .accounts-button { height: 30px; display: flex; align-items: center; gap: 8px; border: 0; border-top: 1px solid var(--neutral-200); padding: 8px 5px 0; background: transparent; color: var(--neutral-500); cursor: pointer; font-size: 11px; }
   .accounts-button:hover { color: var(--neutral-950); }
   .calendar-main { min-width: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -790,12 +971,19 @@
   .time-labels { position: relative; }
   .time-labels span { position: absolute; right: 6px; color: var(--neutral-400); font-size: 8.5px; transform: translateY(-50%); }
   .time-day-column { position: relative; border-left: 1px solid var(--neutral-200); background-image: repeating-linear-gradient(to bottom,transparent 0,transparent calc(var(--hour-height) - 1px),var(--neutral-150, var(--neutral-100)) calc(var(--hour-height) - 1px),var(--neutral-150, var(--neutral-100)) var(--hour-height)); }
-  .time-event { position: absolute; z-index: 2; left: 3px; right: 3px; min-height: 22px; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box; border: 0; border-left: 3px solid var(--event-color); border-radius: 4px; padding: 3px 5px; background: color-mix(in srgb,var(--event-color) 17%,var(--main-panel-background)); color: var(--neutral-900); cursor: pointer; text-align: left; }
+  /* Position and inset come from the layout, so a block clears every grid line
+     — the hour above and below as well as the day column beside it. */
+  .time-event { position: absolute; z-index: 2; min-height: 22px; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box; border: 0; border-radius: 6px; padding: 3px 6px 3px 15px; background: color-mix(in srgb,var(--event-color) 17%,var(--main-panel-background)); color: var(--neutral-900); cursor: pointer; text-align: left; }
+  /* The calendar's colour is a rounded bar inside the block, not a border on
+     its edge: a border is clipped by the block's own corner radius. */
+  .time-event::before { content: ''; position: absolute; top: 5px; bottom: 5px; left: 5px; width: 3px; border-radius: 2px; background: var(--event-color); }
   .time-event:hover { background: color-mix(in srgb,var(--event-color) 24%,var(--main-panel-background)); }
   .time-event strong, .time-event span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .time-event strong { font-size: 9.5px; font-weight: 620; }
-  .time-event span { margin-top: 1px; color: var(--neutral-500); font-size: 8.5px; }
-  .now-line { position: absolute; z-index: 4; left: -4px; right: 0; height: 1px; background: #df554b; pointer-events: none; }
+  .time-event strong { color: color-mix(in srgb,var(--event-color) 62%,var(--neutral-950)); font-size: 9.5px; font-weight: 620; }
+  .time-event span { margin-top: 1px; color: color-mix(in srgb,var(--event-color) 42%,var(--neutral-600)); font-size: 8.5px; }
+  /* Too short for two lines: the title alone reads better than a clipped time. */
+  .time-event.compact span { display: none; }
+  .now-line { position: absolute; z-index: 40; left: -4px; right: 0; height: 1px; background: #df554b; pointer-events: none; }
   .now-line i { position: absolute; left: -3px; top: -3px; width: 7px; height: 7px; border-radius: 50%; background: #df554b; }
   .event-editor-backdrop { position: absolute; z-index: 120; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,.16); animation: calendar-fade .14s ease; }
   @keyframes calendar-fade { from { opacity: 0; } }

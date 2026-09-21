@@ -15,7 +15,11 @@ export interface ScheduleBook {
  * agent writes it down here. Without this the Schedule view could only ever
  * show rows nothing put there.
  */
-export function createScheduleTool(book: ScheduleBook): AgentTool {
+export function createScheduleTool(
+  book: ScheduleBook,
+  ownerForRun: (runId: string) => string | undefined = () => undefined,
+  options: {isRoutineRun?: (runId: string) => boolean} = {},
+): AgentTool {
   return {
     name: "schedule",
     description: [
@@ -30,6 +34,7 @@ export function createScheduleTool(book: ScheduleBook): AgentTool {
       "Times are read in the user's own time zone unless a timeZone is given.",
       "The prompt runs with no one watching, so write it as a complete standalone instruction:",
       "it cannot ask a question or wait for a confirmation.",
+      "A scheduled run cannot create further schedules: listing, updating, removing, and running now all work unattended, but create is refused so routines can never nest.",
     ].join(" "),
     executionMode: "sequential",
     parameters: {
@@ -45,11 +50,17 @@ export function createScheduleTool(book: ScheduleBook): AgentTool {
       required: ["action"],
       additionalProperties: false,
     },
-    async execute(input) {
+    async execute(input, context) {
+      const botId = ownerForRun(context.runId);
+      const owned = () => book.list().filter(item => item.botId === botId);
       const action = String(input.action ?? "");
-      if (action === "list") return {content: JSON.stringify({schedules: book.list().map(summarise)})};
+      if (action === "list") return {content: JSON.stringify({schedules: owned().map(summarise)})};
 
       if (action === "create") {
+        // A routine that could schedule routines would cascade without bound:
+        // every firing would add rows that fire in turn. Reads and edits of
+        // existing rows stay available unattended; only nesting is refused.
+        if (options.isRoutineRun?.(context.runId)) return fail("Schedules cannot create other schedules. Ask the user to create it in chat instead.");
         const title = typeof input.title === "string" ? input.title.trim() : "";
         const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
         if (!title || !prompt) return fail("create needs a title and a prompt");
@@ -57,6 +68,7 @@ export function createScheduleTool(book: ScheduleBook): AgentTool {
           return fail("create needs a frequency, e.g. {kind:'daily', time:'08:00'}");
         try {
           return {content: JSON.stringify(summarise(book.create({
+            ...(botId ? {botId} : {}),
             title,
             prompt,
             frequency: input.frequency as ScheduleFrequencyDto,
@@ -68,6 +80,7 @@ export function createScheduleTool(book: ScheduleBook): AgentTool {
 
       const id = typeof input.id === "string" ? input.id : "";
       if (!id) return fail(`${action} needs the id of a schedule — use 'list' to find it`);
+      if (!owned().some(item => item.id === id)) return fail("Schedule not found for this agent");
       try {
         if (action === "remove") {
           book.remove(id);

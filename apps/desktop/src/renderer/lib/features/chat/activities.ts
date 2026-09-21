@@ -50,7 +50,7 @@ export function collapseActivities(activities: AgentActivityItem[] = []): AgentA
       // tool read as one group with its combined sub-step trail. The calls
       // stay counted even though they share one row, so the settled trail can
       // still say "Ran 2 commands" for two of them.
-      const steps = [...(last.steps ?? []), ...(activity.steps ?? [])];
+      const steps = [...memberSteps(last), ...memberSteps(activity)];
       collapsed[collapsed.length - 1] = {
         ...last,
         ...activity,
@@ -85,6 +85,8 @@ function browserSteps(activity: AgentActivityItem): NonNullable<AgentActivityIte
     id: `${activity.id}:operation`,
     label: activity.target ?? activity.label,
     status: activity.status,
+    kind: activity.kind,
+    ...(activity.icon ? {icon: activity.icon} : {}),
   }];
 }
 
@@ -168,24 +170,27 @@ function countedRow(activity: AgentActivityItem, family: PluralKey): AgentActivi
  * or its label when it has none) with whatever it came back with, and its own
  * sub-steps trailing it so nothing reported is lost in the fold. */
 function memberSteps(member: AgentActivityItem): AgentActivityStep[] {
+  // The step wears the glyph of the call it stands for, so the calls grouped
+  // under one summary row still read as the operations they were.
   const step: AgentActivityStep = {
     id: member.id,
     label: member.target ?? member.label,
     status: member.status,
+    kind: member.kind,
   };
+  if (member.icon) step.icon = member.icon;
+  if (member.logo) step.logo = member.logo;
   if (member.result) step.result = member.result;
   return [step, ...(member.steps ?? [])];
 }
 
-/** One thinking row belongs to the whole run. The optimistic row exists before
- * the backend has assigned a run id, so later reasoning must reuse it by kind
- * rather than append a second run-addressed row. */
+/** Continue only the current episode; intervening work starts a new disclosure. */
 export function runThinkingActivity(
   activities: AgentActivityItem[],
-  runId: string,
+  _runId: string,
 ): AgentActivityItem | undefined {
-  return activities.find((item) => item.id === `${runId}:thinking`)
-    ?? activities.find((item) => item.kind === 'thinking');
+  const latest = activities.at(-1);
+  return latest?.kind === 'thinking' && (latest.status === 'active' || latest.status === 'pending') ? latest : undefined;
 }
 
 /**
@@ -199,10 +204,22 @@ export function activityPresentation(
   name: string,
   input: Record<string, unknown> = {},
   runId = '',
-): Pick<AgentActivityItem, 'kind' | 'label' | 'icon' | 'logo' | 'target' | 'preview'> {
+): Pick<AgentActivityItem, 'kind' | 'label' | 'icon' | 'logo' | 'target' | 'preview' | 'display'> {
   const normalized = name.toLowerCase();
   const path = typeof input.path === 'string' ? input.path : '';
   const uri = typeof input.uri === 'string' ? input.uri : '';
+
+  // Agent-to-agent notes are conversational events, not tool chrome. Keep the
+  // recipient visible so the Team pane can draw one centred line between turns.
+  if (normalized === 'agent_message' && input.action === 'send') {
+    const recipient = typeof input.to === 'string' ? input.to.trim() : '';
+    return {
+      kind: 'messaging',
+      label: recipient ? translate('activity.messagedAgent', {name: recipient}) : translate('activity.sendingMessage'),
+      ...(recipient ? {target: recipient} : {}),
+      display: 'inline',
+    };
+  }
 
   // The hub's own tools are named before anything generic can claim them:
   // `message_search` is a search and `email_read` a read, but what the user
@@ -489,4 +506,87 @@ export function nextDurationTickDelay(startedAt?: string, now = Date.now()): num
   if (!Number.isFinite(start)) return 1000;
   const sinceLastChange = (((now - start - 500) % 1000) + 1000) % 1000;
   return 1000 - sinceLastChange;
+}
+
+/** Prose is a real boundary: tools and thinking only fold across adjacent work. */
+export function activityChains(activities: AgentActivityItem[]): Array<{id: string; kind: 'activity' | 'commentary'; items: AgentActivityItem[]}> {
+  const chains: Array<{id: string; kind: 'activity' | 'commentary'; items: AgentActivityItem[]}> = [];
+  for (const item of activities) {
+    const last = chains.at(-1);
+    if (item.kind !== 'commentary' && last?.kind === 'activity') last.items.push(item);
+    else chains.push({id: item.id, kind: item.kind === 'commentary' ? 'commentary' : 'activity', items: [item]});
+  }
+  return chains;
+}
+
+/** The parts of a transcript line the trail split reads. */
+export type TrailSplitMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  runId?: string;
+  sentAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  activities?: AgentActivityItem[];
+  /** How much of the run's work had already happened when this steer landed.
+   * Set on the message that interrupted the run, never on the prompt. */
+  activitiesBefore?: number;
+};
+
+export type TrailSlice = {
+  activities: AgentActivityItem[];
+  startedAt?: string;
+  completedAt?: string;
+};
+
+/**
+ * A run's work is one trail, but a steer cuts it in two: what the agent had
+ * already done belongs above the message that interrupted it, and what it does
+ * next belongs below. Both halves are cut from the same trail — nothing is
+ * duplicated, and a chat reopened later splits in the same place.
+ *
+ * `above` is keyed by the steering message, `tail` by the run's assistant row;
+ * a run nobody steered produces neither.
+ */
+export function activityTrailSplits(messages: TrailSplitMessage[]): {
+  above: Map<string, TrailSlice>;
+  tail: Map<string, TrailSlice>;
+} {
+  const above = new Map<string, TrailSlice>();
+  const tail = new Map<string, TrailSlice>();
+  for (const assistant of messages) {
+    const trail = assistant.role === 'assistant' && assistant.runId ? assistant.activities : undefined;
+    if (!trail?.length) continue;
+    const steers = messages.filter((message) =>
+      message.role === 'user' && message.runId === assistant.runId && message.activitiesBefore !== undefined,
+    );
+    if (!steers.length) continue;
+    let from = 0;
+    steers.forEach((steer, index) => {
+      const to = Math.min(Math.max(Math.trunc(steer.activitiesBefore ?? 0), from), trail.length);
+      above.set(steer.id, {
+        activities: trail.slice(from, to),
+        startedAt: index === 0 ? assistant.startedAt : steers[index - 1]?.sentAt,
+        completedAt: steer.sentAt,
+      });
+      from = to;
+    });
+    tail.set(assistant.id, {
+      activities: trail.slice(from),
+      startedAt: steers.at(-1)?.sentAt,
+      completedAt: assistant.completedAt,
+    });
+  }
+  return {above, tail};
+}
+
+/** What a group of calls calls itself. Counted work keeps its count
+ * ("Read 3 files"); anything else names the work it was, so the row says what
+ * happened rather than how many calls it took. */
+export function activityChainLabel(activities: AgentActivityItem[]): string {
+  const summary = settledActivities(activities).map((item) => item.label);
+  if (summary.length) return [...new Set(summary)].slice(0, 3).join(', ');
+  const kinds = [...new Set(activities.filter((item) => item.kind !== 'thinking').map((item) => item.kind))];
+  if (kinds.length) return kinds.slice(0, 3).map((kind) => translate(condensedLabels[kind])).join(', ');
+  return activities[0]?.label ?? 'Worked';
 }

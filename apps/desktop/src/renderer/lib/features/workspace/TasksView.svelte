@@ -9,12 +9,14 @@
 </script>
 
 <script lang="ts">
+  import AppSettingsButton from './AppSettingsButton.svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import TaskGlyph from '../../shared/components/TaskGlyph.svelte';
   import ScheduleView, {describeFrequency, formatScheduleTime, type ScheduleFrequency, type ScheduleItem, type ScheduleRun} from './ScheduleView.svelte';
   import {t, type MessageKey} from '../../../i18n';
 
   interface Props {
+    onOpenSettings?: () => void;
     items?: TaskCard[];
     error?: string;
     onDismissError?: () => void;
@@ -35,6 +37,7 @@
   }
 
   let {
+    onOpenSettings,
     items = [],
     error = '',
     onDismissError = () => {},
@@ -176,7 +179,7 @@
   {/if}
 
   <div class="tasks-toolbar">
-    <h2 class="tasks-title">{$t('workspace.tasks')}</h2>
+    <h2 class="tasks-title">{$t('workspace.tasks')}</h2><AppSettingsButton name="Tasks" onclick={onOpenSettings}/>
     <button type="button" class="tasks-add-btn" aria-label={$t('tasks.addTask')} onclick={() => composerOpen = !composerOpen}>
       <Icon name="plus" size={16}/>
     </button>

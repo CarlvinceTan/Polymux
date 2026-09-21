@@ -1,3 +1,4 @@
+import {isTeamBotSetupCue} from '@polymux/protocol';
 import { randomUUID } from "node:crypto";
 import type {
   ConversationDto,
@@ -31,6 +32,8 @@ export class ChatSession {
   busy = false;
   loading = false;
   private cancelRequested = false;
+  private queueHeld = false;
+  private steering = false;
   private polling = false;
   private generation = 0;
   private detached = false;
@@ -78,6 +81,7 @@ export class ChatSession {
           await this.client.call<RunEventDto[]>("runs.events", [runId, 0]),
         );
       for (const message of messages) {
+        if (isTeamBotSetupCue(message.metadata)) continue;
         const startedAt = Date.parse(message.createdAt) || 0;
         if (message.role === "user")
           transcript.rows.push({
@@ -145,7 +149,13 @@ export class ChatSession {
           reasoning: this.configuration.reasoning,
         },
       ]);
-      this.transcript.rows.push({ id, kind: "user", text });
+      this.transcript.rows.push({
+        id,
+        kind: "user",
+        text,
+        startedAt: Date.now(),
+      });
+      this.queueHeld = this.cancelRequested;
       this.transcript.begin(started.runId);
       if (this.cancelRequested) await this.cancel();
     } finally {
@@ -186,12 +196,18 @@ export class ChatSession {
               transcript.applyChild(row, child.events);
           }),
       );
-      if (transcript.status === "completed" && this.queue.length) {
+      if (
+        transcript.status === "completed" &&
+        !this.queueHeld &&
+        !this.steering &&
+        this.queue.length
+      ) {
         const text = this.queue.shift()!;
         try {
           await this.submit(text);
         } catch (error) {
           this.queue.unshift(text);
+          this.queueHeld = true;
           throw error;
         }
       }
@@ -201,7 +217,37 @@ export class ChatSession {
     }
   }
 
+  async steer(text?: string): Promise<void> {
+    if (this.steering || this.busy || this.loading)
+      throw new Error("Wait for pending input.");
+    const queued = !text?.trim();
+    const value = queued ? this.queue[0] : text!.trim();
+    if (!value) return;
+    this.steering = true;
+    try {
+      if (this.transcript.status === "running") {
+        const id = `steer:${randomUUID()}`;
+        await this.client.call("runs.steer", [
+          this.transcript.runId,
+          value,
+          id,
+        ]);
+        this.transcript.rows.push({
+          id,
+          kind: "user",
+          text: value,
+          startedAt: Date.now(),
+        });
+      } else await this.submit(value);
+      if (queued && this.queue[0] === value) this.queue.shift();
+    } finally {
+      this.steering = false;
+      this.changed();
+    }
+  }
+
   async cancel(): Promise<void> {
+    this.queueHeld = true;
     if (this.busy) this.cancelRequested = true;
     // Unsent follow-ups stay visible until the user explicitly discards or retries them.
     if (this.transcript.status === "running")

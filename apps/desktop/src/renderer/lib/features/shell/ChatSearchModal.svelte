@@ -4,7 +4,7 @@
   import {chatSearchSnippets, type ChatSearchSnippet} from './chatSearchSnippets';
   import Icon from '../../shared/components/Icon.svelte';
   import TeamRoleLabel from '../team/TeamRoleLabel.svelte';
-  import BloubAvatar from '../team/BloubAvatar.svelte';
+  import TeamAvatar from '../team/TeamAvatar.svelte';
   import {t} from '../../../i18n';
 
   let {
@@ -140,7 +140,7 @@
               <button type="button" data-tooltip="none" onmouseenter={() => cursor = targetIndex(chat.id)} onclick={() => choose(chat.id)}>
                 {#if chat.avatar}
                   <span class="chat-search-identity">
-                    <BloubAvatar avatar={chat.avatar} size={22} animated={false} centerSilhouette label={`${chat.title} avatar`}/>
+                    <TeamAvatar avatar={chat.avatar} size={22} animated={false} centerSilhouette label={`${chat.title} avatar`}/>
                     <span class="chat-search-title">{chat.title}</span>
                     <TeamRoleLabel role={chat.role ?? ''} raised={targetIndex(chat.id) === activeIndex}/>
                   </span>

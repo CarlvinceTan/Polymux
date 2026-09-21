@@ -282,7 +282,7 @@ export class RowView implements Component {
           ),
         );
     }
-    if (row.kind === "thought") status = markdownTheme.italic(status);
+
     let statusLines = [truncateToWidth(status, contentWidth, "…")];
     if (row.toolPath) {
       const prefix = `${marker} ${theme.text(toolStateLabel(row.text.slice(0, -row.toolPath.length).trimEnd(), row.status))}`;
@@ -317,9 +317,9 @@ export class RowView implements Component {
     const detail = row.kind === "thought" ? row.text : row.detail;
     if (detail && (row.expanded || (row.status === "failed" && !isMcp))) {
       const body = clean(detail).trimEnd().split("\n");
-      const limit = row.kind === "thought" ? body.length : 8;
+      const limit = body.length;
       const preview = row.expanded ? body.slice(0, limit) : body.slice(0, 1);
-      const detailPadding = rowPadding(this.padding(), width);
+      const detailPadding = rowPadding(this.padding() + 2, width);
       lines.push(
         ...new Text(theme.muted(preview.join("\n")), detailPadding, 0)
           .render(width)
@@ -336,6 +336,8 @@ export class RowView implements Component {
       event.button !== "left" ||
       !["thought", "tool"].includes(this.row.kind)
     )
+      return;
+    if (!(this.row.kind === "thought" ? this.row.text.trim() : this.row.detail))
       return;
     this.row.expanded = !this.row.expanded;
     this.refresh();

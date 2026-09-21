@@ -5,6 +5,8 @@
 </script>
 
 <script lang="ts">
+  let {onOpenSettings}: {onOpenSettings?: () => void} = $props();
+  import AppSettingsButton from './AppSettingsButton.svelte';
   import {onDestroy, onMount, tick} from 'svelte';
   import {SvelteSet} from 'svelte/reactivity';
   import type {IdeEntryDto, IdeFileDto} from '@polymux/protocol';
@@ -596,7 +598,7 @@
 <svelte:window onkeydown={onWindowKeydown}/>
 
 {#if !root}
-  <div class="ide-empty" role="status">
+  <div class="ide-empty app-empty-view" role="status">
     <button type="button" class="ide-text-action" onclick={() => void chooseProject()} disabled={busy}>
       {$t('ide.openProject')}
     </button>
@@ -867,6 +869,7 @@
       >
         <Icon name="terminal" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
       </button>
+      <AppSettingsButton name="IDE" onclick={onOpenSettings} size={13}/>
     </footer>
   </div>
 {/if}
@@ -1149,6 +1152,9 @@
   }
   .ide-status-icon:hover, .ide-status-icon.on { color: var(--neutral-950); }
   .ide-status-icon:focus-visible { outline: 2px solid var(--neutral-400); outline-offset: 1px; }
+  .ide-status :global(.app-settings-button) { width: 22px; height: 22px; color: var(--neutral-500); }
+  .ide-status :global(.app-settings-button:hover) { color: var(--neutral-950); }
+  .ide-status :global(.app-settings-button:focus-visible) { outline: 2px solid var(--neutral-400); outline-offset: 1px; }
   .ide-status-meta {
     flex: none;
     color: var(--neutral-600);

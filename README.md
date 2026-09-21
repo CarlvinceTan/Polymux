@@ -66,12 +66,12 @@ curl -fsSL https://polymux.com/install.sh | sh -s -- host
 
 The installer includes a private Node.js runtime, starts the background service,
 then shows a scannable terminal QR alongside one short-lived setup code. Scan
-the QR with Polymux Phone, or paste the setup code into the Desktop Hosts modal;
+the QR with Polymux Mobile, or paste the setup code into the Desktop Hosts modal;
 the address and pairing code are carried together. Repeat the flow to save more
 Hosts, choose the default for new bots, or move an existing bot from
 Edit bot without losing its conversation. Headless Team
 computers require rootless Podman or Docker. Polymux Connect gives each Host a
-secure `connect.polymux.com` address through an outbound connection, so phones
+secure `connect.polymux.com` address through an outbound connection, so mobile devices
 and Desktops need no VPN account, open port, or local-network configuration.
 
 **macOS currently has the best support.** Polymux is also available for Windows and

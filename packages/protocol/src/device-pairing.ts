@@ -1,5 +1,5 @@
-export type DeviceType = 'tablet' | 'phone' | 'pc' | 'laptop' | 'server';
-export function deviceType(value: unknown): DeviceType | undefined { return ['tablet', 'phone', 'pc', 'laptop', 'server'].includes(value as string) ? value as DeviceType : undefined; }
+export type DeviceType = 'tablet' | 'mobile' | 'pc' | 'laptop' | 'server';
+export function deviceType(value: unknown): DeviceType | undefined { return ['tablet', 'mobile', 'pc', 'laptop', 'server'].includes(value as string) ? value as DeviceType : undefined; }
 export interface DeviceApprovalDto {
   id: string;
   deviceName: string;

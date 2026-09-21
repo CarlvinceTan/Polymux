@@ -1,7 +1,7 @@
 ---
 title: Troubleshooting
 slug: troubleshooting
-description: Resolve common setup, provider, connection, browser, and permission problems.
+description: Resolve common setup, provider, device, Locker, browser, and permission problems.
 section: Help
 sectionOrder: 4
 order: 2
@@ -17,6 +17,16 @@ Start with the narrowest failing surface. A provider problem, disconnected Hub b
 Open **Settings → Providers** and confirm the selected provider is connected. Then check **Settings → Models** for the model assigned to the current role.
 
 Common causes include an expired API key, provider rate limit, account-region restriction, unavailable local runtime, or model that is no longer offered by the provider.
+
+## A paired device is unavailable
+
+Open **Devices** from the chat drawer and check whether the Host is online. Offline devices cannot run new Assistant work. Reconnect the device or choose another Host before starting a conversation.
+
+## The Locker will not unlock
+
+Confirm the Locker master password and try again. If Touch ID is enabled, you can use it instead. For an account-synced Locker, sign in and run **Sync now** before assuming an item is missing.
+
+The master password is required to decrypt the Locker. If it is lost and Touch ID is unavailable, Polymux cannot recover the stored items.
 
 ## A Hub account is offline
 

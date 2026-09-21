@@ -23,3 +23,5 @@ export {
 export {ProfileManager, type ExternalProfileSource, type ProfileRecord, type ProfilesSnapshot} from "../../../apps/desktop/src/main/profiles.js";
 export {HeadlessHostRuntime, type HeadlessHostRuntimeOptions} from "./runtime.js";
 export {TeamHostRelay, type TeamHostRelayOptions} from "../../../apps/desktop/src/main/team/host-relay.js";
+
+export {loadDeviceSecret} from './device-secrets.js';

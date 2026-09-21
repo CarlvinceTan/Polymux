@@ -40,6 +40,13 @@ test('loads every published Polymux release in newest-first order', () => {
   assert.deepEqual([...publishedReleaseVersions].sort(), [...versions].sort());
 });
 
+test('keeps exactly the published release history', () => {
+  const releases = loadPublishedReleases();
+  assert.deepEqual(releases.map(({version}) => version), [
+    '0.3.1', '0.3.0', '0.2.4', '0.2.3', '0.2.2', '0.2.1', '0.2.0', '0.1.0',
+  ]);
+});
+
 test('requires category and product-area sections for release notes', () => {
   assert.throws(
     () => validateReleaseBody('0.3.0.md', '## Features\n\n- Added something.'),
@@ -55,9 +62,9 @@ test('groups a release body into ordered platform sections', () => {
   assert.deepEqual(
     sections.map(({category, area}) => `${category}: ${area}`),
     [
-      'Features: Desktop', 'Features: AI', 'Features: CLI', 'Features: Phone',
+      'Features: Desktop', 'Features: AI', 'Features: CLI', 'Features: Mobile',
       'Features: Browser', 'Features: Hub', 'Features: Site',
-      'Bug Fixes: AI', 'Bug Fixes: Desktop', 'Bug Fixes: Hub', 'Bug Fixes: Phone',
+      'Bug Fixes: AI', 'Bug Fixes: Desktop', 'Bug Fixes: Hub', 'Bug Fixes: Mobile',
       'Improvements: Desktop', 'Improvements: CLI', 'Improvements: Browser',
       'Improvements: Hub', 'Improvements: Site',
     ],
@@ -70,23 +77,23 @@ test('groups a release body into ordered platform sections', () => {
 
   assert.deepEqual(
     releasePlatforms({body}),
-    ['Desktop', 'AI', 'CLI', 'Phone', 'Browser', 'Hub', 'Site'],
+    ['Desktop', 'AI', 'CLI', 'Mobile', 'Browser', 'Hub', 'Site'],
   );
 });
 
 test('filters a release to one platform while keeping category grouping', () => {
   const sections = parseReleaseChangelog(releaseBody('0.3.0'));
-  const phone = filterReleaseChangelog(sections, 'Phone');
+  const mobile = filterReleaseChangelog(sections, 'Mobile');
 
-  assert.ok(phone.length > 0);
-  assert.ok(phone.every(({area}) => area === 'Phone'));
+  assert.ok(mobile.length > 0);
+  assert.ok(mobile.every(({area}) => area === 'Mobile'));
   assert.deepEqual(
-    groupReleaseChangelog(phone).map(({category}) => category),
+    groupReleaseChangelog(mobile).map(({category}) => category),
     ['Features', 'Bug Fixes'],
   );
   assert.deepEqual(
-    groupReleaseChangelog(phone).map(({sections: grouped}) => grouped.map(({area}) => area)),
-    [['Phone'], ['Phone']],
+    groupReleaseChangelog(mobile).map(({sections: grouped}) => grouped.map(({area}) => area)),
+    [['Mobile'], ['Mobile']],
   );
 });
 

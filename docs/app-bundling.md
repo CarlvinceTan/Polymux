@@ -45,7 +45,7 @@ Promotion path: Tier 2 works by default; Tier 3 requires a permission review sur
 
 1. Pilot with Locker, no behavior change: move `main/locker/*` logic behind `workspace-apps/locker/src/main.ts`, move `LockerView.svelte` to the bundle's `src/view.svelte`, keep thin re-export shims at the old paths. Registry still lists locker, now sourced from the bundle manifest.
 2. Prove install/disable/uninstall + lock-on-suspend through `AppHost`, including a sample Tier 2 app and a sample Tier 3 (isolated Node backend) app.
-3. Migrate Drive, then Hub; leave Terminal/IDE/Phone (deep system integration) for last.
+3. Migrate Drive, then Hub; leave Terminal/IDE/Mobile (deep system integration) for last.
 4. Document the authoring contract (`polymux.app.json` reference + minimal sample app) once the pilot is stable.
 
 ## Decision: full Node for third parties

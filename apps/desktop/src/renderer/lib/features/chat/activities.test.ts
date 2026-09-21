@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {activityPresentation, activityPreviewTabId, collapseActivities, runThinkingActivity, settledActivities, toolResultFailed, visibleCommentaryLabel} from './activities';
+import {activityChains, activityPresentation, activityPreviewTabId, activityTrailSplits, collapseActivities, runThinkingActivity, settledActivities, toolResultFailed, visibleCommentaryLabel} from './activities';
 
 test('provider scratch headings do not become user-visible activity rows', () => {
   assert.equal(visibleCommentaryLabel('**Planning message lookup implementation**'), null);
@@ -20,6 +20,15 @@ test('browser activity names the surface and the operation it performed', () => 
   assert.deepEqual(activityPresentation('browser_read', {target: 'https://example.com'}, 'run-1').preview, {
     kind: 'browser',
     tabId: '',
+  });
+});
+
+test('agent messages become an inline recipient activity', () => {
+  assert.deepEqual(activityPresentation('agent_message', {action: 'send', to: 'Mark'}), {
+    kind: 'messaging',
+    label: 'Messaged Mark',
+    target: 'Mark',
+    display: 'inline',
   });
 });
 
@@ -78,9 +87,11 @@ test('one browser row keeps the newest live tab preview', () => {
   assert.deepEqual(activities[0]?.preview, {kind: 'browser', tabId: 'tab-2'});
 });
 
-test('reasoning reuses the optimistic thinking row for the whole run', () => {
-  const optimistic = {id: 'optimistic', kind: 'thinking' as const, label: 'Thinking', status: 'completed' as const};
+test('reasoning reuses an active optimistic row but starts a new episode after tools', () => {
+  const optimistic = {id: 'optimistic', kind: 'thinking' as const, label: 'Thinking', status: 'active' as const};
   assert.equal(runThinkingActivity([optimistic], 'run-1')?.id, 'optimistic');
+  assert.equal(runThinkingActivity([{...optimistic, status: 'completed'}], 'run-1'), undefined);
+  assert.equal(runThinkingActivity([optimistic, {id: 'tool', kind: 'tool', label: 'Read', status: 'completed'}], 'run-1'), undefined);
 });
 
 test('a collapsed stretch of identical calls keeps its count', () => {
@@ -170,4 +181,69 @@ test('a command names the row and a read or edit names the file', () => {
   assert.equal(multi.label, 'set -e');
   assert.equal(activityPresentation('read', {path: '/a.ts'}).target, '/a.ts');
   assert.equal(activityPresentation('edit', {path: '/b.ts'}).target, '/b.ts');
+});
+
+
+test('activity chains preserve prose boundaries and every individual result', () => {
+  const items = [
+    {id: 'a', kind: 'thinking' as const, label: 'Thought', status: 'completed' as const},
+    {id: 'b', kind: 'running' as const, label: 'Run', status: 'completed' as const, result: 'first output'},
+    {id: 'c', kind: 'commentary' as const, label: 'Next step', status: 'completed' as const},
+    {id: 'd', kind: 'running' as const, label: 'Run', status: 'failed' as const, result: 'second output'},
+  ];
+  assert.deepEqual(activityChains(items).map((chain) => chain.items.map((item) => item.id)), [['a', 'b'], ['c'], ['d']]);
+  const collapsed = collapseActivities([items[1], {...items[1], id: 'other', result: 'other output'}]);
+  assert.deepEqual(collapsed[0].steps?.map((step) => step.result), ['first output', 'other output']);
+});
+
+test('a steer cuts the run trail around the message that interrupted it', () => {
+  const row = (id: string) => ({id, kind: 'thinking' as const, label: `Step ${id}`, status: 'completed' as const});
+  const splits = activityTrailSplits([
+    {id: 'prompt', role: 'user', runId: 'r1', sentAt: '2026-01-01T00:00:00.000Z'},
+    {id: 'steer', role: 'user', runId: 'r1', sentAt: '2026-01-01T00:00:05.000Z', activitiesBefore: 2},
+    {
+      id: 'answer',
+      role: 'assistant',
+      runId: 'r1',
+      sentAt: '2026-01-01T00:00:10.000Z',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      completedAt: '2026-01-01T00:00:10.000Z',
+      activities: [row('a'), row('b'), row('c')],
+    },
+  ]);
+
+  // What the agent had already done belongs above the steer, timed to the
+  // moment the user typed it; what came after belongs with the reply.
+  assert.deepEqual(splits.above.get('steer'), {
+    activities: [row('a'), row('b')],
+    startedAt: '2026-01-01T00:00:00.000Z',
+    completedAt: '2026-01-01T00:00:05.000Z',
+  });
+  assert.deepEqual(splits.tail.get('answer'), {
+    activities: [row('c')],
+    startedAt: '2026-01-01T00:00:05.000Z',
+    completedAt: '2026-01-01T00:00:10.000Z',
+  });
+  assert.equal(splits.above.has('prompt'), false);
+});
+
+test('a second steer cuts the trail again, and an unsteered run is left whole', () => {
+  const row = (id: string) => ({id, kind: 'reading' as const, label: `Read ${id}`, status: 'completed' as const});
+  const splits = activityTrailSplits([
+    {id: 'first', role: 'user', runId: 'r1', sentAt: '2026-01-01T00:00:02.000Z', activitiesBefore: 1},
+    {id: 'second', role: 'user', runId: 'r1', sentAt: '2026-01-01T00:00:04.000Z', activitiesBefore: 3},
+    {id: 'answer', role: 'assistant', runId: 'r1', sentAt: '2026-01-01T00:00:06.000Z', activities: [row('a'), row('b'), row('c'), row('d')]},
+  ]);
+  assert.deepEqual(splits.above.get('first')?.activities.map((item) => item.id), ['a']);
+  assert.deepEqual(splits.above.get('second')?.activities.map((item) => item.id), ['b', 'c']);
+  assert.deepEqual(splits.tail.get('answer')?.activities.map((item) => item.id), ['d']);
+  // The window between the two steers is timed from the first to the second.
+  assert.equal(splits.above.get('second')?.startedAt, '2026-01-01T00:00:02.000Z');
+
+  const untouched = activityTrailSplits([
+    {id: 'prompt', role: 'user', runId: 'r2', sentAt: '2026-01-01T00:00:00.000Z'},
+    {id: 'answer', role: 'assistant', runId: 'r2', activities: [row('a')]},
+  ]);
+  assert.equal(untouched.above.size, 0);
+  assert.equal(untouched.tail.size, 0);
 });

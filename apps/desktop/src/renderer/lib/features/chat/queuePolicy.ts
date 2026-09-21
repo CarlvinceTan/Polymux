@@ -4,16 +4,12 @@ export interface LiveTurnState {
   hasActiveDelegation: boolean;
 }
 
-/**
- * Keep the main agent conversational while its delegated work continues.
- * A run whose id is still pending cannot receive steering yet; an ordinary
- * non-delegating turn keeps the explicit queue semantics.
- */
+/** Enter queues consistently; explicit immediate input steers a known live run. */
 export function shouldSteerLiveTurn(state: LiveTurnState): boolean {
   return Boolean(
     state.runId
     && !state.runId.startsWith('pending:')
-    && (state.immediate || state.hasActiveDelegation),
+    && state.immediate,
   );
 }
 

@@ -11,14 +11,22 @@
 </script>
 
 <script lang="ts">
+  import type {BotDto, ScheduleDto} from '@polymux/protocol';
+  import {describeFrequency, formatScheduleTime, scheduleStatusLabel} from './ScheduleView.svelte';
   import type {AgentActivityItem} from '../chat/AgentActivity.svelte';
   import {taskStatusLabel} from './taskStatus';
   import LiveActivityPreview from '../../shared/components/LiveActivityPreview.svelte';
   import TaskGlyph from '../../shared/components/TaskGlyph.svelte';
+  import {scrollFade} from '../../shared/scrollFade';
+  import OpenMenu, {type OpenAnchor} from '../../shared/components/OpenMenu.svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import {t} from '../../../i18n';
   import {referenceCopy} from './referenceDisplay';
 
+  export let bot: BotDto | null = null;
+  export let schedules: ScheduleDto[] = [];
+  export let onEditBot: () => void = () => {};
+  export let onOpenSchedules: () => void = () => {};
   export let outputs: OutputItem[] = [];
   export let references: ReferenceItem[] = [];
   export let tasks: TaskItem[] = [];
@@ -34,6 +42,7 @@
   const previewLimit = 4;
 
   let referenceMenuOpen = false;
+  let referenceAnchor: OpenAnchor | null = null;
   let openPreviewId: string | null = null;
   let referenceMenuWrapper: HTMLDivElement;
   let fileInput: HTMLInputElement;
@@ -71,10 +80,12 @@
 
   function closeMenus(): void {
     referenceMenuOpen = false;
+    referenceAnchor = null;
   }
 
-  function toggleReferenceMenu(): void {
+  function toggleReferenceMenu(event: MouseEvent): void {
     referenceMenuOpen = !referenceMenuOpen;
+    referenceAnchor = referenceMenuOpen ? {rect: (event.currentTarget as HTMLElement).getBoundingClientRect()} : null;
   }
 
   function selectedFiles(event: Event): void {
@@ -102,6 +113,28 @@
   <input bind:this={fileInput} class="visually-hidden" type="file" multiple onchange={selectedFiles}/>
   <input bind:this={folderInput} class="visually-hidden" type="file" multiple webkitdirectory={true} onchange={selectedFiles}/>
 
+  <div class="summary-panel-content" use:scrollFade>
+  {#if bot}
+    <section>
+      <header><h2>{bot.name}</h2><button type="button" aria-label={`Edit ${bot.name} settings`} data-tooltip-label="Settings" onclick={onEditBot}><Icon name="settings" size={18}/></button></header>
+      <button type="button" class="summary-row stacked" onclick={onEditBot} aria-label={`Computer and access for ${bot.name}`}>
+        <span class="mini-file"><Icon name="computer" size={15}/></span>
+        <span class="summary-row-copy"><strong>{bot.hostName}</strong><small>{bot.role}</small></span>
+      </button>
+      <p class="empty-row">{bot.status === 'working' ? 'Working' : bot.status === 'idle' ? 'Ready' : bot.status === 'waiting-for-device' ? 'Waiting for device access' : bot.status === 'computer-offline' ? 'Computer offline' : 'Needs attention'}</p>
+    </section>
+    <section>
+      <header><h2>Schedule</h2><button type="button" aria-label={`Open ${bot.name} schedule`} data-tooltip-label="Schedule" onclick={onOpenSchedules}><Icon name="calendar" size={18}/></button></header>
+      {#each schedules.slice(0, previewLimit) as item (item.id)}
+        <button type="button" class="summary-row stacked" onclick={onOpenSchedules}>
+          <span class="mini-file"><Icon name="clock" size={15}/></span>
+          <span class="summary-row-copy"><strong>{item.title}</strong><small>{item.status === 'active' && item.nextRunAt ? formatScheduleTime(item.nextRunAt) : scheduleStatusLabel(item.status)} · {describeFrequency(item.frequency)}</small></span>
+        </button>
+      {:else}<p class="empty-row">No schedules yet</p>{/each}
+      <button type="button" class="summary-view-all" onclick={onOpenSchedules}><span>{schedules.length ? 'Manage schedule' : 'Add a schedule'}</span><Icon name="forward" size={12}/></button>
+    </section>
+  {/if}
+
   <section>
     <header>
       <!-- Outputs are what Polymux produced, so there is nothing to add by hand:
@@ -113,7 +146,7 @@
         <button type="button" class="summary-row" onclick={() => onOpenOutput(output)}><span class="mini-file"><Icon name="file" size={15}/></span><span>{output.name}</span></button>
       {/each}
       {#if outputs.length > previewLimit}<button type="button" class="summary-view-all" onclick={() => onViewAll('outputs')}><span>{$t('summary.viewAll')}</span><Icon name="forward" size={12}/></button>{/if}
-    {:else}<p class="empty-row">{$t('summary.outputsEmpty')}</p>{/if}
+    {:else}<p class="empty-row">{bot ? `Files created by ${bot.name} appear here.` : $t('summary.outputsEmpty')}</p>{/if}
   </section>
 
   <section>
@@ -121,12 +154,7 @@
       <h2>{$t('summary.references')}</h2>
       <div bind:this={referenceMenuWrapper} class="summary-menu-wrap">
         <button type="button" aria-label={$t('summary.addReference')} data-tooltip-align="end" aria-haspopup="menu" aria-expanded={referenceMenuOpen} onclick={toggleReferenceMenu}><Icon name="plus" size={18}/></button>
-        {#if referenceMenuOpen}
-          <div class="polymux-dropdown-menu summary-action-menu reference-action-menu" role="menu">
-            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => fileInput.click()}><Icon name="file" size={15}/><span>{$t('summary.chooseFiles')}</span></button>
-            <button type="button" class="polymux-dropdown-item" role="menuitem" onclick={() => folderInput.click()}><Icon name="folder" size={15}/><span>{$t('summary.chooseFolder')}</span></button>
-          </div>
-        {/if}
+
       </div>
     </header>
     {#if references.length}
@@ -151,12 +179,13 @@
         </button>
       {/each}
       {#if references.length > previewLimit}<button type="button" class="summary-view-all" onclick={() => onViewAll('references')}><span>{$t('summary.viewAll')}</span><Icon name="forward" size={12}/></button>{/if}
-    {:else}<p class="empty-row">{$t('summary.referencesEmpty')}</p>{/if}
+    {:else}<p class="empty-row">{bot ? `Sources used by ${bot.name} appear here.` : $t('summary.referencesEmpty')}</p>{/if}
   </section>
 
-  {#if computerPreviews.length}
+  {#if bot || computerPreviews.length}
     <section class="summary-preview-section">
       <header><h2>{$t('summary.computerUse')}</h2></header>
+      {#if !computerPreviews.length}<p class="empty-row">No computer activity yet</p>{/if}
       {#each computerPreviews as preview (preview.id)}
         <button
           type="button"
@@ -180,9 +209,10 @@
     </section>
   {/if}
 
-  {#if browserPreviews.length}
+  {#if bot || browserPreviews.length}
     <section class="summary-preview-section">
       <header><h2>{$t('summary.browserUse')}</h2></header>
+      {#if !browserPreviews.length}<p class="empty-row">No browser activity yet</p>{/if}
       {#each browserPreviews as preview (preview.id)}
         <button
           type="button"
@@ -206,6 +236,7 @@
     </section>
   {/if}
 
+  {#if !bot}
   <section>
     <header>
       <h2>{$t('summary.tasks')}</h2>
@@ -220,4 +251,10 @@
       {#if tasks.length > previewLimit}<button type="button" class="summary-view-all" onclick={() => onViewAll('tasks')}><span>{$t('summary.viewAll')}</span><Icon name="forward" size={12}/></button>{/if}
     {:else}<p class="empty-row">{$t('summary.tasksEmpty')}</p>{/if}
   </section>
+  {/if}
+  </div>
 </aside>
+
+<OpenMenu choices={[{value: 'files', label: $t('summary.chooseFiles'), icon: 'file'}, {value: 'folder', label: $t('summary.chooseFolder'), icon: 'folder'}]}
+  anchor={referenceAnchor} ariaLabel={$t('summary.addReference')}
+  onChoose={(value) => { if (value === 'files') fileInput.click(); else folderInput.click(); closeMenus(); }} onClose={closeMenus}/>

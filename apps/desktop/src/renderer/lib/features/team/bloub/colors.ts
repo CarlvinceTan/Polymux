@@ -27,7 +27,7 @@ export function adaptiveMonochromeAvatar(avatar: Pick<TeamAvatarDto, 'shape'>): 
 }
 
 export function normalizeBloubAvatar(avatar: TeamAvatarDto): TeamAvatarDto {
-  return isAdaptiveMonochromeAvatar(avatar) ? adaptiveMonochromeAvatar(avatar) : avatar;
+  return isAdaptiveMonochromeAvatar(avatar) ? {...avatar, ...adaptiveMonochromeAvatar(avatar)} : avatar;
 }
 
 export function bloubColorForTheme(avatar: TeamAvatarDto, theme: BloubTheme): string {

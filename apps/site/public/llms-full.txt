@@ -1,11 +1,13 @@
 # Polymux
 
-Polymux is a personal desktop assistant with chats, email, files, browser tabs, and AI models built in. It is designed to be useful with almost no setup: the user asks once, and Polymux identifies the relevant conversation, file, or page and carries out the requested work.
+Polymux is a personal desktop assistant with chats, email, files, an encrypted Locker, connected devices, browser tabs, and AI models built in. It is designed to be useful with almost no setup: the user asks once, and Polymux identifies the relevant conversation, file, or page and carries out the requested work.
 
 ## Capabilities
 
 - Hub brings supported messaging and email services into one workspace.
 - Drive searches local files and connected cloud drives.
+- Locker stores passwords, authenticator codes, recovery codes, and passkeys in an encrypted vault.
+- Connected devices can run Assistant work on the current computer or a paired Host.
 - Browser works with an in-app browser or an explicitly assigned existing browser tab.
 - Model selection supports hosted providers and locally run models while preserving the same workspace.
 - The desktop app is available for macOS, Windows, and Linux.
@@ -30,19 +32,25 @@ Polymux is a personal desktop assistant with chats, email, files, browser tabs, 
 
 - Introduction: https://polymux.com/docs/
 - Quickstart: https://polymux.com/docs/quickstart/
+- Installation: https://polymux.com/docs/installation/
 - Workspace: https://polymux.com/docs/workspace/
 - Hub: https://polymux.com/docs/hub/
+- Locker: https://polymux.com/docs/locker/
+- Devices: https://polymux.com/docs/devices/
 - Drive: https://polymux.com/docs/drive/
 - Browser: https://polymux.com/docs/browser/
+- Schedules and tasks: https://polymux.com/docs/schedules-and-tasks/
 - Models and agents: https://polymux.com/docs/models-and-agents/
 - Skills and MCP: https://polymux.com/docs/skills-and-mcp/
+- Memory: https://polymux.com/docs/memory/
+- Privacy and permissions: https://polymux.com/docs/privacy-and-permissions/
 - Troubleshooting: https://polymux.com/docs/troubleshooting/
 
 ## Releases
 
 - Release history: https://polymux.com/releases/
-- Polymux 0.2.3: https://polymux.com/releases/0.2.3/
-- Polymux 0.2.2: https://polymux.com/releases/0.2.2/
+- Polymux 0.3.0: https://polymux.com/releases/0.3.0/
+- Polymux 0.2.4: https://polymux.com/releases/0.2.4/
 
 ## Browser privacy model
 

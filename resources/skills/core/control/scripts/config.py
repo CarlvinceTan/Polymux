@@ -18,7 +18,7 @@ DEVICE_KINDS = {"local", "remote", "vm", "phone"}
 VM_HOST_KINDS = {"local", "remote"}
 COMPUTER_PLATFORMS = {"linux", "macos", "windows"}
 VM_PLATFORMS = {"linux", "windows"}
-PHONE_PLATFORMS = {"android", "ios"}
+MOBILE_PLATFORMS = {"android", "ios"}
 ROOT_FIELDS = {"devices", "providers"}
 DEVICE_FIELDS = {"kind", "platform", "host", "user_active", "state_command", "power", "lock_command"}
 POWER_FIELDS = {"status", "wake", "sleep"}
@@ -58,7 +58,7 @@ def validate_devices(value: dict) -> None:
             raise ValueError(f"device {device_id!r} platform is required")
         platform = platform.casefold()
         if kind == "phone":
-            allowed_platforms = PHONE_PLATFORMS
+            allowed_platforms = MOBILE_PLATFORMS
         elif kind == "vm":
             allowed_platforms = VM_PLATFORMS
         else:

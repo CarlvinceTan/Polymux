@@ -1,6 +1,6 @@
 # Safari wrapper
 
-Safari will not load a Chrome unpacked zip. It needs an Apple-signed Web Extension wrapper around the shared scripts in `apps/extension` (`locker/` for autofill/passkeys/popup, `agent/` for browser control, plus `background.js`).
+Safari will not load a Chrome unpacked zip. It needs an Apple-signed Web Extension wrapper around the shared scripts in `apps/extension` (`vault/` for autofill/passkeys/popup, `agent/` for browser control, plus `background.js`).
 
 This folder is that wrapper. Development signing uses team `23YB4896XA`
 (FlareHQ) and Automatic style in the Xcode projects. App Store / TestFlight
@@ -35,9 +35,9 @@ Distribution, Mac Installer Distribution, and a provisioning profile for
 Safari currently uses only the cached/account vault. Sign in from the popup to
 pull the account vault, then unlock the cached ciphertext in that trusted popup.
 The popup displays this availability limit. Opening desktop Polymux does not
-connect its Locker to this wrapper.
+connect its Vault to this wrapper.
 
-Desktop Locker now requires a private native capability. The checked-in
+Desktop Vault now requires a private native capability. The checked-in
 converter generates Apple's standard wrapper; there is no custom native-message
 handler or entitlement granting it access to Polymux's private capability file.
 The macOS wrapper is sandboxed without a shared application group, while the iOS
@@ -52,7 +52,7 @@ unauthenticated loopback fallback is not supported.
 ./convert-ios.sh
 ```
 
-Safari Web Extensions on iPhone need an iOS app target with the extension embedded — not the Tauri phone app, and not this Chrome zip. The shared JS is the fill protocol. After conversion:
+Safari Web Extensions on iPhone need an iOS app target with the extension embedded — not the Tauri mobile app, and not this Chrome zip. The shared JS is the fill protocol. After conversion:
 
 1. Open the project under `ios/`. `convert-ios.sh` copies `iOS.entitlements` (App Group `group.com.polymux.extension`) onto the targets.
 2. Set Team `23YB4896XA` if Xcode cleared it. Bundle IDs match macOS:
@@ -60,9 +60,9 @@ Safari Web Extensions on iPhone need an iOS app target with the extension embedd
 3. Archive and upload through Xcode. This machine has no Xcode Apple ID account
    and no iOS development profiles, so iOS archive cannot finish here.
 
-The phone **app** Locker (on-device KeePass vault, Host sync when paired) is the
+The mobile **app** Vault (on-device KeePass vault, Host sync when paired) is the
 supported way to manage passwords on iOS until that wrapper is store-signed.
-The phone app is not a site browser, so it cannot intercept `navigator.credentials`
+The mobile app is not a site browser, so it cannot intercept `navigator.credentials`
 on Safari or Chrome. iOS passkey fill uses this Safari Web Extension after it is
 installed.
 

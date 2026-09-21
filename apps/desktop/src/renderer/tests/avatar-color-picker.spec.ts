@@ -54,7 +54,7 @@ for (const theme of ['light', 'dark'] as const) {
     await drawer.getByRole('button', {name: 'Team', exact: true}).click();
     await drawer.getByRole('button', {name: 'Options for Maya', exact: true}).click();
     await drawer.getByRole('menuitem', {name: 'Edit', exact: true}).click();
-    const editor = page.getByRole('dialog', {name: 'Edit Maya', exact: true});
+    const editor = page.locator('aside.workspace-drawer').getByRole('region', {name: 'Edit Maya', exact: true});
     const adaptive = editor.getByRole('button', {name: 'Ink in Light, Cream in Dark', exact: true});
     await expect(adaptive).toHaveAttribute('aria-pressed', 'false');
     await editor.getByRole('textbox', {name: 'Name', exact: true}).click();

@@ -30,7 +30,7 @@
   import {onDestroy, onMount, type ComponentProps} from 'svelte';
   import {fade} from 'svelte/transition';
   import {readableError} from './lib/shared/errors';
-  import type {AgentMessageOriginDto, AppUpdateDto, ArtifactDto, AccountStatusDto, BrowserExtensionDto, ConversationDto, CreateTeamGroupRequest, CreateBotRequest, DefaultAppDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, ManagerJobDto, ManagerSnapshotDto, MessageDto, NotificationTargetDto, PinnableWorkspaceView, ProfileDto, ReasoningEffort, ReferenceDto, RunEventDto, TeamGroupDto, TeamHostDto, BotDto, WorkspaceAppDto, WorkspaceAppsDto, WorkspaceRevealDto} from '@polymux/protocol';
+  import type {AgentMessageOriginDto, AppUpdateDto, ArtifactDto, AccountStatusDto, BrowserExtensionDto, ConversationDto, CreateBotRequest, DefaultAppDto, DriveProviderId, DriveStatusDto, GoalDto, JsonValue, ManagerJobDto, ManagerSnapshotDto, MessageDto, NotificationTargetDto, PinnableWorkspaceView, ProfileDto, ReasoningEffort, ReferenceDto, RunEventDto, TeamGroupDto, TeamHostDto, BotDto, WorkspaceAppDto, WorkspaceAppsDto, WorkspaceRevealDto} from '@polymux/protocol';
   import {isTeamBotSetupCue} from '@polymux/protocol';
   import TitleBar from './lib/features/chat/TitleBar.svelte';
   import ChatPane, {type ChatMessage} from './lib/features/chat/ChatPane.svelte';
@@ -39,11 +39,13 @@
   import SpeechOrb from './lib/features/chat/SpeechOrb.svelte';
   import ChatDrawer, {type ChatDrawerMode, type ChatEntry} from './lib/features/shell/ChatDrawer.svelte';
   import ChatSearchModal from './lib/features/shell/ChatSearchModal.svelte';
-  import BotDialog from './lib/features/team/BotDialog.svelte';
-  import TeamNewChatSheet from './lib/features/team/TeamNewChatSheet.svelte';
+  import BotEditor from './lib/features/team/BotEditor.svelte';
+  import TeamNewChatBar from './lib/features/team/TeamNewChatBar.svelte';
+  import {teamGroupName} from './lib/features/team/groupName';
+  import {randomTeamAvatar} from './lib/features/team/avatarChoice';
   import TeamHostDialog from './lib/features/team/TeamHostDialog.svelte';
   import AccountSignInDialog from './lib/features/account/AccountSignInDialog.svelte';
-  import TeamGroupDialog from './lib/features/team/TeamGroupDialog.svelte';
+  import TeamGroupMenu from './lib/features/team/TeamGroupMenu.svelte';
   import TeamChatPane from './lib/features/team/TeamChatPane.svelte';
   import SummaryPanel, {type SummarySection, type ReferenceItem} from './lib/features/workspace/SummaryPanel.svelte';
   import WorkspaceDrawer, {SINGLETON_TAB_IDS, type WorkspaceTab, type WorkspaceTabKind} from './lib/features/workspace/WorkspaceDrawer.svelte';
@@ -91,7 +93,7 @@
     void loadHubModule().then((module) => module.revealInHub(target));
   };
   import {activityPresentation, activityPreviewTabId, runThinkingActivity, toolResultFailed, upsertActivity, visibleCommentaryLabel} from './lib/features/chat/activities';
-  import {inferQueuePriority, shouldSteerLiveTurn} from './lib/features/chat/queuePolicy';
+  import {shouldSteerLiveTurn} from './lib/features/chat/queuePolicy';
   import {addConversationRun as withConversationRun, bindPendingRun, latestConversationRun, removeConversationRun as withoutConversationRun} from './lib/features/chat/runAttribution';
   import {platformForChat, primeChatPlatforms} from './lib/shared/state/chatPlatforms';
   import {startupReleaseNotes} from './lib/shared/state/startupReleaseNotes';
@@ -109,7 +111,7 @@
   const requestedWorkspaceView = (() => {
     const raw = new URLSearchParams(window.location.search).get('workspaceView');
     const value = raw === 'schedule' ? 'tasks' : raw;
-    return value === 'drive' || value === 'calendar' || value === 'hub' || value === 'tasks' || value === 'phone' || value === 'locker' || value === 'media' || value === 'terminal' || value === 'ide' || (value === 'usage' || value === 'finance') ? value : null;
+    return value === 'drive' || value === 'calendar' || value === 'hub' || value === 'tasks' || value === 'mobile' || value === 'vault' || value === 'media' || value === 'terminal' || value === 'ide' || (value === 'usage' || value === 'finance') ? value : null;
   })();
   let conversations: Conversation[] = [];
   let bots: BotDto[] = [];
@@ -120,11 +122,15 @@
   let teamEditor: BotDto | 'new' | null = null;
   let teamEditorBusy = false;
   let teamEditorError = '';
+  /** Workspace UI from before the bot page borrowed it, so closing the page
+   * returns to what the user was looking at. */
+  let botEditorReturn: ExpandedReturn | null = null;
   let teamNewChatOpen = false;
-  let teamNewBotName = '';
-  let teamGroupEditor: TeamGroupDto | 'new' | null = null;
-  let teamGroupEditorBusy = false;
-  let teamGroupEditorError = '';
+  /** The group's own surface — rename and members — anchored to whatever
+   * opened it: the identity in the title bar, or the drawer's row menu. */
+  let teamGroupMenu: {groupId: string; anchor: {left: number; bottom: number; width: number}} | null = null;
+  let teamGroupMenuBusy = false;
+  $: menuGroup = teamGroupMenu ? teamGroups.find((group) => group.id === teamGroupMenu?.groupId) ?? null : null;
   let teamGroupSending = false;
   let teamGroupSendQueue: Array<{
     temporaryId: string;
@@ -171,6 +177,9 @@
    * interrupting: only ⌘/Ctrl+Enter (or the Steer action on a queued row)
    * reaches a running agent straight away. */
   let queuedByConversation: Record<string, QueuedSend[]> = {};
+  const heldQueues = new Set<string>();
+  const drainingQueues = new Set<string>();
+  const cancelledPendingRuns = new Set<string>();
   let managerEnabled = false;
   let managerJobs: ManagerJobDto[] = [];
   let managerReady: Promise<void> = Promise.resolve();
@@ -291,16 +300,19 @@
   /** The tab Settings opens on, set by whatever asked for it. Cleared when the
    * settings tab closes so the next plain open lands where it always has. */
   let settingsMode: ComponentProps<typeof SettingsPageComponent>['initialMode'] = '';
-  /** Workspace UI from before Settings was opened from a non-Settings state, so
-   * the gear can press again to go back. */
-  let settingsReturn: {
+  /** Workspace UI from before an expanded page was opened from a non-Settings
+   * state, so that page can hand the layout back. */
+  type ExpandedReturn = {
     panelState: PanelState;
     workspaceExpanded: boolean;
     workspaceWidth: number;
     chatDrawerOpen: boolean;
     chatDrawerWidth: number;
     activeTabId: string | null;
-  } | null = null;
+  };
+
+  let settingsReturn: ExpandedReturn | null = null;
+  let connectionsReturn: ExpandedReturn | null = null;
 
   function settingsViewExpanded(): boolean {
     return mode === 'workspace'
@@ -308,8 +320,20 @@
       && workspaceTabs.some((tab) => tab.id === activeTabId && tab.kind === 'settings');
   }
 
-  function snapshotSettingsReturn(): void {
-    settingsReturn = {
+  function connectionsViewExpanded(): boolean {
+    return mode === 'workspace'
+      && workspaceExpanded
+      && workspaceTabs.some((tab) => tab.id === activeTabId && tab.kind === 'connections');
+  }
+
+  function botViewExpanded(): boolean {
+    return mode === 'workspace'
+      && workspaceExpanded
+      && workspaceTabs.some((tab) => tab.id === activeTabId && tab.kind === 'bot');
+  }
+
+  function snapshotExpandedReturn(): ExpandedReturn {
+    return {
       panelState: {mode: panelState.mode, summaryReturns: panelState.summaryReturns},
       workspaceExpanded,
       workspaceWidth,
@@ -319,9 +343,9 @@
     };
   }
 
-  function restoreSettingsReturn(): void {
-    const saved = settingsReturn;
-    settingsReturn = null;
+  /** Hands the layout back to `kind`'s page's opener. A tab the user has since
+   * closed falls back to the first tab that is not the page being left. */
+  function restoreExpandedReturn(saved: ExpandedReturn | null, kind: WorkspaceTabKind): void {
     if (!saved) {
       workspaceExpanded = false;
       return;
@@ -334,30 +358,61 @@
     chatDrawerWidth = saved.chatDrawerWidth;
     if (tabExists) activeTabId = saved.activeTabId;
     else {
-      const fallback = workspaceTabs.find((tab) => tab.kind !== 'settings') ?? workspaceTabs[0];
+      const fallback = workspaceTabs.find((tab) => tab.kind !== kind) ?? workspaceTabs[0];
       activeTabId = fallback?.id ?? null;
     }
     workspaceExpanded = saved.panelState.mode === 'workspace' && saved.workspaceExpanded;
   }
 
+  /** Settings and bot pages land in the expanded workspace, but they appear
+   * immediately instead of riding the expand slide: cancel any in-flight
+   * motion and pre-sync the motion state so the expand flip below sees no
+   * change to animate. The resize classes stand in for the opening paint so
+   * the drawer's CSS slide and the grid-column transitions do not play
+   * either; they clear right after, leaving later opens/closes animated. */
+  function expandWorkspaceInstant(): void {
+    cancelAnimationFrame(workspaceMotionFrame);
+    workspaceMotionWidth = null;
+    workspaceMotionState = true;
+    workspaceExpanded = true;
+    workspaceResizing = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      workspaceResizing = false;
+    }));
+  }
+
   function openSettings(nextMode: ComponentProps<typeof SettingsPageComponent>['initialMode'] = ''): void {
-    if (!settingsViewExpanded()) snapshotSettingsReturn();
+    if (!settingsViewExpanded()) settingsReturn = snapshotExpandedReturn();
     settingsMode = nextMode;
     newTab('settings');
-    workspaceExpanded = true;
+    expandWorkspaceInstant();
     void preloadSettings(api);
   }
 
   function openConnections(): void {
+    if (!connectionsViewExpanded()) connectionsReturn = snapshotExpandedReturn();
     newTab('connections');
-    workspaceExpanded = true;
+    expandWorkspaceInstant();
     void preloadSettings(api);
+  }
+
+  /** Connections is a toggle like Settings: a second press restores the previous UI. */
+  function toggleConnections(): void {
+    if (connectionsViewExpanded()) {
+      const saved = connectionsReturn;
+      connectionsReturn = null;
+      restoreExpandedReturn(saved, 'connections');
+      return;
+    }
+    openConnections();
   }
 
   /** The gear is a toggle: on expanded Settings it restores, otherwise it opens. */
   function toggleSettings(): void {
     if (settingsViewExpanded()) {
-      restoreSettingsReturn();
+      const saved = settingsReturn;
+      settingsReturn = null;
+      restoreExpandedReturn(saved, 'settings');
       return;
     }
     openSettings();
@@ -501,19 +556,16 @@
   $: tasks = tasksByConversation[active.id] ?? [];
   $: summaryActivities = active.messages.flatMap((message) => message.activities ?? []);
   $: running = Boolean(runsByConversation[active.id]?.length);
-  $: queued = managerEnabled
-    ? managerJobs
-      .filter((job) => job.chatId === active.id && job.status === 'queued')
-      .map((job) => ({
-        id: job.id,
-        text: job.text,
-        files: job.attachments.map((path) => ({name: fileName(path), type: ''})),
-      }))
-    : (queuedByConversation[active.id] ?? []).map((item) => ({
-      id: item.id,
-      text: item.text,
+  $: queued = [
+    ...(queuedByConversation[active.id] ?? []).map((item) => ({
+      id: item.id, text: item.text,
       files: item.files.map((file) => ({name: file.name, type: file.type})),
-    }));
+    })),
+    ...(managerEnabled ? managerJobs.filter((job) => job.chatId === active.id && job.status === 'queued').map((job) => ({
+      id: job.id, text: job.text,
+      files: job.attachments.map((path) => ({name: fileName(path), type: ''})),
+    })) : []),
+  ];
   $: chatEntries = conversations.filter((conversation) => !conversation.botId && !conversation.teamGroupId).map((conversation) => ({
     id: conversation.id,
     title: conversation.title,
@@ -578,7 +630,7 @@
   // Must run before anything derived from the panel mode below: reactive
   // statements run in declaration order, so opening Summary after the column
   // derivations would show the card while the grid still reserved no space for it.
-  $: syncConversationPanel(!activeTeamConversation && active.messages.length > 0, viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH, summaryDismissed);
+  $: syncConversationPanel(Boolean(activeBot) || (!activeTeamConversation && active.messages.length > 0), viewportWidth >= SPLIT_LAYOUT_MIN_WIDTH, summaryDismissed);
 
   $: if (mode !== 'workspace' && workspaceExpanded) workspaceExpanded = false;
   $: applyPanelLayout(viewportWidth, chatDrawerOpen, mode === 'workspace' && !workspaceExpanded, chatDrawerWidth, workspaceWidth);
@@ -587,8 +639,7 @@
    * window-modal surface (or the full-screen speech orb) covers the app. */
   $: browserObscuredByOverlay = chatSearchOpen
     || teamNewChatOpen
-    || Boolean(teamEditor)
-    || Boolean(teamGroupEditor)
+    || Boolean(teamGroupMenu)
     || accountSignInOpen
     || (voiceOpen && !voiceInChat);
 
@@ -1091,7 +1142,7 @@
     void openChat(id);
   }
 
-  async function send(text: string, files: File[], asGoal = false, immediate = false): Promise<void> {
+  async function send(text: string, files: File[], asGoal = false, immediate = false, propagateFailure = false): Promise<void> {
     if (!text && !files.length) return;
     const requestedChat = activeId;
     const requestedFolder = newChatFolderId;
@@ -1129,38 +1180,35 @@
     // A run that has not reported its id yet cannot be steered, so those wait
     // in the queue too even when the send asked to go now.
     if (existingRun && !steerCurrent) {
-      if (managerEnabled) {
-        const attachmentPaths = files.length ? await api.files.paths(files) : [];
-        await api.manager.enqueue({
-          id: crypto.randomUUID(),
-          chatId: conversationId,
-          text,
-          attachments: attachmentPaths,
-          asGoal,
-          priority: inferQueuePriority(text),
-        });
-      } else {
-        enqueue(conversationId, {id: crypto.randomUUID(), text, files, asGoal});
-      }
+      // User follow-ups are ordered drafts, not independent manager jobs.
+      enqueue(conversationId, {id: crypto.randomUUID(), text, files, asGoal});
       return;
     }
     if (existingRun) {
-      const steered: ChatMessage = {id: crypto.randomUUID(), role: 'user', text, files: files.map((file) => file.name), sentAt, asGoal};
+      const liveId = liveAssistantByRun[existingRun];
+      const live = conversations.find((chat) => chat.id === conversationId)?.messages.find((message) => message.id === liveId);
+      // Everything the run has already done belongs above this message, and
+      // everything it does next belongs below it: the trail is cut here rather
+      // than carried wholesale to the foot of the transcript.
+      const steered: ChatMessage = {
+        id: crypto.randomUUID(), role: 'user', text, files: files.map((file) => file.name), sentAt, asGoal, runId: existingRun,
+        ...(live ? {activitiesBefore: live.activities?.length ?? 0} : {}),
+      };
+      await api.runs.steer(existingRun, text, steered.id);
       // The live turn keeps writing into the message it started, which sits
       // above this one — so it moves to the foot of the transcript instead.
       // What the agent says next is a reply to the steer, and reading it above
       // the words it answers is the wrong order.
-      const liveId = liveAssistantByRun[existingRun];
       updateConversation(conversationId, (chat) => {
-        const live = chat.messages.find((message) => message.id === liveId);
-        const rest = live ? chat.messages.filter((message) => message.id !== liveId) : chat.messages;
-        return {...chat, messages: live ? [...rest, steered, live] : [...rest, steered]};
+        const liveRow = chat.messages.find((message) => message.id === liveId);
+        const rest = liveRow ? chat.messages.filter((message) => message.id !== liveId) : chat.messages;
+        return {...chat, messages: liveRow ? [...rest, steered, liveRow] : [...rest, steered]};
       });
       if (asGoal) await setGoal(conversationId, text || files[0]?.name || translate('goal.reviewAttached'));
-      await api.runs.steer(existingRun, text, steered.id);
       return;
     }
 
+    heldQueues.delete(conversationId);
     const userId = crypto.randomUUID();
     const assistantId = crypto.randomUUID();
     const userMessage: ChatMessage = {id: userId, role: 'user', text, files: files.map((file) => file.name), sentAt, asGoal};
@@ -1182,11 +1230,15 @@
       const attachmentPaths = files.length ? await api.files.paths(files) : [];
       const {runId} = await api.runs.start({conversationId, deviceId: activeTeamConversation ? undefined : executionDeviceId || undefined, text, messageId: userId, attachments: attachmentPaths, asGoal, reasoning: reasoningLevel, speechMode: voiceOpen});
       bindRun(conversationId, pendingRunId, runId);
+      if (cancelledPendingRuns.delete(pendingRunId)) await api.runs.cancel(runId);
       updateLiveAssistant(conversationId, runId, (message) => ({...message, runId}));
       if (asGoal) await refreshGoal(conversationId);
       await loadChats();
     } catch (error) {
+      cancelledPendingRuns.delete(pendingRunId);
+      heldQueues.add(conversationId);
       failRun(conversationId, pendingRunId, readableError(error));
+      if (propagateFailure) throw error;
     }
   }
 
@@ -1242,13 +1294,13 @@
 
   async function stop(): Promise<void> {
     const runIds = runsByConversation[active.id] ?? [];
+    heldQueues.add(active.id);
+    for (const runId of runIds) if (runId.startsWith('pending:')) cancelledPendingRuns.add(runId);
     // Stopping means stopping: nothing queued behind this run should start on
     // its own once the cancel lands.
     if (managerEnabled) {
       const queuedJobs = managerJobs.filter((job) => job.chatId === active.id && job.status === 'queued');
       await Promise.all(queuedJobs.map((job) => api.manager.cancel(job.id)));
-    } else {
-      setQueued(active.id, []);
     }
     await Promise.all(runIds.filter((runId) => !runId.startsWith('pending:')).map((runId) => api.runs.cancel(runId)));
   }
@@ -1277,28 +1329,44 @@
    * conversation drains, because a run always starts against the active chat;
    * the rest wait until they are reopened. */
   async function drainQueue(conversationId: string): Promise<void> {
-    if (managerEnabled) return;
+    if (heldQueues.has(conversationId) || drainingQueues.has(conversationId)) return;
     if (activeId !== conversationId || runsByConversation[conversationId]?.length) return;
     const items = queuedByConversation[conversationId] ?? [];
     if (!items.length) return;
+    drainingQueues.add(conversationId);
     setQueued(conversationId, items.slice(1));
-    await send(items[0].text, items[0].files, items[0].asGoal);
+    try { await send(items[0].text, items[0].files, items[0].asGoal, false, true); }
+    catch (error) {
+      setQueued(conversationId, [items[0], ...(queuedByConversation[conversationId] ?? [])]);
+      heldQueues.add(conversationId);
+      showAgentNotice('error', readableError(error));
+    } finally { drainingQueues.delete(conversationId); }
   }
 
   async function steerQueued(id: string): Promise<void> {
-    if (managerEnabled) {
+    if (managerEnabled && managerJobs.some((job) => job.id === id && job.status === 'queued')) {
       const item = managerJobs.find((job) => job.id === id && job.status === 'queued');
       if (!item) return;
       await api.manager.cancel(id);
       await send(item.text, [], item.asGoal, true);
       return;
     }
-    const item = takeQueued(active.id, id);
-    if (item) await send(item.text, item.files, item.asGoal, true);
+    const conversationId = active.id;
+    const items = queuedByConversation[conversationId] ?? [];
+    const index = items.findIndex((item) => item.id === id);
+    const item = takeQueued(conversationId, id);
+    if (!item) return;
+    try { await send(item.text, item.files, item.asGoal, true, true); }
+    catch (error) {
+      const pending = [...(queuedByConversation[conversationId] ?? [])];
+      pending.splice(Math.max(0, index), 0, item);
+      setQueued(conversationId, pending);
+      showAgentNotice('error', readableError(error));
+    }
   }
 
   async function editQueued(id: string): Promise<void> {
-    if (managerEnabled) {
+    if (managerEnabled && managerJobs.some((job) => job.id === id && job.status === 'queued')) {
       const item = managerJobs.find((job) => job.id === id && job.status === 'queued');
       if (!item) return;
       await api.manager.cancel(id);
@@ -1310,7 +1378,7 @@
   }
 
   function reorderQueued(sourceId: string, targetId: string): void {
-    if (managerEnabled) {
+    if (managerEnabled && managerJobs.some((job) => job.id === sourceId && job.status === 'queued')) {
       void api.manager.reorder(sourceId, targetId).catch((error) => {
         console.error('Could not reorder queued work:', readableError(error));
       });
@@ -1326,7 +1394,7 @@
   }
 
   async function removeQueued(id: string): Promise<void> {
-    if (managerEnabled) {
+    if (managerEnabled && managerJobs.some((job) => job.id === id && job.status === 'queued')) {
       await api.manager.cancel(id);
       return;
     }
@@ -1432,6 +1500,8 @@
     window.dispatchEvent(new Event('polymux-chats-changed'));
   }
 
+  /** Opening the bot's page in the workspace, expanded, remembering the layout
+   * it borrowed so closing it hands that back. */
   async function openTeamEditor(member: BotDto | 'new'): Promise<void> {
     teamEditorError = '';
     try {
@@ -1444,7 +1514,25 @@
       teamEditorError = readableError(error);
     }
     await yieldEmbeddedBrowsers();
+    if (!botViewExpanded()) botEditorReturn = snapshotExpandedReturn();
     teamEditor = member;
+    const id = member === 'new' ? 'bot:new' : `bot:${member.id}`;
+    openTab({id, title: member === 'new' ? translate('team.newBot') : member.name, kind: 'bot', botId: member === 'new' ? undefined : member.id});
+    expandWorkspaceInstant();
+  }
+
+  /** Leaving the page returns the workspace to what it was showing, unless the
+   * user moved to another page in the meantime. */
+  function closeTeamEditor(): void {
+    const tabId = activeTabId;
+    if (botViewExpanded()) {
+      const saved = botEditorReturn;
+      botEditorReturn = null;
+      restoreExpandedReturn(saved, 'bot');
+    }
+    teamEditor = null;
+    teamEditorError = '';
+    if (tabId?.startsWith('bot:')) closeTab(tabId);
   }
 
   async function loadTeamHostProfiles(hostId: string): Promise<void> {
@@ -1475,9 +1563,9 @@
     teamEditorError = '';
     try {
       await api.team.remove(member.id);
-      teamEditor = null;
       applyBots(bots.filter((candidate) => candidate.id !== member.id));
       if (activeId === member.conversationId) resetToDraft();
+      closeTeamEditor();
     } catch (error) {
       teamEditorError = readableError(error);
     } finally {
@@ -1493,9 +1581,8 @@
         ? await api.team.update(teamEditor.id, request)
         : await api.team.create(request);
       applyBot(updated);
-      teamEditor = null;
-      teamNewBotName = '';
       teamNewChatOpen = false;
+      closeTeamEditor();
       await openTeam(updated.id);
     } catch (error) {
       teamEditorError = readableError(error);
@@ -1504,59 +1591,102 @@
     }
   }
 
-  function openTeamGroupEditor(group: TeamGroupDto | 'new'): void {
-    teamGroupEditorError = '';
-    void yieldEmbeddedBrowsers().then(() => {
-      teamGroupEditor = group;
-    });
+  function openTeamGroupMenu(group: TeamGroupDto, anchor: {left: number; bottom: number; width: number}): void {
+    if (activeId !== group.conversationId) void openTeamGroup(group.id);
+    teamGroupMenu = {groupId: group.id, anchor};
   }
 
-  function editTeamGroup(groupId: string): void {
+  function editTeamGroup(groupId: string, anchor: {left: number; bottom: number; width: number}): void {
     const group = teamGroups.find((candidate) => candidate.id === groupId);
-    if (group) openTeamGroupEditor(group);
+    if (group) openTeamGroupMenu(group, anchor);
   }
 
   /** The empty Team conversation opens whichever editor its identity belongs to. */
-  function editActiveTeamIdentity(): void {
+  function editActiveTeamIdentity(anchor?: {left: number; bottom: number; width: number}): void {
     if (activeBot) void openTeamEditor(activeBot);
-    else if (activeTeamGroup) openTeamGroupEditor(activeTeamGroup);
+    else if (activeTeamGroup && anchor) openTeamGroupMenu(activeTeamGroup, anchor);
   }
 
   function requestDeleteTeamGroup(groupId: string): void {
     const group = teamGroups.find((candidate) => candidate.id === groupId);
-    if (!group || !window.confirm(`Delete ${group.name} and its group conversation?`)) return;
+    if (!group || !window.confirm(`Delete ${teamGroupName(group, bots)} and its group conversation?`)) return;
     void deleteTeamGroup(group);
   }
 
   async function deleteTeamGroup(group: TeamGroupDto): Promise<void> {
-    teamGroupEditorBusy = true;
-    teamGroupEditorError = '';
+    teamGroupMenuBusy = true;
     try {
       await api.team.removeGroup(group.id);
-      teamGroupEditor = null;
+      teamGroupMenu = null;
       applyTeamGroups(teamGroups.filter((candidate) => candidate.id !== group.id));
       if (activeId === group.conversationId) resetToDraft();
     } catch (error) {
-      teamGroupEditorError = readableError(error);
+      showAgentNotice('error', readableError(error));
     } finally {
-      teamGroupEditorBusy = false;
+      teamGroupMenuBusy = false;
     }
   }
 
-  async function saveTeamGroup(request: CreateTeamGroupRequest): Promise<void> {
-    teamGroupEditorBusy = true;
-    teamGroupEditorError = '';
+  /** Renaming a group replaces its member-list name with the chosen one; an
+   * empty name goes back to reading as its members. */
+  async function renameTeamGroup(group: TeamGroupDto, name: string): Promise<void> {
+    teamGroupMenuBusy = true;
     try {
-      const updated = teamGroupEditor && teamGroupEditor !== 'new'
-        ? await api.team.updateGroup(teamGroupEditor.id, request)
-        : await api.team.createGroup(request);
-      applyTeamGroup(updated);
-      teamGroupEditor = null;
-      await openTeamGroup(updated.id);
+      applyTeamGroup(await api.team.updateGroup(group.id, {name}));
     } catch (error) {
-      teamGroupEditorError = readableError(error);
+      showAgentNotice('error', readableError(error));
     } finally {
-      teamGroupEditorBusy = false;
+      teamGroupMenuBusy = false;
+    }
+  }
+
+  async function updateTeamGroupMembers(group: TeamGroupDto, memberIds: string[]): Promise<void> {
+    teamGroupMenuBusy = true;
+    try {
+      applyTeamGroup(await api.team.updateGroup(group.id, {memberIds}));
+    } catch (error) {
+      showAgentNotice('error', readableError(error));
+    } finally {
+      teamGroupMenuBusy = false;
+    }
+  }
+
+  /** The drawer's + creates a bot outright: "New Chat", no role, so the bot's
+   * own first turn can propose roles and the rest of its setup happens in the
+   * conversation. Polymux is the default runtime; the bot's Agent settings can
+   * move it onto an ACP agent later. */
+  async function createTeamBot(name: string): Promise<void> {
+    teamNewChatOpen = false;
+    try {
+      if (!teamHosts.length) teamHosts = await api.team.hosts();
+      const hostId = teamHosts.find((host) => host.isDefault)?.hostId ?? teamHosts[0]?.hostId;
+      if (!teamProfiles.length) teamProfiles = await api.team.profiles(hostId);
+      const profileId = teamProfiles.find((profile) => profile.teamEligible !== false)?.id;
+      if (!profileId) throw new Error(translate('team.connectHostFirst'));
+      const created = await api.team.create({
+        name: name.trim() || translate('team.newChatName'),
+        role: '',
+        profileId,
+        avatar: randomTeamAvatar(),
+        agentRuntime: {kind: 'polymux'},
+      });
+      applyBot(created);
+      await openTeam(created.id);
+    } catch (error) {
+      showAgentNotice('error', readableError(error));
+    }
+  }
+
+  /** Enter in the group chooser: the group starts unnamed and takes its name
+   * from its members, which the title bar then reads as you plus them. */
+  async function createTeamGroup(memberIds: string[]): Promise<void> {
+    teamNewChatOpen = false;
+    try {
+      const created = await api.team.createGroup({name: '', memberIds});
+      applyTeamGroup(created);
+      await openTeamGroup(created.id);
+    } catch (error) {
+      showAgentNotice('error', readableError(error));
     }
   }
 
@@ -1624,6 +1754,15 @@
     ]);
   }
 
+  /** Re-delivers a stalled first-run setup turn from the setup banner. */
+  async function retryBotSetup(id: string): Promise<void> {
+    try {
+      applyBot(await api.team.retrySetup(id));
+    } catch (error) {
+      showAgentNotice('error', readableError(error));
+    }
+  }
+
   function applyTeamGroup(group: TeamGroupDto): void {
     applyTeamGroups([
       ...teamGroups.filter((candidate) => candidate.id !== group.id),
@@ -1658,7 +1797,7 @@
     teamGroups = [...groups].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
     const groupConversations = teamGroups.map((group): Conversation => ({
       id: group.conversationId,
-      title: group.name,
+      title: teamGroupName(group, bots),
       createdAt: current.get(group.conversationId)?.createdAt ?? Date.parse(group.updatedAt),
       updatedAt: Date.parse(group.updatedAt),
       messages: current.get(group.conversationId)?.messages ?? [],
@@ -1747,9 +1886,7 @@
     if (event.type === 'message.reasoning.delta') {
       const id = `${event.runId}:thinking`;
       const delta = typeof payload.delta === 'string' ? payload.delta : '';
-      // The whole run shares one thinking row, so a later reasoning block —
-      // a new turn, or a new block within one — is separated from the last
-      // rather than running into its final word.
+      // Consecutive reasoning tokens share an episode; tools and prose end it.
       const block = `${typeof payload.turn === 'number' ? payload.turn : 0}:${typeof payload.index === 'number' ? payload.index : 0}`;
       const separator = reasoningBlock[id] !== undefined && reasoningBlock[id] !== block ? '\n\n' : '';
       reasoningBlock[id] = block;
@@ -1761,11 +1898,11 @@
             message.activities ?? [],
             {
               ...existing,
-              id: existing?.id ?? id,
+              id: existing?.id ?? `${id}:${event.sequence}`,
               kind: 'thinking',
               status: 'active',
               label: translate('activity.thinking'),
-              result: `${existing?.result ?? ''}${separator}${delta}`,
+              result: `${existing?.result ?? ''}${existing ? separator : ''}${delta}`,
             },
           ),
         };
@@ -1896,7 +2033,8 @@
           ...item,
           steps: [
             ...(item.steps ?? []).map((step) => step.status === 'active' ? {...step, status: 'completed' as const} : step),
-            {id: `${id}:${event.sequence}`, label, status: 'active' as const},
+            // A progress report inherits the glyph of the call reporting it.
+            {id: `${id}:${event.sequence}`, label, status: 'active' as const, kind: item.kind, ...(item.icon ? {icon: item.icon} : {}), ...(item.logo ? {logo: item.logo} : {})},
           ],
         } : item),
       }));
@@ -1972,6 +2110,7 @@
       updateConversationTasks(conversationId, (current) => current.map((task) => task.parentRunId === event.runId && task.status === 'active'
         ? {...task, status: event.type === 'run.completed' ? 'completed' : 'failed'}
         : task));
+      if (event.type === 'run.failed' || event.type === 'run.cancelled') heldQueues.add(conversationId);
       removeConversationRun(conversationId, event.runId);
     }
     if (event.type === 'run.settled') void settleConversation(conversationId, event.runId);
@@ -2027,6 +2166,16 @@
    * message's metadata so a reloaded chat still shows "Worked for Ns" and the
    * expanded activity list exactly as it looked during the run. */
   async function persistActivities(stored: MessageDto[], current: ChatMessage[]): Promise<void> {
+    // Where a steer cut the run's work, so a chat reopened later draws the
+    // trail either side of it rather than all of it under the steer.
+    for (const message of stored) {
+      if (message.role !== 'user') continue;
+      const boundary = current.find((item) => item.id === message.id)?.activitiesBefore;
+      if (typeof boundary !== 'number') continue;
+      const existing = asRecord(message.metadata);
+      if (existing.activitiesBefore === boundary) continue;
+      await api.conversations.updateMessage(message.id, {metadata: {...existing, activitiesBefore: boundary}});
+    }
     const settled = visibleAssistantRows(stored).filter((message) => message.role === 'assistant' && message.runId);
     for (const storedMessage of settled) {
       const live = current.find((item) => item.role === 'assistant' && item.runId === storedMessage.runId);
@@ -2248,6 +2397,7 @@
         rewind: true,
       });
       bindRun(conversationId, pendingRunId, runId);
+      if (cancelledPendingRuns.delete(pendingRunId)) await api.runs.cancel(runId);
       updateLiveAssistant(conversationId, runId, (message) => ({...message, runId}));
       if (edited.asGoal) await refreshGoal(conversationId);
       await loadChats();
@@ -2265,7 +2415,7 @@
   }
 
   /** Tab kinds a stored snapshot may re-create; anything else is stale data. */
-  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['new', 'media', 'browser', 'summary', 'drive', 'calendar', 'hub', 'subagents', 'tasks', 'phone', 'locker', 'terminal', 'ide', 'usage', 'finance', 'settings', 'connections']);
+  const RESTORABLE_TAB_KINDS = new Set<WorkspaceTabKind>(['bot-schedule', 'new', 'media', 'browser', 'summary', 'drive', 'calendar', 'hub', 'subagents', 'tasks', 'mobile', 'vault', 'terminal', 'ide', 'usage', 'finance', 'settings', 'connections']);
   /** True while a snapshot is being applied, so the auto-save sits out. */
   let workspaceRestoring = false;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2356,7 +2506,7 @@
     references = storedReferences.map(({id, title, kind, uri}) => ({id, title, kind, uri}));
     const resourceTabs = artifacts.map(artifactTab);
     const resourceIds = new Set(resourceTabs.map((tab) => tab.id));
-    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'new' || tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'calendar' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'view' || tab.kind === 'subagent' || tab.kind === 'subagents' || tab.kind === 'tasks' || tab.kind === 'phone' || tab.kind === 'locker' || tab.kind === 'media' || tab.kind === 'terminal' || tab.kind === 'ide' || (tab.kind === 'usage' || tab.kind === 'finance') || tab.kind === 'settings' || tab.kind === 'connections').filter((tab) => tab.kind !== 'media' || !resourceIds.has(tab.id)), ...resourceTabs];
+    workspaceTabs = [...workspaceTabs.filter((tab) => tab.kind === 'bot' || tab.kind === 'bot-schedule' || tab.kind === 'new' || tab.kind === 'summary' || tab.kind === 'drive' || tab.kind === 'calendar' || tab.kind === 'hub' || tab.kind === 'browser' || tab.kind === 'view' || tab.kind === 'subagent' || tab.kind === 'subagents' || tab.kind === 'tasks' || tab.kind === 'mobile' || tab.kind === 'vault' || tab.kind === 'media' || tab.kind === 'terminal' || tab.kind === 'ide' || (tab.kind === 'usage' || tab.kind === 'finance') || tab.kind === 'settings' || tab.kind === 'connections').filter((tab) => tab.kind !== 'media' || !resourceIds.has(tab.id)), ...resourceTabs];
     if (activeTabId && !workspaceTabs.some((tab) => tab.id === activeTabId)) activeTabId = workspaceTabs[0]?.id ?? null;
   }
 
@@ -2404,6 +2554,11 @@
       settingsMode = '';
       refreshExtensionStatus();
     }
+    if (closing?.kind === 'bot') {
+      teamEditor = null;
+      teamEditorError = '';
+      botEditorReturn = null;
+    }
     if (releaseSingleton && closing && isSharedWorkspaceSingleton(closing.kind))
       workspaceSingletonChannel?.postMessage({type: 'closed', kind: closing.kind, owner: workspaceWindowOwner});
   }
@@ -2414,7 +2569,7 @@
     if (reordered.length === workspaceTabs.length) workspaceTabs = reordered;
   }
 
-  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', calendar: 'workspace.calendar', hub: 'workspace.hub', subagents: 'workspace.subagents', tasks: 'workspace.tasks', phone: 'workspace.phone', locker: 'workspace.locker', media: 'workspace.media', terminal: 'workspace.terminal', ide: 'workspace.ide', finance: 'workspace.finance', usage: 'workspace.usage', settings: 'settings.title', connections: 'workspace.connections'};
+  const singletonTitles: Partial<Record<WorkspaceTabKind, MessageKey>> = {drive: 'workspace.drive', calendar: 'workspace.calendar', hub: 'workspace.hub', subagents: 'workspace.subagents', tasks: 'workspace.tasks', mobile: 'workspace.mobile', vault: 'workspace.vault', media: 'workspace.media', terminal: 'workspace.terminal', ide: 'workspace.ide', finance: 'workspace.finance', usage: 'workspace.usage', settings: 'settings.title', connections: 'workspace.connections'};
   type SharedWorkspaceSingleton = PinnableWorkspaceView;
   type WorkspaceSingletonMessage =
     | {type: 'query'; owner: string}
@@ -2426,7 +2581,7 @@
     : new BroadcastChannel('polymux-workspace-singletons');
 
   function isSharedWorkspaceSingleton(kind: WorkspaceTabKind): kind is SharedWorkspaceSingleton {
-    return kind === 'drive' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'phone' || kind === 'locker' || kind === 'ide' || (kind === 'usage' || kind === 'finance');
+    return kind === 'drive' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'mobile' || kind === 'vault' || kind === 'ide' || (kind === 'usage' || kind === 'finance');
   }
 
   function localWorkspaceSingletons(): SharedWorkspaceSingleton[] {
@@ -3004,7 +3159,8 @@
   function openScheduleRun(item: ScheduleItem, run?: ScheduleRun): void {
     const conversationId = run?.conversationId ?? item.history.find((entry) => entry.conversationId)?.conversationId;
     if (!conversationId) return;
-    void openChat(conversationId);
+    if (item.botId) void openTeam(item.botId);
+    else void openChat(conversationId);
   }
 
   /**
@@ -3052,8 +3208,9 @@
   function saveSchedule(
     input: {title: string; prompt: string; frequency: ScheduleFrequency},
     id: string | null,
+    botId?: string,
   ): void {
-    void applySchedule(id ? api.schedules.update(id, input) : api.schedules.create(input));
+    void applySchedule(id ? api.schedules.update(id, input) : api.schedules.create({...input, botId: botId ?? activeBot?.id}));
   }
 
   /**
@@ -3311,7 +3468,7 @@
 
   /** The embedded browser reports its page as it settles, which is also where
    * a visit becomes worth remembering for the launcher. */
-  function updateTabState(id: string, patch: {title?: string; url?: string; favicon?: string | null}): void {
+  function updateTabState(id: string, patch: {title?: string; url?: string; favicon?: string | null; settingsOpen?: boolean}): void {
     workspaceTabs = workspaceTabs.map((tab) => tab.id === id
       ? {...tab, ...patch, title: patch.title ?? tab.title, url: patch.url ?? tab.url, favicon: patch.favicon === undefined ? tab.favicon : patch.favicon}
       : tab);
@@ -3330,9 +3487,15 @@
   }
 
   async function attachReferences(files: File[]): Promise<void> {
-    if (!activeId) return;
-    const added = await api.resources.addFiles(activeId, files);
-    references = [...references, ...added.map(({id, title, kind, uri}) => ({id, title, kind, uri}))];
+    const conversationId = activeId;
+    if (!conversationId) return;
+    try {
+      const added = await api.resources.addFiles(conversationId, files);
+      if (activeId === conversationId)
+        references = [...references, ...added.map(({id, title, kind, uri}) => ({id, title, kind, uri}))];
+    } catch (error) {
+      showAgentNotice('error', error instanceof Error ? error.message : String(error));
+    }
   }
 
   /** Voice opens on its own full surface; Minimise is what docks it into the
@@ -3469,12 +3632,16 @@
           // would wipe the very work the user stopped to read.
           text: mapped.text || previous.text,
           activities: previous.activities,
+          activitiesBefore: previous.activitiesBefore,
           startedAt: previous.startedAt,
           completedAt: previous.completedAt,
         } : mapped;
       });
     const representedIds = new Set(mapped.map((message) => message.id));
-    const representedRuns = new Set(mapped.flatMap((message) => message.runId ? [message.runId] : []));
+    // Only a stored *assistant* row represents a run: the user's own rows carry
+    // the run they started, and counting those would drop the live row — and
+    // with it every event still to come — the moment a steer was stored.
+    const representedRuns = new Set(mapped.flatMap((message) => message.runId && message.role === 'assistant' ? [message.runId] : []));
     // A run can be active (or can fail before producing a durable assistant
     // message) while the chat-list refresh already contains its user message.
     // Keep that live assistant row until a stored message for the same id/run
@@ -3506,6 +3673,7 @@
       feedback,
       runId: message.runId ?? undefined,
       activities,
+      activitiesBefore: typeof metadata.activitiesBefore === 'number' ? metadata.activitiesBefore : undefined,
       startedAt: typeof metadata.startedAt === 'string' ? metadata.startedAt : undefined,
       completedAt: typeof metadata.completedAt === 'string' ? metadata.completedAt : undefined,
       origin: origin ?? undefined,
@@ -3691,19 +3859,20 @@
   {#if requestedWorkspaceView === null}<TitleBar
     title={active.title || $t('chat.untitled')}
     showTitle={!activeTeamConversation && active.messages.length > 0}
+    composeOpen={teamNewChatOpen}
     bot={activeBot}
     teamGroup={activeTeamGroup}
     teamGroupMembers={activeTeamGroupMembers}
-    teamRunning={(runsByConversation[active.id] ?? []).length > 0}
-    showSummary={mode === 'summary' || active.messages.length > 0}
+    showSummary={Boolean(activeBot) || mode === 'summary' || active.messages.length > 0}
     hideNewChat={workspaceExpanded && !chatDrawerOpen}
     showChatToggle={requestedWorkspaceView === null}
     {chatDrawerOpen}
     {mode}
+    self={accountStatus?.profile ? {name: accountStatus.profile.name, avatarUrl: accountStatus.profile.avatarUrl} : null}
+    groupMenuOpen={Boolean(teamGroupMenu)}
     onRename={rename}
     onEditTeam={() => { if (activeBot) editTeam(activeBot.id); }}
-    onEditTeamGroup={() => { if (activeTeamGroup) openTeamGroupEditor(activeTeamGroup); }}
-    onStopTeam={() => void stop()}
+    onEditTeamGroup={(anchor) => { if (activeTeamGroup) openTeamGroupMenu(activeTeamGroup, anchor); }}
     onToggleChatDrawer={() => chatDrawerOpen = !chatDrawerOpen}
     onNewChat={newChat}
     onTogglePanel={togglePanel}
@@ -3737,7 +3906,7 @@
     onOpenTeam={(id) => void openTeam(id)}
     onOpenTeamGroup={(id) => void openTeamGroup(id)}
     onAddTeam={() => { teamNewChatOpen = true; }}
-    onNewBot={() => { teamNewBotName = ''; void openTeamEditor('new'); }}
+    onNewBot={() => void openTeamEditor('new')}
     onEditTeam={editTeam}
     onEditTeamGroup={editTeamGroup}
     onDeleteTeam={requestDeleteTeam}
@@ -3755,8 +3924,7 @@
     }}
     onToggleSettings={() => { teamHostOpen = false; toggleSettings(); }}
     settingsExpanded={mode === 'workspace' && workspaceExpanded && workspaceTabs.some((tab) => tab.id === activeTabId && tab.kind === 'settings')}
-    onOpenConnections={() => { teamHostOpen = false; openConnections(); }}
-    connectionsExpanded={mode === 'workspace' && workspaceExpanded && workspaceTabs.some((tab) => tab.id === activeTabId && tab.kind === 'connections')}
+    onToggleConnections={() => { teamHostOpen = false; toggleConnections(); }}
     onSignIn={() => { void yieldEmbeddedBrowsers().then(() => { accountSignInOpen = true; }); }}
     onSignOut={() => void api.account.signOut().then((status) => accountStatus = status).catch(() => {})}
     onDocumentation={() => openTab({id: 'page:https://polymux.com/docs/', title: translate('account.documentation'), kind: 'browser', url: 'https://polymux.com/docs/'})}
@@ -3771,44 +3939,25 @@
     onClose={() => chatSearchOpen = false}
   />{/if}
 
-  {#if teamNewChatOpen}
-    <TeamNewChatSheet
+  {#if teamNewChatOpen && requestedWorkspaceView === null}
+    <TeamNewChatBar
       {bots}
-      {teamGroups}
-      nested={Boolean(teamEditor || teamGroupEditor)}
-      onOpenTeam={(id) => { teamNewChatOpen = false; void openTeam(id); }}
-      onOpenTeamGroup={(id) => { teamNewChatOpen = false; void openTeamGroup(id); }}
-      onNewBot={(initialName) => { teamNewBotName = initialName; void openTeamEditor('new'); }}
-      onNewGroup={() => { teamNewChatOpen = false; openTeamGroupEditor('new'); }}
+      onOpenBot={(id) => { teamNewChatOpen = false; void openTeam(id); }}
+      onCreateBot={(name) => void createTeamBot(name)}
+      onCreateGroup={(memberIds) => void createTeamGroup(memberIds)}
       onClose={() => { teamNewChatOpen = false; }}
     />
   {/if}
 
-  {#if teamEditor}
-    <BotDialog
-      bot={teamEditor === 'new' ? null : teamEditor}
-      profiles={teamProfiles}
-      hosts={teamHosts}
-      {api}
-      busy={teamEditorBusy}
-      error={teamEditorError}
-      initialName={teamEditor === 'new' ? teamNewBotName : ''}
-      onSave={(request) => void saveTeam(request)}
-      onHostChange={(hostId) => void loadTeamHostProfiles(hostId)}
-      onDelete={teamEditor === 'new' ? null : () => void deleteTeam(teamEditor as BotDto)}
-      onClose={() => { if (!teamEditorBusy) { teamEditor = null; teamNewBotName = ''; } }}
-    />
-  {/if}
-
-  {#if teamGroupEditor}
-    <TeamGroupDialog
-      group={teamGroupEditor === 'new' ? null : teamGroupEditor}
-      members={bots}
-      busy={teamGroupEditorBusy}
-      error={teamGroupEditorError}
-      onSave={(request) => void saveTeamGroup(request)}
-      onDelete={teamGroupEditor === 'new' ? null : () => void deleteTeamGroup(teamGroupEditor as TeamGroupDto)}
-      onClose={() => { if (!teamGroupEditorBusy) teamGroupEditor = null; }}
+  {#if teamGroupMenu && menuGroup}
+    <TeamGroupMenu
+      group={menuGroup}
+      {bots}
+      anchor={teamGroupMenu.anchor}
+      busy={teamGroupMenuBusy}
+      onRename={(name) => void renameTeamGroup(menuGroup, name)}
+      onMembers={(memberIds) => void updateTeamGroupMembers(menuGroup, memberIds)}
+      onClose={() => { teamGroupMenu = null; }}
     />
   {/if}
 
@@ -3838,6 +3987,7 @@
         bot={activeBot}
         group={activeTeamGroup}
         groupMembers={activeTeamGroupMembers}
+        teamMembers={bots}
         messageTarget={searchMessageTarget?.conversationId === active.id ? searchMessageTarget : null}
         onMessageRevealed={() => searchMessageTarget = null}
         messages={active.messages}
@@ -3856,6 +4006,7 @@
         onOpenFilePath={openFilePath}
         onEdit={editMessage}
         onEditIdentity={editActiveTeamIdentity}
+        onRetrySetup={activeBot ? () => retryBotSetup(activeBot.id) : () => {}}
       />
     {/key}
   {:else}
@@ -3917,6 +4068,10 @@
 
   {#if mode === 'summary'}
     <SummaryPanel
+      bot={activeBot}
+      schedules={scheduleItems.filter(item => item.botId === activeBot?.id)}
+      onEditBot={() => { if (activeBot) editTeam(activeBot.id); }}
+      onOpenSchedules={() => { if (activeBot) openTab({id: `bot-schedule:${activeBot.id}`, title: `${activeBot.name} · Schedule`, kind: 'bot-schedule'}); }}
       {outputs}
       {references}
       {tasks}
@@ -3961,6 +4116,7 @@
     onSelectDriveSource={selectDriveSource}
     onDriveNavigate={(entry) => void loadDriveFolder(driveFolderPath(entry))}
     {scheduleItems}
+    scheduleBotId={activeBot?.id}
     {scheduleError}
     unreadSchedules={unreadScheduleCount(scheduleItems)}
     onDismissScheduleError={() => (scheduleError = '')}
@@ -4007,7 +4163,7 @@
     onOpenApp={openWorkspaceApp}
     onTogglePin={togglePinView}
     onOpenSeparateWindow={(kind, placement, tabId) => {
-      if (kind === 'drive' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'phone' || kind === 'locker' || kind === 'media' || kind === 'terminal' || kind === 'ide' || (kind === 'usage' || kind === 'finance'))
+      if (kind === 'drive' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'mobile' || kind === 'vault' || kind === 'media' || kind === 'terminal' || kind === 'ide' || (kind === 'usage' || kind === 'finance'))
         openSeparateWorkspaceView(kind, placement, tabId);
     }}
     {settingsMode}
@@ -4021,7 +4177,24 @@
     }}
     onAppsChange={applyWorkspaceApps}
     onChatsChanged={() => { void loadChats(); }}
-  />
+  >
+    {#snippet botPage()}
+      {#if teamEditor}
+        <BotEditor
+          bot={teamEditor === 'new' ? null : teamEditor}
+          profiles={teamProfiles}
+          hosts={teamHosts}
+          {api}
+          busy={teamEditorBusy}
+          error={teamEditorError}
+          onSave={(request) => void saveTeam(request)}
+          onHostChange={(hostId) => void loadTeamHostProfiles(hostId)}
+          onDelete={teamEditor === 'new' ? null : () => void deleteTeam(teamEditor as BotDto)}
+          onClose={closeTeamEditor}
+        />
+      {/if}
+    {/snippet}
+  </WorkspaceDrawer>
 
   <Tooltip/>
 

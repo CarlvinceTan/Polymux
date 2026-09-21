@@ -3,34 +3,37 @@
   import {afterUpdate, beforeUpdate, tick, type ComponentProps} from 'svelte';
   import {fade} from 'svelte/transition';
   import Icon from '../../shared/components/Icon.svelte';
-  import BloubAvatar from '../team/BloubAvatar.svelte';
+  import TeamAvatar from '../team/TeamAvatar.svelte';
   import GroupAvatar from '../team/GroupAvatar.svelte';
+  import {teamGroupName} from '../team/groupName';
   import {deviceTypeIconName} from '../../shared/deviceTypeIcon';
   import OpenMenu, {type OpenAnchor, type OpenChoice} from '../../shared/components/OpenMenu.svelte';
   import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import type {PanelMode} from '../../shared/state/panels';
-  import {t, type MessageKey} from '../../../i18n';
+  import {t, plural, type MessageKey} from '../../../i18n';
 
   type PinnedView = PinnableWorkspaceView;
   type IconName = ComponentProps<typeof Icon>['name'];
 
   export let title = '';
   export let showTitle = false;
+  /** The Team To: chooser owns the conversation-title slot while it is open. */
+  export let composeOpen = false;
   export let bot: BotDto | null = null;
   export let teamGroup: TeamGroupDto | null = null;
   export let teamGroupMembers: BotDto[] = [];
-  /** A Team conversation can run for a long time on its Host. The title bar is
-   * the only chrome every Team pane shares, so the stop control lives here. */
-  export let teamRunning = false;
+  /** The signed-in person, drawn first in a group's stack and named first in
+   * its default title. */
+  export let self: {name: string; avatarUrl: string | null} | null = null;
   export let showSummary = false;
   export let hideNewChat = false;
   export let showChatToggle = true;
   export let chatDrawerOpen = false;
   export let mode: PanelMode = 'none';
+  export let groupMenuOpen = false;
   export let onRename: (title: string) => void = () => {};
   export let onEditTeam: () => void = () => {};
-  export let onStopTeam: () => void = () => {};
-  export let onEditTeamGroup: () => void = () => {};
+  export let onEditTeamGroup: (anchor: DOMRect) => void = () => {};
   export let onToggleChatDrawer: () => void = () => {};
   export let onNewChat: () => void = () => {};
   export let onTogglePanel: (mode: 'summary' | 'workspace') => void = () => {};
@@ -66,6 +69,12 @@
   let positionChanged = false;
   $: titleControl = editing ? input : titleButton;
   $: titleInputSize = Math.max(8, Math.min(48, draft.length + 2));
+
+  /** A group without a name of its own reads as you and its members, which is
+   * also what its avatar stack shows. */
+  $: groupTitle = teamGroup
+    ? teamGroup.name.trim() || [self?.name.trim() || $t('team.you'), ...teamGroupMembers.map((member) => member.name)].join(', ')
+    : '';
 
   beforeUpdate(() => {
     const position = `${chatDrawerOpen}:${mode}`;
@@ -114,8 +123,8 @@
     }
   }
 
-  const pinnedViewIcons: Record<PinnedView, IconName> = {drive: 'drive', calendar: 'calendar', hub: 'chat', tasks: 'tasks', phone: 'phone', locker: 'key', media: 'image', terminal: 'terminal', ide: 'code', finance: 'banknote', usage: 'chart'};
-  const pinnedViewLabels: Record<PinnedView, MessageKey> = {drive: 'workspace.drive', calendar: 'workspace.calendar', hub: 'workspace.hub', tasks: 'workspace.tasks', phone: 'workspace.phone', locker: 'workspace.locker', media: 'workspace.media', terminal: 'workspace.terminal', ide: 'workspace.ide', finance: 'workspace.finance', usage: 'workspace.usage'};
+  const pinnedViewIcons: Record<PinnedView, IconName> = {drive: 'drive', calendar: 'calendar', hub: 'chat', tasks: 'tasks', mobile: 'mobile', vault: 'key', media: 'image', terminal: 'terminal', ide: 'code', finance: 'banknote', usage: 'chart'};
+  const pinnedViewLabels: Record<PinnedView, MessageKey> = {drive: 'workspace.drive', calendar: 'workspace.calendar', hub: 'workspace.hub', tasks: 'workspace.tasks', mobile: 'workspace.mobile', vault: 'workspace.vault', media: 'workspace.media', terminal: 'workspace.terminal', ide: 'workspace.ide', finance: 'workspace.finance', usage: 'workspace.usage'};
   let pinnedMenu: {view: PinnedView; anchor: OpenAnchor} | null = null;
   let pinnedMenuChoices: OpenChoice[];
   $: pinnedMenuChoices = [
@@ -306,36 +315,33 @@
 />
 
 
-{#if bot || teamGroup}
-  <header class="conversation-title-bar team-conversation-title-bar" aria-label={`Conversation with ${bot?.name ?? teamGroup?.name}`}>
+{#if composeOpen}
+  <!-- The Team To: chooser draws its own bar in this slot. -->
+{:else if bot || teamGroup}
+  <header class="conversation-title-bar team-conversation-title-bar" aria-label={`Conversation with ${bot?.name ?? teamGroupName(teamGroup!, teamGroupMembers)}`}>
     <div class="team-conversation-title">
       <button
         class="team-identity"
         type="button"
-        aria-label={bot ? `Edit bot ${bot.name}` : `Edit group ${teamGroup?.name}`}
+        aria-label={bot ? `Edit bot ${bot.name}` : `Edit group ${groupTitle}`}
         aria-haspopup="dialog"
+        aria-expanded={Boolean(groupMenuOpen)}
         data-tooltip="none"
-        onclick={() => { if (bot) onEditTeam(); else onEditTeamGroup(); }}
+        onclick={(event) => { if (bot) onEditTeam(); else onEditTeamGroup((event.currentTarget as HTMLElement).getBoundingClientRect()); }}
       >
       {#if teamGroup}
-        <GroupAvatar members={teamGroupMembers} size={26} label={`${teamGroup.name} group avatar`}/>
+        <GroupAvatar members={teamGroupMembers} self={self} size={26} label={`${teamGroupName(teamGroup, teamGroupMembers)} group avatar`}/>
       {:else if bot}
         <!-- Static like the group avatar: the title bar is chrome, and the
              chat pane already carries the live expression. -->
-        <BloubAvatar avatar={bot.avatar} expression="neutral" size={26} animated={false} centerSilhouette paper="var(--app-surface)" label={`${bot.name} avatar`}/>
+        <TeamAvatar avatar={bot.avatar} expression="neutral" size={26} animated={false} centerSilhouette paper="var(--app-surface)" label={`${bot.name} avatar`}/>
       {/if}
-      <strong>{bot?.name ?? teamGroup?.name}</strong>
+      <strong>{bot?.name ?? groupTitle}</strong>
       <i aria-hidden="true"></i>
-      <span>{#if bot}{bot.role} · <Icon name={deviceTypeIconName(bot.deviceType)} size={12} strokeWidth={1.4}/> {bot.hostName}{:else}{teamGroupMembers.length} agents · {teamGroupMembers.map((member) => member.name).join(', ')}{/if}</span>
+      <!-- A group named by its members already lists them in the title, so the
+           line carries the count alone; a renamed group still names them. -->
+      <span>{#if bot}{bot.role} · <Icon name={deviceTypeIconName(bot.deviceType)} size={12} strokeWidth={1.4}/> {bot.hostName}{:else if teamGroup?.name.trim()}{plural('team.agentCount', teamGroupMembers.length)} · {teamGroupMembers.map((member) => member.name).join(', ')}{:else}{plural('team.agentCount', teamGroupMembers.length)}{/if}</span>
       </button>
-      {#if teamRunning}
-        <button
-          type="button"
-          class="team-stop"
-          aria-label={$t('composer.stopAgent')}
-          onclick={onStopTeam}
-        ><Icon name="stop" size={13}/><span>{$t('composer.stopAgent')}</span></button>
-      {/if}
     </div>
   </header>
 {:else if showTitle}
@@ -360,12 +366,6 @@
   .team-identity>strong{max-width:220px;color:var(--neutral-950);font-size:13px;font-weight:590;letter-spacing:-.01em}
   .team-identity>i{width:1px;height:14px;flex:none;background:var(--neutral-300)}
   .team-identity>span{max-width:240px;color:var(--neutral-700);font-size:11.5px;font-weight:450}
-  /* Stops an in-flight Team run without leaving the conversation. Kept to the
-     height of the identity chip so the header still reads as one row. */
-  .team-conversation-title>.team-stop{display:flex;align-items:center;gap:6px;height:26px;flex:none;padding:0 11px;border:1px solid var(--neutral-300);border-radius:13px;background:var(--app-surface);color:var(--neutral-900);font:inherit;font-size:11.5px;font-weight:550;cursor:pointer;transition:background-color 120ms ease,border-color 120ms ease}
-  .team-conversation-title>.team-stop:hover{background:var(--neutral-100)}
-  .team-conversation-title>.team-stop:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
-  @media (prefers-reduced-motion:reduce){.team-conversation-title>.team-stop{transition:none}}
   /* The Host's own glyph, drawn inline so the name keeps truncating as one line.
      Centred on the text's x-height, the weight the eye reads in a run that is
      mostly lowercase (the host name has no ascenders), rather than on its cap

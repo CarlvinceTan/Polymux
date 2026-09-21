@@ -3,10 +3,11 @@ import {createServer, type IncomingMessage, type Server, type ServerResponse} fr
 import {hostname} from "node:os";
 import type {JsonValue, Storage} from "@polymux/storage";
 import type {AgentToolResult} from "@polymux/core";
-import {createHostPairingCode, deviceType, LOCKER_HOST_METHODS, normalizeHostPairingCode, type DeviceType} from "@polymux/protocol";
+import {createHostPairingCode, deviceType, VAULT_HOST_METHODS, normalizeHostPairingCode, type DeviceType} from "@polymux/protocol";
+import {SCHEDULE_HOST_METHODS} from '../scheduler/host.js';
 import {DevicePairingSessions, type DevicePeer} from './device-pairing.js';
 import {TeamHostRelay} from "./host-relay.js";
-import {parsePhonePush, phonePushAvailable, sendPhonePush, type PhonePushSubscription} from './phone-push.js';
+import {parseMobilePush, mobilePushAvailable, sendMobilePush, type MobilePushSubscription} from './mobile-push.js';
 
 const PAIRING_KEY = "devices.authorized-peers";
 const RELAY_SECRET_KEY = "team.host-relay-secret";
@@ -18,7 +19,7 @@ const MAX_PAIRING_FAILURES = 5;
 const PAIRING_LOCKOUT_MS = 15 * 60_000;
 
 interface PairingRecord {
-  push?: PhonePushSubscription;
+  push?: MobilePushSubscription;
   deviceType?: DeviceType;
   version: 1;
   desktopId: string;
@@ -56,8 +57,14 @@ export interface TeamDeviceRequest {
 }
 
 interface TeamDeviceResolution {
+  hostId: string;
   approved: boolean;
   result: AgentToolResult;
+}
+
+interface DeviceRequestOptions {
+  /** Evaluate the actual authenticated destination before delivering a tool. */
+  accessForDevice?: (hostId: string) => {allowed: boolean; requiresApproval: boolean};
 }
 
 interface TeamHostServerOptions {
@@ -83,17 +90,17 @@ interface TeamHostServerOptions {
 /**
  * Personal Polymux Host transport.
  *
- * The Host stores only a token hash and accepts exactly one Desktop identity.
+ * The Host stores a separate token hash for each paired device identity.
  * The HTTP listener remains loopback-only by default. When a relay endpoint is
  * configured, an authenticated outbound connection makes the Host reachable at
  * a Polymux HTTPS address without opening a port or requiring a VPN.
  */
 export class TeamHostServer {
   /** Only currently authorised peers receive completion notifications. */
-  async notifyPhones(): Promise<void> {
-    if (!phonePushAvailable()) return;
+  async notifyMobiles(): Promise<void> {
+    if (!mobilePushAvailable()) return;
     await Promise.allSettled(this.#pairings().filter(peer => peer.push && !peer.account).map(async peer => {
-      const result = await sendPhonePush(peer.push!);
+      const result = await sendMobilePush(peer.push!);
       if (result === 'expired') this.#storage.setPreference(PAIRING_KEY, this.#pairings().map(current => {
         if (current.secretHash !== peer.secretHash || current.push?.token !== peer.push?.token) return current;
         const {push, ...rest} = current; return rest;
@@ -132,8 +139,10 @@ export class TeamHostServer {
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
     deliveredTo: string | null;
+    requiresApproval: boolean;
+    accessForDevice?: DeviceRequestOptions["accessForDevice"];
   }>();
-  readonly #deviceWaiters: Array<(value: TeamDeviceRequest | null) => void> = [];
+  readonly #deviceWaiters: Array<{peerHash: string; deliver: (value: TeamDeviceRequest | null) => void}> = [];
 
   constructor(options: TeamHostServerOptions) {
     this.#storage = options.storage;
@@ -252,11 +261,12 @@ export class TeamHostServer {
     return Boolean(this.#pairing());
   }
 
-  async requestDevice(input: Omit<TeamDeviceRequest, "id" | "createdAt">): Promise<TeamDeviceResolution | null> {
-    if (!this.#pairing()) return null;
+  async requestDevice(input: Omit<TeamDeviceRequest, "id" | "createdAt">, options: DeviceRequestOptions = {}): Promise<TeamDeviceResolution | null> {
+    const peers = this.#pairings().filter((peer) => !peer.account);
+    if (!peers.length) return null;
+    if (options.accessForDevice && !peers.some((peer) => options.accessForDevice!(peer.desktopId).allowed)) return null;
     const request: TeamDeviceRequest = {
       ...input,
-      requiresApproval: input.requiresApproval || input.capability !== 'team' && this.#pairings().length > 1,
       id: randomUUID(),
       createdAt: new Date().toISOString(),
     };
@@ -265,13 +275,34 @@ export class TeamHostServer {
         this.#devicePending.delete(request.id);
         const queued = this.#deviceQueue.findIndex((candidate) => candidate.id === request.id);
         if (queued >= 0) this.#deviceQueue.splice(queued, 1);
-        reject(new Error("The paired laptop did not answer the device request in time."));
+        reject(new Error("The paired device did not answer the device request in time."));
       }, this.#deviceRequestTimeoutMs);
-      this.#devicePending.set(request.id, {resolve, reject, timer, deliveredTo: null});
-      const waiter = this.#deviceWaiters.shift();
-      if (waiter) waiter(request);
-      else this.#deviceQueue.push(request);
+      this.#devicePending.set(request.id, {resolve, reject, timer, deliveredTo: null, requiresApproval: input.requiresApproval, accessForDevice: options.accessForDevice});
+      for (let index = 0; index < this.#deviceWaiters.length; index++) {
+        const waiter = this.#deviceWaiters[index]!;
+        const peer = this.#pairings().find((candidate) => candidate.secretHash === waiter.peerHash);
+        const delivery = peer ? this.#requestForPeer(request, peer) : null;
+        if (!delivery) continue;
+        this.#deviceWaiters.splice(index, 1);
+        waiter.deliver(delivery);
+        return;
+      }
+      this.#deviceQueue.push(request);
     });
+  }
+
+  #requestForPeer(request: TeamDeviceRequest, peer: PairingRecord): TeamDeviceRequest | null {
+    if (peer.account) return null;
+    const pending = this.#devicePending.get(request.id);
+    if (!pending || pending.deliveredTo) return null;
+    const policy = pending.accessForDevice?.(peer.desktopId);
+    if (policy && !policy.allowed) return null;
+    // Without a device-specific policy evaluation a legacy identity never
+    // inherits an automatic grant, including on a single-device connection.
+    const requiresApproval = policy?.requiresApproval ?? (request.requiresApproval || request.capability !== "team");
+    pending.deliveredTo = peer.secretHash;
+    pending.requiresApproval = requiresApproval;
+    return {...request, requiresApproval};
   }
 
   async close(): Promise<void> {
@@ -314,7 +345,7 @@ export class TeamHostServer {
           paired: Boolean(this.#pairing()),
           deviceType: this.#deviceType,
           apiVersion: 1,
-          capabilities: ["assistant", "team", "hub", "runs", "uploads", "locker"],
+          capabilities: ["assistant", "team", "hub", "runs", "uploads", "vault"],
         });
         return;
       }
@@ -366,6 +397,10 @@ export class TeamHostServer {
       }
       if (request.method === "POST" && url.pathname === "/polymux-host/v1/rpc") {
         await this.#rpc(request, response);
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/polymux-host/v1/device/access") {
+        await this.#deviceAccess(request, response);
         return;
       }
       if (request.method === "POST" && url.pathname === "/polymux-host/v1/device/next") {
@@ -510,12 +545,12 @@ export class TeamHostServer {
     const method = typeof body.method === "string" ? body.method : "";
     const args = Array.isArray(body.args) ? body.args as JsonValue[] : [];
     if (method === 'notifications.status') {
-      reply(response, 200, {result: {available: phonePushAvailable(), enabled: Boolean(peer?.push)}}); return;
+      reply(response, 200, {result: {available: mobilePushAvailable(), enabled: Boolean(peer?.push)}}); return;
     }
     if (method === 'notifications.register' || method === 'notifications.unregister') {
       if (!peer || peer.account) { reply(response, 403, {error: 'Pair this phone before enabling notifications.'}); return; }
-      const push = method === 'notifications.register' ? parsePhonePush(args[0]) : null;
-      if (method === 'notifications.register' && (!push || !phonePushAvailable())) {
+      const push = method === 'notifications.register' ? parseMobilePush(args[0]) : null;
+      if (method === 'notifications.register' && (!push || !mobilePushAvailable())) {
         reply(response, 400, {error: 'Phone notifications are not configured on this Host.'}); return;
       }
       this.#storage.setPreference(PAIRING_KEY, this.#pairings().map(current => {
@@ -537,33 +572,43 @@ export class TeamHostServer {
   }
 
   async #deviceNext(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (!this.#authenticated(request)) {
-      reply(response, 401, {error: "This Desktop is not paired to the Host."});
+    const peer = this.#authenticatedPeer(request);
+    if (!peer || peer.account) {
+      reply(response, 401, {error: "This device is not paired to the Host."});
       return;
     }
-    const queued = this.#deviceQueue.shift();
-    if (queued) {
-      const pending = this.#devicePending.get(queued.id);
-      if (pending) pending.deliveredTo = this.#authenticatedPeer(request)?.secretHash ?? null;
+    for (let index = 0; index < this.#deviceQueue.length; index++) {
+      const queued = this.#requestForPeer(this.#deviceQueue[index]!, peer);
+      if (!queued) continue;
+      this.#deviceQueue.splice(index, 1);
       reply(response, 200, {request: queued});
       return;
     }
     const next = await new Promise<TeamDeviceRequest | null>((resolve) => {
+      const waiter = {peerHash: peer.secretHash, deliver: (value: TeamDeviceRequest | null) => {
+        clearTimeout(timer);
+        resolve(value);
+      }};
       const timer = setTimeout(() => {
-        const index = this.#deviceWaiters.indexOf(deliver);
+        const index = this.#deviceWaiters.indexOf(waiter);
         if (index >= 0) this.#deviceWaiters.splice(index, 1);
         resolve(null);
       }, this.#devicePollWaitMs);
-      const deliver = (value: TeamDeviceRequest | null) => {
-        clearTimeout(timer);
-        resolve(value);
-      };
-      this.#deviceWaiters.push(deliver);
+      this.#deviceWaiters.push(waiter);
     });
-    const peer = this.#authenticatedPeer(request);
-    if (!peer) { reply(response, 401, {error: 'Device access was revoked.'}); return; }
-    if (next) { const pending = this.#devicePending.get(next.id); if (pending) pending.deliveredTo = peer.secretHash; }
+    if (!this.#authenticatedPeer(request)) { reply(response, 401, {error: "Device access was revoked."}); return; }
     reply(response, 200, {request: next});
+  }
+
+  async #deviceAccess(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const peer = this.#authenticatedPeer(request);
+    if (!peer || peer.account) { reply(response, 401, {error: "This device is not paired to the Host."}); return; }
+    const body = await bodyRecord(request);
+    const pending = typeof body.id === "string" ? this.#devicePending.get(body.id) : undefined;
+    if (!pending) { reply(response, 404, {error: "That device request is no longer waiting."}); return; }
+    if (pending.deliveredTo !== peer.secretHash) { reply(response, 403, {error: "This request belongs to another device."}); return; }
+    const policy = pending.accessForDevice?.(peer.desktopId) ?? {allowed: true, requiresApproval: pending.requiresApproval};
+    reply(response, 200, policy);
   }
 
   async #deviceResolve(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -586,7 +631,15 @@ export class TeamHostServer {
     const result = body.result && typeof body.result === "object" && !Array.isArray(body.result)
       ? body.result as unknown as AgentToolResult
       : {content: "The paired laptop returned an invalid tool result.", isError: true};
-    pending.resolve({approved: body.approved === true, result});
+    const hostId = this.#authenticatedPeer(request)!.desktopId;
+    const policy = pending.accessForDevice?.(hostId) ?? {allowed: true, requiresApproval: pending.requiresApproval};
+    const approvedByUser = body.approved === true && body.approvedByUser === true;
+    const permitted = policy.allowed && (!policy.requiresApproval || approvedByUser);
+    pending.resolve({hostId, approved: permitted && approvedByUser, result: permitted ? result : {
+      content: policy.allowed ? "This device now requires approval before continuing." : "Access to this device is blocked.",
+      isError: true,
+      metadata: {waitingForDevice: policy.allowed},
+    }});
     reply(response, 200, {ok: true});
   }
 
@@ -679,7 +732,7 @@ export class TeamHostServer {
       pending.reject(new Error(message));
     }
     this.#devicePending.clear();
-    for (const waiter of this.#deviceWaiters.splice(0)) waiter(null);
+    for (const waiter of this.#deviceWaiters.splice(0)) waiter.deliver(null);
   }
 }
 
@@ -728,11 +781,24 @@ export class TeamHostClient {
     return value.request ?? null;
   }
 
-  async resolveDeviceRequest(id: string, approved: boolean, result: AgentToolResult): Promise<void> {
+  async deviceRequestAccess(id: string): Promise<{allowed: boolean; requiresApproval: boolean}> {
+    const response = await fetch(`${this.endpoint}/polymux-host/v1/device/access`, {
+      method: "POST",
+      headers: {authorization: `Bearer ${this.secret}`, "content-type": "application/json"},
+      body: JSON.stringify({id}),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const value = await response.json() as {allowed?: boolean; requiresApproval?: boolean; error?: string};
+    if (!response.ok) throw new Error(value.error ?? `Polymux Host returned ${response.status}`);
+    if (typeof value.allowed !== "boolean" || typeof value.requiresApproval !== "boolean") throw new Error("The Host returned an invalid device policy");
+    return {allowed: value.allowed, requiresApproval: value.requiresApproval};
+  }
+
+  async resolveDeviceRequest(id: string, approved: boolean, result: AgentToolResult, approvedByUser = false): Promise<void> {
     const response = await fetch(`${this.endpoint}/polymux-host/v1/device/resolve`, {
       method: "POST",
       headers: {authorization: `Bearer ${this.secret}`, "content-type": "application/json"},
-      body: JSON.stringify({id, approved, result}),
+      body: JSON.stringify({id, approved, result, approvedByUser}),
       signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
@@ -743,8 +809,10 @@ export class TeamHostClient {
 }
 
 const HOST_METHODS = new Set([
+  ...SCHEDULE_HOST_METHODS, 'usage.get', 'tasks.snapshot', 'tasks.cancel',
   "devices.info", "assistant.ensure", "conversations.updateMessage", "conversations.duplicate", "conversations.fork", "goals.get", "goals.execute",
-  "team.list", "team.profiles", "team.create", "team.update", "team.markRead", "team.remove",
+  "team.agentRegistry", "team.agentSettings", "team.hosts", "team.list", "team.profiles", "team.create", "team.update", "team.markRead", "team.remove",
+  "team.retrySetup", "team.spawn", "team.archiveSpawn",
   "team.export", "team.import",
   "team.send", "team.sendExternal", "team.startComputer", "team.stopComputer", "team.leases",
   "team.grantLease", "team.revokeLease", "conversations.list", "conversations.listArchived",
@@ -754,7 +822,7 @@ const HOST_METHODS = new Set([
   "hub.emailAccounts", "hub.saveEmailAccount", "hub.removeEmailAccount", "hub.testEmailAccount",
   "runs.start", "runs.active", "runs.activeAll", "runs.cancel", "runs.steer", "runs.events",
   "runs.configuration", "runs.configure", "runs.updates", "models.list",
-  ...LOCKER_HOST_METHODS,
+  ...VAULT_HOST_METHODS,
 ]);
 
 const MOBILE_ORIGINS = new Set([

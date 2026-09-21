@@ -1,4 +1,6 @@
 <script lang="ts">
+  let {onOpenSettings}: {onOpenSettings?: () => void} = $props();
+  import AppSettingsButton from './AppSettingsButton.svelte';
   import {onMount} from 'svelte';
   import type {AcpRegistryEntryDto, UsageAgentDto, UsageDayDto, UsageNamedCountDto, UsageScope, UsageStatsDto} from '@polymux/protocol';
   import {polymuxApi} from '../../api/polymux';
@@ -45,6 +47,8 @@
   let canScrollRight = $state(false);
   let agentScrollLeft = 0;
   let request = 0;
+  let refreshedAt = 0;
+  let pending = $state(0);
   let detailsWidth = $state(0);
   let detailsHeight = $state(0);
 
@@ -130,16 +134,22 @@
     void load(null);
     // Registry icons enhance the carousel without delaying local usage.
     void api.agentRuntime.registry().then(entries => agentRegistry = entries).catch(() => {});
+    const timer = setInterval(() => {
+      if (!pending && !error && (stats?.discovery?.status === 'scanning' || Date.now() - refreshedAt > 60_000)) void load(agentId);
+    }, 2_000);
+    return () => { clearInterval(timer); request++; };
   });
 
-  async function load(next: string | null, nextScope: UsageScope = scope): Promise<void> {
+  async function load(next: string | null, nextScope: UsageScope = scope, refresh = false): Promise<void> {
     const id = ++request;
+    pending++;
     const first = !stats;
     if (first) loading = true;
     error = '';
     try {
-      const nextStats = await api.usage.get({scope: nextScope, agentId: next});
+      const nextStats = await api.usage.get({scope: nextScope, agentId: next, refresh});
       if (id !== request) return;
+      refreshedAt = Date.now();
       stats = nextStats;
       agentId = nextStats.agentId;
       scope = nextStats.scope;
@@ -147,6 +157,7 @@
       if (id !== request) return;
       error = readableError(reason);
     } finally {
+      pending--;
       if (id === request) loading = false;
     }
   }
@@ -168,10 +179,23 @@
     void load(null, next);
   }
 
+  function scopeKeydown(event: KeyboardEvent): void {
+    const tabs: UsageScope[] = ['all', 'polymux', 'assistant', 'team'];
+    const index = tabs.indexOf(scope);
+    const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+      : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    selectScope(tabs[next]);
+    (event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  }
+
   function agentIcon(agent: UsageAgentDto): string | null {
     const bundled: Record<string, string> = {'acp:claude': claudeIcon, 'acp:codex': codexIcon, 'acp:opencode': opencodeIcon};
+    if (agent.kind === 'external') return bundled[agent.id.replace('external:', 'acp:')] || null;
     return agentRegistry.find(entry => `acp:${entry.id.replace(/-(?:agent-)?acp$/, '')}` === agent.id
-      || entry.name.toLowerCase() === agent.name.toLowerCase())?.icon || bundled[agent.id] || null;
+      || entry.name.toLowerCase() === agent.name.toLowerCase())?.icon || bundled[agent.id.replace('external:', 'acp:')] || null;
   }
 
   function measureAgents(): void {
@@ -214,6 +238,7 @@
   }
 
   function agentName(agent: UsageAgentDto): string {
+    if (scope === 'all' && agent.kind === 'acp') return `${agent.name} (Polymux)`;
     return agent.id === 'polymux' ? $t('usage.polymuxAgent') : agent.name;
   }
 
@@ -381,10 +406,11 @@
 {/snippet}
 
 <div class="usage" role="application" aria-label={$t('workspace.usage')} aria-busy={loading || !!stats && (stats.agentId !== agentId || stats.scope !== scope)}>
+  {#if (loading || error || !stats) && onOpenSettings}<div class="app-context-row"><span>Usage</span><AppSettingsButton name="Usage" onclick={onOpenSettings}/></div>{/if}
   {#if loading}
     <div class="usage-empty" role="status">{$t('common.loading')}</div>
   {:else if error}
-    <div class="usage-empty" role="alert">{error}</div>
+    <div class="usage-empty usage-error" role="alert"><span>{error}</span><button class="usage-mode" type="button" onclick={() => void load(agentId)}>{$t('usage.refresh')}</button></div>
   {:else if stats && panel}
     <div class="usage-depth">
       <header class="usage-depth-head">
@@ -392,6 +418,7 @@
           <Icon name="back" size={16}/>
         </button>
         <h1>{panelTitle}</h1>
+        <AppSettingsButton name="Usage" onclick={onOpenSettings}/>
       </header>
       <div class="usage-depth-body" use:scrollFade={panel}>
         {#if panel === 'heatmap'}
@@ -457,11 +484,19 @@
     <div class="usage-home">
       <header class="usage-head">
         <h1>{$t('workspace.usage')}</h1>
-        <div class="usage-scopes" role="tablist" aria-label={$t('usage.scope')}>
-          {#each (['all', 'assistant', 'team'] as const) as item (item)}
-            <button type="button" class="usage-mode" class:active={scope === item} role="tab" aria-selected={scope === item}
-              onclick={() => selectScope(item)}>{item === 'all' ? $t('usage.allAgents') : item === 'assistant' ? $t('usage.assistant') : $t('usage.team')}</button>
-          {/each}
+        <AppSettingsButton name="Usage" onclick={onOpenSettings}/>
+        <div class="usage-head-end">
+          <div class="usage-scopes" role="tablist" tabindex="-1" aria-label={$t('usage.scope')} onkeydown={scopeKeydown}>
+            {#each (['all', 'polymux', 'assistant', 'team'] as const) as item (item)}
+              <button type="button" class="usage-mode" class:active={scope === item} role="tab" aria-selected={scope === item} tabindex={scope === item ? 0 : -1}
+                onclick={() => selectScope(item)}>{item === 'all' ? $t('usage.allUsage') : item === 'polymux' ? $t('usage.polymuxAgent') : item === 'assistant' ? $t('usage.assistant') : $t('usage.team')}</button>
+            {/each}
+          </div>
+          {#if scope === 'all'}
+            <button type="button" class="usage-refresh" aria-label={$t('usage.refresh')} data-tooltip-label={$t('usage.refresh')}
+              aria-busy={stats.discovery?.status === 'scanning'} disabled={pending > 0}
+              onclick={() => void load(agentId, scope, true)}><Icon name="reload" size={16}/></button>
+          {/if}
         </div>
       </header>
 
@@ -570,8 +605,41 @@
   .usage-head, .usage-agents-block, .usage-metrics, .usage-heatmap, .usage-columns {
     min-width: 0;
   }
-  .usage-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-  .usage-scopes { display: flex; align-items: center; gap: 14px; flex: none; }
+  .usage-error { flex-direction: column; gap: 12px; padding: 24px; text-align: center; }
+  .usage-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px 16px;
+  }
+  .usage-scopes { display: flex; align-items: center; gap: 14px; max-width: 100%; flex-wrap: wrap; }
+  .usage-head-end { grid-column: 3; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+  .usage-head :global(.app-settings-button) { grid-column: 2; justify-self: center; }
+  .usage-refresh {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    flex: none;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--neutral-500);
+    cursor: pointer;
+  }
+  .usage-refresh:hover:not(:disabled) { color: var(--neutral-950); }
+  .usage-refresh:disabled { opacity: .5; cursor: default; }
+  .usage-refresh:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 6px; }
+  .usage-refresh[aria-busy='true'] :global(svg) { animation: usage-refresh-spin .9s linear infinite; }
+  .usage-scopes .usage-mode { white-space: nowrap; }
+  .usage-scopes .usage-mode:focus-visible { outline: 1px solid var(--neutral-500); outline-offset: 3px; border-radius: 2px; }
+  @keyframes usage-refresh-spin { to { transform: rotate(360deg); } }
+  @container (max-width: 620px) {
+    .usage-head-end { grid-column: 1 / -1; justify-content: space-between; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .usage-refresh[aria-busy='true'] :global(svg) { animation: none; }
+  }
   .usage-head h1, .usage-depth-head h1 {
     margin: 0;
     min-width: 0;

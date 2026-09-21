@@ -1,7 +1,7 @@
 # Working on Polymux
 
-Electron + Svelte 5 desktop app. `CLAUDE.md` is a symlink to `AGENTS.md`.
-Do not edit either instruction file unless explicitly asked.
+Electron + Svelte 5 desktop app. 
+Do not edit this instruction file unless explicitly asked.
 
 ## Development
 
@@ -37,6 +37,8 @@ Do not edit either instruction file unless explicitly asked.
 - Match verification to the change. For agent activity, confirm the parent run,
   terminal state, elapsed time, result, and any expected Tasks update; a
   completed-looking activity row alone is insufficient.
+- After changing implementation, update tests that have become stale so they
+  continue to describe current behavior.
 - Do not claim visual verification when only logs or backend state were checked.
 - Restore temporary settings, cancel unfinished test runs, and leave the user's
   foreground app and ordinary Polymux session untouched.

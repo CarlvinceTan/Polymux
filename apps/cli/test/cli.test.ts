@@ -19,7 +19,8 @@ import {
   parseAvatarOption,
   parseConnectTarget,
   parseFlags,
-  parseLaptopAccess,
+  parseDeviceAccessMode,
+  parseDeviceAccessOverrides,
   snapshotText,
   terminalQr,
 } from "../src/index.js";
@@ -84,7 +85,7 @@ test("interactive Host pairing shows the QR while piped output stays scriptable"
   assert.match(interactive, /\u001b\[30;47m/);
   assert.match(interactive, /Connect code: K7M2P9X4Q/);
   assert.equal(piped.includes("\u001b["), false);
-  assert.equal(piped.includes("Scan with Polymux Phone"), false);
+  assert.equal(piped.includes("Scan with Polymux Mobile"), false);
   assert.match(piped, /Setup code: pmx1:/);
 });
 
@@ -157,7 +158,7 @@ test('hidden password input preserves whitespace and restores terminal mode on s
     });
     let displayed = '';
     const output = new Writable({write(chunk, _encoding, done) { displayed += chunk; done(); }});
-    const result = promptSecret('Locker password', input as unknown as NodeJS.ReadStream, output);
+    const result = promptSecret('Vault password', input as unknown as NodeJS.ReadStream, output);
     if (action === 'submit') {
       input.write('  private password  \r');
       assert.equal(await result, '  private password  ');
@@ -167,7 +168,7 @@ test('hidden password input preserves whitespace and restores terminal mode on s
       else input.end();
       await rejected;
     }
-    assert.equal(displayed, 'Locker password: \n');
+    assert.equal(displayed, 'Vault password: \n');
     assert.deepEqual(rawModes, [true, false]);
     input.destroy();
     output.destroy();
@@ -182,14 +183,23 @@ test('piped secret input removes only one line ending', async () => {
   }
 });
 
-test('CLI validates avatar and laptop options before calling the Host', () => {
+test('CLI validates avatar and default device access before calling the Host', () => {
   assert.deepEqual(parseAvatarOption(undefined, undefined), {shape: 'circle', color: '#7557FF'});
   assert.deepEqual(parseAvatarOption('cube', '#112233'), {shape: 'cube', color: '#112233'});
   assert.throws(() => parseAvatarOption('pyramid', undefined));
   assert.throws(() => parseAvatarOption(undefined, 'red'));
-  assert.equal(parseLaptopAccess(undefined), 'off');
-  assert.equal(parseLaptopAccess('ask'), 'ask');
-  assert.throws(() => parseLaptopAccess('always'));
+  assert.equal(parseDeviceAccessMode(undefined), 'allow');
+  for (const value of ['allow', 'ask', 'off']) assert.equal(parseDeviceAccessMode(value), value);
+  for (const value of ['always', '', false, ['allow', 'off']]) assert.throws(() => parseDeviceAccessMode(value));
+});
+
+test('CLI parses multiple explicit device policies without silently accepting invalid access', () => {
+  assert.deepEqual(parseDeviceAccessOverrides(undefined), {});
+  assert.deepEqual(parseDeviceAccessOverrides('desktop=ask,server=allow'), {desktop: 'ask', server: 'allow'});
+  const flags = parseFlags(['--device-access', 'desktop=off', '--device-access', 'server=ask,mobile=allow']);
+  assert.deepEqual(parseDeviceAccessOverrides(flags['device-access']), {desktop: 'off', server: 'ask', mobile: 'allow'});
+  for (const value of ['', '=ask', 'desktop=', 'desktop=always', 'desktop=ask,', 'desktop=off,desktop=allow', '__proto__=allow', false])
+    assert.throws(() => parseDeviceAccessOverrides(value));
 });
 
 test('CLI distinguishes setup codes from installation invitations', () => {

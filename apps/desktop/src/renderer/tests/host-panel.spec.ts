@@ -102,7 +102,12 @@ for (const theme of ['light', 'dark'] as const) {
     }
     await page.screenshot({path: info.outputPath(`devices-${theme}.png`), animations: 'disabled'});
     await page.keyboard.press('Escape'); await expect(panel).toHaveCount(0); await expect(trigger).toBeFocused();
-    await page.setViewportSize({width: 390, height: 640}); await trigger.click();
+    await page.setViewportSize({width: 390, height: 640});
+    // Below the split width the workspace left open by Settings paints over the
+    // chat drawer, so dismiss it before reaching the drawer's own controls.
+    const workspaceToggle = page.getByRole('button', {name: 'Toggle Workspace', exact: true});
+    if ((await workspaceToggle.getAttribute('aria-pressed')) === 'true') await workspaceToggle.click();
+    await trigger.click();
     const bounds = await panel.boundingBox();
     expect(bounds!.x).toBeGreaterThanOrEqual(8); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(382);
     expect(bounds!.y).toBeGreaterThanOrEqual(8); expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(633);
@@ -158,15 +163,15 @@ test('number matching shows choices, connects only on a match, and supports decl
   await page.goto('/?coldStart=0&splashSettled=1&deviceApproval=1');
   await page.getByRole('button', {name: 'Devices', exact: true}).click();
   let panel = page.getByRole('dialog', {name: 'Devices', exact: true});
-  await expect(panel.getByText('Connect Test Phone?')).toBeVisible();
+  await expect(panel.getByText('Connect Test Mobile?')).toBeVisible();
   await expect(panel).toHaveCSS('opacity', '1');
   await page.screenshot({path: info.outputPath('approve-device.png')});
   await panel.getByRole('button', {name: 'Decline', exact: true}).click();
-  await expect(panel.getByText('Test Phone', {exact: true})).toHaveCount(0);
+  await expect(panel.getByText('Test Mobile', {exact: true})).toHaveCount(0);
   await page.reload();
   await page.getByRole('button', {name: 'Devices', exact: true}).click();
   panel = page.getByRole('dialog', {name: 'Devices', exact: true});
   await panel.getByRole('button', {name: '42', exact: true}).click();
-  await expect(panel.getByText('Test Phone', {exact: true})).toBeVisible();
-  await expect(panel.locator('.host-row').filter({hasText: 'Test Phone'}).locator('[data-icon=phone]')).toHaveCount(1);
+  await expect(panel.getByText('Test Mobile', {exact: true})).toBeVisible();
+  await expect(panel.locator('.host-row').filter({hasText: 'Test Mobile'}).locator('[data-icon=mobile]')).toHaveCount(1);
 });

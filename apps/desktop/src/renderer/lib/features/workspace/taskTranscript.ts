@@ -1,6 +1,6 @@
 import type {RunEventDto} from '@polymux/protocol';
 import type {AgentActivityItem} from '../chat/AgentActivity.svelte';
-import {activityPresentation, toolResultFailed, upsertActivity} from '../chat/activities';
+import {runThinkingActivity, activityPresentation, toolResultFailed, upsertActivity} from '../chat/activities';
 import {translate} from '../../../i18n';
 
 /**
@@ -67,13 +67,13 @@ export function applyTaskEvent(base: TaskTranscript, event: RunEventDto): TaskTr
 
     case 'message.reasoning.delta': {
       const id = `${event.runId}:thinking`;
-      const existing = transcript.activities.find((item) => item.id === id);
+      const existing = runThinkingActivity(transcript.activities, event.runId);
       const delta = typeof payload.delta === 'string' ? payload.delta : '';
       return {
         ...transcript,
         activities: upsertActivity(transcript.activities, {
           ...existing,
-          id,
+          id: existing?.id ?? `${id}:${event.sequence}`,
           kind: 'thinking',
           status: 'active',
           label: translate('activity.thinking'),

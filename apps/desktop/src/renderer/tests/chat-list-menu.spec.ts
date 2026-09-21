@@ -21,6 +21,10 @@ test.describe('chat list filter layout', () => {
         await page.getByRole('button', {name: 'Toggle Chats', exact: true}).click();
       }
       await expect(page.locator('html')).toHaveAttribute('data-theme', size.theme);
+      // Below the split width an open workspace paints over the chat drawer, so
+      // the drawer is only usable once that overlay is dismissed.
+      const workspaceToggle = page.getByRole('button', {name: 'Toggle Workspace', exact: true});
+      if ((await workspaceToggle.getAttribute('aria-pressed')) === 'true') await workspaceToggle.click();
       const drawer = page.locator('aside.chat-drawer');
       const trigger = drawer.getByRole('button', {name: 'Arrange'});
       const header = drawer.locator('.chat-drawer-heading');
@@ -47,7 +51,7 @@ test.describe('chat list filter layout', () => {
         const sub = document.querySelector('.chat-list-options-submenu')!;
         const trigger = document.querySelector('.chat-list-options > button')!;
         const rect = (node: Element) => {const r = node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
-        return {main:rect(main),sub:rect(sub),trigger:rect(trigger),
+        return {main:rect(main),sub:rect(sub),trigger:rect(trigger),icon:rect(trigger.querySelector('svg')!),
           unobstructed: [...sub.querySelectorAll('button')].every(button => {
             const r = button.getBoundingClientRect();
             if (r.top < sub.getBoundingClientRect().top || r.bottom > sub.getBoundingClientRect().bottom) return true;
@@ -61,6 +65,8 @@ test.describe('chat list filter layout', () => {
         expect(rect.bottom).toBeLessThanOrEqual(size.height - 7.5);
       }
       expect(geometry.main.top).toBeGreaterThan(geometry.trigger.bottom);
+      if (geometry.icon.left + geometry.main.right - geometry.main.left <= size.width - 8)
+        expect(geometry.main.left).toBeCloseTo(geometry.icon.left, 0);
       expect(geometry.sub.right <= geometry.main.left || geometry.sub.left >= geometry.main.right).toBe(true);
       expect(geometry.unobstructed).toBe(true);
       await page.screenshot({path:info.outputPath(`filter-${size.width}-${size.height}-${size.theme}.png`),animations:'disabled'});

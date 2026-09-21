@@ -4,7 +4,7 @@ slug: browser
 description: Use Polymux’s in-app browser or explicitly assign an external browser tab to a task.
 section: Using Polymux
 sectionOrder: 2
-order: 4
+order: 6
 published: true
 ---
 
@@ -27,6 +27,10 @@ Page content and interaction become available only for the exact tab assigned to
 ## Downloads
 
 Files downloaded through the in-app browser appear in its Downloads view. From there, you can open the file or reveal it using the operating system.
+
+## Saved sign-ins
+
+When the Locker is unlocked, matching passwords and passkeys can be offered for an explicit fill or sign-in action. See [Locker](/docs/locker/) for storage, sync, and import details.
 
 ## When a site needs you
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Polymux",
-  "version": "0.3.4",
-  "description": "Locker autofill plus tab context for Polymux. Fills passwords, TOTP, and vault passkeys from the same vault as desktop Locker.",
+  "version": "0.3.5",
+  "description": "Vault autofill plus tab context for Polymux. Fills passwords, TOTP, and vault passkeys from the same vault as desktop Vault.",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -26,8 +26,8 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Polymux Locker",
-    "default_popup": "locker/popup.html",
+    "default_title": "Polymux Vault",
+    "default_popup": "vault/popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
@@ -55,7 +55,7 @@
         "https://*/*"
       ],
       "js": [
-        "locker/content.js"
+        "vault/content.js"
       ],
       "run_at": "document_idle",
       "all_frames": true
@@ -66,7 +66,7 @@
         "https://*/*"
       ],
       "js": [
-        "locker/webauthn-page.js"
+        "vault/webauthn-page.js"
       ],
       "run_at": "document_start",
       "all_frames": true,
@@ -78,7 +78,7 @@
         "https://*/*"
       ],
       "js": [
-        "locker/webauthn.js"
+        "vault/webauthn.js"
       ],
       "run_at": "document_start",
       "all_frames": true
@@ -87,7 +87,7 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "locker/webauthn-page.js"
+        "vault/webauthn-page.js"
       ],
       "matches": [
         "http://*/*",

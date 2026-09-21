@@ -1,7 +1,7 @@
 ---
 title: Introduction
 slug: introduction
-description: Meet Polymux, the desktop workspace that puts your assistant beside your messages, files, browser, and ongoing work.
+description: Meet Polymux, the desktop workspace that puts your assistant beside your messages, files, credentials, browser, and ongoing work.
 section: Getting started
 sectionOrder: 1
 order: 1
@@ -19,7 +19,9 @@ It is designed to feel useful after a normal desktop install while staying open 
 - **Chat** is where you ask for work and follow the agent’s progress.
 - **Hub** brings supported messaging services and email into one inbox.
 - **Drive** works with local files, cloud drives, network folders, and S3-compatible storage.
+- **Locker** is an encrypted vault for passwords, authenticator codes, recovery codes, and passkeys.
 - **Browser** gives the agent an in-app browser and controlled access to assigned external tabs.
+- **Devices** let signed-in or paired computers run Assistant work while you keep using the same Polymux Desktop.
 - **Tasks and Subagents** keep delegated work visible without crowding the main conversation, including saved requests that run at a recurring time.
 - **Memory** preserves useful context locally between conversations.
 

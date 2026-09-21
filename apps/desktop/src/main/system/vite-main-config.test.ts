@@ -8,12 +8,12 @@ test('the main bundle leaves Node SQLite for Electron to resolve', () => {
 });
 
 test('workspace packages resolve to source so Forge watch builds can finish', () => {
-  const locker = workspacePackageAliases().find((alias) => (
-    alias.find instanceof RegExp && alias.find.test('@polymux/locker')
+  const vault = workspacePackageAliases().find((alias) => (
+    alias.find instanceof RegExp && alias.find.test('@polymux/vault')
   ));
-  assert.ok(locker);
-  assert.equal(typeof locker.replacement, 'string');
-  assert.ok(existsSync(locker.replacement));
+  assert.ok(vault);
+  assert.equal(typeof vault.replacement, 'string');
+  assert.ok(existsSync(vault.replacement));
   assert.equal(
     workspacePackageAliases().some((alias) => (
       alias.find instanceof RegExp && alias.find.test('@polymux/browser/src/cursor-motion.js')

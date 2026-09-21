@@ -883,11 +883,11 @@
   /* The drive tab's own frame: the same edges every settings pane sits inside,
      so the section rail and the detail beside it line up with the rest of
      Settings rather than running to the window edge. */
-  .browser-tab{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 16px 0}
+  .browser-tab{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge, 24px) 16px 0}
   .browser-error{margin:0 0 10px;padding:7px 10px;border-radius:8px;background:#fbeaea;color:#8f3a3a;font-size:11px}
   :global(:root[data-theme="dark"]) .browser-error{background:#321f1f;color:#eea7a7}
 
-  .browser-body{min-width:0;min-height:0;flex:1;display:grid;grid-template-columns:186px minmax(0,1fr);gap:var(--options-divider-gap)}
+  .browser-body{min-width:0;min-height:0;flex:1;display:grid;grid-template-columns:186px minmax(0,1fr);gap:var(--options-divider-gap, 15px)}
   .browser-rail{min-width:0;min-height:0;display:flex;flex-direction:column;gap:4px;margin:0;padding:6px 12px;overflow-y:auto;list-style:none;border-right:1px solid var(--neutral-200)}
   .browser-rail>li{margin:0}
   .browser-rail button{width:100%;height:32px;display:flex;align-items:center;gap:10px;border:0;border-radius:10px;padding:0 9px;background:transparent;color:var(--neutral-600);cursor:pointer;font-family:inherit;text-align:left;font-size:13px;transition:color .15s,background .15s}

@@ -71,7 +71,7 @@ test('new literal text colours must be explicitly theme-safe', () => {
     '.team-avatar-preview-theme button', // Avatar preview controls inherit a fixed light/dark preview surface.
     '.team-avatar-preview span', // Preview copy is independent of the app theme.
     '.team-avatar-preview.dark span', // Dark preview copy on its fixed dark surface.
-    '.phone-screen-waiting', // Loading copy sits inside the fixed black device screen.
+    '.mobile-screen-waiting', // Loading copy sits inside the fixed black device screen.
     '.bank-card', // Bank-card text is on fixed dark gradients in both app themes.
     '.card-balance-label', // Copy inside the same fixed dark bank-card surface.
     '.card-bottom button', // Actions inside the same fixed dark bank-card surface.

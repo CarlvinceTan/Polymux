@@ -12,10 +12,10 @@ const transportFiles = [
   "apps/connect/relay/src/index.ts",
   "apps/desktop/src/renderer/lib/api/polymux.ts",
   "apps/desktop/src/renderer/lib/features/team/TeamHostDialog.svelte",
-  "apps/phone/src/lib/host.ts",
-  "apps/phone/src-tauri/Info.plist",
-  "apps/phone/src-tauri/capabilities/default.json",
-  "apps/phone/src-tauri/gen/android/app/build.gradle.kts",
+  "apps/mobile/src/lib/host.ts",
+  "apps/mobile/src-tauri/Info.plist",
+  "apps/mobile/src-tauri/capabilities/default.json",
+  "apps/mobile/src-tauri/gen/android/app/build.gradle.kts",
   "packages/host/src/runtime.ts",
   "packages/protocol/src/host-setup.ts",
   "packages/protocol/src/relay.ts",
@@ -32,7 +32,7 @@ test("Personal Host transport defaults to Polymux Connect without Tailscale assu
       assert.equal(text.includes(marker), false, `${path} still allows a legacy CGNAT Host address`);
   }
 
-  for (const path of ["apps/cli/src/index.ts", "apps/desktop/src/main/backend.ts", "apps/phone/src/lib/host.ts"]) {
+  for (const path of ["apps/cli/src/index.ts", "apps/desktop/src/main/backend.ts", "apps/mobile/src/lib/host.ts"]) {
     const source = sources.find((candidate) => candidate.path === path);
     assert.ok(source, `missing transport contract source ${path}`);
     assert.match(source.text, /connect\.polymux\.com/, `${path} does not name the Polymux Connect default`);
@@ -49,9 +49,9 @@ test("Personal Host transport defaults to Polymux Connect without Tailscale assu
   assert.match(relay.text, /webSocketOrigin:\s*url\.origin/);
   assert.match(edge.text, /POLYMUX_CONNECT_UPSTREAM/);
 
-  const ios = sources.find(({path}) => path === "apps/phone/src-tauri/Info.plist");
-  const android = sources.find(({path}) => path === "apps/phone/src-tauri/gen/android/app/build.gradle.kts");
-  const capability = sources.find(({path}) => path === "apps/phone/src-tauri/capabilities/default.json");
+  const ios = sources.find(({path}) => path === "apps/mobile/src-tauri/Info.plist");
+  const android = sources.find(({path}) => path === "apps/mobile/src-tauri/gen/android/app/build.gradle.kts");
+  const capability = sources.find(({path}) => path === "apps/mobile/src-tauri/capabilities/default.json");
   assert.ok(ios && android && capability, "missing native mobile transport policy sources");
   assert.doesNotMatch(ios.text, /NSAllowsArbitraryLoads/);
   assert.match(ios.text, /NSAllowsLocalNetworking/);

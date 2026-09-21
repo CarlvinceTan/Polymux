@@ -10,7 +10,7 @@ let pendingRequest = false;
  * the guest world so it can wrap navigator.credentials; the overlay and IPC
  * stay in this isolated preload.
  */
-export function installLockerWebAuthn(): void {
+export function installVaultWebAuthn(): void {
   void webFrame.executeJavaScript(`(${pageHook.toString()})()`);
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
@@ -103,8 +103,8 @@ interface Offer {
 function unlockOverlay(): Promise<boolean> {
   return new Promise((resolve) => {
     const shadow = overlay(`
-      <h1>Locker is locked</h1>
-      <p>Unlock Locker in Polymux, then retry.</p>
+      <h1>Vault is locked</h1>
+      <p>Unlock Vault in Polymux, then retry.</p>
       <p class="error" hidden></p>
       <button type="button" id="retry">Retry</button>
       <button type="button" class="quiet" id="cancel">Not now</button>
@@ -117,10 +117,10 @@ function unlockOverlay(): Promise<boolean> {
       void invoke({action: "status"}).then((next) => {
         if (next.unlocked) { closeOverlay(); resolve(true); return; }
         const error = shadow.querySelector(".error") as HTMLElement | null;
-        if (error) { error.hidden = false; error.textContent = "Locker is still locked. Unlock it in Polymux."; }
+        if (error) { error.hidden = false; error.textContent = "Vault is still locked. Unlock it in Polymux."; }
       }).catch(() => {
         const error = shadow.querySelector(".error") as HTMLElement | null;
-        if (error) { error.hidden = false; error.textContent = "Could not connect to Locker. Try again."; }
+        if (error) { error.hidden = false; error.textContent = "Could not connect to Vault. Try again."; }
       });
     });
   });
@@ -156,7 +156,7 @@ function confirm(title: string, detail: string): Promise<boolean> {
     const shadow = overlay(`
       <h1>${escapeHtml(title)}</h1>
       <p>${escapeHtml(detail)}</p>
-      <button type="button" id="save">Save to Locker</button>
+      <button type="button" id="save">Save to Vault</button>
       <button type="button" class="quiet" id="skip">Not now</button>
     `);
     shadow.getElementById("save")?.addEventListener("click", () => {

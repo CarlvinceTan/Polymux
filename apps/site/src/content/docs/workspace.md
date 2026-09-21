@@ -14,7 +14,7 @@ The workspace keeps the material behind an answer visible beside your conversati
 
 ## Open a view
 
-Use the workspace control in the title bar to open a view. The available views include **Drive**, **Hub**, **Browser**, **Tasks**, and **Subagents**. Recurring schedules live inside **Tasks**.
+Use the workspace control in the title bar to open a view. The available views include **Drive**, **Hub**, **Locker**, **Browser**, **Tasks**, and **Subagents**. Recurring schedules live inside **Tasks**.
 
 You can keep several tabs open, switch between them, resize the workspace, expand it, or minimise it back into the conversation.
 
@@ -23,6 +23,10 @@ You can keep several tabs open, switch between them, resize the workspace, expan
 Workspace tabs belong to the current working context. This makes it easier to see which page or file the agent is using without turning every intermediate step into another chat message.
 
 Closing a view removes it from the visible workspace. It does not automatically delete the underlying file, message, browser history, or task.
+
+## Choose a device
+
+The **Devices** control in the chat drawer selects which paired computer runs Assistant work. Choose the device before sending the first message in a conversation; an offline Host cannot start new work. See [Devices](/docs/devices/) for pairing and connection details.
 
 ## Pinned views
 

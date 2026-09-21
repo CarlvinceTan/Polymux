@@ -27,6 +27,7 @@
   import RichSignatureEditor from './RichSignatureEditor.svelte';
 
   export let api: PolymuxApi;
+  export let responsive = false;
 
   /** Which providers this build can sign in to; empty draws no buttons. */
   $: mailSignInProviders = status?.email.signInProviders ?? [];
@@ -888,7 +889,7 @@
   }
 </script>
 
-<div class="comms" role="tabpanel">
+<div class="comms" class:responsive role="tabpanel">
     {#if error}
       <div class="comms-error" role="alert">
         <span>{error}</span>
@@ -899,6 +900,23 @@
     <!-- The rail chrome — divider, tool row, list frame — is painted before the
          fleet lands, so the first status fills a pane that is already there
          rather than replacing a bare line of text with the whole layout. -->
+    <div class="comms-platform-picker" role="tablist" aria-label={$t('hub.accountPlatform')}>
+      {#each visibleRail as entry (entry.key)}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={isSelected(entry.section, selected)}
+          class:active={isSelected(entry.section, selected)}
+          onclick={() => (selected = entry.section)}
+        >
+          {#if entry.logo}
+            <img src={entry.logo} alt="" aria-hidden="true" />
+          {/if}
+          <span>{entry.name}</span>
+          <span class="comms-dot" data-state={entry.state}></span>
+        </button>
+      {/each}
+    </div>
     <div class="comms-body">
       <div class="comms-rail-column">
         <ul
@@ -1045,16 +1063,17 @@
                 </span>
               {/if}
             </header>
-            <div class="comms-signature-toolbar">
-              <Menu
-                options={signatureAccountOptions}
-                value={signatureAccountId}
-                label={$t('hub.signatureAccounts')}
-                icon="mail"
-                wide
-                keepOpenOnChange
-                onChange={chooseSignatureAccount}
-              />
+            <div class="comms-signature-toolbar" role="tablist" aria-label={$t('hub.signatureAccounts')}>
+              {#each signatureAccountOptions as option (option.value)}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={signatureAccountId === option.value}
+                  class:active={signatureAccountId === option.value}
+                  onclick={() => chooseSignatureAccount(option.value)}
+                  title={option.label}
+                >{option.value === 'all' ? option.label : option.label}</button>
+              {/each}
               <small>{plural('hub.signatures', signatureScopeCount)}</small>
             </div>
 
@@ -1453,7 +1472,7 @@
 </div>
 
 <style>
-  .comms{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 16px var(--options-content-edge)}
+  .comms{container-type:inline-size;flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px var(--options-detail-edge) 16px var(--options-content-edge)}
   .comms-muted{color:var(--neutral-400);font-size:11px}
   .comms-error{display:flex;align-items:center;gap:12px;margin-bottom:10px;padding:9px 11px;border-radius:9px;background:#fff5f5;color:#8f3e3e;font-size:11px}
   .comms-error>span{min-width:0;flex:1}
@@ -1500,7 +1519,7 @@
   .comms-dot[data-state="logged-out"]{background:var(--neutral-300)}
   .comms-dot[data-state="unreachable"],.comms-dot[data-state="unavailable"]{background:var(--neutral-200);box-shadow:inset 0 0 0 1px var(--neutral-300)}
 
-  .comms-detail{min-height:0;overflow-y:auto;padding-right:2px}
+  .comms-detail{min-width:0;min-height:0;overflow-y:auto;padding-right:2px}
   /* The signature page owns its two internal scrollers. Keeping the outer
      detail pane scrollable would clip and mask the account menu before it can
      float over the workspace below. */
@@ -1514,7 +1533,7 @@
   /* Borderless — the glyph is the affordance, and a box around it competes with
      the cards below. The hover fill is what confirms it is a target. */
   .comms-detail-actions button{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:var(--neutral-500);cursor:pointer}
-  .comms-detail-actions button:hover{background:var(--neutral-100);color:var(--neutral-950)}
+  .comms-detail-actions button:hover{color:var(--neutral-950)}
 
   .comms-block{margin-bottom:16px;padding-top:12px;border-top:1px solid var(--neutral-200)}
   .comms-block h4{margin:0 0 7px;color:var(--neutral-900);font-size:11.5px;font-weight:570}
@@ -1542,10 +1561,10 @@
   .comms-form label{display:flex;flex-direction:column;gap:3px}
   .comms-form label>span{color:var(--neutral-600);font-size:10.5px;font-weight:530}
   .comms-form label>small{color:var(--neutral-400);font-size:9.5px}
-  .comms-form input{height:30px;border:1px solid var(--neutral-200);border-radius:8px;padding:0 9px;background:var(--app-surface);color:var(--neutral-950);font-family:inherit;font-size:11.5px}
+  .comms-form input{min-width:0;width:100%;box-sizing:border-box;height:30px;border:1px solid var(--neutral-200);border-radius:8px;padding:0 9px;background:var(--app-surface);color:var(--neutral-950);font-family:inherit;font-size:11.5px}
   .comms-form input:focus-visible{border-color:var(--neutral-500);outline:0}
   .comms-form-row{display:flex;max-width:440px;gap:9px}
-  .comms-form-row>label{flex:1}
+  .comms-form-row>label{flex:1;min-width:0}
   .comms-form-row .comms-port{max-width:82px;flex:none}
 
   .comms-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:12px}
@@ -1595,12 +1614,11 @@
      page rail, so another full-height account rail only adds chrome. */
   .comms-signature-page{height:100%;min-height:0;display:flex;flex-direction:column}
   .comms-signature-header{flex:none;margin-bottom:10px}
-  .comms-signature-toolbar{display:flex;align-items:center;gap:9px;margin-bottom:12px}
-  .comms-signature-toolbar :global(.select-menu){width:160px;min-width:160px;max-width:160px;flex:0 0 160px}
-  .comms-signature-toolbar :global(.select-menu-trigger){box-sizing:border-box;width:100%;min-width:0;max-width:100%;height:29px;justify-content:flex-start;gap:6px;padding:0 9px 0 8px;font-size:10.5px}
-  .comms-signature-toolbar :global(.select-menu-trigger>span:not(.select-menu-icon)){min-width:0;flex:1;text-align:left}
-  .comms-signature-toolbar :global(.select-menu-trigger>[data-icon="chevron"]){flex:none;margin-left:auto;transform:translateY(1px)}
-  .comms-signature-toolbar :global(.select-menu-list){right:auto;left:0;width:100%;min-width:100%;max-width:100%}
+  .comms-signature-toolbar{display:flex;align-items:center;gap:6px;margin-bottom:12px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+  .comms-signature-toolbar::-webkit-scrollbar{display:none}
+  .comms-signature-toolbar button{flex:none;border:1px solid var(--neutral-200);border-radius:999px;padding:5px 11px;background:var(--app-surface);color:var(--neutral-600);cursor:pointer;font-family:inherit;font-size:10.5px;font-weight:550;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis}
+  .comms-signature-toolbar button:hover{background:var(--neutral-100);color:var(--neutral-950)}
+  .comms-signature-toolbar button.active{border-color:var(--neutral-950);background:var(--neutral-950);color:var(--app-bg)}
   .comms-signature-toolbar>small{margin-left:auto;color:var(--neutral-400);font-size:10px;white-space:nowrap}
 
   .comms-signature-workspace{min-height:0;flex:1;display:grid;grid-template-columns:minmax(176px,.8fr) minmax(260px,1.7fr);gap:18px;animation:comms-signature-in .14s ease-out both}
@@ -1643,4 +1661,15 @@
   .comms-status[data-state="ok"]{color:var(--status-success-text)}
   .comms-status[data-state="error"]{color:var(--status-error-text)}
   .comms-status[data-state="unknown"]{color:var(--neutral-500)}
+  .comms-platform-picker{display:none;flex:none;margin-bottom:14px;gap:6px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+  .comms-platform-picker::-webkit-scrollbar{display:none}
+  .comms-platform-picker button{flex:none;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--neutral-200);border-radius:999px;padding:6px 11px;background:var(--app-surface);color:var(--neutral-600);cursor:pointer;font-family:inherit;font-size:11px;font-weight:550;white-space:nowrap}
+  .comms-platform-picker button img{width:16px;height:16px;object-fit:contain}
+  .comms-platform-picker button:hover{background:var(--neutral-100);color:var(--neutral-950)}
+  .comms-platform-picker button.active{border-color:var(--neutral-950);background:var(--neutral-950);color:var(--app-bg)}
+  @container (max-width:560px){
+    .comms.responsive .comms-platform-picker{display:flex}
+    .comms.responsive .comms-rail-column{display:none}
+    .comms.responsive .comms-body{grid-template-columns:minmax(0,1fr)}
+  }
 </style>
